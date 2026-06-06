@@ -67,9 +67,8 @@ struct AnalysisExportMetadata: Codable, Sendable {
     // MARK: - Architecture
 
     struct Architecture: Codable, Sendable {
-        /// `ModelCheckpointFile.currentArchHash`, hex-formatted — the
-        /// shape+topology fingerprint that gates checkpoint loading.
-        let archHash: String
+        /// Human v-number for display (4 = pre-activation, 3 = post-activation).
+        /// Identity is the embedded config / `summary`, not a hash (see plan §6).
         let architectureVersion: Int
         /// Total persistent-tensor element count (`ChessNetwork.parameterCount`).
         let parameterCount: Int

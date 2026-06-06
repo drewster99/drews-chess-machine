@@ -37,10 +37,8 @@ struct AutoResumeModelBlockView: View {
             return "unknown (saved before arch metadata)"
         }
         let paramsStr = AutoResumeFormat.count(arch.parameterCount) + " params"
-        return "v\(arch.architectureVersion) · "
-            + "\(arch.numBlocks) blocks · "
-            + "\(arch.channels) channels · "
-            + "SE/\(arch.seReductionRatio) · "
-            + paramsStr
+        let v = arch.architectureVersion
+        let se = arch.seReductionRatio
+        return "v\(v) · \(arch.numBlocks) blocks · \(arch.channels) channels · SE/\(se) · \(paramsStr)"
     }
 }

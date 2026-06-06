@@ -21,7 +21,6 @@ enum SafetensorsModelIO {
         case missingTensor(String)
         case missingArchitecture
         case badArchitectureJSON(String)
-        case archHashMismatch(stored: String, computed: String)
 
         var description: String {
             switch self {
@@ -29,7 +28,6 @@ enum SafetensorsModelIO {
             case .missingTensor(let name): return "safetensors model: missing tensor '\(name)'"
             case .missingArchitecture: return "safetensors model: no architecture in __metadata__"
             case .badArchitectureJSON(let d): return "safetensors model: architecture JSON failed to decode (\(d))"
-            case .archHashMismatch(let stored, let computed): return "safetensors model: arch_hash \(stored) doesn't match embedded architecture (\(computed)) — file is inconsistent/tampered"
             }
         }
     }
@@ -43,7 +41,6 @@ enum SafetensorsModelIO {
         static let trainingStep = "training_step"
         static let parentModelID = "parent_model_id"
         static let notes = "notes"
-        static let archHash = "arch_hash"
         static let architecture = "architecture"
     }
 
@@ -98,7 +95,6 @@ enum SafetensorsModelIO {
             Key.creator: metadata.creator,
             Key.parentModelID: metadata.parentModelID,
             Key.notes: metadata.notes,
-            Key.archHash: architecture.archHashHex,
         ]
         if let step = metadata.trainingStep { md[Key.trainingStep] = String(step) }
         let archData = try JSONEncoder().encode(architecture)
@@ -131,13 +127,9 @@ enum SafetensorsModelIO {
             throw IOError.badArchitectureJSON(error.localizedDescription)
         }
 
-        // The stored arch_hash must agree with the embedded architecture, so a
-        // hand-edited / mismatched config is caught here rather than surfacing
-        // later as a confusing weight-shape error.
-        if let storedHash = md[Key.archHash], storedHash != architecture.archHashHex {
-            throw IOError.archHashMismatch(stored: storedHash, computed: architecture.archHashHex)
-        }
-
+        // Identity is the embedded architecture itself (no arch_hash); integrity
+        // is content_sha256 (verified in SafetensorsFile). A hand-edited config
+        // surfaces as a weight-shape mismatch against the plan below.
         let hasVelocity = tensors.contains { $0.name.hasPrefix("opt.") && $0.name.hasSuffix(".velocity") }
         let names = tensorNames(for: architecture, includesVelocity: hasVelocity)
         let plan = architecture.weightTensorPlan()

@@ -2,85 +2,177 @@
 //  NetworkArchitecture.swift
 //  DrewsChessMachine
 //
-//  Single source of truth for a network's *shape*. This value type is the
-//  runtime, per-model replacement for the compile-time `static let` arch
-//  constants that currently live on `ChessNetwork` (channels, numBlocks,
-//  tower kernel, SE shape, value-head dims, compute dtype). It owns the
-//  derived quantities those constants feed — `parameterCount`, the
-//  `archHash`, the human `summary`, and — critically — the ordered
-//  `weightTensorPlan` that names and shapes every persistent tensor in the
-//  exact order `ChessNetwork.exportWeights()` / `loadWeights()` use.
+//  Single source of truth for a network's *shape* — the runtime, per-model
+//  replacement for the compile-time arch constants that historically lived on
+//  `ChessNetwork`. This value type is **purely topological**: it owns the
+//  decomposed configurable axes (§5a of RUNTIME_ARCHITECTURE_CONFIG_PLAN.md), the
+//  derived quantities they feed (`inputPlanes`, `valueHeadClasses`,
+//  `parameterCount`, `architectureSummary`), and the ordered `weightTensorPlan`
+//  that names + shapes every persistent tensor in the exact order
+//  `ChessNetwork.exportWeights()` / `loadWeights()` use.
 //
-//  Phase 1 (this file): the value type + its derivations + presets, with NO
-//  wiring into `ChessNetwork` yet. `ChessNetwork` keeps building from its
-//  statics; the parity between this struct's derivations and the live build
-//  is asserted by tests (param counts and arch hashes reproduce the
-//  documented values exactly) and, in later phases, by the bit-exact
-//  forward-pass save verification.
-//
-//  Scope note: only the v4 (pre-activation) block style is modeled here.
-//  The v3 (post-activation) historical style — needed to *load* the 8- and
-//  16-block legacy models — is reintroduced in the v3/v4 phase alongside the
-//  v3 builder, where its tensor plan and parameter formula can be verified
-//  against the real historical weights rather than guessed.
+//  Design rules baked in here:
+//  - **No silent defaults.** The memberwise init has zero defaulted fields — every
+//    configurable parameter is passed explicitly. The only place concrete values
+//    live is a `Preset`.
+//  - **Flat schema.** Style + its numeric param are separate flat fields
+//    (`blockSeStyle` + `blockSeReductionRatio`); `validate()` enforces consistency.
+//  - **Naming.** camelCase Swift property ↔ lower_snake_case JSON key (explicit
+//    `CodingKeys`); enum rawValues are snake/lowercase tokens. Canonical JSON
+//    (sortedKeys, done at the storage boundary) makes field declaration order
+//    irrelevant to identity.
+//  - **Identity = the value itself** (`Equatable`/`Hashable`). There is no config
+//    hash; `arch_hash` survives only as a legacy-`.dcmmodel` lookup (see `Preset`).
+//  - **`label` lives OUTSIDE this struct** (in the surrounding model/preset
+//    metadata), so the topology stays the sole identity.
 //
 
 import Foundation
 
-// MARK: - Component enums
+// MARK: - Component enums (snake_case rawValues = the JSON tokens)
 
-/// Residual-block topology. Only v4 is currently buildable; `.v3PostActivation`
-/// is added in the v3/v4 phase (it changes block ordering, removes ReZero, and
-/// uses a different value head, so it can't be modeled accurately until the
-/// historical builder is reintroduced).
-enum BlockStyle: String, Sendable, Codable, Hashable {
-    /// Pre-activation ResNet-v2: `BN→ReLU→conv→BN→ReLU→conv→[SE]`, clean
-    /// identity skip with a trainable per-block ReZero scalar
-    /// (`out = input + α·F(input)`, α init `1/√numBlocks`).
-    case v4PreActivation
+/// The set of input feature planes `BoardEncoder` produces. Single source of truth
+/// shared by `BoardEncoder` (writes them), `ChessNetwork` (stem input depth), and
+/// `ReplayBuffer` (per-position stride). Adding a case + a `BoardEncoder` branch is
+/// the ONLY way to introduce an encoding — the type system then forbids defining a
+/// config the encoder can't produce.
+enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
+    /// 20 planes: pieces / castling / EP / 50-move / 2 repetition-count planes —
+    /// the original encoding, with NO temporal-repetition history.
+    case basic20
+    /// 30 planes: `basic20` (planes 0–19) + 10 temporal-repetition history planes.
+    case basic30
+
+    /// Ordered plane-group spec. `description` renders from this and a unit test
+    /// asserts the encoder fills exactly these ranges (no doc/impl drift).
+    var planeGroups: [PlaneGroup] {
+        let base: [PlaneGroup] = [
+            PlaneGroup(0...5,   "my pieces: pawn, knight, bishop, rook, queen, king"),
+            PlaneGroup(6...11,  "opponent's pieces: same order"),
+            PlaneGroup(12...13, "my castling: kingside, queenside"),
+            PlaneGroup(14...15, "opponent's castling: kingside, queenside"),
+            PlaneGroup(16...16, "en passant target square"),
+            PlaneGroup(17...17, "halfmove / 50-move clock, min(clock,99)/99"),
+            PlaneGroup(18...18, "repetition: current position seen >=1x before"),
+            PlaneGroup(19...19, "repetition: seen >=2x before (3-fold threshold)"),
+        ]
+        switch self {
+        case .basic20:
+            return base
+        case .basic30:
+            return base + [
+                PlaneGroup(20...29, "temporal-repetition history: plane 20+i = position i+1 plies ago is a strict duplicate")
+            ]
+        }
+    }
+
+    /// Number of 8x8 planes — derived from `planeGroups`, never duplicated.
+    var planeCount: Int { (planeGroups.last?.range.upperBound ?? -1) + 1 }
+
+    /// Human-readable table, rendered from `planeGroups` (single source of truth).
+    var planeDescription: String {
+        var lines = ["\(rawValue) — \(planeCount) planes:"]
+        for g in planeGroups {
+            let lo = g.range.lowerBound, hi = g.range.upperBound
+            let label = lo == hi ? "\(lo)" : "\(lo)-\(hi)"
+            lines.append("  [\(label)] \(g.meaning)")
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// One contiguous range of input planes + what it means. Drives both the rendered
+/// description and the encoder-correctness test.
+struct PlaneGroup: Sendable, Hashable {
+    let range: ClosedRange<Int>
+    let meaning: String
+    init(_ range: ClosedRange<Int>, _ meaning: String) {
+        self.range = range
+        self.meaning = meaning
+    }
+}
+
+/// The single network-wide hidden-activation function (block main path, SE FC1,
+/// tower-end, both heads). Verified across all of git history: every architecture
+/// used ReLU at every hidden site, so `.relu` reproduces all historical nets. The
+/// SE gate (`sigmoid`) and the value output (`tanh`/`softmax`) are structural and
+/// NOT governed by this.
+enum ActivationFunction: String, Codable, CaseIterable, Sendable, Hashable {
+    case relu
+    case silu
+    case gelu
+}
+
+/// Residual-block activation placement. Bundles the correlated choices: `pre` =
+/// pre-activation (BN→act→conv…), stem ReLU OFF, tower-end BN ON; `post` =
+/// post-activation (conv→BN→act…), stem ReLU ON, tower-end BN OFF.
+enum BlockActivationStyle: String, Codable, CaseIterable, Sendable, Hashable {
+    case pre
+    case post
+}
+
+/// How the residual branch merges with the skip.
+enum BlockSkipMerge: String, Codable, CaseIterable, Sendable, Hashable {
+    /// `out = input + alpha*F(input)` — clean identity highway (v4).
+    case cleanAdd = "clean_add"
+    /// `out = activation(input + F(input))` — activation-gated sum (v3 was the ReLU case).
+    case activationGated = "activation_gated"
 }
 
 /// Squeeze-and-Excitation channel-attention variant inside each residual block.
-enum SEStyle: String, Sendable, Codable, Hashable {
-    /// No SE module.
+enum SEStyle: String, Codable, CaseIterable, Sendable, Hashable {
     case none
-    /// Standard SE gate: FC2 emits `channels`, applied as `sigmoid(z)·x`.
-    case attenuateOnly
-    /// Scale-and-bias SE: FC2 emits `2·channels` (γ‖β), applied as
-    /// `sigmoid(γ)·x + β`. The current v4 default; non-standard vs stock SE,
-    /// hence the `se_scalebias` flag in the exported tensor names.
-    case scaleAndBias
+    /// FC2 emits `channels`, applied as `sigmoid(z)*x`.
+    case attenuateOnly = "attenuate_only"
+    /// FC2 emits `2*channels` (gamma||beta), applied as `sigmoid(gamma)*x + beta`.
+    case scaleAndBias = "scale_and_bias"
 }
 
-/// GPU compute precision. NOT a storage property — weights are always Float32
-/// on disk; this only selects the MPSGraph compute dtype (and, when bf16, the
-/// trainer's fp32-master mixed-precision update path). Recorded in model
-/// metadata as informational ("trained-as").
-enum ComputeDataType: String, Sendable, Codable, Hashable {
+/// Policy-head topology. All three emit 4864 raw logits in the current
+/// `PolicyEncoding` (76x64); masking + softmax happen CPU-side downstream.
+enum PolicyHeadStyle: String, Codable, CaseIterable, Sendable, Hashable {
+    /// Single 1x1 conv channels->76 (+bias) -> reshape. Ignores `policyPreConvChannels`.
+    case simpleConv = "simple_conv"
+    /// 1x1 conv channels->K -> BN -> act -> 1x1 conv K->76 (+bias) -> reshape.
+    case intermediateConv = "intermediate_conv"
+    /// 1x1 conv channels->K -> BN -> act -> flatten(K*64) -> FC(K*64->4864) (+bias).
+    case fcBottleneck = "fc_bottleneck"
+}
+
+/// Value-head topology. Determines output count + activation + the training loss.
+enum ValueHeadStyle: String, Codable, CaseIterable, Sendable, Hashable {
+    /// 1 logit -> tanh; trained with MSE vs game result z in {-1,0,+1}.
+    case scalarTanh = "scalar_tanh"
+    /// 3 logits -> softmax (W/D/L); trained with categorical cross-entropy.
+    case wdlSoftmax = "wdl_softmax"
+}
+
+/// GPU compute precision. NOT a storage property — weights are always Float32 on
+/// disk; this selects the MPSGraph compute dtype (and the trainer's fp32-master
+/// mixed-precision path when bf16). Honored as configured — no hardware gate
+/// (bf16 works everywhere on supported OS, only faster on M5+; see plan §9).
+enum ComputeDataType: String, Codable, CaseIterable, Sendable, Hashable {
     case float32
-    case bFloat16
+    case bFloat16 = "bfloat16"
 }
 
 // MARK: - Weight tensor plan
 
-/// What a persistent tensor *is*, so the safetensors writer can apply the
-/// right PyTorch-orientation transform at the export boundary (conv stays
-/// OIHW; Linear weights transpose `[in,out]→[out,in]`; biases reshape to 1-D).
-/// The native shapes recorded in `WeightTensorSpec.shape` are the engine's own
-/// layout; orientation transforms are a writer concern, not a plan concern.
+/// What a persistent tensor *is*, so the safetensors writer can apply the right
+/// PyTorch-orientation transform at the export boundary (conv stays OIHW; Linear
+/// transposes `[in,out]->[out,in]`; biases reshape to 1-D).
 enum WeightKind: String, Sendable, Hashable {
     case conv            // [outC, inC, kH, kW] (OIHW)
     case linear          // [in, out] (MPSGraph matmul orientation)
-    case bias            // [1, N, ...] / [1, N] — element count N
+    case bias            // element count N
     case bnAffine        // BN gamma / beta — [channels]
     case bnRunningStat   // BN running_mean / running_var — [channels]
     case scalar          // ReZero alpha — [1]
 }
 
-/// One persistent tensor's identity: its PyTorch-ready name, native shape, and
-/// kind. The ordered list of these (`weightTensorPlan`) is the single source of
-/// truth shared by the builder, the analyzer, the safetensors writer, and the
-/// loader.
+/// One persistent tensor's identity: PyTorch-ready name, native shape, and kind.
+/// The ordered list (`weightTensorPlan`) is the single source of truth shared by
+/// builder, analyzer, safetensors writer, and loader.
 struct WeightTensorSpec: Sendable, Equatable {
     let name: String
     let shape: [Int]
@@ -91,239 +183,264 @@ struct WeightTensorSpec: Sendable, Equatable {
 // MARK: - Errors
 
 enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
-    case kernelMustBeOdd(Int)
+    case kernelMustBeOdd(field: String, value: Int)
     case nonPositive(field: String, value: Int)
     case channelsNotDivisibleByReduction(channels: Int, reduction: Int)
-    case fixedFieldChanged(field: String, expected: Int, got: Int)
+    case valueConvChannelsExceedChannels(conv: Int, channels: Int)
 
     var description: String {
         switch self {
-        case .kernelMustBeOdd(let k):
-            return "towerConvKernelSize must be odd for symmetric same-padding (got \(k))"
+        case .kernelMustBeOdd(let field, let value):
+            return "\(field) must be odd for symmetric same-padding (got \(value))"
         case .nonPositive(let field, let value):
             return "\(field) must be positive (got \(value))"
         case .channelsNotDivisibleByReduction(let c, let r):
-            return "channels (\(c)) must be divisible by seReductionRatio (\(r))"
-        case .fixedFieldChanged(let field, let expected, let got):
-            return "\(field) is fixed by the engine at \(expected) (got \(got)); changing it requires new encoders"
+            return "channels (\(c)) must be divisible by blockSeReductionRatio (\(r))"
+        case .valueConvChannelsExceedChannels(let conv, let channels):
+            return "valueHeadConvChannels (\(conv)) cannot exceed channels (\(channels))"
         }
     }
 }
 
 // MARK: - NetworkArchitecture
 
-/// Immutable description of one network's architecture. Construct via the
-/// memberwise init or a `preset`; call `validate()` before building.
+/// Immutable, purely-topological description of one network's architecture.
+/// Construct via the memberwise init (all fields required) or a `Preset`; call
+/// `validate()` before building.
 struct NetworkArchitecture: Sendable, Codable, Hashable {
 
-    // Variable knobs ------------------------------------------------------
+    // Input ---------------------------------------------------------------
+    var inputEncoding: InputEncoding
+
+    // Tower ---------------------------------------------------------------
     var channels: Int
     var numBlocks: Int
-    var towerConvKernelSize: Int
-    var blockStyle: BlockStyle
-    var se: SEStyle
-    var seReductionRatio: Int
+    var stemConvKernelSize: Int
+    var activationFunction: ActivationFunction
+
+    // Block ---------------------------------------------------------------
+    var blockActivationStyle: BlockActivationStyle
+    var blockSkipMerge: BlockSkipMerge
+    var blockUseRezero: Bool
+    var rezeroAlphaInit: Float           // consumed only when blockUseRezero
+    var blockConv1KernelSize: Int
+    var blockConv2KernelSize: Int
+    var blockSeStyle: SEStyle
+    var blockSeReductionRatio: Int       // consumed only when blockSeStyle != none
+
+    // Policy head ---------------------------------------------------------
+    var policyHeadStyle: PolicyHeadStyle
+    var policyPreConvChannels: Int       // K for intermediate_conv / fc_bottleneck
+
+    // Value head ----------------------------------------------------------
+    var valueHeadStyle: ValueHeadStyle
     var valueHeadConvChannels: Int
     var valueHeadHiddenUnits: Int
+
+    // Precision -----------------------------------------------------------
     var computeDataType: ComputeDataType
 
-    // Fixed-by-engine -----------------------------------------------------
-    // Pinned by BoardEncoder / PolicyEncoding / the WDL head. Carried here for
-    // hashing + serialization completeness; `validate()` enforces the pins.
-    var inputPlanes: Int = 30
-    var boardSize: Int = 8
-    var policyChannels: Int = 76
-    var valueHeadClasses: Int = 3
+    // Fixed-by-engine (not stored, not in init) ---------------------------
+    static let boardSize = 8
+    static let policyChannels = 76
+    static var policySize: Int { policyChannels * boardSize * boardSize }   // 4864
 
-    static let fixedInputPlanes = 30
-    static let fixedBoardSize = 8
-    static let fixedPolicyChannels = 76
-    static let fixedValueHeadClasses = 3
-
+    /// All-required memberwise init — NO defaults (no silent fallbacks).
     init(
+        inputEncoding: InputEncoding,
         channels: Int,
         numBlocks: Int,
-        towerConvKernelSize: Int,
-        blockStyle: BlockStyle,
-        se: SEStyle,
-        seReductionRatio: Int,
+        stemConvKernelSize: Int,
+        activationFunction: ActivationFunction,
+        blockActivationStyle: BlockActivationStyle,
+        blockSkipMerge: BlockSkipMerge,
+        blockUseRezero: Bool,
+        rezeroAlphaInit: Float,
+        blockConv1KernelSize: Int,
+        blockConv2KernelSize: Int,
+        blockSeStyle: SEStyle,
+        blockSeReductionRatio: Int,
+        policyHeadStyle: PolicyHeadStyle,
+        policyPreConvChannels: Int,
+        valueHeadStyle: ValueHeadStyle,
         valueHeadConvChannels: Int,
         valueHeadHiddenUnits: Int,
         computeDataType: ComputeDataType
     ) {
+        self.inputEncoding = inputEncoding
         self.channels = channels
         self.numBlocks = numBlocks
-        self.towerConvKernelSize = towerConvKernelSize
-        self.blockStyle = blockStyle
-        self.se = se
-        self.seReductionRatio = seReductionRatio
+        self.stemConvKernelSize = stemConvKernelSize
+        self.activationFunction = activationFunction
+        self.blockActivationStyle = blockActivationStyle
+        self.blockSkipMerge = blockSkipMerge
+        self.blockUseRezero = blockUseRezero
+        self.rezeroAlphaInit = rezeroAlphaInit
+        self.blockConv1KernelSize = blockConv1KernelSize
+        self.blockConv2KernelSize = blockConv2KernelSize
+        self.blockSeStyle = blockSeStyle
+        self.blockSeReductionRatio = blockSeReductionRatio
+        self.policyHeadStyle = policyHeadStyle
+        self.policyPreConvChannels = policyPreConvChannels
+        self.valueHeadStyle = valueHeadStyle
         self.valueHeadConvChannels = valueHeadConvChannels
         self.valueHeadHiddenUnits = valueHeadHiddenUnits
         self.computeDataType = computeDataType
     }
 
-    // Derived shape scalars ----------------------------------------------
+    // MARK: Codable — explicit lower_snake_case keys
 
-    var policySize: Int { policyChannels * boardSize * boardSize }
-
-    /// Topology version, mixed into `archHash`. v4 = pre-activation tower.
-    var architectureVersion: Int {
-        switch blockStyle {
-        case .v4PreActivation: return 4
-        }
+    enum CodingKeys: String, CodingKey {
+        case inputEncoding = "input_encoding"
+        case channels
+        case numBlocks = "num_blocks"
+        case stemConvKernelSize = "stem_conv_kernel_size"
+        case activationFunction = "activation_function"
+        case blockActivationStyle = "block_activation_style"
+        case blockSkipMerge = "block_skip_merge"
+        case blockUseRezero = "block_use_rezero"
+        case rezeroAlphaInit = "rezero_alpha_init"
+        case blockConv1KernelSize = "block_conv1_kernel_size"
+        case blockConv2KernelSize = "block_conv2_kernel_size"
+        case blockSeStyle = "block_se_style"
+        case blockSeReductionRatio = "block_se_reduction_ratio"
+        case policyHeadStyle = "policy_head_style"
+        case policyPreConvChannels = "policy_pre_conv_channels"
+        case valueHeadStyle = "value_head_style"
+        case valueHeadConvChannels = "value_head_conv_channels"
+        case valueHeadHiddenUnits = "value_head_hidden_units"
+        case computeDataType = "compute_data_type"
     }
 
-    // MARK: Validation
+    // MARK: Derived shape scalars
+
+    var inputPlanes: Int { inputEncoding.planeCount }
+    var boardSize: Int { Self.boardSize }
+    var policyChannels: Int { Self.policyChannels }
+    var policySize: Int { Self.policySize }
+    var valueHeadClasses: Int { valueHeadStyle == .wdlSoftmax ? 3 : 1 }
+    /// Tower-end BN exists only for pre-activation (post-act blocks end in an activation).
+    var hasTowerEndBN: Bool { blockActivationStyle == .pre }
+    /// Stem ReLU exists only for post-activation (pre-act defers it to block 0).
+    var hasStemActivation: Bool { blockActivationStyle == .post }
+    /// Human v-number for display only (no role in identity / hashing).
+    var architectureVersionLabel: Int { blockActivationStyle == .pre ? 4 : 3 }
+
+    // MARK: Validation (structural only — memory budget is a build-time, device-aware check)
 
     func validate() throws {
-        guard towerConvKernelSize % 2 == 1 else {
-            throw NetworkArchitectureError.kernelMustBeOdd(towerConvKernelSize)
-        }
-        guard channels > 0 else {
-            throw NetworkArchitectureError.nonPositive(field: "channels", value: channels)
-        }
-        guard numBlocks > 0 else {
-            throw NetworkArchitectureError.nonPositive(field: "numBlocks", value: numBlocks)
-        }
-        guard towerConvKernelSize > 0 else {
-            throw NetworkArchitectureError.nonPositive(field: "towerConvKernelSize", value: towerConvKernelSize)
-        }
-        guard valueHeadConvChannels > 0 else {
-            throw NetworkArchitectureError.nonPositive(field: "valueHeadConvChannels", value: valueHeadConvChannels)
-        }
-        guard valueHeadHiddenUnits > 0 else {
-            throw NetworkArchitectureError.nonPositive(field: "valueHeadHiddenUnits", value: valueHeadHiddenUnits)
-        }
-        // Unconditional: the residual block computes `channels / seReductionRatio`
-        // regardless of SE style, so a zero ratio would divide-by-zero at build
-        // even when se == .none.
-        guard seReductionRatio > 0 else {
-            throw NetworkArchitectureError.nonPositive(field: "seReductionRatio", value: seReductionRatio)
-        }
-        if se != .none {
-            guard channels % seReductionRatio == 0 else {
-                throw NetworkArchitectureError.channelsNotDivisibleByReduction(channels: channels, reduction: seReductionRatio)
+        try requireOdd("stemConvKernelSize", stemConvKernelSize)
+        try requireOdd("blockConv1KernelSize", blockConv1KernelSize)
+        try requireOdd("blockConv2KernelSize", blockConv2KernelSize)
+        try requirePositive("channels", channels)
+        try requirePositive("numBlocks", numBlocks)
+        try requirePositive("policyPreConvChannels", policyPreConvChannels)
+        try requirePositive("valueHeadConvChannels", valueHeadConvChannels)
+        try requirePositive("valueHeadHiddenUnits", valueHeadHiddenUnits)
+        // Unconditional: the block computes channels / ratio regardless of SE style.
+        try requirePositive("blockSeReductionRatio", blockSeReductionRatio)
+        if blockSeStyle != .none {
+            guard channels % blockSeReductionRatio == 0 else {
+                throw NetworkArchitectureError.channelsNotDivisibleByReduction(
+                    channels: channels, reduction: blockSeReductionRatio)
             }
         }
-        try checkFixed("inputPlanes", inputPlanes, Self.fixedInputPlanes)
-        try checkFixed("boardSize", boardSize, Self.fixedBoardSize)
-        try checkFixed("policyChannels", policyChannels, Self.fixedPolicyChannels)
-        try checkFixed("valueHeadClasses", valueHeadClasses, Self.fixedValueHeadClasses)
-    }
-
-    private func checkFixed(_ field: String, _ got: Int, _ expected: Int) throws {
-        guard got == expected else {
-            throw NetworkArchitectureError.fixedFieldChanged(field: field, expected: expected, got: got)
+        guard valueHeadConvChannels <= channels else {
+            throw NetworkArchitectureError.valueConvChannelsExceedChannels(
+                conv: valueHeadConvChannels, channels: channels)
         }
     }
 
-    // MARK: Parameter count
+    private func requireOdd(_ field: String, _ v: Int) throws {
+        guard v > 0 else { throw NetworkArchitectureError.nonPositive(field: field, value: v) }
+        guard v % 2 == 1 else { throw NetworkArchitectureError.kernelMustBeOdd(field: field, value: v) }
+    }
+    private func requirePositive(_ field: String, _ v: Int) throws {
+        guard v > 0 else { throw NetworkArchitectureError.nonPositive(field: field, value: v) }
+    }
+
+    // MARK: Parameter count (verified against all four documented presets)
 
     /// Total persistent-tensor element count (trainable weights + BN running
-    /// mean/var). Mirrors the layer shapes built by `ChessNetwork`; equals the
-    /// summed element counts of `weightTensorPlan` (asserted in tests).
+    /// mean/var). Equals the summed element counts of `weightTensorPlan` (asserted
+    /// in tests). Branches on every axis that changes a shape.
     var parameterCount: Int {
         let c = channels
-        let seReduced = se == .none ? 0 : c / seReductionRatio
-        let convArea = towerConvKernelSize * towerConvKernelSize
+        let seReduced = blockSeStyle == .none ? 0 : c / blockSeReductionRatio
 
-        let convPerBlock = 2 * (c * c * convArea)
-        let bnPerBlock = 2 * (4 * c)            // bn1 + bn2, each γ/β/mean/var
-        let seParams: Int
-        switch se {
-        case .none:
-            seParams = 0
-        case .attenuateOnly:
-            seParams = (c * seReduced + seReduced) + (seReduced * c + c)
-        case .scaleAndBias:
-            seParams = (c * seReduced + seReduced) + (seReduced * 2 * c + 2 * c)
+        // Stem: conv (bias-free) + BN.
+        let stem = (inputPlanes * c * stemConvKernelSize * stemConvKernelSize) + 4 * c
+
+        // Per block: two convs (bias-free) + two BNs + SE + optional rezero.
+        let conv1 = c * c * blockConv1KernelSize * blockConv1KernelSize
+        let conv2 = c * c * blockConv2KernelSize * blockConv2KernelSize
+        let bns = 2 * (4 * c)
+        let se: Int
+        switch blockSeStyle {
+        case .none:         se = 0
+        case .attenuateOnly: se = (c * seReduced + seReduced) + (seReduced * c + c)
+        case .scaleAndBias:  se = (c * seReduced + seReduced) + (seReduced * 2 * c + 2 * c)
         }
-        let resScale: Int
-        switch blockStyle {
-        case .v4PreActivation: resScale = 1
+        let rezero = blockUseRezero ? 1 : 0
+        let perBlock = conv1 + conv2 + bns + se + rezero
+
+        let towerEndBN = hasTowerEndBN ? 4 * c : 0
+
+        // Policy head.
+        let pK = policyPreConvChannels
+        let policy: Int
+        switch policyHeadStyle {
+        case .simpleConv:
+            policy = (c * policyChannels) + policyChannels
+        case .intermediateConv:
+            policy = (c * pK) + 4 * pK + (pK * policyChannels) + policyChannels
+        case .fcBottleneck:
+            let flat = pK * boardSize * boardSize
+            policy = (c * pK) + 4 * pK + (flat * policySize) + policySize
         }
-        let perBlock = convPerBlock + bnPerBlock + seParams + resScale
 
-        let stem = (inputPlanes * c * convArea) + (4 * c)
-        let towerFinalBN = 4 * c
-        let policy = (c * c) + (4 * c) + (c * policyChannels + policyChannels)
-        let valueFlatten = boardSize * boardSize * valueHeadConvChannels
-        let valueConvBN = (c * valueHeadConvChannels) + (4 * valueHeadConvChannels)
-        let valueFC1 = (valueFlatten * valueHeadHiddenUnits) + valueHeadHiddenUnits
-        let valueFC2 = (valueHeadHiddenUnits * valueHeadClasses) + valueHeadClasses
-        let value = valueConvBN + valueFC1 + valueFC2
+        // Value head.
+        let cv = valueHeadConvChannels
+        let h = valueHeadHiddenUnits
+        let flatV = boardSize * boardSize * cv
+        let value = (c * cv) + 4 * cv + (flatV * h + h) + (h * valueHeadClasses + valueHeadClasses)
 
-        return (numBlocks * perBlock) + stem + towerFinalBN + policy + value
+        return stem + numBlocks * perBlock + towerEndBN + policy + value
     }
 
-    // MARK: Arch hash
-
-    /// FNV-1a over the shape scalars + topology version. Byte-for-byte the same
-    /// formula as the legacy `ModelCheckpointFile.currentArchHash`, so the four
-    /// documented historical hashes reproduce exactly. `architectureVersion`
-    /// was added to the mix at v4; v3 (when reintroduced) omits it.
-    var archHash: UInt32 {
-        var h: UInt32 = 0x811C_9DC5 // FNV-1a offset basis
-        func mix(_ value: Int) {
-            let u32 = UInt32(truncatingIfNeeded: value)
-            var v = u32.littleEndian
-            withUnsafeBytes(of: &v) { raw in
-                for byte in raw {
-                    h ^= UInt32(byte)
-                    h = h &* 0x0100_0193
-                }
-            }
-        }
-        mix(channels)
-        mix(numBlocks)
-        mix(inputPlanes)
-        mix(boardSize)
-        mix(policySize)
-        mix(valueHeadClasses)
-        // Topology version only entered the hash at v4; v3 hashes 6 scalars.
-        if architectureVersion >= 4 {
-            mix(architectureVersion)
-        }
-        return h
-    }
-
-    /// `archHash` formatted as the project's `0x........` lowercase hex tag.
-    var archHashHex: String {
-        "0x" + String(format: "%08x", archHash)
-    }
-
-    // MARK: Summary
+    // MARK: Summary (human-readable, computed from the config)
 
     var architectureSummary: String {
-        let k = towerConvKernelSize
         let seDesc: String
-        switch se {
+        switch blockSeStyle {
         case .none: seDesc = "no-SE"
-        case .attenuateOnly: seDesc = "SE÷\(seReductionRatio)"
-        case .scaleAndBias: seDesc = "SE±÷\(seReductionRatio)"
+        case .attenuateOnly: seDesc = "SE/\(blockSeReductionRatio)"
+        case .scaleAndBias: seDesc = "SE+/\(blockSeReductionRatio)"
         }
-        let blockDesc: String
-        switch blockStyle {
-        case .v4PreActivation: blockDesc = "ReZero"
-        }
-        return "v\(architectureVersion) · stem \(inputPlanes)→\(channels) (\(k)×\(k))"
-            + " · \(numBlocks)×[\(k)×\(k) conv×2, \(seDesc), \(blockDesc)]"
-            + " · policy→\(policyChannels) (\(policySize))"
-            + " · value→\(valueHeadConvChannels)→FC\(valueHeadHiddenUnits)→WDL(\(valueHeadClasses))"
-            + " · \(computeDataType.rawValue) · \(parameterCount.formatted(.number)) params"
+        let k1 = blockConv1KernelSize, k2 = blockConv2KernelSize
+        let kDesc = k1 == k2 ? "\(k1)x\(k1)" : "\(k1)x\(k1),\(k2)x\(k2)"
+        let rezeroDesc = blockUseRezero ? "ReZero" : "no-ReZero"
+        let valueDesc = valueHeadStyle == .wdlSoftmax
+            ? "WDL(\(valueHeadConvChannels)->FC\(valueHeadHiddenUnits))"
+            : "tanh(\(valueHeadConvChannels)->FC\(valueHeadHiddenUnits))"
+        return "v\(architectureVersionLabel) \(blockActivationStyle.rawValue)"
+            + " . in \(inputEncoding.rawValue)(\(inputPlanes)) -> stem \(channels) (\(stemConvKernelSize)x\(stemConvKernelSize))"
+            + " . \(numBlocks)x[\(kDesc) conv, \(seDesc), \(blockSkipMerge.rawValue), \(rezeroDesc)]"
+            + " . act \(activationFunction.rawValue)"
+            + " . policy \(policyHeadStyle.rawValue)(\(policySize))"
+            + " . value \(valueDesc)"
+            + " . \(computeDataType.rawValue) . \(parameterCount.formatted(.number)) params"
     }
 
     // MARK: Weight tensor plan
 
-    /// Ordered (name, shape, kind) for every persistent tensor, in the exact
-    /// order `ChessNetwork.exportWeights()` emits and `loadWeights()` expects:
-    /// **all trainables in build order, then all BN running stats in build
-    /// order**. Names are PyTorch-ready module paths. This is the single source
-    /// of truth the safetensors writer/loader and the analyzer build against.
+    /// Ordered (name, shape, kind) for every persistent tensor in the exact order
+    /// `ChessNetwork.exportWeights()` emits and `loadWeights()` expects: **all
+    /// trainables in build order, then all BN running stats in build order**. Names
+    /// are PyTorch-ready module paths. Branches on every topology axis.
     func weightTensorPlan() -> [WeightTensorSpec] {
         let c = channels
-        let k = towerConvKernelSize
-        let seReduced = se == .none ? 0 : c / seReductionRatio
+        let seReduced = blockSeStyle == .none ? 0 : c / blockSeReductionRatio
 
         var trainables: [WeightTensorSpec] = []
         var running: [WeightTensorSpec] = []
@@ -334,55 +451,86 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             running.append(.init(name: "\(prefix).running_mean", shape: [ch], kind: .bnRunningStat))
             running.append(.init(name: "\(prefix).running_var", shape: [ch], kind: .bnRunningStat))
         }
-
-        // Stem: conv → BN (no ReLU in v4).
-        trainables.append(.init(name: "stem.conv.weight", shape: [c, inputPlanes, k, k], kind: .conv))
-        bn("stem.bn", c)
-
-        // Tower: pre-activation residual blocks.
-        for i in 0..<numBlocks {
-            let p = "blocks.\(i)"
-            bn("\(p).bn1", c)
-            trainables.append(.init(name: "\(p).conv1.weight", shape: [c, c, k, k], kind: .conv))
-            bn("\(p).bn2", c)
-            trainables.append(.init(name: "\(p).conv2.weight", shape: [c, c, k, k], kind: .conv))
-            switch se {
+        func se(_ prefix: String) {
+            switch blockSeStyle {
             case .none:
                 break
             case .attenuateOnly:
-                trainables.append(.init(name: "\(p).se_attenuate.fc1.weight", shape: [c, seReduced], kind: .linear))
-                trainables.append(.init(name: "\(p).se_attenuate.fc1.bias", shape: [seReduced], kind: .bias))
-                trainables.append(.init(name: "\(p).se_attenuate.fc2.weight", shape: [seReduced, c], kind: .linear))
-                trainables.append(.init(name: "\(p).se_attenuate.fc2.bias", shape: [c], kind: .bias))
+                trainables.append(.init(name: "\(prefix).se_attenuate.fc1.weight", shape: [c, seReduced], kind: .linear))
+                trainables.append(.init(name: "\(prefix).se_attenuate.fc1.bias", shape: [seReduced], kind: .bias))
+                trainables.append(.init(name: "\(prefix).se_attenuate.fc2.weight", shape: [seReduced, c], kind: .linear))
+                trainables.append(.init(name: "\(prefix).se_attenuate.fc2.bias", shape: [c], kind: .bias))
             case .scaleAndBias:
-                trainables.append(.init(name: "\(p).se_scalebias.fc1.weight", shape: [c, seReduced], kind: .linear))
-                trainables.append(.init(name: "\(p).se_scalebias.fc1.bias", shape: [seReduced], kind: .bias))
-                trainables.append(.init(name: "\(p).se_scalebias.fc2.weight", shape: [seReduced, 2 * c], kind: .linear))
-                trainables.append(.init(name: "\(p).se_scalebias.fc2.bias", shape: [2 * c], kind: .bias))
+                trainables.append(.init(name: "\(prefix).se_scalebias.fc1.weight", shape: [c, seReduced], kind: .linear))
+                trainables.append(.init(name: "\(prefix).se_scalebias.fc1.bias", shape: [seReduced], kind: .bias))
+                trainables.append(.init(name: "\(prefix).se_scalebias.fc2.weight", shape: [seReduced, 2 * c], kind: .linear))
+                trainables.append(.init(name: "\(prefix).se_scalebias.fc2.bias", shape: [2 * c], kind: .bias))
             }
-            switch blockStyle {
-            case .v4PreActivation:
+        }
+
+        // Stem: conv -> BN.
+        trainables.append(.init(name: "stem.conv.weight", shape: [c, inputPlanes, stemConvKernelSize, stemConvKernelSize], kind: .conv))
+        bn("stem.bn", c)
+
+        // Tower.
+        for i in 0..<numBlocks {
+            let p = "blocks.\(i)"
+            let conv1 = WeightTensorSpec(name: "\(p).conv1.weight", shape: [c, c, blockConv1KernelSize, blockConv1KernelSize], kind: .conv)
+            let conv2 = WeightTensorSpec(name: "\(p).conv2.weight", shape: [c, c, blockConv2KernelSize, blockConv2KernelSize], kind: .conv)
+            switch blockActivationStyle {
+            case .pre:
+                // BN1 -> act -> conv1 -> BN2 -> act -> conv2 -> SE -> [rezero]
+                bn("\(p).bn1", c)
+                trainables.append(conv1)
+                bn("\(p).bn2", c)
+                trainables.append(conv2)
+                se(p)
+            case .post:
+                // conv1 -> BN1 -> act -> conv2 -> BN2 -> SE -> (act on merged sum)
+                trainables.append(conv1)
+                bn("\(p).bn1", c)
+                trainables.append(conv2)
+                bn("\(p).bn2", c)
+                se(p)
+            }
+            if blockUseRezero {
                 trainables.append(.init(name: "\(p).rezero_alpha", shape: [1], kind: .scalar))
             }
         }
 
-        // Tower-end normalization.
-        bn("tower_final_bn", c)
+        // Tower-end normalization (pre-activation only).
+        if hasTowerEndBN { bn("tower_final_bn", c) }
 
-        // Policy head: 1×1 conv → BN → ReLU → 1×1 conv (+bias).
-        trainables.append(.init(name: "policy.pre_conv.weight", shape: [c, c, 1, 1], kind: .conv))
-        bn("policy.pre_bn", c)
-        trainables.append(.init(name: "policy.conv.weight", shape: [policyChannels, c, 1, 1], kind: .conv))
-        trainables.append(.init(name: "policy.conv.bias", shape: [1, policyChannels, 1, 1], kind: .bias))
+        // Policy head.
+        let pK = policyPreConvChannels
+        switch policyHeadStyle {
+        case .simpleConv:
+            trainables.append(.init(name: "policy.conv.weight", shape: [policyChannels, c, 1, 1], kind: .conv))
+            trainables.append(.init(name: "policy.conv.bias", shape: [1, policyChannels, 1, 1], kind: .bias))
+        case .intermediateConv:
+            trainables.append(.init(name: "policy.pre_conv.weight", shape: [pK, c, 1, 1], kind: .conv))
+            bn("policy.pre_bn", pK)
+            trainables.append(.init(name: "policy.conv.weight", shape: [policyChannels, pK, 1, 1], kind: .conv))
+            trainables.append(.init(name: "policy.conv.bias", shape: [1, policyChannels, 1, 1], kind: .bias))
+        case .fcBottleneck:
+            trainables.append(.init(name: "policy.pre_conv.weight", shape: [pK, c, 1, 1], kind: .conv))
+            bn("policy.pre_bn", pK)
+            let flat = pK * boardSize * boardSize
+            trainables.append(.init(name: "policy.fc.weight", shape: [flat, policySize], kind: .linear))
+            trainables.append(.init(name: "policy.fc.bias", shape: [1, policySize], kind: .bias))
+        }
 
-        // Value head: 1×1 conv → BN → ReLU → flatten → FC → ReLU → FC(WDL).
-        trainables.append(.init(name: "value.conv.weight", shape: [valueHeadConvChannels, c, 1, 1], kind: .conv))
-        bn("value.bn", valueHeadConvChannels)
-        let flat = boardSize * boardSize * valueHeadConvChannels
-        trainables.append(.init(name: "value.fc1.weight", shape: [flat, valueHeadHiddenUnits], kind: .linear))
-        trainables.append(.init(name: "value.fc1.bias", shape: [1, valueHeadHiddenUnits], kind: .bias))
-        trainables.append(.init(name: "value.wdl_fc2.weight", shape: [valueHeadHiddenUnits, valueHeadClasses], kind: .linear))
-        trainables.append(.init(name: "value.wdl_fc2.bias", shape: [1, valueHeadClasses], kind: .bias))
+        // Value head.
+        let cv = valueHeadConvChannels
+        let h = valueHeadHiddenUnits
+        trainables.append(.init(name: "value.conv.weight", shape: [cv, c, 1, 1], kind: .conv))
+        bn("value.bn", cv)
+        let flatV = boardSize * boardSize * cv
+        trainables.append(.init(name: "value.fc1.weight", shape: [flatV, h], kind: .linear))
+        trainables.append(.init(name: "value.fc1.bias", shape: [1, h], kind: .bias))
+        let fc2Name = valueHeadStyle == .wdlSoftmax ? "value.wdl_fc2" : "value.scalar_fc2"
+        trainables.append(.init(name: "\(fc2Name).weight", shape: [h, valueHeadClasses], kind: .linear))
+        trainables.append(.init(name: "\(fc2Name).bias", shape: [1, valueHeadClasses], kind: .bias))
 
         return trainables + running
     }
@@ -391,42 +539,97 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
 // MARK: - Presets
 
 extension NetworkArchitecture {
-    /// Named architectures. v4 presets only for now; the v3 historical presets
-    /// (8-block, 16-block) arrive with the v3 builder in the v3/v4 phase.
+    /// Named built-in architectures. Compiled-in and immutable (never written to the
+    /// Presets folder — that's user-saved only). The historical presets are also the
+    /// targets of the legacy `.dcmmodel` hash table (`legacyDcmmodelArchHashes`).
     enum Preset: String, Sendable, CaseIterable {
-        case v4_5block_7x7     // current champion architecture
-        case v4_12block_3x3    // bf16 3×3 baseline ("Session A")
-        case v4_8block_3x3     // the proposed re-run of the 8-block tower in v4
+        case v3_8block_3x3        // 0x13ba0b55, 2,483,667 params (Ko63 / IWkd / sMe9)
+        case v3_16block_3x3       // 0x5347c53d, 4,934,867 params
+        case v4_12block_3x3       // 0xbad32ced, 3,898,139 params (WcRm)
+        case v4_5block_7x7        // 0xdf23a86c, 8,445,748 params (current)
+        case v4_8block_3x3        // 2,664,087 params (proposed re-run)
 
         static let current = Preset.v4_5block_7x7
     }
 
     static func preset(_ p: Preset) -> NetworkArchitecture {
         switch p {
-        case .v4_5block_7x7:
+        case .v3_8block_3x3:
             return NetworkArchitecture(
-                channels: 128, numBlocks: 5, towerConvKernelSize: 7,
-                blockStyle: .v4PreActivation, se: .scaleAndBias, seReductionRatio: 4,
-                valueHeadConvChannels: 16, valueHeadHiddenUnits: 128,
-                computeDataType: .bFloat16
+                inputEncoding: .basic30, channels: 128, numBlocks: 8, stemConvKernelSize: 3,
+                activationFunction: .relu, blockActivationStyle: .post,
+                blockSkipMerge: .activationGated, blockUseRezero: false, rezeroAlphaInit: 1,
+                blockConv1KernelSize: 3, blockConv2KernelSize: 3,
+                blockSeStyle: .attenuateOnly, blockSeReductionRatio: 4,
+                policyHeadStyle: .simpleConv, policyPreConvChannels: 128,
+                valueHeadStyle: .wdlSoftmax, valueHeadConvChannels: 1, valueHeadHiddenUnits: 64,
+                computeDataType: .float32
+            )
+        case .v3_16block_3x3:
+            return NetworkArchitecture(
+                inputEncoding: .basic30, channels: 128, numBlocks: 16, stemConvKernelSize: 3,
+                activationFunction: .relu, blockActivationStyle: .post,
+                blockSkipMerge: .activationGated, blockUseRezero: false, rezeroAlphaInit: 1,
+                blockConv1KernelSize: 3, blockConv2KernelSize: 3,
+                blockSeStyle: .attenuateOnly, blockSeReductionRatio: 4,
+                policyHeadStyle: .intermediateConv, policyPreConvChannels: 128,
+                valueHeadStyle: .wdlSoftmax, valueHeadConvChannels: 1, valueHeadHiddenUnits: 64,
+                computeDataType: .float32
             )
         case .v4_12block_3x3:
             return NetworkArchitecture(
-                channels: 128, numBlocks: 12, towerConvKernelSize: 3,
-                blockStyle: .v4PreActivation, se: .scaleAndBias, seReductionRatio: 4,
-                valueHeadConvChannels: 16, valueHeadHiddenUnits: 128,
+                inputEncoding: .basic30, channels: 128, numBlocks: 12, stemConvKernelSize: 3,
+                activationFunction: .relu, blockActivationStyle: .pre,
+                blockSkipMerge: .cleanAdd, blockUseRezero: true,
+                rezeroAlphaInit: 1.0 / Float(12).squareRoot(),
+                blockConv1KernelSize: 3, blockConv2KernelSize: 3,
+                blockSeStyle: .scaleAndBias, blockSeReductionRatio: 4,
+                policyHeadStyle: .intermediateConv, policyPreConvChannels: 128,
+                valueHeadStyle: .wdlSoftmax, valueHeadConvChannels: 16, valueHeadHiddenUnits: 128,
+                computeDataType: .bFloat16
+            )
+        case .v4_5block_7x7:
+            return NetworkArchitecture(
+                inputEncoding: .basic30, channels: 128, numBlocks: 5, stemConvKernelSize: 7,
+                activationFunction: .relu, blockActivationStyle: .pre,
+                blockSkipMerge: .cleanAdd, blockUseRezero: true,
+                rezeroAlphaInit: 1.0 / Float(5).squareRoot(),
+                blockConv1KernelSize: 7, blockConv2KernelSize: 7,
+                blockSeStyle: .scaleAndBias, blockSeReductionRatio: 4,
+                policyHeadStyle: .intermediateConv, policyPreConvChannels: 128,
+                valueHeadStyle: .wdlSoftmax, valueHeadConvChannels: 16, valueHeadHiddenUnits: 128,
                 computeDataType: .bFloat16
             )
         case .v4_8block_3x3:
             return NetworkArchitecture(
-                channels: 128, numBlocks: 8, towerConvKernelSize: 3,
-                blockStyle: .v4PreActivation, se: .scaleAndBias, seReductionRatio: 4,
-                valueHeadConvChannels: 16, valueHeadHiddenUnits: 128,
+                inputEncoding: .basic30, channels: 128, numBlocks: 8, stemConvKernelSize: 3,
+                activationFunction: .relu, blockActivationStyle: .pre,
+                blockSkipMerge: .cleanAdd, blockUseRezero: true,
+                rezeroAlphaInit: 1.0 / Float(8).squareRoot(),
+                blockConv1KernelSize: 3, blockConv2KernelSize: 3,
+                blockSeStyle: .scaleAndBias, blockSeReductionRatio: 4,
+                policyHeadStyle: .intermediateConv, policyPreConvChannels: 128,
+                valueHeadStyle: .wdlSoftmax, valueHeadConvChannels: 16, valueHeadHiddenUnits: 128,
                 computeDataType: .bFloat16
             )
         }
     }
 
-    /// The architecture the current build's `ChessNetwork` statics describe.
+    /// The architecture the current build defaults to.
     static var current: NetworkArchitecture { preset(.current) }
+
+    /// Legacy `.dcmmodel` archHash (the old 7-scalar FNV value stored at byte
+    /// offset 12) -> the historical preset to rebuild. The ONLY backward-compat
+    /// shim; used by the legacy reader (Phase F). Bidirectional via `legacyArchHash(for:)`.
+    static let legacyDcmmodelArchHashes: [UInt32: Preset] = [
+        0x13ba_0b55: .v3_8block_3x3,
+        0x5347_c53d: .v3_16block_3x3,
+        0xbad3_2ced: .v4_12block_3x3,
+        0xdf23_a86c: .v4_5block_7x7,
+    ]
+
+    /// Reverse lookup: the legacy stored hash for a preset, if it has one.
+    static func legacyArchHash(for preset: Preset) -> UInt32? {
+        legacyDcmmodelArchHashes.first(where: { $0.value == preset })?.key
+    }
 }

@@ -982,7 +982,7 @@ final class SessionController {
     var buildArchitecture: NetworkArchitecture = .current
 
     func buildNetwork() {
-        SessionLogger.shared.log("[BUTTON] Build Network (\(buildArchitecture.archHashHex))")
+        SessionLogger.shared.log("[BUTTON] Build Network (\(buildArchitecture.architectureSummary))")
         if isBusyProvider() {
             onRefuseMenuAction(busyReasonProvider())
             return
@@ -1049,7 +1049,7 @@ final class SessionController {
         networkStatus = ""
         onDropTrainer()
         onClearTrainingDisplay()
-        SessionLogger.shared.log("[BUILD] Auto-build before load (\(targetArch.archHashHex))")
+        SessionLogger.shared.log("[BUILD] Auto-build before load (\(targetArch.architectureSummary))")
         let result = await Task.detached(priority: .userInitiated) {
             Self.performBuild(arch: targetArch)
         }.value

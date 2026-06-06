@@ -160,17 +160,16 @@ extension SessionController {
         let arch = network?.network.arch ?? .current
         let notes = ChessNetwork.architectureNotes
         let architecture = AnalysisExportMetadata.Architecture(
-            archHash: arch.archHashHex,
-            architectureVersion: arch.architectureVersion,
+            architectureVersion: arch.architectureVersionLabel,
             parameterCount: arch.parameterCount,
             numBlocks: arch.numBlocks,
             channels: arch.channels,
-            convKernelSize: arch.towerConvKernelSize,
+            convKernelSize: arch.blockConv1KernelSize,
             inputPlanes: arch.inputPlanes,
             boardSize: arch.boardSize,
             policyChannels: arch.policyChannels,
             policySize: arch.policySize,
-            seReductionRatio: arch.seReductionRatio,
+            seReductionRatio: arch.blockSeReductionRatio,
             valueHead: AnalysisExportMetadata.Architecture.ValueHead(
                 classes: arch.valueHeadClasses,
                 convChannels: arch.valueHeadConvChannels,
