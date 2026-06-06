@@ -229,9 +229,16 @@ struct GameState: Sendable {
 ///   from a longer maneuvering cycle — which planes 18-19 cannot express.
 enum BoardEncoder {
 
-    /// Number of floats one encoded position occupies: `inputPlanes`
-    /// × 64 squares.
-    static let tensorLength = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
+    /// Number of floats one encoded position occupies for `encoding`:
+    /// `planeCount × 64` (basic20 → 1280, basic30 → 1920).
+    static func tensorLength(for encoding: InputEncoding) -> Int {
+        encoding.planeCount * ChessNetwork.boardSize * ChessNetwork.boardSize
+    }
+
+    /// Transitional default-encoding stride (basic30) for call sites not yet
+    /// threaded with a per-session encoding. Phase C replaces these with
+    /// `tensorLength(for:)` sourced from the session's `arch.inputEncoding`.
+    static var tensorLength: Int { tensorLength(for: .basic30) }
 
     /// Encode a game state into a caller-owned slice of `tensorLength` floats.
     ///
@@ -244,8 +251,10 @@ enum BoardEncoder {
     /// encoding. The buffer must have at least `tensorLength` elements.
     static func encode(
         _ state: GameState,
-        into buffer: UnsafeMutableBufferPointer<Float>
+        into buffer: UnsafeMutableBufferPointer<Float>,
+        encoding: InputEncoding = .basic30
     ) {
+        let tensorLength = Self.tensorLength(for: encoding)
         precondition(
             buffer.count >= tensorLength,
             "BoardEncoder.encode(into:): buffer must hold at least \(tensorLength) floats (got \(buffer.count))"
@@ -360,10 +369,14 @@ enum BoardEncoder {
         // window). For tests / UI editable positions / .starting where
         // the mask defaults to 0, all 10 planes stay zero — the correct
         // "no recent repetitions" encoding.
-        let recentMask = state.recentRepetitionMask
-        if recentMask != 0 {
-            for i in 0..<10 where (recentMask >> i) & 1 == 1 {
-                fillPlane(base, plane: 20 + i)
+        // Planes 20-29 exist only in encodings that include the temporal
+        // history window (basic30); basic20 stops at plane 19.
+        if encoding.planeCount > 20 {
+            let recentMask = state.recentRepetitionMask
+            if recentMask != 0 {
+                for i in 0..<10 where (recentMask >> i) & 1 == 1 {
+                    fillPlane(base, plane: 20 + i)
+                }
             }
         }
     }
@@ -374,17 +387,17 @@ enum BoardEncoder {
     /// paths share the same encoding logic. Used by non-hot-path
     /// callers (tests, the Forward Pass demo UI). Hot-path callers
     /// should use `encode(_:into:)` with a pre-allocated scratch.
-    static func encode(_ state: GameState) -> [Float] {
-        var tensor = [Float](repeating: 0, count: tensorLength)
+    static func encode(_ state: GameState, encoding: InputEncoding = .basic30) -> [Float] {
+        var tensor = [Float](repeating: 0, count: tensorLength(for: encoding))
         tensor.withUnsafeMutableBufferPointer { buf in
-            encode(state, into: buf)
+            encode(state, into: buf, encoding: encoding)
         }
         return tensor
     }
 
     /// Convenience: encode the starting position.
-    static func encodeStartingPosition() -> [Float] {
-        encode(.starting)
+    static func encodeStartingPosition(encoding: InputEncoding = .basic30) -> [Float] {
+        encode(.starting, encoding: encoding)
     }
 
     /// Reconstruct a "synthetic white-to-move" `GameState` from a raw

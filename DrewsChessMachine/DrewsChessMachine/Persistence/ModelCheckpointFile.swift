@@ -318,13 +318,19 @@ struct ModelCheckpointFile {
             throw ModelCheckpointError.unsupportedVersion(version)
         }
 
+        // Legacy .dcmmodel files are anonymous/positional and embed no config,
+        // so resolve the stored archHash to a built-in historical preset (the
+        // only backward-compat shim, per plan §6) and rebuild that architecture.
+        // The current arch's hash is in the table too, so this also covers
+        // freshly-saved .dcmmodel files. An unknown hash can't be rebuilt -> reject.
         let archHash = try reader.readUInt32LE()
-        guard archHash == Self.currentArchHash else {
+        guard let legacyPreset = NetworkArchitecture.legacyDcmmodelArchHashes[archHash] else {
             throw ModelCheckpointError.archMismatch(
                 expected: Self.currentArchHash,
                 got: archHash
             )
         }
+        let resolvedArchitecture = NetworkArchitecture.preset(legacyPreset)
 
         let numTensors = Int(try reader.readUInt32LE())
 
@@ -400,6 +406,7 @@ struct ModelCheckpointFile {
             createdAtUnix: createdAtUnix,
             metadata: metadata,
             weights: weights,
+            architecture: resolvedArchitecture,
             formatVersion: version
         )
     }
