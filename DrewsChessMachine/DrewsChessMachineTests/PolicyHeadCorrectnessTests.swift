@@ -364,7 +364,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             // its ULP is ~100× coarser than fp32's, so a fixed 1e-3 logit
             // tolerance is below a single bf16 ULP and infeasible). Both
             // still catch a gross batching bug, which differs by ~O(logit).
-            let eps = ChessNetwork.weightRelativeEpsilon
+            let eps = ChessNetwork.weightRelativeEpsilon(for: ChessNetwork.mpsDataType(for: .current))
             let valueTol = max(1e-4, 8 * eps)   // value scalar ∈ [−1, 1]
             XCTAssertEqual(singleValue, batchValues[i], accuracy: valueTol,
                            "Batched value differs from single-call value at slot \(i)")
@@ -404,6 +404,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         enum Kind { case he, glorot }
         struct Spec { let name: String; let shape: [Int]; let fanIn: Int; let fanOut: Int; let kind: Kind }
         let cur = NetworkArchitecture.current
+        let dtype = ChessNetwork.mpsDataType(for: cur)
         let c = cur.channels
         let reduced = c / cur.blockSeReductionRatio
         let vConv = cur.valueHeadConvChannels
@@ -426,23 +427,23 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             specs.append(Spec(name: "block\(i)_conv1", shape: [c, c, k, k], fanIn: c*kArea, fanOut: 0, kind: .he))
             specs.append(Spec(name: "block\(i)_conv2", shape: [c, c, k, k], fanIn: c*kArea, fanOut: 0, kind: .he))
         }
-        let eps = ChessNetwork.weightRelativeEpsilon
+        let eps = ChessNetwork.weightRelativeEpsilon(for: dtype)
         for s in specs {
             let count = s.shape.reduce(1, *)
             let data: Data
             let expectedStd: Float
             switch s.kind {
             case .he:
-                data = ChessNetwork.heInitData(shape: s.shape, fanIn: s.fanIn)
+                data = ChessNetwork.heInitData(shape: s.shape, fanIn: s.fanIn, dataType: dtype)
                 expectedStd = sqrtf(2.0 / Float(s.fanIn))
             case .glorot:
-                data = ChessNetwork.glorotInitDataFCInOut(shape: s.shape)
+                data = ChessNetwork.glorotInitDataFCInOut(shape: s.shape, dataType: dtype)
                 expectedStd = sqrtf(2.0 / Float(s.fanIn + s.fanOut))
             }
             // Element count + decode per the active dtype.
-            let n = data.count / ChessNetwork.bytesPerWeightElement
+            let n = data.count / ChessNetwork.bytesPerWeightElement(for: dtype)
             XCTAssertEqual(n, count, "Element count mismatch for \(s.name)")
-            let floats = ChessNetwork.decodeWeightData(data)
+            let floats = ChessNetwork.decodeWeightData(data, dataType: dtype)
             let mean = floats.reduce(Float(0), +) / Float(floats.count)
             let varSum = floats.reduce(Float(0)) { acc, x in acc + (x - mean) * (x - mean) }
             let std = sqrtf(varSum / Float(floats.count))

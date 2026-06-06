@@ -517,7 +517,7 @@ final class MomentumOptimizerTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        guard ChessNetwork.dataType != .float32 else {
+        guard NetworkArchitecture.current.computeDataType != .float32 else {
             throw XCTSkip("fp32 master path is inactive under .float32 dataType")
         }
         let trainer = try ChessTrainer(
@@ -603,7 +603,7 @@ final class MomentumOptimizerTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        guard ChessNetwork.dataType != .float32 else {
+        guard NetworkArchitecture.current.computeDataType != .float32 else {
             throw XCTSkip("fp32 master path is inactive under .float32 dataType")
         }
         let trainer = try ChessTrainer(learningRate: 1e-2, lrWarmupSteps: 0)
@@ -621,7 +621,7 @@ final class MomentumOptimizerTests: XCTestCase {
         // (1) Faithful sync: each bf16 working value is within one bf16 ULP of
         //     its fp32 master (cast is round-to-nearest, ≤ ½ ULP; one ULP is a
         //     safe bound, robust to GPU-vs-host rounding-mode differences).
-        let eps = ChessNetwork.weightRelativeEpsilon   // 2⁻⁷ for bf16
+        let eps = ChessNetwork.weightRelativeEpsilon(for: ChessNetwork.mpsDataType(for: .current))   // 2⁻⁷ for bf16
         var violations = 0
         var worst = ""
         for i in 0..<baseCount {

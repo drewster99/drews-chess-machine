@@ -1465,20 +1465,20 @@ final class ChessTrainer: @unchecked Sendable {
         /// is narrower than Float32 (bf16/fp16). The per-ply self-play
         /// and replay paths always produce these as Float32, but every
         /// one of their graph placeholders is declared at
-        /// `ChessNetwork.dataType` — so the matching ND array storage is
+        /// `the net's compute dtype` — so the matching ND array storage is
         /// that same width, and each step must narrow Float32 → dtype
         /// bits before `writeBytes`. Each buffer is allocated once per
         /// batch size, sized to its tensor's element count, and reused
         /// every step so the timed training loop stays allocation-free,
         /// exactly like the ND arrays themselves.
         ///
-        /// All four are `nil` when `ChessNetwork.dataType == .float32`:
+        /// All four are `nil` when `the net's compute dtype == .float32`:
         /// there each ND array is Float32 too, so the host hands its raw
         /// Float32 bytes straight through with no conversion or scratch.
         ///
         /// The move feed never needs staging — it is int32 on both the
         /// host and the placeholder, so its Int32 bytes are always fed
-        /// raw regardless of `ChessNetwork.dataType`.
+        /// raw regardless of `the net's compute dtype`.
         let boardStaging: UnsafeMutableBufferPointer<UInt16>?
         let zStaging: UnsafeMutableBufferPointer<UInt16>?
         let vBaselineStaging: UnsafeMutableBufferPointer<UInt16>?
@@ -1748,7 +1748,7 @@ final class ChessTrainer: @unchecked Sendable {
         // `Float`. A `.float32` descriptor here would byte-mismatch the
         // bf16 placeholder under bf16.
         let lrDesc = MPSNDArrayDescriptor(
-            dataType: ChessNetwork.dataType,
+            dataType: ChessNetwork.mpsDataType(for: arch),
             shape: [1]
         )
         // The four optimizer-update scalars feed fp32 placeholders (see
@@ -1945,7 +1945,7 @@ final class ChessTrainer: @unchecked Sendable {
         // narrows each scalar to bf16 before `writeBytes` in
         // `buildFeeds` (raw `Float` on `.float32`).
         let lrDesc = MPSNDArrayDescriptor(
-            dataType: ChessNetwork.dataType,
+            dataType: ChessNetwork.mpsDataType(for: arch),
             shape: [1]
         )
         // fp32 ND arrays for the four optimizer-update scalars (see the
@@ -2082,7 +2082,7 @@ final class ChessTrainer: @unchecked Sendable {
         assignOps: [MPSGraphOperation]
     ) {
         let graph = network.graph
-        let dtype = ChessNetwork.dataType
+        let dtype = ChessNetwork.mpsDataType(for: network.arch)
 
         // --- fp32-accumulation guards for batch reductions ---
         //
@@ -3394,12 +3394,12 @@ final class ChessTrainer: @unchecked Sendable {
         // accumulator has the same shape.
         // Narrow back to `dtype` so the norm rejoins the bf16 clip math
         // (`maximum`/`division` with the bf16 `gradClipMaxNorm`) and the
-        // host readback, which both assume `ChessNetwork.dataType`. The
+        // host readback, which both assume `the net's compute dtype`. The
         // fp32 accumulation above is what mattered; the final scalar's
         // bf16 rounding is negligible against a clip threshold.
         // Keep the fp32 norm for the clip math (the clip scalars are fp32),
         // and narrow a separate copy to `dtype` only for the host readback
-        // (`readFloats` assumes `ChessNetwork.dataType`).
+        // (`readFloats` assumes `the net's compute dtype`).
         let gradGlobalNormF32 = graph.squareRoot(
             with: gradSumOfSquaresTensor,
             name: "grad_global_norm_f32"
@@ -5191,7 +5191,7 @@ final class ChessTrainer: @unchecked Sendable {
 
         // The four real-valued feeds (board, z, vBaseline, legalMask)
         // each have a graph placeholder declared at
-        // `ChessNetwork.dataType`, so their ND-array storage is that
+        // `the net's compute dtype`, so their ND-array storage is that
         // width. On `.float32` the host's Float32 source bytes go
         // straight through, zero-copy. On a narrower dtype (bf16) the
         // Float32 source is the wrong width, so narrow it into the
@@ -5260,7 +5260,7 @@ final class ChessTrainer: @unchecked Sendable {
         }
         lr *= warmupMul
         // Each scalar hyperparameter ND array is declared at
-        // `ChessNetwork.dataType` (its graph placeholder is `dtype`), so
+        // `the net's compute dtype` (its graph placeholder is `dtype`), so
         // `writeScalarFeed` narrows the Swift `Float` to bf16 before
         // `writeBytes` on a narrow dtype, or writes the raw `Float` on
         // `.float32`. A raw `writeBytes(&lr, …)` of a 4-byte Float into
@@ -5284,7 +5284,7 @@ final class ChessTrainer: @unchecked Sendable {
     }
 
     /// Write a Float32 host buffer into an ND array whose storage is
-    /// `ChessNetwork.dataType`. On `.float32` this is a zero-copy raw
+    /// `the net's compute dtype`. On `.float32` this is a zero-copy raw
     /// `writeBytes` of the Float32 source. On a narrower dtype (bf16)
     /// the source is narrowed element-by-element into the supplied
     /// reusable `staging` buffer first, then `staging`'s bytes are fed —
@@ -5292,7 +5292,7 @@ final class ChessTrainer: @unchecked Sendable {
     /// up. `staging` must be non-nil and sized to `count` on a narrow
     /// dtype (allocated once per batch size in `feedsForBatch`); it is
     /// `nil` on `.float32`.
-    /// Branches on the **ND array's own** dtype, not `ChessNetwork.dataType`.
+    /// Branches on the **ND array's own** dtype, not `the net's compute dtype`.
     /// All four real-valued feeds (board, z, vBaseline, legalMask) are now
     /// fp32 — each feeds an fp32 placeholder narrowed to the compute dtype by
     /// an in-graph `cast` — so on the bf16 build every call takes the fp32
@@ -5323,7 +5323,7 @@ final class ChessTrainer: @unchecked Sendable {
     }
 
     /// Write a single Float32 scalar into a 1-element ND array whose
-    /// storage is `ChessNetwork.dataType`. On `.float32` the raw `Float`
+    /// storage is `the net's compute dtype`. On `.float32` the raw `Float`
     /// bytes are written directly; on bf16 the value is narrowed to a
     /// single `UInt16` on the stack and that is written. No reusable
     /// staging is needed — one element fits in a local.
@@ -5355,7 +5355,7 @@ final class ChessTrainer: @unchecked Sendable {
             return existing
         }
         let mtlDevice = network.metalDevice
-        let dtype = ChessNetwork.dataType
+        let dtype = ChessNetwork.mpsDataType(for: arch)
 
         // The board feed is always fp32: it feeds the network's fp32
         // `inputPlaceholder`, which narrows to the compute dtype on the GPU
@@ -5668,30 +5668,36 @@ final class ChessTrainer: @unchecked Sendable {
         else {
             throw ChessTrainerError.lossOutputMissing
         }
+        let dtype = ChessNetwork.mpsDataType(for: arch)
         ChessNetwork.readFloats(
             from: totalData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotTotal),
-            count: 1
+            count: 1,
+            dataType: dtype
         )
         ChessNetwork.readFloats(
             from: policyData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicy),
-            count: 1
+            count: 1,
+            dataType: dtype
         )
         ChessNetwork.readFloats(
             from: valueData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValue),
-            count: 1
+            count: 1,
+            dataType: dtype
         )
         ChessNetwork.readFloats(
             from: illegalPenaltyData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotIllegalMassPenalty),
-            count: 1
+            count: 1,
+            dataType: dtype
         )
         ChessNetwork.readFloats(
             from: gradNormData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotGradNorm),
-            count: 1
+            count: 1,
+            dataType: dtype
         )
 
         // Diagnostic outputs are requested only on stats steps, so their
@@ -5726,28 +5732,28 @@ final class ChessTrainer: @unchecked Sendable {
             else {
                 throw ChessTrainerError.lossOutputMissing
             }
-            ChessNetwork.readFloats(from: entropyData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotEntropy), count: 1)
-            ChessNetwork.readFloats(from: nonNegData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNeg), count: 1)
-            ChessNetwork.readFloats(from: nonNegIllegalData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNegIllegal), count: 1)
-            ChessNetwork.readFloats(from: valueMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueMean), count: 1)
-            ChessNetwork.readFloats(from: valueAbsMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueAbsMean), count: 1)
-            ChessNetwork.readFloats(from: valueProbWinData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbWin), count: 1)
-            ChessNetwork.readFloats(from: valueProbDrawData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbDraw), count: 1)
-            ChessNetwork.readFloats(from: valueProbLossData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbLoss), count: 1)
-            ChessNetwork.readFloats(from: policyHeadWNormData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyHeadWNorm), count: 1)
-            ChessNetwork.readFloats(from: pLogitAbsMaxData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPLogitAbsMax), count: 1)
-            ChessNetwork.readFloats(from: playedMoveProbData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProb), count: 1)
-            ChessNetwork.readFloats(from: playedMoveProbPosAdvData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProbPosAdv), count: 1)
-            ChessNetwork.readFloats(from: playedMoveProbNegAdvData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProbNegAdv), count: 1)
-            ChessNetwork.readFloats(from: advMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMean), count: 1)
-            ChessNetwork.readFloats(from: advStdData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvStd), count: 1)
-            ChessNetwork.readFloats(from: advMinData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMin), count: 1)
-            ChessNetwork.readFloats(from: advMaxData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMax), count: 1)
-            ChessNetwork.readFloats(from: advFracPosData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvFracPos), count: 1)
-            ChessNetwork.readFloats(from: advFracSmallData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvFracSmall), count: 1)
-            ChessNetwork.readFloats(from: policyLossWinData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLossWin), count: 1)
-            ChessNetwork.readFloats(from: policyLossLossData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLossLoss), count: 1)
-            ChessNetwork.readFloats(from: velocityNormData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotVelocityNorm), count: 1)
+            ChessNetwork.readFloats(from: entropyData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotEntropy), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: nonNegData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNeg), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: nonNegIllegalData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNegIllegal), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: valueMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueMean), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: valueAbsMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueAbsMean), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: valueProbWinData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbWin), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: valueProbDrawData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbDraw), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: valueProbLossData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbLoss), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: policyHeadWNormData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyHeadWNorm), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: pLogitAbsMaxData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPLogitAbsMax), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: playedMoveProbData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProb), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: playedMoveProbPosAdvData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProbPosAdv), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: playedMoveProbNegAdvData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProbNegAdv), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: advMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMean), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: advStdData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvStd), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: advMinData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMin), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: advMaxData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMax), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: advFracPosData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvFracPos), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: advFracSmallData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvFracSmall), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: policyLossWinData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLossWin), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: policyLossLossData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLossLoss), count: 1, dataType: dtype)
+            ChessNetwork.readFloats(from: velocityNormData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotVelocityNorm), count: 1, dataType: dtype)
             // Raw per-position advantage — batch-sized vector. Read into a
             // fresh [Float] since the size depends on the runtime batch.
             let advRawBatchSize: Int = advRawData.shape.reduce(1) { acc, dim in
@@ -5757,7 +5763,7 @@ final class ChessTrainer: @unchecked Sendable {
             if advRawBatchSize > 0 {
                 advRawValues.withUnsafeMutableBufferPointer { buf in
                     if let base = buf.baseAddress {
-                        ChessNetwork.readFloats(from: advRawData, into: base, count: advRawBatchSize)
+                        ChessNetwork.readFloats(from: advRawData, into: base, count: advRawBatchSize, dataType: dtype)
                     }
                 }
             }

@@ -102,8 +102,8 @@ final class BF16CastEquivalenceTests: XCTestCase {
     /// bit-identical. The conv is the only consumer of the cast, so equality
     /// here means the entire forward is unchanged.
     func testCastThenConvMatchesDirectBF16Conv() throws {
-        guard ChessNetwork.dataType == .bFloat16 else {
-            throw XCTSkip("bf16 path inactive (dataType=\(ChessNetwork.dataType))")
+        guard NetworkArchitecture.current.computeDataType == .bFloat16 else {
+            throw XCTSkip("bf16 path inactive (computeDataType=\(NetworkArchitecture.current.computeDataType))")
         }
         guard let device = MTLCreateSystemDefaultDevice(),
               let queue = device.makeCommandQueue() else {
@@ -197,8 +197,8 @@ final class BF16CastEquivalenceTests: XCTestCase {
     /// gradient actually depends on the conv output, making it sensitive to any
     /// forward *or* backward divergence the cast might introduce.
     func testCastThenConvGradientMatchesDirectBF16Conv() throws {
-        guard ChessNetwork.dataType == .bFloat16 else {
-            throw XCTSkip("bf16 path inactive (dataType=\(ChessNetwork.dataType))")
+        guard NetworkArchitecture.current.computeDataType == .bFloat16 else {
+            throw XCTSkip("bf16 path inactive (computeDataType=\(NetworkArchitecture.current.computeDataType))")
         }
         guard let device = MTLCreateSystemDefaultDevice(),
               let queue = device.makeCommandQueue() else {
@@ -359,8 +359,8 @@ final class BF16CastEquivalenceTests: XCTestCase {
     /// asserts both `readFloats` overloads widen them bit-identically to the
     /// reference `bFloat16BitsToFloat32` (the original loop's math).
     func testReadFloatsBF16WidenMatchesReference() throws {
-        guard ChessNetwork.dataType == .bFloat16 else {
-            throw XCTSkip("bf16 readFloats path inactive (dataType=\(ChessNetwork.dataType))")
+        guard NetworkArchitecture.current.computeDataType == .bFloat16 else {
+            throw XCTSkip("bf16 readFloats path inactive (computeDataType=\(NetworkArchitecture.current.computeDataType))")
         }
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("Metal not available")
@@ -378,7 +378,7 @@ final class BF16CastEquivalenceTests: XCTestCase {
 
         let expected = cpuBF16BitsToFP32(bits)
 
-        let outArray = ChessNetwork.readFloats(from: td, count: n)
+        let outArray = ChessNetwork.readFloats(from: td, count: n, dataType: .bFloat16)
         XCTAssertEqual(outArray.count, n)
         for i in 0..<n {
             XCTAssertEqual(
@@ -390,7 +390,7 @@ final class BF16CastEquivalenceTests: XCTestCase {
         var outPtr = [Float](repeating: 0, count: n)
         outPtr.withUnsafeMutableBufferPointer { buf in
             if let base = buf.baseAddress {
-                ChessNetwork.readFloats(from: td, into: base, count: n)
+                ChessNetwork.readFloats(from: td, into: base, count: n, dataType: .bFloat16)
             }
         }
         for i in 0..<n {
