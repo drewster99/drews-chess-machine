@@ -1,7 +1,10 @@
 # Replay-buffer history reconstruction — store once, stack on read
 
-Status: **PLANNED, not started.** Branch: `safetensors-storage`. Created 2026-06-06.
-Do not implement until explicitly told to start.
+Status: **IMPLEMENTED (compile-clean), tests written but not yet run** (commit
+`8e7ed83`, 2026-06-06). All phases done; bake-in replaced outright. The bit-exact
+reconstruction-vs-bake-in test exists but has NOT been executed (live training session
+blocks running the test target) — run `DrewsChessMachineTests` when the session is free
+to close the validation gate. Branch: `safetensors-storage`.
 
 ## Goal
 
@@ -158,5 +161,38 @@ changed generation as evicted → zero from there). Not needed for v1.
 - **Concurrency mechanism** — RESOLVED (2026-06-06): reuse the existing buffer
   `OSAllocatedUnfairLock` (gather under `sample()`'s lock, flip after release). Generation
   tags deferred to "only if profiling demands". See "Concurrency".
-- **Cutover** — keep bake-in behind a flag during transition, or replace outright? *(OPEN —
-  the one remaining decision)*
+- **Cutover** — RESOLVED (2026-06-06): replace bake-in outright; the bit-exact
+  reconstruction test is the safety net. No flag.
+
+## Confirmed implementation details (2026-06-06)
+
+- **No `BoardEncoder` / `ChessNetwork` changes.** The encoder already emits mover-relative
+  frames; storage keeps the frame-0 slice; the flip is a buffer-side op. Keeps this work
+  off the files another agent is editing.
+- **ABA-safe.** `(gameId, ply)` validation is collision-safe: `workerGameId =
+  (workerId<<16)|(gameIndex & 0xFFFF)` repeats only after 65,536 games from one worker —
+  far beyond any residency window (~thousands of games, a handful per worker). Plus the
+  `ply` check is a second guard. No generation tags.
+- **Stored stride = `planesPerFrame × 64`** (full10ply200 → 1,280; basic20/30 unchanged at
+  20/30 planes since their `planesPerFrame == planeCount`). **Reconstructed stride =
+  `planeCount × 64`** (full10ply200 → 12,800) — the trainer's GPU staging keeps this size;
+  the two strides decouple. `ReplayBuffer` is told the `InputEncoding` so it derives both.
+- **Per-game contiguity is free.** Changing `flush` from two per-side `append`s to **one
+  merged `append`** lands the whole game as one contiguous ring block (wrap → the existing
+  append already splits). No ring-mechanics rewrite.
+- **Unified flush (all encodings).** Build one array in **reverse game-ply order** by
+  interleaving the two per-side staging arrays by ply parity; carry **per-row outcome**
+  (white +x / black −x); single `append`. For basic20/30 this only changes physical order
+  + append-count — stored positions/metadata/outcomes are identical, and sampling is
+  by-metadata, so behavior is unchanged.
+- **Unified reconstruction (all encodings) in `ReplayBuffer.sample`.** Gather
+  `historyFrameCount` frames forward from the sampled slot (frame 0 = the slot), validate
+  each by `(gameId, ply)`, zero from the first mismatch, flip the odd frames, write
+  `planeCount × 64` into `intoBoards`. Single-frame encodings → gather 1, no odd frames,
+  no flip → identical to today. Gather under the existing lock; flip on the private
+  `intoBoards` copy.
+- **Edge cases:** require `capacity ≫ selfPlayMaxPliesPerGame` (a game block must fit);
+  blocks may wrap (≤2 segments, handled by existing append + the gather); partially-evicted
+  games → priors zeroed by validation (the natural truncation).
+- **`decodeSynthetic` / `legalMassSnapshot` unaffected** — frame N stays at planes 0–17 of
+  the reconstruction.
