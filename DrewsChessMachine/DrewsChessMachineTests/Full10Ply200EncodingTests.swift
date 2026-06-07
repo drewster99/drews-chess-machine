@@ -33,10 +33,14 @@ final class Full10Ply200EncodingTests: XCTestCase {
         XCTAssertEqual(InputEncoding.full10ply200.planeCount, 200)
         XCTAssertEqual(InputEncoding.full10ply200.historyFrameCount, 10)
         XCTAssertEqual(InputEncoding.full10ply200.planesPerFrame, 20)
-        // historyFrameCount × planesPerFrame == planeCount for every encoding.
+        XCTAssertEqual(InputEncoding.full10ply200.tailPlaneCount, 0)
+        // historyFrameCount × planesPerFrame + tailPlaneCount == planeCount for
+        // every encoding (generalized for non-stacked tails like
+        // full10Ply10Reps210's 10 appended repetition planes).
         for enc in InputEncoding.allCases {
-            XCTAssertEqual(enc.historyFrameCount * enc.planesPerFrame, enc.planeCount,
-                           "frame-structure invariant must hold for \(enc.rawValue)")
+            XCTAssertEqual(enc.historyFrameCount * enc.planesPerFrame + enc.tailPlaneCount,
+                           enc.planeCount,
+                           "frame+tail invariant must hold for \(enc.rawValue)")
         }
     }
 

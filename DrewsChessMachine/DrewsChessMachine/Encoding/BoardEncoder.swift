@@ -304,6 +304,30 @@ enum BoardEncoder {
                                 planeBase: (f + 1) * stride,
                                 includeTemporalRepetition: false, base: base)
             }
+        case .full10Ply10Reps210:
+            // Same 10-frame basic20 stack as full10ply200 (mirrored, not
+            // shared, so full10ply200's path stays byte-identical), then the
+            // CURRENT position's 10 temporal-repetition planes appended at the
+            // tail (planes 200–209), read from the engine-maintained mask —
+            // bit-for-bit identical to basic30's planes 20–29. History frames
+            // carry no reps. The training path reproduces this same tail from
+            // stored priors in `ReplayBuffer.appendRepetitionTail`.
+            let stride = encoding.planesPerFrame
+            writeBasicBlock(current, perspective: persp, planeBase: 0,
+                            includeTemporalRepetition: false, base: base)
+            let available = min(history.count, encoding.historyFrameCount - 1)
+            for f in 0..<available {
+                writeBasicBlock(history[f], perspective: persp,
+                                planeBase: (f + 1) * stride,
+                                includeTemporalRepetition: false, base: base)
+            }
+            let repBase = encoding.historyFrameCount * encoding.planesPerFrame
+            let recentMask = current.recentRepetitionMask
+            if recentMask != 0 {
+                for i in 0..<10 where (recentMask >> i) & 1 == 1 {
+                    fillPlane(base, plane: repBase + i)
+                }
+            }
         }
     }
 

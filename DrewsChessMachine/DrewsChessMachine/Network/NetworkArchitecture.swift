@@ -47,6 +47,13 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
     /// marker planes; absent (pre-game-start) frames stay all-zero. History
     /// frames carry no temporal-repetition block (each is plain basic20).
     case full10ply200
+    /// 210 planes: `full10ply200`'s 200 planes + the 10 `basic30` temporal-
+    /// repetition planes (planes 20–29 there) appended at 200–209, describing
+    /// the CURRENT position only. History frames carry no reps. The appended
+    /// block is NOT part of the stacked frames — it is a non-stacked tail
+    /// (`tailPlaneCount == 10`), reproduced bit-for-bit from `basic30`'s
+    /// `recentRepetitionMask`.
+    case full10Ply10Reps210
 
     /// Ordered plane-group spec. `description` renders from this and a unit test
     /// asserts the encoder fills exactly these ranges (no doc/impl drift).
@@ -82,6 +89,13 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
                 }
             }
             return groups
+        case .full10Ply10Reps210:
+            // full10ply200's 200 planes (10 stacked basic20 frames) + the 10
+            // basic30 temporal-repetition planes appended at 200–209. Reuses
+            // full10ply200's group layout verbatim so the two never drift.
+            return InputEncoding.full10ply200.planeGroups + [
+                PlaneGroup(200...209, "temporal-repetition history: plane 200+i = position i+1 plies ago is a strict duplicate")
+            ]
         }
     }
 
@@ -93,18 +107,33 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
     var historyFrameCount: Int {
         switch self {
         case .basic20, .basic30: return 1
-        case .full10ply200: return 10
+        case .full10ply200, .full10Ply10Reps210: return 10
         }
     }
 
     /// Planes per stacked frame. History encodings stack the 20-plane basic20
     /// block; single-frame encodings report their whole plane count.
-    /// Invariant (asserted in tests): `historyFrameCount * planesPerFrame == planeCount`.
+    /// Invariant (asserted in tests): `historyFrameCount * planesPerFrame + tailPlaneCount == planeCount`.
     var planesPerFrame: Int {
         switch self {
         case .basic20: return 20
         case .basic30: return 30
-        case .full10ply200: return 20
+        case .full10ply200, .full10Ply10Reps210: return 20
+        }
+    }
+
+    /// Planes appended after the stacked frames that are NOT part of any frame
+    /// (e.g. whole-position repetition planes describing only the current ply).
+    /// `0` for every encoding whose planes are exactly
+    /// `historyFrameCount × planesPerFrame`. The replay buffer stores only the
+    /// stacked frames; a non-zero tail is produced by the consumer at sample
+    /// time (see `ReplayBuffer.appendRepetitionTail`) and at inference time
+    /// from the live `GameState`.
+    /// Invariant (asserted in tests): `historyFrameCount × planesPerFrame + tailPlaneCount == planeCount`.
+    var tailPlaneCount: Int {
+        switch self {
+        case .basic20, .basic30, .full10ply200: return 0
+        case .full10Ply10Reps210: return 10
         }
     }
 
@@ -131,6 +160,18 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
                 let lo = g.range.lowerBound, hi = g.range.upperBound
                 let label = lo == hi ? "\(lo)" : "\(lo)-\(hi)"
                 lines.append("    [\(label)] \(g.meaning)")
+            }
+            // Non-stacked tail planes (e.g. appended repetition block), if any.
+            // Empty for full10ply200, so its description is unchanged.
+            let stackedPlanes = historyFrameCount * planesPerFrame
+            let tailGroups = planeGroups.filter { $0.range.lowerBound >= stackedPlanes }
+            if !tailGroups.isEmpty {
+                lines.append("  appended (not stacked):")
+                for g in tailGroups {
+                    let lo = g.range.lowerBound, hi = g.range.upperBound
+                    let label = lo == hi ? "\(lo)" : "\(lo)-\(hi)"
+                    lines.append("    [\(label)] \(g.meaning)")
+                }
             }
             return lines.joined(separator: "\n")
         }

@@ -1466,6 +1466,69 @@ final class ReplayBuffer: @unchecked Sendable {
         }
     }
 
+    /// Append the `full10Ply10Reps210` temporal-repetition tail (planes
+    /// 200–209) for the sampled position, reproducing basic30's
+    /// `recentRepetitionMask` from the stored prior frames. Called after
+    /// `reconstructHistoryStack` has written the 200 stacked planes.
+    ///
+    /// EXACT basic30 semantics (verified against `ChessGameEngine.applyMove` /
+    /// `PositionKey`): bit `i` (plane 200+i) is set iff the position `(i+1)`
+    /// plies ago is a `PositionKey` duplicate of the current one — board + STM
+    /// + castling + EP equal. Same STM requires an EVEN ply distance, so only
+    /// odd `i` (even distance `k = i+1`) can ever be set; even `i` stay 0.
+    ///
+    /// Why this matches the engine without tracking its window-clear: a true
+    /// board repeat cannot span a pawn move or capture, so strict board
+    /// equality already excludes everything the irreversible-move clear would.
+    /// Even-distance priors are stored in the SAME perspective as the current
+    /// frame (same mover color), so the `PositionKey`-defining planes (0–16:
+    /// pieces, castling, EP — excluding halfmove 17 and rep-counts 18–19) are a
+    /// raw byte compare. The window is 10 plies deep — one deeper than the
+    /// 10-frame stack reaches (N-9) — so priors are read straight from storage
+    /// (`k = 2…10`) with the same same-game / exact-ply validity the gather uses.
+    ///
+    /// Ring-eviction note: an overwritten prior reads as absent (bit 0),
+    /// under-counting vs the push-time mask — identical to how the history
+    /// gather treats an evicted prior frame (zeroed). Negligible and by design.
+    @inline(__always)
+    private func appendRepetitionTail(
+        srcIndex: Int,
+        into dstBoard: UnsafeMutablePointer<Float>
+    ) {
+        let area = ChessNetwork.boardSize * ChessNetwork.boardSize   // 64
+        let repBase = historyFrameCount * planesPerFrame             // 200
+        // reconstructHistoryStack wrote only planes 0..<repBase; zero the tail
+        // before setting bits (fill-on-match only writes the 1s).
+        (dstBoard + repBase * area).update(
+            repeating: 0, count: inputEncoding.tailPlaneCount * area)
+
+        let gameId = workerGameIdStorage[srcIndex]
+        let basePly = Int(plyIndexStorage[srcIndex])
+        // PositionKey planes are 0–16 (pieces 0–11, castling 12–15, EP 16);
+        // exclude halfmove (17) and rep-counts (18–19).
+        let keyBytes = 17 * area * MemoryLayout<Float>.stride
+        let curFrame = boardStorage + srcIndex * floatsPerBoard
+
+        // Only even ply distances share side-to-move and can be duplicates.
+        var k = 2
+        while k <= ChessGameEngine.recentPositionKeyWindow {
+            let expectedPly = basePly - k
+            if expectedPly >= 0 {
+                let priorIndex = (srcIndex + k) % capacity
+                if workerGameIdStorage[priorIndex] == gameId
+                    && Int(plyIndexStorage[priorIndex]) == expectedPly {
+                    let priorFrame = boardStorage + priorIndex * floatsPerBoard
+                    if memcmp(curFrame, priorFrame, keyBytes) == 0 {
+                        // mask bit i = k-1 → plane repBase + (k-1).
+                        (dstBoard + (repBase + k - 1) * area).update(
+                            repeating: 1, count: area)
+                    }
+                }
+            }
+            k += 2
+        }
+    }
+
     /// Apply the encoder's full perspective transform to one stored
     /// `planesPerFrame`-plane frame, in place. This is the bit-exact
     /// inverse-perspective of `BoardEncoder.writeBasicBlock`: encoding the
@@ -1554,6 +1617,9 @@ final class ReplayBuffer: @unchecked Sendable {
             guard let srcIndex = match else { return false }
             if historyFrameCount > 1 {
                 reconstructHistoryStack(srcIndex: srcIndex, into: dstBoard)
+                if inputEncoding == .full10Ply10Reps210 {
+                    appendRepetitionTail(srcIndex: srcIndex, into: dstBoard)
+                }
             } else {
                 dstBoard.update(
                     from: boardStorage + srcIndex * floatsPerBoard,
@@ -1623,6 +1689,11 @@ final class ReplayBuffer: @unchecked Sendable {
             let floatsPerBoard = self.floatsPerBoard
             let reconstructedStride = self.reconstructedStride
             let multiFrame = historyFrameCount > 1
+            // Encodings with a non-stacked tail (currently only
+            // full10Ply10Reps210's 10 repetition planes) recompute that tail
+            // from stored priors after the stack gather. Inert for every other
+            // encoding, whose path below is byte-for-byte unchanged.
+            let appendRepTail = inputEncoding == .full10Ply10Reps210
 
             @inline(__always)
             func emit(_ i: Int, _ srcIndex: Int) {
@@ -1636,6 +1707,9 @@ final class ReplayBuffer: @unchecked Sendable {
                     // `withLockUnchecked`); the flip mutates only `dstBoard`,
                     // which is caller-private staging.
                     reconstructHistoryStack(srcIndex: srcIndex, into: dstBoard)
+                    if appendRepTail {
+                        appendRepetitionTail(srcIndex: srcIndex, into: dstBoard)
+                    }
                 } else {
                     // Single-frame encoding: the stored stride equals the
                     // reconstructed stride, so this is the byte-for-byte
