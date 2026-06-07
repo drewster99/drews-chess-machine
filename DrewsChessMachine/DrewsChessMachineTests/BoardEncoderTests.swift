@@ -37,6 +37,34 @@ final class BoardEncoderTests: XCTestCase {
                        "basic30 has 30 planes × 64 = 1920 floats per encoded position (20 baseline + 10 temporal-repetition history)")
     }
 
+    /// Drift guard for the `planeGroups` spec InputEncoding promises ("a unit
+    /// test asserts the encoder fills exactly these ranges"). For EVERY
+    /// encoding the declared groups must tile `[0, planeCount)` exactly —
+    /// start at 0, contiguous, gap-free, non-overlapping — and the
+    /// frame/tail/tensor-length derivations must all agree. Catches doc/impl
+    /// drift the instant any encoding's plane layout changes (present or future).
+    func testPlaneGroupsTileExactlyForAllEncodings() {
+        for enc in InputEncoding.allCases {
+            let groups = enc.planeGroups.sorted { $0.range.lowerBound < $1.range.lowerBound }
+            XCTAssertFalse(groups.isEmpty, "\(enc.rawValue) has no plane groups")
+            XCTAssertEqual(groups.first?.range.lowerBound, 0,
+                           "\(enc.rawValue) plane groups must start at plane 0")
+            var next = 0
+            for g in groups {
+                XCTAssertEqual(g.range.lowerBound, next,
+                    "\(enc.rawValue): gap/overlap at plane \(g.range.lowerBound) (expected \(next))")
+                next = g.range.upperBound + 1
+            }
+            XCTAssertEqual(next, enc.planeCount,
+                "\(enc.rawValue): groups cover \(next) planes but planeCount is \(enc.planeCount)")
+            XCTAssertEqual(enc.historyFrameCount * enc.planesPerFrame + enc.tailPlaneCount,
+                           enc.planeCount,
+                           "\(enc.rawValue): frame×perFrame + tail must equal planeCount")
+            XCTAssertEqual(BoardEncoder.tensorLength(for: enc), enc.planeCount * 64,
+                           "\(enc.rawValue): tensorLength must be planeCount × 64")
+        }
+    }
+
     func testEncodeStartingPositionProducesCorrectLength() {
         let tensor = BoardEncoder.encode(.starting, encoding: .basic30)
         XCTAssertEqual(tensor.count, BoardEncoder.tensorLength(for: .basic30))

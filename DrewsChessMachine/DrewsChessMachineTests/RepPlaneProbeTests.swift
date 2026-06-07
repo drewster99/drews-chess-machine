@@ -3,13 +3,20 @@ import XCTest
 
 /// Behavioral probe for the repetition planes (input planes 18..29).
 ///
-/// Question being answered: with a fully trained champion network,
-/// does the value head's W/D/L distribution AND the policy softmax
-/// shift when the repetition planes (18..19 = "this position has been
-/// seen N times before" count flags; 20..29 = "i plies ago was a
-/// strict-rule duplicate" temporal mask) are flipped from "fresh
-/// position" to "this position is about to repeat" while the rest
-/// of the board encoding is held constant?
+/// These are SELF-CONTAINED, repeatable tests: each builds a fresh basic30
+/// network in-test (no on-disk champion) and asserts the probe MACHINERY
+/// produces complete, finite output for every position/variant, then writes
+/// a report for inspection. The exact magnitudes are not asserted (random
+/// weights), so the same probe can be pointed at a trained champion manually
+/// to answer the research question below — but the TEST contract is the
+/// structural one, which is deterministic and champion-independent.
+///
+/// Research question (manual use): with a trained network, does the value
+/// head's W/D/L distribution AND the policy softmax shift when the repetition
+/// planes (18..19 = "this position has been seen N times before" count flags;
+/// 20..29 = "i plies ago was a strict-rule duplicate" temporal mask) are
+/// flipped from "fresh position" to "this position is about to repeat" while
+/// the rest of the board encoding is held constant?
 ///
 /// If yes (large policy KL and/or large value shift, especially
 /// toward draw in the pattern that signals threefold imminence),
@@ -28,13 +35,11 @@ final class RepPlaneProbeTests: XCTestCase {
     private let outputPath = "/tmp/rep_plane_probe_results.txt"
 
     func test_probeRepetitionPlanes_writeReport() async throws {
-        // Use the champion model (inference-only snapshot at the last
-        // arena promotion). The trainer .dcmmodel carries SGD momentum
-        // buffers alongside network weights (220 tensors) which an
-        // inference network's loadWeights rejects (expects 128). For
-        // the "did the network learn to use these planes?" question,
-        // the arena-validated champion is the more meaningful target.
-        let (mps, file, modelURL) = try await loadLatestChampionOrSkip()
+        // Self-contained: build the probe network in-test so the result is
+        // repeatable and independent of any on-disk champion. The assertions
+        // below verify the probe's OUTPUT data (completeness + finiteness),
+        // then the report is written for the curious.
+        let mps = try makeProbeNetwork()
 
         // ----- 3. Build a diverse set of probe positions by walking
         // a few random self-play games from .starting and snapshotting
@@ -52,8 +57,8 @@ final class RepPlaneProbeTests: XCTestCase {
         let planeFloats = 64
 
         var report = ProbeReport()
-        report.modelPath = modelURL.path
-        report.modelID = file.modelID
+        report.modelPath = Self.probeNetLabel
+        report.modelID = Self.probeNetLabel
         report.numPositions = probeStates.count
 
         for (posIdx, state) in probeStates.enumerated() {
@@ -134,10 +139,34 @@ final class RepPlaneProbeTests: XCTestCase {
             report.positions.append(perPos)
         }
 
-        // ----- 5. Format + write the report -----
+        // ----- 5. Check the data -----
+        XCTAssertEqual(report.positions.count, probeStates.count,
+                       "every probe position must produce a result")
+        let variantCount = report.positions.first?.variants.count ?? 0
+        XCTAssertGreaterThan(variantCount, 0, "each position must probe at least one variant")
+        for pos in report.positions {
+            let w = pos.baselineValueWDL
+            XCTAssertTrue(w.win.isFinite && w.draw.isFinite && w.loss.isFinite,
+                          "baseline WDL must be finite at ply \(pos.ply)")
+            XCTAssertEqual(Double(w.win + w.draw + w.loss), 1.0, accuracy: 1e-3,
+                           "WDL softmax must sum to 1 at ply \(pos.ply)")
+            XCTAssertEqual(pos.variants.count, variantCount,
+                           "every position must probe the same variants")
+            for v in pos.variants {
+                XCTAssertTrue(v.klPolicy.isFinite && v.klPolicy >= 0,
+                              "policy KL must be finite and non-negative (\(v.name))")
+                XCTAssertTrue(v.dWin.isFinite && v.dDraw.isFinite && v.dLoss.isFinite && v.dScalar.isFinite,
+                              "value deltas must be finite (\(v.name))")
+            }
+        }
+
+        // ----- 6. Write the report, then verify the file on disk -----
         let text = report.formatted()
         try text.write(toFile: outputPath, atomically: true, encoding: .utf8)
-        print("[REP-PROBE] wrote report to \(outputPath) (\(text.count) bytes)")
+        let readback = try String(contentsOfFile: outputPath, encoding: .utf8)
+        XCTAssertFalse(readback.isEmpty, "report file must be non-empty")
+        XCTAssertTrue(readback.contains("probe positions: \(probeStates.count)"),
+                      "report file must record the probed position count")
         print(text)   // Echo so it lands in xcresult logs too.
     }
 
@@ -152,7 +181,7 @@ final class RepPlaneProbeTests: XCTestCase {
     /// would naturally arise (low-material drawish endgame), not a
     /// random opening position.
     func test_constructedKnightShuffleEndgame_probe() async throws {
-        let (mps, file, _) = try await loadLatestChampionOrSkip()
+        let mps = try makeProbeNetwork()
 
         // Build the endgame position.
         //   row 0 = rank 8 … row 7 = rank 1, col 0 = a-file.
@@ -220,9 +249,20 @@ final class RepPlaneProbeTests: XCTestCase {
         let dLoss = outWith.wdl.loss - outWithout.wdl.loss
         let dScalar = (outWith.wdl.win - outWith.wdl.loss) - (outWithout.wdl.win - outWithout.wdl.loss)
 
+        // Check the data: both evaluations valid, deltas finite, KL sane.
+        for (label, o) in [("with-rep", outWith), ("without-rep", outWithout)] {
+            XCTAssertTrue(o.wdl.win.isFinite && o.wdl.draw.isFinite && o.wdl.loss.isFinite,
+                          "\(label) WDL must be finite")
+            XCTAssertEqual(Double(o.wdl.win + o.wdl.draw + o.wdl.loss), 1.0, accuracy: 1e-3,
+                           "\(label) WDL softmax must sum to 1")
+        }
+        XCTAssertTrue(kl.isFinite && kl >= 0, "policy KL must be finite and non-negative")
+        XCTAssertTrue(dWin.isFinite && dDraw.isFinite && dLoss.isFinite && dScalar.isFinite,
+                      "value deltas must be finite")
+
         var s = "Constructed knight-shuffle endgame probe\n"
         s += "==========================================\n"
-        s += "modelID: \(file.modelID)\n\n"
+        s += "modelID: \(Self.probeNetLabel)\n\n"
         s += "Position: white K@g1 N@b1 P@a2,g2,h2 vs black K@g8 N@b8 P@a7,g7,h7\n"
         s += "  10 pieces, white to move, in-distribution endgame material\n"
         s += "Shuffle: \(moves.map(\.name).joined(separator: " · "))\n"
@@ -241,7 +281,10 @@ final class RepPlaneProbeTests: XCTestCase {
         s += "    - p_win and p_loss should both decrease\n"
         s += "    - Policy may shift to either ESCAPE the cycle (if winning) or REPEAT it (if drawing)\n"
 
-        try s.write(toFile: "/tmp/knight_shuffle_probe.txt", atomically: true, encoding: .utf8)
+        let knightPath = "/tmp/knight_shuffle_probe.txt"
+        try s.write(toFile: knightPath, atomically: true, encoding: .utf8)
+        XCTAssertFalse(try String(contentsOfFile: knightPath, encoding: .utf8).isEmpty,
+                       "knight-shuffle report file must be non-empty")
         print(s)
     }
 
@@ -253,7 +296,7 @@ final class RepPlaneProbeTests: XCTestCase {
     /// learned the 50-move-rule signal, p_draw should rise monotonically
     /// with the halfmove value.
     func test_halfmoveProbe_writeReport() async throws {
-        let (mps, file, _) = try await loadLatestChampionOrSkip()
+        let mps = try makeProbeNetwork()
 
         let probeStates = buildProbeStates(targetCount: 20, seed: 0xBADCAFE_1234567)
         let testValues: [Float] = [0.00, 0.25, 0.50, 0.75, 0.90, 0.99]
@@ -302,9 +345,19 @@ final class RepPlaneProbeTests: XCTestCase {
             perPosLines.append(line)
         }
 
+        // Check the data: every value tested at every position, all finite.
+        for (vi, a) in aggs.enumerated() {
+            XCTAssertEqual(a.n, probeStates.count,
+                           "halfmove value index \(vi) must be tested at every position")
+            XCTAssertTrue(a.maxKL.isFinite && a.maxKL >= 0, "maxKL must be finite/non-negative")
+            XCTAssertTrue(a.sumKL.isFinite && a.sumDWin.isFinite && a.sumDDraw.isFinite
+                          && a.sumDLoss.isFinite && a.sumDScalar.isFinite,
+                          "aggregated deltas must be finite at value index \(vi)")
+        }
+
         var s = "Halfmove-clock sensitivity probe\n"
         s += "================================\n"
-        s += "modelID: \(file.modelID)\n"
+        s += "modelID: \(Self.probeNetLabel)\n"
         s += "probe positions: \(probeStates.count)\n"
         s += "halfmove values tested (plane 17, broadcast): \(testValues.map { String(format: "%.2f", $0) }.joined(separator: ", "))\n"
         s += "(network's halfmove encoding: min(clock, 99) / 99 → so plane value 0.50 ≈ halfmove 50, 0.99 ≈ halfmove 98)\n\n"
@@ -340,97 +393,30 @@ final class RepPlaneProbeTests: XCTestCase {
             s += line + "\n"
         }
 
-        try s.write(toFile: "/tmp/halfmove_probe.txt", atomically: true, encoding: .utf8)
+        let halfmovePath = "/tmp/halfmove_probe.txt"
+        try s.write(toFile: halfmovePath, atomically: true, encoding: .utf8)
+        XCTAssertFalse(try String(contentsOfFile: halfmovePath, encoding: .utf8).isEmpty,
+                       "halfmove report file must be non-empty")
         print(s)
     }
 
     // MARK: - Helpers
 
-    private func locateLatestChampionModel() throws -> URL {
-        let fm = FileManager.default
-        let support = try fm.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: false
-        ).appendingPathComponent("DrewsChessMachine/Sessions", isDirectory: true)
-        let sessionDirs = try fm.contentsOfDirectory(
-            at: support,
-            includingPropertiesForKeys: [.contentModificationDateKey]
-        ).filter { $0.pathExtension == "dcmsession" }
-        guard let latest = sessionDirs.max(by: {
-            modificationDate(of: $0) < modificationDate(of: $1)
-        }) else {
-            throw NSError(domain: "RepPlaneProbeTests", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "no .dcmsession found"])
-        }
-        // Resolve champion.safetensors (current format) then champion.dcmmodel
-        // (legacy) — sessions no longer write .dcmmodel.
-        let modelURL = SessionCheckpointLayout.existingChampionURL(in: latest)
-        guard fm.fileExists(atPath: modelURL.path) else {
-            throw NSError(
-                domain: "RepPlaneProbeTests", code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "latest session has no champion model: \(modelURL.path)"]
-            )
-        }
-        return modelURL
-    }
+    /// A short, fixed label for the self-contained probe network.
+    private static let probeNetLabel = "self-contained probe (random-init basic30)"
 
-    /// Load the latest on-disk champion into a fresh inference network,
-    /// or `XCTSkip` when no architecture-compatible champion exists.
-    ///
-    /// These probes ask "did the *trained* champion learn to use plane
-    /// X?" — a question with no meaning unless a trained, loadable
-    /// champion is present. After an architecture change (e.g. a
-    /// `numBlocks` bump) the only saved models carry the previous
-    /// `archHash`, so `loadModelFile` rejects them by design; that is a
-    /// skip, not a failure. Once a champion has been trained and saved
-    /// under the current architecture the probe runs normally.
-    private func loadLatestChampionOrSkip() async throws
-        -> (mps: ChessMPSNetwork, file: ModelCheckpointFile, modelURL: URL) {
-        let modelURL: URL
-        do {
-            modelURL = try locateLatestChampionModel()
-        } catch {
-            throw XCTSkip("No champion model on disk: \(error.localizedDescription)")
-        }
-        let file: ModelCheckpointFile
-        do {
-            file = try CheckpointManager.loadModelFile(at: modelURL)
-        } catch ModelCheckpointError.archMismatch(let expected, let got) {
-            throw XCTSkip(
-                "Latest champion has an unmapped legacy archHash 0x\(String(got, radix: 16)) "
-                + "(no preset; expected one of the documented 0x\(String(expected, radix: 16)))."
-            )
-        }
-        // Build the champion's ACTUAL architecture — safetensors embeds it; a
-        // legacy .dcmmodel maps its hash to a preset — so non-default champions
-        // load and the probe runs instead of skipping.
-        let mps = try ChessMPSNetwork(.randomWeights, arch: file.architecture)
-        let baseCount = mps.network.trainableVariables.count
-            + mps.network.bnRunningStatsVariables.count
-        do {
-            try await mps.network.loadWeights(Array(file.weights.prefix(baseCount)))
-        } catch {
-            throw XCTSkip(
-                "Champion weights incompatible with rebuilt architecture: \(error.localizedDescription)"
-            )
-        }
-        return (mps, file, modelURL)
-    }
-
-    /// Mtime for sort comparison; falls back to .distantPast on any
-    /// failure to read the attribute. Used only for "find the newest
-    /// .dcmsession" — sorting an undatable URL to the bottom is the
-    /// right fallback. Explicit do/catch (not `try?`) so the failure
-    /// path is named, not silenced.
-    private func modificationDate(of url: URL) -> Date {
-        do {
-            let values = try url.resourceValues(forKeys: [.contentModificationDateKey])
-            return values.contentModificationDate ?? .distantPast
-        } catch {
-            return .distantPast
-        }
+    /// Build a fresh basic30 inference network for the probe — no on-disk
+    /// champion. These probes assert that the probe MACHINERY produces
+    /// complete, finite output for every position/variant: a repeatable
+    /// contract that doesn't depend on whatever model happens to be on disk.
+    /// (Random weights are sufficient for that contract — the magnitudes
+    /// aren't asserted. "Did the *trained* champion learn plane X?" is a
+    /// manual research question, not a deterministic unit test.)
+    private func makeProbeNetwork() throws -> ChessMPSNetwork {
+        let arch = NetworkArchitecture.preset(.v3_8block_3x3)
+        precondition(arch.inputEncoding == .basic30,
+                     "probe encodes basic30; the probe network must be a basic30 arch")
+        return try ChessMPSNetwork(.randomWeights, arch: arch)
     }
 
     // MARK: - Probe-state generator
