@@ -46,8 +46,28 @@ final class PlayController {
     var isSetupVisible: Bool = false
 
     /// Last opponent choice the user picked in the setup popover.
-    /// Persisted across opens within a single launch.
+    /// Persisted across opens within a single launch. The pre-first-open
+    /// value here is only a fallback — `openSetupPopover` re-derives the
+    /// default at open time (live trainer when one is available).
     var opponentChoice: HumanPlayOpponentChoice = .championSnapshot
+
+    /// Whether the user has explicitly chosen an opponent in the setup
+    /// popover (or via the file picker) this launch. Until they do,
+    /// opening the popover defaults the opponent to `.liveTrainer`
+    /// whenever a trainer is available (training in progress or a trainer
+    /// loaded), falling back to `.championSnapshot` otherwise. Set only
+    /// by deliberate user picks — the programmatic re-selections in
+    /// `reset` / `revertToHistoryPly` deliberately don't set it, so an
+    /// in-flight game's restore can't masquerade as an explicit choice.
+    private var hasUserPickedOpponent: Bool = false
+
+    /// Record a deliberate user opponent pick (radio button or file
+    /// selection), which both applies the choice and suppresses the
+    /// live-trainer auto-default on subsequent popover opens.
+    func noteUserOpponentChoice(_ choice: HumanPlayOpponentChoice) {
+        opponentChoice = choice
+        hasUserPickedOpponent = true
+    }
 
     /// Color the human plays as. Default white so the human moves
     /// first — least surprising on a brand-new session.
@@ -254,13 +274,23 @@ final class PlayController {
     /// state (error text), then shows the popover. If a game is
     /// already in flight, refuses with a status update rather than
     /// silently overlaying a second setup on top.
-    func openSetupPopover() {
+    ///
+    /// `trainerAvailable` is `session.trainer != nil` — true whenever a
+    /// trainer is loaded or training is in progress. When true and the
+    /// user hasn't already made an explicit pick this launch, the
+    /// opponent defaults to `.liveTrainer` so "play the thing that's
+    /// currently training" is one click away; otherwise it falls back to
+    /// the champion snapshot.
+    func openSetupPopover(trainerAvailable: Bool) {
         if isPlayingHuman {
             setupErrorText = "A human game is already in progress. Stop it first."
             isSetupVisible = true
             return
         }
         setupErrorText = nil
+        if !hasUserPickedOpponent {
+            opponentChoice = trainerAvailable ? .liveTrainer : .championSnapshot
+        }
         isSetupVisible = true
     }
 
@@ -310,8 +340,10 @@ final class PlayController {
                     self.loadedFileLabel = Self.describeModelFile(url)
                     // Picking a file implies the user wants the
                     // loaded-file option — flip the radio so the popover
-                    // doesn't require a separate tap.
-                    self.opponentChoice = .loadedFile
+                    // doesn't require a separate tap. Count it as an
+                    // explicit pick so a later reopen doesn't override it
+                    // back to the live-trainer default.
+                    self.noteUserOpponentChoice(.loadedFile)
                     self.setupErrorText = nil
                 }
                 // Re-show regardless of OK/Cancel: the user expects to
@@ -1049,7 +1081,10 @@ struct PlaySetupPopover: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Opponent")
                     .font(.subheadline.weight(.semibold))
-                Picker("Opponent", selection: $controller.opponentChoice) {
+                Picker("Opponent", selection: Binding(
+                    get: { controller.opponentChoice },
+                    set: { controller.noteUserOpponentChoice($0) }
+                )) {
                     Text("Champion (snapshot)")
                         .tag(HumanPlayOpponentChoice.championSnapshot)
                         .help(championAvailable

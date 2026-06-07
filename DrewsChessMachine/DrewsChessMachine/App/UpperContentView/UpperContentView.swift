@@ -2170,7 +2170,9 @@ struct UpperContentView: View {
         commandHub.chartZoomIn = { session.chartZoomIn() }
         commandHub.chartZoomOut = { session.chartZoomOut() }
         commandHub.chartZoomEnableAuto = { session.chartZoomEnableAuto() }
-        commandHub.openHumanPlaySetup = { playController.openSetupPopover() }
+        commandHub.openHumanPlaySetup = {
+            playController.openSetupPopover(trainerAvailable: session.trainer != nil)
+        }
         commandHub.stopHumanGame = { playController.stop(gameWatcher: gameWatcher) }
         commandHub.resetHumanGame = {
             playController.reset(session: session, gameWatcher: gameWatcher)
