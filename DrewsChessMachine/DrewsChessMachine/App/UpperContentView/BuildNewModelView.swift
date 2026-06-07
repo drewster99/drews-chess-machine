@@ -81,6 +81,9 @@ struct BuildNewModelView: View {
 
                 Section("Policy head") {
                     enumPicker("Policy style", $model.policyHeadStyle, PolicyHeadStyle.allCases)
+                    Text(model.policyHeadStyle.styleDescription)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
                     if model.policyHeadStyle != .simpleConv {
                         intField("Policy pre-conv channels (K)", $model.policyPreConvChannels)
                     }

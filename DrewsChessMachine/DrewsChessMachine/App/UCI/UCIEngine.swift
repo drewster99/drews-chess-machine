@@ -221,6 +221,22 @@ enum UCIEngine {
         }
     }
 
+    /// Encode the position `engine` is about to move from, threading the
+    /// engine's real ply history so a history encoding (full10ply200) sees the
+    /// temporal/repetition planes it was trained on rather than empty frames —
+    /// the train/infer skew that otherwise weakens play from an external GUI.
+    ///
+    /// `internal` (not `private`) purely so a unit test can assert the history
+    /// is threaded; the UCI command loop itself is stdin/stdout-driven and so
+    /// not directly testable.
+    static func encodedBoardForGo(engine: ChessGameEngine, encoding: InputEncoding) -> [Float] {
+        var buffer = [Float](repeating: 0, count: BoardEncoder.tensorLength(for: encoding))
+        buffer.withUnsafeMutableBufferPointer { buf in
+            BoardEncoder.encode(engine.state, history: engine.recentStates, into: buf, encoding: encoding)
+        }
+        return buffer
+    }
+
     private static func handleGo(session: Session) {
         let engine = session.engine
         // Game already over — emit a UCI null move so the GUI gets a
@@ -234,19 +250,11 @@ enum UCIEngine {
 
         let state = engine.state
         let encoding = session.source.inputEncoding
-        var encodedBuffer = [Float](repeating: 0, count: BoardEncoder.tensorLength(for: encoding))
-        encodedBuffer.withUnsafeMutableBufferPointer { buf in
-            // Thread the real ply history so a history encoding (full10ply200)
-            // sees the same temporal/repetition planes it was trained on. Without
-            // this the network always sees empty history frames over UCI — a
-            // train/infer skew that weakens play from an external GUI.
-            BoardEncoder.encode(state, history: engine.recentStates, into: buf, encoding: encoding)
-        }
-        // Rebind to a `let` so the @Sendable closure passed to
-        // syncWait below captures an immutable value rather than the
-        // mutable `var` (Swift 6 strict concurrency rejects captures
-        // of vars in concurrently-executing closures).
-        let encoded = encodedBuffer
+        // Encode via the shared seam, which threads `engine.recentStates` as
+        // history. Returns a `let`, so the @Sendable closure passed to syncWait
+        // below captures an immutable value (Swift 6 strict concurrency rejects
+        // captures of `var`s in concurrently-executing closures).
+        let encoded = encodedBoardForGo(engine: engine, encoding: encoding)
 
         let policySize = ChessNetwork.policySize
         let policyPtr = UnsafeMutablePointer<Float>.allocate(capacity: policySize)

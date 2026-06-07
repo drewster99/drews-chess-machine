@@ -49,6 +49,26 @@ final class LRMomentumCycleTests: XCTestCase {
         XCTAssertFalse(c.isActive)
     }
 
+    func testMomentumWithReversedEndpointsFallsBackInsteadOfRunningBackward() throws {
+        // A reversed pair (max < min) is a misconfiguration: the explicit
+        // `momentumInvert` flag is the sanctioned way to run the schedule
+        // backward. momentum(forStep:) must fall back to nil (→ the static
+        // coefficient) rather than silently run reversed, mirroring the LR
+        // channel's lrMax >= lrMin guard.
+        let reversed = makeMomentum(min: 0.95, max: 0.85, period: 1000)
+        XCTAssertNil(reversed.momentum(forStep: 0))
+        XCTAssertNil(reversed.momentum(forStep: 500))
+
+        // Equal endpoints are valid (a degenerate constant schedule), not a
+        // misconfiguration — must stay active and return the shared value.
+        let flat = makeMomentum(min: 0.9, max: 0.9, period: 1000)
+        XCTAssertEqual(try XCTUnwrap(flat.momentum(forStep: 250)), 0.9, accuracy: tol)
+
+        // A normal ascending pair stays active.
+        let ok = makeMomentum(min: 0.85, max: 0.95, period: 1000)
+        XCTAssertNotNil(ok.momentum(forStep: 250))
+    }
+
     // MARK: - Cosine fraction shape
 
     func testFractionIsZeroAtBoundaryOneAtMidpoint() {

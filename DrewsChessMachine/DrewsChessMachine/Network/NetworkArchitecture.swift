@@ -113,10 +113,26 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
     /// so they get a one-line structural summary instead of the full table.
     var planeDescription: String {
         if historyFrameCount > 1 {
-            return "\(rawValue) — \(planeCount) planes: a \(planesPerFrame)-plane "
-                + "basic20 frame stacked \(historyFrameCount)× for plies N, N-1, … "
-                + "N-\(historyFrameCount - 1), each from the ply-N mover's perspective; "
-                + "absent (pre-game) frames are zero."
+            // History-stacking encoding. Enumerating all `planeCount` groups
+            // would repeat one frame's table `historyFrameCount`× (an 80+ line
+            // wall), so instead list the per-frame plane ranges (the "ply
+            // ranges") and the shared basic20 sub-structure once.
+            var lines = ["\(rawValue) — \(planeCount) planes: \(historyFrameCount) stacked "
+                + "\(planesPerFrame)-plane basic20 frames, each from the ply-N mover's "
+                + "perspective; absent (pre-game) frames are zero."]
+            lines.append("  frames (each a \(planesPerFrame)-plane basic20 block):")
+            for f in 0..<historyFrameCount {
+                let lo = f * planesPerFrame, hi = lo + planesPerFrame - 1
+                let ply = f == 0 ? "ply N (current)" : "ply N-\(f)"
+                lines.append("    [\(lo)-\(hi)] \(ply)")
+            }
+            lines.append("  within each frame:")
+            for g in InputEncoding.basic20.planeGroups {
+                let lo = g.range.lowerBound, hi = g.range.upperBound
+                let label = lo == hi ? "\(lo)" : "\(lo)-\(hi)"
+                lines.append("    [\(label)] \(g.meaning)")
+            }
+            return lines.joined(separator: "\n")
         }
         var lines = ["\(rawValue) — \(planeCount) planes:"]
         for g in planeGroups {
@@ -184,6 +200,26 @@ enum PolicyHeadStyle: String, Codable, CaseIterable, Sendable, Hashable {
     case intermediateConv = "intermediate_conv"
     /// 1x1 conv channels->K -> BN -> act -> flatten(K*64) -> FC(K*64->4864) (+bias).
     case fcBottleneck = "fc_bottleneck"
+
+    /// Human-readable summary shown beside the picker in the Build screen,
+    /// mirroring `InputEncoding.planeDescription`. Every style emits the same
+    /// 4864 raw logits (76 channels × 64 squares); they differ only in how the
+    /// tower output is projected down to them. `K` = policy pre-conv channels.
+    var styleDescription: String {
+        switch self {
+        case .simpleConv:
+            return "simple_conv — one 1×1 conv (channels → 76) → 4864 logits. "
+                + "Fully convolutional, fewest parameters; ignores K."
+        case .intermediateConv:
+            return "intermediate_conv — 1×1 conv (channels → K) → BN → activation "
+                + "→ 1×1 conv (K → 76) → 4864 logits. An added conv layer of width K "
+                + "before the projection; still fully convolutional."
+        case .fcBottleneck:
+            return "fc_bottleneck — 1×1 conv (channels → K) → BN → activation → "
+                + "flatten(K×64) → fully-connected (K×64 → 4864). A dense final "
+                + "projection — the most parameters (FC = K×64×4864 weights)."
+        }
+    }
 }
 
 /// Value-head topology. Determines output count + activation + the training loss.

@@ -227,4 +227,111 @@ final class RuntimeArchReachTests: XCTestCase {
         XCTAssertEqual(wdl.win - wdl.loss, vBox.value, accuracy: 1e-4,
                        "win - loss must equal the derived scalar value v")
     }
+
+    // MARK: - bf16 compute precision (per-arch precision reach)
+
+    /// `.current` with the compute precision overridden to bf16, independent of
+    /// whichever preset (fp32 or bf16) is active.
+    private func bf16Arch() -> NetworkArchitecture {
+        var arch = NetworkArchitecture.current
+        arch.computeDataType = .bFloat16
+        return arch
+    }
+
+    func testBF16ArchitectureShape() throws {
+        XCTAssertEqual(bf16Arch().computeDataType, .bFloat16)
+    }
+
+    func testBF16NetworkBuildsAndEvaluatesFinite() async throws {
+        try requireMetal()
+        // The bf16 cast math is characterized unconditionally in
+        // BF16CastEquivalenceTests, but its higher-level "a bf16-configured
+        // network builds and runs a finite forward pass" checks skip unless
+        // `.current` is bf16. Pin it explicitly so per-arch precision threading
+        // (compute_data_type) is exercised regardless of the active preset.
+        let net = try ChessMPSNetwork(.randomWeights, arch: bf16Arch())
+        XCTAssertEqual(net.arch.computeDataType, .bFloat16)
+
+        let board = BoardEncoder.encode(.starting, encoding: net.inputEncoding)
+        let policyBox = SyncBox<[Float]>([])
+        let valueBox = SyncBox<Float>(2)
+        try await net.evaluate(board: board) { policyBuf, v in
+            policyBox.value = Array(policyBuf)
+            valueBox.value = v
+        }
+        XCTAssertEqual(policyBox.value.count, ChessNetwork.policySize)
+        XCTAssertTrue(policyBox.value.allSatisfy { $0.isFinite },
+                      "bf16 policy logits must all be finite")
+        XCTAssertTrue(valueBox.value.isFinite, "bf16 value must be finite")
+        XCTAssertLessThanOrEqual(abs(valueBox.value), 1.0 + 1e-3,
+                                 "value (p_win - p_loss) stays in [-1, 1]")
+    }
+
+    func testBF16TrainerStepProducesFiniteLosses() async throws {
+        try requireMetal()
+        // A bf16 trainer must stage/feed bf16 through the master-weights path
+        // and produce finite losses; a precision-threading bug (wrong dtype on
+        // a buffer or placeholder) would surface as NaN/Inf or a crash here.
+        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: bf16Arch())
+        let timing = try await trainer.trainStep(batchSize: 8)
+        XCTAssertTrue(timing.policyLoss.isFinite, "bf16 policy loss must be finite")
+        XCTAssertTrue(timing.valueLoss.isFinite, "bf16 value loss must be finite")
+    }
+
+    // MARK: - Hidden activation (relu / silu / gelu)
+
+    /// The activation picker in the Build screen offers silu and gelu beside
+    /// relu. They route through one `ChessNetwork.activation` helper used at
+    /// every hidden site, but the code path had no coverage and the active
+    /// preset is relu — so silu/gelu had never actually executed. This proves
+    /// they're genuinely wired (not silently relu) by holding the weights fixed
+    /// and showing each activation yields a DIFFERENT, finite forward pass.
+    func testSiluAndGeluChangeForwardPassVsReLU() async throws {
+        try requireMetal()
+        var reluArch = NetworkArchitecture.current
+        reluArch.activationFunction = .relu
+
+        // One random weight set, shared across all three activations. Loading
+        // it over each net overwrites the build-time BN warmup stats too, so
+        // the ONLY difference between the three forward passes is the
+        // activation function itself.
+        let reluNet = try ChessMPSNetwork(.randomWeights, arch: reluArch)
+        let weights = try await reluNet.network.exportWeights()
+        let board = BoardEncoder.encode(.starting, encoding: reluNet.inputEncoding)
+
+        func policy(_ activation: ActivationFunction) async throws -> [Float] {
+            var arch = reluArch
+            arch.activationFunction = activation
+            let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+            try await net.network.loadWeights(weights)
+            let box = SyncBox<[Float]>([])
+            try await net.evaluate(board: board) { p, _ in box.value = Array(p) }
+            return box.value
+        }
+
+        let reluP = try await policy(.relu)
+        let siluP = try await policy(.silu)
+        let geluP = try await policy(.gelu)
+
+        XCTAssertEqual(reluP.count, ChessNetwork.policySize)
+        for (name, p) in [("relu", reluP), ("silu", siluP), ("gelu", geluP)] {
+            XCTAssertTrue(p.allSatisfy { $0.isFinite }, "\(name) policy logits must be finite")
+        }
+        // Same weights → any difference is purely the activation taking effect.
+        XCTAssertNotEqual(reluP, siluP, "silu must change the forward pass vs relu")
+        XCTAssertNotEqual(reluP, geluP, "gelu must change the forward pass vs relu")
+        XCTAssertNotEqual(siluP, geluP, "silu and gelu must differ from each other")
+    }
+
+    func testGeluTrainerStepProducesFiniteLosses() async throws {
+        try requireMetal()
+        // gelu's exact erf path is the most exotic activation op; exercise it in
+        // the training graph (not just inference) to prove it builds and runs.
+        var arch = NetworkArchitecture.current
+        arch.activationFunction = .gelu
+        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: arch)
+        let timing = try await trainer.trainStep(batchSize: 8)
+        XCTAssertTrue(timing.policyLoss.isFinite, "gelu policy loss must be finite")
+        XCTAssertTrue(timing.valueLoss.isFinite, "gelu value loss must be finite")
+    }
 }
