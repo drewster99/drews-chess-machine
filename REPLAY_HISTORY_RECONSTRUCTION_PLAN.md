@@ -92,15 +92,23 @@ For each sampled position N:
    (pieces 0–5↔6–11, castling 12–13↔14–15). Even frames (incl. frame 0) are used as stored.
 4. Result is **bit-identical** to what the current bake-in produces for position N.
 
-## Concurrency
+## Concurrency (DECIDED: reuse the existing buffer lock)
 
-The cross-slot gather races with concurrent self-play block writes. `(gameId, ply)`
-validation catches a *fully* overwritten prior, but not a slot being overwritten
-*mid-copy* (torn read). **Recommended:** a per-slot **generation/epoch counter**; after the
-gather, re-check each copied prior's generation is unchanged — if it changed, treat as
-evicted (zero from there). Lock-free, fits the project's `OSAllocatedUnfairLock`/SyncBox
-style. Alternatives: a coarse buffer RW-lock around flush+gather; or game-granular eviction
-(don't recycle a block until the whole game ages out).
+`ReplayBuffer` is already guarded by one `OSAllocatedUnfairLock` (line 52); `append()`
+(self-play flush) and `sample()` (trainer) both take it, so they are mutually exclusive —
+that's why there are no torn reads today. **Do the cross-slot gather inside the existing
+`sample()` lock:** under the lock, copy the ≤10 raw frames into private staging (≤2 memcpys)
++ the `(gameId, ply)` validation reads; then **release the lock and apply the
+flip-odd-frames transform** on the copied-out private data. No new mechanism, guaranteed
+correct.
+
+Lock-hold barely changes: today `sample()` copies one 200-plane stack (12,800 floats) per
+position under the lock; after, it gathers ≤10 × 1,280 = ≤12,800 floats — the **same byte
+volume**, just from 10 slots instead of 1.
+
+*Only if* profiling later shows the gather's lock-hold starving self-play: revisit a
+lock-free path (per-slot generation/epoch counter re-checked after the gather; treat a
+changed generation as evicted → zero from there). Not needed for v1.
 
 ## Metadata / sampling
 
@@ -147,6 +155,8 @@ style. Alternatives: a coarse buffer RW-lock around flush+gather; or game-granul
 
 - **Perspective approach** — RESOLVED (2026-06-06): relative storage (store the mover-relative
   frame 0 of the inference stack) + flip-odd-frames at read. See "Key decision".
-- **Concurrency mechanism** — generation tags (recommended) vs coarse lock vs game-granular
-  eviction. *(open)*
-- Whether to keep bake-in available behind a flag during cutover, or replace outright. *(open)*
+- **Concurrency mechanism** — RESOLVED (2026-06-06): reuse the existing buffer
+  `OSAllocatedUnfairLock` (gather under `sample()`'s lock, flip after release). Generation
+  tags deferred to "only if profiling demands". See "Concurrency".
+- **Cutover** — keep bake-in behind a flag during transition, or replace outright? *(OPEN —
+  the one remaining decision)*
