@@ -947,6 +947,10 @@ final class SessionController {
             )
             t.lrMomentumCycle = params.lrMomentumCycle
             trainer = t
+            SessionLogger.shared.logArchitecture(
+                event: "built trainer \(t.identifier?.description ?? "?")",
+                arch: t.arch
+            )
             return t
         } catch {
             trainingError = "Trainer init failed: \(error.localizedDescription)"
@@ -1027,6 +1031,10 @@ final class SessionController {
                     ID: \(idStr)
                     Architecture: \(net.network.arch.architectureSummary)
                     """
+                SessionLogger.shared.logArchitecture(
+                    event: "built champion \(idStr)",
+                    arch: net.network.arch
+                )
                 checkpoint?.lastSavedAt = nil
                 checkpoint?.lastResumedAt = nil
             case .failure(let error):

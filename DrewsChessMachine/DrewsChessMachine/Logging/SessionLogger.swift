@@ -147,6 +147,22 @@ final class SessionLogger: @unchecked Sendable {
         }
     }
 
+    /// Emit the authoritative `[ARCH]` line describing a network architecture
+    /// that has just become live — built, loaded from a model file, resumed
+    /// from a session, or the trainer forked at training start. This is the
+    /// single source of truth for "what architecture is actually running."
+    ///
+    /// The `[APP] launched` banner can only report `NetworkArchitecture.current`
+    /// (the compile-time default preset), because at launch no model exists
+    /// yet. The architecture is runtime-configurable, so the *live* arch
+    /// routinely differs from that default — every transition that makes one
+    /// live logs one of these so a run's true encoding (e.g. `full10ply200(200)`
+    /// vs the default `basic30(30)`), topology, and parameter count are never
+    /// in doubt. `event` names the transition and any model id / file.
+    func logArchitecture(event: String, arch: NetworkArchitecture) {
+        log("[ARCH] \(event) | \(arch.architectureSummary)")
+    }
+
     /// Path of the active log file, if any. Useful for surfacing the
     /// location to the user (e.g. via a "Reveal in Finder" menu item)
     /// or for debugging from LLDB.

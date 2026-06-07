@@ -530,6 +530,10 @@ extension SessionController {
                 networkStatus = "Loaded model \(file.modelID)\nFrom: \(url.lastPathComponent)"
                 checkpoint?.setCheckpointStatus("Loaded \(file.modelID)", kind: .success)
                 SessionLogger.shared.log("[CHECKPOINT] Loaded model: \(url.lastPathComponent) → \(file.modelID)")
+                SessionLogger.shared.logArchitecture(
+                    event: "loaded model \(url.lastPathComponent) → \(file.modelID)",
+                    arch: file.architecture
+                )
                 onClearInferenceResult()
                 // Flag champion-replaced for the post-Stop Start dialog's
                 // "Continue" annotation. Cleared as soon as a new training
@@ -645,6 +649,10 @@ extension SessionController {
                     bufStr = " replay=none"
                 }
                 SessionLogger.shared.log("[CHECKPOINT] Loaded session: \(url.lastPathComponent) savedBuild=\(savedBuild) savedGit=\(savedGit)\(bufStr)")
+                SessionLogger.shared.logArchitecture(
+                    event: "resumed session \(loaded.state.sessionID) (champion \(loaded.championFile.modelID))",
+                    arch: loaded.championFile.architecture
+                )
                 onClearInferenceResult()
                 if startAfterLoad {
                     // Auto-resume path (from the launch-time sheet or

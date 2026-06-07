@@ -274,10 +274,19 @@ struct DrewsChessMachineApp: App {
             "TensorChannelNames is out of sync with the default arch inputPlanes (\(defaultInputPlanes)) — names=\(TensorChannelNames.names.count), shortNames=\(TensorChannelNames.shortNames.count). Update Views/Board/TensorChannelNames.swift."
         )
         let dirtyMarker = BuildInfo.gitDirty ? "*" : ""
-        let archHashHex = String(format: "0x%08x", ModelCheckpointFile.archHash(for: .current))
         let autoTrainMarker = autoTrainOnLaunch ? " autoTrain=on" : ""
         SessionLogger.shared.log(
-            "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp) arch_hash=\(archHashHex) inputPlanes=\(NetworkArchitecture.current.inputPlanes) policySize=\(ChessNetwork.policySize)\(autoTrainMarker)"
+            "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp)\(autoTrainMarker)"
+        )
+        // The launch banner deliberately no longer prints arch fields: at
+        // launch nothing is loaded, so the only arch knowable here is the
+        // compile-time default — printing it as bare `inputPlanes=`/`arch_hash=`
+        // invited mistaking it for the live (runtime-configured) architecture.
+        // Log the default explicitly labelled instead; the real arch is logged
+        // via `[ARCH]` the moment a model is built, loaded, or resumed.
+        SessionLogger.shared.logArchitecture(
+            event: "default preset (no model loaded yet)",
+            arch: .current
         )
         if let path = SessionLogger.shared.activeLogPath {
             SessionLogger.shared.log("[APP] session log: \(path)")
