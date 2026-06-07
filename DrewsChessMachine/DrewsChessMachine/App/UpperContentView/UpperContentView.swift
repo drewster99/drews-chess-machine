@@ -813,6 +813,12 @@ struct UpperContentView: View {
     private var liveInputPlanes: Int {
         network?.network.arch.inputPlanes ?? NetworkArchitecture.current.inputPlanes
     }
+    /// The live model's encoding (or the default when no model is built),
+    /// used to source per-plane channel names. Its `channelNames` /
+    /// `shortChannelNames` always have exactly `liveInputPlanes` entries.
+    private var liveInputEncoding: InputEncoding {
+        network?.network.arch.inputEncoding ?? NetworkArchitecture.current.inputEncoding
+    }
     private var isBusy: Bool {
         isBuilding
         || isEvaluating
@@ -987,10 +993,11 @@ struct UpperContentView: View {
         if selectedOverlay < 0 { return "" }
         if selectedOverlay == 0 { return "Top Moves" }
         let i = selectedOverlay - 1
-        guard i >= 0, i < TensorChannelNames.names.count else {
+        let names = liveInputEncoding.channelNames
+        guard i >= 0, i < names.count else {
             return "Channel \(i)"
         }
-        return "Channel \(i): \(TensorChannelNames.names[i])"
+        return "Channel \(i): \(names[i])"
     }
 
     /// "Last saved: 5/6/26 at 4:34 PM", "Resumed 5/6/26 at 4:34 PM",
@@ -1501,6 +1508,7 @@ struct UpperContentView: View {
     @ViewBuilder
     private var inputTensorStripSection: some View {
         if let result = inferenceResult, showForwardPassUI, selectedOverlay >= 0 {
+            let shortNames = liveInputEncoding.shortChannelNames   // count == liveInputPlanes
             Divider()
             HStack(spacing: 2) {
                 ForEach(Array(0..<liveInputPlanes), id: \.self) { channel in
@@ -1517,7 +1525,7 @@ struct UpperContentView: View {
                                         lineWidth: isSelected ? 2 : 0.5
                                     )
                             )
-                        Text(TensorChannelNames.shortNames[channel])
+                        Text(channel < shortNames.count ? shortNames[channel] : "ch\(channel)")
                             .font(.system(size: 8))
                             .foregroundStyle(isSelected ? .primary : .tertiary)
                             .lineLimit(1)

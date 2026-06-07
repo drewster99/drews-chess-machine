@@ -65,6 +65,20 @@ final class BoardEncoderTests: XCTestCase {
         }
     }
 
+    /// Channel display names are derived per-encoding (InputEncoding+ChannelNames)
+    /// rather than from a fixed list; they MUST have exactly one entry per plane
+    /// for every encoding, so the visualizers can never index past the end (the
+    /// old fixed-30 TensorChannelNames crash class). Replaces the former launch
+    /// precondition.
+    func testChannelNamesCountMatchesPlaneCountForAllEncodings() {
+        for enc in InputEncoding.allCases {
+            XCTAssertEqual(enc.channelNames.count, enc.planeCount,
+                           "\(enc.rawValue): channelNames must have one entry per plane")
+            XCTAssertEqual(enc.shortChannelNames.count, enc.planeCount,
+                           "\(enc.rawValue): shortChannelNames must have one entry per plane")
+        }
+    }
+
     /// Per-encoding content coverage: EVERY encoding's frame 0 (the base
     /// basic20 block, planes 0–19) must equal the `basic20` encode of the same
     /// position — so each tensor type is verified to reuse the (basic30-pinned)

@@ -267,12 +267,10 @@ struct DrewsChessMachineApp: App {
         // stats — lands in a single `dcm_log_yyyymmdd-HHMMSS.txt`
         // file under the app's Library/Logs directory.
         SessionLogger.shared.start()
-        let defaultInputPlanes = NetworkArchitecture.current.inputPlanes
-        precondition(
-            TensorChannelNames.names.count == defaultInputPlanes
-                && TensorChannelNames.shortNames.count == defaultInputPlanes,
-            "TensorChannelNames is out of sync with the default arch inputPlanes (\(defaultInputPlanes)) — names=\(TensorChannelNames.names.count), shortNames=\(TensorChannelNames.shortNames.count). Update Views/Board/TensorChannelNames.swift."
-        )
+        // (Channel display names are now derived per-encoding from
+        // `InputEncoding.channelNames` — sized to `planeCount` by construction
+        // — so the old "TensorChannelNames must match the default inputPlanes"
+        // launch precondition is gone; a count test guards it instead.)
         let dirtyMarker = BuildInfo.gitDirty ? "*" : ""
         let autoTrainMarker = autoTrainOnLaunch ? " autoTrain=on" : ""
         SessionLogger.shared.log(
