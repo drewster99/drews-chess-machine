@@ -236,7 +236,11 @@ enum UCIEngine {
         let encoding = session.source.inputEncoding
         var encodedBuffer = [Float](repeating: 0, count: BoardEncoder.tensorLength(for: encoding))
         encodedBuffer.withUnsafeMutableBufferPointer { buf in
-            BoardEncoder.encode(state, into: buf, encoding: encoding)
+            // Thread the real ply history so a history encoding (full10ply200)
+            // sees the same temporal/repetition planes it was trained on. Without
+            // this the network always sees empty history frames over UCI — a
+            // train/infer skew that weakens play from an external GUI.
+            BoardEncoder.encode(state, history: engine.recentStates, into: buf, encoding: encoding)
         }
         // Rebind to a `let` so the @Sendable closure passed to
         // syncWait below captures an immutable value rather than the

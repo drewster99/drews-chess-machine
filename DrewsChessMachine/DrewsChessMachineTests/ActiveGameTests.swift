@@ -41,7 +41,7 @@ final class ActiveGameTests: XCTestCase {
     /// real `BoardEncoder.encode` output here; for layout-only tests
     /// any reproducible content works.
     private func fakeBoardBytes(seed: UInt32) -> [Float] {
-        var arr = [Float](repeating: 0, count: BoardEncoder.tensorLength)
+        var arr = [Float](repeating: 0, count: BoardEncoder.tensorLength(for: .basic30))
         // Deterministic small-period pattern so different seeds produce
         // distinguishable bytes without pulling in an RNG.
         for i in 0..<arr.count {

@@ -290,6 +290,10 @@ def validate_and_emit(selected: list[dict], preset: Preset, db_snapshot: str) ->
             "preset": preset.name,
             "rating_range": [preset.rating_min, preset.rating_max],
             "rating_tiers": [list(t) for t in preset.rating_tiers],
+            "theme_tiers": {
+                theme: [list(t) for t in tiers]
+                for theme, tiers in preset.theme_tiers.items()
+            },
             "filters": {
                 "min_popularity": f.min_popularity,
                 "min_nb_plays": f.min_nb_plays,
@@ -327,6 +331,7 @@ def main() -> int:
         preset = Preset(
             name=preset.name, out_path=args.out, theme_priority=preset.theme_priority,
             rating_tiers=preset.rating_tiers, filters=preset.filters,
+            theme_tiers=preset.theme_tiers,
         )
 
     if not args.csv.exists():

@@ -19,12 +19,12 @@ final class ChessMPSNetworkPointerEvaluateTests: XCTestCase {
     /// standard starting position, encoded with the engine's
     /// `BoardEncoder`. Same input for both paths.
     private func makeBatch(count: Int) -> [Float] {
-        let boardFloats = BoardEncoder.tensorLength
+        let boardFloats = BoardEncoder.tensorLength(for: .basic30)
         var batch = [Float](repeating: 0, count: count * boardFloats)
         let state = GameState.starting
         var oneBoard = [Float](repeating: 0, count: boardFloats)
         oneBoard.withUnsafeMutableBufferPointer { buf in
-            BoardEncoder.encode(state, into: buf)
+            BoardEncoder.encode(state, into: buf, encoding: .basic30)
         }
         for i in 0..<count {
             let dstOffset = i * boardFloats
@@ -51,7 +51,7 @@ final class ChessMPSNetworkPointerEvaluateTests: XCTestCase {
         // Path 2: the new pointer overload, fed the exact same bytes
         // out of a separately-allocated `UnsafeMutablePointer<Float>`
         // (mimics what the tick driver will do with its tick-scratch).
-        let floatCount = count * BoardEncoder.tensorLength
+        let floatCount = count * BoardEncoder.tensorLength(for: .basic30)
         let scratch = UnsafeMutablePointer<Float>.allocate(capacity: floatCount)
         defer {
             scratch.deinitialize(count: floatCount)

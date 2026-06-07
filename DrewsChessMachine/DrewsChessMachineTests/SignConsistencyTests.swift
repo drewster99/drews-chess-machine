@@ -45,8 +45,8 @@ final class SignConsistencyTests: XCTestCase {
             enPassantSquare: nil,
             halfmoveClock: 0
         )
-        let white = BoardEncoder.encode(whiteToMove)
-        let black = BoardEncoder.encode(blackToMove)
+        let white = BoardEncoder.encode(whiteToMove, encoding: .basic30)
+        let black = BoardEncoder.encode(blackToMove, encoding: .basic30)
         XCTAssertEqual(
             white, black,
             "Encoder must produce bit-identical output for white-to-move and " +
@@ -114,8 +114,8 @@ final class SignConsistencyTests: XCTestCase {
             enPassantSquare: nil, halfmoveClock: 0
         )
 
-        let encP = BoardEncoder.encode(P)
-        let encPprime = BoardEncoder.encode(Pprime)
+        let encP = BoardEncoder.encode(P, encoding: .basic30)
+        let encPprime = BoardEncoder.encode(Pprime, encoding: .basic30)
         XCTAssertEqual(
             encP, encPprime,
             "Color-mirrored positions should produce bit-identical encodings " +
@@ -147,8 +147,8 @@ final class SignConsistencyTests: XCTestCase {
             blackKingsideCastle: true, blackQueensideCastle: true,
             enPassantSquare: nil, halfmoveClock: 0
         )
-        let whiteEnc = BoardEncoder.encode(whiteToMove)
-        let blackEnc = BoardEncoder.encode(blackToMove)
+        let whiteEnc = BoardEncoder.encode(whiteToMove, encoding: .basic30)
+        let blackEnc = BoardEncoder.encode(blackToMove, encoding: .basic30)
         XCTAssertEqual(whiteEnc, blackEnc, "Test precondition (Test A) must hold")
 
         nonisolated(unsafe) var whitePolicy: [Float] = []

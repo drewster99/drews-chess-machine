@@ -131,7 +131,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
         let weights = try await net.network.exportWeights()
         XCTAssertEqual(weights.count, arch.weightTensorPlan().count)
 
-        let board = BoardEncoder.encode(.starting)
+        let board = BoardEncoder.encode(.starting, encoding: .basic30)
         try await net.evaluate(board: board) { policyBuf, value in
             XCTAssertEqual(policyBuf.count, arch.policySize)
             XCTAssertTrue(value.isFinite)

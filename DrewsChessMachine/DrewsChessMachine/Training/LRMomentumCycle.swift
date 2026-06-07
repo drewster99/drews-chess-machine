@@ -120,10 +120,16 @@ struct LRMomentumCycle: Sendable, Equatable, Codable {
     }
 
     /// Effective Polyak momentum for `step`, or `nil` when momentum cycling
-    /// is inactive — the caller then falls back to the static momentum
-    /// coefficient. Linear interpolation between the endpoints.
+    /// is inactive or misconfigured — the caller then falls back to the static
+    /// momentum coefficient. Linear interpolation between the endpoints.
+    ///
+    /// Requires `momentumMax >= momentumMin`: an inverted endpoint pair would
+    /// silently run the schedule backwards, which is exactly what the explicit
+    /// `momentumInvert` flag exists to express. Rather than honor an accidental
+    /// reversal, fall back to the static coefficient (mirroring the LR channel's
+    /// `lrMax >= lrMin` guard).
     func momentum(forStep step: Int) -> Double? {
-        guard momentumEnabled, momentumPeriodSteps > 0 else { return nil }
+        guard momentumEnabled, momentumPeriodSteps > 0, momentumMax >= momentumMin else { return nil }
         let frac = Self.cycleFraction(step: step, period: momentumPeriodSteps, count: momentumCount, invert: momentumInvert)
         return momentumMin + (momentumMax - momentumMin) * frac
     }

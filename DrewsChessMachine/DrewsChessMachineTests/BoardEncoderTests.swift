@@ -23,22 +23,29 @@ final class BoardEncoderTests: XCTestCase {
     // MARK: - Tensor length
 
     func testTensorLength() {
-        XCTAssertEqual(BoardEncoder.tensorLength,
-                       NetworkArchitecture.current.inputPlanes * 8 * 8,
-                       "tensorLength must equal inputPlanes × 64")
-        XCTAssertEqual(BoardEncoder.tensorLength, 1920,
-                       "Architecture v3 has 30 planes × 64 = 1920 floats per encoded position (20 baseline + 10 temporal-repetition history)")
+        // Every encoding's stride must equal its plane count × 64.
+        for encoding in InputEncoding.allCases {
+            XCTAssertEqual(BoardEncoder.tensorLength(for: encoding),
+                           encoding.planeCount * 8 * 8,
+                           "tensorLength(for: .\(encoding)) must equal planeCount × 64")
+        }
+        let current = NetworkArchitecture.current
+        XCTAssertEqual(BoardEncoder.tensorLength(for: current.inputEncoding),
+                       current.inputPlanes * 8 * 8,
+                       "the current architecture's stride must equal inputPlanes × 64")
+        XCTAssertEqual(BoardEncoder.tensorLength(for: .basic30), 1920,
+                       "basic30 has 30 planes × 64 = 1920 floats per encoded position (20 baseline + 10 temporal-repetition history)")
     }
 
     func testEncodeStartingPositionProducesCorrectLength() {
-        let tensor = BoardEncoder.encode(.starting)
-        XCTAssertEqual(tensor.count, BoardEncoder.tensorLength)
+        let tensor = BoardEncoder.encode(.starting, encoding: .basic30)
+        XCTAssertEqual(tensor.count, BoardEncoder.tensorLength(for: .basic30))
     }
 
     // MARK: - Piece occupancy
 
     func testStartingPositionPieceCounts() {
-        let tensor = BoardEncoder.encode(.starting)
+        let tensor = BoardEncoder.encode(.starting, encoding: .basic30)
         // Planes 0-5 = my (white) pieces. Each plane should have the
         // correct count of 1.0s for the starting position:
         //   pawn=8, knight=2, bishop=2, rook=2, queen=1, king=1
@@ -59,7 +66,7 @@ final class BoardEncoderTests: XCTestCase {
     // MARK: - Castling planes
 
     func testStartingPositionCastlingPlanesAllOnes() {
-        let tensor = BoardEncoder.encode(.starting)
+        let tensor = BoardEncoder.encode(.starting, encoding: .basic30)
         // All four castling planes (12-15) should be all 1.0 at the
         // starting position since both colors have all four rights.
         for plane in 12..<16 {
@@ -86,7 +93,7 @@ final class BoardEncoderTests: XCTestCase {
             blackKingsideCastle: true, blackQueensideCastle: true,
             enPassantSquare: nil, halfmoveClock: 0
         )
-        let tensor = BoardEncoder.encode(state)
+        let tensor = BoardEncoder.encode(state, encoding: .basic30)
         XCTAssertEqual(sumPlane(tensor: tensor, plane: 12), 0.0, "My kingside castle plane should be zero")
         XCTAssertEqual(sumPlane(tensor: tensor, plane: 13), 0.0, "My queenside castle plane should be zero")
         XCTAssertEqual(sumPlane(tensor: tensor, plane: 14), 64.0, "Opp kingside castle plane should be all 1")
@@ -96,7 +103,7 @@ final class BoardEncoderTests: XCTestCase {
     // MARK: - En passant plane
 
     func testEnPassantPlaneIsZeroAtStartingPosition() {
-        let tensor = BoardEncoder.encode(.starting)
+        let tensor = BoardEncoder.encode(.starting, encoding: .basic30)
         XCTAssertEqual(sumPlane(tensor: tensor, plane: 16), 0.0,
                        "En passant plane should be zero at starting position")
     }
@@ -109,7 +116,7 @@ final class BoardEncoderTests: XCTestCase {
             ChessMove(fromRow: 6, fromCol: 4, toRow: 4, toCol: 4, promotion: nil),
             to: .starting
         )
-        let tensor = BoardEncoder.encode(after1e4)
+        let tensor = BoardEncoder.encode(after1e4, encoding: .basic30)
         let sum = sumPlane(tensor: tensor, plane: 16)
         XCTAssertEqual(sum, 1.0, "En passant plane should have exactly one 1.0 cell after 1.e4")
         // Verify it's at the right spot: encoder row 2, col 4.
@@ -121,7 +128,7 @@ final class BoardEncoderTests: XCTestCase {
 
     func testHalfmoveClockPlaneZeroAtClock0() {
         // Starting position has halfmoveClock = 0, so plane 17 should be all 0.
-        let tensor = BoardEncoder.encode(.starting)
+        let tensor = BoardEncoder.encode(.starting, encoding: .basic30)
         XCTAssertEqual(sumPlane(tensor: tensor, plane: 17), 0.0,
                        "Halfmove clock plane should be zero at clock=0")
     }
@@ -136,7 +143,7 @@ final class BoardEncoderTests: XCTestCase {
             enPassantSquare: nil,
             halfmoveClock: 99
         )
-        let tensor = BoardEncoder.encode(state)
+        let tensor = BoardEncoder.encode(state, encoding: .basic30)
         XCTAssertEqual(sumPlane(tensor: tensor, plane: 17), 64.0,
                        "Halfmove plane saturates at 1.0 when clock=99")
     }
@@ -153,7 +160,7 @@ final class BoardEncoderTests: XCTestCase {
                 enPassantSquare: nil,
                 halfmoveClock: clock
             )
-            let tensor = BoardEncoder.encode(state)
+            let tensor = BoardEncoder.encode(state, encoding: .basic30)
             XCTAssertEqual(sumPlane(tensor: tensor, plane: 17), 64.0,
                            "Halfmove plane should saturate at all-1.0 for clock=\(clock)")
         }
@@ -162,7 +169,7 @@ final class BoardEncoderTests: XCTestCase {
     // MARK: - Repetition planes (18 + 19)
 
     func testRepetitionPlanesZeroAtCount0() {
-        let tensor = BoardEncoder.encode(.starting)
+        let tensor = BoardEncoder.encode(.starting, encoding: .basic30)
         XCTAssertEqual(sumPlane(tensor: tensor, plane: 18), 0.0,
                        "Plane 18 (rep ≥1) should be zero at repetitionCount=0")
         XCTAssertEqual(sumPlane(tensor: tensor, plane: 19), 0.0,
@@ -171,7 +178,7 @@ final class BoardEncoderTests: XCTestCase {
 
     func testRepetitionPlanesAtCount1() {
         let state = GameState.starting.withRepetitionCount(1)
-        let tensor = BoardEncoder.encode(state)
+        let tensor = BoardEncoder.encode(state, encoding: .basic30)
         XCTAssertEqual(sumPlane(tensor: tensor, plane: 18), 64.0,
                        "Plane 18 should be all-1 at repetitionCount=1")
         XCTAssertEqual(sumPlane(tensor: tensor, plane: 19), 0.0,
@@ -180,7 +187,7 @@ final class BoardEncoderTests: XCTestCase {
 
     func testRepetitionPlanesAtCount2() {
         let state = GameState.starting.withRepetitionCount(2)
-        let tensor = BoardEncoder.encode(state)
+        let tensor = BoardEncoder.encode(state, encoding: .basic30)
         XCTAssertEqual(sumPlane(tensor: tensor, plane: 18), 64.0,
                        "Plane 18 should be all-1 at repetitionCount=2")
         XCTAssertEqual(sumPlane(tensor: tensor, plane: 19), 64.0,
@@ -193,7 +200,7 @@ final class BoardEncoderTests: XCTestCase {
         // same all-1 result for both planes regardless of how high.
         for count in [2, 3, 5, 100] {
             let state = GameState.starting.withRepetitionCount(count)
-            let tensor = BoardEncoder.encode(state)
+            let tensor = BoardEncoder.encode(state, encoding: .basic30)
             XCTAssertEqual(sumPlane(tensor: tensor, plane: 18), 64.0,
                            "Plane 18 should be all-1 for repetitionCount=\(count)")
             XCTAssertEqual(sumPlane(tensor: tensor, plane: 19), 64.0,
@@ -213,7 +220,7 @@ final class BoardEncoderTests: XCTestCase {
             ChessMove(fromRow: 6, fromCol: 4, toRow: 4, toCol: 4, promotion: nil),
             to: .starting
         )
-        let tensor = BoardEncoder.encode(after1e4)
+        let tensor = BoardEncoder.encode(after1e4, encoding: .basic30)
         // Plane 5 is "my king." For black to move, that's the black king.
         // Black king at absolute (0, 4) → encoder row (7-0)=7, col 4.
         XCTAssertEqual(tensor[5 * 64 + 7 * 8 + 4], 1.0,

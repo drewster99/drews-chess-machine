@@ -47,7 +47,7 @@ final class RepPlaneProbeTests: XCTestCase {
         // the rep planes (indices 18..29 inclusive). All other bytes
         // are identical, so any difference in network output is
         // entirely due to the rep-plane bits.
-        let perBoard = BoardEncoder.tensorLength
+        let perBoard = BoardEncoder.tensorLength(for: .basic30)
         XCTAssertEqual(perBoard, 30 * 64)
         let planeFloats = 64
 
@@ -59,7 +59,7 @@ final class RepPlaneProbeTests: XCTestCase {
         for (posIdx, state) in probeStates.enumerated() {
             var base = [Float](repeating: 0, count: perBoard)
             base.withUnsafeMutableBufferPointer { buf in
-                BoardEncoder.encode(state, into: buf)
+                BoardEncoder.encode(state, into: buf, encoding: .basic30)
             }
             // Force planes 18..29 to zero so the baseline is
             // "fresh position, no history." This matters for
@@ -203,9 +203,9 @@ final class RepPlaneProbeTests: XCTestCase {
                        "after 4-ply shuffle, mask t-4 (bit 3) should be the only bit set")
 
         // Encode WITH rep planes (real game history) and WITHOUT (zeroed).
-        let perBoard = BoardEncoder.tensorLength
+        let perBoard = BoardEncoder.tensorLength(for: .basic30)
         var withRep = [Float](repeating: 0, count: perBoard)
-        withRep.withUnsafeMutableBufferPointer { BoardEncoder.encode(postState, into: $0) }
+        withRep.withUnsafeMutableBufferPointer { BoardEncoder.encode(postState, into: $0, encoding: .basic30) }
         var withoutRep = withRep
         for plane in 18...29 {
             setPlane(&withoutRep, index: plane, value: 0)
@@ -257,7 +257,7 @@ final class RepPlaneProbeTests: XCTestCase {
 
         let probeStates = buildProbeStates(targetCount: 20, seed: 0xBADCAFE_1234567)
         let testValues: [Float] = [0.00, 0.25, 0.50, 0.75, 0.90, 0.99]
-        let perBoard = BoardEncoder.tensorLength
+        let perBoard = BoardEncoder.tensorLength(for: .basic30)
 
         struct HalfmoveAgg {
             var sumKL: Double = 0
@@ -273,7 +273,7 @@ final class RepPlaneProbeTests: XCTestCase {
 
         for (posIdx, state) in probeStates.enumerated() {
             var base = [Float](repeating: 0, count: perBoard)
-            base.withUnsafeMutableBufferPointer { BoardEncoder.encode(state, into: $0) }
+            base.withUnsafeMutableBufferPointer { BoardEncoder.encode(state, into: $0, encoding: .basic30) }
             // Zero rep planes and halfmove so baseline is "fresh, no recent rep, halfmove=0"
             for plane in 17...29 {
                 setPlane(&base, index: plane, value: 0)

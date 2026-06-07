@@ -846,11 +846,23 @@ final class ChessNetwork: @unchecked Sendable {
                     throw ChessNetworkError.outputMissing("valueProbs")
                 }
                 Self.readFloats(from: probsData, into: inferenceValueProbsScratchPtr, count: arch.valueHeadClasses, dataType: Self.mpsDataType(for: arch))
-                return (
-                    win: inferenceValueProbsScratchPtr[0],
-                    draw: inferenceValueProbsScratchPtr[1],
-                    loss: inferenceValueProbsScratchPtr[2]
-                )
+                switch arch.valueHeadStyle {
+                case .wdlSoftmax:
+                    // Three-slot W/D/L softmax: the scratch holds 3 elements.
+                    return (
+                        win: inferenceValueProbsScratchPtr[0],
+                        draw: inferenceValueProbsScratchPtr[1],
+                        loss: inferenceValueProbsScratchPtr[2]
+                    )
+                case .scalarTanh:
+                    // Single-slot tanh value v = p_win − p_loss ∈ [−1, +1]; the
+                    // scratch is sized `valueHeadClasses` == 1, so reading slots
+                    // 1/2 would run off the allocation. Project the scalar back
+                    // onto a W/D/L triple that preserves win − loss = v. A scalar
+                    // head carries no separable draw mass, so draw is reported 0.
+                    let v = inferenceValueProbsScratchPtr[0]
+                    return (win: max(v, 0), draw: 0, loss: max(-v, 0))
+                }
             }
         }
     }

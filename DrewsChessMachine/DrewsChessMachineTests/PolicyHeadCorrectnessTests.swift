@@ -161,7 +161,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             let origIdx = PolicyEncoding.policyIndex(move, currentPlayer: state.currentPlayer)
 
             // Encode the board, then decodeSynthetic → "white" state.
-            let tensor = BoardEncoder.encode(state)
+            let tensor = BoardEncoder.encode(state, encoding: .basic30)
             let synth = tensor.withUnsafeBufferPointer { buf -> GameState in
                 BoardEncoder.decodeSynthetic(from: buf.baseAddress!)
             }
@@ -275,7 +275,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             for state in states {
                 let legal = MoveGenerator.legalMoves(for: state)
                 if legal.isEmpty { continue }
-                let tensor = BoardEncoder.encode(state)
+                let tensor = BoardEncoder.encode(state, encoding: .basic30)
                 nonisolated(unsafe) var policy: [Float] = []
                 nonisolated(unsafe) var value: Float = 0
                 try await net.evaluate(board: tensor) { policyBuf, v in
@@ -330,7 +330,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         // 8 positions: starting + 7 random walks.
         let states = sampleStates(count: 8)
         XCTAssertEqual(states.count, 8)
-        let tensors = states.map { BoardEncoder.encode($0) }
+        let tensors = states.map { BoardEncoder.encode($0, encoding: .basic30) }
         let totalFloats = tensors.reduce(0) { $0 + $1.count }
 
         // Pack into one contiguous buffer.
@@ -732,21 +732,21 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
     func testRepetitionPlanesReflectCount() {
         var s = GameState.starting
         s = s.withRepetitionCount(0)
-        var t = BoardEncoder.encode(s)
+        var t = BoardEncoder.encode(s, encoding: .basic30)
         XCTAssertEqual(sumPlane(tensor: t, plane: 18), 0,
                        "rep plane 18 must be all zero when repCount=0")
         XCTAssertEqual(sumPlane(tensor: t, plane: 19), 0,
                        "rep plane 19 must be all zero when repCount=0")
 
         s = GameState.starting.withRepetitionCount(1)
-        t = BoardEncoder.encode(s)
+        t = BoardEncoder.encode(s, encoding: .basic30)
         XCTAssertEqual(sumPlane(tensor: t, plane: 18), 64,
                        "rep plane 18 must be all 1.0 when repCount=1")
         XCTAssertEqual(sumPlane(tensor: t, plane: 19), 0,
                        "rep plane 19 must remain zero when repCount=1")
 
         s = GameState.starting.withRepetitionCount(2)
-        t = BoardEncoder.encode(s)
+        t = BoardEncoder.encode(s, encoding: .basic30)
         XCTAssertEqual(sumPlane(tensor: t, plane: 18), 64,
                        "rep plane 18 must be all 1.0 when repCount=2")
         XCTAssertEqual(sumPlane(tensor: t, plane: 19), 64,
@@ -760,9 +760,9 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
     // input planes). Hard-coded constants in different files MUST match.
 
     func testEncoderTensorLengthMatchesNetworkInputShape() {
-        XCTAssertEqual(BoardEncoder.tensorLength,
+        XCTAssertEqual(BoardEncoder.tensorLength(for: .basic30),
                        NetworkArchitecture.current.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize)
-        XCTAssertEqual(BoardEncoder.tensorLength, 1920)
+        XCTAssertEqual(BoardEncoder.tensorLength(for: .basic30), 1920)
         XCTAssertEqual(ChessNetwork.policySize,
                        ChessNetwork.policyChannels * ChessNetwork.boardSize * ChessNetwork.boardSize)
         XCTAssertEqual(ChessNetwork.policySize, 4864)
@@ -888,7 +888,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             let storedIdx = PolicyEncoding.policyIndex(
                 move, currentPlayer: state.currentPlayer
             )
-            let tensor = BoardEncoder.encode(state)
+            let tensor = BoardEncoder.encode(state, encoding: .basic30)
 
             // ---- Trainer-side legalMassSnapshot reconstruction ----
             let synth = tensor.withUnsafeBufferPointer { buf -> GameState in
@@ -954,7 +954,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             let net = try ChessMPSNetwork(.randomWeights)
             let state: GameState = .starting
             let legal = MoveGenerator.legalMoves(for: state)
-            let tensor = BoardEncoder.encode(state)
+            let tensor = BoardEncoder.encode(state, encoding: .basic30)
             nonisolated(unsafe) var policy: [Float] = []
             try await net.evaluate(board: tensor) { policyBuf, _ in
                 policy = Array(policyBuf)
@@ -1051,7 +1051,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             throw XCTSkip("Metal not available")
         }
         let net = try ChessNetwork(bnMode: .inference)
-        let zeroBoard = [Float](repeating: 0, count: BoardEncoder.tensorLength)
+        let zeroBoard = [Float](repeating: 0, count: BoardEncoder.tensorLength(for: .basic30))
         nonisolated(unsafe) var policy: [Float] = []
         nonisolated(unsafe) var value: Float = 0
         try await net.evaluate(board: zeroBoard) { policyBuf, v in
@@ -1115,7 +1115,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
 
             var batchBoards: [Float] = []
             let states = sampleStates(count: 8)
-            for s in states { batchBoards.append(contentsOf: BoardEncoder.encode(s)) }
+            for s in states { batchBoards.append(contentsOf: BoardEncoder.encode(s, encoding: .basic30)) }
             nonisolated(unsafe) var infPolicy: [Float] = []
             try await infNet.evaluateBatched(batchBoards: batchBoards, count: 8) { policyBuf, _, _ in
                 infPolicy = Array(policyBuf)
@@ -1166,7 +1166,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         let net = try ChessNetwork(bnMode: .training)
         let states = sampleStates(count: 64)
         var batch: [Float] = []
-        for s in states { batch.append(contentsOf: BoardEncoder.encode(s)) }
+        for s in states { batch.append(contentsOf: BoardEncoder.encode(s, encoding: .basic30)) }
         nonisolated(unsafe) var policy: [Float] = []
         try await net.evaluateBatched(batchBoards: batch, count: states.count) { policyBuf, _, _ in
             policy = Array(policyBuf)
@@ -1279,8 +1279,8 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             blackKingsideCastle: false, blackQueensideCastle: false,
             enPassantSquare: nil, halfmoveClock: 0
         )
-        XCTAssertEqual(BoardEncoder.encode(whiteToMove),
-                       BoardEncoder.encode(blackToMove),
+        XCTAssertEqual(BoardEncoder.encode(whiteToMove, encoding: .basic30),
+                       BoardEncoder.encode(blackToMove, encoding: .basic30),
                        "Symmetric position must encode identically for both sides")
     }
 

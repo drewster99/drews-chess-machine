@@ -1193,10 +1193,20 @@ extension SessionController {
                         "[CHECKPOINT] Restored replay buffer: stored=\(snap.storedCount)/\(snap.capacity) totalAdded=\(snap.totalPositionsAdded) writeIndex=\(snap.writeIndex)"
                     )
                 } catch {
-                    box.recordError("Replay buffer restore failed: \(error.localizedDescription)")
-                    SessionLogger.shared.log(
-                        "[CHECKPOINT] Replay buffer restore failed: \(error.localizedDescription) — continuing with empty buffer"
-                    )
+                    // Losing the entire replay buffer on resume is a heavy
+                    // degradation, so surface it on the user-facing checkpoint
+                    // status channel (the canonical load-failure surface) — not
+                    // just the trainer's `_error` (first-error-wins, so it can be
+                    // swallowed by a prior error) and the log. Training still
+                    // continues with an empty buffer rather than aborting the
+                    // resume, matching the "never auto-delete on a failed load"
+                    // stance: the user can stop and repair the folder manually.
+                    let message = "Replay buffer restore failed: \(error.localizedDescription) — continuing with empty buffer"
+                    box.recordError(message)
+                    await MainActor.run {
+                        self.checkpoint?.setCheckpointStatus(message, kind: .error)
+                    }
+                    SessionLogger.shared.log("[CHECKPOINT] \(message)")
                 }
             }
 

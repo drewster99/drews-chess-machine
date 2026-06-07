@@ -235,11 +235,6 @@ enum BoardEncoder {
         encoding.planeCount * ChessNetwork.boardSize * ChessNetwork.boardSize
     }
 
-    /// Transitional default-encoding stride (basic30) for call sites not yet
-    /// threaded with a per-session encoding. Phase C replaces these with
-    /// `tensorLength(for:)` sourced from the session's `arch.inputEncoding`.
-    static var tensorLength: Int { tensorLength(for: .basic30) }
-
     /// Encode a game state into a caller-owned slice of `tensorLength` floats.
     ///
     /// The per-move inference hot path uses this variant so the encoded
@@ -254,7 +249,7 @@ enum BoardEncoder {
         history: [GameState] = [],
         perspective: PieceColor? = nil,
         into buffer: UnsafeMutableBufferPointer<Float>,
-        encoding: InputEncoding = .basic30
+        encoding: InputEncoding
     ) {
         let tensorLength = Self.tensorLength(for: encoding)
         precondition(
@@ -415,7 +410,7 @@ enum BoardEncoder {
         _ current: GameState,
         history: [GameState] = [],
         perspective: PieceColor? = nil,
-        encoding: InputEncoding = .basic30
+        encoding: InputEncoding
     ) -> [Float] {
         var tensor = [Float](repeating: 0, count: tensorLength(for: encoding))
         tensor.withUnsafeMutableBufferPointer { buf in
@@ -425,7 +420,7 @@ enum BoardEncoder {
     }
 
     /// Convenience: encode the starting position.
-    static func encodeStartingPosition(encoding: InputEncoding = .basic30) -> [Float] {
+    static func encodeStartingPosition(encoding: InputEncoding) -> [Float] {
         encode(.starting, encoding: encoding)
     }
 

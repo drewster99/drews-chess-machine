@@ -21,6 +21,7 @@ enum SafetensorsModelIO {
         case missingTensor(String)
         case missingArchitecture
         case badArchitectureJSON(String)
+        case tensorShapeMismatch(name: String, expected: Int, got: Int)
 
         var description: String {
             switch self {
@@ -28,6 +29,8 @@ enum SafetensorsModelIO {
             case .missingTensor(let name): return "safetensors model: missing tensor '\(name)'"
             case .missingArchitecture: return "safetensors model: no architecture in __metadata__"
             case .badArchitectureJSON(let d): return "safetensors model: architecture JSON failed to decode (\(d))"
+            case .tensorShapeMismatch(let name, let expected, let got):
+                return "safetensors model: tensor '\(name)' has \(got) elements but the embedded architecture's plan expects \(expected)"
             }
         }
     }
@@ -139,6 +142,17 @@ enum SafetensorsModelIO {
         for (i, name) in names.enumerated() {
             guard let torchData = byName[name] else { throw IOError.missingTensor(name) }
             if i < plan.count {
+                // The file's per-tensor element count (validated against its own
+                // header shape in `SafetensorsFile.decode`) must also agree with
+                // the embedded architecture's plan — they are two independent shape
+                // sources and `fromTorchLayout` indexes by the plan's dims. A
+                // mismatch (hand-edited config, buggy external writer) would
+                // otherwise run `transpose2D` off the end of `torchData`; surface
+                // it as a clean error so the embedded arch stays the single source
+                // of truth for what shapes we accept.
+                guard torchData.count == plan[i].elementCount else {
+                    throw IOError.tensorShapeMismatch(name: name, expected: plan[i].elementCount, got: torchData.count)
+                }
                 // Reverse the PyTorch layout back to the engine's native flat order.
                 weights.append(Self.fromTorchLayout(kind: plan[i].kind, nativeShape: plan[i].shape, torchData: torchData))
             } else {
