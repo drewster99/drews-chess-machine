@@ -65,6 +65,37 @@ final class BoardEncoderTests: XCTestCase {
         }
     }
 
+    /// Per-encoding content coverage: EVERY encoding's frame 0 (the base
+    /// basic20 block, planes 0–19) must equal the `basic20` encode of the same
+    /// position — so each tensor type is verified to reuse the (basic30-pinned)
+    /// piece / castling / en-passant / halfmove content correctly, not just to
+    /// have the right shape. Run across positions that exercise pieces,
+    /// castling, en-passant and black-to-move (perspective flip). New
+    /// encodings are covered automatically via `allCases`.
+    func testEveryEncodingFrameZeroMatchesBasic20() {
+        let afterE4 = MoveGenerator.applyMove(
+            ChessMove(fromRow: 6, fromCol: 4, toRow: 4, toCol: 4, promotion: nil),
+            to: .starting)                                   // sets the en-passant plane
+        let afterE4E5 = MoveGenerator.applyMove(
+            ChessMove(fromRow: 1, fromCol: 4, toRow: 3, toCol: 4, promotion: nil),
+            to: afterE4)                                     // black to move → perspective flip
+        let positions: [(String, GameState)] = [
+            ("starting", .starting),
+            ("after 1.e4 (EP set)", afterE4),
+            ("after 1.e4 e5 (black to move)", afterE4E5),
+        ]
+        let frameZeroFloats = 20 * 64
+        for enc in InputEncoding.allCases {
+            for (label, pos) in positions {
+                let full = BoardEncoder.encode(pos, encoding: enc)
+                let basic20 = BoardEncoder.encode(pos, encoding: .basic20)
+                XCTAssertGreaterThanOrEqual(full.count, frameZeroFloats)
+                XCTAssertEqual(Array(full.prefix(frameZeroFloats)), basic20,
+                    "\(enc.rawValue): frame-0 base block must equal basic20 for \(label)")
+            }
+        }
+    }
+
     func testEncodeStartingPositionProducesCorrectLength() {
         let tensor = BoardEncoder.encode(.starting, encoding: .basic30)
         XCTAssertEqual(tensor.count, BoardEncoder.tensorLength(for: .basic30))
