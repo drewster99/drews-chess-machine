@@ -31,6 +31,17 @@ extension InputEncoding {
         }
     }
 
+    /// snake_case per-plane labels for the weight-analysis stem detail
+    /// (`NetworkWeightAnalyzer`). Preserves that tool's historical vocabulary
+    /// but, like the others, is derived from the encoding so it has exactly
+    /// `planeCount` correctly-positioned labels for every encoding (the fixed
+    /// 30-entry list it replaced mislabeled every multi-frame plane).
+    var analyzerPlaneLabels: [String] {
+        compose(base: Self.basic30AnalyzerLabels) { frame, name in
+            frame == 0 ? name : "ply_N-\(frame)_\(name)"
+        }
+    }
+
     private func compose(
         base base30: [String],
         frameTag: (_ frame: Int, _ name: String) -> String
@@ -79,5 +90,20 @@ extension InputEncoding {
         "rep≥1", "rep≥2",
         "rep−1", "rep−2", "rep−3", "rep−4", "rep−5",
         "rep−6", "rep−7", "rep−8", "rep−9", "rep−10",
+    ]
+
+    private static let basic30AnalyzerLabels = [
+        "mover_pawn", "mover_knight", "mover_bishop",
+        "mover_rook", "mover_queen", "mover_king",
+        "opp_pawn", "opp_knight", "opp_bishop",
+        "opp_rook", "opp_queen", "opp_king",
+        "my_kingside_castle", "my_queenside_castle",
+        "opp_kingside_castle", "opp_queenside_castle",
+        "en_passant", "halfmove_clock",
+        "rep_>=1", "rep_>=2",
+        "rep_1_ply_ago", "rep_2_plies_ago", "rep_3_plies_ago",
+        "rep_4_plies_ago", "rep_5_plies_ago", "rep_6_plies_ago",
+        "rep_7_plies_ago", "rep_8_plies_ago", "rep_9_plies_ago",
+        "rep_10_plies_ago",
     ]
 }

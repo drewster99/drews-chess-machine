@@ -76,6 +76,8 @@ final class BoardEncoderTests: XCTestCase {
                            "\(enc.rawValue): channelNames must have one entry per plane")
             XCTAssertEqual(enc.shortChannelNames.count, enc.planeCount,
                            "\(enc.rawValue): shortChannelNames must have one entry per plane")
+            XCTAssertEqual(enc.analyzerPlaneLabels.count, enc.planeCount,
+                           "\(enc.rawValue): analyzerPlaneLabels must have one entry per plane")
         }
     }
 

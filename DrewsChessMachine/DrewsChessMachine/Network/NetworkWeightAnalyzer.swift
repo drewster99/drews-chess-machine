@@ -186,23 +186,6 @@ enum NetworkWeightAnalyzer {
     static let convDeadRatio: Double = 0.05
     static let convWeakRatio: Double = 0.25
 
-    /// Human-readable per-input-plane label. Order matches
-    /// `BoardEncoder.encode`. Used in the stem detail.
-    static let inputPlaneLabels: [String] = [
-        "mover_pawn", "mover_knight", "mover_bishop",
-        "mover_rook", "mover_queen", "mover_king",
-        "opp_pawn", "opp_knight", "opp_bishop",
-        "opp_rook", "opp_queen", "opp_king",
-        "my_kingside_castle", "my_queenside_castle",
-        "opp_kingside_castle", "opp_queenside_castle",
-        "en_passant", "halfmove_clock",
-        "rep_>=1", "rep_>=2",
-        "rep_1_ply_ago", "rep_2_plies_ago", "rep_3_plies_ago",
-        "rep_4_plies_ago", "rep_5_plies_ago", "rep_6_plies_ago",
-        "rep_7_plies_ago", "rep_8_plies_ago", "rep_9_plies_ago",
-        "rep_10_plies_ago"
-    ]
-
     // MARK: - Result struct
 
     struct Result: Codable, Sendable {
@@ -631,7 +614,7 @@ enum NetworkWeightAnalyzer {
         )
         return Result.StemInputChannelDetail(
             perInputChannelL2: perInputL2,
-            planeLabels: Array(inputPlaneLabels.prefix(inC)),
+            planeLabels: Array(arch.inputEncoding.analyzerPlaneLabels.prefix(inC)),
             initPerInputChannelL2: initPerInputL2
         )
     }
