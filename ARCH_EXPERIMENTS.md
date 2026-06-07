@@ -124,8 +124,8 @@ Wide-set is the cross-experiment default and is available here from step ~0 (unl
 | ~55,128 | 674 | 3.80 | 749 | 3.99 | **Current (in progress).** Still climbing (+8 wide last bucket), still promoting, value head decisive (pD 0.706, vAbs 0.153). No plateau yet. |
 
 ### 4. Wins
-- **No training instability through ~55k.** pEnt healthy (~2.65 nats), pIllM ~0.011, gNorm ~3.08, value head decisive at the final step, no NaN — bf16 stable.
-- **Value head did eventually turn decisive (~54k)** — pD 0.79→0.71, vAbs ×~2, draws 90%→82% — so the encoding is *learnable*, not a dead end.
+- **Encoding is learnable.** The value head turned decisive at ~54k (pD 0.79→0.71, vAbs ×~2, draws 90%→82%) — not a dead end.
+- *(Stable training is **not** counted as a Win: Exp 1 was also stable, so this is no regression, not an improvement. The slower path to decisiveness is in Shortcomings.)*
 
 ### 5. Shortcomings
 Comparing primarily against Experiment 1

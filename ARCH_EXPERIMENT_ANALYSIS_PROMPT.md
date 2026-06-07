@@ -7,10 +7,10 @@ summary. Follow it in order; the output is a new `## Experiment N` section appen
 (In-progress runs are valid entries — mark the header "in progress", give **no capacity verdict**,
 and classify everything **relative to the comparison baseline**, normally the prior experiment.)
 
-**Style:** terse, factual, step-anchored. Numbers live in tables. No extra words. Causal claims
-must pass the precedence test below. **Map hypotheses to the variables you actually changed; offer
-competing hypotheses, not one confident mechanism — don't theorize beyond the evidence. A
-worse-than-baseline result is never a Win.** Don't overclaim (see Pitfalls).
+**Style:** terse, factual, step-anchored. **Short words. Short sentences. Short paragraphs.** Numbers
+live in tables. Causal claims must pass the precedence test below. **Map hypotheses to the variables
+you changed; give competing hypotheses, not one confident mechanism — don't theorize past the
+evidence. A Win must beat the comparator; matching it is not a Win.** Don't overclaim (see Pitfalls).
 
 ---
 
@@ -127,8 +127,9 @@ for f in <pre-plateau logs>; do
   encodings, and the banner's `inputPlanes` can be stale. Isolate by log file + build + live lineage;
   confirm the encoding from `[ARCH]` or `session.json`. Abandoned fresh-start logs (steps near 0) also
   collide with early marks — filter by lineage.
-- **A worse-than-baseline result is not a Win.** "Productive but slower than the prior experiment"
-  (slower bootstrap, lower matched-step pElo, delayed value differentiation) is a **Shortcoming**.
+- **A Win must beat the comparator.** Matching it (both stable, both fast) is not a Win — just no
+  regression. Stable training is a Win only if the comparator was unstable. Worse than it (slower
+  bootstrap, lower matched-step pElo) is a Shortcoming.
 - **Don't over-theorize cause.** Map candidate causes to the variables you actually changed and list
   them as competing hypotheses; don't commit to one mechanism (or an elaborate just-so story) without
   evidence. "One, the other, or both — undetermined" is an acceptable, honest conclusion.
@@ -150,13 +151,13 @@ numbered sections:
    ordered by step. Rows = start, first promotion, steepest-gain mark, probe-instrumentation step,
    **plateau onset**, turning point(s)/cliff, each param change (with step), last promotion, final
    assessment. `—` where a set lacks coverage.
-4. **Wins** — only what is genuinely good in absolute terms (no instability; learnable encoding) **or
-   better than the comparison baseline at matched steps.** A productive-but-worse-than-baseline result
-   does NOT go here — it is a Shortcoming.
-5. **Shortcomings** — **name the baseline** ("Comparing primarily against Experiment N"), then: any
-   worse-than-baseline behavior at matched steps (with numbers — slower bootstrap, lower pElo, delayed
-   value differentiation), plateau step + unproductive span (if finished), regressions, and a capacity
-   verdict **only if finished** (in-progress → "no capacity verdict yet").
+4. **Wins** — only what **beats** the comparator. A trait it lacked, or a metric better than it at
+   matched steps. Matching it is **not** a Win — that's just no regression; drop it or note it neutrally.
+   Stable training is a Win **only if** the comparator was unstable and this run isn't.
+5. **Shortcomings** — name the comparator ("Comparing primarily against Experiment N"). Then: anything
+   **worse than it** at matched steps (with numbers — slower bootstrap, lower pElo, delayed value
+   differentiation), or **objectively bad** on its own (instability, regression, plateau + unproductive
+   span if finished). Capacity verdict only if finished; in-progress → "no capacity verdict yet".
 6. **Analysis** — for a **controlled experiment**, enumerate candidate causes as **competing hypotheses
    that map 1:1 to the variables you changed** (e.g. "H1: +9 history planes slowed it · H2: −10
    repetition planes slowed it"), and state it may be one, the other, or both — **no winner without
