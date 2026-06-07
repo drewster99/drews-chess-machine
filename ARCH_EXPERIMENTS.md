@@ -71,3 +71,88 @@ Location: `~/Library/Application Support/DrewsChessMachine/Sessions/`
 - **Regularization:** bump weight_decay to ~3e-4 on long runs to cap logit/weight-norm growth.
 - **LR:** drop cycling; at most a single cosine anneal to a low LR for a final polish. Keep constant 1e-2 as the workhorse.
 - Only widen channels **after** depth is restored, not instead of it.
+
+---
+
+## Experiment 2 — 5-Block 7×7-Wide, `full10ply200` Input (ReZero / SE)
+
+**arch_hash** `0xdf23a86c` (**NOT authoritative** — collides with Exp 1; banner also misreports `inputPlanes=30`) · **lineage** `oItC` (saved) / `2Gd1` (live) · **build** 1760 · **dates** 2026-06-06 → **in progress (~55k steps)**
+
+> Identification caveat: this branch makes architecture runtime-configurable, so `arch_hash`/`inputPlanes` in the `[APP]` banner are stale and **identical to Experiment 1's** despite a different encoding. Isolate this run by **log file** (`dcm_log_20260606-213834.txt`) + **live lineage `2Gd1`**, never by `arch_hash`. (A later build adds an `[ARCH]` line carrying the true `architectureSummary`; this run predates it.)
+
+### 1. Architecture
+- **Input:** **200 planes** × 8×8 (NCHW), `full10ply200` — 10 stacked `basic20` frames (current ply N + 9 prior plies N-1…N-9), each from the ply-N mover's perspective; absent pre-game frames zero. **No temporal-repetition "duplication" planes** (the 10 `basic30` planes 20–29 are gone; the 2 per-frame repetition-count planes 18/19 survive inside each `basic20` frame). **Policy** 4864 logits; **value** 3-class W/D/L head.
+- **Stem:** 7×7 conv, **200 → 128**.
+- **Tower:** **identical to Experiment 1** — 5 pre-activation residual blocks, 128 ch, each 7×7 same-padded conv → scale-and-bias **SE** (reduction /4) → clean identity add scaled by per-block ReZero α (`1/√5`). Activation ReLU.
+- **Policy head:** 1×1 conv 128 → 76 → 4864. **Value head:** 1×1 conv 128 → 16 → BN/ReLU → flatten(1024) → FC 1024→128 → ReLU → FC 128→3 (W/D/L), categorical-CE.
+- **Precision:** bfloat16. **Params:** 9,511,988 (~9.51M). **Arch version:** v4.
+- *Context:* **only the input encoding changed vs Exp 1** (basic30/30 → full10ply200/200). The +1,066,240 params over Exp 1's 8.45M are entirely the wider stem ((200−30)×128×7×7). This is therefore a controlled **encoding** experiment on a fixed tower — the question is whether richer position history minus explicit duplication planes helps or hurts.
+
+### 2. Relevant saved sessions
+Twelve resumable `.dcmsession` snapshots (saved lineage `oItC`; live champion lineage `2Gd1`) — the 11 post-promotion autosaves plus one manual save. Each carries `inputPlanes: 200`, `buildNumber: 1760`; the 11 promote steps match the arena promotion ladder exactly.
+
+| Saved session (`.dcmsession`) | Step @ snapshot | Trigger |
+|---|--:|---|
+| `20260607-030329-20260607-5-oItC-promote` | 1,440 | promote |
+| `20260607-031849-20260607-5-oItC-promote` | 2,414 | promote |
+| `20260607-043515-20260607-5-oItC-promote` | 7,526 | promote |
+| `20260607-045034-20260607-5-oItC-promote` | 8,557 | promote |
+| `20260607-062232-20260607-5-oItC-promote` | 14,252 | promote |
+| `20260607-085540-20260607-5-oItC-promote` | 23,903 | promote |
+| `20260607-114329-20260607-5-oItC-promote` | 32,095 | promote |
+| `20260607-121406-20260607-5-oItC-promote` | 33,477 | promote |
+| `20260607-154748-20260607-5-oItC-promote` | 45,415 | promote |
+| `20260607-164849-20260607-5-oItC-promote` | 47,972 | promote |
+| `20260607-191620-20260607-5-oItC-promote` | 53,749 | promote |
+| `20260607-195042-20260607-5-oItC-manual`  | 54,495 | manual |
+
+Location: `~/Library/Application Support/DrewsChessMachine/Sessions/`. Steps = each session's `trainingSteps`.
+
+### 3. Factuals
+Wide-set is the cross-experiment default and is available here from step ~0 (unlike Exp 1, which has wide only from ~190k). **Cross-comparison to Exp 1 below ~190k must use the 200-set** (Exp 1 lacks early wide); wide tracks ~90–110 below the 200-set here.
+
+| Step | pElo (wide) | NLL (wide) | pElo (200) | NLL (200) | Detail |
+|--:|--:|--:|--:|--:|---|
+| 0 | 543 | 3.80 | 677 | 4.10 | New full10ply200 net (Exp-1 tower; only encoding changed). **Constant LR 1e-2** (weight_decay 1e-4, grad_clip 30, entropy_bonus 0, draw_penalty 0, μ 0.90). |
+| 1,440 | 543 | 3.80 | 677 | 4.10 | First promotion (arena #1, score 0.5625). |
+| ~10,000 | 607 | 3.83 | 701 | 4.09 | **Steepest-gain bucket** (+43 wide). Early bootstrap. |
+| ~16,700 | 604 | 3.82 | 699 | 4.09 | **Value head near the draw prior:** pD 0.76, vAbs 0.085, self-play draws **88%**. (basic30 at 16.7k: pD 0.76 / vAbs 0.109 / 84%.) |
+| ~32,000 | 631 | 3.82 | 738 | 4.06 | Value head still flat: pD **0.80**, vAbs 0.079, draws **90%**. (basic30 at 28.6k had already started differentiating: pD 0.71 / vAbs 0.128 / 79%.) |
+| ~40,000 | 666 | 3.82 | 767 | 4.02 | Still stuck: pD 0.79, vAbs 0.083, draws 89%. **8 promotions by here vs Exp 1's 13;** 200-set pElo 767 vs Exp 1's 801 — **slower bootstrap.** |
+| 53,749 | 672 | 3.81 | 735 | 4.01 | Last promotion so far (arena #63, score 0.5775). 66 arenas / **11 promotions** total. |
+| ~54,400 | 672 | 3.81 | 735 | 4.01 | **Value head turns decisive** (~25k steps later than basic30): pD 0.79→**0.716**, vAbs 0.083→**0.145**, draws 90%→**82%**, gNorm 0.98→2.66 (head now learning). |
+| ~55,128 | 674 | 3.80 | 749 | 3.99 | **Current (in progress).** Still climbing (+8 wide last bucket), still promoting, value head decisive (pD 0.706, vAbs 0.153). No plateau yet. |
+
+### 4. Wins
+- **No training instability through ~55k.** pEnt healthy (~2.65 nats), pIllM ~0.011, gNorm ~3.08, value head decisive at the final step, no NaN — bf16 stable.
+- **Value head did eventually turn decisive (~54k)** — pD 0.79→0.71, vAbs ×~2, draws 90%→82% — so the encoding is *learnable*, not a dead end.
+
+### 5. Shortcomings
+Comparing primarily against Experiment 1
+- **Slow bootstrap:** wide pElo 543 → 674, **11 promotions, still promoting at 53.7k** (no arena cliff). Steepest gain in the first 10k.
+- **Prolonged flat value head / high draw rate early.** For ~the first 44k steps the value head sat at pD ~0.79 / vAbs ~0.08 with **88–90% self-play draws**, only turning decisive at ~54k. The same tower on `basic30` did so by ~28k. (pD never approached 1.0 — this is a slow-to-differentiate value head plus a high draw rate, *not* the pD→1 value-head collapse the rubric defines.)
+
+  | Step | full10ply200 (this) pD / vAbs / draw% | basic30 (Exp-1 lineage) pD / vAbs / draw% |
+  |--:|--|--|
+  | 16.7k | 0.759 / 0.085 / 88% | 0.761 / 0.109 / 84% |
+  | 28.6k | 0.798 / 0.079 / 90% | 0.709 / 0.128 / 79% |
+  | 44.6k | 0.794 / 0.083 / 89% | 0.649 / 0.188 / 73% |
+  | 54.4k | 0.716 / 0.145 / 82% | 0.632 / 0.200 / 75% |
+
+- **Slower bootstrap vs basic30** at matched steps: 8 promotions by 40k vs 13; 200-set pElo 767 vs 801 at 40k.
+- **Wide-set NLL essentially flat** (~3.80–3.83 across all 55k) despite the pElo climb — calibration on the puzzle set is not improving even as ranking does.
+- **No capacity verdict possible** — run is in progress and still climbing; plateau/ceiling cannot be assessed yet (contrast Exp 1's completed 470k run).
+- **Per-step cost up:** +1.07M stem params + 200-plane encode (encodeMs p50 ~450) raise step time ~20% over the Exp-1-era build.
+
+### 6. Analysis
+- **Controlled encoding test.** Identical tower, optimizer (constant 1e-2 / μ 0.90, single distinct LR — confirmed), and regularization as Exp 1; **only the input encoding differs.** Differences are attributable to the encoding (modulo seed — see caveat).
+
+One of these is probably correct (or maybe even both):
+- **Hypothesis #1: Adding 9 move history slowed learning**
+- **Hypothesis #2: Removing the 10 repetition planes slowed learning**
+- **AZ/Leela keep both history *and* explicit repetition planes** — this encoding diverges by dropping the latter.
+- **Cadence-as-strength-curve** still holds: promotions are decaying-but-ongoing (no cliff), consistent with a run still on its productive slope.
+
+### 7. Suggested future variants / changes
+- **Add back 10 history repetition planes to the input tensor**
+

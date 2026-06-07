@@ -1,23 +1,35 @@
 # Architecture-Experiment Analysis Prompt
 
 Hand this to whoever (or whatever) writes the next entry in `ARCH_EXPERIMENTS.md`. It is the
-procedure for turning a finished/plateaued training run into one experiment summary. Follow it
-in order; the output is a new `## Experiment N` section appended to `ARCH_EXPERIMENTS.md`,
-using that file's exact section structure and conventions.
+procedure for turning a finished/plateaued **or still-running** training run into one experiment
+summary. Follow it in order; the output is a new `## Experiment N` section appended to
+`ARCH_EXPERIMENTS.md`, using that file's exact section structure and conventions.
+(In-progress runs are valid entries — mark the header "in progress", give **no capacity verdict**,
+and classify everything **relative to the comparison baseline**, normally the prior experiment.)
 
 **Style:** terse, factual, step-anchored. Numbers live in tables. No extra words. Causal claims
-must pass the precedence test below. Don't overclaim (see Pitfalls).
+must pass the precedence test below. **Map hypotheses to the variables you actually changed; offer
+competing hypotheses, not one confident mechanism — don't theorize beyond the evidence. A
+worse-than-baseline result is never a Win.** Don't overclaim (see Pitfalls).
 
 ---
 
 ## 0. Identify and isolate the run
-A run is identified by **`arch_hash`** (from the `[APP]` banner) and its **live ModelID lineage**
-(e.g. `bzw3`). Always isolate by these — fresh-start and prior-arch logs share low step numbers
-and will contaminate early marks.
+**Do NOT identify or equate runs by `arch_hash`.** Under runtime-configurable architecture it is not
+authoritative — it can be *identical across genuinely different encodings* (Exp 1 and Exp 2 both log
+`0xdf23a86c`), and the `[APP]` banner's `inputPlanes`/`policySize` can be stale (Exp 2 ran 200-plane
+`full10ply200` while the banner still said `inputPlanes=30`). Identify a run by its **log file**,
+**build number**, and **live ModelID lineage** (e.g. `2Gd1`). The **saved** lineage differs from the
+**live** one (e.g. `oItC` saved / `2Gd1` live) — sessions on disk carry the saved tag.
 
-- `arch_hash`, build, git, `inputPlanes`, `policySize`: `grep -m1 '\[APP\]' <log>`
-- Confirm architecture string: `grep -m1 '\[BUILD\]' <log>` (blocks, kernel, SE, params, dtype).
-- Filter every later extraction by the lineage tag (e.g. `grep 'bzw3'`) to exclude abandoned runs.
+- **TRUE architecture** from the **`[ARCH]`** line (`architectureSummary`: encoding+planes, stem,
+  blocks, kernel, SE, value head, dtype, params): `grep -m1 '\[ARCH\]' <log>`. Builds predating `[ARCH]`
+  carry the same string elsewhere, or read it from a saved session's `session.json`
+  (`architecture.inputPlanes` / `input_encoding`) — never trust the `[APP]` banner's arch fields.
+- build, git: `grep -m1 '\[APP\]' <log>` (use these fields, not its arch fields).
+- Filter every later extraction by the lineage tag (e.g. `grep '2Gd1'`) to exclude abandoned/foreign runs.
+
+Don't guess. Check.
 
 ## 1. Data sources
 - **Session logs:** `~/Library/Logs/DrewsChessMachine/dcm_log_YYYYMMDD-HHMMSS.txt` (one per launch;
@@ -26,6 +38,8 @@ and will contaminate early marks.
   Each is a point-in-time snapshot; read its step from `session.json`.
 - **Tags:** `[APP]` launch banner · `[STATS]` ~1/min training snapshot · `[ARENA]` arena/promotions ·
   `[TACTICAL-LICHESS]` pElo/NLL probe (200-set and `set=wide`) · `[CHECKPOINT]` · `[ALARM]`.
+
+Actually look for sources and make sure they're the correct ones.
 
 ## 2. Metrics — what to pull and what each means
 **Strength (the point of the experiment):**
@@ -44,6 +58,8 @@ and will contaminate early marks.
 **Optimizer schedule:**
 - `lr=` and `μ=` in `[STATS]`. **Detect schedule by distinct values, not min/max range** — a single
   stray reading makes a constant run look cyclic (this bit us). Stamp every change with its step.
+
+Be sure you're fetching the right data. Never guess. Always check.
 
 ## 3. Analysis recipes
 Cache the probe trace once, then bucket:
@@ -107,7 +123,15 @@ for f in <pre-plateau logs>; do
 ## 6. Pitfalls (we hit these — don't repeat)
 - **Don't infer cycling from LR min/max range — count distinct values.** One stray reading faked a
   "1e-1 cycle" that never existed.
-- **Isolate by arch_hash/lineage.** Abandoned fresh-start logs (steps near 0) collide with early marks.
+- **Never isolate or equate runs by `arch_hash`** — under runtime-config it collides across different
+  encodings, and the banner's `inputPlanes` can be stale. Isolate by log file + build + live lineage;
+  confirm the encoding from `[ARCH]` or `session.json`. Abandoned fresh-start logs (steps near 0) also
+  collide with early marks — filter by lineage.
+- **A worse-than-baseline result is not a Win.** "Productive but slower than the prior experiment"
+  (slower bootstrap, lower matched-step pElo, delayed value differentiation) is a **Shortcoming**.
+- **Don't over-theorize cause.** Map candidate causes to the variables you actually changed and list
+  them as competing hypotheses; don't commit to one mechanism (or an elaborate just-so story) without
+  evidence. "One, the other, or both — undetermined" is an acceptable, honest conclusion.
 - **Don't overclaim "trained cleanly throughout."** Scope Wins to *no instability* and to the
   *productive window*; post-saturation regression (sub-0.5 candidates, logit inflation) goes in
   Shortcomings. "No collapse" ≠ "productive the whole run."
@@ -117,26 +141,39 @@ for f in <pre-plateau logs>; do
 - **Read the run by step, not time** — resumes restart wall-clock and can rewind the step counter.
 
 ## 7. Output — append `## Experiment N` to `ARCH_EXPERIMENTS.md`
-Match Experiment 1 exactly. **Title, `arch_hash`, lineage (saved/live), and date range go in the
+Match the format of Experiment 1 exactly. **Title, `arch_hash`, lineage (saved/live), and date range go in the
 unnumbered `## Experiment N — …` header + metadata line** (not a numbered section). Then seven
 numbered sections:
-1. **Architecture** — input/policy/value, stem, tower (blocks, kernel, SE, skip), heads, dtype, params, arch version; one context line on the param-budget tradeoff.
-2. **Relevant saved sessions** — table: session folder · step @ snapshot.
+1. **Architecture** — input/policy/value, stem, tower (blocks, kernel, SE, skip), heads, dtype, params, arch version; one **Context** line stating — for a controlled experiment — **exactly what is held fixed vs changed relative to the comparison baseline** (plus any param-budget tradeoff).
+2. **Relevant saved sessions** — table: session folder · step @ snapshot. Saved lineage ≠ live lineage — list **every** snapshot for the run (find them by date/window + saved tag, not the live tag).
 3. **Factuals** — table `Step | pElo (wide) | NLL (wide) | pElo (200) | NLL (200) | Detail`,
    ordered by step. Rows = start, first promotion, steepest-gain mark, probe-instrumentation step,
    **plateau onset**, turning point(s)/cliff, each param change (with step), last promotion, final
    assessment. `—` where a set lacks coverage.
-4. **Wins** — only what's true (no-instability; productive window with numbers).
-5. **Shortcomings** — plateau step, unproductive span, any regression, capacity verdict.
-6. **Analysis** — capacity-vs-optimization call, cadence-as-strength-curve, schedule findings, concerns.
-7. **Suggested future variants / changes** — the next lever (usually depth), regularization, LR plan.
+4. **Wins** — only what is genuinely good in absolute terms (no instability; learnable encoding) **or
+   better than the comparison baseline at matched steps.** A productive-but-worse-than-baseline result
+   does NOT go here — it is a Shortcoming.
+5. **Shortcomings** — **name the baseline** ("Comparing primarily against Experiment N"), then: any
+   worse-than-baseline behavior at matched steps (with numbers — slower bootstrap, lower pElo, delayed
+   value differentiation), plateau step + unproductive span (if finished), regressions, and a capacity
+   verdict **only if finished** (in-progress → "no capacity verdict yet").
+6. **Analysis** — for a **controlled experiment**, enumerate candidate causes as **competing hypotheses
+   that map 1:1 to the variables you changed** (e.g. "H1: +9 history planes slowed it · H2: −10
+   repetition planes slowed it"), and state it may be one, the other, or both — **no winner without
+   evidence, no elaborate mechanism story.** Then capacity-vs-optimization (if finished),
+   cadence-as-strength-curve, schedule findings, the n=1 seed caveat, concerns.
+7. **Suggested future variants / changes** — lead with the **single most concrete next lever, tied to a
+   hypothesis** (e.g. "add back the 10 repetition planes"); one clear move beats a menu of five. At most
+   a couple of secondary notes.
 
 ## 8. Validation checklist (before finalizing)
-- [ ] Run isolated by arch_hash + lineage; no foreign-run rows.
+- [ ] Run isolated by log file + build + live lineage (NOT arch_hash); encoding confirmed via `[ARCH]`/`session.json`; no foreign-run rows.
 - [ ] pElo/NLL are wide-set where available; exceptions marked.
 - [ ] Plateau onset (pElo) and arena cliff both reported, with the lag.
 - [ ] Every LR/momentum change stamped with its step; schedule confirmed by distinct values.
 - [ ] Every causal claim passes temporal precedence.
-- [ ] Wins contain no degradation; degradation is in Shortcomings.
+- [ ] Wins contain nothing worse-than-baseline; relative regressions (slower/weaker at matched steps) are in Shortcomings, with the baseline named.
+- [ ] Analysis hypotheses map 1:1 to the variables changed; no unsupported single-mechanism claim; seed/n=1 caveat stated.
+- [ ] §7 leads with one concrete lever tied to a hypothesis.
 - [ ] Final-step stability metrics cited to justify capacity-vs-blow-up call.
 - [ ] Numbers in tables; prose trimmed of filler.
