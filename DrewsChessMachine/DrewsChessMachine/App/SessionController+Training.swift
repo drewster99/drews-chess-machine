@@ -72,11 +72,15 @@ extension SessionController {
         if continueMode, let existing = replayBuffer {
             buffer = existing
         } else {
-            // Buffer stride must match the encoding self-play produces — the
-            // champion network's per-architecture input encoding.
+            // The buffer is keyed off the champion network's input encoding
+            // so it derives both the stored single-frame stride and the
+            // reconstructed full-stack stride. For a history encoding
+            // (full10ply200) it stores one mover-relative frame per ply and
+            // reconstructs the stacked network input at sample time; for
+            // single-frame encodings stored == reconstructed.
             buffer = ReplayBuffer(
                 capacity: TrainingParameters.shared.replayBufferCapacity,
-                floatsPerBoard: BoardEncoder.tensorLength(for: network.inputEncoding))
+                inputEncoding: network.inputEncoding)
             replayBuffer = buffer
         }
         // Seed the buffer's per-batch sampling constraints from the

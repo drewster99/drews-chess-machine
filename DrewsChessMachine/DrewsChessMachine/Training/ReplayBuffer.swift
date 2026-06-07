@@ -4,9 +4,10 @@ import os
 
 /// Thread-safe fixed-capacity ring of labeled self-play positions.
 ///
-/// Self-play workers push whole games via `append(boards:policyIndices:outcome:count:)`
-/// once each game ends and outcomes are known. The trainer pulls out
-/// minibatches via `sample(count:intoBoards:moves:zs:)`.
+/// Self-play workers push whole games via
+/// `append(boards:policyIndices:…:outcomes:count:)` once each game ends and
+/// outcomes are known. The trainer pulls out minibatches via
+/// `sample(count:intoBoards:moves:zs:)`.
 /// Both sides run on background tasks; access is serialized by a
 /// private `OSAllocatedUnfairLock` so the buffer is safe to share
 /// across tasks.
@@ -31,18 +32,60 @@ final class ReplayBuffer: @unchecked Sendable {
     /// explicitly; a mismatched stride would silently misinterpret every
     /// stored board, which is also why `restore` rejects a file whose
     /// recorded stride differs from this value.
+    ///
+    /// **History encodings store one frame, not the full stack.** For a
+    /// history encoding (e.g. `full10ply200`) this is the SINGLE-frame
+    /// stride — `planesPerFrame × 64` (1,280 for full10ply200) — not the
+    /// full network input width. Each ply is stored exactly once as its
+    /// own mover-relative frame; the full `historyFrameCount`-frame
+    /// network input is reconstructed at `sample(...)` time by stacking
+    /// the sampled ply with its contiguous priors. For a single-frame
+    /// encoding (`basic20`/`basic30`, `historyFrameCount == 1`) the stored
+    /// stride equals the reconstructed stride, so those encodings store
+    /// and reconstruct one frame byte-identically — nothing changes.
     let floatsPerBoard: Int
 
-    /// Convenience stride for the DEFAULT architecture's input encoding
-    /// (`NetworkArchitecture.current.inputEncoding`). Used by tests, the UI
-    /// RAM estimate, and tooling that has no specific net in hand. NOT used
-    /// by the live training buffer — that passes the session network's actual
-    /// `tensorLength(for: network.inputEncoding)` explicitly, and the restore
-    /// paths peek the file's recorded stride. Tracks the current preset's
-    /// encoding rather than hardcoding basic30, so it stays correct if a
-    /// different encoding ever becomes the default.
+    /// The input encoding the boards in this buffer were produced under.
+    /// Owned so the buffer can derive both the STORED stride
+    /// (`floatsPerBoard = planesPerFrame × 64`) and the RECONSTRUCTED
+    /// stride (`reconstructedStride = planeCount × 64`) the trainer's GPU
+    /// staging expects. The two coincide for single-frame encodings.
+    let inputEncoding: InputEncoding
+
+    /// Number of stacked position frames the network input carries
+    /// (`inputEncoding.historyFrameCount`). `1` for single-frame
+    /// encodings, where the gather/flip reconstruction in `sample` is
+    /// skipped entirely so single-frame sampling stays a bit-for-bit
+    /// legacy memcpy.
+    let historyFrameCount: Int
+
+    /// Planes per stored frame (`inputEncoding.planesPerFrame`).
+    /// `floatsPerBoard == planesPerFrame × 64` by construction.
+    let planesPerFrame: Int
+
+    /// Floats the trainer's GPU staging expects per sampled position —
+    /// the FULL network input width, `inputEncoding.planeCount × 64`.
+    /// Equals `historyFrameCount × floatsPerBoard`. `sample(...)` writes
+    /// exactly this many floats into each `intoBoards` slot, assembling
+    /// the history stack from `historyFrameCount` stored single frames.
+    let reconstructedStride: Int
+
+    /// Convenience STORED stride for the DEFAULT architecture's input
+    /// encoding (`NetworkArchitecture.current.inputEncoding`). Used by
+    /// tests, the UI RAM estimate, and tooling that has no specific net in
+    /// hand. NOT used by the live training buffer — that passes the session
+    /// network's encoding to `init(capacity:inputEncoding:)` explicitly, and
+    /// the restore paths peek the file's recorded stride.
+    ///
+    /// This is the single-frame stride (`planesPerFrame × 64`), which is
+    /// what `floatsPerBoard` means everywhere post-reconstruction: a
+    /// history encoding stores one frame per slot. For the current
+    /// single-frame default (basic30) stored == reconstructed == 1920, so
+    /// the value is unchanged; it tracks the preset rather than hardcoding
+    /// basic30, so it stays correct if the default ever changes.
     static var defaultFloatsPerBoard: Int {
-        BoardEncoder.tensorLength(for: NetworkArchitecture.current.inputEncoding)
+        NetworkArchitecture.current.inputEncoding.planesPerFrame
+            * ChessNetwork.boardSize * ChessNetwork.boardSize
     }
 
     /// Maximum number of positions held. Older positions are overwritten
@@ -264,11 +307,51 @@ final class ReplayBuffer: @unchecked Sendable {
         ReplayBufferAnalyzer.materialBucketIndex(for: Int(materialCount))
     }
 
-    init(capacity: Int, floatsPerBoard: Int = ReplayBuffer.defaultFloatsPerBoard) {
+    /// Pick a single-frame `InputEncoding` whose stored stride matches a
+    /// given `floatsPerBoard`. Used by the restore-only construction paths
+    /// (CLI replay-buffer analyzer, checkpoint round-trip verify) that
+    /// know only the file's recorded stored stride, not its encoding — the
+    /// on-disk format records the stored stride but not the encoding. Those
+    /// paths only `restore(...)` + `withSlotData(...)`-analyze; they never
+    /// call `sample(...)`, so the history reconstruction never runs and the
+    /// (possibly cosmetic) choice between two encodings that share a stored
+    /// stride — `basic20` and `full10ply200` both store 20 planes — does
+    /// not affect any output. We deliberately resolve such collisions to
+    /// the single-frame member so a stray `sample(...)` on an
+    /// analysis/verify buffer degrades to a plain frame copy rather than a
+    /// gather that would read neighbouring slots' frames.
+    static func singleFrameEncoding(forStoredStride floatsPerBoard: Int) -> InputEncoding {
+        let planes = floatsPerBoard / (ChessNetwork.boardSize * ChessNetwork.boardSize)
+        for enc in InputEncoding.allCases
+        where enc.historyFrameCount == 1 && enc.planeCount == planes {
+            return enc
+        }
+        // No single-frame encoding matches this stride. Fall back to the
+        // current arch's encoding — its stored stride will mismatch the
+        // requested `floatsPerBoard`, so the matching `init` overload
+        // (which keys `floatsPerBoard` off the encoding) would be wrong;
+        // this fallback exists only to keep the lookup total. Restore
+        // paths pass a stride peeked from a real file, so this is
+        // unreachable in practice for any file this build wrote.
+        return NetworkArchitecture.current.inputEncoding
+    }
+
+    /// Designated initializer keyed off the buffer's `InputEncoding`. The
+    /// stored stride (`floatsPerBoard`) is derived as `planesPerFrame ×
+    /// 64`; the reconstructed stride (`reconstructedStride`, the full
+    /// network input width handed to the trainer's GPU staging) as
+    /// `planeCount × 64`. The two coincide for single-frame encodings.
+    init(capacity: Int, inputEncoding: InputEncoding) {
         precondition(capacity > 0, "Replay buffer capacity must be positive")
-        precondition(floatsPerBoard > 0, "Replay buffer floatsPerBoard must be positive")
         self.capacity = capacity
-        self.floatsPerBoard = floatsPerBoard
+        self.inputEncoding = inputEncoding
+        self.historyFrameCount = inputEncoding.historyFrameCount
+        self.planesPerFrame = inputEncoding.planesPerFrame
+        let area = ChessNetwork.boardSize * ChessNetwork.boardSize
+        let storedStride = inputEncoding.planesPerFrame * area
+        precondition(storedStride > 0, "Replay buffer floatsPerBoard must be positive")
+        self.floatsPerBoard = storedStride
+        self.reconstructedStride = inputEncoding.planeCount * area
 
         // Pre-allocate one IndexedSlotSet per analyzer bucket. The 5th
         // (23–30) is structurally unreachable but kept to keep array
@@ -314,6 +397,36 @@ final class ReplayBuffer: @unchecked Sendable {
         let materials = UnsafeMutablePointer<UInt8>.allocate(capacity: capacity)
         materials.initialize(repeating: 0, count: capacity)
         self.materialCountStorage = materials
+    }
+
+    /// Stored-stride convenience initializer. Resolves the stride to a
+    /// single-frame `InputEncoding` via `singleFrameEncoding(forStoredStride:)`
+    /// and forwards to the designated initializer. Used by:
+    ///   - the restore-only paths (CLI analyzer, checkpoint verify) that
+    ///     peek a stored stride from a saved file and never `sample(...)`;
+    ///   - tests that construct a buffer from `defaultFloatsPerBoard` or an
+    ///     explicit stride.
+    /// Because the resolution is to a single-frame encoding,
+    /// `reconstructedStride == floatsPerBoard` here — sampling through a
+    /// buffer built this way is a plain frame copy, identical to the legacy
+    /// single-frame behaviour. To get history reconstruction (the
+    /// `full10ply200` store-once path) construct with `init(capacity:
+    /// inputEncoding:)` and pass the history encoding explicitly, as the
+    /// live training path does.
+    convenience init(
+        capacity: Int,
+        floatsPerBoard: Int = ReplayBuffer.defaultFloatsPerBoard
+    ) {
+        self.init(
+            capacity: capacity,
+            inputEncoding: ReplayBuffer.singleFrameEncoding(forStoredStride: floatsPerBoard)
+        )
+        precondition(
+            self.floatsPerBoard == floatsPerBoard,
+            "ReplayBuffer(capacity:floatsPerBoard:): no single-frame encoding "
+            + "matches stored stride \(floatsPerBoard) (resolved to "
+            + "\(inputEncoding) with stride \(self.floatsPerBoard))"
+        )
     }
 
     deinit {
@@ -956,10 +1069,18 @@ final class ReplayBuffer: @unchecked Sendable {
 
     /// Append one finished game's positions in bulk. The caller passes
     /// contiguous buffers of `count` board tensors (`count * floatsPerBoard`
-    /// floats) and `count` policy indices, plus a single outcome to
-    /// broadcast across every row. When the ring is full, new rows
-    /// overwrite the oldest in FIFO order with wraparound handled via
-    /// two `memcpy` calls at the seam.
+    /// floats — the STORED single-frame stride), `count` policy indices,
+    /// and a **per-row** `outcomes` buffer (one outcome per position). When
+    /// the ring is full, new rows overwrite the oldest in FIFO order with
+    /// wraparound handled via two `memcpy` calls at the seam.
+    ///
+    /// **Per-row outcomes (not broadcast).** A single merged append now
+    /// carries one whole game whose rows alternate mover sign: white-mover
+    /// rows hold +x and black-mover rows hold −x. `ActiveGame.flush`
+    /// interleaves the two per-side staging runs into one reverse-ply-order
+    /// block and passes the matching per-row outcome array — so this method
+    /// cannot broadcast a single value across the chunk and instead reads
+    /// each row's outcome for the W/D/L bookkeeping.
     ///
     /// The caller owns the input buffers — they are not retained past
     /// the call, so this method synchronously copies the input bytes
@@ -974,7 +1095,7 @@ final class ReplayBuffer: @unchecked Sendable {
         gameLength: UInt16,
         workerId: UInt16,
         intraWorkerGameIndex: UInt32,
-        outcome: Float,
+        outcomes: UnsafePointer<Float>,
         count positionCount: Int
     ) {
         guard positionCount > 0 else { return }
@@ -982,10 +1103,16 @@ final class ReplayBuffer: @unchecked Sendable {
             "ReplayBuffer.append: positionCount (\(positionCount)) exceeds capacity (\(capacity))")
 
         let packedId = Self.packWorkerGameId(workerId: workerId, gameIndex: intraWorkerGameIndex)
-        // Outcome bucket for the per-hash WLD counters. Drawn games
-        // come in as exactly 0; positive = win, negative = loss.
-        let isWin: Bool = outcome > 0.5
-        let isLoss: Bool = outcome < -0.5
+        // Game-level decisiveness for the decisive-game counter: a single
+        // non-draw row makes the whole game decisive. Drawn games come in
+        // as exactly 0 on every row; a decisive game has +x white rows and
+        // −x black rows (both non-zero). Scan once up-front so each chunk's
+        // residency transition can pass the consistent game-level flag.
+        var gameIsDecisive = false
+        for i in 0..<positionCount where outcomes[i] > 0.5 || outcomes[i] < -0.5 {
+            gameIsDecisive = true
+            break
+        }
 
         // `UnsafePointer`/`UnsafeMutablePointer` aren't Sendable, but this
         // closure runs synchronously under the lock and doesn't outlive
@@ -1033,9 +1160,9 @@ final class ReplayBuffer: @unchecked Sendable {
                     from: policyIndices + srcOffset,
                     count: chunk
                 )
-                // Outcomes: broadcast — no source buffer, just fill.
+                // Outcomes: per-row copy (mixed sign within one game).
                 (outcomeStorage + writeIndex).update(
-                    repeating: outcome,
+                    from: outcomes + srcOffset,
                     count: chunk
                 )
                 // Observability fields (per-position): ply, hash, tau.
@@ -1066,17 +1193,28 @@ final class ReplayBuffer: @unchecked Sendable {
                 )
 
                 // INSERTION pass for the hash dict — increment counters
-                // for the freshly written slots.
+                // for the freshly written slots, reading each row's own
+                // outcome (mixed sign within one game). Tally this chunk's
+                // W/D/L split as we go so the composition aggregates get the
+                // exact per-chunk counts.
+                var chunkWin = 0, chunkDraw = 0, chunkLoss = 0
                 for i in 0..<chunk {
+                    let z = outcomes[srcOffset + i]
+                    let rowWin = z > 0.5
+                    let rowLoss = z < -0.5
+                    if rowWin { chunkWin += 1 }
+                    else if rowLoss { chunkLoss += 1 }
+                    else { chunkDraw += 1 }
                     incrementHashStat(
                         hash: stateHashes[srcOffset + i],
-                        isWin: isWin,
-                        isLoss: isLoss
+                        isWin: rowWin,
+                        isLoss: rowLoss
                     )
                 }
                 incrementCompositionAggregates(
                     gameLength: gameLength, packedId: packedId,
-                    isWin: isWin, isLoss: isLoss, count: chunk
+                    winCount: chunkWin, drawCount: chunkDraw, lossCount: chunkLoss,
+                    gameIsDecisive: gameIsDecisive
                 )
                 // Material-bucket index insertion. Reads the freshly
                 // written `materialCountStorage[slot]` rather than the
@@ -1133,15 +1271,27 @@ final class ReplayBuffer: @unchecked Sendable {
 
     // MARK: - Composition aggregate mutation (must be called while holding `lock`)
 
-    /// Add `count` resident positions, all from the same game (so they
-    /// share `gameLength`, `packedId`, and outcome class).
+    /// Add `winCount + drawCount + lossCount` resident positions, all from
+    /// the same game (so they share `gameLength` and `packedId`). The W/D/L
+    /// split is passed explicitly because a single merged append now mixes
+    /// outcome signs within one game: white-mover rows carry +x and
+    /// black-mover rows carry −x, so a decisive game contributes BOTH win
+    /// and loss positions under one `packedId`. `gameIsDecisive` is the
+    /// game-level property (any non-draw row), used to bump the
+    /// decisive-game counter exactly once on the packedId's first
+    /// residency — mirrored by the symmetric decrement in
+    /// `decrementCompositionAggregatesForSlot`, which fires on the game's
+    /// last-evicted slot (whose outcome is non-zero for any decisive game).
     @inline(__always)
     private func incrementCompositionAggregates(
-        gameLength: UInt16, packedId: UInt32, isWin: Bool, isLoss: Bool, count: Int
+        gameLength: UInt16, packedId: UInt32,
+        winCount: Int, drawCount: Int, lossCount: Int,
+        gameIsDecisive: Bool
     ) {
-        if isWin { winPositions += count }
-        else if isLoss { lossPositions += count }
-        else { drawPositions += count }
+        winPositions += winCount
+        lossPositions += lossCount
+        drawPositions += drawCount
+        let count = winCount + drawCount + lossCount
         sumGameLengthOverResidentPositions += Int(gameLength) * count
         // Track decisive-game count transitions: bump only when this
         // packedId crosses from "no resident positions" to "≥1 resident
@@ -1149,7 +1299,7 @@ final class ReplayBuffer: @unchecked Sendable {
         // is handled in `decrementCompositionAggregatesForSlot`.
         let wasResident = residentGames[packedId] != nil
         residentGames[packedId, default: 0] += count
-        if !wasResident && (isWin || isLoss) {
+        if !wasResident && gameIsDecisive {
             residentDecisiveGameCount += 1
         }
         residentLengthHistogram[gameLength, default: 0] += count
@@ -1223,6 +1373,197 @@ final class ReplayBuffer: @unchecked Sendable {
         lock.withLock { hashStats[hash] }
     }
 
+    // MARK: - History reconstruction (must be called while holding `lock`)
+
+    /// Materialize the full `historyFrameCount`-frame network input for the
+    /// position stored at ring `srcIndex`, writing `reconstructedStride`
+    /// floats into `dstBoard` (caller-private staging, exactly one position
+    /// wide). Only meaningful for history encodings; the single-frame fast
+    /// path in `sample`'s `emit` never reaches here.
+    ///
+    /// **Why this works without re-encoding.** Each ply is stored exactly
+    /// once, as its own mover's-perspective frame (frame 0 of the
+    /// inference stack — the same bytes a normal single-position encode
+    /// produces). A game is laid down by `ActiveGame.flush` as one
+    /// contiguous ring block in *reverse* game-ply order: address ascends
+    /// as ply descends (`[ply_K, ply_{K-1}, …, ply_0]`). So the sampled
+    /// ply's `historyFrameCount-1` chronological priors sit at the
+    /// `historyFrameCount-1` ring slots *forward* of `srcIndex`. Frame f
+    /// (f = 0 … historyFrameCount-1) is therefore ring slot
+    /// `(srcIndex + f) mod capacity`.
+    ///
+    /// **Validation.** A candidate frame is valid iff it belongs to the
+    /// same game (`workerGameId`) AND is exactly `f` plies older
+    /// (`plyIndex == ply - f`). On the FIRST invalid f — a game-start
+    /// underflow (no `f`-plies-older position exists), a game-boundary
+    /// crossing, or an eviction that already clobbered the prior — frames
+    /// f … historyFrameCount-1 are zeroed and the gather stops. `(gameId,
+    /// ply)` is ABA-safe within any residency window (see
+    /// `packWorkerGameId`), so no generation tag is needed.
+    ///
+    /// **Perspective fix.** The encoder stores each ply in its OWN mover's
+    /// perspective, and consecutive plies alternate White-POV / Black-POV.
+    /// A frame f plies older than the sampled ply is the opposite mover
+    /// exactly when f is odd. So after the byte gather we apply the
+    /// encoder's full perspective transform (`flipFrameInPlace`) to every
+    /// odd frame — independent of the sampled ply's color — which yields
+    /// bit-exactly the sampled-mover-relative encoding the network expects,
+    /// matching `BoardEncoder.encode(…, encoding: <history encoding>)`.
+    ///
+    /// **Test hook.** `reconstructStack(forWorkerGameId:plyIndex:into:)`
+    /// locates the resident ring slot matching a `(gameId, ply)` pair and
+    /// reconstructs it through this exact path, so the bit-exact
+    /// reconstruction-vs-bake-in test can target a specific position
+    /// deterministically (the public `sample` draws at random). It is the
+    /// minimal seam needed for that test and reuses the production gather +
+    /// flip with no special-casing.
+    @inline(__always)
+    private func reconstructHistoryStack(
+        srcIndex: Int,
+        into dstBoard: UnsafeMutablePointer<Float>
+    ) {
+        let frameFloats = floatsPerBoard            // planesPerFrame × 64
+        let gameId = workerGameIdStorage[srcIndex]
+        let basePly = Int(plyIndexStorage[srcIndex])
+
+        var f = 0
+        while f < historyFrameCount {
+            let ringIndex = (srcIndex + f) % capacity
+            let frameBase = dstBoard + f * frameFloats
+            // Frame 0 is the sampled slot itself — always valid. For f > 0,
+            // require same-game + exactly-f-plies-older. A negative expected
+            // ply (game-start underflow) can never match a stored
+            // (non-negative) plyIndex, so it falls through to the zero-fill.
+            let expectedPly = basePly - f
+            let valid = f == 0
+                || (workerGameIdStorage[ringIndex] == gameId
+                    && expectedPly >= 0
+                    && Int(plyIndexStorage[ringIndex]) == expectedPly)
+            if !valid {
+                // Zero this frame through the last frame, then stop: an
+                // absent prior means every still-older prior is absent too
+                // (the block is contiguous in ply order).
+                let zeroBase = dstBoard + f * frameFloats
+                zeroBase.update(repeating: 0, count: (historyFrameCount - f) * frameFloats)
+                break
+            }
+            frameBase.update(
+                from: boardStorage + ringIndex * frameFloats,
+                count: frameFloats
+            )
+            f += 1
+        }
+
+        // Flip the odd frames into the sampled ply's perspective. Even
+        // frames (including frame 0) are already in that perspective and
+        // are used as stored. A zeroed (absent) frame flips to itself, so
+        // flipping past the gather's stop point is harmless — but we bound
+        // the loop to the frames we actually filled to avoid needless work.
+        var odd = 1
+        while odd < historyFrameCount {
+            flipFrameInPlace(dstBoard + odd * frameFloats)
+            odd += 2
+        }
+    }
+
+    /// Apply the encoder's full perspective transform to one stored
+    /// `planesPerFrame`-plane frame, in place. This is the bit-exact
+    /// inverse-perspective of `BoardEncoder.writeBasicBlock`: encoding the
+    /// same position from the opposite mover's perspective differs from the
+    /// stored frame by exactly (a) a vertical row-reversal of every plane
+    /// and (b) a swap of the my/opp plane pairs.
+    ///
+    /// Plane semantics (the `basic20` block; history frames carry no
+    /// temporal-repetition planes, so only planes 0–19 exist here):
+    ///   - 0–5  my pieces / 6–11 opponent pieces  → row-flip + pair-swap
+    ///   - 12–13 my castling / 14–15 opp castling  → row-flip (constant
+    ///     planes, so the row-flip is a no-op) + pair-swap
+    ///   - 16 en passant target  → row-flip (a positional square)
+    ///   - 17 halfmove clock      → broadcast constant; row-flip no-op, no swap
+    ///   - 18/19 repetition flags → broadcast constant; row-flip no-op, no swap
+    ///
+    /// The row-flip is applied uniformly to all planes (a no-op on the
+    /// broadcast/constant planes); the pair-swap is applied only to the
+    /// two piece/castling pair groups. Operates on caller-private staging.
+    @inline(__always)
+    private func flipFrameInPlace(_ frame: UnsafeMutablePointer<Float>) {
+        let area = ChessNetwork.boardSize * ChessNetwork.boardSize  // 64
+        let rows = ChessNetwork.boardSize                            // 8
+        let cols = ChessNetwork.boardSize                            // 8
+
+        // (1) Vertical row-reversal of every plane: swap row r with row
+        // (rows-1-r) within each plane. Half the row pairs to avoid double
+        // swapping; the middle row (odd `rows`) is its own mirror — but
+        // `rows` is even (8), so every row has a distinct partner.
+        for plane in 0..<planesPerFrame {
+            let planeBase = frame + plane * area
+            var r = 0
+            while r < rows / 2 {
+                let top = planeBase + r * cols
+                let bottom = planeBase + (rows - 1 - r) * cols
+                for c in 0..<cols {
+                    let tmp = top[c]
+                    top[c] = bottom[c]
+                    bottom[c] = tmp
+                }
+                r += 1
+            }
+        }
+
+        // (2) Swap the my/opp plane pairs. Pieces: 0–5 ↔ 6–11. Castling:
+        // 12–13 ↔ 14–15. EP (16), clock (17), repetition (18/19) are not
+        // perspective-paired and are left as-is (their row-flip above
+        // already handled any positional component).
+        @inline(__always)
+        func swapPlanes(_ a: Int, _ b: Int) {
+            let pa = frame + a * area
+            let pb = frame + b * area
+            for k in 0..<area {
+                let tmp = pa[k]
+                pa[k] = pb[k]
+                pb[k] = tmp
+            }
+        }
+        for k in 0..<6 { swapPlanes(k, 6 + k) }       // pieces
+        swapPlanes(12, 14)                             // castling kingside
+        swapPlanes(13, 15)                             // castling queenside
+    }
+
+    /// Test hook: deterministically reconstruct the position whose
+    /// `(workerGameId, plyIndex)` matches the arguments, writing
+    /// `reconstructedStride` floats into `dstBoard`. Returns `false` (and
+    /// leaves `dstBoard` untouched) if no resident slot matches. Routes
+    /// through the exact production gather + odd-frame flip used by
+    /// `sample`, so the bit-exact reconstruction-vs-bake-in test exercises
+    /// the real path without depending on `sample`'s random draw. Single-
+    /// frame encodings still go through the plain frame copy. Holds the
+    /// lock for the lookup + gather, matching `sample`'s discipline.
+    func reconstructStack(
+        forWorkerGameId workerGameId: UInt32,
+        plyIndex: UInt16,
+        into dstBoard: UnsafeMutablePointer<Float>
+    ) -> Bool {
+        lock.withLockUnchecked {
+            var match: Int? = nil
+            for slot in 0..<storedCount
+            where workerGameIdStorage[slot] == workerGameId
+                && plyIndexStorage[slot] == plyIndex {
+                match = slot
+                break
+            }
+            guard let srcIndex = match else { return false }
+            if historyFrameCount > 1 {
+                reconstructHistoryStack(srcIndex: srcIndex, into: dstBoard)
+            } else {
+                dstBoard.update(
+                    from: boardStorage + srcIndex * floatsPerBoard,
+                    count: floatsPerBoard
+                )
+            }
+            return true
+        }
+    }
+
     // MARK: - Sample
 
     /// Draw `sampleCount` positions from the positions currently held,
@@ -1245,8 +1586,11 @@ final class ReplayBuffer: @unchecked Sendable {
     ///     yields first if the combination is jointly tight.
     /// All of this is done by rejection sampling over the same uniform
     /// draw the legacy path uses — O(sampleCount · small constant + #distinct
-    /// resident lengths), with the unchanged O(sampleCount · floatsPerBoard)
-    /// board memcpy still dominating.
+    /// resident lengths), with the per-position board materialization still
+    /// dominating: a single-frame copy for single-frame encodings, or a
+    /// `historyFrameCount`-frame gather + odd-frame flip for history
+    /// encodings (see `reconstructHistoryStack`). Each sampled position
+    /// writes `reconstructedStride` floats into `intoBoards`.
     ///
     /// The training-required outputs (`dstBoards`, `dstMoves`, `dstZs`)
     /// are mandatory. The observability metadata outputs
@@ -1277,13 +1621,30 @@ final class ReplayBuffer: @unchecked Sendable {
             }
 
             let floatsPerBoard = self.floatsPerBoard
+            let reconstructedStride = self.reconstructedStride
+            let multiFrame = historyFrameCount > 1
 
             @inline(__always)
             func emit(_ i: Int, _ srcIndex: Int) {
-                (dstBoards + i * floatsPerBoard).update(
-                    from: boardStorage + srcIndex * floatsPerBoard,
-                    count: floatsPerBoard
-                )
+                let dstBoard = dstBoards + i * reconstructedStride
+                if multiFrame {
+                    // History encoding: assemble the `historyFrameCount`-frame
+                    // network input from `historyFrameCount` stored single
+                    // frames (the sampled ply + its contiguous priors), then
+                    // flip the odd frames into the sampled ply's perspective.
+                    // All gather reads stay under this lock (we're inside
+                    // `withLockUnchecked`); the flip mutates only `dstBoard`,
+                    // which is caller-private staging.
+                    reconstructHistoryStack(srcIndex: srcIndex, into: dstBoard)
+                } else {
+                    // Single-frame encoding: the stored stride equals the
+                    // reconstructed stride, so this is the byte-for-byte
+                    // legacy frame copy — no gather, no flip.
+                    dstBoard.update(
+                        from: boardStorage + srcIndex * floatsPerBoard,
+                        count: floatsPerBoard
+                    )
+                }
                 dstMoves[i] = moveStorage[srcIndex]
                 dstZs[i] = outcomeStorage[srcIndex]
                 if let dstPlies { dstPlies[i] = plyIndexStorage[srcIndex] }
@@ -2925,10 +3286,18 @@ final class ReplayBuffer: @unchecked Sendable {
                 let isWin = outcome > 0.5
                 let isLoss = outcome < -0.5
                 incrementHashStat(hash: h, isWin: isWin, isLoss: isLoss)
+                // Per-slot walk: pass this slot's own W/D/L (count 1) and
+                // its decisiveness as the game-level flag. A decisive game
+                // has every row non-draw, so the first-in-ring slot of the
+                // game (the only one that flips `wasResident`) carries the
+                // bump — identical to the legacy per-slot rebuild.
                 incrementCompositionAggregates(
                     gameLength: gameLengthStorage[slot],
                     packedId: workerGameIdStorage[slot],
-                    isWin: isWin, isLoss: isLoss, count: 1
+                    winCount: isWin ? 1 : 0,
+                    drawCount: (!isWin && !isLoss) ? 1 : 0,
+                    lossCount: isLoss ? 1 : 0,
+                    gameIsDecisive: isWin || isLoss
                 )
                 let bucket = Self.materialBucketIndex(for: materialCountStorage[slot])
                 materialBucketSlots[bucket].insert(slot)
