@@ -135,4 +135,54 @@ final class SafetensorsModelIOTests: XCTestCase {
             weights: [[1, 2, 3]], architecture: arch, includesVelocity: false
         ))
     }
+
+    /// A file whose embedded architecture's plan disagrees with a stored
+    /// tensor's element count (hand-edited config, buggy external writer) must
+    /// surface as a clean `tensorShapeMismatch`, NOT a trap. The crash path was
+    /// a `.linear` tensor: `decode` regenerates the plan from the embedded arch
+    /// and `fromTorchLayout`/`transpose2D` index by the plan's [out,in] dims, so
+    /// a short data array ran off the end before the downstream `loadWeights`
+    /// count guard could ever see it. The integrity hash (`content_sha256`)
+    /// covers only the data region, so a writer that recomputes it still reaches
+    /// this point — exactly the gap this guards. We corrupt the first `.linear`
+    /// tensor specifically to exercise the former OOB path.
+    func testLinearTensorCountMismatchAgainstEmbeddedArchThrowsCleanly() throws {
+        let arch = NetworkArchitecture.current
+        let plan = arch.weightTensorPlan()
+        let names = SafetensorsModelIO.tensorNames(for: arch, includesVelocity: false)
+
+        let linearIdx = try XCTUnwrap(
+            plan.firstIndex { $0.kind == .linear },
+            "current arch must have at least one linear tensor")
+        let corruptCount = plan[linearIdx].elementCount / 2
+        XCTAssertGreaterThan(corruptCount, 0)
+        XCTAssertNotEqual(corruptCount, plan[linearIdx].elementCount)
+
+        // Element counts match the plan everywhere except the corrupted linear
+        // tensor. Each tensor's declared shape matches its own data length, so
+        // the lower-level SafetensorsFile.encode accepts the file (and writes a
+        // valid content_sha256); only the plan cross-check in SafetensorsModelIO
+        // rejects it.
+        var tensors: [SafetensorsTensor] = []
+        for (i, spec) in plan.enumerated() {
+            let count = (i == linearIdx) ? corruptCount : spec.elementCount
+            tensors.append(SafetensorsTensor(
+                name: names[i], shape: [count],
+                data: [Float](repeating: 0, count: count)))
+        }
+
+        let archJSON = String(decoding: try JSONEncoder().encode(arch), as: UTF8.self)
+        let bytes = try SafetensorsFile.encode(
+            tensors: tensors, metadata: ["architecture": archJSON])
+
+        XCTAssertThrowsError(try SafetensorsModelIO.decode(bytes)) { error in
+            guard case SafetensorsModelIO.IOError.tensorShapeMismatch(
+                let name, let expected, let got) = error else {
+                return XCTFail("expected .tensorShapeMismatch, got \(error)")
+            }
+            XCTAssertEqual(name, names[linearIdx])
+            XCTAssertEqual(expected, plan[linearIdx].elementCount)
+            XCTAssertEqual(got, corruptCount)
+        }
+    }
 }

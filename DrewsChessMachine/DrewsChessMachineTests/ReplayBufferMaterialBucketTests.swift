@@ -58,21 +58,25 @@ final class ReplayBufferMaterialBucketTests: XCTestCase {
         var hashes = [UInt64](repeating: 0, count: length)
         for i in 0..<length { hashes[i] = (UInt64(workerId) << 40) | (UInt64(gameIndex) << 16) | UInt64(i & 0xFFFF) }
         let mats = [UInt8](repeating: materialCount, count: length)
+        // append now takes a per-position outcomes pointer; the whole game
+        // shares one outcome, so broadcast it across all `length` rows.
+        let outcomes = [Float](repeating: outcome, count: length)
         boards.withUnsafeBufferPointer { b in
         moves.withUnsafeBufferPointer { m in
         plies.withUnsafeBufferPointer { pl in
         taus.withUnsafeBufferPointer { t in
         hashes.withUnsafeBufferPointer { h in
         mats.withUnsafeBufferPointer { ma in
+        outcomes.withUnsafeBufferPointer { o in
             buffer.append(
                 boards: b.baseAddress!, policyIndices: m.baseAddress!,
                 plyIndices: pl.baseAddress!, samplingTaus: t.baseAddress!,
                 stateHashes: h.baseAddress!, materialCounts: ma.baseAddress!,
                 gameLength: UInt16(min(length, Int(UInt16.max))),
                 workerId: workerId, intraWorkerGameIndex: gameIndex,
-                outcome: outcome, count: length
+                outcomes: o.baseAddress!, count: length
             )
-        }}}}}}
+        }}}}}}}
     }
 
     private func drawBatch(

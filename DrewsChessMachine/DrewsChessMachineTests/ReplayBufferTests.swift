@@ -59,6 +59,8 @@ final class ReplayBufferTests: XCTestCase {
         var tau: Float = 1.0
         var hash: UInt64 = 0xCAFE_BABE_DEAD_BEEF
         var mat: UInt8 = 32
+        // append takes a per-position outcomes pointer; one position here.
+        var outcome: Float = 1.0
 
         boardFloats.withUnsafeBufferPointer { boardsBuf in
             withUnsafePointer(to: &move) { moveP in
@@ -66,6 +68,7 @@ final class ReplayBufferTests: XCTestCase {
                     withUnsafePointer(to: &tau) { tauP in
                         withUnsafePointer(to: &hash) { hashP in
                             withUnsafePointer(to: &mat) { matP in
+                            withUnsafePointer(to: &outcome) { outcomeP in
                                 buffer.append(
                                     boards: boardsBuf.baseAddress!,
                                     policyIndices: moveP,
@@ -76,9 +79,10 @@ final class ReplayBufferTests: XCTestCase {
                                     gameLength: 1,
                                     workerId: 0,
                                     intraWorkerGameIndex: 0,
-                                    outcome: 1.0,
+                                    outcomes: outcomeP,
                                     count: 1
                                 )
+                            }
                             }
                         }
                     }
@@ -438,12 +442,15 @@ final class ReplayBufferTests: XCTestCase {
         var tau: Float = 1.0
         var hash: UInt64 = seed
         var mat: UInt8 = 32
+        // append takes a per-position outcomes pointer; one position here.
+        var outcome: Float = 1.0
         boardFloats.withUnsafeBufferPointer { boardsBuf in
             withUnsafePointer(to: &move) { moveP in
                 withUnsafePointer(to: &ply) { plyP in
                     withUnsafePointer(to: &tau) { tauP in
                         withUnsafePointer(to: &hash) { hashP in
                             withUnsafePointer(to: &mat) { matP in
+                            withUnsafePointer(to: &outcome) { outcomeP in
                                 buffer.append(
                                     boards: boardsBuf.baseAddress!,
                                     policyIndices: moveP,
@@ -454,9 +461,10 @@ final class ReplayBufferTests: XCTestCase {
                                     gameLength: 1,
                                     workerId: 0,
                                     intraWorkerGameIndex: UInt32(seed & 0xFFFF),
-                                    outcome: 1.0,
+                                    outcomes: outcomeP,
                                     count: 1
                                 )
+                            }
                             }
                         }
                     }

@@ -112,6 +112,8 @@ final class RuntimeArchReachTests: XCTestCase {
         var tau: Float = 0.8
         var hash: UInt64 = 0x1234_5678
         var mat: UInt8 = 24
+        // append takes a per-position outcomes pointer; one position here.
+        var outcome: Float = 1.0
         board.withUnsafeBufferPointer { boardsBuf in
             guard let base = boardsBuf.baseAddress else {
                 XCTFail("board buffer baseAddress is nil"); return
@@ -121,6 +123,7 @@ final class RuntimeArchReachTests: XCTestCase {
             withUnsafePointer(to: &tau) { tauP in
             withUnsafePointer(to: &hash) { hashP in
             withUnsafePointer(to: &mat) { matP in
+            withUnsafePointer(to: &outcome) { outcomeP in
                 buffer.append(
                     boards: base,
                     policyIndices: moveP,
@@ -131,10 +134,10 @@ final class RuntimeArchReachTests: XCTestCase {
                     gameLength: 1,
                     workerId: 0,
                     intraWorkerGameIndex: 0,
-                    outcome: 1.0,
+                    outcomes: outcomeP,
                     count: 1
                 )
-            }}}}}
+            }}}}}}
         }
 
         let url = FileManager.default.temporaryDirectory
@@ -192,5 +195,36 @@ final class RuntimeArchReachTests: XCTestCase {
         XCTAssertTrue(timing.valueLoss.isFinite, "scalar tanh value loss (MSE) must be finite")
         XCTAssertGreaterThanOrEqual(timing.valueLoss, 0, "MSE is non-negative")
         XCTAssertTrue(timing.policyLoss.isFinite)
+    }
+
+    func testScalarTanhEvaluateValueDistributionStaysInBounds() async throws {
+        try requireMetal()
+        // Regression: evaluateValueDistribution sizes its W/D/L probs scratch to
+        // arch.valueHeadClasses, which is 1 for scalar_tanh. The pre-fix code
+        // unconditionally returned slots [0]/[1]/[2], reading two floats off the
+        // end of a one-element allocation. It is reachable via the tactical /
+        // candidate probes, which call this exact method on a ChessMPSNetwork
+        // with no value-head-style gate. The fix branches on valueHeadStyle and
+        // projects the single tanh scalar v onto (win, draw, loss) preserving
+        // win - loss = v. This asserts the projection is sane and matches the
+        // derived scalar from the universal eval path.
+        let net = try ChessMPSNetwork(.randomWeights, arch: scalarTanhArch())
+        let board = BoardEncoder.encode(.starting, encoding: net.inputEncoding)
+
+        let wdl = try await net.evaluateValueDistribution(board: board)
+        XCTAssertTrue(wdl.win.isFinite && wdl.draw.isFinite && wdl.loss.isFinite,
+                      "scalar_tanh W/D/L projection must be finite")
+        XCTAssertEqual(wdl.draw, 0, "a scalar head carries no separable draw mass")
+        XCTAssertGreaterThanOrEqual(wdl.win, 0, "win mass must be non-negative")
+        XCTAssertGreaterThanOrEqual(wdl.loss, 0, "loss mass must be non-negative")
+        XCTAssertLessThanOrEqual(abs(wdl.win - wdl.loss), 1.0 + 1e-3,
+                                 "win - loss reconstructs v = tanh in [-1, 1]")
+
+        // The same deterministic forward pass through the universal eval path
+        // yields the derived scalar v; win - loss must reconstruct it.
+        let vBox = SyncBox<Float>(2)
+        try await net.evaluate(board: board) { _, v in vBox.value = v }
+        XCTAssertEqual(wdl.win - wdl.loss, vBox.value, accuracy: 1e-4,
+                       "win - loss must equal the derived scalar value v")
     }
 }
