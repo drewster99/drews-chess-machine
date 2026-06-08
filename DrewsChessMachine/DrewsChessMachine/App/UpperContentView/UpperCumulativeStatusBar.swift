@@ -75,9 +75,9 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
                 StatusBarCell(label: "Legal mass", value: legalMass)
                 StatusBarCell(label: "Runs", value: runs)
                 StatusBarCell(label: "Arenas", value: arenas, action: onShowArenaHistory)
+                scoreCell
                 StatusBarCell(label: "Promotions", value: promotions, action: onShowPromotions)
                 lastPromoteCell
-                scoreCell
                 tacticalRankCell
                 tacticalProbCell
             },

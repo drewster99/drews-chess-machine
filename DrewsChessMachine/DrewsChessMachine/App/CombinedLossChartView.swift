@@ -30,6 +30,14 @@ struct CombinedLossChartView: View {
     @State private var emaSpan = 25
     @State private var chartGroup = FastChartGroup()
 
+    /// Manually-chosen visible x-window (trainer-step range). `nil`
+    /// means "auto-fit the full run" — the chart follows the live right
+    /// edge as new steps arrive. Once the user pans or zooms, this is
+    /// set and the view stops following live until "Reset zoom" clears
+    /// it back to `nil`. Always stored already clamped to the data's
+    /// full extent (see `clampVisible`).
+    @State private var visibleXRange: ClosedRange<Double>?
+
     /// Color the training (leading-axis) elements share.
     private let trainColor = Color.blue
     /// Color the eval (trailing-axis) elements share.
@@ -70,6 +78,13 @@ struct CombinedLossChartView: View {
                     .fixedSize()
             }
             Spacer(minLength: 0)
+            if visibleXRange != nil {
+                Button("Reset zoom") { visibleXRange = nil }
+                    .buttonStyle(.link)
+            } else {
+                Text("drag to pan · pinch to zoom")
+                    .foregroundStyle(.secondary)
+            }
         }
         .font(.system(.caption, design: .monospaced))
     }
@@ -160,6 +175,17 @@ struct CombinedLossChartView: View {
         let trainDomainYs = emaEnabled ? trainEMAYs : trainRawYs
         let evalDomainYs = emaEnabled ? evalEMAYs : evalRawYs
 
+        // The full run's x-extent, then the actually-visible window. When
+        // the user has panned/zoomed (`visibleXRange != nil`) we honor
+        // that window; otherwise we fit the whole run and track the live
+        // right edge. Either way the Y axes rescale to *only* the points
+        // inside the visible window so zooming into a flat-looking tail
+        // expands it to fill the panel.
+        let fullXDomain = Self.paddedXDomain(xs)
+        let activeXDomain = Self.clampVisible(visibleXRange, to: fullXDomain)
+        let trainYDomainYs = Self.windowedYs(plot: trainPlot, ys: trainDomainYs, xDomain: activeXDomain)
+        let evalYDomainYs = Self.windowedYs(plot: evalPlot, ys: evalDomainYs, xDomain: activeXDomain)
+
         let legendItems = [
             FastChartLegendItem(label: "train total loss (left)", color: trainColor),
             FastChartLegendItem(label: "eval NLL (right)", color: evalColor)
@@ -168,9 +194,9 @@ struct CombinedLossChartView: View {
         return FastLineChart(
             title: "Training vs Eval Loss (X = trainer step)",
             group: chartGroup,
-            xDomain: Self.paddedXDomain(xs),
-            yDomain: Self.paddedYDomain(trainDomainYs),
-            secondaryYDomain: evalPlot.isEmpty ? nil : Self.paddedYDomain(evalDomainYs),
+            xDomain: activeXDomain,
+            yDomain: Self.paddedYDomain(trainYDomainYs),
+            secondaryYDomain: evalPlot.isEmpty ? nil : Self.paddedYDomain(evalYDomainYs),
             secondaryYLabelFormatter: { String(format: "%.2f", $0) },
             secondaryYLabelColor: evalColor,
             series: series,
@@ -179,11 +205,34 @@ struct CombinedLossChartView: View {
             yLabelFormatter: { String(format: "%.2f", $0) },
             xLabelFormatter: FastChartFormatters.compact,
             legend: .custom(legendItems),
-            headerValue: { _ in
+            headerValue: { ctx in
+                // While a crosshair is active, read the sample under it on
+                // each series; otherwise show the latest ("live") values.
                 var parts: [String] = []
-                if let t = trainPts.last { parts.append(String(format: "train %.3f", Double(t.y))) }
-                if let e = evalPts.last { parts.append(String(format: "eval %.3f", Double(e.y))) }
+                if let hx = ctx.hoveredX {
+                    if let i = Self.nearestIndex(hoveredX: hx, points: trainPts) {
+                        parts.append(String(format: "train %.3f", Double(trainPts[i].y)))
+                    }
+                    if let j = Self.nearestIndex(hoveredX: hx, points: evalPts) {
+                        parts.append(String(format: "eval %.3f", Double(evalPts[j].y)))
+                    }
+                } else {
+                    if let t = trainPts.last { parts.append(String(format: "train %.3f", Double(t.y))) }
+                    if let e = evalPts.last { parts.append(String(format: "eval %.3f", Double(e.y))) }
+                }
                 return AttributedString(parts.joined(separator: "   "))
+            },
+            onInteractiveXDomainChange: { requested in
+                // A window that (after clamping) spans essentially the whole
+                // run means "no zoom" — drop back to auto-fit so the chart
+                // resumes following the live right edge instead of freezing
+                // at the current full extent. This makes panning a
+                // fully-zoomed-out chart a no-op and makes pinch-back-to-full
+                // restore live tracking without needing the Reset button.
+                let clamped = Self.clampVisible(requested, to: fullXDomain)
+                let fullSpan = fullXDomain.upperBound - fullXDomain.lowerBound
+                let clampedSpan = clamped.upperBound - clamped.lowerBound
+                visibleXRange = (fullSpan > 0 && clampedSpan >= fullSpan * 0.999) ? nil : clamped
             }
         )
     }
@@ -276,5 +325,63 @@ struct CombinedLossChartView: View {
         if hi <= lo { return (lo - 0.5)...(hi + 0.5) }
         let pad = (hi - lo) * 0.10
         return (lo - pad)...(hi + pad)
+    }
+
+    // MARK: - Pan / zoom helpers
+
+    /// Clamp a requested visible x-window to the run's full extent so a
+    /// pan/zoom can never scroll past the data or zoom out beyond the
+    /// whole run. A `nil` request means "auto-fit" and returns the full
+    /// extent unchanged. The window's span is preserved where possible
+    /// and slid back inside the bounds when it would overhang an edge;
+    /// a span wider than the full extent collapses to the full extent.
+    /// A tiny lower bound on the span keeps the most extreme zoom-in from
+    /// producing a degenerate range.
+    static func clampVisible(
+        _ requested: ClosedRange<Double>?,
+        to full: ClosedRange<Double>
+    ) -> ClosedRange<Double> {
+        guard let requested else { return full }
+        let fullSpan = full.upperBound - full.lowerBound
+        guard fullSpan > 0 else { return full }
+        var span = min(requested.upperBound - requested.lowerBound, fullSpan)
+        span = max(span, fullSpan * 0.002)
+        var lo = requested.lowerBound
+        if lo < full.lowerBound { lo = full.lowerBound }
+        if lo + span > full.upperBound { lo = full.upperBound - span }
+        return lo...(lo + span)
+    }
+
+    /// The y-values of `plot` whose x falls inside `xDomain`, used to
+    /// rescale the Y axis to what's currently visible. `plot` and `ys`
+    /// are parallel (same index = same point). Returns the full `ys`
+    /// when the window happens to bracket no plotted point, so the axis
+    /// never collapses to an empty range.
+    static func windowedYs(
+        plot: [CGPoint],
+        ys: [Double],
+        xDomain: ClosedRange<Double>
+    ) -> [Double] {
+        guard plot.count == ys.count, !plot.isEmpty else { return ys }
+        var out: [Double] = []
+        out.reserveCapacity(plot.count)
+        for i in plot.indices {
+            let x = Double(plot[i].x)
+            if x >= xDomain.lowerBound && x <= xDomain.upperBound { out.append(ys[i]) }
+        }
+        return out.isEmpty ? ys : out
+    }
+
+    /// Index of the point whose x is closest to `hoveredX`. Points are
+    /// non-decreasing in x; a linear scan is fine at these series sizes.
+    static func nearestIndex(hoveredX: Double, points: [CGPoint]) -> Int? {
+        guard !points.isEmpty else { return nil }
+        var best = 0
+        var bestDist = abs(Double(points[0].x) - hoveredX)
+        for i in 1..<points.count {
+            let d = abs(Double(points[i].x) - hoveredX)
+            if d < bestDist { bestDist = d; best = i }
+        }
+        return best
     }
 }

@@ -41,6 +41,16 @@ public struct FastLineChart: View {
     private let xLabelFormatter: @Sendable (Double) -> String
     private let legend: FastChartLegend
     private let headerValue: ((FastChartHoverContext) -> AttributedString)?
+    /// Opt-in interactive pan/zoom. When non-nil, the plot accepts a
+    /// click-drag (horizontal pan) and a trackpad pinch (zoom anchored
+    /// at the cursor, or the window center when nothing is hovered) and
+    /// reports the requested new visible x-range here. The chart itself
+    /// stays bound-driven — it does not mutate its own `xDomain`; the
+    /// caller is expected to store the reported range and feed it back
+    /// in as the next `xDomain` (and rescale Y to the windowed data if
+    /// it wants). nil (the default) leaves the chart non-interactive,
+    /// exactly as before, so every existing call site is unaffected.
+    private let onInteractiveXDomainChange: ((ClosedRange<Double>) -> Void)?
 
     /// Local state for the title's "click-to-explain" popover.
     /// Owned here so each `FastLineChart` instance gets its own
@@ -67,7 +77,8 @@ public struct FastLineChart: View {
         yLabelFormatter: @escaping @Sendable (Double) -> String = FastChartFormatters.compact,
         xLabelFormatter: @escaping @Sendable (Double) -> String = FastChartFormatters.elapsedTime,
         legend: FastChartLegend = .auto,
-        headerValue: ((FastChartHoverContext) -> AttributedString)? = nil
+        headerValue: ((FastChartHoverContext) -> AttributedString)? = nil,
+        onInteractiveXDomainChange: ((ClosedRange<Double>) -> Void)? = nil
     ) {
         self.title = title
         self.titleHelp = titleHelp
@@ -89,6 +100,7 @@ public struct FastLineChart: View {
         self.xLabelFormatter = xLabelFormatter
         self.legend = legend
         self.headerValue = headerValue
+        self.onInteractiveXDomainChange = onInteractiveXDomainChange
     }
 
     /// Tick positions actually rendered for the Y axis. Explicit
@@ -401,6 +413,12 @@ public struct FastLineChart: View {
                     if group.hoveredX != nil { group.hoveredX = nil }
                 }
             }
+            .modifier(ChartXPanZoomModifier(
+                plotWidth: plot.width,
+                xDomain: xDomain,
+                hoveredX: group.hoveredX,
+                onChange: onInteractiveXDomainChange
+            ))
     }
 
     @ViewBuilder
@@ -462,4 +480,77 @@ public struct FastLineChart: View {
 
     private var yAxisLabelColumnWidth: CGFloat { 26 }
     private var xAxisLabelRowHeight: CGFloat { 10 }
+}
+
+/// Adds horizontal pan (click-drag) and pinch-to-zoom to the chart's
+/// hover surface, reporting the requested new visible x-range through
+/// `onChange` in *data* coordinates. The gesture math runs here, where
+/// the plot's pixel width and current data domain are both known, so
+/// the caller only has to store the reported range and feed it back in
+/// as the next `xDomain`.
+///
+/// When `onChange` is nil the modifier is a pass-through — the host
+/// chart stays exactly as non-interactive as it was before, so the
+/// fourteen other `FastLineChart` call sites that don't opt in are
+/// untouched.
+///
+/// Both gestures freeze the domain they started from (`panStart` /
+/// `zoomStart`) for the duration of the gesture, so each incremental
+/// `onChange` is computed against a stable origin even though the
+/// caller is simultaneously feeding a new (possibly clamped) `xDomain`
+/// back in on every frame — without the freeze the feedback would
+/// compound and the pan would accelerate.
+private struct ChartXPanZoomModifier: ViewModifier {
+    let plotWidth: CGFloat
+    let xDomain: ClosedRange<Double>
+    let hoveredX: Double?
+    let onChange: ((ClosedRange<Double>) -> Void)?
+
+    @State private var panStart: ClosedRange<Double>?
+    @State private var zoomStart: ClosedRange<Double>?
+
+    func body(content: Content) -> some View {
+        if let onChange {
+            content.gesture(magnify(onChange).simultaneously(with: pan(onChange)))
+        } else {
+            content
+        }
+    }
+
+    private func pan(_ onChange: @escaping (ClosedRange<Double>) -> Void) -> some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { value in
+                guard plotWidth > 0 else { return }
+                let start = panStart ?? xDomain
+                if panStart == nil { panStart = start }
+                let span = start.upperBound - start.lowerBound
+                // Drag right → reveal earlier data → window moves left.
+                let dx = -Double(value.translation.width) / Double(plotWidth) * span
+                onChange((start.lowerBound + dx)...(start.upperBound + dx))
+            }
+            .onEnded { _ in panStart = nil }
+    }
+
+    private func magnify(_ onChange: @escaping (ClosedRange<Double>) -> Void) -> some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                let start = zoomStart ?? xDomain
+                if zoomStart == nil { zoomStart = start }
+                let startSpan = start.upperBound - start.lowerBound
+                guard startSpan > 0, value.magnification > 0 else { return }
+                // Pinch out (magnification > 1) shrinks the span → zoom in.
+                let newSpan = startSpan / Double(value.magnification)
+                let anchor: Double
+                if let hoveredX, hoveredX >= start.lowerBound, hoveredX <= start.upperBound {
+                    anchor = hoveredX
+                } else {
+                    anchor = (start.lowerBound + start.upperBound) / 2
+                }
+                // Keep the anchor's data value pinned under the same pixel.
+                let fraction = (anchor - start.lowerBound) / startSpan
+                let lo = anchor - fraction * newSpan
+                onChange(lo...(lo + newSpan))
+            }
+            .onEnded { _ in zoomStart = nil }
+    }
 }
