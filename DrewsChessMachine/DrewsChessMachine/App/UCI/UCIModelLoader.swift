@@ -61,26 +61,28 @@ enum UCIModelLoader {
         return try await loadDefault()
     }
 
-    private static func loadExplicit(path: String) async throws -> Loaded {
-        let expanded = (path as NSString).expandingTildeInPath
-        let url = URL(fileURLWithPath: expanded)
-        let ext = url.pathExtension.lowercased()
-        guard ext == "safetensors" || ext == "dcmmodel" else {
-            throw LoadError.explicitMustBeDcmmodel(url)
+    /// Resolve the weight-file URL to use, WITHOUT loading it, using the
+    /// same precedence as `resolveAndLoad`: explicit `--model <path>` if
+    /// given, otherwise the most recently saved session's trainer file.
+    /// Shared by the UCI loader (which then loads it) and the
+    /// `--playchess` launch path (which hands the URL straight to the
+    /// human-play `.loadedFile` opponent). Returns the URL plus a short
+    /// human-readable source label for logging. Throws the same
+    /// `LoadError`s as the load paths so the caller can surface one
+    /// message regardless of resolution vs. load failure.
+    static func resolveModelURL(explicitPath: String?) throws -> (url: URL, sourceLabel: String) {
+        if let path = explicitPath {
+            let expanded = (path as NSString).expandingTildeInPath
+            let url = URL(fileURLWithPath: expanded)
+            let ext = url.pathExtension.lowercased()
+            guard ext == "safetensors" || ext == "dcmmodel" else {
+                throw LoadError.explicitMustBeDcmmodel(url)
+            }
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                throw LoadError.modelFileMissing(url)
+            }
+            return (url, "--model \(url.path)")
         }
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            throw LoadError.modelFileMissing(url)
-        }
-        let file = try CheckpointManager.loadModelFile(at: url)
-        let network = try await buildAndLoad(weights: file.weights, arch: file.architecture)
-        return Loaded(
-            network: network,
-            modelID: file.modelID,
-            sourceLabel: "--model \(url.path)"
-        )
-    }
-
-    private static func loadDefault() async throws -> Loaded {
         guard let pointer = LastSessionPointer.read() else {
             throw LoadError.noSavedSession
         }
@@ -92,13 +94,21 @@ enum UCIModelLoader {
         guard FileManager.default.fileExists(atPath: trainerURL.path) else {
             throw LoadError.modelFileMissing(trainerURL)
         }
-        let file = try CheckpointManager.loadModelFile(at: trainerURL)
+        return (trainerURL, "session \(pointer.sessionID) trainer")
+    }
+
+    private static func loadExplicit(path: String) async throws -> Loaded {
+        let (url, label) = try resolveModelURL(explicitPath: path)
+        let file = try CheckpointManager.loadModelFile(at: url)
         let network = try await buildAndLoad(weights: file.weights, arch: file.architecture)
-        return Loaded(
-            network: network,
-            modelID: file.modelID,
-            sourceLabel: "session \(pointer.sessionID) trainer"
-        )
+        return Loaded(network: network, modelID: file.modelID, sourceLabel: label)
+    }
+
+    private static func loadDefault() async throws -> Loaded {
+        let (url, label) = try resolveModelURL(explicitPath: nil)
+        let file = try CheckpointManager.loadModelFile(at: url)
+        let network = try await buildAndLoad(weights: file.weights, arch: file.architecture)
+        return Loaded(network: network, modelID: file.modelID, sourceLabel: label)
     }
 
     /// Build a fresh `ChessMPSNetwork` (inference BN mode) and load the

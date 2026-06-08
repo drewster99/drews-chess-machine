@@ -58,6 +58,18 @@ struct DrewsChessMachineApp: App {
     /// Nil = no snapshot.
     private let cliOutputURL: URL?
 
+    /// True iff the process was launched with `--playchess`. A GUI-launch
+    /// flag (like `--train`, not a pre-flight exit): the window opens and
+    /// `UpperContentView` immediately starts a human-vs-network game
+    /// against the model resolved from `playChessModelPath` (the same
+    /// resolution `--uci` uses). Mutually exclusive with `--train`.
+    private let autoPlayChessOnLaunch: Bool
+
+    /// Value of `--model <path>` when `--playchess` is present. Nil ⇒ the
+    /// most recently saved session's trainer file is used. Resolved via
+    /// `UCIModelLoader.resolveModelURL` so it matches `--uci`'s behavior.
+    private let playChessModelPath: String?
+
     init() {
         // Parse launch-time CLI flags before any logging so the
         // [APP] banner can record whether auto-train mode is on
@@ -118,8 +130,8 @@ struct DrewsChessMachineApp: App {
         Self.handleSweepIfPresent(rawArgs: rawArgs)
 
         // Known flags.
-        let booleanFlags: Set<String> = ["--train"]
-        let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit"]
+        let booleanFlags: Set<String> = ["--train", "--playchess"]
+        let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit", "--model"]
 
         // Indices of rawArgs that were consumed by a known flag.
         // Anything NOT in this set after parsing is unknown and
@@ -165,6 +177,19 @@ struct DrewsChessMachineApp: App {
         for idx in trainIndices { consumedIndices.insert(idx) }
         if trainIndices.count > 1 {
             errors.append("--train specified \(trainIndices.count) times; only one allowed")
+        }
+
+        // `--playchess` — boolean GUI-launch flag. Opens the window and
+        // starts a human-vs-network game immediately (see `--model`).
+        // Mutually exclusive with `--train` (one launch mode at a time).
+        let playChessIndices = rawArgs.indices.filter { rawArgs[$0] == "--playchess" }
+        self.autoPlayChessOnLaunch = !playChessIndices.isEmpty
+        for idx in playChessIndices { consumedIndices.insert(idx) }
+        if playChessIndices.count > 1 {
+            errors.append("--playchess specified \(playChessIndices.count) times; only one allowed")
+        }
+        if !trainIndices.isEmpty && !playChessIndices.isEmpty {
+            errors.append("--train and --playchess are mutually exclusive")
         }
 
         // `--parameters <path>` — optional hyperparameter override
@@ -218,6 +243,17 @@ struct DrewsChessMachineApp: App {
         }
         self.cliOutputURL = parsedOutputURL
 
+        // `--model <path>` — opponent weights for `--playchess`. (Under
+        // `--uci` this flag is consumed by the UCI pre-flight above and
+        // never reaches here, so any `--model` seen now belongs to a
+        // GUI launch — valid only alongside `--playchess`.) Nil ⇒ the
+        // most recent saved session's trainer is used.
+        let parsedPlayChessModelPath = takeValue(for: "--model")
+        self.playChessModelPath = parsedPlayChessModelPath
+        if parsedPlayChessModelPath != nil && playChessIndices.isEmpty {
+            errors.append("--model is only valid alongside --playchess (UCI passes --model via --uci)")
+        }
+
         // Unknown-argument scan. Anything that wasn't consumed
         // by a known flag above is rejected — including stray
         // positional args, typos like `--out` instead of
@@ -241,18 +277,37 @@ struct DrewsChessMachineApp: App {
         // appearing briefly would be confusing.
         if !errors.isEmpty {
             let usage = """
-            Usage: DrewsChessMachine [--train] [--parameters <file>] [--output <file>] [--training-time-limit <seconds>]
+            Usage: DrewsChessMachine [mode] [options]          (flags may be given in any order)
 
-            Options (any order):
-              --train                         Headless mode: auto build fresh network, start Play-and-Train,
-                                              switch to Candidate Test view.
-              --parameters <file>             JSON file of hyperparameter overrides. Unknown keys are accepted
-                                              by the JSON decoder only if they match a known field.
-              --output <file>                 Write JSON snapshot to <file> on training_time_limit expiry.
+            Launch modes (pick at most one; default = open the normal training console GUI):
+              --train                         Headless: auto-build a fresh network, start Play-and-Train,
+                                              switch to the Candidate Test view.
+              --playchess                     Open the GUI and immediately start a human-vs-network game.
+                                              Opponent weights resolved like --uci (see --model below).
+
+            Training options (with --train):
+              --parameters <file>             JSON file of hyperparameter overrides (partial files allowed;
+                                              only keys matching a known field are applied).
+              --output <file>                 Write the JSON snapshot to <file> on training_time_limit expiry.
                                               Without this flag, the snapshot goes to stdout.
               --training-time-limit <seconds> Seconds of Play-and-Train before the JSON snapshot is written
                                               and the process exits. Overrides any value in --parameters.
                                               Only honored under --train.
+
+            Opponent selection (with --playchess):
+              --model <path>                  .safetensors or .dcmmodel weights to play against. Without it,
+                                              the most recently saved session's trainer is used.
+
+            Headless engine / tools (each runs without opening a window, then exits):
+              --uci [--model <path>]          Run as a UCI engine on stdin/stdout (cutechess, etc.). --model
+                                              selects weights (default: latest saved session's trainer).
+              --sweep [--sweep-sizes <csv>] [--sweep-seconds <n>]
+                                              Batch-size throughput sweep; print the table and exit.
+              --analyze-replay-buffer <path>  Analyze a replay_buffer.bin (or a .dcmsession dir); print JSON,
+                                              human summary to stderr, and exit.
+              --show-default-parameters       Print every default training parameter as JSON and exit.
+              --create-parameters-file [<path>] [--force]
+                                              Write parameters.json + parameters.md (default: ./) and exit.
             """
             for err in errors {
                 let line = "DrewsChessMachine: error: \(err)\n"
@@ -273,8 +328,9 @@ struct DrewsChessMachineApp: App {
         // launch precondition is gone; a count test guards it instead.)
         let dirtyMarker = BuildInfo.gitDirty ? "*" : ""
         let autoTrainMarker = autoTrainOnLaunch ? " autoTrain=on" : ""
+        let playChessMarker = autoPlayChessOnLaunch ? " playChess=on" : ""
         SessionLogger.shared.log(
-            "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp)\(autoTrainMarker)"
+            "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp)\(autoTrainMarker)\(playChessMarker)"
         )
         // The launch banner deliberately no longer prints arch fields: at
         // launch nothing is loaded, so the only arch knowable here is the
@@ -294,6 +350,10 @@ struct DrewsChessMachineApp: App {
         }
         if autoTrainOnLaunch {
             SessionLogger.shared.log("[APP] --train flag detected; will build fresh network and start Play-and-Train on first appear")
+        }
+        if autoPlayChessOnLaunch {
+            let modelDesc = playChessModelPath ?? "latest saved session trainer"
+            SessionLogger.shared.log("[APP] --playchess flag detected; will start a human-vs-network game on first appear (opponent: \(modelDesc))")
         }
         // Reflect the chart-collection gate at launch so a perf
         // isolation run is unambiguously identifiable in the session
@@ -325,6 +385,8 @@ struct DrewsChessMachineApp: App {
             ContentView(
                 commandHub: commandHub,
                 autoTrainOnLaunch: autoTrainOnLaunch,
+                autoPlayChessOnLaunch: autoPlayChessOnLaunch,
+                playChessModelPath: playChessModelPath,
                 cliConfig: cliConfig,
                 cliOutputURL: cliOutputURL,
                 showTrainingGraphs: showTrainingGraphs,

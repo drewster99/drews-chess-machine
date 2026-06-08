@@ -24,6 +24,17 @@ struct UpperContentView: View {
     /// being discovered via `CommandLine.arguments` at view time.
     let autoTrainOnLaunch: Bool
 
+    /// Forwarded from `DrewsChessMachineApp`'s `--playchess` flag. When
+    /// set, the first `.onAppear` resolves the opponent model and starts
+    /// a human-vs-network game (via the existing `.loadedFile` opponent
+    /// path) instead of presenting the resume-from-autosave sheet.
+    let autoPlayChessOnLaunch: Bool
+
+    /// Forwarded `--model <path>` value for `--playchess` (opponent
+    /// weights). Nil ⇒ the most recently saved session's trainer, resolved
+    /// the same way `--uci` resolves it (`UCIModelLoader.resolveModelURL`).
+    let playChessModelPath: String?
+
     /// Parsed `--parameters <file>` JSON. Applied to the relevant
     /// `@AppStorage` / `@State` fields right before
     /// `buildNetwork()` fires inside the auto-train sequence, so
@@ -51,12 +62,16 @@ struct UpperContentView: View {
     init(
         commandHub: AppCommandHub,
         autoTrainOnLaunch: Bool,
+        autoPlayChessOnLaunch: Bool,
+        playChessModelPath: String?,
         cliConfig: CliTrainingConfig?,
         cliOutputURL: URL?,
         chartCoordinator: ChartCoordinator
     ) {
         self.commandHub = commandHub
         self.autoTrainOnLaunch = autoTrainOnLaunch
+        self.autoPlayChessOnLaunch = autoPlayChessOnLaunch
+        self.playChessModelPath = playChessModelPath
         self.cliConfig = cliConfig
         self.cliOutputURL = cliOutputURL
         self.chartCoordinator = chartCoordinator
@@ -70,6 +85,11 @@ struct UpperContentView: View {
     /// session. Flipped `true` the first time the sequence
     /// starts and never cleared.
     @State private var autoTrainFired: Bool = false
+
+    /// Idempotency guard for the `--playchess` launch sequence. `.onAppear`
+    /// can fire more than once; the human-game start is a one-shot launch
+    /// behavior, so this flips `true` on the first fire and never clears.
+    @State private var autoPlayChessFired: Bool = false
 
     /// Live recorder for `--output` runs. Moved to SessionController in
     /// Stage 4h — forwarding proxy. (Allocated at the start of startRealTraining
@@ -1708,8 +1728,20 @@ struct UpperContentView: View {
         // nothing useful. Skipped under `--train` because the
         // headless launch path (`handleWindowAttached`) has
         // already kicked off training and the sheet would be
-        // confusing on top of an active session.
-        if !autoTrainOnLaunch {
+        // confusing on top of an active session. Skipped under
+        // `--playchess` for the same reason: that flag drives the
+        // window straight into a human-vs-network game, so the
+        // resume sheet would be in the way. The play-chess sequence
+        // fires here (after all `session.*` hooks above are wired,
+        // which `playController.start` relies on) rather than in
+        // `handleWindowAttached`, since human play is inherently
+        // interactive and wants the visible window.
+        if autoPlayChessOnLaunch {
+            if !autoPlayChessFired {
+                autoPlayChessFired = true
+                runAutoPlayChessLaunchSequence()
+            }
+        } else if !autoTrainOnLaunch {
             autoResume.maybePresentSheet(isTrainingActive: realTraining)
         }
     }
@@ -1931,6 +1963,38 @@ struct UpperContentView: View {
             playAndTrainBoardMode = .candidateTest
             SessionLogger.shared.log("[APP] --train: switched to Candidate Test view")
         }
+    }
+
+    /// Drive the `--playchess` launch: resolve the opponent weight file
+    /// (explicit `--model <path>`, else the most recent saved session's
+    /// trainer — the same precedence `--uci` uses), point the
+    /// `PlayController` at it through the existing `.loadedFile` opponent
+    /// path, and start a human-vs-network game. The human plays White by
+    /// default (moves first). If resolution fails (no `--model` and no
+    /// saved session), log it and open the Play setup popover so the user
+    /// can pick a model by hand rather than launching into nothing.
+    ///
+    /// Routing through `.loadedFile` deliberately avoids depending on a
+    /// built champion/trainer in this session — the opponent network is
+    /// built fresh from the file, so `--playchess` works on a cold launch.
+    @MainActor
+    private func runAutoPlayChessLaunchSequence() {
+        let resolved: (url: URL, sourceLabel: String)
+        do {
+            resolved = try UCIModelLoader.resolveModelURL(explicitPath: playChessModelPath)
+        } catch {
+            SessionLogger.shared.log(
+                "[APP] --playchess: could not resolve opponent model: \(error). Opening Play setup so you can pick one."
+            )
+            playController.openSetupPopover(trainerAvailable: session.trainer != nil)
+            return
+        }
+        SessionLogger.shared.log("[APP] --playchess: opponent = \(resolved.sourceLabel); starting human-vs-network game (you play White)")
+        playController.loadedFileURL = resolved.url
+        playController.loadedFileLabel = resolved.url.lastPathComponent
+        playController.noteUserOpponentChoice(.loadedFile)
+        playController.humanColor = .white
+        playController.start(session: session, gameWatcher: gameWatcher)
     }
 
     /// Write the `--parameters` JSON overrides into the relevant
