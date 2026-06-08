@@ -7,11 +7,19 @@ section structure verbatim and change only the content within each section.
 per-experiment note says otherwise — the lower-variance signal, and the default for
 cross-experiment comparison.
 
+**Architecture identity (per `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md` §6):** identity is the
+**embedded architecture config** (the `[ARCH]` / `architectureSummary` line), **not**
+`arch_hash`. On this branch `arch_hash` is non-authoritative — it collides across different
+encodings (same plane *count*) and survives only as a legacy-`.dcmmodel` lookup key.
+Identify a run by its `architectureSummary` + lineage + log file; a safetensors file's
+integrity is `content_sha256`. Each experiment's **arch** line below is the canonical
+summary in the plan's decomposed-axis vocabulary.
+
 ---
 
 ## Experiment 1 — 5-Block 7×7-Wide (ReZero / SE)
 
-**arch_hash** `0xdf23a86c` · **lineage** `5K7Z` (saved) / `bzw3` (live) · **dates** 2026-06-01 → 2026-06-06
+**arch** `v4 pre . in basic30(30) -> stem 128 (7x7) . 5x[7x7 conv, SE+/4, clean_add, ReZero] . act relu . policy intermediate_conv(4864) . value WDL(16->FC128) . bfloat16` · **lineage** `5K7Z` (saved) / `bzw3` (live) · **dates** 2026-06-01 → 2026-06-06 · *(legacy `.dcmmodel` tag `0xdf23a86c` — non-authoritative; identity is the embedded config per PLAN §6)*
 
 ### 1. Architecture
 - **Input:** 30 planes × 8×8 (NCHW), current-player perspective; **policy** 4864 logits (76×64, AlphaZero encoding); **value** 3-class W/D/L head.
@@ -60,6 +68,8 @@ Location: `~/Library/Application Support/DrewsChessMachine/Sessions/`
 
 ### 6. Analysis
 - **The plateau is a capacity ceiling, not a blow-up.**
+- **Capacity ceiling confirmed by weight forensics (2026-06-08, on the 465k `champion.safetensors`).** Reading the saved weights directly: **0% dead channels** in every conv (weakest channel 0.6–0.9× its layer mean), **0%** near-zero BN γ, and **~91–95% effective rank** (participation ratio of singular values) in all ten tower convs. The net populated every channel and nearly every representational dimension and *still* couldn't pass pElo ~965 for 210k steps — i.e. the plateau is **not** unused capacity (which would show dead units / low rank), it's a packed net with nowhere to write new knowledge. The 7×7 tower kernels also use their full spatial extent (outer ring holds **~41%** of each kernel's energy; a 3×3 truncation would discard ~74%) — no spatial slack either. The over-sharpening the logs showed (pwNorm 13.8→22.3, pLogitAbsMax 15.6→30.7 while gNorm fell 2.0→0.56 and pElo stayed flat) is the saturated-net signature: SGD spent its remaining budget inflating confidence on known lines, not learning. *Caveat:* the forensics confirm capacity is fully **utilized** but can't fully separate a hard ceiling from a fixable weak-regularization over-sharpening stall (wd 1e-4 lets logits run; the 400k→467k blow-up is partly the LR-cycling experiment). Clean disambiguator: a **resume-from-checkpoint run with wd≈3e-4 / a one-shot LR anneal** — if pElo breaks ~977 it was regularization, if it stays pinned it was capacity.
+- **Stem is over-wide (incidental forensic finding).** The 7×7 stem collapsed to ~1×1 (center holds 30% of energy, outer ring only 21% — vs the tower's 41% edge share): board planes are per-square one-hot, so the stem's real job is a pointwise per-square embedding and it zeroed the kernel periphery. A 1×1/3×3 stem costs ~nothing and frees ~150k params (far more on wider-input encodings). Spatial reasoning is the tower's job.
 - **Promotion cadence is the cleanest strength curve.** A smooth decay ending in a cliff is the saturation signature; health metrics alone look fine well into the plateau.
 - **LR cycling never earned a promotion here** — constant LR did all the work. Cycling on a saturated net is churn, not damage (gNorm stable at peaks); the sub-0.5 arena scores are cycling artifacts, not degradation.
 - **Capacity ≠ parameter count.** The shallow-but-wide 5-block/7×7 net underperformed; for chess, **depth likely matters more** than per-layer receptive field at equal budget.
@@ -71,12 +81,13 @@ Location: `~/Library/Application Support/DrewsChessMachine/Sessions/`
 - **Regularization:** bump weight_decay to ~3e-4 on long runs to cap logit/weight-norm growth.
 - **LR:** drop cycling; at most a single cosine anneal to a low LR for a final polish. Keep constant 1e-2 as the workhorse.
 - Only widen channels **after** depth is restored, not instead of it.
+- **Refined by the weight forensics:** the tower is reach-hungry (uses the full 7×7) **and** channel-packed (0% dead, ~93% rank), so the move is **more depth + more channels at 3×3 kernels** (depth delivers the reach the tower wants, more parameter-efficiently than wide kernels — every competitive chess net is deep/wide/3×3) plus a **1×1 stem**. Do **not** narrow the tower kernels in place — that amputates needed reach. Wider *convs* are the lowest-value axis on an 8×8 board (receptive field is global after ~2 layers).
 
 ---
 
 ## Experiment 2 — 5-Block 7×7-Wide, `full10ply200` Input (ReZero / SE)
 
-**arch_hash** `0xdf23a86c` (**NOT authoritative** — collides with Exp 1; banner also misreports `inputPlanes=30`) · **lineage** `oItC` (saved) / `2Gd1` (live) · **build** 1760 · **dates** 2026-06-06 → **in progress (~55k steps)**
+**arch** `v4 pre . in full10ply200(200) -> stem 128 (7x7) . 5x[7x7 conv, SE+/4, clean_add, ReZero] . act relu . policy intermediate_conv(4864) . value WDL(16->FC128) . bfloat16` · **lineage** `oItC` (saved) / `2Gd1` (live) · **build** 1760 · **log** `dcm_log_20260606-213834.txt` · **dates** 2026-06-06 → 2026-06-07 (**completed at step 58,933**; stopped to start Experiment 3) · *(legacy `arch_hash` `0xdf23a86c` non-authoritative — collides with Exp 1, banner also misreports `inputPlanes=30`; identity is the embedded config per PLAN §6)*
 
 > Identification caveat: this branch makes architecture runtime-configurable, so `arch_hash`/`inputPlanes` in the `[APP]` banner are stale and **identical to Experiment 1's** despite a different encoding. Isolate this run by **log file** (`dcm_log_20260606-213834.txt`) + **live lineage `2Gd1`**, never by `arch_hash`. (A later build adds an `[ARCH]` line carrying the true `architectureSummary`; this run predates it.)
 
@@ -121,7 +132,10 @@ Wide-set is the cross-experiment default and is available here from step ~0 (unl
 | ~40,000 | 666 | 3.82 | 767 | 4.02 | Still stuck: pD 0.79, vAbs 0.083, draws 89%. **8 promotions by here vs Exp 1's 13;** 200-set pElo 767 vs Exp 1's 801 — **slower bootstrap.** |
 | 53,749 | 672 | 3.81 | 735 | 4.01 | Last promotion so far (arena #63, score 0.5775). 66 arenas / **11 promotions** total. |
 | ~54,400 | 672 | 3.81 | 735 | 4.01 | **Value head turns decisive** (~25k steps later than basic30): pD 0.79→**0.716**, vAbs 0.083→**0.145**, draws 90%→**82%**, gNorm 0.98→2.66 (head now learning). |
-| ~55,128 | 674 | 3.80 | 749 | 3.99 | **Current (in progress).** Still climbing (+8 wide last bucket), still promoting, value head decisive (pD 0.706, vAbs 0.153). No plateau yet. |
+| ~55,128 | 674 | 3.80 | 749 | 3.99 | Still climbing (+8 wide last bucket), still promoting, value head decisive (pD 0.706, vAbs 0.153). No plateau yet. |
+| 58,933 | — | — | — | — | **Final step — run stopped to start Experiment 3.** |
+
+**Final status (run ended step 58,933):** the value head broke its stall ~48–54k exactly as anticipated (vAbs 0.083→0.134 by ~48k → ~0.15 by 54k; pD 0.80→0.72; draws 89%→82%). At 52.8k: 200-set pElo 755 / NLL 3.98, vAbs 0.135, pD 0.730. The run **never plateaued** — still on its slow productive slope when stopped — so Exp 2 yields **no capacity verdict**, only the slow-bootstrap + flat-NLL findings. Direct successor: **Experiment 3** (adds the dropped repetition planes back).
 
 ### 4. Wins
 - **Encoding is learnable.** The value head turned decisive at ~54k (pD 0.79→0.71, vAbs ×~2, draws 90%→82%) — not a dead end.
@@ -154,5 +168,65 @@ One of these is probably correct (or maybe even both):
 - **Cadence-as-strength-curve** still holds: promotions are decaying-but-ongoing (no cliff), consistent with a run still on its productive slope.
 
 ### 7. Suggested future variants / changes
-- **Add back 10 history repetition planes to the input tensor**
+- **Add back 10 history repetition planes to the input tensor** — *done: Experiment 3.*
+
+---
+
+## Experiment 3 — 5-Block 7×7-Wide, `full10Ply10Reps210` Input (ReZero / SE)
+
+**arch** `v4 pre . in full10Ply10Reps210(210) -> stem 128 (7x7) . 5x[7x7 conv, SE+/4, clean_add, ReZero] . act relu . policy intermediate_conv(4864) . value WDL(16->FC128) . bfloat16` · **lineage** `eaRt`→`KnCx` (live champion; promotions fork the ID) · **build** 1770 · **log** `dcm_log_20260607-174928.txt` · **dates** 2026-06-07 → in progress (~53k steps @ 2026-06-08 10:36) · *(safetensors-native, embedded-config identity per PLAN §6 — no `arch_hash`; isolate by the `[ARCH]` summary line + log file)*
+
+> Direct successor to Experiment 2 — its single suggested variant (add the 10 repetition planes back). `full10Ply10Reps210` = `full10ply200` (10 stacked `basic20` frames) **+** the 10 `basic30` temporal-repetition planes (20–29) restored as a tail. So across the three experiments only the **input encoding** changes on an identical 5-block-7×7 tower: Exp 1 `basic30` (reps, no history), Exp 2 `full10ply200` (history, no reps), Exp 3 `full10Ply10Reps210` (history **and** reps). A controlled encoding ladder.
+
+### 1. Architecture
+- **Input:** **210 planes** × 8×8 (NCHW), `full10Ply10Reps210` — 10 stacked `basic20` frames (current ply N + 9 prior plies, ply-N mover's perspective, absent frames zero) followed by the 10 `basic30` temporal-repetition planes (plane `200+i` = position `i+1` plies ago is a strict duplicate). **Policy** 4864 logits; **value** 3-class W/D/L head.
+- **Stem:** 7×7 conv, **210 → 128**.
+- **Tower / policy / value:** **identical to Experiments 1 & 2** — 5 pre-activation residual blocks, 128 ch, 7×7 convs, scale-and-bias SE (/4), clean-add + ReZero (α `1/√5`), ReLU; `intermediate_conv` policy head; WDL value head (C_v=16, H=128).
+- **Precision:** bfloat16. **Params:** 9,574,708 (~9.57M).
+- *Context:* **only the input encoding changed vs Exp 2** (full10ply200/200 → full10Ply10Reps210/210). +62,720 params, all stem ((210−200)×128×49). Tests whether restoring the dropped duplication planes recovers Exp 2's slow value-head bootstrap.
+
+### 2. Relevant saved sessions
+Numerous post-promotion + periodic `.dcmsession` autosaves (safetensors-native; live champion lineage `eaRt`→`KnCx`). Verified snapshot:
+
+| Saved session (`.dcmsession`) | Step @ snapshot | Trigger |
+|---|--:|---|
+| `20260608-140104-20260607-7-KnCx-promote` | 48,825 | promote |
+
+Each `champion.safetensors` embeds the full architecture in `__metadata__` (`input_encoding: full10Ply10Reps210`, `training_step`, `content_sha256`). Location: `~/Library/Application Support/DrewsChessMachine/Sessions/`.
+
+### 3. Factuals
+200-set is the cross-comparison column (basic30/Exp 1 lacks early wide-set); wide-set listed where available.
+
+| Step | pElo (200) | NLL (200) | pElo (wide) | NLL (wide) | vAbs | pD | draw% | Detail |
+|--:|--:|--:|--:|--:|--:|--:|--:|---|
+| 5k | 698 | 4.022 | 616 | 3.827 | 0.104 | 0.719 | 79% | Value head already decisive (started low pD 0.667 / vAbs ~0.10 at 1k — unlike Exp 2's draw-prior start). |
+| 10k | 744 | 3.905 | 647 | 3.726 | 0.095 | 0.757 | 85% | Leads basic30 (719) and Exp 2 (694) on 200-set pElo. ~4 promotions by 10.5k (tied). |
+| 23k | 733 | 3.888 | 654 | 3.716 | 0.118 | 0.716 | 83% | Value head tracking basic30 (vAbs 0.118 vs 0.133); still ≈ level on pElo. |
+| 30k | 704 | 3.929 | 652 | 3.759 | 0.130 | 0.714 | 83% | basic30 begins its surge here; 210 flat. |
+| 40k | 761 | 3.909 | 670 | 3.769 | 0.162 | 0.660 | 77% | basic30 overtakes (803 vs 761). 210 value head decisive & climbing. |
+| 48k | 738 | 3.928 | 663 | 3.758 | 0.163 | 0.658 | 78% | Gap to basic30 ~70 pElo / 0.43 NLL. Tied with Exp 2 on pElo (766). |
+| 52.8k | 754 | 3.927 | — | — | 0.167 | 0.647 | 79% | **Plateaued** ~750; basic30 ~810. Gap stable ~55 pElo. |
+
+*Trend slopes (23k–48k): basic30 pElo **+57/10k (R²=0.53)**, NLL **−0.12/10k (R²=0.71)** — genuinely climbing. 210 pElo **+15/10k (R²=0.09 — flat/noise)**, NLL ~0 — not improving. The gap widened 23k→40k then stabilized.*
+
+### 4. Wins
+- **Value head ignites early — like basic30, unlike Exp 2.** Decisive from ~step 1k (vAbs ~0.10, pD climbing); tracks basic30 (vAbs 0.118/0.162/0.167 at 23k/40k/52.8k vs basic30's 0.133/0.20/0.20) and runs **~30k steps ahead** of Exp 2's stalled head (frozen ~0.083 until ~48k). Restoring the repetition planes (the only change vs Exp 2) coincides with recovering early value-head learning. **Behaviorally supports Exp 2's Hypothesis #2** (removing the rep planes slowed the value head), not #1 (history per se) — but see the weight-forensics caveat in §6.
+- **Better calibration + more decisive head than Exp 2** at matched steps (NLL 3.93 vs 3.98–4.02; vAbs 0.167 vs 0.135 at 52.8k).
+
+### 5. Shortcomings
+Comparing primarily against Experiment 1 (basic30).
+- **Tactically weaker than basic30, and the gap is a stable plateau, not closing.** From a ~level start (210 *led* at 23k: 733 vs 714), basic30 surged after 30k while 210 stayed flat; by 52.8k basic30 leads **~55 pElo (810 vs 754) and ~0.43 NLL (3.50 vs 3.93)**. 210's pElo slope is statistically flat (R²=0.09) vs basic30's real climb — the lines diverged then locked, they are not converging.
+- **No tactical benefit over Exp 2.** 210 and full10ply200 are **tied on pElo** (~755 at 52.8k) — restoring the rep planes helped the *value head* but did **nothing** for tactical/policy strength.
+- **Wide-set NLL flat** (~3.72–3.77 across 10k–48k) — the same calibration-not-improving signature as Exp 2; basic30's NLL drops over the same window.
+
+### 6. Analysis
+- **Controlled encoding ladder, value-head result:** on the identical tower/optimizer, Exp 3 (history+reps) ignites the value head as early as Exp 1 (reps, no history) and far earlier than Exp 2 (history, no reps). Read naively, the **repetition planes** drive early value-head learning (H2).
+- **Weight forensics complicate the mechanism (2026-06-08, on the 48.8k `champion.safetensors`).** Per-input-plane stem L2 norm shows the net reads **only frame 0 (2.5× init) and frame 1 (1.6× init)**; **frames 2–9 sit at initialization (0.96–0.98× init) and slightly *decay* over 47k steps** (weight-decay pruning unreinforced inputs), and **the rep-plane tail is also at init (0.95×)**. Across all saved checkpoints (1.4k→48.8k), F0/F1 grow monotonically while F2–9/reps never move. So **the 210 net uses only "current + 1 prior ply"; the other 8 history frames and the rep planes are structurally unused.** And basic30 *also* leaves its rep planes at ~0.66× init — so the rep planes are not heavily weighted in **either** net. Exp 3's early-value-head advantage over Exp 2 is therefore **not** cleanly attributable to the rep planes being *used* (they're at init); it may be seed, or a small purposeful sparse projection the norm can't see (rep planes are sparse-binary). **Open: confirm via an occlusion test** (zero the rep planes on repetition-rich positions, measure the value/policy delta).
+- **Why no tactical gain:** the deep history is unused, so Exp 3 is effectively a `basic30`-class net carrying ~150 dead input planes + ~1 extra ply of context. On the capacity-saturated 5-block tower (Exp 1's forensics: 0% dead, ~93% rank, full kernel utilization) there is no spare capacity to exploit the richer input. Same capacity story as Exp 1, viewed from the input side.
+- **The encoding question is not answerable on this tower** — whether 10-ply history *could* help is confounded by the tower being the bottleneck (the net declines to use the history at all). The clean test is the same deeper-tower experiment Exp 1 calls for.
+
+### 7. Suggested future variants / changes
+- **Settle the encoding question on a tower that isn't the bottleneck:** rerun `full10ply200` / `full10Ply10Reps210` vs `basic30` on an **8–12 block 3×3** tower (1×1 stem). Readout: does the stem's frame-2–9 norm move off init? If yes, capacity was the bind and history helps; if it stays pinned (as here), deep history is dead weight for this engine — close the question.
+- **Occlusion test for the rep planes** (sparse-binary, so weight-norm understates them): on positions at/near 3-fold, zero the rep tail and measure the value-head shift — settles "suppressed vs functionally unused." Ideal probe: a position with ≥2 legal moves where one forces 3-fold/50-move and the other is otherwise equal-looking but keeps a win.
+- **Drop the dead input cost:** a 1×1 stem on the 210 encoding frees ~1.29M params (~13.5% of the model) the current 7×7 stem spends on a spatially-collapsed, mostly-ignored input.
 
