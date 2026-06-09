@@ -230,3 +230,74 @@ Comparing primarily against Experiment 1 (basic30).
 - **Occlusion test for the rep planes** (sparse-binary, so weight-norm understates them): on positions at/near 3-fold, zero the rep tail and measure the value-head shift — settles "suppressed vs functionally unused." Ideal probe: a position with ≥2 legal moves where one forces 3-fold/50-move and the other is otherwise equal-looking but keeps a win.
 - **Drop the dead input cost:** a 1×1 stem on the 210 encoding frees ~1.29M params (~13.5% of the model) the current 7×7 stem spends on a spatially-collapsed, mostly-ignored input.
 
+---
+
+## Experiment 4 — 5-Block 256-Wide Dual-Kernel (7×7+3×3), `full10Ply10Reps210` Input (ReZero / SE)
+
+**arch** `v4 pre . in full10Ply10Reps210(210) -> stem 256 (3x3) . 5x[7x7,3x3 conv, SE+/2, clean_add, ReZero] . act relu . policy intermediate_conv(4864) . value WDL(16->FC256) . bfloat16` · **lineage** `cwkO` (saved) / `jaq1`→`jaq1-4` (live champion; promotions fork the ID) · **build** 1781 (fresh) → 1782 (resumed) · **logs** `dcm_log_20260608-133428.txt` (steps 1–520) + `dcm_log_20260608-140857.txt` (steps 509–13,868, the main run) · **dates** 2026-06-08 (~13:34 → 21:58 CDT, ~8.5h; stopped by manual save) · *(safetensors-native, embedded-config identity per PLAN §6 — no `arch_hash`; isolate by the `[ARCH]` summary line + log file)*
+
+> **First tower change in the series.** Experiments 1–3 held a fixed 5-block / 7×7 / 128-ch tower and varied only the input encoding. Experiment 4 keeps Exp 3's `full10Ply10Reps210` input but **scales the tower** — a direct (partial) implementation of Exp 1/3 §7's "more channels at 3×3 kernels" + "shrink the over-wide stem" advice. It is therefore **not** a controlled step in the encoding ladder; it is an uncontrolled jump (tower width ×2, the block's second conv 7×7→3×3, smaller stem kernel, wider value FC, 2.1× params) and a single seed — read its deltas vs Exp 3 as suggestive, not attributable. The literal preceding fresh build that day was a `stem 512 / single-5×5 / 67.9M`-param probe (`gViN`, build 1781) abandoned after ~822 steps; Exp 4 is the configuration that was kept.
+
+### 1. Architecture
+- **Input:** **210 planes** × 8×8 (NCHW), `full10Ply10Reps210` — identical to Experiment 3 (10 stacked `basic20` frames + the 10 `basic30` temporal-repetition planes 200–209). **Policy** 4864 logits; **value** 3-class W/D/L head.
+- **Stem:** **3×3** conv, 210 → **256** (Exp 3 was 7×7 → 128).
+- **Tower:** **5** pre-activation residual blocks, **256 ch**. Each block has **two convs** (a two-conv residual block, same as Exp 1–3 — `blockConv1KernelSize` + `blockConv2KernelSize`), but the **second conv is now 3×3 instead of 7×7** (block kernels **7×7 → 3×3**; Exp 1–3 were **7×7 → 7×7**, which the summary collapses to "7x7" because the two are equal) → scale-and-bias **SE (reduction /2)** → clean identity add scaled by per-block ReZero α (`1/√5`). Activation ReLU. The tower still has 10 convs (5 blocks × 2), same as Exp 3; what changed is the second kernel (7×7→3×3) and the channel width.
+- **Policy head:** `intermediate_conv` → 4864 (unchanged). **Value head:** 1×1 conv → 16 → BN/ReLU → flatten(1024) → FC 1024→**256** → ReLU → FC 256→3 (W/D/L), categorical-CE (head width 128→256).
+- **Precision:** bfloat16. **Params:** **20,349,716 (~20.35M)** — ~2.1× Exp 3's 9.57M. **Arch version:** v4.
+- *Context:* depth was **not** increased (still 5 blocks) and the stem was **not** taken all the way to 1×1; the advice was taken on two axes (more channels, and moving toward 3×3 by shrinking the block's **second** conv from 7×7 to 3×3) and partially on a third (7×7→3×3 stem). The block's **first** conv stays 7×7 — consistent with Exp 1's forensic finding that the tower uses its full 7×7 reach — so each block now pairs one wide (7×7) and one cheap (3×3) conv instead of two 7×7s.
+- **Optimizer / regularization (unchanged from Exp 1–3):** constant LR **1e-2**, weight_decay **1e-4**, grad_clip 30, μ 0.90, entropy_bonus 0, draw_penalty 0; batch 4096, 800 self-play workers, promote ≥ 0.53 (later 0.55), 400-game arenas.
+
+### 2. Relevant saved sessions
+`.dcmsession` autosaves (safetensors-native; saved lineage `cwkO`, live champion `jaq1`→`jaq1-4`). Session filenames are **UTC**-stamped; the steps below are each session's `trainingSteps`, matching the four arena promotions plus the final manual save (CDT times in parentheses).
+
+| Saved session (`.dcmsession`) | Step @ snapshot | Trigger |
+|---|--:|---|
+| `20260608-201157-20260608-5-cwkO-promote` | 1,268 | promote → `jaq1-1` (arena #3, 15:11 CDT) |
+| `20260608-205859-20260608-5-cwkO-promote` | 2,838 | promote → `jaq1-2` (arena #6, 15:58 CDT) |
+| `20260608-220114-20260608-5-cwkO-promote` | 4,988 | promote → `jaq1-3` (arena #10, 17:01 CDT) |
+| `20260609-000607-20260608-5-cwkO-promote` | 9,091 | promote → `jaq1-4` (arena #18, +68 Elo, 19:06 CDT) |
+| `20260609-025811-20260608-5-cwkO-manual`  | ~13,868 | manual (final, 21:58 CDT — best champion is the prior `jaq1-4`) |
+
+Each `champion.safetensors` embeds the architecture in `__metadata__` (`input_encoding: full10Ply10Reps210`, `training_step`, `content_sha256`). Location: `~/Library/Application Support/DrewsChessMachine/Sessions/`.
+
+### 3. Factuals
+Wide-set (4435-puzzle) is the cross-experiment default; 200-set listed alongside (high variance). `vAbs`/`pD`/`draw%` are champion self-play. **The probe NLL is reliable only through ~step 5,000** — it blows up thereafter (see Shortcomings), which also makes `pElo` (rank-based, more robust) the only usable tactical signal after that point.
+
+| Step | pElo (wide) | NLL (wide) | pElo (200) | NLL (200) | vAbs | pD | draw% | Detail |
+|--:|--:|--:|--:|--:|--:|--:|--:|---|
+| 521 | 477 | 4.17 | 588 | 4.58 | ~0.085 | 0.72 | 84% | Run start (fresh 20.35M net, champion `jaq1` / trainer `jaq1-1`). Constant LR 1e-2, wd 1e-4. |
+| 1,268 | 563 | 3.71 | — | — | 0.089 | 0.72 | 87% | Promotion #3 → `jaq1-1`. Tactical climbing cleanly. |
+| 2,838 | 613 | 3.78 | — | — | 0.097 | 0.75 | 87% | Promotion #6 → `jaq1-2`. |
+| ~5,000 | **635** | **3.78** | — | — | 0.088 | 0.76 | 90% | Promotion #10 → `jaq1-3`. **Peak clean tactical state**; 3 promotions and wide pElo +158 in the first ~4.5k steps. |
+| ~5,500 | ~590 | **5.6 → 9.9** | — | — | — | — | — | **Probe-NLL blow-up onset.** Wide NLL leaves ~3.8 and never returns; climbs to 15–17 over the next ~2k steps. pElo begins oscillating 370–665. |
+| 9,091 | ~550 | ~14 (junk) | — | — | 0.086→**0.149** | 0.73→**0.51** | 86%→**59%** | Promotion #18 → `jaq1-4`, arena **+68 Elo** (the run's only large win). **Champion value head turns decisive here**: by ~step 9,410 vAbs 0.086→0.15, pD 0.73→0.51, draws 86%→59%, mean self-play game length **~280→~122 plies (halved)**. The champion (`jaq1-4`) is the best net of the run. |
+| 13,868 | 623 (junk NLL) | 13.2 | 727 | 13.7 | 0.161 | 0.50 | 57% | **Final step** (manual save, run stopped). 29 arenas / **4 promotions** total; trainer (`jaq1-5`) **lost every arena after #18** (scores 0.16–0.49, Elo to −286), zero further promotions across the last ~4.8k steps. |
+
+*Training-distribution telemetry stayed healthy the entire run — `pEnt` 2.65→2.49, `gNorm` ~1.3–3.1, `pLogitAbsMax` ~13.7 (flat), `pwNorm` 12.7→14.0 (mild), no NaN, legal-mass probe steady 0.85–0.89. The blow-up is **invisible** on `[STATS]`; only the out-of-distribution Lichess probe NLL and the arena reveal it.*
+
+### 4. Wins
+- **Value head turns decisive, strongly.** At the `jaq1-4` promotion (~step 9k) the champion's self-play went from ~86% draws / ~280-ply shuffling to **57% draws / ~122-ply decisive games**, with vAbs ~0.086→0.16 and pD 0.73→0.50. The clearest decisive-value transition of any experiment so far, and the engine genuinely started converting advantages.
+- **Fast, clean early tactical bootstrap** through ~step 5k: wide pElo **477→635** (+158) with 3 promotions and wide NLL falling 4.17→3.78 — a better early tactical slope than Exp 3's 128-ch tower on the same input (≈616 wide at 5k).
+- **No in-distribution instability.** On its own self-play distribution the 2.1×-capacity net was stable in bf16 (entropy, gradient norm, logit max all well-behaved) — the extra capacity did not cause training-loop divergence.
+
+### 5. Shortcomings
+- **Catastrophic out-of-distribution calibration blow-up from ~step 5,400.** Wide-set probe NLL exploded **3.78 → 8–17** and stayed pinned there for the final ~8k steps (200-set likewise). Meanwhile rank-based **pElo only oscillated** (370–665) — i.e. the policy still *ranks* tactical moves roughly as before but assigns **pathologically peaked, confidently-wrong** distributions on positions it doesn't generate in self-play. The arena confirms the over-sharpening from the other side (arena #28: candidate played-move prob ≈ **0.97** every position, value ≈ 0).
+- **Trainer-lineage strength regression.** After the `jaq1-4` promotion the trainer (`jaq1-5`) was weaker than the frozen champion in **every** subsequent arena (scores 0.16–0.49, Elo −7 to −286) and earned **no further promotions** — the last ~4.8k steps were net-negative for the trainer even though the champion was fine.
+- **The failure is invisible to the standard health metrics.** `pEnt`/`gNorm`/`pLogitAbsMax`/`pwNorm` all looked healthy throughout; a run watched only by `[STATS]`/the entropy & draw-collapse alarms would read as fine. Only the manual tactical probe and the arena caught it.
+- **No tactical-ceiling verdict.** Clean wide pElo never cleanly exceeded ~635 before the NLL contamination, so this run cannot be compared on ceiling to Exp 1 (~879 wide) — and it is a single seed on a brand-new tower, so deltas vs Exp 3 are not attributable.
+
+### 6. Analysis
+- **The signature finding is the split:** healthy training-distribution metrics + decisive champion value head, but an exploded out-of-distribution probe NLL and a self-degrading trainer. The net learned to play its own (increasingly narrow, decisive) self-play lines extremely confidently while becoming catastrophically mis-calibrated everywhere else.
+
+One of these is probably the driver (possibly both):
+- **Hypothesis #1 — self-play distribution narrowing.** As the champion sharpened (draws 86%→57%, games halving in length), the replay buffer concentrated on a narrow band of lines; the trainer over-specialized to them and went OOD on tactical puzzles. (`diverge≈1.8` with 100% unique games is *in* the nominally-healthy band, so this is not an obvious diversity collapse — it needs the diversity-histogram + per-frame stem-norm check to confirm.)
+- **Hypothesis #2 — under-regularization at 2.1× capacity.** wd 1e-4 / constant 1e-2 — the settings that held the 9.5M nets — may simply be too weak for a 20.3M policy, exactly the "weights/logits grow unbounded at wd 1e-4" concern Exp 1 §6 flagged. **Caveat that complicates H2:** `pLogitAbsMax`/`pwNorm` did **not** inflate on the training distribution here (unlike Exp 1's saturated-net over-sharpening), so any over-sharpening is *distribution-specific*, not a global logit run-away — which is more consistent with H1 than with a plain weight-norm blow-up.
+- **The champion is genuinely the best net of the run** (`jaq1-4`, step 9,091 — decisive value head, won its arena +68). The regression is the **trainer lineage diverging**, not the champion degrading; the keeper checkpoint is `20260609-000607-…-cwkO-promote` (step 9,091).
+- **Cleanest disambiguator:** resume from the pre-blow-up `jaq1-3` checkpoint (step 4,988) with **wd ≈ 3e-4** and/or a one-shot LR anneal, and watch the **probe NLL**: if it stays bounded it was regularization (H2); if it still explodes while training metrics stay clean it was distribution narrowing (H1).
+
+### 7. Suggested future variants / changes
+- **Make the probe NLL (and self-play diversity histogram) first-class alarms.** This blow-up was silent to every existing alarm; a "wide-NLL rising off its floor" trip would have caught it ~4k steps before the run was stopped.
+- **Re-run from the `jaq1-3` (step ~4,988) checkpoint with wd 3e-4** (± single cosine anneal) to settle H1 vs H2 per §6.
+- **If distribution-narrowing (H1):** raise the self-play exploration temperature / lengthen its tail, or mix a small fraction of OOD (probe-like) positions into the trainer's eval, to keep the policy honest off the self-play manifold.
+- **Take the parts of Exp 1/3 §7 not yet applied:** go to a **1×1 stem** on the 210 encoding (frees ~1.3M params the 3×3 stem still partly wastes) and **add depth** (8–12 blocks) rather than only width — depth was the one axis this experiment left untouched.
+
