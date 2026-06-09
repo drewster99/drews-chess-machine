@@ -14,6 +14,10 @@ enum ChessNetworkError: LocalizedError {
     case weightLoadMismatch(String)
     case variableShapeMissing(String)
     case boardSizeMismatch(expected: Int, got: Int)
+    /// A GPU command buffer we committed finished in a non-`completed` state
+    /// (out-of-memory, timeout, kernel fault). Surfaced instead of consuming
+    /// garbage result tensors.
+    case gpuCommandFailed(stage: String, status: Int, error: String?)
 
     var errorDescription: String? {
         switch self {
@@ -31,6 +35,8 @@ enum ChessNetworkError: LocalizedError {
             return "Variable '\(name)' has no shape — cannot size load placeholder"
         case .boardSizeMismatch(let expected, let got):
             return "Inference input size mismatch: expected \(expected) floats, got \(got)"
+        case .gpuCommandFailed(let stage, let status, let error):
+            return "GPU command buffer failed during \(stage): status=\(status), error=\(error ?? "none")."
         }
     }
 }
@@ -1103,13 +1109,25 @@ final class ChessNetwork: @unchecked Sendable {
         }
         let desc = MPSGraphCompilationDescriptor()
         desc.optimizationLevel = .level1
-        let executable = graph.compile(
-            with: MPSGraphDevice(mtlDevice: metalDevice),
-            feeds: feedShapes,
-            targetTensors: inferenceTargets,
-            targetOperations: nil,
-            compilationDescriptor: desc
-        )
+        // Compile on a large stack: MPSGraph's compile traverses the full op DAG
+        // depth-first, so a deep tower can overflow the default dispatch-worker
+        // stack here just as the trainer's autodiff does. See
+        // `withLargeBuildStack`. The wrapped compile cannot itself throw, so the
+        // only possible error is the helper's unreachable thread-failure.
+        let executable: MPSGraphExecutable
+        do {
+            executable = try withLargeBuildStack {
+                self.graph.compile(
+                    with: MPSGraphDevice(mtlDevice: self.metalDevice),
+                    feeds: feedShapes,
+                    targetTensors: self.inferenceTargets,
+                    targetOperations: nil,
+                    compilationDescriptor: desc
+                )
+            }
+        } catch {
+            preconditionFailure("ChessNetwork inference compile failed on large-stack thread: \(error)")
+        }
         inferenceExecutables[count] = executable
         return executable
     }
@@ -1124,6 +1142,14 @@ final class ChessNetwork: @unchecked Sendable {
     /// back as bf16→fp32; this casts bf16→fp32 on the GPU) — just no CPU round
     /// trip. The result buffer is reused per call; safe because the trainer
     /// drives this serially (phase 2 fully completes before phase 3 reads it).
+    /// The most recent value-baseline command buffer. It is committed WITHOUT a
+    /// host wait (it overlaps the trainer's step), so we cannot inspect its
+    /// status synchronously at commit time. Instead we hold the reference and
+    /// check its (by-then settled) status on the *next* baseline call — a failed
+    /// baseline would otherwise silently feed garbage `v(s)` into training.
+    /// Accessed only on `executionQueue`.
+    private var lastBaselineCommandBuffer: MTLCommandBuffer?
+
     func computeValueBaselineGPU(
         batchBoards: [Float],
         count: Int,
@@ -1145,6 +1171,17 @@ final class ChessNetwork: @unchecked Sendable {
         let expected = count * arch.inputPlanes * Self.boardSize * Self.boardSize
         guard batchBoards.count == expected else {
             throw ChessNetworkError.boardSizeMismatch(expected: expected, got: batchBoards.count)
+        }
+        // The previous baseline was committed without a host wait; by now it has
+        // settled (the trainer's dependent step waited on it). If it faulted,
+        // surface that before issuing another step on top of poisoned state.
+        if let previous = lastBaselineCommandBuffer, previous.status == .error {
+            lastBaselineCommandBuffer = nil
+            throw ChessNetworkError.gpuCommandFailed(
+                stage: "value baseline",
+                status: Int(previous.status.rawValue),
+                error: previous.error?.localizedDescription
+            )
         }
         let entry = batchInputEntry(for: count)
         let resultTD = valueBaselineResultTD(for: count)
@@ -1187,6 +1224,8 @@ final class ChessNetwork: @unchecked Sendable {
                 executionDescriptor: nil
             )
             mpsCommandBuffer.commit()
+            // Retain for the next call's status check (see `lastBaselineCommandBuffer`).
+            lastBaselineCommandBuffer = mtlCommandBuffer
             consume(resultTD)
         }
     }
@@ -1212,13 +1251,21 @@ final class ChessNetwork: @unchecked Sendable {
         }
         let desc = MPSGraphCompilationDescriptor()
         desc.optimizationLevel = .level1
-        let executable = graph.compile(
-            with: MPSGraphDevice(mtlDevice: metalDevice),
-            feeds: feedShapes,
-            targetTensors: [valueOutputFP32],
-            targetOperations: nil,
-            compilationDescriptor: desc
-        )
+        // Large-stack compile — see `inferenceExecutable` / `withLargeBuildStack`.
+        let executable: MPSGraphExecutable
+        do {
+            executable = try withLargeBuildStack {
+                self.graph.compile(
+                    with: MPSGraphDevice(mtlDevice: self.metalDevice),
+                    feeds: feedShapes,
+                    targetTensors: [self.valueOutputFP32],
+                    targetOperations: nil,
+                    compilationDescriptor: desc
+                )
+            }
+        } catch {
+            preconditionFailure("ChessNetwork value-baseline compile failed on large-stack thread: \(error)")
+        }
         valueBaselineExecutables[count] = executable
         return executable
     }

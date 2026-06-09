@@ -9,6 +9,18 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-06-09 CDT — Deep towers build & train without crashing (large graph-build stack) + GPU command-buffer error checking
+
+Building a very deep network (~100+ residual blocks) and starting training crashed the process with an uncatchable `EXC_BAD_ACCESS (SIGBUS)` at a stack guard page. The crash was inside MPSGraph's reverse-mode autodiff: `gradientForPrimaryTensor` → `Autodiff::recursePartialGrad` recurses **depth-first over the op DAG, one native stack frame per op, inline on the calling thread**. The trainer builds that graph on a serial `DispatchQueue` whose worker thread carries the platform-default ~512 KB stack, and a deep tower overflows it — empirically a 100-block tower already overflowed; a 150-block tower recursed ~1,419 frames deep. Depth is the trigger, not width or parameter count (a 5-block 20 M-param net builds fine; a 150-block 3 M-param net did not).
+
+**Build the gradient graph (and compile it) on a dedicated 64 MB-stack thread.** New `withLargeBuildStack(_:)` (`Utils/LargeStackBuild.swift`) runs a closure synchronously on a `Thread` with a 64 MB stack (~128× the dispatch-worker default) and rethrows its result; the caller blocks on a semaphore, so the serial discipline of whatever queue invoked it is preserved (nothing else runs on the trainer/network during the build) and the cross-thread hand-off needs no lock. The autodiff runs inline on the calling thread (confirmed from the crash stack), so hosting it on the big-stack thread is sufficient. Wrapped: the trainer gradient build (`buildTrainingOps`, at both init and `internalResetNetwork`), the trainer's executable `compile`, and the two inference compiles (`inferenceExecutable`, `valueBaselineExecutable`) — `compile` traverses the same DAG, so a deep champion could overflow on the self-play path too. A depth-estimate backstop (`ChessTrainerError.towerTooDeepToBuild`) raises a catchable error for towers beyond ~75 % of the 64 MB budget (~6,000 blocks) instead of letting them SIGBUS.
+
+**GPU command-buffer errors are now surfaced, not swallowed.** After `commit()` + `waitUntilCompleted()` the trainer never checked `mtlCommandBuffer.status`/`.error`. `waitUntilCompleted` returns whether the GPU work succeeded or not, so a failed command buffer (out-of-memory, timeout, kernel fault — the likely failure mode for an oversized net) was silently swallowed and the result tensors read back as garbage, surfacing only later (if at all) as a non-finite-loss trip with the wrong root cause. The training step now throws `ChessTrainerError.gpuCommandFailed` on a non-`completed` status. The value-baseline forward (`computeValueBaselineGPU`) is committed without a host wait (it overlaps the trainer step), so its buffer is retained and its by-then-settled status is checked on the next call, throwing `ChessNetworkError.gpuCommandFailed`. `executable.run`/`graph.run` sites are MPS-internal (no command buffer exposed) and surface errors their own way.
+
+**Known remaining wall (inherent, not fixed here):** the *first* training step's `encode` lazily compiles a Metal pipeline state (`MPSKey_Compile` → `MTLCompiler` → AGX) for every distinct op in the graph, serialized through the Metal compiler queue. At ~150 blocks that first encode takes minutes before step 1 completes; once the pipeline states are cached, subsequent steps encode instantly. This is an MPSGraph/Metal property, separate from the build crash, and applies to both training and inference compiles.
+
+---
+
 ## 2026-06-05 CDT — Model storage is safetensors-native + runtime-configurable architecture (foundation)
 
 Branch `safetensors-storage`. Two linked changes, sequenced storage-format-first.

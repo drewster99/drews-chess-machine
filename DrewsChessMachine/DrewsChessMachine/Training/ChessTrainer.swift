@@ -15,6 +15,14 @@ enum ChessTrainerError: LocalizedError {
     case trainerWeightCountMismatch(expected: String, got: Int)
     case velocityReadbackMissing(String)
     case velocityLoadGraphFailed(String)
+    /// The tower is deep enough that building its gradient graph would risk
+    /// overflowing even the enlarged graph-build stack. Raised *before* the
+    /// build runs so it surfaces as a catchable error instead of a SIGBUS.
+    case towerTooDeepToBuild(numBlocks: Int, estimatedKB: Int, limitKB: Int)
+    /// The GPU command buffer for a training step finished in a non-`completed`
+    /// state (out-of-memory, timeout, kernel fault). Surfaced instead of reading
+    /// back garbage result tensors and training on them.
+    case gpuCommandFailed(stage: String, status: Int, error: String?)
 
     var errorDescription: String? {
         switch self {
@@ -30,6 +38,10 @@ enum ChessTrainerError: LocalizedError {
             return "Velocity tensor missing from graph.run results: \(name)"
         case .velocityLoadGraphFailed(let name):
             return "Velocity load graph.run returned empty/missing result for tensor: \(name)"
+        case .towerTooDeepToBuild(let numBlocks, let estimatedKB, let limitKB):
+            return "Tower too deep to build gradients: \(numBlocks) residual blocks need ~\(estimatedKB) KB of build stack, over the \(limitKB) KB budget. Depth is the limit, not width or parameter count — reduce the block count."
+        case .gpuCommandFailed(let stage, let status, let error):
+            return "GPU command buffer failed during \(stage): status=\(status), error=\(error ?? "none"). Results from this step are unreliable; training halted."
         }
     }
 }
@@ -1679,7 +1691,7 @@ final class ChessTrainer: @unchecked Sendable {
         let net = try ChessNetwork(arch: arch, bnMode: .training)
         net.commandQueue.label = "ChessTrainer.net(init)"
         self.network = net
-        let built = try Self.buildTrainingOps(network: net)
+        let built = try withLargeBuildStack { try Self.buildTrainingOps(network: net) }
         self.movePlayedPlaceholder = built.movePlayed
         self.zPlaceholder = built.z
         self.vBaselinePlaceholder = built.vBaseline
@@ -1882,7 +1894,7 @@ final class ChessTrainer: @unchecked Sendable {
         let net = try ChessNetwork(arch: arch, bnMode: .training)
         net.commandQueue.label = "ChessTrainer.net(reset)"
         self.network = net
-        let built = try Self.buildTrainingOps(network: net)
+        let built = try withLargeBuildStack { try Self.buildTrainingOps(network: net) }
         self.movePlayedPlaceholder = built.movePlayed
         self.zPlaceholder = built.z
         self.vBaselinePlaceholder = built.vBaseline
@@ -2081,6 +2093,27 @@ final class ChessTrainer: @unchecked Sendable {
         velocityGlobalNorm: MPSGraphTensor,
         assignOps: [MPSGraphOperation]
     ) {
+        // Stack-overflow backstop for pathologically deep towers — see
+        // `graphBuildStackBytes`. Autodiff stack appetite scales with depth:
+        // empirically a 100-block tower already overflowed the ~512 KB default
+        // stack (so > ~5 KB/block), and 150 blocks recursed ~1,419 frames deep.
+        // We build on a 64 MB stack, but it is still finite, so refuse — with a
+        // catchable error rather than a SIGBUS — any tower whose estimated
+        // appetite exceeds 75% of that budget. The per-block figure is
+        // deliberately pessimistic (8 KB).
+        let estimatedBytesPerBlock = 8 << 10
+        let fixedBuildOverheadBytes = 512 << 10
+        let estimatedBuildBytes =
+            network.arch.numBlocks * estimatedBytesPerBlock + fixedBuildOverheadBytes
+        let buildBudgetBytes = graphBuildStackBytes * 3 / 4
+        if estimatedBuildBytes > buildBudgetBytes {
+            throw ChessTrainerError.towerTooDeepToBuild(
+                numBlocks: network.arch.numBlocks,
+                estimatedKB: estimatedBuildBytes / 1024,
+                limitKB: buildBudgetBytes / 1024
+            )
+        }
+
         let graph = network.graph
         let dtype = ChessNetwork.mpsDataType(for: network.arch)
 
@@ -5557,7 +5590,7 @@ final class ChessTrainer: @unchecked Sendable {
         includeDiagnostics: Bool,
         targets: [MPSGraphTensor],
         feeds: [MPSGraphTensor: MPSGraphTensorData]
-    ) -> MPSGraphExecutable {
+    ) throws -> MPSGraphExecutable {
         let key = TrainingExecutableKey(batchSize: batchSize, includeDiagnostics: includeDiagnostics)
         if let existing = trainingExecutables[key] {
             return existing
@@ -5572,13 +5605,19 @@ final class ChessTrainer: @unchecked Sendable {
         }
         let des = MPSGraphCompilationDescriptor()
         des.optimizationLevel = .level1
-        let executable = network.graph.compile(
-            with: MPSGraphDevice(mtlDevice: network.metalDevice),
-            feeds: feedShapes,
-            targetTensors: targets,
-            targetOperations: assignOps,
-            compilationDescriptor: des
-        )
+        // Compile on the large-stack thread too: like autodiff, MPSGraph's
+        // compile traverses the full op DAG (now including the gradient ops),
+        // so a deep tower can overflow the default dispatch-worker stack here as
+        // well. See `withLargeBuildStack`.
+        let executable = try withLargeBuildStack {
+            self.network.graph.compile(
+                with: MPSGraphDevice(mtlDevice: self.network.metalDevice),
+                feeds: feedShapes,
+                targetTensors: targets,
+                targetOperations: self.assignOps,
+                compilationDescriptor: des
+            )
+        }
         trainingExecutables[key] = executable
         SessionLogger.shared.log(
             "[EXEC] compiled training executable batch=\(batchSize) diagnostics=\(includeDiagnostics) targets=\(targets.count)"
@@ -5643,7 +5682,7 @@ final class ChessTrainer: @unchecked Sendable {
         // vice versa. The compiled step is numerically identical to graph.run
         // (MPSGraphExecutableTrainingEquivalenceTests). See
         // GPU_UTILIZATION_PLAN.md (Phase 2).
-        let executable = trainingExecutable(
+        let executable = try trainingExecutable(
             batchSize: batchSize,
             includeDiagnostics: includeDiagnostics,
             targets: targets,
@@ -5701,6 +5740,17 @@ final class ChessTrainer: @unchecked Sendable {
         let gpuWaitStart = CFAbsoluteTimeGetCurrent()
         mpsCommandBuffer.commit()
         mpsCommandBuffer.waitUntilCompleted()
+        // `waitUntilCompleted` returns regardless of GPU success. A non-completed
+        // status (OOM / timeout / kernel fault — e.g. an oversized network) means
+        // the result tensors below hold garbage; surface it instead of reading
+        // them back and training on poisoned weights.
+        if mtlCommandBuffer.status != .completed {
+            throw ChessTrainerError.gpuCommandFailed(
+                stage: "training step",
+                status: Int(mtlCommandBuffer.status.rawValue),
+                error: mtlCommandBuffer.error?.localizedDescription
+            )
+        }
         let gpuWaitMs = (CFAbsoluteTimeGetCurrent() - gpuWaitStart) * 1000
         encodeMsTimes.append(encodeMs)
         gpuWaitMsTimes.append(gpuWaitMs)
