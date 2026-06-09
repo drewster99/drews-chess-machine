@@ -5740,11 +5740,12 @@ final class ChessTrainer: @unchecked Sendable {
         let gpuWaitStart = CFAbsoluteTimeGetCurrent()
         mpsCommandBuffer.commit()
         mpsCommandBuffer.waitUntilCompleted()
-        // `waitUntilCompleted` returns regardless of GPU success. A non-completed
-        // status (OOM / timeout / kernel fault — e.g. an oversized network) means
-        // the result tensors below hold garbage; surface it instead of reading
-        // them back and training on poisoned weights.
-        if mtlCommandBuffer.status != .completed {
+        // `waitUntilCompleted` returns regardless of GPU success, leaving the
+        // buffer in either `.completed` or `.error`. On `.error` (OOM / timeout /
+        // kernel fault — e.g. an oversized network) the result tensors below hold
+        // garbage; surface it instead of reading them back and training on
+        // poisoned weights.
+        if mtlCommandBuffer.status == .error {
             throw ChessTrainerError.gpuCommandFailed(
                 stage: "training step",
                 status: mtlCommandBuffer.status,
