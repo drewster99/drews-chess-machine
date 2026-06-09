@@ -129,6 +129,12 @@ struct DrewsChessMachineApp: App {
         // GUI init, so no window and no auto-resume sheet.
         Self.handleSweepIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: headless depth (block-count) sweep (--arch-sweep). Builds a
+        // fresh trainer at each requested block count, times build + per-step, and
+        // streams JSONL — investigation tool for the deep-tower "hang". Exits
+        // before SwiftUI / Metal GUI init.
+        Self.handleArchSweepIfPresent(rawArgs: rawArgs)
+
         // Known flags.
         let booleanFlags: Set<String> = ["--train", "--playchess"]
         let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit", "--model"]
@@ -820,6 +826,68 @@ struct DrewsChessMachineApp: App {
         }
 
         SweepCLI.runAndExit(sizes: sizes, secondsPerSize: secondsPerSize)
+    }
+
+    // MARK: - Depth (block-count) sweep pre-flight (--arch-sweep)
+
+    /// Inspects `rawArgs` for `--arch-sweep`. If present, parses the optional
+    /// companions (`--arch-sweep-blocks <csv>`, `--arch-sweep-steps <n>`,
+    /// `--arch-sweep-batch <n>`, `--arch-sweep-out <path>`) and hands control to
+    /// `ArchSweepCLI.runAndExit`, which never returns. Investigation-only.
+    private static func handleArchSweepIfPresent(rawArgs: [String]) {
+        let flag = "--arch-sweep"
+        guard rawArgs.contains(flag) else { return }
+        let blocksFlag = "--arch-sweep-blocks"
+        let stepsFlag = "--arch-sweep-steps"
+        let batchFlag = "--arch-sweep-batch"
+        let outFlag = "--arch-sweep-out"
+
+        let allowedFlags: Set<String> = [flag, blocksFlag, stepsFlag, batchFlag, outFlag]
+        if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
+            FileHandle.standardError.write(Data(
+                "error: \(flag) does not accept '\(bad)'\n".utf8
+            ))
+            Darwin.exit(50)
+        }
+
+        func value(after f: String) -> String? {
+            guard let idx = rawArgs.firstIndex(of: f) else { return nil }
+            let vi = idx + 1
+            guard vi < rawArgs.count, !rawArgs[vi].hasPrefix("--") else {
+                FileHandle.standardError.write(Data("error: \(f) requires a value\n".utf8))
+                Darwin.exit(51)
+            }
+            return rawArgs[vi]
+        }
+
+        var blocks = [20, 50, 80, 110, 140]
+        if let raw = value(after: blocksFlag) {
+            let parsed = raw.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            guard !parsed.isEmpty, parsed.allSatisfy({ $0 > 0 }) else {
+                FileHandle.standardError.write(Data("error: \(blocksFlag) '\(raw)' is not a list of positive ints\n".utf8))
+                Darwin.exit(52)
+            }
+            blocks = parsed
+        }
+        var steps = 6
+        if let raw = value(after: stepsFlag) {
+            guard let v = Int(raw), v > 0 else {
+                FileHandle.standardError.write(Data("error: \(stepsFlag) requires a positive int\n".utf8))
+                Darwin.exit(53)
+            }
+            steps = v
+        }
+        var batch = 512
+        if let raw = value(after: batchFlag) {
+            guard let v = Int(raw), v > 0 else {
+                FileHandle.standardError.write(Data("error: \(batchFlag) requires a positive int\n".utf8))
+                Darwin.exit(54)
+            }
+            batch = v
+        }
+        let outPath = value(after: outFlag) ?? "/tmp/arch_bench.jsonl"
+
+        ArchSweepCLI.runAndExit(blocks: blocks, steps: steps, batch: batch, outPath: outPath)
     }
 
     // MARK: - Replay-buffer analyzer pre-flight (--analyze-replay-buffer)
