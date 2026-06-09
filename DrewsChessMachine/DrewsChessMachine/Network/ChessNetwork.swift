@@ -17,7 +17,7 @@ enum ChessNetworkError: LocalizedError {
     /// A GPU command buffer we committed finished in a non-`completed` state
     /// (out-of-memory, timeout, kernel fault). Surfaced instead of consuming
     /// garbage result tensors.
-    case gpuCommandFailed(stage: String, status: Int, error: String?)
+    case gpuCommandFailed(stage: String, status: MTLCommandBufferStatus, error: String?)
 
     var errorDescription: String? {
         switch self {
@@ -1179,7 +1179,7 @@ final class ChessNetwork: @unchecked Sendable {
             lastBaselineCommandBuffer = nil
             throw ChessNetworkError.gpuCommandFailed(
                 stage: "value baseline",
-                status: Int(previous.status.rawValue),
+                status: previous.status,
                 error: previous.error?.localizedDescription
             )
         }

@@ -22,7 +22,7 @@ enum ChessTrainerError: LocalizedError {
     /// The GPU command buffer for a training step finished in a non-`completed`
     /// state (out-of-memory, timeout, kernel fault). Surfaced instead of reading
     /// back garbage result tensors and training on them.
-    case gpuCommandFailed(stage: String, status: Int, error: String?)
+    case gpuCommandFailed(stage: String, status: MTLCommandBufferStatus, error: String?)
 
     var errorDescription: String? {
         switch self {
@@ -5747,7 +5747,7 @@ final class ChessTrainer: @unchecked Sendable {
         if mtlCommandBuffer.status != .completed {
             throw ChessTrainerError.gpuCommandFailed(
                 stage: "training step",
-                status: Int(mtlCommandBuffer.status.rawValue),
+                status: mtlCommandBuffer.status,
                 error: mtlCommandBuffer.error?.localizedDescription
             )
         }
