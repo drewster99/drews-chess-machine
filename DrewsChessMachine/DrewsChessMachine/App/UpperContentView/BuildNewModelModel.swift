@@ -122,6 +122,25 @@ final class BuildNewModelModel {
         )
     }
 
+    /// The depth-appropriate ReZero α init for the current block count:
+    /// `1/√blocks`, which keeps the residual-stream variance ~O(1) at init
+    /// (each of N blocks contributes ~α², so α = 1/√N → total ~1). The field is
+    /// seeded from the loaded preset and does NOT auto-track the block count, so
+    /// building a deep net off a shallow preset silently keeps the shallow α
+    /// (e.g. a 50-block net left at the 5-block 0.447). `numBlocks` is clamped
+    /// to ≥1 to avoid a divide-by-zero while the field is mid-edit.
+    var recommendedRezeroAlphaInit: Float {
+        1.0 / Float(max(1, numBlocks)).squareRoot()
+    }
+
+    /// True when ReZero is enabled and the α init meaningfully differs from the
+    /// depth-appropriate `recommendedRezeroAlphaInit`. Drives the mismatch
+    /// highlight + one-click "apply" affordance in the Build-New-Model screen.
+    /// Tolerance absorbs float round-trip noise (stored values like 0.447214).
+    var rezeroAlphaInitMismatch: Bool {
+        blockUseRezero && abs(rezeroAlphaInit - recommendedRezeroAlphaInit) > 1e-4
+    }
+
     /// `nil` when the current fields form a valid architecture; otherwise the
     /// validation error text (Build is disabled while non-nil).
     var validationError: String? {

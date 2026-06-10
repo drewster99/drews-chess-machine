@@ -69,7 +69,23 @@ struct BuildNewModelView: View {
                     enumPicker("Skip merge", $model.blockSkipMerge, BlockSkipMerge.allCases)
                     Toggle("Use ReZero", isOn: $model.blockUseRezero)
                     if model.blockUseRezero {
-                        floatField("ReZero α init", $model.rezeroAlphaInit)
+                        // The α init is seeded from the loaded preset and does
+                        // NOT auto-track the block count, so a deep net built off
+                        // a shallow preset silently keeps the shallow α. Flag the
+                        // mismatch and offer a one-click snap to 1/√blocks rather
+                        // than silently overwriting a deliberately-set value.
+                        HStack {
+                            floatField("ReZero α init", $model.rezeroAlphaInit)
+                            if model.rezeroAlphaInitMismatch {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                Button(String(format: "Use 1/√%d = %.3f", model.numBlocks, model.recommendedRezeroAlphaInit)) {
+                                    model.rezeroAlphaInit = model.recommendedRezeroAlphaInit
+                                }
+                                .controlSize(.small)
+                                .help("ReZero α init doesn't match the depth-appropriate value (1/√blocks); click to apply.")
+                            }
+                        }
                     }
                     intField("Conv 1 kernel size (odd)", $model.blockConv1KernelSize)
                     intField("Conv 2 kernel size (odd)", $model.blockConv2KernelSize)
