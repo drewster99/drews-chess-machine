@@ -4567,14 +4567,21 @@ final class ChessTrainer: @unchecked Sendable {
             let count: Int
         }
         let sampled: Sampled? = try await enqueue { [sampleSize] in
-            self.ensureReplayBatchCapacity(sampleSize)
-            guard
-                let boards = self.replayBatchBoards,
-                let moves = self.replayBatchMoves,
-                let zs = self.replayBatchZs
-            else {
-                preconditionFailure("ChessTrainer staging buffers missing")
-            }
+            // Probe-private scratch — deliberately NOT the trainStep staging
+            // buffers (`replayBatchBoards/Moves/Zs`). A probe and an in-flight
+            // `trainStep` share this serial queue, but `trainStep` frees the
+            // queue during its Phase-2 cross-queue await; sampling into the
+            // shared staging in that window would overwrite the live batch that
+            // Phase 3 then trains against a now-stale vBaseline (wrong
+            // advantages). Dedicated buffers, freed on return, eliminate it.
+            // `Array(...)` copies the data out before the `defer` deallocates
+            // (defer runs after the return value is built), so the copy is safe.
+            let floatsPerBoard = self.arch.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
+            let total = sampleSize * floatsPerBoard
+            let boards = UnsafeMutablePointer<Float>.allocate(capacity: total)
+            let moves = UnsafeMutablePointer<Int32>.allocate(capacity: sampleSize)
+            let zs = UnsafeMutablePointer<Float>.allocate(capacity: sampleSize)
+            defer { boards.deallocate(); moves.deallocate(); zs.deallocate() }
             let ok = replayBuffer.sample(
                 count: sampleSize,
                 intoBoards: boards,
@@ -4582,8 +4589,6 @@ final class ChessTrainer: @unchecked Sendable {
                 zs: zs
             )
             guard ok else { return nil }
-            let floatsPerBoard = self.arch.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
-            let total = sampleSize * floatsPerBoard
             return Sampled(
                 boards: Array(UnsafeBufferPointer(start: boards, count: total)),
                 count: sampleSize
@@ -5738,17 +5743,25 @@ final class ChessTrainer: @unchecked Sendable {
         )
         let encodeMs = (CFAbsoluteTimeGetCurrent() - encodeStart) * 1000
         let gpuWaitStart = CFAbsoluteTimeGetCurrent()
+        // Serialize this SGD weight-write against concurrent `exportWeights`
+        // reads (probe paths run `graph.run` on the network queue). Held only
+        // across commit→wait — the GPU section that writes the variables — and
+        // released before the readback. Throw-free between wait/signal, so the
+        // signal is always reached. See `ChessNetwork.weightAccessLock`.
+        network.weightAccessLock.wait()
         mpsCommandBuffer.commit()
         mpsCommandBuffer.waitUntilCompleted()
+        let stepStatus = mtlCommandBuffer.status
+        network.weightAccessLock.signal()
         // `waitUntilCompleted` returns regardless of GPU success, leaving the
         // buffer in either `.completed` or `.error`. On `.error` (OOM / timeout /
         // kernel fault — e.g. an oversized network) the result tensors below hold
         // garbage; surface it instead of reading them back and training on
         // poisoned weights.
-        if mtlCommandBuffer.status == .error {
+        if stepStatus == .error {
             throw ChessTrainerError.gpuCommandFailed(
                 stage: "training step",
-                status: mtlCommandBuffer.status,
+                status: stepStatus,
                 error: mtlCommandBuffer.error?.localizedDescription
             )
         }

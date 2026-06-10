@@ -424,6 +424,21 @@ final class ChessNetwork: @unchecked Sendable {
     let graphDevice: MPSGraphDevice
     private let executionQueue = DispatchQueue(label: "drewschess.chessnetwork.serial")
 
+    /// Mutex serializing **variable reads** (`exportWeights`, which runs
+    /// `graph.run` on this network's queue) against the trainer's **SGD
+    /// weight-update** (`ChessTrainer.runPreparedStep`, which writes these same
+    /// MPSGraph variables from a *different* queue). Without it, a probe
+    /// exporting weights (candidate probe, legal-mass / tactical probes,
+    /// analyses) races the in-flight SGD step on the shared variables — torn
+    /// reads and result contamination, violating the trainer's "pause before
+    /// touching weights" contract. A `DispatchSemaphore` (not the project's
+    /// usual `OSAllocatedUnfairLock`) because it's held across GPU work
+    /// (commit→waitUntilCompleted / `graph.run`), which unfair locks aren't
+    /// meant for. Held only across the variable-touching GPU section on each
+    /// side; never nested (the SGD never exports, export never trains), so it
+    /// cannot deadlock. Contention is rare (probes fire on multi-second timers).
+    let weightAccessLock = DispatchSemaphore(value: 1)
+
     /// The architecture this instance was built to. Drives every layer shape
     /// in the build path (the static `channels`/`numBlocks`/… constants remain
     /// as the *default* arch for external callers; a guard test asserts they
@@ -1251,6 +1266,7 @@ final class ChessNetwork: @unchecked Sendable {
         }
         let desc = MPSGraphCompilationDescriptor()
         desc.optimizationLevel = .level1
+        
         // Large-stack compile — see `inferenceExecutable` / `withLargeBuildStack`.
         let executable: MPSGraphExecutable
         do {
@@ -1352,6 +1368,13 @@ final class ChessNetwork: @unchecked Sendable {
 
     private func internalExportWeights() throws -> [[Float]] {
         let allVars = trainableVariables + bnRunningStatsVariables
+
+        // Serialize this variable read against the trainer's concurrent SGD
+        // weight-write (it runs from the trainer queue, not this one). See
+        // `weightAccessLock`. Held across the `graph.run` read below; the
+        // subsequent host-side readback only touches the result snapshots.
+        weightAccessLock.wait()
+        defer { weightAccessLock.signal() }
 
         // MPSGraph requires feeds for every placeholder in the graph,
         // even ones unreachable from the target tensors. We feed the
