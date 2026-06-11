@@ -42,6 +42,18 @@ Resumable `.dcmsession` snapshots (weights + replay buffer + params), covering s
 
 Location: `~/Library/Application Support/DrewsChessMachine/Sessions/`
 
+Resume-point characterization (log forensics 2026-06-11) — the saves differ
+materially in what the trainer state carries:
+
+- **276,276** — pre-cliff (marginal-promotion era; the cadence cliff is at ~340k).
+- **382,625** — **the only post-cliff, pre-LR-cycling checkpoint**: LR cycling
+  began at step 382,728, ~100 steps and four minutes after this save. Chosen
+  starting point for the ceiling-vs-stall resume probe (§8).
+- **465,652** — mid-cycling snapshot; `trainer.safetensors` includes the SGD
+  velocity tensors (`opt.*.velocity`), captured during an lr≈1.8e-1 hot phase.
+- **467,077** — taken right after the run's final constant-1e-1 segment (§3),
+  so the trainer weights and velocity carry that 10×-LR kick.
+
 ### 3. Factuals
 
 | Step | pElo (wide) | NLL (wide) | pElo (200) | NLL (200) | Detail |
@@ -51,9 +63,12 @@ Location: `~/Library/Application Support/DrewsChessMachine/Sessions/`
 | ~40,000 | — | — | 801 | 3.54 | **13 promotions** reached by here — fast early bootstrap. |
 | ~190,000 | 806 | 3.25 | 924 | 3.33 | **Wide-set (4435-puzzle) probe instrumented from ~here** — wide-set coverage begins. |
 | 339,874 | 871 | 3.18 | 977 | 3.21 | **Turning point** — #279, the 29th and final normal-cadence promotion; promotion cadence collapses here (capacity ceiling). |
-| 382,728 | 871 | 3.21 | 961 | 3.23 | **Param change:** LR cycling introduced (peaks ~3e-1, troughs ~1e-4), toggled on/off thereafter. |
+| 382,728 | 871 | 3.21 | 961 | 3.23 | **Param change:** LR cycling introduced (peaks ~3e-1, troughs ~1e-4), toggled on/off thereafter; **momentum cycles with it** (μ 0.90 ↔ ~0.855). A one-minute constant-**1e-1** poke at step ~382,722 (06-05 19:27) preceded it and was rolled back by a session resume. |
 | 409,245 | 879 | 3.16 | 968 | 3.17 | Last promotion — #343 → champion `bzw3-31`; landed inside a **constant-1e-2** window. |
+| 465,739 | — | — | — | — | **Param change (final):** cycling off → **constant LR 1e-1** (10× base) for the last ~1,360 steps, until the manual save/shutdown at 467,099 (06-06 20:23–20:58). The end-of-run trainer state carries this hot segment. |
 | ~470,000 | 876 | 3.17 | 961 | 3.21 | Run assessed: 398 arenas, **30 promotions total**, plateaued. LR cycling earned **zero promotions**; under hot peaks, candidate arena scores drifted **below 0.5** (worse than the standing champion). |
+
+*Run-config note (2026-06-11 forensics): `selfPlayDelay` was **3000 ms** over the entire verified span (step ~251k → end; every `[STATS]` line), alongside workers=800, batch=4096, decay=1e-4, promote≥0.53, unchanged taus. The run still averaged ~3.7k steps/hr — keep this in mind when comparing step rates across runs with different spDelay settings.*
 
 *The **wide set (4435 puzzles)** is the cross-experiment default, but was only instrumented from ~step 190k — early rows show **200-set** only. Both are listed here so this run stays comparable to priors (200-set) and future runs (wide-set). Wide tracks ~90–100 pElo below the 200-set with the same shape.*
 
@@ -82,6 +97,34 @@ Location: `~/Library/Application Support/DrewsChessMachine/Sessions/`
 - **LR:** drop cycling; at most a single cosine anneal to a low LR for a final polish. Keep constant 1e-2 as the workhorse.
 - Only widen channels **after** depth is restored, not instead of it.
 - **Refined by the weight forensics:** the tower is reach-hungry (uses the full 7×7) **and** channel-packed (0% dead, ~93% rank), so the move is **more depth + more channels at 3×3 kernels** (depth delivers the reach the tower wants, more parameter-efficiently than wide kernels — every competitive chess net is deep/wide/3×3) plus a **1×1 stem**. Do **not** narrow the tower kernels in place — that amputates needed reach. Wider *convs* are the lowest-value axis on an 8×8 board (receptive field is global after ~2 layers).
+
+### 8. Resume probe — ceiling vs stall (protocol set 2026-06-11; results pending)
+
+Executes the §6 disambiguator: is the plateau a hard capacity ceiling, or a
+weak-regularization over-sharpening stall (wd 1e-4 letting logit/weight norms
+inflate, saturating the softmax and shrinking effective gradients)?
+
+- **Resume point: `20260606-002543-…-5K7Z-periodic` (step 382,625)** — not the
+  465k/467k saves. Rationale: the 465k trainer is post-83k-steps of cycling
+  churn with the 200-set pElo already down 977→961 and hot velocity tensors in
+  the save; a *null* result from there can't distinguish "ceiling" from
+  "cycling-damaged starting point". 382,625 is post-cliff but pre-cycling, with
+  the inflation pathology already present (pwNorm ~17 of the 13.8→22.3 climb) —
+  the stall hypothesis is fully testable and a null is clean.
+- **Phase A:** cycling off, LR constant 1e-2, weight_decay 1e-4 → **3e-4**,
+  ~5–10k steps. Health signature that decay is biting: pwNorm/pLogitAbsMax
+  deflate, gNorm recovers. Then arena.
+- **Phase B (if Phase A stays pinned):** keep wd 3e-4, one-shot anneal to LR
+  constant **1e-3**, ~5k steps, arena.
+- **Primary readout: the tactical-battery pElo ceiling, not arena promotions.**
+  The lineage never broke **~977 (200-set) / ~879 (wide)** from anywhere in
+  470k steps; breaking it post-intervention is clean signal. Promotions are
+  secondary evidence here: this save's champion is the older `bzw3-30`, and the
+  original run still squeezed straggler promotion #343 out of this region, so
+  a lone promotion is ambiguous (base rate ≈ 1 per ~85k steps from this point).
+- **Verdict rule:** breaks the ceiling → it was the stall (and the phase that
+  broke it names the lever); pinned through both phases → capacity ceiling
+  confirmed, depth is the answer.
 
 ---
 
@@ -301,3 +344,49 @@ One of these is probably the driver (possibly both):
 - **If distribution-narrowing (H1):** raise the self-play exploration temperature / lengthen its tail, or mix a small fraction of OOD (probe-like) positions into the trainer's eval, to keep the policy honest off the self-play manifold.
 - **Take the parts of Exp 1/3 §7 not yet applied:** go to a **1×1 stem** on the 210 encoding (frees ~1.3M params the 3×3 stem still partly wastes) and **add depth** (8–12 blocks) rather than only width — depth was the one axis this experiment left untouched.
 
+
+---
+
+## Experiment 5 — Re-check: Exp 1 Architecture Re-run on Bug-Fixed Code
+
+**arch** identical to Exp 1: `v4 pre . in basic30(30) -> stem 128 (7x7) . 5x[7x7 conv, SE+/4, clean_add, ReZero] . act relu . policy intermediate_conv(4864) . value WDL(16->FC128) . bfloat16 . 8,445,748 params` · **lineage** `3p0G` (saved) / `JhJQ` (live champion) · **builds** 1795 → 1806 · **logs** `dcm_log_20260610-090909.txt` (fresh build) through `dcm_log_20260611-081931.txt` · **dates** 2026-06-10 09:09 CDT → 2026-06-11 (stopped to start Experiment 6)
+
+**Why:** two proven training-loop concurrency bugs — the probe staging-buffer
+clobber and the `exportWeights`/SGD race — were found 2026-06-09 and fixed
+before this run. Every prior experiment trained with those bugs present, so
+this is a clean re-run of Exp 1's exact architecture + input on fixed code:
+a re-baseline, and a health check of the fixes under full load.
+
+**Status at stop (~step 62k, ~31h):** healthy and unremarkable — **9
+promotions / 109 arenas**, pEnt ~2.70, pIllM ~0.009, value head still
+draw-heavy (pD ~0.76, vAbs ~0.14). Promotion cadence trails Exp 1 at matched
+steps (9 vs 13 by ~40–60k), but config differences muddy the comparison: this
+run carried `spDelay=3000ms` until 2026-06-11 ~16:45 CDT (set to 0 at ~step
+61.8k) and stepped at roughly half Exp 1's rate (~1.9k vs ~3.7k steps/hr).
+No bug-fix regression signature observed. Resumable from the `3p0G`
+post-promotion autosaves.
+
+---
+
+## Experiment 6 — Exp 1 Resume Probe: Capacity Ceiling vs Over-Sharpening Stall
+
+**arch** identical to Exp 1 (resumed weights, not a fresh build) · **resume point** `20260606-002543-20260601-12-5K7Z-periodic.dcmsession`, step 382,625 — the only post-cliff, pre-LR-cycling checkpoint of the Exp 1 run · **lineage / log / dates** TBD at launch (2026-06-11 →)
+
+**Why:** Exp 1's verdict — "capacity ceiling, 5 blocks too shallow" — carries
+one unresolved caveat (Exp 1 §6): at wd 1e-4 the logit/weight norms inflated
+unopposed (pwNorm 13.8→22.3, pLogitAbsMax →31, gNorm →0.56), so the plateau
+could instead be a weak-regularization over-sharpening stall — SGD spending
+its budget inflating confidence on known lines while effective gradients
+shrink. The depth-vs-capacity conclusion feeds every future architecture
+choice, so it's worth one cheap resume (~a day) to pin down before investing
+in depth runs.
+
+**Protocol** (full rationale in Exp 1 §8): resume 382,625 → cycling off, LR
+constant 1e-2, **wd 1e-4 → 3e-4**, ~5–10k steps (Phase A); if pinned, one-shot
+anneal to LR 1e-3 (Phase B). Primary readout: does the tactical-battery pElo
+break the lineage's all-run ceiling (**~977** 200-set / **~879** wide)?
+Promotions are secondary (this save's champion is the older `bzw3-30`).
+Verdict rule: ceiling breaks → stall (the breaking phase names the lever);
+pinned through both phases → capacity ceiling confirmed, depth is the answer.
+
+*(results pending)*
