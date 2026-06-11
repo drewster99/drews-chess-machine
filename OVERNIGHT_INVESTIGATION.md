@@ -91,6 +91,86 @@ The executable/.level1/kernel-selection hypothesis is now refuted comprehensivel
 
 Standing facts after iteration 5: the 3×3-vs-7×7 separation remains real and UNEXPLAINED by any audited code path (builder faithful except the ReZero-α Build-screen regression, which only mis-set the 50-block run; tick-driver concurrency race-free; vBaseline handoff dtype-clean; batch/LR identical across stable+blowup runs). Most decisive remaining experiment: train the `v4_12block_3x3` preset on the current build with standard params — stable ⇒ blowup is architecture-intrinsic (depth/kernel dynamics); blows up ⇒ a new-code factor still hides outside everything audited so far. The 7×7 5-block control run started 2026-06-10 09:09 (JhJQ) is the other arm.
 
+### ITERATION 6 (2026-06-10) — SUPER-TABLE: architecture × parameters × outcome, all eight runs
+
+Motivation: the stable/blowup comparisons so far tabulated architecture only; nobody had tabulated the sampling/loss/training parameters per run. Extracted from each run's own `[STATS]`/`[ARCH]`/banner lines (one log per run, identified by lineage ID + build).
+
+**Parameter axis: ELIMINATED.** Every run below — stable and blowup, 2026-05-31 through today — ran with byte-identical knobs:
+`sp.tau=1.00/0.50/0.007 · ar.tau=0.60/0.20/0.020 · drawKeep=1.00 · batch=4096 · lr=1.0e-02·√b (warmup 1/500 on fresh builds) · promote≥0.53 · arenaGames=400 · arenaAutoSec=900 · workers=800 · buffer=1M · clip=30 · wd=1e-04 · ent=0 · illM=1.0 · drawPen=0 · pLossW=vLossW=1.00 · μ=0.90 · complCE=on`
+(Note: `sp.tau` floor has been **0.007** — near-greedy late-game — in every run including the stables; the 1.0→0.4 schedule in the design docs is stale.)
+
+| run (lineage) | dates | build(s) | builder / step-exec era | encoding | stem | tower | SE | value | params | ReZero α (should be) | steps reached | wide-NLL | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| LWKa | 05-31→06-01 | ≤1562 | old fixed · graph.run | basic30 | 128 **(3×3)** | 12×[3×3] 128ch | /4 | WDL 16→FC128 | ~3.9M | 0.289 (✓ 1/√12) | ~106,740 | n/a (pre-wide); 200-set flat 3.57–3.69 | **STABLE** |
+| bzw3 = Exp 1 | 06-01→06-06 | 1612→1716 | old fixed → config-on-load (1693+) · spans the 06-02 executable change | basic30 | 128 (7×7) | 5×[7×7] 128ch | /4 | WDL 16→FC128 | 8.45M | 0.447 (✓ 1/√5) | **470,819** | flat 3.16–3.18 from 240k→470k | **STABLE** |
+| 2Gd1 = Exp 2 | 06-06 | 1760 | config · executable | full10ply200 | 128 (7×7) | 5×[7×7] 128ch | /4 | WDL 16→FC128 | ~8.9M | 0.447 (✓) | 58,933 | flat 3.81–3.82 | **STABLE** |
+| eaRt = Exp 3 | 06-07 | 1770 | config · executable | full10Ply10Reps210 | 128 (7×7) | 5×[7×7] 128ch | /4 | WDL 16→FC128 | 9.57M | 0.447 (✓) | 53,837 | flat ~3.75 | **STABLE** |
+| jaq1 = Exp 4 | 06-08 | 1781/1782 | config · executable | full10Ply10Reps210 | 256 **(3×3)** | 5×[7×7,3×3] 256ch | **/2** | WDL 16→**FC256** | 20.3M | 0.447 (✓) | 13,868 | blowup onset **~5,014** (at promotion #10) | **BLOWUP** |
+| LMGh = 50blk | 06-09 | 1793 | config · executable | basic30 | 32 **(3×3)** | 50×[3×3] 32ch | /4 | WDL 16→FC32 | 1.02M | **0.289 (✗ should be 0.141** — Build-screen α regression) | 87,507 | 7.8→11.1 (blown from ~9k) | **BLOWUP** |
+| WjRY/tGOH = 8blk | 06-09→06-10 | 1795 | config · executable | basic30 | 128 **(3×3)** | 8×[3×3] 128ch | /4 | WDL 16→FC128 | 2.66M | 0.354 (✓ 1/√8) | ~107,548 | flat 3.58 → break 72–76k → 9–14 | **BLOWUP** (onset right after last promotion #26 @62,415) |
+| JhJQ | 06-10→ | 1795/1801 | config · executable | basic30 | 128 (7×7) | 5×[7×7] 128ch | /4 | WDL 16→FC128 | 8.45M | 0.447 (✓) | running | — | control arm (Exp-1 arch on current code) |
+
+Designed total residual gain `blocks·α²` = 1.0 for every run except 50blk (4.17, the α bug).
+
+### What the super-table settles
+1. **Parameters are NOT the axis** — identical across all eight runs. Hypothesis "recent default/param drift" (incl. the 06-04 defaults-alignment commit) is refuted; the 0.007 tau floor, 82%-draw data regime, lr 0.01 (·√(b/4096), a no-op at batch 4096 — see iteration 7 correction), and complement-CE were all present in the 470k-step stable run too.
+2. **The clean separation is now: current-era (config-builder/executable) runs with a 3×3 STEM all blew up (3/3); all 7×7-stem runs are stable (3/3 + control pending); the old-era 3×3 stem (LWKa) was stable to ~106k** — beyond WjRY's 73k onset, though onset varies wildly with arch (5k–73k) so step counts aren't directly comparable.
+3. bzw3's final ~90k steps ran on the CONFIG builder (built-by-embedded-config on load, build 1693+) and stayed flat — the config builder per se is exonerated for 7×7. Combined with the bit-exact kernel tests, "new code × 3×3" survives only as a correlation whose code-level mechanism has been eliminated everywhere we've looked.
+4. Checkpoint phantom-ID naming (saves stamped with an ID absent from [STATS]/[ARENA]) is visible as far back as Exp 4 (cwkO save vs jaq1 lineage), same pattern as tGOH vs WjRY — one bug, ongoing.
+5. The decisive experiment is unchanged and sharper: **`v4_12block_3x3` preset on the current build** replicates LWKa's exact architecture on new code. Stable past ~110k ⇒ blowups are arch-intrinsic to the *specific* 3×3 configs tried (stem width/depth combos), not the code. Blows up ⇒ a new-code factor exists that every audit so far has missed.
+
+### ITERATION 7 (2026-06-10) — pre-bf16 era recovered: the 8×3×3 ran 495k steps STABLE… at 10× lower LR
+
+User recalled an early 8-block 3×3 multi-day run pre-bf16. Found and verified:
+
+| run (lineage) | dates | arch_hash | arch | precision | lr | μ | ent / drawPen / complCE | steps | trainer gens (≈promotions) | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **KbHZ** | 05-14→05-22 | 0x13ba0b55 | **8×[3×3] 128ch, stem 3×3**, basic30, pre-v4 tower | **fp32** | **1.0e-03·√b** | 0.65 | 2.5e-3 / 0.05 / absent | **~495,000** | -3→-18 in the logs (≈15+; steady) | **STABLE** — pLoss 0.77→0.55, pIllM 0.037→0.011, promoting throughout |
+| sMe9 | 05-25→05-28 | 0x13ba0b55 | same 8×3×3 fp32 | fp32 | 1.0e-03·√b | 0.85→0.90 | 0 / 0 / **on** (complCE existed by 05-25) | ≥115,628 | -3→-29 (≈26!) | healthy in logs |
+| ysdg | 05-29→05-30 | 0x5347c53d | 16-block era (053f919) | fp32 | 1.0e-03·√b | 0.90 | 0 / 0 / on | — | — | short-lived era |
+| KXvb→LWKa | 05-31 | 0xbad32ced | v4 12×3×3 (cb3b4cf + c249df2) | **bf16**+fp32 masters | **1.0e-02·√b ← 10× JUMP** | 0.90 | 0 / 0 / on | →106k | 9+ | stable to retirement |
+
+**Corrections to iteration 6:** "parameters identical across all runs" holds only for the post-05-31 era. Before that: lr was **10× lower** (1e-3 vs 1e-2; the √-batch factor is sqrt(b/4096) per ChessTrainer.sqrtScaleBaseBatchSize — a NO-OP at batch 4096, so effective LRs are simply 0.001 vs 0.01. An earlier draft of this section mis-read the display as raw √b; corrected 06-11), momentum 0.65→0.85→0.90 over May, entropy bonus and drawPenalty were on during KbHZ, complement-CE arrived ~05-25. **On 05-31, four things changed at once:** bf16 default + fp32 masters + architecture v4 (pre-activation/ReZero/scale-bias-SE) + lr ×10. Every blowup is on the far side of that day; every 3×3 run on the near side (KbHZ 495k, sMe9 115k) was healthy.
+
+Caveats: KbHZ/sMe9 predate the tactical/Lichess probes entirely (zero `[TACTICAL]` lines) — OOD health unmeasured; their stability evidence is in-dist metrics plus **sustained promotion velocity** (the strongest behavioral signal: KbHZ minted ~15 trainer generations across the week, sMe9 ~26 — vs WjRY's lock-out after 7).
+
+**Sharpened hypothesis:** `lr=1e-2` (·√(b/4096) is a no-op at batch 4096) with μ=0.90 — effective per-gradient step ≈ lr/(1−μ) ≈ 0.10, vs KbHZ's 0.001/(1−0.65) ≈ 0.003, a ~35× aggression gap — sits **above the optimization-stability threshold for shallow/narrow 3×3 towers but below it for 7×7 towers** (and was tolerated by the deeper 12×3×3 with its smaller per-block ReZero gain). bf16 may shave the remaining margin. This fits: the same 8×3×3 shape = 495k steps at lr 1e-3 (fp32 era) vs blowup at 73k at lr 1e-2 (bf16/v4 era); 7×7 stable at lr 1e-2 to 471k; onset-at-promotion (distribution shift perturbs an optimizer already at the stability edge); the minute-scale function-space oscillation in probes.
+
+**Decisive experiments, now even cheaper:** (a) rerun WjRY's exact 8×3×3 v4 bf16 config at **lr 1e-3·√b** — sails past 100k ⇒ LR is the trigger; (b) the 12-block-on-current-code arm still separates code-era for free; (c) optionally KbHZ-exact (fp32) at lr 1e-2 to test precision-independence.
+
+### ITERATION 8 (2026-06-11) — retro-probe of all checkpoints (`--probe-model` CLI) + FINAL RUN TABLE
+
+New enabler: `--probe-model <path> [--probe-set 200|wide|both] [--probe-out f]` (ProbeModelCLI.swift) — loads any saved champion (weight file / .dcmsession / directory of sessions) by its embedded/legacy arch and runs the exact `TacticalProbeRunner.runBatch` path the live watchers use. Swept ALL 80 session checkpoints (incl. legacy v3 era), 0 errors. Raw: `/tmp/checkpoint_probe_sweep.jsonl`.
+
+**Cross-model metric note:** NLL is sharpness-confounded (KbHZ at pEnt≈1.7 reads NLL 6.58 with a *better* pElo than diffuse June models at NLL 3.7). `top1` and `pElo` are the comparable columns; NLL is only comparable within a lineage at similar entropy.
+
+#### FINAL RUN TABLE (all lineages, 2026-05-14 → live)
+
+| run | arch | prec | lr / μ / complCE | steps reached | wide-set top1 / pElo trajectory (probed ckpts) | verdict |
+|---|---|---|---|---|---|---|
+| **KbHZ** | 8×3×3 v3, stem 3×3 | fp32 | 1e-3 / 0.65 / – | 494,927 (May) | 6.7% / 562 @495k | **STABLE** |
+| **KbHZ-cont.** (live) | same, on current code | (loaded arch) | 1e-3 / 0.65 / on→OFF @498.7k | →536k+ | 6.7→**7.4** (post-complCE kick) →7.0% / 562→585→571; NLL dipped 6.58→4.81 (diffusion) → re-sharpened to 6.27 | **STABLE**, promoting (gen 17→22) |
+| **sMe9** | 8×3×3 v3 | fp32 | 1e-3 / 0.85→0.90 / on | ≥372,748 | **11.1% / 709** @373k — best 3×3 ever recorded | **STABLE** |
+| **ysdg** | 16×3×3 v3 | fp32 | 1e-3 / 0.90 / on | ~78,222 | 5.5% / 512 @~75k (slow learner) | stable-while-run |
+| **KXvb** | 12×3×3 **v4 bf16** | bf16 | **1e-2** / 0.90 / on | ~51,551 | 6.5% / 552 @~51k | stable-while-run |
+| **LWKa** | 12×3×3 v4 bf16 | bf16 | 1e-2 / 0.90 / on | ~106,740 | 9.2% / 648 @~100k | **STABLE→retired** |
+| **bzw3 / Exp1** | 5×7×7 v4 | bf16 | 1e-2 / 0.90 / on | **470,819** | 16.6→**17.3% / 876** @251k→471k — strongest model overall | **STABLE** |
+| **2Gd1 / Exp2** | 5×7×7, full10ply200 | bf16 | 1e-2 / 0.90 / on | 58,933 | 6.6→10.5→9.5% / 555→688→660 (gens 1-11) | **STABLE** |
+| **eaRt / Exp3** | 5×7×7, 210enc | bf16 | 1e-2 / 0.90 / on | 53,837 | 7.1→10.3% / 577→682 monotone-ish (gens 1-14) | **STABLE** |
+| **jaq1 / Exp4** | 5 blk 256ch, stem 3×3, k2 3×3 | bf16 | 1e-2 / 0.90 / on | 13,868 | gens 1-3: 6.5→8.7% / →632 healthy; **gen 4 (the onset promotion): NLL 3.77→6.40, top1 8.7→6.3%** — the damage was already in the promoted candidate | **BLOWUP @~5k** |
+| **LMGh / 50blk** | 50×3×3 32ch, **α=1/√12 bug** | bf16 | 1e-2 / 0.90 / on | 87,507 | gen1 4.7%/3.98 → **gen2 NLL 13.1** → gen3 8.5%/5.50 — violent oscillation, champions promoted while OOD-blown | **BLOWUP @~9k** |
+| **WjRY** | 8×3×3 v4, stem 3×3 | bf16 | 1e-2 / 0.90 / on | ~107,548 | gens 1-7 (7.7k→62.4k): 5.2→**8.2% / 614**, NLL 3.73→3.60 — every saved champion healthy & improving; collapse happened entirely in the post-gen-7 trainer (no further promotions → no degraded saves) | **BLOWUP @~73k** |
+| **JhJQ / Exp1-retry** (live) | 5×7×7 v4, current code | bf16 | 1e-2 / 0.90 / on | →57k+ | gens 1-9: 5.0→**8.6% / 630**, NLL 3.94→3.49 monotone | **STABLE**, promoting |
+
+Constant across every run: batch 4096 (√-scale pivot ⇒ effective lr = displayed lr), tau 1.00/0.50/0.007, drawKeep 1.0, clip 30, illM 1.0, buffer 1M, arenas 400g/900s/promote≥0.53. wd: 1e-4 except sMe9/ysdg/KXvb-era 1e-3.
+
+#### What the retro-probe adds
+1. **Blowup damage rides INSIDE promoted candidates at onset** (Exp4 gen-4: champion itself probes 6.40) — arena score (in-dist, vs sibling) and OOD quality decouple exactly at onset. The 50blk promoted a champion at NLL 13.1.
+2. **WjRY's saved champions never degraded** — the rot lived in the trainer after the last promotion; promotion lock-out preserved the champion line. Matches the lock-out-ratchet reading.
+3. **KbHZ continuation is healthy and slightly above its May self** (top1 6.7→7.0-7.4%, pElo 562→571-585) — the complCE excursion's NLL dip (6.58→4.81) and re-climb (→6.27) is a clean lab demonstration of the NLL-sharpness confound; top1/pElo never degraded. 3×3 + current code + native cool regime = fine through +41k steps so far.
+4. **sMe9 (11.1%/709) and bzw3 (17.3%/876) set the reference bars**: the cool-regime 3×3 beat every hot-regime 3×3 measurement; the 7×7 marathon dwarfs everything.
+5. ysdg/KXvb single points are unremarkable-healthy — no blowup evidence anywhere in the v3/fp32 era or the 12-block v4 era.
+
 ### STATUS / handoff
 Hypotheses eliminated: capacity, width, depth, params, learning rate, code-regression. Surviving: 3×3 second-conv / 3×3 stem (confounded, needs isolation). **The only way to finish Track 2 is a controlled experiment** that flips ONE axis at a time from a stable config. Recommended decisive run: take a known-stable config (e.g. basic30, 5-block, 128ch, **7×7+7×7**, 7×7 stem — Exp-1-like, fast on basic30) and flip ONLY the block-2 kernel to 3×3 (then separately only the stem to 3×3); train from scratch ~10k steps each, watch wide-set NLL. If the 3×3 variant blows up and the 7×7 control stays flat → confirmed. Needs a code enabler (`--architecture-file` is a stub/not parsed; or `--resume`; or in-process harness) + GPU headroom — **best run attended** (verify the isolated launch + watch contention with the live run). Until then, **practical guidance: prefer 7×7 (at least for the 2nd block conv + stem) for stable runs; treat 3×3-heavy configs as blowup-prone pending the controlled test.**
 

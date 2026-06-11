@@ -135,6 +135,13 @@ struct DrewsChessMachineApp: App {
         // before SwiftUI / Metal GUI init.
         Self.handleArchSweepIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: headless checkpoint probe (--probe-model). Loads saved
+        // champions (a weight file, one .dcmsession, or a whole directory of
+        // sessions) and runs the Lichess probe batteries against each,
+        // emitting JSONL — retro-fills OOD measurements for runs that
+        // predate the live probes. Exits before SwiftUI / Metal GUI init.
+        Self.handleProbeModelIfPresent(rawArgs: rawArgs)
+
         // Known flags.
         let booleanFlags: Set<String> = ["--train", "--playchess"]
         let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit", "--model"]
@@ -311,6 +318,10 @@ struct DrewsChessMachineApp: App {
                                               Batch-size throughput sweep; print the table and exit.
               --analyze-replay-buffer <path>  Analyze a replay_buffer.bin (or a .dcmsession dir); print JSON,
                                               human summary to stderr, and exit.
+              --probe-model <path> [--probe-set 200|wide|both] [--probe-out <file>]
+                                              Run the Lichess probe batteries against saved checkpoints
+                                              (a weight file, one .dcmsession, or a directory of sessions);
+                                              one JSON line per checkpoint x set, then exit.
               --show-default-parameters       Print every default training parameter as JSON and exit.
               --create-parameters-file [<path>] [--force]
                                               Write parameters.json + parameters.md (default: ./) and exit.
@@ -888,6 +899,57 @@ struct DrewsChessMachineApp: App {
         let outPath = value(after: outFlag) ?? "/tmp/arch_bench.jsonl"
 
         ArchSweepCLI.runAndExit(blocks: blocks, steps: steps, batch: batch, outPath: outPath)
+    }
+
+    // MARK: - Checkpoint probe pre-flight (--probe-model)
+
+    /// Inspects `rawArgs` for `--probe-model`. If present, parses the
+    /// optional companions (`--probe-set <200|wide|both>`,
+    /// `--probe-out <path>`) and hands control to
+    /// `ProbeModelCLI.runAndExit`, which never returns.
+    /// Investigation-only — retro-probes saved checkpoints with the
+    /// Lichess tactical batteries.
+    private static func handleProbeModelIfPresent(rawArgs: [String]) {
+        let flag = "--probe-model"
+        guard rawArgs.contains(flag) else { return }
+        let setFlag = "--probe-set"
+        let outFlag = "--probe-out"
+
+        let allowedFlags: Set<String> = [flag, setFlag, outFlag]
+        if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
+            FileHandle.standardError.write(Data(
+                "error: \(flag) does not accept '\(bad)'\n".utf8
+            ))
+            Darwin.exit(60)
+        }
+
+        func value(after f: String) -> String? {
+            guard let idx = rawArgs.firstIndex(of: f) else { return nil }
+            let vi = idx + 1
+            guard vi < rawArgs.count, !rawArgs[vi].hasPrefix("--") else {
+                FileHandle.standardError.write(Data("error: \(f) requires a value\n".utf8))
+                Darwin.exit(62)
+            }
+            return rawArgs[vi]
+        }
+
+        guard let modelPath = value(after: flag) else {
+            FileHandle.standardError.write(Data(
+                "error: \(flag) requires a path (weight file, .dcmsession dir, or a directory of sessions)\n".utf8
+            ))
+            Darwin.exit(63)
+        }
+        var set = ProbeModelCLI.ProbeSet.both
+        if let raw = value(after: setFlag) {
+            guard let parsed = ProbeModelCLI.ProbeSet(rawValue: raw) else {
+                FileHandle.standardError.write(Data(
+                    "error: \(setFlag) must be 200, wide, or both; got '\(raw)'\n".utf8
+                ))
+                Darwin.exit(64)
+            }
+            set = parsed
+        }
+        ProbeModelCLI.runAndExit(modelPath: modelPath, set: set, outPath: value(after: outFlag))
     }
 
     // MARK: - Replay-buffer analyzer pre-flight (--analyze-replay-buffer)
