@@ -2783,6 +2783,7 @@ struct UpperContentView: View {
             scoreCell: scoreStatusBarCell,
             tacticalRankCell: tacticalRankStatusBarCell,
             tacticalProbCell: tacticalProbStatusBarCell,
+            widePEloCell: widePEloStatusBarCell,
             // Right-side chips. Built each parent render. The
             // popovers' bindings / error flags / callbacks remain
             // captured here exactly as before. The chip-side
@@ -3003,6 +3004,42 @@ struct UpperContentView: View {
         { [commandHub] in
             commandHub.openTacticalProbeMonitor()
         }
+    }
+
+    /// "Wide pElo" cell — MLE puzzle-Elo from the latest wide-set
+    /// (~4,435-puzzle) Lichess battery tick, the cross-experiment
+    /// default strength metric (see ARCH_EXPERIMENTS.md). "—" before
+    /// the first tick; the "<floor" / ">ceil" sentinels mirror
+    /// `LichessProbeDetailView.formatPuzzleElo` for the unbounded-MLE
+    /// edges (all-wrong / all-correct). Click opens the Lichess Probe
+    /// Detail window.
+    private var widePEloStatusBarCell: StatusBarCell {
+        let elo = session.lichessProbeWideHistory.overallSeries.last?.puzzleElo
+        let value: String
+        let color: Color
+        if let e = elo, e.isFinite {
+            value = String(format: "%.0f", e)
+            color = .primary
+        } else if let e = elo, e == -.infinity {
+            value = "<floor"
+            color = .secondary
+        } else if let e = elo, e == .infinity {
+            value = ">ceil"
+            color = .secondary
+        } else {
+            // nil (no tick yet) or NaN (tick had no rated puzzles).
+            value = "—"
+            color = .secondary
+        }
+        return StatusBarCell(
+            label: "Wide pElo",
+            value: value,
+            action: { [commandHub] in
+                SessionLogger.shared.log("[BUTTON] Open Lichess Probe Detail (status cell)")
+                commandHub.openLichessProbeDetail()
+            },
+            valueColor: color
+        )
     }
 
     /// Apply attribute-based color highlighting to the multi-line

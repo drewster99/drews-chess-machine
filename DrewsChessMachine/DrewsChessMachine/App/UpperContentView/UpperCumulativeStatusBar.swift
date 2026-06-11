@@ -55,6 +55,9 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
     /// all of its legal probability mass on the right move. Click
     /// opens the same Tactical Probe Monitor window.
     let tacticalProbCell: StatusBarCell
+    /// "Wide pElo" — MLE puzzle-Elo from the latest wide-set Lichess
+    /// battery tick. Click opens the Lichess Probe Detail window.
+    let widePEloCell: StatusBarCell
     @ViewBuilder let rightChips: () -> RightChips
 
     var body: some View {
@@ -80,6 +83,7 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
                 lastPromoteCell
                 tacticalRankCell
                 tacticalProbCell
+                widePEloCell
             },
             rightChips: rightChips
         )
