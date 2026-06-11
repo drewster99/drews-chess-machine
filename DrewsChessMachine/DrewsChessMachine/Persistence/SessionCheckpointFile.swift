@@ -258,10 +258,97 @@ struct SessionCheckpointState: Codable, Equatable {
     /// policy via a complementary CE against a mirror-smoothed target
     /// (mass on the OTHER legal moves) instead of contributing zero
     /// gradient (the legacy clamp-on regime). Optional for back-compat
-    /// with session files written before the toggle landed; absent →
-    /// loader falls through to the user's current
-    /// `TrainingParameters.shared.signedAdvantageComplementCE`.
+    /// with session files written before the toggle landed; resolve via
+    /// `resolvedSignedAdvantageComplementCE` — never by falling through
+    /// to the live `TrainingParameters` value.
     var signedAdvantageComplementCE: Bool?
+
+    /// The complement-CE setting a resumed session should actually run
+    /// with.
+    ///
+    /// This checkpoint field was introduced in the same commit as the
+    /// complement-CE feature itself, so a session file lacking the
+    /// field provably predates the feature — the run it captured
+    /// factually trained in the legacy clamp-on regime. The
+    /// absent-field fallback must therefore reproduce that pre-feature
+    /// behavior (off), NOT the user's current default: falling through
+    /// to the live setting silently switched the policy-gradient
+    /// regime of old runs on resume. (Observed on the resumed KbHZ
+    /// session from 2026-05: its policy loss jumped at resume because
+    /// complement CE was applied to a run that never used it.)
+    ///
+    /// Kept as a pure static so the policy is unit-testable without
+    /// constructing a full checkpoint state; the instance property is
+    /// the call-site-facing form.
+    static func resolvedSignedAdvantageComplementCE(savedFlag: Bool?) -> Bool {
+        savedFlag ?? false
+    }
+
+    /// Instance form of `resolvedSignedAdvantageComplementCE(savedFlag:)`.
+    var resolvedSignedAdvantageComplementCE: Bool {
+        Self.resolvedSignedAdvantageComplementCE(savedFlag: signedAdvantageComplementCE)
+    }
+
+    // MARK: Pre-feature fallback resolution
+    //
+    // The resolvers below share the complement-CE situation: each
+    // checkpoint field was introduced together with the feature it
+    // controls, so a session file lacking the field provably predates
+    // the feature — the run it captured factually trained WITHOUT it.
+    // The absent-field fallback must therefore reproduce that
+    // pre-feature behavior, never the live `TrainingParameters` value
+    // (which would silently change the regime of an old run on
+    // resume). Pure statics so the policy is unit-testable
+    // (`SessionResumeParameterFallbackTests`).
+
+    /// Pre-feature behavior: plain SGD — no momentum term existed.
+    static func resolvedMomentumCoeff(saved: Float?) -> Float {
+        saved ?? 0.0
+    }
+
+    /// Pre-feature behavior: no illegal-mass penalty term in the loss.
+    static func resolvedIllegalMassPenaltyWeight(saved: Float?) -> Float {
+        saved ?? 0.0
+    }
+
+    /// Pre-feature behavior: one-hot policy CE — no label smoothing.
+    static func resolvedPolicyLabelSmoothingEpsilon(saved: Float?) -> Float {
+        saved ?? 0.0
+    }
+
+    /// Pre-feature behavior: uncapped per-game batch sampling. The
+    /// parameter's range no longer includes a disabled value, so the
+    /// fallback is the declared range maximum, where the cap
+    /// essentially never binds at observed game lengths.
+    static func resolvedMaxPliesFromAnyOneGame(saved: Int?) -> Int {
+        saved ?? 400
+    }
+
+    /// Pre-feature behavior: no LR/momentum cycling. On nil the
+    /// caller's current cycle numbers (periods, bounds) are preserved
+    /// so the settings popover keeps the user's values, but both
+    /// enabled flags are forced off — a live cycle must never be
+    /// applied to a session that predates the cycling feature.
+    static func resolvedLRMomentumCycle(
+        saved: LRMomentumCycle?,
+        current: LRMomentumCycle
+    ) -> LRMomentumCycle {
+        if let saved { return saved }
+        return LRMomentumCycle(
+            lrEnabled: false,
+            lrPeriodSteps: current.lrPeriodSteps,
+            lrCount: current.lrCount,
+            lrMin: current.lrMin,
+            lrMax: current.lrMax,
+            lrInvert: current.lrInvert,
+            momentumEnabled: false,
+            momentumPeriodSteps: current.momentumPeriodSteps,
+            momentumCount: current.momentumCount,
+            momentumMin: current.momentumMin,
+            momentumMax: current.momentumMax,
+            momentumInvert: current.momentumInvert
+        )
+    }
     var replayBufferMinPositionsBeforeTraining: Int?
     var arenaAutoIntervalSec: Double?
     var candidateProbeIntervalSec: Double?
