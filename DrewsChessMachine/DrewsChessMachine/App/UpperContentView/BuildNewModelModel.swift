@@ -48,21 +48,30 @@ final class BuildNewModelModel {
     var saveAsName: String = ""
 
     init(_ named: NamedArchitecture = NamedArchitecture(label: "Custom", architecture: .current)) {
+        // The draft edits a UNIFORM tower (one group seeded from the
+        // architecture's first group; total block count preserved). The
+        // per-group editor + tower diagram are Phase B of
+        // ARCHITECTURE_EXPANSION_PLAN.md Feature 2 — until then, loading a
+        // mixed-group architecture into this draft collapses it to the
+        // first group's recipe.
         let a = named.architecture
+        guard let g = a.blockGroups.first else {
+            preconditionFailure("NetworkArchitecture.blockGroups is empty (validate() rejects this)")
+        }
         self.labelOverride = ""
         self.inputEncoding = a.inputEncoding
-        self.channels = a.channels
+        self.channels = g.channels
         self.numBlocks = a.numBlocks
         self.stemConvKernelSize = a.stemConvKernelSize
         self.activationFunction = a.activationFunction
-        self.blockActivationStyle = a.blockActivationStyle
-        self.blockSkipMerge = a.blockSkipMerge
-        self.blockUseRezero = a.blockUseRezero
-        self.rezeroAlphaInit = a.rezeroAlphaInit
-        self.blockConv1KernelSize = a.blockConv1KernelSize
-        self.blockConv2KernelSize = a.blockConv2KernelSize
-        self.blockSeStyle = a.blockSeStyle
-        self.blockSeReductionRatio = a.blockSeReductionRatio
+        self.blockActivationStyle = g.activationStyle
+        self.blockSkipMerge = g.skipMerge
+        self.blockUseRezero = g.useRezero
+        self.rezeroAlphaInit = g.rezeroAlphaInit
+        self.blockConv1KernelSize = g.conv1KernelSize
+        self.blockConv2KernelSize = g.conv2KernelSize
+        self.blockSeStyle = g.seStyle
+        self.blockSeReductionRatio = g.seReductionRatio
         self.policyHeadStyle = a.policyHeadStyle
         self.policyPreConvChannels = a.policyPreConvChannels
         self.valueHeadStyle = a.valueHeadStyle
@@ -73,22 +82,27 @@ final class BuildNewModelModel {
 
     /// Populate every field from a preset (the picker selection is derived from
     /// architecture equality, so no separate "selected" flag is needed).
+    /// Uniform-draft caveat: see `init` — mixed-group architectures collapse
+    /// to their first group's recipe until the Phase B group editor lands.
     func load(_ named: NamedArchitecture) {
         let a = named.architecture
+        guard let g = a.blockGroups.first else {
+            preconditionFailure("NetworkArchitecture.blockGroups is empty (validate() rejects this)")
+        }
         labelOverride = ""
         inputEncoding = a.inputEncoding
-        channels = a.channels
+        channels = g.channels
         numBlocks = a.numBlocks
         stemConvKernelSize = a.stemConvKernelSize
         activationFunction = a.activationFunction
-        blockActivationStyle = a.blockActivationStyle
-        blockSkipMerge = a.blockSkipMerge
-        blockUseRezero = a.blockUseRezero
-        rezeroAlphaInit = a.rezeroAlphaInit
-        blockConv1KernelSize = a.blockConv1KernelSize
-        blockConv2KernelSize = a.blockConv2KernelSize
-        blockSeStyle = a.blockSeStyle
-        blockSeReductionRatio = a.blockSeReductionRatio
+        blockActivationStyle = g.activationStyle
+        blockSkipMerge = g.skipMerge
+        blockUseRezero = g.useRezero
+        rezeroAlphaInit = g.rezeroAlphaInit
+        blockConv1KernelSize = g.conv1KernelSize
+        blockConv2KernelSize = g.conv2KernelSize
+        blockSeStyle = g.seStyle
+        blockSeReductionRatio = g.seReductionRatio
         policyHeadStyle = a.policyHeadStyle
         policyPreConvChannels = a.policyPreConvChannels
         valueHeadStyle = a.valueHeadStyle

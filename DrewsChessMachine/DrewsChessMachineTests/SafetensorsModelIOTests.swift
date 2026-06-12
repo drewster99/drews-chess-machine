@@ -91,21 +91,21 @@ final class SafetensorsModelIOTests: XCTestCase {
         for t in tensors { shapeByName[t.name] = t.shape }
 
         let flatten = arch.boardSize * arch.boardSize * arch.valueHeadConvChannels
-        let seReduced = arch.channels / arch.blockSeReductionRatio
+        let seReduced = arch.towerOutputChannels / arch.blockGroups[0].seReductionRatio
 
         // FC weights transposed to torch [out, in]:
         XCTAssertEqual(shapeByName["value.fc1.weight"], [arch.valueHeadHiddenUnits, flatten])
         XCTAssertEqual(shapeByName["value.wdl_fc2.weight"], [arch.valueHeadClasses, arch.valueHeadHiddenUnits])
-        XCTAssertEqual(shapeByName["blocks.0.se_scalebias.fc1.weight"], [seReduced, arch.channels])
-        XCTAssertEqual(shapeByName["blocks.0.se_scalebias.fc2.weight"], [2 * arch.channels, seReduced])
+        XCTAssertEqual(shapeByName["blocks.0.se_scalebias.fc1.weight"], [seReduced, arch.towerOutputChannels])
+        XCTAssertEqual(shapeByName["blocks.0.se_scalebias.fc2.weight"], [2 * arch.towerOutputChannels, seReduced])
         // Biases 1-D:
         XCTAssertEqual(shapeByName["value.wdl_fc2.bias"], [arch.valueHeadClasses])
         XCTAssertEqual(shapeByName["value.fc1.bias"], [arch.valueHeadHiddenUnits])
         XCTAssertEqual(shapeByName["policy.conv.bias"], [arch.policyChannels])
         // Conv OIHW unchanged; BN [C]; scalar [1]:
-        XCTAssertEqual(shapeByName["policy.conv.weight"], [arch.policyChannels, arch.channels, 1, 1])
-        XCTAssertEqual(shapeByName["stem.conv.weight"], [arch.channels, arch.inputPlanes, arch.stemConvKernelSize, arch.stemConvKernelSize])
-        XCTAssertEqual(shapeByName["stem.bn.weight"], [arch.channels])
+        XCTAssertEqual(shapeByName["policy.conv.weight"], [arch.policyChannels, arch.towerOutputChannels, 1, 1])
+        XCTAssertEqual(shapeByName["stem.conv.weight"], [arch.towerOutputChannels, arch.inputPlanes, arch.stemConvKernelSize, arch.stemConvKernelSize])
+        XCTAssertEqual(shapeByName["stem.bn.weight"], [arch.towerOutputChannels])
         XCTAssertEqual(shapeByName["blocks.0.rezero_alpha"], [1])
 
         // Verify the actual data transpose (not just the shape label).

@@ -131,7 +131,9 @@ struct ModelCheckpointFile {
                 }
             }
         }
-        mix(arch.channels)
+        // Legacy presets are all uniform towers, so the tower-output width
+        // IS the historical `channels` scalar — hashes are unchanged.
+        mix(arch.towerOutputChannels)
         mix(arch.numBlocks)
         mix(arch.inputPlanes)
         mix(ChessNetwork.boardSize)
@@ -173,15 +175,21 @@ struct ModelCheckpointFile {
     /// pre-decode) this is defense-in-depth: if the hash ever matches a
     /// malformed element count, we still reject before allocating.
     static func maxTensorElementCount(for arch: NetworkArchitecture) -> Int {
-        let c = arch.channels
-        let blockArea = max(arch.blockConv1KernelSize, arch.blockConv2KernelSize) * max(arch.blockConv1KernelSize, arch.blockConv2KernelSize)
+        // Upper-bound with the WIDEST block and the LARGEST kernel anywhere
+        // in the tower — per-group widths/kernels make any single-width
+        // formula an undercount, and this guard only needs a plausible
+        // ceiling, not exactness.
+        let c = arch.maxBlockChannels
+        let maxKernel = arch.blockGroups
+            .map { max($0.conv1KernelSize, $0.conv2KernelSize) }
+            .max() ?? 1
+        let blockArea = maxKernel * maxKernel
         let stemArea = arch.stemConvKernelSize * arch.stemConvKernelSize
         let residualConv = c * c * blockArea
         let stemConv = arch.inputPlanes * c * stemArea
         let policyConv = c * ChessNetwork.policyChannels
         let valueFC1 = (ChessNetwork.boardSize * ChessNetwork.boardSize * arch.valueHeadConvChannels) * arch.valueHeadHiddenUnits
-        let seReduced = arch.blockSeStyle == .none ? 1 : c / arch.blockSeReductionRatio
-        let seFC = c * seReduced
+        let seFC = c * c  // >= channels × (channels / r) for every group
         let largest = max(residualConv, stemConv, policyConv, valueFC1, seFC)
         return largest + 65_536
     }

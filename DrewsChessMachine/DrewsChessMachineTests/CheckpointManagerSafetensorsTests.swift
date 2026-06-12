@@ -122,11 +122,11 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
     /// crash the build or the forward pass on a 64-channel net.
     func testNonDefaultArchitectureBuildsAndEvaluates() async throws {
         var arch = NetworkArchitecture.current
-        arch.channels = 64
+        arch.blockGroups[0].channels = 64
         try arch.validate()
 
         let net = try ChessMPSNetwork(.randomWeights, arch: arch)
-        XCTAssertEqual(net.network.arch.channels, 64)
+        XCTAssertEqual(net.network.arch.towerOutputChannels, 64)
 
         let weights = try await net.network.exportWeights()
         XCTAssertEqual(weights.count, arch.weightTensorPlan().count)

@@ -25,7 +25,7 @@ final class ArchitectureConfigTests: XCTestCase {
         // Encode an invalid arch (even kernel) directly, bypassing validate(),
         // then confirm load() validates and rejects it.
         var bad = NetworkArchitecture.current
-        bad.blockConv1KernelSize = 4
+        bad.blockGroups[0].conv1KernelSize = 4
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("arch_bad_\(UUID().uuidString).json")
         defer { do { try FileManager.default.removeItem(at: url) } catch {} }

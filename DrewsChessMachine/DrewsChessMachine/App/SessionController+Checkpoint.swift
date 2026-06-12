@@ -855,12 +855,15 @@ extension SessionController {
         .withArchitecture(
             ArchitectureMetadata(
                 architectureVersion: resolvedArch.architectureVersionLabel,
-                channels: resolvedArch.channels,
+                // Legacy uniform scalars: tower-output width + the first
+                // group's SE ratio (mixed towers are fully described by the
+                // embedded config itself).
+                channels: resolvedArch.towerOutputChannels,
                 numBlocks: resolvedArch.numBlocks,
                 inputPlanes: resolvedArch.inputPlanes,
                 policySize: resolvedArch.policySize,
                 valueHeadClasses: resolvedArch.valueHeadClasses,
-                seReductionRatio: resolvedArch.blockSeReductionRatio,
+                seReductionRatio: resolvedArch.blockGroups[0].seReductionRatio,
                 parameterCount: resolvedArch.parameterCount
             )
         )

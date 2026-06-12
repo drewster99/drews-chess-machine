@@ -6270,7 +6270,7 @@ final class ChessTrainer: @unchecked Sendable {
     static func largestBufferBytes(forBatchSize batchSize: Int, arch: NetworkArchitecture) -> UInt64 {
         let floatBytes = MemoryLayout<Float>.size
         let spatial = ChessNetwork.boardSize * ChessNetwork.boardSize
-        let channels = arch.channels
+        let channels = arch.maxBlockChannels
         return UInt64(channels * spatial * floatBytes) * UInt64(batchSize)
     }
 

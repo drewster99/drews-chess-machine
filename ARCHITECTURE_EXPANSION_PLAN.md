@@ -172,22 +172,31 @@ Post-2018 developments (context for future experiments):
 ## render a graphical view of the whole architecture)
 
 ### Design — config model (REVISED 2026-06-12: two-level groups — a
-### group is a sequence of typed block runs, not one recipe × count;
-### strides fully per-block, no first-block-only rule)
+### group is a sequence of typed block runs, not one recipe × count.
+### Stride was added and then DROPPED the same day — decision record
+### in the BlockSpec bullet; spatial shape is immutably 8×8.)
 
-- **`BlockSpec`** (Codable, Hashable, Sendable) — one fully-specified
-  block recipe. EVERY block-configurable element lives here (user
-  requirement 2026-06-12: any block in the tower can differ from any
-  other in any field):
+- **`BlockGroup`** (Codable, Hashable, Sendable) — `count >= 1` + one
+  fully-specified block recipe as flat fields (the project's
+  flat-schema rule). EVERY block-configurable element lives here (user
+  requirement 2026-06-12: with count = 1 groups, any block in the
+  tower can differ from any other in any field):
   - `channels` (>= 8; the block's output width)
   - `conv1_kernel_size`, `conv2_kernel_size` (odd, validated)
-  - `conv1_stride`, `conv2_stride` (>= 1; always rendered explicitly,
-    never implied). Strides are fully per-block — there is NO "first
-    block of the group only" rule (user direction 2026-06-12:
-    arbitrary configurability beats guardrails). The spatial-collapse
-    hazard is handled by bookkeeping + validation below, not by
-    restricting where strides may appear. The stem gains a tower-level
-    `stem_stride` ("all convs" per the same direction).
+  - **No stride fields — decision record (2026-06-12):** per-conv
+    stride was added to this plan and dropped the same day. Stride's
+    payoffs (compute on large inputs, faster receptive-field growth)
+    barely apply to an 8×8 board that 12 stacked 3×3 blocks already
+    cover several times over, while its cost lands exactly on the
+    engine's core: the fully-convolutional policy head emits 76 logits
+    PER SQUARE and structurally requires an 8×8 tower output, so any
+    downsampling forces an FC policy head. Dropping it deletes the
+    per-block (H, W) bookkeeping, the FC-head validation rule, the
+    strided skip-projection variant, and the diagram's spatial
+    staircase/saturation display. Spatial shape is therefore immutable
+    (8×8 everywhere, all convs same-padded); channels are the only
+    shape axis. Stride lives in the v2 sketch if a downsampling
+    experiment is ever wanted.
   - `se_style`, `se_reduction_ratio` (ratio must divide channels)
   - `use_rezero`, `rezero_alpha_init`
   - `activation_function` (relu/mish/etc — whatever the enum offers)
@@ -196,72 +205,48 @@ Post-2018 developments (context for future experiments):
   - `dropout_multiplier` (>= 0; per-block scale on the global
     `DropoutRate` — effective rate = clamp(rate × multiplier); baked as
     a per-block graph constant composed with the rate variable)
-- **`BlockGroupEntry`** — `spec: BlockSpec` + `count >= 1`: a run of
-  `count` consecutive blocks of one spec.
-- **`BlockGroup`** — `name` (authoring label, shown in summary +
-  diagram) + `entries: [BlockGroupEntry]` (>= 1 entries) +
-  `repeatCount >= 1`. A group is a composite: e.g. group A = 1× spec₁
-  + 3× spec₂ → every instance of A contributes 4 blocks. The user's
-  stride example is one group = 1× [7x7s2 block] + 7× [3x3s1 block].
-  (`repeatCount` lets a whole composite repeat — A A B — without
-  duplicating its definition; default 1, always rendered.)
+- (SIMPLIFIED 2026-06-12 with user approval: the interim two-level
+  shape — groups holding multiple typed entries plus a `repeatCount` —
+  bought only authoring sugar that a "duplicate group" button
+  replicates; it moved to the v2 sketch. "One wide-view block then
+  seven local blocks" is simply two groups: `1×[7x7…] -> 7×[3x3…]`.)
 - **Tower** = `blockGroups: [BlockGroup]`, ordered input → output.
 - **Expansion is the engine's only view**: the config exposes
-  `expandedBlocks: [BlockSpec]` (groups flat-mapped: repeatCount ×
-  entries × count). Graph builders, weightTensorPlan, parameterCount,
-  the analyzer, and the diagram's math consume ONLY the flat expanded
-  list — groups are an authoring/persistence structure, never an
-  engine concept. This kills all per-group special-casing: anything
-  that previously keyed on "first block of group" now just reads
-  adjacent expanded specs.
+  `expandedBlocks: [BlockGroup]` — each group repeated `count` times,
+  concatenated, every returned element normalized to `count = 1` so
+  one element ≡ one block. Graph builders, weightTensorPlan,
+  parameterCount, the analyzer, and the diagram's math consume ONLY
+  the flat expanded list — groups are an authoring/persistence
+  structure, never an engine concept. This kills all per-group
+  special-casing: anything that previously keyed on "first block of
+  group" now just reads adjacent expanded specs.
 - `numBlocks` and `channels` become DERIVED (`expandedBlocks.count`;
   tower-output channels = last expanded block's). Stored legacy
   fields removed from the struct; decode keeps reading them forever
   (below).
 - **Stem** outputs the FIRST expanded block's channels
-  (`inputPlanes → expandedBlocks[0].channels`; tower-level stem kernel
-  and `stem_stride`, both explicit).
+  (`inputPlanes → expandedBlocks[0].channels`; tower-level stem
+  kernel, explicit).
 - **Transitions are per-block, not per-group**: block i's input width
   `inC` is the previous expanded block's channels (stem output for
   block 0); its output width `outC` is its own channels. A block gets
-  the skip projection iff `inC != outC` or its stride product
-  (`conv1_stride × conv2_stride`) > 1:
+  the skip projection iff `inC != outC`:
   - branch conv1 maps `inC → outC`; conv2 and everything after run at
     `outC`; BN1 sized `inC`, BN2/SE/α sized `outC`.
   - the skip projection is a **1×1 conv** (`inC → outC`, bias-free,
     He-init, weight-decayed — a true weight matrix), named
-    `blockN_skip_proj_weights`, carrying the block's stride product so
-    skip and branch land at the same shape (the full ResNet downsample
-    transition). Every other block keeps the clean identity skip — the
-    gradient highway survives wherever width and resolution are
-    constant.
-  - with one width and all strides 1 this is exactly today's tower;
-    with width steps it is the WRN staircase; spatial size changes
-    only through the explicit stride fields.
+    `blockN_skip_proj_weights` — a pure per-square linear remap of the
+    feature vector, zero spatial mixing: the minimum repair that makes
+    the add well-shaped. Every other block keeps the clean identity
+    skip — the gradient highway survives wherever width is constant.
+  - with one width this is exactly today's tower; with width steps it
+    is the WRN staircase with the resolution axis removed (the board
+    is always 8×8).
 - **Heads** read the tower-output channels (last expanded block), not
   a global `channels` — policy pre-conv `towerOut → K`, value conv
   `towerOut → valueHeadConvChannels`. Tower-end BN sized `towerOut`.
-- **Spatial bookkeeping + head constraint (stride consequence):** the
-  config tracks (H, W) through every expanded block (same-padding,
-  size = ceil(size/stride)). Because strides may appear on ANY block,
-  the bookkeeping is what keeps arbitrary placement safe: ceil()
-  floors the size at 1×1 (8 → 4 → 2 → 1 under repeated stride 2, then
-  saturates), so no configuration can underflow — extra strides past
-  1×1 are merely wasted, and the diagram makes that saturation
-  visible. SE (global pool), BN, and the dropout mask ([N,C,1,1]
-  broadcast) are spatial-agnostic; the heads are not:
-  - the fully-convolutional policy head emits 76 logits PER SQUARE and
-    structurally requires an 8×8 tower output. Validation REJECTS any
-    config whose cumulative stride product > 1 unless
-    `policy_head_style` is an FC variant (which flattens whatever
-    spatial size arrives). The value head's flatten sizes itself from
-    the actual tower-output spatial dims.
-  - the diagram renders the spatial size on every block cell so a
-    staircase like 8×8 → 4×4 is visible alongside the width staircase.
-  - design note: striding on an 8×8 board trades away exactly the
-    per-square precision chess needs (the 2026-06-12 funnel
-    discussion), so strides ship as an experimental axis with hard
-    validation, not a recommendation.
+  Spatial dims never change, so head flatten sizes keep their fixed
+  8×8 forms exactly as today.
 - **Dropout mask shapes** become per-width: `[N, block.channels, 1, 1]`,
   each built from the input placeholder's batch dim + a channel
   constant (same safe construction; one shape tensor per distinct
@@ -287,17 +272,16 @@ Post-2018 developments (context for future experiments):
   Encode writes only `block_groups`; the decoder reads both forever.
   Encode/decode preserves the AUTHORED structure (group names,
   repeats, entry boundaries) — it never normalizes to the expansion.
-- `architectureSummary` renders EVERY attribute of EVERY entry
+- `architectureSummary` renders EVERY attribute of EVERY group
   explicitly — no silent defaults (user direction 2026-06-12: a reader
-  should never need to know a default to read a summary). Per entry:
-  count, both conv kernels with strides, channels, SE style/ratio,
-  activation function + style, skip merge, ReZero α-init, dropout
-  multiplier; groups render as `repeatCount x( entry + entry + … )`
-  with the repeat always shown. e.g. the user's example group —
-  `1x( 1x[7x7s2+3x3s1 @128, SE+/4, relu/pre, clean_add, ReZero(0.20), drop*1.0]
-  + 7x[3x3s1+3x3s1 @128, SE+/4, relu/pre, clean_add, ReZero(0.20), drop*1.0] )`
-  — and `->` between groups (skip projections are implied by any
-  adjacent width/stride change in the expansion, never written).
+  should never need to know a default to read a summary). Per group:
+  count, both conv kernels, channels, SE style/ratio, activation
+  function + style, skip merge, ReZero α-init, dropout multiplier,
+  with `->` between groups (skip projections are implied by any
+  adjacent width change in the expansion, never written). e.g. the
+  user's example tower —
+  `1x[7x7+3x3 @128, SE+/4, relu/pre, clean_add, ReZero(0.20), drop*1.0]
+  -> 7x[3x3+3x3 @128, SE+/4, relu/pre, clean_add, ReZero(0.20), drop*1.0]`.
   Uniform towers render in the SAME explicit form — this deliberately
   changes today's summary strings. The golden-string test pins the new
   explicit form for uniform, multi-entry, and repeated-group towers,
@@ -340,16 +324,16 @@ A read-only, live-updating schematic of the ENTIRE network, rendered
 from the draft config (updates as the user edits groups):
 
 - Vertical flow: input planes (encoding name + plane count) → stem
-  (kernel, stride, in→out channels) → each block group as a bracketed
-  segment (name + repeatCount badge) containing one cell stack per
-  entry, every cell printing its FULL configuration (count badge, both
-  kernels + strides, channels, spatial size, SE style/ratio,
-  activation function + style, skip merge, ReZero α, dropout
-  multiplier — no "differs from default" badges, nothing implied; same
-  no-silent-defaults rule as the summary) → width/stride-transition
-  markers (1×1 projection) wherever the expansion fires the per-block
-  projection rule, including inside a group → tower-end BN → policy
-  head and value head side by side (their internal stages summarized).
+  (kernel, in→out channels) → each block group as a bracketed segment
+  (name + repeatCount badge) containing one cell stack per entry,
+  every cell printing its FULL configuration (count badge, both
+  kernels, channels, SE style/ratio, activation function + style,
+  skip merge, ReZero α, dropout multiplier — no "differs from default"
+  badges, nothing implied; same no-silent-defaults rule as the
+  summary) → width-transition markers (1×1 projection) wherever the
+  expansion fires the per-block projection rule, including inside a
+  group → tower-end BN → policy head and value head side by side
+  (their internal stages summarized).
 - **Box width proportional to channel count** so the WRN staircase is
   visible at a glance; per-section parameter counts and the grand
   total displayed on each segment.
@@ -363,7 +347,43 @@ from the draft config (updates as the user edits groups):
 ### v2 sketch (still out of scope)
 
 DenseNet-style stem-tap concat into the policy head;
-`dropout_granularity = unit`.
+`dropout_granularity = unit`; per-conv stride (added 2026-06-12,
+dropped the same day — see the decision record in the BlockGroup
+bullet; would reintroduce per-block (H, W) bookkeeping, the FC-policy
+-head requirement, and the strided skip projection); two-level groups
+(typed entries + repeatCount per group — authoring sugar dropped
+2026-06-12 in favor of one recipe + count per group).
+
+### Builder refactor contracts (Phase A, decided 2026-06-12)
+
+The five contracts the `ChessNetwork.swift` rewrite must honor —
+decided up front because each silently desyncs if improvised:
+
+1. **Tensor order.** The trainables append order inside a block stays
+   `(pre: bn1, conv1, bn2, conv2, SE, [rezero]; post: conv1, bn1,
+   conv2, bn2, SE, [rezero])`, and `blockN_skip_proj_weights` (plan
+   name `blocks.N.skip_proj.weight`) appends LAST within its block,
+   after the rezero α — in both the builder and `weightTensorPlan`,
+   which mirror each other tensor-for-tensor. Uniform towers produce
+   no projections, so existing checkpoints keep their exact layout.
+2. **What the projection consumes.** Pre-activation blocks: the skip
+   projection reads the SHARED pre-activation (the BN1→act output the
+   branch also reads — He et al. v2 convention), so both paths see the
+   same normalized input at a transition. Post-activation blocks: the
+   raw block input (v1 convention). Sizing: BN1 is `inC`; conv1 maps
+   `inC → outC`; BN2/SE/α and conv2 run at `outC`.
+3. **Projection hygiene.** Bias-free 1×1, He init with fan-in = inC,
+   weight-decayed (a true weight matrix), built for training and
+   inference graphs alike.
+4. **Per-width dropout mask cache.** One mask shape tensor per
+   distinct width among the expanded blocks (batch dim from the input
+   placeholder + channel constant — the autodiff-safe construction
+   from Feature 1), shared by every block at that width. Per-block
+   `dropout_multiplier` composes as a baked constant with the live
+   rate variable, clamped to [0, 0.95].
+5. **Per-tensor fan-in.** Weight init and `NetworkWeightAnalyzer`
+   derive fan-in from each tensor's OWN shape (kernel² × its real
+   inC), never from tower-level fields.
 
 ---
 
@@ -412,7 +432,7 @@ DenseNet-style stem-tap concat into the policy head;
    for a mixed-arch, dropout-enabled config — confirming inference graphs
    are dropout-free.
 7. Build-New-Model creates a mixed tower (e.g. one group of
-   1×[7×7 s2] + 7×[3×3 s1], FC policy head, channel dropout 0.1) and
-   Play-and-Train runs it; `[ARCH]` line shows the explicit grouped
-   summary.
+   1×[7×7+3×3] + 7×[3×3+3×3] with a width step, channel dropout 0.1)
+   and Play-and-Train runs it; `[ARCH]` line shows the explicit
+   grouped summary.
 8. All existing tests pass unmodified.

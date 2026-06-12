@@ -162,14 +162,16 @@ extension SessionController {
         let architecture = AnalysisExportMetadata.Architecture(
             architectureVersion: arch.architectureVersionLabel,
             parameterCount: arch.parameterCount,
+            // These legacy uniform scalars describe the FIRST block group
+            // (mixed towers carry the full structure in `summary`).
             numBlocks: arch.numBlocks,
-            channels: arch.channels,
-            convKernelSize: arch.blockConv1KernelSize,
+            channels: arch.towerOutputChannels,
+            convKernelSize: arch.blockGroups[0].conv1KernelSize,
             inputPlanes: arch.inputPlanes,
             boardSize: arch.boardSize,
             policyChannels: arch.policyChannels,
             policySize: arch.policySize,
-            seReductionRatio: arch.blockSeReductionRatio,
+            seReductionRatio: arch.blockGroups[0].seReductionRatio,
             valueHead: AnalysisExportMetadata.Architecture.ValueHead(
                 classes: arch.valueHeadClasses,
                 convChannels: arch.valueHeadConvChannels,

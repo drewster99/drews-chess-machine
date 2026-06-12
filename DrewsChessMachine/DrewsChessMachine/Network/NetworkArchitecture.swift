@@ -280,6 +280,56 @@ enum ComputeDataType: String, Codable, CaseIterable, Sendable, Hashable {
     case bFloat16 = "bfloat16"
 }
 
+// MARK: - BlockGroup
+
+/// One run of identical residual blocks: a fully-specified block recipe (flat
+/// fields, per the project's flat-schema rule) plus a `count`. The tower is an
+/// ordered `[BlockGroup]`; EVERY block-configurable element lives here, so a
+/// tower of count-1 groups can make every block different
+/// (ARCHITECTURE_EXPANSION_PLAN.md Feature 2).
+///
+/// Width (`channels`) is per-group (WRN-style staircase). Where consecutive
+/// expanded blocks differ in width, the engine inserts a 1×1 skip projection
+/// on that block — a per-square linear remap, zero spatial mixing — and the
+/// branch's conv1 carries the `inC → outC` step. Spatial shape is immutable
+/// (8×8 everywhere; per-conv stride was considered and dropped 2026-06-12 —
+/// decision record in the plan).
+struct BlockGroup: Codable, Hashable, Sendable {
+    /// How many consecutive blocks this recipe produces (>= 1).
+    var count: Int
+    /// The blocks' output width (their conv1 maps the incoming width here).
+    var channels: Int
+    var conv1KernelSize: Int
+    var conv2KernelSize: Int
+    var seStyle: SEStyle
+    var seReductionRatio: Int            // consumed only when seStyle != none
+    var useRezero: Bool
+    var rezeroAlphaInit: Float           // consumed only when useRezero
+    /// Hidden activation on this group's block main path + SE FC1.
+    var activationFunction: ActivationFunction
+    var activationStyle: BlockActivationStyle
+    var skipMerge: BlockSkipMerge
+    /// Per-group scale on the global live `DropoutRate`:
+    /// effective rate = clamp(rate × multiplier, 0, 0.95). Baked into the
+    /// graph as a constant composed with the live rate variable.
+    var dropoutMultiplier: Float
+
+    enum CodingKeys: String, CodingKey {
+        case count
+        case channels
+        case conv1KernelSize = "conv1_kernel_size"
+        case conv2KernelSize = "conv2_kernel_size"
+        case seStyle = "se_style"
+        case seReductionRatio = "se_reduction_ratio"
+        case useRezero = "use_rezero"
+        case rezeroAlphaInit = "rezero_alpha_init"
+        case activationFunction = "activation_function"
+        case activationStyle = "activation_style"
+        case skipMerge = "skip_merge"
+        case dropoutMultiplier = "dropout_multiplier"
+    }
+}
+
 // MARK: - Weight tensor plan
 
 /// What a persistent tensor *is*, so the safetensors writer can apply the right
@@ -337,20 +387,14 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     var inputEncoding: InputEncoding
 
     // Tower ---------------------------------------------------------------
-    var channels: Int
-    var numBlocks: Int
+    /// Ordered block groups, input → output (>= 1 group; validated). The
+    /// stem outputs the FIRST group's width; the heads read the LAST's.
+    var blockGroups: [BlockGroup]
     var stemConvKernelSize: Int
+    /// Hidden activation for the tower-LEVEL sites (stem activation when
+    /// post-act, tower-end activation, both heads). Block main paths use
+    /// their group's own `activationFunction`.
     var activationFunction: ActivationFunction
-
-    // Block ---------------------------------------------------------------
-    var blockActivationStyle: BlockActivationStyle
-    var blockSkipMerge: BlockSkipMerge
-    var blockUseRezero: Bool
-    var rezeroAlphaInit: Float           // consumed only when blockUseRezero
-    var blockConv1KernelSize: Int
-    var blockConv2KernelSize: Int
-    var blockSeStyle: SEStyle
-    var blockSeReductionRatio: Int       // consumed only when blockSeStyle != none
 
     // Policy head ---------------------------------------------------------
     var policyHeadStyle: PolicyHeadStyle
@@ -372,6 +416,32 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     /// All-required memberwise init — NO defaults (no silent fallbacks).
     init(
         inputEncoding: InputEncoding,
+        blockGroups: [BlockGroup],
+        stemConvKernelSize: Int,
+        activationFunction: ActivationFunction,
+        policyHeadStyle: PolicyHeadStyle,
+        policyPreConvChannels: Int,
+        valueHeadStyle: ValueHeadStyle,
+        valueHeadConvChannels: Int,
+        valueHeadHiddenUnits: Int,
+        computeDataType: ComputeDataType
+    ) {
+        self.inputEncoding = inputEncoding
+        self.blockGroups = blockGroups
+        self.stemConvKernelSize = stemConvKernelSize
+        self.activationFunction = activationFunction
+        self.policyHeadStyle = policyHeadStyle
+        self.policyPreConvChannels = policyPreConvChannels
+        self.valueHeadStyle = valueHeadStyle
+        self.valueHeadConvChannels = valueHeadConvChannels
+        self.valueHeadHiddenUnits = valueHeadHiddenUnits
+        self.computeDataType = computeDataType
+    }
+
+    /// Convenience for the (common) uniform tower: one group carrying every
+    /// block field, count = `numBlocks`. All-required — no defaults.
+    init(
+        inputEncoding: InputEncoding,
         channels: Int,
         numBlocks: Int,
         stemConvKernelSize: Int,
@@ -391,49 +461,109 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         valueHeadHiddenUnits: Int,
         computeDataType: ComputeDataType
     ) {
-        self.inputEncoding = inputEncoding
-        self.channels = channels
-        self.numBlocks = numBlocks
-        self.stemConvKernelSize = stemConvKernelSize
-        self.activationFunction = activationFunction
-        self.blockActivationStyle = blockActivationStyle
-        self.blockSkipMerge = blockSkipMerge
-        self.blockUseRezero = blockUseRezero
-        self.rezeroAlphaInit = rezeroAlphaInit
-        self.blockConv1KernelSize = blockConv1KernelSize
-        self.blockConv2KernelSize = blockConv2KernelSize
-        self.blockSeStyle = blockSeStyle
-        self.blockSeReductionRatio = blockSeReductionRatio
-        self.policyHeadStyle = policyHeadStyle
-        self.policyPreConvChannels = policyPreConvChannels
-        self.valueHeadStyle = valueHeadStyle
-        self.valueHeadConvChannels = valueHeadConvChannels
-        self.valueHeadHiddenUnits = valueHeadHiddenUnits
-        self.computeDataType = computeDataType
+        self.init(
+            inputEncoding: inputEncoding,
+            blockGroups: [BlockGroup(
+                count: numBlocks,
+                channels: channels,
+                conv1KernelSize: blockConv1KernelSize,
+                conv2KernelSize: blockConv2KernelSize,
+                seStyle: blockSeStyle,
+                seReductionRatio: blockSeReductionRatio,
+                useRezero: blockUseRezero,
+                rezeroAlphaInit: rezeroAlphaInit,
+                activationFunction: activationFunction,
+                activationStyle: blockActivationStyle,
+                skipMerge: blockSkipMerge,
+                dropoutMultiplier: 1
+            )],
+            stemConvKernelSize: stemConvKernelSize,
+            activationFunction: activationFunction,
+            policyHeadStyle: policyHeadStyle,
+            policyPreConvChannels: policyPreConvChannels,
+            valueHeadStyle: valueHeadStyle,
+            valueHeadConvChannels: valueHeadConvChannels,
+            valueHeadHiddenUnits: valueHeadHiddenUnits,
+            computeDataType: computeDataType
+        )
     }
 
     // MARK: Codable — explicit lower_snake_case keys
+    //
+    // Encode writes ONLY `block_groups` for the tower. Decode reads both
+    // forms forever: `block_groups` when present, otherwise the legacy
+    // uniform keys (`channels`, `num_blocks`, `block_*`) expand to a single
+    // group — every existing safetensors/session file loads unchanged.
+    // `dropout_multiplier` for legacy saves is 1 (that IS the legacy
+    // semantic: the global rate applied unscaled).
 
     enum CodingKeys: String, CodingKey {
         case inputEncoding = "input_encoding"
-        case channels
-        case numBlocks = "num_blocks"
+        case blockGroups = "block_groups"
         case stemConvKernelSize = "stem_conv_kernel_size"
         case activationFunction = "activation_function"
-        case blockActivationStyle = "block_activation_style"
-        case blockSkipMerge = "block_skip_merge"
-        case blockUseRezero = "block_use_rezero"
-        case rezeroAlphaInit = "rezero_alpha_init"
-        case blockConv1KernelSize = "block_conv1_kernel_size"
-        case blockConv2KernelSize = "block_conv2_kernel_size"
-        case blockSeStyle = "block_se_style"
-        case blockSeReductionRatio = "block_se_reduction_ratio"
         case policyHeadStyle = "policy_head_style"
         case policyPreConvChannels = "policy_pre_conv_channels"
         case valueHeadStyle = "value_head_style"
         case valueHeadConvChannels = "value_head_conv_channels"
         case valueHeadHiddenUnits = "value_head_hidden_units"
         case computeDataType = "compute_data_type"
+        // Legacy uniform-tower keys — decode-only, never written.
+        case legacyChannels = "channels"
+        case legacyNumBlocks = "num_blocks"
+        case legacyBlockActivationStyle = "block_activation_style"
+        case legacyBlockSkipMerge = "block_skip_merge"
+        case legacyBlockUseRezero = "block_use_rezero"
+        case legacyRezeroAlphaInit = "rezero_alpha_init"
+        case legacyBlockConv1KernelSize = "block_conv1_kernel_size"
+        case legacyBlockConv2KernelSize = "block_conv2_kernel_size"
+        case legacyBlockSeStyle = "block_se_style"
+        case legacyBlockSeReductionRatio = "block_se_reduction_ratio"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        inputEncoding = try c.decode(InputEncoding.self, forKey: .inputEncoding)
+        stemConvKernelSize = try c.decode(Int.self, forKey: .stemConvKernelSize)
+        activationFunction = try c.decode(ActivationFunction.self, forKey: .activationFunction)
+        policyHeadStyle = try c.decode(PolicyHeadStyle.self, forKey: .policyHeadStyle)
+        policyPreConvChannels = try c.decode(Int.self, forKey: .policyPreConvChannels)
+        valueHeadStyle = try c.decode(ValueHeadStyle.self, forKey: .valueHeadStyle)
+        valueHeadConvChannels = try c.decode(Int.self, forKey: .valueHeadConvChannels)
+        valueHeadHiddenUnits = try c.decode(Int.self, forKey: .valueHeadHiddenUnits)
+        computeDataType = try c.decode(ComputeDataType.self, forKey: .computeDataType)
+        if let groups = try c.decodeIfPresent([BlockGroup].self, forKey: .blockGroups) {
+            blockGroups = groups
+        } else {
+            blockGroups = [BlockGroup(
+                count: try c.decode(Int.self, forKey: .legacyNumBlocks),
+                channels: try c.decode(Int.self, forKey: .legacyChannels),
+                conv1KernelSize: try c.decode(Int.self, forKey: .legacyBlockConv1KernelSize),
+                conv2KernelSize: try c.decode(Int.self, forKey: .legacyBlockConv2KernelSize),
+                seStyle: try c.decode(SEStyle.self, forKey: .legacyBlockSeStyle),
+                seReductionRatio: try c.decode(Int.self, forKey: .legacyBlockSeReductionRatio),
+                useRezero: try c.decode(Bool.self, forKey: .legacyBlockUseRezero),
+                rezeroAlphaInit: try c.decode(Float.self, forKey: .legacyRezeroAlphaInit),
+                activationFunction: activationFunction,
+                activationStyle: try c.decode(BlockActivationStyle.self, forKey: .legacyBlockActivationStyle),
+                skipMerge: try c.decode(BlockSkipMerge.self, forKey: .legacyBlockSkipMerge),
+                dropoutMultiplier: 1
+            )]
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(inputEncoding, forKey: .inputEncoding)
+        try c.encode(blockGroups, forKey: .blockGroups)
+        try c.encode(stemConvKernelSize, forKey: .stemConvKernelSize)
+        try c.encode(activationFunction, forKey: .activationFunction)
+        try c.encode(policyHeadStyle, forKey: .policyHeadStyle)
+        try c.encode(policyPreConvChannels, forKey: .policyPreConvChannels)
+        try c.encode(valueHeadStyle, forKey: .valueHeadStyle)
+        try c.encode(valueHeadConvChannels, forKey: .valueHeadConvChannels)
+        try c.encode(valueHeadHiddenUnits, forKey: .valueHeadHiddenUnits)
+        try c.encode(computeDataType, forKey: .computeDataType)
     }
 
     // MARK: Derived shape scalars
@@ -443,35 +573,105 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     var policyChannels: Int { Self.policyChannels }
     var policySize: Int { Self.policySize }
     var valueHeadClasses: Int { valueHeadStyle == .wdlSoftmax ? 3 : 1 }
-    /// Tower-end BN exists only for pre-activation (post-act blocks end in an activation).
-    var hasTowerEndBN: Bool { blockActivationStyle == .pre }
-    /// Stem ReLU exists only for post-activation (pre-act defers it to block 0).
-    var hasStemActivation: Bool { blockActivationStyle == .post }
+
+    /// The tower flattened to one element per block (each returned group has
+    /// `count == 1`). The ENGINE'S ONLY VIEW of the tower: graph builders,
+    /// `weightTensorPlan`, `parameterCount`, and the analyzer walk this —
+    /// groups are an authoring/persistence structure, never an engine concept.
+    var expandedBlocks: [BlockGroup] {
+        blockGroups.flatMap { group -> [BlockGroup] in
+            var single = group
+            single.count = 1
+            return Array(repeating: single, count: group.count)
+        }
+    }
+
+    /// Total block count across all groups (derived; no stored copy).
+    var numBlocks: Int { blockGroups.reduce(0) { $0 + $1.count } }
+
+    /// The stem's output width = the first group's channels.
+    var stemOutputChannels: Int {
+        guard let first = blockGroups.first else {
+            preconditionFailure("NetworkArchitecture.blockGroups is empty (validate() rejects this)")
+        }
+        return first.channels
+    }
+
+    /// The tower's output width = the last group's channels. What the heads
+    /// and the tower-end BN read. (There is deliberately NO uniform
+    /// `channels` accessor — mixed towers have no single width, so every
+    /// consumer must choose stem-side or head-side explicitly.)
+    var towerOutputChannels: Int {
+        guard let last = blockGroups.last else {
+            preconditionFailure("NetworkArchitecture.blockGroups is empty (validate() rejects this)")
+        }
+        return last.channels
+    }
+
+    /// The widest block in the tower — sizes worst-case activation buffers
+    /// and tensor-size guards.
+    var maxBlockChannels: Int {
+        guard let widest = blockGroups.map(\.channels).max() else {
+            preconditionFailure("NetworkArchitecture.blockGroups is empty (validate() rejects this)")
+        }
+        return widest
+    }
+
+    /// Tower-end BN exists only when the LAST block is pre-activation (a
+    /// pre-act tail ends un-normalized/un-activated; a post-act tail is
+    /// already conditioned).
+    var hasTowerEndBN: Bool {
+        guard let last = blockGroups.last else {
+            preconditionFailure("NetworkArchitecture.blockGroups is empty (validate() rejects this)")
+        }
+        return last.activationStyle == .pre
+    }
+    /// Stem ReLU exists only when the FIRST block is post-activation (a
+    /// pre-act first block defers the first nonlinearity to its own BN→act).
+    var hasStemActivation: Bool {
+        guard let first = blockGroups.first else {
+            preconditionFailure("NetworkArchitecture.blockGroups is empty (validate() rejects this)")
+        }
+        return first.activationStyle == .post
+    }
     /// Human v-number for display only (no role in identity / hashing).
-    var architectureVersionLabel: Int { blockActivationStyle == .pre ? 4 : 3 }
+    /// Mixed-style towers report the FIRST group's lineage.
+    var architectureVersionLabel: Int {
+        guard let first = blockGroups.first else {
+            preconditionFailure("NetworkArchitecture.blockGroups is empty (validate() rejects this)")
+        }
+        return first.activationStyle == .pre ? 4 : 3
+    }
 
     // MARK: Validation (structural only — memory budget is a build-time, device-aware check)
 
     func validate() throws {
         try requireOdd("stemConvKernelSize", stemConvKernelSize)
-        try requireOdd("blockConv1KernelSize", blockConv1KernelSize)
-        try requireOdd("blockConv2KernelSize", blockConv2KernelSize)
-        try requirePositive("channels", channels)
-        try requirePositive("numBlocks", numBlocks)
+        try requirePositive("blockGroups.count", blockGroups.count)
+        for (gi, g) in blockGroups.enumerated() {
+            try requirePositive("blockGroups[\(gi)].count", g.count)
+            try requirePositive("blockGroups[\(gi)].channels", g.channels)
+            try requireOdd("blockGroups[\(gi)].conv1KernelSize", g.conv1KernelSize)
+            try requireOdd("blockGroups[\(gi)].conv2KernelSize", g.conv2KernelSize)
+            // Unconditional: the block computes channels / ratio regardless of SE style.
+            try requirePositive("blockGroups[\(gi)].seReductionRatio", g.seReductionRatio)
+            if g.seStyle != .none {
+                guard g.channels % g.seReductionRatio == 0 else {
+                    throw NetworkArchitectureError.channelsNotDivisibleByReduction(
+                        channels: g.channels, reduction: g.seReductionRatio)
+                }
+            }
+            guard g.dropoutMultiplier >= 0, g.dropoutMultiplier.isFinite else {
+                throw NetworkArchitectureError.nonPositive(
+                    field: "blockGroups[\(gi)].dropoutMultiplier", value: Int(g.dropoutMultiplier))
+            }
+        }
         try requirePositive("policyPreConvChannels", policyPreConvChannels)
         try requirePositive("valueHeadConvChannels", valueHeadConvChannels)
         try requirePositive("valueHeadHiddenUnits", valueHeadHiddenUnits)
-        // Unconditional: the block computes channels / ratio regardless of SE style.
-        try requirePositive("blockSeReductionRatio", blockSeReductionRatio)
-        if blockSeStyle != .none {
-            guard channels % blockSeReductionRatio == 0 else {
-                throw NetworkArchitectureError.channelsNotDivisibleByReduction(
-                    channels: channels, reduction: blockSeReductionRatio)
-            }
-        }
-        guard valueHeadConvChannels <= channels else {
+        guard valueHeadConvChannels <= towerOutputChannels else {
             throw NetworkArchitectureError.valueConvChannelsExceedChannels(
-                conv: valueHeadConvChannels, channels: channels)
+                conv: valueHeadConvChannels, channels: towerOutputChannels)
         }
     }
 
@@ -487,80 +687,119 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
 
     /// Total persistent-tensor element count (trainable weights + BN running
     /// mean/var). Equals the summed element counts of `weightTensorPlan` (asserted
-    /// in tests). Branches on every axis that changes a shape.
+    /// in tests). Walks `expandedBlocks`, threading the incoming width — block
+    /// `i`'s conv1 maps `inC → outC`, BN1 is sized `inC`, everything after runs
+    /// at `outC`, and a width transition adds the 1×1 skip projection.
     var parameterCount: Int {
-        let c = channels
-        let seReduced = blockSeStyle == .none ? 0 : c / blockSeReductionRatio
+        let c0 = stemOutputChannels
 
         // Stem: conv (bias-free) + BN.
-        let stem = (inputPlanes * c * stemConvKernelSize * stemConvKernelSize) + 4 * c
+        let stem = (inputPlanes * c0 * stemConvKernelSize * stemConvKernelSize) + 4 * c0
 
-        // Per block: two convs (bias-free) + two BNs + SE + optional rezero.
-        let conv1 = c * c * blockConv1KernelSize * blockConv1KernelSize
-        let conv2 = c * c * blockConv2KernelSize * blockConv2KernelSize
-        let bns = 2 * (4 * c)
-        let se: Int
-        switch blockSeStyle {
-        case .none:         se = 0
-        case .attenuateOnly: se = (c * seReduced + seReduced) + (seReduced * c + c)
-        case .scaleAndBias:  se = (c * seReduced + seReduced) + (seReduced * 2 * c + 2 * c)
+        // Tower.
+        var tower = 0
+        var inC = c0
+        for spec in expandedBlocks {
+            let outC = spec.channels
+            let conv1 = outC * inC * spec.conv1KernelSize * spec.conv1KernelSize
+            let conv2 = outC * outC * spec.conv2KernelSize * spec.conv2KernelSize
+            // BN1 normalizes the block input (pre-act) or conv1 output
+            // (post-act) — sized inC vs outC accordingly; BN2 is always outC.
+            let bn1 = 4 * (spec.activationStyle == .pre ? inC : outC)
+            let bn2 = 4 * outC
+            let seReduced = spec.seStyle == .none ? 0 : outC / spec.seReductionRatio
+            let se: Int
+            switch spec.seStyle {
+            case .none:          se = 0
+            case .attenuateOnly: se = (outC * seReduced + seReduced) + (seReduced * outC + outC)
+            case .scaleAndBias:  se = (outC * seReduced + seReduced) + (seReduced * 2 * outC + 2 * outC)
+            }
+            let rezero = spec.useRezero ? 1 : 0
+            let proj = inC != outC ? inC * outC : 0
+            tower += conv1 + conv2 + bn1 + bn2 + se + rezero + proj
+            inC = outC
         }
-        let rezero = blockUseRezero ? 1 : 0
-        let perBlock = conv1 + conv2 + bns + se + rezero
 
-        let towerEndBN = hasTowerEndBN ? 4 * c : 0
+        let cT = towerOutputChannels
+        let towerEndBN = hasTowerEndBN ? 4 * cT : 0
 
         // Policy head.
         let pK = policyPreConvChannels
         let policy: Int
         switch policyHeadStyle {
         case .simpleConv:
-            policy = (c * policyChannels) + policyChannels
+            policy = (cT * policyChannels) + policyChannels
         case .intermediateConv:
-            policy = (c * pK) + 4 * pK + (pK * policyChannels) + policyChannels
+            policy = (cT * pK) + 4 * pK + (pK * policyChannels) + policyChannels
         case .fcBottleneck:
             let flat = pK * boardSize * boardSize
-            policy = (c * pK) + 4 * pK + (flat * policySize) + policySize
+            policy = (cT * pK) + 4 * pK + (flat * policySize) + policySize
         }
 
         // Value head.
         let cv = valueHeadConvChannels
         let h = valueHeadHiddenUnits
         let flatV = boardSize * boardSize * cv
-        let value = (c * cv) + 4 * cv + (flatV * h + h) + (h * valueHeadClasses + valueHeadClasses)
+        let value = (cT * cv) + 4 * cv + (flatV * h + h) + (h * valueHeadClasses + valueHeadClasses)
 
-        return stem + numBlocks * perBlock + towerEndBN + policy + value
+        return stem + tower + towerEndBN + policy + value
     }
 
     // MARK: Summary (human-readable, computed from the config)
 
     /// Compact one-glance label for the title bar, e.g. "v3 · 8-block 3×3 · 128ch · 2,483,667 params".
+    /// Multi-group towers render the kernel mix as "mixed" and the width as a
+    /// stem→tower range when the widths differ.
     var shortLabel: String {
-        let k1 = blockConv1KernelSize, k2 = blockConv2KernelSize
-        let kDesc = k1 == k2 ? "\(k1)×\(k1)" : "\(k1)×\(k1),\(k2)×\(k2)"
-        return "v\(architectureVersionLabel) · \(numBlocks)-block \(kDesc) · \(channels)ch · \(parameterCount.formatted(.number)) params"
+        let kDesc: String
+        if blockGroups.count == 1, let g = blockGroups.first {
+            kDesc = g.conv1KernelSize == g.conv2KernelSize
+                ? "\(g.conv1KernelSize)×\(g.conv1KernelSize)"
+                : "\(g.conv1KernelSize)×\(g.conv1KernelSize),\(g.conv2KernelSize)×\(g.conv2KernelSize)"
+        } else {
+            kDesc = "mixed"
+        }
+        let chDesc = stemOutputChannels == towerOutputChannels
+            ? "\(towerOutputChannels)ch"
+            : "\(stemOutputChannels)→\(towerOutputChannels)ch"
+        return "v\(architectureVersionLabel) · \(numBlocks)-block \(kDesc) · \(chDesc) · \(parameterCount.formatted(.number)) params"
     }
 
+    /// Fully-explicit tower description — every attribute of every group is
+    /// rendered, with NO silent defaults (a reader never needs to know a
+    /// default to read a summary; user direction 2026-06-12). `->` separates
+    /// groups; skip projections are implied by adjacent width changes in the
+    /// expansion, never written. The golden-string tests pin this exact form.
     var architectureSummary: String {
-        let seDesc: String
-        switch blockSeStyle {
-        case .none: seDesc = "no-SE"
-        case .attenuateOnly: seDesc = "SE/\(blockSeReductionRatio)"
-        case .scaleAndBias: seDesc = "SE+/\(blockSeReductionRatio)"
-        }
-        let k1 = blockConv1KernelSize, k2 = blockConv2KernelSize
-        let kDesc = k1 == k2 ? "\(k1)x\(k1)" : "\(k1)x\(k1),\(k2)x\(k2)"
-        let rezeroDesc = blockUseRezero ? "ReZero" : "no-ReZero"
+        let groupsDesc = blockGroups.map { Self.groupSummary($0) }.joined(separator: " -> ")
         let valueDesc = valueHeadStyle == .wdlSoftmax
             ? "WDL(\(valueHeadConvChannels)->FC\(valueHeadHiddenUnits))"
             : "tanh(\(valueHeadConvChannels)->FC\(valueHeadHiddenUnits))"
-        return "v\(architectureVersionLabel) \(blockActivationStyle.rawValue)"
-            + " . in \(inputEncoding.rawValue)(\(inputPlanes)) -> stem \(channels) (\(stemConvKernelSize)x\(stemConvKernelSize))"
-            + " . \(numBlocks)x[\(kDesc) conv, \(seDesc), \(blockSkipMerge.rawValue), \(rezeroDesc)]"
+        return "v\(architectureVersionLabel)"
+            + " . in \(inputEncoding.rawValue)(\(inputPlanes)) -> stem \(stemOutputChannels) (\(stemConvKernelSize)x\(stemConvKernelSize))"
+            + " . \(groupsDesc)"
             + " . act \(activationFunction.rawValue)"
             + " . policy \(policyHeadStyle.rawValue)(\(policySize))"
             + " . value \(valueDesc)"
             + " . \(computeDataType.rawValue) . \(parameterCount.formatted(.number)) params"
+    }
+
+    /// One group's explicit rendering, e.g.
+    /// `5x[7x7+7x7 @128, SE+/4, relu/pre, clean_add, ReZero(0.447), drop*1]`.
+    static func groupSummary(_ g: BlockGroup) -> String {
+        let seDesc: String
+        switch g.seStyle {
+        case .none: seDesc = "no-SE"
+        case .attenuateOnly: seDesc = "SE/\(g.seReductionRatio)"
+        case .scaleAndBias: seDesc = "SE+/\(g.seReductionRatio)"
+        }
+        let rezeroDesc = g.useRezero
+            ? "ReZero(\(String(format: "%.3g", g.rezeroAlphaInit)))"
+            : "no-ReZero"
+        return "\(g.count)x[\(g.conv1KernelSize)x\(g.conv1KernelSize)+\(g.conv2KernelSize)x\(g.conv2KernelSize)"
+            + " @\(g.channels), \(seDesc), \(g.activationFunction.rawValue)/\(g.activationStyle.rawValue)"
+            + ", \(g.skipMerge.rawValue), \(rezeroDesc)"
+            + ", drop*\(String(format: "%g", g.dropoutMultiplier))]"
     }
 
     // MARK: Weight tensor plan
@@ -570,9 +809,6 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     /// trainables in build order, then all BN running stats in build order**. Names
     /// are PyTorch-ready module paths. Branches on every topology axis.
     func weightTensorPlan() -> [WeightTensorSpec] {
-        let c = channels
-        let seReduced = blockSeStyle == .none ? 0 : c / blockSeReductionRatio
-
         var trainables: [WeightTensorSpec] = []
         var running: [WeightTensorSpec] = []
 
@@ -582,69 +818,87 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             running.append(.init(name: "\(prefix).running_mean", shape: [ch], kind: .bnRunningStat))
             running.append(.init(name: "\(prefix).running_var", shape: [ch], kind: .bnRunningStat))
         }
-        func se(_ prefix: String) {
-            switch blockSeStyle {
+        func se(_ prefix: String, _ spec: BlockGroup) {
+            let outC = spec.channels
+            let seReduced = spec.seStyle == .none ? 0 : outC / spec.seReductionRatio
+            switch spec.seStyle {
             case .none:
                 break
             case .attenuateOnly:
-                trainables.append(.init(name: "\(prefix).se_attenuate.fc1.weight", shape: [c, seReduced], kind: .linear))
+                trainables.append(.init(name: "\(prefix).se_attenuate.fc1.weight", shape: [outC, seReduced], kind: .linear))
                 trainables.append(.init(name: "\(prefix).se_attenuate.fc1.bias", shape: [seReduced], kind: .bias))
-                trainables.append(.init(name: "\(prefix).se_attenuate.fc2.weight", shape: [seReduced, c], kind: .linear))
-                trainables.append(.init(name: "\(prefix).se_attenuate.fc2.bias", shape: [c], kind: .bias))
+                trainables.append(.init(name: "\(prefix).se_attenuate.fc2.weight", shape: [seReduced, outC], kind: .linear))
+                trainables.append(.init(name: "\(prefix).se_attenuate.fc2.bias", shape: [outC], kind: .bias))
             case .scaleAndBias:
-                trainables.append(.init(name: "\(prefix).se_scalebias.fc1.weight", shape: [c, seReduced], kind: .linear))
+                trainables.append(.init(name: "\(prefix).se_scalebias.fc1.weight", shape: [outC, seReduced], kind: .linear))
                 trainables.append(.init(name: "\(prefix).se_scalebias.fc1.bias", shape: [seReduced], kind: .bias))
-                trainables.append(.init(name: "\(prefix).se_scalebias.fc2.weight", shape: [seReduced, 2 * c], kind: .linear))
-                trainables.append(.init(name: "\(prefix).se_scalebias.fc2.bias", shape: [2 * c], kind: .bias))
+                trainables.append(.init(name: "\(prefix).se_scalebias.fc2.weight", shape: [seReduced, 2 * outC], kind: .linear))
+                trainables.append(.init(name: "\(prefix).se_scalebias.fc2.bias", shape: [2 * outC], kind: .bias))
             }
         }
 
         // Stem: conv -> BN.
-        trainables.append(.init(name: "stem.conv.weight", shape: [c, inputPlanes, stemConvKernelSize, stemConvKernelSize], kind: .conv))
-        bn("stem.bn", c)
+        let c0 = stemOutputChannels
+        trainables.append(.init(name: "stem.conv.weight", shape: [c0, inputPlanes, stemConvKernelSize, stemConvKernelSize], kind: .conv))
+        bn("stem.bn", c0)
 
-        // Tower.
-        for i in 0..<numBlocks {
+        // Tower: thread the incoming width through the expanded blocks. The
+        // per-block tensor order mirrors `ChessNetwork.residualBlock`'s
+        // trainables append order EXACTLY (the builder is the other half of
+        // this contract): pre = bn1, conv1, bn2, conv2, SE, [rezero]; post =
+        // conv1, bn1, conv2, bn2, SE, [rezero]; the skip projection — present
+        // only on width transitions — appends LAST within its block. Uniform
+        // towers therefore keep today's exact layout.
+        var inC = c0
+        for (i, spec) in expandedBlocks.enumerated() {
             let p = "blocks.\(i)"
-            let conv1 = WeightTensorSpec(name: "\(p).conv1.weight", shape: [c, c, blockConv1KernelSize, blockConv1KernelSize], kind: .conv)
-            let conv2 = WeightTensorSpec(name: "\(p).conv2.weight", shape: [c, c, blockConv2KernelSize, blockConv2KernelSize], kind: .conv)
-            switch blockActivationStyle {
+            let outC = spec.channels
+            let conv1 = WeightTensorSpec(name: "\(p).conv1.weight", shape: [outC, inC, spec.conv1KernelSize, spec.conv1KernelSize], kind: .conv)
+            let conv2 = WeightTensorSpec(name: "\(p).conv2.weight", shape: [outC, outC, spec.conv2KernelSize, spec.conv2KernelSize], kind: .conv)
+            switch spec.activationStyle {
             case .pre:
                 // BN1 -> act -> conv1 -> BN2 -> act -> conv2 -> SE -> [rezero]
-                bn("\(p).bn1", c)
+                bn("\(p).bn1", inC)
                 trainables.append(conv1)
-                bn("\(p).bn2", c)
+                bn("\(p).bn2", outC)
                 trainables.append(conv2)
-                se(p)
+                se(p, spec)
             case .post:
                 // conv1 -> BN1 -> act -> conv2 -> BN2 -> SE -> (act on merged sum)
                 trainables.append(conv1)
-                bn("\(p).bn1", c)
+                bn("\(p).bn1", outC)
                 trainables.append(conv2)
-                bn("\(p).bn2", c)
-                se(p)
+                bn("\(p).bn2", outC)
+                se(p, spec)
             }
-            if blockUseRezero {
+            if spec.useRezero {
                 trainables.append(.init(name: "\(p).rezero_alpha", shape: [1], kind: .scalar))
             }
+            if inC != outC {
+                trainables.append(.init(name: "\(p).skip_proj.weight", shape: [outC, inC, 1, 1], kind: .conv))
+            }
+            inC = outC
         }
 
-        // Tower-end normalization (pre-activation only).
-        if hasTowerEndBN { bn("tower_final_bn", c) }
+        // Tower-end normalization (pre-activation tail only).
+        if hasTowerEndBN { bn("tower_final_bn", towerOutputChannels) }
+
+        // Heads read the tower-output width.
+        let cT = towerOutputChannels
 
         // Policy head.
         let pK = policyPreConvChannels
         switch policyHeadStyle {
         case .simpleConv:
-            trainables.append(.init(name: "policy.conv.weight", shape: [policyChannels, c, 1, 1], kind: .conv))
+            trainables.append(.init(name: "policy.conv.weight", shape: [policyChannels, cT, 1, 1], kind: .conv))
             trainables.append(.init(name: "policy.conv.bias", shape: [1, policyChannels, 1, 1], kind: .bias))
         case .intermediateConv:
-            trainables.append(.init(name: "policy.pre_conv.weight", shape: [pK, c, 1, 1], kind: .conv))
+            trainables.append(.init(name: "policy.pre_conv.weight", shape: [pK, cT, 1, 1], kind: .conv))
             bn("policy.pre_bn", pK)
             trainables.append(.init(name: "policy.conv.weight", shape: [policyChannels, pK, 1, 1], kind: .conv))
             trainables.append(.init(name: "policy.conv.bias", shape: [1, policyChannels, 1, 1], kind: .bias))
         case .fcBottleneck:
-            trainables.append(.init(name: "policy.pre_conv.weight", shape: [pK, c, 1, 1], kind: .conv))
+            trainables.append(.init(name: "policy.pre_conv.weight", shape: [pK, cT, 1, 1], kind: .conv))
             bn("policy.pre_bn", pK)
             let flat = pK * boardSize * boardSize
             trainables.append(.init(name: "policy.fc.weight", shape: [flat, policySize], kind: .linear))
@@ -654,7 +908,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         // Value head.
         let cv = valueHeadConvChannels
         let h = valueHeadHiddenUnits
-        trainables.append(.init(name: "value.conv.weight", shape: [cv, c, 1, 1], kind: .conv))
+        trainables.append(.init(name: "value.conv.weight", shape: [cv, cT, 1, 1], kind: .conv))
         bn("value.bn", cv)
         let flatV = boardSize * boardSize * cv
         trainables.append(.init(name: "value.fc1.weight", shape: [flatV, h], kind: .linear))

@@ -153,7 +153,7 @@ final class SessionManifestTests: XCTestCase {
         )
         XCTAssertEqual(m.architectureSummary, arch.architectureSummary)
         XCTAssertEqual(m.parameterCount, arch.parameterCount)
-        XCTAssertEqual(m.channels, arch.channels)
+        XCTAssertEqual(m.channels, arch.towerOutputChannels)
         XCTAssertEqual(m.numBlocks, arch.numBlocks)
     }
 

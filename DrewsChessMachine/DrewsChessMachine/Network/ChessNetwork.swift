@@ -551,15 +551,16 @@ final class ChessNetwork: @unchecked Sendable {
         var batchMeans: [MPSGraphTensor] = []
         var batchVars: [MPSGraphTensor] = []
 
-        // --- Stem: same-padded conv (inputPlanes -> 128) -> BN -> ReLU ---
+        // --- Stem: same-padded conv (inputPlanes -> first group's width) -> BN -> ReLU ---
 
+        let stemOutC = arch.stemOutputChannels
         let stemWeights = g.variable(
             with: Self.heInitDataConvOIHW(
-                shape: [arch.channels, arch.inputPlanes, arch.stemConvKernelSize, arch.stemConvKernelSize],
+                shape: [stemOutC, arch.inputPlanes, arch.stemConvKernelSize, arch.stemConvKernelSize],
                 dataType: Self.mpsDataType(for: arch)
             ),
             shape: [
-                NSNumber(value: arch.channels),
+                NSNumber(value: stemOutC),
                 NSNumber(value: arch.inputPlanes),
                 NSNumber(value: arch.stemConvKernelSize),
                 NSNumber(value: arch.stemConvKernelSize)
@@ -576,7 +577,7 @@ final class ChessNetwork: @unchecked Sendable {
             name: "stem_conv"
         )
         x = Self.batchNorm(
-            graph: g, input: x, channels: arch.channels, name: "stem_bn", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
+            graph: g, input: x, channels: stemOutC, name: "stem_bn", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
@@ -603,7 +604,7 @@ final class ChessNetwork: @unchecked Sendable {
         var dropoutStateVar: MPSGraphTensor?
         var dropoutSeedOp: MPSGraphOperation?
         var dropoutAdvanceOp: MPSGraphOperation?
-        var dropoutMaskShape: MPSGraphTensor?
+        var dropoutMaskShapes: [Int: MPSGraphTensor] = [:]
         var dropoutState: MPSGraphTensor?
         var dropoutRateLoadPh: MPSGraphTensor?
         var dropoutRateAssign: MPSGraphOperation?
@@ -645,26 +646,38 @@ final class ChessNetwork: @unchecked Sendable {
             let batchOnly = g.sliceTensor(
                 inputShape, dimension: 0, start: 0, length: 1, name: "dropout_shape_n"
             )
-            let channelDim = g.constant(
-                Double(arch.channels), shape: [1], dataType: .int32
-            )
             let spatialOnes = g.constant(1.0, shape: [2], dataType: .int32)
-            dropoutMaskShape = g.concatTensors(
-                [batchOnly, channelDim, spatialOnes], dimension: 0, name: "dropout_mask_shape"
-            )
+            // One mask shape tensor per distinct block width (the mask is
+            // applied at the WRN slot, where the tensor already runs at the
+            // block's OUTPUT width), shared by every block at that width.
+            // Sorted for deterministic graph-construction order.
+            for width in Set(arch.expandedBlocks.map(\.channels)).sorted() {
+                let channelDim = g.constant(
+                    Double(width), shape: [1], dataType: .int32
+                )
+                dropoutMaskShapes[width] = g.concatTensors(
+                    [batchOnly, channelDim, spatialOnes], dimension: 0,
+                    name: "dropout_mask_shape_c\(width)"
+                )
+            }
         }
 
-        // --- Tower: pre-activation residual blocks (count = `numBlocks`) ---
+        // --- Tower: residual blocks, walking the flat expanded list and ---
+        // --- threading the incoming width (`expandedBlocks` is the      ---
+        // --- engine's only view of the group structure)                 ---
 
-        for i in 0..<arch.numBlocks {
+        var towerInC = stemOutC
+        for (i, spec) in arch.expandedBlocks.enumerated() {
             x = try Self.residualBlock(
                 graph: g,
                 arch: arch,
+                spec: spec,
                 input: x,
+                inChannels: towerInC,
                 blockIndex: i,
                 bnMode: bnMode,
                 dropoutRate: dropoutRateVar,
-                dropoutMaskShape: dropoutMaskShape,
+                dropoutMaskShape: dropoutMaskShapes[spec.channels],
                 dropoutRngState: &dropoutState,
                 trainables: &trainables,
                 shouldDecay: &shouldDecay,
@@ -673,6 +686,7 @@ final class ChessNetwork: @unchecked Sendable {
                 batchMeans: &batchMeans,
                 batchVars: &batchVars
             )
+            towerInC = spec.channels
         }
 
         // Advance the RNG state variable to the post-tower stream position
@@ -700,7 +714,7 @@ final class ChessNetwork: @unchecked Sendable {
         // is already conditioned and no tower-end BN exists (matches v3).
         if arch.hasTowerEndBN {
             x = Self.batchNorm(
-                graph: g, input: x, channels: arch.channels, name: "tower_final_bn", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
+                graph: g, input: x, channels: arch.towerOutputChannels, name: "tower_final_bn", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
                 trainables: &trainables,
                 shouldDecay: &shouldDecay,
                 runningStats: &runningStats,
@@ -1816,14 +1830,22 @@ final class ChessNetwork: @unchecked Sendable {
         return desc
     }
 
-    /// The single network-wide hidden activation, selected by `arch.activationFunction`.
-    /// SiLU = `x*sigmoid(x)`; GELU exact (erf-based). Used at every hidden site (block
-    /// main path, SE FC1, tower-end, heads). The SE gate (sigmoid) and value output
-    /// (tanh/softmax) are structural and call their own ops directly.
+    /// The tower-LEVEL hidden activation (stem act when post-act, tower-end,
+    /// heads), selected by `arch.activationFunction`. Block main paths and SE
+    /// FC1 use the overload below with their group's own function.
     private static func activation(
         _ graph: MPSGraph, _ x: MPSGraphTensor, _ arch: NetworkArchitecture, name: String
     ) -> MPSGraphTensor {
-        switch arch.activationFunction {
+        activation(graph, x, arch.activationFunction, name: name)
+    }
+
+    /// SiLU = `x*sigmoid(x)`; GELU exact (erf-based). The SE gate (sigmoid)
+    /// and value output (tanh/softmax) are structural and call their own ops
+    /// directly.
+    private static func activation(
+        _ graph: MPSGraph, _ x: MPSGraphTensor, _ fn: ActivationFunction, name: String
+    ) -> MPSGraphTensor {
+        switch fn {
         case .relu:
             return graph.reLU(with: x, name: name)
         case .silu:
@@ -2036,7 +2058,9 @@ final class ChessNetwork: @unchecked Sendable {
     private static func residualBlock(
         graph: MPSGraph,
         arch: NetworkArchitecture,
+        spec: BlockGroup,
         input: MPSGraphTensor,
+        inChannels: Int,
         blockIndex: Int,
         bnMode: BNMode,
         dropoutRate: MPSGraphTensor?,
@@ -2050,9 +2074,14 @@ final class ChessNetwork: @unchecked Sendable {
         batchVars: inout [MPSGraphTensor]
     ) throws -> MPSGraphTensor {
         let prefix = "block\(blockIndex)"
-        let channels = arch.channels
-        let conv1Desc = try makeConvDescriptor(kernelSize: arch.blockConv1KernelSize)
-        let conv2Desc = try makeConvDescriptor(kernelSize: arch.blockConv2KernelSize)
+        // `inC` is the previous expanded block's width (stem output for block
+        // 0); `outC` is this block's own. They differ exactly at a width
+        // transition, where conv1 carries the remap on the branch and the
+        // skip gets the 1×1 projection (below).
+        let inC = inChannels
+        let outC = spec.channels
+        let conv1Desc = try makeConvDescriptor(kernelSize: spec.conv1KernelSize)
+        let conv2Desc = try makeConvDescriptor(kernelSize: spec.conv2KernelSize)
 
         // Channel (spatial) dropout with inverted scaling, present only on
         // training-mode graphs (the caller passes nil rate/shape/state
@@ -2094,9 +2123,27 @@ final class ChessNetwork: @unchecked Sendable {
         // too); flag this when comparing against WRN-style results.
         var dropoutStateLocal = dropoutRngState
         func applyChannelDropout(_ h: MPSGraphTensor) throws -> MPSGraphTensor {
-            guard let rate = dropoutRate,
+            guard let baseRate = dropoutRate,
                   let maskShape = dropoutMaskShape,
                   let stateIn = dropoutStateLocal else { return h }
+            // Per-group dropout multiplier: effective rate = min(rate ×
+            // multiplier, 0.95) — the cap keeps the inverted 1/(1-rate)
+            // scale finite. Multiplier 1 (the uniform/legacy semantic)
+            // composes NO extra ops, so uniform towers keep today's exact
+            // graph.
+            let rate: MPSGraphTensor
+            if spec.dropoutMultiplier == 1 {
+                rate = baseRate
+            } else {
+                let mult = graph.constant(
+                    Double(spec.dropoutMultiplier), shape: [1], dataType: .float32
+                )
+                let scaled = graph.multiplication(
+                    baseRate, mult, name: "\(prefix)_dropout_rate_scaled"
+                )
+                let cap = graph.constant(0.95, shape: [1], dataType: .float32)
+                rate = graph.minimum(scaled, cap, name: "\(prefix)_dropout_rate_capped")
+            }
             guard let desc = MPSGraphRandomOpDescriptor(
                 distribution: .uniform, dataType: .float32
             ) else {
@@ -2123,10 +2170,13 @@ final class ChessNetwork: @unchecked Sendable {
         }
 
         // Bias-free, He-init conv weight (caller appends to `trainables`).
-        func makeConvWeight(_ name: String, _ k: Int) -> MPSGraphTensor {
+        // Fan-in derives from the tensor's OWN shape (inCh × k²), never from
+        // tower-level fields — per-block widths make any global assumption
+        // wrong, not just stale.
+        func makeConvWeight(_ name: String, _ k: Int, _ inCh: Int, _ outCh: Int) -> MPSGraphTensor {
             graph.variable(
-                with: heInitDataConvOIHW(shape: [channels, channels, k, k], dataType: Self.mpsDataType(for: arch)),
-                shape: [NSNumber(value: channels), NSNumber(value: channels), NSNumber(value: k), NSNumber(value: k)],
+                with: heInitDataConvOIHW(shape: [outCh, inCh, k, k], dataType: Self.mpsDataType(for: arch)),
+                shape: [NSNumber(value: outCh), NSNumber(value: inCh), NSNumber(value: k), NSNumber(value: k)],
                 dataType: Self.mpsDataType(for: arch),
                 name: "\(name)_weights"
             )
@@ -2135,38 +2185,47 @@ final class ChessNetwork: @unchecked Sendable {
         // Residual function F(input). `z` is the SE input: the raw conv2 output
         // in pre-activation, or the BN2 output in post-activation. The append
         // order here is the single source of truth that `weightTensorPlan`
-        // mirrors (pre: bn1,conv1,bn2,conv2 ; post: conv1,bn1,conv2,bn2).
+        // mirrors (pre: bn1,conv1,bn2,conv2 ; post: conv1,bn1,conv2,bn2; then
+        // SE, rezero, and — width transitions only — the skip projection LAST).
+        //
+        // `skipProjInput` is what a width-transition skip projection consumes:
+        // for pre-activation blocks it is the SHARED pre-activation (the
+        // BN1→act output the branch also reads — He et al. v2 convention, so
+        // both paths see the same normalized input at a transition); for
+        // post-activation blocks it is the raw block input (v1 convention).
         let z: MPSGraphTensor
-        switch arch.blockActivationStyle {
+        var skipProjInput = input
+        switch spec.activationStyle {
         case .pre:
-            var h = batchNorm(graph: graph, input: input, channels: channels, name: "\(prefix)_bn1", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
+            var h = batchNorm(graph: graph, input: input, channels: inC, name: "\(prefix)_bn1", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
-            h = activation(graph, h, arch, name: "\(prefix)_act1")
-            let conv1W = makeConvWeight("\(prefix)_conv1", arch.blockConv1KernelSize)
+            h = activation(graph, h, spec.activationFunction, name: "\(prefix)_act1")
+            skipProjInput = h
+            let conv1W = makeConvWeight("\(prefix)_conv1", spec.conv1KernelSize, inC, outC)
             trainables.append(conv1W); shouldDecay.append(true)
             h = graph.convolution2D(h, weights: conv1W, descriptor: conv1Desc, name: "\(prefix)_conv1")
-            h = batchNorm(graph: graph, input: h, channels: channels, name: "\(prefix)_bn2", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
+            h = batchNorm(graph: graph, input: h, channels: outC, name: "\(prefix)_bn2", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
-            h = activation(graph, h, arch, name: "\(prefix)_act2")
+            h = activation(graph, h, spec.activationFunction, name: "\(prefix)_act2")
             h = try applyChannelDropout(h)
-            let conv2W = makeConvWeight("\(prefix)_conv2", arch.blockConv2KernelSize)
+            let conv2W = makeConvWeight("\(prefix)_conv2", spec.conv2KernelSize, outC, outC)
             trainables.append(conv2W); shouldDecay.append(true)
             z = graph.convolution2D(h, weights: conv2W, descriptor: conv2Desc, name: "\(prefix)_conv2")
         case .post:
-            let conv1W = makeConvWeight("\(prefix)_conv1", arch.blockConv1KernelSize)
+            let conv1W = makeConvWeight("\(prefix)_conv1", spec.conv1KernelSize, inC, outC)
             trainables.append(conv1W); shouldDecay.append(true)
             var h = graph.convolution2D(input, weights: conv1W, descriptor: conv1Desc, name: "\(prefix)_conv1")
-            h = batchNorm(graph: graph, input: h, channels: channels, name: "\(prefix)_bn1", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
+            h = batchNorm(graph: graph, input: h, channels: outC, name: "\(prefix)_bn1", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
-            h = activation(graph, h, arch, name: "\(prefix)_act1")
+            h = activation(graph, h, spec.activationFunction, name: "\(prefix)_act1")
             h = try applyChannelDropout(h)
-            let conv2W = makeConvWeight("\(prefix)_conv2", arch.blockConv2KernelSize)
+            let conv2W = makeConvWeight("\(prefix)_conv2", spec.conv2KernelSize, outC, outC)
             trainables.append(conv2W); shouldDecay.append(true)
             h = graph.convolution2D(h, weights: conv2W, descriptor: conv2Desc, name: "\(prefix)_conv2")
-            z = batchNorm(graph: graph, input: h, channels: channels, name: "\(prefix)_bn2", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
+            z = batchNorm(graph: graph, input: h, channels: outC, name: "\(prefix)_bn2", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
         }
@@ -2177,29 +2236,53 @@ final class ChessNetwork: @unchecked Sendable {
         dropoutRngState = dropoutStateLocal
 
         // SE channel attention (style-dependent; identity when .none).
-        let seOut = applySE(graph: graph, arch: arch, z: z, prefix: prefix,
+        let seOut = applySE(graph: graph, arch: arch, spec: spec, z: z, prefix: prefix,
             trainables: &trainables, shouldDecay: &shouldDecay)
 
         // ReZero branch scalar (optional), init `rezeroAlphaInit`, no weight decay.
         var branch = seOut
-        if arch.blockUseRezero {
+        if spec.useRezero {
             let alpha = graph.variable(
-                with: makeWeightData([arch.rezeroAlphaInit], dataType: Self.mpsDataType(for: arch)),
+                with: makeWeightData([spec.rezeroAlphaInit], dataType: Self.mpsDataType(for: arch)),
                 shape: [1], dataType: Self.mpsDataType(for: arch), name: "\(prefix)_res_scale")
             trainables.append(alpha); shouldDecay.append(false)
             branch = graph.multiplication(seOut, alpha, name: "\(prefix)_res_scaled")
         }
 
-        // Merge with the skip.
-        switch arch.blockSkipMerge {
-        case .cleanAdd:
-            // out = input + [alpha .] F(input) — clean identity highway (no activation on the sum).
-            return graph.addition(input, branch, name: "\(prefix)_skip")
-        case .activationGated:
-            // out = activation(input + F(input)) — the v3 gated merge.
-            let sum = graph.addition(input, branch, name: "\(prefix)_skip_sum")
-            return activation(graph, sum, arch, name: "\(prefix)_skip")
+        // Skip path: clean identity everywhere widths match; at a width
+        // transition (inC != outC) the add cannot typecheck, so the skip gets
+        // the minimum repair — a bias-free 1×1 projection (a pure per-square
+        // linear remap of the feature vector, zero spatial mixing), He-init
+        // by its own fan-in, weight-decayed. Its weight appends LAST within
+        // the block (after the rezero α) per the tensor-order contract that
+        // `weightTensorPlan` mirrors.
+        var skipSource = input
+        var skipProjWeight: MPSGraphTensor? = nil
+        if inC != outC {
+            let projW = makeConvWeight("\(prefix)_skip_proj", 1, inC, outC)
+            skipProjWeight = projW
+            let projDesc = try makeConvDescriptor(kernelSize: 1)
+            skipSource = graph.convolution2D(
+                skipProjInput, weights: projW, descriptor: projDesc,
+                name: "\(prefix)_skip_proj"
+            )
         }
+
+        // Merge with the skip.
+        let merged: MPSGraphTensor
+        switch spec.skipMerge {
+        case .cleanAdd:
+            // out = skip + [alpha .] F(input) — clean identity highway (no activation on the sum).
+            merged = graph.addition(skipSource, branch, name: "\(prefix)_skip")
+        case .activationGated:
+            // out = activation(skip + F(input)) — the v3 gated merge.
+            let sum = graph.addition(skipSource, branch, name: "\(prefix)_skip_sum")
+            merged = activation(graph, sum, spec.activationFunction, name: "\(prefix)_skip")
+        }
+        if let skipProjWeight {
+            trainables.append(skipProjWeight); shouldDecay.append(true)
+        }
+        return merged
     }
 
     /// Squeeze-and-Excitation channel attention applied to `z`. Appends SE weights
@@ -2207,13 +2290,13 @@ final class ChessNetwork: @unchecked Sendable {
     /// `arch.blockSeStyle == .none`. `attenuateOnly`: FC2->C, `sigmoid(z)*x`.
     /// `scaleAndBias`: FC2->2C, `sigmoid(gamma)*x + beta`.
     private static func applySE(
-        graph: MPSGraph, arch: NetworkArchitecture, z: MPSGraphTensor, prefix: String,
+        graph: MPSGraph, arch: NetworkArchitecture, spec: BlockGroup, z: MPSGraphTensor, prefix: String,
         trainables: inout [MPSGraphTensor], shouldDecay: inout [Bool]
     ) -> MPSGraphTensor {
-        guard arch.blockSeStyle != .none else { return z }
-        let channels = arch.channels
-        let seReduced = channels / arch.blockSeReductionRatio
-        let seExpand = arch.blockSeStyle == .scaleAndBias ? 2 * channels : channels
+        guard spec.seStyle != .none else { return z }
+        let channels = spec.channels
+        let seReduced = channels / spec.seReductionRatio
+        let seExpand = spec.seStyle == .scaleAndBias ? 2 * channels : channels
 
         // Squeeze: global average pool over [H, W] -> [B, C, 1, 1] -> [B, C].
         var s = graph.mean(of: z, axes: [2, 3], name: "\(prefix)_se_squeeze")
@@ -2232,7 +2315,7 @@ final class ChessNetwork: @unchecked Sendable {
         trainables.append(fc1b); shouldDecay.append(false)
         s = graph.matrixMultiplication(primary: s, secondary: fc1, name: "\(prefix)_se_fc1")
         s = graph.addition(s, fc1b, name: "\(prefix)_se_fc1_bias_add")
-        s = activation(graph, s, arch, name: "\(prefix)_se_act")
+        s = activation(graph, s, spec.activationFunction, name: "\(prefix)_se_act")
 
         // Excite FC2: C/r -> seExpand (Glorot, feeds the sigmoid gate).
         let fc2 = graph.variable(
@@ -2248,7 +2331,7 @@ final class ChessNetwork: @unchecked Sendable {
         s = graph.matrixMultiplication(primary: s, secondary: fc2, name: "\(prefix)_se_fc2")
         s = graph.addition(s, fc2b, name: "\(prefix)_se_fc2_bias_add")
 
-        switch arch.blockSeStyle {
+        switch spec.seStyle {
         case .none:
             return z
         case .attenuateOnly:
@@ -2300,7 +2383,7 @@ final class ChessNetwork: @unchecked Sendable {
         batchMeans: inout [MPSGraphTensor],
         batchVars: inout [MPSGraphTensor]
     ) -> (output: MPSGraphTensor, finalWeights: MPSGraphTensor) {
-        let channels = arch.channels
+        let channels = arch.towerOutputChannels
         let pc = Self.policyChannels
         let pK = arch.policyPreConvChannels
 
@@ -2409,9 +2492,10 @@ final class ChessNetwork: @unchecked Sendable {
     ) -> (scalar: MPSGraphTensor, logits: MPSGraphTensor, probs: MPSGraphTensor) {
         // 1x1 conv: compress the trunk to `valueHeadConvChannels` scoring maps.
         let convChannels = arch.valueHeadConvChannels
+        let towerOut = arch.towerOutputChannels
         let convW = graph.variable(
-            with: heInitDataConvOIHW(shape: [convChannels, arch.channels, 1, 1], dataType: Self.mpsDataType(for: arch)),
-            shape: [NSNumber(value: convChannels), NSNumber(value: arch.channels), 1, 1],
+            with: heInitDataConvOIHW(shape: [convChannels, towerOut, 1, 1], dataType: Self.mpsDataType(for: arch)),
+            shape: [NSNumber(value: convChannels), NSNumber(value: towerOut), 1, 1],
             dataType: Self.mpsDataType(for: arch),
             name: "value_conv_weights"
         )

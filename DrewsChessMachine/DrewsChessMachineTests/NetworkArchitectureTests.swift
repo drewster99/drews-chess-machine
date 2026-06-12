@@ -97,23 +97,23 @@ final class NetworkArchitectureTests: XCTestCase {
 
     func testValidationRejectsEvenKernel() {
         var a = NetworkArchitecture.current
-        a.blockConv1KernelSize = 4
+        a.blockGroups[0].conv1KernelSize = 4
         XCTAssertThrowsError(try a.validate()) { error in
             XCTAssertEqual(error as? NetworkArchitectureError,
-                           .kernelMustBeOdd(field: "blockConv1KernelSize", value: 4))
+                           .kernelMustBeOdd(field: "blockGroups[0].conv1KernelSize", value: 4))
         }
     }
 
     func testValidationRejectsChannelsNotDivisibleByReduction() {
         var a = NetworkArchitecture.current
-        a.channels = 130 // not divisible by 4 (SE on)
+        a.blockGroups[0].channels = 130 // not divisible by 4 (SE on)
         XCTAssertThrowsError(try a.validate())
     }
 
     func testNoneSEAllowsNonDivisibleChannels() throws {
         var a = NetworkArchitecture.current
-        a.blockSeStyle = .none
-        a.channels = 130
+        a.blockGroups[0].seStyle = .none
+        a.blockGroups[0].channels = 130
         XCTAssertNoThrow(try a.validate())
     }
 
@@ -121,17 +121,17 @@ final class NetworkArchitectureTests: XCTestCase {
         // The residual block computes channels / ratio regardless of SE style,
         // so a zero ratio must be rejected even when se == .none.
         var a = NetworkArchitecture.current
-        a.blockSeStyle = .none
-        a.blockSeReductionRatio = 0
+        a.blockGroups[0].seStyle = .none
+        a.blockGroups[0].seReductionRatio = 0
         XCTAssertThrowsError(try a.validate()) { error in
             XCTAssertEqual(error as? NetworkArchitectureError,
-                           .nonPositive(field: "blockSeReductionRatio", value: 0))
+                           .nonPositive(field: "blockGroups[0].seReductionRatio", value: 0))
         }
     }
 
     func testValidationRejectsValueConvChannelsExceedingChannels() {
         var a = NetworkArchitecture.current
-        a.valueHeadConvChannels = a.channels + 1
+        a.valueHeadConvChannels = a.towerOutputChannels + 1
         XCTAssertThrowsError(try a.validate())
     }
 
@@ -166,10 +166,14 @@ final class NetworkArchitectureTests: XCTestCase {
         enc.outputFormatting = [.sortedKeys]
         let json = String(decoding: try enc.encode(NetworkArchitecture.current), as: UTF8.self)
         XCTAssertTrue(json.contains("\"input_encoding\""))
-        XCTAssertTrue(json.contains("\"num_blocks\""))
-        XCTAssertTrue(json.contains("\"block_conv1_kernel_size\""))
+        XCTAssertTrue(json.contains("\"block_groups\""))
+        XCTAssertTrue(json.contains("\"conv1_kernel_size\""))
         XCTAssertTrue(json.contains("\"compute_data_type\""))
         XCTAssertFalse(json.contains("\"numBlocks\""))
+        // Encode writes ONLY block_groups for the tower; the legacy uniform
+        // keys are decode-only (read forever, never written).
+        XCTAssertFalse(json.contains("\"num_blocks\""))
+        XCTAssertFalse(json.contains("\"block_conv1_kernel_size\""))
     }
 
     /// Canonical (sortedKeys) encoding is deterministic and independent of struct
@@ -186,8 +190,8 @@ final class NetworkArchitectureTests: XCTestCase {
 
     func testSEStyleAffectsParameterCount() {
         let base = NetworkArchitecture.current          // scale_and_bias
-        var attenuate = base; attenuate.blockSeStyle = .attenuateOnly
-        var noSE = base; noSE.blockSeStyle = .none
+        var attenuate = base; attenuate.blockGroups[0].seStyle = .attenuateOnly
+        var noSE = base; noSE.blockGroups[0].seStyle = .none
         // scale-and-bias has the widest FC2 (2C) → most params; none → fewest.
         XCTAssertGreaterThan(base.parameterCount, attenuate.parameterCount)
         XCTAssertGreaterThan(attenuate.parameterCount, noSE.parameterCount)
@@ -204,14 +208,14 @@ final class NetworkArchitectureTests: XCTestCase {
     /// caught, plus the genuinely fixed engine constants that remain static.
     func testCurrentPresetIdentity() {
         let cur = NetworkArchitecture.current
-        XCTAssertEqual(cur.channels, 128)
+        XCTAssertEqual(cur.towerOutputChannels, 128)
         XCTAssertEqual(cur.numBlocks, 5)
-        XCTAssertEqual(cur.blockConv1KernelSize, 7)
-        XCTAssertEqual(cur.blockConv2KernelSize, 7)
+        XCTAssertEqual(cur.blockGroups[0].conv1KernelSize, 7)
+        XCTAssertEqual(cur.blockGroups[0].conv2KernelSize, 7)
         XCTAssertEqual(cur.stemConvKernelSize, 7)
         XCTAssertEqual(cur.inputPlanes, 30)
         XCTAssertEqual(cur.valueHeadClasses, 3)
-        XCTAssertEqual(cur.blockSeReductionRatio, 4)
+        XCTAssertEqual(cur.blockGroups[0].seReductionRatio, 4)
         XCTAssertEqual(cur.valueHeadConvChannels, 16)
         XCTAssertEqual(cur.valueHeadHiddenUnits, 128)
         XCTAssertEqual(cur.architectureVersionLabel, 4)

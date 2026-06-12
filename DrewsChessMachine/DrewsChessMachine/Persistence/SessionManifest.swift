@@ -213,7 +213,7 @@ extension SessionManifest {
                 archSummary = decoded.architectureSummary
                 paramCount = decoded.parameterCount
                 inputPlanes = decoded.inputPlanes
-                chans = decoded.channels
+                chans = decoded.towerOutputChannels
                 blocks = decoded.numBlocks
             } else {
                 // Legacy camelCase scalars; synthesize a readable line.

@@ -59,7 +59,7 @@ enum ValueHeadAnalyzer {
     /// (statistics, not weights), and the FC biases (init to zero).
     private static func fanIn(forVariableNamed name: String, arch: NetworkArchitecture) -> Int? {
         switch name {
-        case "value_conv_weights":   return arch.channels  // 1×1 conv: inC = channels
+        case "value_conv_weights":   return arch.towerOutputChannels  // 1×1 conv: inC = tower output
         case "value_fc1_weights":    return ChessNetwork.boardSize * ChessNetwork.boardSize * arch.valueHeadConvChannels  // FC [flatten, hidden], fan_in = flatten
         case "value_fc2_weights":    return arch.valueHeadHiddenUnits  // FC [hidden, classes], fan_in = hidden
         default:                     return nil         // bn/bias: no He-init reference

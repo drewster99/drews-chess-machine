@@ -405,12 +405,12 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         struct Spec { let name: String; let shape: [Int]; let fanIn: Int; let fanOut: Int; let kind: Kind }
         let cur = NetworkArchitecture.current
         let dtype = ChessNetwork.mpsDataType(for: cur)
-        let c = cur.channels
-        let reduced = c / cur.blockSeReductionRatio
+        let c = cur.towerOutputChannels
+        let reduced = c / cur.blockGroups[0].seReductionRatio
         let vConv = cur.valueHeadConvChannels
         let vFlat = ChessNetwork.boardSize * ChessNetwork.boardSize * vConv
         let vHidden = cur.valueHeadHiddenUnits
-        let k = cur.blockConv1KernelSize
+        let k = cur.blockGroups[0].conv1KernelSize
         let kArea = k * k
         var specs: [Spec] = [
             Spec(name: "stem_conv", shape: [c, cur.inputPlanes, cur.stemConvKernelSize, cur.stemConvKernelSize], fanIn: cur.inputPlanes * cur.stemConvKernelSize * cur.stemConvKernelSize, fanOut: 0, kind: .he),
