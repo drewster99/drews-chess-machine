@@ -40,91 +40,192 @@ struct BuildNewModelView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding([.horizontal, .top])
 
-            Form {
-                Section("Preset") {
-                    Picker("Start from", selection: presetSelection) {
-                        Text("Custom").tag(String?.none)
-                        ForEach(ArchitecturePresetStore.allPresets(), id: \.name) { entry in
-                            Text(entry.named.label).tag(String?.some(entry.name))
-                        }
-                    }
-                }
-
-                Section("Input") {
-                    enumPicker("Input encoding", $model.inputEncoding, InputEncoding.allCases)
-                    Text(model.inputEncoding.planeDescription)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Tower") {
-                    intField("Channels", $model.channels)
-                    intField("Blocks", $model.numBlocks)
-                    intField("Stem kernel size (odd)", $model.stemConvKernelSize)
-                    enumPicker("Activation", $model.activationFunction, ActivationFunction.allCases)
-                }
-
-                Section("Residual block") {
-                    enumPicker("Activation style", $model.blockActivationStyle, BlockActivationStyle.allCases)
-                    enumPicker("Skip merge", $model.blockSkipMerge, BlockSkipMerge.allCases)
-                    Toggle("Use ReZero", isOn: $model.blockUseRezero)
-                    if model.blockUseRezero {
-                        // The α init is seeded from the loaded preset and does
-                        // NOT auto-track the block count, so a deep net built off
-                        // a shallow preset silently keeps the shallow α. Flag the
-                        // mismatch and offer a one-click snap to 1/√blocks rather
-                        // than silently overwriting a deliberately-set value.
-                        HStack {
-                            floatField("ReZero α init", $model.rezeroAlphaInit)
-                            if model.rezeroAlphaInitMismatch {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.orange)
-                                Button(String(format: "Use 1/√%d = %.3f", model.numBlocks, model.recommendedRezeroAlphaInit)) {
-                                    model.rezeroAlphaInit = model.recommendedRezeroAlphaInit
-                                }
-                                .controlSize(.small)
-                                .help("ReZero α init doesn't match the depth-appropriate value (1/√blocks); click to apply.")
+            HStack(spacing: 0) {
+                Form {
+                    Section("Preset") {
+                        Picker("Start from", selection: presetSelection) {
+                            Text("Custom").tag(String?.none)
+                            ForEach(ArchitecturePresetStore.allPresets(), id: \.name) { entry in
+                                Text(entry.named.label).tag(String?.some(entry.name))
                             }
                         }
                     }
-                    intField("Conv 1 kernel size (odd)", $model.blockConv1KernelSize)
-                    intField("Conv 2 kernel size (odd)", $model.blockConv2KernelSize)
-                    enumPicker("SE style", $model.blockSeStyle, SEStyle.allCases)
-                    if model.blockSeStyle != .none {
-                        intField("SE reduction ratio", $model.blockSeReductionRatio)
+
+                    Section("Input") {
+                        enumPicker("Input encoding", $model.inputEncoding, InputEncoding.allCases)
+                        Text(model.inputEncoding.planeDescription)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Section("Tower") {
+                        intField("Stem kernel size (odd)", $model.stemConvKernelSize)
+                        enumPicker("Tower-level activation", $model.activationFunction, ActivationFunction.allCases)
+                        LabeledContent("Total blocks") {
+                            Text("\(model.blockGroups.reduce(0) { $0 + $1.count })")
+                                .monospacedDigit()
+                        }
+                    }
+
+                    ForEach(model.blockGroups.indices, id: \.self) { i in
+                        Section {
+                            groupFields(i)
+                        } header: {
+                            groupHeader(i)
+                        }
+                    }
+
+                    Section {
+                        Button {
+                            model.duplicateGroup(at: model.blockGroups.count - 1)
+                        } label: {
+                            Label("Add group", systemImage: "plus")
+                        }
+                    }
+
+                    Section("Policy head") {
+                        enumPicker("Policy style", $model.policyHeadStyle, PolicyHeadStyle.allCases)
+                        Text(model.policyHeadStyle.styleDescription)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                        if model.policyHeadStyle != .simpleConv {
+                            intField("Policy pre-conv channels (K)", $model.policyPreConvChannels)
+                        }
+                    }
+
+                    Section("Value head") {
+                        enumPicker("Value style", $model.valueHeadStyle, ValueHeadStyle.allCases)
+                        intField("Value conv channels", $model.valueHeadConvChannels)
+                        intField("Value hidden units", $model.valueHeadHiddenUnits)
+                    }
+
+                    Section("Precision") {
+                        enumPicker("Compute dtype", $model.computeDataType, ComputeDataType.allCases)
+                    }
+
+                    Section("Name") {
+                        TextField("Label", text: $model.labelOverride, prompt: Text(model.label))
                     }
                 }
+                .formStyle(.grouped)
+                .frame(minWidth: 540)
 
-                Section("Policy head") {
-                    enumPicker("Policy style", $model.policyHeadStyle, PolicyHeadStyle.allCases)
-                    Text(model.policyHeadStyle.styleDescription)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                    if model.policyHeadStyle != .simpleConv {
-                        intField("Policy pre-conv channels (K)", $model.policyPreConvChannels)
-                    }
-                }
+                Divider()
 
-                Section("Value head") {
-                    enumPicker("Value style", $model.valueHeadStyle, ValueHeadStyle.allCases)
-                    intField("Value conv channels", $model.valueHeadConvChannels)
-                    intField("Value hidden units", $model.valueHeadHiddenUnits)
-                }
-
-                Section("Precision") {
-                    enumPicker("Compute dtype", $model.computeDataType, ComputeDataType.allCases)
-                }
-
-                Section("Name") {
-                    TextField("Label", text: $model.labelOverride, prompt: Text(model.label))
-                }
+                diagramPane
+                    .frame(width: 420)
             }
-            .formStyle(.grouped)
 
             readout
             actionBar
         }
-        .frame(minWidth: 560, minHeight: 620)
+        .frame(minWidth: 1000, minHeight: 700)
+    }
+
+    // MARK: Block-group editor
+
+    @ViewBuilder
+    private func groupHeader(_ i: Int) -> some View {
+        HStack(spacing: 6) {
+            Text("Group \(i + 1)")
+            Spacer()
+            Button {
+                model.moveGroup(at: i, offset: -1)
+            } label: {
+                Image(systemName: "chevron.up")
+            }
+            .disabled(i == 0)
+            .help("Move this group one step toward the input")
+            Button {
+                model.moveGroup(at: i, offset: 1)
+            } label: {
+                Image(systemName: "chevron.down")
+            }
+            .disabled(i == model.blockGroups.count - 1)
+            .help("Move this group one step toward the heads")
+            Button {
+                model.duplicateGroup(at: i)
+            } label: {
+                Image(systemName: "plus.square.on.square")
+            }
+            .help("Insert a copy of this group below it")
+            Button {
+                model.removeGroup(at: i)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .disabled(model.blockGroups.count == 1)
+            .help("Remove this group")
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+    }
+
+    @ViewBuilder
+    private func groupFields(_ i: Int) -> some View {
+        @Bindable var model = model
+        intField("Blocks (count)", $model.blockGroups[i].count)
+        intField("Channels", $model.blockGroups[i].channels)
+        intField("Conv 1 kernel size (odd)", $model.blockGroups[i].conv1KernelSize)
+        intField("Conv 2 kernel size (odd)", $model.blockGroups[i].conv2KernelSize)
+        enumPicker("SE style", $model.blockGroups[i].seStyle, SEStyle.allCases)
+        if model.blockGroups[i].seStyle != .none {
+            intField("SE reduction ratio", $model.blockGroups[i].seReductionRatio)
+        }
+        enumPicker("Activation", $model.blockGroups[i].activationFunction, ActivationFunction.allCases)
+        enumPicker("Activation style", $model.blockGroups[i].activationStyle, BlockActivationStyle.allCases)
+        enumPicker("Skip merge", $model.blockGroups[i].skipMerge, BlockSkipMerge.allCases)
+        Toggle("Use ReZero", isOn: $model.blockGroups[i].useRezero)
+        if model.blockGroups[i].useRezero {
+            // The α init is seeded from the loaded preset and does NOT
+            // auto-track the TOTAL block count, so a deep net built off a
+            // shallow preset silently keeps the shallow α. Flag the mismatch
+            // and offer a one-click snap to 1/√(total blocks) rather than
+            // silently overwriting a deliberately-set value.
+            HStack {
+                floatField("ReZero α init", $model.blockGroups[i].rezeroAlphaInit)
+                if model.rezeroAlphaInitMismatch(at: i) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Button(String(format: "Use 1/√%d = %.3f", model.totalBlocks, model.recommendedRezeroAlphaInit)) {
+                        model.blockGroups[i].rezeroAlphaInit = model.recommendedRezeroAlphaInit
+                    }
+                    .controlSize(.small)
+                    .help("ReZero α init doesn't match the depth-appropriate value (1/√ total blocks); click to apply.")
+                }
+            }
+        }
+        floatField("Dropout multiplier", $model.blockGroups[i].dropoutMultiplier)
+    }
+
+    // MARK: Diagram pane (live-updating, renders the draft)
+
+    @ViewBuilder
+    private var diagramPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Architecture")
+                .font(.headline)
+                .padding([.horizontal, .top], 12)
+                .padding(.bottom, 6)
+            if model.isValid {
+                ScrollView(.vertical) {
+                    ArchitectureDiagramView(architecture: model.architecture)
+                        .padding(12)
+                        .frame(maxWidth: .infinity)
+                }
+            } else {
+                VStack {
+                    Spacer()
+                    Label(model.validationError ?? "invalid configuration",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .padding()
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
     }
 
     // MARK: Live readout

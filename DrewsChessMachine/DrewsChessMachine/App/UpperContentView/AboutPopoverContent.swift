@@ -29,6 +29,15 @@ struct AboutPopoverContent: View {
                 Text("Build time: \(String(format: "%.1f ms", net.buildTimeMs))")
                     .font(.system(.callout, design: .monospaced))
             }
+            Divider()
+            // "What am I running" — same renderer as the Build-New-Model
+            // draft pane, fed from the LIVE network's embedded config.
+            ScrollView(.vertical) {
+                ArchitectureDiagramView(architecture: arch)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity)
+            }
+            .frame(maxHeight: 380)
         }
         .padding(16)
         .frame(width: 540)

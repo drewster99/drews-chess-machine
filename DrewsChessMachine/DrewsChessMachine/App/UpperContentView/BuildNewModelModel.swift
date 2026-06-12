@@ -24,18 +24,12 @@ final class BuildNewModelModel {
     // config edited away from a preset shows "Custom", not the preset's name.
     var labelOverride: String = ""
     var inputEncoding: InputEncoding
-    var channels: Int
-    var numBlocks: Int
+    /// The tower, edited group-by-group (ARCHITECTURE_EXPANSION_PLAN.md
+    /// Feature 2 Phase B). Full fidelity: a loaded mixed tower round-trips
+    /// through the editor without collapsing.
+    var blockGroups: [BlockGroup]
     var stemConvKernelSize: Int
     var activationFunction: ActivationFunction
-    var blockActivationStyle: BlockActivationStyle
-    var blockSkipMerge: BlockSkipMerge
-    var blockUseRezero: Bool
-    var rezeroAlphaInit: Float
-    var blockConv1KernelSize: Int
-    var blockConv2KernelSize: Int
-    var blockSeStyle: SEStyle
-    var blockSeReductionRatio: Int
     var policyHeadStyle: PolicyHeadStyle
     var policyPreConvChannels: Int
     var valueHeadStyle: ValueHeadStyle
@@ -48,30 +42,12 @@ final class BuildNewModelModel {
     var saveAsName: String = ""
 
     init(_ named: NamedArchitecture = NamedArchitecture(label: "Custom", architecture: .current)) {
-        // The draft edits a UNIFORM tower (one group seeded from the
-        // architecture's first group; total block count preserved). The
-        // per-group editor + tower diagram are Phase B of
-        // ARCHITECTURE_EXPANSION_PLAN.md Feature 2 — until then, loading a
-        // mixed-group architecture into this draft collapses it to the
-        // first group's recipe.
         let a = named.architecture
-        guard let g = a.blockGroups.first else {
-            preconditionFailure("NetworkArchitecture.blockGroups is empty (validate() rejects this)")
-        }
         self.labelOverride = ""
         self.inputEncoding = a.inputEncoding
-        self.channels = g.channels
-        self.numBlocks = a.numBlocks
+        self.blockGroups = a.blockGroups
         self.stemConvKernelSize = a.stemConvKernelSize
         self.activationFunction = a.activationFunction
-        self.blockActivationStyle = g.activationStyle
-        self.blockSkipMerge = g.skipMerge
-        self.blockUseRezero = g.useRezero
-        self.rezeroAlphaInit = g.rezeroAlphaInit
-        self.blockConv1KernelSize = g.conv1KernelSize
-        self.blockConv2KernelSize = g.conv2KernelSize
-        self.blockSeStyle = g.seStyle
-        self.blockSeReductionRatio = g.seReductionRatio
         self.policyHeadStyle = a.policyHeadStyle
         self.policyPreConvChannels = a.policyPreConvChannels
         self.valueHeadStyle = a.valueHeadStyle
@@ -82,27 +58,13 @@ final class BuildNewModelModel {
 
     /// Populate every field from a preset (the picker selection is derived from
     /// architecture equality, so no separate "selected" flag is needed).
-    /// Uniform-draft caveat: see `init` — mixed-group architectures collapse
-    /// to their first group's recipe until the Phase B group editor lands.
     func load(_ named: NamedArchitecture) {
         let a = named.architecture
-        guard let g = a.blockGroups.first else {
-            preconditionFailure("NetworkArchitecture.blockGroups is empty (validate() rejects this)")
-        }
         labelOverride = ""
         inputEncoding = a.inputEncoding
-        channels = g.channels
-        numBlocks = a.numBlocks
+        blockGroups = a.blockGroups
         stemConvKernelSize = a.stemConvKernelSize
         activationFunction = a.activationFunction
-        blockActivationStyle = g.activationStyle
-        blockSkipMerge = g.skipMerge
-        blockUseRezero = g.useRezero
-        rezeroAlphaInit = g.rezeroAlphaInit
-        blockConv1KernelSize = g.conv1KernelSize
-        blockConv2KernelSize = g.conv2KernelSize
-        blockSeStyle = g.seStyle
-        blockSeReductionRatio = g.seReductionRatio
         policyHeadStyle = a.policyHeadStyle
         policyPreConvChannels = a.policyPreConvChannels
         valueHeadStyle = a.valueHeadStyle
@@ -115,18 +77,9 @@ final class BuildNewModelModel {
     var architecture: NetworkArchitecture {
         NetworkArchitecture(
             inputEncoding: inputEncoding,
-            channels: channels,
-            numBlocks: numBlocks,
+            blockGroups: blockGroups,
             stemConvKernelSize: stemConvKernelSize,
             activationFunction: activationFunction,
-            blockActivationStyle: blockActivationStyle,
-            blockSkipMerge: blockSkipMerge,
-            blockUseRezero: blockUseRezero,
-            rezeroAlphaInit: rezeroAlphaInit,
-            blockConv1KernelSize: blockConv1KernelSize,
-            blockConv2KernelSize: blockConv2KernelSize,
-            blockSeStyle: blockSeStyle,
-            blockSeReductionRatio: blockSeReductionRatio,
             policyHeadStyle: policyHeadStyle,
             policyPreConvChannels: policyPreConvChannels,
             valueHeadStyle: valueHeadStyle,
@@ -136,23 +89,47 @@ final class BuildNewModelModel {
         )
     }
 
-    /// The depth-appropriate ReZero α init for the current block count:
-    /// `1/√blocks`, which keeps the residual-stream variance ~O(1) at init
-    /// (each of N blocks contributes ~α², so α = 1/√N → total ~1). The field is
-    /// seeded from the loaded preset and does NOT auto-track the block count, so
-    /// building a deep net off a shallow preset silently keeps the shallow α
-    /// (e.g. a 50-block net left at the 5-block 0.447). `numBlocks` is clamped
-    /// to ≥1 to avoid a divide-by-zero while the field is mid-edit.
-    var recommendedRezeroAlphaInit: Float {
-        1.0 / Float(max(1, numBlocks)).squareRoot()
+    // MARK: Group manipulation (the editor's add/duplicate/remove/reorder)
+
+    /// Total blocks across all groups (clamped ≥1 for ratios mid-edit).
+    var totalBlocks: Int { max(1, blockGroups.reduce(0) { $0 + max(0, $1.count) }) }
+
+    func duplicateGroup(at index: Int) {
+        guard blockGroups.indices.contains(index) else { return }
+        blockGroups.insert(blockGroups[index], at: index + 1)
     }
 
-    /// True when ReZero is enabled and the α init meaningfully differs from the
-    /// depth-appropriate `recommendedRezeroAlphaInit`. Drives the mismatch
-    /// highlight + one-click "apply" affordance in the Build-New-Model screen.
-    /// Tolerance absorbs float round-trip noise (stored values like 0.447214).
-    var rezeroAlphaInitMismatch: Bool {
-        blockUseRezero && abs(rezeroAlphaInit - recommendedRezeroAlphaInit) > 1e-4
+    func removeGroup(at index: Int) {
+        guard blockGroups.indices.contains(index), blockGroups.count > 1 else { return }
+        blockGroups.remove(at: index)
+    }
+
+    /// Move a group one slot toward the input (-1) or the heads (+1).
+    func moveGroup(at index: Int, offset: Int) {
+        let target = index + offset
+        guard blockGroups.indices.contains(index),
+              blockGroups.indices.contains(target) else { return }
+        blockGroups.swapAt(index, target)
+    }
+
+    /// The depth-appropriate ReZero α init for the current TOTAL block count
+    /// (expanded across all groups): `1/√blocks`, which keeps the
+    /// residual-stream variance ~O(1) at init (each of N blocks contributes
+    /// ~α², so α = 1/√N → total ~1). Group α fields are seeded from the
+    /// loaded preset and do NOT auto-track the block count, so building a
+    /// deep net off a shallow preset silently keeps the shallow α — the
+    /// mismatch flag + one-click apply below cover that.
+    var recommendedRezeroAlphaInit: Float {
+        1.0 / Float(totalBlocks).squareRoot()
+    }
+
+    /// True when the group at `index` has ReZero enabled and an α init that
+    /// meaningfully differs from `recommendedRezeroAlphaInit`. Tolerance
+    /// absorbs float round-trip noise (stored values like 0.447214).
+    func rezeroAlphaInitMismatch(at index: Int) -> Bool {
+        guard blockGroups.indices.contains(index) else { return false }
+        let g = blockGroups[index]
+        return g.useRezero && abs(g.rezeroAlphaInit - recommendedRezeroAlphaInit) > 1e-4
     }
 
     /// `nil` when the current fields form a valid architecture; otherwise the
