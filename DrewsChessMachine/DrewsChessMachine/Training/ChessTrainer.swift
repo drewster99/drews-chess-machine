@@ -1134,6 +1134,21 @@ final class ChessTrainer: @unchecked Sendable {
     /// every step via a scalar placeholder, so edits take effect on
     /// the next step without graph rebuild.
     var weightDecayC: Float
+    /// Live channel-dropout rate (drop probability, 0 = off). Unlike the
+    /// per-step scalar feeds above, the rate lives in a GRAPH VARIABLE
+    /// (`dropout_rate`) read by the training-mode forward pass — a
+    /// placeholder there would impose a feed requirement on every forward
+    /// run site. Setting this property therefore pushes the value into the
+    /// graph via a tiny out-of-band assign on `executionQueue` (the
+    /// loadWeights pattern); it takes effect on the next training step.
+    /// Reads return the last value pushed. Clamped to the parameter's
+    /// [0, 0.95] range defensively — a rate of 1.0 would divide by zero in
+    /// the inverted-dropout scale.
+    var dropoutRate: Float {
+        get { _dropoutRate.value }
+        set { pushDropoutRateToGraph(newValue) }
+    }
+    private let _dropoutRate = SyncBox<Float>(0)
     /// Live gradient-clip max norm. Fed via scalar placeholder each
     /// step.
     var gradClipMaxNorm: Float
@@ -1348,7 +1363,9 @@ final class ChessTrainer: @unchecked Sendable {
     private var complementCEEnablePlaceholder: MPSGraphTensor // [] scalar float (1.0/0.0)
     /// Per-trainable-variable momentum velocity buffers, allocated parallel
     /// to `network.trainableVariables`. Each step's update is
-    /// `v_new = μ·v_old + (clipped_grad + decayC·variable)`; this list
+    /// `v_new = μ·v_old + clipped_grad` — weight decay does NOT enter the
+    /// velocity; it is applied decoupled at the weight-update site (see the
+    /// optimizer comment on the SGD-update loop). This list
     /// holds the `v` for each variable. Initialized to zero on graph build
     /// (so μ=0.0 reduces to plain SGD bit-exact). Persisted across
     /// `Stop`/`Continue` and session save/load via the trainer's
@@ -1747,6 +1764,11 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossLossTensor = built.policyLossLoss
         self.velocityGlobalNormTensor = built.velocityGlobalNorm
         self.assignOps = built.assignOps
+        // Advance the dropout RNG stream exactly once per training step,
+        // compiled into the same executable as the SGD assigns.
+        if let advance = network.dropoutRngAdvanceOp {
+            self.assignOps.append(advance)
+        }
 
         // Scalar ND array for the learning rate feed, reused every step.
         // Every scalar hyperparameter placeholder (lr, entropyCoeff,
@@ -1825,8 +1847,12 @@ final class ChessTrainer: @unchecked Sendable {
         // Seed the fp32 masters from the freshly-built (He/Glorot-init) bf16
         // working weights so the first trainStep accumulates from the real
         // init, not from zero. No-op under `.float32`. Not yet on
-        // `executionQueue`, so wrap in a sync hop.
-        executionQueue.sync { self.runSyncMastersOnQueue() }
+        // `executionQueue`, so wrap in a sync hop. The dropout RNG state is
+        // seeded in the same hop (no-op on graphs without dropout nodes).
+        executionQueue.sync {
+            self.runSyncMastersOnQueue()
+            self.runDropoutSeedOnQueue()
+        }
     }
 
     deinit {
@@ -1950,6 +1976,11 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossLossTensor = built.policyLossLoss
         self.velocityGlobalNormTensor = built.velocityGlobalNorm
         self.assignOps = built.assignOps
+        // Advance the dropout RNG stream exactly once per training step
+        // (same as the designated init).
+        if let advance = network.dropoutRngAdvanceOp {
+            self.assignOps.append(advance)
+        }
         // Rebuild the LR scalar feed against the new network's device
         // so the new graph's placeholder maps to a fresh wrapper. As in
         // the designated init, these scalar feeds match the network
@@ -2023,8 +2054,10 @@ final class ChessTrainer: @unchecked Sendable {
 
         // Seed the fp32 masters from the new network's freshly-built working
         // weights. Already on `executionQueue` (via `enqueue`), so run
-        // directly. No-op under `.float32`.
+        // directly. No-op under `.float32`. Re-seed the dropout RNG state
+        // for the new graph as well.
         runSyncMastersOnQueue()
+        runDropoutSeedOnQueue()
     }
 
     /// Build the training subgraph (loss + gradients + SGD assigns) on top
@@ -5227,6 +5260,61 @@ final class ChessTrainer: @unchecked Sendable {
                 feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
                 targetTensors: [first],
                 targetOperations: syncMastersOps
+            )
+        }
+    }
+
+    /// Push a new dropout rate into the training graph's `dropout_rate`
+    /// variable. Stores the clamped value immediately (so readers see it)
+    /// and runs the assign asynchronously on `executionQueue`, serialized
+    /// behind any in-flight training step. Logs the application so a
+    /// mid-run change is visible in the session log next to its effects.
+    private func pushDropoutRateToGraph(_ rate: Float) {
+        let clamped = min(max(rate, 0.0), 0.95)
+        _dropoutRate.value = clamped
+        guard let ph = network.dropoutRateLoadPlaceholder,
+              let assign = network.dropoutRateAssignOp,
+              let nda = network.dropoutRateLoadNDArray,
+              let td = network.dropoutRateLoadTensorData,
+              let rateVar = network.dropoutRateVariable else {
+            SessionLogger.shared.log(
+                "[PARAM] dropoutRate set on a network without dropout scaffolding — ignored (inference-mode graph?)"
+            )
+            return
+        }
+        executionQueue.async {
+            var v = clamped
+            nda.writeBytes(&v, strideBytes: nil)
+            autoreleasepool {
+                _ = self.network.graph.run(
+                    with: self.network.commandQueue,
+                    feeds: [
+                        self.network.inputPlaceholder: self.network.dummyInferenceInputTensorData,
+                        ph: td
+                    ],
+                    targetTensors: [rateVar],
+                    targetOperations: [assign]
+                )
+            }
+            SessionLogger.shared.log(String(format: "[PARAM] dropoutRate applied to training graph: %.4f", clamped))
+        }
+    }
+
+    /// Run the one-time dropout RNG seed assign on the **current** thread
+    /// (caller owns the queue) — `dropout_rng_state <- philoxState(seed)`.
+    /// The state variable is built zero-filled; without this the per-block
+    /// random draws would all start from the degenerate zero state. No-op
+    /// on graphs without dropout scaffolding (inference networks). Same
+    /// dummy-input feed pattern as `runSyncMastersOnQueue`.
+    private func runDropoutSeedOnQueue() {
+        guard let seedOp = network.dropoutRngSeedOp,
+              let stateVar = network.dropoutRngStateVariable else { return }
+        autoreleasepool {
+            _ = network.graph.run(
+                with: network.commandQueue,
+                feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
+                targetTensors: [stateVar],
+                targetOperations: [seedOp]
             )
         }
     }

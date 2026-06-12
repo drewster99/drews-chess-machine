@@ -158,6 +158,18 @@ extension SessionController {
                         "[RESUME-PARAM] weight_decay: saved=nil applied=\(TrainingParameters.shared.weightDecay) (defaulted)"
                     )
                 }
+                if let dr = rs.dropoutRate {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] dropout_rate: \(TrainingParameters.shared.dropoutRate) -> \(dr) (from session)"
+                    )
+                    trainer.dropoutRate = dr
+                    TrainingParameters.shared.dropoutRate = Double(dr)
+                } else {
+                    trainer.dropoutRate = Float(TrainingParameters.shared.dropoutRate)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] dropout_rate: saved=nil applied=\(TrainingParameters.shared.dropoutRate) (defaulted)"
+                    )
+                }
                 if let clip = rs.gradClipMaxNorm {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] grad_clip_max_norm: \(TrainingParameters.shared.gradClipMaxNorm) -> \(clip) (from session)"
@@ -635,6 +647,7 @@ extension SessionController {
                 trainer.entropyRegularizationCoeff = Float(TrainingParameters.shared.entropyBonus)
                 trainer.drawPenalty = Float(TrainingParameters.shared.drawPenalty)
                 trainer.weightDecayC = Float(TrainingParameters.shared.weightDecay)
+                trainer.dropoutRate = Float(TrainingParameters.shared.dropoutRate)
                 trainer.gradClipMaxNorm = Float(TrainingParameters.shared.gradClipMaxNorm)
                 trainer.policyLossWeight = Float(TrainingParameters.shared.policyLossWeight)
                 trainer.valueLossWeight = Float(TrainingParameters.shared.valueLossWeight)
@@ -1003,6 +1016,7 @@ extension SessionController {
         }
         let outputURL = cliOutputURL
         let cliTrainingTimeLimitSec = cliConfig?.trainingTimeLimitSec
+        let cliTrainingStepLimit = cliConfig?.trainingStepLimit
         let isAutoTrainRun = autoTrainOnLaunch
         let runStart = Date()
 
@@ -1063,6 +1077,7 @@ extension SessionController {
             [trainer, network, buffer, box, tBox, pStatsBox, spDiversityTracker,
              selfPlayGate, trainingGate, arenaFlag, triggerBox, overrideBox, countBox,
              gameWatcher, ratioController, recorder, outputURL, cliTrainingTimeLimitSec,
+             cliTrainingStepLimit,
              isAutoTrainRun,
              sessionTrainingBatchSize, sessionMinBufferBeforeTraining,
              sessionTournamentGames, sessionPromoteThreshold] in
@@ -1731,7 +1746,7 @@ extension SessionController {
                         let workerN = countBox.count
                         let spSched = scheduleBox.selfPlay
                         let arSched = scheduleBox.arena
-                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac, maxPliesCap, complementCEOn, cycle) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, dropRate, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac, maxPliesCap, complementCEOn, cycle) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
@@ -1740,6 +1755,7 @@ extension SessionController {
                                 trainer.illegalMassPenaltyWeight,
                                 trainer.drawPenalty,
                                 trainer.weightDecayC,
+                                trainer.dropoutRate,
                                 trainer.gradClipMaxNorm,
                                 trainer.policyLossWeight,
                                 trainer.valueLossWeight,
@@ -1891,9 +1907,10 @@ extension SessionController {
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
                         let cfgStr = "batch=\(sessionTrainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", livePromoteThreshold)) arenaGames=\(liveTournamentGames) arenaAutoSec=\(Int(arenaAutoSec)) workers=\(workerN)"
                         let regStr = String(
-                            format: "clip=%.1f decay=%.0e ent=%.1e illM=%.1e drawPen=%.3f pLossW=%.2f vLossW=%.2f μ=%.2f complCE=%@",
+                            format: "clip=%.1f decay=%.0e drop=%.2f ent=%.1e illM=%.1e drawPen=%.3f pLossW=%.2f vLossW=%.2f μ=%.2f complCE=%@",
                             gradClip,
                             weightDec,
+                            dropRate,
                             entropyCoeff,
                             illegalMassW,
                             drawPen,
@@ -2429,6 +2446,50 @@ extension SessionController {
                         }
                         SessionLogger.shared.log("[APP] --train: exiting process after snapshot")
                         Darwin._exit(0)
+                    }
+                }
+
+                // `training_step_limit` watcher — the step-denominated twin
+                // of the time-limit task above. Polls the trainer's
+                // completed-step counter (SyncBox-backed, safe off-main) at
+                // a coarse cadence; on crossing the budget it writes the
+                // snapshot and exits with `step_limit_reached`. Both
+                // budgets may be armed; whichever fires first wins (each
+                // exits the process, so there is no double-write).
+                if isAutoTrainRun, let recorder, let stepLimit = cliTrainingStepLimit, stepLimit > 0 {
+                    group.addTask(priority: .utility) {
+                        while !Task.isCancelled {
+                            do {
+                                try await Task.sleep(for: .seconds(2))
+                            } catch {
+                                return
+                            }
+                            let steps = trainer.completedTrainSteps
+                            guard steps >= stepLimit else { continue }
+                            let elapsed = Date().timeIntervalSince(runStart)
+                            let destDescription = outputURL?.path ?? "<stdout>"
+                            SessionLogger.shared.log(
+                                "[APP] --train: training_step_limit=\(stepLimit) reached at steps=\(steps) elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
+                            )
+                            recorder.setTerminationReason(.stepLimitReached)
+                            let counts = recorder.countsSnapshot()
+                            do {
+                                if let outputURL {
+                                    try recorder.writeJSON(to: outputURL, totalTrainingSeconds: elapsed)
+                                } else {
+                                    try recorder.writeJSONToStdout(totalTrainingSeconds: elapsed)
+                                }
+                                SessionLogger.shared.log(
+                                    "[APP] --train: wrote snapshot to \(destDescription) (arenas=\(counts.arenas), stats=\(counts.stats), probes=\(counts.probes))"
+                                )
+                            } catch {
+                                SessionLogger.shared.log(
+                                    "[APP] --train: snapshot write FAILED for \(destDescription): \(error.localizedDescription)"
+                                )
+                            }
+                            SessionLogger.shared.log("[APP] --train: exiting process after step-limit snapshot")
+                            Darwin._exit(0)
+                        }
                     }
                 }
 

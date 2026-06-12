@@ -74,7 +74,8 @@ final class CliTrainingConfigTests: XCTestCase {
                 "self_play_concurrency": .int(8),
                 "entropy_bonus": .double(0.001)
             ],
-            trainingTimeLimitSec: 300.0
+            trainingTimeLimitSec: 300.0,
+            trainingStepLimit: nil
         )
         let summary = cfg.summaryString()
         // Sorted by id for stable diffs.
@@ -88,7 +89,7 @@ final class CliTrainingConfigTests: XCTestCase {
     }
 
     func testSummary_emptyShowsPlaceholder() {
-        let cfg = CliTrainingConfig(trainingParameters: [:], trainingTimeLimitSec: nil)
+        let cfg = CliTrainingConfig(trainingParameters: [:], trainingTimeLimitSec: nil, trainingStepLimit: nil)
         XCTAssertEqual(cfg.summaryString(), "(empty)")
     }
 

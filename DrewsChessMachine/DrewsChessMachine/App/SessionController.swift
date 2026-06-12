@@ -911,6 +911,7 @@ final class SessionController {
             trainer.entropyRegularizationCoeff = Float(params.entropyBonus)
             trainer.drawPenalty = Float(params.drawPenalty)
             trainer.weightDecayC = Float(params.weightDecay)
+            trainer.dropoutRate = Float(params.dropoutRate)
             trainer.gradClipMaxNorm = Float(params.gradClipMaxNorm)
             trainer.policyLossWeight = Float(params.policyLossWeight)
             trainer.valueLossWeight = Float(params.valueLossWeight)

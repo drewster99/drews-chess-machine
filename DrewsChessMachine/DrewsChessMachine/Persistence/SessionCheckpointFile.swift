@@ -189,6 +189,9 @@ struct SessionCheckpointState: Codable, Equatable {
     let selfPlayWorkerCount: Int
     var gradClipMaxNorm: Float?
     var weightDecayCoeff: Float?
+    /// Channel-dropout rate (drop probability, 0 = off). Optional for
+    /// back-compat with session files written before dropout existed.
+    var dropoutRate: Float?
     /// Policy-loss coefficient applied to the policy term in
     /// `total_loss = valueLossWeight·valueLoss +
     /// policyLossWeight·policyLoss − …`. Optional for back-compat

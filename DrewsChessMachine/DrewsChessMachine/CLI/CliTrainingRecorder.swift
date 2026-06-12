@@ -132,6 +132,10 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// The `training_time_limit` deadline fired and the snapshot
         /// was written cleanly at its scheduled moment.
         case timerExpired = "timer_expired"
+        /// The `training_step_limit` step budget was reached (trainer
+        /// completed-step counter crossed the configured value) and the
+        /// snapshot was written cleanly.
+        case stepLimitReached = "step_limit_reached"
         /// The legal-mass collapse detector found `illegalMass`
         /// above threshold for enough consecutive probes that the
         /// run was aborted early; the snapshot is still written

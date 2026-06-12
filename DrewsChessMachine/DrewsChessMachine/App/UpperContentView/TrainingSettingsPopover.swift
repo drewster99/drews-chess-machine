@@ -239,6 +239,7 @@ struct TrainingSettingsPopover: View {
                     illegalMassWeightText: $model.illegalMassWeightText,
                     gradClipText: $model.gradClipText,
                     weightDecayText: $model.weightDecayText,
+                    dropoutRateText: $model.dropoutRateText,
                     policyLossWeightText: $model.policyLossWeightText,
                     valueLossWeightText: $model.valueLossWeightText,
                     valueLabelSmoothingText: $model.valueLabelSmoothingText,
@@ -251,6 +252,7 @@ struct TrainingSettingsPopover: View {
                     illegalMassWeightError: model.illegalMassWeightError,
                     gradClipError: model.gradClipError,
                     weightDecayError: model.weightDecayError,
+                    dropoutRateError: model.dropoutRateError,
                     policyLossWeightError: model.policyLossWeightError,
                     valueLossWeightError: model.valueLossWeightError,
                     valueLabelSmoothingError: model.valueLabelSmoothingError,
@@ -666,6 +668,7 @@ private struct OptimizerTab: View {
     @Binding var illegalMassWeightText: String
     @Binding var gradClipText: String
     @Binding var weightDecayText: String
+    @Binding var dropoutRateText: String
     @Binding var policyLossWeightText: String
     @Binding var valueLossWeightText: String
     @Binding var valueLabelSmoothingText: String
@@ -679,6 +682,7 @@ private struct OptimizerTab: View {
     let illegalMassWeightError: Bool
     let gradClipError: Bool
     let weightDecayError: Bool
+    let dropoutRateError: Bool
     let policyLossWeightError: Bool
     let valueLossWeightError: Bool
     let valueLabelSmoothingError: Bool
@@ -842,6 +846,23 @@ private struct OptimizerTab: View {
                             ),
                             in: 0.0...0.1,
                             step: 1e-4
+                        )
+                    }
+                    PopoverRow(
+                        label: "Dropout rate:",
+                        text: $dropoutRateText,
+                        error: dropoutRateError,
+                        placeholder: "0.00"
+                    ) {
+                        Stepper(
+                            "",
+                            value: PopoverBindings.doubleBinding(
+                                text: $dropoutRateText,
+                                fallback: 0.0,
+                                format: "%.2f"
+                            ),
+                            in: 0.0...0.95,
+                            step: 0.05
                         )
                     }
                     PopoverRow(

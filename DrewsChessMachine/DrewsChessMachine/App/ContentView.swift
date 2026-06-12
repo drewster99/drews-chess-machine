@@ -29,6 +29,9 @@ struct ContentView: View {
     /// Forwarded `--model <path>` value (opponent weights for
     /// `--playchess`). Nil ⇒ latest saved session's trainer.
     let playChessModelPath: String?
+    /// Forwarded `--start-model <path>` value (starting champion for
+    /// `--train`). Nil ⇒ fresh random build.
+    let trainStartModelPath: String?
     let cliConfig: CliTrainingConfig?
     let cliOutputURL: URL?
     /// View > Show Training Graphs preference, forwarded from
@@ -100,6 +103,7 @@ struct ContentView: View {
             autoTrainOnLaunch: autoTrainOnLaunch,
             autoPlayChessOnLaunch: autoPlayChessOnLaunch,
             playChessModelPath: playChessModelPath,
+            trainStartModelPath: trainStartModelPath,
             cliConfig: cliConfig,
             cliOutputURL: cliOutputURL,
             chartCoordinator: chartCoordinator
@@ -148,6 +152,7 @@ struct ContentView: View {
         autoTrainOnLaunch: false,
         autoPlayChessOnLaunch: false,
         playChessModelPath: nil,
+        trainStartModelPath: nil,
         cliConfig: nil,
         cliOutputURL: nil,
         showTrainingGraphs: true,

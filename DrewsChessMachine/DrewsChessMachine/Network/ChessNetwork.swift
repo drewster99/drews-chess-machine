@@ -10,6 +10,7 @@ enum ChessNetworkError: LocalizedError {
     case metalNotSupported
     case commandQueueCreationFailed
     case descriptorCreationFailed
+    case randomDescriptorCreationFailed
     case outputMissing(String)
     case weightLoadMismatch(String)
     case variableShapeMissing(String)
@@ -27,6 +28,8 @@ enum ChessNetworkError: LocalizedError {
             return "Failed to create Metal command queue"
         case .descriptorCreationFailed:
             return "Failed to create convolution descriptor"
+        case .randomDescriptorCreationFailed:
+            return "Failed to create random-op descriptor for dropout"
         case .outputMissing(let name):
             return "Inference output missing: \(name)"
         case .weightLoadMismatch(let detail):
@@ -199,6 +202,45 @@ final class ChessNetwork: @unchecked Sendable {
 
     let graph: MPSGraph
     let inputPlaceholder: MPSGraphTensor
+
+    // MARK: Dropout (training-mode graphs only; all nil on inference graphs)
+
+    /// Global dropout rate, a graph VARIABLE (not a placeholder) so no run
+    /// site on this graph is forced to feed it — forwards read its current
+    /// value directly. Built holding 0.0, which makes every dropout node an
+    /// exact identity (mask all-ones, scale 1.0; ×1.0 is exact in bf16 too),
+    /// so a rate-0 training graph is numerically indistinguishable from one
+    /// without the nodes — only the random-generation cost remains, which is
+    /// precisely what the perf probe measures. fp32 scalar; compared against
+    /// fp32 uniforms regardless of compute dtype.
+    let dropoutRateVariable: MPSGraphTensor?
+    /// Philox RNG state threaded through the per-block channel-mask draws.
+    /// Variable (persists across executions); seeded once via
+    /// `dropoutRngSeedOp` and advanced once per training step via
+    /// `dropoutRngAdvanceOp` so every step draws fresh masks. Deliberately
+    /// NOT persisted across save/resume — dropout noise is not part of
+    /// model identity. Forward passes that skip the advance op (e.g.
+    /// diagnostics `evaluate` on the trainer network) re-read the same
+    /// stream position; harmless for noise, exact no-op at rate 0.
+    let dropoutRngStateVariable: MPSGraphTensor?
+    /// One-time seeding assign (`stateVar <- philoxState(seed)`); the
+    /// trainer runs it right after graph construction (and after a network
+    /// reset), mirroring the master-sync pattern.
+    let dropoutRngSeedOp: MPSGraphOperation?
+    /// Per-step state-advance assign; the trainer appends this to its SGD
+    /// `assignOps` so the compiled training executable advances the stream
+    /// exactly once per step.
+    let dropoutRngAdvanceOp: MPSGraphOperation?
+    /// Setter plumbing for `dropoutRateVariable`: a `[1]` fp32 placeholder +
+    /// assign op + pre-allocated ND array, run out-of-band by
+    /// `ChessTrainer.dropoutRate` when the parameter changes (loadWeights
+    /// pattern — never part of the forward/training executables, so the
+    /// placeholder imposes no feed requirement on any other run).
+    let dropoutRateLoadPlaceholder: MPSGraphTensor?
+    let dropoutRateAssignOp: MPSGraphOperation?
+    let dropoutRateLoadNDArray: MPSNDArray?
+    let dropoutRateLoadTensorData: MPSGraphTensorData?
+
     let policyOutput: MPSGraphTensor
     /// fp32 cast of `policyOutput`, used only as the inference readback
     /// target so the CPU reads raw fp32 bytes (the bf16→fp32 widen of the
@@ -549,6 +591,69 @@ final class ChessNetwork: @unchecked Sendable {
             x = Self.activation(g, x, arch, name: "stem_act")
         }
 
+        // --- Dropout scaffolding (training-mode graphs only) ---
+        //
+        // Built unconditionally into every training-mode block at the WRN
+        // slot (after the conv2-side BN+activation, before conv2). The rate
+        // lives in a graph variable holding 0.0 until something sets it, so
+        // the node is an exact identity by default; see the property docs.
+        // The channel mask shape [N, C, 1, 1] is derived at runtime from the
+        // stem output's shape (batch is dynamic in this graph).
+        var dropoutRateVar: MPSGraphTensor?
+        var dropoutStateVar: MPSGraphTensor?
+        var dropoutSeedOp: MPSGraphOperation?
+        var dropoutAdvanceOp: MPSGraphOperation?
+        var dropoutMaskShape: MPSGraphTensor?
+        var dropoutState: MPSGraphTensor?
+        var dropoutRateLoadPh: MPSGraphTensor?
+        var dropoutRateAssign: MPSGraphOperation?
+        var dropoutRateNDArray: MPSNDArray?
+        var dropoutRateTensorData: MPSGraphTensorData?
+        if bnMode == .training {
+            let rateVar = g.variable(
+                with: withUnsafeBytes(of: Float(0)) { Data($0) },
+                shape: [1], dataType: .float32, name: "dropout_rate"
+            )
+            dropoutRateVar = rateVar
+            let ratePh = g.placeholder(shape: [1], dataType: .float32, name: "dropout_rate_load")
+            dropoutRateLoadPh = ratePh
+            dropoutRateAssign = g.assign(rateVar, tensor: ratePh, name: "dropout_rate_load_assign")
+            let rateDesc = MPSNDArrayDescriptor(dataType: .float32, shape: [1])
+            let rateNDA = MPSNDArray(device: mtlDevice, descriptor: rateDesc)
+            dropoutRateNDArray = rateNDA
+            dropoutRateTensorData = MPSGraphTensorData(rateNDA)
+            let stateVar = g.variable(
+                with: Data(count: 7 * MemoryLayout<Int32>.size),
+                shape: [7], dataType: .int32, name: "dropout_rng_state"
+            )
+            dropoutStateVar = stateVar
+            let seeded = g.randomPhiloxStateTensor(
+                withSeed: Int.random(in: 0..<Int.max), name: "dropout_rng_seed"
+            )
+            dropoutSeedOp = g.assign(stateVar, tensor: seeded, name: "dropout_rng_seed_assign")
+            dropoutState = stateVar
+            // Mask shape [N, C, 1, 1]: the dynamic batch dim is read from the
+            // INPUT PLACEHOLDER's shape, never from a tensor downstream of
+            // trainable weights. `shapeOf` has no gradient function, so
+            // attaching it to e.g. the stem output adds a consumer autodiff
+            // cannot sum over — MPSGraph then fails to produce gradients for
+            // everything upstream ("Couldn't get gradient Tensor for tensor
+            // of op: stem_conv_weights", hard assertion). No trainable is
+            // upstream of the placeholder, so this branch is invisible to
+            // the backward pass.
+            let inputShape = g.shapeOf(input, name: "dropout_input_shape")
+            let batchOnly = g.sliceTensor(
+                inputShape, dimension: 0, start: 0, length: 1, name: "dropout_shape_n"
+            )
+            let channelDim = g.constant(
+                Double(arch.channels), shape: [1], dataType: .int32
+            )
+            let spatialOnes = g.constant(1.0, shape: [2], dataType: .int32)
+            dropoutMaskShape = g.concatTensors(
+                [batchOnly, channelDim, spatialOnes], dimension: 0, name: "dropout_mask_shape"
+            )
+        }
+
         // --- Tower: pre-activation residual blocks (count = `numBlocks`) ---
 
         for i in 0..<arch.numBlocks {
@@ -558,6 +663,9 @@ final class ChessNetwork: @unchecked Sendable {
                 input: x,
                 blockIndex: i,
                 bnMode: bnMode,
+                dropoutRate: dropoutRateVar,
+                dropoutMaskShape: dropoutMaskShape,
+                dropoutRngState: &dropoutState,
                 trainables: &trainables,
                 shouldDecay: &shouldDecay,
                 runningStats: &runningStats,
@@ -566,6 +674,22 @@ final class ChessNetwork: @unchecked Sendable {
                 batchVars: &batchVars
             )
         }
+
+        // Advance the RNG state variable to the post-tower stream position
+        // once per training step (the trainer compiles this into its SGD
+        // assign ops). Only meaningful when the blocks actually consumed
+        // randomness — i.e. the chained state differs from the variable.
+        if let stateVar = dropoutStateVar, let finalState = dropoutState, finalState !== stateVar {
+            dropoutAdvanceOp = g.assign(stateVar, tensor: finalState, name: "dropout_rng_advance")
+        }
+        self.dropoutRateVariable = dropoutRateVar
+        self.dropoutRngStateVariable = dropoutStateVar
+        self.dropoutRngSeedOp = dropoutSeedOp
+        self.dropoutRngAdvanceOp = dropoutAdvanceOp
+        self.dropoutRateLoadPlaceholder = dropoutRateLoadPh
+        self.dropoutRateAssignOp = dropoutRateAssign
+        self.dropoutRateLoadNDArray = dropoutRateNDArray
+        self.dropoutRateLoadTensorData = dropoutRateTensorData
 
         // --- Tower-end normalization (pre-activation only) ---
         //
@@ -1915,6 +2039,9 @@ final class ChessNetwork: @unchecked Sendable {
         input: MPSGraphTensor,
         blockIndex: Int,
         bnMode: BNMode,
+        dropoutRate: MPSGraphTensor?,
+        dropoutMaskShape: MPSGraphTensor?,
+        dropoutRngState: inout MPSGraphTensor?,
         trainables: inout [MPSGraphTensor],
         shouldDecay: inout [Bool],
         runningStats: inout [MPSGraphTensor],
@@ -1926,6 +2053,74 @@ final class ChessNetwork: @unchecked Sendable {
         let channels = arch.channels
         let conv1Desc = try makeConvDescriptor(kernelSize: arch.blockConv1KernelSize)
         let conv2Desc = try makeConvDescriptor(kernelSize: arch.blockConv2KernelSize)
+
+        // Channel (spatial) dropout with inverted scaling, present only on
+        // training-mode graphs (the caller passes nil rate/shape/state
+        // otherwise). One fresh [N, C, 1, 1] uniform draw per block per
+        // step, chained through `dropoutRngState`; keep-mask = (u >= rate);
+        // survivors scaled by 1/(1-rate) so train-time expectations match
+        // the dropout-free inference graphs. At rate 0 (the build-time
+        // value) the whole node is an exact identity — see
+        // `dropoutRateVariable`.
+        //
+        // WHY CHANNEL GRANULARITY: the mask broadcasts one coin per
+        // (sample, channel) across the whole board, so a dropped feature
+        // map goes dark as a unit. Per-element ("unit") dropout was
+        // rejected because adjacent squares within one feature map are
+        // strongly correlated on a board — a pinhole at one square is
+        // trivially reconstructed from its neighbors, so the effective
+        // regularization is far weaker than the nominal rate (the
+        // SpatialDropout argument, Tompson et al.). DropBlock-style
+        // contiguous patches were rejected because their niche — patches
+        // larger than the correlation length but smaller than the map —
+        // barely exists on a board this small; the interesting granularity
+        // endpoints here are unit and channel, and channel is the one that
+        // forces cross-channel redundancy (no feature may rely on one
+        // fragile channel coalition). Whole-branch dropping (stochastic
+        // depth / DropPath, the modern transformer-era favorite) is a
+        // separate future axis gated on the ReZero multiply, not this
+        // node. Decision record with paper references:
+        // ARCHITECTURE_EXPANSION_PLAN.md (Feature 1).
+        //
+        // PLACEMENT (WRN slot, between the conv2-side activation and
+        // conv2): the block's own BN statistics are computed on clean,
+        // un-dropped activations (the dropout/BN variance-shift
+        // disharmony only propagates forward); conv2 is the directly
+        // regularized consumer; the skip path is never touched, so a
+        // heavily-masked branch degrades toward a clean no-op through the
+        // identity add. Note our SE module sits BELOW the mask, so SE
+        // attention is computed from masked activations — a deliberate
+        // deviation from plain WRN (SE learns missing-channel robustness
+        // too); flag this when comparing against WRN-style results.
+        var dropoutStateLocal = dropoutRngState
+        func applyChannelDropout(_ h: MPSGraphTensor) throws -> MPSGraphTensor {
+            guard let rate = dropoutRate,
+                  let maskShape = dropoutMaskShape,
+                  let stateIn = dropoutStateLocal else { return h }
+            guard let desc = MPSGraphRandomOpDescriptor(
+                distribution: .uniform, dataType: .float32
+            ) else {
+                throw ChessNetworkError.randomDescriptorCreationFailed
+            }
+            let drawn = graph.randomTensor(
+                withShapeTensor: maskShape, descriptor: desc,
+                stateTensor: stateIn, name: "\(prefix)_dropout_rng"
+            )
+            dropoutStateLocal = drawn[1]
+            let keep = graph.greaterThanOrEqualTo(drawn[0], rate, name: "\(prefix)_dropout_keep")
+            let maskF = graph.cast(keep, to: .float32, name: "\(prefix)_dropout_mask")
+            let one = graph.constant(1.0, shape: [1], dataType: .float32)
+            let scale = graph.division(
+                one, graph.subtraction(one, rate, name: "\(prefix)_dropout_keep_frac"),
+                name: "\(prefix)_dropout_scale"
+            )
+            let scaledMask = graph.multiplication(maskF, scale, name: "\(prefix)_dropout_scaled_mask")
+            let dtype = Self.mpsDataType(for: arch)
+            let scaledMaskCast = (dtype == .float32)
+                ? scaledMask
+                : graph.cast(scaledMask, to: dtype, name: "\(prefix)_dropout_scaled_mask_cast")
+            return graph.multiplication(h, scaledMaskCast, name: "\(prefix)_dropout")
+        }
 
         // Bias-free, He-init conv weight (caller appends to `trainables`).
         func makeConvWeight(_ name: String, _ k: Int) -> MPSGraphTensor {
@@ -1955,6 +2150,7 @@ final class ChessNetwork: @unchecked Sendable {
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
             h = activation(graph, h, arch, name: "\(prefix)_act2")
+            h = try applyChannelDropout(h)
             let conv2W = makeConvWeight("\(prefix)_conv2", arch.blockConv2KernelSize)
             trainables.append(conv2W); shouldDecay.append(true)
             z = graph.convolution2D(h, weights: conv2W, descriptor: conv2Desc, name: "\(prefix)_conv2")
@@ -1966,6 +2162,7 @@ final class ChessNetwork: @unchecked Sendable {
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
             h = activation(graph, h, arch, name: "\(prefix)_act1")
+            h = try applyChannelDropout(h)
             let conv2W = makeConvWeight("\(prefix)_conv2", arch.blockConv2KernelSize)
             trainables.append(conv2W); shouldDecay.append(true)
             h = graph.convolution2D(h, weights: conv2W, descriptor: conv2Desc, name: "\(prefix)_conv2")
@@ -1973,6 +2170,11 @@ final class ChessNetwork: @unchecked Sendable {
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
         }
+
+        // Hand the advanced RNG stream position back to the caller so the
+        // next block draws fresh numbers (and the post-tower advance op
+        // captures the final position).
+        dropoutRngState = dropoutStateLocal
 
         // SE channel attention (style-dependent; identity when .none).
         let seOut = applySE(graph: graph, arch: arch, z: z, prefix: prefix,

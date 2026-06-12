@@ -70,6 +70,11 @@ struct DrewsChessMachineApp: App {
     /// `UCIModelLoader.resolveModelURL` so it matches `--uci`'s behavior.
     private let playChessModelPath: String?
 
+    /// Value of `--start-model <path>` when `--train` is present: the
+    /// saved model loaded as the starting champion instead of a fresh
+    /// random init. Nil ⇒ the classic fresh-build auto-train path.
+    private let trainStartModelPath: String?
+
     init() {
         // Parse launch-time CLI flags before any logging so the
         // [APP] banner can record whether auto-train mode is on
@@ -144,7 +149,7 @@ struct DrewsChessMachineApp: App {
 
         // Known flags.
         let booleanFlags: Set<String> = ["--train", "--playchess"]
-        let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit", "--model"]
+        let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit", "--training-step-limit", "--start-model", "--model"]
 
         // Indices of rawArgs that were consumed by a known flag.
         // Anything NOT in this set after parsing is unknown and
@@ -238,10 +243,35 @@ struct DrewsChessMachineApp: App {
             if parsedConfig == nil {
                 parsedConfig = CliTrainingConfig(
                     trainingParameters: [:],
-                    trainingTimeLimitSec: override
+                    trainingTimeLimitSec: override,
+                    trainingStepLimit: nil
                 )
             } else {
                 parsedConfig?.trainingTimeLimitSec = override
+            }
+        }
+
+        // `--training-step-limit <steps>` — stop after the trainer
+        // completes this many SGD steps (snapshot + exit, same dance
+        // as the time limit; whichever budget fires first wins). CLI
+        // flag wins over a `training_step_limit` key in --parameters.
+        var trainingStepLimitCliOverride: Int? = nil
+        if let raw = takeValue(for: "--training-step-limit") {
+            if let parsed = Int(raw), parsed > 0 {
+                trainingStepLimitCliOverride = parsed
+            } else {
+                errors.append("--training-step-limit value '\(raw)' is not a positive integer")
+            }
+        }
+        if let override = trainingStepLimitCliOverride {
+            if parsedConfig == nil {
+                parsedConfig = CliTrainingConfig(
+                    trainingParameters: [:],
+                    trainingTimeLimitSec: nil,
+                    trainingStepLimit: override
+                )
+            } else {
+                parsedConfig?.trainingStepLimit = override
             }
         }
         self.cliConfig = parsedConfig
@@ -265,6 +295,17 @@ struct DrewsChessMachineApp: App {
         self.playChessModelPath = parsedPlayChessModelPath
         if parsedPlayChessModelPath != nil && playChessIndices.isEmpty {
             errors.append("--model is only valid alongside --playchess (UCI passes --model via --uci)")
+        }
+
+        // `--start-model <path>` — with --train, load this saved model's
+        // weights into the champion instead of random initialization (the
+        // trainer then forks from it as usual). The lever for controlled
+        // A/B experiments: N headless runs from one identical starting
+        // net, with per-arm hyperparameters from --parameters.
+        let parsedTrainStartModelPath = takeValue(for: "--start-model")
+        self.trainStartModelPath = parsedTrainStartModelPath
+        if parsedTrainStartModelPath != nil && trainIndices.isEmpty {
+            errors.append("--start-model is only valid alongside --train")
         }
 
         // Unknown-argument scan. Anything that wasn't consumed
@@ -306,6 +347,12 @@ struct DrewsChessMachineApp: App {
               --training-time-limit <seconds> Seconds of Play-and-Train before the JSON snapshot is written
                                               and the process exits. Overrides any value in --parameters.
                                               Only honored under --train.
+              --training-step-limit <steps>   Stop after the trainer completes this many SGD steps (snapshot
+                                              + exit, same as the time limit; first budget to fire wins).
+                                              Overrides any training_step_limit in --parameters.
+              --start-model <path>            Load this saved model (.safetensors / .dcmmodel) as the starting
+                                              champion instead of a fresh random init; the trainer forks from
+                                              it. For controlled A/B runs from one identical starting net.
 
             Opponent selection (with --playchess):
               --model <path>                  .safetensors or .dcmmodel weights to play against. Without it,
@@ -404,6 +451,7 @@ struct DrewsChessMachineApp: App {
                 autoTrainOnLaunch: autoTrainOnLaunch,
                 autoPlayChessOnLaunch: autoPlayChessOnLaunch,
                 playChessModelPath: playChessModelPath,
+                trainStartModelPath: trainStartModelPath,
                 cliConfig: cliConfig,
                 cliOutputURL: cliOutputURL,
                 showTrainingGraphs: showTrainingGraphs,

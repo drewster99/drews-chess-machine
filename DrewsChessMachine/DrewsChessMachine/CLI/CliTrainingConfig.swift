@@ -26,6 +26,13 @@ struct CliTrainingConfig: Sendable {
     /// the params file did not include `training_time_limit`.
     var trainingTimeLimitSec: Double?
 
+    /// Session step budget: stop (snapshot + exit, identical dance to
+    /// the time limit) once the trainer's completed-step counter reaches
+    /// this value. Same `--output` gating as the time limit. Both limits
+    /// may be set — whichever fires first wins. Nil when the params file
+    /// did not include `training_step_limit`.
+    var trainingStepLimit: Int?
+
     /// Load and decode a parameters JSON file from disk. Throws on
     /// I/O failure or malformed JSON.
     ///
@@ -40,11 +47,20 @@ struct CliTrainingConfig: Sendable {
 
         var values: [String: ParameterValue] = [:]
         var trainingTimeLimitSec: Double?
+        var trainingStepLimit: Int?
 
         for (id, anyValue) in dict {
             if id == "training_time_limit" {
                 if let n = anyValue as? NSNumber {
                     trainingTimeLimitSec = n.doubleValue
+                } else {
+                    throw TrainingConfigError.wrongType(id: id)
+                }
+                continue
+            }
+            if id == "training_step_limit" {
+                if let n = anyValue as? NSNumber {
+                    trainingStepLimit = n.intValue
                 } else {
                     throw TrainingConfigError.wrongType(id: id)
                 }
@@ -73,7 +89,8 @@ struct CliTrainingConfig: Sendable {
 
         return CliTrainingConfig(
             trainingParameters: values,
-            trainingTimeLimitSec: trainingTimeLimitSec
+            trainingTimeLimitSec: trainingTimeLimitSec,
+            trainingStepLimit: trainingStepLimit
         )
     }
 
@@ -94,6 +111,9 @@ struct CliTrainingConfig: Sendable {
         }
         if let t = trainingTimeLimitSec {
             parts.append("training_time_limit=\(t)")
+        }
+        if let s = trainingStepLimit {
+            parts.append("training_step_limit=\(s)")
         }
         return parts.isEmpty ? "(empty)" : parts.joined(separator: " ")
     }

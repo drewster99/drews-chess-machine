@@ -48,6 +48,7 @@ final class TrainingSettingsPopoverModel {
     var illegalMassWeightText = "" { didSet { illegalMassWeightError = false } }
     var gradClipText = "" { didSet { gradClipError = false } }
     var weightDecayText = "" { didSet { weightDecayError = false } }
+    var dropoutRateText = "" { didSet { dropoutRateError = false } }
     var policyLossWeightText = "" { didSet { policyLossWeightError = false } }
     var valueLossWeightText = "" { didSet { valueLossWeightError = false } }
     var valueLabelSmoothingText = "" { didSet { valueLabelSmoothingError = false } }
@@ -61,6 +62,7 @@ final class TrainingSettingsPopoverModel {
     private(set) var illegalMassWeightError = false
     private(set) var gradClipError = false
     private(set) var weightDecayError = false
+    private(set) var dropoutRateError = false
     private(set) var policyLossWeightError = false
     private(set) var valueLossWeightError = false
     private(set) var valueLabelSmoothingError = false
@@ -223,6 +225,7 @@ final class TrainingSettingsPopoverModel {
         illegalMassWeightText = String(format: "%.2f", p.illegalMassWeight)
         gradClipText = String(format: "%.1f", p.gradClipMaxNorm)
         weightDecayText = String(format: "%.2e", p.weightDecay)
+        dropoutRateText = String(format: "%.2f", p.dropoutRate)
         policyLossWeightText = String(format: "%.2f", p.policyLossWeight)
         valueLossWeightText = String(format: "%.2f", p.valueLossWeight)
         valueLabelSmoothingText = String(format: "%.3f", p.valueLabelSmoothingEpsilon)
@@ -294,6 +297,7 @@ final class TrainingSettingsPopoverModel {
         illegalMassWeightError = false
         gradClipError = false
         weightDecayError = false
+        dropoutRateError = false
         policyLossWeightError = false
         valueLossWeightError = false
         valueLabelSmoothingError = false
@@ -810,6 +814,24 @@ final class TrainingSettingsPopoverModel {
             }
         } else {
             weightDecayError = true
+            anyError = true
+        }
+
+        // Dropout rate — Double in [0, 0.95]. Drop probability
+        // (PyTorch/Keras convention); 0 disables. Pushed onto the live
+        // trainer via the graph-variable assign (`ChessTrainer.dropoutRate`).
+        if let v = Double(dropoutRateText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 0.95, v.isFinite {
+            dropoutRateError = false
+            if abs(v - p.dropoutRate) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] dropoutRate: %.3f -> %.3f", p.dropoutRate, v)
+                )
+                p.dropoutRate = v
+                trainer?.dropoutRate = Float(v)
+            }
+        } else {
+            dropoutRateError = true
             anyError = true
         }
 

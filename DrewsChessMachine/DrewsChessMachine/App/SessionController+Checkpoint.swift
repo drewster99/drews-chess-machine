@@ -471,10 +471,26 @@ extension SessionController {
             onRefuseMenuAction(busyReasonProvider())
             return
         }
+        Task {
+            _ = await performLoadModel(url: url)
+        }
+    }
 
+    /// Awaitable core of `loadModelFrom(url:)` — read + decode the model
+    /// file, build (or rebuild) the champion at its architecture, and apply
+    /// the weights. Returns `true` on success. Exposed separately so the
+    /// `--train --start-model` launch sequence can sequence "load champion,
+    /// THEN start Play-and-Train" without polling UI state.
+    @discardableResult
+    func performLoadModel(url: URL) async -> Bool {
         checkpoint?.checkpointSaveInFlight = true
         checkpoint?.setCheckpointStatus("Loading \(url.lastPathComponent)…", kind: .progress)
+        return await withCheckedContinuation { continuation in
+            performLoadModelBody(url: url, completion: { continuation.resume(returning: $0) })
+        }
+    }
 
+    private func performLoadModelBody(url: URL, completion: @escaping @MainActor (Bool) -> Void) {
         Task {
             // 1. Read + decode the file first (CPU) to learn its architecture.
             //    The security scope is held across the read; loadWeights below
@@ -498,6 +514,7 @@ extension SessionController {
                     checkpoint?.setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
                     SessionLogger.shared.log("[CHECKPOINT] Load model failed: \(error.localizedDescription)")
                 }
+                completion(false)
                 return
             }
 
@@ -511,6 +528,7 @@ extension SessionController {
                     checkpoint?.setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
                     SessionLogger.shared.log("[CHECKPOINT] Load model auto-build failed: \(error.localizedDescription)")
                 }
+                completion(false)
                 return
             }
 
@@ -541,9 +559,11 @@ extension SessionController {
                 if replayBuffer != nil {
                     championLoadedSinceLastTrainingSegment = true
                 }
+                completion(true)
             case .failure(let error):
                 checkpoint?.setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Load model failed: \(error.localizedDescription)")
+                completion(false)
             }
         }
     }
@@ -765,6 +785,7 @@ extension SessionController {
             selfPlayWorkerCount: params.selfPlayConcurrency,
             gradClipMaxNorm: Float(params.gradClipMaxNorm),
             weightDecayCoeff: Float(params.weightDecay),
+            dropoutRate: Float(params.dropoutRate),
             policyLossWeight: Float(params.policyLossWeight),
             valueLossWeight: Float(params.valueLossWeight),
             momentumCoeff: Float(params.momentumCoeff),

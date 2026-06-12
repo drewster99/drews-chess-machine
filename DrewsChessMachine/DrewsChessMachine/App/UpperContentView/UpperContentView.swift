@@ -35,6 +35,11 @@ struct UpperContentView: View {
     /// the same way `--uci` resolves it (`UCIModelLoader.resolveModelURL`).
     let playChessModelPath: String?
 
+    /// Forwarded `--start-model <path>` value for `--train`: load this
+    /// saved model as the starting champion instead of building a fresh
+    /// random network. Nil ⇒ the classic fresh-build auto-train path.
+    let trainStartModelPath: String?
+
     /// Parsed `--parameters <file>` JSON. Applied to the relevant
     /// `@AppStorage` / `@State` fields right before
     /// `buildNetwork()` fires inside the auto-train sequence, so
@@ -64,6 +69,7 @@ struct UpperContentView: View {
         autoTrainOnLaunch: Bool,
         autoPlayChessOnLaunch: Bool,
         playChessModelPath: String?,
+        trainStartModelPath: String?,
         cliConfig: CliTrainingConfig?,
         cliOutputURL: URL?,
         chartCoordinator: ChartCoordinator
@@ -72,6 +78,7 @@ struct UpperContentView: View {
         self.autoTrainOnLaunch = autoTrainOnLaunch
         self.autoPlayChessOnLaunch = autoPlayChessOnLaunch
         self.playChessModelPath = playChessModelPath
+        self.trainStartModelPath = trainStartModelPath
         self.cliConfig = cliConfig
         self.cliOutputURL = cliOutputURL
         self.chartCoordinator = chartCoordinator
@@ -1939,6 +1946,30 @@ struct UpperContentView: View {
         // `applyCliConfigOverridesFromMenu(cfg:)`, so the override
         // logic is shared rather than CLI-only.
         applyCliConfigOverrides()
+
+        // `--start-model <path>`: load the given saved model as the
+        // starting champion (built at the FILE's architecture, weights
+        // applied) instead of a fresh random build. The trainer forks
+        // from the champion on session start, so both lineages begin at
+        // the loaded weights — the lever for controlled A/B runs from one
+        // identical starting net.
+        if let startPath = trainStartModelPath {
+            let startURL = URL(fileURLWithPath: (startPath as NSString).expandingTildeInPath)
+            SessionLogger.shared.log("[APP] --train: loading start model \(startURL.path)")
+            Task { @MainActor in
+                let loaded = await session.performLoadModel(url: startURL)
+                guard loaded, networkReady else {
+                    SessionLogger.shared.log("[APP] --train: --start-model load failed; aborting auto-train")
+                    return
+                }
+                SessionLogger.shared.log("[APP] --train: start model loaded as champion; starting Play-and-Train")
+                session.startRealTraining(mode: .freshOrFromLoadedSession)
+                playAndTrainBoardMode = .candidateTest
+                SessionLogger.shared.log("[APP] --train: switched to Candidate Test view")
+            }
+            return
+        }
+
         session.buildNetwork()
         Task { @MainActor in
             while isBuilding {

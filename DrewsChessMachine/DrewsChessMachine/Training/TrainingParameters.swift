@@ -224,6 +224,16 @@ public enum GradClipMaxNorm: TrainingParameterKey {}
 public enum WeightDecay: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Dropout Rate",
+    description: "Probability that a residual-branch CHANNEL is dropped (spatial dropout at the WRN slot inside every block, between the conv2-side activation and conv2; inverted scaling so train-time expectations match the dropout-free inference graphs). 0 disables: the graph nodes are exact identities at measurably zero cost. NOTE this is the DROP probability (PyTorch/Keras convention) — the 2014 paper and older tutorials quote the complement (retention p), so their p=0.5-0.8 equals 0.2-0.5 here. Conv-channel dropout typically wants far less than FC-era defaults; with continuous fresh self-play data there is little overfitting to fight, so treat nonzero values as an experiment, not a default.",
+    default: 0.0,
+    range: 0.0...0.95,
+    category: "Optimizer",
+    liveTunable: true
+)
+public enum DropoutRate: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "Policy Loss Weight",
     description: "Per-component weighting on the POLICY-LOSS TENSOR inside total_loss = valueLossWeight · valueLoss + policyLossWeight · policyLoss − entropyCoeff · policyEntropy. Pairs with valueLossWeight. Higher values shift shared-trunk gradients toward policy fitting and away from the value head's W/D/L cross-entropy: at policyLossWeight = valueLossWeight = 1 the trunk is pulled equally by both heads (AlphaZero canonical); at policyLossWeight=5+ the policy head dominates trunk shaping and the value head trails. NOT a multiplier on policy logits — that's a common misreading. Without MCTS-quality policy targets (this engine has none), values above ~3 amplify policy-target noise faster than the value head can supply a useful baseline.",
     default: 1.0,
@@ -797,6 +807,7 @@ public extension TrainingParametersSnapshot {
     var entropyBonus: Double { value(for: EntropyBonus.self) }
     var gradClipMaxNorm: Double { value(for: GradClipMaxNorm.self) }
     var weightDecay: Double { value(for: WeightDecay.self) }
+    var dropoutRate: Double { value(for: DropoutRate.self) }
     var policyLossWeight: Double { value(for: PolicyLossWeight.self) }
     var valueLossWeight: Double { value(for: ValueLossWeight.self) }
     var learningRate: Double { value(for: LearningRate.self) }
@@ -866,6 +877,7 @@ public final class TrainingParameters {
     public var valueLabelSmoothingEpsilon: Double { didSet { Self.persist(ValueLabelSmoothingEpsilon.self, value: valueLabelSmoothingEpsilon) } }
     public var gradClipMaxNorm: Double { didSet { Self.persist(GradClipMaxNorm.self, value: gradClipMaxNorm) } }
     public var weightDecay: Double { didSet { Self.persist(WeightDecay.self, value: weightDecay) } }
+    public var dropoutRate: Double { didSet { Self.persist(DropoutRate.self, value: dropoutRate) } }
     public var policyLossWeight: Double { didSet { Self.persist(PolicyLossWeight.self, value: policyLossWeight) } }
     public var valueLossWeight: Double { didSet { Self.persist(ValueLossWeight.self, value: valueLossWeight) } }
     public var learningRate: Double { didSet { Self.persist(LearningRate.self, value: learningRate) } }
@@ -928,6 +940,7 @@ public final class TrainingParameters {
         self.valueLabelSmoothingEpsilon = Self.read(ValueLabelSmoothingEpsilon.self)
         self.gradClipMaxNorm = Self.read(GradClipMaxNorm.self)
         self.weightDecay = Self.read(WeightDecay.self)
+        self.dropoutRate = Self.read(DropoutRate.self)
         self.policyLossWeight = Self.read(PolicyLossWeight.self)
         self.valueLossWeight = Self.read(ValueLossWeight.self)
         self.learningRate = Self.read(LearningRate.self)
@@ -996,6 +1009,7 @@ public final class TrainingParameters {
         v[ValueLabelSmoothingEpsilon.id] = ValueLabelSmoothingEpsilon.encode(valueLabelSmoothingEpsilon)
         v[GradClipMaxNorm.id] = GradClipMaxNorm.encode(gradClipMaxNorm)
         v[WeightDecay.id] = WeightDecay.encode(weightDecay)
+        v[DropoutRate.id] = DropoutRate.encode(dropoutRate)
         v[PolicyLossWeight.id] = PolicyLossWeight.encode(policyLossWeight)
         v[ValueLossWeight.id] = ValueLossWeight.encode(valueLossWeight)
         v[LearningRate.id] = LearningRate.encode(learningRate)
@@ -1076,6 +1090,8 @@ public final class TrainingParameters {
             try GradClipMaxNorm.definition.validate(raw); gradClipMaxNorm = try GradClipMaxNorm.decode(raw)
         case WeightDecay.id:
             try WeightDecay.definition.validate(raw); weightDecay = try WeightDecay.decode(raw)
+        case DropoutRate.id:
+            try DropoutRate.definition.validate(raw); dropoutRate = try DropoutRate.decode(raw)
         case PolicyLossWeight.id:
             try PolicyLossWeight.definition.validate(raw); policyLossWeight = try PolicyLossWeight.decode(raw)
         case ValueLossWeight.id:
@@ -1256,6 +1272,7 @@ public final class TrainingParameters {
         ValueLabelSmoothingEpsilon.self,
         GradClipMaxNorm.self,
         WeightDecay.self,
+        DropoutRate.self,
         PolicyLossWeight.self,
         ValueLossWeight.self,
         LearningRate.self,
