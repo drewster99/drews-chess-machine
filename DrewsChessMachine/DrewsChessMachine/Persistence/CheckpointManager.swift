@@ -720,6 +720,30 @@ enum CheckpointManager {
             throw CheckpointManagerError.writeFailed(tmpDirURL, error)
         }
 
+        // manifest.json — the Load Session picker's at-a-glance summary,
+        // derived from the EXACT session.json bytes just written (single
+        // extraction code path; cannot drift from the file). A manifest
+        // failure must not abort the save: the manifest is regenerable
+        // derived data (the picker's indexer rebuilds it from
+        // session.json), the session files are the artifact. Log loudly
+        // and continue.
+        do {
+            let manifestData = try SessionManifest.makeManifestData(
+                sessionJSON: stateEncoded,
+                folderName: dirName,
+                sessionDirURL: tmpDirURL,
+                sessionJSONURL: stateTmpURL
+            )
+            try manifestData.write(
+                to: tmpDirURL.appendingPathComponent("manifest.json"),
+                options: [.atomic]
+            )
+        } catch {
+            SessionLogger.shared.log(
+                "[CHECKPOINT] manifest.json write FAILED (session save continues; picker will index from session.json): \(error.localizedDescription)"
+            )
+        }
+
         // F_FULLFSYNC every file we just wrote. `Data.write(...,
         // options: [.atomic])` gives an atomic rename on top of a
         // normal write, but does NOT imply platter-level durability —

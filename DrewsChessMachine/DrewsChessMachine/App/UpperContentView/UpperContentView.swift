@@ -978,6 +978,12 @@ struct UpperContentView: View {
         maxSelfPlayWorkers: UpperContentView.absoluteMaxSelfPlayWorkers
     )
 
+    /// State for the rich Load Session picker (File > Load Session…).
+    /// The bare `.fileImporter` remains reachable via the picker's
+    /// Browse… button for sessions outside the default directory.
+    @State private var sessionPicker = SessionPickerModel()
+    @State private var showingSessionPicker = false
+
     /// Binding for the side-to-move segmented picker. Writes rebuild
     /// `editableState` with the new current-player (nothing else changes)
     /// and kick off an auto re-eval so the arrows update for the new
@@ -1590,6 +1596,31 @@ struct UpperContentView: View {
                 }
             )
             .fileDialogDefaultDirectory(CheckpointPaths.sessionsDir)
+
+        Color.clear
+            .sheet(isPresented: $showingSessionPicker) {
+                SessionPickerSheet(
+                    model: sessionPicker,
+                    onLoad: { manifest in
+                        showingSessionPicker = false
+                        guard let url = sessionPicker.folderURL(for: manifest) else {
+                            SessionLogger.shared.log(
+                                "[BUTTON] Load Session (picker): no scan directory for \(manifest.folderName) — ignoring"
+                            )
+                            return
+                        }
+                        SessionLogger.shared.log(
+                            "[BUTTON] Load Session (picker): \(manifest.folderName)"
+                        )
+                        session.loadSessionFrom(url: url)
+                    },
+                    onBrowse: {
+                        showingSessionPicker = false
+                        checkpoint.showingLoadSessionImporter = true
+                    },
+                    onCancel: { showingSessionPicker = false }
+                )
+            }
 
         Color.clear
             .fileImporter(
@@ -2253,7 +2284,8 @@ struct UpperContentView: View {
         }
         commandHub.loadSession = {
             SessionLogger.shared.log("[BUTTON] Load Session")
-            checkpoint.showingLoadSessionImporter = true
+            sessionPicker.beginScan(directory: CheckpointPaths.sessionsDir)
+            showingSessionPicker = true
         }
         commandHub.loadModel = {
             SessionLogger.shared.log("[BUTTON] Load Model")
