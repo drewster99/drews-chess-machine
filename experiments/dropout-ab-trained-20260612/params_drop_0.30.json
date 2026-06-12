@@ -1,0 +1,6 @@
+{
+  "dropout_rate": 0.30,
+  "weight_decay": 0.0005,
+  "arena_auto_interval_sec": 36000,
+  "replay_buffer_min_positions_before_training": 200000
+}
