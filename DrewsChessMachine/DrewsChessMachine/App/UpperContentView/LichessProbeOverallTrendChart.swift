@@ -277,11 +277,24 @@ struct LichessProbeOverallTrendChart: View {
         cmp: Double?,
         fmt: (Double) -> String
     ) -> AttributedString {
+        // The hovered/live sample's trainer step leads the value so the
+        // reader always knows *where* in the run the number came from.
+        // Ticks recorded before a trainer existed have no step — those
+        // fall back to the bare value.
         let main: String
         if let hx = ctx.hoveredX, let i = Self.nearestIndex(hoveredX: hx, xs: xs) {
-            main = fmt(value(samples[i]))
+            let sample = samples[i]
+            if let step = sample.trainingStep {
+                main = "step \(step.formatted())  " + fmt(value(sample))
+            } else {
+                main = fmt(value(sample))
+            }
         } else if let last = samples.last {
-            main = "live " + fmt(value(last))
+            if let step = last.trainingStep {
+                main = "live @ \(step.formatted())  " + fmt(value(last))
+            } else {
+                main = "live " + fmt(value(last))
+            }
         } else {
             main = "--"
         }
