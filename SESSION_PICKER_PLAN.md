@@ -1,5 +1,12 @@
 # Session Picker Plan
 
+> **STATUS 2026-06-13: SHIPPED** (`9939563`; review fixes `54e3ca3`).
+> `SessionManifest` (manifest-at-save + legacy index cache), `SessionPickerModel`,
+> and `SessionPickerSheet` are live; File > Load Session opens the picker, with
+> Browse… falling back to the old importer. Edge-case fixes from code review
+> (empty arenaHistory, partial draw counters, non-finite pElo walk-back,
+> tolerant promotion-count fallback) are in `54e3ca3`.
+
 A custom "Load Session" picker that shows significant detail about every saved
 `.dcmsession` so the right one can be chosen without memorizing folder names.
 

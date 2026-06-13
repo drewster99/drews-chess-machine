@@ -389,15 +389,24 @@ decided up front because each silently desyncs if improvised:
 
 ## Phasing (revised 2026-06-12 — Feature 1 SHIPPED first as a global
 ## rate without per-block structure; commit eacced3)
+##
+## STATUS 2026-06-13: Feature 2 SHIPPED. The two-level entries idea was
+## simplified to one recipe + count per group; per-conv stride was added
+## and dropped same day (decision records above). Phase A = `73a1bdd`,
+## Phase B = `120f46b`, recheck/mapping + mixed-arch save test = `ed84386`.
+## Review fixes (empty-block_groups decode guard, NaN-multiplier validate,
+## fc_bottleneck ceiling) = `54e3ca3`. First production heterogeneous tower
+## (eBNC: stem 128 3×3 -> 3×[3×3@128,SE+/2] -> 3×[5×5@256,SE+/2], ~10.66M
+## params) ran self-play+arena from 2026-06-12 and has promoted 10×.
 
-- **Phase A (config + engine):** BlockSpec/BlockGroupEntry/BlockGroup
+- **Phase A (config + engine) — SHIPPED `73a1bdd`:** BlockSpec/BlockGroupEntry/BlockGroup
   model + expansion + decode fallbacks + explicit summary + ChessNetwork
   builders (flat expanded walk, per-block projections, per-width
   dropout shapes, heads at towerOut) + weightTensorPlan +
   parameterCount + analyzer + tests (round-trip with authored-structure
   preservation, golden summaries, mixed-arch weight-plan alignment,
   transition gradient flow).
-- **Phase B (UI):** Build-New-Model group editor + ArchitectureDiagramView
+- **Phase B (UI) — SHIPPED `120f46b`:** Build-New-Model group editor + ArchitectureDiagramView
   (draft + current-champion call sites).
 - One build + commit per phase (multi-phase convention).
 
