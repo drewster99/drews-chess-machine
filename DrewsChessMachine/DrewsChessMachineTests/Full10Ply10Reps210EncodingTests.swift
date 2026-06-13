@@ -180,9 +180,9 @@ final class Full10Ply10Reps210EncodingTests: XCTestCase {
         var boards = [Float](repeating: 0, count: total * stride)
         var policy = [Int32](repeating: 0, count: total)
         var plies = [UInt16](repeating: 0, count: total)
-        var taus = [Float](repeating: 1.0, count: total)
+        let taus = [Float](repeating: 1.0, count: total)
         var hashes = [UInt64](repeating: 0, count: total)
-        var materials = [UInt8](repeating: 0, count: total)
+        let materials = [UInt8](repeating: 0, count: total)
         var outcomes = [Float](repeating: 0, count: total)
         for dst in 0..<total {
             let p = captured[total - 1 - dst]

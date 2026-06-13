@@ -93,9 +93,9 @@ final class ReplayHistoryReconstructionTests: XCTestCase {
         var boards = [Float](repeating: 0, count: total * stride)
         var policy = [Int32](repeating: 0, count: total)
         var plies = [UInt16](repeating: 0, count: total)
-        var taus = [Float](repeating: 1.0, count: total)
+        let taus = [Float](repeating: 1.0, count: total)
         var hashes = [UInt64](repeating: 0, count: total)
-        var materials = [UInt8](repeating: 0, count: total)
+        let materials = [UInt8](repeating: 0, count: total)
         var outcomes = [Float](repeating: 0, count: total)
 
         // dst row 0 = last ply played; dst row total-1 = opening ply.
@@ -310,11 +310,11 @@ final class ReplayHistoryReconstructionTests: XCTestCase {
         let total = captured.count
         let stride = buffer.floatsPerBoard
         var boards = [Float](repeating: 0, count: total * stride)
-        var policy = [Int32](repeating: 0, count: total)
+        let policy = [Int32](repeating: 0, count: total)
         var plies = [UInt16](repeating: 0, count: total)
-        var taus = [Float](repeating: 1.0, count: total)
+        let taus = [Float](repeating: 1.0, count: total)
         var hashes = [UInt64](repeating: 0, count: total)
-        var materials = [UInt8](repeating: 0, count: total)
+        let materials = [UInt8](repeating: 0, count: total)
         var outcomes = [Float](repeating: 0, count: total)
         var perPlyExpected: [Int: [Float]] = [:]
         for dst in 0..<total {
