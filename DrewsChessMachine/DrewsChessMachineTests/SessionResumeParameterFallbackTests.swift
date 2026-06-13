@@ -49,6 +49,13 @@ final class SessionResumeParameterFallbackTests: XCTestCase {
         XCTAssertEqual(SessionCheckpointState.resolvedMomentumCoeff(saved: 0.65), 0.65)
     }
 
+    /// Absent field ⇒ the session predates channel dropout ⇒ the saved run
+    /// trained at rate 0; resume must NOT inherit the live dropout rate.
+    func testDropoutRateAbsentFieldResolvesToZero() {
+        XCTAssertEqual(SessionCheckpointState.resolvedDropoutRate(saved: nil), 0.0)
+        XCTAssertEqual(SessionCheckpointState.resolvedDropoutRate(saved: 0.30), 0.30)
+    }
+
     /// Absent field ⇒ no illegal-mass penalty term existed in the loss.
     func testIllegalMassWeightAbsentFieldResolvesToZero() {
         XCTAssertEqual(SessionCheckpointState.resolvedIllegalMassPenaltyWeight(saved: nil), 0.0)

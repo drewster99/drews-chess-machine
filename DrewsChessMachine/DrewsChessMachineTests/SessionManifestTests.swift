@@ -139,6 +139,42 @@ final class SessionManifestTests: XCTestCase {
         XCTAssertNil(m.latestPElo200)
     }
 
+    private func extractDefault(_ dict: [String: Any]) -> SessionManifest {
+        SessionManifest.extract(
+            jsonDict: dict,
+            folderName: "20260612-191329-20260601-12-5K7Z-manual.dcmsession",
+            disk: nil, srcBytes: nil, srcMTime: nil)
+    }
+
+    /// #5: an empty `arenaHistory` array (count 0) must not mask the probe
+    /// history's arena count.
+    func testExtract_emptyArenaHistoryFallsBackToProbeCount() {
+        var dict = legacyDict()
+        dict["arenaHistory"] = [Any]()
+        // legacyDict's lichessProbeHistory carries latestArenaCount = 380.
+        XCTAssertEqual(extractDefault(dict).arenaCount, 380)
+    }
+
+    /// #6: a non-finite FINAL probe tick must not discard earlier finite
+    /// history — the manifest reports the most recent finite pElo.
+    func testExtract_pEloWalksBackPastNonFiniteFinalTick() {
+        var dict = legacyDict()
+        dict["lichessProbeWideHistory"] = [
+            "overall": [["puzzleElo": 880.0], ["puzzleElo": 891.25],
+                        ["puzzleElo": Double.nan]]
+        ]
+        XCTAssertEqual(extractDefault(dict).latestPEloWide, 891.25)
+    }
+
+    /// #4: a PARTIAL draw-counter block (some keys missing) reports nil, not
+    /// a misleadingly-low total. Full block still sums (covered by
+    /// testExtract_legacyDict).
+    func testExtract_partialDrawCountersReportNil() {
+        var dict = legacyDict()
+        dict["insufficientMaterialDraws"] = nil  // drop one of the four
+        XCTAssertNil(extractDefault(dict).drawCount)
+    }
+
     // MARK: Extraction — runtime-config architecture
 
     func testExtract_runtimeConfigArchUsesCanonicalSummary() throws {

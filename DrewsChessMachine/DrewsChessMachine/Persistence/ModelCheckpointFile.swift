@@ -188,9 +188,13 @@ struct ModelCheckpointFile {
         let residualConv = c * c * blockArea
         let stemConv = arch.inputPlanes * c * stemArea
         let policyConv = c * ChessNetwork.policyChannels
+        // fc_bottleneck policy head: a single FC of [pK·64, policySize] — far
+        // larger than any conv term, so it must bound the ceiling or a valid
+        // fc_bottleneck model is rejected on load as implausibleTensorSize.
+        let policyFC = arch.policyPreConvChannels * ChessNetwork.boardSize * ChessNetwork.boardSize * ChessNetwork.policySize
         let valueFC1 = (ChessNetwork.boardSize * ChessNetwork.boardSize * arch.valueHeadConvChannels) * arch.valueHeadHiddenUnits
         let seFC = c * c  // >= channels × (channels / r) for every group
-        let largest = max(residualConv, stemConv, policyConv, valueFC1, seFC)
+        let largest = max(residualConv, stemConv, policyConv, policyFC, valueFC1, seFC)
         return largest + 65_536
     }
 

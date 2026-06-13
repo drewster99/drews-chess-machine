@@ -361,9 +361,16 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
     case nonPositive(field: String, value: Int)
     case channelsNotDivisibleByReduction(channels: Int, reduction: Int)
     case valueConvChannelsExceedChannels(conv: Int, channels: Int)
+    /// A Float field that must be finite and >= 0 (e.g. a dropout
+    /// multiplier). Carries the Float directly — never coerced to Int,
+    /// which would trap on the NaN/infinite values this case exists to
+    /// reject.
+    case mustBeFiniteNonNegative(field: String, value: Float)
 
     var description: String {
         switch self {
+        case .mustBeFiniteNonNegative(let field, let value):
+            return "\(field) must be finite and >= 0 (got \(value))"
         case .kernelMustBeOdd(let field, let value):
             return "\(field) must be odd for symmetric same-padding (got \(value))"
         case .nonPositive(let field, let value):
@@ -533,6 +540,17 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         valueHeadHiddenUnits = try c.decode(Int.self, forKey: .valueHeadHiddenUnits)
         computeDataType = try c.decode(ComputeDataType.self, forKey: .computeDataType)
         if let groups = try c.decodeIfPresent([BlockGroup].self, forKey: .blockGroups) {
+            // An empty array is structurally invalid: the stem/head/summary
+            // accessors `preconditionFailure` on no groups, and they are read
+            // (SessionManifest.extract, SafetensorsModelIO load) before
+            // `validate()` runs — so a malformed `"block_groups": []` must be
+            // rejected here as a thrown decode error, not allowed to crash the
+            // process later.
+            guard !groups.isEmpty else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .blockGroups, in: c,
+                    debugDescription: "block_groups must contain at least one group")
+            }
             blockGroups = groups
         } else {
             blockGroups = [BlockGroup(
@@ -662,8 +680,8 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 }
             }
             guard g.dropoutMultiplier >= 0, g.dropoutMultiplier.isFinite else {
-                throw NetworkArchitectureError.nonPositive(
-                    field: "blockGroups[\(gi)].dropoutMultiplier", value: Int(g.dropoutMultiplier))
+                throw NetworkArchitectureError.mustBeFiniteNonNegative(
+                    field: "blockGroups[\(gi)].dropoutMultiplier", value: g.dropoutMultiplier)
             }
         }
         try requirePositive("policyPreConvChannels", policyPreConvChannels)

@@ -161,6 +161,34 @@ final class NetworkArchitectureTests: XCTestCase {
         }
     }
 
+    /// Regression: a config JSON with an empty `block_groups` array must be
+    /// REJECTED by the decoder (thrown DecodingError), never decoded into an
+    /// arch whose stem/head accessors `preconditionFailure`. The crash paths
+    /// (SessionManifest.extract on a background queue, SafetensorsModelIO
+    /// load) read those accessors before validate() ever runs.
+    func testEmptyBlockGroupsDecodeThrows() throws {
+        var dict = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(NetworkArchitecture.current)) as! [String: Any]
+        dict["block_groups"] = [Any]()  // structurally invalid
+        let data = try JSONSerialization.data(withJSONObject: dict)
+        XCTAssertThrowsError(try JSONDecoder().decode(NetworkArchitecture.self, from: data)) { error in
+            guard case DecodingError.dataCorrupted = error else {
+                return XCTFail("expected dataCorrupted, got \(error)")
+            }
+        }
+    }
+
+    /// Regression: validate() must THROW (not trap) for a non-finite dropout
+    /// multiplier. The old code built the error via Int(multiplier), which
+    /// crashes on exactly the NaN/infinite values it means to reject.
+    func testNonFiniteDropoutMultiplierValidatesAsThrow() {
+        for bad: Float in [.infinity, .nan, -1.0] {
+            var a = NetworkArchitecture.current
+            a.blockGroups[0].dropoutMultiplier = bad
+            XCTAssertThrowsError(try a.validate(), "multiplier \(bad)")
+        }
+    }
+
     func testSnakeCaseKeys() throws {
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys]

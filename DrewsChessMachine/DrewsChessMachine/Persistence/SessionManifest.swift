@@ -239,11 +239,19 @@ extension SessionManifest {
             guard let h = dict[key] as? [String: Any] else { return (nil, nil, nil) }
             let promos = (h["latestPromotionCount"] as? NSNumber)?.intValue
             let arenas = (h["latestArenaCount"] as? NSNumber)?.intValue
+            // The latest tick's puzzleElo can be non-finite (±inf for
+            // all-correct/all-wrong, NaN for a tick with no rated puzzles).
+            // Walk back to the most recent FINITE value rather than
+            // discarding the whole history when only the final tick is an
+            // edge case.
             var elo: Double? = nil
-            if let overall = h["overall"] as? [[String: Any]],
-               let last = overall.last {
-                elo = (last["puzzleElo"] as? NSNumber)?.doubleValue
-                if let e = elo, !e.isFinite { elo = nil }
+            if let overall = h["overall"] as? [[String: Any]] {
+                for entry in overall.reversed() {
+                    if let e = (entry["puzzleElo"] as? NSNumber)?.doubleValue, e.isFinite {
+                        elo = e
+                        break
+                    }
+                }
             }
             return (promos, arenas, elo)
         }
@@ -252,16 +260,25 @@ extension SessionManifest {
         pElo200 = p200.pElo
         pEloWide = pWide.pElo
         promotionCount = p200.promos ?? pWide.promos
-        if arenaCount == nil { arenaCount = p200.arenas }
-        if promotionCount == nil, let arenas = dict["arenaHistory"] as? [[String: Any]] {
+        // An empty arenaHistory array yields count 0 (non-nil) and would
+        // mask the probe-history fallback; treat 0 as "no arena data here"
+        // and prefer the probe's count when it has one.
+        if (arenaCount ?? 0) == 0 { arenaCount = p200.arenas ?? arenaCount }
+        // Tolerate a non-`[[String:Any]]` arenaHistory shape (legacy /
+        // heterogeneous): count only the entries that parse as promoted,
+        // rather than failing the whole cast and leaving promotionCount nil.
+        if promotionCount == nil, let arenas = dict["arenaHistory"] as? [Any] {
             promotionCount = arenas.reduce(0) { acc, e in
-                acc + (((e["promoted"] as? NSNumber)?.boolValue == true) ? 1 : 0)
+                acc + (((e as? [String: Any])?["promoted"] as? NSNumber)?.boolValue == true ? 1 : 0)
             }
         }
 
-        let draws = [int("stalemates"), int("fiftyMoveDraws"),
-                     int("threefoldRepetitionDraws"), int("insufficientMaterialDraws")]
-            .compactMap { $0 }
+        // Draw counters are written as one atomic block, so a partial subset
+        // means an unexpected/hand-edited schema — report nil ("—") rather
+        // than a misleadingly-low "total" that silently omits a category.
+        let drawParts = [int("stalemates"), int("fiftyMoveDraws"),
+                         int("threefoldRepetitionDraws"), int("insufficientMaterialDraws")]
+        let draws: [Int] = drawParts.contains(where: { $0 == nil }) ? [] : drawParts.compactMap { $0 }
         let savedAt = dbl("savedAtUnix").map { Date(timeIntervalSince1970: $0) } ?? parsed.savedAt
 
         return SessionManifest(

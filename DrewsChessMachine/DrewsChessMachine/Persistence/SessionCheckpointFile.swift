@@ -309,6 +309,14 @@ struct SessionCheckpointState: Codable, Equatable {
         saved ?? 0.0
     }
 
+    /// Pre-feature behavior: no channel dropout. A session predating the
+    /// dropout feature factually trained at rate 0, so resume must NOT
+    /// inherit the live `TrainingParameters.dropoutRate` (which could
+    /// silently inject dropout into an old run).
+    static func resolvedDropoutRate(saved: Float?) -> Float {
+        saved ?? 0.0
+    }
+
     /// Pre-feature behavior: no illegal-mass penalty term in the loss.
     static func resolvedIllegalMassPenaltyWeight(saved: Float?) -> Float {
         saved ?? 0.0

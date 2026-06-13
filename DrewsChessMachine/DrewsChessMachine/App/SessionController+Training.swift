@@ -158,18 +158,21 @@ extension SessionController {
                         "[RESUME-PARAM] weight_decay: saved=nil applied=\(TrainingParameters.shared.weightDecay) (defaulted)"
                     )
                 }
+                // saved=nil means the session predates channel dropout, so it
+                // factually trained at rate 0 — reproduce that, never inherit
+                // the live rate (which would inject dropout into an old run).
+                let resolvedDropout = SessionCheckpointState.resolvedDropoutRate(saved: rs.dropoutRate)
                 if let dr = rs.dropoutRate {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] dropout_rate: \(TrainingParameters.shared.dropoutRate) -> \(dr) (from session)"
                     )
-                    trainer.dropoutRate = dr
-                    TrainingParameters.shared.dropoutRate = Double(dr)
                 } else {
-                    trainer.dropoutRate = Float(TrainingParameters.shared.dropoutRate)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] dropout_rate: saved=nil applied=\(TrainingParameters.shared.dropoutRate) (defaulted)"
+                        "[RESUME-PARAM] dropout_rate: saved=nil applied=\(resolvedDropout) (session predates the feature; no-dropout regime preserved)"
                     )
                 }
+                trainer.dropoutRate = resolvedDropout
+                TrainingParameters.shared.dropoutRate = Double(resolvedDropout)
                 if let clip = rs.gradClipMaxNorm {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] grad_clip_max_norm: \(TrainingParameters.shared.gradClipMaxNorm) -> \(clip) (from session)"
