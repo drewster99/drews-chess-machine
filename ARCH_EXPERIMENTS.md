@@ -15,6 +15,20 @@ Identify a run by its `architectureSummary` + lineage + log file; a safetensors 
 integrity is `content_sha256`. Each experiment's **arch** line below is the canonical
 summary in the plan's decomposed-axis vocabulary.
 
+**Summary-format change (2026-06-12, block groups — one-time mapping):** with
+`ARCHITECTURE_EXPANSION_PLAN.md` Feature 2, `architectureSummary` switched to a
+fully-explicit per-group form (no silent defaults). The **arch** lines of Experiments 1–6
+below are in the OLD format and remain valid identities; map them to the new form as:
+`v4 pre` / `v3 post` → `v4` / `v3` (the activation style moved into each group);
+`Nx[<k>x<k> conv, <SE>, <merge>, ReZero]` →
+`Nx[<k1>x<k1>+<k2>x<k2> @<channels>, <SE>, <fn>/<style>, <merge>, ReZero(<α-init>), drop*<mult>]`
+(both kernels always shown; width, activation function/style, α init, and dropout
+multiplier explicit; legacy multiplier ≡ 1); the dual-kernel comma form `7x7,3x3 conv`
+becomes `7x7+3x3`. Multi-group towers join group terms with `->`. Concretely, Exp 1's line
+maps to:
+`v4 . in basic30(30) -> stem 128 (7x7) . 5x[7x7+7x7 @128, SE+/4, relu/pre, clean_add, ReZero(0.447), drop*1] . act relu . policy intermediate_conv(4864) . value WDL(16->FC128) . bfloat16 . 8,445,748 params`.
+New experiments record the explicit grouped summary verbatim.
+
 ---
 
 ## Experiment 1 — 5-Block 7×7-Wide (ReZero / SE)

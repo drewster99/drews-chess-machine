@@ -3082,6 +3082,11 @@ struct UpperContentView: View {
         let color: Color
         if let e = elo, e.isFinite {
             value = String(format: "%.0f", e)
+            // Primary, deliberately: the status bar's orange means "this
+            // band is unhealthy" (see the two Tactical cells), and pElo has
+            // no good/bad bands — its meaningful scale shifts run to run —
+            // so a normal reading must not claim the warning color.
+            // (Considered and reverted 2026-06-12.)
             color = .primary
         } else if let e = elo, e == -.infinity {
             value = "<floor"

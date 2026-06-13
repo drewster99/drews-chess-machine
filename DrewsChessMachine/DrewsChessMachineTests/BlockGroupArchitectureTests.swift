@@ -223,4 +223,39 @@ final class BlockGroupArchitectureTests: XCTestCase {
         XCTAssertEqual(trainer.arch, arch)
         try await trainer.network.loadWeights(championWeights)
     }
+
+    // MARK: GPU — mixed tower saves with bit-exact verification, reloads
+
+    func testMixedArchSavesVerifiesAndReloadsBitExact() async throws {
+        // CheckpointManager.saveModel runs the embedded forward-pass
+        // verification against an arch-matched scratch network — for a
+        // mixed tower that is the strongest end-to-end proof: weight plan,
+        // safetensors layout, loader shape validation, and the inference
+        // graph (projection included) all have to agree bit-for-bit.
+        let arch = mixedArch()
+        try arch.validate()
+        let champion = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let weights = try await champion.network.exportWeights()
+
+        let url = try await CheckpointManager.saveModel(
+            weights: weights, modelID: "unittest-blockgroups",
+            createdAtUnix: 1_781_300_000,
+            metadata: ModelCheckpointMetadata(
+                creator: "manual", trainingStep: nil, parentModelID: "", notes: "mixed-groups"
+            ),
+            architecture: arch, trigger: "unittest"
+        )
+        defer {
+            do { try FileManager.default.removeItem(at: url) }
+            catch { XCTFail("cleanup failed: \(error)") }
+        }
+
+        let loaded = try CheckpointManager.loadModelFile(at: url)
+        XCTAssertEqual(loaded.architecture, arch,
+                       "embedded config round-trips the authored group structure")
+        XCTAssertEqual(loaded.weights.count, weights.count)
+        for (a, b) in zip(weights, loaded.weights) {
+            XCTAssertEqual(a.map(\.bitPattern), b.map(\.bitPattern))
+        }
+    }
 }
