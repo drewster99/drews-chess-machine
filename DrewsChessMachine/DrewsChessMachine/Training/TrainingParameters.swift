@@ -1244,7 +1244,21 @@ public final class TrainingParameters {
         }
     }
 
+    /// When true, the `didSet` persisters skip writing to `UserDefaults`.
+    /// Set only around a transient run-override apply (`--parameters` /
+    /// "Load Parameters…") so a per-run hyperparameter override does NOT
+    /// mutate the user's saved defaults — and, critically, does not leak
+    /// across processes (a headless `--train` arm and the GUI share the
+    /// same UserDefaults domain; without this, an experiment arm's value
+    /// silently became the next launch's default — the 2026-06-12
+    /// dropout=0.7 leak). Toggled and read only synchronously on the main
+    /// thread inside `applyCliConfigOverrides` (apply → didSet → persist is
+    /// one synchronous main-actor sequence), so the unchecked storage is
+    /// race-free in practice.
+    nonisolated(unsafe) static var suppressPersistence = false
+
     private nonisolated static func persist<K: TrainingParameterKey>(_ key: K.Type, value: K.Value) {
+        if suppressPersistence { return }
         let raw = K.encode(value)
         if (try? K.definition.validate(raw)) == nil {
             // Validation failed — programmer or CLI wrote a bad value through the typed setter.

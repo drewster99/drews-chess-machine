@@ -2136,6 +2136,18 @@ struct UpperContentView: View {
         // Apply through TrainingParameters — definition.validate runs on each
         // typed setter; out-of-range values throw and are surfaced via the
         // catch below rather than silently dropped.
+        //
+        // Suppress UserDefaults persistence for the duration: a `--parameters`
+        // override (or a "Load Parameters…" file) is a TRANSIENT per-run
+        // setting, not a change to the user's saved defaults. Persisting it
+        // would also leak across processes — a headless `--train` arm and the
+        // GUI share one UserDefaults domain, so an experiment arm's value
+        // silently became the next launch's default (the 2026-06-12
+        // dropout=0.7 contamination). The in-memory singleton still updates,
+        // so the running session uses the override and the session checkpoint
+        // captures it for resume.
+        TrainingParameters.suppressPersistence = true
+        defer { TrainingParameters.suppressPersistence = false }
         do {
             try trainingParams.apply(values)
         } catch {
