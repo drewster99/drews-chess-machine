@@ -131,9 +131,12 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
         let weights = try await net.network.exportWeights()
         XCTAssertEqual(weights.count, arch.weightTensorPlan().count)
 
+        // Capture an immutable scalar so the @Sendable evaluate closure
+        // doesn't reference the mutable `arch` (Swift 6 concurrency).
+        let expectedPolicySize = arch.policySize
         let board = BoardEncoder.encode(.starting, encoding: .basic30)
         try await net.evaluate(board: board) { policyBuf, value in
-            XCTAssertEqual(policyBuf.count, arch.policySize)
+            XCTAssertEqual(policyBuf.count, expectedPolicySize)
             XCTAssertTrue(value.isFinite)
         }
     }
