@@ -105,6 +105,8 @@ Branch `safetensors-storage`. Two linked changes, sequenced storage-format-first
 
 **Status / remaining.** Storage + build-any-architecture are done and tested. Not yet wired: the trainer/candidate/arena nets still build the default arch (a non-default champion can be built but not yet *trained* — fails gracefully at fork); per-model compute precision; loading historical v3/v4 (old-arch) models (needs an `archHash→config` fallback + v3 builder + consuming the embedded config on load); CLI `--uci` build-from-embedded-config and `--playchess`. See `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md`.
 
+> **Update (2026-06-13):** most of the above "not yet wired" items have since shipped; this `Status / remaining` snapshot is kept only as the 2026-06-05 record. **Non-default-architecture *training* is done** — heterogeneous block-groups towers train end to end (the eBNC run trains a `stem 128 → 3×[3×3@128] → 3×[5×5@256]` net; see the 2026-06-12 block-groups entry and ARCH_EXPERIMENTS Experiment 7), so the "built but not trained / fails at fork" limitation no longer holds. **`--uci` and `--playchess` both ship** (`--uci` since 2026-05-29 `28cf394`; `--playchess` per `26c14e9`), loading weights through the embedded-config safetensors path. **Per-model compute precision is wired** too — `NetworkArchitecture.computeDataType` is honored by the graph builders (`mpsDataType(for:)`) and selectable in Build-New-Model. For the authoritative current phase list — including any remaining legacy-`.dcmmodel` v3/v4 old-arch load work — see `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md`.
+
 ---
 
 ## 2026-06-04 CDT — Parallel 4,435-puzzle WIDE Lichess probe set (one batched eval) + probe timing
