@@ -1244,6 +1244,38 @@ experiment artifacts (`results.json` ~6.8 MB, `experiment_results.js` ~921 KB, t
 
 ## Completed
 
+- **Block groups: heterogeneous towers with per-group widths (2026-06-12 →
+  2026-06-13).** `NetworkArchitecture`'s uniform block fields became
+  `blockGroups: [BlockGroup]` — an ordered list of (count + full per-group
+  recipe: channels, both conv kernels, SE style/ratio, ReZero α, activation
+  function/style, skip merge, dropout multiplier). The engine consumes only the
+  flattened `expandedBlocks`; width transitions insert a bias-free 1×1 skip
+  projection (WRN staircase). Encode writes `block_groups` only; legacy uniform
+  keys decode forever, and uniform towers build byte-identically to the prior
+  code (proven by the embedded bit-exact forward-pass save check). Phase B adds
+  a per-group Build-New-Model editor + a live `ArchitectureDiagramView` (shared
+  with the About popover). Per-conv stride was considered and dropped; two-level
+  group entries simplified to one recipe + count. CHANGELOG `73a1bdd` (Phase A)
+  / `120f46b` (Phase B) / `ed84386`, `54e3ca3` (recheck + review fixes). First
+  production heterogeneous tower (eBNC, ~10.66M params) running since 2026-06-12;
+  see ARCH_EXPERIMENTS Experiment 7.
+
+- **Channel dropout (live-tunable) + headless A/B harness (2026-06-12).**
+  Every training-mode residual block carries a channel (spatial) dropout node at
+  the WRN slot; live-tunable `DropoutRate` parameter, inference graphs untouched.
+  Headless `--start-model` + `--training-step-limit` CLI added for the A/B arms.
+  Finding: ≈ zero distinguishable effect at 600 steps from both a random-init
+  fork and the trained 5K7Z champion (machinery validated; any benefit is a
+  long-horizon question). CHANGELOG `eacced3` / `600c016` + two A/B FINDING
+  entries.
+
+- **Rich Load Session picker (2026-06-12).** File > Load Session opens a
+  lineage-grouped picker showing architecture / run-progress / performance /
+  hyperparameters per save, instead of the bare `.fileImporter` (kept reachable
+  via Browse…). `CheckpointManager` writes a small `manifest.json` at save;
+  legacy sessions are indexed once into an out-of-folder cache. CHANGELOG
+  `9939563`; edge-case fixes `54e3ca3`.
+
 - **Tabbed Training Settings popover + main-screen control sweep +
   save-verify v2 fix + chart hover bug fix + latent arena-tau push
   bug fix (2026-05-05).** Cohesive UI consolidation covered in

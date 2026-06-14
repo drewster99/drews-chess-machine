@@ -45,6 +45,18 @@ Three 600-step arms (rates 0 / 0.30 / 0.70) from one random-init champion via `-
 
 New "Wide pElo" status-bar cell (latest wide-set battery puzzle-Elo, click opens the Lichess Probe Detail window); the session-status chip's spinner replaced with a custom arc (`ChipActivitySpinner`) because macOS's `ProgressView` spinner ignores `.tint` and was invisible on the tinted chip; the Training settings chip pinned to intrinsic width (no more "Traini…"). Chart headers in Training-vs-Eval and the probe-detail OVERALL charts now lead with the hovered/live sample's trainer step.
 
+## 2026-06-11 CDT — Session resume: pre-feature fallbacks for absent parameter fields (`38272c2`)
+
+A session file lacking a feature-introducing parameter field provably predates that feature, so the saved run trained without it. Resume now reproduces that pre-feature regime via testable `resolved*` statics on `SessionCheckpointState` (momentum, illegal-mass penalty, label smoothing, signed-advantage complement CE, max-plies, LR/momentum cycle) instead of inheriting the live default — which had silently switched a run's regime (the KbHZ resume loss jump when complement CE applied to a run that never used it). Each `[RESUME-PARAM]` log line records the three-way decision (from-session / defaulted / pre-feature-preserved).
+
+## 2026-06-10 CDT — Fix two probe/training concurrency bugs: staging clobber + exportWeights/SGD race (`2e58830`)
+
+Bug 1: the legal-mass probe sampled into the trainer's shared staging buffers, so during a trainStep cross-queue await the probe could overwrite the live batch that Phase 3 then trained against a stale `vBaseline` — it now samples into per-call scratch buffers. Bug 2: probe weight exports (candidate / legal-mass / tactical probes, analyses) ran `exportWeights()` reading the trainer's variables concurrently with SGD writes — now serialized. Both are training-hot-path correctness fixes.
+
+## 2026-06-10 CDT — Build-New-Model: ReZero α-init mismatch warning + one-click fix (`c3eb430`)
+
+The ReZero α-init field is seeded from the loaded preset and doesn't track block count, so a deep net built off a shallow preset silently keeps the shallow α. The Build screen now flags a drift from the depth-appropriate `1/√blocks` (`recommendedRezeroAlphaInit` / `rezeroAlphaInitMismatch`) with an orange icon + a "Use 1/√N = x.xxx" button — non-destructive, never auto-overwrites a deliberately-set value. (Later generalized to per-group in the block-groups feature.)
+
 ## 2026-06-09 CDT — Deep towers build & train without crashing (large graph-build stack) + GPU command-buffer error checking
 
 Building a very deep network (~100+ residual blocks) and starting training crashed the process with an uncatchable `EXC_BAD_ACCESS (SIGBUS)` at a stack guard page. The crash was inside MPSGraph's reverse-mode autodiff: `gradientForPrimaryTensor` → `Autodiff::recursePartialGrad` recurses **depth-first over the op DAG, one native stack frame per op, inline on the calling thread**. The trainer builds that graph on a serial `DispatchQueue` whose worker thread carries the platform-default ~512 KB stack, and a deep tower overflows it — empirically a 100-block tower already overflowed; a 150-block tower recursed ~1,419 frames deep. Depth is the trigger, not width or parameter count (a 5-block 20 M-param net builds fine; a 150-block 3 M-param net did not).
@@ -56,6 +68,26 @@ Building a very deep network (~100+ residual blocks) and starting training crash
 **Known remaining wall (inherent, not fixed here):** the *first* training step's `encode` lazily compiles a Metal pipeline state (`MPSKey_Compile` → `MTLCompiler` → AGX) for every distinct op in the graph, serialized through the Metal compiler queue. At ~150 blocks that first encode takes minutes before step 1 completes; once the pipeline states are cached, subsequent steps encode instantly. This is an MPSGraph/Metal property, separate from the build crash, and applies to both training and inference compiles.
 
 ---
+
+## 2026-06-09 CDT — `--arch-sweep` headless depth-benchmark CLI (`a0fd962`)
+
+Investigation tool: builds a trainer at each requested block count and streams per-step timing JSONL. Resolved the deep-tower "hang" — steady-state training scales ~linearly (~3 ms/block, GPU at all depths), and the apparent hang is the one-time first-step Metal pipeline-state compilation, which scales ~quadratically with depth (6.9 s at 20 blocks → ~8 min at 140). Companion to the same-day deep-tower build fix.
+
+## 2026-06-07 CDT — `full10Ply10Reps210` input encoding (`ec20c18`)
+
+New `InputEncoding` case: 210 planes = `full10ply200`'s 200 stacked frames + the 10 `basic30` temporal-repetition planes appended at 200–209 (current position only). The reps are not stored in the replay buffer (same 20-plane frames as `full10ply200`); the inference path fills 200–209 from `GameState.recentRepetitionMask` and training recomputes them. `full10ply200` / `basic30` / `basic20` unchanged.
+
+## 2026-06-06 CDT — `full10ply200` input encoding: 10-ply stacked history threaded through hot paths + UI (`1439f57`)
+
+New `InputEncoding.full10ply200`: 200 planes = 10 stacked 20-plane `basic20` frames (current + 9 prior plies), each from the ply-N mover's perspective. The engine's `recentStates` window is supplied to every gameplay encode — self-play (`BatchedSelfPlayDriver`), arena (`TickTournamentDriver`), and inference (a new `recentHistory` param on the player path) — with absent (pre-game) frames left zero.
+
+## 2026-06-06 CDT — Replay history reconstruction: store one frame per ply, reconstruct on read (`8e7ed83`)
+
+`full10ply200` now stores each ply once as its mover-relative 20-plane frame (1,280 floats) instead of the full 200-plane stack (12,800) — a ~10× replay-RAM cut — and the trainer reconstructs the 200-plane input at sample time (decoupled stored stride vs reconstructed stride). `basic20`/`basic30` stored data + reconstructed output are byte-identical. (REPLAY_HISTORY_RECONSTRUCTION_PLAN.md.)
+
+## 2026-06-06 CDT — Cyclical LR + inverse-coupled momentum scheduling (`95e0d54`)
+
+`TRAINING_DYNAMICS_PLAN.md` §3: a repeating, global-step-keyed cycle for optimizer LR (geometric interpolation between endpoints) and Polyak momentum (linear, inverse-coupled) as a plateau-breaking super-convergence lever (Leslie Smith 1cycle family, adapted to open-ended self-play). `LRMomentumCycle` (pure Sendable/Codable + unit tests) drives 12 new `lr_cycle_*` / `momentum_cycle_*` training parameters; the cycle phase is a pure function of the persisted global step so resume is seamless; new Cycling tab in the training-settings popover.
 
 ## 2026-06-05 CDT — Model storage is safetensors-native + runtime-configurable architecture (foundation)
 
@@ -150,6 +182,10 @@ A from-scratch rebuild of the residual tower's internals. This is a fresh-start 
 Supporting/bookkeeping: `ChessNetwork.parameterCount` updated (wider SE FC2, +1 α/block, +`tower_final_bn`). `NetworkWeightAnalyzer` updated — Glorot init-L2 reference for `*_se_fc2_weights` (new `glorotInitL2`/`expectedInitL2`), `*_res_scale` drift-from-init reference = `1/√numBlocks` (replacing the removed `*_bn2_gamma`=0 case), a `tower_final` section, and the baseline-gate analysis now reads only the gammas half of the 256-wide FC2 bias. Stale comments in `PolicyHeadCorrectnessTests` (Test 3 init-legalmass, Test 7 gradient-connectivity) rewritten to reflect ReZero + the BN warmup; no assertions or test logic changed. Gradient/optimizer/weight-transfer/BN-warmup paths are all generic over the live variable arrays, so the new tensors flow through with no hardcoded counts. (Note: this lands on top of the earlier same-cycle `numBlocks` 16 → 12 reduction.)
 
 ---
+
+## 2026-05-29 CDT — UCI mode for cutechess / external opponents (`28cf394`)
+
+`DrewsChessMachine --uci` launches as a stdin/stdout UCI engine instead of the GUI; `--model <path>` selects a weight file, else the latest session's trainer loads via `LastSessionPointer`. Pre-flight runs before SwiftUI is created, so no window appears and the auto-resume countdown never fires.
 
 ## 2026-05-29 15:26 CDT — 16-block tower: depth doubling + zero-γ identity init + policy-head BN
 
