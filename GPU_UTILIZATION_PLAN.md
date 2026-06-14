@@ -1,7 +1,9 @@
 # GPU Utilization Plan — training step is CPU-encode-bound
 
-Status: **PLAN — not started.** Phases 1 and 2 only; Phase 3 (kernel fusion /
-baseline-forward merge) is explicitly deferred per direction on 2026-06-02.
+Status: **Phase 2 SHIPPED** (2026-06-13 audit) — the precompiled-executable fix
+is in code (`ChessTrainer.trainingExecutables` + `executable.encode`, replacing
+per-step `graph.run`). Phase 3 (kernel fusion / baseline-forward merge) remains
+**explicitly deferred** per direction on 2026-06-02.
 
 ## Diagnosis
 

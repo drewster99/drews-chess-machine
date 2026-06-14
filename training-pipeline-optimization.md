@@ -1,5 +1,9 @@
 # Training Pipeline Optimization Plan
 
+> **Status: PENDING / TODO** (2026-06-13 audit). The pipelined-trainer overlap
+> (P1/P2(N+1) with P3(N)) is NOT built; trainer phases remain serial. Note the
+> precompiled-executable lever DID ship separately (see GPU_UTILIZATION_PLAN.md Phase 2).
+
 ## Context
 
 We instrumented the trainer step with `[LEGAL-COST]` and observed at batch=4096:

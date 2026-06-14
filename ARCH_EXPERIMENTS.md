@@ -404,3 +404,13 @@ Verdict rule: ceiling breaks → stall (the breaking phase names the lever);
 pinned through both phases → capacity ceiling confirmed, depth is the answer.
 
 *(results pending)*
+
+## Experiment 7 — First Heterogeneous Block-Groups Tower (eBNC) — IN PROGRESS
+
+**arch** `v4 . in basic30(30) -> stem 128 (3x3) . 3x[3x3+3x3 @128, SE+/2, relu/pre, clean_add, ReZero(0.408), drop*1] -> 5x5 group ...` — concretely a two-group WRN-style staircase: stem 128 (3×3) → **3× [3×3 @128, SE scale+bias /2]** → **3× [5×5 @256, SE scale+bias /2]**, ReZero, channel dropout rate 0.30, ~**10.66M params**. The 128→256 transition carries a 1×1 skip projection. · **lineage** `eBNC` (saved/live) · **build** 1835→1841 · **dates** 2026-06-12 →
+
+**Why:** first production run of the block-groups feature (ARCHITECTURE_EXPANSION_PLAN.md Feature 2) — validates that a heterogeneous, multi-width tower with skip projections trains, promotes, and survives save/resume end to end. Not a controlled architecture comparison; a shakedown of the new capability.
+
+**Status (2026-06-13, still running):** healthy throughout. ~step 46k, champion `eBNC-10` (10 promotions). Loss/entropy/gNorm all in-band; `drop=0.30` applied. Survived a disk-full process exit at step ~29.4k (Trash holding the earlier cleanup pinned the volume at 100%) and auto-resumed cleanly from the post-promotion checkpoint — no weights lost. Wide-probe pElo peaked ~643 mid-run.
+
+*(in progress — full writeup deferred until the run concludes or is promoted to a controlled comparison)*

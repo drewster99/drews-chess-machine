@@ -1,6 +1,8 @@
 # Plan: `full10Ply10Reps210` input encoding
 
-Status: **PLAN — not started.** Implement only on explicit "start".
+Status: **SHIPPED** (2026-06-13 audit). `InputEncoding.full10Ply10Reps210` (210
+planes, 10-plane repetition tail) is implemented in `NetworkArchitecture.swift`
+and threaded through the encoder / replay / build paths.
 
 Branch: `safetensors-storage`. Follow-up to Experiment 2 (`full10ply200`). The Experiment-2
 finding: dropping the explicit repetition planes is one of two suspects for the slower bootstrap.

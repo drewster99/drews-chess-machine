@@ -1,5 +1,8 @@
 # Capture per-position legal-move mask during self-play; persist with replay records
 
+> **Status: PENDING / TODO** (2026-06-13 audit). Not implemented — the trainer
+> still regenerates legal-move masks every step (no persisted per-position mask).
+
 ## Context
 
 Today, every training step regenerates each batch position's legal-move mask from scratch:

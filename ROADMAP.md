@@ -687,6 +687,35 @@ original rationale is not lost.
   15–22 bucket entropy falling ≥0.10 nats and value-scalar spread at least
   doubling, without arena promotion rate falling >25%.
 
+### Backlog migrated from standalone docs (2026-06-13)
+
+Consolidated here when `TODO_NEXT.md` / `NEW_PARAMETERS.md` were retired (their
+done/obsolete items live in CHANGELOG; only the still-open ones survive below).
+
+- **Per-tensor gradient-norm readback** (from TODO_NEXT). Today only the global
+  `gNorm` and a single `policyHeadWeightNorm` are read back; a per-tensor norm
+  breakdown would localize which layers drive clip events. Not built.
+- **Weight EMA / SWA for inference** (from TODO_NEXT). Maintain a slow-moving
+  average of weights and evaluate the arena/probe champion from it. No
+  SWA/EMA-inference code exists.
+- **Horizontal-mirror data augmentation** (from TODO_NEXT). Chess is left-right
+  symmetric; mirror board+policy at sample time to ~2× effective data. Detailed
+  design preserved in git history (TODO_NEXT @ pre-retirement); not built.
+- **Cosine (monotone) LR decay post-warmup** (from TODO_NEXT). Distinct from the
+  now-shipped *cyclical* LR/momentum (`LRMomentumCycle.swift`); folds into the
+  existing "Adaptive learning-rate schedule" item — reconcile against the cyclical
+  schedule before pursuing.
+- **Candidate training-parameter knobs** (from NEW_PARAMETERS). A parameter-design
+  backlog, almost none shipped as proposed: expose the existing hardcoded Dirichlet
+  config as `self_play_dirichlet_*` parameters; entropy-bonus schedule/controller;
+  replay `sample_mode` (recency / TD-priority / without-replacement) and explicit
+  per-outcome weights (NOTE: the composition-aware sampler — per-game cap, draw cap,
+  length tilt — already shipped 2026-05-12, so only these remain; TD-priority needs
+  real code beyond params because `vBaseline` goes stale); sample-time numeric knobs
+  (softmax logit clip, policy top-k cap, min-legal-prob floor); a `legalMassCollapse`
+  metric + min-batches guard. Full proposals in git history (NEW_PARAMETERS @
+  pre-retirement).
+
 ## Code-review remediation roadmap (added 2026-05-11)
 
 Result of an in-depth review of the codebase against Swift / SwiftUI / macOS /

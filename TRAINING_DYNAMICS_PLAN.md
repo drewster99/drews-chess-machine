@@ -1,7 +1,8 @@
 # Training Dynamics Plan — cyclical LR/momentum + measurement
 
-Status: **PLAN.** Item 0 (EMA overlay) is **implemented**; the rest is designed,
-not started. Separate from `GPU_UTILIZATION_PLAN.md` (that's throughput; this is
+Status: **PARTIALLY SHIPPED** (2026-06-13 audit). Item 0 (EMA overlay) AND
+Section 3 (cyclical LR / inverse-coupled momentum, `Training/LRMomentumCycle.swift`)
+are **implemented**; the Tier-1/2 measurement scaffolding is designed, not all built. Separate from `GPU_UTILIZATION_PLAN.md` (that's throughput; this is
 learning dynamics + how we measure them).
 
 ## Motivation

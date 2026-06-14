@@ -1,5 +1,8 @@
 # Chart X-Axis Toggle Plan (time / steps / positions)
 
+> **Status: PENDING / TODO** (2026-06-13 audit). Not yet implemented — no chart
+> x-axis (time/steps/positions) toggle in the code.
+
 The main charts screen renders every series against wall-clock time. Training
 dynamics are easier to reason about against trainer steps — and once batch
 size is ever varied mid-run, *positions trained* becomes the only

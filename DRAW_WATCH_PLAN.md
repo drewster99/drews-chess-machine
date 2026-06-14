@@ -1,5 +1,9 @@
 # DRAW_WATCH_PLAN.md
 
+> **Status: SHIPPED** (2026-06-13 audit). `Training/DrawWatchTracker.swift` is live
+> (`SessionController.drawWatchTracker` / `drawWatchSnapshot`); stealth monitor only,
+> no game-termination (still a non-goal).
+
 Stealth-mode per-game `pDraw` monitor during self-play. **No game termination in this phase — every game still plays out to its natural conclusion (mate / stalemate / 3-fold / 50-move / ply-cap). Flagging a game does NOT change the game's behavior in any way; the worker just records that the flag fired and the game continues playing exactly as before.** Termination policy is an explicit non-goal of this plan and would be a separate plan layered on top.
 
 A key v1 metric is **the flag's predictive accuracy as a draw signal**: of the games we flag, what percentage actually go on to end in a draw (vs end decisively despite the network thinking they were drawn). This requires the game to finish, which is one more reason termination stays off in this phase.

@@ -1,6 +1,8 @@
 # Stratified Replay-Buffer Sampling by Material Bucket
 
-Status: **plan / not yet implemented**. Pending user approval before any code is written.
+Status: **SHIPPED** (2026-06-13 audit). Material-bucket stratification is in code:
+the `replayBufferStratifyByMaterial` training parameter,
+`SamplingConstraints.materialBucketWeights`, and `ReplayBufferAnalyzer.materialBuckets`.
 
 ## Motivation
 
