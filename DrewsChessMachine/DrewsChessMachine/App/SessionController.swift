@@ -258,6 +258,18 @@ final class SessionController {
     /// `true` while a Play-and-Train (self-play) session is active.
     var realTraining: Bool = false
 
+    /// `true` once a training divergence (non-finite loss / GPU command
+    /// failure / gradient blow-up) has suspended the trainer. The session is
+    /// deliberately NOT torn down on divergence — the alarm banner stays up so
+    /// the user can see why training stopped, and the rest of the run
+    /// (heartbeat, self-play, stats) keeps living. Instead, this flag is the
+    /// single gate that prevents the suspended state from doing further harm:
+    /// it blocks arenas from running (which would otherwise snapshot the
+    /// poisoned trainer weights into a candidate) and blocks the 4-hour
+    /// periodic autosave from persisting the diverged session. Reset on a fresh
+    /// `startRealTraining` and on `stopRealTraining`.
+    var trainingSuspendedByDivergence: Bool = false
+
     /// Handle to the Play-and-Train driver `Task`. Cancelled on Stop.
     var realTrainingTask: Task<Void, Never>?
 

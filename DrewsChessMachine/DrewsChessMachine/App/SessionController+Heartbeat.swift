@@ -371,6 +371,14 @@ extension SessionController {
             periodicSaveLastPollAt = nil
             return
         }
+        // Gate: never fire the 4-hour autosave while training is suspended on a
+        // divergence — persisting a poisoned (NaN-weights) session would write
+        // junk and could overwrite the user's last-session pointer. The banner
+        // stays up; the user can still save manually if they want it for
+        // debugging.
+        if trainingSuspendedByDivergence {
+            return
+        }
         let now = Date()
         if let lastPoll = periodicSaveLastPollAt,
            now.timeIntervalSince(lastPoll) < 1.0 {
@@ -577,7 +585,16 @@ extension SessionController {
         // The training-alarm evaluation (divergence streaks → banner / beep)
         // lives on `TrainingAlarmController` — see `trainingAlarm`.
         await chartCoordinator?.appendTrainingChart(sample, totalGpuMs: currentGpuMs)
-        trainingAlarm?.evaluate(from: sample)
+        // Once a divergence has suspended training, leave the alarm banner
+        // exactly as `suspendTrainingOnDivergence` raised it. The trainer has
+        // stopped stepping so the rolling metrics are frozen on the last (often
+        // blown-up) step; re-running the streak detectors against that stale
+        // sample would only churn the banner (and its recovery path could
+        // eventually clear a divergence-titled banner). The chart keeps
+        // appending so live self-play data still plots.
+        if !trainingSuspendedByDivergence {
+            trainingAlarm?.evaluate(from: sample)
+        }
     }
 
     private func refreshProgressRateIfNeeded() async {

@@ -953,6 +953,9 @@ extension SessionController {
         arenaOverrideBox = overrideBox
         isArenaRunning = false
         realTraining = true
+        // Clear any divergence suspension from a prior run so this start begins
+        // with arenas and the periodic autosave un-gated.
+        trainingSuspendedByDivergence = false
         // Arm the 4-hour periodic-save scheduler. Always construct
         // a fresh controller on each start — a previous stop will
         // have nil'd it out, and `.continueAfterStop` intentionally
@@ -1580,6 +1583,23 @@ extension SessionController {
                             timing = sampledTiming
                         } catch {
                             box.recordError(error.localizedDescription)
+                            // A divergence (non-finite loss / GPU command
+                            // failure / gradient blow-up) poisons the in-memory
+                            // trainer weights. We deliberately do NOT call
+                            // `stopRealTraining` here: that cancels the whole
+                            // run and — critically — clears the alarm, so the
+                            // banner explaining *why* training stopped would
+                            // vanish before the user ever saw it. Instead we
+                            // SUSPEND: keep the alarm banner up, leave the rest
+                            // of the run (heartbeat, self-play, stats) alive,
+                            // and flip `trainingSuspendedByDivergence` so the
+                            // suspended state gates the two things that would
+                            // otherwise act on the poisoned net — arenas and the
+                            // 4-hour periodic autosave. The trainer worker exits
+                            // (it can't keep stepping a NaN net); the user can
+                            // inspect the session or reload an earlier
+                            // checkpoint, and an explicit Stop fully tears down.
+                            await self.suspendTrainingOnDivergence(reason: error.localizedDescription)
                             return
                         }
 
@@ -1664,6 +1684,17 @@ extension SessionController {
                         case .falseAlarm:
                             continue arenaLoop
                         case .fire:
+                            // Gate: a diverged/suspended trainer holds poisoned
+                            // (NaN) weights — running an arena would snapshot
+                            // them into a candidate and could promote garbage.
+                            // Skip the run entirely while suspended (covers both
+                            // a still-pending auto-trigger and a manual Run
+                            // Arena click). The trigger was already consumed by
+                            // `waitForTrigger`, so we just loop back and wait.
+                            if await MainActor.run(body: { self.trainingSuspendedByDivergence }) {
+                                SessionLogger.shared.log("[ARENA] skipped — training suspended (divergence)")
+                                continue arenaLoop
+                            }
                             await self.runArenaParallel(
                                 trainer: trainer,
                                 champion: network,
@@ -2731,9 +2762,55 @@ extension SessionController {
         }
     }
 
+    /// Suspend training after a divergence (non-finite loss / GPU failure /
+    /// gradient blow-up) WITHOUT tearing the run down.
+    ///
+    /// Unlike `stopRealTraining`, this keeps the run's other tasks (heartbeat,
+    /// self-play, stats ticker, arena coordinator) alive and — deliberately —
+    /// does NOT clear the alarm. The trainer worker that called this returns
+    /// immediately afterward (a NaN net can't keep stepping), but the session
+    /// stays loaded with the banner up so the user can see what happened and
+    /// reload an earlier checkpoint. `trainingSuspendedByDivergence` is the gate
+    /// that stops the now-poisoned trainer weights from doing further harm:
+    /// arenas won't run (no candidate snapshot of the NaN weights) and the
+    /// 4-hour periodic autosave won't persist the diverged session.
+    ///
+    /// Idempotent: a second diverging step (e.g. a brief window before the
+    /// worker fully unwinds) re-enters here and no-ops past the guard so the
+    /// banner detail isn't churned.
+    func suspendTrainingOnDivergence(reason: String) {
+        guard !trainingSuspendedByDivergence else { return }
+        trainingSuspendedByDivergence = true
+        // Raise the banner explicitly rather than relying on the heartbeat's
+        // gNorm/entropy streak detector having already tripped — an instant
+        // step-1 NaN can diverge before any streak threshold is met. A distinct
+        // title also makes the banner sticky: the divergence/value-head
+        // auto-clear paths only clear alarms whose title they own, so a later
+        // recovery streak (or a run of nil samples once stepping stops) can't
+        // silently wipe this one. The user dismisses it, or an explicit Stop
+        // clears it.
+        trainingAlarm?.raise(
+            severity: .critical,
+            title: "Training Diverged (Suspended)",
+            detail: "Trainer halted on a non-finite / blown-up step (\(reason)). Arenas and the 4-hour autosave are paused. Reload an earlier checkpoint or Stop."
+        )
+        // Close the in-progress training segment so cumulative wall-time totals
+        // exclude the suspended idle (the trainer is no longer stepping).
+        checkpoint?.closeActiveTrainingSegment(reason: "diverge-suspend")
+        SessionLogger.shared.log("[DIVERGE] training suspended (banner kept, arenas + 4h autosave gated): \(reason)")
+    }
+
+    /// Full teardown of a Play-and-Train run — the user-initiated Stop path.
+    /// Cancels the worker task group, clears any alarm banner (including a
+    /// divergence-suspend banner), closes the active training segment, and
+    /// disarms the periodic-save scheduler so a Stop-then-Start doesn't fire an
+    /// immediate save. (A training divergence no longer routes here — it calls
+    /// `suspendTrainingOnDivergence` instead, which keeps the banner and the
+    /// session alive.)
     func stopRealTraining() {
         realTrainingTask?.cancel()
         realTrainingTask = nil
+        trainingSuspendedByDivergence = false
         trainingAlarm?.clear()
         // Close the in-progress training segment so cumulative wall-time
         // totals exclude post-Stop idle. If saving immediately after,
