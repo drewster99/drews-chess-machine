@@ -5753,7 +5753,6 @@ final class ChessTrainer: @unchecked Sendable {
             return existing
         }
         let mtlDevice = network.metalDevice
-        let dtype = ChessNetwork.mpsDataType(for: arch)
 
         // The board feed is always fp32: it feeds the network's fp32
         // `inputPlaceholder`, which narrows to the compute dtype on the GPU
