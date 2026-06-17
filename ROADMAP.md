@@ -1136,6 +1136,17 @@ experiment artifacts (`results.json` ~6.8 MB, `experiment_results.js` ~921 KB, t
 
 ## Findings
 
+- **fp16 (float16) is inference-only on the macOS-27-beta stack (2026-06-17).**
+  fp16 forward + safetensors round-trip are sound and tested, but a real fp16
+  `trainStep` diverges to a NaN gradient on the first step at every batch (worse
+  than bf16, whose batch-1 is finite): forward CE components stay finite while
+  the aggregate loss and gradient norm go NaN, so the overflow is in the fp16
+  backward / auxiliary loss terms, not the fp32-accumulated CE. fp16's exponent
+  range is far narrower than bf16/fp32. Viable fp16 training would need loss
+  scaling and/or fp32 computation of the loss + aux terms — deferred. Captured by
+  the two known-failing `FP16ComputePathTests` trainStep cells; full MPSGraph
+  beta-stack writeup in `documentation/macos27-beta1-mpsgraph-findings.md`.
+
 - **Batch-size sweep is reliable at 1 s per batch size.** The Batch Size
   Sweep panel runs a training-mode copy of the network through real SGD
   steps at each batch size and reports steady-state throughput. We tried
@@ -1243,6 +1254,20 @@ experiment artifacts (`results.json` ~6.8 MB, `experiment_results.js` ~921 KB, t
   policy-head distribution is a prerequisite for future promotions.
 
 ## Completed
+
+- **fp16 (float16) selectable compute precision — inference (2026-06-17,
+  `b25f37e`).** `ComputeDataType` gains `.float16` beside `.float32` / `.bFloat16`,
+  selectable in Build-New-Model and embedded in safetensors metadata. Closed the
+  four remaining touchpoints over the pre-existing float16 conversion branches:
+  exhaustive `mpsDataType(for:)` switch, the `readFloats(into:)` hot-path readback
+  (vImage), and the trainer's two host-side feed narrows (vImage bulk / native
+  `Float16` scalar). In-graph casts + the fp32-master mixed-precision path are
+  dtype-generic so fp16 reuses them; config-D stays bf16-only. fp16 inference is
+  tested and sound; fp16 **training** NaNs immediately on this beta stack (see
+  Findings + `documentation/macos27-beta1-mpsgraph-findings.md`), so fp16 is an
+  inference precision for now. Tests: `FP16ConversionTests` (all pass),
+  `FP16ComputePathTests` (forward + checkpoint pass; trainStep cells fail by
+  design as tripwires).
 
 - **Block groups: heterogeneous towers with per-group widths (2026-06-12 →
   2026-06-13).** `NetworkArchitecture`'s uniform block fields became
