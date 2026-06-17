@@ -276,6 +276,7 @@ final class CliTrainingRecorderTests: XCTestCase {
             workerCount: 4,
             gradClipMaxNorm: 30,
             weightDecayC: 1e-4,
+            dropoutRate: 0,
             entropyRegularizationCoeff: 1e-3,
             drawPenalty: 0.1,
             policyLossWeight: 1,

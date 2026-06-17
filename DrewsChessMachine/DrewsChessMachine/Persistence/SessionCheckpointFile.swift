@@ -329,10 +329,13 @@ struct SessionCheckpointState: Codable, Equatable {
 
     /// Pre-feature behavior: uncapped per-game batch sampling. The
     /// parameter's range no longer includes a disabled value, so the
-    /// fallback is the declared range maximum, where the cap
-    /// essentially never binds at observed game lengths.
+    /// closest representable equivalent is the declared range maximum,
+    /// where the cap essentially never binds at observed game lengths.
+    /// Sourced from the parameter definition (the single source of truth)
+    /// so it tracks any future change to the declared range rather than
+    /// drifting from a hardcoded literal.
     static func resolvedMaxPliesFromAnyOneGame(saved: Int?) -> Int {
-        saved ?? 400
+        saved ?? MaxPliesFromAnyOneGame.definition.intRange?.max ?? 400
     }
 
     /// Pre-feature behavior: no LR/momentum cycling. On nil the

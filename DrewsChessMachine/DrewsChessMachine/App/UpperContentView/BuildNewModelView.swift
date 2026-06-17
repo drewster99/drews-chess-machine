@@ -67,7 +67,11 @@ struct BuildNewModelView: View {
                         }
                     }
 
-                    ForEach(model.blockGroups.indices, id: \.self) { i in
+                    // Iterate by stable group identity (not array index), so a
+                    // reorder/remove re-associates rows by identity rather than
+                    // by position. `i` is recomputed each body build from the
+                    // current arrays, so it is never stale for the bindings.
+                    ForEach(Array(zip(model.groupIDs, model.blockGroups.indices)), id: \.0) { (_, i) in
                         Section {
                             groupFields(i)
                         } header: {

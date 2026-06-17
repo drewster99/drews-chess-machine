@@ -4745,9 +4745,11 @@ final class ChessTrainer: @unchecked Sendable {
     /// should hand in the app-level `probeInferenceNetwork` (the same
     /// one used by candidate-test probes). The nil path runs the pass
     /// directly against `self.network` and IS affected by BN-stat
-    /// pollution — retained only so the function remains callable in
-    /// contexts that haven't been migrated (tests, exploratory code).
-    /// Production call sites must always pass `inferenceNetwork`.
+    /// pollution — and, at a nonzero channel-dropout rate, by live dropout
+    /// randomly masking the probe's policy/legal-mass output — retained only
+    /// so the function remains callable in contexts that haven't been
+    /// migrated (tests, exploratory code). Production call sites must always
+    /// pass `inferenceNetwork`.
     func legalMassSnapshot(
         replayBuffer: ReplayBuffer,
         sampleSize: Int,
@@ -5449,6 +5451,13 @@ final class ChessTrainer: @unchecked Sendable {
             var v = clamped
             nda.writeBytes(&v, strideBytes: nil)
             autoreleasepool {
+                // Serialize against a concurrent probe `exportWeights`
+                // `graph.run` on the network queue: two `graph.run` calls on
+                // one `MPSGraph`/`commandQueue` from different queues is the
+                // same hazard the SGD weight-write closes. This assign touches
+                // only the `dropout_rate` variable (not `trainableVariables`),
+                // so it can't corrupt an export result, but it shares the graph.
+                self.network.weightAccessLock.wait()
                 _ = self.network.graph.run(
                     with: self.network.commandQueue,
                     feeds: [
@@ -5458,6 +5467,7 @@ final class ChessTrainer: @unchecked Sendable {
                     targetTensors: [rateVar],
                     targetOperations: [assign]
                 )
+                self.network.weightAccessLock.signal()
             }
             SessionLogger.shared.log(String(format: "[PARAM] dropoutRate applied to training graph: %.4f", clamped))
         }
@@ -6034,6 +6044,14 @@ final class ChessTrainer: @unchecked Sendable {
         // across commit→wait — the GPU section that writes the variables — and
         // released before the readback. Throw-free between wait/signal, so the
         // signal is always reached. See `ChessNetwork.weightAccessLock`.
+        //
+        // Note the lock guards the fp32 *masters* here; the bf16/fp16 *working*
+        // variables are re-derived under a second lock section below (the
+        // working-sync `graph.run`). `internalExportWeights` reads the working
+        // variables, so between these two sections an export can observe working
+        // weights that lag the masters by one SGD step. That is benign for the
+        // probe (which mirrors approximate weights into an inference net), but
+        // it is why the lock does not make export and SGD strictly atomic.
         network.weightAccessLock.wait()
         mpsCommandBuffer.commit()
         mpsCommandBuffer.waitUntilCompleted()
@@ -6365,7 +6383,7 @@ final class ChessTrainer: @unchecked Sendable {
 
             // Largest single MTLBuffer we'll ask Metal for. Exact, not
             // estimated: the trainer literally uploads a
-            // [batch, arch.channels, ChessNetwork.boardSize, ChessNetwork.boardSize]
+            // [batch, arch.maxBlockChannels, ChessNetwork.boardSize, ChessNetwork.boardSize]
             // float32 activation tensor and that's the biggest buffer in
             // the graph (beats the [batch, policySize] policy tensors and
             // the [batch, inputPlanes, ChessNetwork.boardSize, ChessNetwork.boardSize] input).
@@ -6483,7 +6501,7 @@ final class ChessTrainer: @unchecked Sendable {
 
     /// Exact size of the largest single MTLBuffer the trainer requests at
     /// this batch size — one
-    /// [batch, arch.channels, ChessNetwork.boardSize, ChessNetwork.boardSize]
+    /// [batch, arch.maxBlockChannels, ChessNetwork.boardSize, ChessNetwork.boardSize]
     /// float32 activation tensor. That's larger than the [batch, policySize]
     /// policy tensors and the [batch, inputPlanes, ChessNetwork.boardSize,
     /// ChessNetwork.boardSize] input, so it's the buffer that would first hit

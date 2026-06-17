@@ -105,6 +105,12 @@ final class SessionPickerModel {
             .filter { $0.pathExtension == "dcmsession" }
             .sorted { $0.lastPathComponent > $1.lastPathComponent }  // newest names first
 
+            // Reclaim index-cache entries for sessions deleted since the last
+            // scan, so the cache directory can't grow without bound.
+            SessionManifest.pruneIndexCache(
+                liveFolderNames: Set(folders.map { $0.lastPathComponent })
+            )
+
             Task { @MainActor [weak self] in
                 guard let self, self.scanGeneration == generation else { return }
                 self.totalCount = folders.count

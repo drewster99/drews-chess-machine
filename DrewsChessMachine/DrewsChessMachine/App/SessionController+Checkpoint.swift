@@ -800,7 +800,7 @@ extension SessionController {
             selfPlayWorkerCount: params.selfPlayConcurrency,
             gradClipMaxNorm: Float(params.gradClipMaxNorm),
             weightDecayCoeff: Float(params.weightDecay),
-            dropoutRate: Float(params.dropoutRate),
+            dropoutRate: trainer?.dropoutRate ?? Float(params.dropoutRate),
             policyLossWeight: Float(params.policyLossWeight),
             valueLossWeight: Float(params.valueLossWeight),
             momentumCoeff: Float(params.momentumCoeff),

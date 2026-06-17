@@ -28,6 +28,13 @@ final class BuildNewModelModel {
     /// Feature 2 Phase B). Full fidelity: a loaded mixed tower round-trips
     /// through the editor without collapsing.
     var blockGroups: [BlockGroup]
+    /// Stable per-group identities for the editor's `ForEach`, kept strictly
+    /// parallel to `blockGroups` through every mutation below. Never persisted
+    /// and not part of the architecture — `BlockGroup` stays a pure value type
+    /// (Codable/Hashable equality must not depend on identity). Using these as
+    /// the row id avoids index-as-identity, so reordering/removing a group
+    /// re-associates rows correctly instead of by position.
+    private(set) var groupIDs: [UUID]
     var stemConvKernelSize: Int
     var activationFunction: ActivationFunction
     var policyHeadStyle: PolicyHeadStyle
@@ -46,6 +53,7 @@ final class BuildNewModelModel {
         self.labelOverride = ""
         self.inputEncoding = a.inputEncoding
         self.blockGroups = a.blockGroups
+        self.groupIDs = a.blockGroups.map { _ in UUID() }
         self.stemConvKernelSize = a.stemConvKernelSize
         self.activationFunction = a.activationFunction
         self.policyHeadStyle = a.policyHeadStyle
@@ -63,6 +71,7 @@ final class BuildNewModelModel {
         labelOverride = ""
         inputEncoding = a.inputEncoding
         blockGroups = a.blockGroups
+        groupIDs = a.blockGroups.map { _ in UUID() }
         stemConvKernelSize = a.stemConvKernelSize
         activationFunction = a.activationFunction
         policyHeadStyle = a.policyHeadStyle
@@ -97,11 +106,13 @@ final class BuildNewModelModel {
     func duplicateGroup(at index: Int) {
         guard blockGroups.indices.contains(index) else { return }
         blockGroups.insert(blockGroups[index], at: index + 1)
+        groupIDs.insert(UUID(), at: index + 1)
     }
 
     func removeGroup(at index: Int) {
         guard blockGroups.indices.contains(index), blockGroups.count > 1 else { return }
         blockGroups.remove(at: index)
+        groupIDs.remove(at: index)
     }
 
     /// Move a group one slot toward the input (-1) or the heads (+1).
@@ -110,6 +121,7 @@ final class BuildNewModelModel {
         guard blockGroups.indices.contains(index),
               blockGroups.indices.contains(target) else { return }
         blockGroups.swapAt(index, target)
+        groupIDs.swapAt(index, target)
     }
 
     /// The depth-appropriate ReZero α init for the current TOTAL block count

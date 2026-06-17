@@ -458,4 +458,36 @@ extension SessionManifest {
         }
         return extracted
     }
+
+    /// Delete index-cache entries whose session folder no longer exists.
+    /// Cache files live outside the (immutable) session folders, so a
+    /// deleted `.dcmsession` would otherwise leave its `<folderName>.json`
+    /// orphaned forever. `liveFolderNames` is the set of `.dcmsession`
+    /// folder names found in the current scan; any cache file not backed by
+    /// one of them is reclaimed. Best-effort: a failed delete is logged and
+    /// skipped (the orphan is harmless — the picker never reads it).
+    static func pruneIndexCache(liveFolderNames: Set<String>) {
+        let fm = FileManager.default
+        let dir = indexCacheDirectory()
+        guard let entries = try? fm.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) else { return }
+        for cacheURL in entries where cacheURL.pathExtension == "json" {
+            // Cache file is "<folderName>.json"; the backing folder is the
+            // name with the ".json" suffix stripped (folder names already
+            // carry their own ".dcmsession" extension).
+            let backingFolder = cacheURL.deletingPathExtension().lastPathComponent
+            guard !liveFolderNames.contains(backingFolder) else { continue }
+            do {
+                try fm.removeItem(at: cacheURL)
+                SessionLogger.shared.log(
+                    "[SESSION-INDEX] pruned orphan cache entry \(cacheURL.lastPathComponent)"
+                )
+            } catch {
+                SessionLogger.shared.log(
+                    "[SESSION-INDEX] orphan cache prune failed for \(cacheURL.lastPathComponent): \(error.localizedDescription)"
+                )
+            }
+        }
+    }
 }

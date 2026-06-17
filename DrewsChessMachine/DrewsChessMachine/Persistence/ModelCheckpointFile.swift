@@ -193,7 +193,10 @@ struct ModelCheckpointFile {
         // fc_bottleneck model is rejected on load as implausibleTensorSize.
         let policyFC = arch.policyPreConvChannels * ChessNetwork.boardSize * ChessNetwork.boardSize * ChessNetwork.policySize
         let valueFC1 = (ChessNetwork.boardSize * ChessNetwork.boardSize * arch.valueHeadConvChannels) * arch.valueHeadHiddenUnits
-        let seFC = c * c  // >= channels × (channels / r) for every group
+        // SE fc2 for the scaleAndBias style is [outC/r, 2·outC] = 2·outC²/r,
+        // which at r=1 exceeds c². Use 2·c² so the ceiling covers every SE
+        // style at any reduction ratio the validator permits.
+        let seFC = 2 * c * c
         let largest = max(residualConv, stemConv, policyConv, policyFC, valueFC1, seFC)
         return largest + 65_536
     }

@@ -613,6 +613,10 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let workerCount: Int
         let gradClipMaxNorm: Double
         let weightDecayC: Double
+        /// Channel-dropout rate in effect this tick. Surfaced so a dropout
+        /// A/B sweep's `results.json` records which rate each arm ran at —
+        /// the parameter the harness exists to compare.
+        let dropoutRate: Double
         let entropyRegularizationCoeff: Double
         let drawPenalty: Double
         let policyLossWeight: Double
@@ -712,6 +716,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case workerCount = "worker_count"
             case gradClipMaxNorm = "grad_clip_max_norm"
             case weightDecayC = "weight_decay"
+            case dropoutRate = "dropout_rate"
             case entropyRegularizationCoeff = "entropy_regularization_coeff"
             case drawPenalty = "draw_penalty"
             case policyLossWeight = "policy_loss_weight"

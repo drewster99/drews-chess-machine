@@ -173,7 +173,7 @@ final class ChessNetwork: @unchecked Sendable {
     // to live here as static lets describing one hardcoded topology. They
     // were removed once the architecture became runtime-configurable: the
     // single source of truth is now the instance `arch:
-    // NetworkArchitecture`. Read `arch.channels`, `arch.numBlocks`,
+    // NetworkArchitecture`. Read `arch.maxBlockChannels`, `arch.numBlocks`,
     // `arch.parameterCount`, etc. — never a global default — so every
     // consumer describes the ACTUAL built net. Only the genuinely fixed
     // engine constants (`boardSize`, `policyChannels`, `policySize`, and —

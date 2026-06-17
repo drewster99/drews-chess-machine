@@ -211,28 +211,40 @@ struct CombinedLossChartView: View {
                 // Either way the trainer step (the chart's x) leads, so the
                 // reader always knows *where* in the run the values are from.
                 var parts: [String] = []
-                var stepX: Double?
+                var trainStepX: Double?
+                var evalStepX: Double?
                 if let hx = ctx.hoveredX {
                     if let i = Self.nearestIndex(hoveredX: hx, points: trainPts) {
-                        stepX = Double(trainPts[i].x)
+                        trainStepX = Double(trainPts[i].x)
                         parts.append(String(format: "train %.3f", Double(trainPts[i].y)))
                     }
                     if let j = Self.nearestIndex(hoveredX: hx, points: evalPts) {
-                        if stepX == nil { stepX = Double(evalPts[j].x) }
+                        evalStepX = Double(evalPts[j].x)
                         parts.append(String(format: "eval %.3f", Double(evalPts[j].y)))
                     }
                 } else {
                     if let t = trainPts.last {
-                        stepX = Double(t.x)
+                        trainStepX = Double(t.x)
                         parts.append(String(format: "train %.3f", Double(t.y)))
                     }
                     if let e = evalPts.last {
-                        if stepX == nil { stepX = Double(e.x) }
+                        evalStepX = Double(e.x)
                         parts.append(String(format: "eval %.3f", Double(e.y)))
                     }
                 }
-                if let s = stepX {
-                    parts.insert("step \(Int(s).formatted())", at: 0)
+                // The leading "step N" labels the train sample (the chart's
+                // primary series). If the nearest eval sample sits at a
+                // different step — sparse/misaligned probe ticks — annotate the
+                // eval value with its own step so the reader never reads it as
+                // belonging to the leading step. When only eval is present, it
+                // owns the leading step.
+                let leadStepX = trainStepX ?? evalStepX
+                if let lead = leadStepX {
+                    parts.insert("step \(Int(lead).formatted())", at: 0)
+                }
+                if let evalStepX, let trainStepX, evalStepX != trainStepX,
+                   let evalPartIndex = parts.firstIndex(where: { $0.hasPrefix("eval ") }) {
+                    parts[evalPartIndex] += " @step \(Int(evalStepX).formatted())"
                 }
                 return AttributedString(parts.joined(separator: "   "))
             },

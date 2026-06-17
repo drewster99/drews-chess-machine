@@ -2281,6 +2281,7 @@ extension SessionController {
                                 workerCount: workerN,
                                 gradClipMaxNorm: Double(gradClip),
                                 weightDecayC: Double(weightDec),
+                                dropoutRate: Double(dropRate),
                                 entropyRegularizationCoeff: Double(entropyCoeff),
                                 drawPenalty: Double(drawPen),
                                 policyLossWeight: Double(policyW),
@@ -2447,6 +2448,22 @@ extension SessionController {
                 //     stdio buffer to flush),
                 //   - session log writes have already been
                 //     flushed by SessionLogger before this point.
+                // Single-winner guard shared by the three process-terminating
+                // paths (time-limit, step-limit, legal-mass collapse). Each
+                // `Darwin._exit(0)` would normally kill the process before a
+                // second path could also write, but the budgets are polled
+                // independently and two can cross their thresholds within the
+                // same poll window — both would then pass their guards and race
+                // to write the snapshot. The claim makes exactly one path write
+                // and exit; the losers return without touching the file.
+                let terminationClaimed = SyncBox(false)
+                let claimTermination: @Sendable () -> Bool = {
+                    terminationClaimed.mutate { claimed in
+                        if claimed { return false }
+                        claimed = true
+                        return true
+                    }
+                }
                 if isAutoTrainRun, let recorder, let deadlineSec = cliTrainingTimeLimitSec, deadlineSec > 0 {
                     group.addTask(priority: .utility) {
                         do {
@@ -2457,6 +2474,7 @@ extension SessionController {
                             return
                         }
                         if Task.isCancelled { return }
+                        guard claimTermination() else { return }
                         let elapsed = Date().timeIntervalSince(runStart)
                         let destDescription = outputURL?.path ?? "<stdout>"
                         SessionLogger.shared.log(
@@ -2488,8 +2506,9 @@ extension SessionController {
                 // completed-step counter (SyncBox-backed, safe off-main) at
                 // a coarse cadence; on crossing the budget it writes the
                 // snapshot and exits with `step_limit_reached`. Both
-                // budgets may be armed; whichever fires first wins (each
-                // exits the process, so there is no double-write).
+                // budgets may be armed; whichever claims termination first
+                // writes and exits, the other returns without writing (see
+                // `claimTermination`).
                 if isAutoTrainRun, let recorder, let stepLimit = cliTrainingStepLimit, stepLimit > 0 {
                     group.addTask(priority: .utility) {
                         while !Task.isCancelled {
@@ -2500,6 +2519,7 @@ extension SessionController {
                             }
                             let steps = trainer.completedTrainSteps
                             guard steps >= stepLimit else { continue }
+                            guard claimTermination() else { return }
                             let elapsed = Date().timeIntervalSince(runStart)
                             let destDescription = outputURL?.path ?? "<stdout>"
                             SessionLogger.shared.log(
@@ -2562,7 +2582,7 @@ extension SessionController {
                 let collapseGracePeriodSec = TrainingParameters.shared.legalMassCollapseGraceSeconds
                 let collapseNoImprovementProbeCount = max(1, TrainingParameters.shared.legalMassCollapseNoImprovementProbes)
                 group.addTask(priority: .utility) {
-                    [trainer, buffer, box, probeInferenceForProbes] in
+                    [trainer, buffer, box, probeInferenceForProbes, claimTermination] in
                     let probeIntervalSec: UInt64 = 60
                     let sampleSize = 128
                     let gracePeriodSec: TimeInterval = collapseGracePeriodSec
@@ -2672,6 +2692,15 @@ extension SessionController {
                                     legalMassWindow.last ?? 0, legalMassWindow.first ?? 0)
                             )
                             await MainActor.run {
+                                // Don't clobber the divergence-suspend banner.
+                                // When training has already been suspended for
+                                // divergence, the network is frozen/poisoned and
+                                // this probe keeps seeing the downstream symptom;
+                                // raising here would replace the sticky
+                                // "Training Diverged (Suspended)" banner (which
+                                // explains *why* training stopped) with a
+                                // secondary alarm. Mirrors the heartbeat gate.
+                                guard !self.trainingSuspendedByDivergence else { return }
                                 self.trainingAlarm?.raise(
                                     severity: .critical,
                                     title: "Policy Collapse (legal mass)",
@@ -2695,7 +2724,7 @@ extension SessionController {
                                     legalMassWindow.count, illegalMassThreshold,
                                     legalMassWindow.first ?? 0, legalMassWindow.last ?? 0)
                             )
-                            if let rec = collapseRecorder {
+                            if let rec = collapseRecorder, claimTermination() {
                                 let destDescription = collapseOutputURL?.path ?? "<stdout>"
                                 SessionLogger.shared.log(
                                     "[APP] --train: legal-mass collapse abort at elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
