@@ -95,7 +95,7 @@ final class SessionPickerModel {
         totalCount = 0
         scanDirectory = directory
 
-        Self.indexQueue.async {
+        Self.indexQueue.async { [weak self] in
             let fm = FileManager.default
             let folders = ((try? fm.contentsOfDirectory(
                 at: directory,
@@ -111,7 +111,7 @@ final class SessionPickerModel {
                 liveFolderNames: Set(folders.map { $0.lastPathComponent })
             )
 
-            Task { @MainActor [weak self] in
+            Task { @MainActor in
                 guard let self, self.scanGeneration == generation else { return }
                 self.totalCount = folders.count
                 if folders.isEmpty { self.isScanning = false }
@@ -119,7 +119,7 @@ final class SessionPickerModel {
 
             for url in folders {
                 let manifest = SessionManifest.resolve(sessionFolder: url)
-                Task { @MainActor [weak self] in
+                Task { @MainActor in
                     guard let self, self.scanGeneration == generation else { return }
                     self.manifests.append(manifest)
                     self.scannedCount += 1
