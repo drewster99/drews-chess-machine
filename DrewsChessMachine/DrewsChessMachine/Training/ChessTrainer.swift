@@ -5437,17 +5437,31 @@ final class ChessTrainer: @unchecked Sendable {
     private func pushDropoutRateToGraph(_ rate: Float) {
         let clamped = min(max(rate, 0.0), 0.95)
         _dropoutRate.value = clamped
-        guard let ph = network.dropoutRateLoadPlaceholder,
-              let assign = network.dropoutRateAssignOp,
-              let nda = network.dropoutRateLoadNDArray,
-              let td = network.dropoutRateLoadTensorData,
-              let rateVar = network.dropoutRateVariable else {
+        // Eligibility gate only. The dropout-scaffolding objects are
+        // non-Sendable MPS class instances, so they must not be captured into
+        // the `@Sendable` `executionQueue.async` closure as locals — instead
+        // the closure re-reads them through `self.network` (the same channel it
+        // already uses for `graph`/`commandQueue`/`inputPlaceholder`). The
+        // scaffolding properties are `let`s on `ChessNetwork`, so the reference
+        // each name resolves to is stable for the network's lifetime; reading
+        // them at execution time rather than scheduling time also keeps every
+        // tensor in the `graph.run` sourced from one consistent network.
+        guard network.dropoutRateLoadPlaceholder != nil,
+              network.dropoutRateAssignOp != nil,
+              network.dropoutRateLoadNDArray != nil,
+              network.dropoutRateLoadTensorData != nil,
+              network.dropoutRateVariable != nil else {
             SessionLogger.shared.log(
                 "[PARAM] dropoutRate set on a network without dropout scaffolding — ignored (inference-mode graph?)"
             )
             return
         }
         executionQueue.async {
+            guard let ph = self.network.dropoutRateLoadPlaceholder,
+                  let assign = self.network.dropoutRateAssignOp,
+                  let nda = self.network.dropoutRateLoadNDArray,
+                  let td = self.network.dropoutRateLoadTensorData,
+                  let rateVar = self.network.dropoutRateVariable else { return }
             var v = clamped
             nda.writeBytes(&v, strideBytes: nil)
             autoreleasepool {
