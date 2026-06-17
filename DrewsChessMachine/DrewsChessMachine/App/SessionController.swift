@@ -939,6 +939,18 @@ final class SessionController {
             return trainer
         }
         do {
+            // The trainer forks champion weights, so its net must match the
+            // champion's architecture.
+            let trainerArch = network?.network.arch ?? .current
+            // Experimental config-D opt-in (`--bf16-cast-in-forward`): for bf16
+            // models, store weights fp32 and cast to bf16 in the forward instead
+            // of the bf16-working-variable + fp32-master path — the macOS-27-beta
+            // bf16-divergence workaround. No-op for fp32 archs.
+            let bf16CastInForward = trainerArch.computeDataType == .bFloat16
+                && CommandLine.arguments.contains("--bf16-cast-in-forward")
+            if bf16CastInForward {
+                SessionLogger.shared.log("[APP] --bf16-cast-in-forward: trainer using config D (fp32 weight storage, bf16 cast-in-forward)")
+            }
             let t = try ChessTrainer(
                 learningRate: Float(params.learningRate),
                 entropyRegularizationCoeff: Float(params.entropyBonus),
@@ -954,9 +966,8 @@ final class SessionController {
                 useSignedAdvantageComplementCE: params.signedAdvantageComplementCE,
                 sqrtBatchScalingForLR: params.sqrtBatchScalingLR,
                 lrWarmupSteps: params.lrWarmupSteps,
-                // The trainer forks champion weights, so its net must match the
-                // champion's architecture.
-                arch: network?.network.arch ?? .current
+                arch: trainerArch,
+                bf16CastInForward: bf16CastInForward
             )
             t.lrMomentumCycle = params.lrMomentumCycle
             trainer = t

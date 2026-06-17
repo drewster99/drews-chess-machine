@@ -583,7 +583,14 @@ extension SessionController {
         }
     }
 
-    func loadSessionFrom(url: URL, startAfterLoad: Bool = false) {
+    /// `forceFloat32`: when true, the loaded session's `computeDataType` is
+    /// overridden to `.float32` for the champion — and therefore for the trainer
+    /// and every inference/arena network, which all derive their arch from
+    /// `network.network.arch`. Used to load a bf16-trained session and continue
+    /// training in fp32 (lossless bf16→fp32 widen on weight load), to dodge the
+    /// Xcode 27 / macOS 27 beta bf16 training stomp. Driven by the auto-resume
+    /// sheet's "Load as float32" checkbox.
+    func loadSessionFrom(url: URL, startAfterLoad: Bool = false, forceFloat32: Bool = false) {
         // In-function guards (belt-and-suspenders with menu disable).
         if isBuildingOrBusyProvider() {
             onRefuseMenuAction(busyReasonProvider())
@@ -623,7 +630,15 @@ extension SessionController {
             //    not the current build default — so non-default / historical
             //    sessions get a matching graph. The random init only satisfies
             //    graph compilation; the weights are overwritten next.
-            let championResult = await self.ensureChampionBuilt(arch: loaded.championFile.architecture)
+            var championArch = loaded.championFile.architecture
+            if forceFloat32 && championArch.computeDataType != .float32 {
+                SessionLogger.shared.log(
+                    "[RESUME] forceFloat32: overriding saved computeDataType "
+                    + "\(championArch.computeDataType.rawValue) -> float32 for champion + trainer + all inference nets"
+                )
+                championArch.computeDataType = .float32
+            }
+            let championResult = await self.ensureChampionBuilt(arch: championArch)
             guard case .success(let champion) = championResult else {
                 checkpoint?.checkpointSaveInFlight = false
                 if case .failure(let error) = championResult {

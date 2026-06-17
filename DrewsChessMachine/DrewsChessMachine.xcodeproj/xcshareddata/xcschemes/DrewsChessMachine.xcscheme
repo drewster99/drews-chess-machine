@@ -39,7 +39,7 @@
       <Testables>
          <TestableReference
             skipped = "NO"
-            parallelizable = "YES">
+            parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "49B1100A2F95D9DB00FC2EA5"
@@ -47,6 +47,11 @@
                BlueprintName = "DrewsChessMachineTests"
                ReferencedContainer = "container:DrewsChessMachine.xcodeproj">
             </BuildableReference>
+            <SelectedTests>
+               <Test
+                  Identifier = "MacOS27NaNIsolationTests/test_realPath_fp32_overlap">
+               </Test>
+            </SelectedTests>
          </TestableReference>
       </Testables>
    </TestAction>

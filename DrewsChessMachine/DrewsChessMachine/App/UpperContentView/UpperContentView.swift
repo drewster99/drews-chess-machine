@@ -1185,7 +1185,8 @@ struct UpperContentView: View {
                     summary: autoResume.summary,
                     countdownRemaining: autoResume.countdownRemaining,
                     onDismiss: { autoResume.dismiss() },
-                    onResume: { autoResume.performResume() }
+                    onResume: { autoResume.performResume() },
+                    loadAsFloat32: $autoResume.loadAsFloat32
                 )
             }
         }
@@ -1717,7 +1718,11 @@ struct UpperContentView: View {
         }
         // The auto-resume controller chains into the load-and-start path here.
         autoResume.onResume = { pointer in
-            session.loadSessionFrom(url: pointer.directoryURL, startAfterLoad: true)
+            session.loadSessionFrom(
+                url: pointer.directoryURL,
+                startAfterLoad: true,
+                forceFloat32: autoResume.loadAsFloat32
+            )
         }
         // The Load-Parameters file-import path needs to apply the picked
         // CliTrainingConfig over `trainingParams` and return the list of

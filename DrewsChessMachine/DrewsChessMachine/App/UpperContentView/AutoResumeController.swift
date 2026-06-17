@@ -19,6 +19,12 @@ final class AutoResumeController {
     /// a SwiftUI `.sheet(isPresented:)` binding.
     var sheetShowing = false
 
+    /// When true, the resume loads the (bf16) session as float32 — see
+    /// `SessionController.loadSessionFrom(forceFloat32:)`. Backs the sheet's
+    /// "Load as float32" checkbox; read by `UpperContentView`'s `onResume`
+    /// closure so the manual button AND the countdown auto-fire both honor it.
+    var loadAsFloat32 = false
+
     /// Pointer the sheet / menu is offering to resume. Captured when presented
     /// so the resume action uses the exact pointer the user saw.
     private(set) var pointer: LastSessionPointer?

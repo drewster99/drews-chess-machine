@@ -1345,6 +1345,92 @@ final class ChessTrainer: @unchecked Sendable {
     /// Architecture the trainer's network is built to — must match the champion
     /// it forks from. Captured at init and reused by `internalResetNetwork`.
     let arch: NetworkArchitecture
+    /// MPSGraph compilation optimization level for the precompiled training
+    /// executable. Defaults to `.level1` (the production setting). Exposed as an
+    /// init parameter purely so the macOS-27 NaN-isolation tests can compile a
+    /// `.level0` trainer and check whether the level-1 codegen path is what
+    /// turns bf16 multi-step gradients non-finite.
+    let executableOptimizationLevel: MPSGraphOptimization
+    /// Experimental "config D" mixed-precision mode (see
+    /// `ChessNetwork.bf16CastInForward`). When true, the trainer builds its
+    /// training-mode network with fp32-stored weights cast to bf16 in the
+    /// forward, and the optimizer runs the plain fp32 path (no masters, no
+    /// working-sync). Threaded to every `ChessNetwork` the trainer builds.
+    /// Default false keeps the canonical bf16-working-var / fp32-master path.
+    let bf16CastInForward: Bool
+    /// A/B knob for the macOS-27 NaN-isolation matrix: when true, every
+    /// `ChessNetwork` this trainer builds calls `disableAutoLayoutConversion()`
+    /// on its `MPSGraph`, opting out of the new (Xcode 27 b1 / macOS 27 beta)
+    /// default that auto-converts conv layouts on the GPU. Default false leaves
+    /// the production behavior unchanged. See `ChessNetwork.init`.
+    let disableAutoLayoutConversion: Bool
+    /// A/B knob for the macOS-27 NaN-isolation matrix: when non-nil, every
+    /// `MPSGraphCompilationDescriptor` this trainer builds has its
+    /// `reducedPrecisionFastMath` set to this value. `.none` forbids reduced-
+    /// precision conv shortcuts (FP16 winograd intermediates, FP32->FP19/TF32
+    /// operand narrowing). The documented default is already `.none`, so this is a
+    /// force/verify lever, not a behavior change. Stored as the enum's raw `UInt`
+    /// (the macOS-26 enum can't be named in a property on the app's deployment
+    /// target); reconstructed under `#available` at the compile site. nil leaves
+    /// the descriptor default.
+    let reducedPrecisionFastMathRaw: UInt?
+    /// Workaround for a bf16 mixed-precision GPU buffer stomp first seen under
+    /// **Xcode 27 beta 1 + macOS 27 beta** (2026-06). When true (the default),
+    /// the bf16 working-weight sync `working = cast(master)` is split OUT of the
+    /// fused training executable and run as a SEPARATE `graph.run` after the
+    /// master update's command buffer has fully completed. No-op under
+    /// `.float32` (there is no second write to split).
+    ///
+    /// THE BUG. Under bf16, the per-trainable optimizer tail emits TWO target
+    /// writes into one compiled executable: the fp32 master assign and the bf16
+    /// working assign through an (unnamed) `cast` temporary (see the update loop
+    /// in `buildTrainingOps`). On this beta stack that fused dual-write corrupts
+    /// trainable weight buffers: the bf16 working weights read back NaN and the
+    /// fp32 masters read back garbage (an exact `1.0` sentinel) from step 2 on,
+    /// poisoning the whole net within a few steps. It is:
+    ///   - bf16-ONLY — fp32 (single write, no master, no cast temp) is clean;
+    ///   - NOT the cast op — a standalone `cast([128,32] fp32 -> bf16)` through
+    ///     graph.run AND the compiled-executable path is bit-exact clean;
+    ///   - intermittent / layout-sensitive — it favors the rank-2 SE fc1
+    ///     `[128,32]` and fc2-bias `[1,256]` tensors, with the corrupted element
+    ///     count growing with tower size (consistent with a buffer-aliasing /
+    ///     liveness-planner fault around the fused dual-write, not a value bug);
+    ///   - NEW with the toolchain/OS upgrade only — byte-identical source
+    ///     trained bf16 for hundreds of thousands of steps before it. A stale
+    ///     Metal toolchain was ruled out (reinstalling the matching one did not
+    ///     help; `xcode-select` already pointed at the beta).
+    ///
+    /// THE FIX. Splitting the working sync into its own pass (different
+    /// allocation/liveness scope, its own command buffer) takes the single-block
+    /// repro from ~1,010,433 non-finite working elements to 0 across 16 steps,
+    /// reproducibly. Only the *trainable* working writes are split; the BN
+    /// running-stat master+working write is left fused (it never corrupted — the
+    /// split A/B's full-net export, BN included, was 0 non-finite).
+    ///
+    /// ANE NOTE (recorded in case it matters). Throughout the bf16 runs the
+    /// console spews, many times per step:
+    ///     Error: ANE cannot handle intermediate tensor type fp32
+    ///     Failed to create unit plist.
+    /// The Apple Neural Engine is fp16-only, so it correctly refuses the fp32
+    /// intermediates the bf16 path uniquely carries (masters / grad-widening
+    /// casts) — MPSGraph attempts to partition onto the ANE, the ANE rejects the
+    /// fp32 work, and it should fall back to GPU. That makes this most likely
+    /// benign fallback noise, NOT the cause. It is not fully excluded, though:
+    /// the message is about an *intermediate*, and the stomp is about the fp32
+    /// master / cast-temp intermediate, so a bad ANE<->GPU partition/fallback
+    /// handoff that the split happens to move off the offending boundary remains
+    /// possible. The split fixes the stomp without disabling the ANE, so the two
+    /// aren't distinguished; an ANE-disable test would settle it.
+    ///
+    /// Set false to restore the original fused single-executable path (one
+    /// `graph.run` per step, faster) — do that once a future toolchain/OS fixes
+    /// the underlying stomp, or to reproduce the bug for an Apple Feedback / the
+    /// `MacOS27NaNIsolationTests` A/B.
+    let splitWorkingWeightSync: Bool
+    /// Separate `working = cast(master)` assigns, built when
+    /// `splitWorkingWeightSync` is true; run as their own pass in
+    /// `runPreparedStep`. Empty otherwise.
+    private var workingSyncOps: [MPSGraphOperation] = []
     private(set) var network: ChessNetwork
     private var movePlayedPlaceholder: MPSGraphTensor   // [batch] int32
     private var zPlaceholder: MPSGraphTensor            // [batch, 1] float
@@ -1688,7 +1774,12 @@ final class ChessTrainer: @unchecked Sendable {
         useSignedAdvantageComplementCE: Bool = true,
         sqrtBatchScalingForLR: Bool = true,
         lrWarmupSteps: Int = 100,
-        arch: NetworkArchitecture = .current
+        arch: NetworkArchitecture = .current,
+        executableOptimizationLevel: MPSGraphOptimization = .level1,
+        splitWorkingWeightSync: Bool = true,
+        bf16CastInForward: Bool = false,
+        disableAutoLayoutConversion: Bool = false,
+        reducedPrecisionFastMathRaw: UInt? = nil
     ) throws {
         self.learningRate = learningRate
         self.entropyRegularizationCoeff = entropyRegularizationCoeff
@@ -1705,10 +1796,19 @@ final class ChessTrainer: @unchecked Sendable {
         self.sqrtBatchScalingForLR = sqrtBatchScalingForLR
         self.lrWarmupSteps = lrWarmupSteps
         self.arch = arch
-        let net = try ChessNetwork(arch: arch, bnMode: .training)
+        self.executableOptimizationLevel = executableOptimizationLevel
+        self.splitWorkingWeightSync = splitWorkingWeightSync
+        self.bf16CastInForward = bf16CastInForward
+        self.disableAutoLayoutConversion = disableAutoLayoutConversion
+        self.reducedPrecisionFastMathRaw = reducedPrecisionFastMathRaw
+        let net = try ChessNetwork(arch: arch, bnMode: .training, bf16CastInForward: bf16CastInForward,
+                                   disableAutoLayoutConversion: disableAutoLayoutConversion,
+                                   reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
         net.commandQueue.label = "ChessTrainer.net(init)"
         self.network = net
-        let built = try withLargeBuildStack { try Self.buildTrainingOps(network: net) }
+        let built = try withLargeBuildStack {
+            try Self.buildTrainingOps(network: net, splitTrainableWorkingSync: splitWorkingWeightSync)
+        }
         self.movePlayedPlaceholder = built.movePlayed
         self.zPlaceholder = built.z
         self.vBaselinePlaceholder = built.vBaseline
@@ -1768,6 +1868,14 @@ final class ChessTrainer: @unchecked Sendable {
         // compiled into the same executable as the SGD assigns.
         if let advance = network.dropoutRngAdvanceOp {
             self.assignOps.append(advance)
+        }
+        // Experiment: when the working-weight sync is split out of the fused
+        // executable, build the separate `working = cast(master)` assigns here
+        // (no-op / empty unless splitWorkingWeightSync && bf16). Config D has
+        // no working vars and no masters at all, so no working-sync is built.
+        if splitWorkingWeightSync && !bf16CastInForward {
+            self.workingSyncOps = Self.buildWorkingSyncOps(
+                net: net, masterVariables: built.masterVariables, arch: arch)
         }
 
         // Scalar ND array for the learning rate feed, reused every step.
@@ -1917,10 +2025,14 @@ final class ChessTrainer: @unchecked Sendable {
     }
 
     private func internalResetNetwork() throws {
-        let net = try ChessNetwork(arch: arch, bnMode: .training)
+        let net = try ChessNetwork(arch: arch, bnMode: .training, bf16CastInForward: bf16CastInForward,
+                                   disableAutoLayoutConversion: disableAutoLayoutConversion,
+                                   reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
         net.commandQueue.label = "ChessTrainer.net(reset)"
         self.network = net
-        let built = try withLargeBuildStack { try Self.buildTrainingOps(network: net) }
+        let built = try withLargeBuildStack {
+            try Self.buildTrainingOps(network: net, splitTrainableWorkingSync: self.splitWorkingWeightSync)
+        }
         self.movePlayedPlaceholder = built.movePlayed
         self.zPlaceholder = built.z
         self.vBaselinePlaceholder = built.vBaseline
@@ -1981,6 +2093,12 @@ final class ChessTrainer: @unchecked Sendable {
         if let advance = network.dropoutRngAdvanceOp {
             self.assignOps.append(advance)
         }
+        // Rebuild the split working-sync ops against the fresh network (stale
+        // ops from the previous net must not be reused). Config D has no
+        // working vars / masters, so no working-sync is built.
+        self.workingSyncOps = (splitWorkingWeightSync && !bf16CastInForward)
+            ? Self.buildWorkingSyncOps(net: net, masterVariables: built.masterVariables, arch: arch)
+            : []
         // Rebuild the LR scalar feed against the new network's device
         // so the new graph's placeholder maps to a fresh wrapper. As in
         // the designated init, these scalar feeds match the network
@@ -2067,8 +2185,35 @@ final class ChessTrainer: @unchecked Sendable {
     /// fails gradient lookup — that would mean the autodiff couldn't reach
     /// it from the loss, which is a network-construction bug we want to
     /// surface immediately rather than silently train without it.
+    /// Build the standalone `working = cast(master)` assign for each TRAINABLE
+    /// (indices [0, trainableCount) of `masterVariables`), used by the
+    /// split-working-sync experiment. Reads the master variable (which the main
+    /// step already updated) and casts it into the bf16 working variable, in a
+    /// separate graph pass. Empty on `.float32` (no masters).
+    private static func buildWorkingSyncOps(
+        net: ChessNetwork, masterVariables: [MPSGraphTensor], arch: NetworkArchitecture
+    ) -> [MPSGraphOperation] {
+        let dtype = ChessNetwork.mpsDataType(for: arch)
+        guard dtype != .float32 else { return [] }
+        let g = net.graph
+        // ALL persistent working vars — trainables THEN bn running stats — in the
+        // same order as `masterVariables`, so master[i] feeds working[i]. The bn
+        // running-stat sync is included (its fused dual-write is the same stomp
+        // pattern as the trainable one — see the macOS-27 repro); covering only
+        // trainables left a corrupting path uncovered.
+        let working = net.trainableVariables + net.bnRunningStatsVariables
+        var ops: [MPSGraphOperation] = []
+        ops.reserveCapacity(working.count)
+        for i in 0..<working.count {
+            let synced = g.cast(masterVariables[i], to: dtype, name: "split_working_sync_\(i)")
+            ops.append(g.assign(working[i], tensor: synced, name: "split_working_assign_\(i)"))
+        }
+        return ops
+    }
+
     private static func buildTrainingOps(
-        network: ChessNetwork
+        network: ChessNetwork,
+        splitTrainableWorkingSync: Bool = false
     ) throws -> (
         movePlayed: MPSGraphTensor,
         z: MPSGraphTensor,
@@ -3629,7 +3774,13 @@ final class ChessTrainer: @unchecked Sendable {
         // copy is re-derived each step as `cast(master)`. Under `.float32`
         // there is no separate master (working weights are the master) and
         // this collapses to the prior plain path.
-        let useMaster = (dtype != .float32)
+        // Config D (`network.bf16CastActive`): the persistent weight/stat
+        // variables are stored fp32 (the variable IS the master; the forward
+        // casts each to bf16 at point of use). The optimizer therefore runs
+        // exactly the fp32 path — SGD on the fp32 variable directly, fp32
+        // velocity, NO master, NO working-sync — so `useMaster` is forced
+        // off even though `dtype` is bf16.
+        let useMaster = (dtype != .float32) && !network.bf16CastActive
         // fp32 zero-init bytes for an fp32 variable of `count` elements.
         func fp32Zeros(_ count: Int) -> Data { Data(count: count * MemoryLayout<Float>.size) }
 
@@ -3803,8 +3954,11 @@ final class ChessTrainer: @unchecked Sendable {
             }
             let updated = graph.subtraction(optWeight, totalStep, name: nil)
             ops.append(graph.assign(optWeight, tensor: updated, name: nil))
-            if useMaster {
+            if useMaster && !splitTrainableWorkingSync {
                 // Re-derive the bf16 working weight the forward graph reads.
+                // Skipped under the split experiment: the working sync runs as a
+                // separate pass (`workingSyncOps`) after the master update, so
+                // this fused dual-write executable isn't built.
                 ops.append(graph.assign(variable, tensor: graph.cast(updated, to: dtype, name: nil), name: nil))
             }
         }
@@ -3838,7 +3992,14 @@ final class ChessTrainer: @unchecked Sendable {
                     let scaledNew = graph.multiplication(batchF, emaComplement, name: nil)
                     let updatedStat = graph.addition(scaledOld, scaledNew, name: nil)
                     ops.append(graph.assign(statMaster, tensor: updatedStat, name: nil))
-                    ops.append(graph.assign(workingStat, tensor: graph.cast(updatedStat, to: dtype, name: nil), name: nil))
+                    if !splitTrainableWorkingSync {
+                        // Fused bf16 working-stat sync. Skipped under the split:
+                        // the bn working stat is re-derived from its master in the
+                        // separate `workingSyncOps` pass (see `buildWorkingSyncOps`),
+                        // same as the trainable weights — its fused dual-write is the
+                        // same macOS-27 stomp pattern.
+                        ops.append(graph.assign(workingStat, tensor: graph.cast(updatedStat, to: dtype, name: nil), name: nil))
+                    }
                 }
             }
         } else {
@@ -5136,7 +5297,9 @@ final class ChessTrainer: @unchecked Sendable {
     /// Read the fp32 master values (weights + running stats), parallel to
     /// `trainableVariables + bnRunningStatsVariables`. Empty under `.float32`
     /// (no masters). Caller must have paused training.
-    private func readMasterValues() async throws -> [[Float]] {
+    /// Internal (not private) so the macOS-27 NaN-isolation tests can compare
+    /// master-vs-working weight norms to localize the bf16 divergence.
+    func readMasterValues() async throws -> [[Float]] {
         guard !masterVariables.isEmpty else { return [] }
         return try await withCheckedThrowingContinuation { continuation in
             executionQueue.async { [self] in
@@ -5507,6 +5670,24 @@ final class ChessTrainer: @unchecked Sendable {
                 stagingBase[elementIndex] = ChessNetwork.float32ToBFloat16Bits(floatPtr[elementIndex])
             }
             ndArray.writeBytes(UnsafeMutableRawPointer(stagingBase), strideBytes: nil)
+        case .float16:
+            guard let staging, let stagingBase = staging.baseAddress, staging.count >= count else {
+                fatalError("ChessTrainer.writeRealValuedFeed: fp16 staging missing or undersized (have \(staging?.count ?? -1), need \(count))")
+            }
+            var srcImg = vImage_Buffer(
+                data: UnsafeMutableRawPointer(mutating: floatPtr),
+                height: 1,
+                width: vImagePixelCount(count),
+                rowBytes: count * MemoryLayout<Float>.size
+            )
+            var dstImg = vImage_Buffer(
+                data: stagingBase,
+                height: 1,
+                width: vImagePixelCount(count),
+                rowBytes: count * MemoryLayout<UInt16>.size
+            )
+            _ = vImageConvert_PlanarFtoPlanar16F(&srcImg, &dstImg, 0)
+            ndArray.writeBytes(UnsafeMutableRawPointer(stagingBase), strideBytes: nil)
         default:
             fatalError("ChessTrainer.writeRealValuedFeed: no host-side converter for ND array dtype \(ndArray.dataType)")
         }
@@ -5529,6 +5710,9 @@ final class ChessTrainer: @unchecked Sendable {
             ndArray.writeBytes(&v, strideBytes: nil)
         case .bFloat16:
             var bits = ChessNetwork.float32ToBFloat16Bits(value)
+            ndArray.writeBytes(&bits, strideBytes: nil)
+        case .float16:
+            var bits = Float16(value).bitPattern
             ndArray.writeBytes(&bits, strideBytes: nil)
         default:
             fatalError("ChessTrainer.writeScalarFeed: no host-side converter for dtype \(ndArray.dataType)")
@@ -5697,7 +5881,21 @@ final class ChessTrainer: @unchecked Sendable {
             )
         }
         let des = MPSGraphCompilationDescriptor()
-        des.optimizationLevel = .level1
+        des.optimizationLevel = self.executableOptimizationLevel
+        if self.disableAutoLayoutConversion, #available(macOS 27.0, *) {
+            des.disableAutoLayoutConversion()
+        }
+        // Record what MPSGraph defaults reducedPrecisionFastMath to (answers
+        // "is the compiler silently allowing FP16 winograd / FP19 shortcuts?"),
+        // then apply the A/B override if one was requested.
+        if #available(macOS 26.0, *) {
+            SessionLogger.shared.log(
+                "[EXEC] reducedPrecisionFastMath default=\(des.reducedPrecisionFastMath.rawValue) override=\(self.reducedPrecisionFastMathRaw.map(String.init) ?? "nil")"
+            )
+            if let reducedPrecisionFastMathRaw = self.reducedPrecisionFastMathRaw {
+                des.reducedPrecisionFastMath = MPSGraphReducedPrecisionFastMath(rawValue: reducedPrecisionFastMathRaw)
+            }
+        }
         // Compile on the large-stack thread too: like autodiff, MPSGraph's
         // compile traverses the full op DAG (now including the gradient ops),
         // so a deep tower can overflow the default dispatch-worker stack here as
@@ -5852,6 +6050,29 @@ final class ChessTrainer: @unchecked Sendable {
                 status: stepStatus,
                 error: mtlCommandBuffer.error?.localizedDescription
             )
+        }
+        // Split working-weight sync (bf16 stomp workaround; see
+        // `splitWorkingWeightSync`): the main executable updated the fp32 masters
+        // but did NOT re-derive the bf16 working weights. Do that now in a
+        // SEPARATE graph.run — its own command buffer, after the master writes
+        // have fully completed (waitUntilCompleted above) — so the cast
+        // temporary lives in a different allocation scope than the fused
+        // dual-write that stomps on the Xcode-27/macOS-27 beta stack. No feeds:
+        // the sync ops depend only on the master variables, not on any
+        // placeholder. Empty (skipped) under `.float32` and when the flag is off.
+        if !workingSyncOps.isEmpty {
+            // Non-empty targetTensors (read back one variable, ignored) avoids
+            // any empty-target edge case in graph.run; the real work is the
+            // targetOperations (the working = cast(master) assigns).
+            let dummyTarget = network.trainableVariables[0]
+            network.weightAccessLock.wait()
+            _ = network.graph.run(
+                with: network.commandQueue,
+                feeds: [:],
+                targetTensors: [dummyTarget],
+                targetOperations: workingSyncOps
+            )
+            network.weightAccessLock.signal()
         }
         let gpuWaitMs = (CFAbsoluteTimeGetCurrent() - gpuWaitStart) * 1000
         encodeMsTimes.append(encodeMs)

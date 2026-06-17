@@ -210,6 +210,18 @@ struct DrewsChessMachineApp: App {
             errors.append("--train and --playchess are mutually exclusive")
         }
 
+        // `--bf16-cast-in-forward` — experimental: train bf16 models with config
+        // D (weights stored fp32, cast to bf16 in the forward; no bf16 working
+        // variable / fp32 master), the workaround for the macOS-27-beta bf16
+        // training divergence. Read directly in `SessionController.ensureTrainer`
+        // via `CommandLine.arguments`; here we only consume the flag so the
+        // unknown-argument scan accepts it. A no-op for fp32 models.
+        let bf16CastIndices = rawArgs.indices.filter { rawArgs[$0] == "--bf16-cast-in-forward" }
+        for idx in bf16CastIndices { consumedIndices.insert(idx) }
+        if bf16CastIndices.count > 1 {
+            errors.append("--bf16-cast-in-forward specified \(bf16CastIndices.count) times; only one allowed")
+        }
+
         // `--parameters <path>` — optional hyperparameter override
         // file. Values that the JSON doesn't name fall back to
         // the normal UI defaults. File-not-found and malformed

@@ -278,6 +278,13 @@ enum ValueHeadStyle: String, Codable, CaseIterable, Sendable, Hashable {
 enum ComputeDataType: String, Codable, CaseIterable, Sendable, Hashable {
     case float32
     case bFloat16 = "bfloat16"
+    /// IEEE 754 half. Same 10-bit mantissa precision as bf16's 7-bit but a
+    /// far narrower exponent range than either bf16 or fp32 (max ≈ 65504,
+    /// min normal ≈ 6.1e-5). ANE-native, so inference may run faster than
+    /// bf16; training carries no loss scaling here, so small gradients can
+    /// underflow to zero in the fp16 forward/backward even though the
+    /// optimizer keeps fp32 masters (see `weightStorageDataType`).
+    case float16
 }
 
 // MARK: - BlockGroup
@@ -951,6 +958,7 @@ extension NetworkArchitecture {
         case v4_12block_3x3       // 0xbad32ced, 3,898,139 params (WcRm)
         case v4_5block_7x7        // 0xdf23a86c, 8,445,748 params (current)
         case v4_8block_3x3        // 2,664,087 params (proposed re-run)
+        case v4_4block_3x3_fp32   // fp32 4-block 3x3 — beta-stack stable-precision run (2026-06-14)
 
         static let current = Preset.v4_5block_7x7
     }
@@ -1014,6 +1022,21 @@ extension NetworkArchitecture {
                 policyHeadStyle: .intermediateConv, policyPreConvChannels: 128,
                 valueHeadStyle: .wdlSoftmax, valueHeadConvChannels: 16, valueHeadHiddenUnits: 128,
                 computeDataType: .bFloat16
+            )
+        case .v4_4block_3x3_fp32:
+            // Normal v4 3x3 recipe (matches v4_8block_3x3) but 4 blocks and
+            // FLOAT32 — a stable-precision run while the Xcode/macOS 27 beta
+            // bf16 training stomp is unresolved.
+            return NetworkArchitecture(
+                inputEncoding: .basic30, channels: 128, numBlocks: 4, stemConvKernelSize: 3,
+                activationFunction: .relu, blockActivationStyle: .pre,
+                blockSkipMerge: .cleanAdd, blockUseRezero: true,
+                rezeroAlphaInit: 1.0 / Float(4).squareRoot(),
+                blockConv1KernelSize: 3, blockConv2KernelSize: 3,
+                blockSeStyle: .scaleAndBias, blockSeReductionRatio: 4,
+                policyHeadStyle: .intermediateConv, policyPreConvChannels: 128,
+                valueHeadStyle: .wdlSoftmax, valueHeadConvChannels: 16, valueHeadHiddenUnits: 128,
+                computeDataType: .float32
             )
         }
     }
