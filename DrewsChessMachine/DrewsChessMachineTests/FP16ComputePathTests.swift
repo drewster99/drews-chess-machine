@@ -20,16 +20,21 @@
 //  KNOWN-FAILING (intentional investigation markers, kept failing by design —
 //  like the `MacOS27NaNIsolationTests` cells, and like them pinned out of the
 //  default scheme run):
-//   - a real fp16 `trainStep` does NOT stay finite. It diverges on the very
-//     first step at BOTH batch 1 and batch 64 — worse than bf16, whose batch-1
-//     cell is finite. The forward CE components (policy, value) come back
-//     finite, but the aggregate loss and the gradient norm are NaN, so the
-//     overflow is in the fp16 BACKWARD and/or an auxiliary loss term (entropy /
-//     illegal-mass), not the fp32-accumulated CE reductions. fp16's exponent
-//     range is far narrower than bf16/fp32; viable fp16 training would need
-//     loss scaling and/or fp32 computation of the loss + aux terms. Until that
-//     exists, fp16 is an INFERENCE-only precision and these two cells stand as
-//     the tripwire that proves it.
+//   - a real fp16 `trainStep` does NOT stay finite over multiple steps. Two
+//     fp16 *underflow* bugs that made the forward/entropy path NaN have been
+//     FIXED (see the "policy-entropy NaN" regression block below): the masked-
+//     logit bias overflowing fp16 to −∞ (0·(−∞)=NaN), and the entropy ε=1e-7
+//     clamp flushing as an fp16 denormal (log(0), 0·(−∞)=NaN). With those
+//     fixed the forward CE components, the entropy, and the aggregate loss all
+//     come back finite. What REMAINS is the fp16 BACKWARD: the gradient norm
+//     overflows to ∞ within a step or two (step 0 is finite, then the fp16
+//     backward range gives out), so the optimizer corrupts the weights and the
+//     step throws `nonFiniteLoss`. That is a genuine fp16 dynamic-range limit
+//     (viable fp16 training would need loss/gradient scaling) and it was seen
+//     on the macOS-27 beta-1 MPSGraph stack — to be re-baselined on a
+//     pre-macOS27 device before deciding real-limit vs. beta-artifact. Until
+//     resolved, fp16 stays an INFERENCE-only precision and these cells are the
+//     tripwire that proves it.
 //
 //  All Metal-backed; each skips if Metal is unavailable.
 //
@@ -138,6 +143,56 @@ final class FP16ComputePathTests: XCTestCase {
 
     func test_fp16TrainStep_batch1_steps4()  async throws { try await fp16TrainSweep(batch: 1, steps: 4) }
     func test_fp16TrainStep_batch64_steps4() async throws { try await fp16TrainSweep(batch: 64, steps: 4) }
+
+    // MARK: - Regression: fp16 policy-entropy NaN (two underflow bugs, both fixed)
+    //
+    // Diagnosed 2026-06-17. The policy-entropy diagnostic H(p) = −Σ p·log(p)
+    // went NaN in fp16 (`pEnt=nan`, poisoning `total` and the gradient even
+    // with the entropy-regularizer coefficient at its default 0, since
+    // 0·NaN = NaN) — while the policy/value cross-entropies, accumulated on an
+    // fp32 path, stayed finite. TWO distinct fp16 *underflow* bugs (not the
+    // exponent-range *overflow* the original file header inferred), now both
+    // fixed in `ChessTrainer.buildTrainingOps`:
+    //   1. Masked-logit bias: the illegal bias was −1e9, which overflows fp16
+    //      (max 65504) to −∞, so `illegalMask · (−∞)` = 0·(−∞) = NaN at every
+    //      *legal* cell → the whole masked softmax is NaN. Fixed by using a
+    //      dtype-representable magnitude (−3e4) under fp16.
+    //   2. Entropy ε clamp: ε = 1e-7 is an fp16 denormal (smallest normal is
+    //      2⁻¹⁴ ≈ 6.1e-5) and flushes to 0, so a masked cell's softmax+ε = 0,
+    //      log(0) = −∞, 0·(−∞) = NaN. Fixed by computing the entropy log-path
+    //      in fp32 (ε representable there).
+    // With both fixes the entropy and total loss are finite (verified
+    // `pEnt≈0.88–1.31`, `total≈120–166`).
+    //
+    // These cells assert the full fp16 trainStep stays finite — entropy, loss,
+    // AND gradient. They are STILL red today, but for a *different* reason than
+    // the two bugs above: the fp16 *backward* gradient overflows to ∞ within a
+    // step or two (`grad=inf`; step 0 is finite, the optimizer steps, and the
+    // fp16 backward range gives out). That is a genuine fp16 dynamic-range
+    // limit (would need loss/gradient scaling), and it was observed on the
+    // macOS-27 beta-1 MPSGraph stack — to be re-baselined on a pre-macOS27
+    // device before deciding whether it is a real limit or a beta artifact.
+    // Kept as red-by-design tripwires, pinned out of the default scheme, like
+    // the sweep cells above. Split per-batch.
+    private func fp16EntropyFiniteSweep(batch: Int, steps: Int,
+                                        file: StaticString = #filePath, line: UInt = #line) async throws {
+        try requireMetal()
+        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: fp16Arch(),
+                                       executableOptimizationLevel: .level1)
+        for s in 0..<steps {
+            let t = try await trainer.trainStep(batchSize: batch)
+            XCTAssertTrue(t.policyEntropy.isFinite,
+                "[fp16 batch=\(batch)] policy entropy non-finite at step \(s): \(t.policyEntropy) — the ε=1e-7 entropy clamp flushed as an fp16 denormal, so 0·log0=NaN",
+                file: file, line: line)
+            XCTAssertTrue(t.loss.isFinite,
+                "[fp16 batch=\(batch)] total loss non-finite at step \(s): \(t.loss)", file: file, line: line)
+            XCTAssertTrue(t.gradGlobalNorm.isFinite,
+                "[fp16 batch=\(batch)] gradNorm non-finite at step \(s): \(t.gradGlobalNorm)", file: file, line: line)
+        }
+    }
+
+    func test_fp16TrainStep_batch1_policyEntropyFinite()  async throws { try await fp16EntropyFiniteSweep(batch: 1, steps: 4) }
+    func test_fp16TrainStep_batch64_policyEntropyFinite() async throws { try await fp16EntropyFiniteSweep(batch: 64, steps: 4) }
 
     /// A real fp16 model must survive the on-disk safetensors round-trip,
     /// including the bit-exact forward-pass verify gate inside `saveModel`

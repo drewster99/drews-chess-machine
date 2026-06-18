@@ -2370,9 +2370,19 @@ final class ChessTrainer: @unchecked Sendable {
         let legalMask = (dtype == .float32) ? legalMaskFeed : graph.cast(legalMaskFeed, to: dtype, name: "legal_move_mask_cast")
 
         // Build masked logits: illegal positions get a huge negative bias.
+        // The bias magnitude must be representable in the compute dtype.
+        // −1e9 overflows fp16 (max finite 65504) to −∞, and then the
+        // illegal-mask multiply computes `0 · (−∞) = NaN` at every *legal*
+        // cell (where `illegalMask = 0`), poisoning the whole masked softmax
+        // (and thus the policy entropy). A magnitude of −3e4 is well inside
+        // fp16's range yet still drives the illegal-cell softmax to zero —
+        // `exp(−3e4 − rowMax)` underflows to 0 in every dtype — so masking is
+        // unchanged. bf16/fp32 (exponent range ≥ fp32) keep −1e9 exactly, so
+        // their masked logits are byte-identical to before.
         let oneConst = graph.constant(1.0, dataType: dtype)
         let illegalMask = graph.subtraction(oneConst, legalMask, name: "illegal_mask")
-        let largeNeg = graph.constant(-1e9, dataType: dtype)
+        let maskNegMagnitude: Double = (dtype == .float16) ? -3e4 : -1e9
+        let largeNeg = graph.constant(maskNegMagnitude, dataType: dtype)
         let additiveMask = graph.multiplication(illegalMask, largeNeg, name: "additive_mask")
         let maskedLogits = graph.addition(network.policyOutput, additiveMask, name: "masked_logits")
 
@@ -3098,9 +3108,26 @@ final class ChessTrainer: @unchecked Sendable {
             axis: 1,
             name: "policy_softmax_legal"
         )
-        let logEpsConst = graph.constant(1e-7, dataType: dtype)
+        // The whole log-path of the entropy (the `+ε` clamp, the `log`, and
+        // the `p·log p` product) runs in fp32, not the compute dtype. The
+        // clamp is ε = 1e-7, but fp16's smallest *normal* is 2⁻¹⁴ ≈ 6.1e-5,
+        // so in fp16 the constant 1e-7 is a denormal — and MPS flushes fp16
+        // denormals to zero, which silently voids the clamp. A masked
+        // (illegal) cell then has softmax = 0, so softmax+ε = 0,
+        // log(0) = −∞, and p·log p = 0·(−∞) = NaN. Because this scalar feeds
+        // `total_loss` through the entropy regularizer, that NaN poisons the
+        // total and the gradient even when the regularizer coefficient is 0
+        // (0·NaN = NaN). Widening to fp32 first keeps ε representable (fp32
+        // min normal ≈ 1.2e-38) so the clamp does its job. bf16 was never
+        // broken here — its exponent range matches fp32, so 1e-7 was always
+        // representable — but it computes the per-element log-path more
+        // accurately in fp32 too, at negligible cost. `cast` carries an
+        // autograd rule, so the entropy regularizer's gradient path is
+        // unaffected. (`widenForReduction` is identity under fp32.)
+        let softmaxLegalForLog = widenForReduction(softmaxLegal)
+        let logEpsConst = graph.constant(1e-7, dataType: .float32)
         let softmaxClampedLegal = graph.addition(
-            softmaxLegal,
+            softmaxLegalForLog,
             logEpsConst,
             name: "policy_softmax_legal_clamped"
         )
@@ -3109,17 +3136,17 @@ final class ChessTrainer: @unchecked Sendable {
             name: "policy_log_softmax_legal"
         )
         let pLogPLegal = graph.multiplication(
-            softmaxLegal,
+            softmaxLegalForLog,
             logSoftmaxLegal,
             name: "p_log_p_legal"
         )
-        // Accumulate the per-position entropy (a sum over 4864 p·log p
-        // terms) and the batch mean in fp32 — under bf16 the small tail
-        // terms would otherwise be lost. Narrow the final scalar back to
-        // `dtype` so it rejoins the bf16 graph (it feeds `total_loss` via
-        // the entropy regularizer and is read back as `pEnt`).
+        // `pLogPLegal` is already fp32; reduce the per-position entropy (a
+        // sum over 4864 p·log p terms) and batch mean in fp32, then narrow
+        // the final scalar back to `dtype` so it rejoins the graph (it feeds
+        // `total_loss` via the entropy regularizer and is read back as
+        // `pEnt`).
         let negEntropyPerPos = graph.reductionSum(
-            with: widenForReduction(pLogPLegal),
+            with: pLogPLegal,
             axis: 1,
             name: "neg_entropy_per_pos_f32"
         )
