@@ -27,8 +27,7 @@
       buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
-      shouldUseLaunchSchemeArgsEnv = "NO"
-      shouldAutocreateTestPlan = "YES">
+      shouldUseLaunchSchemeArgsEnv = "NO">
       <EnvironmentVariables>
          <EnvironmentVariable
             key = "DCM_RUN_LEGACY_LOAD"
@@ -36,6 +35,12 @@
             isEnabled = "NO">
          </EnvironmentVariable>
       </EnvironmentVariables>
+      <TestPlans>
+         <TestPlanReference
+            reference = "container:DrewsChessMachine.xctestplan"
+            default = "YES">
+         </TestPlanReference>
+      </TestPlans>
       <Testables>
          <TestableReference
             skipped = "NO"
@@ -47,11 +52,6 @@
                BlueprintName = "DrewsChessMachineTests"
                ReferencedContainer = "container:DrewsChessMachine.xcodeproj">
             </BuildableReference>
-            <SelectedTests>
-               <Test
-                  Identifier = "MacOS27NaNIsolationTests/test_realPath_fp32_overlap">
-               </Test>
-            </SelectedTests>
          </TestableReference>
       </Testables>
    </TestAction>
@@ -81,6 +81,9 @@
             ReferencedContainer = "container:DrewsChessMachine.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
+      <MetalAPIValidationSettings
+         isEnabled = "No">
+      </MetalAPIValidationSettings>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Debug"

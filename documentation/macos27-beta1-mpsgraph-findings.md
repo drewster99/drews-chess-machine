@@ -20,9 +20,18 @@ Two facts frame everything below:
 
 The live reproduction harness is `DrewsChessMachineTests/MacOS27NaNIsolationTests.swift`
 (precision × batch × step-count sweep, plus the layout/precision A/B probes) and
-`DrewsChessMachineTests/FP16ComputePathTests.swift` (the fp16 cells). These tests
-are intentionally **pinned out of the default scheme run** and several stand as
-known-failing tripwires; do not "fix" them by relaxing the assertion.
+`DrewsChessMachineTests/FP16ComputePathTests.swift` (the fp16 cells). Several of
+these stand as known-failing tripwires on the broken toolchain; do not "fix" them
+by relaxing the assertion.
+
+**Test-suite status (2026-06-17, macOS 26.5.1).** The default test plan now runs
+the *entire* suite — the old `selectedTests` allowlist was removed, so these
+harness tests are no longer pinned out and execute on every run. On **macOS 26**
+the full run is green: **808 passed, 0 failed, 1 skipped** (the lone skip is the
+env-gated `LegacyDcmmodelLoadTests` behind `DCM_RUN_LEGACY_LOAD`). The tripwires
+above pass here because the §1–§5 breakage is a **macOS 27 beta** phenomenon — the
+same tests go red on macOS 27 beta 1, which is *by design*: a red there is the
+signal that the toolchain is still broken, not a regression to silence.
 
 ---
 

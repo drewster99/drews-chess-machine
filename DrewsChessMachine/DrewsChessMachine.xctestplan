@@ -1,0 +1,32 @@
+{
+  "configurations" : [
+    {
+      "id" : "B2485455-9014-4EDF-A0E0-446B991D2DBA",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "environmentVariableEntries" : [
+      {
+        "enabled" : false,
+        "key" : "DCM_RUN_LEGACY_LOAD",
+        "value" : "1"
+      }
+    ],
+    "performanceAntipatternCheckerEnabled" : true
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : false,
+      "target" : {
+        "containerPath" : "container:DrewsChessMachine.xcodeproj",
+        "identifier" : "49B1100A2F95D9DB00FC2EA5",
+        "name" : "DrewsChessMachineTests"
+      }
+    }
+  ],
+  "version" : 1
+}
