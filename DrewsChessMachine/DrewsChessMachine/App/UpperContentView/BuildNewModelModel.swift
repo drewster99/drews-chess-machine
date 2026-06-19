@@ -43,6 +43,14 @@ final class BuildNewModelModel {
     var valueHeadConvChannels: Int
     var valueHeadHiddenUnits: Int
     var computeDataType: ComputeDataType
+    /// Feature skip (optional long concat skip). `featureSkipSource == .none`
+    /// disables the whole feature. The fusion-mode and final-block toggles are
+    /// shown but rejected by `validate()` for now (phase 2).
+    var featureSkipSource: FeatureSkipSource
+    var featureSkipFusion: FeatureSkipFusion
+    var featureSkipToPolicyHead: Bool
+    var featureSkipToValueHead: Bool
+    var featureSkipToFinalBlock: Bool
 
     /// Name to save the current config under (Save-as-Preset). Defaults from the
     /// label, sanitized to a filename-safe slug.
@@ -62,6 +70,11 @@ final class BuildNewModelModel {
         self.valueHeadConvChannels = a.valueHeadConvChannels
         self.valueHeadHiddenUnits = a.valueHeadHiddenUnits
         self.computeDataType = a.computeDataType
+        self.featureSkipSource = a.featureSkipSource
+        self.featureSkipFusion = a.featureSkipFusion
+        self.featureSkipToPolicyHead = a.featureSkipToPolicyHead
+        self.featureSkipToValueHead = a.featureSkipToValueHead
+        self.featureSkipToFinalBlock = a.featureSkipToFinalBlock
     }
 
     /// Populate every field from a preset (the picker selection is derived from
@@ -80,6 +93,11 @@ final class BuildNewModelModel {
         valueHeadConvChannels = a.valueHeadConvChannels
         valueHeadHiddenUnits = a.valueHeadHiddenUnits
         computeDataType = a.computeDataType
+        featureSkipSource = a.featureSkipSource
+        featureSkipFusion = a.featureSkipFusion
+        featureSkipToPolicyHead = a.featureSkipToPolicyHead
+        featureSkipToValueHead = a.featureSkipToValueHead
+        featureSkipToFinalBlock = a.featureSkipToFinalBlock
     }
 
     /// The architecture described by the current fields.
@@ -94,7 +112,12 @@ final class BuildNewModelModel {
             valueHeadStyle: valueHeadStyle,
             valueHeadConvChannels: valueHeadConvChannels,
             valueHeadHiddenUnits: valueHeadHiddenUnits,
-            computeDataType: computeDataType
+            computeDataType: computeDataType,
+            featureSkipSource: featureSkipSource,
+            featureSkipFusion: featureSkipFusion,
+            featureSkipToPolicyHead: featureSkipToPolicyHead,
+            featureSkipToValueHead: featureSkipToValueHead,
+            featureSkipToFinalBlock: featureSkipToFinalBlock
         )
     }
 

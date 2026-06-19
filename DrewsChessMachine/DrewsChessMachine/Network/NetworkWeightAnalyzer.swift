@@ -52,7 +52,7 @@ enum NetworkWeightAnalyzer {
     static func sectionOrder(numBlocks: Int) -> [String] {
         ["stem"]
         + (0..<numBlocks).map { "block_\($0)" }
-        + ["tower_final", "policy", "value", "other"]
+        + ["tower_final", "feature_skip", "policy", "value", "other"]
     }
 
     /// 0-based section bucket for a variable. Drives both the
@@ -60,6 +60,7 @@ enum NetworkWeightAnalyzer {
     static func section(forVariableNamed name: String) -> String {
         if name.hasPrefix("stem_") { return "stem" }
         if name.hasPrefix("tower_final_") { return "tower_final" }
+        if name.hasPrefix("feature_skip_") { return "feature_skip" }
         if name.hasPrefix("policy_") { return "policy" }
         if name.hasPrefix("value_") { return "value" }
         if name.hasPrefix("block") {
@@ -89,7 +90,11 @@ enum NetworkWeightAnalyzer {
         guard let i = Int(digits) else { return nil }
         let expanded = arch.expandedBlocks
         guard i < expanded.count else { return nil }
-        let inC = i == 0 ? arch.stemOutputChannels : expanded[i - 1].channels
+        // Fold in the final-block feature skip (+ source on the last block under a
+        // routed concatDirect skip) so the analyzer's conv1/skip_proj fan-in and shape
+        // match the builder/plan; zero for every other block.
+        let baseInC = i == 0 ? arch.stemOutputChannels : expanded[i - 1].channels
+        let inC = baseInC + arch.blockSkipExtraInputChannels(blockIndex: i)
         return (expanded[i], inC)
     }
 
@@ -98,12 +103,16 @@ enum NetworkWeightAnalyzer {
     /// Mirrors the shapes set in `ChessNetwork`'s graph construction;
     /// if those shapes change the analyzer needs updating in lockstep.
     static func fanIn(forVariableNamed name: String, arch: NetworkArchitecture) -> Int? {
-        let cT = arch.towerOutputChannels
+        // The policy/value FIRST convs read the head INPUT width, which a routed
+        // concatDirect feature skip widens beyond the tower output. Both helpers
+        // equal `towerOutputChannels` when the skip is off, so non-fusion nets are
+        // byte-identical to the pre-feature-skip behavior.
         switch name {
         case "stem_conv_weights":       return arch.inputPlanes * arch.stemConvKernelSize * arch.stemConvKernelSize
-        case "policy_pre_conv_weights": return cT * 1 * 1
-        case "policy_conv_weights":     return (arch.policyHeadStyle == .simpleConv ? cT : arch.policyPreConvChannels) * 1 * 1
-        case "value_conv_weights":      return cT   // 1×1 conv: inC = tower output
+        case "policy_pre_conv_weights": return arch.policyHeadInputChannels * 1 * 1
+        case "policy_conv_weights":     return (arch.policyHeadStyle == .simpleConv ? arch.policyHeadInputChannels : arch.policyPreConvChannels) * 1 * 1
+        case "value_conv_weights":      return arch.valueHeadInputChannels   // 1×1 conv: inC = head input width
+        case "feature_skip_conv_weights": return arch.featureSkipCompressInputChannels  // 1×1 compress conv
         case "value_fc1_weights":       return arch.boardSize * arch.boardSize * arch.valueHeadConvChannels  // FC [flatten, hidden]
         case "value_wdl_fc2_weights", "value_scalar_fc2_weights": return arch.valueHeadHiddenUnits  // FC [hidden, classes]
         default: break
@@ -598,15 +607,17 @@ enum NetworkWeightAnalyzer {
         arch: NetworkArchitecture
     ) -> (outC: Int, inC: Int, kH: Int, kW: Int)? {
         let c0 = arch.stemOutputChannels
-        let cT = arch.towerOutputChannels
+        // The policy/value FIRST convs read the head INPUT width (widened by a
+        // routed concatDirect feature skip; == towerOutputChannels when off).
         switch name {
         case "stem_conv_weights":       return (c0, arch.inputPlanes, arch.stemConvKernelSize, arch.stemConvKernelSize)
-        case "policy_pre_conv_weights": return (arch.policyPreConvChannels, cT, 1, 1)
+        case "policy_pre_conv_weights": return (arch.policyPreConvChannels, arch.policyHeadInputChannels, 1, 1)
         case "policy_conv_weights":
             return arch.policyHeadStyle == .simpleConv
-                ? (ChessNetwork.policyChannels, cT, 1, 1)
+                ? (ChessNetwork.policyChannels, arch.policyHeadInputChannels, 1, 1)
                 : (ChessNetwork.policyChannels, arch.policyPreConvChannels, 1, 1)
-        case "value_conv_weights":      return (arch.valueHeadConvChannels, cT, 1, 1)
+        case "value_conv_weights":      return (arch.valueHeadConvChannels, arch.valueHeadInputChannels, 1, 1)
+        case "feature_skip_conv_weights": return (arch.towerOutputChannels, arch.featureSkipCompressInputChannels, 1, 1)
         default: break
         }
         if let (spec, inC) = blockSpec(forVariableNamed: name, arch: arch) {

@@ -103,6 +103,22 @@ struct BuildNewModelView: View {
                         intField("Value hidden units", $model.valueHeadHiddenUnits)
                     }
 
+                    Section("Feature skip") {
+                        enumPicker("Source", $model.featureSkipSource, FeatureSkipSource.allCases)
+                        if model.featureSkipSource != .none {
+                            Toggle("Route to policy head", isOn: $model.featureSkipToPolicyHead)
+                            Toggle("Route to value head", isOn: $model.featureSkipToValueHead)
+                            Toggle("Route to final block", isOn: $model.featureSkipToFinalBlock)
+                            enumPicker("Fusion mode", $model.featureSkipFusion, FeatureSkipFusion.allCases)
+                            Text("concat_direct widens each routed consumer's input in place "
+                                + "(no extra tensors). compress_conv_bn_relu builds one shared "
+                                + "1×1-conv→BN→act node for the heads — head-only, so it can't "
+                                + "combine with final-block routing.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
                     Section("Precision") {
                         enumPicker("Compute dtype", $model.computeDataType, ComputeDataType.allCases)
                     }

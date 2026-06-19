@@ -12,35 +12,41 @@ struct AboutPopoverContent: View {
     private var arch: NetworkArchitecture { network?.network.arch ?? .current }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("About Drew's Chess Machine")
-                .font(.headline)
-            Text("Forward pass through a ~\(parameterCountMillionsText) parameter convolutional network using MPSGraph on the GPU.")
-                .font(.callout)
-            Divider()
-            Text(arch.architectureSummary)
-                .font(.system(.callout, design: .monospaced))
-                .textSelection(.enabled)
-            Text("Parameters: \(parameterCountText)")
-                .font(.system(.callout, design: .monospaced))
-            if let net = network {
-                Text("Network ID: \(net.identifier?.description ?? "–")")
+        // The WHOLE popover scrolls (one outer ScrollView), not just the diagram.
+        // The earlier design scrolled only the diagram inside a fixed-height VStack,
+        // so the header/summary + the diagram's tail (the `Σ … params` line, pushed
+        // lower by the feature-skip marker row) clipped past the screen with no way
+        // to reach them. `maxHeight` caps the popover so it fits the screen and the
+        // overflow scrolls; the width stays fixed.
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("About Drew's Chess Machine")
+                    .font(.headline)
+                Text("Forward pass through a ~\(parameterCountMillionsText) parameter convolutional network using MPSGraph on the GPU.")
+                    .font(.callout)
+                Divider()
+                Text(arch.architectureSummary)
                     .font(.system(.callout, design: .monospaced))
-                Text("Build time: \(String(format: "%.1f ms", net.buildTimeMs))")
+                    .textSelection(.enabled)
+                Text("Parameters: \(parameterCountText)")
                     .font(.system(.callout, design: .monospaced))
-            }
-            Divider()
-            // "What am I running" — same renderer as the Build-New-Model
-            // draft pane, fed from the LIVE network's embedded config.
-            ScrollView(.vertical) {
+                if let net = network {
+                    Text("Network ID: \(net.identifier?.description ?? "–")")
+                        .font(.system(.callout, design: .monospaced))
+                    Text("Build time: \(String(format: "%.1f ms", net.buildTimeMs))")
+                        .font(.system(.callout, design: .monospaced))
+                }
+                Divider()
+                // "What am I running" — same renderer as the Build-New-Model
+                // draft pane, fed from the LIVE network's embedded config.
                 ArchitectureDiagramView(architecture: arch)
                     .padding(.vertical, 4)
                     .frame(maxWidth: .infinity)
             }
-            .frame(maxHeight: 380)
+            .padding(16)
         }
-        .padding(16)
         .frame(width: 540)
+        .frame(maxHeight: 600)
     }
 
     /// Exact persistent-tensor count with thousands separators plus a

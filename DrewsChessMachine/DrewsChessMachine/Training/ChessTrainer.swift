@@ -6549,7 +6549,9 @@ final class ChessTrainer: @unchecked Sendable {
     static func largestBufferBytes(forBatchSize batchSize: Int, arch: NetworkArchitecture) -> UInt64 {
         let floatBytes = MemoryLayout<Float>.size
         let spatial = ChessNetwork.boardSize * ChessNetwork.boardSize
-        let channels = arch.maxBlockChannels
+        // Activation-size worst case: a feature-skip concat (tower_out + source) can be
+        // wider than the widest block, so use maxActivationChannels, not maxBlockChannels.
+        let channels = arch.maxActivationChannels
         return UInt64(channels * spatial * floatBytes) * UInt64(batchSize)
     }
 

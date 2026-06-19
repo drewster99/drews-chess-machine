@@ -24,6 +24,7 @@ struct ArchitectureDiagramView: View {
         var stem = 0
         var perGroup: [Int] = []
         var towerEndBN = 0
+        var featureSkip = 0
         var policy = 0
         var value = 0
         var total = 0
@@ -47,6 +48,8 @@ struct ArchitectureDiagramView: View {
                 }
             } else if spec.name.hasPrefix("tower_final_bn") {
                 s.towerEndBN += spec.elementCount
+            } else if spec.name.hasPrefix("feature_skip.") {
+                s.featureSkip += spec.elementCount
             } else if spec.name.hasPrefix("policy.") {
                 s.policy += spec.elementCount
             } else if spec.name.hasPrefix("value.") {
@@ -96,19 +99,23 @@ struct ArchitectureDiagramView: View {
                     paramsLine(segs.towerEndBN)
                 }
             }
+            if arch.featureSkipEnabled {
+                connector()
+                featureSkipMarker(arch, compressParams: segs.featureSkip)
+            }
             connector()
             HStack(alignment: .top, spacing: 16) {
                 cell(width: 175, emphasized: false) {
                     line("policy · \(arch.policyHeadStyle.rawValue)", bold: true)
                     if arch.policyHeadStyle != .simpleConv {
-                        line("\(arch.towerOutputChannels) → K=\(arch.policyPreConvChannels)")
+                        line("\(arch.policyHeadInputChannels) → K=\(arch.policyPreConvChannels)")
                     }
                     line("→ \(arch.policySize) logits")
                     paramsLine(segs.policy)
                 }
                 cell(width: 175, emphasized: false) {
                     line("value · \(arch.valueHeadStyle.rawValue)", bold: true)
-                    line("\(arch.towerOutputChannels) → \(arch.valueHeadConvChannels)ch → FC\(arch.valueHeadHiddenUnits)")
+                    line("\(arch.valueHeadInputChannels) → \(arch.valueHeadConvChannels)ch → FC\(arch.valueHeadHiddenUnits)")
                     line("→ \(arch.valueHeadClasses) \(arch.valueHeadClasses == 3 ? "(W/D/L)" : "(scalar)")")
                     paramsLine(segs.value)
                 }
@@ -147,6 +154,34 @@ struct ArchitectureDiagramView: View {
 
     private func rezeroLabel(_ g: BlockGroup) -> String {
         g.useRezero ? "ReZero(\(String(format: "%.3g", g.rezeroAlphaInit)))" : "no-ReZero"
+    }
+
+    /// Marker for the optional feature skip: a single long concat skip carrying
+    /// the source tensor (currently the stem output) into the routed head inputs.
+    /// `concatDirect` adds no tensors — the routed heads' first convs already
+    /// account for the widened input — so this marker is informational, no
+    /// separate param count. Plain function (not `@ViewBuilder`): it builds the
+    /// destination list imperatively and returns one styled `Text`.
+    private func featureSkipMarker(_ arch: NetworkArchitecture, compressParams: Int) -> some View {
+        let dests = [
+            arch.featureSkipToPolicyHead ? "policy" : nil,
+            arch.featureSkipToValueHead ? "value" : nil,
+            arch.featureSkipToFinalBlock ? "finalBlock" : nil
+        ].compactMap { $0 }.joined(separator: ",")
+        // compress_conv_bn_relu adds a real fusion node; show its params. concatDirect
+        // adds none (the routed heads/final-block widen in place), so show the +channels.
+        let detail = compressParams > 0
+            ? "\(compressParams.formatted(.number)) params"
+            : "+\(arch.featureSkipSourceChannels)ch"
+        return Text("⤳ skip \(arch.featureSkipSource.rawValue) → [\(dests)] · \(arch.featureSkipFusion.rawValue) (\(detail))")
+            .font(.system(.caption2, design: .monospaced).weight(.semibold))
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(Color.purple.opacity(0.18)))
+            .overlay(Capsule().strokeBorder(Color.purple.opacity(0.5)))
     }
 
     @ViewBuilder

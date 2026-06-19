@@ -692,6 +692,12 @@ final class ChessNetwork: @unchecked Sendable {
             x = Self.activation(g, x, arch, name: "stem_act")
         }
 
+        // Hold the stem output for the optional feature skip (a single long concat
+        // skip into the heads). This is the post-stem-BN[-act] tensor `x0`; the tower
+        // loop is about to overwrite `x`, so the reference is captured now. Nil-cost
+        // when the feature is off (just a retained graph-node reference).
+        let stemOutputTensor = x
+
         // --- Dropout scaffolding (training-mode graphs only) ---
         //
         // Built unconditionally into every training-mode block at the WRN
@@ -768,12 +774,21 @@ final class ChessNetwork: @unchecked Sendable {
 
         var towerInC = stemOutC
         for (i, spec) in arch.expandedBlocks.enumerated() {
+            // Final-block feature skip (concatDirect): concat the stem source onto
+            // this block's input; the block's own width-transition machinery (conv1
+            // `inC` + the 1×1 skip projection that appears when inC != outC) absorbs
+            // it. `blockSkipExtraInputChannels` is non-zero ONLY for the last block
+            // under a routed skip-to-final-block, so every other block is unchanged.
+            let blockSkipExtra = arch.blockSkipExtraInputChannels(blockIndex: i)
+            let blockInput = blockSkipExtra > 0
+                ? g.concatTensors([x, stemOutputTensor], dimension: 1, name: "block\(i)_skip_concat")
+                : x
             x = try Self.residualBlock(
                 graph: g,
                 arch: arch,
                 spec: spec,
-                input: x,
-                inChannels: towerInC,
+                input: blockInput,
+                inChannels: towerInC + blockSkipExtra,
                 blockIndex: i,
                 bnMode: bnMode,
                 weightStorageDataType: weightStorageDType,
@@ -828,10 +843,56 @@ final class ChessNetwork: @unchecked Sendable {
             x = Self.activation(g, x, arch, name: "tower_final_act")
         }
 
+        // --- Feature skip into the heads ---
+        //
+        // Concat along the channel axis (dim 1, NCHW). Two mutually-exclusive modes:
+        //  • concatDirect — a routed head reads concat([tower_out, source]) and its
+        //    own first conv (widened to towerC + sourceC) absorbs it. No new tensors;
+        //    trainable/running-stat ordering is untouched.
+        //  • compressConvBNReLU — ONE shared node f = act(BN(Conv1×1(concat → towerC)))
+        //    feeds the routed heads at width towerC. Its conv + BN append HERE — after
+        //    the tower-end BN, before the heads — exactly mirroring `weightTensorPlan`,
+        //    so the index-aligned export/load contract holds.
+        // The concat is built once and shared by both routed heads; unrouted heads
+        // (and off configs) read the bare tower output `x`.
+        let policyHeadInput: MPSGraphTensor
+        let valueHeadInput: MPSGraphTensor
+        if arch.featureSkipUsesCompressNode {
+            let concat = g.concatTensors([x, stemOutputTensor], dimension: 1, name: "feature_skip_concat")
+            let fusionInC = arch.featureSkipCompressInputChannels
+            let towerC = arch.towerOutputChannels
+            let fusionConvW = g.variable(
+                with: Self.heInitDataConvOIHW(shape: [towerC, fusionInC, 1, 1], dataType: weightStorageDType),
+                shape: [NSNumber(value: towerC), NSNumber(value: fusionInC), 1, 1],
+                dataType: weightStorageDType, name: "feature_skip_conv_weights")
+            trainables.append(fusionConvW)
+            shouldDecay.append(true)
+            var f = g.convolution2D(
+                concat, weights: castInForward(fusionConvW), descriptor: conv1x1, name: "feature_skip_conv")
+            f = Self.batchNorm(
+                graph: g, input: f, channels: towerC, name: "feature_skip_bn", bnMode: bnMode,
+                dataType: Self.mpsDataType(for: arch), weightStorageDataType: weightStorageDType,
+                castInForward: castInForward, trainables: &trainables, shouldDecay: &shouldDecay,
+                runningStats: &runningStats, runningStatsAssignOps: &runningStatsAssigns,
+                batchMeans: &batchMeans, batchVars: &batchVars)
+            f = Self.activation(g, f, arch, name: "feature_skip_act")
+            policyHeadInput = arch.featureSkipToPolicyHead ? f : x
+            valueHeadInput = arch.featureSkipToValueHead ? f : x
+        } else if arch.featureSkipEnabled, arch.featureSkipFusion == .concatDirect,
+                  arch.featureSkipToPolicyHead || arch.featureSkipToValueHead {
+            let concat = g.concatTensors([x, stemOutputTensor], dimension: 1, name: "feature_skip_concat")
+            policyHeadInput = arch.featureSkipToPolicyHead ? concat : x
+            valueHeadInput = arch.featureSkipToValueHead ? concat : x
+        } else {
+            policyHeadInput = x
+            valueHeadInput = x
+        }
+
         // --- Policy head ---
 
         let policy = Self.policyHead(
-            graph: g, arch: arch, input: x, descriptor: conv1x1, bnMode: bnMode,
+            graph: g, arch: arch, input: policyHeadInput, inputChannels: arch.policyHeadInputChannels,
+            descriptor: conv1x1, bnMode: bnMode,
             weightStorageDataType: weightStorageDType, castInForward: castInForward,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
@@ -849,7 +910,8 @@ final class ChessNetwork: @unchecked Sendable {
         // --- Value head ---
 
         let valueHeadOut = Self.valueHead(
-            graph: g, arch: arch, input: x, descriptor: conv1x1, bnMode: bnMode,
+            graph: g, arch: arch, input: valueHeadInput, inputChannels: arch.valueHeadInputChannels,
+            descriptor: conv1x1, bnMode: bnMode,
             weightStorageDataType: weightStorageDType, castInForward: castInForward,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
@@ -2551,6 +2613,7 @@ final class ChessNetwork: @unchecked Sendable {
         graph: MPSGraph,
         arch: NetworkArchitecture,
         input: MPSGraphTensor,
+        inputChannels: Int,
         descriptor: MPSGraphConvolution2DOpDescriptor,
         bnMode: BNMode,
         weightStorageDataType: MPSDataType,
@@ -2562,7 +2625,11 @@ final class ChessNetwork: @unchecked Sendable {
         batchMeans: inout [MPSGraphTensor],
         batchVars: inout [MPSGraphTensor]
     ) -> (output: MPSGraphTensor, finalWeights: MPSGraphTensor) {
-        let channels = arch.towerOutputChannels
+        // The first conv's input width. Equals `arch.towerOutputChannels` normally;
+        // wider when a routed `concatDirect` feature skip feeds this head. The caller
+        // passes `arch.policyHeadInputChannels` so paramCount/weightTensorPlan/builder
+        // share one formula.
+        let channels = inputChannels
         let pc = Self.policyChannels
         let pK = arch.policyPreConvChannels
 
@@ -2662,6 +2729,7 @@ final class ChessNetwork: @unchecked Sendable {
         graph: MPSGraph,
         arch: NetworkArchitecture,
         input: MPSGraphTensor,
+        inputChannels: Int,
         descriptor: MPSGraphConvolution2DOpDescriptor,
         bnMode: BNMode,
         weightStorageDataType: MPSDataType,
@@ -2673,9 +2741,12 @@ final class ChessNetwork: @unchecked Sendable {
         batchMeans: inout [MPSGraphTensor],
         batchVars: inout [MPSGraphTensor]
     ) -> (scalar: MPSGraphTensor, logits: MPSGraphTensor, probs: MPSGraphTensor) {
-        // 1x1 conv: compress the trunk to `valueHeadConvChannels` scoring maps.
+        // 1x1 conv: compress the trunk to `valueHeadConvChannels` scoring maps. The
+        // input width equals `arch.towerOutputChannels` normally; wider when a routed
+        // `concatDirect` feature skip feeds this head (caller passes
+        // `arch.valueHeadInputChannels`).
         let convChannels = arch.valueHeadConvChannels
-        let towerOut = arch.towerOutputChannels
+        let towerOut = inputChannels
         let convW = graph.variable(
             with: heInitDataConvOIHW(shape: [convChannels, towerOut, 1, 1], dataType: weightStorageDataType),
             shape: [NSNumber(value: convChannels), NSNumber(value: towerOut), 1, 1],

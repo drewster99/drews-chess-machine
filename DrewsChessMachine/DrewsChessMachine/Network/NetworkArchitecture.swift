@@ -223,6 +223,30 @@ enum BlockSkipMerge: String, Codable, CaseIterable, Sendable, Hashable {
     case activationGated = "activation_gated"
 }
 
+/// Source tensor for the optional "feature skip" — a single long concat skip that
+/// hands a routed consumer *direct*, un-mixed access to early features alongside the
+/// deep tower output (the DenseNet feature-reuse idea distilled to one skip). `.none`
+/// is the global off switch: with `.none` the whole feature is absent and the network
+/// builds byte-identical to a net that never had the axis. Future sources (raw input
+/// planes, a mid-tower tap) slot in here.
+enum FeatureSkipSource: String, Codable, CaseIterable, Sendable, Hashable {
+    /// Feature skip disabled.
+    case none
+    /// The post-stem-BN tensor `x0` (normalized, 8×8, compute dtype).
+    case stemOutput = "stem_output"
+}
+
+/// How a routed destination consumes the feature-skip source.
+enum FeatureSkipFusion: String, Codable, CaseIterable, Sendable, Hashable {
+    /// The destination reads `concat([dest_input, source])` directly; its own first
+    /// conv (width `towerC + sourceC`) absorbs the projection. No extra tensors.
+    case concatDirect = "concat_direct"
+    /// One shared `ReLU(BN(Conv1×1(concat → towerC)))` node feeds the routed
+    /// destinations at fixed width `towerC`. Adds a conv + BN. (Phase 2 — `validate()`
+    /// currently rejects this.)
+    case compressConvBNReLU = "compress_conv_bn_relu"
+}
+
 /// Squeeze-and-Excitation channel-attention variant inside each residual block.
 enum SEStyle: String, Codable, CaseIterable, Sendable, Hashable {
     case none
@@ -373,9 +397,18 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
     /// which would trap on the NaN/infinite values this case exists to
     /// reject.
     case mustBeFiniteNonNegative(field: String, value: Float)
+    /// Feature skip is enabled (`source != .none`) but no destination is routed.
+    case featureSkipNoDestination
+    /// A feature-skip option that is config-carried but not yet implemented
+    /// (`toFinalBlock` destination, `compressConvBNReLU` fusion). Phase 2.
+    case featureSkipUnsupported(option: String)
 
     var description: String {
         switch self {
+        case .featureSkipNoDestination:
+            return "featureSkipSource is enabled but no destination is routed (set at least one of featureSkipToPolicyHead / featureSkipToValueHead)"
+        case .featureSkipUnsupported(let option):
+            return "feature-skip option '\(option)' is not yet supported (config-carried for a future phase)"
         case .mustBeFiniteNonNegative(let field, let value):
             return "\(field) must be finite and >= 0 (got \(value))"
         case .kernelMustBeOdd(let field, let value):
@@ -422,6 +455,19 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     // Precision -----------------------------------------------------------
     var computeDataType: ComputeDataType
 
+    // Feature skip (optional long concat skip) ----------------------------
+    /// Source tensor for the feature skip; `.none` = disabled (default).
+    var featureSkipSource: FeatureSkipSource
+    /// How routed destinations consume the source.
+    var featureSkipFusion: FeatureSkipFusion
+    /// Route the skip into the policy head's input.
+    var featureSkipToPolicyHead: Bool
+    /// Route the skip into the value head's input.
+    var featureSkipToValueHead: Bool
+    /// Route the skip into the final tower block's input. (Phase 2 — `validate()`
+    /// currently rejects this; carried so the axis is complete.)
+    var featureSkipToFinalBlock: Bool
+
     // Fixed-by-engine (not stored, not in init) ---------------------------
     static let boardSize = 8
     static let policyChannels = 76
@@ -438,7 +484,12 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         valueHeadStyle: ValueHeadStyle,
         valueHeadConvChannels: Int,
         valueHeadHiddenUnits: Int,
-        computeDataType: ComputeDataType
+        computeDataType: ComputeDataType,
+        featureSkipSource: FeatureSkipSource,
+        featureSkipFusion: FeatureSkipFusion,
+        featureSkipToPolicyHead: Bool,
+        featureSkipToValueHead: Bool,
+        featureSkipToFinalBlock: Bool
     ) {
         self.inputEncoding = inputEncoding
         self.blockGroups = blockGroups
@@ -450,6 +501,11 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         self.valueHeadConvChannels = valueHeadConvChannels
         self.valueHeadHiddenUnits = valueHeadHiddenUnits
         self.computeDataType = computeDataType
+        self.featureSkipSource = featureSkipSource
+        self.featureSkipFusion = featureSkipFusion
+        self.featureSkipToPolicyHead = featureSkipToPolicyHead
+        self.featureSkipToValueHead = featureSkipToValueHead
+        self.featureSkipToFinalBlock = featureSkipToFinalBlock
     }
 
     /// Convenience for the (common) uniform tower: one group carrying every
@@ -498,7 +554,14 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             valueHeadStyle: valueHeadStyle,
             valueHeadConvChannels: valueHeadConvChannels,
             valueHeadHiddenUnits: valueHeadHiddenUnits,
-            computeDataType: computeDataType
+            computeDataType: computeDataType,
+            // Uniform towers default to feature-skip OFF; presets that enable it
+            // mutate the returned value's `featureSkip*` fields.
+            featureSkipSource: .none,
+            featureSkipFusion: .concatDirect,
+            featureSkipToPolicyHead: false,
+            featureSkipToValueHead: false,
+            featureSkipToFinalBlock: false
         )
     }
 
@@ -522,6 +585,11 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         case valueHeadConvChannels = "value_head_conv_channels"
         case valueHeadHiddenUnits = "value_head_hidden_units"
         case computeDataType = "compute_data_type"
+        case featureSkipSource = "feature_skip_source"
+        case featureSkipFusion = "feature_skip_fusion"
+        case featureSkipToPolicyHead = "feature_skip_to_policy_head"
+        case featureSkipToValueHead = "feature_skip_to_value_head"
+        case featureSkipToFinalBlock = "feature_skip_to_final_block"
         // Legacy uniform-tower keys — decode-only, never written.
         case legacyChannels = "channels"
         case legacyNumBlocks = "num_blocks"
@@ -546,6 +614,13 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         valueHeadConvChannels = try c.decode(Int.self, forKey: .valueHeadConvChannels)
         valueHeadHiddenUnits = try c.decode(Int.self, forKey: .valueHeadHiddenUnits)
         computeDataType = try c.decode(ComputeDataType.self, forKey: .computeDataType)
+        // Feature skip: optional + defaulted so every pre-feature-skip file decodes
+        // to a fully-off (byte-identical) configuration.
+        featureSkipSource = try c.decodeIfPresent(FeatureSkipSource.self, forKey: .featureSkipSource) ?? .none
+        featureSkipFusion = try c.decodeIfPresent(FeatureSkipFusion.self, forKey: .featureSkipFusion) ?? .concatDirect
+        featureSkipToPolicyHead = try c.decodeIfPresent(Bool.self, forKey: .featureSkipToPolicyHead) ?? false
+        featureSkipToValueHead = try c.decodeIfPresent(Bool.self, forKey: .featureSkipToValueHead) ?? false
+        featureSkipToFinalBlock = try c.decodeIfPresent(Bool.self, forKey: .featureSkipToFinalBlock) ?? false
         if let groups = try c.decodeIfPresent([BlockGroup].self, forKey: .blockGroups) {
             // An empty array is structurally invalid: the stem/head/summary
             // accessors `preconditionFailure` on no groups, and they are read
@@ -589,6 +664,11 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         try c.encode(valueHeadConvChannels, forKey: .valueHeadConvChannels)
         try c.encode(valueHeadHiddenUnits, forKey: .valueHeadHiddenUnits)
         try c.encode(computeDataType, forKey: .computeDataType)
+        try c.encode(featureSkipSource, forKey: .featureSkipSource)
+        try c.encode(featureSkipFusion, forKey: .featureSkipFusion)
+        try c.encode(featureSkipToPolicyHead, forKey: .featureSkipToPolicyHead)
+        try c.encode(featureSkipToValueHead, forKey: .featureSkipToValueHead)
+        try c.encode(featureSkipToFinalBlock, forKey: .featureSkipToFinalBlock)
     }
 
     // MARK: Derived shape scalars
@@ -598,6 +678,64 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     var policyChannels: Int { Self.policyChannels }
     var policySize: Int { Self.policySize }
     var valueHeadClasses: Int { valueHeadStyle == .wdlSoftmax ? 3 : 1 }
+
+    // MARK: Feature skip — the single width formula shared by builder, plan, paramCount
+
+    /// Whether the feature skip is active.
+    var featureSkipEnabled: Bool { featureSkipSource != .none }
+
+    /// The width of the source tensor being skipped. Stem output = the stem's width.
+    var featureSkipSourceChannels: Int {
+        switch featureSkipSource {
+        case .none:       return 0
+        case .stemOutput: return stemOutputChannels
+        }
+    }
+
+    /// Effective input width for a head, accounting for a routed `concatDirect` skip.
+    /// In `concatDirect` a routed head reads `concat([tower_out, source])`, so its
+    /// first conv widens by the source width; unrouted heads (and any future compress
+    /// mode, which feeds a fixed-`towerC` node) stay at `towerOutputChannels`. This is
+    /// the ONE formula the graph builder, `weightTensorPlan`, and `parameterCount` all
+    /// consume so the three never drift.
+    func headInputChannels(routed: Bool) -> Int {
+        let widen = featureSkipEnabled && featureSkipFusion == .concatDirect && routed
+        return towerOutputChannels + (widen ? featureSkipSourceChannels : 0)
+    }
+
+    var policyHeadInputChannels: Int { headInputChannels(routed: featureSkipToPolicyHead) }
+    var valueHeadInputChannels: Int { headInputChannels(routed: featureSkipToValueHead) }
+
+    /// True when a shared compress-fusion node (`feature_skip.conv` + BN) must be
+    /// built: `compressConvBNReLU` with at least one head routed. The node compresses
+    /// `concat([tower_out, source])` back to `towerOutputChannels`, and the routed
+    /// heads read it (so their input width stays `towerOutputChannels` — `headInputChannels`
+    /// widens only for `concatDirect`).
+    var featureSkipUsesCompressNode: Bool {
+        featureSkipEnabled
+            && featureSkipFusion == .compressConvBNReLU
+            && (featureSkipToPolicyHead || featureSkipToValueHead)
+    }
+
+    /// The compress node's 1×1 conv input width = tower output + source.
+    var featureSkipCompressInputChannels: Int {
+        towerOutputChannels + featureSkipSourceChannels
+    }
+
+    /// Extra input channels concatenated onto an expanded block's input by a routed
+    /// `concatDirect` skip-to-final-block. Non-zero ONLY for the last expanded block,
+    /// and only under `concatDirect` (compress is head-only). The block's existing
+    /// width-transition machinery (conv1 `inC`, pre-act BN1 size, and the 1×1 skip
+    /// projection that appears when `inC != outC`) absorbs the widening — so the SAME
+    /// `inC` must be threaded by the builder, `parameterCount`, `weightTensorPlan`, and
+    /// the analyzer's `blockSpec`, or those four desync on the final block.
+    func blockSkipExtraInputChannels(blockIndex: Int) -> Int {
+        guard featureSkipEnabled,
+              featureSkipFusion == .concatDirect,
+              featureSkipToFinalBlock,
+              blockIndex == numBlocks - 1 else { return 0 }
+        return featureSkipSourceChannels
+    }
 
     /// The tower flattened to one element per block (each returned group has
     /// `count == 1`). The ENGINE'S ONLY VIEW of the tower: graph builders,
@@ -640,6 +778,16 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             preconditionFailure("NetworkArchitecture.blockGroups is empty (validate() rejects this)")
         }
         return widest
+    }
+
+    /// The widest single activation tensor's channel count — the buffer-footprint
+    /// worst case. Normally `maxBlockChannels`, but an enabled feature skip materializes
+    /// a `concat([tower_out, source])` tensor (`towerOutputChannels + source`) that can
+    /// exceed it, so fold that in. (`maxBlockChannels` stays the pure-tower quantity
+    /// used by the legacy arch hash and per-block guards; this is the activation-size one.)
+    var maxActivationChannels: Int {
+        let base = maxBlockChannels
+        return featureSkipEnabled ? max(base, towerOutputChannels + featureSkipSourceChannels) : base
     }
 
     /// Tower-end BN exists only when the LAST block is pre-activation (a
@@ -698,6 +846,17 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             throw NetworkArchitectureError.valueConvChannelsExceedChannels(
                 conv: valueHeadConvChannels, channels: towerOutputChannels)
         }
+        if featureSkipEnabled {
+            guard featureSkipToPolicyHead || featureSkipToValueHead || featureSkipToFinalBlock else {
+                throw NetworkArchitectureError.featureSkipNoDestination
+            }
+            // Compress builds a single tower-width head-fusion node; that tensor has no
+            // meaning as a block input, so it cannot combine with the final-block
+            // destination (which concatenates the raw source onto a block's input).
+            if featureSkipFusion == .compressConvBNReLU, featureSkipToFinalBlock {
+                throw NetworkArchitectureError.featureSkipUnsupported(option: "compress_conv_bn_relu + to_final_block")
+            }
+        }
     }
 
     private func requireOdd(_ field: String, _ v: Int) throws {
@@ -721,16 +880,19 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         // Stem: conv (bias-free) + BN.
         let stem = (inputPlanes * c0 * stemConvKernelSize * stemConvKernelSize) + 4 * c0
 
-        // Tower.
+        // Tower. `inCEff` folds in the final-block feature skip (`+ source` on the
+        // last block's input under a routed concatDirect skip); it equals `inC`
+        // everywhere else, so non-finalBlock configs are unchanged.
         var tower = 0
         var inC = c0
-        for spec in expandedBlocks {
+        for (i, spec) in expandedBlocks.enumerated() {
+            let inCEff = inC + blockSkipExtraInputChannels(blockIndex: i)
             let outC = spec.channels
-            let conv1 = outC * inC * spec.conv1KernelSize * spec.conv1KernelSize
+            let conv1 = outC * inCEff * spec.conv1KernelSize * spec.conv1KernelSize
             let conv2 = outC * outC * spec.conv2KernelSize * spec.conv2KernelSize
             // BN1 normalizes the block input (pre-act) or conv1 output
-            // (post-act) — sized inC vs outC accordingly; BN2 is always outC.
-            let bn1 = 4 * (spec.activationStyle == .pre ? inC : outC)
+            // (post-act) — sized inCEff vs outC accordingly; BN2 is always outC.
+            let bn1 = 4 * (spec.activationStyle == .pre ? inCEff : outC)
             let bn2 = 4 * outC
             let seReduced = spec.seStyle == .none ? 0 : outC / spec.seReductionRatio
             let se: Int
@@ -740,7 +902,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             case .scaleAndBias:  se = (outC * seReduced + seReduced) + (seReduced * 2 * outC + 2 * outC)
             }
             let rezero = spec.useRezero ? 1 : 0
-            let proj = inC != outC ? inC * outC : 0
+            let proj = inCEff != outC ? inCEff * outC : 0
             tower += conv1 + conv2 + bn1 + bn2 + se + rezero + proj
             inC = outC
         }
@@ -748,26 +910,36 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         let cT = towerOutputChannels
         let towerEndBN = hasTowerEndBN ? 4 * cT : 0
 
+        // Heads. The FIRST conv of each head reads the effective input width — wider
+        // by the feature-skip source under a routed `concatDirect` skip, else `cT`.
+        let cP = policyHeadInputChannels
+        let cVin = valueHeadInputChannels
+
         // Policy head.
         let pK = policyPreConvChannels
         let policy: Int
         switch policyHeadStyle {
         case .simpleConv:
-            policy = (cT * policyChannels) + policyChannels
+            policy = (cP * policyChannels) + policyChannels
         case .intermediateConv:
-            policy = (cT * pK) + 4 * pK + (pK * policyChannels) + policyChannels
+            policy = (cP * pK) + 4 * pK + (pK * policyChannels) + policyChannels
         case .fcBottleneck:
             let flat = pK * boardSize * boardSize
-            policy = (cT * pK) + 4 * pK + (flat * policySize) + policySize
+            policy = (cP * pK) + 4 * pK + (flat * policySize) + policySize
         }
 
         // Value head.
         let cv = valueHeadConvChannels
         let h = valueHeadHiddenUnits
         let flatV = boardSize * boardSize * cv
-        let value = (cT * cv) + 4 * cv + (flatV * h + h) + (h * valueHeadClasses + valueHeadClasses)
+        let value = (cVin * cv) + 4 * cv + (flatV * h + h) + (h * valueHeadClasses + valueHeadClasses)
 
-        return stem + tower + towerEndBN + policy + value
+        // Compress fusion node (head-only): 1×1 conv (towerC+source → towerC) + BN.
+        let compressNode = featureSkipUsesCompressNode
+            ? (featureSkipCompressInputChannels * cT + 4 * cT)
+            : 0
+
+        return stem + tower + towerEndBN + compressNode + policy + value
     }
 
     // MARK: Summary (human-readable, computed from the config)
@@ -800,12 +972,25 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         let valueDesc = valueHeadStyle == .wdlSoftmax
             ? "WDL(\(valueHeadConvChannels)->FC\(valueHeadHiddenUnits))"
             : "tanh(\(valueHeadConvChannels)->FC\(valueHeadHiddenUnits))"
+        // Rendered ONLY when enabled, so off (the default) keeps every preset's golden
+        // string byte-identical to the pre-feature-skip form.
+        let skipDesc: String
+        if featureSkipEnabled {
+            var dests: [String] = []
+            if featureSkipToPolicyHead { dests.append("policy") }
+            if featureSkipToValueHead { dests.append("value") }
+            if featureSkipToFinalBlock { dests.append("finalBlock") }
+            skipDesc = " . skip \(featureSkipSource.rawValue)->[\(dests.joined(separator: ","))]/\(featureSkipFusion.rawValue)"
+        } else {
+            skipDesc = ""
+        }
         return "v\(architectureVersionLabel)"
             + " . in \(inputEncoding.rawValue)(\(inputPlanes)) -> stem \(stemOutputChannels) (\(stemConvKernelSize)x\(stemConvKernelSize))"
             + " . \(groupsDesc)"
             + " . act \(activationFunction.rawValue)"
             + " . policy \(policyHeadStyle.rawValue)(\(policySize))"
             + " . value \(valueDesc)"
+            + skipDesc
             + " . \(computeDataType.rawValue) . \(parameterCount.formatted(.number)) params"
     }
 
@@ -876,14 +1061,18 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         // towers therefore keep today's exact layout.
         var inC = c0
         for (i, spec) in expandedBlocks.enumerated() {
+            // `inCEff` folds in the final-block feature skip (+ source on the last
+            // block under a routed concatDirect skip); == inC everywhere else, so the
+            // conv1/bn1/skip-proj shapes are unchanged for non-finalBlock configs.
+            let inCEff = inC + blockSkipExtraInputChannels(blockIndex: i)
             let p = "blocks.\(i)"
             let outC = spec.channels
-            let conv1 = WeightTensorSpec(name: "\(p).conv1.weight", shape: [outC, inC, spec.conv1KernelSize, spec.conv1KernelSize], kind: .conv)
+            let conv1 = WeightTensorSpec(name: "\(p).conv1.weight", shape: [outC, inCEff, spec.conv1KernelSize, spec.conv1KernelSize], kind: .conv)
             let conv2 = WeightTensorSpec(name: "\(p).conv2.weight", shape: [outC, outC, spec.conv2KernelSize, spec.conv2KernelSize], kind: .conv)
             switch spec.activationStyle {
             case .pre:
                 // BN1 -> act -> conv1 -> BN2 -> act -> conv2 -> SE -> [rezero]
-                bn("\(p).bn1", inC)
+                bn("\(p).bn1", inCEff)
                 trainables.append(conv1)
                 bn("\(p).bn2", outC)
                 trainables.append(conv2)
@@ -899,8 +1088,8 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             if spec.useRezero {
                 trainables.append(.init(name: "\(p).rezero_alpha", shape: [1], kind: .scalar))
             }
-            if inC != outC {
-                trainables.append(.init(name: "\(p).skip_proj.weight", shape: [outC, inC, 1, 1], kind: .conv))
+            if inCEff != outC {
+                trainables.append(.init(name: "\(p).skip_proj.weight", shape: [outC, inCEff, 1, 1], kind: .conv))
             }
             inC = outC
         }
@@ -908,22 +1097,35 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         // Tower-end normalization (pre-activation tail only).
         if hasTowerEndBN { bn("tower_final_bn", towerOutputChannels) }
 
-        // Heads read the tower-output width.
-        let cT = towerOutputChannels
+        // Compress fusion node (head-only): inserted between the tower-end BN and the
+        // heads, mirroring the graph builder's append position so the index-aligned
+        // export/load contract holds. concatDirect adds no entry here.
+        if featureSkipUsesCompressNode {
+            trainables.append(.init(
+                name: "feature_skip.conv.weight",
+                shape: [towerOutputChannels, featureSkipCompressInputChannels, 1, 1], kind: .conv))
+            bn("feature_skip.bn", towerOutputChannels)
+        }
+
+        // Heads read the tower-output width — wider by the feature-skip source when a
+        // routed `concatDirect` skip feeds that head (FIRST conv only). Same formula
+        // as `parameterCount` and the graph builder.
+        let cP = policyHeadInputChannels
+        let cVin = valueHeadInputChannels
 
         // Policy head.
         let pK = policyPreConvChannels
         switch policyHeadStyle {
         case .simpleConv:
-            trainables.append(.init(name: "policy.conv.weight", shape: [policyChannels, cT, 1, 1], kind: .conv))
+            trainables.append(.init(name: "policy.conv.weight", shape: [policyChannels, cP, 1, 1], kind: .conv))
             trainables.append(.init(name: "policy.conv.bias", shape: [1, policyChannels, 1, 1], kind: .bias))
         case .intermediateConv:
-            trainables.append(.init(name: "policy.pre_conv.weight", shape: [pK, cT, 1, 1], kind: .conv))
+            trainables.append(.init(name: "policy.pre_conv.weight", shape: [pK, cP, 1, 1], kind: .conv))
             bn("policy.pre_bn", pK)
             trainables.append(.init(name: "policy.conv.weight", shape: [policyChannels, pK, 1, 1], kind: .conv))
             trainables.append(.init(name: "policy.conv.bias", shape: [1, policyChannels, 1, 1], kind: .bias))
         case .fcBottleneck:
-            trainables.append(.init(name: "policy.pre_conv.weight", shape: [pK, cT, 1, 1], kind: .conv))
+            trainables.append(.init(name: "policy.pre_conv.weight", shape: [pK, cP, 1, 1], kind: .conv))
             bn("policy.pre_bn", pK)
             let flat = pK * boardSize * boardSize
             trainables.append(.init(name: "policy.fc.weight", shape: [flat, policySize], kind: .linear))
@@ -933,7 +1135,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         // Value head.
         let cv = valueHeadConvChannels
         let h = valueHeadHiddenUnits
-        trainables.append(.init(name: "value.conv.weight", shape: [cv, cT, 1, 1], kind: .conv))
+        trainables.append(.init(name: "value.conv.weight", shape: [cv, cVin, 1, 1], kind: .conv))
         bn("value.bn", cv)
         let flatV = boardSize * boardSize * cv
         trainables.append(.init(name: "value.fc1.weight", shape: [flatV, h], kind: .linear))
@@ -959,6 +1161,7 @@ extension NetworkArchitecture {
         case v4_5block_7x7        // 0xdf23a86c, 8,445,748 params (current)
         case v4_8block_3x3        // 2,664,087 params (proposed re-run)
         case v4_4block_3x3_fp32   // fp32 4-block 3x3 — beta-stack stable-precision run (2026-06-14)
+        case v4_5block_7x7_fusion // current preset + feature skip (stem -> both heads, concat_direct)
 
         static let current = Preset.v4_5block_7x7
     }
@@ -1038,6 +1241,17 @@ extension NetworkArchitecture {
                 valueHeadStyle: .wdlSoftmax, valueHeadConvChannels: 16, valueHeadHiddenUnits: 128,
                 computeDataType: .float32
             )
+        case .v4_5block_7x7_fusion:
+            // The current preset with the feature skip enabled: stem output routed
+            // into BOTH heads via concat_direct. Authored by mutating the base preset
+            // so it tracks any future change to v4_5block_7x7's recipe.
+            var a = NetworkArchitecture.preset(.v4_5block_7x7)
+            a.featureSkipSource = .stemOutput
+            a.featureSkipFusion = .concatDirect
+            a.featureSkipToPolicyHead = true
+            a.featureSkipToValueHead = true
+            a.featureSkipToFinalBlock = false
+            return a
         }
     }
 
