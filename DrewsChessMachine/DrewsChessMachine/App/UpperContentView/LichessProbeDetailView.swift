@@ -1258,9 +1258,13 @@ struct LichessProbeDetailView: View {
         history: LichessProbeHistory,
         comparison: LichessProbeComparison?
     ) -> some View {
-        let liveAggregates = LichessProbeHistory.aggregates(from: history.latestPerPuzzleResults)
-        let liveSummary = LichessProbeOverallSummary(folding: liveAggregates)
-        let liveElo = Self.mlePuzzleElo(forHistory: history)
+        // Read the history's cached fold (recomputed only when the per-puzzle
+        // snapshot changes) rather than re-folding the whole set on every
+        // render. Fall back to a live fold only if the cache is somehow unset
+        // while data exists — with an empty snapshot the fallback folds [] (cheap).
+        let liveSummary = history.latestOverallSummary
+            ?? LichessProbeOverallSummary(folding: LichessProbeHistory.aggregates(from: history.latestPerPuzzleResults))
+        let liveElo = history.latestOverallElo ?? Self.mlePuzzleElo(forHistory: history)
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 12) {
                 Text("OVERALL")

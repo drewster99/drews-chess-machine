@@ -188,6 +188,15 @@ final class LichessProbeHistory {
     /// "latest" semantic is unambiguous.
     private(set) var latestPerPuzzleResults: [ProbeResult] = []
 
+    /// Cached OVERALL fold of `latestPerPuzzleResults` — the summary + MLE
+    /// puzzle-Elo the detail window's summary band shows. Recomputed only when
+    /// the per-puzzle snapshot is replaced (`record` / `restore` / `clearAll`),
+    /// NOT on every render: the band re-evaluates on every probe tick, hover,
+    /// and scroll, and folding the wide set's ~4,435 results live each time was
+    /// a measurable per-render cost. nil before the first tick / after clear.
+    private(set) var latestOverallSummary: LichessProbeOverallSummary?
+    private(set) var latestOverallElo: Double?
+
     /// Timestamp of `latestPerPuzzleResults`. nil before the first
     /// tick.
     private(set) var latestTickTimestamp: Date?
@@ -306,6 +315,29 @@ final class LichessProbeHistory {
         if overallSeries.count > maxOverallSamples {
             overallSeries.removeFirst(overallSeries.count - maxOverallSamples)
         }
+        recomputeLatestOverall()
+    }
+
+    /// Recompute the cached OVERALL summary + puzzle-Elo from the current
+    /// `latestPerPuzzleResults`. Definitionally equal to the live fold the
+    /// detail window's summary band used to do every render; called only when
+    /// the snapshot changes so the band can read the cache instead.
+    private func recomputeLatestOverall() {
+        guard !latestPerPuzzleResults.isEmpty else {
+            latestOverallSummary = nil
+            latestOverallElo = nil
+            return
+        }
+        latestOverallSummary = LichessProbeOverallSummary(
+            folding: Self.aggregates(from: latestPerPuzzleResults)
+        )
+        let pairs: [(rating: Int, correct: Bool)] = latestPerPuzzleResults.compactMap {
+            guard let meta = LichessProbeData.metadata[$0.probe.name] else { return nil }
+            let isArgmaxCorrect = $0.verdict == .correctAndConfident
+                || $0.verdict == .correctButFlat
+            return (rating: meta.rating, correct: isArgmaxCorrect)
+        }
+        latestOverallElo = Self.mlePuzzleElo(pairs: pairs)
     }
 
     /// Most recent aggregate for one theme, or nil before the first
@@ -354,6 +386,7 @@ final class LichessProbeHistory {
         latestTickActiveTrainingSec = nil
         latestTickArenaCount = nil
         latestTickPromotionCount = nil
+        recomputeLatestOverall()
     }
 
     // MARK: - Session persistence
@@ -405,6 +438,7 @@ final class LichessProbeHistory {
         latestTickActiveTrainingSec = snapshot.latestActiveTrainingSec
         latestTickArenaCount = snapshot.latestArenaCount
         latestTickPromotionCount = snapshot.latestPromotionCount
+        recomputeLatestOverall()
     }
 
     /// Sum of `argmaxCorrect` across all themes' latest entries, or

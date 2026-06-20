@@ -242,8 +242,9 @@ enum FeatureSkipFusion: String, Codable, CaseIterable, Sendable, Hashable {
     /// conv (width `towerC + sourceC`) absorbs the projection. No extra tensors.
     case concatDirect = "concat_direct"
     /// One shared `ReLU(BN(Conv1×1(concat → towerC)))` node feeds the routed
-    /// destinations at fixed width `towerC`. Adds a conv + BN. (Phase 2 — `validate()`
-    /// currently rejects this.)
+    /// destinations at fixed width `towerC`. Adds a conv + BN. Supported for the
+    /// policy/value heads; `validate()` rejects it only in combination with the
+    /// final-block destination (the compressed node has no meaning as a block input).
     case compressConvBNReLU = "compress_conv_bn_relu"
 }
 
@@ -399,8 +400,10 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
     case mustBeFiniteNonNegative(field: String, value: Float)
     /// Feature skip is enabled (`source != .none`) but no destination is routed.
     case featureSkipNoDestination
-    /// A feature-skip option that is config-carried but not yet implemented
-    /// (`toFinalBlock` destination, `compressConvBNReLU` fusion). Phase 2.
+    /// A feature-skip combination that is config-carried but unsupported —
+    /// currently only `compressConvBNReLU` fusion together with the
+    /// `toFinalBlock` destination. Every other feature-skip option (head
+    /// fusion in either mode, concat-direct to the final block) is fully built.
     case featureSkipUnsupported(option: String)
 
     var description: String {
@@ -408,7 +411,7 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
         case .featureSkipNoDestination:
             return "featureSkipSource is enabled but no destination is routed (set at least one of featureSkipToPolicyHead / featureSkipToValueHead)"
         case .featureSkipUnsupported(let option):
-            return "feature-skip option '\(option)' is not yet supported (config-carried for a future phase)"
+            return "feature-skip combination '\(option)' is not supported"
         case .mustBeFiniteNonNegative(let field, let value):
             return "\(field) must be finite and >= 0 (got \(value))"
         case .kernelMustBeOdd(let field, let value):

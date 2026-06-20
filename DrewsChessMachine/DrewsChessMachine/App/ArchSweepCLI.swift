@@ -46,21 +46,30 @@ enum ArchSweepCLI {
     }
 
     static func runAndExit(blocks: [Int], steps: Int, batch: Int, outPath: String) -> Never {
+        let expandedOut = (outPath as NSString).expandingTildeInPath
         SessionLogger.shared.start()
         SessionLogger.shared.log(
-            "[ARCH-SWEEP-CLI] launched build=\(BuildInfo.buildNumber) blocks=\(blocks) steps=\(steps) batch=\(batch) out=\(outPath)"
+            "[ARCH-SWEEP-CLI] launched build=\(BuildInfo.buildNumber) blocks=\(blocks) steps=\(steps) batch=\(batch) out=\(expandedOut)"
         )
 
-        FileManager.default.createFile(atPath: outPath, contents: nil)
-        let handle = FileHandle(forWritingAtPath: outPath)
+        FileManager.default.createFile(atPath: expandedOut, contents: nil)
+        let handle = FileHandle(forWritingAtPath: expandedOut)
 
         func emit(_ obj: [String: Any]) {
             print(obj.map { "\($0)=\($1)" }.sorted().joined(separator: " "))
-            guard let handle,
-                  let data = try? JSONSerialization.data(withJSONObject: obj) else { return }
-            try? handle.write(contentsOf: data)
-            try? handle.write(contentsOf: Data("\n".utf8))
-            try? handle.synchronize()
+            guard let handle else { return }
+            // Surface a write/encode failure to stderr rather than silently
+            // dropping the JSONL line (`try?` would hide a vanished record).
+            do {
+                let data = try JSONSerialization.data(withJSONObject: obj)
+                try handle.write(contentsOf: data)
+                try handle.write(contentsOf: Data("\n".utf8))
+                try handle.synchronize()
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "error: write to --arch-sweep-out failed: \(error.localizedDescription)\n".utf8
+                ))
+            }
         }
 
         emit(["event": "sweep_start", "blocks": blocks, "steps": steps, "batch": batch])

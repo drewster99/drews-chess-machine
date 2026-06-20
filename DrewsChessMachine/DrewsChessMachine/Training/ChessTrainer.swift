@@ -6112,7 +6112,7 @@ final class ChessTrainer: @unchecked Sendable {
         // Split working-weight sync (bf16 stomp workaround; see
         // `splitWorkingWeightSync`): the main executable updated the fp32 masters
         // but did NOT re-derive the bf16 working weights. Do that now in a
-        // SEPARATE graph.run — its own command buffer, after the master writes
+        // SEPARATE GPU pass — its own command buffer, after the master writes
         // have fully completed (waitUntilCompleted above) — so the cast
         // temporary lives in a different allocation scope than the fused
         // dual-write that stomps on the Xcode-27/macOS-27 beta stack. No feeds:
@@ -6120,17 +6120,40 @@ final class ChessTrainer: @unchecked Sendable {
         // placeholder. Empty (skipped) under `.float32` and when the flag is off.
         if !workingSyncOps.isEmpty {
             // Non-empty targetTensors (read back one variable, ignored) avoids
-            // any empty-target edge case in graph.run; the real work is the
-            // targetOperations (the working = cast(master) assigns).
+            // any empty-target edge case; the real work is the targetOperations
+            // (the working = cast(master) assigns).
             let dummyTarget = network.trainableVariables[0]
+            // Encode into a command buffer we own (instead of the high-level
+            // `graph.run`, which hides its buffer) SO WE CAN CHECK ITS STATUS.
+            // If this pass faults (OOM/timeout/kernel error) the bf16/fp16
+            // working weights silently stay stale while the fp32 masters have
+            // already advanced — the next step would then train against a
+            // working/master mismatch. Surface it loudly instead, mirroring the
+            // main step's `.error` check above. encode+commit+wait is functionally
+            // identical to `graph.run`.
+            guard let syncMtlCommandBuffer = network.commandQueue.makeCommandBuffer() else {
+                throw ChessTrainerError.lossOutputMissing
+            }
+            let syncCommandBuffer = MPSCommandBuffer(commandBuffer: syncMtlCommandBuffer)
             network.weightAccessLock.wait()
-            _ = network.graph.run(
-                with: network.commandQueue,
+            _ = network.graph.encode(
+                to: syncCommandBuffer,
                 feeds: [:],
                 targetTensors: [dummyTarget],
-                targetOperations: workingSyncOps
+                targetOperations: workingSyncOps,
+                executionDescriptor: nil
             )
+            syncCommandBuffer.commit()
+            syncCommandBuffer.waitUntilCompleted()
+            let syncStatus = syncMtlCommandBuffer.status
             network.weightAccessLock.signal()
+            if syncStatus == .error {
+                throw ChessTrainerError.gpuCommandFailed(
+                    stage: "working-weight sync",
+                    status: syncStatus,
+                    error: syncMtlCommandBuffer.error?.localizedDescription
+                )
+            }
         }
         let gpuWaitMs = (CFAbsoluteTimeGetCurrent() - gpuWaitStart) * 1000
         encodeMsTimes.append(encodeMs)

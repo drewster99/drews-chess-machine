@@ -27,8 +27,8 @@ import SwiftUIFastCharts
 /// telemetry uses, so the trajectory lines up with steps/positions
 /// elsewhere. If any sample lacks a step (e.g. a manual "Probe now"
 /// taken before training started, or the steps aren't monotonic) the
-/// chart falls back to plotting against tick index and labels the axis
-/// accordingly.
+/// chart falls back to plotting against tick index, and a caption
+/// beneath the charts notes which the x axis represents.
 ///
 /// When a comparison snapshot is loaded, a dashed horizontal
 /// reference line at the cmp's value is overlaid on each chart so
@@ -82,11 +82,15 @@ struct LichessProbeOverallTrendChart: View {
         if samples.isEmpty {
             placeholder
         } else {
-            let xs = Self.xPositions(for: samples).xs
+            let positions = Self.xPositions(for: samples)
             VStack(alignment: .leading, spacing: 4) {
                 emaControls
-                nllChart(samples: samples, xs: xs)
-                eloChart(samples: samples, xs: xs)
+                nllChart(samples: samples, xs: positions.xs)
+                eloChart(samples: samples, xs: positions.xs)
+                Text("x axis: \(positions.label)")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
     }

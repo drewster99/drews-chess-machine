@@ -252,18 +252,18 @@ extension SessionController {
                 }
                 trainer.policyLabelSmoothingEpsilon = resolvedSmoothing
                 TrainingParameters.shared.policyLabelSmoothingEpsilon = Double(resolvedSmoothing)
+                let resolvedValueSmoothing = SessionCheckpointState.resolvedValueLabelSmoothingEpsilon(saved: rs.valueLabelSmoothingEpsilon)
                 if let vlse = rs.valueLabelSmoothingEpsilon {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] value_label_smoothing_epsilon: \(TrainingParameters.shared.valueLabelSmoothingEpsilon) -> \(vlse) (from session)"
                     )
-                    trainer.valueLabelSmoothingEpsilon = vlse
-                    TrainingParameters.shared.valueLabelSmoothingEpsilon = Double(vlse)
                 } else {
-                    trainer.valueLabelSmoothingEpsilon = Float(TrainingParameters.shared.valueLabelSmoothingEpsilon)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] value_label_smoothing_epsilon: saved=nil applied=\(TrainingParameters.shared.valueLabelSmoothingEpsilon) (defaulted)"
+                        "[RESUME-PARAM] value_label_smoothing_epsilon: saved=nil applied=\(resolvedValueSmoothing) (session predates the feature; hard one-hot W/D/L preserved)"
                     )
                 }
+                trainer.valueLabelSmoothingEpsilon = resolvedValueSmoothing
+                TrainingParameters.shared.valueLabelSmoothingEpsilon = Double(resolvedValueSmoothing)
                 if let bsi = rs.batchStatsInterval {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] batch_stats_interval: \(TrainingParameters.shared.batchStatsInterval) -> \(bsi) (from session)"

@@ -327,6 +327,16 @@ struct SessionCheckpointState: Codable, Equatable {
         saved ?? 0.0
     }
 
+    /// Pre-feature behavior: hard one-hot W/D/L target — no value-head
+    /// label smoothing. A session file lacking this field predates the
+    /// term, so resume must reproduce ε=0 rather than inherit the live
+    /// `TrainingParameters.valueLabelSmoothingEpsilon` (which would
+    /// silently re-shape an old run's value loss on resume — the same
+    /// regression the sibling resolvers exist to prevent).
+    static func resolvedValueLabelSmoothingEpsilon(saved: Float?) -> Float {
+        saved ?? 0.0
+    }
+
     /// Pre-feature behavior: uncapped per-game batch sampling. The
     /// parameter's range no longer includes a disabled value, so the
     /// closest representable equivalent is the declared range maximum,

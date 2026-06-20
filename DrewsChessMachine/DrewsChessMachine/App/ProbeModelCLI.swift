@@ -52,8 +52,9 @@ enum ProbeModelCLI {
 
         var handle: FileHandle?
         if let outPath {
-            FileManager.default.createFile(atPath: outPath, contents: nil)
-            handle = FileHandle(forWritingAtPath: outPath)
+            let expandedOut = (outPath as NSString).expandingTildeInPath
+            FileManager.default.createFile(atPath: expandedOut, contents: nil)
+            handle = FileHandle(forWritingAtPath: expandedOut)
         }
 
         func emit(_ obj: [String: Any]) {

@@ -68,6 +68,15 @@ final class SessionResumeParameterFallbackTests: XCTestCase {
         XCTAssertEqual(SessionCheckpointState.resolvedPolicyLabelSmoothingEpsilon(saved: 0.1), 0.1)
     }
 
+    /// Absent field ⇒ the saved run trained with a hard one-hot W/D/L
+    /// target (no value-head label smoothing). Must NOT inherit the live
+    /// `TrainingParameters` value on resume — same regime-preservation
+    /// contract as the sibling loss-shaping resolvers.
+    func testValueLabelSmoothingAbsentFieldResolvesToZero() {
+        XCTAssertEqual(SessionCheckpointState.resolvedValueLabelSmoothingEpsilon(saved: nil), 0.0)
+        XCTAssertEqual(SessionCheckpointState.resolvedValueLabelSmoothingEpsilon(saved: 0.05), 0.05)
+    }
+
     /// Absent field ⇒ the saved run sampled batches with no per-game
     /// cap; the range maximum is the closest representable equivalent.
     func testMaxPliesFromAnyOneGameAbsentFieldResolvesToRangeMax() {

@@ -127,7 +127,10 @@ struct MiniLineChart: View {
         guard let b = bucket, let v = rangeAccessor(b)?.max else {
             return AttributedString(hoveredX != nil ? "— no data" : "--")
         }
-        let valueStr = wholeNumber ? String(Int(v))
+        // `Int(v)` traps on NaN/±Inf, so only take the whole-number path when the
+        // value is finite (an empty-window bucket aggregation can surface a
+        // non-finite max); otherwise fall back to the formatter, which handles it.
+        let valueStr = (wholeNumber && v.isFinite) ? String(Int(v))
             : (valueFormat?(v) ?? FastChartFormatters.compact(v))
         let annotation = annotationAccessor?(b)
         if let suffix = annotation, !suffix.isEmpty {

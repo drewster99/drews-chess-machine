@@ -8,6 +8,7 @@ enum ModelCheckpointError: LocalizedError {
     case magicMismatch
     case unsupportedVersion(UInt32)
     case archMismatch(expected: UInt32, got: UInt32)
+    case archNotLegacyEncodable(archHash: UInt32)
     case tensorCountMismatch(expected: Int, got: Int)
     case tensorIndexMismatch(expected: Int, got: UInt32)
     case elementCountMismatch(tensorIndex: Int, expected: Int, got: Int)
@@ -29,6 +30,8 @@ enum ModelCheckpointError: LocalizedError {
             return "Unsupported .dcmmodel format version \(v)"
         case .archMismatch(let expected, let got):
             return "Architecture mismatch: file was saved with archHash 0x\(String(got, radix: 16)), current build expects 0x\(String(expected, radix: 16))"
+        case .archNotLegacyEncodable(let archHash):
+            return "This architecture (archHash 0x\(String(archHash, radix: 16))) has no legacy .dcmmodel hash and could not be read back from a .dcmmodel file — save it as .safetensors (which carries the full embedded config) instead."
         case .tensorCountMismatch(let expected, let got):
             return "Tensor count mismatch: file has \(got) tensors, current build expects \(expected)"
         case .tensorIndexMismatch(let expected, let got):
@@ -251,13 +254,25 @@ struct ModelCheckpointFile {
     /// trailing SHA-256. Caller writes the result atomically to
     /// disk.
     func encode() throws -> Data {
+        // The .dcmmodel reader is positional and embeds no config — it can only
+        // resolve a fixed set of historical preset hashes back to an
+        // architecture (`decode`'s `legacyDcmmodelArchHashes` lookup). Stamping a
+        // hash the reader can't resolve would silently produce a file that
+        // `decode` rejects as `archMismatch`. Refuse to write an unreadable file
+        // rather than discover it on the next load; modern saves use safetensors,
+        // which carries the full embedded architecture and has no such limit.
+        let hash = Self.archHash(for: architecture)
+        guard NetworkArchitecture.legacyDcmmodelArchHashes[hash] != nil else {
+            throw ModelCheckpointError.archNotLegacyEncodable(archHash: hash)
+        }
+
         var out = Data()
         out.reserveCapacity(Self.estimateEncodedSize(weights: weights))
 
         // Fixed header
         out.append(contentsOf: Self.magic)
         out.appendUInt32LE(Self.formatVersion)
-        out.appendUInt32LE(Self.archHash(for: architecture))
+        out.appendUInt32LE(hash)
         out.appendUInt32LE(UInt32(weights.count))
         out.appendInt64LE(createdAtUnix)
 

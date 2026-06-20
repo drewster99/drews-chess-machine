@@ -44,8 +44,9 @@ final class BuildNewModelModel {
     var valueHeadHiddenUnits: Int
     var computeDataType: ComputeDataType
     /// Feature skip (optional long concat skip). `featureSkipSource == .none`
-    /// disables the whole feature. The fusion-mode and final-block toggles are
-    /// shown but rejected by `validate()` for now (phase 2).
+    /// disables the whole feature. All destinations (policy/value heads, final
+    /// block) and both fusion modes are supported; `validate()` rejects only
+    /// `compressConvBNReLU` fusion combined with the final-block destination.
     var featureSkipSource: FeatureSkipSource
     var featureSkipFusion: FeatureSkipFusion
     var featureSkipToPolicyHead: Bool
@@ -55,6 +56,14 @@ final class BuildNewModelModel {
     /// Name to save the current config under (Save-as-Preset). Defaults from the
     /// label, sanitized to a filename-safe slug.
     var saveAsName: String = ""
+
+    /// Cached preset list (built-ins + user-saved). Scanned once at init (and
+    /// after a Save-as-Preset via `refreshPresets()`) rather than on every
+    /// `body`/`matchedPreset` access: `ArchitecturePresetStore.allPresets()`
+    /// enumerates and JSON-decodes the user Presets folder, and `body`
+    /// re-evaluates on every keystroke into any field, so reading it live meant
+    /// a disk scan several times per render pass.
+    private(set) var availablePresets: [(name: String, named: NamedArchitecture)] = []
 
     init(_ named: NamedArchitecture = NamedArchitecture(label: "Custom", architecture: .current)) {
         let a = named.architecture
@@ -75,6 +84,13 @@ final class BuildNewModelModel {
         self.featureSkipToPolicyHead = a.featureSkipToPolicyHead
         self.featureSkipToValueHead = a.featureSkipToValueHead
         self.featureSkipToFinalBlock = a.featureSkipToFinalBlock
+        self.availablePresets = ArchitecturePresetStore.allPresets()
+    }
+
+    /// Re-scan the preset folder. Call after saving a new user preset so it
+    /// appears in the picker without re-scanning on every render.
+    func refreshPresets() {
+        availablePresets = ArchitecturePresetStore.allPresets()
     }
 
     /// Populate every field from a preset (the picker selection is derived from
@@ -190,7 +206,7 @@ final class BuildNewModelModel {
     /// fields, if any — `nil` means "Custom".
     var matchedPreset: NamedArchitecture? {
         let a = architecture
-        return ArchitecturePresetStore.allPresets().first(where: { $0.named.architecture == a })?.named
+        return availablePresets.first(where: { $0.named.architecture == a })?.named
     }
 
     /// Effective display label: the user's override if set; else the matched

@@ -2628,6 +2628,7 @@ final class ReplayBuffer: @unchecked Sendable {
         case truncatedHeader
         case unsupportedVersion(UInt32)
         case incompatibleBoardSize(expected: Int, got: Int)
+        case incompatibleEncoding(expected: String, got: String)
         case invalidCounts(capacity: Int, stored: Int, writeIndex: Int)
         case truncatedBody(expected: Int, got: Int)
         case sizeMismatch(expected: Int64, got: Int64)
@@ -2643,6 +2644,8 @@ final class ReplayBuffer: @unchecked Sendable {
             case .unsupportedVersion(let v): return "Unsupported replay buffer format version \(v)"
             case .incompatibleBoardSize(let exp, let got):
                 return "Replay buffer board size mismatch (expected \(exp) floats, file has \(got))"
+            case .incompatibleEncoding(let exp, let got):
+                return "Replay buffer input-encoding mismatch (this buffer reconstructs '\(exp)' history; file was saved as '\(got)') — the per-frame stride matches but the encodings differ, so reconstructed history would be corrupt"
             case .invalidCounts(let cap, let stored, let wi):
                 return "Invalid replay buffer counts (capacity=\(cap) stored=\(stored) writeIndex=\(wi))"
             case .truncatedBody(let exp, let got):
@@ -2664,9 +2667,12 @@ final class ReplayBuffer: @unchecked Sendable {
     /// Format version. Bump on any on-disk layout change.
     ///
     /// Current format is v7:
-    ///   - Header: 8-byte magic + 4-byte version + 4-byte pad + 5 × Int64
+    ///   - Header: 8-byte magic + 4-byte version + 4-byte encodingTag + 5 × Int64
     ///     (floatsPerBoard, capacity, storedCount, writeIndex,
-    ///     totalPositionsAdded).
+    ///     totalPositionsAdded). The encodingTag (a stable FNV-1a hash of the
+    ///     `InputEncoding` rawValue) occupies the slot that was a zero pad in
+    ///     earlier v7 writes, so it is read back-compatibly: a file with tag 0 is
+    ///     a pre-tag v7 file and skips the encoding check (see `restore`).
     ///   - Body (oldest-first, `storedCount` entries each):
     ///     1. boards (`floatsPerBoard` × Float32)
     ///     2. moves (Int32)
@@ -2689,8 +2695,24 @@ final class ReplayBuffer: @unchecked Sendable {
     /// with synthesized metadata. Session resume should either restore
     /// the exact saved state or fail loudly.
     private static let fileVersion: UInt32 = 7
-    /// Header size in bytes: 8 magic + 4 version + 4 pad + 5 × Int64 fields.
+    /// Header size in bytes: 8 magic + 4 version + 4 encodingTag + 5 × Int64 fields.
     private static let headerSize: Int = 8 + 4 + 4 + 8 * 5
+
+    /// Stable 32-bit tag for an `InputEncoding`, stored in the header (the slot
+    /// that used to be a zero pad). Two distinct encodings can share a stored
+    /// per-frame stride — e.g. single-frame `basic20` and 10-frame `full10ply200`
+    /// both store 20-plane frames (stride 1280) — so the `floatsPerBoard` check
+    /// alone cannot tell them apart. FNV-1a over the rawValue so the tag is
+    /// stable across enum reordering/additions; never 0 (0 is the
+    /// "legacy/pre-tag file" sentinel that disables the check on restore).
+    static func encodingTag(_ encoding: InputEncoding) -> UInt32 {
+        var h: UInt32 = 0x811C_9DC5 // FNV-1a offset basis
+        for byte in encoding.rawValue.utf8 {
+            h ^= UInt32(byte)
+            h = h &* 0x0100_0193
+        }
+        return h == 0 ? 1 : h
+    }
     /// SHA-256 trailer size in bytes.
     private static let trailerSize: Int = 32
     /// Chunk size for raw-buffer writes/reads. Keeps peak Data
@@ -2751,8 +2773,11 @@ final class ReplayBuffer: @unchecked Sendable {
         header.append(contentsOf: Self.fileMagic)
         var version = Self.fileVersion
         withUnsafeBytes(of: &version) { header.append(contentsOf: $0) }
-        var pad: UInt32 = 0
-        withUnsafeBytes(of: &pad) { header.append(contentsOf: $0) }
+        // Encoding tag (previously a zero pad). Lets `restore` reject a file
+        // whose encoding differs from a reconstructing target buffer's even when
+        // the per-frame stride collides. See `encodingTag`.
+        var encodingTag = Self.encodingTag(self.inputEncoding)
+        withUnsafeBytes(of: &encodingTag) { header.append(contentsOf: $0) }
         var fpb64 = Int64(floatsPerBoard)
         withUnsafeBytes(of: &fpb64) { header.append(contentsOf: $0) }
         var cap64 = Int64(cap)
@@ -3108,6 +3133,33 @@ final class ReplayBuffer: @unchecked Sendable {
                 expected: self.floatsPerBoard,
                 got: Int(fpbFile)
             )
+        }
+
+        // Encoding-tag check. The tag sits in the slot that was a zero pad in
+        // pre-tag v7 writes, so tag 0 means "legacy file, no tag" → skip (the
+        // stride check above is the only gate, as before). When present, ENFORCE
+        // it only for a reconstructing target buffer (`historyFrameCount > 1`):
+        // such a buffer rebuilds N-frame history from the stored per-ply frames,
+        // so a file written by a different-but-stride-compatible encoding would
+        // be silently reconstructed into corrupt history planes. A single-frame
+        // buffer (`historyFrameCount == 1` — e.g. the save-time verify scratch,
+        // which derives its encoding from stride alone, or a basic20/basic30
+        // resume) only copies frames verbatim, so a tag difference is benign
+        // there and must not reject.
+        let encodingTagFile: UInt32 = headerData.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 12, as: UInt32.self)
+        }
+        if encodingTagFile != 0, self.historyFrameCount > 1 {
+            let expectedTag = Self.encodingTag(self.inputEncoding)
+            guard encodingTagFile == expectedTag else {
+                let gotName = InputEncoding.allCases
+                    .first { Self.encodingTag($0) == encodingTagFile }?.rawValue
+                    ?? "0x\(String(encodingTagFile, radix: 16))"
+                throw PersistenceError.incompatibleEncoding(
+                    expected: self.inputEncoding.rawValue,
+                    got: gotName
+                )
+            }
         }
 
         // Upper-bound caps before any further arithmetic. A corrupted

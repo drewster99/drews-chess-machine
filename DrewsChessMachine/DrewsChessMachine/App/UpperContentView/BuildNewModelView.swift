@@ -45,7 +45,7 @@ struct BuildNewModelView: View {
                     Section("Preset") {
                         Picker("Start from", selection: presetSelection) {
                             Text("Custom").tag(String?.none)
-                            ForEach(ArchitecturePresetStore.allPresets(), id: \.name) { entry in
+                            ForEach(model.availablePresets, id: \.name) { entry in
                                 Text(entry.named.label).tag(String?.some(entry.name))
                             }
                         }
@@ -287,6 +287,7 @@ struct BuildNewModelView: View {
                 do {
                     let url = try ArchitecturePresetStore.save(
                         name: name, label: model.label, architecture: model.architecture)
+                    model.refreshPresets()
                     saveStatus = "Saved \(url.lastPathComponent)"
                 } catch {
                     saveStatus = "\(error)"
@@ -317,11 +318,11 @@ struct BuildNewModelView: View {
         Binding(
             get: {
                 let current = model.architecture
-                return ArchitecturePresetStore.allPresets().first(where: { $0.named.architecture == current })?.name
+                return model.availablePresets.first(where: { $0.named.architecture == current })?.name
             },
             set: { newName in
                 guard let name = newName,
-                      let entry = ArchitecturePresetStore.allPresets().first(where: { $0.name == name })
+                      let entry = model.availablePresets.first(where: { $0.name == name })
                 else { return }
                 model.load(entry.named)
             }

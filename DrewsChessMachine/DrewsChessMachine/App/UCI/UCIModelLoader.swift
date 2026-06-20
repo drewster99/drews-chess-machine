@@ -36,7 +36,7 @@ enum UCIModelLoader {
             case .modelFileMissing(let url):
                 return "Model file does not exist: \(url.path)"
             case .explicitMustBeDcmmodel(let url):
-                return "--model expects a .dcmmodel file; got: \(url.path) (session directories are not accepted)"
+                return "--model expects a .safetensors or .dcmmodel file; got: \(url.path) (session directories are not accepted)"
             case .weightCountTooSmall(let have, let need):
                 return "Model file has \(have) tensors but the network needs at least \(need)"
             }
