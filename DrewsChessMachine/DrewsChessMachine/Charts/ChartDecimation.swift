@@ -58,6 +58,9 @@ struct TrainingBucket: Sendable, Equatable, Identifiable {
     let policyLossLoss: ChartBucketRange?
     let legalEntropy: ChartBucketRange?
     let legalMass: ChartBucketRange?
+    /// Self-play rolling mean game length (plies) and draw rate ([0,1]).
+    let gameLength: ChartBucketRange?
+    let drawFraction: ChartBucketRange?
     let cpuPercent: ChartBucketRange?
     let gpuBusyPercent: ChartBucketRange?
     let appMemoryGB: ChartBucketRange?
@@ -282,6 +285,8 @@ private struct TrainingBucketBuilder {
     var policyLossLoss = NumericAccumulator()
     var legalEntropy = NumericAccumulator()
     var legalMass = NumericAccumulator()
+    var gameLength = NumericAccumulator()
+    var drawFraction = NumericAccumulator()
     var cpuPercent = NumericAccumulator()
     var gpuBusyPercent = NumericAccumulator()
     var appMemoryGB = NumericAccumulator()
@@ -312,6 +317,8 @@ private struct TrainingBucketBuilder {
         policyLossLoss.absorb(s.rollingPolicyLossLoss)
         legalEntropy.absorb(s.rollingLegalEntropy)
         legalMass.absorb(s.rollingLegalMass)
+        gameLength.absorb(s.rollingAvgGameLength)
+        drawFraction.absorb(s.rollingDrawFraction)
         cpuPercent.absorb(s.cpuPercent)
         gpuBusyPercent.absorb(s.gpuBusyPercent)
         appMemoryGB.absorb(s.appMemoryGB)
@@ -343,6 +350,8 @@ private struct TrainingBucketBuilder {
             policyLossLoss: policyLossLoss.range,
             legalEntropy: legalEntropy.range,
             legalMass: legalMass.range,
+            gameLength: gameLength.range,
+            drawFraction: drawFraction.range,
             cpuPercent: cpuPercent.range,
             gpuBusyPercent: gpuBusyPercent.range,
             appMemoryGB: appMemoryGB.range,

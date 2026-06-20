@@ -104,6 +104,18 @@ struct TrainingChartSample: Identifiable, Sendable, Codable, Equatable {
     let rollingValueProbDraw: Double?
     let rollingValueProbLoss: Double?
 
+    /// Rolling-window mean self-play game length in plies — `recentMoves /
+    /// recentGames` from `ParallelWorkerStatsBox`, the same `rollingAvgLen`
+    /// the `[STATS]` line reports. A self-play metric (not a training-batch
+    /// one). Optional + additive: older `.dcmsession` files decode this nil.
+    let rollingAvgGameLength: Double?
+    /// Rolling-window self-play draw rate in `[0, 1]` — `recentDraws /
+    /// recentGames`, the fraction of recently-completed self-play games that
+    /// ended in a natural draw (stalemate / 50-move / 3-fold / insufficient
+    /// material; decisive and ply-capped games are the complement). Optional
+    /// + additive.
+    let rollingDrawFraction: Double?
+
     // System metrics
     let cpuPercent: Double?
     let gpuBusyPercent: Double?

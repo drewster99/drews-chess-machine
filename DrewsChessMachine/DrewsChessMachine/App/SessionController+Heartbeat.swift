@@ -549,6 +549,15 @@ extension SessionController {
         // tile can render a continuous step trace rather than
         // sampling on hover.
         let pi = ProcessInfo.processInfo
+        // Self-play game-length + draw-rate over the rolling window, from the
+        // same `parallelStats` snapshot the [STATS] line reads. `recentGames`
+        // is the window denominator for both; nil until at least one self-play
+        // game has completed (chart skips the nil samples).
+        let (rollingAvgGameLength, rollingDrawFraction): (Double?, Double?) = {
+            guard let p = parallelStats, p.recentGames > 0 else { return (nil, nil) }
+            let games = Double(p.recentGames)
+            return (Double(p.recentMoves) / games, Double(p.recentDraws) / games)
+        }()
         let sample = TrainingChartSample(
             id: chartCoordinator?.trainingChartNextId ?? 0,
             elapsedSec: elapsed,
@@ -571,6 +580,8 @@ extension SessionController {
             rollingValueProbWin: trainingSnap?.rollingValueProbWin,
             rollingValueProbDraw: trainingSnap?.rollingValueProbDraw,
             rollingValueProbLoss: trainingSnap?.rollingValueProbLoss,
+            rollingAvgGameLength: rollingAvgGameLength,
+            rollingDrawFraction: rollingDrawFraction,
             cpuPercent: cpuPercent,
             gpuBusyPercent: trainingSnap != nil ? gpuBusy : nil,
             gpuMemoryMB: gpuMemMB,
