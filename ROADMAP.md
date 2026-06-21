@@ -11,6 +11,196 @@ original rationale is not lost.
 
 ## Future improvements (validated open)
 
+- **Self-play corpus recording + replay — full design (2026-06-20, not yet
+  built).** Record completed self-play games to a reusable,
+  architecture-independent **game corpus** so multiple architectures /
+  hyperparameter settings can be trained on *identical* inputs, and so external
+  PGN (Lichess `.pgn.zst`) can be imported as training data. PGN is an
+  import/export converter only; the replay path consumes only the native
+  `GameRecord`. Current scope: **game-level replay**; batch-level replay and
+  seeded shuffle are deferred (see end of entry).
+
+  **Why move-lists — not encoded tensors, not seeds.** A self-play game is just
+  a move list + result, which re-encodes into *any* architecture's input planes
+  at train time, so it is the only architecture-independent record. It is also
+  tiny: a move packs into 2 bytes (from 6b + to 6b + promo 3b; castling/EP
+  inferred on replay; per-ply tau is reconstructable from the deterministic
+  `SamplingSchedule`, so not stored), i.e. ~160 MB/h at 80M plies/h — versus
+  ~600 GB/h (F32) if we stored encoded `basic30` tensors (1920 floats/pos). We
+  do **not** chase seed-level reproducibility of self-play: MPSGraph/Metal
+  forward passes are not bit-reproducible run-to-run, so a categorical sample
+  can flip on a ULP — record the games that actually happened instead.
+
+  **`GameRecord`.** Start position (standard assumed; optional `startFEN` only
+  for imported setups), the 2-byte move list, result (W/D/L), and a `sourceID`
+  reference. The replay loader replays the moves through `ChessGameEngine` and
+  the target arch's `BoardEncoder`, appending each game as one contiguous
+  reverse-ply block via the **same append path self-play uses** — required so
+  the buffer's history-plane reconstruction (which reads neighboring ring slots)
+  stays correct.
+
+  **Corpus store + shard files.** A standalone `Corpora/<corpusID>/` store
+  (alongside `Models/`, `Sessions/`), **never embedded in a session folder** — a
+  corpus is unbounded and append-only, and sessions re-save to a fresh folder on
+  every trigger (today `replay_buffer.bin` + `training_chart.json` are
+  re-serialized in full each save, `CheckpointManager.swift:656`), so embedding
+  would be O(saves × corpus) copying. `session.json` instead carries a
+  `recordingCorpusID` *reference* + a high-water mark (games/shards/plies at
+  save) via the Optional-field + `[RESUME-PARAM]` pattern (mirror
+  `batchStatsInterval`) — a NEW pattern; nothing currently references data
+  outside its own session folder. Shards are **self-describing** and sized by a
+  soft byte target (`--shard-soft-limit-mb`, default 64) cut at a whole-game
+  boundary, so a shard always holds an integer number of complete games (the
+  game is the atomic replay unit). Layout: a fixed 256-byte **front header**
+  written once at create (magic, formatVersion, `corpusID`, shardSeq,
+  `sourceID`, createdAt — records start at offset 256); a **body** of
+  length-prefixed game records each with a CRC-32; and a fixed 64-byte
+  **trailer** appended at seal (trailerMagic, gameCount, plyCount, sealUnix,
+  SHA-256 over `[0, EOF−64)`). Seal-time facts (count, SHA) live in the trailer,
+  **not** backfilled into the front — the file is pure append, matching the
+  trailing-SHA pattern of `.dcmmodel`/`replay_buffer.bin`. Two checksums, two
+  jobs: per-record CRC for open-log recovery, whole-shard SHA for sealed
+  integrity. Open→seal: write the front header (fsync); append games with a
+  streaming SHA, fsync on a cadence (per game / ~1 s); seal = finalize SHA,
+  append trailer, fsync, atomic rename `.open`→final, fsync dir, then record the
+  source. Crash-safe at every step — the trailer's presence is the commit; an
+  `.open` file with no valid trailer is recovered by CRC-scanning to the last
+  complete game (loses only the un-fsync'd tail).
+
+  **Metadata — one `corpus.json`.** A single provenance-only file:
+  `{ corpusID, name, comment, state, createdAt, sources: [...] }`, where
+  `sources` is an **append-only** list with one record per ingestion (self-play
+  session or PGN import): `sourceID`, kind, `input{filename,url}`, options (incl.
+  shard size + import filters), `appBuild` (from `BuildInfo.swift`), timestamp,
+  counts. Written **only on ingestion events** (rare) — shard seals never touch
+  it. It holds only the **non-reconstructable** bits (name, comment, provenance);
+  the shard list and aggregate counts are **derived** by `readdir` + reading each
+  64-byte trailer, so a stale/lost `corpus.json` is never data loss (only
+  name/comment/provenance would be lost — hence atomic-write + fsync it). No
+  persisted shard index by default; add a throwaway `manifest.json` cache later
+  only if listing is slow. Per-shard sidecars were considered and rejected
+  (redundant with the trailer; two-file atomicity for no gain); per-source files
+  only become worthwhile under concurrent multi-writer ingestion into one corpus
+  — not a current need.
+
+  **Recording (post-filter, both train paths).** Tee the corpus writer at the
+  point games flush to the `ReplayBuffer` — i.e. **after** the random draw-keep
+  filter — so the corpus *is* the exact training set, frozen and identical for
+  every replay (recording raw would force re-applying a random filter at replay,
+  giving different inputs per run). `moveHistory` is already in hand there (the
+  same point `GameDiversityTracker` uses). Writes go through an async append
+  queue so recording never stalls the self-play hot path. Gated by a new
+  `recordSelfPlayGames` bool `@TrainingParameter`. Must be wired into **both** the
+  GUI and the `--train` paths — the headless path has no game-capture hook today.
+
+  **Corpus identity & lifecycle.** A recording run mints a **new corpus**
+  (auto-id) by default, with opt-in append-to-named for deliberate continuation.
+  State goes recording → sealed/frozen (replay uses a frozen corpus). Replay
+  accepts **multiple** `--replay-corpus` so self-play + Lichess can be mixed; the
+  feeder interleaves them.
+
+  **PGN import.** Stream `zstd -dc` via subprocess (libzstd fallback; Apple's
+  `Compression` framework lacks zstd) — never inflate a ~200 GB dump to disk.
+  SAN→`ChessMove` by generating legal moves per ply and matching. Standard-start
+  games only (skip FEN-setup / Chess960 / variants); filters `--min-rating`,
+  `--time-control`, `--max-games`, min-plies; skip malformed. Output =
+  `GameRecord` shards in a corpus; the import is one `sources[]` record with its
+  file/url/options/appBuild.
+
+  **Replay — offline, step-locked feeder.** Fixed corpus → `ReplayBuffer` →
+  trainer, with **no self-play and no replay-ratio controller**. Pre-fill the
+  ring, then append `K = batchSize / R` positions per training step (`R` = reuse;
+  reuse the existing `replayRatioTarget`, reinterpreted offline). Ring capacity
+  vs corpus selects the regime: fits → load once (fixed dataset); bigger →
+  streaming moving window. Stream shards in stored order (deterministic; shuffle
+  deferred). The random batch sampler is unchanged and **unseeded**, so for
+  game-replay the A/B protocol is "same frozen corpus + same step-locked feed (so
+  buffer contents are identical across runs), run each architecture N times and
+  average out sampling noise." Stop on a `--steps` or `--epochs` budget (not
+  corpus exhaustion); `--training-time-limit` stays opt-in for
+  hardware-vs-hardware comparison only.
+
+  **Replay run lifecycle (train-only).** Self-play workers off; the
+  arena/promotion/candidate/`arenaChampionNetwork` apparatus stays dormant; the
+  trainer trains `trainer.network` to the budget. Start fresh (build a new net of
+  the chosen arch) or from a built net (`--start-model`). Checkpoint triggers =
+  periodic + manual only (nothing promotes), and identity is stable (no mid-run
+  ModelID forks). Strength is measured read-only via the periodic Lichess probe
+  (eval-loss — deterministic, architecture-agnostic, the comparable metric); an
+  arena vs a *fixed reference* net is allowed as pure measurement (never copies
+  weights).
+
+  **Reproducibility & the linchpin invariant.** The A/B harness already mostly
+  exists: freeze params (`--create-parameters-file` → `--parameters
+  frozen.json`), freeze init (`--start-model` for same-arch, or fresh×N for
+  cross-arch), freeze budget (`--training-step-limit`/`--epochs`); the only new
+  axis is the frozen corpus. **Required invariant:** re-encoding a recorded
+  self-play game must reproduce *bit-for-bit* the input the trainer originally
+  saw — `BoardEncoder` is a pure function of (start + move sequence), with the
+  repetition/history planes determined by replaying the moves. This is testable
+  (record → re-encode → compare to the live-encoded frames) and must hold before
+  any replay result is trusted.
+
+  **CLI surface + usage.** New flags: `--record-games`, `--import-pgn <path>`
+  (+ `--min-rating`/`--time-control`/`--max-games`), `--corpus-name`,
+  `--shard-soft-limit-mb` (default 64), `--replay-corpus <path>` (repeatable),
+  `--epochs <n>`. Overhaul the usage banner to document **every** flag (new +
+  existing) with worked examples for the common scenarios: a cross-architecture
+  A/B, a same-init hyperparameter A/B, a PGN import, and a replay run from a built
+  model vs fresh. Record the corpus id(s), reuse `R`, budget, and import filters
+  in both `session.json` and the `--output` results.json for traceability.
+
+  **Build order.** (1) `GameRecord` + corpus store + writer (`corpus.json`,
+  self-describing shards, seal/recover); (2) recording tee'd off the self-play
+  flush, GUI + `--train`; (3) replay loader + step-locked feeder + offline mode +
+  `--replay-corpus`/`--epochs`; (4) train-only lifecycle wiring; (5) manifest
+  fields in session.json/results.json; (6) PGN import; (7) usage overhaul. The
+  same-init/same-params/same-budget pieces (`--start-model`, `--parameters`,
+  `--training-step-limit`) already exist and are verified.
+
+  **Deferred:** seeded game-level shard-shuffle (shard-order permutation +
+  in-shard shuffle + optional reservoir), batch-level replay (seeded sampler /
+  literal batches), concurrent multi-writer ingestion (would reintroduce
+  per-source files), and a persisted shard-index cache.
+
+  **Resume-from-non-latest provenance (must warn, must not silently destroy).**
+  On resume, compare the session's saved watermark against the corpus manifest's
+  current head. watermark == head → continue appending, no issue. watermark <
+  head (resuming *behind* the corpus's current state, e.g. loading an older
+  autosave) means the corpus already holds games "ahead" of the resume point.
+  Policy: **never truncate or overwrite previously-sealed shards** (violates the
+  project's "nothing is ever overwritten" + "never delete the user's data"
+  rules). Detect the condition, surface it explicitly in the resume UI/log, and
+  offer (a) **fork** — mint a new corpus id, original preserved sealed, new games
+  recorded into the fork (default; clean provenance), or (b) **continue same
+  corpus** — accept a superset containing both continuations past the watermark
+  (fine as training data, muddy provenance). Headless/CLI resume has no
+  interactive prompt, so it must default to fork + a loud log line stating
+  exactly what happened. Also handle corpus-id-points-at-missing-data
+  (deleted/moved externally) → warn + offer create-fresh or disable-recording,
+  mirroring the `LastSessionPointer` target-deleted handling.
+
+  **CLI resume open issues (documented 2026-06-20).**
+  1. **`results.json` is not cumulative across resume.** The `--output` snapshot
+     is an atomic overwrite written by a *per-run* `CliTrainingRecorder`
+     (`SessionController+Training.swift:1015`; `CliTrainingRecorder.writeJSON`
+     uses `.atomic`, no append). A stopped-then-resumed headless run writes a
+     results.json covering only the post-resume segment. GUI session state
+     (charts, counters, `TrainingSegment`s) *is* continuous on resume; the CLI
+     snapshot is not. Needs a continuation mode (load prior recorder state /
+     accumulate segments) if cumulative headless results are wanted.
+  2. **Self-play recording is not wired into the CLI train path.** Recording must
+     be added to both the GUI and the `--train` paths; the headless path's
+     game-capture hook does not exist yet.
+  3. **`results.json` flush is signal-gated and misses SIGINT.** Written only on
+     a budget firing (`--training-step-limit`/`--training-time-limit`) or
+     SIGUSR1/SIGHUP/AppKit-terminate — *not* SIGINT/Ctrl-C, and never on crash.
+     A Ctrl-C'd run intended for resume may have flushed nothing.
+  4. **Step-limit granularity.** The step watcher polls every 2 s
+     (`SessionController+Training.swift:2512`), so it stops a few steps past the
+     limit — fine for budgets, not bit-exact for strict A/B; gate exactly at N
+     if exactness is needed.
+
 - **History dropout (training-time input masking) — deferred future feature.**
   For history-stacking input encodings (`full10ply200`), a
   `historyDropoutProbability` ∈ [0,1] training augmentation: with probability *p*,
