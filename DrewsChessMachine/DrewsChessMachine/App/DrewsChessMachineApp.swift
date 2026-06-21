@@ -154,6 +154,10 @@ struct DrewsChessMachineApp: App {
         // SwiftUI / Metal GUI init.
         Self.handleReplayCorpusIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: PGN → game-corpus import (--import-pgn). Streams the
+        // .pgn(.zst), converts games to the corpus format, and exits.
+        Self.handleImportPGNIfPresent(rawArgs: rawArgs)
+
         // Known flags.
         let booleanFlags: Set<String> = ["--train", "--playchess"]
         let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit", "--training-step-limit", "--start-model", "--model"]
@@ -940,6 +944,70 @@ struct DrewsChessMachineApp: App {
             startModelPath: startModelPath
         )
         CorpusReplayRunner.runAndExit(config: config, params: params)
+    }
+
+    // MARK: - PGN import pre-flight (--import-pgn)
+
+    /// Inspects `rawArgs` for `--import-pgn <path>`. If present, parses the
+    /// import filters, hands control to `PGNImporter.runImportAndExit`, and
+    /// never returns. No GPU / no SwiftUI — pure parse + disk I/O.
+    private static func handleImportPGNIfPresent(rawArgs: [String]) {
+        guard rawArgs.contains("--import-pgn") else { return }
+
+        var inputPath: String? = nil
+        var corpusName: String? = nil
+        var minRating: Int? = nil
+        var maxGames: Int? = nil
+        var minPlies = 1
+        var timeControls: [String]? = nil
+        var shardSoftLimitMB = 64
+
+        var i = 0
+        while i < rawArgs.count {
+            let arg = rawArgs[i]
+            let nextValue: String? = {
+                guard i + 1 < rawArgs.count else { return nil }
+                let v = rawArgs[i + 1]
+                return v.hasPrefix("--") ? nil : v
+            }()
+            switch arg {
+            case "--import-pgn":
+                if let v = nextValue { inputPath = v; i += 2 } else { i += 1 }
+            case "--corpus-name":
+                if let v = nextValue { corpusName = v; i += 2 } else { i += 1 }
+            case "--min-rating":
+                if let v = nextValue { minRating = Int(v); i += 2 } else { i += 1 }
+            case "--max-games":
+                if let v = nextValue { maxGames = Int(v); i += 2 } else { i += 1 }
+            case "--min-plies":
+                if let v = nextValue { minPlies = max(1, Int(v) ?? 1); i += 2 } else { i += 1 }
+            case "--shard-soft-limit-mb":
+                if let v = nextValue { shardSoftLimitMB = max(1, Int(v) ?? 64); i += 2 } else { i += 1 }
+            case "--time-control":
+                if let v = nextValue {
+                    timeControls = v.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                    i += 2
+                } else { i += 1 }
+            default:
+                i += 1
+            }
+        }
+
+        guard let path = inputPath else {
+            FileHandle.standardError.write(Data("error: --import-pgn requires a file path (.pgn or .pgn.zst)\n".utf8))
+            Darwin.exit(2)
+        }
+
+        let config = PGNImportConfig(
+            inputPath: path,
+            corpusName: corpusName,
+            minRating: minRating,
+            maxGames: maxGames,
+            minPlies: minPlies,
+            timeControlClasses: timeControls,
+            shardSoftLimitMB: shardSoftLimitMB
+        )
+        PGNImporter.runImportAndExit(config: config)
     }
 
     // MARK: - Batch-size sweep pre-flight (--sweep)
