@@ -395,6 +395,37 @@ struct DrewsChessMachineApp: App {
               --show-default-parameters       Print every default training parameter as JSON and exit.
               --create-parameters-file [<path>] [--force]
                                               Write parameters.json + parameters.md (default: ./) and exit.
+
+            Offline corpus replay & PGN import (each runs headless, then exits):
+              --replay-corpus <dir>           Train on a fixed recorded game corpus (repeatable, to mix corpora):
+                                              no self-play, no arena, no promotion. Fills the replay buffer from
+                                              the games and runs a step-locked SGD loop (K = batch / replay-ratio
+                                              positions per step). Pair with --training-step-limit <n> OR
+                                              --epochs <n> (default: 1 pass) and --parameters <file> to pin the
+                                              hyperparameters. Uses a fresh net (--start-model not yet wired here).
+              --epochs <n>                    Replay budget: number of full passes over the corpus.
+              --import-pgn <path>             Convert a .pgn / .pgn.zst (e.g. a Lichess monthly dump) into a
+                                              corpus, then exit. .zst needs the `zstd` CLI on PATH; standard-start
+                                              games only. Filters: --min-rating <elo> (both sides),
+                                              --max-games <n>, --min-plies <n>,
+                                              --time-control <bullet,blitz,rapid,classical>, --corpus-name <name>,
+                                              --shard-soft-limit-mb <mb> (default 64).
+
+            Self-play recording: set the `record_self_play_games` parameter (e.g. in a --parameters file) to
+            record every kept self-play game into a corpus under Corpora/ during a --train run.
+
+            Examples:
+              # Cross-architecture A/B on identical games (build is fresh each run; average over N runs):
+              DrewsChessMachine --replay-corpus <CorpusDir> --parameters frozen.json --training-step-limit 50000 --output archA.json
+
+              # Same-architecture hyperparameter A/B from one identical starting net:
+              DrewsChessMachine --train --start-model champ.safetensors --parameters lrA.json --training-step-limit 50000 --output lrA.json
+
+              # Import a Lichess dump (rated blitz/rapid, 1800+, first 1M games):
+              DrewsChessMachine --import-pgn lichess_2026-05.pgn.zst --min-rating 1800 --time-control blitz,rapid --max-games 1000000 --corpus-name lichess-2026-05
+
+              # Replay a corpus for 3 full passes:
+              DrewsChessMachine --replay-corpus <CorpusDir> --epochs 3 --parameters frozen.json
             """
             for err in errors {
                 let line = "DrewsChessMachine: error: \(err)\n"
