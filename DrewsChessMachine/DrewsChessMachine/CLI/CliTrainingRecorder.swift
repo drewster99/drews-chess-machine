@@ -30,6 +30,9 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// or collapse detector). Readers should call
         /// `setTerminationReason(_:)` before `writeJSON(...)`.
         var terminationReason: TerminationReason?
+        /// Id of the corpus self-play games are recorded into, surfaced in
+        /// results.json provenance. Set via setRecordingCorpusID(_:).
+        var recordingCorpusID: String?
     }
     private let lock = OSAllocatedUnfairLock<State>(initialState: State())
 
@@ -37,6 +40,10 @@ final class CliTrainingRecorder: @unchecked Sendable {
 
     func setSessionID(_ id: String?) {
         lock.withLock { $0.sessionID = id }
+    }
+
+    func setRecordingCorpusID(_ id: String?) {
+        lock.withLock { $0.recordingCorpusID = id }
     }
 
     /// Record how the run ended. Safe to call from any thread — the
@@ -81,7 +88,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
                 positionsTrained: state.stats.last?.positionsTrained,
                 arenaResults: state.arenas,
                 stats: state.stats,
-                candidateTests: state.probes
+                candidateTests: state.probes,
+                recordingCorpusID: state.recordingCorpusID
             )
         }
 
@@ -195,6 +203,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let arenaResults: [Arena]
         let stats: [StatsLine]
         let candidateTests: [CandidateTest]
+        let recordingCorpusID: String?
 
         enum CodingKeys: String, CodingKey {
             case totalTrainingSeconds = "total_training_seconds"
@@ -206,6 +215,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case arenaResults = "arena_results"
             case stats
             case candidateTests = "candidate_tests"
+            case recordingCorpusID = "recording_corpus_id"
         }
     }
 

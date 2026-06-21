@@ -826,6 +826,7 @@ extension SessionController {
             legalMassCollapseGraceSeconds: params.legalMassCollapseGraceSeconds,
             legalMassCollapseNoImprovementProbes: params.legalMassCollapseNoImprovementProbes,
             batchStatsInterval: params.batchStatsInterval,
+            recordingCorpusID: activeRecordingCorpusID,
             lrMomentumCycle: params.lrMomentumCycle,
             maxPliesFromAnyOneGame: params.maxPliesFromAnyOneGame,
             targetSampledGameLengthPlies: params.targetSampledGameLengthPlies,

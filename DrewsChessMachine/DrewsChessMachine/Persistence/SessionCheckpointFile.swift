@@ -383,6 +383,11 @@ struct SessionCheckpointState: Codable, Equatable {
     /// Optional for back-compat; absent → loader falls through to
     /// `TrainingParameters.shared.batchStatsInterval`.
     var batchStatsInterval: Int?
+    /// Id of the standalone game corpus this run recorded self-play games into
+    /// (under Corpora/), or nil when recording was off. Provenance only — the
+    /// corpus lives outside the session folder. Optional + defaulted for
+    /// back-compat with older session files.
+    var recordingCorpusID: String? = nil
     /// LR/momentum cycling configuration in effect at save time (the 12
     /// `lr_cycle_*` / `momentum_cycle_*` parameters bundled into the runtime
     /// `LRMomentumCycle` struct). Optional for back-compat with session files

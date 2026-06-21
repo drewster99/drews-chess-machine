@@ -276,6 +276,11 @@ extension SessionController {
                         "[RESUME-PARAM] batch_stats_interval: saved=nil applied=\(TrainingParameters.shared.batchStatsInterval) (defaulted)"
                     )
                 }
+                if let cid = rs.recordingCorpusID {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] recording_corpus_id: prior run recorded into corpus \(cid) (informational; this run starts a fresh corpus when recording is on)"
+                    )
+                }
                 // LR/momentum cycling. The 12 cycling params are written back
                 // onto the singleton (so UserDefaults + the popover reflect the
                 // resumed config) and the bundled struct is pushed onto the
@@ -1040,6 +1045,7 @@ extension SessionController {
                 )
                 corpusRecorder = rec
                 activeRecordingCorpusID = rec.corpusID
+                recorder?.setRecordingCorpusID(rec.corpusID)
                 SessionLogger.shared.log("[CORPUS] recording self-play games → corpus \(rec.corpusID)")
             } catch {
                 corpusRecorder = nil
