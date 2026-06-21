@@ -147,6 +147,13 @@ struct DrewsChessMachineApp: App {
         // predate the live probes. Exits before SwiftUI / Metal GUI init.
         Self.handleProbeModelIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: headless offline corpus-replay trainer (--replay-corpus).
+        // Builds a fresh net + trainer, fills the replay buffer from recorded
+        // games (no self-play, no arena, no promotion), runs a step-locked SGD
+        // loop to a --training-step-limit / --epochs budget, and exits before
+        // SwiftUI / Metal GUI init.
+        Self.handleReplayCorpusIfPresent(rawArgs: rawArgs)
+
         // Known flags.
         let booleanFlags: Set<String> = ["--train", "--playchess"]
         let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit", "--training-step-limit", "--start-model", "--model"]
@@ -836,6 +843,103 @@ struct DrewsChessMachineApp: App {
         }
 
         UCIEngine.runAndExit(modelPath: modelPath)
+    }
+
+    // MARK: - Offline corpus-replay pre-flight (--replay-corpus)
+
+    /// Inspects `rawArgs` for `--replay-corpus <dir>` (repeatable). If present,
+    /// snapshots the training parameters on the main actor (applying a
+    /// `--parameters` file first if given), builds a `CorpusReplayConfig`, hands
+    /// control to `CorpusReplayRunner.runAndExit`, and never returns. Runs
+    /// before the strict-CLI parser (which would reject `--replay-corpus` /
+    /// `--epochs` as unknown) and before the SwiftUI WindowGroup.
+    private static func handleReplayCorpusIfPresent(rawArgs: [String]) {
+        guard rawArgs.contains("--replay-corpus") else { return }
+
+        var corpusPaths: [String] = []
+        var epochs: Int? = nil
+        var stepLimit: Int? = nil
+        var parametersPath: String? = nil
+        var startModelPath: String? = nil
+
+        var i = 0
+        while i < rawArgs.count {
+            let arg = rawArgs[i]
+            let nextValue: String? = {
+                guard i + 1 < rawArgs.count else { return nil }
+                let v = rawArgs[i + 1]
+                return v.hasPrefix("--") ? nil : v
+            }()
+            switch arg {
+            case "--replay-corpus":
+                if let v = nextValue { corpusPaths.append(v); i += 2 } else { i += 1 }
+            case "--epochs":
+                if let v = nextValue { epochs = Int(v); i += 2 } else { i += 1 }
+            case "--training-step-limit":
+                if let v = nextValue { stepLimit = Int(v); i += 2 } else { i += 1 }
+            case "--parameters":
+                if let v = nextValue { parametersPath = v; i += 2 } else { i += 1 }
+            case "--start-model":
+                if let v = nextValue { startModelPath = v; i += 2 } else { i += 1 }
+            default:
+                i += 1
+            }
+        }
+
+        guard !corpusPaths.isEmpty else {
+            FileHandle.standardError.write(Data("error: --replay-corpus requires at least one corpus directory path\n".utf8))
+            Darwin.exit(2)
+        }
+
+        // Snapshot parameters on the main actor (init() runs on the main
+        // thread), applying a --parameters file first. Everything below the
+        // snapshot is plain Sendable data, so the off-actor replay task never
+        // touches the @MainActor singleton (which would deadlock against the
+        // syncWait semaphore held on this thread).
+        let params: ReplayParams = MainActor.assumeIsolated {
+            if let pp = parametersPath {
+                do {
+                    let url = URL(fileURLWithPath: (pp as NSString).expandingTildeInPath)
+                    let cfg = try CliTrainingConfig.load(from: url)
+                    try TrainingParameters.shared.apply(cfg.trainingParameters)
+                    if stepLimit == nil { stepLimit = cfg.trainingStepLimit }
+                } catch {
+                    FileHandle.standardError.write(Data("error: --parameters load/apply failed: \(error.localizedDescription)\n".utf8))
+                    Darwin.exit(2)
+                }
+            }
+            let tp = TrainingParameters.shared
+            return ReplayParams(
+                learningRate: tp.learningRate,
+                entropyBonus: tp.entropyBonus,
+                drawPenalty: tp.drawPenalty,
+                weightDecay: tp.weightDecay,
+                gradClipMaxNorm: tp.gradClipMaxNorm,
+                policyLossWeight: tp.policyLossWeight,
+                valueLossWeight: tp.valueLossWeight,
+                illegalMassWeight: tp.illegalMassWeight,
+                policyLabelSmoothingEpsilon: tp.policyLabelSmoothingEpsilon,
+                valueLabelSmoothingEpsilon: tp.valueLabelSmoothingEpsilon,
+                momentumCoeff: tp.momentumCoeff,
+                signedAdvantageComplementCE: tp.signedAdvantageComplementCE,
+                sqrtBatchScalingLR: tp.sqrtBatchScalingLR,
+                lrWarmupSteps: tp.lrWarmupSteps,
+                trainingBatchSize: tp.trainingBatchSize,
+                replayBufferCapacity: tp.replayBufferCapacity,
+                replayRatioTarget: tp.replayRatioTarget,
+                replayBufferMinPositionsBeforeTraining: tp.replayBufferMinPositionsBeforeTraining
+            )
+        }
+
+        let config = CorpusReplayConfig(
+            corpusDirectories: corpusPaths.map {
+                URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true)
+            },
+            stepLimit: stepLimit,
+            epochs: epochs,
+            startModelPath: startModelPath
+        )
+        CorpusReplayRunner.runAndExit(config: config, params: params)
     }
 
     // MARK: - Batch-size sweep pre-flight (--sweep)
