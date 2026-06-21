@@ -1026,6 +1026,31 @@ extension SessionController {
         let isAutoTrainRun = autoTrainOnLaunch
         let runStart = Date()
 
+        // Self-play corpus recording. Read once at run start (not
+        // live-tunable). When enabled, every kept (post-draw-filter) self-play
+        // game is tee'd into a standalone game corpus under Corpora/, referenced
+        // by id from session.json. nil when off or on a create failure —
+        // recording is best-effort and never blocks training.
+        let corpusRecorder: CorpusRecorder?
+        if TrainingParameters.shared.recordSelfPlayGames {
+            do {
+                let rec = try CorpusRecorder.create(
+                    name: "Self-play \(checkpoint?.currentSessionID ?? "session")",
+                    comment: "Recorded by build \(BuildInfo.buildNumber) (\(BuildInfo.gitHash))"
+                )
+                corpusRecorder = rec
+                activeRecordingCorpusID = rec.corpusID
+                SessionLogger.shared.log("[CORPUS] recording self-play games → corpus \(rec.corpusID)")
+            } catch {
+                corpusRecorder = nil
+                activeRecordingCorpusID = nil
+                SessionLogger.shared.log("[CORPUS] failed to create recording corpus: \(error.localizedDescription)")
+            }
+        } else {
+            corpusRecorder = nil
+            activeRecordingCorpusID = nil
+        }
+
         // Register the early-stop flush handler so SIGUSR1 / SIGHUP /
         // applicationShouldTerminate can write `result.json` cleanly
         // before exiting. Cleared in the teardown block. The closure
@@ -1473,7 +1498,8 @@ extension SessionController {
                 gameWatcher: gameWatcher,
                 scheduleBox: scheduleBox,
                 replayRatioController: ratioController,
-                drawWatchTracker: drawWatch
+                drawWatchTracker: drawWatch,
+                corpusRecorder: corpusRecorder
             )
 
             // Pin the probe inference network into a local the child
@@ -2761,6 +2787,10 @@ extension SessionController {
                 for await _ in group { }
             }
 
+            // Flush + seal the recording corpus (if any) before teardown clears
+            // its references. Blocks briefly while the serial queue drains.
+            corpusRecorder?.finishAndSeal()
+
             await MainActor.run {
                 trainingAlarm?.clear()
                 realTraining = false
@@ -2785,6 +2815,7 @@ extension SessionController {
                 effectiveReplayRatioTarget = nil
                 lastReplayRatioCompensatorAt = nil
                 cliRecorder = nil
+                activeRecordingCorpusID = nil
                 EarlyStopCoordinator.shared.earlyStopHandler = nil
                 EarlyStopCoordinator.shared.saveSessionHandler = nil
             }

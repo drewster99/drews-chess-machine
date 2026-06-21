@@ -105,6 +105,11 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
     /// `Training/DrawWatchTracker.swift` + `DRAW_WATCH_PLAN.md`.
     let drawWatchTracker: DrawWatchTracker?
 
+    /// Optional self-play game recorder. When set (by `SessionController` at
+    /// run start, gated on `recordSelfPlayGames`), every kept post-filter game
+    /// is tee'd into the corpus. nil ⇒ recording off (a cheap nil check).
+    let corpusRecorder: CorpusRecorder?
+
     // MARK: - Private state (driver-task-owned, no lock needed)
 
     private var games: [ActiveGame] = []
@@ -167,7 +172,8 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         gameWatcher: GameWatcher?,
         scheduleBox: SamplingScheduleBox,
         replayRatioController: ReplayRatioController? = nil,
-        drawWatchTracker: DrawWatchTracker? = nil
+        drawWatchTracker: DrawWatchTracker? = nil,
+        corpusRecorder: CorpusRecorder? = nil
     ) {
         self.network = network
         self.buffer = buffer
@@ -179,6 +185,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         self.scheduleBox = scheduleBox
         self.replayRatioController = replayRatioController
         self.drawWatchTracker = drawWatchTracker
+        self.corpusRecorder = corpusRecorder
     }
 
     deinit {
@@ -699,6 +706,9 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                         statsBox.recordEmittedGame(result: result, flushed: flushed)
                         replayRatioController?.recordSelfPlayEmittedGame(positions: flushed.positions)
                     }
+                    // Tee the kept (post-draw-filter) game into the recording
+                    // corpus. Async + best-effort; never stalls the tick.
+                    corpusRecorder?.record(moves: g.engine.moveHistory, result: result)
                 }
                 // If !kept: skip flush. The next resetForNewGame zeroes
                 // the per-side fill counters and the recorded scratch

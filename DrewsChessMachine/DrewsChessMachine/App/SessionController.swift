@@ -662,6 +662,13 @@ final class SessionController {
     /// stats/arena/probe paths, `nil` in normal interactive runs.
     var cliRecorder: CliTrainingRecorder?
 
+    /// The id of the corpus the active run is recording self-play games into,
+    /// or nil when recording is off. Set in `startRealTraining` and read by
+    /// `buildCurrentSessionState` so the session checkpoint references the
+    /// corpus by id (the corpus itself lives outside the session folder under
+    /// `Corpora/`).
+    var activeRecordingCorpusID: String?
+
     /// Whether the Play-and-Train view should show the candidate-test forward-
     /// pass board instead of the live game. True when training is active AND
     /// (the persisted mode is `.candidateTest` OR there are >1 self-play

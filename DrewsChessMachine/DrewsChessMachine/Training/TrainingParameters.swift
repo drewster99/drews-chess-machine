@@ -442,6 +442,15 @@ public enum ReplayRatioTarget: TrainingParameterKey {}
 public enum ReplayRatioAutoAdjust: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Record Self-Play Games",
+    description: "Record completed (post-draw-filter) self-play games to a reusable game corpus under Corpora/. Read once at run start (not live-tunable).",
+    default: false,
+    category: "Self-Play Sampling",
+    liveTunable: false
+)
+public enum RecordSelfPlayGames: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "Self-Play Concurrency",
     description: "Parallel self-play game count. More = faster replay-buffer fill but more GPU contention.",
     default: 800,
@@ -821,6 +830,7 @@ public extension TrainingParametersSnapshot {
     var selfPlayTauDecayPerPly: Double { value(for: SelfPlayTauDecayPerPly.self) }
     var selfPlayDrawKeepFraction: Double { value(for: SelfPlayDrawKeepFraction.self) }
     var selfPlayMaxPliesPerGame: Int { value(for: SelfPlayMaxPliesPerGame.self) }
+    var recordSelfPlayGames: Bool { value(for: RecordSelfPlayGames.self) }
     var drawWatchPDrawThreshold: Double { value(for: DrawWatchPDrawThreshold.self) }
     var drawWatchTerminateGames: Bool { value(for: DrawWatchTerminateGames.self) }
     var drawWatchStreakLength: Int { value(for: DrawWatchStreakLength.self) }
@@ -891,6 +901,7 @@ public final class TrainingParameters {
     public var selfPlayTauDecayPerPly: Double { didSet { Self.persist(SelfPlayTauDecayPerPly.self, value: selfPlayTauDecayPerPly) } }
     public var selfPlayDrawKeepFraction: Double { didSet { Self.persist(SelfPlayDrawKeepFraction.self, value: selfPlayDrawKeepFraction) } }
     public var selfPlayMaxPliesPerGame: Int { didSet { Self.persist(SelfPlayMaxPliesPerGame.self, value: selfPlayMaxPliesPerGame) } }
+    public var recordSelfPlayGames: Bool { didSet { Self.persist(RecordSelfPlayGames.self, value: recordSelfPlayGames) } }
     public var drawWatchPDrawThreshold: Double { didSet { Self.persist(DrawWatchPDrawThreshold.self, value: drawWatchPDrawThreshold) } }
     public var drawWatchTerminateGames: Bool { didSet { Self.persist(DrawWatchTerminateGames.self, value: drawWatchTerminateGames) } }
     public var drawWatchStreakLength: Int { didSet { Self.persist(DrawWatchStreakLength.self, value: drawWatchStreakLength) } }
@@ -954,6 +965,7 @@ public final class TrainingParameters {
         self.selfPlayTauDecayPerPly = Self.read(SelfPlayTauDecayPerPly.self)
         self.selfPlayDrawKeepFraction = Self.read(SelfPlayDrawKeepFraction.self)
         self.selfPlayMaxPliesPerGame = Self.read(SelfPlayMaxPliesPerGame.self)
+        self.recordSelfPlayGames = Self.read(RecordSelfPlayGames.self)
         self.drawWatchPDrawThreshold = Self.read(DrawWatchPDrawThreshold.self)
         self.drawWatchTerminateGames = Self.read(DrawWatchTerminateGames.self)
         self.drawWatchStreakLength = Self.read(DrawWatchStreakLength.self)
@@ -1023,6 +1035,7 @@ public final class TrainingParameters {
         v[SelfPlayTauDecayPerPly.id] = SelfPlayTauDecayPerPly.encode(selfPlayTauDecayPerPly)
         v[SelfPlayDrawKeepFraction.id] = SelfPlayDrawKeepFraction.encode(selfPlayDrawKeepFraction)
         v[SelfPlayMaxPliesPerGame.id] = SelfPlayMaxPliesPerGame.encode(selfPlayMaxPliesPerGame)
+        v[RecordSelfPlayGames.id] = RecordSelfPlayGames.encode(recordSelfPlayGames)
         v[DrawWatchPDrawThreshold.id] = DrawWatchPDrawThreshold.encode(drawWatchPDrawThreshold)
         v[DrawWatchTerminateGames.id] = DrawWatchTerminateGames.encode(drawWatchTerminateGames)
         v[DrawWatchStreakLength.id] = DrawWatchStreakLength.encode(drawWatchStreakLength)
@@ -1118,6 +1131,8 @@ public final class TrainingParameters {
             try SelfPlayDrawKeepFraction.definition.validate(raw); selfPlayDrawKeepFraction = try SelfPlayDrawKeepFraction.decode(raw)
         case SelfPlayMaxPliesPerGame.id:
             try SelfPlayMaxPliesPerGame.definition.validate(raw); selfPlayMaxPliesPerGame = try SelfPlayMaxPliesPerGame.decode(raw)
+        case RecordSelfPlayGames.id:
+            try RecordSelfPlayGames.definition.validate(raw); recordSelfPlayGames = try RecordSelfPlayGames.decode(raw)
         case DrawWatchPDrawThreshold.id:
             try DrawWatchPDrawThreshold.definition.validate(raw); drawWatchPDrawThreshold = try DrawWatchPDrawThreshold.decode(raw)
         case DrawWatchTerminateGames.id:
@@ -1300,6 +1315,7 @@ public final class TrainingParameters {
         SelfPlayTauDecayPerPly.self,
         SelfPlayDrawKeepFraction.self,
         SelfPlayMaxPliesPerGame.self,
+        RecordSelfPlayGames.self,
         DrawWatchPDrawThreshold.self,
         DrawWatchTerminateGames.self,
         DrawWatchStreakLength.self,
