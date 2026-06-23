@@ -669,6 +669,12 @@ final class SessionController {
     /// `Corpora/`).
     var activeRecordingCorpusID: String?
 
+    /// Label of the analysis currently running (e.g. "Value Head"), or nil when
+    /// none is. Set by `beginAnalysis`/`endAnalysis`; the single-flight guard
+    /// that stops concurrent Debug-menu analyses reads it, and it drives the
+    /// "Analyzing…" status. `@Observable` (via the class) so UI can reflect it.
+    var runningAnalysisLabel: String?
+
     /// Whether the Play-and-Train view should show the candidate-test forward-
     /// pass board instead of the live game. True when training is active AND
     /// (the persisted mode is `.candidateTest` OR there are >1 self-play

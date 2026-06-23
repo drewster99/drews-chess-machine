@@ -42,11 +42,13 @@ extension SessionController {
         let netForEntropy = network
         let trainerForEntropy = trainer
         let modelLabel = netForEntropy?.identifier?.description ?? "<no-id>"
+        guard beginAnalysis("Replay Buffer") else { return }
         // Snapshot training-progress context on the main actor before
         // the detached heavy walk; stamped onto the result below.
         let exportMetadata = currentAnalysisExportMetadata()
 
         Task.detached(priority: .utility) {
+            defer { Task { @MainActor in self.endAnalysis() } }
             // Off-main heavy walk + JSON write. Both the analyzer pass
             // and the file I/O are bounded — a sub-second analyzer pass
             // and a ~MB-sized JSON write — but neither belongs on the

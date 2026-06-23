@@ -50,8 +50,10 @@ extension SessionController {
             )
             return
         }
+        guard beginAnalysis("All Analyses") else { return }
 
         Task.detached(priority: .utility) {
+            defer { Task { @MainActor in self.endAnalysis() } }
             var summaryLines: [String] = []
             var firstSuccessURL: URL?
 

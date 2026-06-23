@@ -29,11 +29,13 @@ extension SessionController {
             return
         }
         let modelLabel = net.identifier?.description ?? "<no-id>"
+        guard beginAnalysis("Value Head") else { return }
         // Snapshot training-progress context on the main actor before
         // the detached work; stamped onto the result below.
         let exportMetadata = currentAnalysisExportMetadata()
 
         Task.detached(priority: .utility) {
+            defer { Task { @MainActor in self.endAnalysis() } }
             // Off-main work: exportWeights() bounces through the
             // network's executionQueue (so it serializes against any
             // inference forward pass currently running) and the rest
