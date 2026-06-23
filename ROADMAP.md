@@ -11,8 +11,13 @@ original rationale is not lost.
 
 ## Future improvements (validated open)
 
-- **Self-play corpus recording + replay — full design (2026-06-20, not yet
-  built).** Record completed self-play games to a reusable,
+- **Self-play corpus recording + replay — ✅ SHIPPED 2026-06-20** (`f0c0012`
+  corpus format/store, `0ad27b3` recording tee, `c4243b5` offline replay
+  `--replay-corpus`/`--epochs`, `461c95c` provenance, `049e94f` PGN import,
+  `5a93c54` usage). The full design below is preserved as the as-built record;
+  only the **Deferred** sub-list (seeded shuffle, batch-level replay,
+  multi-writer ingestion, shard-index cache) and CLI-resume issues #1/#3/#4
+  remain open — this entry belongs in Completed. Record completed self-play games to a reusable,
   architecture-independent **game corpus** so multiple architectures /
   hyperparameter settings can be trained on *identical* inputs, and so external
   PGN (Lichess `.pgn.zst`) can be imported as training data. PGN is an
@@ -189,9 +194,10 @@ original rationale is not lost.
      (charts, counters, `TrainingSegment`s) *is* continuous on resume; the CLI
      snapshot is not. Needs a continuation mode (load prior recorder state /
      accumulate segments) if cumulative headless results are wanted.
-  2. **Self-play recording is not wired into the CLI train path.** Recording must
-     be added to both the GUI and the `--train` paths; the headless path's
-     game-capture hook does not exist yet.
+  2. ~~Self-play recording is not wired into the CLI train path.~~ **RESOLVED
+     2026-06-20.** Recording is wired into both the GUI and `--train` paths —
+     `TrainingParameters.shared.recordSelfPlayGames` is read at
+     `SessionController+Training.swift:1040` and tees games into the corpus.
   3. **`results.json` flush is signal-gated and misses SIGINT.** Written only on
      a budget firing (`--training-step-limit`/`--training-time-limit`) or
      SIGUSR1/SIGHUP/AppKit-terminate — *not* SIGINT/Ctrl-C, and never on crash.
@@ -278,14 +284,16 @@ original rationale is not lost.
   files are now safetensors (`.safetensors`, PyTorch-drop-in layout, Python-
   loadable, no exporter); legacy `.dcmmodel` still reads; `ChessNetwork` builds
   from a `NetworkArchitecture` value type; build any architecture via
-  `architecture.json`. **Remaining:** thread the champion's arch through the
-  trainer/candidate/arena nets so a non-default architecture is *trainable*
-  (and through `saveModel`/`saveSession` so it's saved with the correct embedded
-  config); per-model compute precision (bf16/f32); load historical v3/v4
-  (old-arch) models via an `archHash→config` fallback + a v3 block/value-head
-  builder + consuming the embedded config on load; CLI (`--uci` builds from the
-  file's embedded config; `--playchess` opens the human-play UI with an
-  auto/`--model`-selected net).
+  `architecture.json`. **Update 2026-06-23 — effectively all shipped:**
+  non-default architectures are trainable end to end (heterogeneous block-groups
+  towers, 2026-06-12) and saved with their embedded config; per-model compute
+  precision (f32/bf16/fp16) is selectable (fp16 added 2026-06-17, inference-only —
+  training NaNs by design); legacy `.dcmmodel` old-arch loading via the
+  `archHash→config` fallback is in place; `--uci` (`28cf394`) and `--playchess`
+  (`26c14e9`) both ship. The one genuinely-open item is the **headless
+  `--architecture-preset` / `--architecture-file` CLI flags** (the preset store is
+  GUI-only) — see `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md` for the authoritative
+  phase list.
 
 - **Standalone "Training vs Eval Loss" window.** Planned (added 2026-06-05).
   A separate, freely-resizable `NSWindow` (following the established
@@ -343,16 +351,11 @@ original rationale is not lost.
   Pure-logic XCTests in scope: the step-interpolation function and the
   `ChartAxisLayout` right-column geometry.
 
-- **`BatchFeedsInput` struct for `ChessTrainer.buildFeeds`.** Still open.
-  Current implementation evidence: `ChessTrainer.buildFeeds(batchSize:boards:moves:zs:vBaselines:legalMasks:)`
-  in `Training/ChessTrainer.swift` still takes six positional arguments:
-  `batchSize`, `UnsafePointer<Float>` boards, `UnsafePointer<Int32>` moves,
-  `UnsafePointer<Float>` z outcomes, `UnsafePointer<Float>` value baselines,
-  and `UnsafePointer<Float>` legal masks. The same call sites still pass nested
-  `withUnsafeBufferPointer` base addresses from random-data sweep code and real
-  replay-buffer sample code. The original safety concern is still valid: three
-  same-typed `UnsafePointer<Float>` inputs can be silently swapped by a future
-  refactor and still produce a shaped batch.
+- **`BatchFeedsInput` struct for `ChessTrainer.buildFeeds`.** ✅ **SHIPPED
+  2026-05-11** (`49878fa`). `buildFeeds(_ input: BatchFeedsInput)` now takes a
+  single named-field struct (`struct BatchFeedsInput` at `ChessTrainer.swift:5659`),
+  so the compiler binds inputs by name rather than position — the original
+  same-typed-`UnsafePointer<Float>`-swap safety concern is closed.
 
   Planned shape remains unchanged: wrap the inputs in a small `BatchFeedsInput`
   struct with named fields so the compiler binds by name rather than position.
@@ -364,7 +367,7 @@ original rationale is not lost.
   details. The old roadmap text was directionally right that autosaves are kept
   indefinitely, but it understated the current persistence payload: modern
   `.dcmsession` directories can include `replay_buffer.bin`, and the current
-  replay-buffer file format is v6, so disk growth can be larger than the older
+  replay-buffer file format is v7, so disk growth can be larger than the older
   "model + session.json only" session plan implied.
 
   Current implementation evidence:
@@ -389,14 +392,13 @@ original rationale is not lost.
   footprint is a demonstrated problem; the "never overwrite" invariant remains
   in force until retention is explicitly implemented.
 
-- **Human-vs-model play.** Still open, but the current UI state needed
-  correction. The existing File/View command "Play Game" is not human-vs-model:
-  `UpperContentView.playSingleGame()` constructs one `ChessMachine`, creates a
-  `DirectMoveEvaluationSource(network: network)`, then creates both White and
-  Black as `MPSChessPlayer` instances pointing at the same champion network.
-  `startContinuousPlay()` does the same in a loop. A search found no `HumanPlayer`,
-  user-move player, slot picker, side-to-play picker, or UI path that lets a
-  human supply moves.
+- **Human-vs-model play.** ✅ **SHIPPED 2026-05-14** (`15613c9`, "Add Chess menu
+  with human-vs-network Play…"). `App/UpperContentView/PlayController.swift` is a
+  full human-vs-network controller: a `HumanPlayOpponentChoice` model-slot picker
+  (champion snapshot / trainer snapshot / live trainer / loaded file), a
+  `humanColor` side picker, and tap-based human move entry. The distinct
+  network-vs-network **Play Game** demo (`playSingleGame()`) still exists
+  alongside it. The original "still open" analysis below is kept as design history.
 
   The original design goal remains valid: let a human play against either the
   champion or a trainer/candidate snapshot from the UI, for sanity-checking play
@@ -557,15 +559,15 @@ original rationale is not lost.
   benefit), cosine/SGDR (no natural epoch in self-play; adds a tunable
   without a principled way to set it).
 
-- **Compiled `MPSGraphExecutable`.** Still open. `ChessNetwork.evaluate`,
-  `ChessNetwork.evaluate(batchBoards:count:)`, export/load helpers, BN stats,
-  and `ChessTrainer.runPreparedStep` still call `graph.run(...)` directly.
-  `ChessMPSNetwork.NetworkInitMode.package(URL)` still throws
-  `ChessMPSNetworkError.packageLoadingNotImplemented`, so package loading is not
-  implemented. Pre-compiling via `graph.compile(...)` may still remove per-call
-  executable-cache lookup and provide a reusable serialized executable for the
-  package path, but this should be revisited only after measuring current
-  steady-state `graph.run` overhead.
+- **Compiled `MPSGraphExecutable`.** Largely shipped. **Batched inference**
+  migrated to a compiled executable 2026-06-02 (`3f02ac4`,
+  `ChessNetwork.inferenceExecutables`, `.level1`), and the **training step** now
+  encodes through `ChessTrainer.trainingExecutables` (`graph.compile` +
+  `executable.encode`; see GPU_UTILIZATION_PLAN.md Phase 2). Still on the direct
+  `graph.run(...)` path: single-position `ChessNetwork.evaluate`, the export /
+  BN-stats helpers. **Still open:** `ChessMPSNetwork.NetworkInitMode.package(URL)`
+  throws `ChessMPSNetworkError.packageLoadingNotImplemented` — serialized-package
+  loading is not implemented.
 
 - **Replace `Engine ▸ Promote Trainee` (arena-only override) with a standalone
   "Promote Trainee Now" action.** **IMPLEMENTED 2026-05-11** (see CHANGELOG entry
