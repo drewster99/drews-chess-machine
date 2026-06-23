@@ -582,6 +582,8 @@ extension SessionController {
             rollingValueProbLoss: trainingSnap?.rollingValueProbLoss,
             rollingAvgGameLength: rollingAvgGameLength,
             rollingDrawFraction: rollingDrawFraction,
+            rollingSampledBatchGameLength: trainingSnap?.rollingSampledBatchGameLength,
+            rollingSampledBatchDrawFraction: trainingSnap?.rollingSampledBatchDrawFraction,
             cpuPercent: cpuPercent,
             gpuBusyPercent: trainingSnap != nil ? gpuBusy : nil,
             gpuMemoryMB: gpuMemMB,

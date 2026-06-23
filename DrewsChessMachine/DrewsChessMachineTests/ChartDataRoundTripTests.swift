@@ -71,6 +71,8 @@ final class ChartDataRoundTripTests: XCTestCase {
             rollingValueProbLoss: 0.2,
             rollingAvgGameLength: 280.0,
             rollingDrawFraction: 0.65,
+            rollingSampledBatchGameLength: 310.0,
+            rollingSampledBatchDrawFraction: 0.58,
             cpuPercent: 75.5,
             gpuBusyPercent: 88.0,
             gpuMemoryMB: 512.0,
@@ -105,6 +107,8 @@ final class ChartDataRoundTripTests: XCTestCase {
             rollingValueProbLoss: nil,
             rollingAvgGameLength: nil,
             rollingDrawFraction: nil,
+            rollingSampledBatchGameLength: nil,
+            rollingSampledBatchDrawFraction: nil,
             cpuPercent: nil,
             gpuBusyPercent: nil,
             gpuMemoryMB: nil,
@@ -159,6 +163,8 @@ final class ChartDataRoundTripTests: XCTestCase {
         assertBitEqual(a.rollingValueProbLoss, b.rollingValueProbLoss, "rollingValueProbLoss", line: line)
         assertBitEqual(a.rollingAvgGameLength, b.rollingAvgGameLength, "rollingAvgGameLength", line: line)
         assertBitEqual(a.rollingDrawFraction, b.rollingDrawFraction, "rollingDrawFraction", line: line)
+        assertBitEqual(a.rollingSampledBatchGameLength, b.rollingSampledBatchGameLength, "rollingSampledBatchGameLength", line: line)
+        assertBitEqual(a.rollingSampledBatchDrawFraction, b.rollingSampledBatchDrawFraction, "rollingSampledBatchDrawFraction", line: line)
         assertBitEqual(a.cpuPercent, b.cpuPercent, "cpuPercent", line: line)
         assertBitEqual(a.gpuBusyPercent, b.gpuBusyPercent, "gpuBusyPercent", line: line)
         assertBitEqual(a.gpuMemoryMB, b.gpuMemoryMB, "gpuMemoryMB", line: line)

@@ -236,38 +236,20 @@ struct TrainingChartGridView: View {
                 bucketWidthSec: bucketWidthSec
             )
             .equatable()
-            MiniLineChart(
-                title: "self-play game length",
+            GameLengthChart(
                 buckets: frame.trainingBuckets,
-                rangeAccessor: { $0.gameLength },
-                unit: "plies",
-                color: .orange,
                 group: fastChartGroup,
                 xDomain: xDomain,
-                bucketWidthSec: bucketWidthSec,
-                wholeNumber: true,
-                titleHelp: AttributedString("""
-                    Rolling-window mean length of completed self-play games, in plies \
-                    (recentMoves / recentGames — the rollingAvgLen on the [STATS] line). \
-                    A self-play metric, independent of the training batch.
-                    """)
+                bucketWidthSec: bucketWidthSec
             )
-            MiniLineChart(
-                title: "self-play draw rate",
+            .equatable()
+            DrawRateChart(
                 buckets: frame.trainingBuckets,
-                rangeAccessor: { $0.drawFraction },
-                unit: "",
-                color: .brown,
                 group: fastChartGroup,
                 xDomain: xDomain,
-                bucketWidthSec: bucketWidthSec,
-                titleHelp: AttributedString("""
-                    Fraction of recently-completed self-play games that ended in a natural draw \
-                    (stalemate / 50-move / 3-fold / insufficient material), in [0, 1]. Decisive \
-                    and ply-capped games make up the complement.
-                    """),
-                valueFormat: { String(format: "%.3f", $0) }
+                bucketWidthSec: bucketWidthSec
             )
+            .equatable()
             MiniLineChart(
                 title: "vMean (p_win − p_loss)",
                 buckets: frame.trainingBuckets,

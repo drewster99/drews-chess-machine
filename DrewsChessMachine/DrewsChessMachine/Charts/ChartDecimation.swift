@@ -61,6 +61,11 @@ struct TrainingBucket: Sendable, Equatable, Identifiable {
     /// Self-play rolling mean game length (plies) and draw rate ([0,1]).
     let gameLength: ChartBucketRange?
     let drawFraction: ChartBucketRange?
+    /// Sampled-minibatch rolling mean game length (plies) and draw rate ([0,1])
+    /// — the trainer-side counterparts to `gameLength` / `drawFraction`, drawn
+    /// on the same tiles.
+    let sampledBatchGameLength: ChartBucketRange?
+    let sampledBatchDrawFraction: ChartBucketRange?
     let cpuPercent: ChartBucketRange?
     let gpuBusyPercent: ChartBucketRange?
     let appMemoryGB: ChartBucketRange?
@@ -287,6 +292,8 @@ private struct TrainingBucketBuilder {
     var legalMass = NumericAccumulator()
     var gameLength = NumericAccumulator()
     var drawFraction = NumericAccumulator()
+    var sampledBatchGameLength = NumericAccumulator()
+    var sampledBatchDrawFraction = NumericAccumulator()
     var cpuPercent = NumericAccumulator()
     var gpuBusyPercent = NumericAccumulator()
     var appMemoryGB = NumericAccumulator()
@@ -319,6 +326,8 @@ private struct TrainingBucketBuilder {
         legalMass.absorb(s.rollingLegalMass)
         gameLength.absorb(s.rollingAvgGameLength)
         drawFraction.absorb(s.rollingDrawFraction)
+        sampledBatchGameLength.absorb(s.rollingSampledBatchGameLength)
+        sampledBatchDrawFraction.absorb(s.rollingSampledBatchDrawFraction)
         cpuPercent.absorb(s.cpuPercent)
         gpuBusyPercent.absorb(s.gpuBusyPercent)
         appMemoryGB.absorb(s.appMemoryGB)
@@ -352,6 +361,8 @@ private struct TrainingBucketBuilder {
             legalMass: legalMass.range,
             gameLength: gameLength.range,
             drawFraction: drawFraction.range,
+            sampledBatchGameLength: sampledBatchGameLength.range,
+            sampledBatchDrawFraction: sampledBatchDrawFraction.range,
             cpuPercent: cpuPercent.range,
             gpuBusyPercent: gpuBusyPercent.range,
             appMemoryGB: appMemoryGB.range,

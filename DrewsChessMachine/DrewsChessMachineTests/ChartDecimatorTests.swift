@@ -42,6 +42,8 @@ final class ChartDecimatorTests: XCTestCase {
             rollingValueProbLoss: nil,
             rollingAvgGameLength: nil,
             rollingDrawFraction: nil,
+            rollingSampledBatchGameLength: nil,
+            rollingSampledBatchDrawFraction: nil,
             cpuPercent: cpuPercent,
             gpuBusyPercent: nil,
             gpuMemoryMB: nil,

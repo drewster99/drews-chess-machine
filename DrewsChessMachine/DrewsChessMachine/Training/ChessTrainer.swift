@@ -239,6 +239,27 @@ struct TrainStepTiming: Sendable {
     /// high relative to LR for the current loss landscape.
     let velocityNorm: Float
 
+    /// Position-weighted mean game length (in plies) of the minibatch THIS
+    /// step pulled from the replay buffer — `SamplingResult.achievedMeanGameLength`,
+    /// i.e. the mean over emitted positions of each position's whole-game length.
+    /// Unlike the diagnostic block above this is valid on EVERY step (the sampler
+    /// tallies it on the uniform fast path too, not just stats steps), so
+    /// `recordStep` folds it into a rolling mean unconditionally. NOTE: this is
+    /// *position-weighted* (a 300-ply game contributes 300 rows, a 40-ply game
+    /// 40), so it sits naturally above the *game-weighted* self-play mean length;
+    /// it also diverges from the raw buffer composition when the length-tilt
+    /// sampling constraint is active — that divergence is the signal. `.nan` on
+    /// the random-data sweep path, which never samples the replay buffer.
+    let sampledBatchMeanGameLength: Double
+    /// Fraction of THIS step's sampled minibatch whose game ended in a draw —
+    /// `achievedDrawCount / batchSize`, in [0, 1]. The post-constraint REALIZED
+    /// batch draw rate, distinct from the pre-constraint buffer draw rate on the
+    /// `[STATS]` `comp=` segment: with the draw-cap constraint active this is
+    /// clamped below the buffer's draw share. Also position-weighted, so longer
+    /// (often drawn) games are over-represented relative to the per-game
+    /// self-play draw rate. Valid on every step; `.nan` on the sweep path.
+    let sampledBatchDrawFraction: Double
+
     /// True when this step's diagnostic outputs (policy entropy, advantage
     /// stats, played-move / value-head probabilities, weight & velocity norms,
     /// non-negligible-cell counts, outcome-split policy losses) were actually
@@ -570,6 +591,16 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         /// so velocity-vs-gradient magnitude can be compared at a
         /// glance when raising μ. Nil before any step has executed.
         let rollingVelocityNorm: Double?
+        /// Rolling-window means of the sampled-minibatch composition —
+        /// `TrainStepTiming.sampledBatchMeanGameLength` (position-weighted mean
+        /// game length, plies) and `…DrawFraction` (realized post-constraint
+        /// draw rate, [0,1]). Folded in on every step, so these track what the
+        /// trainer is actually consuming from the replay buffer, to be plotted
+        /// alongside the self-play game-length / draw-rate series. Nil before
+        /// the first replay-sampled step. See the field docstrings on
+        /// `TrainStepTiming` for the per-game-vs-per-position caveat.
+        let rollingSampledBatchGameLength: Double?
+        let rollingSampledBatchDrawFraction: Double?
         /// Rolling-window means of `TrainStepTiming` timing fields,
         /// over the last `rollingTimingWindow` steps. These intentionally
         /// shadow `TrainingRunStats.avgGpuMs` (which is cumulative across
@@ -628,6 +659,12 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _policyLossWinWindow: RollingDoubleWindow
     private var _policyLossLossWindow: RollingDoubleWindow
     private var _velocityNormWindow: RollingDoubleWindow
+    /// Realized sampled-minibatch composition windows — appended on EVERY step
+    /// (not gated on `hasDiagnostics`, since the sampler tallies these on the
+    /// uniform fast path too). NaN entries (the random-data sweep path) are
+    /// skipped at append time so the means stay well-defined.
+    private var _sampledBatchGameLengthWindow: RollingDoubleWindow
+    private var _sampledBatchDrawFractionWindow: RollingDoubleWindow
     /// Rolling per-step timing windows. Sized independently of
     /// `rollingWindow` because the right horizon for "is the trainer
     /// slowing down?" is hundreds of steps, not the much smaller window
@@ -707,6 +744,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         self._policyLossWinWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyLossLossWindow = RollingDoubleWindow(limit: rollingWindow)
         self._velocityNormWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._sampledBatchGameLengthWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._sampledBatchDrawFractionWindow = RollingDoubleWindow(limit: rollingWindow)
         self._dataPrepMsWindow = RollingDoubleWindow(limit: Self.rollingTimingWindow)
         self._gpuRunMsWindow = RollingDoubleWindow(limit: Self.rollingTimingWindow)
         self._readbackMsWindow = RollingDoubleWindow(limit: Self.rollingTimingWindow)
@@ -752,6 +791,18 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._readbackMsWindow.append(timing.readbackMs)
             self._queueWaitMsWindow.append(timing.queueWaitMs)
             self._stepMsWindow.append(timing.totalMs)
+
+            // Sampled-batch composition — valid on EVERY step (the replay
+            // sampler tallies it on the uniform fast path too), so it lives
+            // here in the unconditional block rather than under the
+            // `hasDiagnostics` gate. NaN-guarded for the random-data sweep
+            // path, which never samples the buffer.
+            if timing.sampledBatchMeanGameLength.isFinite {
+                self._sampledBatchGameLengthWindow.append(timing.sampledBatchMeanGameLength)
+            }
+            if timing.sampledBatchDrawFraction.isFinite {
+                self._sampledBatchDrawFractionWindow.append(timing.sampledBatchDrawFraction)
+            }
 
             // The diagnostic reductions are computed only on stats steps
             // (`hasDiagnostics`); non-stats steps carry `.nan` / `nil`
@@ -893,6 +944,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._policyLossWinWindow.removeAll()
             self._policyLossLossWindow.removeAll()
             self._velocityNormWindow.removeAll()
+            self._sampledBatchGameLengthWindow.removeAll()
+            self._sampledBatchDrawFractionWindow.removeAll()
             self._dataPrepMsWindow.removeAll()
             self._gpuRunMsWindow.removeAll()
             self._readbackMsWindow.removeAll()
@@ -948,6 +1001,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             let rollingPLossWin = _policyLossWinWindow.mean
             let rollingPLossLoss = _policyLossLossWindow.mean
             let rollingVNorm = _velocityNormWindow.mean
+            let rollingSampledBatchLen = _sampledBatchGameLengthWindow.mean
+            let rollingSampledBatchDraw = _sampledBatchDrawFractionWindow.mean
             let (advP05, advP50, advP95) = Self.percentiles(
                 ring: _advRawRing,
                 filled: _advRawRingFilled
@@ -987,6 +1042,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
                 rollingPolicyLossWin: rollingPLossWin,
                 rollingPolicyLossLoss: rollingPLossLoss,
                 rollingVelocityNorm: rollingVNorm,
+                rollingSampledBatchGameLength: rollingSampledBatchLen,
+                rollingSampledBatchDrawFraction: rollingSampledBatchDraw,
                 recentDataPrepMs: _dataPrepMsWindow.mean,
                 recentGpuRunMs: _gpuRunMsWindow.mean,
                 recentReadbackMs: _readbackMsWindow.mean,
@@ -4341,6 +4398,12 @@ final class ChessTrainer: @unchecked Sendable {
             let boardsCopy: [Float]
             let isStatsStep: Bool
             let includeDiagnostics: Bool
+            /// Position-weighted mean game length and draw fraction of the
+            /// minibatch this step sampled — carried out of phase 1 (the only
+            /// layer that sees the `SamplingResult`) so phase 3 can stamp them
+            /// onto `TrainStepTiming` for the rolling chart windows.
+            let sampledBatchMeanGameLength: Double
+            let sampledBatchDrawFraction: Double
         }
         let phase1: Phase1? = try await enqueue { [batchSize] in
             let phase1Start = CFAbsoluteTimeGetCurrent()
@@ -4385,6 +4448,18 @@ final class ChessTrainer: @unchecked Sendable {
                 materialCounts: isStatsStep ? materials : nil
             )
             guard didSample else { return nil }
+            // Realized composition of the batch this step just drew, for the
+            // rolling sampled-batch chart windows (mean game length + draw
+            // rate). `lastSamplingResult()` is populated on EVERY sample — the
+            // uniform fast path tallies it too, not just the stats-step
+            // constrained path — and the trainer serializes steps, so nothing
+            // re-samples between here and the phase-3 `recordStep`. Read once,
+            // on the trainer queue, while we hold the batch.
+            let samplingResult = replayBuffer.lastSamplingResult()
+            let sampledBatchMeanGameLength = samplingResult.achievedMeanGameLength
+            let sampledBatchDrawFraction = samplingResult.batchSize > 0
+                ? Double(samplingResult.achievedDrawCount) / Double(samplingResult.batchSize)
+                : Double.nan
             // Compute batch stats up-front (cheap, ~1 ms) and emit the
             // line BEFORE the heavy GPU work fires. Doing it here keeps
             // it on the trainer queue (no cross-queue ownership of the
@@ -4430,7 +4505,13 @@ final class ChessTrainer: @unchecked Sendable {
             let totalFloats = batchSize * floatsPerBoard
             let boardsCopy = Array(UnsafeBufferPointer(start: boards, count: totalFloats))
             self.phase1WallTimesMs.append((CFAbsoluteTimeGetCurrent() - phase1Start) * 1000)
-            return Phase1(boardsCopy: boardsCopy, isStatsStep: isStatsStep, includeDiagnostics: includeDiagnostics)
+            return Phase1(
+                boardsCopy: boardsCopy,
+                isStatsStep: isStatsStep,
+                includeDiagnostics: includeDiagnostics,
+                sampledBatchMeanGameLength: sampledBatchMeanGameLength,
+                sampledBatchDrawFraction: sampledBatchDrawFraction
+            )
         }
         guard let phase1 else { return nil }
 
@@ -4469,7 +4550,9 @@ final class ChessTrainer: @unchecked Sendable {
         let dispatchedAtPhase3 = CFAbsoluteTimeGetCurrent()
         let isStatsStep = phase1.isStatsStep
         let includeDiagnostics = phase1.includeDiagnostics
-        return try await enqueue { [batchSize, vBaselineHandoff, freshBaselineMs, dispatchedAtPhase3, isStatsStep, includeDiagnostics] in
+        let sampledBatchMeanGameLength = phase1.sampledBatchMeanGameLength
+        let sampledBatchDrawFraction = phase1.sampledBatchDrawFraction
+        return try await enqueue { [batchSize, vBaselineHandoff, freshBaselineMs, dispatchedAtPhase3, isStatsStep, includeDiagnostics, sampledBatchMeanGameLength, sampledBatchDrawFraction] in
             let phase3Start = CFAbsoluteTimeGetCurrent()
             let phase3QueueWaitMs = (phase3Start - dispatchedAtPhase3) * 1000
             let totalStart = phase3Start
@@ -4746,6 +4829,11 @@ final class ChessTrainer: @unchecked Sendable {
                 policyLossWin: baseTiming.policyLossWin,
                 policyLossLoss: baseTiming.policyLossLoss,
                 velocityNorm: baseTiming.velocityNorm,
+                // Stamp the realized batch composition phase 1 measured off the
+                // `SamplingResult` (baseTiming carries `.nan` placeholders — the
+                // inner step runner never sees the sample).
+                sampledBatchMeanGameLength: sampledBatchMeanGameLength,
+                sampledBatchDrawFraction: sampledBatchDrawFraction,
                 hasDiagnostics: baseTiming.hasDiagnostics
             )
         }
@@ -6380,6 +6468,14 @@ final class ChessTrainer: @unchecked Sendable {
             policyLossWin: policyLossWinBufValue.isFinite ? policyLossWinBufValue : nil,
             policyLossLoss: policyLossLossBufValue.isFinite ? policyLossLossBufValue : nil,
             velocityNorm: velocityNormBufValue,
+            // Batch composition isn't known at this layer — it comes from the
+            // replay-buffer `sample()` call up in phase 1. The real-data path's
+            // outer trainStep overwrites both at the phase-3 level (mirroring
+            // `freshBaselineMs`); the random-data sweep path never samples the
+            // replay buffer, so leaving them `.nan` is correct (and `recordStep`
+            // skips non-finite values).
+            sampledBatchMeanGameLength: .nan,
+            sampledBatchDrawFraction: .nan,
             hasDiagnostics: includeDiagnostics
         )
         }  // autoreleasepool

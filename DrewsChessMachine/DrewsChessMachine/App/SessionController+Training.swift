@@ -2114,6 +2114,16 @@ extension SessionController {
                             bufComp.meanGameLengthPerSampledPosition,
                             bufComp.winFraction, bufComp.drawFraction, bufComp.lossFraction
                         )
+                        // Realized sampled-batch composition (rolling mean over
+                        // the training-step window) — the post-constraint
+                        // counterpart to the pre-constraint buffer `comp=` above,
+                        // and the exact pair the game-length / draw-rate chart
+                        // tiles plot against the self-play series.
+                        let sampBatchLenStr = trainingSnap.rollingSampledBatchGameLength
+                            .map { String(format: "%.1f", $0) } ?? "--"
+                        let sampBatchDrawStr = trainingSnap.rollingSampledBatchDrawFraction
+                            .map { String(format: "%.3f", $0) } ?? "--"
+                        let sampBatchStr = "len=\(sampBatchLenStr) D=\(sampBatchDrawStr)"
                         // Per-step timing means over the rolling timing
                         // window. Splits `recentStepMs` into prep/gpu/
                         // read/queueWait/step so a slowdown can be
@@ -2178,7 +2188,7 @@ extension SessionController {
                         // inputs).
                         let shapesStr = "feedCache=\(trainer.feedCacheCount)"
 
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) spGamesEm=\(parallelSnap.emittedGames) spMovesEm=\(parallelSnap.emittedPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) spGamesEm=\(parallelSnap.emittedGames) spMovesEm=\(parallelSnap.emittedPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) sampBatch=(\(sampBatchStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // [DRAW-WATCH] summary — piggyback on the same

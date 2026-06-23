@@ -22,7 +22,9 @@ final class TrainingLiveStatsGatingTests: XCTestCase {
         gradGlobalNorm: Float,
         policyEntropy: Float = .nan,
         valueMean: Float = .nan,
-        advantageRaw: [Float]? = nil
+        advantageRaw: [Float]? = nil,
+        sampledBatchMeanGameLength: Double = .nan,
+        sampledBatchDrawFraction: Double = .nan
     ) -> TrainStepTiming {
         TrainStepTiming(
             dataPrepMs: 1, gpuRunMs: 2, readbackMs: 0.1, queueWaitMs: 0, totalMs: 3,
@@ -46,6 +48,8 @@ final class TrainingLiveStatsGatingTests: XCTestCase {
             advantageRaw: advantageRaw,
             policyLossWin: nil, policyLossLoss: nil,
             velocityNorm: .nan,
+            sampledBatchMeanGameLength: sampledBatchMeanGameLength,
+            sampledBatchDrawFraction: sampledBatchDrawFraction,
             hasDiagnostics: hasDiagnostics
         )
     }
@@ -112,5 +116,56 @@ final class TrainingLiveStatsGatingTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(snap.rollingPolicyLoss), 1.0, accuracy: 1e-6)
         // No stats step → no `lastTiming` surfaced.
         XCTAssertNil(snap.lastTiming)
+    }
+
+    /// The sampled-batch composition (game length + draw rate) is valid on
+    /// EVERY step — the replay sampler tallies it on the uniform fast path too —
+    /// so its rolling means must accumulate on non-stats steps as well, exactly
+    /// like the loss windows and unlike the diagnostic windows.
+    func testSampledBatchCompositionAccumulatesEveryStep() throws {
+        let box = TrainingLiveStatsBox(rollingWindow: 100)
+
+        // One stats step, then five non-stats steps. Batch composition is set on
+        // all six (it isn't gated by `hasDiagnostics`).
+        box.recordStep(makeTiming(
+            hasDiagnostics: true,
+            policyLoss: 1.0,
+            gradGlobalNorm: 3.0,
+            policyEntropy: 2.0,
+            valueMean: 0.5,
+            sampledBatchMeanGameLength: 100.0,
+            sampledBatchDrawFraction: 0.5
+        ))
+        for _ in 0..<5 {
+            box.recordStep(makeTiming(
+                hasDiagnostics: false,
+                policyLoss: 2.0,
+                gradGlobalNorm: 4.0,
+                sampledBatchMeanGameLength: 200.0,
+                sampledBatchDrawFraction: 0.0
+            ))
+        }
+
+        let snap = box.snapshot()
+        // (100 + 5·200)/6 and (0.5 + 5·0.0)/6 — i.e. every step counted, not
+        // just the single stats step.
+        XCTAssertEqual(try XCTUnwrap(snap.rollingSampledBatchGameLength), 1100.0 / 6.0, accuracy: 1e-6)
+        XCTAssertEqual(try XCTUnwrap(snap.rollingSampledBatchDrawFraction), 0.5 / 6.0, accuracy: 1e-9)
+    }
+
+    /// NaN batch composition (the random-data sweep path, which never samples
+    /// the replay buffer) must be skipped, leaving the rolling means nil rather
+    /// than poisoned — even though the loss windows still accumulate.
+    func testNaNSampledBatchCompositionIsSkipped() throws {
+        let box = TrainingLiveStatsBox(rollingWindow: 100)
+        for _ in 0..<4 {
+            // Default sampledBatch* params are `.nan`.
+            box.recordStep(makeTiming(hasDiagnostics: false, policyLoss: 1.0, gradGlobalNorm: 2.0))
+        }
+        let snap = box.snapshot()
+        XCTAssertNil(snap.rollingSampledBatchGameLength)
+        XCTAssertNil(snap.rollingSampledBatchDrawFraction)
+        // Loss window still accumulated, confirming the steps were recorded.
+        XCTAssertEqual(try XCTUnwrap(snap.rollingPolicyLoss), 1.0, accuracy: 1e-6)
     }
 }

@@ -116,6 +116,22 @@ struct TrainingChartSample: Identifiable, Sendable, Codable, Equatable {
     /// + additive.
     let rollingDrawFraction: Double?
 
+    /// Rolling-window position-weighted mean game length (plies) of the
+    /// minibatches the trainer sampled from the replay buffer —
+    /// `TrainingLiveStatsBox.Snapshot.rollingSampledBatchGameLength`. Plotted
+    /// on the same tile as `rollingAvgGameLength` so "what self-play produces"
+    /// and "what the trainer consumes" can be compared directly. Sits naturally
+    /// above the self-play line (position-weighting over-represents long games)
+    /// and diverges further when the length-tilt sampling constraint is active.
+    /// Optional + additive: older `.dcmsession` files decode this nil.
+    let rollingSampledBatchGameLength: Double?
+    /// Rolling-window realized draw rate of the sampled minibatches in `[0, 1]`
+    /// — `rollingSampledBatchDrawFraction`, the per-position fraction whose game
+    /// was a draw. Plotted alongside `rollingDrawFraction`; clamped below the
+    /// self-play draw rate when the draw-cap sampling constraint is active.
+    /// Optional + additive.
+    let rollingSampledBatchDrawFraction: Double?
+
     // System metrics
     let cpuPercent: Double?
     let gpuBusyPercent: Double?
