@@ -1447,6 +1447,61 @@ experiment artifacts (`results.json` ~6.8 MB, `experiment_results.js` ~921 KB, t
 
 ## Completed
 
+- **Fast legal-move generation: make/unmake + pin-based (2026-06-24, `81ac884`,
+  `d4becf6`).** Move-generation legality was a copy-make filter — for each
+  pseudo-legal move it allocated a whole new `GameState` (board-array COW) just
+  to test whether the mover's king was attacked, ~30 per position. Profiling an
+  import put 93% of CPU in `MoveGenerator.legalMoves`, roughly half of it in that
+  per-candidate allocation. Two faster generators were added, each required to
+  return the **identical** move set: `legalMovesMakeUnmake` (B) applies each move
+  in place on one board buffer, tests the king square, and unmakes — no
+  per-candidate allocation (~3× on perft); `legalMovesPinBased` (C) computes the
+  check status and a `UInt64` absolute-pin bitboard once from the king's rays,
+  then fast-paths any move that is not-in-check ∧ not-a-king-move ∧
+  not-en-passant ∧ not-from-a-pinned-square with no apply at all, verifying only
+  the residual via the shared make/unmake primitive (~6× on perft).
+  `isSquareAttacked` gained an `UnsafeBufferPointer` overload so the legality
+  test needs no `GameState` wrapper. Production `legalMoves` now calls
+  `legalMovesPinBased`; `legalMovesCopyMake` is retained as the perft and
+  cross-check reference. All three generators are pure (no shared mutable state),
+  so they run unchanged across concurrent self-play workers. The pin fast-path is
+  sound because the only ways a non-king move can newly expose its own king are
+  vacating a king ray (absolute pin) or an en-passant rank discovery, both
+  excluded. Validation: a `PerftTests` suite checks all three against published
+  node counts for six standard positions (incl. Kiwipete) and runs a per-node
+  differential of B and C against copy-make (~200K positions, zero divergence);
+  the `--crosscheck-movegen` flag makes `legalMoves` additionally run all three
+  per call and log any divergence (FEN + move diff) to stderr/SessionLogger,
+  soak-tested over ~8K real self-play positions (zero divergence); plus an
+  independent code review (no Critical findings).
+
+- **Parallel PGN importer; replay-by-legality; fsync removal (2026-06-24,
+  `81ac884`, `d4becf6`).** The PGN→corpus importer (`--import-pgn`) was a single
+  serial loop bottlenecked on per-ply move generation; it is now a worker pool
+  (`activeProcessorCount − 2`) that parses, replays, and encodes framed records
+  off-thread, feeding a single serial writer that drains a per-sequence reorder
+  buffer so the corpus preserves original file order, with `DispatchSemaphore`
+  backpressure and a `DispatchGroup` barrier. Output is deterministic and
+  independent of worker count. Each SAN token is resolved against the
+  *pseudo-legal* moves with legality checked only on the match (avoiding a full
+  legal-move generation per ply), and resolution rejects an ambiguous SAN
+  (more than one legal match) rather than guessing. Replay is by legality only,
+  so a game legally played through a claimable-but-unclaimed threefold-repetition
+  or fifty-move draw imports correctly — the engine's self-play auto-termination
+  is not applied to recorded games; the outcome comes from the `Result` tag.
+  Hard-fail by default on the first unparseable game (`--lenient` counts and
+  skips instead) and on a nonzero reader/decompressor exit (missing file, missing
+  `zstd`, corrupt `.zst`) so a bad input fails loudly instead of producing a
+  silent empty corpus. The shard writer's per-record fsync cadence (described in
+  the corpus entry above) was removed as unnecessary for a re-runnable import —
+  one `synchronize()` at seal remains; crash recovery still relies on the
+  per-record CRC-32 and the sealed-shard SHA-256. New flags: `--max-storage
+  <size>`, `--import-threads <n>`, `--lenient`. `FENParser` gained `GameState →
+  FEN` encoding (inverse of `parse`) for reproducible divergence logging. Tests
+  in `PGNImporterTests` (order-preservation, thread-count determinism, hard-fail,
+  lenient, exact max-games cap, threefold replay, ambiguous-SAN rejection,
+  missing-file hard-fail), `PerftTests`, and `FENParserTests`.
+
 - **fp16 (float16) selectable compute precision — inference (2026-06-17,
   `b25f37e`).** `ComputeDataType` gains `.float16` beside `.float32` / `.bFloat16`,
   selectable in Build-New-Model and embedded in safetensors metadata. Closed the
