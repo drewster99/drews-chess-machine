@@ -1,10 +1,20 @@
 # Self-play game corpus — design plan
 
-Status: **TABLED — deferred.** Captured for later; not the current focus (that's
-`FULL10PLY200_PLAN.md`). This feature is independent of full10ply200 — full10ply200 sources
-its history from the live `ChessGameEngine` window, not from this corpus — so tabling B
-does not block A. The emit-completeness regression test (invariants 1–5) is specced here
-and travels with this workstream. Branch: `safetensors-storage`. Created 2026-06-06.
+Status: **SHIPPED 2026-06-20** (`f0c0012` format/store, `0ad27b3` recording, `c4243b5`
+offline replay, `461c95c` provenance, `049e94f` PGN import, `5a93c54` usage). Created
+2026-06-06; branch `safetensors-storage`.
+
+> **As-built correction (2026-06-23).** The shipped corpus is **leaner than this plan
+> specced.** The on-disk `GameRecord` (`Persistence/GameRecord.swift`) stores only
+> `startFEN` + the 2-byte packed `moves` + `outcome` (W/D/L) + `terminationReason` — it
+> *"holds no encoded tensors and no policy indices."* The per-ply **behavior-policy
+> probability, value scalar, sampling tau, and material count** described under "Per-ply
+> record" / "Consumption deferred (data captured now)" below were **NOT** captured (that
+> "captured now / impossible to backfill" decision did not ship), and the generating
+> `ModelID` is recorded at the **ingestion-event** level in `corpus.json`, not per game.
+> So off-policy / V-trace data is *not* sitting in existing corpus files — re-deriving it
+> would require regenerating the games. Treat the per-ply sections below as original design
+> intent, not the as-built format.
 
 ## Goal
 
@@ -36,6 +46,9 @@ buffer (saving that would re-freeze the encoding). Games are stored as complete,
 units.
 
 ## Per-ply record (architecture-independent)
+
+> **Not as-built** — see the correction banner at the top: the shipped `GameRecord` is
+> move-list-only; the behavior/value/tau/material fields below were not captured.
 
 - **Played move** — the `ChessMove` (policy target). Prefer the move over the derived
   `policyIndex` (rawer; survives any `PolicyEncoding` change — though the 76×64 space is

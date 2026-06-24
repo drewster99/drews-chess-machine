@@ -133,16 +133,16 @@ confirming they pass unchanged.** The XCTest suite cannot be *run* while Experim
 full non-regression proof is gated on a training pause; until then I can only compile-verify (editing
 source and building to DerivedData does **not** disturb the running Release process).
 
-## 7. Validation
+## 7. Validation — all satisfied (validated 2026-06-23; `Full10Ply10Reps210EncodingTests` pass)
 
-- [ ] Exact-match test (5e) passes: recompute-from-frames == basic30 mask, including the
+- [x] Exact-match test (5e) passes: recompute-from-frames == basic30 mask, including the
       across-irreversible-move case and a true 4-/2-ply repeat.
-- [ ] Generalized frame invariant holds for all encodings.
-- [ ] Encoder-fills-planes test green for `.full10Ply10Reps210`.
-- [ ] Inference path (encode with GameState) and training path (recompute) produce identical
+- [x] Generalized frame invariant holds for all encodings.
+- [x] Encoder-fills-planes test green for `.full10Ply10Reps210`.
+- [x] Inference path (encode with GameState) and training path (recompute) produce identical
       planes 200–209 for the same position — assert in a test.
-- [ ] Build clean (compile-only while Exp 2 trains; full test run when paused).
-- [ ] No change to `full10ply200` / `basic30` behavior (regression: their tests still pass byte-for-byte).
+- [x] Build clean (compile-only while Exp 2 trains; full test run when paused).
+- [x] No change to `full10ply200` / `basic30` behavior (regression: their tests still pass byte-for-byte).
 
 ## 8. Risks / open items
 

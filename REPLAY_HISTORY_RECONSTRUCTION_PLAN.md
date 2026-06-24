@@ -1,10 +1,10 @@
 # Replay-buffer history reconstruction — store once, stack on read
 
-Status: **IMPLEMENTED (compile-clean), tests written but not yet run** (commit
-`8e7ed83`, 2026-06-06). All phases done; bake-in replaced outright. The bit-exact
-reconstruction-vs-bake-in test exists but has NOT been executed (live training session
-blocks running the test target) — run `DrewsChessMachineTests` when the session is free
-to close the validation gate. Branch: `safetensors-storage`.
+Status: **SHIPPED — tests run & passing (2026-06-23 audit).** (commit `8e7ed83`,
+2026-06-06; implementation `ReplayBuffer.reconstructHistoryStack`.) All phases done; bake-in
+replaced outright. The bit-exact reconstruction-vs-bake-in test (`ReplayHistoryReconstructionTests`
+in `DrewsChessMachineTests`) has now been executed and passes, closing the validation gate that
+was previously blocked behind a live training session. Branch: `safetensors-storage`.
 
 ## Goal
 

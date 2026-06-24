@@ -1,6 +1,8 @@
+> **ARCHIVED (2026-06-23).** NOTE: this file IS committed (the "uncommitted working notes" header was wrong). Track 1 (deep-tower compile wall) is SOLVED and recorded in CHANGELOG (2026-06-09 `--arch-sweep` entry); Track 2 (Exp-4 3×3 blowup) lives in ARCH_EXPERIMENTS.md Experiment 4. Body retained below for history.
+
 # Overnight investigation (2026-06-09, autonomous loop) — running notes
 
-Uncommitted working notes. Two tracks. Raw Track-1 data: `/tmp/arch_bench.jsonl`.
+Committed working notes. Two tracks. Raw Track-1 data: `/tmp/arch_bench.jsonl`.
 
 ## TRACK 1 — "training hangs at large block counts" — SOLVED
 

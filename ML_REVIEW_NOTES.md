@@ -1,5 +1,11 @@
 # ML Expert Review Notes
 
+> **Snapshot as of 2026-05-05 — several findings since superseded; do not treat as current.** The body below is preserved as a historical record. Known corrections (verified 2026-06-23 against the `safetensors-storage` trunk):
+> - **Optimizer (Finding #1):** the optimizer is now **SGD-with-momentum + decoupled (AdamW-style) weight decay**, *not* "plain SGD". `MomentumCoeff` is a real tunable parameter (default **0.9**) and `ChessTrainer.swift` maintains per-variable velocity buffers: `v_new = μ·v_old + clipped_grad`, `weight_new = weight_old − lr·v_new − lr·decayC·weight_old`. The "no Adam moments or momentum state" claim is wrong.
+> - **Policy loss (Finding #2):** policy cross-entropy is computed on **raw, unmasked logits by design**, *not* on `maskedLogits`. See `ChessTrainer.swift` ("Raw policy logits, NOT `maskedLogits`" / "The CE softmax is over the **raw** policy logits"). Feeding `maskedLogits` was tried and reverted; the model is deliberately pushed to lower raw illegal logits.
+> - **Draw penalty (Finding #6):** `draw_penalty` default is now **0** (neutral draws), *not* 0.1.
+> - **All cited line numbers below have drifted** and should not be trusted; treat every `file.swift:NNN` reference as approximate-at-best.
+
 This document records the completed ML expert review findings for `drews-chess-machine`, organized by priority.
 
 ## Critical Issues

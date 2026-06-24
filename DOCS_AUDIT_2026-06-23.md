@@ -1,5 +1,12 @@
 # Docs audit — 2026-06-23
 
+> **Resolution (2026-06-23).** All four tiers below have since been applied.
+> Tier 1 (CLAUDE.md / ROADMAP / CHANGELOG) landed first; Tiers 2–4 plus the
+> CLAUDE.md sampling-section fix landed in a follow-up pass — including the
+> `replay_buffer_file_format.md` v7 rewrite with a full v1→v7 version-history
+> table, and folding OVERNIGHT_INVESTIGATION's lr-stability-threshold finding
+> into ARCH_EXPERIMENTS. This document is retained as the audit record.
+
 Read-only audit of all ~43 substantive markdown docs (root + `documentation/` +
 `scripts/` + `experiments/` notes; the 491 `experiments/*/proposal.md` autotrain
 one-liners excluded). Each doc's claims were cross-checked against the current

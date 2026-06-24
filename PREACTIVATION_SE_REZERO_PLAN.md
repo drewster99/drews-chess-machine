@@ -3,14 +3,25 @@
 Status: **IMPLEMENTED** (architecture v4 = `ChessNetwork.architectureVersion`). See
 the 2026-05-31 CHANGELOG entries for the as-built summary.
 
-> **Correction since drafting:** the tower was reduced to **`numBlocks = 12`** (was
-> 16 when this plan was written). The ReZero α init is therefore **`1/√12 ≈ 0.289`**,
-> not the `1/√16 = 0.25` quoted throughout this doc, and the per-block variance-growth
-> figures (e.g. "×1.28 over 16 blocks") shift accordingly. The implementation derives
-> α from `1/√numBlocks` (see `ChessNetwork.residualBlock`), so it tracks `numBlocks`
-> automatically — read the `0.25`/`16` references below as `1/√numBlocks`/`numBlocks`.
-> The default learning rate was also raised to `1e-3` for the bf16 path (separate
-> CHANGELOG entry).
+> **Correction since drafting (updated 2026-06-23):** the default tower is now the
+> **`v4_5block_7x7` preset — 5 blocks** (`NetworkArchitecture.Preset.current`), not the
+> 16 of the original draft nor the 12 of the earlier correction. The depth-appropriate
+> ReZero α init is therefore **`1/√5 ≈ 0.447`**, not the `1/√16 = 0.25` quoted
+> throughout this doc, and the per-block variance-growth figures (e.g. "×1.28 over 16
+> blocks") shift accordingly. α is still derived from `1/√numBlocks`, so it tracks the
+> configured block count automatically — read the `0.25`/`16` references below as
+> `1/√numBlocks`/`numBlocks`. The default learning rate was also raised to `1e-3` for
+> the bf16 path (separate CHANGELOG entry).
+>
+> The `architectureVersion` / `currentArchHash` mechanics described in §3.B and §6 were
+> superseded by the **runtime-configurable-architecture refactor**: architecture is no
+> longer a compile-time `architectureVersion` constant. `architectureVersionLabel`
+> (`NetworkArchitecture.swift`) is now a *computed* label, and `archHash` is reduced to
+> a **legacy-`.dcmmodel`-only lookup** (`legacyDcmmodelArchHashes` in
+> `NetworkArchitecture.swift`, resolved by `ModelCheckpointFile`) — the modern
+> `.safetensors` format embeds the full `NetworkArchitecture` config instead of relying
+> on a hash bump for compatibility. Read §3.B/§6's "bump `architectureVersion` to
+> perturb `archHash`" prose as historical.
 
 Branch context: `bf16-trainer`. This is a fresh-architecture change (architecture
 "v4"). It is **not** weight-compatible with any existing `.dcmmodel` / `.dcmsession`;

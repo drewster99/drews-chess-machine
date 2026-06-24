@@ -1,11 +1,19 @@
 # Lichess Probe Detail — auto-compare to session-start + wide-set comparison
 
-**Status: implemented** (build-verified, 0 errors; runtime validation pending the
-next launch since the run can't be interrupted). Implements an auto-comparison that, by
+**Status: DONE** (shipped and in use as of 2026-06-23; the original build-verified
+note is superseded). Implements an auto-comparison that, by
 default, diffs the live probe against **this session's start-of-training
 snapshot** (the `training-start-*` auto-exports), for **both** sets, with a
 header toggle and UserDefaults persistence. Also adds the OVERALL summary band
 to the wide set and lights up the wide charts' comparison reference lines.
+
+> **Refinement since drafting:** manual `Compare…` no longer shows a friendly
+> mismatch alert on a probe-count that doesn't match a set exactly. It now routes
+> the picked file to the **nearest** set size — comparing `probeCount` against the
+> live `LichessProbeData.wideSet.count` / `largeSet.count` and pinning to whichever
+> is closer (`routeManualComparison` in `LichessProbeDetailView.swift`). Landed via
+> follow-up commits `524d59f` / `d593c2b` / `b585198`. Read the "mismatch → friendly
+> alert" passages below as superseded.
 
 ## Goal / behavior
 When the Detail window opens, default to comparing live-vs-session-start so the

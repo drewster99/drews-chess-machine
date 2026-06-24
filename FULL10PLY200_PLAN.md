@@ -1,8 +1,9 @@
 # full10ply200 input encoding + history-dropout — implementation plan
 
-Status: **Phases 1–4 IMPLEMENTED (compile-clean).** Tests written; **test *run*
-deferred** (a live training session blocks running tests/app per project rule).
-Phase 5 (history dropout) **DEFERRED → ROADMAP.md**. Branch: `safetensors-storage`.
+Status: **Phases 1–4 SHIPPED (2026-06-23 audit) — tests passing.** The
+`Full10Ply200EncodingTests` (in `DrewsChessMachineTests`) have since RUN and PASS, closing
+the validation gate that was previously deferred behind a live training session. Phase 5
+(history dropout) remains correctly **DEFERRED → ROADMAP.md**. Branch: `safetensors-storage`.
 Created 2026-06-06.
 
 Phase 3 scope note: in addition to self-play / inference / BN-warmup, the **arena**

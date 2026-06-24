@@ -1,9 +1,13 @@
 # Hybrid mixed precision: fp32 master weights + bf16 compute — implementation plan
 
-Status: **IMPLEMENTED — compiles clean (0 errors). NOT runtime-tested** (training run
-active; per workflow, no app/test runs during training). Runtime validation (the "money
-test" + the momentum/round-trip tests) is pending the machine freeing up.
-Branch: `bf16-trainer`.
+Status: **SHIPPED — runtime-validated, in production since 2026-05-31.** This is the
+canonical bf16 trainer path (`0626cec` "Canonical bf16 trainer = fp32 master weights
+(mixed precision)", 2026-05-31; validation tests `d186c89` same day) and has been the
+production training path for weeks. `masterVariables` / `syncMastersOps` /
+`syncMastersFromWorking()` are live in `Training/ChessTrainer.swift`, and the 2026-06-17
+fp16 CHANGELOG entry (`b25f37e`) confirms the fp32-master mixed-precision optimizer path is
+dtype-generic (keyed on `dtype != .float32`) and that bf16 trains on it. Branch: `bf16-trainer`
+(merged forward into `safetensors-storage`).
 
 **As-built note:** the checkpoint format/version bump in §5 turned out to be **unnecessary**.
 Masters are parallel to `trainables + bnRunningStatsVariables` (same count as the existing

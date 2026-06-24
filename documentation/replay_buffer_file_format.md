@@ -1,22 +1,33 @@
 # Replay Buffer File Format (`.replay_buffer.bin`)
 
 Binary serialization format for the self-play `ReplayBuffer` — the
-ring of `(board, move, outcome, vBaseline)` tuples that the trainer
-samples minibatches from. Produced by `ReplayBuffer.write(to:)` and
-consumed by `ReplayBuffer.restore(from:)` in
-`DrewsChessMachine/DrewsChessMachine/ReplayBuffer.swift`.
+ring of per-position columns (board, move, outcome, plus the v5+
+observability columns) that the trainer samples minibatches from.
+Produced by `ReplayBuffer.write(to:)` and consumed by
+`ReplayBuffer.restore(from:)` in
+`DrewsChessMachine/DrewsChessMachine/Training/ReplayBuffer.swift`.
 
 A replay buffer file lives inside a `.dcmsession` directory next to
-`champion.dcmmodel`, `trainer.dcmmodel`, and `session.json`. It is
-never used outside that session-bundle context; `session.json`'s
-`hasReplayBuffer` flag controls whether the file is expected to be
-present.
+`champion.safetensors`, `trainer.safetensors` (legacy `.dcmmodel`),
+and `session.json`. It is never used outside that session-bundle
+context; `session.json`'s `hasReplayBuffer` flag controls whether the
+file is expected to be present.
+
+> **Document status (2026-06-23).** The current on-disk version is
+> **v7** (`ReplayBuffer.fileVersion`). This document retains the full
+> **v3** and **v4** sections as historical reference and adds a
+> consolidated version history plus a complete **current v7** section
+> below. The decoder accepts only the current version — every prior
+> version is rejected with `PersistenceError.unsupportedVersion` (no
+> migration path).
 
 ## Design goals
 
 - **Byte-exact round-trip.** Save-then-load must reproduce every
   stored position bit-for-bit — identical board floats, identical
-  policy-index moves, identical outcomes, identical vBaselines.
+  policy-index moves, identical outcomes, and (v5+) identical
+  observability columns. (v7 dropped the `vBaselines` column that
+  v2–v6 carried; see the version history.)
 - **Stride matches the network input exactly.** Each saved board is
   `BoardEncoder.tensorLength` floats — the exact shape the live
   `ChessNetwork` consumes. No re-encoding, no separate repetition-
@@ -25,13 +36,36 @@ present.
   board-plane shape (e.g., pre-repetition-planes 18-plane encoding)
   refuses to load into a build with a different shape. `archHash`-
   style identity — via `floatsPerBoard` check at decode time.
-- **Four parallel arrays, oldest-first.** On-disk order is the
+- **Parallel column arrays, oldest-first.** On-disk order is the
   chronological ring order, not the in-memory physical-slot order.
   Readers do not need to know the pre-save `writeIndex` to reconstruct
-  the ring — they just append the file's entries in order.
+  the ring — they just append the file's entries in order. The column
+  *count* is version-dependent (4 in v3/v4 → 9 in v7; see the version
+  history).
 - **No in-place editing.** Every save is a fresh file inside a fresh
   `.dcmsession` directory, alongside the two model files and the JSON
   state blob.
+
+## Format version history
+
+The writer bumps `fileVersion` on any on-disk layout change; the reader
+hard-rejects every prior version (`PersistenceError.unsupportedVersion`).
+No backward-compatible readers, no migration — a resumed session restores
+the exact saved state or fails loudly.
+
+| Version | When | Change |
+|---|---|---|
+| **v1** | original | Base columns: boards, moves, outcomes. 18-plane boards (1,152 floats). No `vBaselines`. |
+| **v2** | — | Added the `vBaselines` (Float32) column. Still 18-plane (1,152). |
+| **v3** | 2026-04-19/20 | Board stride → 20 planes (1,280 floats; adds repetition planes 18–19). No integrity trailer / size check / caps yet. |
+| **v4** | 2026-04-20 | Durability hardening: 32-byte SHA-256 trailer, strict size-equality check, upper-bound caps, `synchronize()` + `F_FULLFSYNC`. Body unchanged (4 columns + `vBaselines`). |
+| **v5** | 2026-05-02 (`c1ec893`) | Added five per-position observability columns: `plyIndices`, `gameLengths`, `samplingTaus`, `stateHashes`, `workerGameIds`. |
+| **v6** | 2026-05-02 (`dfdf22c`) | Added the `materialCounts` (UInt8) column. |
+| **v7** | 2026-05-12 (`b48793c`) | Dropped the now-dead `vBaselines` column (the W/D/L value-head rewrite made the play-time-frozen baseline obsolete — the trainer recomputes a fresh policy-gradient baseline every step). The header `pad` slot was later (2026-06-20, `3016060`) repurposed as a live `encodingTag`, backward-compatibly *within* v7. |
+
+Detailed layouts follow: **v3** and **v4** are retained as historical
+sections (v4's durability machinery is still in force); the **current v7**
+layout is the last section.
 
 ## Historical format: v3
 
@@ -310,7 +344,7 @@ a specific `PersistenceError`:
 These are the subject of the "ReplayBuffer durability" item in
 `TODO_NEXT.md`. When implemented, the format moves to v4.
 
-## Current format: v4
+## Format v4 — durability baseline (mechanics inherited by v5–v7)
 
 v4 is the durability-hardened evolution of v3. The on-disk layout
 preserves v3's header and section structure verbatim, and appends a
@@ -318,9 +352,16 @@ preserves v3's header and section structure verbatim, and appends a
 invariant, hard upper-bound caps on every counter field, and full
 SHA verification before any header field is trusted.
 
-**This is the format every current build produces and consumes.** v3
-and earlier files are rejected by the v4 decoder with
-`PersistenceError.unsupportedVersion`. No migration path.
+**v4 is no longer the current on-disk version (that is v7, below), but
+its durability machinery is still in force.** The SHA-256 trailer, the
+size-equality check, the upper-bound caps, the `synchronize()` +
+`F_FULLFSYNC` write path, the durability pipeline, the launch-time
+orphan sweep, the session cross-check, and the error taxonomy described
+in this section are all inherited *unchanged* by v5–v7 — those versions
+changed only the body column set (and v7 the header `pad` → `encodingTag`)
+and the version gate. v3 and earlier files are rejected with
+`PersistenceError.unsupportedVersion`; a current (v7) build likewise
+rejects v4–v6 files. No migration path.
 
 ### On-disk layout (v4)
 
@@ -508,7 +549,7 @@ check is skipped rather than forced to mismatch.
 |---|---|
 | `.badMagic` | First 8 bytes ≠ `"DCMRPBUF"` |
 | `.truncatedHeader` | File is shorter than the 56-byte header |
-| `.unsupportedVersion(v)` | `fileVersion` is not 4 |
+| `.unsupportedVersion(v)` | `fileVersion` is not the current version (4 historically; **7** in current builds) |
 | `.incompatibleBoardSize(exp, got)` | `floatsPerBoard` does not match the running build's `BoardEncoder.tensorLength` |
 | `.upperBoundExceeded(field, value, max)` | A counter field exceeds its `maxReasonable*` cap |
 | `.invalidCounts(cap, stored, wi)` | Counter relationships fail (non-negative, stored ≤ capacity, writeIndex in range) |
@@ -517,6 +558,107 @@ check is skipped rather than forced to mismatch.
 | `.truncatedBody(expected, got)` | A section read returned fewer bytes than requested (should be caught by `.sizeMismatch` first, but kept as a defense) |
 | `.writeFailed(err)` | Write-side I/O failure |
 | `.readFailed(err)` | Read-side I/O failure that does not fit a more specific error |
+
+## Current format: v7
+
+v7 is the format every current build produces and consumes. It inherits
+v4's entire durability stack — SHA-256 trailer, strict size-equality
+check, upper-bound caps, `synchronize()` + `F_FULLFSYNC`, the durability
+pipeline, launch-time orphan sweep, and session cross-check (all in the
+"Format v4" section above). Two things changed across v5–v7:
+
+1. **The body grew from 4 columns to 9** — v5 added five per-position
+   observability columns; v6 added one more.
+2. **`vBaselines` was dropped** (v7) and the header `pad` slot became a
+   live **`encodingTag`** (a v7-era, backward-compatible refinement).
+
+### On-disk layout (v7)
+
+All multi-byte integers are little-endian; floats are IEEE-754 binary32.
+One 56-byte header, then nine parallel columns each `storedCount` entries
+long (oldest-first, in the order below), then a 32-byte trailer.
+
+```
+Offset  Size              Field                  Type       Notes
+------  ----------------  ---------------------  ---------  ------------------------------------
+  0        8              magic                  [UInt8]    ASCII "DCMRPBUF"
+  8        4              fileVersion            UInt32     Currently 7
+ 12        4              encodingTag            UInt32     FNV-1a of InputEncoding.rawValue; 0 = legacy/pre-tag sentinel (was `pad` in v3–v6)
+ 16        8              floatsPerBoard         Int64      Stored per-frame stride; must equal the running build's stored stride
+ 24        8              capacity               Int64      Ring capacity at save time (positions)
+ 32        8              storedCount            Int64      Number of positions actually saved
+ 40        8              writeIndex             Int64      Ring write cursor at save time (< capacity)
+ 48        8              totalPositionsAdded    Int64      Lifetime counter (replay-ratio controller)
+
+  --- body: storedCount entries each, oldest-first, in this column order ---
+ 56        S × F × 4      boards                 Float32    F = floatsPerBoard
+  ..       S × 4          moves                  Int32      Policy index, [0, 4864)
+  ..       S × 4          outcomes               Float32    z ∈ {-1, 0, +1}, side-to-move POV
+  ..       S × 2          plyIndices             UInt16     0-based ply within game            (v5)
+  ..       S × 2          gameLengths            UInt16     total plies (broadcast per game)   (v5)
+  ..       S × 4          samplingTaus           Float32    tau used at sampling time          (v5)
+  ..       S × 8          stateHashes            UInt64     per-position board hash            (v5)
+  ..       S × 4          workerGameIds          UInt32     (workerId<<16)|gameIndex           (v5)
+  ..       S × 1          materialCounts         UInt8      non-pawn piece count (0–30)        (v6)
+
+  --- trailer ---
+END-32   32              sha256                 [UInt8]    SHA-256 over all preceding bytes
+```
+
+Per-slot body bytes = `floatsPerBoard × 4 + 29` (the 29 = 4+4+2+2+4+8+4+1
+for the nine non-board columns). **Total file size:**
+
+```
+totalBytes = 56 + storedCount × (floatsPerBoard × 4 + 29) + 32
+           = 88 + storedCount × (floatsPerBoard × 4 + 29)
+```
+
+For a full 1 M-position ring storing `basic30` frames
+(`floatsPerBoard = 30 × 64 = 1,920`): 88 + 1,000,000 × (7,680 + 29) ≈
+**7.71 GB**. (`basic20` / a single `full10ply200` frame store 1,280
+floats → ≈ 5.15 GB.)
+
+### `floatsPerBoard` is now the *stored* per-frame stride
+
+Since the replay-history-reconstruction change, the buffer stores **one
+mover-relative frame per position** (`planesPerFrame × 64`) and
+reconstructs the full network input at sample time. So `floatsPerBoard`
+is the *stored* stride, not the network-input stride:
+
+- `basic20` → 1,280; `basic30` → 1,920
+- `full10ply200` → **1,280 stored** (one 20-plane frame), 12,800 reconstructed
+- `full10Ply10Reps210` → 1,344 stored
+
+The decoder still checks `floatsPerBoard` against the running build's
+stored stride (the `incompatibleBoardSize` gate), but a stride match is
+no longer sufficient to prove encoding compatibility — hence the
+`encodingTag`.
+
+### `encodingTag` — UInt32 (offset 12, was `pad`)
+
+Two distinct encodings can share a stored per-frame stride — single-frame
+`basic20` and 10-frame `full10ply200` both store 20-plane frames (stride
+1,280) — so `floatsPerBoard` alone cannot tell them apart. v7 repurposes
+the former zero-`pad` slot as a stable **FNV-1a hash of
+`InputEncoding.rawValue`** (`ReplayBuffer.encodingTag`). It is never 0;
+**tag 0 is the legacy/pre-tag sentinel** — a file written before the tag
+landed (early v7, plus any v3–v6 file via the same slot) carries 0 and
+the encoding check is skipped.
+
+On restore, a reconstructing buffer (`historyFrameCount > 1`) rejects a
+file whose tag is present-but-different (a stride-compatible-but-wrong
+encoding); single-frame encodings and tag-0 files skip the check. Added
+2026-06-20 (`3016060`) as a backward-compatible refinement *within* v7 —
+no version bump, because the slot was already reserved.
+
+### Decode / write / durability — same as v4
+
+The decode protocol, write protocol, durability pipeline, launch-time
+orphan sweep, session-load cross-check, and error taxonomy are exactly
+the v4 ones above, with two differences: the version gate is
+`fileVersion == 7` (not 4), and the size check / body read walk the nine
+columns (per-slot `floatsPerBoard × 4 + 29`) instead of four
+(`+ 12`). The SHA-256 verify still covers every byte before the trailer.
 
 ## Non-goals
 

@@ -1,15 +1,33 @@
 # Safetensors-native storage + runtime-configurable architecture — Plan
 
-Status: **APPROVED — in progress.** Branch `safetensors-storage` (from `bf16-trainer`).
-Build + commit per phase; no stopping between phases.
+Status: **SHIPPED (2026-06-23 audit) — one CLI item open.** Branch `safetensors-storage`
+(from `bf16-trainer`). Build + commit per phase; no stopping between phases.
 
 **Progress:** Phases 1–4 complete (NetworkArchitecture foundation, safetensors-native
 storage, static→instance refactor, build-new-net flexibility). Phase 6a complete
-(resume/load by embedded architecture). **Remaining:** Phase 5 (per-model precision,
-honored as-is — no bf16 gate, see §9), Phase 6 (v3/v4 block-style + SE
-variants + archHash→config fallback), Phase 7 (`--uci` from embedded config,
-`--playchess`), Phase 8 (capstone). See §15 for the two invariants that constrain
-all remaining work.
+(resume/load by embedded architecture). **Effectively all remaining phases have now
+shipped:**
+- **Phase 5 (per-model compute precision) — SHIPPED.** `ComputeDataType` (`.float32` /
+  `.bFloat16` / `.float16`) is embedded per-model and honored by the graph builders
+  (`ChessNetwork.swift` / `NetworkArchitecture.swift`); fp16 added 2026-06-17 (`b25f37e`,
+  inference-ready). No bf16 gate — honored as-is, per §9.
+- **Phase 6 (block-style / SE / heterogeneous towers) — SHIPPED** via the block-groups
+  refactor (`73a1bdd` Phase A: heterogeneous tower config + per-block graph builders;
+  `120f46b` Phase B: per-group Build-New-Model editor + diagram). Non-default-architecture
+  training (mixed/WRN-staircase towers) is exercised by GPU tests. Legacy `archHash→config`
+  fallback survives as a `.dcmmodel`-only lookup table.
+- **Phase 7 (`--uci` / `--playchess`) — SHIPPED.** Both flags ship in the arg parser
+  (`DrewsChessMachineApp.swift`): `--uci` (`28cf394`, cutechess / external opponents) and
+  `--playchess` (`26c14e9`).
+- **Safetensors-native storage — SHIPPED** (`Persistence/SafetensorsModelIO.swift`); identity
+  = embedded config, integrity = `content_sha256`.
+
+**The one genuinely-open item** is the headless **`--architecture-preset` /
+`--architecture-file` CLI flags** (§10): the preset store (`ArchitecturePresetStore`) exists
+and drives Build-New-Model, but it is GUI-only — those flags are *not* in the arg parser
+(grep-confirmed), so a fresh tower cannot yet be built/trained from the CLI. The deferred
+`architecture_version`-drop decision (free-text `label` instead) also remains open. See §15
+for the two invariants that constrain this remaining work.
 
 **Design revision in progress (§5a / §6 / §10):** a component-by-component design
 walkthrough with the user has finalized the configurable-architecture surface, and it

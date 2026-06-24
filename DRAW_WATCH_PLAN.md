@@ -1,8 +1,21 @@
 # DRAW_WATCH_PLAN.md
 
-> **Status: SHIPPED** (2026-06-13 audit). `Training/DrawWatchTracker.swift` is live
-> (`SessionController.drawWatchTracker` / `drawWatchSnapshot`); stealth monitor only,
-> no game-termination (still a non-goal).
+> **Status: SHIPPED** (v1 2026-06-13 audit; extended through v2/v3 by 2026-06-23).
+> `Training/DrawWatchTracker.swift` is live (`SessionController.drawWatchTracker` /
+> `drawWatchSnapshot`). The shipped feature now exceeds this v1 plan — several "future
+> non-goals" listed below have since landed:
+> - **Game termination on flag** (the Stage-2 non-goal) shipped as a toggle: the
+>   `drawWatchTerminateGames` `@TrainingParameter` (`Training/TrainingParameters.swift`)
+>   gates early-stopping a flagged game as a draw.
+> - **Tunable streak length:** the v1 compile-time `N = 8` constant was promoted to the
+>   `drawWatchStreakLength` `@TrainingParameter` (`Training/TrainingParameters.swift`),
+>   so the consecutive-ply window is now user-configurable.
+> - **Histogram bucket width is 40 plies**, not the 20 plies documented below
+>   (`DrawWatchTracker.histogramBucketWidthPlies = 40`; 10 buckets × 40 = 0–400 plies).
+>
+> The rest of this doc describes the v1 design as drafted; read the `N = 8`, "constant
+> for now", "20-ply bucket", and "termination is a non-goal" passages as superseded by
+> the above.
 
 Stealth-mode per-game `pDraw` monitor during self-play. **No game termination in this phase — every game still plays out to its natural conclusion (mate / stalemate / 3-fold / 50-move / ply-cap). Flagging a game does NOT change the game's behavior in any way; the worker just records that the flag fired and the game continues playing exactly as before.** Termination policy is an explicit non-goal of this plan and would be a separate plan layered on top.
 

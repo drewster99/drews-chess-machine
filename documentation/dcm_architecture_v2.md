@@ -1,6 +1,17 @@
 # Implementation Plan: Bundled Architecture Refresh
 *(SE blocks + AZ-style 76-channel policy head + threefold-repetition input planes)*
 
+> **HISTORICAL PLAN (April 2026) — superseded; do not read as the current architecture.**
+> This is the plan + as-built snapshot that introduced the 18→20-plane / 76-channel-4864
+> policy / SE-block refresh. The architecture has since moved well past it: input is now
+> **30-plane `basic30`** (runtime-selectable, also `full10ply200` / `full10Ply10Reps210`),
+> the tower is a **runtime-configurable block-groups** design (default **`v4_5block_7x7`**,
+> ~8.45M params — not the 8×3×3 ~2.4M tower described here), and the value head is the
+> **3-logit W/D/L** head (the scalar-`tanh` head this doc treats as future work shipped
+> 2026-05-12). For the current shape see `CLAUDE.md` and `NetworkArchitecture.swift`; for
+> storage see `documentation/replay_buffer_file_format.md` (now v7) and the safetensors
+> model format. Kept as historical record.
+
 This is a single coordinated change requiring `currentArchHash` bump, ReplayBuffer format bump (v2 → v3), and full retrain. All existing checkpoints will fail to load with `.archMismatch` (per CLAUDE.md "no migration without request"). User has confirmed willingness to discard existing models and replay buffers.
 
 ---

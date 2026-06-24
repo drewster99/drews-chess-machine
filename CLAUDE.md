@@ -106,10 +106,12 @@ The interactive single-game players (`MPSChessPlayer`) don't talk to `ChessMPSNe
 
 ### Sampling (temperature schedules)
 
-Move selection is temperature-softmax over legal-only logits — no top-k, no MCTS. Schedules live on `SamplingSchedule`:
-- `.selfPlay` — tau 1.0 → 0.4 over 20 plies per player. Exploration-heavy for replay-buffer coverage.
-- `.arena` — tau 1.0 → 0.2 over 20 plies per player. Tighter for signal-to-noise in scoring.
+Move selection is temperature-softmax over legal-only logits — no top-k, no MCTS. The self-play and arena schedules are **tunable** — built from `TrainingParameters` at session start and held on `MPSChessPlayer.SamplingSchedule` as resolved start/decay/floor. Temperature decays linearly per **game-total ply**: `tau(ply) = max(floor, start − decay·ply)`.
+- **self-play** — default start 1.0 → floor 0.5, decay 0.007/ply (`selfPlayStartTau` / `selfPlayTargetTau` / `selfPlayTauDecayPerPly`). Exploration-heavy for replay-buffer coverage; self-play also adds Dirichlet root noise.
+- **arena** — default start 0.6 → floor 0.2, decay 0.02/ply (`arenaStartTau` / `arenaTargetTau` / `arenaTauDecayPerPly`). Tighter for signal-to-noise in scoring.
 - `.uniform` — flat 1.0, used by Play Game / Forward Pass demo.
+
+(The hardcoded `SamplingSchedule.selfPlay`/`.arena` constants — start 2.0 — are now only fallbacks; the live schedules use the parameters above.)
 
 See `documentation/sampling-parameters.md` for rationale.
 

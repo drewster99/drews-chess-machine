@@ -2,16 +2,18 @@
 
 Notes on how the engine samples moves during self-play (data generation) vs arena evaluation (candidate-vs-champion tournaments), the evolution of the temperature schedule, and how game diversity is tracked.
 
+> **Status (2026-06-23).** The self-play and arena temperature schedules are now **tunable `TrainingParameters`** — see *Current presets* below for the live defaults. The *rationale* and *history* sections describe the original v3 design intent, whose specific tau numbers have since been retuned via parameters. Three standing corrections to the prose below: policy width is **4,864** (76 channels × 64 squares, AlphaZero-shape), not 4,096; `ply` is **game-total** (half-moves from either side), not per-player; and self-play additionally mixes **Dirichlet root noise** into the opening. The *ModelID mint/inherit* section is current.
+
 ## Sampling method
 
-After the network outputs 4,096 raw logits (one per from-square x to-square), moves are selected by:
+After the network outputs 4,864 raw policy logits (76 channels × 64 squares, AlphaZero-shape encoding), moves are selected by:
 
 1. **Filter** to legal moves only (gather their logits; illegal moves are excluded from the softmax entirely, equivalent to masking them to -infinity).
 2. **Temperature-scale** the gathered logits: `scaled[i] = logit[i] / tau`.
 3. **Softmax** (numerically stable: max-subtract, exp, normalize).
 4. **Categorical sample** from the resulting distribution (single uniform random draw, walk the cumulative distribution).
 
-No top-k, no top-p, no beam search, no MCTS. Temperature is the sole knob controlling exploration vs. exploitation.
+No top-k, no top-p, no beam search, no MCTS. Temperature is the primary exploration knob; self-play additionally mixes **Dirichlet root noise** into the opening policy (`MoveSampler` / `DirichletNoiseConfig`).
 
 ## Temperature schedule: linear decay
 
@@ -21,7 +23,7 @@ Temperature follows a linear-decay schedule:
 tau(ply) = max(floorTau, startTau - decayPerPly * ply)
 ```
 
-where `ply` is the number of moves this player has made in the current game (0-indexed, per-player). The schedule is defined by three parameters:
+where `ply` is the **game-total** ply (half-moves from either side, 0-indexed at the starting position). The schedule is defined by three parameters:
 
 | Parameter | Description |
 |---|---|
@@ -33,11 +35,21 @@ The linear ramp replaces an earlier two-phase model (abrupt jump from opening te
 
 ### Current presets
 
+**The self-play and arena schedules are tunable** — built at session start
+from `TrainingParameters` (`selfPlayStartTau` / `selfPlayTargetTau` /
+`selfPlayTauDecayPerPly`, and the `arena…` equivalents), not hardcoded. The
+defaults below are what an unmodified `parameters.json` uses; `floorTau` is
+the `…TargetTau` parameter.
+
 | Preset | `startTau` | `decayPerPly` | `floorTau` | Floor reached at ply | Used by |
 |---|---|---|---|---|---|
-| `.selfPlay` | 1.0 | 0.03 | 0.4 | 20 | Play-and-Train self-play workers |
-| `.arena` | 0.7 | 0.04 | 0.2 | 13 | Arena tournament (candidate vs champion) |
-| `.uniform` | 1.0 | 0.0 | 1.0 | never | Play Game / Forward Pass (legacy) |
+| self-play | 1.0 | 0.007 | 0.5 | ~71 | Play-and-Train self-play |
+| arena | 0.6 | 0.02 | 0.2 | 20 | Arena tournament (candidate vs champion) |
+| `.uniform` | 1.0 | 0.0 | 1.0 | never | Play Game / Forward Pass |
+
+The hardcoded `SamplingSchedule.selfPlay` / `.arena` constants in
+`MPSChessPlayer.swift` (start **2.0**, decay 0.03 / 0.04, floor 0.4 / 0.2)
+are now only fallbacks — the live runtime uses the parameter values above.
 
 ### Self-play schedule rationale
 
@@ -52,7 +64,7 @@ The floor of 0.4 is higher than the prior two-phase main temperature of 0.25. Th
 
 The arena exists to measure which network is stronger. Noise in the sampling reduces the signal-to-noise ratio of the evaluation, requiring more games for statistical significance.
 
-- **Moderate opening diversity**: Without some stochastic opening play, color-alternating tournaments would collapse into a handful of deterministic lines. `startTau=0.7` provides enough opening variation to keep the 200-game tournament from repeating itself while staying closer to each network's actual preferences than the self-play `startTau=1.0`.
+- **Moderate opening diversity**: Without some stochastic opening play, color-alternating tournaments would collapse into a handful of deterministic lines. The arena `startTau` (default **0.6**) provides enough opening variation to keep the tournament from repeating itself while staying closer to each network's actual preferences than the self-play default (**1.0**).
 - **Faster decay** (`decayPerPly=0.04` vs 0.03): The arena tightens faster because evaluation accuracy matters more than exploration.
 - **Lower floor** (`floorTau=0.2`): By ply 13 both networks are playing near their actual preferences, which is what we want for scoring.
 

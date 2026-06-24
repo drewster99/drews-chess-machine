@@ -1,3 +1,5 @@
+> **IMPLEMENTED (commit `c1ec893`, 2026-05-02)** — this is now an as-built spec, no longer pending. Lives in `Training/ReplayBuffer.swift` (`BufferedPositionStats` struct + `hashStats` map). Body retained below.
+
 # Pending: replay-buffer batch-stats instrumentation
 
 User-approved design (2026-05-02). Implement after current 5400s run (`20260502-041819`) finishes — do not interrupt the in-flight run.

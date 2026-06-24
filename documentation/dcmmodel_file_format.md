@@ -4,7 +4,21 @@ Binary serialization format for one `ChessNetwork` worth of persistent
 state (trainable weights + BN running statistics). Produced by
 `ModelCheckpointFile.encode()` and consumed by
 `ModelCheckpointFile.decode(_:)` in
-`DrewsChessMachine/DrewsChessMachine/ModelCheckpointFile.swift`.
+`DrewsChessMachine/DrewsChessMachine/Persistence/ModelCheckpointFile.swift`.
+
+> **LEGACY / read-only format (status 2026-06-23).** Model storage went
+> **safetensors-native on 2026-06-05** — `CheckpointManager.saveModel` now
+> writes `.safetensors` via `SafetensorsModelIO.encode`. `.dcmmodel` is a
+> **read-only legacy** path (selected by the `DCMMODEL` magic); the encoder
+> refuses to write a `.dcmmodel` whose architecture the decoder can't
+> resolve (`archNotLegacyEncodable` → "save it as .safetensors instead").
+> Two corrections to the spec below: `archHash` is now a **7-scalar** FNV-1a
+> mix (adds `valueHeadClasses` + an architecture version to the five listed
+> here), and it is **no longer the model identity** — runtime-configurable
+> models embed their full `NetworkArchitecture` as JSON; the legacy hash
+> only maps an old `.dcmmodel` back to a preset (`legacyDcmmodelArchHashes`).
+> The byte-level structure below remains an accurate description of the
+> legacy format.
 
 ## Design goals
 
@@ -95,7 +109,9 @@ Fowler-Noll-Vo hash, version 1a. Created by Glenn Fowler, Landon Curt
 Noll, and Phong Vo in 1991; variant 1a (XOR-before-multiply, better
 avalanche) published by Noll in 2009. It is a simple, fast,
 non-cryptographic hash with good uniformity for short inputs —
-exactly the shape of input being hashed here (five small integers).
+exactly the shape of input being hashed here (now **seven** small
+integers — see the legacy banner; this section describes the original
+five-constant form).
 
 **Two magic constants** define the 32-bit variant:
 

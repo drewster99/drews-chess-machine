@@ -1,5 +1,7 @@
 # ROADMAP Update Notes — 2026-05-05
 
+> **Superseded — this is the 2026-05-05 ROADMAP reconciliation record; its content is folded into ROADMAP.md.** Kept for historical record only. Note that some details below have drifted since 2026-05-05 (e.g. the replay-buffer format is now **v7**, not v6, and v7 dropped `vBaselines`); the code-evidence quotes are frozen as of 2026-05-05.
+
 This file documents the reconciliation of `ROADMAP.md` against the actual code in
 `/Users/andrew/Documents/ncc_source/cursor/drews-chess-machine`.
 
@@ -81,9 +83,9 @@ Searches found no `HumanPlayer`, user-move bridge, slot picker, or side picker.
 - `DrewsChessMachineApp.swift` File menu includes Save/Load Session/Model and parameter actions.
 - `CheckpointPaths` uses `~/Library/Application Support/DrewsChessMachine/Sessions/` and `Models/`.
 
-### 6. Replay buffer persistence is now v6, not the old v3/v4-only state
+### 6. Replay buffer persistence is now v7, not the old v3/v4-only state
 
-**Correction:** The roadmap now says replay-buffer durability is complete and current format is v6. The stale note saying TODO_NEXT #3 remained open was replaced.
+**Correction:** The roadmap now says replay-buffer durability is complete and current format is v7. The stale note saying TODO_NEXT #3 remained open was replaced.
 
 **Evidence:** `ReplayBuffer.swift` has:
 

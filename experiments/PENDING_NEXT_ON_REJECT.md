@@ -1,3 +1,5 @@
+> **SPENT (2026-05-02 one-shot overlay)** — its build-499 deliverables shipped (batch-stats observability, `pEntLegal`, `pLossWin`/`pLossLoss` split; commit `c1ec893`); retained for history only. Body retained below.
+
 # Pending: next-iteration overlay (latest user directive supersedes earlier)
 
 ## Active overlay (2026-05-02 ~01:00 CDT — supersedes prior)
