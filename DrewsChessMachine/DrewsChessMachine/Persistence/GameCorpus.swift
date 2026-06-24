@@ -213,14 +213,21 @@ final class GameCorpus {
     /// to a fresh shard once the soft byte limit is crossed (always on a
     /// whole-game boundary).
     func append(_ game: GameRecord) throws {
+        try append(framed: GameCorpusShardFormat.encodeFramedRecord(game), plyCount: game.moves.count)
+    }
+
+    /// Append a pre-encoded framed game (encoded off the writer thread by the
+    /// caller, e.g. the parallel PGN importer). Mirrors `append(_:)` exactly but
+    /// skips re-encoding; seals and rotates on the same whole-game boundary.
+    func append(framed frame: Data, plyCount: Int) throws {
         guard let writer = currentWriter else {
             throw GameCorpusError.invalidState("no source in progress; call beginSource first")
         }
-        try writer.append(game)
+        try writer.appendFramed(frame, plyCount: plyCount)
         if !metadata.sources.isEmpty {
             let i = metadata.sources.count - 1
             metadata.sources[i].gamesAdded = (metadata.sources[i].gamesAdded ?? 0) + 1
-            metadata.sources[i].pliesAdded = (metadata.sources[i].pliesAdded ?? 0) + game.moves.count
+            metadata.sources[i].pliesAdded = (metadata.sources[i].pliesAdded ?? 0) + plyCount
         }
         if writer.byteCount >= shardSoftLimitBytes {
             _ = try writer.seal(sealUnix: Int64(Date().timeIntervalSince1970))

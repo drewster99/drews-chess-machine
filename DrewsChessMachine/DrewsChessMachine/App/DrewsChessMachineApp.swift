@@ -233,6 +233,13 @@ struct DrewsChessMachineApp: App {
             errors.append("--bf16-cast-in-forward specified \(bf16CastIndices.count) times; only one allowed")
         }
 
+        // `--crosscheck-movegen` — diagnostic soak: every `MoveGenerator.legalMoves`
+        // call also runs the make/unmake and pin-based generators and logs any
+        // divergent position. Read in `MoveGenerator` via `CommandLine.arguments`;
+        // consumed here so the unknown-argument scan accepts it.
+        let crosscheckMovegenIndices = rawArgs.indices.filter { rawArgs[$0] == "--crosscheck-movegen" }
+        for idx in crosscheckMovegenIndices { consumedIndices.insert(idx) }
+
         // `--parameters <path>` — optional hyperparameter override
         // file. Values that the JSON doesn't name fall back to
         // the normal UI defaults. File-not-found and malformed
@@ -409,7 +416,10 @@ struct DrewsChessMachineApp: App {
                                               games only. Filters: --min-rating <elo> (both sides),
                                               --max-games <n>, --min-plies <n>,
                                               --time-control <bullet,blitz,rapid,classical>, --corpus-name <name>,
-                                              --shard-soft-limit-mb <mb> (default 64).
+                                              --shard-soft-limit-mb <mb> (default 64),
+                                              --max-storage <size> (e.g. 2GB; stops near that corpus body size),
+                                              --import-threads <n> (default cores-2),
+                                              --lenient (count parse failures instead of hard-failing on the first).
 
             Self-play recording: set the `record_self_play_games` parameter (e.g. in a --parameters file) to
             record every kept self-play game into a corpus under Corpora/ during a --train run.
@@ -827,7 +837,10 @@ struct DrewsChessMachineApp: App {
         // Any other `--`-prefixed flag besides `--uci` / `--model` is
         // a usage error — a typo in `--mode` would otherwise silently
         // launch the GUI with a confusing model-load failure.
-        let allowedFlags: Set<String> = [uciFlag, modelFlag]
+        // `--crosscheck-movegen` is a global diagnostic (read in
+        // `MoveGenerator` via `CommandLine.arguments`); permit it so a UCI
+        // self-play run can exercise the move-generator cross-check.
+        let allowedFlags: Set<String> = [uciFlag, modelFlag, "--crosscheck-movegen"]
         if let badFlag = rawArgs.first(where: {
             $0.hasPrefix("--") && !allowedFlags.contains($0)
         }) {
@@ -869,6 +882,11 @@ struct DrewsChessMachineApp: App {
         if let idx = modelIndices.first {
             consumed.insert(idx)
             consumed.insert(idx + 1)
+        }
+        // `--crosscheck-movegen` is a global diagnostic read in `MoveGenerator`
+        // via `CommandLine.arguments`; consume it so it isn't flagged as a stray.
+        for (i, arg) in rawArgs.enumerated() where arg == "--crosscheck-movegen" {
+            consumed.insert(i)
         }
         for (i, arg) in rawArgs.enumerated() where !consumed.contains(i) {
             FileHandle.standardError.write(Data(
@@ -992,6 +1010,9 @@ struct DrewsChessMachineApp: App {
         var minPlies = 1
         var timeControls: [String]? = nil
         var shardSoftLimitMB = 64
+        var maxStorageBytes: Int? = nil
+        var importThreads: Int? = nil
+        var failOnError = true
 
         var i = 0
         while i < rawArgs.count {
@@ -1019,6 +1040,20 @@ struct DrewsChessMachineApp: App {
                     timeControls = v.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
                     i += 2
                 } else { i += 1 }
+            case "--max-storage":
+                guard let v = nextValue, let bytes = parseByteSize(v) else {
+                    FileHandle.standardError.write(Data("error: --max-storage requires a valid size (e.g. 2GB, 500MB)\n".utf8))
+                    Darwin.exit(2)
+                }
+                maxStorageBytes = bytes; i += 2
+            case "--import-threads":
+                guard let v = nextValue, let n = Int(v), n >= 1 else {
+                    FileHandle.standardError.write(Data("error: --import-threads requires a positive integer\n".utf8))
+                    Darwin.exit(2)
+                }
+                importThreads = n; i += 2
+            case "--lenient":
+                failOnError = false; i += 1
             default:
                 i += 1
             }
@@ -1036,9 +1071,30 @@ struct DrewsChessMachineApp: App {
             maxGames: maxGames,
             minPlies: minPlies,
             timeControlClasses: timeControls,
-            shardSoftLimitMB: shardSoftLimitMB
+            shardSoftLimitMB: shardSoftLimitMB,
+            maxStorageBytes: maxStorageBytes,
+            importThreads: importThreads,
+            failOnError: failOnError
         )
         PGNImporter.runImportAndExit(config: config)
+    }
+
+    /// Parse a human byte size like `2GB`, `500MB`, `1.5G`, or a bare byte
+    /// count (binary units: KiB/MiB/GiB/TiB). Returns nil if unparseable.
+    private static func parseByteSize(_ s: String) -> Int? {
+        let t = s.trimmingCharacters(in: .whitespaces).uppercased()
+        let units: [(String, Double)] = [
+            ("TB", 1099511627776), ("GB", 1073741824), ("MB", 1048576), ("KB", 1024),
+            ("T", 1099511627776), ("G", 1073741824), ("M", 1048576), ("K", 1024), ("B", 1)
+        ]
+        for (suffix, mult) in units where t.hasSuffix(suffix) {
+            let numPart = t.dropLast(suffix.count).trimmingCharacters(in: .whitespaces)
+            guard let value = Double(numPart), value.isFinite, value >= 0 else { return nil }
+            let bytes = value * mult
+            guard bytes < Double(Int.max) else { return nil }
+            return Int(bytes)
+        }
+        return Int(t)
     }
 
     // MARK: - Batch-size sweep pre-flight (--sweep)

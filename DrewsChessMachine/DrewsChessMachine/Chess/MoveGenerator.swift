@@ -6,8 +6,63 @@ enum MoveGenerator {
 
     // MARK: - Public API
 
-    /// All legal moves for the current player in the given state.
+    /// All legal moves for the current player in the given state: the
+    /// pseudo-legal moves minus any that leave the mover's own king in check.
     static func legalMoves(for state: GameState) -> [ChessMove] {
+        let color = state.currentPlayer
+        let legal = pseudoLegalMoves(for: state).filter { move in
+            !isInCheck(applyMove(move, to: state), color: color)
+        }
+        if crosscheckMovegen { crosscheckGenerators(reference: legal, state: state) }
+        return legal
+    }
+
+    /// When `--crosscheck-movegen` is passed, every `legalMoves` call also runs
+    /// the make/unmake (B) and pin-based (C) generators and logs any position
+    /// whose move set disagrees with this reference. A self-play soak guard,
+    /// off (a single bool check) otherwise. Evaluated once, thread-safe.
+    static let crosscheckMovegen = CommandLine.arguments.contains("--crosscheck-movegen")
+
+    /// One-time stderr notice on the first cross-check, so a soak can positively
+    /// confirm the cross-check is active rather than silently disabled.
+    private static let announceCrosscheck: Void = {
+        FileHandle.standardError.write(Data("[MOVEGEN-CROSSCHECK] active\n".utf8))
+    }()
+
+    private static func crosscheckGenerators(reference: [ChessMove], state: GameState) {
+        _ = announceCrosscheck
+        let ref = Set(reference)
+        let makeUnmake = Set(legalMovesMakeUnmake(for: state))
+        let pinBased = Set(legalMovesPinBased(for: state))
+        guard makeUnmake != ref || pinBased != ref else { return }
+        func diff(_ other: Set<ChessMove>) -> String {
+            "missing=\(ref.subtracting(other).map(uciString)) extra=\(other.subtracting(ref).map(uciString))"
+        }
+        var parts: [String] = []
+        if makeUnmake != ref { parts.append("B[\(diff(makeUnmake))]") }
+        if pinBased != ref { parts.append("C[\(diff(pinBased))]") }
+        // Log AND write to stderr: a divergence is a correctness failure that
+        // must surface regardless of whether SessionLogger is started (it isn't
+        // in UCI mode).
+        let msg = "[MOVEGEN-CROSSCHECK] divergence FEN='\(FENParser.fen(from: state))' \(parts.joined(separator: " "))"
+        SessionLogger.shared.log(msg)
+        FileHandle.standardError.write(Data((msg + "\n").utf8))
+    }
+
+    private static func uciString(_ m: ChessMove) -> String {
+        let files = Array("abcdefgh")
+        let promo = m.promotion.map { "=\($0)" } ?? ""
+        return "\(files[m.fromCol])\(8 - m.fromRow)\(files[m.toCol])\(8 - m.toRow)\(promo)"
+    }
+
+    /// Every move the current player's pieces can make by the movement rules,
+    /// WITHOUT removing those that leave the mover's own king in check. This is
+    /// the unfiltered basis `legalMoves` filters. It's much cheaper than
+    /// `legalMoves` (no per-move apply + check scan), so a caller that only
+    /// needs to resolve one specific move — e.g. matching a single SAN token —
+    /// can generate these and legality-check just the matched candidate instead
+    /// of legality-filtering the whole list.
+    static func pseudoLegalMoves(for state: GameState) -> [ChessMove] {
         var moves: [ChessMove] = []
         let color = state.currentPlayer
 
@@ -40,12 +95,157 @@ enum MoveGenerator {
                 }
             }
         }
+        return moves
+    }
 
-        // Filter: only keep moves that don't leave our own king in check
-        return moves.filter { move in
-            let newState = applyMove(move, to: state)
-            return !isInCheck(newState, color: color)
+    /// (B) Make/unmake variant of `legalMoves`: the same result set, but it
+    /// tests each pseudo-legal move's legality by applying it **in place** on a
+    /// single board buffer and undoing it — no fresh `GameState` (and no board
+    /// array) allocated per candidate, the dominant cost of the copy-make
+    /// filter. Validated move-for-move against `legalMoves` by perft.
+    static func legalMovesMakeUnmake(for state: GameState) -> [ChessMove] {
+        let pseudo = pseudoLegalMoves(for: state)
+        let color = state.currentPlayer
+        let kingHome = kingSquare(of: color, board: state.board)
+
+        var legal: [ChessMove] = []
+        legal.reserveCapacity(pseudo.count)
+        var board = state.board
+        board.withUnsafeMutableBufferPointer { buf in
+            for move in pseudo where moveLeavesKingSafe(move, on: buf, kingHome: kingHome, color: color) {
+                legal.append(move)
+            }
         }
+        return legal
+    }
+
+    /// (C) Pin/check-aware legality. A pin set and the in-check flag are
+    /// computed **once** per position; then any move that is not in check, not a
+    /// king move, not en passant, and not from a pinned square is legal with NO
+    /// per-move apply — such a move provably cannot expose the king. The
+    /// residual (king moves, pinned pieces, in-check evasions, en passant) is
+    /// verified with the same make/unmake test. Validated move-for-move against
+    /// `legalMoves` by perft.
+    static func legalMovesPinBased(for state: GameState) -> [ChessMove] {
+        let pseudo = pseudoLegalMoves(for: state)
+        let color = state.currentPlayer
+        let kingHome = kingSquare(of: color, board: state.board)
+
+        var legal: [ChessMove] = []
+        legal.reserveCapacity(pseudo.count)
+        var board = state.board
+        board.withUnsafeMutableBufferPointer { buf in
+            let inCheck = isSquareAttacked(board: UnsafeBufferPointer(buf),
+                                           row: kingHome / 8, col: kingHome % 8, by: color.opposite)
+            let pinned = pinnedSquares(board: UnsafeBufferPointer(buf), kingIndex: kingHome, color: color)
+            for move in pseudo {
+                let fromIndex = move.fromRow * 8 + move.fromCol
+                let isKingMove = fromIndex == kingHome
+                let isEnPassant = !isKingMove
+                    && move.toCol != move.fromCol
+                    && buf[fromIndex]?.type == .pawn
+                    && buf[move.toRow * 8 + move.toCol] == nil
+                if !inCheck && !isKingMove && !isEnPassant && !pinned.contains(fromIndex) {
+                    legal.append(move)            // provably cannot expose the king
+                } else if moveLeavesKingSafe(move, on: buf, kingHome: kingHome, color: color) {
+                    legal.append(move)
+                }
+            }
+        }
+        return legal
+    }
+
+    /// Index of `color`'s king on `board` (0 if absent — only in malformed
+    /// positions, which the generators are never asked about).
+    private static func kingSquare(of color: PieceColor, board: [Piece?]) -> Int {
+        let king = Piece(type: .king, color: color)
+        for i in 0..<64 where board[i] == king { return i }
+        return 0
+    }
+
+    /// Apply `move` to `buf`, test whether `color`'s king (relocated to the move
+    /// destination if the king itself moved) is attacked, then restore `buf`
+    /// exactly. Replicates `applyMove`'s board mutations (capture, en passant,
+    /// castling rook move, promotion). The single make/unmake legality
+    /// primitive shared by both alternative generators.
+    private static func moveLeavesKingSafe(_ move: ChessMove,
+                                           on buf: UnsafeMutableBufferPointer<Piece?>,
+                                           kingHome: Int,
+                                           color: PieceColor) -> Bool {
+        let fromIndex = move.fromRow * 8 + move.fromCol
+        let toIndex = move.toRow * 8 + move.toCol
+        guard let moving = buf[fromIndex] else {
+            preconditionFailure("moveLeavesKingSafe: move from an empty square")
+        }
+        let captured = buf[toIndex]
+        let isEnPassant = moving.type == .pawn && move.toCol != move.fromCol && captured == nil
+        let epIndex = move.fromRow * 8 + move.toCol
+        let epCaptured = isEnPassant ? buf[epIndex] : nil
+        let isCastle = moving.type == .king && abs(move.toCol - move.fromCol) == 2
+        let rowBase = move.fromRow * 8
+        let kingside = move.toCol > move.fromCol
+        let rookFrom = isCastle ? (kingside ? rowBase + 7 : rowBase + 0) : 0
+        let rookTo = isCastle ? (kingside ? rowBase + 5 : rowBase + 3) : 0
+        let rookPiece = isCastle ? buf[rookFrom] : nil
+
+        buf[fromIndex] = nil
+        buf[toIndex] = move.promotion.map { Piece(type: $0, color: moving.color) } ?? moving
+        if isEnPassant { buf[epIndex] = nil }
+        if isCastle { buf[rookTo] = rookPiece; buf[rookFrom] = nil }
+
+        let kingIndex = moving.type == .king ? toIndex : kingHome
+        let safe = !isSquareAttacked(board: UnsafeBufferPointer(buf),
+                                     row: kingIndex / 8, col: kingIndex % 8, by: color.opposite)
+
+        buf[fromIndex] = moving
+        buf[toIndex] = captured
+        if isEnPassant { buf[epIndex] = epCaptured }
+        if isCastle { buf[rookFrom] = rookPiece; buf[rookTo] = nil }
+
+        return safe
+    }
+
+    /// Squares of `color`'s pieces absolutely pinned to its king — a friendly
+    /// piece alone on a king ray with an enemy slider of the matching ray type
+    /// (or a queen) behind it. Computed once from the king outward along the
+    /// eight rays.
+    private static func pinnedSquares(board: UnsafeBufferPointer<Piece?>, kingIndex: Int, color: PieceColor) -> Set<Int> {
+        var pinned: Set<Int> = []
+        let kr = kingIndex / 8, kc = kingIndex % 8
+        for o in diagonals {
+            if let s = pinAlongRay(board: board, kr: kr, kc: kc, dr: o.dr, dc: o.dc, color: color, slider: .bishop) {
+                pinned.insert(s)
+            }
+        }
+        for o in straights {
+            if let s = pinAlongRay(board: board, kr: kr, kc: kc, dr: o.dr, dc: o.dc, color: color, slider: .rook) {
+                pinned.insert(s)
+            }
+        }
+        return pinned
+    }
+
+    /// Walk one ray from the king: if the first piece is ours and the next piece
+    /// along the ray is an enemy `slider` (or queen), our piece is pinned —
+    /// return its square. Otherwise nil.
+    private static func pinAlongRay(board: UnsafeBufferPointer<Piece?>,
+                                    kr: Int, kc: Int, dr: Int, dc: Int,
+                                    color: PieceColor, slider: PieceType) -> Int? {
+        var r = kr + dr, c = kc + dc
+        var ownSquare: Int? = nil
+        while r >= 0, r < 8, c >= 0, c < 8 {
+            if let p = board[r * 8 + c] {
+                if p.color == color {
+                    if ownSquare != nil { return nil }   // second friendly blocker → no pin
+                    ownSquare = r * 8 + c
+                } else {
+                    guard let own = ownSquare else { return nil }   // enemy adjacent → check, not pin
+                    return (p.type == slider || p.type == .queen) ? own : nil
+                }
+            }
+            r += dr; c += dc
+        }
+        return nil
     }
 
     /// Whether the given color's king is in check.
@@ -177,11 +377,15 @@ enum MoveGenerator {
 
     /// Whether a square is attacked by any piece of the given color.
     static func isSquareAttacked(_ state: GameState, row: Int, col: Int, by attackerColor: PieceColor) -> Bool {
-        // Bind the board buffer once: every lookup below reads `board` instead
-        // of re-borrowing `state.board`, which keeps the array buffer's
-        // refcount traffic out of this hot path.
-        let board = state.board
+        state.board.withUnsafeBufferPointer { board in
+            isSquareAttacked(board: board, row: row, col: col, by: attackerColor)
+        }
+    }
 
+    /// Board-buffer overload of `isSquareAttacked`, so a legality test needs no
+    /// `GameState` wrapper. Used by the make/unmake generator, which mutates a
+    /// single board buffer in place rather than allocating a state per move.
+    static func isSquareAttacked(board: UnsafeBufferPointer<Piece?>, row: Int, col: Int, by attackerColor: PieceColor) -> Bool {
         // Pawn attacks — an attacking pawn sits one row "behind" the target
         // from its perspective. The two diagonal source squares are checked
         // explicitly rather than via a `[-1, 1]` literal, which would heap-

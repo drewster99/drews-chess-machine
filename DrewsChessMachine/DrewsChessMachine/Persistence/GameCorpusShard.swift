@@ -224,20 +224,16 @@ final class ShardWriter {
     private(set) var byteCount: Int
     private(set) var gameCount: Int
     private(set) var plyCount: Int
-    private var appendsSinceSync: Int
-    private let syncEveryNGames: Int
 
-    /// Create a fresh open shard: writes and flushes the 256-byte front header.
+    /// Create a fresh open shard: writes the 256-byte front header.
     init(creatingAt openURL: URL,
-         header: GameCorpusShardFormat.FrontHeader,
-         syncEveryNGames: Int = 64) throws {
+         header: GameCorpusShardFormat.FrontHeader) throws {
         let headerData = try GameCorpusShardFormat.encodeFrontHeader(header)
         do {
             try headerData.write(to: openURL, options: [.atomic])
         } catch {
             throw GameCorpusError.ioFailed("write header \(openURL.lastPathComponent): \(error.localizedDescription)")
         }
-        try corpusFullSync(openURL)
         self.openURL = openURL
         self.handle = try FileHandle(forWritingTo: openURL)
         _ = try self.handle.seekToEnd()
@@ -247,8 +243,6 @@ final class ShardWriter {
         self.byteCount = headerData.count
         self.gameCount = 0
         self.plyCount = 0
-        self.appendsSinceSync = 0
-        self.syncEveryNGames = max(1, syncEveryNGames)
     }
 
     /// Reopen an existing open shard, truncate it to a recovered valid extent,
@@ -257,11 +251,9 @@ final class ShardWriter {
     init(resumingAt openURL: URL,
          validByteCount: Int,
          gameCount: Int,
-         plyCount: Int,
-         syncEveryNGames: Int = 64) throws {
+         plyCount: Int) throws {
         let h = try FileHandle(forWritingTo: openURL)
         try h.truncate(atOffset: UInt64(validByteCount))
-        try h.synchronize()
         let existing = try Data(contentsOf: openURL)
         var hasher = SHA256()
         hasher.update(data: existing)
@@ -272,12 +264,17 @@ final class ShardWriter {
         self.byteCount = validByteCount
         self.gameCount = gameCount
         self.plyCount = plyCount
-        self.appendsSinceSync = 0
-        self.syncEveryNGames = max(1, syncEveryNGames)
     }
 
     func append(_ game: GameRecord) throws {
-        let frame = GameCorpusShardFormat.encodeFramedRecord(game)
+        try appendFramed(GameCorpusShardFormat.encodeFramedRecord(game), plyCount: game.moves.count)
+    }
+
+    /// Append a record already framed as `len|payload|crc` (e.g. encoded
+    /// off-thread by `GameCorpusShardFormat.encodeFramedRecord`). `plyCount` is
+    /// the game's move count, carried only for the running ply total. Lets a
+    /// parallel producer do the encode/CRC work and leave this writer thin.
+    func appendFramed(_ frame: Data, plyCount: Int) throws {
         do {
             try handle.write(contentsOf: frame)
         } catch {
@@ -286,23 +283,13 @@ final class ShardWriter {
         hasher.update(data: frame)
         byteCount += frame.count
         gameCount += 1
-        plyCount += game.moves.count
-        appendsSinceSync += 1
-        if appendsSinceSync >= syncEveryNGames {
-            try sync()
-        }
+        self.plyCount += plyCount
     }
 
-    func sync() throws {
-        try handle.synchronize()
-        appendsSinceSync = 0
-    }
-
-    /// Finalize the SHA, append the 64-byte trailer, fsync, close, and
+    /// Finalize the SHA, append the 64-byte trailer, flush once, close, and
     /// atomically rename `….open` → final. Returns the sealed file URL.
     @discardableResult
     func seal(sealUnix: Int64) throws -> URL {
-        try sync()
         let digest = Data(hasher.finalize())
         var w = CorpusByteWriter()
         w.appendBytes(GameCorpusShardFormat.trailerMagic)
@@ -322,11 +309,6 @@ final class ShardWriter {
             try FileManager.default.moveItem(at: openURL, to: finalURL)
         } catch {
             throw GameCorpusError.ioFailed("seal rename: \(error.localizedDescription)")
-        }
-        do {
-            try corpusFullSync(finalURL.deletingLastPathComponent())
-        } catch {
-            // Best-effort parent-directory flush; the rename itself succeeded.
         }
         return finalURL
     }

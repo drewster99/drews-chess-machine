@@ -67,4 +67,152 @@ final class PGNImporterTests: XCTestCase {
         XCTAssertEqual(PGNImporter.timeControlClass("1800+0"), "classical")
         XCTAssertEqual(PGNImporter.timeControlClass("300+3"), "blitz") // 300 + 40*3 = 420
     }
+
+    // MARK: - Parallel import pipeline
+
+    private func writeTempPGN(_ text: String) throws -> (pgn: URL, dir: URL) {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pgnimp-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let pgn = dir.appendingPathComponent("games.pgn")
+        try text.write(to: pgn, atomically: true, encoding: .utf8)
+        return (pgn, dir)
+    }
+
+    private func importGames(pgn: URL,
+                             into parent: URL,
+                             threads: Int,
+                             failOnError: Bool = true,
+                             maxGames: Int? = nil) throws -> (summary: PGNImporter.Summary, games: [GameRecord]) {
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        var cfg = PGNImportConfig(inputPath: pgn.path, corpusName: "t", minRating: nil,
+                                  maxGames: maxGames, minPlies: 1, timeControlClasses: nil)
+        cfg.importThreads = threads
+        cfg.failOnError = failOnError
+        cfg.outputParentDirectory = parent
+        let summary = try PGNImporter.runImport(config: cfg)
+        let corpusDir = try XCTUnwrap(
+            try FileManager.default.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil).first)
+        let corpus = try GameCorpus.open(directory: corpusDir)
+        return (summary, try corpus.allGames())
+    }
+
+    /// The parallel importer must preserve original file order and produce
+    /// identical output regardless of worker count.
+    func testParallelImportPreservesOrderAndIsDeterministic() throws {
+        let line = ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7"]
+        var text = ""
+        var expectedLengths: [Int] = []
+        for k in 0..<80 {
+            let len = 2 + (k % (line.count - 1))   // cycles 2...10 plies
+            expectedLengths.append(len)
+            let moves = line.prefix(len).joined(separator: " ")
+            text += "[Event \"t\"]\n[Result \"1-0\"]\n\n\(moves) 1-0\n\n"
+        }
+        let (pgn, dir) = try writeTempPGN(text)
+        defer {
+            do { try FileManager.default.removeItem(at: dir) }
+            catch { /* best-effort temp cleanup */ }
+        }
+
+        let serial = try importGames(pgn: pgn, into: dir.appendingPathComponent("s"), threads: 1)
+        let parallel = try importGames(pgn: pgn, into: dir.appendingPathComponent("p"), threads: 8)
+
+        XCTAssertEqual(serial.summary.imported, 80)
+        XCTAssertEqual(parallel.summary.imported, 80)
+        XCTAssertEqual(serial.games.map(\.moves.count), expectedLengths)   // order preserved
+        XCTAssertEqual(parallel.games.map(\.moves.count), expectedLengths)
+        XCTAssertEqual(serial.games, parallel.games)                       // thread-count independent
+    }
+
+    func testHardFailsOnUnparseableGameByDefault() throws {
+        let text = "[Event \"t\"]\n[Result \"1-0\"]\n\ne4 e5 Zz9 1-0\n\n"
+        let (pgn, dir) = try writeTempPGN(text)
+        defer {
+            do { try FileManager.default.removeItem(at: dir) }
+            catch { /* best-effort temp cleanup */ }
+        }
+        XCTAssertThrowsError(try importGames(pgn: pgn, into: dir.appendingPathComponent("hf"), threads: 4)) { error in
+            guard case PGNImportError.gameFailed = error else {
+                return XCTFail("expected PGNImportError.gameFailed, got \(error)")
+            }
+        }
+    }
+
+    func testLenientCountsParseFailuresInsteadOfFailing() throws {
+        let text = "[Event \"t\"]\n[Result \"1-0\"]\n\ne4 e5 Nf3 1-0\n\n"
+                 + "[Event \"t\"]\n[Result \"1-0\"]\n\ne4 Zz9 1-0\n\n"
+        let (pgn, dir) = try writeTempPGN(text)
+        defer {
+            do { try FileManager.default.removeItem(at: dir) }
+            catch { /* best-effort temp cleanup */ }
+        }
+        let r = try importGames(pgn: pgn, into: dir.appendingPathComponent("len"),
+                                threads: 4, failOnError: false)
+        XCTAssertEqual(r.summary.imported, 1)
+        XCTAssertEqual(r.summary.parseErrors, 1)
+    }
+
+    func testMaxGamesCapIsExactAndOrdered() throws {
+        let line = ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"]
+        var text = ""
+        for k in 0..<50 {
+            let len = 2 + (k % (line.count - 1))
+            let moves = line.prefix(len).joined(separator: " ")
+            text += "[Event \"t\"]\n[Result \"1-0\"]\n\n\(moves) 1-0\n\n"
+        }
+        let (pgn, dir) = try writeTempPGN(text)
+        defer {
+            do { try FileManager.default.removeItem(at: dir) }
+            catch { /* best-effort temp cleanup */ }
+        }
+        let r = try importGames(pgn: pgn, into: dir.appendingPathComponent("cap"), threads: 8, maxGames: 10)
+        XCTAssertEqual(r.summary.imported, 10)
+        XCTAssertEqual(r.games.count, 10)
+    }
+
+    /// A game that legally plays on past a threefold repetition (claimable, not
+    /// auto-terminating) must import. Regression for the import hard-failing
+    /// with "illegal move … : The game has already ended" because the engine's
+    /// self-play auto-draw vetoed a legal continuation.
+    func testImportsGamePlayingThroughThreefoldRepetition() throws {
+        // Knights out-and-back returns the start position three times as an
+        // applied state, then play continues — a never-claimed threefold.
+        let moves = "Nf3 Nf6 Ng1 Ng8 Nf3 Nf6 Ng1 Ng8 Nf3 Nf6 Ng1 Ng8 Nf3 Nf6"
+        let text = "[Event \"t\"]\n[Result \"1/2-1/2\"]\n\n\(moves) 1/2-1/2\n\n"
+        let (pgn, dir) = try writeTempPGN(text)
+        defer {
+            do { try FileManager.default.removeItem(at: dir) }
+            catch { /* best-effort temp cleanup */ }
+        }
+        let r = try importGames(pgn: pgn, into: dir.appendingPathComponent("rep"), threads: 1)
+        XCTAssertEqual(r.summary.imported, 1)
+        XCTAssertEqual(r.games.first?.moves.count, 14)
+    }
+
+    // MARK: - SAN resolution via pseudo-legal + per-candidate legality (A)
+
+    /// `resolveLegalSANMove` must pick the LEGAL match when a pinned piece also
+    /// pseudo-matches the (undisambiguated) SAN token. Guards the
+    /// pseudo-legal-then-verify resolution against returning an illegal move.
+    func testResolveSANPicksLegalMoveOverPinnedPseudoMatch() throws {
+        // White Ke1, Nc3 (pinned by Ba5 on the a5–e1 diagonal), Ng1; black Ke8.
+        // For "Ne2", only Ng1–e2 is legal — Nc3–e2 would expose the king.
+        let state = try FENParser.parse("4k3/8/8/b7/8/2N5/8/4K1N1 w - - 0 1")
+        let move = try XCTUnwrap(PGNImporter.resolveLegalSANMove("Ne2", state: state))
+        // g1 = (row 7, col 6) ; e2 = (row 6, col 4)
+        XCTAssertEqual([move.fromRow, move.fromCol, move.toRow, move.toCol], [7, 6, 6, 4])
+    }
+
+    /// The pinned knight's Nc3–e2 is pseudo-legal but not legal — confirming the
+    /// legality filter (not move generation) is what disambiguates above, and
+    /// that the pseudoLegalMoves/legalMoves split holds.
+    func testPinnedMoveIsPseudoLegalButNotLegal() throws {
+        let state = try FENParser.parse("4k3/8/8/b7/8/2N5/8/4K1N1 w - - 0 1")
+        func hasNc3e2(_ moves: [ChessMove]) -> Bool {
+            moves.contains { $0.fromRow == 5 && $0.fromCol == 2 && $0.toRow == 6 && $0.toCol == 4 }
+        }
+        XCTAssertTrue(hasNc3e2(MoveGenerator.pseudoLegalMoves(for: state)), "Nc3–e2 should be pseudo-legal")
+        XCTAssertFalse(hasNc3e2(MoveGenerator.legalMoves(for: state)), "Nc3–e2 should be illegal (pinned)")
+    }
 }

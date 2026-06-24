@@ -1,4 +1,6 @@
 import Foundation
+import Dispatch
+import os
 
 struct PGNImportConfig: Sendable {
     var inputPath: String
@@ -8,13 +10,24 @@ struct PGNImportConfig: Sendable {
     var minPlies: Int
     var timeControlClasses: [String]?   // e.g. ["blitz","rapid"]; nil = all
     var shardSoftLimitMB: Int = 64
+    /// Stop once the corpus body reaches this many bytes (whole-game boundary).
+    var maxStorageBytes: Int? = nil
+    /// Worker threads for parsing/replay. nil ⇒ activeProcessorCount − 2.
+    var importThreads: Int? = nil
+    /// Abort the whole import on the first game that fails to parse/replay
+    /// (default). When false, such games are counted and skipped.
+    var failOnError: Bool = true
+    /// Where the corpus directory is created. nil ⇒ the shared `Corpora/` store.
+    var outputParentDirectory: URL? = nil
 }
 
 enum PGNImportError: LocalizedError {
     case openFailed(String)
+    case gameFailed(String)
     var errorDescription: String? {
         switch self {
         case .openFailed(let s): return "PGN import open failed: \(s)"
+        case .gameFailed(let s): return "PGN import failed on \(s)"
         }
     }
 }
@@ -24,7 +37,11 @@ enum PGNImportError: LocalizedError {
 /// converts each SAN move list to `ChessMove`s by matching against the
 /// engine's legal moves, applies rating / time-control / length filters, and
 /// appends the survivors to a fresh corpus. Standard-start games only (FEN
-/// setups, variants, and any game with an unparseable move are skipped).
+/// setups, variants are skipped; an unparseable move hard-fails by default).
+///
+/// The CPU-bound per-game replay runs across a worker pool while a single
+/// serial writer appends results **in original file order**, so the output is
+/// deterministic and independent of thread count.
 enum PGNImporter {
 
     // MARK: - CLI entry
@@ -54,6 +71,14 @@ enum PGNImporter {
         var corpusID = ""
     }
 
+    /// One game's worker output: a ready-to-write framed buffer, a filtered
+    /// skip, or a hard failure with a diagnostic reason.
+    enum ImportSlot: Sendable {
+        case imported(frame: Data, plyCount: Int)
+        case skipped
+        case failed(reason: String)
+    }
+
     // MARK: - Import
 
     static func runImport(config: PGNImportConfig) throws -> Summary {
@@ -63,7 +88,8 @@ enum PGNImporter {
         let corpus = try GameCorpus.create(
             name: config.corpusName ?? inputURL.lastPathComponent,
             comment: "Imported from \(inputURL.lastPathComponent) by build \(BuildInfo.buildNumber) (\(BuildInfo.gitHash))",
-            shardSoftLimitBytes: max(1, config.shardSoftLimitMB) * 1024 * 1024
+            shardSoftLimitBytes: max(1, config.shardSoftLimitMB) * 1024 * 1024,
+            parentDirectory: config.outputParentDirectory
         )
         try corpus.beginSource(
             kind: "pgnImport",
@@ -74,43 +100,77 @@ enum PGNImporter {
             maxGames: config.maxGames
         )
 
-        var summary = Summary()
-        summary.corpusID = corpus.corpusID
-        var done = false
+        let workerCount = max(1, config.importThreads ?? (ProcessInfo.processInfo.activeProcessorCount - 2))
+        let workers = OperationQueue()
+        workers.maxConcurrentOperationCount = workerCount
+        workers.qualityOfService = .userInitiated
+        let writerQueue = DispatchQueue(label: "pgn.import.writer")
+        // Bound in-flight items (and therefore the reorder buffer) so the reader
+        // can't outrun the workers; generous slack absorbs head-of-line stalls.
+        let inFlight = DispatchSemaphore(value: workerCount * 4)
+        let group = DispatchGroup()
+        let stop = OSAllocatedUnfairLock(initialState: false)
+        let box = ImportWriterBox(corpus: corpus, config: config,
+                                  inFlight: inFlight, group: group, stop: stop)
 
-        try streamGames(at: expanded) { tags, movetext in
-            if done { return }
-            switch importOneGame(tags: tags, movetext: movetext, config: config) {
-            case .imported(let game):
-                do {
-                    try corpus.append(game)
-                    summary.imported += 1
-                    if let mx = config.maxGames, summary.imported >= mx { done = true }
-                    if summary.imported % 10_000 == 0 {
-                        SessionLogger.shared.log("[PGN] imported \(summary.imported) games…")
-                    }
-                } catch {
-                    SessionLogger.shared.log("[PGN] append failed: \(error.localizedDescription)")
-                    summary.parseErrors += 1
+        SessionLogger.shared.log(
+            "[PGN] workers=\(workerCount) failOnError=\(config.failOnError) " +
+            "maxGames=\(config.maxGames.map(String.init) ?? "∞") " +
+            "maxStorage=\(config.maxStorageBytes.map(String.init) ?? "∞")")
+
+        var seq = 0
+        try streamGames(at: expanded,
+                        shouldContinue: { !stop.withLock { $0 } }) { tags, movetext in
+            inFlight.wait()
+            if stop.withLock({ $0 }) {
+                inFlight.signal()
+                return
+            }
+            let mySeq = seq
+            seq += 1
+            group.enter()
+            workers.addOperation {
+                let slot = processOneGame(tags: tags, movetext: movetext, config: config)
+                writerQueue.async {
+                    box.submit(seq: mySeq, slot: slot)
                 }
-            case .skipped:
-                summary.skipped += 1
-            case .parseError:
-                summary.parseErrors += 1
             }
         }
+        group.wait()
 
+        // Seal the (partial, on error) corpus so what's written stays valid.
         try corpus.finishSource()
-        return summary
+
+        if let err = box.firstError {
+            let msg = "game #\(err.seq + 1): \(err.reason)"
+            SessionLogger.shared.log("[PGN] hard-fail — \(msg)")
+            throw PGNImportError.gameFailed(msg)
+        }
+        return box.summary
     }
 
-    private enum GameOutcomeResult {
+    // MARK: - Per-game worker (pure, runs off the writer thread)
+
+    private enum BuildResult {
         case imported(GameRecord)
         case skipped
-        case parseError
+        case failed(String)
     }
 
-    private static func importOneGame(tags: [String: String], movetext: String, config: PGNImportConfig) -> GameOutcomeResult {
+    /// Build a game and encode its framed buffer — the parallelizable hot path.
+    static func processOneGame(tags: [String: String], movetext: String, config: PGNImportConfig) -> ImportSlot {
+        switch buildGame(tags: tags, movetext: movetext, config: config) {
+        case .imported(let game):
+            return .imported(frame: GameCorpusShardFormat.encodeFramedRecord(game),
+                             plyCount: game.moves.count)
+        case .skipped:
+            return .skipped
+        case .failed(let reason):
+            return .failed(reason: reason)
+        }
+    }
+
+    private static func buildGame(tags: [String: String], movetext: String, config: PGNImportConfig) -> BuildResult {
         // Standard start only.
         if tags["FEN"] != nil || tags["SetUp"] == "1" { return .skipped }
         if let variant = tags["Variant"], variant.lowercased() != "standard" { return .skipped }
@@ -131,20 +191,26 @@ enum PGNImporter {
         let tokens = sanTokens(from: movetext)
         guard !tokens.isEmpty else { return .skipped }
 
-        let engine = ChessGameEngine()
+        // Replay by legality only. The recorded game is ground truth, so a
+        // claimable-but-unclaimed draw (threefold repetition, fifty-move rule)
+        // must NOT stop replay the way ChessGameEngine's self-play
+        // auto-termination would — humans legally play on past both. The
+        // outcome comes from the PGN Result tag, not from end-state detection.
+        // (Repetition bookkeeping isn't needed here: the corpus stores raw
+        // moves and is re-encoded at training time.)
+        //
+        // Each SAN token is resolved against the *pseudo-legal* moves and only
+        // the matched candidate is legality-checked — far cheaper than
+        // generating and legality-filtering the entire legal move list per ply.
+        var state = ChessGameEngine().state
         var moves: [ChessMove] = []
         moves.reserveCapacity(tokens.count)
         for token in tokens {
-            let legal = MoveGenerator.legalMoves(for: engine.state)
-            guard let move = matchSAN(token, state: engine.state, legal: legal) else {
-                return .parseError
+            guard let move = resolveLegalSANMove(token, state: state) else {
+                return .failed("unresolved SAN '\(token)' at ply \(moves.count + 1)")
             }
             moves.append(move)
-            do {
-                try engine.applyMoveAndAdvance(move)
-            } catch {
-                return .parseError
-            }
+            state = MoveGenerator.applyMove(move, to: state)
         }
 
         guard moves.count >= config.minPlies else { return .skipped }
@@ -154,8 +220,11 @@ enum PGNImporter {
     // MARK: - Streaming reader
 
     /// Decompress (if `.zst`) and stream the file, invoking `onGame(tags,
-    /// movetext)` for each complete game.
-    private static func streamGames(at path: String, onGame: (_ tags: [String: String], _ movetext: String) -> Void) throws {
+    /// movetext)` for each complete game. Stops early (and kills the
+    /// decompressor) as soon as `shouldContinue()` turns false.
+    private static func streamGames(at path: String,
+                                    shouldContinue: () -> Bool,
+                                    onGame: (_ tags: [String: String], _ movetext: String) -> Void) throws {
         let process = Process()
         let usesZstd = path.hasSuffix(".zst")
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -199,22 +268,34 @@ enum PGNImporter {
             }
         }
 
-        var carry = Data()
+        // Scan complete lines out of `carry` per chunk, compacting the leftover
+        // tail just once per chunk (cheap integer cursor, no per-line memmove).
+        var carry = [UInt8]()
         let newline: UInt8 = 0x0A
-        while true {
+        while shouldContinue() {
             let chunk = handle.availableData
             if chunk.isEmpty { break }
-            carry.append(chunk)
-            while let nl = carry.firstIndex(of: newline) {
-                let lineData = carry.subdata(in: carry.startIndex..<nl)
-                carry.removeSubrange(carry.startIndex...nl)
-                processLine(String(decoding: lineData, as: UTF8.self))
+            carry.append(contentsOf: chunk)
+            var lineStart = 0
+            var i = 0
+            while i < carry.count {
+                if carry[i] == newline {
+                    processLine(String(decoding: carry[lineStart..<i], as: UTF8.self))
+                    lineStart = i + 1
+                }
+                i += 1
             }
+            if lineStart > 0 { carry.removeFirst(lineStart) }
         }
-        if !carry.isEmpty {
-            processLine(String(decoding: carry, as: UTF8.self))
+        // On natural EOF, flush the trailing partial line and emit the final
+        // game; on an early stop, skip it — those games would only be dropped.
+        if shouldContinue() {
+            if !carry.isEmpty {
+                processLine(String(decoding: carry, as: UTF8.self))
+            }
+            finalizeGame()
         }
-        finalizeGame()
+        if process.isRunning { process.terminate() }
         process.waitUntilExit()
     }
 
@@ -277,20 +358,43 @@ enum PGNImporter {
 
     // MARK: - SAN → ChessMove
 
-    /// Match a SAN token against the legal moves of `state`. Returns the unique
-    /// matching `ChessMove`, or nil if the token doesn't resolve.
+    /// Match a SAN token against a supplied move list (assumed legal). Returns
+    /// the first matching `ChessMove`, or nil. Kept for callers/tests that
+    /// already hold the legal moves; replay uses `resolveLegalSANMove`.
     static func matchSAN(_ token: String, state: GameState, legal: [ChessMove]) -> ChessMove? {
+        sanCandidates(token, state: state, from: legal).first
+    }
+
+    /// Resolve a SAN token to the unique LEGAL move in `state`, generating only
+    /// pseudo-legal candidates and legality-checking just the SAN matches. This
+    /// avoids generating and legality-filtering the entire legal move list (the
+    /// importer's dominant cost) when only one move needs resolving. A pinned
+    /// piece that pseudo-matches the token is correctly rejected here.
+    static func resolveLegalSANMove(_ token: String, state: GameState) -> ChessMove? {
+        let color = state.currentPlayer
+        return sanCandidates(token, state: state, from: MoveGenerator.pseudoLegalMoves(for: state))
+            .first { candidate in
+                !MoveGenerator.isInCheck(MoveGenerator.applyMove(candidate, to: state), color: color)
+            }
+    }
+
+    /// Every move in `moves` that matches SAN `token` for `state` — by piece
+    /// type, destination, disambiguation, promotion, and castling. Pass the
+    /// full legal list to get only legal matches, or pseudo-legal moves to
+    /// legality-check the matches yourself. Shared by `matchSAN` (first match)
+    /// and `resolveLegalSANMove` (first legal match).
+    private static func sanCandidates(_ token: String, state: GameState, from moves: [ChessMove]) -> [ChessMove] {
         var san = token
         // Strip check/mate/annotation suffixes.
         while let last = san.last, "+#!?".contains(last) { san.removeLast() }
-        if san.isEmpty { return nil }
+        if san.isEmpty { return [] }
 
         // Castling.
         if san == "O-O" || san == "0-0" {
-            return legal.first { m in isKing(m, state) && m.toCol == m.fromCol + 2 }
+            return moves.filter { m in isKing(m, state) && m.toCol == m.fromCol + 2 }
         }
         if san == "O-O-O" || san == "0-0-0" {
-            return legal.first { m in isKing(m, state) && m.toCol == m.fromCol - 2 }
+            return moves.filter { m in isKing(m, state) && m.toCol == m.fromCol - 2 }
         }
 
         var chars = Array(san)
@@ -315,8 +419,8 @@ enum PGNImporter {
 
         // Strip capture markers; what's left is [disambig]? dest.
         let rest = Array(chars[idx...]).filter { $0 != "x" }
-        guard rest.count >= 2 else { return nil }
-        guard let dest = square(file: rest[rest.count - 2], rank: rest[rest.count - 1]) else { return nil }
+        guard rest.count >= 2 else { return [] }
+        guard let dest = square(file: rest[rest.count - 2], rank: rest[rest.count - 1]) else { return [] }
 
         var disFile: Int? = nil
         var disRow: Int? = nil
@@ -328,7 +432,7 @@ enum PGNImporter {
             }
         }
 
-        let candidates = legal.filter { m in
+        return moves.filter { m in
             guard m.toRow == dest.row, m.toCol == dest.col else { return false }
             guard m.promotion == promotion else { return false }
             guard let piece = state.board[m.fromRow * 8 + m.fromCol], piece.type == pieceType else { return false }
@@ -336,7 +440,6 @@ enum PGNImporter {
             if let dr = disRow, m.fromRow != dr { return false }
             return true
         }
-        return candidates.first
     }
 
     private static func isKing(_ m: ChessMove, _ state: GameState) -> Bool {
@@ -391,6 +494,88 @@ enum PGNImporter {
         case ..<479:  return "blitz"
         case ..<1499: return "rapid"
         default:      return "classical"
+        }
+    }
+}
+
+/// Serial-writer-confined state for the parallel importer. Every property is
+/// touched only on the import's writer `DispatchQueue`, so the reference can be
+/// shared across the worker closures without further locking — hence
+/// `@unchecked Sendable`. The reorder buffer (`pending`) re-imposes original
+/// file order on out-of-order worker completions.
+private final class ImportWriterBox: @unchecked Sendable {
+    private let corpus: GameCorpus
+    private let config: PGNImportConfig
+    private let inFlight: DispatchSemaphore
+    private let group: DispatchGroup
+    private let stop: OSAllocatedUnfairLock<Bool>
+
+    var summary: PGNImporter.Summary
+    private var pending: [Int: PGNImporter.ImportSlot] = [:]
+    private var nextSeq = 0
+    private var importedBytes = 0
+    private(set) var firstError: (seq: Int, reason: String)? = nil
+
+    init(corpus: GameCorpus,
+         config: PGNImportConfig,
+         inFlight: DispatchSemaphore,
+         group: DispatchGroup,
+         stop: OSAllocatedUnfairLock<Bool>) {
+        self.corpus = corpus
+        self.config = config
+        self.inFlight = inFlight
+        self.group = group
+        self.stop = stop
+        var s = PGNImporter.Summary()
+        s.corpusID = corpus.corpusID
+        self.summary = s
+    }
+
+    private func requestStop() { stop.withLock { $0 = true } }
+    private func isStopped() -> Bool { stop.withLock { $0 } }
+
+    /// Store one completed slot and drain every now-contiguous slot in order.
+    /// Must run on the serial writer queue.
+    func submit(seq: Int, slot: PGNImporter.ImportSlot) {
+        pending[seq] = slot
+        while let s = pending.removeValue(forKey: nextSeq) {
+            if firstError == nil { consume(s, seq: nextSeq) }
+            nextSeq += 1
+            inFlight.signal()
+            group.leave()
+        }
+    }
+
+    private func consume(_ slot: PGNImporter.ImportSlot, seq: Int) {
+        if isStopped() { return }   // already past a cap — drop in-flight remainder
+        switch slot {
+        case .imported(let frame, let ply):
+            if let cap = config.maxStorageBytes, importedBytes + frame.count > cap {
+                requestStop()
+                return
+            }
+            do {
+                try corpus.append(framed: frame, plyCount: ply)
+            } catch {
+                firstError = (seq, "append failed: \(error.localizedDescription)")
+                requestStop()
+                return
+            }
+            summary.imported += 1
+            importedBytes += frame.count
+            if let mx = config.maxGames, summary.imported >= mx { requestStop() }
+            if summary.imported % 10_000 == 0 {
+                SessionLogger.shared.log("[PGN] imported \(summary.imported) games…")
+            }
+        case .skipped:
+            summary.skipped += 1
+        case .failed(let reason):
+            if config.failOnError {
+                firstError = (seq, reason)
+                requestStop()
+            } else {
+                summary.parseErrors += 1
+            }
         }
     }
 }
