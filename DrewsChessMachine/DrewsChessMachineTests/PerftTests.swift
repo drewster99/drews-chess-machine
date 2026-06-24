@@ -37,12 +37,21 @@ final class PerftTests: XCTestCase {
         ("position6-d3",  "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10", 3, 89_890),
     ]
 
-    /// The canonical `legalMoves` must reproduce the reference perft counts.
-    func testLegalMovesMatchesReferencePerft() throws {
+    /// The copy-make reference must reproduce the published perft counts.
+    func testCopyMakeMatchesReferencePerft() throws {
+        for c in Self.cases {
+            let state = try FENParser.parse(c.fen)
+            let nodes = perft(state, depth: c.depth, gen: MoveGenerator.legalMovesCopyMake)
+            XCTAssertEqual(nodes, c.nodes, "copy-make perft(\(c.depth)) mismatch for \(c.name)")
+        }
+    }
+
+    /// The production `legalMoves` (now pin-based) must also reproduce them.
+    func testProductionLegalMovesMatchesReferencePerft() throws {
         for c in Self.cases {
             let state = try FENParser.parse(c.fen)
             let nodes = perft(state, depth: c.depth, gen: MoveGenerator.legalMoves)
-            XCTAssertEqual(nodes, c.nodes, "perft(\(c.depth)) mismatch for \(c.name)")
+            XCTAssertEqual(nodes, c.nodes, "legalMoves perft(\(c.depth)) mismatch for \(c.name)")
         }
     }
 
@@ -105,9 +114,9 @@ final class PerftTests: XCTestCase {
         for c in Self.cases {
             let state = try FENParser.parse(c.fen)
             let divergence = firstPerftDivergence(state, depth: c.depth,
-                                                  reference: MoveGenerator.legalMoves,
+                                                  reference: MoveGenerator.legalMovesCopyMake,
                                                   candidate: MoveGenerator.legalMovesMakeUnmake)
-            XCTAssertNil(divergence, "make/unmake diverges from legalMoves in \(c.name): \(divergence ?? "")")
+            XCTAssertNil(divergence, "make/unmake diverges from copy-make in \(c.name): \(divergence ?? "")")
         }
     }
 
@@ -129,9 +138,9 @@ final class PerftTests: XCTestCase {
         for c in Self.cases {
             let state = try FENParser.parse(c.fen)
             let divergence = firstPerftDivergence(state, depth: c.depth,
-                                                  reference: MoveGenerator.legalMoves,
+                                                  reference: MoveGenerator.legalMovesCopyMake,
                                                   candidate: MoveGenerator.legalMovesPinBased)
-            XCTAssertNil(divergence, "pin-based diverges from legalMoves in \(c.name): \(divergence ?? "")")
+            XCTAssertNil(divergence, "pin-based diverges from copy-make in \(c.name): \(divergence ?? "")")
         }
     }
 

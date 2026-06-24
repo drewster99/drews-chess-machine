@@ -6,15 +6,24 @@ enum MoveGenerator {
 
     // MARK: - Public API
 
-    /// All legal moves for the current player in the given state: the
-    /// pseudo-legal moves minus any that leave the mover's own king in check.
+    /// All legal moves for the current player. Uses the pin-based generator
+    /// (`legalMovesPinBased`); `legalMovesCopyMake` is the equivalent reference
+    /// implementation, validated against it by perft and the live cross-check.
     static func legalMoves(for state: GameState) -> [ChessMove] {
+        let legal = legalMovesPinBased(for: state)
+        if crosscheckMovegen { crosscheckGenerators(pinBased: legal, state: state) }
+        return legal
+    }
+
+    /// Reference legality filter: copy-make — allocate a fresh state per
+    /// candidate and keep those that don't leave the king in check. Retained as
+    /// the gold reference for perft and the cross-check oracle; the production
+    /// `legalMoves` uses the faster `legalMovesPinBased`.
+    static func legalMovesCopyMake(for state: GameState) -> [ChessMove] {
         let color = state.currentPlayer
-        let legal = pseudoLegalMoves(for: state).filter { move in
+        return pseudoLegalMoves(for: state).filter { move in
             !isInCheck(applyMove(move, to: state), color: color)
         }
-        if crosscheckMovegen { crosscheckGenerators(reference: legal, state: state) }
-        return legal
     }
 
     /// When `--crosscheck-movegen` is passed, every `legalMoves` call also runs
@@ -29,18 +38,18 @@ enum MoveGenerator {
         FileHandle.standardError.write(Data("[MOVEGEN-CROSSCHECK] active\n".utf8))
     }()
 
-    private static func crosscheckGenerators(reference: [ChessMove], state: GameState) {
+    private static func crosscheckGenerators(pinBased: [ChessMove], state: GameState) {
         _ = announceCrosscheck
-        let ref = Set(reference)
+        let ref = Set(legalMovesCopyMake(for: state))   // copy-make oracle
         let makeUnmake = Set(legalMovesMakeUnmake(for: state))
-        let pinBased = Set(legalMovesPinBased(for: state))
-        guard makeUnmake != ref || pinBased != ref else { return }
+        let pin = Set(pinBased)                          // the production result
+        guard makeUnmake != ref || pin != ref else { return }
         func diff(_ other: Set<ChessMove>) -> String {
             "missing=\(ref.subtracting(other).map(uciString)) extra=\(other.subtracting(ref).map(uciString))"
         }
         var parts: [String] = []
         if makeUnmake != ref { parts.append("B[\(diff(makeUnmake))]") }
-        if pinBased != ref { parts.append("C[\(diff(pinBased))]") }
+        if pin != ref { parts.append("C[\(diff(pin))]") }
         // Log AND write to stderr: a divergence is a correctness failure that
         // must surface regardless of whether SessionLogger is started (it isn't
         // in UCI mode).
@@ -145,7 +154,7 @@ enum MoveGenerator {
                     && move.toCol != move.fromCol
                     && buf[fromIndex]?.type == .pawn
                     && buf[move.toRow * 8 + move.toCol] == nil
-                if !inCheck && !isKingMove && !isEnPassant && !pinned.contains(fromIndex) {
+                if !inCheck && !isKingMove && !isEnPassant && (pinned & (UInt64(1) << fromIndex)) == 0 {
                     legal.append(move)            // provably cannot expose the king
                 } else if moveLeavesKingSafe(move, on: buf, kingHome: kingHome, color: color) {
                     legal.append(move)
@@ -209,17 +218,20 @@ enum MoveGenerator {
     /// piece alone on a king ray with an enemy slider of the matching ray type
     /// (or a queen) behind it. Computed once from the king outward along the
     /// eight rays.
-    private static func pinnedSquares(board: UnsafeBufferPointer<Piece?>, kingIndex: Int, color: PieceColor) -> Set<Int> {
-        var pinned: Set<Int> = []
+    /// Bitboard of `color`'s pinned-piece squares (bit `i` = square `i`), so the
+    /// hot path tests membership with a bit-and instead of a `Set` lookup and
+    /// the per-call set allocation.
+    private static func pinnedSquares(board: UnsafeBufferPointer<Piece?>, kingIndex: Int, color: PieceColor) -> UInt64 {
+        var pinned: UInt64 = 0
         let kr = kingIndex / 8, kc = kingIndex % 8
         for o in diagonals {
             if let s = pinAlongRay(board: board, kr: kr, kc: kc, dr: o.dr, dc: o.dc, color: color, slider: .bishop) {
-                pinned.insert(s)
+                pinned |= UInt64(1) << s
             }
         }
         for o in straights {
             if let s = pinAlongRay(board: board, kr: kr, kc: kc, dr: o.dr, dc: o.dc, color: color, slider: .rook) {
-                pinned.insert(s)
+                pinned |= UInt64(1) << s
             }
         }
         return pinned

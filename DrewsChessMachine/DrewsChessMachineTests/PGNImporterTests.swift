@@ -215,4 +215,28 @@ final class PGNImporterTests: XCTestCase {
         XCTAssertTrue(hasNc3e2(MoveGenerator.pseudoLegalMoves(for: state)), "Nc3–e2 should be pseudo-legal")
         XCTAssertFalse(hasNc3e2(MoveGenerator.legalMoves(for: state)), "Nc3–e2 should be illegal (pinned)")
     }
+
+    /// A missing/unreadable input file must hard-fail (the reader subprocess
+    /// exits nonzero), not silently produce an empty corpus.
+    func testImportFailsOnMissingInputFile() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pgnimp-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(at: dir) }
+            catch { /* best-effort temp cleanup */ }
+        }
+        let missing = dir.appendingPathComponent("does-not-exist.pgn")
+        XCTAssertThrowsError(try importGames(pgn: missing, into: dir.appendingPathComponent("out"), threads: 2))
+    }
+
+    /// An undisambiguated SAN with more than one legal match must resolve to nil
+    /// (the importer then fails loudly); the disambiguated form resolves uniquely.
+    func testAmbiguousSANResolvesToNil() throws {
+        // Both Nb1 and Nf3 can legally reach d2.
+        let state = try FENParser.parse("4k3/8/8/8/8/5N2/8/1N2K3 w - - 0 1")
+        XCTAssertNil(PGNImporter.resolveLegalSANMove("Nd2", state: state))
+        let nbd2 = try XCTUnwrap(PGNImporter.resolveLegalSANMove("Nbd2", state: state))
+        XCTAssertEqual([nbd2.fromRow, nbd2.fromCol], [7, 1])   // b1
+    }
 }

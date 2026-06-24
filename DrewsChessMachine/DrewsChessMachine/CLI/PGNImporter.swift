@@ -272,9 +272,11 @@ enum PGNImporter {
         // tail just once per chunk (cheap integer cursor, no per-line memmove).
         var carry = [UInt8]()
         let newline: UInt8 = 0x0A
-        while shouldContinue() {
+        var endedByStop = false
+        while true {
+            if !shouldContinue() { endedByStop = true; break }
             let chunk = handle.availableData
-            if chunk.isEmpty { break }
+            if chunk.isEmpty { break }   // natural EOF
             carry.append(contentsOf: chunk)
             var lineStart = 0
             var i = 0
@@ -289,7 +291,7 @@ enum PGNImporter {
         }
         // On natural EOF, flush the trailing partial line and emit the final
         // game; on an early stop, skip it — those games would only be dropped.
-        if shouldContinue() {
+        if !endedByStop {
             if !carry.isEmpty {
                 processLine(String(decoding: carry, as: UTF8.self))
             }
@@ -297,6 +299,14 @@ enum PGNImporter {
         }
         if process.isRunning { process.terminate() }
         process.waitUntilExit()
+        // A nonzero exit on a natural read (not our own early termination) means
+        // the reader/decompressor failed — missing input file, missing `zstd`,
+        // or a corrupt `.zst` — which would otherwise yield a silently empty or
+        // truncated corpus. Fail loudly instead.
+        if !endedByStop && process.terminationStatus != 0 {
+            let tool = process.arguments?.first ?? "reader"
+            throw PGNImportError.openFailed("\(tool) exited with status \(process.terminationStatus) reading \(path)")
+        }
     }
 
     private static func parseTag(_ line: String) -> (String, String)? {
@@ -369,13 +379,17 @@ enum PGNImporter {
     /// pseudo-legal candidates and legality-checking just the SAN matches. This
     /// avoids generating and legality-filtering the entire legal move list (the
     /// importer's dominant cost) when only one move needs resolving. A pinned
-    /// piece that pseudo-matches the token is correctly rejected here.
+    /// piece that pseudo-matches the token is correctly rejected here. Returns
+    /// nil if there is no legal match, or if more than one legal move matches
+    /// (an ambiguous token — well-formed SAN always disambiguates), so the
+    /// importer fails loudly rather than guessing.
     static func resolveLegalSANMove(_ token: String, state: GameState) -> ChessMove? {
         let color = state.currentPlayer
-        return sanCandidates(token, state: state, from: MoveGenerator.pseudoLegalMoves(for: state))
-            .first { candidate in
+        let legal = sanCandidates(token, state: state, from: MoveGenerator.pseudoLegalMoves(for: state))
+            .filter { candidate in
                 !MoveGenerator.isInCheck(MoveGenerator.applyMove(candidate, to: state), color: color)
             }
+        return legal.count == 1 ? legal[0] : nil
     }
 
     /// Every move in `moves` that matches SAN `token` for `state` — by piece
