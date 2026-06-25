@@ -404,7 +404,8 @@ struct DrewsChessMachineApp: App {
                                               Write parameters.json + parameters.md (default: ./) and exit.
 
             Offline corpus replay & PGN import (each runs headless, then exits):
-              --replay-corpus <dir>           Train on a fixed recorded game corpus (repeatable, to mix corpora):
+              --replay-corpus <dir|id>        Train on a fixed recorded game corpus — a path, or a bare corpus
+                                              ID resolved under Corpora/ (repeatable, to mix corpora):
                                               no self-play, no arena, no promotion. Fills the replay buffer from
                                               the games and runs a step-locked SGD loop (K = batch / replay-ratio
                                               positions per step). Pair with --training-step-limit <n> OR
@@ -985,14 +986,37 @@ struct DrewsChessMachineApp: App {
         }
 
         let config = CorpusReplayConfig(
-            corpusDirectories: corpusPaths.map {
-                URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true)
+            corpusDirectories: corpusPaths.map { arg in
+                guard let dir = resolveCorpusDirectory(arg) else {
+                    let triedPath = URL(fileURLWithPath: (arg as NSString).expandingTildeInPath).path
+                    let triedID = CorpusPaths.corporaDir.appendingPathComponent(arg).path
+                    FileHandle.standardError.write(Data(
+                        "error: corpus not found for '\(arg)' — no corpus.json at \(triedPath) or \(triedID)\n".utf8))
+                    Darwin.exit(2)
+                }
+                return dir
             },
             stepLimit: stepLimit,
             epochs: epochs,
             startModelPath: startModelPath
         )
         CorpusReplayRunner.runAndExit(config: config, params: params)
+    }
+
+    /// Resolve a `--replay-corpus` argument to a corpus directory: accepts
+    /// either a filesystem path (absolute, or relative to the working
+    /// directory) or a bare corpus ID resolved under the shared `Corpora/`
+    /// store. Prefers an existing path; returns the directory that contains a
+    /// `corpus.json`, or nil if neither location does. `corporaDir` is injected
+    /// for testing.
+    static func resolveCorpusDirectory(_ arg: String,
+                                       corporaDir: URL = CorpusPaths.corporaDir) -> URL? {
+        let fm = FileManager.default
+        let asPath = URL(fileURLWithPath: (arg as NSString).expandingTildeInPath, isDirectory: true)
+        if fm.fileExists(atPath: asPath.appendingPathComponent("corpus.json").path) { return asPath }
+        let asID = corporaDir.appendingPathComponent(arg, isDirectory: true)
+        if fm.fileExists(atPath: asID.appendingPathComponent("corpus.json").path) { return asID }
+        return nil
     }
 
     // MARK: - PGN import pre-flight (--import-pgn)
