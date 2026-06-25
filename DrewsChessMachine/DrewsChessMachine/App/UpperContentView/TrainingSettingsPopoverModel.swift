@@ -150,6 +150,22 @@ final class TrainingSettingsPopoverModel {
     private(set) var targetSampledGameLengthPliesError = false
     private(set) var maxDrawPercentPerBatchError = false
 
+    // MARK: - Sessions tab
+    //
+    // Autosave-policy knobs. Not live-propagated like the Replay-tab fields:
+    // the periodic-save interval is reconciled mid-session by the heartbeat
+    // (which reads `periodicAutosaveIntervalSec` off the singleton and
+    // re-anchors the running `PeriodicSaveController`), and the retention cap
+    // is read at prune time after each periodic save — so a plain commit-on-Save
+    // write to `TrainingParameters.shared` is all that's needed, with no Cancel
+    // stash. The interval is edited in MINUTES for legibility (the parameter
+    // stores seconds); seeding rounds to the nearest minute.
+    var periodicAutosaveIntervalMinutesText = "" { didSet { periodicAutosaveIntervalError = false } }
+    var maxPeriodicAutosavesKeptText = "" { didSet { maxPeriodicAutosavesKeptError = false } }
+
+    private(set) var periodicAutosaveIntervalError = false
+    private(set) var maxPeriodicAutosavesKeptError = false
+
     // MARK: - Cancel stash (for the live-propagated replay-ratio fields)
 
     private var originalReplayRatioTarget: Double = 1.0
@@ -265,6 +281,9 @@ final class TrainingSettingsPopoverModel {
         targetSampledGameLengthPliesText = String(p.targetSampledGameLengthPlies)
         maxDrawPercentPerBatchText = String(p.maxDrawPercentPerBatch)
         replayBufferStratifyByMaterial = p.replayBufferStratifyByMaterial
+        // --- Sessions tab ---
+        periodicAutosaveIntervalMinutesText = String(Int((p.periodicAutosaveIntervalSec / 60.0).rounded()))
+        maxPeriodicAutosavesKeptText = String(p.maxPeriodicAutosavesKept)
         // Stash pre-edit values for the four replay-ratio control fields. The
         // Replay tab live-propagates changes to those fields; if the user hits
         // Cancel we restore from this stash, matching the standard
@@ -327,6 +346,8 @@ final class TrainingSettingsPopoverModel {
         maxPliesFromAnyOneGameError = false
         targetSampledGameLengthPliesError = false
         maxDrawPercentPerBatchError = false
+        periodicAutosaveIntervalError = false
+        maxPeriodicAutosavesKeptError = false
     }
 
     /// Restore the seven live-propagated Replay-tab fields (four replay-ratio
@@ -1133,6 +1154,40 @@ final class TrainingSettingsPopoverModel {
             replayTrainingStepDelayError = false
         } else {
             replayTrainingStepDelayError = true
+            anyError = true
+        }
+
+        // --- Sessions tab ---
+        // Autosave interval — edited in minutes, stored as seconds. Range
+        // [1, 10080] min = [60, 604800] sec, matching the parameter's range.
+        // Commit-on-Save: the heartbeat re-anchors the running controller from
+        // the new value, so no live trainer write is needed here.
+        if let mins = Int(periodicAutosaveIntervalMinutesText.trimmingCharacters(in: .whitespaces)),
+           mins >= 1, mins <= 10_080 {
+            periodicAutosaveIntervalError = false
+            let secs = Double(mins * 60)
+            if abs(secs - p.periodicAutosaveIntervalSec) > 0.5 {
+                SessionLogger.shared.log(
+                    "[PARAM] periodicAutosaveIntervalSec: \(Int(p.periodicAutosaveIntervalSec)) -> \(Int(secs))"
+                )
+                p.periodicAutosaveIntervalSec = secs
+            }
+        } else {
+            periodicAutosaveIntervalError = true
+            anyError = true
+        }
+        // Max periodic autosaves kept — Int in [0, 10000]; 0 = unlimited.
+        // Read live at prune time (after each periodic save), so a plain
+        // singleton write is all that's required.
+        if let n = Int(maxPeriodicAutosavesKeptText.trimmingCharacters(in: .whitespaces)),
+           n >= 0, n <= 10_000 {
+            maxPeriodicAutosavesKeptError = false
+            if n != p.maxPeriodicAutosavesKept {
+                SessionLogger.shared.log("[PARAM] maxPeriodicAutosavesKept: \(p.maxPeriodicAutosavesKept) -> \(n)")
+                p.maxPeriodicAutosavesKept = n
+            }
+        } else {
+            maxPeriodicAutosavesKeptError = true
             anyError = true
         }
 

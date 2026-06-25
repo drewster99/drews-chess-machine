@@ -164,6 +164,64 @@ enum CheckpointPaths {
         sweep(modelsDir, ".safetensors.tmp")
     }
 
+    /// Suffix that uniquely identifies a periodic (4-hourly-by-default)
+    /// autosave session directory. Built from `SessionSaveTrigger.periodic`'s
+    /// disk tag so the two stay in lock-step — pruning must only ever touch
+    /// periodic saves, never `-manual` / `-promote` / `-sigusr2` ones.
+    static let periodicSessionSuffix = "-periodic.dcmsession"
+
+    /// Enforce the periodic-autosave retention cap: keep only the `keep` most
+    /// recent `-periodic.dcmsession` directories under `Sessions/`, deleting
+    /// the older ones. `keep <= 0` means **unlimited** (no pruning — the
+    /// legacy behavior) and returns immediately.
+    ///
+    /// Only periodic saves are candidates; manual, post-promotion, and signal
+    /// saves are filtered out by the filename suffix and are never deleted
+    /// here. Ordering is by filename, which is chronological because every
+    /// name is `YYYYMMDD-HHMMSS-…` (see `makeSessionDirectoryName`). `protecting`
+    /// — typically the just-written save and/or the current LastSessionPointer
+    /// target — is never deleted regardless of its rank, a belt-and-suspenders
+    /// guard against ever pruning the directory a resume would reach for.
+    ///
+    /// Each removal logs `[PRUNE]`; a per-item failure logs `[PRUNE-ERR]` and
+    /// does not abort the sweep (a stuck file should not strand the cap). Safe
+    /// to call off the main actor — pure FileManager work, no shared state.
+    static func prunePeriodicAutosaves(keeping keep: Int, protecting: URL? = nil) {
+        guard keep > 0 else { return }
+        let fm = FileManager.default
+        let entries: [URL]
+        do {
+            entries = try fm.contentsOfDirectory(
+                at: sessionsDir,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            SessionLogger.shared.log(
+                "[PRUNE-ERR] Could not list Sessions for periodic-autosave pruning: \(error.localizedDescription)"
+            )
+            return
+        }
+        let protectedName = protecting?.standardizedFileURL.lastPathComponent
+        let periodic = entries
+            .filter { $0.lastPathComponent.hasSuffix(periodicSessionSuffix) }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent } // newest first
+        guard periodic.count > keep else { return }
+        for url in periodic.dropFirst(keep) {
+            if let protectedName, url.lastPathComponent == protectedName { continue }
+            do {
+                try fm.removeItem(at: url)
+                SessionLogger.shared.log(
+                    "[PRUNE] Removed old periodic autosave \(url.lastPathComponent) (retention cap=\(keep))"
+                )
+            } catch {
+                SessionLogger.shared.log(
+                    "[PRUNE-ERR] Could not remove \(url.lastPathComponent): \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
     /// POSIX/UTC timestamp formatter used as the leading sort key in
     /// every generated filename so Finder's alphabetical order is
     /// also chronological order.

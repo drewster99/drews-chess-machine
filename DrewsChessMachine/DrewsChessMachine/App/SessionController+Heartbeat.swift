@@ -385,6 +385,19 @@ extension SessionController {
             return
         }
         periodicSaveLastPollAt = now
+        // Reconcile a live change to the autosave interval. The user can
+        // edit `periodic_autosave_interval_sec` mid-session (Sessions tab);
+        // re-anchor the controller's deadline so the new cadence takes
+        // effect without a Play-and-Train restart. Compared with a small
+        // tolerance because the parameter is a Double persisted through
+        // UserDefaults.
+        let desiredInterval = TrainingParameters.shared.periodicAutosaveIntervalSec
+        if abs(controller.interval - desiredInterval) > 0.5 {
+            SessionLogger.shared.log(
+                "[CHECKPOINT] Periodic autosave interval changed: \(Int(controller.interval))s -> \(Int(desiredInterval))s (re-anchoring next save)"
+            )
+            controller.updateInterval(desiredInterval, now: now)
+        }
         if periodicSaveInFlight {
             return
         }
@@ -393,7 +406,7 @@ extension SessionController {
             return
         case .fire:
             SessionLogger.shared.log(
-                "[CHECKPOINT] Periodic save tick — firing (interval=\(Int(UpperContentView.periodicSaveIntervalSec))s)"
+                "[CHECKPOINT] Periodic save tick — firing (interval=\(Int(controller.interval))s)"
             )
             handleSaveSessionPeriodic()
         }

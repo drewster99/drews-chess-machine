@@ -777,6 +777,28 @@ public enum MomentumCycleMax: TrainingParameterKey {}
 )
 public enum MomentumCycleInvert: TrainingParameterKey {}
 
+// MARK: - Sessions / autosave policy
+
+@TrainingParameter(
+    name: "Periodic Autosave Interval (sec)",
+    description: "Cadence of the periodic full-session autosave while Play-and-Train is active, in seconds. The default 14400 = 4 hours. Read live: the heartbeat reconciles a mid-session change against the running PeriodicSaveController and re-anchors the next-save deadline, so a shorter interval takes effect without restarting Play-and-Train. Does not affect manual saves or post-promotion autosaves.",
+    default: 14400.0,
+    range: 60.0...604800.0,
+    category: "Sessions",
+    liveTunable: true
+)
+public enum PeriodicAutosaveIntervalSec: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Max Periodic Autosaves Kept",
+    description: "Retention cap on the number of periodic (`-periodic.dcmsession`) autosaves kept on disk. After each successful periodic save, older periodic saves beyond this count are deleted (newest kept). Default 3. 0 = unlimited (no pruning, the pre-2026-06-24 behavior). Manual (`-manual`), post-promotion (`-promote`), and signal (`-sigusr2`) saves are never pruned by this knob.",
+    default: 3,
+    range: 0...10000,
+    category: "Sessions",
+    liveTunable: true
+)
+public enum MaxPeriodicAutosavesKept: TrainingParameterKey {}
+
 // MARK: - TrainingParametersSnapshot
 
 public struct TrainingParametersSnapshot: Sendable {
@@ -870,6 +892,8 @@ public extension TrainingParametersSnapshot {
     var momentumCycleMin: Double { value(for: MomentumCycleMin.self) }
     var momentumCycleMax: Double { value(for: MomentumCycleMax.self) }
     var momentumCycleInvert: Bool { value(for: MomentumCycleInvert.self) }
+    var periodicAutosaveIntervalSec: Double { value(for: PeriodicAutosaveIntervalSec.self) }
+    var maxPeriodicAutosavesKept: Int { value(for: MaxPeriodicAutosavesKept.self) }
 }
 
 // MARK: - TrainingParameters singleton
@@ -941,6 +965,8 @@ public final class TrainingParameters {
     public var momentumCycleMin: Double { didSet { Self.persist(MomentumCycleMin.self, value: momentumCycleMin) } }
     public var momentumCycleMax: Double { didSet { Self.persist(MomentumCycleMax.self, value: momentumCycleMax) } }
     public var momentumCycleInvert: Bool { didSet { Self.persist(MomentumCycleInvert.self, value: momentumCycleInvert) } }
+    public var periodicAutosaveIntervalSec: Double { didSet { Self.persist(PeriodicAutosaveIntervalSec.self, value: periodicAutosaveIntervalSec) } }
+    public var maxPeriodicAutosavesKept: Int { didSet { Self.persist(MaxPeriodicAutosavesKept.self, value: maxPeriodicAutosavesKept) } }
 
     private init() {
         // Read each value from UserDefaults (or definition default if absent / invalid).
@@ -1005,6 +1031,8 @@ public final class TrainingParameters {
         self.momentumCycleMin = Self.read(MomentumCycleMin.self)
         self.momentumCycleMax = Self.read(MomentumCycleMax.self)
         self.momentumCycleInvert = Self.read(MomentumCycleInvert.self)
+        self.periodicAutosaveIntervalSec = Self.read(PeriodicAutosaveIntervalSec.self)
+        self.maxPeriodicAutosavesKept = Self.read(MaxPeriodicAutosavesKept.self)
     }
 
     // MARK: Snapshot
@@ -1075,6 +1103,8 @@ public final class TrainingParameters {
         v[MomentumCycleMin.id] = MomentumCycleMin.encode(momentumCycleMin)
         v[MomentumCycleMax.id] = MomentumCycleMax.encode(momentumCycleMax)
         v[MomentumCycleInvert.id] = MomentumCycleInvert.encode(momentumCycleInvert)
+        v[PeriodicAutosaveIntervalSec.id] = PeriodicAutosaveIntervalSec.encode(periodicAutosaveIntervalSec)
+        v[MaxPeriodicAutosavesKept.id] = MaxPeriodicAutosavesKept.encode(maxPeriodicAutosavesKept)
         return v
     }
 
@@ -1211,6 +1241,10 @@ public final class TrainingParameters {
             try MomentumCycleMax.definition.validate(raw); momentumCycleMax = try MomentumCycleMax.decode(raw)
         case MomentumCycleInvert.id:
             try MomentumCycleInvert.definition.validate(raw); momentumCycleInvert = try MomentumCycleInvert.decode(raw)
+        case PeriodicAutosaveIntervalSec.id:
+            try PeriodicAutosaveIntervalSec.definition.validate(raw); periodicAutosaveIntervalSec = try PeriodicAutosaveIntervalSec.decode(raw)
+        case MaxPeriodicAutosavesKept.id:
+            try MaxPeriodicAutosavesKept.definition.validate(raw); maxPeriodicAutosavesKept = try MaxPeriodicAutosavesKept.decode(raw)
         default:
             throw TrainingConfigError.unknownParameter(id: id)
         }
@@ -1354,7 +1388,9 @@ public final class TrainingParameters {
         MomentumCycleCount.self,
         MomentumCycleMin.self,
         MomentumCycleMax.self,
-        MomentumCycleInvert.self
+        MomentumCycleInvert.self,
+        PeriodicAutosaveIntervalSec.self,
+        MaxPeriodicAutosavesKept.self
     ]
 
     public nonisolated static var allDefinitions: [TrainingParameterDefinition] {

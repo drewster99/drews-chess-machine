@@ -444,6 +444,20 @@ extension SessionController {
                 periodicSaveController?.noteSuccessfulSave(at: Date())
                 checkpoint?.lastSavedAt = Date()
                 checkpoint?.lastResumedAt = nil
+                // Enforce the periodic-autosave retention cap. Only periodic
+                // saves trigger pruning (and `prunePeriodicAutosaves` only ever
+                // deletes `-periodic` directories); the just-written save is
+                // passed as `protecting` so it can never be the one removed.
+                // `maxPeriodicAutosavesKept` is read live here on the main actor;
+                // 0 = unlimited, in which case the prune is a no-op.
+                if trigger == .periodic {
+                    let keep = TrainingParameters.shared.maxPeriodicAutosavesKept
+                    if keep > 0 {
+                        Task.detached(priority: .utility) {
+                            CheckpointPaths.prunePeriodicAutosaves(keeping: keep, protecting: url)
+                        }
+                    }
+                }
             case .failure(let error):
                 checkpoint?.setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(error.localizedDescription)")
@@ -826,6 +840,8 @@ extension SessionController {
             legalMassCollapseGraceSeconds: params.legalMassCollapseGraceSeconds,
             legalMassCollapseNoImprovementProbes: params.legalMassCollapseNoImprovementProbes,
             batchStatsInterval: params.batchStatsInterval,
+            periodicAutosaveIntervalSec: params.periodicAutosaveIntervalSec,
+            maxPeriodicAutosavesKept: params.maxPeriodicAutosavesKept,
             recordingCorpusID: activeRecordingCorpusID,
             lrMomentumCycle: params.lrMomentumCycle,
             maxPliesFromAnyOneGame: params.maxPliesFromAnyOneGame,
