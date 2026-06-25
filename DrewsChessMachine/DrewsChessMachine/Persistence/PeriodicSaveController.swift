@@ -35,8 +35,12 @@ final class PeriodicSaveController {
     /// Interval between scheduled saves while Play-and-Train is
     /// armed. The controller is interval-agnostic; the caller
     /// passes it in once at construction for ease of testing with
-    /// a shorter cadence.
-    let interval: TimeInterval
+    /// a shorter cadence. Mutable so a mid-session change to the
+    /// `periodic_autosave_interval_sec` parameter can be reconciled
+    /// live via `updateInterval(_:now:)` (the heartbeat does this);
+    /// `private(set)` keeps the deadline math the controller's own
+    /// responsibility.
+    private(set) var interval: TimeInterval
 
     /// `true` while Play-and-Train is running. The deadline clock
     /// is only meaningful when `armed == true`. Disarming cancels
@@ -101,6 +105,41 @@ final class PeriodicSaveController {
         // facts about the world outside the controller's armed
         // state, and a fresh arm() will overwrite the deadline
         // regardless.
+    }
+
+    /// Reconcile a live change to the configured interval. Re-anchors
+    /// the pending deadline so the *next* save still lands `newInterval`
+    /// seconds after the last anchor (the last successful save, or the
+    /// arm time) rather than `oldInterval` seconds after it: we recover
+    /// the anchor as `nextFireAt − oldInterval` and re-add the new
+    /// interval. Shortening the interval can move the deadline into the
+    /// past, in which case the next `decide(now:)` simply fires — the
+    /// intended "save sooner" behavior. A no-op when the interval is
+    /// unchanged or the controller is disarmed (a fresh `arm()` will set
+    /// the deadline from the new interval anyway).
+    ///
+    /// A `pendingFire` queued from an earlier arena-deferred crossing was
+    /// justified by the *old* deadline. After re-anchoring, if the *new*
+    /// deadline has not yet been reached at `now`, that pending save is no
+    /// longer due and must be dropped — otherwise the next post-arena
+    /// `decide(now:)` would fire a save the live cadence says isn't due yet
+    /// (e.g. the user lengthens the interval mid-arena after a deadline had
+    /// already crossed). If the new deadline is still in the past at `now`,
+    /// the pending fire stands. Clearing is always safe: a still-running
+    /// arena that crosses the new deadline again will re-set `pendingFire`
+    /// on the next `decide(now:)`.
+    func updateInterval(_ newInterval: TimeInterval, now: Date) {
+        precondition(newInterval > 0, "PeriodicSaveController interval must be > 0; got \(newInterval)")
+        guard newInterval != interval else { return }
+        if armed, let fireAt = nextFireAt {
+            let anchor = fireAt.addingTimeInterval(-interval)
+            let newDeadline = anchor.addingTimeInterval(newInterval)
+            nextFireAt = newDeadline
+            if pendingFire, now < newDeadline {
+                pendingFire = false
+            }
+        }
+        interval = newInterval
     }
 
     // MARK: - External event notifications

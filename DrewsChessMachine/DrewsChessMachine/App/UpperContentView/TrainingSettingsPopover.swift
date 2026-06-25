@@ -38,6 +38,7 @@ fileprivate enum Tab: String, CaseIterable, Identifiable {
     case cycling = "Cycling"
     case selfPlay = "Self Play"
     case replay = "Replay"
+    case sessions = "Sessions"
     var id: String { rawValue }
 }
 
@@ -146,8 +147,13 @@ struct TrainingSettingsPopover: View {
             || model.maxDrawPercentPerBatchError
     }
 
+    private var sessionsHasError: Bool {
+        model.periodicAutosaveIntervalError
+            || model.maxPeriodicAutosavesKeptError
+    }
+
     private var anyTabHasError: Bool {
-        optimizerHasError || cyclingHasError || selfPlayHasError || replayHasError
+        optimizerHasError || cyclingHasError || selfPlayHasError || replayHasError || sessionsHasError
     }
 
     var body: some View {
@@ -185,7 +191,8 @@ struct TrainingSettingsPopover: View {
                 optimizerHasError: optimizerHasError,
                 cyclingHasError: cyclingHasError,
                 selfPlayHasError: selfPlayHasError,
-                replayHasError: replayHasError
+                replayHasError: replayHasError,
+                sessionsHasError: sessionsHasError
             )
 
             Divider()
@@ -322,6 +329,13 @@ struct TrainingSettingsPopover: View {
                     onLiveMaxDrawPercentPerBatchChange: { model.applyLiveMaxDrawPercentPerBatch($0) },
                     onLiveReplayBufferStratifyByMaterialChange: { model.applyLiveReplayBufferStratifyByMaterial($0) }
                 )
+            case .sessions:
+                SessionsTab(
+                    periodicAutosaveIntervalMinutesText: $model.periodicAutosaveIntervalMinutesText,
+                    maxPeriodicAutosavesKeptText: $model.maxPeriodicAutosavesKeptText,
+                    periodicAutosaveIntervalError: model.periodicAutosaveIntervalError,
+                    maxPeriodicAutosavesKeptError: model.maxPeriodicAutosavesKeptError
+                )
             }
             }
 
@@ -375,18 +389,19 @@ struct TrainingSettingsPopover: View {
 /// light accent-color tint; unselected tabs render with a
 /// secondary foreground for the label.
 ///
-/// The four tabs are unrolled (rather than `ForEach(Tab.allCases)`)
+/// The five tabs are unrolled (rather than `ForEach(Tab.allCases)`)
 /// so there is no per-render `Array(Tab.allCases.enumerated())`
 /// allocation and no `if idx > 0 { Divider() }` conditional that
 /// would change the view tree shape across re-evals. SwiftUI sees a
-/// stable seven-child HStack: button, divider, button, divider,
-/// button, divider, button.
+/// stable nine-child HStack: button, divider, button, divider,
+/// button, divider, button, divider, button.
 fileprivate struct TrainingSettingsTabBar: View {
     @Binding var selectedTab: Tab
     let optimizerHasError: Bool
     let cyclingHasError: Bool
     let selfPlayHasError: Bool
     let replayHasError: Bool
+    let sessionsHasError: Bool
 
     var body: some View {
         HStack(spacing: 0) {
@@ -412,6 +427,12 @@ fileprivate struct TrainingSettingsTabBar: View {
                 tab: .replay,
                 selectedTab: $selectedTab,
                 hasError: replayHasError
+            )
+            Divider().frame(height: 18)
+            TrainingSettingsTabButton(
+                tab: .sessions,
+                selectedTab: $selectedTab,
+                hasError: sessionsHasError
             )
         }
         .overlay(
@@ -969,6 +990,86 @@ private struct OptimizerTab: View {
         lrText = String(format: "%.2e", next)
     }
 
+}
+
+// MARK: - Sessions tab
+
+/// Autosave-policy controls: the periodic full-session autosave cadence and
+/// the retention cap on how many periodic autosaves are kept on disk.
+///
+/// Both commit on Save (no live-propagation). A changed interval is picked up
+/// mid-session by the main-actor heartbeat, which re-anchors the running
+/// `PeriodicSaveController`; the retention cap is consulted after each periodic
+/// save completes. So neither field needs a direct push onto a live object the
+/// way the Replay tab's fields do. The interval is edited in minutes (the
+/// `periodic_autosave_interval_sec` parameter stores seconds) with an hours
+/// hint. Manual saves and post-promotion autosaves are unaffected by either
+/// knob.
+private struct SessionsTab: View {
+    @Binding var periodicAutosaveIntervalMinutesText: String
+    @Binding var maxPeriodicAutosavesKeptText: String
+    let periodicAutosaveIntervalError: Bool
+    let maxPeriodicAutosavesKeptError: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Autosave")
+                    .font(.subheadline.weight(.semibold))
+                PopoverRow(
+                    label: "Interval (min):",
+                    text: $periodicAutosaveIntervalMinutesText,
+                    error: periodicAutosaveIntervalError,
+                    placeholder: "240",
+                    hint: intervalHint
+                ) {
+                    Stepper(
+                        "",
+                        value: PopoverBindings.intBinding(text: $periodicAutosaveIntervalMinutesText, fallback: 240),
+                        in: 1...10_080,
+                        step: 30
+                    )
+                }
+                PopoverRow(
+                    label: "Max autosaves kept:",
+                    text: $maxPeriodicAutosavesKeptText,
+                    error: maxPeriodicAutosavesKeptError,
+                    placeholder: "3",
+                    hint: keptHint
+                ) {
+                    Stepper(
+                        "",
+                        value: PopoverBindings.intBinding(text: $maxPeriodicAutosavesKeptText, fallback: 3),
+                        in: 0...10_000,
+                        step: 1
+                    )
+                }
+            }
+
+            Divider()
+
+            Text("The periodic autosave writes a full session checkpoint on this cadence while Play-and-Train runs; an interval change takes effect mid-session. The retention cap deletes the oldest periodic autosaves beyond the kept count after each new one is written — manual saves and post-promotion autosaves are never pruned. 0 keeps every periodic autosave (no pruning).")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// "= X.X h" readout of the minutes field, recomputed as the user types.
+    /// Empty when the text doesn't parse to a positive integer.
+    private var intervalHint: String {
+        let trimmed = periodicAutosaveIntervalMinutesText.trimmingCharacters(in: .whitespaces)
+        guard let mins = Int(trimmed), mins > 0 else { return "" }
+        return String(format: "= %.2g h", Double(mins) / 60.0)
+    }
+
+    /// Clarifies that 0 disables pruning; blank otherwise.
+    private var keptHint: String {
+        let trimmed = maxPeriodicAutosavesKeptText.trimmingCharacters(in: .whitespaces)
+        if let n = Int(trimmed), n == 0 { return "0 = keep all" }
+        return ""
+    }
 }
 
 // MARK: - Self Play tab

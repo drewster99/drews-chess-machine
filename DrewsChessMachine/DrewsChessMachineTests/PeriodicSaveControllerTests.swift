@@ -222,6 +222,103 @@ final class PeriodicSaveControllerTests: XCTestCase {
         XCTAssertEqual(c.decide(now: t0.addingTimeInterval(220)), .idle)
     }
 
+    // MARK: - Live interval changes
+
+    func testUpdateIntervalReanchorsPendingDeadline() {
+        // Armed at t0 with a 100s interval → deadline t=100. Lengthening
+        // the interval to 150s should re-anchor relative to the SAME
+        // anchor (the arm time t0), pushing the deadline to t=150 — not
+        // 150s from "now".
+        let c = makeController(intervalSec: 100)
+        c.arm(now: t0)
+        XCTAssertEqual(c.nextFireAt, t0.addingTimeInterval(100))
+        c.updateInterval(150, now: t0.addingTimeInterval(40))
+        XCTAssertEqual(c.interval, 150)
+        XCTAssertEqual(c.nextFireAt, t0.addingTimeInterval(150))
+        XCTAssertEqual(c.decide(now: t0.addingTimeInterval(149)), .idle)
+        XCTAssertEqual(c.decide(now: t0.addingTimeInterval(150)), .fire)
+    }
+
+    func testUpdateIntervalShorteningCanMoveDeadlineIntoPast() {
+        // Shrinking the interval below the elapsed time should bring the
+        // deadline into the past, so the next decide() fires immediately
+        // — the intended "save sooner" behavior.
+        let c = makeController(intervalSec: 100)
+        c.arm(now: t0)
+        c.updateInterval(30, now: t0.addingTimeInterval(40))
+        XCTAssertEqual(c.nextFireAt, t0.addingTimeInterval(30))
+        XCTAssertEqual(c.decide(now: t0.addingTimeInterval(40)), .fire)
+    }
+
+    func testUpdateIntervalReanchorsFromLastSave() {
+        // After a save at t=50 the deadline is t=150 (interval 100).
+        // Changing the interval to 80 should re-anchor off the save
+        // time: t=50 + 80 = t=130.
+        let c = makeController(intervalSec: 100)
+        c.arm(now: t0)
+        c.noteSuccessfulSave(at: t0.addingTimeInterval(50))
+        XCTAssertEqual(c.nextFireAt, t0.addingTimeInterval(150))
+        c.updateInterval(80, now: t0.addingTimeInterval(60))
+        XCTAssertEqual(c.nextFireAt, t0.addingTimeInterval(130))
+    }
+
+    func testUpdateIntervalNoOpWhenUnchanged() {
+        let c = makeController(intervalSec: 100)
+        c.arm(now: t0)
+        c.updateInterval(100, now: t0.addingTimeInterval(40))
+        XCTAssertEqual(c.nextFireAt, t0.addingTimeInterval(100))
+        XCTAssertEqual(c.interval, 100)
+    }
+
+    func testUpdateIntervalWhileDisarmedJustStoresInterval() {
+        // Disarmed: no deadline to re-anchor, but a subsequent arm()
+        // must use the new interval.
+        let c = makeController(intervalSec: 100)
+        c.updateInterval(250, now: t0)
+        XCTAssertEqual(c.interval, 250)
+        XCTAssertNil(c.nextFireAt)
+        c.arm(now: t0)
+        XCTAssertEqual(c.nextFireAt, t0.addingTimeInterval(250))
+    }
+
+    func testUpdateIntervalLengtheningClearsStalePendingFire() {
+        // Armed at t0 (interval 100 → deadline t=100). An arena is
+        // running and the deadline crosses at t=120, queuing a pending
+        // fire. The user then LENGTHENS the interval to 300; the deadline
+        // re-anchors to t=300, which is in the future relative to now.
+        // The stale pending fire must be dropped so that when the arena
+        // ends the next decide() does NOT fire a save the live cadence
+        // says isn't due until t=300.
+        let c = makeController(intervalSec: 100)
+        c.arm(now: t0)
+        c.noteArenaBegan()
+        _ = c.decide(now: t0.addingTimeInterval(120))
+        XCTAssertTrue(c.pendingFire)
+        c.updateInterval(300, now: t0.addingTimeInterval(130))
+        XCTAssertFalse(c.pendingFire)
+        XCTAssertEqual(c.nextFireAt, t0.addingTimeInterval(300))
+        c.noteArenaEnded()
+        XCTAssertEqual(c.decide(now: t0.addingTimeInterval(150)), .idle)
+        XCTAssertEqual(c.decide(now: t0.addingTimeInterval(300)), .fire)
+    }
+
+    func testUpdateIntervalKeepsPendingFireWhenNewDeadlineStillPast() {
+        // Same setup, but the deadline crosses later (t=250) and the user
+        // SHORTENS the interval to 200 → re-anchored deadline t=200, which
+        // is still in the past at now=260. The pending fire is genuinely
+        // due, so it must be preserved and fire once the arena ends.
+        let c = makeController(intervalSec: 100)
+        c.arm(now: t0)
+        c.noteArenaBegan()
+        _ = c.decide(now: t0.addingTimeInterval(250))
+        XCTAssertTrue(c.pendingFire)
+        c.updateInterval(200, now: t0.addingTimeInterval(260))
+        XCTAssertTrue(c.pendingFire)
+        XCTAssertEqual(c.nextFireAt, t0.addingTimeInterval(200))
+        c.noteArenaEnded()
+        XCTAssertEqual(c.decide(now: t0.addingTimeInterval(270)), .fire)
+    }
+
     // MARK: - Disarmed edge cases
 
     func testSuccessfulSaveWhileDisarmedDoesNotArm() {

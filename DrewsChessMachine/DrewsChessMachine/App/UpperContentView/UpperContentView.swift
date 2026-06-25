@@ -708,11 +708,17 @@ struct UpperContentView: View {
         get { session.periodicSaveInFlight } nonmutating set { session.periodicSaveInFlight = newValue }
     }
 
-    /// Interval between scheduled periodic saves while a
-    /// Play-and-Train session is active. 4 hours per the
-    /// product spec — long enough to keep disk churn low, short
-    /// enough that a crash never forfeits more than half a
-    /// working day of training.
+    /// Default interval between scheduled periodic saves while a
+    /// Play-and-Train session is active. 4 hours — long enough to
+    /// keep disk churn low, short enough that a crash never forfeits
+    /// more than half a working day of training.
+    ///
+    /// **Superseded as the live source of truth** by the
+    /// `periodicAutosaveIntervalSec` training parameter (same default,
+    /// `14400`), which is what `PeriodicSaveController` is now armed
+    /// with and what the heartbeat reconciles live. Editing this
+    /// constant no longer changes the running cadence — kept only as
+    /// the documented default value and as the doc/ROADMAP anchor.
     nonisolated static let periodicSaveIntervalSec: TimeInterval = 4 * 60 * 60
 
     // MARK: - Auto-resume sheet

@@ -276,6 +276,50 @@ extension SessionController {
                         "[RESUME-PARAM] batch_stats_interval: saved=nil applied=\(TrainingParameters.shared.batchStatsInterval) (defaulted)"
                     )
                 }
+                // Range-validate before assigning: the value is written
+                // straight onto `TrainingParameters.shared` and then feeds
+                // `PeriodicSaveController(interval:)`, whose precondition is
+                // `interval > 0`. A direct property write bypasses the macro's
+                // decode-path validation, so a corrupt/hand-edited/future
+                // session could otherwise drive an out-of-range (or ≤ 0)
+                // interval into a Play-and-Train start and crash. Mirror the
+                // sibling `arena_auto_interval_sec` clamp-and-keep-current
+                // pattern. Range matches the `PeriodicAutosaveIntervalSec`
+                // definition (60 ... 604800).
+                if let pai = rs.periodicAutosaveIntervalSec {
+                    if (60.0...604800.0).contains(pai) {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] periodic_autosave_interval_sec: \(TrainingParameters.shared.periodicAutosaveIntervalSec) -> \(pai) (from session)"
+                        )
+                        TrainingParameters.shared.periodicAutosaveIntervalSec = pai
+                    } else {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] periodic_autosave_interval_sec: saved=\(pai) out of range — kept current \(TrainingParameters.shared.periodicAutosaveIntervalSec)"
+                        )
+                    }
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] periodic_autosave_interval_sec: saved=nil applied=\(TrainingParameters.shared.periodicAutosaveIntervalSec) (defaulted)"
+                    )
+                }
+                // Range matches the `MaxPeriodicAutosavesKept` definition
+                // (0 ... 10000); 0 = unlimited.
+                if let mpk = rs.maxPeriodicAutosavesKept {
+                    if (0...10000).contains(mpk) {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] max_periodic_autosaves_kept: \(TrainingParameters.shared.maxPeriodicAutosavesKept) -> \(mpk) (from session)"
+                        )
+                        TrainingParameters.shared.maxPeriodicAutosavesKept = mpk
+                    } else {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] max_periodic_autosaves_kept: saved=\(mpk) out of range — kept current \(TrainingParameters.shared.maxPeriodicAutosavesKept)"
+                        )
+                    }
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] max_periodic_autosaves_kept: saved=nil applied=\(TrainingParameters.shared.maxPeriodicAutosavesKept) (defaulted)"
+                    )
+                }
                 if let cid = rs.recordingCorpusID {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] recording_corpus_id: prior run recorded into corpus \(cid) (informational; this run starts a fresh corpus when recording is on)"
@@ -961,15 +1005,17 @@ extension SessionController {
         // Clear any divergence suspension from a prior run so this start begins
         // with arenas and the periodic autosave un-gated.
         trainingSuspendedByDivergence = false
-        // Arm the 4-hour periodic-save scheduler. Always construct
-        // a fresh controller on each start — a previous stop will
-        // have nil'd it out, and `.continueAfterStop` intentionally
-        // resets the next-save deadline to a full interval from
-        // now rather than inheriting whatever time was left on the
-        // prior arm, since the whole point of the scheduler is
-        // "saved within the last 4 hours" and the session was not
-        // being saved while stopped.
-        let controller = PeriodicSaveController(interval: UpperContentView.periodicSaveIntervalSec)
+        // Arm the periodic-save scheduler. Always construct a fresh
+        // controller on each start — a previous stop will have nil'd it
+        // out, and `.continueAfterStop` intentionally resets the
+        // next-save deadline to a full interval from now rather than
+        // inheriting whatever time was left on the prior arm, since the
+        // whole point of the scheduler is "saved within the last
+        // interval" and the session was not being saved while stopped.
+        // The interval is the live `periodic_autosave_interval_sec`
+        // parameter (default 4 hours); mid-session changes are reconciled
+        // by the heartbeat via `PeriodicSaveController.updateInterval`.
+        let controller = PeriodicSaveController(interval: TrainingParameters.shared.periodicAutosaveIntervalSec)
         controller.arm(now: Date())
         periodicSaveController = controller
         periodicSaveLastPollAt = Date()

@@ -383,6 +383,15 @@ struct SessionCheckpointState: Codable, Equatable {
     /// Optional for back-compat; absent → loader falls through to
     /// `TrainingParameters.shared.batchStatsInterval`.
     var batchStatsInterval: Int?
+    /// Periodic-autosave cadence (seconds) in effect at save time
+    /// (`TrainingParameters.shared.periodicAutosaveIntervalSec`). Optional for
+    /// back-compat; absent → loader falls through to the current value.
+    var periodicAutosaveIntervalSec: Double?
+    /// Periodic-autosave retention cap in effect at save time
+    /// (`TrainingParameters.shared.maxPeriodicAutosavesKept`; 0 = unlimited).
+    /// Optional for back-compat; absent → loader falls through to the current
+    /// value.
+    var maxPeriodicAutosavesKept: Int?
     /// Id of the standalone game corpus this run recorded self-play games into
     /// (under Corpora/), or nil when recording was off. Provenance only — the
     /// corpus lives outside the session folder. Optional + defaulted for
