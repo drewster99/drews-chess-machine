@@ -1,4 +1,18 @@
 import Foundation
+import Darwin
+import os
+
+/// Cross-thread one-shot "please stop" flag for the replay loop. The SIGINT
+/// `DispatchSource` handler (running on a global queue) flips it; the training
+/// loop (running on the detached replay task) reads it once per step. An
+/// `OSAllocatedUnfairLock` — the project standard — guards the single Bool;
+/// this is not on any hot path (one read per GPU step), so the lock cost is
+/// irrelevant.
+private final class ReplayAbortFlag: @unchecked Sendable {
+    private let state = OSAllocatedUnfairLock(initialState: false)
+    func request() { state.withLock { $0 = true } }
+    var isRequested: Bool { state.withLock { $0 } }
+}
 
 /// Plain, `Sendable` snapshot of the training parameters an offline replay run
 /// needs. Captured on the main actor (from `TrainingParameters.shared`) before
@@ -32,13 +46,26 @@ struct CorpusReplayConfig: Sendable {
     var stepLimit: Int?
     var epochs: Int?
     var startModelPath: String?
+    /// Explicit destination for the rolling trainer-model file. When nil the
+    /// runner derives a path next to `--start-model` (or inside the first
+    /// corpus directory). The same file is overwritten by the periodic
+    /// autosave and by the final save on exit/abort.
+    var outModelPath: String?
+    /// Freshly-minted `ModelID` for this run's saved model, minted on the main
+    /// actor in the pre-flight handler (the `ModelIDMinter` is main-actor
+    /// isolated and the replay loop runs off-actor, so it can't mint there).
+    var runModelID: String
 }
 
 enum CorpusReplayError: LocalizedError {
     case noGames
+    case startModelTooSmall(have: Int, need: Int)
     var errorDescription: String? {
         switch self {
-        case .noGames: return "No sealed shards found in the provided corpus path(s)"
+        case .noGames:
+            return "No sealed shards found in the provided corpus path(s)"
+        case let .startModelTooSmall(have, need):
+            return "--start-model has \(have) weight tensors but the network needs at least \(need) (trainables + BN running stats)"
         }
     }
 }
@@ -62,10 +89,43 @@ enum CorpusReplayRunner {
         SessionLogger.shared.log(
             "[REPLAY] starting offline corpus replay over \(config.corpusDirectories.count) corpus path(s)"
         )
+
+        // Ctrl-C handling. Install BEFORE the run so an early interrupt is
+        // honored. We ignore the default SIGINT disposition (which would kill
+        // the process immediately, losing the final save) and instead route
+        // the signal to a DispatchSource handler on a background queue, where
+        // it's safe to do real work (signal handlers proper are
+        // async-signal-unsafe). First press → request a clean abort; the loop
+        // breaks after the in-flight step and the final save runs. Second
+        // press → restore the default disposition and re-raise, so an
+        // impatient or wedged run can still be force-killed.
+        let abort = ReplayAbortFlag()
+        signal(SIGINT, SIG_IGN)
+        let sigSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+        sigSource.setEventHandler {
+            if abort.isRequested {
+                signal(SIGINT, SIG_DFL)
+                raise(SIGINT)
+                return
+            }
+            abort.request()
+            let msg = "[REPLAY] SIGINT received — finishing current step, saving, then exiting (Ctrl-C again to force-quit)"
+            print(msg)
+            SessionLogger.shared.log(msg)
+        }
+        sigSource.resume()
+
+        // Hold a strong reference to the dispatch source across the blocking
+        // run. `sigSource` is otherwise unused after `resume()`, and in a
+        // Release build ARC may shorten its lifetime to that last use and
+        // deallocate it — a released signal source stops delivering, silently
+        // breaking Ctrl-C while we're parked in `syncWait`.
         let result: Result
         do {
-            result = try syncWait {
-                try await runReplay(config: config, params: params)
+            result = try withExtendedLifetime(sigSource) {
+                try syncWait {
+                    try await runReplay(config: config, params: params, abort: abort)
+                }
             }
         } catch {
             FileHandle.standardError.write(Data("replay: failed: \(error.localizedDescription)\n".utf8))
@@ -82,8 +142,28 @@ enum CorpusReplayRunner {
 
     // MARK: - The run
 
-    private static func runReplay(config: CorpusReplayConfig, params p: ReplayParams) async throws -> Result {
-        let arch = NetworkArchitecture.current
+    private static func runReplay(config: CorpusReplayConfig, params p: ReplayParams, abort: ReplayAbortFlag) async throws -> Result {
+        // --start-model: load a saved model and continue training from it. The
+        // file embeds its own architecture, which then drives both the trainer
+        // and the feeder net — a start model of a different shape than the
+        // current default preset trains correctly. nil → fresh random net at
+        // the current preset.
+        let arch: NetworkArchitecture
+        let startModelFile: ModelCheckpointFile?
+        let parentModelID: String
+        if let sm = config.startModelPath {
+            let url = URL(fileURLWithPath: (sm as NSString).expandingTildeInPath)
+            let file = try CheckpointManager.loadModelFile(at: url)
+            startModelFile = file
+            parentModelID = file.modelID
+            arch = file.architecture
+            SessionLogger.shared.log("[REPLAY] start-model: \(url.lastPathComponent) modelID=\(file.modelID) encoding=\(arch.inputEncoding.rawValue)")
+        } else {
+            startModelFile = nil
+            parentModelID = ""
+            arch = NetworkArchitecture.current
+        }
+
         SessionLogger.shared.log("[REPLAY] building network + trainer (encoding=\(arch.inputEncoding.rawValue))")
         let net = try ChessMPSNetwork(.randomWeights, arch: arch)
         let trainer = try ChessTrainer(
@@ -106,8 +186,89 @@ enum CorpusReplayRunner {
         let buffer = ReplayBuffer(capacity: p.replayBufferCapacity, inputEncoding: net.inputEncoding)
         let feeder = CorpusReplayFeeder(network: net, buffer: buffer)
 
-        if let sm = config.startModelPath {
-            SessionLogger.shared.log("[REPLAY] note: --start-model (\(sm)) is not yet wired for replay mode; using a fresh random net")
+        // Seed both the trainer (the network that actually learns) and the
+        // feeder net (computes the value baseline while feeding) from the start
+        // model's base weights — exactly trainables + BN running stats. A
+        // trainer source file carries optimizer velocity after that block, so
+        // take the leading base prefix (same rule as ProbeModelCLI /
+        // UCIModelLoader).
+        //
+        // The trainer must be seeded via `loadBaseWeightsResetVelocity`, NOT a
+        // bare `network.loadWeights`: under the canonical bf16 mixed-precision
+        // path the optimizer steps the fp32 *master* weights and re-derives the
+        // bf16 working copy from them each step. Writing only the working copy
+        // would leave the masters at random init, and the first SGD step would
+        // overwrite our loaded weights with that random surface. This call
+        // writes the working copy, seeds the fp32 masters from the same values,
+        // and zeros optimizer velocity (a fresh fork — momentum re-accumulates).
+        // The feeder net is a plain inference network (no masters/velocity), so
+        // a direct `loadWeights` is correct there.
+        if let file = startModelFile {
+            let baseCount = net.network.trainableVariables.count + net.network.bnRunningStatsVariables.count
+            guard file.weights.count >= baseCount else {
+                throw CorpusReplayError.startModelTooSmall(have: file.weights.count, need: baseCount)
+            }
+            let base = Array(file.weights.prefix(baseCount))
+            try await net.network.loadWeights(base)
+            try await trainer.loadBaseWeightsResetVelocity(base)
+            SessionLogger.shared.log("[REPLAY] start-model weights loaded into trainer (working+masters, velocity zeroed) + feeder net (base tensors=\(baseCount))")
+        }
+
+        // Rolling trainer-model output file. The same file is overwritten by
+        // the periodic autosave and by the final save on exit/abort, so it
+        // always holds the latest weights. Destination precedence: explicit
+        // --out-model; else next to --start-model; else inside the first corpus
+        // directory. Overwrite is deliberate here (the CheckpointManager
+        // never-overwrite history rule is for the curated Models/Sessions
+        // store) — this is a single "latest" convenience file.
+        let outModelURL: URL = {
+            if let explicit = config.outModelPath {
+                return URL(fileURLWithPath: (explicit as NSString).expandingTildeInPath)
+            }
+            if let sm = config.startModelPath {
+                let smURL = URL(fileURLWithPath: (sm as NSString).expandingTildeInPath)
+                let stem = smURL.deletingPathExtension().lastPathComponent
+                return smURL.deletingLastPathComponent().appendingPathComponent("\(stem)-replay-latest.safetensors")
+            }
+            return config.corpusDirectories[0].appendingPathComponent("replay-latest.safetensors")
+        }()
+        SessionLogger.shared.log("[REPLAY] trainer-model output: \(outModelURL.path)")
+
+        // Export the trainer's current base weights and overwrite the rolling
+        // output file. Failures here are logged but non-fatal: a convenience
+        // autosave that can't write (e.g. a read-only corpus volume) must not
+        // tear down an otherwise-healthy training run. Pass --out-model to a
+        // writable location if the derived path can't be written.
+        func saveTrainerModel(step: Int, reason: String) async {
+            do {
+                let weights = try await trainer.network.exportWeights()
+                let metadata = ModelCheckpointMetadata(
+                    creator: "replay",
+                    trainingStep: step,
+                    parentModelID: parentModelID,
+                    notes: "corpus replay \(reason) @ step \(step)"
+                )
+                let encoded = try SafetensorsModelIO.encode(
+                    modelID: config.runModelID,
+                    createdAtUnix: Int64(Date().timeIntervalSince1970),
+                    metadata: metadata,
+                    weights: weights,
+                    architecture: arch,
+                    includesVelocity: false
+                )
+                try FileManager.default.createDirectory(
+                    at: outModelURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try encoded.write(to: outModelURL, options: [.atomic])
+                let msg = "[REPLAY] saved trainer model (\(reason)) step=\(step) -> \(outModelURL.lastPathComponent)"
+                print(msg)
+                SessionLogger.shared.log(msg)
+            } catch {
+                let msg = "[REPLAY] WARNING: trainer-model save (\(reason)) failed at step \(step): \(error.localizedDescription)"
+                FileHandle.standardError.write(Data((msg + "\n").utf8))
+                SessionLogger.shared.log(msg)
+            }
         }
 
         // Gather sealed shard URLs across all corpora, in stable order.
@@ -180,7 +341,16 @@ enum CorpusReplayRunner {
         // Step-locked SGD loop.
         var step = 0
         let logEvery = 50
+        let autosaveEvery = 1000
+        var aborted = false
         while true {
+            // Ctrl-C: stop cleanly before starting another step so the
+            // post-loop save captures a complete, non-mid-step state.
+            if abort.isRequested {
+                aborted = true
+                SessionLogger.shared.log("[REPLAY] abort requested — stopping at step \(step)")
+                break
+            }
             if let sl = stepLimit, step >= sl { break }
             let targetFed = prefillPositions + step * perStepFeed
             while positionsFed < targetFed && !corpusExhausted {
@@ -204,7 +374,17 @@ enum CorpusReplayRunner {
                 SessionLogger.shared.log(line)
                 print(line)
             }
+            // Periodic autosave (overwrites the rolling output file).
+            if step % autosaveEvery == 0 {
+                await saveTrainerModel(step: step, reason: "autosave")
+            }
         }
+
+        // Final save on any clean exit path — step/epoch limit, corpus
+        // exhaustion, or Ctrl-C abort. A thrown error skips this (it propagates
+        // out of runReplay before we get here): the network state after a hard
+        // failure isn't worth persisting over the last good autosave.
+        await saveTrainerModel(step: step, reason: aborted ? "abort" : "final")
 
         return Result(steps: step, positionsFed: positionsFed, gamesFed: gamesFed, epochs: epochsCompleted)
     }

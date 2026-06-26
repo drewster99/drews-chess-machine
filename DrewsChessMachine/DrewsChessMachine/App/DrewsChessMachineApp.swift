@@ -410,7 +410,12 @@ struct DrewsChessMachineApp: App {
                                               the games and runs a step-locked SGD loop (K = batch / replay-ratio
                                               positions per step). Pair with --training-step-limit <n> OR
                                               --epochs <n> (default: 1 pass) and --parameters <file> to pin the
-                                              hyperparameters. Uses a fresh net (--start-model not yet wired here).
+                                              hyperparameters. Pass --start-model <file> to continue training from a
+                                              saved model (its embedded architecture is used). Ctrl-C stops cleanly
+                                              and saves; press again to force-quit. The trainer model is saved every
+                                              1000 steps and on exit/abort to a single rolling file (overwritten):
+                                              next to --start-model, else inside the corpus dir, or --out-model <path>.
+              --out-model <path>              Destination for the rolling trainer-model file (overwrites in place).
               --epochs <n>                    Replay budget: number of full passes over the corpus.
               --import-pgn <path>             Convert a .pgn / .pgn.zst (e.g. a Lichess monthly dump) into a
                                               corpus, then exit. .zst needs the `zstd` CLI on PATH; standard-start
@@ -915,6 +920,7 @@ struct DrewsChessMachineApp: App {
         var stepLimit: Int? = nil
         var parametersPath: String? = nil
         var startModelPath: String? = nil
+        var outModelPath: String? = nil
 
         var i = 0
         while i < rawArgs.count {
@@ -935,6 +941,8 @@ struct DrewsChessMachineApp: App {
                 if let v = nextValue { parametersPath = v; i += 2 } else { i += 1 }
             case "--start-model":
                 if let v = nextValue { startModelPath = v; i += 2 } else { i += 1 }
+            case "--out-model":
+                if let v = nextValue { outModelPath = v; i += 2 } else { i += 1 }
             default:
                 i += 1
             }
@@ -985,6 +993,10 @@ struct DrewsChessMachineApp: App {
             )
         }
 
+        // Mint the run's saved-model ModelID here on the main thread — the
+        // minter is main-actor isolated and the replay loop runs off-actor.
+        let runModelID = MainActor.assumeIsolated { ModelIDMinter.mint().value }
+
         let config = CorpusReplayConfig(
             corpusDirectories: corpusPaths.map { arg in
                 guard let dir = resolveCorpusDirectory(arg) else {
@@ -998,7 +1010,9 @@ struct DrewsChessMachineApp: App {
             },
             stepLimit: stepLimit,
             epochs: epochs,
-            startModelPath: startModelPath
+            startModelPath: startModelPath,
+            outModelPath: outModelPath,
+            runModelID: runModelID
         )
         CorpusReplayRunner.runAndExit(config: config, params: params)
     }
