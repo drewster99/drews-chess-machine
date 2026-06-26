@@ -164,6 +164,27 @@ enum CorpusReplayRunner {
             arch = NetworkArchitecture.current
         }
 
+        // Startup banner: make the network type and the training hyperparameters
+        // explicit in the log so a replay run is self-documenting (otherwise the
+        // only clue was the input encoding). `architectureSummary` is the
+        // fully-explicit form — version, encoding, block groups, heads, compute
+        // dtype, and parameter count, with no silent defaults.
+        let archSource = startModelFile == nil ? "default preset" : "start-model"
+        SessionLogger.shared.log("[REPLAY-ARCH] (\(archSource)) \(arch.architectureSummary)")
+        // Numeric knobs via String(format:) (%ld for Int, %g for Double); the
+        // two on/off flags are interpolated rather than passed through %@ (Swift
+        // String + %@ relies on NSString bridging — avoid it).
+        let hparamsLine = String(
+            format: "[REPLAY-HPARAMS] lr=%.6g batch=%ld wd=%.4g momentum=%.3g gradClip=%.3g entropyBonus=%.4g drawPenalty=%.4g policyW=%.3g valueW=%.3g illegalW=%.4g pLabelSmooth=%.4g vLabelSmooth=%.4g lrWarmup=%ld bufCap=%ld replayRatio=%.3g minPrefill=%ld",
+            p.learningRate, p.trainingBatchSize, p.weightDecay, p.momentumCoeff, p.gradClipMaxNorm,
+            p.entropyBonus, p.drawPenalty, p.policyLossWeight, p.valueLossWeight, p.illegalMassWeight,
+            p.policyLabelSmoothingEpsilon, p.valueLabelSmoothingEpsilon,
+            p.lrWarmupSteps, p.replayBufferCapacity, p.replayRatioTarget,
+            p.replayBufferMinPositionsBeforeTraining
+        )
+            + " complementCE=\(p.signedAdvantageComplementCE ? "on" : "off")"
+            + " sqrtBatchLR=\(p.sqrtBatchScalingLR ? "on" : "off")"
+        SessionLogger.shared.log(hparamsLine)
         SessionLogger.shared.log("[REPLAY] building network + trainer (encoding=\(arch.inputEncoding.rawValue))")
         let net = try ChessMPSNetwork(.randomWeights, arch: arch)
         let trainer = try ChessTrainer(
@@ -217,20 +238,35 @@ enum CorpusReplayRunner {
         // Rolling trainer-model output file. The same file is overwritten by
         // the periodic autosave and by the final save on exit/abort, so it
         // always holds the latest weights. Destination precedence: explicit
-        // --out-model; else next to --start-model; else inside the first corpus
-        // directory. Overwrite is deliberate here (the CheckpointManager
-        // never-overwrite history rule is for the curated Models/Sessions
-        // store) — this is a single "latest" convenience file.
+        // --out-model; else next to --start-model; else the app's Models
+        // directory named after the corpus. Overwrite is deliberate here (the
+        // CheckpointManager never-overwrite history rule is for the curated
+        // Models/Sessions store) — this is a single "latest" convenience file.
         let outModelURL: URL = {
             if let explicit = config.outModelPath {
-                return URL(fileURLWithPath: (explicit as NSString).expandingTildeInPath)
+                // Always land on a `.safetensors` extension. The file is
+                // safetensors-encoded, and the loaders that consume it
+                // (--probe-model, --start-model) key off the extension — a
+                // bare name like `corp1model` would be written verbatim and
+                // then rejected as "no .safetensors found". Append it when the
+                // caller didn't supply it (a supplied `.safetensors` is kept).
+                let url = URL(fileURLWithPath: (explicit as NSString).expandingTildeInPath)
+                return url.pathExtension.lowercased() == "safetensors"
+                    ? url
+                    : url.appendingPathExtension("safetensors")
             }
             if let sm = config.startModelPath {
                 let smURL = URL(fileURLWithPath: (sm as NSString).expandingTildeInPath)
                 let stem = smURL.deletingPathExtension().lastPathComponent
                 return smURL.deletingLastPathComponent().appendingPathComponent("\(stem)-replay-latest.safetensors")
             }
-            return config.corpusDirectories[0].appendingPathComponent("replay-latest.safetensors")
+            // No --start-model: default into the app's Models directory — always
+            // writable (even when the corpus is a read-only mounted volume),
+            // keeps the corpus data dir pristine, and lands where --probe-model
+            // and the GUI already look. Named after the corpus so runs over
+            // different corpora don't collide on one file.
+            let corpusName = config.corpusDirectories[0].lastPathComponent
+            return CheckpointPaths.modelsDir.appendingPathComponent("\(corpusName)-replay-latest.safetensors")
         }()
         SessionLogger.shared.log("[REPLAY] trainer-model output: \(outModelURL.path)")
 
@@ -338,6 +374,15 @@ enum CorpusReplayRunner {
         let prefillPositions = positionsFed
         SessionLogger.shared.log("[REPLAY] pre-filled: bufCount=\(buffer.count) positionsFed=\(positionsFed) gamesFed=\(gamesFed)")
 
+        // Format a possibly-not-measured diagnostic. The trainer only computes
+        // the diagnostic bundle (entropy, value W/D/L, played-move prob, illegal
+        // mass) on its diagnostic-cadence steps, leaving the field NaN otherwise
+        // (e.g. the first logged step). Render those as "--" rather than "nan"
+        // so the line stays readable.
+        func dg(_ v: Float, _ digits: Int) -> String {
+            v.isFinite ? String(format: "%.\(digits)f", v) : "--"
+        }
+
         // Step-locked SGD loop.
         var step = 0
         let logEvery = 50
@@ -366,11 +411,16 @@ enum CorpusReplayRunner {
             }
             step += 1
             if step == 1 || step % logEvery == 0 {
-                let line = String(
-                    format: "[REPLAY] step=%d loss=%.4f pLoss=%.4f vLoss=%.4f pEnt=%.3f gNorm=%.3f buf=%d fed=%d games=%d epoch=%d",
-                    step, timing.loss, timing.policyLoss, timing.valueLoss, timing.policyEntropy,
-                    timing.gradGlobalNorm, buffer.count, positionsFed, gamesFed, epochsCompleted
-                )
+                // Live, warmup-adjusted LR read from the trainer (single source
+                // of truth — don't re-derive the warmup formula here).
+                let liveLR = trainer.effectiveLearningRate(forBatchSize: batchSize, completedSteps: nil)
+                let line = "[REPLAY] step=\(step)"
+                    + String(format: " loss=%.4f pLoss=%.4f vLoss=%.4f", timing.loss, timing.policyLoss, timing.valueLoss)
+                    + " pEnt=\(dg(timing.policyEntropy, 3)) pIllM=\(dg(timing.illegalMassPenalty, 4))"
+                    + " playedP=\(dg(timing.playedMoveProb, 3))"
+                    + " pW=\(dg(timing.valueProbWin, 2)) pD=\(dg(timing.valueProbDraw, 2)) pL=\(dg(timing.valueProbLoss, 2)) vAbs=\(dg(timing.valueAbsMean, 3))"
+                    + String(format: " gNorm=%.3f lr=%.3g ms=%.1f", timing.gradGlobalNorm, liveLR, timing.totalMs)
+                    + " buf=\(buffer.count) plies=\(positionsFed) games=\(gamesFed) epoch=\(epochsCompleted)"
                 SessionLogger.shared.log(line)
                 print(line)
             }

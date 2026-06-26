@@ -414,8 +414,10 @@ struct DrewsChessMachineApp: App {
                                               saved model (its embedded architecture is used). Ctrl-C stops cleanly
                                               and saves; press again to force-quit. The trainer model is saved every
                                               1000 steps and on exit/abort to a single rolling file (overwritten):
-                                              next to --start-model, else inside the corpus dir, or --out-model <path>.
-              --out-model <path>              Destination for the rolling trainer-model file (overwrites in place).
+                                              --out-model <path>, else next to --start-model, else the app Models dir
+                                              named after the corpus (<corpusID>-replay-latest.safetensors).
+              --out-model <path>              Destination for the rolling trainer-model file (overwrites in place);
+                                              a .safetensors extension is appended if you don't supply one.
               --epochs <n>                    Replay budget: number of full passes over the corpus.
               --import-pgn <path>             Convert a .pgn / .pgn.zst (e.g. a Lichess monthly dump) into a
                                               corpus, then exit. .zst needs the `zstd` CLI on PATH; standard-start
