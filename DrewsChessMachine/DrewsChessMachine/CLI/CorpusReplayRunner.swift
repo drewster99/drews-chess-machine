@@ -50,6 +50,17 @@ struct CorpusReplayConfig: Sendable {
     /// `v3_8block_3x3`) for a fresh-init run. Used only when `startModelPath` is
     /// nil; selects that architecture instead of `NetworkArchitecture.current`.
     var presetName: String?
+    /// Resume the corpus stream at shard sequence `startShard` (0-based — the
+    /// `NNNNN` in `shard-NNNNN.dcmgames`): skip shards `0…startShard-1` on the
+    /// first pass, full coverage after the epoch wrap. For warm-start runs that
+    /// should pick up near where a prior run left off. Mutually exclusive with
+    /// `startGameIndex`; out-of-range is a hard error.
+    var startShard: Int?
+    /// Resume at a global within-epoch game index (0-based, counts skipped
+    /// games — matches the `games=`/`nextGame=` log counters). Resolved against
+    /// the per-shard game counts into a `(shard, within-shard offset)` start.
+    /// Mutually exclusive with `startShard`.
+    var startGameIndex: Int?
     /// Explicit destination for the rolling trainer-model file. When nil the
     /// runner derives a path next to `--start-model` (or inside the first
     /// corpus directory). The same file is overwritten by the periodic
@@ -199,6 +210,75 @@ enum CorpusReplayRunner {
             + " complementCE=\(p.signedAdvantageComplementCE ? "on" : "off")"
             + " sqrtBatchLR=\(p.sqrtBatchScalingLR ? "on" : "off")"
         SessionLogger.shared.log(hparamsLine)
+        // Resolve the corpus + resume start BEFORE building the (expensive)
+        // network/trainer, so a bad --start-shard / --start-game-index (or an
+        // empty corpus) fails in milliseconds instead of after a multi-second
+        // MPSGraph build.
+        //
+        // Gather sealed shard URLs across all corpora, in stable order. Capture
+        // the first corpus's id + path for the resume metadata (the common
+        // single-corpus case; resume matches on corpus id, treats path as hint).
+        var shardURLs: [URL] = []
+        var resumeCorpusID = ""
+        var resumeCorpusPath = ""
+        for (di, dir) in config.corpusDirectories.enumerated() {
+            let corpus = try GameCorpus.open(directory: dir)
+            let urls = try corpus.sealedShardURLs()
+            shardURLs.append(contentsOf: urls)
+            if di == 0 { resumeCorpusID = corpus.corpusID; resumeCorpusPath = dir.path }
+            SessionLogger.shared.log("[REPLAY] corpus \(corpus.corpusID): \(urls.count) sealed shard(s)")
+        }
+        guard !shardURLs.isEmpty else { throw CorpusReplayError.noGames }
+
+        // Per-shard game counts via cheap trailer reads (no full-shard decode) —
+        // for --start-game-index resolution, the resume `nextGame=` logging, and
+        // the saved `next_game_index`. cumGames[i] = games in shards 0..<i, so
+        // cumGames[i] is the global index of shard i's first game and
+        // cumGames.last! the corpus total.
+        let shardGameCounts = try shardURLs.map { try GameCorpusShardIO.readSealedCounts(at: $0).gameCount }
+        var cumGames: [Int] = [0]
+        for c in shardGameCounts { cumGames.append(cumGames.last! + c) }
+        let totalCorpusGames = cumGames.last ?? 0
+
+        // Global within-epoch game index -> (shard, within-shard offset).
+        func locate(_ gi: Int) -> (shard: Int, offset: Int) {
+            var s = 0
+            while s + 1 < cumGames.count && cumGames[s + 1] <= gi { s += 1 }
+            return (s, gi - cumGames[s])
+        }
+
+        // Resolve the resume start from --start-shard / --start-game-index.
+        // Out-of-range is a HARD error (loud, not a silent wrong start). N is
+        // 0-based: --start-shard is the NNNNN in shard-NNNNN.dcmgames;
+        // --start-game-index is the global within-epoch game ordinal. These run
+        // before the network build, so a typo'd resume arg never pays for it.
+        if config.startShard != nil && config.startGameIndex != nil {
+            FileHandle.standardError.write(Data("error: --start-shard and --start-game-index are mutually exclusive\n".utf8))
+            Darwin.exit(2)
+        }
+        var startShardCursor = 0
+        var startWithinShardSkip = 0
+        if let ss = config.startShard {
+            guard ss >= 0 && ss < shardURLs.count else {
+                FileHandle.standardError.write(Data("error: --start-shard \(ss) out of range; valid 0…\(shardURLs.count - 1)\n".utf8))
+                Darwin.exit(2)
+            }
+            startShardCursor = ss
+            let skipDesc = ss == 0 ? "no shards skipped" : "skipping shards 0…\(ss - 1), \(cumGames[ss]) games"
+            SessionLogger.shared.log("[REPLAY] --start-shard \(ss) -> \(shardURLs[ss].lastPathComponent) (\(skipDesc))")
+        } else if let gi = config.startGameIndex {
+            guard gi >= 0 && gi < totalCorpusGames else {
+                FileHandle.standardError.write(Data("error: --start-game-index \(gi) out of range; valid 0…\(totalCorpusGames - 1)\n".utf8))
+                Darwin.exit(2)
+            }
+            let (s, off) = locate(gi)
+            startShardCursor = s
+            startWithinShardSkip = off
+            SessionLogger.shared.log("[REPLAY] --start-game-index \(gi) -> \(shardURLs[s].lastPathComponent) offset \(off) (skipping \(gi) games on the first pass)")
+        }
+        // Global within-epoch index of the resume start (first game fed).
+        let startGlobalIndex = cumGames[startShardCursor] + startWithinShardSkip
+
         SessionLogger.shared.log("[REPLAY] building network + trainer (encoding=\(arch.inputEncoding.rawValue))")
         let net = try ChessMPSNetwork(.randomWeights, arch: arch)
         let trainer = try ChessTrainer(
@@ -289,7 +369,16 @@ enum CorpusReplayRunner {
         // autosave that can't write (e.g. a read-only corpus volume) must not
         // tear down an otherwise-healthy training run. Pass --out-model to a
         // writable location if the derived path can't be written.
-        func saveTrainerModel(step: Int, reason: String) async {
+        // Resume info is passed in (not captured): the corpus index / stream
+        // cursor are resolved AFTER this nested func, so the call sites — which
+        // run inside the SGD loop where those are in scope — supply them. The
+        // `replay_*` keys land in the safetensors `__metadata__` (write-only in
+        // Phase 1; the exact-reconstruction resume reads them later). `built_by_*`
+        // pins which encoder/feeder build wrote them, so a byte-exact resume can
+        // refuse a build whose encoding may differ.
+        func saveTrainerModel(step: Int, reason: String,
+                              nextGameIndex: Int, shard: Int, epoch: Int, populatedPlies: Int,
+                              corpusID: String, corpusPath: String) async {
             do {
                 let weights = try await trainer.network.exportWeights()
                 let metadata = ModelCheckpointMetadata(
@@ -298,20 +387,31 @@ enum CorpusReplayRunner {
                     parentModelID: parentModelID,
                     notes: "corpus replay \(reason) @ step \(step)"
                 )
+                let resumeMeta: [String: String] = [
+                    "replay_corpus_id": corpusID,
+                    "replay_corpus_path": corpusPath,
+                    "replay_next_game_index": String(nextGameIndex),
+                    "replay_epoch": String(epoch),
+                    "replay_populated_plies": String(populatedPlies),
+                    "replay_capacity": String(p.replayBufferCapacity),
+                    "built_by_build": String(BuildInfo.buildNumber),
+                    "built_by_git": BuildInfo.gitHash,
+                ]
                 let encoded = try SafetensorsModelIO.encode(
                     modelID: config.runModelID,
                     createdAtUnix: Int64(Date().timeIntervalSince1970),
                     metadata: metadata,
                     weights: weights,
                     architecture: arch,
-                    includesVelocity: false
+                    includesVelocity: false,
+                    resumeMetadata: resumeMeta
                 )
                 try FileManager.default.createDirectory(
                     at: outModelURL.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
                 try encoded.write(to: outModelURL, options: [.atomic])
-                let msg = "[REPLAY] saved trainer model (\(reason)) step=\(step) -> \(outModelURL.lastPathComponent)"
+                let msg = "[REPLAY] saved trainer model (\(reason)) step=\(step) nextGame=\(nextGameIndex) shard=\(shard) epoch=\(epoch) -> \(outModelURL.lastPathComponent)"
                 print(msg)
                 SessionLogger.shared.log(msg)
             } catch {
@@ -320,16 +420,6 @@ enum CorpusReplayRunner {
                 SessionLogger.shared.log(msg)
             }
         }
-
-        // Gather sealed shard URLs across all corpora, in stable order.
-        var shardURLs: [URL] = []
-        for dir in config.corpusDirectories {
-            let corpus = try GameCorpus.open(directory: dir)
-            let urls = try corpus.sealedShardURLs()
-            shardURLs.append(contentsOf: urls)
-            SessionLogger.shared.log("[REPLAY] corpus \(corpus.corpusID): \(urls.count) sealed shard(s)")
-        }
-        guard !shardURLs.isEmpty else { throw CorpusReplayError.noGames }
 
         let batchSize = max(1, p.trainingBatchSize)
         let reuse = max(0.01, p.replayRatioTarget)
@@ -348,17 +438,32 @@ enum CorpusReplayRunner {
         )
 
         // Streaming game source, cycling the shard list for epochs.
-        var shardCursor = 0
+        var shardCursor = startShardCursor
         var currentGames: [GameRecord] = []
         var gameCursor = 0
         var epochsCompleted = 0
+        // One-shot within-shard skip applied to the FIRST loaded shard
+        // (--start-game-index); cleared after that shard and on any epoch wrap.
+        var firstShardSkip = startWithinShardSkip
+        // Global within-epoch index of the NEXT game nextGame() will return:
+        // starts at the resume point, +1 per returned game, resets to 0 on the
+        // epoch wrap. Logged as `nextGame=` and saved as `next_game_index`.
+        var nextGameWithinEpoch = startGlobalIndex
 
         func nextGame() -> GameRecord? {
             while gameCursor >= currentGames.count {
                 if shardCursor >= shardURLs.count {
+                    // Wrap to a fresh epoch. Reset the cursors BEFORE the
+                    // epoch-limit return, so a run that completes its budget
+                    // leaves a consistent (nextGame=0, shard=0, epoch incremented)
+                    // resume point rather than (nextGame=totalGames, shard=count)
+                    // — the latter is one past the end and outside the resume
+                    // bounds this same file enforces on read.
                     epochsCompleted += 1
-                    if let el = epochLimit, epochsCompleted >= el { return nil }
                     shardCursor = 0
+                    nextGameWithinEpoch = 0   // fresh epoch starts at game 0…
+                    firstShardSkip = 0        // …and the one-shot skip is spent
+                    if let el = epochLimit, epochsCompleted >= el { return nil }
                 }
                 let url = shardURLs[shardCursor]
                 shardCursor += 1
@@ -369,9 +474,26 @@ enum CorpusReplayRunner {
                     currentGames = []
                 }
                 gameCursor = 0
+                if firstShardSkip > 0 {
+                    // offset < this shard's game count by construction (locate),
+                    // so this never lands past the end.
+                    gameCursor = min(firstShardSkip, currentGames.count)
+                    firstShardSkip = 0
+                }
+                // Re-anchor the resume counter to the TRUE global index of the
+                // next game in the shard just loaded (cumGames[loaded] +
+                // gameCursor). The +1-per-game advance below only counts games
+                // actually returned, but cumGames counts every shard — so if an
+                // unreadable shard was skipped above (currentGames=[]), the
+                // running counter would drift low by that shard's game count.
+                // Deriving from cumGames here keeps it exact across skips with no
+                // dependence on the skipped shard's size. (shardCursor was already
+                // incremented past the loaded shard, so loaded == shardCursor-1.)
+                nextGameWithinEpoch = cumGames[shardCursor - 1] + gameCursor
             }
             let g = currentGames[gameCursor]
             gameCursor += 1
+            nextGameWithinEpoch += 1
             return g
         }
 
@@ -440,7 +562,10 @@ enum CorpusReplayRunner {
             }
             // Periodic autosave (overwrites the rolling output file).
             if step % autosaveEvery == 0 {
-                await saveTrainerModel(step: step, reason: "autosave")
+                await saveTrainerModel(step: step, reason: "autosave",
+                    nextGameIndex: nextGameWithinEpoch, shard: locate(nextGameWithinEpoch).shard,
+                    epoch: epochsCompleted, populatedPlies: buffer.count,
+                    corpusID: resumeCorpusID, corpusPath: resumeCorpusPath)
             }
         }
 
@@ -448,7 +573,10 @@ enum CorpusReplayRunner {
         // exhaustion, or Ctrl-C abort. A thrown error skips this (it propagates
         // out of runReplay before we get here): the network state after a hard
         // failure isn't worth persisting over the last good autosave.
-        await saveTrainerModel(step: step, reason: aborted ? "abort" : "final")
+        await saveTrainerModel(step: step, reason: aborted ? "abort" : "final",
+            nextGameIndex: nextGameWithinEpoch, shard: locate(nextGameWithinEpoch).shard,
+            epoch: epochsCompleted, populatedPlies: buffer.count,
+            corpusID: resumeCorpusID, corpusPath: resumeCorpusPath)
 
         return Result(steps: step, positionsFed: positionsFed, gamesFed: gamesFed, epochs: epochsCompleted)
     }

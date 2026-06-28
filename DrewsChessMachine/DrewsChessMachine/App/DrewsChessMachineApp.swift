@@ -930,6 +930,36 @@ struct DrewsChessMachineApp: App {
         var startModelPath: String? = nil
         var outModelPath: String? = nil
         var presetName: String? = nil
+        var startShard: Int? = nil
+        var startGameIndex: Int? = nil
+
+        // Strict validation: a recognized flag with a missing or unparseable
+        // value is a HARD error, never a silent default. A mistyped
+        // `--start-shard 9x` silently starting from shard 0 would waste a
+        // multi-hour pass landing nowhere near the intended resume point.
+        // Anything unexpected — an unknown `--flag` OR a stray/misplaced bare
+        // token — is a hard error, not a silent skip (this handler exits before
+        // the strict-CLI parser that would otherwise catch unknown flags, and
+        // `rawArgs` is `CommandLine.arguments.dropFirst()` so argv[0] is already
+        // gone and every flag consumes its own value — nothing legitimate lands
+        // in `default`). `nextValue` is nil when the next token is absent OR is
+        // itself a `--flag`, so "flag with no value" is caught even when another
+        // flag immediately follows.
+        func requireValue(_ flag: String, _ v: String?) -> String {
+            guard let v else {
+                FileHandle.standardError.write(Data("error: \(flag) requires a value\n".utf8))
+                Darwin.exit(2)
+            }
+            return v
+        }
+        func requireInt(_ flag: String, _ v: String?) -> Int {
+            let s = requireValue(flag, v)
+            guard let n = Int(s) else {
+                FileHandle.standardError.write(Data("error: \(flag) expects an integer value, got '\(s)'\n".utf8))
+                Darwin.exit(2)
+            }
+            return n
+        }
 
         var i = 0
         while i < rawArgs.count {
@@ -941,21 +971,26 @@ struct DrewsChessMachineApp: App {
             }()
             switch arg {
             case "--replay-corpus":
-                if let v = nextValue { corpusPaths.append(v); i += 2 } else { i += 1 }
+                corpusPaths.append(requireValue(arg, nextValue)); i += 2
             case "--epochs":
-                if let v = nextValue { epochs = Int(v); i += 2 } else { i += 1 }
+                epochs = requireInt(arg, nextValue); i += 2
             case "--training-step-limit":
-                if let v = nextValue { stepLimit = Int(v); i += 2 } else { i += 1 }
+                stepLimit = requireInt(arg, nextValue); i += 2
             case "--parameters":
-                if let v = nextValue { parametersPath = v; i += 2 } else { i += 1 }
+                parametersPath = requireValue(arg, nextValue); i += 2
             case "--start-model":
-                if let v = nextValue { startModelPath = v; i += 2 } else { i += 1 }
+                startModelPath = requireValue(arg, nextValue); i += 2
             case "--out-model":
-                if let v = nextValue { outModelPath = v; i += 2 } else { i += 1 }
+                outModelPath = requireValue(arg, nextValue); i += 2
             case "--preset":
-                if let v = nextValue { presetName = v; i += 2 } else { i += 1 }
+                presetName = requireValue(arg, nextValue); i += 2
+            case "--start-shard":
+                startShard = requireInt(arg, nextValue); i += 2
+            case "--start-game-index":
+                startGameIndex = requireInt(arg, nextValue); i += 2
             default:
-                i += 1
+                FileHandle.standardError.write(Data("error: unexpected argument '\(arg)' (with --replay-corpus)\n".utf8))
+                Darwin.exit(2)
             }
         }
 
@@ -1023,6 +1058,8 @@ struct DrewsChessMachineApp: App {
             epochs: epochs,
             startModelPath: startModelPath,
             presetName: presetName,
+            startShard: startShard,
+            startGameIndex: startGameIndex,
             outModelPath: outModelPath,
             runModelID: runModelID
         )

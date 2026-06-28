@@ -378,6 +378,36 @@ enum GameCorpusShardIO {
                            games: games)
     }
 
+    /// Cheap counts-only read of a sealed shard: seeks straight to the 64-byte
+    /// trailer and decodes `(gameCount, plyCount)` without reading or
+    /// SHA/CRC-verifying the body. For building a per-shard game-count index
+    /// (e.g. `--start-game-index` resolution and the resume `next_game_index`
+    /// logging) where reading every full shard would be gratuitous I/O — a
+    /// shard is ~64 MB, the trailer is 64 B. Trades the integrity check for
+    /// speed; callers that need verified games still use `readSealed`.
+    static func readSealedCounts(at url: URL) throws -> (gameCount: Int, plyCount: Int) {
+        let handle: FileHandle
+        do { handle = try FileHandle(forReadingFrom: url) }
+        catch { throw GameCorpusError.ioFailed("open \(url.lastPathComponent): \(error.localizedDescription)") }
+        defer { try? handle.close() }
+
+        let trailerSize = GameCorpusShardFormat.trailerSize
+        let size = (try? handle.seekToEnd()) ?? 0
+        guard size >= UInt64(GameCorpusShardFormat.frontHeaderSize + trailerSize) else {
+            throw GameCorpusError.truncatedHeader
+        }
+        try handle.seek(toOffset: size - UInt64(trailerSize))
+        guard let tdata = try handle.read(upToCount: trailerSize), tdata.count == trailerSize else {
+            throw GameCorpusError.truncatedHeader
+        }
+        var tr = CorpusByteReader(tdata)
+        let tmagic = try tr.readBytes(8)
+        guard tmagic == GameCorpusShardFormat.trailerMagic else { throw GameCorpusError.badTrailerMagic }
+        let gameCount = Int(try tr.readInt64LE())
+        let plyCount = Int(try tr.readInt64LE())
+        return (gameCount, plyCount)
+    }
+
     struct OpenShardScan {
         var header: GameCorpusShardFormat.FrontHeader
         var validByteCount: Int

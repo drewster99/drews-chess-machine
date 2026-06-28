@@ -68,7 +68,8 @@ enum SafetensorsModelIO {
         metadata: ModelCheckpointMetadata,
         weights: [[Float]],
         architecture: NetworkArchitecture,
-        includesVelocity: Bool
+        includesVelocity: Bool,
+        resumeMetadata: [String: String]? = nil
     ) throws -> Data {
         let names = tensorNames(for: architecture, includesVelocity: includesVelocity)
         guard weights.count == names.count else {
@@ -102,6 +103,18 @@ enum SafetensorsModelIO {
         if let step = metadata.trainingStep { md[Key.trainingStep] = String(step) }
         let archData = try JSONEncoder().encode(architecture)
         md[Key.architecture] = String(decoding: archData, as: UTF8.self)
+
+        // Optional resume provenance (e.g. corpus-replay `replay_*` / `built_by_*`
+        // keys). Caller-namespaced strings written verbatim into `__metadata__`;
+        // current decode ignores unknown keys, so this is purely additive. Never
+        // overwrite a reserved key (the caller prefixes avoid collision anyway).
+        if let rm = resumeMetadata {
+            let reserved: Set<String> = [
+                Key.formatVersion, Key.modelID, Key.createdAt, Key.creator,
+                Key.trainingStep, Key.parentModelID, Key.notes, Key.architecture,
+            ]
+            for (k, v) in rm where !reserved.contains(k) { md[k] = v }
+        }
 
         return try SafetensorsFile.encode(tensors: tensors, metadata: md)
     }

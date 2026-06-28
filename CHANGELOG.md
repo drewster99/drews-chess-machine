@@ -9,6 +9,18 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-06-28 CDT — Corpus-replay resume (Phase 1): `--start-shard` / `--start-game-index` + self-describing checkpoints (pending commit)
+
+`--replay-corpus` can now RESUME the corpus stream near where a prior run stopped, and its checkpoints record where they were so a future run can continue. (Phase 2 — exact buffer reconstruction + momentum-refill warm-up — is deferred. Corpus-replay only; self-play resume is unchanged, still via `.dcmsession`.)
+
+- **`--start-shard N`** — begin at 0-based shard sequence N (the `NNNNN` in `shard-NNNNN.dcmgames`); skips shards `0…N-1` on the first pass, full coverage after the epoch wrap.
+- **`--start-game-index N`** — begin at a 0-based global within-epoch game index; resolved to `(shard, within-shard offset)` via per-shard game counts. Mutually exclusive with `--start-shard`.
+- **`GameCorpusShardIO.readSealedCounts`** — cheap trailer-only `(gameCount, plyCount)` read (64 B, no full-shard decode) for the per-shard count index.
+- **`nextGameWithinEpoch`** cursor tracks the resume point; logged on every autosave/final save (`… nextGame=N shard=S epoch=E …`) and written into the safetensors `__metadata__` as `replay_corpus_id`/`_path`/`_next_game_index`/`_epoch`/`_populated_plies`/`_capacity` + `built_by_build`/`_git`, via a new optional **write-only** `SafetensorsModelIO.encode(resumeMetadata:)` (additive — existing save/load byte-unchanged, reserved keys protected, decode ignores unknowns).
+- **Strict arg validation** — every recognized `--replay-corpus` flag hard-errors on a missing or unparseable value; unknown flags and stray tokens error too (no silent defaults — a typo'd `--start-shard 9x` can't silently start from shard 0). Resume bounds + mutual-exclusion are checked BEFORE the network build, so a bad arg fails in milliseconds rather than after an MPSGraph build.
+
+Correctness (independently reviewed + runtime-validated): the epoch-completion wrap resets the cursor *before* the limit-return (no out-of-range `nextGame=totalGames`/`shard=count` metadata on a finished pass); the cursor re-anchors from the cumulative counts on every shard load, so an unreadable-shard skip can't desync the saved resume index. Files: `CLI/CorpusReplayRunner.swift`, `Persistence/GameCorpusShard.swift`, `App/DrewsChessMachineApp.swift`, `Persistence/SafetensorsModelIO.swift`.
+
 ## 2026-06-28 CDT — Architecture v5: per-block output LayerNorm (`v5_5block_7x7_lnout`) (pending commit)
 
 New optional per-block **output normalization** (`BlockGroup.outputNorm: BlockOutputNorm?`, cases `none` | `layer_norm`), orthogonal to the skip-merge mode: when set, the block returns `LayerNorm(merge)` — a channel-wise LayerNorm over C at each board square (ConvNeXt convention, per-channel learnable γ/β, **no running stats**), applied after the skip merge/projection. `ChessNetwork.layerNorm` recomputes mean/variance per-forward over axis [1], so it is byte-identical at train and inference — that is the point: it re-centers the clean-add residual stream every block, killing the v4 highway mean-drift **without** reintroducing BatchNorm's train/eval running-stat gap (`v5` = `v4` + this LayerNorm).
