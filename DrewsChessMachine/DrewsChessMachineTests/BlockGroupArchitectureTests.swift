@@ -138,7 +138,7 @@ final class BlockGroupArchitectureTests: XCTestCase {
         XCTAssertEqual(
             NetworkArchitecture.current.architectureSummary,
             "v4 . in basic30(30) -> stem 128 (7x7)"
-            + " . 5x[7x7+7x7 @128, SE+/4, relu/pre, clean_add, ReZero(0.447), drop*1]"
+            + " . 5x[7x7+7x7 @128, SE+/4, relu/pre, clean_add, ReZero(0.447·tanh≤0.447), drop*1]"
             + " . act relu . policy intermediate_conv(4864)"
             + " . value WDL(16->FC128) . bfloat16 . \(params) params"
         )
@@ -150,8 +150,8 @@ final class BlockGroupArchitectureTests: XCTestCase {
         XCTAssertEqual(
             arch.architectureSummary,
             "v4 . in basic30(30) -> stem 64 (7x7)"
-            + " . 1x[7x7+3x3 @64, SE+/4, relu/pre, clean_add, ReZero(0.5), drop*1]"
-            + " -> 3x[3x3+3x3 @128, SE+/4, relu/pre, clean_add, ReZero(0.5), drop*0.5]"
+            + " . 1x[7x7+3x3 @64, SE+/4, relu/pre, clean_add, ReZero(0.5·tanh≤0.5), drop*1]"
+            + " -> 3x[3x3+3x3 @128, SE+/4, relu/pre, clean_add, ReZero(0.5·tanh≤0.5), drop*0.5]"
             + " . act relu . policy intermediate_conv(4864)"
             + " . value WDL(16->FC128) . bfloat16 . \(params) params"
         )
@@ -190,6 +190,69 @@ final class BlockGroupArchitectureTests: XCTestCase {
         // Cross-checks: unique names; the parameter formula matches the plan.
         XCTAssertEqual(Set(names).count, names.count)
         XCTAssertEqual(plan.reduce(0) { $0 + $1.elementCount }, arch.parameterCount)
+    }
+
+    // MARK: v5 — output LayerNorm
+
+    func testV5OutputLayerNormPlanAndParams() throws {
+        let arch = NetworkArchitecture.preset(.v5_5block_7x7_lnout)
+        try arch.validate()
+        let plan = arch.weightTensorPlan()
+        let names = plan.map(\.name)
+        let byName = Dictionary(uniqueKeysWithValues: plan.map { ($0.name, $0) })
+
+        // Each block grows res_ln.weight + res_ln.bias, each [channels].
+        for b in 0..<5 {
+            XCTAssertEqual(byName["blocks.\(b).res_ln.weight"]?.shape, [128])
+            XCTAssertEqual(byName["blocks.\(b).res_ln.bias"]?.shape, [128])
+            XCTAssertEqual(byName["blocks.\(b).res_ln.weight"]?.kind, .bnAffine)
+            // LayerNorm keeps NO running stats.
+            XCTAssertNil(byName["blocks.\(b).res_ln.running_mean"])
+        }
+        // res_ln appends LAST within the block: this is a uniform 128-wide tower
+        // (no skip_proj), so γ/β follow rezero_alpha directly, in weight→bias order.
+        let alphaIdx = try XCTUnwrap(names.firstIndex(of: "blocks.0.rezero_alpha"))
+        XCTAssertEqual(names[alphaIdx + 1], "blocks.0.res_ln.weight")
+        XCTAssertEqual(names[alphaIdx + 2], "blocks.0.res_ln.bias")
+
+        // Unique names; param formula matches the plan; exact count = v4 + 5·2·128.
+        XCTAssertEqual(Set(names).count, names.count)
+        XCTAssertEqual(plan.reduce(0) { $0 + $1.elementCount }, arch.parameterCount)
+        XCTAssertEqual(arch.parameterCount, 8_447_028)
+        XCTAssertEqual(arch.parameterCount,
+                       NetworkArchitecture.preset(.v4_5block_7x7).parameterCount + 5 * 2 * 128)
+
+        // groupSummary surfaces the output norm; v4 (no output norm) does not.
+        XCTAssertTrue(NetworkArchitecture.groupSummary(arch.blockGroups[0]).contains("out:layer_norm"))
+        XCTAssertFalse(NetworkArchitecture.groupSummary(
+            NetworkArchitecture.preset(.v4_5block_7x7).blockGroups[0]).contains("out:"))
+
+        // Family label: output norm bumps to v5; v4 (no output norm) stays v4.
+        XCTAssertEqual(arch.architectureVersionLabel, 5)
+        XCTAssertTrue(arch.architectureSummary.hasPrefix("v5 "))
+        XCTAssertEqual(NetworkArchitecture.preset(.v4_5block_7x7).architectureVersionLabel, 4)
+    }
+
+    // MARK: GPU — v5 LayerNorm-output tower builds, evaluates, exports
+
+    func testV5OutputLayerNormBuildsAndEvaluates() async throws {
+        let arch = NetworkArchitecture.preset(.v5_5block_7x7_lnout)
+        try arch.validate()
+        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        // exportWeights count == plan count confirms the GRAPH BUILDER appended
+        // exactly the tensors weightTensorPlan lists — i.e. the res_ln γ/β are
+        // wired in the builder in lockstep with the plan (the index-aligned
+        // save/load contract). A forward pass confirms the LN graph (mean/var
+        // over the channel axis + normalize) actually builds and is finite.
+        let weights = try await net.network.exportWeights()
+        XCTAssertEqual(weights.count, arch.weightTensorPlan().count)
+
+        let board = BoardEncoder.encode(.starting, encoding: .basic30)
+        try await net.evaluate(board: board) { policyBuf, value in
+            XCTAssertEqual(policyBuf.count, arch.policySize)
+            XCTAssertTrue(value.isFinite)
+            XCTAssertTrue(policyBuf.allSatisfy { $0.isFinite })
+        }
     }
 
     // MARK: GPU — mixed tower builds, evaluates, exports

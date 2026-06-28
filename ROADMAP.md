@@ -11,6 +11,48 @@ original rationale is not lost.
 
 ## Future improvements (validated open)
 
+- **Corpus shard format v2 — rich provenance + per-game/per-ply metadata (PLAN ONLY, drafted 2026-06-27; no code yet).**
+
+  **Why.** The v1 `.dcmgames` format (see the shipped corpus entry below) is deliberately minimal. Per game it stores only `flags / outcome / terminationReason / moveCount / packed-moves / optional startFEN`; per shard only `corpusID / sourceID / shardSeq / createdAtUnix`. During PGN import everything else the PGN carried — White/Black Elo, `WhiteRatingDiff`/`BlackRatingDiff`, `TimeControl`, titles (incl. `BOT`), `ECO`/`Opening`, `UTCDate`/`UTCTime`, `Event`, `Site` (the unique lichess game id/URL), and per-move `[%eval]`/`[%clk]` annotations — is parsed *only* to apply the `minRating`/`timeControlClasses` filters and then **thrown away** (`PGNImporter.buildGame`). Consequences we hit on 2026-06-27 while debugging the ReZero runs: (a) no per-game unique id — a corpus game is addressable only positionally (shard seq + ordinal), so no dedup and no trace back to source; (b) cannot re-filter a built corpus (e.g. "≥2000 only", "classical only", "after date X") without a full re-import; (c) no record of *which* app build or *what* filter produced a corpus (`corpus.json` omits the filter spec); (d) no engine-eval signal, which is the single biggest missed opportunity (see below); (e) a latent enum bug (also below). Storage is cheap relative to the analyses this unlocks — **bias toward capturing more, not less.**
+
+  **Design principle: extensible, self-describing, lossless-enough.** Bump `frontMagic`/`version` to v2 but make per-record bodies **TLV-structured** (a required core followed by a sequence of `(fieldTag: u16, len: u32, bytes)` optional fields) so new fields can be added forever without a version break and old readers skip unknown tags. Reserve a version bump only for changes to the required core. Keep the good v1 bones: append-only, per-record CRC32, front header + sealed trailer, little-endian.
+
+  **Shard front header v2 (per-shard provenance).**
+  - `shardUID` (16-byte UUID) — globally unique shard identity (v1 has only `shardSeq`).
+  - `corpusID`, `sourceID`, `shardSeq`, `createdAtUnix` (carried over).
+  - **Writer identity:** app name, app version string, build number, git hash (we already stamp these into `BuildInfo`/`corpus.json` sources — put them in the shard too so a detached shard is self-describing).
+  - **Source descriptor block:**
+    - `sourceKind` enum (`pgnImport` / `selfPlay` / `arena` / `external`).
+    - `sourceText` free string — human description, e.g. `"Lichess standard rated games, lichess_db_standard_rated_2026-05, no filter"` or `"DCM self-play, champion 20260626-2-q2Bb"`.
+    - `sourceURL` (e.g. the lichess database URL), `inputFilePath` (for conversions), and `inputFileSHA256` (provenance / dedup of source files).
+    - **`filterSpec`** — the *exact* filter applied: `minRating`, `timeControlClasses`, date range, variant filter, "FEN/SetUp skipped" flag, etc. (Today this is unrecoverable — a corpus's filtering is invisible after the fact.)
+    - `dateRangeCovered` (min/max game date in this shard/source).
+  - **`featureFlags` bitset** — which optional per-game / per-ply fields this shard actually contains (`hasElo`, `hasRatingDiff`, `hasTimeControl`, `hasTitles`, `hasECO`, `hasOpeningName`, `hasNames`, `hasDate`, `hasEval`, `hasClock`, `hasRawTags`). Lets a reader/query know without scanning records.
+
+  **Sealed trailer v2 (cheap query without a full scan).** Carry over `gameCount`/`plyCount`/CRC and add an **aggregate stats block** computed at seal: W/D/L counts, rating histogram (coarse buckets per side), time-control-class mix, ECO/opening histogram, game-length histogram, termination-reason mix, eval-coverage %. Most "what's in this corpus?" questions then answer instantly from trailers; consider also a corpus-level `stats.json` aggregating across shards.
+
+  **Per-game record v2.**
+  - *Required core:* `gameUID` (our 16-byte id, content-or-random), `outcome`, `terminationReason` (fixed enum, see below), `moveCount`, packed moves, optional `startFEN`.
+  - *TLV optional fields:* `sourceGameID` (string — e.g. lichess 8-char id from `Site`), `sourceURL`, `whiteElo`/`blackElo` (u16), `whiteRatingDiff`/`blackRatingDiff` (i16), `ratingType`/`timeControlClass` enum, raw `TimeControl` (base seconds u16 + increment u8, or string), `whiteTitle`/`blackTitle` enum (incl. `BOT`), `whiteName`/`blackName` (strings — lichess data is public), `ecoCode` (pack `A00`–`E99` into u16), `openingName` (string), `utcDateTime` (i64 unix), `event`, `contentHash` (hash of `startFEN`+packed moves, for source-independent dedup), NAGs/comments if useful, and a **`rawTagsBlob`** (optional, compressed) holding the original PGN tag set verbatim as a full-fidelity escape hatch.
+
+  **Per-ply optional channels (the big one): `[%eval]` and `[%clk]`.** Lichess "analysed" games carry a Stockfish eval per move and clock per move. Capturing eval per ply (i16 centipawns, with a mate-in-N sentinel encoding) would let us **train the value head against engine eval** — a vastly stronger, denser signal than the single terminal WDL label we use today — and enable policy-distillation experiments. Clock per ply (u16 seconds) enables time-management modelling and quality filtering (e.g. down-weight moves played in time-scramble as noisy). Store as optional parallel arrays gated by `featureFlags`; they roughly double a game's bytes when present, which is acceptable per the "keep data" stance — but make them opt-in per shard so self-play (no eval) doesn't pay.
+
+  **Enum fixes (carry into v2).**
+  - **`terminationReason` nil→checkmate collision (latent bug).** v1 `encodeRecordPayload` writes `terminationReason?.rawValue ?? 0`, and `checkmate == 0`, so a *nil* (unknown) reason is indistinguishable from checkmate in the byte — PGN imports leave it nil, so every imported game looks like "checkmate" if a reader ignores the `0x02` "present" flag (this confused our 2026-06-27 corpus analysis). v2: make `0 = unknown/unspecified` an explicit first enum case (shift the real reasons up), so there is no collision and no reliance on a sidecar flag.
+  - **Expand `GameTerminationReason`** to cover PGN `[Termination]` reality: `unknown, checkmate, stalemate, fiftyMoveRule, insufficientMaterial, threefoldRepetition, resignation, timeForfeit, drawAgreement, abandoned, rulesInfraction/flagged, adjudication, other`. Termination quality matters for label trust (a timeout in a winning position is a noisy label).
+  - Add `RatingType`/`TimeControlClass` (`bullet/blitz/rapid/classical/correspondence/unknown`) and `PlayerTitle` (`none/GM/IM/FM/CM/NM/WGM/.../BOT`) enums.
+
+  **Reconsider loading PGNs directly (vs. the binary corpus).** Worth revisiting now that we want full PGN fidelity:
+  - *Direct-PGN pros:* zero conversion loss, single source of truth, re-filter anytime, human-readable.
+  - *Direct-PGN cons (why v1 went binary, still valid):* SAN parsing needs full legal-move generation per ply (slow); lichess monthly dumps are huge (tens of GB); no random access; no integrity check; and the parse cost repeats **every epoch** over millions of games.
+  - *Recommendation:* keep the binary corpus as the **canonical training fast-path** (throughput over millions of plies/epoch rules out re-parsing PGN each pass), but (1) capture ~all PGN metadata in v2 so we rarely need the original, and (2) optionally retain the compressed `rawTagsBlob` per game for full fidelity / re-derivation. A streaming PGN *reader* for ad-hoc one-pass jobs is a reasonable separate utility, but not the training path.
+
+  **Adjacent wins to consider while here:** a per-shard **offset index** (game→byte offset sidecar) to enable true shuffled/random sampling across the corpus instead of sequential replay (better training mix; also listed as a v1 "Deferred" item below); and content-hash **dedup** across multiple imported months/sources.
+
+  **Questions v2 should make answerable** (the litmus test for the field set): rating/time-control/ECO/length/result distributions over any slice; "train only on ≥N-rated / classical / titled / non-bot games" as a post-hoc replay filter; trace any training game back to its lichess source; dedup across sources/months; value-head training from engine eval; time-pressure analysis; provenance audit ("which build + filter produced this corpus, from which input file"); and detecting meta/distribution shift across date ranges.
+
+  **Migration / back-compat.** No in-place rewrite of v1 shards (append-only, and they're large); the reader keeps decoding v1 (`version == 1`) with the minimal field set, and new corpora are written v2. The TLV body means subsequent field additions are *not* version bumps. Note in the eventual commit that v1 corpora simply lack the richer fields (queries over them return "unknown" for absent fields).
+
 - **Self-play corpus recording + replay — ✅ SHIPPED 2026-06-20** (`f0c0012`
   corpus format/store, `0ad27b3` recording tee, `c4243b5` offline replay
   `--replay-corpus`/`--epochs`, `461c95c` provenance, `049e94f` PGN import,

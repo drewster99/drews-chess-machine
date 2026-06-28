@@ -335,8 +335,8 @@ static func runBatch(
     _ probes: [TacticalProbe],
     encodedInput: [Float],
     against net: ChessMPSNetwork
-) async -> (results: [ProbeResult], gpuMs: Double, postMs: Double) {
-    guard !probes.isEmpty else { return ([], 0, 0) }
+) async -> (results: [ProbeResult], gpuMs: Double, postMs: Double, logitAbsMaxPerPos: [Float]) {
+    guard !probes.isEmpty else { return ([], 0, 0, []) }
     let policySize = ChessNetwork.policySize
 
     let readback = BatchReadbackBox()
@@ -353,7 +353,7 @@ static func runBatch(
         SessionLogger.shared.log(
             "[TACTICAL] evaluateBatched failed for \(probes.count)-probe battery: \(error)"
         )
-        return (probes.map { Self.errorResult(for: $0) }, Self.msSince(gpuStart), 0)
+        return (probes.map { Self.errorResult(for: $0) }, Self.msSince(gpuStart), 0, [])
     }
     let gpuMs = Self.msSince(gpuStart)
 
@@ -366,22 +366,36 @@ static func runBatch(
             + " policy=\(policyFlat.count) expected=\(probes.count * policySize)"
             + " wdl=\(wdlFlat.count) — battery errored"
         )
-        return (probes.map { Self.errorResult(for: $0) }, gpuMs, 0)
+        return (probes.map { Self.errorResult(for: $0) }, gpuMs, 0, [])
     }
 
     let postStart = DispatchTime.now().uptimeNanoseconds
     var results: [ProbeResult] = []
     results.reserveCapacity(probes.count)
+    // Per-position max |raw policy logit|, aligned 1:1 with `results`.
+    // This is the probe-side analogue of the trainer's `pLogitAbsMax`
+    // diagnostic (reductionMaximum of |logits| per position). The graph
+    // emits raw logits — `policyFlat` is pre-softmax — so this is the
+    // same quantity the trainer reduces, just measured on the probe set.
+    // Callers aggregate (mean / peak) over whichever subset they report.
+    var logitAbsMaxPerPos: [Float] = []
+    logitAbsMaxPerPos.reserveCapacity(probes.count)
     for (j, probe) in probes.enumerated() {
         let pLo = j * policySize
         let rawLogits = Array(policyFlat[pLo..<pLo + policySize])
+        var posMax: Float = 0
+        for v in rawLogits {
+            let a = abs(v)
+            if a > posMax { posMax = a }
+        }
+        logitAbsMaxPerPos.append(posMax)
         let rawPolicy = ChessRunner.softmax(rawLogits)
         let wLo = j * 3
         let wdl = (win: wdlFlat[wLo], draw: wdlFlat[wLo + 1], loss: wdlFlat[wLo + 2])
         results.append(buildProbeResult(probe: probe, rawPolicy: rawPolicy, wdl: wdl))
     }
     let postMs = Self.msSince(postStart)
-    return (results, gpuMs, postMs)
+    return (results, gpuMs, postMs, logitAbsMaxPerPos)
 }
 
 /// Monotonic elapsed milliseconds since a `DispatchTime` uptime mark.

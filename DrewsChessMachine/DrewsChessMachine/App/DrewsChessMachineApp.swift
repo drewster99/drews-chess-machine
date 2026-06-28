@@ -147,6 +147,12 @@ struct DrewsChessMachineApp: App {
         // predate the live probes. Exits before SwiftUI / Metal GUI init.
         Self.handleProbeModelIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: headless fresh-net mint (--new-model). Builds an untrained
+        // network from a --preset and writes it to a .safetensors for reuse as a
+        // fixed --start-model across runs. Must run BEFORE the replay handler,
+        // which also reads --preset. Exits before SwiftUI / Metal GUI init.
+        Self.handleNewModelIfPresent(rawArgs: rawArgs)
+
         // Pre-flight: headless offline corpus-replay trainer (--replay-corpus).
         // Builds a fresh net + trainer, fills the replay buffer from recorded
         // games (no self-play, no arena, no promotion), runs a step-locked SGD
@@ -923,6 +929,7 @@ struct DrewsChessMachineApp: App {
         var parametersPath: String? = nil
         var startModelPath: String? = nil
         var outModelPath: String? = nil
+        var presetName: String? = nil
 
         var i = 0
         while i < rawArgs.count {
@@ -945,6 +952,8 @@ struct DrewsChessMachineApp: App {
                 if let v = nextValue { startModelPath = v; i += 2 } else { i += 1 }
             case "--out-model":
                 if let v = nextValue { outModelPath = v; i += 2 } else { i += 1 }
+            case "--preset":
+                if let v = nextValue { presetName = v; i += 2 } else { i += 1 }
             default:
                 i += 1
             }
@@ -1013,6 +1022,7 @@ struct DrewsChessMachineApp: App {
             stepLimit: stepLimit,
             epochs: epochs,
             startModelPath: startModelPath,
+            presetName: presetName,
             outModelPath: outModelPath,
             runModelID: runModelID
         )
@@ -1309,6 +1319,50 @@ struct DrewsChessMachineApp: App {
             set = parsed
         }
         ProbeModelCLI.runAndExit(modelPath: modelPath, set: set, outPath: value(after: outFlag))
+    }
+
+    // MARK: - Fresh-net mint pre-flight (--new-model)
+
+    /// `--new-model --preset <name> [--out-model <path>]`: build an untrained
+    /// net from the preset and write it to safetensors, then exit. No training.
+    /// Mints the ModelID here (main actor) and hands the GPU build off to
+    /// `NewModelCLI.runAndExit`.
+    private static func handleNewModelIfPresent(rawArgs: [String]) {
+        let flag = "--new-model"
+        guard rawArgs.contains(flag) else { return }
+        let presetFlag = "--preset"
+        let outFlag = "--out-model"
+
+        let allowedFlags: Set<String> = [flag, presetFlag, outFlag]
+        if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
+            FileHandle.standardError.write(Data(
+                "error: \(flag) does not accept '\(bad)'\n".utf8
+            ))
+            Darwin.exit(75)
+        }
+
+        func value(after f: String) -> String? {
+            guard let idx = rawArgs.firstIndex(of: f) else { return nil }
+            let vi = idx + 1
+            guard vi < rawArgs.count, !rawArgs[vi].hasPrefix("--") else {
+                FileHandle.standardError.write(Data("error: \(f) requires a value\n".utf8))
+                Darwin.exit(76)
+            }
+            return rawArgs[vi]
+        }
+
+        guard let presetName = value(after: presetFlag) else {
+            let valid = NetworkArchitecture.Preset.allCases.map(\.rawValue).joined(separator: ", ")
+            FileHandle.standardError.write(Data(
+                "error: \(flag) requires --preset <name>. Valid: \(valid)\n".utf8
+            ))
+            Darwin.exit(77)
+        }
+
+        // Mint on the main actor (the minter is main-actor isolated); the build
+        // runs off-actor inside runAndExit.
+        let modelID = MainActor.assumeIsolated { ModelIDMinter.mint().value }
+        NewModelCLI.runAndExit(presetName: presetName, outPath: value(after: outFlag), modelID: modelID)
     }
 
     // MARK: - Replay-buffer analyzer pre-flight (--analyze-replay-buffer)

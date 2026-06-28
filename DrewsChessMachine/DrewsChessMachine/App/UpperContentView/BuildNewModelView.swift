@@ -195,6 +195,12 @@ struct BuildNewModelView: View {
         enumPicker("Activation", $model.blockGroups[i].activationFunction, ActivationFunction.allCases)
         enumPicker("Activation style", $model.blockGroups[i].activationStyle, BlockActivationStyle.allCases)
         enumPicker("Skip merge", $model.blockGroups[i].skipMerge, BlockSkipMerge.allCases)
+        // Optional output normalization (Optional in the model so old configs
+        // decode as nil); map nil <-> .none for the non-optional picker.
+        enumPicker("Output norm", Binding(
+            get: { model.blockGroups[i].outputNorm ?? .none },
+            set: { model.blockGroups[i].outputNorm = $0 }
+        ), BlockOutputNorm.allCases)
         Toggle("Use ReZero", isOn: $model.blockGroups[i].useRezero)
         if model.blockGroups[i].useRezero {
             // The α init is seeded from the loaded preset and does NOT
@@ -204,14 +210,26 @@ struct BuildNewModelView: View {
             // silently overwriting a deliberately-set value.
             HStack {
                 floatField("ReZero α init", $model.blockGroups[i].rezeroAlphaInit)
+                // Two depth-appropriate inits are blessed: 1/√N (default,
+                // variance-preserving) and 1/N (DeepNorm-style, gentler — for
+                // deep towers where the stream *mean* accumulates). Offer a
+                // one-click snap to each; the forward soft-bound is α₀·tanh
+                // (asymptote ≈ α₀, mult 1.0) either way. Warn only when the init
+                // matches neither (a stale value carried from a shallower preset).
+                Button(String(format: "1/√%d=%.3f", model.totalBlocks, model.recommendedRezeroAlphaInit)) {
+                    model.blockGroups[i].rezeroAlphaInit = model.recommendedRezeroAlphaInit
+                }
+                .controlSize(.small)
+                .help("Default ReZero init: 1/√(total blocks), variance-preserving. Forward tanh soft-bound ≈ α₀.")
+                Button(String(format: "1/%d=%.3f", model.totalBlocks, model.recommendedRezeroAlphaInit1OverN)) {
+                    model.blockGroups[i].rezeroAlphaInit = model.recommendedRezeroAlphaInit1OverN
+                }
+                .controlSize(.small)
+                .help("DeepNorm-style init: 1/(total blocks). Gentler; preferable for very deep towers. Forward tanh soft-bound ≈ α₀.")
                 if model.rezeroAlphaInitMismatch(at: i) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
-                    Button(String(format: "Use 1/√%d = %.3f", model.totalBlocks, model.recommendedRezeroAlphaInit)) {
-                        model.blockGroups[i].rezeroAlphaInit = model.recommendedRezeroAlphaInit
-                    }
-                    .controlSize(.small)
-                    .help("ReZero α init doesn't match the depth-appropriate value (1/√ total blocks); click to apply.")
+                        .help("ReZero α init matches neither 1/√N nor 1/N for this depth — likely a stale value from a shallower preset.")
                 }
             }
         }

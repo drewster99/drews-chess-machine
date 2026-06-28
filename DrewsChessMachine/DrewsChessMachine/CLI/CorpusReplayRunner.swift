@@ -46,6 +46,10 @@ struct CorpusReplayConfig: Sendable {
     var stepLimit: Int?
     var epochs: Int?
     var startModelPath: String?
+    /// Optional built-in preset name (`NetworkArchitecture.Preset` rawValue, e.g.
+    /// `v3_8block_3x3`) for a fresh-init run. Used only when `startModelPath` is
+    /// nil; selects that architecture instead of `NetworkArchitecture.current`.
+    var presetName: String?
     /// Explicit destination for the rolling trainer-model file. When nil the
     /// runner derives a path next to `--start-model` (or inside the first
     /// corpus directory). The same file is overwritten by the periodic
@@ -161,7 +165,17 @@ enum CorpusReplayRunner {
         } else {
             startModelFile = nil
             parentModelID = ""
-            arch = NetworkArchitecture.current
+            if let pn = config.presetName {
+                guard let preset = NetworkArchitecture.Preset(rawValue: pn) else {
+                    let names = NetworkArchitecture.Preset.allCases.map(\.rawValue).joined(separator: ", ")
+                    FileHandle.standardError.write(Data("error: unknown --preset '\(pn)'. Available: \(names)\n".utf8))
+                    Darwin.exit(2)
+                }
+                arch = NetworkArchitecture.preset(preset)
+                SessionLogger.shared.log("[REPLAY] fresh net from preset: \(pn)")
+            } else {
+                arch = NetworkArchitecture.current
+            }
         }
 
         // Startup banner: make the network type and the training hyperparameters

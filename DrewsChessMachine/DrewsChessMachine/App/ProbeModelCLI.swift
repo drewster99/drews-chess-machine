@@ -177,16 +177,23 @@ enum ProbeModelCLI {
             throw ProbeModelError.resultCountMismatch(have: batch.results.count, want: probes.count)
         }
 
+        // Per-position logit-abs-max aligns 1:1 with `batch.results`; an
+        // older/error path may hand back an empty array — slice defensively.
+        let logitAbsMax = batch.logitAbsMaxPerPos.count == batch.results.count
+            ? batch.logitAbsMaxPerPos : []
+
         var emitted: [[String: Any]] = []
         if !primary.isEmpty {
             emitted.append(summary(
                 of: Array(batch.results[0..<primary.count]),
+                logitAbsMaxPerPos: logitAbsMax.isEmpty ? [] : Array(logitAbsMax[0..<primary.count]),
                 setLabel: "200", file: file, weightFileURL: weightFileURL, gpuMs: batch.gpuMs
             ))
         }
         if !wide.isEmpty {
             emitted.append(summary(
                 of: Array(batch.results[primary.count...]),
+                logitAbsMaxPerPos: logitAbsMax.isEmpty ? [] : Array(logitAbsMax[primary.count...]),
                 setLabel: "wide", file: file, weightFileURL: weightFileURL, gpuMs: batch.gpuMs
             ))
         }
@@ -197,6 +204,7 @@ enum ProbeModelCLI {
     /// `[TACTICAL-LICHESS] tick` log line reports.
     private static func summary(
         of results: [ProbeResult],
+        logitAbsMaxPerPos: [Float],
         setLabel: String,
         file: ModelCheckpointFile,
         weightFileURL: URL,
@@ -236,6 +244,16 @@ enum ProbeModelCLI {
         }
         if elo.isFinite {
             obj["pElo"] = elo
+        }
+        // Policy-logit magnitude over this battery. `mean` matches the
+        // trainer's `pLogitAbsMax` diagnostic (mean over positions of the
+        // per-position max |logit|); `peak` is the worst single position,
+        // the more sensitive read on logit blow-up. Emitted only when the
+        // per-position array survived the forward pass.
+        if !logitAbsMaxPerPos.isEmpty {
+            let sum = logitAbsMaxPerPos.reduce(0, +)
+            obj["policy_logit_abs_max"] = Double(sum / Float(logitAbsMaxPerPos.count))
+            obj["policy_logit_abs_max_peak"] = Double(logitAbsMaxPerPos.max() ?? 0)
         }
         return obj
     }

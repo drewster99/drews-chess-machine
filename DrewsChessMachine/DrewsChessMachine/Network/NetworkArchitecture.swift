@@ -223,6 +223,23 @@ enum BlockSkipMerge: String, Codable, CaseIterable, Sendable, Hashable {
     case activationGated = "activation_gated"
 }
 
+/// Optional normalization applied to the block's *final output* — after the
+/// skip merge, just before the block returns. Orthogonal to `BlockSkipMerge`:
+/// it composes with either merge mode. Its purpose is to re-center the residual
+/// stream every block so the un-recentered clean-add highway (v4) cannot
+/// accumulate a drifting mean. LayerNorm is chosen over BatchNorm here precisely
+/// because it has **no train/eval statistics gap** — it recomputes its stats
+/// per-forward, identically at train and inference — so it kills the
+/// running-stat drift that degraded v4 inference without reintroducing the same
+/// failure mode. (`v5` = `v4` + `.layerNorm`.) See ROADMAP / rezero notes.
+enum BlockOutputNorm: String, Codable, CaseIterable, Sendable, Hashable {
+    /// No output normalization — the block returns the merge result directly (v3/v4).
+    case none
+    /// `out = LayerNorm(merge)` — channel-wise LayerNorm over the C dimension at
+    /// each board square (ConvNeXt convention), with per-channel learnable γ/β.
+    case layerNorm = "layer_norm"
+}
+
 /// Source tensor for the optional "feature skip" — a single long concat skip that
 /// hands a routed consumer *direct*, un-mixed access to early features alongside the
 /// deep tower output (the DenseNet feature-reuse idea distilled to one skip). `.none`
@@ -345,6 +362,16 @@ struct BlockGroup: Codable, Hashable, Sendable {
     /// effective rate = clamp(rate × multiplier, 0, 0.95). Baked into the
     /// graph as a constant composed with the live rate variable.
     var dropoutMultiplier: Float
+    /// Optional normalization on the block's final output (after the skip
+    /// merge). Optional-typed so models/sessions saved before this field
+    /// existed decode it as `nil`; `nil` and `.none` both mean "no output
+    /// norm". Read through `resolvedOutputNorm`, never the raw Optional.
+    var outputNorm: BlockOutputNorm? = nil
+
+    /// `outputNorm` with the legacy-`nil` case folded into `.none`, so callers
+    /// never branch on the Optional. This is the value the builder,
+    /// `weightTensorPlan`, and `parameterCount` all read.
+    var resolvedOutputNorm: BlockOutputNorm { outputNorm ?? .none }
 
     enum CodingKeys: String, CodingKey {
         case count
@@ -359,6 +386,7 @@ struct BlockGroup: Codable, Hashable, Sendable {
         case activationStyle = "activation_style"
         case skipMerge = "skip_merge"
         case dropoutMultiplier = "dropout_multiplier"
+        case outputNorm = "output_norm"
     }
 }
 
@@ -532,7 +560,8 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         valueHeadStyle: ValueHeadStyle,
         valueHeadConvChannels: Int,
         valueHeadHiddenUnits: Int,
-        computeDataType: ComputeDataType
+        computeDataType: ComputeDataType,
+        blockOutputNorm: BlockOutputNorm? = nil
     ) {
         self.init(
             inputEncoding: inputEncoding,
@@ -548,7 +577,8 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 activationFunction: activationFunction,
                 activationStyle: blockActivationStyle,
                 skipMerge: blockSkipMerge,
-                dropoutMultiplier: 1
+                dropoutMultiplier: 1,
+                outputNorm: blockOutputNorm
             )],
             stemConvKernelSize: stemConvKernelSize,
             activationFunction: activationFunction,
@@ -816,6 +846,11 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         guard let first = blockGroups.first else {
             preconditionFailure("NetworkArchitecture.blockGroups is empty (validate() rejects this)")
         }
+        // Output normalization on any block is the v5-era addition (re-centered
+        // clean-add highway); it post-dates the pre-vs-post v3/v4 split, so it
+        // takes precedence. v3 (post-act) and v4 (pre-act) keep their labels
+        // because neither carries an output norm.
+        if blockGroups.contains(where: { $0.resolvedOutputNorm != .none }) { return 5 }
         return first.activationStyle == .pre ? 4 : 3
     }
 
@@ -906,7 +941,9 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             }
             let rezero = spec.useRezero ? 1 : 0
             let proj = inCEff != outC ? inCEff * outC : 0
-            tower += conv1 + conv2 + bn1 + bn2 + se + rezero + proj
+            // Optional output LayerNorm: per-channel γ + β (no running stats).
+            let outNorm = spec.resolvedOutputNorm == .layerNorm ? 2 * outC : 0
+            tower += conv1 + conv2 + bn1 + bn2 + se + rezero + proj + outNorm
             inC = outC
         }
 
@@ -997,8 +1034,19 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             + " . \(computeDataType.rawValue) . \(parameterCount.formatted(.number)) params"
     }
 
+    /// Multiplier on the per-block ReZero init `α₀` giving the asymptotic ceiling
+    /// `C = rezeroTanhCeilingMultiple · α₀` of the soft-bound `C·tanh(α/C)` in the
+    /// forward (see `ChessNetwork.residualBlock`, `documentation/rezero-alpha-clamp.md`).
+    /// With multiplier 1.0, `C = α₀ = 1/√N`, so effective α saturates at the
+    /// variance-preserving value (Σα² ≈ 1 across N blocks). An absolute `C = 1.0`
+    /// was tried and failed: effective α saturated ~0.95 across all blocks
+    /// (Σα² ≈ 4.5), the residual-stream mean still exploded (bn1Mean 43→1384 over
+    /// 1k steps), and the run broke ~step 5800 — the hard-clamp failure, delayed.
+    static let rezeroTanhCeilingMultiple: Double = 1.0
+
     /// One group's explicit rendering, e.g.
-    /// `5x[7x7+7x7 @128, SE+/4, relu/pre, clean_add, ReZero(0.447), drop*1]`.
+    /// `5x[7x7+7x7 @128, SE+/4, relu/pre, clean_add, ReZero(0.447·tanh≤0.447), drop*1]`
+    /// — the `tanh≤` value is the forward soft-bound asymptote `α₀ · rezeroTanhCeilingMultiple`.
     static func groupSummary(_ g: BlockGroup) -> String {
         let seDesc: String
         switch g.seStyle {
@@ -1007,11 +1055,14 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         case .scaleAndBias: seDesc = "SE+/\(g.seReductionRatio)"
         }
         let rezeroDesc = g.useRezero
-            ? "ReZero(\(String(format: "%.3g", g.rezeroAlphaInit)))"
+            ? "ReZero(\(String(format: "%.3g", g.rezeroAlphaInit))·tanh≤\(String(format: "%.3g", Double(g.rezeroAlphaInit) * rezeroTanhCeilingMultiple)))"
             : "no-ReZero"
+        // Only render the output-norm clause when present, so v3/v4 group
+        // summaries (and their golden-string tests) are byte-identical.
+        let outNormDesc = g.resolvedOutputNorm == .none ? "" : ", out:\(g.resolvedOutputNorm.rawValue)"
         return "\(g.count)x[\(g.conv1KernelSize)x\(g.conv1KernelSize)+\(g.conv2KernelSize)x\(g.conv2KernelSize)"
             + " @\(g.channels), \(seDesc), \(g.activationFunction.rawValue)/\(g.activationStyle.rawValue)"
-            + ", \(g.skipMerge.rawValue), \(rezeroDesc)"
+            + ", \(g.skipMerge.rawValue), \(rezeroDesc)\(outNormDesc)"
             + ", drop*\(String(format: "%g", g.dropoutMultiplier))]"
     }
 
@@ -1094,6 +1145,14 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             if inCEff != outC {
                 trainables.append(.init(name: "\(p).skip_proj.weight", shape: [outC, inCEff, 1, 1], kind: .conv))
             }
+            // Output LayerNorm γ/β append LAST within the block — the builder
+            // applies the norm to the merged output AFTER the skip projection,
+            // so this mirrors `ChessNetwork.residualBlock`'s append order. No
+            // running stats (LayerNorm computes its stats per-forward).
+            if spec.resolvedOutputNorm == .layerNorm {
+                trainables.append(.init(name: "\(p).res_ln.weight", shape: [outC], kind: .bnAffine))
+                trainables.append(.init(name: "\(p).res_ln.bias", shape: [outC], kind: .bnAffine))
+            }
             inC = outC
         }
 
@@ -1165,6 +1224,7 @@ extension NetworkArchitecture {
         case v4_8block_3x3        // 2,664,087 params (proposed re-run)
         case v4_4block_3x3_fp32   // fp32 4-block 3x3 — beta-stack stable-precision run (2026-06-14)
         case v4_5block_7x7_fusion // current preset + feature skip (stem -> both heads, concat_direct)
+        case v5_5block_7x7_lnout  // v4_5block_7x7 recipe + LayerNorm on each block's output
 
         static let current = Preset.v4_5block_7x7
     }
@@ -1254,6 +1314,19 @@ extension NetworkArchitecture {
             a.featureSkipToPolicyHead = true
             a.featureSkipToValueHead = true
             a.featureSkipToFinalBlock = false
+            return a
+        case .v5_5block_7x7_lnout:
+            // The current v4 preset, byte-for-byte, plus a channel-wise LayerNorm
+            // on each block's output (clean-add highway re-centered every block,
+            // ReZero retained). Authored by mutating the base preset so it tracks
+            // any future change to v4_5block_7x7's recipe. Adds 2·128 params/block
+            // (γ/β) over v4 — 8,445,748 → 8,447,028.
+            var a = NetworkArchitecture.preset(.v4_5block_7x7)
+            a.blockGroups = a.blockGroups.map { group in
+                var g = group
+                g.outputNorm = .layerNorm
+                return g
+            }
             return a
         }
     }

@@ -2264,6 +2264,51 @@ final class ChessNetwork: @unchecked Sendable {
         )
     }
 
+    /// Channel-wise LayerNorm over the C dimension at each board square
+    /// (ConvNeXt convention), with per-channel learnable γ/β. Unlike
+    /// `batchNorm` it keeps **no running stats** and has **no train/eval
+    /// branch**: the mean/variance are recomputed every forward over axis [1],
+    /// so the op is byte-identical at training and inference. That is the whole
+    /// point — it re-centers the clean-add residual stream every block (killing
+    /// the highway mean-drift that degraded v4) without reintroducing the
+    /// running-stat train/eval gap that BatchNorm carries. γ (init 1) and β
+    /// (init 0) append to `trainables`, un-decayed, mirroring the
+    /// `\(name).weight` / `\(name).bias` order in `weightTensorPlan`.
+    private static func layerNorm(
+        graph: MPSGraph,
+        input: MPSGraphTensor,
+        channels: Int,
+        name: String,
+        weightStorageDataType: MPSDataType,
+        castInForward: (MPSGraphTensor) -> MPSGraphTensor,
+        trainables: inout [MPSGraphTensor],
+        shouldDecay: inout [Bool]
+    ) -> MPSGraphTensor {
+        let ch = NSNumber(value: channels)
+        let gamma = graph.variable(
+            with: onesData(count: channels, dataType: weightStorageDataType),
+            shape: [1, ch, 1, 1], dataType: weightStorageDataType, name: "\(name)_gamma"
+        )
+        let beta = graph.variable(
+            with: zerosData(count: channels, dataType: weightStorageDataType),
+            shape: [1, ch, 1, 1], dataType: weightStorageDataType, name: "\(name)_beta"
+        )
+        trainables.append(gamma); shouldDecay.append(false)
+        trainables.append(beta); shouldDecay.append(false)
+
+        // Stats over the channel axis, per (n, h, w). MPSGraph keeps reduced
+        // dims at size 1, so mean/variance are [N, 1, H, W] — broadcastable
+        // against the [1, C, 1, 1] affine and the [N, C, H, W] input. Runs in
+        // the compute dtype; γ/β cast in under config D (identity otherwise).
+        let mean = graph.mean(of: input, axes: [1], name: "\(name)_mean")
+        let variance = graph.variance(of: input, axes: [1], name: "\(name)_var")
+        return graph.normalize(
+            input, mean: mean, variance: variance,
+            gamma: castInForward(gamma), beta: castInForward(beta),
+            epsilon: 1e-5, name: name
+        )
+    }
+
     /// One pre-activation (ResNet v2) residual block with a scale-and-bias
     /// SE module and a ReZero branch scalar:
     ///   out = input + α · F(input),   F = BN→ReLU→conv→BN→ReLU→conv→SE
@@ -2483,7 +2528,33 @@ final class ChessNetwork: @unchecked Sendable {
                 with: makeWeightData([spec.rezeroAlphaInit], dataType: weightStorageDataType),
                 shape: [1], dataType: weightStorageDataType, name: "\(prefix)_res_scale")
             trainables.append(alpha); shouldDecay.append(false)
-            branch = graph.multiplication(seOut, castInForward(alpha), name: "\(prefix)_res_scaled")
+            // Soft-bound the ReZero scalar through `C·tanh(α/C)` in the forward.
+            // α is a free, undecayed scalar and nothing opposes its growth — left
+            // unbounded it ratchets (a runaway to ~30 once drowned the identity
+            // skip and degenerated the whole tower). A *hard* clamp at C bounded
+            // the magnitude but had zero gradient past C, so the stored α drifted
+            // freely above the wall (we saw 2.0→2.27) while pinned at the ceiling,
+            // and C=2.0 sat the tower in an already-degraded regime for ~17k steps.
+            // tanh fixes both: it's a smooth saturating bound to ±C with a gradient
+            // that is alive everywhere (never a dead zone), near-identity for small
+            // α (C·tanh(α/C) ≈ α when α≪C, so it starts at the depth-aware 1/√N
+            // init and behaves normally in the healthy range), and asymptotes to C
+            // so α can never enter the runaway regime. C = α₀ = 1/√N
+            // (rezeroTanhCeilingMultiple·α₀, mult 1.0): the raw α still ratchets up
+            // (its gradient is one-way), so effective α saturates AT the cap across
+            // all blocks — pinning the cap at the init makes that saturated state
+            // variance-preserving (Σα² ≈ N·(1/√N)² = 1). C=1.0 failed because
+            // saturating at ~0.95 per block gives Σα² ≈ 4.5 and the stream mean
+            // still exploded (bn1Mean 43→1384 over 1k steps, broke ~step 5800).
+            // Bounding in the forward means a saved α is still bounded on reload,
+            // and the branch keeps full gradient. See documentation/rezero-alpha-clamp.md.
+            let cConst = graph.constant(Double(spec.rezeroAlphaInit) * NetworkArchitecture.rezeroTanhCeilingMultiple, dataType: alpha.dataType)
+            let alphaBounded = graph.multiplication(
+                cConst,
+                graph.tanh(with: graph.division(alpha, cConst, name: nil), name: nil),
+                name: "\(prefix)_res_scale_tanh"
+            )
+            branch = graph.multiplication(seOut, castInForward(alphaBounded), name: "\(prefix)_res_scaled")
         }
 
         // Skip path: clean identity everywhere widths match; at a width
@@ -2519,7 +2590,18 @@ final class ChessNetwork: @unchecked Sendable {
         if let skipProjWeight {
             trainables.append(skipProjWeight); shouldDecay.append(true)
         }
-        return merged
+
+        // Optional output normalization — applied to the merged block output
+        // AFTER the skip projection, so its γ/β are the LAST tensors appended
+        // within this block (matching weightTensorPlan's `res_ln` placement).
+        // Re-centers the residual stream every block; composes with either
+        // skipMerge mode. (v5 = v4 clean-add highway + this LayerNorm.)
+        guard spec.resolvedOutputNorm == .layerNorm else { return merged }
+        return layerNorm(
+            graph: graph, input: merged, channels: outC, name: "\(prefix)_res_ln",
+            weightStorageDataType: weightStorageDataType, castInForward: castInForward,
+            trainables: &trainables, shouldDecay: &shouldDecay
+        )
     }
 
     /// Squeeze-and-Excitation channel attention applied to `z`. Appends SE weights

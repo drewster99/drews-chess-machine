@@ -174,13 +174,28 @@ final class BuildNewModelModel {
         1.0 / Float(totalBlocks).squareRoot()
     }
 
+    /// DeepNorm-style alternative ReZero init (`1/N`): gentler than `1/√N`,
+    /// preferable for very deep towers where the residual stream's *mean* (not
+    /// just variance) accumulates down the stack. Offered alongside `1/√N`;
+    /// `1/√N` stays the default. The forward tanh soft-bound (asymptote ≈ α₀,
+    /// `rezeroTanhCeilingMultiple` = 1.0) tracks whichever is chosen. See
+    /// documentation/rezero-alpha-clamp.md.
+    var recommendedRezeroAlphaInit1OverN: Float {
+        1.0 / Float(totalBlocks)
+    }
+
     /// True when the group at `index` has ReZero enabled and an α init that
-    /// meaningfully differs from `recommendedRezeroAlphaInit`. Tolerance
-    /// absorbs float round-trip noise (stored values like 0.447214).
+    /// matches NEITHER depth-appropriate value (`1/√N` nor `1/N`) — i.e. likely
+    /// a stale value carried from a shallower preset. Tolerance absorbs float
+    /// round-trip noise (stored values like 0.447214). Either canonical init is
+    /// valid, so only flag when it's neither.
     func rezeroAlphaInitMismatch(at index: Int) -> Bool {
         guard blockGroups.indices.contains(index) else { return false }
         let g = blockGroups[index]
-        return g.useRezero && abs(g.rezeroAlphaInit - recommendedRezeroAlphaInit) > 1e-4
+        guard g.useRezero else { return false }
+        let a = g.rezeroAlphaInit
+        return abs(a - recommendedRezeroAlphaInit) > 1e-4
+            && abs(a - recommendedRezeroAlphaInit1OverN) > 1e-4
     }
 
     /// `nil` when the current fields form a valid architecture; otherwise the
