@@ -127,7 +127,12 @@ run's own step counter.
 | m0.93 | 5000 | 1489.3 | 2.180 | 2.75 | 0.81 | 0.9957 | 11.625 | 1.102 | 0.921 | 15.60 / 23.125 |
 | m0.93 | 6000 | 1524.7 | 2.158 | 2.80 | 0.79 | 0.9955 | 11.750 | 1.406 | 0.922 | 15.70 / 23.75 |
 | m0.93 | 7000 | 1577.0 | 2.138 | 2.72 | 0.82 | 0.9957 | 11.625 | 0.980 | 0.924 | 15.46 / 22.5 |
-| **m0.93** | **8000** | **1506.7** | **2.187** | **2.73** | **0.82** | **0.9955** | **11.625** | **0.902** | **0.925** | **15.38 / 22.625** |
+| m0.93 | 8000 | 1506.7 | 2.187 | 2.73 | 0.82 | 0.9955 | 11.625 | 0.902 | 0.925 | 15.38 / 22.625 |
+| m0.93 | 9000 | 1538.0 | 2.164 | 2.77 | 0.79 | 0.9960 | 11.875 | 0.910 | 0.927 | 15.33 / 22.25 |
+| m0.93 | 10000 | 1475.9 | 2.160 | 2.73 | 0.83 | 0.9953 | 11.812 | 1.992 | 0.929 | 15.92 / 23.5 |
+| m0.93 | 11000 | 1511.3 | 2.232 | 2.75 | 0.80 | 0.9959 | 11.938 | 0.867 | 0.930 | 15.36 / 22.5 |
+| m0.93 | 12000 | 1550.3 | 2.170 | 2.72 | 0.80 | 0.9962 | 11.875 | 0.863 | 0.932 | 15.20 / 22.375 |
+| **m0.93** | **13000** | **1514.9** | **2.256** | **2.70** | **0.80** | **0.9956** | **11.812** | **1.133** | **0.934** | **14.98 / 22.0** |
 
 Notes: the wd1e-4 17k row's `Σαeff²` and 2–4k `Σαeff²` cells, the wd1e-4 35k
 peak and wd5e-4 12k peak `pLogitAbsMax`, are gaps in collection, not data — left
@@ -161,10 +166,16 @@ three runs are otherwise one continuous pass over the corpus (games 0 → ~8.9M,
 - **m0.93** — `wd 2.5e-4` (lighter than 5e-4), `lr 0.01`, **`momentum 0.93`**
   (steady-state step amplification 1/(1−μ) = 14.3× vs 0.9's 10× — i.e. a higher
   *effective* LR without touching the warmup schedule). Resumed at game
-  7,851,549. **Finding (8k in, tentative):** the only run to poke above the
-  ~1529 ceiling — new all-time high 1577 @ 7k, recent band center ~1525 vs
-  wd5e-4's ~1505. The edge is real but small and noisy (~+20 pElo); μ=0.93 has
-  stayed stable (gNorm calm, no instability from the larger effective step).
+  7,851,549. **Finding (13k in):** the only run to poke above the ~1529 ceiling
+  — new all-time high 1577 @ 7k, then a noisy ~1476–1577 band whose center
+  (~1525 over marks 6–13k) sits ~+20 above wd5e-4's ~1505. The edge has held
+  across eight marks but is small and never consolidated into a clean step up —
+  honest read is a marginal win, not a decisive one. μ=0.93 stayed stable
+  throughout (gNorm calm, no instability from the larger effective step). One
+  late wrinkle contradicting the wd5e-4 read: across the m0.93 run the
+  `pLogitAbsMax` *mean* drifts slowly down (15.65 @ 1k → 14.98 @ 13k, first
+  sub-15 mark) — so the lighter 2.5e-4 WD *does* ease the logit mean, just
+  cumulatively over many more steps than wd5e-4's 15k window showed.
 
 Takeaway: **weight decay is not a strength lever** on this corpus at this scale;
 LR / momentum is. WD's only clean effect was a slightly lower logit *peak*.
@@ -408,15 +419,17 @@ fed-plies, not games.)
 All three runs are healthy. The base run topped ~1502 @ 44k; the WD/momentum
 continuation runs (above) carried the lineage to a 1577 high under `m0.93` with a
 ~1525 band center, ~43% of one corpus epoch in. The only ongoing internal signal
-is the benign linear warming of §3 — `bn1Mean` ~11.6 and `Σαeff²` ~0.925 by
-m0.93 8k, both creeping straight through both run cutovers with zero inference
+is the benign linear warming of §3 — `bn1Mean` ~11.8 and `Σαeff²` ~0.934 by
+m0.93 13k, both creeping straight through both run cutovers with zero inference
 cost (LayerNorm-on-output keeps it decoupled from the forward pass). `Σαeff²` is
 approaching its by-design saturation ceiling of 1.0 (all effective α at the
 `C = 1/√N` cap), which is variance-preserving, not a runaway.
 
 The WD experiment (§4) is **resolved**: weight decay at 5e-4 / 2.5e-4 is harmless
-but is not a strength lever and does not pull the logit *mean* down; the only
-clean effect is a modestly lower logit *peak*. The strength lever is LR /
-momentum. Open question carried by the `m0.93` run: whether the higher effective
-LR's marginal edge over the ~1529 ceiling holds and consolidates, or stays inside
-the noise band.
+and is not a strength lever; the strength lever is LR / momentum. Its effect on
+the logit *peak* is a clean modest reduction, and on the logit *mean* a slow
+cumulative ease (visible only over the longer m0.93 window: 15.65 → 14.98 across
+13k steps), not the no-effect the shorter wd5e-4 window suggested. Open question
+carried by the `m0.93` run: whether the higher effective LR's marginal ~+20 edge
+over the ~1529 ceiling consolidates into a clean step up, or stays inside the
+noise band (8 marks in, it has held but not separated).
