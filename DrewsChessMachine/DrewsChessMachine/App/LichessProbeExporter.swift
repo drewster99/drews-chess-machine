@@ -12,12 +12,16 @@ import Foundation
 /// embedded in the JSON under `export_id`, so filename ↔ content
 /// identity is checkable.
 ///
-/// Schema v2 — each `puzzles[]` entry is `{ puzzle: {...}, probe_result: {...} }`
+/// Schema v4 — each `puzzles[]` entry is `{ puzzle: {...}, probe_result: {...} }`
 /// for readability and to keep the "what the puzzle is" data lexically
 /// separated from "how the network performed on it." Top-level metadata
-/// includes the export UUID, the tick timestamp, the model label, and
-/// the build that produced the data so an exported file can stand
-/// alone for analysis later.
+/// includes the export UUID, the tick timestamp, the model label, the
+/// trainer step the tick was taken at (`training_step`, added in v3; nil
+/// when the tick predates any trainer), four training-progress fields
+/// added in v4 (`positions_trained`, `active_training_sec`, `arena_count`,
+/// `promotion_count` — mirroring the status-bar cells of the same name
+/// at tick time), and the build that produced the data so an exported
+/// file can stand alone for analysis later.
 ///
 /// User flow: the Lichess Probe Detail window's "Export latest…"
 /// button calls `exportLatest`. On success an NSAlert with Reveal in
@@ -28,20 +32,41 @@ import Foundation
 @MainActor
 enum LichessProbeExporter {
 
-    static func exportLatest(history: LichessProbeHistory) {
-        SessionLogger.shared.log("[BUTTON] Export Lichess Probe Results")
+    /// - Parameters:
+    ///   - tag: optional filename tag inserted before the hash (e.g.
+    ///     `training-start-wide`) so auto-exports are distinguishable
+    ///     from manual ones. nil ⇒ the original `LichessProbe_<stamp>_<hash>`
+    ///     name (manual button behavior, unchanged).
+    ///   - announce: when false, suppress the success/failure NSAlert and
+    ///     the "no tick yet" beep — used by the automatic start-of-training
+    ///     export so it doesn't pop UI. Always logs either way.
+    /// - Returns: the written file's `URL` on success, `nil` on skip
+    ///   (no tick yet) or any failure. The manual button ignores the
+    ///   return; the auto start-of-training export records it so the
+    ///   Detail window can auto-compare against it.
+    @discardableResult
+    static func exportLatest(
+        history: LichessProbeHistory,
+        tag: String? = nil,
+        announce: Bool = true
+    ) -> URL? {
+        SessionLogger.shared.log(
+            "[BUTTON] Export Lichess Probe Results"
+            + (tag.map { " (\($0))" } ?? "")
+        )
 
         guard !history.latestPerPuzzleResults.isEmpty,
               let tickTimestamp = history.latestTickTimestamp else {
             SessionLogger.shared.log(
                 "[TACTICAL-LICHESS] export skipped: no tick recorded yet"
+                + (tag.map { " [\($0)]" } ?? "")
             )
-            NSSound.beep()
-            return
+            if announce { NSSound.beep() }
+            return nil
         }
 
         let exportID = UUID()
-        let filename = filename(for: tickTimestamp, exportID: exportID)
+        let filename = filename(for: tickTimestamp, exportID: exportID, tag: tag)
 
         let dir = performanceLichessProbesDir
         do {
@@ -53,12 +78,14 @@ enum LichessProbeExporter {
             SessionLogger.shared.log(
                 "[TACTICAL-LICHESS] export failed: could not create \(dir.path): \(error.localizedDescription)"
             )
-            presentExportAlert(
-                title: "Export failed",
-                message: "Could not create the export folder:\n\n\(dir.path)\n\n\(error.localizedDescription)",
-                revealURL: nil
-            )
-            return
+            if announce {
+                presentExportAlert(
+                    title: "Export failed",
+                    message: "Could not create the export folder:\n\n\(dir.path)\n\n\(error.localizedDescription)",
+                    revealURL: nil
+                )
+            }
+            return nil
         }
 
         let url = dir.appendingPathComponent(filename)
@@ -73,28 +100,34 @@ enum LichessProbeExporter {
             SessionLogger.shared.log(
                 "[TACTICAL-LICHESS] export wrote \(data.count) bytes to \(url.path)"
             )
-            presentExportAlert(
-                title: "Export complete",
-                message: """
-                    Wrote \(history.latestPerPuzzleResults.count) puzzles \
-                    (\(formattedSize(data.count))) to
+            if announce {
+                presentExportAlert(
+                    title: "Export complete",
+                    message: """
+                        Wrote \(history.latestPerPuzzleResults.count) puzzles \
+                        (\(formattedSize(data.count))) to
 
-                    \(url.path)
+                        \(url.path)
 
-                    Click Reveal in Finder to open the containing folder \
-                    with the file selected.
-                    """,
-                revealURL: url
-            )
+                        Click Reveal in Finder to open the containing folder \
+                        with the file selected.
+                        """,
+                    revealURL: url
+                )
+            }
+            return url
         } catch {
             SessionLogger.shared.log(
                 "[TACTICAL-LICHESS] export failed: \(error.localizedDescription)"
             )
-            presentExportAlert(
-                title: "Export failed",
-                message: "Could not write the JSON file:\n\n\(url.path)\n\n\(error.localizedDescription)",
-                revealURL: nil
-            )
+            if announce {
+                presentExportAlert(
+                    title: "Export failed",
+                    message: "Could not write the JSON file:\n\n\(url.path)\n\n\(error.localizedDescription)",
+                    revealURL: nil
+                )
+            }
+            return nil
         }
     }
 
@@ -117,12 +150,13 @@ enum LichessProbeExporter {
 
     // MARK: - Filename
 
-    private static func filename(for tickTimestamp: Date, exportID: UUID) -> String {
+    private static func filename(for tickTimestamp: Date, exportID: UUID, tag: String?) -> String {
         let stamp = filenameTimestampFormatter.string(from: tickTimestamp)
         let shortHash = exportID.uuidString.lowercased()
             .replacingOccurrences(of: "-", with: "")
             .prefix(8)
-        return "LichessProbe_\(stamp)_\(shortHash).json"
+        let tagPart = tag.map { "_\($0)" } ?? ""
+        return "LichessProbe_\(stamp)\(tagPart)_\(shortHash).json"
     }
 
     private static let filenameTimestampFormatter: DateFormatter = {
@@ -144,18 +178,11 @@ enum LichessProbeExporter {
         message: String,
         revealURL: URL?
     ) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        if revealURL != nil {
-            alert.addButton(withTitle: "Reveal in Finder")
-        }
-        let response = alert.runModal()
-        if let url = revealURL, response == .alertSecondButtonReturn {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        }
+        NonBlockingAlert.presentInformational(
+            title: title,
+            message: message,
+            revealURL: revealURL
+        )
     }
 
     private static func formattedSize(_ bytes: Int) -> String {
@@ -176,11 +203,16 @@ enum LichessProbeExporter {
     ) throws -> Data {
         let entries = history.latestPerPuzzleResults.map(buildPuzzleEntry(_:))
         let payload = ExportPayload(
-            schemaVersion: 2,
+            schemaVersion: 4,
             exportId: exportID.uuidString.lowercased(),
             generatedAt: isoTimestampFormatter.string(from: Date()),
             tickTimestamp: isoTimestampFormatter.string(from: tickTimestamp),
             modelLabel: history.latestTickModelLabel,
+            trainingStep: history.latestTickTrainingStep,
+            positionsTrained: history.latestTickPositionsTrained,
+            activeTrainingSec: history.latestTickActiveTrainingSec,
+            arenaCount: history.latestTickArenaCount,
+            promotionCount: history.latestTickPromotionCount,
             appBuild: AppBuildBlock.current,
             probeCount: entries.count,
             puzzles: entries
@@ -230,27 +262,11 @@ enum LichessProbeExporter {
         return PuzzleEntry(puzzle: puzzle, probeResult: probeResult)
     }
 
-    /// Reconstruct UCI long-algebraic from a `ChessMove`. Same shape as
-    /// `LichessProbeData.parseUCI`'s inverse:
-    /// `<from-square><to-square>[promotion]`.
+    /// Reconstruct UCI long-algebraic from a `ChessMove`. Delegates to
+    /// `ChessMove.uci`, the single source of truth for the encoding
+    /// shared with session-checkpoint probe persistence.
     private static func uciString(_ move: ChessMove) -> String {
-        let from = squareName(row: move.fromRow, col: move.fromCol)
-        let to = squareName(row: move.toRow, col: move.toCol)
-        let promo: String
-        switch move.promotion {
-        case .queen?:  promo = "q"
-        case .rook?:   promo = "r"
-        case .bishop?: promo = "b"
-        case .knight?: promo = "n"
-        default:       promo = ""
-        }
-        return "\(from)\(to)\(promo)"
-    }
-
-    private static func squareName(row: Int, col: Int) -> String {
-        let file = Character(UnicodeScalar(UInt8(97 + col)))
-        let rank = 8 - row
-        return "\(file)\(rank)"
+        move.uci
     }
 
     // MARK: - Codable payloads
@@ -261,6 +277,23 @@ enum LichessProbeExporter {
         let generatedAt: String
         let tickTimestamp: String
         let modelLabel: String?
+        /// Trainer step count at the moment the exported tick was
+        /// recorded. nil when the tick ran before a trainer existed.
+        let trainingStep: Int?
+        /// Total positions consumed by the trainer at tick time —
+        /// `training_step × trainingBatchSize`. Added in schema v4.
+        /// nil if `training_step` is nil.
+        let positionsTrained: Int?
+        /// Cumulative active training wall-time in seconds at tick
+        /// time. Added in schema v4. nil if no checkpoint controller
+        /// was attached at tick time.
+        let activeTrainingSec: Double?
+        /// Total arena tournaments completed at tick time. Added in
+        /// schema v4.
+        let arenaCount: Int?
+        /// Subset of `arena_count` where the candidate was promoted.
+        /// Added in schema v4.
+        let promotionCount: Int?
         let appBuild: AppBuildBlock
         let probeCount: Int
         let puzzles: [PuzzleEntry]
@@ -271,6 +304,11 @@ enum LichessProbeExporter {
             case generatedAt = "generated_at"
             case tickTimestamp = "tick_timestamp"
             case modelLabel = "model_label"
+            case trainingStep = "training_step"
+            case positionsTrained = "positions_trained"
+            case activeTrainingSec = "active_training_sec"
+            case arenaCount = "arena_count"
+            case promotionCount = "promotion_count"
             case appBuild = "app_build"
             case probeCount = "probe_count"
             case puzzles

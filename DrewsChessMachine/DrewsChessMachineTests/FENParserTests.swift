@@ -163,13 +163,16 @@ final class FENParserTests: XCTestCase {
 
     func testWrongFieldCountThrows() {
         XCTAssertThrowsError(
+            // Board + side-to-move + castling + en-passant only — the
+            // halfmove clock and fullmove number are missing, so this
+            // splits into 4 fields where a valid FEN has 6.
             try FENParser.parse("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -")
         ) { error in
             guard let pe = error as? FENParser.ParseError else {
                 XCTFail("wrong error type: \(error)"); return
             }
             if case .wrongFieldCount(let n) = pe {
-                XCTAssertEqual(n, 5)
+                XCTAssertEqual(n, 4)
             } else {
                 XCTFail("expected wrongFieldCount, got \(pe)")
             }
@@ -190,7 +193,11 @@ final class FENParserTests: XCTestCase {
 
     func testRankSumMismatchThrows() {
         XCTAssertThrowsError(
-            try FENParser.parse("8/8/8/8/8/8/8/9 w - - 0 1")
+            // Last rank lists 9 files' worth of pieces (8 is the max), so
+            // the file counter overruns the rank. A bare digit > 8 (e.g.
+            // "/9") is instead rejected earlier as an unknown piece
+            // character, since valid run-length digits are 1...8.
+            try FENParser.parse("8/8/8/8/8/8/8/RRRRRRRRR w - - 0 1")
         ) { error in
             guard let pe = error as? FENParser.ParseError else {
                 XCTFail("wrong error type: \(error)"); return

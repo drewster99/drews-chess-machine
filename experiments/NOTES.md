@@ -4,6 +4,31 @@ Free-form running journal of autotrain decisions, observations, and promotion-ca
 
 ---
 
+## 2026-06-09 — Archive distillation: parameter-landscape wisdom (covers 20260421→20260503, ~487 iterations)
+
+Consolidated review of the whole experiment archive (387 regressed / 48 improved / 44 neutral / 8 not-improved) before pruning the bulky per-iteration telemetry. The walkback docs and earlier entries cover the seed-sensitivity story; this entry records the **parameter-landscape shape** and **app-level bugs** that were only implicit in the per-folder commentary. Causal claims below are weak wherever they rest on n=1 deltas — at this build, single-run deltas are confounded by the documented seed bifurcation, so read "X collapsed when changed" as "X did not survive a single replicate," not "X causes collapse."
+
+**Landscape shape (which axes are safe to move, which are cliffs):**
+- **`self_play_tau_decay` is the widest-envelope axis.** Both up and down moves were accepted across contexts; rarely implicated in collapse. Effectively decoupled from policy-head gradient dynamics — the safest knob to explore.
+- **Arena-only knobs (`arena_*`, `arena_promote_threshold`, `arena_games_per_tournament`, interval) are safe but inert.** ~50 arena-side changes produced zero SGD collapses *and* zero movement on the goal-1 (collapse-resistance) metrics. The bottleneck is training-side stability, not promotion logistics. Don't spend iterations here expecting learning gains. (Note: one 0.55→0.54 promote-threshold run saw legalMass crash — almost certainly baseline irreproducibility / seed noise, not a real coupling, since this knob touches only promotion logic.)
+- **`K` (policy mixing coeff): dead end.** Every move off 5 regressed or collapsed; 5 sits between cliffs.
+- **`training_batch_size`: inert.** Marginal/neutral everywhere — `sqrt_batch_scaling_lr` absorbs the change, so batch size is mostly a no-op for the dynamics we care about.
+- **`weight_decay` is a narrow ledge, not a slope.** 2e-4 held; both 1.5e-4 and 3e-4 failed to replicate. Behaves like a gated threshold coupled to the entropy equilibrium, not a monotone leverage knob.
+- **`replay_ratio_target` ≈ 1.1 is a local optimum with cliffs on both sides** (both 1.05/1.0 and 1.15/1.2 failed). Caveat: this predates / overlaps the controller unit-mismatch bug (187e86c), so some of the asymmetry may be measurement, not dynamics.
+- **`entropy_bonus` basin is asymmetric:** the lower edge (~0.003–0.004) is brittle, the upper end (~0.012–0.015) is forgiving. When unsure, step *up* conservatively rather than probing the floor.
+- **Gradient clipping is orthogonal to collapse *direction*.** Sweeping clip 30→10→20→25 changed peak gNorm but not whether/where the policy collapsed. Clip is a magnitude damper; to redirect gradient flow you must move entropy_bonus / weight_decay too. Don't tune clip in isolation expecting it to prevent one-hot collapse.
+- **Params are NOT transfer-stable across app builds.** entropy=0.0025 went from stable (build ~349) to reliably-collapsing (build 390). Re-validate any "known-good" config after an app change touching the training/probe path; the collapse-detector commit alone shifted dynamics (see walkback-build390-summary.md).
+- **Short windows distort warmup tuning.** 600s runs produced anomalously few steps (60–100 vs ~340 typical), so `lr_warmup_steps` effects are unreadable below ~900s. Tune warmup only in ≥900s windows.
+
+**App-level bugs surfaced by autotrain (verify before trusting any are fixed):**
+- `--training-time-limit` CLI flag may not be wired for short limits — app didn't self-terminate at 600s; watchdog SIGTERM'd at 720s (`20260421-180412`). Never confirmed fixed; low impact (watchdog catches it).
+- Max-prob collapse watchdog measured *buffer-mean* prob, not start-position prob (`20260428-072622-codechange`) — the attempted fix was rejected as structurally insufficient. Likely still measures the wrong thing.
+- **ReplayRatioController over-correction may persist past the unit-mismatch fix (187e86c).** Two late codechange iterations (`20260503-083522-codechange`, `20260503-124021-codechange`) proposed an integral/anti-windup compensator that was *never committed*. If a future run regresses on the ratio band or throughput (the goal.txt R1/R2 rule), this is the prime suspect — the controller fix may be incomplete.
+
+**Protocol takeaways for any future tuning at this build:** require 3-replicate stability before promoting a baseline; tune entropy_bonus + weight_decay + replay_ratio as a coupled set, not independently; don't burn iterations on K, batch_size, or arena-only knobs.
+
+---
+
 ## 2026-05-02 — Promoted 104322 baseline failed to replicate (twice); seed-fragile
 
 After promoting `20260501-104322` parameters as the new baseline, ran two consecutive replicates with identical params. Both failed in **different** modes:

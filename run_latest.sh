@@ -32,5 +32,7 @@ for path in "${candidates[@]}"; do
         NEWEST="$path"
     fi
 done
-echo "$PROG: launching $NEWEST" >&2
+if [ "${DCM_QUIET:-0}" != "1" ]; then
+    echo "$PROG: launching $NEWEST" >&2
+fi
 exec "$NEWEST" "$@"

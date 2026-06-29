@@ -19,6 +19,17 @@ public struct FastLineChart: View {
     private let group: FastChartGroup
     private let xDomain: ClosedRange<Double>
     private let yDomain: ClosedRange<Double>
+    /// Independent domain for series tagged `yAxis: .secondary`. When
+    /// non-nil the chart reserves a trailing label column and draws a
+    /// second set of Y labels on the right; when nil the chart is a
+    /// plain single-axis chart exactly as before.
+    private let secondaryYDomain: ClosedRange<Double>?
+    private let secondaryYTickValues: [Double]?
+    private let secondaryYLabelFormatter: @Sendable (Double) -> String
+    /// Tint for the trailing-axis labels. When nil they render in the
+    /// same secondary style as the primary labels; pass a color to
+    /// visually bind the right axis to the series it scales.
+    private let secondaryYLabelColor: Color?
     private let series: [FastChartSeries]
     private let referenceLines: [FastChartReferenceLine]
     private let yLabelCount: Int
@@ -30,6 +41,16 @@ public struct FastLineChart: View {
     private let xLabelFormatter: @Sendable (Double) -> String
     private let legend: FastChartLegend
     private let headerValue: ((FastChartHoverContext) -> AttributedString)?
+    /// Opt-in interactive pan/zoom. When non-nil, the plot accepts a
+    /// click-drag (horizontal pan) and a trackpad pinch (zoom anchored
+    /// at the cursor, or the window center when nothing is hovered) and
+    /// reports the requested new visible x-range here. The chart itself
+    /// stays bound-driven — it does not mutate its own `xDomain`; the
+    /// caller is expected to store the reported range and feed it back
+    /// in as the next `xDomain` (and rescale Y to the windowed data if
+    /// it wants). nil (the default) leaves the chart non-interactive,
+    /// exactly as before, so every existing call site is unaffected.
+    private let onInteractiveXDomainChange: ((ClosedRange<Double>) -> Void)?
 
     /// Local state for the title's "click-to-explain" popover.
     /// Owned here so each `FastLineChart` instance gets its own
@@ -42,6 +63,10 @@ public struct FastLineChart: View {
         group: FastChartGroup,
         xDomain: ClosedRange<Double>,
         yDomain: ClosedRange<Double>,
+        secondaryYDomain: ClosedRange<Double>? = nil,
+        secondaryYTickValues: [Double]? = nil,
+        secondaryYLabelFormatter: @escaping @Sendable (Double) -> String = FastChartFormatters.compact,
+        secondaryYLabelColor: Color? = nil,
         series: [FastChartSeries],
         referenceLines: [FastChartReferenceLine] = [],
         yLabelCount: Int = 4,
@@ -52,13 +77,18 @@ public struct FastLineChart: View {
         yLabelFormatter: @escaping @Sendable (Double) -> String = FastChartFormatters.compact,
         xLabelFormatter: @escaping @Sendable (Double) -> String = FastChartFormatters.elapsedTime,
         legend: FastChartLegend = .auto,
-        headerValue: ((FastChartHoverContext) -> AttributedString)? = nil
+        headerValue: ((FastChartHoverContext) -> AttributedString)? = nil,
+        onInteractiveXDomainChange: ((ClosedRange<Double>) -> Void)? = nil
     ) {
         self.title = title
         self.titleHelp = titleHelp
         self.group = group
         self.xDomain = xDomain
         self.yDomain = yDomain
+        self.secondaryYDomain = secondaryYDomain
+        self.secondaryYTickValues = secondaryYTickValues
+        self.secondaryYLabelFormatter = secondaryYLabelFormatter
+        self.secondaryYLabelColor = secondaryYLabelColor
         self.series = series
         self.referenceLines = referenceLines
         self.yLabelCount = yLabelCount
@@ -70,6 +100,7 @@ public struct FastLineChart: View {
         self.xLabelFormatter = xLabelFormatter
         self.legend = legend
         self.headerValue = headerValue
+        self.onInteractiveXDomainChange = onInteractiveXDomainChange
     }
 
     /// Tick positions actually rendered for the Y axis. Explicit
@@ -98,6 +129,18 @@ public struct FastLineChart: View {
             explicit: xTickValues,
             domain: xDomain,
             fallback: { ChartAxisLayout.evenlySpacedTicks(domain: $0, count: xLabelCount) }
+        )
+    }
+
+    /// Tick positions for the trailing (secondary) Y axis. Empty when
+    /// no `secondaryYDomain` is set. Mirrors the primary `yTicks`
+    /// resolution so the right labels read as round numbers too.
+    private var secondaryYTicks: [Double] {
+        guard let secondaryYDomain else { return [] }
+        return ChartAxisLayout.resolvedTicks(
+            explicit: secondaryYTickValues,
+            domain: secondaryYDomain,
+            fallback: { ChartAxisLayout.niceTicks(domain: $0, approxCount: yLabelCount) }
         )
     }
 
@@ -179,11 +222,13 @@ public struct FastLineChart: View {
     private var plotArea: some View {
         let yTicksResolved = yTicks
         let xTicksResolved = xTicks
+        let secondaryYTicksResolved = secondaryYTicks
         return GeometryReader { geo in
             let layout = ChartAxisLayout(
                 totalSize: geo.size,
                 yLabelWidth: yAxisLabelColumnWidth,
-                xLabelHeight: showXAxisLabels ? xAxisLabelRowHeight : 0
+                xLabelHeight: showXAxisLabels ? xAxisLabelRowHeight : 0,
+                rightLabelWidth: secondaryYDomain != nil ? yAxisLabelColumnWidth : 0
             )
             ZStack(alignment: .topLeading) {
                 FastChartCanvasContent(
@@ -191,6 +236,7 @@ public struct FastLineChart: View {
                     referenceLines: referenceLines,
                     xDomain: xDomain,
                     yDomain: yDomain,
+                    secondaryYDomain: secondaryYDomain,
                     yTicks: yTicksResolved,
                     xTicks: xTicksResolved,
                     gridlineColor: Color.gray.opacity(0.18),
@@ -200,6 +246,13 @@ public struct FastLineChart: View {
                 .offset(x: layout.plotRect.origin.x, y: layout.plotRect.origin.y)
 
                 yAxisLabels(layout: layout, ticks: yTicksResolved)
+                if let secondaryYDomain {
+                    secondaryYAxisLabels(
+                        layout: layout,
+                        ticks: secondaryYTicksResolved,
+                        domain: secondaryYDomain
+                    )
+                }
                 if showXAxisLabels {
                     xAxisLabels(layout: layout, ticks: xTicksResolved)
                 }
@@ -208,6 +261,40 @@ public struct FastLineChart: View {
                 crosshairOverlay(layout: layout)
             }
         }
+    }
+
+    /// Trailing-axis labels for the secondary domain. Mirrors
+    /// `yAxisLabels` but positions each label inside the right-hand
+    /// reserved column and maps tick values through a transform built
+    /// from `domain` so they line up with the `.secondary` series.
+    private func secondaryYAxisLabels(
+        layout: ChartAxisLayout,
+        ticks: [Double],
+        domain: ClosedRange<Double>
+    ) -> some View {
+        let plot = layout.plotRect
+        let transform = ChartCoordTransform(
+            xDomain: xDomain,
+            yDomain: domain,
+            rect: plot
+        )
+        return ZStack(alignment: .topLeading) {
+            ForEach(ticks.indices, id: \.self) { i in
+                let y = ticks[i]
+                Text(secondaryYLabelFormatter(y))
+                    .font(.system(size: 7))
+                    .monospacedDigit()
+                    .foregroundStyle(secondaryYLabelColor ?? .secondary)
+                    .lineLimit(1)
+                    .frame(width: layout.rightLabelWidth - 2, alignment: .leading)
+                    .position(
+                        x: plot.maxX + layout.rightLabelWidth / 2,
+                        y: transform.viewY(y)
+                    )
+            }
+        }
+        .frame(width: layout.totalSize.width, height: layout.totalSize.height, alignment: .topLeading)
+        .allowsHitTesting(false)
     }
 
     private func yAxisLabels(layout: ChartAxisLayout, ticks: [Double]) -> some View {
@@ -326,6 +413,12 @@ public struct FastLineChart: View {
                     if group.hoveredX != nil { group.hoveredX = nil }
                 }
             }
+            .modifier(ChartXPanZoomModifier(
+                plotWidth: plot.width,
+                xDomain: xDomain,
+                hoveredX: group.hoveredX,
+                onChange: onInteractiveXDomainChange
+            ))
     }
 
     @ViewBuilder
@@ -387,4 +480,77 @@ public struct FastLineChart: View {
 
     private var yAxisLabelColumnWidth: CGFloat { 26 }
     private var xAxisLabelRowHeight: CGFloat { 10 }
+}
+
+/// Adds horizontal pan (click-drag) and pinch-to-zoom to the chart's
+/// hover surface, reporting the requested new visible x-range through
+/// `onChange` in *data* coordinates. The gesture math runs here, where
+/// the plot's pixel width and current data domain are both known, so
+/// the caller only has to store the reported range and feed it back in
+/// as the next `xDomain`.
+///
+/// When `onChange` is nil the modifier is a pass-through — the host
+/// chart stays exactly as non-interactive as it was before, so the
+/// fourteen other `FastLineChart` call sites that don't opt in are
+/// untouched.
+///
+/// Both gestures freeze the domain they started from (`panStart` /
+/// `zoomStart`) for the duration of the gesture, so each incremental
+/// `onChange` is computed against a stable origin even though the
+/// caller is simultaneously feeding a new (possibly clamped) `xDomain`
+/// back in on every frame — without the freeze the feedback would
+/// compound and the pan would accelerate.
+private struct ChartXPanZoomModifier: ViewModifier {
+    let plotWidth: CGFloat
+    let xDomain: ClosedRange<Double>
+    let hoveredX: Double?
+    let onChange: ((ClosedRange<Double>) -> Void)?
+
+    @State private var panStart: ClosedRange<Double>?
+    @State private var zoomStart: ClosedRange<Double>?
+
+    func body(content: Content) -> some View {
+        if let onChange {
+            content.gesture(magnify(onChange).simultaneously(with: pan(onChange)))
+        } else {
+            content
+        }
+    }
+
+    private func pan(_ onChange: @escaping (ClosedRange<Double>) -> Void) -> some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { value in
+                guard plotWidth > 0 else { return }
+                let start = panStart ?? xDomain
+                if panStart == nil { panStart = start }
+                let span = start.upperBound - start.lowerBound
+                // Drag right → reveal earlier data → window moves left.
+                let dx = -Double(value.translation.width) / Double(plotWidth) * span
+                onChange((start.lowerBound + dx)...(start.upperBound + dx))
+            }
+            .onEnded { _ in panStart = nil }
+    }
+
+    private func magnify(_ onChange: @escaping (ClosedRange<Double>) -> Void) -> some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                let start = zoomStart ?? xDomain
+                if zoomStart == nil { zoomStart = start }
+                let startSpan = start.upperBound - start.lowerBound
+                guard startSpan > 0, value.magnification > 0 else { return }
+                // Pinch out (magnification > 1) shrinks the span → zoom in.
+                let newSpan = startSpan / Double(value.magnification)
+                let anchor: Double
+                if let hoveredX, hoveredX >= start.lowerBound, hoveredX <= start.upperBound {
+                    anchor = hoveredX
+                } else {
+                    anchor = (start.lowerBound + start.upperBound) / 2
+                }
+                // Keep the anchor's data value pinned under the same pixel.
+                let fraction = (anchor - start.lowerBound) / startSpan
+                let lo = anchor - fraction * newSpan
+                onChange(lo...(lo + newSpan))
+            }
+            .onEnded { _ in zoomStart = nil }
+    }
 }

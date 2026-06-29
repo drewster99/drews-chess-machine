@@ -59,6 +59,8 @@ final class ReplayBufferTests: XCTestCase {
         var tau: Float = 1.0
         var hash: UInt64 = 0xCAFE_BABE_DEAD_BEEF
         var mat: UInt8 = 32
+        // append takes a per-position outcomes pointer; one position here.
+        var outcome: Float = 1.0
 
         boardFloats.withUnsafeBufferPointer { boardsBuf in
             withUnsafePointer(to: &move) { moveP in
@@ -66,6 +68,7 @@ final class ReplayBufferTests: XCTestCase {
                     withUnsafePointer(to: &tau) { tauP in
                         withUnsafePointer(to: &hash) { hashP in
                             withUnsafePointer(to: &mat) { matP in
+                            withUnsafePointer(to: &outcome) { outcomeP in
                                 buffer.append(
                                     boards: boardsBuf.baseAddress!,
                                     policyIndices: moveP,
@@ -76,9 +79,10 @@ final class ReplayBufferTests: XCTestCase {
                                     gameLength: 1,
                                     workerId: 0,
                                     intraWorkerGameIndex: 0,
-                                    outcome: 1.0,
+                                    outcomes: outcomeP,
                                     count: 1
                                 )
+                            }
                             }
                         }
                     }
@@ -94,7 +98,7 @@ final class ReplayBufferTests: XCTestCase {
         XCTAssertEqual(restored.count, 1)
 
         // Sample what we wrote and compare bytes.
-        var sampledBoard = [Float](repeating: 0, count: ReplayBuffer.floatsPerBoard)
+        var sampledBoard = [Float](repeating: 0, count: ReplayBuffer.defaultFloatsPerBoard)
         var sampledMove: Int32 = 0
         var sampledZ: Float = 0
 
@@ -192,7 +196,7 @@ final class ReplayBufferTests: XCTestCase {
         let magic = "DCMRPBUF".data(using: .utf8)!
         var version: UInt32 = 3
         var pad: UInt32 = 0
-        var fpb: Int64 = Int64(ReplayBuffer.floatsPerBoard)
+        var fpb: Int64 = Int64(ReplayBuffer.defaultFloatsPerBoard)
         var cap: Int64 = 100
         var stored: Int64 = 0
         var writeIdx: Int64 = 0
@@ -224,7 +228,7 @@ final class ReplayBufferTests: XCTestCase {
         let magic = "DCMRPBUF".data(using: .utf8)!
         var version: UInt32 = 4
         var pad: UInt32 = 0
-        var fpb: Int64 = Int64(ReplayBuffer.floatsPerBoard)
+        var fpb: Int64 = Int64(ReplayBuffer.defaultFloatsPerBoard)
         var cap: Int64 = 100
         var stored: Int64 = 0
         var writeIdx: Int64 = 0
@@ -255,7 +259,7 @@ final class ReplayBufferTests: XCTestCase {
         let magic = "DCMRPBUF".data(using: .utf8)!
         var version: UInt32 = 5
         var pad: UInt32 = 0
-        var fpb: Int64 = Int64(ReplayBuffer.floatsPerBoard)
+        var fpb: Int64 = Int64(ReplayBuffer.defaultFloatsPerBoard)
         var cap: Int64 = 100
         var stored: Int64 = 0
         var writeIdx: Int64 = 0
@@ -360,7 +364,7 @@ final class ReplayBufferTests: XCTestCase {
         let magic = "DCMRPBUF".data(using: .utf8)!
         var version: UInt32 = 6
         var pad: UInt32 = 0
-        var fpb: Int64 = Int64(ReplayBuffer.floatsPerBoard)
+        var fpb: Int64 = Int64(ReplayBuffer.defaultFloatsPerBoard)
         var cap: Int64 = 100
         var stored: Int64 = 0
         var writeIdx: Int64 = 0
@@ -395,7 +399,7 @@ final class ReplayBufferTests: XCTestCase {
         let magic = "DCMRPBUF".data(using: .utf8)!
         var version: UInt32 = 7
         var pad: UInt32 = 0
-        var fpb: Int64 = Int64(ReplayBuffer.floatsPerBoard)
+        var fpb: Int64 = Int64(ReplayBuffer.defaultFloatsPerBoard)
         var cap: Int64 = .max
         var stored: Int64 = 0
         var writeIdx: Int64 = 0
@@ -438,12 +442,15 @@ final class ReplayBufferTests: XCTestCase {
         var tau: Float = 1.0
         var hash: UInt64 = seed
         var mat: UInt8 = 32
+        // append takes a per-position outcomes pointer; one position here.
+        var outcome: Float = 1.0
         boardFloats.withUnsafeBufferPointer { boardsBuf in
             withUnsafePointer(to: &move) { moveP in
                 withUnsafePointer(to: &ply) { plyP in
                     withUnsafePointer(to: &tau) { tauP in
                         withUnsafePointer(to: &hash) { hashP in
                             withUnsafePointer(to: &mat) { matP in
+                            withUnsafePointer(to: &outcome) { outcomeP in
                                 buffer.append(
                                     boards: boardsBuf.baseAddress!,
                                     policyIndices: moveP,
@@ -454,9 +461,10 @@ final class ReplayBufferTests: XCTestCase {
                                     gameLength: 1,
                                     workerId: 0,
                                     intraWorkerGameIndex: UInt32(seed & 0xFFFF),
-                                    outcome: 1.0,
+                                    outcomes: outcomeP,
                                     count: 1
                                 )
+                            }
                             }
                         }
                     }
@@ -469,7 +477,7 @@ final class ReplayBufferTests: XCTestCase {
 
     private func makeFakeBoard(seed: UInt64) -> [Float] {
         var rng = SeededRNG(seed: seed)
-        let count = ReplayBuffer.floatsPerBoard
+        let count = ReplayBuffer.defaultFloatsPerBoard
         var board = [Float](repeating: 0, count: count)
         for i in 0..<count {
             // Deterministic float in [0, 1).

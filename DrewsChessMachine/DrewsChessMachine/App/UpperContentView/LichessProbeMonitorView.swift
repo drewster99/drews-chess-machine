@@ -262,7 +262,10 @@ struct LichessProbeMonitorView: View {
                     + "TOP-5 = bookmove is among the top-5. "
                     + "AVG PROB = mean legal-masked mass the network put on the bookmove (continuous in [0, 1]). "
                     + "AVG RANK = mean 1-indexed rank of the bookmove among legals (lower = better). "
-                    + "Green/red on AVG PROB = up since prior tick; on AVG RANK = rank fell (improvement)."
+                    + "Green/red colors mean direction since the prior tick: "
+                    + "ARGMAX / ARGMAX % / AVG PROB green = up (more correct / more committed); "
+                    + "AVG RANK green = rank fell (bookmove moved up the ranking — improvement); "
+                    + "red is the reverse; primary color = first tick or unchanged."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)

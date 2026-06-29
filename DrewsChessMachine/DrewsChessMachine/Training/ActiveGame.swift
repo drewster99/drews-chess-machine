@@ -33,10 +33,20 @@ final class ActiveGame: @unchecked Sendable {
 
     // MARK: - Constants
 
-    /// Per-position encoded-board size in floats. Cached here so init
-    /// math doesn't need to reach into `BoardEncoder` for every slot
-    /// allocation.
-    private static let boardFloats = BoardEncoder.tensorLength
+    /// Per-position STORED board size in floats — the single mover-relative
+    /// frame, `planesPerFrame × 64`, NOT the full network-input width. For
+    /// single-frame encodings (basic20/basic30) this equals the full
+    /// `tensorLength`; for a history encoding (full10ply200) it is just
+    /// frame 0 (1,280 floats) because the replay buffer stores each ply
+    /// once and reconstructs the history stack at sample time. `recordPly`
+    /// therefore copies only the first `boardFloats` floats of the driver's
+    /// full inference encoding (frame 0 sits at the start of that buffer).
+    /// `init` can't use this computed accessor before every stored property
+    /// is set, so it derives the same value from the `whiteNetwork`
+    /// parameter directly and passes it into `allocBoardScratch`.
+    private var boardFloats: Int {
+        whiteNetwork.inputEncoding.planesPerFrame * ChessNetwork.boardSize * ChessNetwork.boardSize
+    }
 
     // MARK: - Identity (set once at init or per-game reset)
 
@@ -147,6 +157,28 @@ final class ActiveGame: @unchecked Sendable {
     /// Number of plies the black side has recorded this game.
     private(set) var blackPliesRecorded: Int = 0
 
+    // MARK: - Per-game merged flush staging (reverse game-ply order)
+
+    /// Reusable merged staging for `flush`. The two per-side runs are
+    /// interleaved here in REVERSE game-ply order (ply descending: the
+    /// last ply played first, the opening ply last) so the whole game
+    /// lands as one contiguous, reverse-chronological `ReplayBuffer`
+    /// append — which is exactly the layout the trainer's history
+    /// reconstruction reads: from any sampled ply's slot, the
+    /// `historyFrameCount-1` chronological priors sit at the next ring
+    /// slots forward. Capacity is `perSideCap * 2` (the max total plies);
+    /// grown in lock-step with the per-side scratch. Contents are
+    /// overwritten each flush, never read stale.
+    private var mergedBoardScratch: UnsafeMutablePointer<Float>
+    private var mergedPolicyIndices: UnsafeMutablePointer<Int32>
+    private var mergedPlyIndices: UnsafeMutablePointer<UInt16>
+    private var mergedSamplingTaus: UnsafeMutablePointer<Float>
+    private var mergedStateHashes: UnsafeMutablePointer<UInt64>
+    private var mergedMaterialCounts: UnsafeMutablePointer<UInt8>
+    /// Per-row outcome for the merged block: white-mover rows carry
+    /// `whiteOutcome` (+1/0/−1), black-mover rows carry its negation.
+    private var mergedOutcomes: UnsafeMutablePointer<Float>
+
     // MARK: - Draw-watch (stealth pDraw monitor — does NOT affect gameplay)
 
     /// Running count of consecutive plies (any side) for which the
@@ -216,8 +248,15 @@ final class ActiveGame: @unchecked Sendable {
         let sideCap = (capPlies + 1) / 2
         self.perSideCap = sideCap
 
-        self.whiteBoardScratch = Self.allocBoardScratch(sideCap)
-        self.blackBoardScratch = Self.allocBoardScratch(sideCap)
+        // STORED single-frame width for these networks' architecture —
+        // `planesPerFrame × 64`. Derived from the parameter (not the
+        // computed `boardFloats`, which can't run until every stored
+        // property is initialized). For history encodings this is one
+        // frame, matching `ReplayBuffer.floatsPerBoard`.
+        let bf = whiteNetwork.inputEncoding.planesPerFrame
+            * ChessNetwork.boardSize * ChessNetwork.boardSize
+        self.whiteBoardScratch = Self.allocBoardScratch(sideCap, boardFloats: bf)
+        self.blackBoardScratch = Self.allocBoardScratch(sideCap, boardFloats: bf)
         self.whitePolicyIndices = Self.allocInt32(sideCap)
         self.blackPolicyIndices = Self.allocInt32(sideCap)
         self.whitePlyIndices = Self.allocUInt16(sideCap)
@@ -228,10 +267,20 @@ final class ActiveGame: @unchecked Sendable {
         self.blackStateHashes = Self.allocUInt64(sideCap)
         self.whiteMaterialCounts = Self.allocUInt8(sideCap)
         self.blackMaterialCounts = Self.allocUInt8(sideCap)
+
+        // Merged flush staging holds up to both sides at once.
+        let mergedCap = sideCap * 2
+        self.mergedBoardScratch = Self.allocBoardScratch(mergedCap, boardFloats: bf)
+        self.mergedPolicyIndices = Self.allocInt32(mergedCap)
+        self.mergedPlyIndices = Self.allocUInt16(mergedCap)
+        self.mergedSamplingTaus = Self.allocFloat(mergedCap)
+        self.mergedStateHashes = Self.allocUInt64(mergedCap)
+        self.mergedMaterialCounts = Self.allocUInt8(mergedCap)
+        self.mergedOutcomes = Self.allocFloat(mergedCap)
     }
 
     deinit {
-        let bf = Self.boardFloats
+        let bf = boardFloats
         whiteBoardScratch.deinitialize(count: perSideCap * bf)
         whiteBoardScratch.deallocate()
         blackBoardScratch.deinitialize(count: perSideCap * bf)
@@ -246,6 +295,15 @@ final class ActiveGame: @unchecked Sendable {
         blackStateHashes.deinitialize(count: perSideCap);   blackStateHashes.deallocate()
         whiteMaterialCounts.deinitialize(count: perSideCap); whiteMaterialCounts.deallocate()
         blackMaterialCounts.deinitialize(count: perSideCap); blackMaterialCounts.deallocate()
+
+        let mergedCap = perSideCap * 2
+        mergedBoardScratch.deinitialize(count: mergedCap * bf); mergedBoardScratch.deallocate()
+        mergedPolicyIndices.deinitialize(count: mergedCap);  mergedPolicyIndices.deallocate()
+        mergedPlyIndices.deinitialize(count: mergedCap);     mergedPlyIndices.deallocate()
+        mergedSamplingTaus.deinitialize(count: mergedCap);   mergedSamplingTaus.deallocate()
+        mergedStateHashes.deinitialize(count: mergedCap);    mergedStateHashes.deallocate()
+        mergedMaterialCounts.deinitialize(count: mergedCap); mergedMaterialCounts.deallocate()
+        mergedOutcomes.deinitialize(count: mergedCap);       mergedOutcomes.deallocate()
     }
 
     // MARK: - Lifecycle
@@ -301,10 +359,15 @@ final class ActiveGame: @unchecked Sendable {
 
     /// Record one ply into the side-appropriate staging slot. The
     /// caller (the tick driver) has already encoded the board into
-    /// its tick scratch at `encodedBoardSrc`; this method copies that
-    /// encoded-board run (`BoardEncoder.tensorLength` floats) into
-    /// the next free slot of the side's `*BoardScratch` and writes
-    /// the per-ply metadata fields.
+    /// its tick scratch at `encodedBoardSrc` (the FULL network input —
+    /// `tensorLength` floats, with frame 0 at its start). This method
+    /// copies only the first `boardFloats` floats — the single
+    /// mover-relative frame the replay buffer stores per ply (= frame 0
+    /// of that encoding; for single-frame encodings the whole thing) —
+    /// into the next free slot of the side's `*BoardScratch` and writes
+    /// the per-ply metadata fields. The history stack is reconstructed
+    /// from neighbouring stored frames at sample time, so storing one
+    /// frame per ply is sufficient and ~10× smaller for full10ply200.
     ///
     /// `side` is which color just played this ply — i.e. the side
     /// whose turn it WAS at the time of the move, NOT
@@ -322,7 +385,7 @@ final class ActiveGame: @unchecked Sendable {
         samplingTau: Float,
         materialCount: UInt8
     ) {
-        let bf = Self.boardFloats
+        let bf = boardFloats
         switch side {
         case .white:
             precondition(
@@ -362,23 +425,39 @@ final class ActiveGame: @unchecked Sendable {
     // MARK: - Flush
 
     /// Bulk-push every recorded ply from the just-finished game into
-    /// `buffer`, two `append` calls (white side + black side) with the
-    /// per-side outcome broadcast across every row. Mirrors the
-    /// two-`MPSChessPlayer` flushes today, including the per-side
-    /// outcome sign-flip — white's outcome is +1 if white won, -1 if
-    /// black won, 0 for draws; black gets the negation.
+    /// `buffer` as ONE merged, reverse-game-ply-ordered append.
+    ///
+    /// **Why one merged append (was two per-side).** The replay buffer's
+    /// history reconstruction reads each game as a single contiguous,
+    /// reverse-chronological ring block: from a sampled ply's slot, the
+    /// chronological priors sit at the next ring slots forward. Emitting
+    /// the whole game in ply-descending order (last ply first, opening ply
+    /// last) as one append lands exactly that layout for free — the ring's
+    /// FIFO write makes the block contiguous (wrap is handled inside
+    /// `append`). The two per-side staging runs are interleaved here by
+    /// game-ply parity (white = even ply, black = odd ply).
+    ///
+    /// **Per-row outcome.** White-mover rows carry `whiteOutcome` (+1 if
+    /// white won, −1 if black won, 0 for draws); black-mover rows carry its
+    /// negation. The single `append` receives the matching per-row outcome
+    /// array — outcomes are no longer broadcast because one game now mixes
+    /// both signs.
+    ///
+    /// For single-frame encodings (basic20/basic30) this changes only the
+    /// physical order of stored positions and the append count (two → one);
+    /// the stored positions, their metadata, and their outcomes are
+    /// identical, and sampling is by-metadata, so behaviour is unchanged.
     ///
     /// Caller is responsible for the draw-keep filter (i.e.
     /// `selfPlayDrawKeepFraction` for drawn games): this method
     /// unconditionally flushes. The caller decides whether to call it.
     ///
-    /// Returns the combined `FlushedGameStats` (sum of white and
-    /// black flushes), or `nil` if there's nothing to flush.
+    /// Returns the merged `FlushedGameStats`, or `nil` if there's nothing
+    /// to flush.
     @discardableResult
     func flush(buffer: ReplayBuffer, result: GameResult) -> FlushedGameStats? {
-        guard whitePliesRecorded > 0 || blackPliesRecorded > 0 else {
-            return nil
-        }
+        let total = whitePliesRecorded + blackPliesRecorded
+        guard total > 0 else { return nil }
 
         let whiteOutcome: Float
         switch result {
@@ -393,53 +472,44 @@ final class ActiveGame: @unchecked Sendable {
         let blackOutcome: Float = -whiteOutcome
 
         let gameLengthClamped = UInt16(min(totalPliesPlayed, Int(UInt16.max)))
+        let bf = boardFloats
 
-        let whiteStats = flushSide(
-            buffer: buffer,
-            boards: whiteBoardScratch,
-            policyIndices: whitePolicyIndices,
-            plyIndices: whitePlyIndices,
-            samplingTaus: whiteSamplingTaus,
-            stateHashes: whiteStateHashes,
-            materialCounts: whiteMaterialCounts,
-            count: whitePliesRecorded,
-            outcome: whiteOutcome,
-            gameLength: gameLengthClamped
-        )
-        let blackStats = flushSide(
-            buffer: buffer,
-            boards: blackBoardScratch,
-            policyIndices: blackPolicyIndices,
-            plyIndices: blackPlyIndices,
-            samplingTaus: blackSamplingTaus,
-            stateHashes: blackStateHashes,
-            materialCounts: blackMaterialCounts,
-            count: blackPliesRecorded,
-            outcome: blackOutcome,
-            gameLength: gameLengthClamped
-        )
-        return whiteStats + blackStats
-    }
-
-    private func flushSide(
-        buffer: ReplayBuffer,
-        boards: UnsafePointer<Float>,
-        policyIndices: UnsafePointer<Int32>,
-        plyIndices: UnsafePointer<UInt16>,
-        samplingTaus: UnsafePointer<Float>,
-        stateHashes: UnsafePointer<UInt64>,
-        materialCounts: UnsafePointer<UInt8>,
-        count: Int,
-        outcome: Float,
-        gameLength: UInt16
-    ) -> FlushedGameStats {
-        if count == 0 { return .empty }
-
+        // Build the merged block in reverse game-ply order: dst row 0 = the
+        // last ply played (game-ply total-1), dst row total-1 = the opening
+        // ply (game-ply 0). For each game-ply p: even → white side index
+        // p/2, odd → black side index (p-1)/2. Sourcing by game-ply (not by
+        // a running side cursor) keeps the interleave correct even when one
+        // side played one more ply than the other (game ended on white's
+        // move) — the per-side index for a given parity is simply p/2.
         var phaseByPly = PhaseHistogram.zero
         var phaseByMaterial = PhaseHistogram.zero
-        for i in 0..<count {
-            let plyBucket = PhaseHistogram.plyBucket(ply: Int(plyIndices[i]))
-            let matBucket = PhaseHistogram.materialBucket(materialCount: Int(materialCounts[i]))
+        var dst = 0
+        var gamePly = total - 1
+        while gamePly >= 0 {
+            let isWhite = (gamePly & 1) == 0
+            let sideIndex = gamePly / 2
+            let dstBoard = mergedBoardScratch + dst * bf
+            if isWhite {
+                dstBoard.update(from: whiteBoardScratch + sideIndex * bf, count: bf)
+                mergedPolicyIndices[dst] = whitePolicyIndices[sideIndex]
+                mergedPlyIndices[dst] = whitePlyIndices[sideIndex]
+                mergedSamplingTaus[dst] = whiteSamplingTaus[sideIndex]
+                mergedStateHashes[dst] = whiteStateHashes[sideIndex]
+                mergedMaterialCounts[dst] = whiteMaterialCounts[sideIndex]
+                mergedOutcomes[dst] = whiteOutcome
+            } else {
+                dstBoard.update(from: blackBoardScratch + sideIndex * bf, count: bf)
+                mergedPolicyIndices[dst] = blackPolicyIndices[sideIndex]
+                mergedPlyIndices[dst] = blackPlyIndices[sideIndex]
+                mergedSamplingTaus[dst] = blackSamplingTaus[sideIndex]
+                mergedStateHashes[dst] = blackStateHashes[sideIndex]
+                mergedMaterialCounts[dst] = blackMaterialCounts[sideIndex]
+                mergedOutcomes[dst] = blackOutcome
+            }
+            // Phase histograms are order-independent over the game's
+            // positions, so accumulate straight from the merged row.
+            let plyBucket = PhaseHistogram.plyBucket(ply: Int(mergedPlyIndices[dst]))
+            let matBucket = PhaseHistogram.materialBucket(materialCount: Int(mergedMaterialCounts[dst]))
             switch plyBucket {
             case 0: phaseByPly.open += 1
             case 1: phaseByPly.early += 1
@@ -454,24 +524,26 @@ final class ActiveGame: @unchecked Sendable {
             case 3: phaseByMaterial.late += 1
             default: phaseByMaterial.end += 1
             }
+            dst += 1
+            gamePly -= 1
         }
 
         buffer.append(
-            boards: boards,
-            policyIndices: policyIndices,
-            plyIndices: plyIndices,
-            samplingTaus: samplingTaus,
-            stateHashes: stateHashes,
-            materialCounts: materialCounts,
-            gameLength: gameLength,
+            boards: mergedBoardScratch,
+            policyIndices: mergedPolicyIndices,
+            plyIndices: mergedPlyIndices,
+            samplingTaus: mergedSamplingTaus,
+            stateHashes: mergedStateHashes,
+            materialCounts: mergedMaterialCounts,
+            gameLength: gameLengthClamped,
             workerId: workerId,
             intraWorkerGameIndex: intraWorkerGameIndex,
-            outcome: outcome,
-            count: count
+            outcomes: mergedOutcomes,
+            count: total
         )
 
         return FlushedGameStats(
-            positions: count,
+            positions: total,
             phaseByPly: phaseByPly,
             phaseByMaterial: phaseByMaterial
         )
@@ -485,7 +557,7 @@ final class ActiveGame: @unchecked Sendable {
     /// it's safe to discard buffer contents — we're between games.
     private func growSideScratches(to newCap: Int) {
         precondition(newCap > perSideCap, "ActiveGame.growSideScratches: must strictly increase")
-        let bf = Self.boardFloats
+        let bf = boardFloats
 
         whiteBoardScratch.deinitialize(count: perSideCap * bf); whiteBoardScratch.deallocate()
         blackBoardScratch.deinitialize(count: perSideCap * bf); blackBoardScratch.deallocate()
@@ -500,8 +572,17 @@ final class ActiveGame: @unchecked Sendable {
         whiteMaterialCounts.deinitialize(count: perSideCap); whiteMaterialCounts.deallocate()
         blackMaterialCounts.deinitialize(count: perSideCap); blackMaterialCounts.deallocate()
 
-        whiteBoardScratch = Self.allocBoardScratch(newCap)
-        blackBoardScratch = Self.allocBoardScratch(newCap)
+        let oldMergedCap = perSideCap * 2
+        mergedBoardScratch.deinitialize(count: oldMergedCap * bf); mergedBoardScratch.deallocate()
+        mergedPolicyIndices.deinitialize(count: oldMergedCap);  mergedPolicyIndices.deallocate()
+        mergedPlyIndices.deinitialize(count: oldMergedCap);     mergedPlyIndices.deallocate()
+        mergedSamplingTaus.deinitialize(count: oldMergedCap);   mergedSamplingTaus.deallocate()
+        mergedStateHashes.deinitialize(count: oldMergedCap);    mergedStateHashes.deallocate()
+        mergedMaterialCounts.deinitialize(count: oldMergedCap); mergedMaterialCounts.deallocate()
+        mergedOutcomes.deinitialize(count: oldMergedCap);       mergedOutcomes.deallocate()
+
+        whiteBoardScratch = Self.allocBoardScratch(newCap, boardFloats: bf)
+        blackBoardScratch = Self.allocBoardScratch(newCap, boardFloats: bf)
         whitePolicyIndices = Self.allocInt32(newCap)
         blackPolicyIndices = Self.allocInt32(newCap)
         whitePlyIndices = Self.allocUInt16(newCap)
@@ -513,12 +594,21 @@ final class ActiveGame: @unchecked Sendable {
         whiteMaterialCounts = Self.allocUInt8(newCap)
         blackMaterialCounts = Self.allocUInt8(newCap)
 
+        let newMergedCap = newCap * 2
+        mergedBoardScratch = Self.allocBoardScratch(newMergedCap, boardFloats: bf)
+        mergedPolicyIndices = Self.allocInt32(newMergedCap)
+        mergedPlyIndices = Self.allocUInt16(newMergedCap)
+        mergedSamplingTaus = Self.allocFloat(newMergedCap)
+        mergedStateHashes = Self.allocUInt64(newMergedCap)
+        mergedMaterialCounts = Self.allocUInt8(newMergedCap)
+        mergedOutcomes = Self.allocFloat(newMergedCap)
+
         perSideCap = newCap
     }
 
     // MARK: - Allocation helpers
 
-    private static func allocBoardScratch(_ sideCap: Int) -> UnsafeMutablePointer<Float> {
+    private static func allocBoardScratch(_ sideCap: Int, boardFloats: Int) -> UnsafeMutablePointer<Float> {
         let count = sideCap * boardFloats
         let p = UnsafeMutablePointer<Float>.allocate(capacity: count)
         p.initialize(repeating: 0, count: count)

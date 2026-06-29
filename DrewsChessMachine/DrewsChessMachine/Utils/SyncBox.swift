@@ -28,6 +28,15 @@ final class SyncBox<T: Sendable>: @unchecked Sendable {
         }
     }
 
+    /// Mutate the protected value and return a result from the same locked
+    /// critical section — the building block for atomic read-modify-return
+    /// operations like compare-and-set.
+    public func mutate<R: Sendable>(_ body: @Sendable (inout T) -> R) -> R {
+        lock.withLock { lockedValue in
+            body(&lockedValue)
+        }
+    }
+
     public init(_ value: T) {
         lock = OSAllocatedUnfairLock(initialState: value)
     }

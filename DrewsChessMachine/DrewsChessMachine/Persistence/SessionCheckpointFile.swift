@@ -112,6 +112,37 @@ struct ArenaHistoryEntryCodable: Codable, Equatable {
     var extendedSummary: ArenaExtendedSummary?
 }
 
+/// Network-architecture snapshot captured at save time so the
+/// resume sheet can show what shape of network produced the
+/// session — e.g. `v4 · 12 blocks · 128 channels · 3.9M params`.
+/// These numbers are build-time constants on `ChessNetwork`, but
+/// they can change across architecture-version bumps; persisting
+/// them lets the resume sheet describe the *saved* session even
+/// when the user is now running a build with a different arch
+/// (which the build-mismatch warning also flags). All fields are
+/// non-Optional inside the struct, but the struct as a whole is
+/// Optional on `SessionCheckpointState` for back-compat with
+/// sessions saved before the field landed.
+struct ArchitectureMetadata: Codable, Equatable {
+    /// `NetworkArchitecture.architectureVersionLabel` — distinguishes
+    /// topology changes (e.g. the v3 → v4 pre-activation rebuild) that
+    /// pure shape constants don't capture.
+    let architectureVersion: Int
+    let channels: Int
+    let numBlocks: Int
+    let inputPlanes: Int
+    let policySize: Int
+    let valueHeadClasses: Int
+    /// Squeeze-and-Excitation FC reduction ratio
+    /// (`NetworkArchitecture.blockSeReductionRatio`). Surfaced because
+    /// changing the SE width without changing channels still produces a
+    /// distinct architecture for the model loader's arch hash.
+    let seReductionRatio: Int
+    /// Trainable + BN parameter count, computed via
+    /// `NetworkArchitecture.parameterCount` at save time.
+    let parameterCount: Int
+}
+
 // MARK: - Session State
 
 /// Serialized form of a paused training session. Stored at
@@ -158,6 +189,9 @@ struct SessionCheckpointState: Codable, Equatable {
     let selfPlayWorkerCount: Int
     var gradClipMaxNorm: Float?
     var weightDecayCoeff: Float?
+    /// Channel-dropout rate (drop probability, 0 = off). Optional for
+    /// back-compat with session files written before dropout existed.
+    var dropoutRate: Float?
     /// Policy-loss coefficient applied to the policy term in
     /// `total_loss = valueLossWeight·valueLoss +
     /// policyLossWeight·policyLoss − …`. Optional for back-compat
@@ -227,10 +261,118 @@ struct SessionCheckpointState: Codable, Equatable {
     /// policy via a complementary CE against a mirror-smoothed target
     /// (mass on the OTHER legal moves) instead of contributing zero
     /// gradient (the legacy clamp-on regime). Optional for back-compat
-    /// with session files written before the toggle landed; absent →
-    /// loader falls through to the user's current
-    /// `TrainingParameters.shared.signedAdvantageComplementCE`.
+    /// with session files written before the toggle landed; resolve via
+    /// `resolvedSignedAdvantageComplementCE` — never by falling through
+    /// to the live `TrainingParameters` value.
     var signedAdvantageComplementCE: Bool?
+
+    /// The complement-CE setting a resumed session should actually run
+    /// with.
+    ///
+    /// This checkpoint field was introduced in the same commit as the
+    /// complement-CE feature itself, so a session file lacking the
+    /// field provably predates the feature — the run it captured
+    /// factually trained in the legacy clamp-on regime. The
+    /// absent-field fallback must therefore reproduce that pre-feature
+    /// behavior (off), NOT the user's current default: falling through
+    /// to the live setting silently switched the policy-gradient
+    /// regime of old runs on resume. (Observed on the resumed KbHZ
+    /// session from 2026-05: its policy loss jumped at resume because
+    /// complement CE was applied to a run that never used it.)
+    ///
+    /// Kept as a pure static so the policy is unit-testable without
+    /// constructing a full checkpoint state; the instance property is
+    /// the call-site-facing form.
+    static func resolvedSignedAdvantageComplementCE(savedFlag: Bool?) -> Bool {
+        savedFlag ?? false
+    }
+
+    /// Instance form of `resolvedSignedAdvantageComplementCE(savedFlag:)`.
+    var resolvedSignedAdvantageComplementCE: Bool {
+        Self.resolvedSignedAdvantageComplementCE(savedFlag: signedAdvantageComplementCE)
+    }
+
+    // MARK: Pre-feature fallback resolution
+    //
+    // The resolvers below share the complement-CE situation: each
+    // checkpoint field was introduced together with the feature it
+    // controls, so a session file lacking the field provably predates
+    // the feature — the run it captured factually trained WITHOUT it.
+    // The absent-field fallback must therefore reproduce that
+    // pre-feature behavior, never the live `TrainingParameters` value
+    // (which would silently change the regime of an old run on
+    // resume). Pure statics so the policy is unit-testable
+    // (`SessionResumeParameterFallbackTests`).
+
+    /// Pre-feature behavior: plain SGD — no momentum term existed.
+    static func resolvedMomentumCoeff(saved: Float?) -> Float {
+        saved ?? 0.0
+    }
+
+    /// Pre-feature behavior: no channel dropout. A session predating the
+    /// dropout feature factually trained at rate 0, so resume must NOT
+    /// inherit the live `TrainingParameters.dropoutRate` (which could
+    /// silently inject dropout into an old run).
+    static func resolvedDropoutRate(saved: Float?) -> Float {
+        saved ?? 0.0
+    }
+
+    /// Pre-feature behavior: no illegal-mass penalty term in the loss.
+    static func resolvedIllegalMassPenaltyWeight(saved: Float?) -> Float {
+        saved ?? 0.0
+    }
+
+    /// Pre-feature behavior: one-hot policy CE — no label smoothing.
+    static func resolvedPolicyLabelSmoothingEpsilon(saved: Float?) -> Float {
+        saved ?? 0.0
+    }
+
+    /// Pre-feature behavior: hard one-hot W/D/L target — no value-head
+    /// label smoothing. A session file lacking this field predates the
+    /// term, so resume must reproduce ε=0 rather than inherit the live
+    /// `TrainingParameters.valueLabelSmoothingEpsilon` (which would
+    /// silently re-shape an old run's value loss on resume — the same
+    /// regression the sibling resolvers exist to prevent).
+    static func resolvedValueLabelSmoothingEpsilon(saved: Float?) -> Float {
+        saved ?? 0.0
+    }
+
+    /// Pre-feature behavior: uncapped per-game batch sampling. The
+    /// parameter's range no longer includes a disabled value, so the
+    /// closest representable equivalent is the declared range maximum,
+    /// where the cap essentially never binds at observed game lengths.
+    /// Sourced from the parameter definition (the single source of truth)
+    /// so it tracks any future change to the declared range rather than
+    /// drifting from a hardcoded literal.
+    static func resolvedMaxPliesFromAnyOneGame(saved: Int?) -> Int {
+        saved ?? MaxPliesFromAnyOneGame.definition.intRange?.max ?? 400
+    }
+
+    /// Pre-feature behavior: no LR/momentum cycling. On nil the
+    /// caller's current cycle numbers (periods, bounds) are preserved
+    /// so the settings popover keeps the user's values, but both
+    /// enabled flags are forced off — a live cycle must never be
+    /// applied to a session that predates the cycling feature.
+    static func resolvedLRMomentumCycle(
+        saved: LRMomentumCycle?,
+        current: LRMomentumCycle
+    ) -> LRMomentumCycle {
+        if let saved { return saved }
+        return LRMomentumCycle(
+            lrEnabled: false,
+            lrPeriodSteps: current.lrPeriodSteps,
+            lrCount: current.lrCount,
+            lrMin: current.lrMin,
+            lrMax: current.lrMax,
+            lrInvert: current.lrInvert,
+            momentumEnabled: false,
+            momentumPeriodSteps: current.momentumPeriodSteps,
+            momentumCount: current.momentumCount,
+            momentumMin: current.momentumMin,
+            momentumMax: current.momentumMax,
+            momentumInvert: current.momentumInvert
+        )
+    }
     var replayBufferMinPositionsBeforeTraining: Int?
     var arenaAutoIntervalSec: Double?
     var candidateProbeIntervalSec: Double?
@@ -241,6 +383,29 @@ struct SessionCheckpointState: Codable, Equatable {
     /// Optional for back-compat; absent → loader falls through to
     /// `TrainingParameters.shared.batchStatsInterval`.
     var batchStatsInterval: Int?
+    /// Periodic-autosave cadence (seconds) in effect at save time
+    /// (`TrainingParameters.shared.periodicAutosaveIntervalSec`). Optional for
+    /// back-compat; absent → loader falls through to the current value.
+    var periodicAutosaveIntervalSec: Double?
+    /// Periodic-autosave retention cap in effect at save time
+    /// (`TrainingParameters.shared.maxPeriodicAutosavesKept`; 0 = unlimited).
+    /// Optional for back-compat; absent → loader falls through to the current
+    /// value.
+    var maxPeriodicAutosavesKept: Int?
+    /// Id of the standalone game corpus this run recorded self-play games into
+    /// (under Corpora/), or nil when recording was off. Provenance only — the
+    /// corpus lives outside the session folder. Optional + defaulted for
+    /// back-compat with older session files.
+    var recordingCorpusID: String? = nil
+    /// LR/momentum cycling configuration in effect at save time (the 12
+    /// `lr_cycle_*` / `momentum_cycle_*` parameters bundled into the runtime
+    /// `LRMomentumCycle` struct). Optional for back-compat with session files
+    /// written before cycling landed; absent → loader falls through to the
+    /// user's current `TrainingParameters.shared` cycling values. Because the
+    /// schedule's phase is a pure function of the global step (which is also
+    /// persisted as `trainingSteps`), restoring this is all resume needs to
+    /// continue the cycle seamlessly.
+    var lrMomentumCycle: LRMomentumCycle?
     /// Composition-aware replay-buffer sampler constraints in effect at
     /// save time. All Optional for back-compat with session files written
     /// before these knobs existed; absent → loader falls through to the
@@ -384,8 +549,34 @@ struct SessionCheckpointState: Codable, Equatable {
     let championID: String
     let trainerID: String
 
+    /// Architecture-shape snapshot captured at save time. Optional for
+    /// back-compat with session files written before the field landed;
+    /// absent → resume sheet renders the architecture line as "unknown
+    /// (session predates architecture metadata)".
+    var architecture: ArchitectureMetadata?
+
     // Arena history (audit log — displayed in the UI on resume)
     let arenaHistory: [ArenaHistoryEntryCodable]
+
+    /// Serialized 200-puzzle Lichess probe monitor history (OVERALL
+    /// NLL/Elo series, per-theme aggregate series, and the latest
+    /// per-puzzle detail rows). Optional for back-compat: sessions saved
+    /// before probe-history persistence existed decode this as nil, and
+    /// the loader starts the monitor empty. Positions aren't stored —
+    /// the per-puzzle rows are reconstructed by name on resume (see
+    /// `ProbeResultCodable`).
+    var lichessProbeHistory: LichessProbeHistorySnapshot?
+
+    /// Serialized WIDE-set (~4,435-puzzle) Lichess probe history,
+    /// parallel to `lichessProbeHistory`. Optional for back-compat:
+    /// sessions saved before the wide set existed decode this as nil and
+    /// the wide monitor starts empty.
+    var lichessProbeWideHistory: LichessProbeHistorySnapshot?
+
+    /// Serialized tactical probe monitor history (per-probe time series
+    /// of full `ProbeResult`s). Optional for back-compat, same as
+    /// `lichessProbeHistory`.
+    var tacticalProbeHistory: TacticalProbeHistorySnapshot?
 
     // MARK: - Training Segments
 
@@ -462,6 +653,15 @@ struct SessionCheckpointState: Codable, Equatable {
     /// reason as `withTrainingSegments`: keeps the memberwise init
     /// call site lean. Pass `nil` for `hasChartData` when no chart
     /// snapshot is being saved (no companion files written).
+    /// Return a copy with `architecture` populated. Same builder-helper
+    /// pattern as `withTrainingSegments` / `withChartData` — keeps the
+    /// memberwise init call site lean.
+    func withArchitecture(_ architecture: ArchitectureMetadata?) -> SessionCheckpointState {
+        var copy = self
+        copy.architecture = architecture
+        return copy
+    }
+
     func withChartData(
         hasChartData: Bool?,
         trainingChartSampleCount: Int?,
@@ -475,6 +675,21 @@ struct SessionCheckpointState: Codable, Equatable {
         copy.progressRateSampleCount = progressRateSampleCount
         copy.arenaChartEvents = arenaChartEvents
         copy.legalMassMaxAllTime = legalMassMaxAllTime
+        return copy
+    }
+
+    /// Return a copy with the probe-monitor histories attached. Same
+    /// builder-helper pattern as `withChartData` — keeps the memberwise
+    /// init call site lean.
+    func withProbeHistories(
+        lichess: LichessProbeHistorySnapshot?,
+        wideLichess: LichessProbeHistorySnapshot?,
+        tactical: TacticalProbeHistorySnapshot?
+    ) -> SessionCheckpointState {
+        var copy = self
+        copy.lichessProbeHistory = lichess
+        copy.lichessProbeWideHistory = wideLichess
+        copy.tacticalProbeHistory = tactical
         return copy
     }
 
@@ -496,19 +711,42 @@ struct SessionCheckpointState: Codable, Equatable {
 /// constituent `.dcmmodel` files are immediately usable when
 /// copied out in Finder.
 enum SessionCheckpointLayout {
-    static let championFilename = "champion.dcmmodel"
-    static let trainerFilename = "trainer.dcmmodel"
+    static let championFilename = "champion.safetensors"
+    static let trainerFilename = "trainer.safetensors"
+    static let legacyChampionFilename = "champion.dcmmodel"
+    static let legacyTrainerFilename = "trainer.dcmmodel"
     static let stateFilename = "session.json"
     static let replayBufferFilename = "replay_buffer.bin"
     static let trainingChartFilename = "training_chart.json"
     static let progressRateChartFilename = "progress_rate_chart.json"
 
+    /// Canonical (write) path for new sessions: `champion.safetensors`.
     static func championURL(in directoryURL: URL) -> URL {
         directoryURL.appendingPathComponent(championFilename)
     }
 
+    /// Canonical (write) path for new sessions: `trainer.safetensors`.
     static func trainerURL(in directoryURL: URL) -> URL {
         directoryURL.appendingPathComponent(trainerFilename)
+    }
+
+    /// Read path: native `.safetensors` if present, else legacy `.dcmmodel`.
+    /// Falls back to the `.safetensors` path when neither exists so the
+    /// caller's `fileExists` check reports the file missing as before.
+    static func existingChampionURL(in directoryURL: URL) -> URL {
+        resolveExisting(in: directoryURL, primary: championFilename, legacy: legacyChampionFilename)
+    }
+
+    static func existingTrainerURL(in directoryURL: URL) -> URL {
+        resolveExisting(in: directoryURL, primary: trainerFilename, legacy: legacyTrainerFilename)
+    }
+
+    private static func resolveExisting(in directoryURL: URL, primary: String, legacy: String) -> URL {
+        let primaryURL = directoryURL.appendingPathComponent(primary)
+        if FileManager.default.fileExists(atPath: primaryURL.path) { return primaryURL }
+        let legacyURL = directoryURL.appendingPathComponent(legacy)
+        if FileManager.default.fileExists(atPath: legacyURL.path) { return legacyURL }
+        return primaryURL
     }
 
     static func stateURL(in directoryURL: URL) -> URL {
@@ -543,8 +781,8 @@ enum SessionCheckpointLayout {
         // children resolve correctly.
         let normalizedDir = URL(fileURLWithPath: directoryURL.path, isDirectory: true)
         let fm = FileManager.default
-        let championURL = championURL(in: normalizedDir)
-        let trainerURL = trainerURL(in: normalizedDir)
+        let championURL = existingChampionURL(in: normalizedDir)
+        let trainerURL = existingTrainerURL(in: normalizedDir)
         let stateURL = stateURL(in: normalizedDir)
 
         guard fm.fileExists(atPath: championURL.path) else {

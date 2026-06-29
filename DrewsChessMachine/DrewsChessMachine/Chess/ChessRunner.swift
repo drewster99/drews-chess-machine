@@ -9,6 +9,10 @@ import Foundation
 final class ChessRunner: @unchecked Sendable {
     private let network: ChessMPSNetwork
 
+    /// Input encoding the wrapped network expects — every board encoded
+    /// for `evaluate` must use this (per architecture).
+    var inputEncoding: InputEncoding { network.inputEncoding }
+
     init(network: ChessMPSNetwork) {
         self.network = network
     }

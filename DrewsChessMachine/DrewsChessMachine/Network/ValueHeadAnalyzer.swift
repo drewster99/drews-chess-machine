@@ -8,12 +8,15 @@ import Foundation
 //
 // The value head's structure (see `ChessNetwork.valueHead`):
 //
-//   1×1 conv (128 → 1)        — `value_conv_weights`        128 floats
-//   BatchNorm γ, β            — `value_bn_gamma|beta`         1 float each
-//   FC 64 → 64                — `value_fc1_weights`        4096 floats
-//   FC 64 → 64 bias           — `value_fc1_bias`             64 floats
-//   FC 64 → 3 (W/D/L logits)  — `value_fc2_weights`         192 floats
-//   FC 64 → 3 bias            — `value_fc2_bias`              3 floats
+//   1×1 conv (channels → valueHeadConvChannels) — `value_conv_weights`
+//   BatchNorm γ, β            — `value_bn_gamma|beta`  (valueHeadConvChannels each)
+//   FC flatten → hidden       — `value_fc1_weights`
+//   FC flatten → hidden bias  — `value_fc1_bias`
+//   FC hidden → 3 (W/D/L)     — `value_fc2_weights`
+//   FC hidden → 3 bias        — `value_fc2_bias`              3 floats
+//
+// (flatten = boardSize² × valueHeadConvChannels; hidden =
+// valueHeadHiddenUnits — see `ChessNetwork.valueHead`.)
 //
 // The two highest-signal reads are `value_fc2_weights` (output-layer
 // magnitudes — if these are near zero the head is bias-only) and
@@ -54,11 +57,11 @@ enum ValueHeadAnalyzer {
     /// for tensors that don't have a meaningful "init L2" — BN
     /// gamma/beta (init constants, not He-init), BN running stats
     /// (statistics, not weights), and the FC biases (init to zero).
-    private static func fanIn(forVariableNamed name: String) -> Int? {
+    private static func fanIn(forVariableNamed name: String, arch: NetworkArchitecture) -> Int? {
         switch name {
-        case "value_conv_weights":   return 128         // 1×1 conv: inC = 128
-        case "value_fc1_weights":    return 64          // FC [64, 64], fan_in = in
-        case "value_fc2_weights":    return 64          // FC [64, 3],  fan_in = in
+        case "value_conv_weights":   return arch.towerOutputChannels  // 1×1 conv: inC = tower output
+        case "value_fc1_weights":    return ChessNetwork.boardSize * ChessNetwork.boardSize * arch.valueHeadConvChannels  // FC [flatten, hidden], fan_in = flatten
+        case "value_fc2_weights":    return arch.valueHeadHiddenUnits  // FC [hidden, classes], fan_in = hidden
         default:                     return nil         // bn/bias: no He-init reference
         }
     }
@@ -131,6 +134,13 @@ enum ValueHeadAnalyzer {
 
         let producedAtISO8601: String
         let modelLabel: String
+
+        /// Cross-cutting training-progress context (step count, elapsed
+        /// time, build/git provenance). Stamped on by `SessionController`
+        /// at export time — the analyzer leaves it `nil` and a `nil`
+        /// optional omits its key, so analyzer-only callers and tests
+        /// produce JSON unchanged from before this field existed.
+        var exportMetadata: AnalysisExportMetadata? = nil
         let weightStats: [WeightStats]
         let fc2Bias: FC2BiasDetail?
         let fc2Weights: FC2WeightsDetail?
@@ -156,6 +166,7 @@ enum ValueHeadAnalyzer {
         // variable lists live on the underlying `ChessNetwork`, not
         // the `ChessMPSNetwork` wrapper, hence the `.network.` hop.
         let weights = try await network.exportWeights()
+        let arch = network.network.arch
         let allVariables = network.network.trainableVariables
             + network.network.bnRunningStatsVariables
 
@@ -175,12 +186,12 @@ enum ValueHeadAnalyzer {
             guard name.hasPrefix("value_") else { continue }
             let values = weights[i]
 
-            stats.append(makeStats(name: name, values: values))
+            stats.append(makeStats(name: name, values: values, arch: arch))
 
             if name == "value_fc2_bias" {
                 fc2BiasDetail = makeFC2BiasDetail(values: values)
             } else if name == "value_fc2_weights" {
-                fc2WeightsDetail = makeFC2WeightsDetail(values: values)
+                fc2WeightsDetail = makeFC2WeightsDetail(values: values, arch: arch)
             }
         }
 
@@ -206,7 +217,8 @@ enum ValueHeadAnalyzer {
 
     private static func makeStats(
         name: String,
-        values: [Float]
+        values: [Float],
+        arch: NetworkArchitecture
     ) -> Result.WeightStats {
         let n = values.count
         guard n > 0 else {
@@ -248,7 +260,7 @@ enum ValueHeadAnalyzer {
             percentile(p: Double(p), sortedAscending: sorted)
         }
 
-        let initL2 = fanIn(forVariableNamed: name).map {
+        let initL2 = fanIn(forVariableNamed: name, arch: arch).map {
             heInitL2(elementCount: n, fanIn: $0)
         }
         let ratio = initL2.map { $0 > 0 ? l2 / $0 : 0 }
@@ -285,15 +297,15 @@ enum ValueHeadAnalyzer {
         )
     }
 
-    private static func makeFC2WeightsDetail(values: [Float]) -> Result.FC2WeightsDetail? {
-        // The `value_fc2_weights` tensor has shape [64, 3] (in × out)
+    private static func makeFC2WeightsDetail(values: [Float], arch: NetworkArchitecture) -> Result.FC2WeightsDetail? {
+        // The `value_fc2_weights` tensor has shape [hidden, 3] (in × out)
         // and is stored row-major (every 3 consecutive floats are the
         // weights from one input neuron to W/D/L). To get the L2 norm
-        // of the `[c]` output column, sum squares of `values[i*3 + c]`
-        // for i in 0..<64. Hard-code the shape constants here — they're
-        // structural facts of the value head, not tunable defaults.
-        let outDim = 3
-        let inDim = 64
+        // of the `[c]` output column, sum squares of `values[i*outDim + c]`
+        // for i in 0..<hidden. Dims come from `ChessNetwork` so this tracks
+        // the value-head shape — they're structural facts, not tunables.
+        let outDim = arch.valueHeadClasses
+        let inDim = arch.valueHeadHiddenUnits
         guard values.count == inDim * outDim else { return nil }
         var columnSumSq = [Double](repeating: 0, count: outDim)
         for i in 0..<inDim {

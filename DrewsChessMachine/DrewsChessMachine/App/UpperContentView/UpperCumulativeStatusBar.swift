@@ -11,12 +11,18 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
     let hasHistory: Bool
     let canRunArena: Bool
     let activeTrainingTime: String
-    /// `nil` outside the LR warm-up window — the cell is then
-    /// omitted. (This still produces a `_ConditionalContent`
-    /// flip; if it ever becomes a hot path, switch to an
-    /// always-rendered cell with a `frame(width:)`-collapsed
-    /// hidden state.)
-    let warmupLREffective: String?
+    /// Live actual learning rate the optimizer is being fed (cycle value,
+    /// if active, composed with √batch + warmup). `nil` outside a training
+    /// session — the cell is then omitted. Shown whenever a trainer exists,
+    /// not only during warm-up. (The optional still produces a
+    /// `_ConditionalContent` flip on session start/stop; not a hot path.)
+    let learningRate: String?
+    /// True while the LR is still ramping through warm-up, so the cell can
+    /// label itself distinctly without hiding the actual value.
+    let learningRateInWarmup: Bool
+    /// Live actual Polyak momentum being fed (cycle value, if active, or the
+    /// static coefficient). `nil` outside a training session.
+    let momentum: String?
     let trainingSteps: String
     let positionsTrained: String
     let trainingRate: String
@@ -49,6 +55,9 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
     /// all of its legal probability mass on the right move. Click
     /// opens the same Tactical Probe Monitor window.
     let tacticalProbCell: StatusBarCell
+    /// "Wide pElo" — MLE puzzle-Elo from the latest wide-set Lichess
+    /// battery tick. Click opens the Lichess Probe Detail window.
+    let widePEloCell: StatusBarCell
     @ViewBuilder let rightChips: () -> RightChips
 
     var body: some View {
@@ -57,8 +66,11 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
             isVisible: hasHistory || canRunArena,
             historyCells: {
                 StatusBarCell(label: "Active training time", value: activeTrainingTime)
-                if let lr = warmupLREffective {
-                    StatusBarCell(label: "LR effective", value: lr)
+                if let lr = learningRate {
+                    StatusBarCell(label: learningRateInWarmup ? "LR (warm-up)" : "LR", value: lr)
+                }
+                if let m = momentum {
+                    StatusBarCell(label: "Momentum", value: m)
                 }
                 StatusBarCell(label: "Training steps", value: trainingSteps)
                 StatusBarCell(label: "Positions trained", value: positionsTrained)
@@ -66,11 +78,12 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
                 StatusBarCell(label: "Legal mass", value: legalMass)
                 StatusBarCell(label: "Runs", value: runs)
                 StatusBarCell(label: "Arenas", value: arenas, action: onShowArenaHistory)
+                scoreCell
                 StatusBarCell(label: "Promotions", value: promotions, action: onShowPromotions)
                 lastPromoteCell
-                scoreCell
                 tacticalRankCell
                 tacticalProbCell
+                widePEloCell
             },
             rightChips: rightChips
         )

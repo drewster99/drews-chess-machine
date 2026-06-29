@@ -8,6 +8,7 @@ enum ModelCheckpointError: LocalizedError {
     case magicMismatch
     case unsupportedVersion(UInt32)
     case archMismatch(expected: UInt32, got: UInt32)
+    case archNotLegacyEncodable(archHash: UInt32)
     case tensorCountMismatch(expected: Int, got: Int)
     case tensorIndexMismatch(expected: Int, got: UInt32)
     case elementCountMismatch(tensorIndex: Int, expected: Int, got: Int)
@@ -29,6 +30,8 @@ enum ModelCheckpointError: LocalizedError {
             return "Unsupported .dcmmodel format version \(v)"
         case .archMismatch(let expected, let got):
             return "Architecture mismatch: file was saved with archHash 0x\(String(got, radix: 16)), current build expects 0x\(String(expected, radix: 16))"
+        case .archNotLegacyEncodable(let archHash):
+            return "This architecture (archHash 0x\(String(archHash, radix: 16))) has no legacy .dcmmodel hash and could not be read back from a .dcmmodel file — save it as .safetensors (which carries the full embedded config) instead."
         case .tensorCountMismatch(let expected, let got):
             return "Tensor count mismatch: file has \(got) tensors, current build expects \(expected)"
         case .tensorIndexMismatch(let expected, let got):
@@ -108,16 +111,20 @@ struct ModelCheckpointFile {
     /// rejected instead of silently inventing missing session state.
     static let supportedReadVersions: Set<UInt32> = [2]
 
-    /// Hash of the shape constants that determine variable layout.
-    /// Any change to `ChessNetwork.channels`, `numBlocks`,
-    /// `inputPlanes`, `boardSize`, `policySize`, or `valueHeadClasses`
-    /// changes this value, so stale files refuse to load instead of
-    /// silently landing in wrong-sized slots.
-    static var currentArchHash: UInt32 {
+    /// Legacy `.dcmmodel` architecture hash for a given architecture — the
+    /// 7-scalar FNV-1a mix (channels, numBlocks, inputPlanes, boardSize,
+    /// policySize, valueHeadClasses, architecture version) that historical
+    /// files embedded so a stale file refused to land in wrong-sized slots.
+    /// Retained only for the legacy `.dcmmodel` write/read path; the
+    /// safetensors format carries the full embedded config instead. The
+    /// values are mixed from the *given* architecture (not a global
+    /// default), so a freshly-saved `.dcmmodel` round-trips through
+    /// `legacyDcmmodelArchHashes` to the matching preset.
+    static func archHash(for arch: NetworkArchitecture) -> UInt32 {
         var h: UInt32 = 0x811C9DC5 // FNV-1a offset basis
         func mix(_ value: Int) {
             guard let u32 = UInt32(exactly: value) else {
-                preconditionFailure("Architecture constant exceeds UInt32: \(value). Widen currentArchHash before using values this large.")
+                preconditionFailure("Architecture constant exceeds UInt32: \(value). Widen archHash before using values this large.")
             }
             var v = u32.littleEndian
             withUnsafeBytes(of: &v) { raw in
@@ -127,12 +134,18 @@ struct ModelCheckpointFile {
                 }
             }
         }
-        mix(ChessNetwork.channels)
-        mix(ChessNetwork.numBlocks)
-        mix(ChessNetwork.inputPlanes)
+        // Legacy presets are all uniform towers, so the tower-output width
+        // IS the historical `channels` scalar — hashes are unchanged.
+        mix(arch.towerOutputChannels)
+        mix(arch.numBlocks)
+        mix(arch.inputPlanes)
         mix(ChessNetwork.boardSize)
         mix(ChessNetwork.policySize)
-        mix(ChessNetwork.valueHeadClasses)
+        mix(arch.valueHeadClasses)
+        // Topology version — distinguishes forward-graph changes the
+        // shape-only mixes above can't see (e.g. the v3→v4 pre-activation
+        // rebuild), so an incompatible-topology checkpoint is rejected.
+        mix(arch.architectureVersionLabel)
         return h
     }
 
@@ -151,31 +164,54 @@ struct ModelCheckpointFile {
     /// architecture change (channels, policy width, input planes,
     /// SE width) instead of needing a manual bump.
     ///
-    /// Current largest tensors at the post-refresh architecture:
-    /// - residual conv weights: `channels × channels × 9 = 147,456`
-    /// - stem conv: `inputPlanes × channels × 9 = 34,560`
-    /// - policy 1×1 conv: `channels × policyChannels = 9,728`
-    /// - SE FC: `channels × (channels / r) = 4,096`
-    /// All well below the cap. The 65,536-element slack lets a minor
-    /// architectural tweak land without immediately tripping the
-    /// implausibleTensorSize guard.
+    /// Largest plausible single-tensor element count for `arch` (with its
+    /// own per-conv kernel sizes):
+    /// - residual conv weights: `channels × channels × k²`
+    /// - stem conv: `inputPlanes × channels × stemK²`
+    /// - policy 1×1 conv: `channels × policyChannels`
+    /// - value FC1: `(boardSize² × valueHeadConvChannels) × valueHeadHiddenUnits`
+    /// - SE FC: `channels × (channels / r)`
+    /// The 65,536-element slack lets a minor architectural tweak land
+    /// without immediately tripping the implausibleTensorSize guard.
     ///
     /// Paired with the SHA-256 trailer (which already catches corruption
     /// pre-decode) this is defense-in-depth: if the hash ever matches a
     /// malformed element count, we still reject before allocating.
-    static var maxTensorElementCount: Int {
-        let residualConv = ChessNetwork.channels * ChessNetwork.channels * 9
-        let stemConv = ChessNetwork.inputPlanes * ChessNetwork.channels * 9
-        let policyConv = ChessNetwork.channels * ChessNetwork.policyChannels
-        let seReduced = ChessNetwork.channels / ChessNetwork.seReductionRatio
-        let seFC = ChessNetwork.channels * seReduced
-        let largest = max(residualConv, stemConv, policyConv, seFC)
+    static func maxTensorElementCount(for arch: NetworkArchitecture) -> Int {
+        // Upper-bound with the WIDEST block and the LARGEST kernel anywhere
+        // in the tower — per-group widths/kernels make any single-width
+        // formula an undercount, and this guard only needs a plausible
+        // ceiling, not exactness.
+        let c = arch.maxBlockChannels
+        let maxKernel = arch.blockGroups
+            .map { max($0.conv1KernelSize, $0.conv2KernelSize) }
+            .max() ?? 1
+        let blockArea = maxKernel * maxKernel
+        let stemArea = arch.stemConvKernelSize * arch.stemConvKernelSize
+        let residualConv = c * c * blockArea
+        let stemConv = arch.inputPlanes * c * stemArea
+        let policyConv = c * ChessNetwork.policyChannels
+        // fc_bottleneck policy head: a single FC of [pK·64, policySize] — far
+        // larger than any conv term, so it must bound the ceiling or a valid
+        // fc_bottleneck model is rejected on load as implausibleTensorSize.
+        let policyFC = arch.policyPreConvChannels * ChessNetwork.boardSize * ChessNetwork.boardSize * ChessNetwork.policySize
+        let valueFC1 = (ChessNetwork.boardSize * ChessNetwork.boardSize * arch.valueHeadConvChannels) * arch.valueHeadHiddenUnits
+        // SE fc2 for the scaleAndBias style is [outC/r, 2·outC] = 2·outC²/r,
+        // which at r=1 exceeds c². Use 2·c² so the ceiling covers every SE
+        // style at any reduction ratio the validator permits.
+        let seFC = 2 * c * c
+        let largest = max(residualConv, stemConv, policyConv, policyFC, valueFC1, seFC)
         return largest + 65_536
     }
 
     let modelID: String
     let createdAtUnix: Int64
     let metadata: ModelCheckpointMetadata
+    /// Architecture the weights belong to. Populated from the embedded config
+    /// for safetensors files; defaults to the current arch for legacy
+    /// `.dcmmodel` files (which pass the archHash == current check). Lets the
+    /// load path build a matching graph instead of assuming the current arch.
+    let architecture: NetworkArchitecture
     /// One sub-array per persistent tensor.
     /// - Champion/candidate/probe files: `trainableVariables +
     ///   bnRunningStatsVariables`.
@@ -201,12 +237,14 @@ struct ModelCheckpointFile {
         createdAtUnix: Int64,
         metadata: ModelCheckpointMetadata,
         weights: [[Float]],
+        architecture: NetworkArchitecture = .current,
         formatVersion: UInt32 = ModelCheckpointFile.formatVersion
     ) {
         self.modelID = modelID
         self.createdAtUnix = createdAtUnix
         self.metadata = metadata
         self.weights = weights
+        self.architecture = architecture
         self.formatVersion = formatVersion
     }
 
@@ -216,13 +254,25 @@ struct ModelCheckpointFile {
     /// trailing SHA-256. Caller writes the result atomically to
     /// disk.
     func encode() throws -> Data {
+        // The .dcmmodel reader is positional and embeds no config — it can only
+        // resolve a fixed set of historical preset hashes back to an
+        // architecture (`decode`'s `legacyDcmmodelArchHashes` lookup). Stamping a
+        // hash the reader can't resolve would silently produce a file that
+        // `decode` rejects as `archMismatch`. Refuse to write an unreadable file
+        // rather than discover it on the next load; modern saves use safetensors,
+        // which carries the full embedded architecture and has no such limit.
+        let hash = Self.archHash(for: architecture)
+        guard NetworkArchitecture.legacyDcmmodelArchHashes[hash] != nil else {
+            throw ModelCheckpointError.archNotLegacyEncodable(archHash: hash)
+        }
+
         var out = Data()
         out.reserveCapacity(Self.estimateEncodedSize(weights: weights))
 
         // Fixed header
         out.append(contentsOf: Self.magic)
         out.appendUInt32LE(Self.formatVersion)
-        out.appendUInt32LE(Self.currentArchHash)
+        out.appendUInt32LE(hash)
         out.appendUInt32LE(UInt32(weights.count))
         out.appendInt64LE(createdAtUnix)
 
@@ -305,13 +355,19 @@ struct ModelCheckpointFile {
             throw ModelCheckpointError.unsupportedVersion(version)
         }
 
+        // Legacy .dcmmodel files are anonymous/positional and embed no config,
+        // so resolve the stored archHash to a built-in historical preset (the
+        // only backward-compat shim, per plan §6) and rebuild that architecture.
+        // The current arch's hash is in the table too, so this also covers
+        // freshly-saved .dcmmodel files. An unknown hash can't be rebuilt -> reject.
         let archHash = try reader.readUInt32LE()
-        guard archHash == Self.currentArchHash else {
+        guard let legacyPreset = NetworkArchitecture.legacyDcmmodelArchHashes[archHash] else {
             throw ModelCheckpointError.archMismatch(
-                expected: Self.currentArchHash,
+                expected: Self.archHash(for: .current),
                 got: archHash
             )
         }
+        let resolvedArchitecture = NetworkArchitecture.preset(legacyPreset)
 
         let numTensors = Int(try reader.readUInt32LE())
 
@@ -349,11 +405,12 @@ struct ModelCheckpointFile {
                 )
             }
             let elementCount = Int(try reader.readUInt32LE())
-            guard elementCount >= 0, elementCount <= Self.maxTensorElementCount else {
+            let maxElements = Self.maxTensorElementCount(for: resolvedArchitecture)
+            guard elementCount >= 0, elementCount <= maxElements else {
                 throw ModelCheckpointError.implausibleTensorSize(
                     tensorIndex: expectedIndex,
                     elementCount: elementCount,
-                    maxAllowed: Self.maxTensorElementCount
+                    maxAllowed: maxElements
                 )
             }
             let (byteCount, overflowed) = elementCount.multipliedReportingOverflow(by: MemoryLayout<Float>.size)
@@ -361,7 +418,7 @@ struct ModelCheckpointFile {
                 throw ModelCheckpointError.implausibleTensorSize(
                     tensorIndex: expectedIndex,
                     elementCount: elementCount,
-                    maxAllowed: Self.maxTensorElementCount
+                    maxAllowed: maxElements
                 )
             }
             let raw = try reader.readBytes(byteCount)
@@ -387,6 +444,7 @@ struct ModelCheckpointFile {
             createdAtUnix: createdAtUnix,
             metadata: metadata,
             weights: weights,
+            architecture: resolvedArchitecture,
             formatVersion: version
         )
     }

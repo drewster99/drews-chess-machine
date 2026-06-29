@@ -72,11 +72,32 @@ final class SessionController {
     /// of the session controller, same as `tacticalProbeHistory`.
     let lichessProbeHistory = LichessProbeHistory()
 
+    /// Parallel history for the ~4,435-puzzle WIDE Lichess probe set, run
+    /// alongside `lichessProbeHistory` by the same watcher off ONE weight
+    /// snapshot per tick. Separate instance so the 200-set's chart and
+    /// persistence stay untouched. Lifetime = session controller.
+    let lichessProbeWideHistory = LichessProbeHistory()
+
     /// Periodic driver behind `lichessProbeHistory`. Parallel to
     /// `tacticalProbeWatcher` — lazily created on first
     /// `startLichessProbeWatcher()`, runs for the life of the session,
     /// no-ops cleanly when the chosen probe network isn't ready.
     private var lichessProbeWatcher: LichessProbeWatcher?
+
+    /// One-shot task that, ~2 minutes after training first starts
+    /// progressing, auto-exports a "start of training" snapshot of both
+    /// Lichess probe sets (see `scheduleStartOfTrainingProbeExport`).
+    /// Fires once per launch.
+    private var startOfTrainingExportTask: Task<Void, Never>?
+
+    /// Paths of THIS launch's start-of-training Lichess exports, set when
+    /// `scheduleStartOfTrainingProbeExport` fires. nil until then. The
+    /// Lichess Probe Detail window observes these (the session controller
+    /// is `@Observable`) to auto-load the "compare vs session start"
+    /// snapshot — using the in-memory path means there's no need to scan
+    /// the export folder or guess whether a file belongs to this session.
+    private(set) var currentSessionStartSet200ExportURL: URL?
+    private(set) var currentSessionStartWideExportURL: URL?
 
     // MARK: - Inference networks (life-of-app caches)
 
@@ -236,6 +257,18 @@ final class SessionController {
 
     /// `true` while a Play-and-Train (self-play) session is active.
     var realTraining: Bool = false
+
+    /// `true` once a training divergence (non-finite loss / GPU command
+    /// failure / gradient blow-up) has suspended the trainer. The session is
+    /// deliberately NOT torn down on divergence — the alarm banner stays up so
+    /// the user can see why training stopped, and the rest of the run
+    /// (heartbeat, self-play, stats) keeps living. Instead, this flag is the
+    /// single gate that prevents the suspended state from doing further harm:
+    /// it blocks arenas from running (which would otherwise snapshot the
+    /// poisoned trainer weights into a candidate) and blocks the 4-hour
+    /// periodic autosave from persisting the diverged session. Reset on a fresh
+    /// `startRealTraining` and on `stopRealTraining`.
+    var trainingSuspendedByDivergence: Bool = false
 
     /// Handle to the Play-and-Train driver `Task`. Cancelled on Stop.
     var realTrainingTask: Task<Void, Never>?
@@ -492,7 +525,13 @@ final class SessionController {
     struct TrainerWarmupSnapshot: Equatable {
         var completedSteps: Int
         var warmupSteps: Int
+        /// Actual LR the optimizer is being fed this step — cycle value (if
+        /// LR cycling is active) composed with √batch scaling and the warmup
+        /// ramp. Shown live in the status bar regardless of warmup state.
         var effectiveLR: Float
+        /// Actual Polyak momentum being fed this step — cycle value (if
+        /// momentum cycling is active) or the static coefficient.
+        var effectiveMomentum: Float
         var inWarmup: Bool { warmupSteps > 0 && completedSteps < warmupSteps }
     }
     /// Mirror of the trainer's warmup state, refreshed by the heartbeat. `nil` outside a session.
@@ -623,6 +662,19 @@ final class SessionController {
     /// stats/arena/probe paths, `nil` in normal interactive runs.
     var cliRecorder: CliTrainingRecorder?
 
+    /// The id of the corpus the active run is recording self-play games into,
+    /// or nil when recording is off. Set in `startRealTraining` and read by
+    /// `buildCurrentSessionState` so the session checkpoint references the
+    /// corpus by id (the corpus itself lives outside the session folder under
+    /// `Corpora/`).
+    var activeRecordingCorpusID: String?
+
+    /// Label of the analysis currently running (e.g. "Value Head"), or nil when
+    /// none is. Set by `beginAnalysis`/`endAnalysis`; the single-flight guard
+    /// that stops concurrent Debug-menu analyses reads it, and it drives the
+    /// "Analyzing…" status. `@Observable` (via the class) so UI can reflect it.
+    var runningAnalysisLabel: String?
+
     /// Whether the Play-and-Train view should show the candidate-test forward-
     /// pass board instead of the live game. True when training is active AND
     /// (the persisted mode is `.candidateTest` OR there are >1 self-play
@@ -656,15 +708,23 @@ final class SessionController {
     /// ticks no-op while `network == nil`).
     func startTacticalProbeWatcher() {
         guard tacticalProbeWatcher == nil else { return }
-        let w = TacticalProbeWatcher(sessionController: self, history: tacticalProbeHistory)
+        // Match the Lichess probe's cadence (vs. this watcher's 200-step
+        // default) so both forward-metric traces are sampled at the same
+        // density. Cheap relative to Lichess: 9 probes, no weight snapshot.
+        let w = TacticalProbeWatcher(
+            sessionController: self,
+            history: tacticalProbeHistory,
+            triggerEverySteps: 100
+        )
         tacticalProbeWatcher = w
         w.start()
     }
 
     /// On-demand fire of a single tactical-probe cycle. Wired to the
     /// "Probe now" button in the Tactical Probe Monitor window so the
-    /// user can refresh the displayed stats without waiting up to
-    /// `TacticalProbeWatcher.intervalSec` for the next scheduled tick.
+    /// user can refresh the displayed stats without waiting for the
+    /// watcher's next step-trigger boundary (see
+    /// `TacticalProbeWatcher.triggerEverySteps`, default 100).
     /// No-op if the watcher hasn't been created yet (e.g. the user
     /// clicks Probe Now during the brief window between app launch
     /// and `startTacticalProbeWatcher()`).
@@ -679,16 +739,86 @@ final class SessionController {
         guard lichessProbeWatcher == nil else { return }
         let w = LichessProbeWatcher(
             sessionController: self,
-            history: lichessProbeHistory
+            history: lichessProbeHistory,
+            // The WIDE longitudinal set rides the SAME watcher: one weight
+            // snapshot per tick, both batteries (200 + 4,435) in ONE
+            // batched forward, each recorded to its own history.
+            wideProbes: LichessProbeData.wideSet,
+            wideHistory: lichessProbeWideHistory,
+            // Denser-than-default cadence (vs. the 400-step default) for a
+            // closer forward-metric trace. Batched eval keeps the combined
+            // ~4,635-position tick cheap enough to run this densely.
+            triggerEverySteps: 25
         )
         lichessProbeWatcher = w
         w.start()
+        scheduleStartOfTrainingProbeExport()
+    }
+
+    /// Schedule the one-shot "start of training" Lichess probe export.
+    /// Idempotent per launch — a second call while the task is pending or
+    /// after it fired is a no-op. Waits until the trainer's step count
+    /// actually advances (training is really running, not just the view
+    /// mounting), then ~2 minutes later auto-exports a snapshot of BOTH
+    /// probe sets to the canonical export folder. Reuses the "Export
+    /// latest…" path but suppresses its window/beep (`announce: false`)
+    /// and tags the filenames so the start-of-training snapshots are easy
+    /// to pick out from manual exports.
+    private func scheduleStartOfTrainingProbeExport() {
+        guard startOfTrainingExportTask == nil else { return }
+        startOfTrainingExportTask = Task { [weak self] in
+            guard let self else { return }
+            // Wait for training to actually progress past wherever the
+            // step counter is now (handles "view mounted before training
+            // started" and session-resume, where the step is nonzero).
+            let baseline = self.trainer?.completedTrainSteps ?? 0
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                } catch {
+                    return
+                }
+                if Task.isCancelled { return }
+                if let step = self.trainer?.completedTrainSteps, step > baseline {
+                    break
+                }
+            }
+            if Task.isCancelled { return }
+            // Give the watcher ~2 minutes to record a start-of-training
+            // tick into both histories, then export once.
+            do {
+                try await Task.sleep(nanoseconds: 120_000_000_000)
+            } catch {
+                return
+            }
+            if Task.isCancelled { return }
+            let set200URL = LichessProbeExporter.exportLatest(
+                history: self.lichessProbeHistory,
+                tag: "training-start-set200",
+                announce: false
+            )
+            let wideURL = LichessProbeExporter.exportLatest(
+                history: self.lichessProbeWideHistory,
+                tag: "training-start-wide",
+                announce: false
+            )
+            // Record the written paths so the Detail window can auto-load
+            // them as the "session start" comparison (observed via @Observable).
+            self.currentSessionStartSet200ExportURL = set200URL
+            self.currentSessionStartWideExportURL = wideURL
+            SessionLogger.shared.log(
+                "[TACTICAL-LICHESS] start-of-training auto-export fired"
+                + " (set200=\(set200URL?.lastPathComponent ?? "skip")"
+                + " wide=\(wideURL?.lastPathComponent ?? "skip"))"
+            )
+        }
     }
 
     /// On-demand fire of a single Lichess-probe cycle. Wired to the
     /// "Probe now" button in the Lichess Probe Monitor window so the
-    /// user can refresh the displayed stats without waiting up to
-    /// `LichessProbeWatcher.intervalSec` for the next scheduled tick.
+    /// user can refresh the displayed stats without waiting for the
+    /// watcher's next step-trigger boundary (see
+    /// `LichessProbeWatcher.triggerEverySteps`, default 200).
     func triggerLichessProbeNow() {
         lichessProbeWatcher?.triggerOnce()
     }
@@ -806,6 +936,7 @@ final class SessionController {
             trainer.entropyRegularizationCoeff = Float(params.entropyBonus)
             trainer.drawPenalty = Float(params.drawPenalty)
             trainer.weightDecayC = Float(params.weightDecay)
+            trainer.dropoutRate = Float(params.dropoutRate)
             trainer.gradClipMaxNorm = Float(params.gradClipMaxNorm)
             trainer.policyLossWeight = Float(params.policyLossWeight)
             trainer.valueLossWeight = Float(params.valueLossWeight)
@@ -817,9 +948,22 @@ final class SessionController {
             trainer.sqrtBatchScalingForLR = params.sqrtBatchScalingLR
             trainer.lrWarmupSteps = params.lrWarmupSteps
             trainer.batchStatsInterval = params.batchStatsInterval
+            trainer.lrMomentumCycle = params.lrMomentumCycle
             return trainer
         }
         do {
+            // The trainer forks champion weights, so its net must match the
+            // champion's architecture.
+            let trainerArch = network?.network.arch ?? .current
+            // Experimental config-D opt-in (`--bf16-cast-in-forward`): for bf16
+            // models, store weights fp32 and cast to bf16 in the forward instead
+            // of the bf16-working-variable + fp32-master path — the macOS-27-beta
+            // bf16-divergence workaround. No-op for fp32 archs.
+            let bf16CastInForward = trainerArch.computeDataType == .bFloat16
+                && CommandLine.arguments.contains("--bf16-cast-in-forward")
+            if bf16CastInForward {
+                SessionLogger.shared.log("[APP] --bf16-cast-in-forward: trainer using config D (fp32 weight storage, bf16 cast-in-forward)")
+            }
             let t = try ChessTrainer(
                 learningRate: Float(params.learningRate),
                 entropyRegularizationCoeff: Float(params.entropyBonus),
@@ -834,9 +978,16 @@ final class SessionController {
                 momentumCoeff: Float(params.momentumCoeff),
                 useSignedAdvantageComplementCE: params.signedAdvantageComplementCE,
                 sqrtBatchScalingForLR: params.sqrtBatchScalingLR,
-                lrWarmupSteps: params.lrWarmupSteps
+                lrWarmupSteps: params.lrWarmupSteps,
+                arch: trainerArch,
+                bf16CastInForward: bf16CastInForward
             )
+            t.lrMomentumCycle = params.lrMomentumCycle
             trainer = t
+            SessionLogger.shared.logArchitecture(
+                event: "built trainer \(t.identifier?.description ?? "?")",
+                arch: t.arch
+            )
             return t
         } catch {
             trainingError = "Trainer init failed: \(error.localizedDescription)"
@@ -874,8 +1025,13 @@ final class SessionController {
     /// disable conditions for keyboard-shortcut / URL-scheme invocations under
     /// a race. On success, mints a fresh `ModelID`, wires the new network +
     /// runner, fills `networkStatus`, and clears the last-saved-at marker.
+    /// Architecture the next Build uses. Defaults to the current champion
+    /// architecture; set from the architecture config (architecture.json /
+    /// the build UI) to construct a different topology.
+    var buildArchitecture: NetworkArchitecture = .current
+
     func buildNetwork() {
-        SessionLogger.shared.log("[BUTTON] Build Network")
+        SessionLogger.shared.log("[BUTTON] Build Network (\(buildArchitecture.architectureSummary))")
         if isBusyProvider() {
             onRefuseMenuAction(busyReasonProvider())
             return
@@ -891,23 +1047,31 @@ final class SessionController {
         onDropTrainer()
         onClearTrainingDisplay()
 
+        // `buildArchitecture` is set by the Build-New-Model screen (or, headless,
+        // a CLI arch flag); default is `.current`. The old well-known
+        // `architecture.json` auto-load was removed per plan §10.
+        let arch = buildArchitecture
         Task {
             let result = await Task.detached(priority: .userInitiated) {
-                Self.performBuild()
+                Self.performBuild(arch: arch)
             }.value
 
             switch result {
             case .success(let net):
                 net.identifier = ModelIDMinter.mint()
                 network = net
+                net.network.commandQueue.label = "champion (self-play)"
                 runner = ChessRunner(network: net)
                 let idStr = net.identifier?.description ?? "?"
                 networkStatus = """
                     Network built in \(String(format: "%.1f", net.buildTimeMs)) ms
                     ID: \(idStr)
-                    Architecture: \(ChessNetwork.inputPlanes)x8x8 -> stem(128)
-                      -> 8 res+SE blocks -> policy(\(ChessNetwork.policySize)) + value(3 W/D/L)
+                    Architecture: \(net.network.arch.architectureSummary)
                     """
+                SessionLogger.shared.logArchitecture(
+                    event: "built champion \(idStr)",
+                    arch: net.network.arch
+                )
                 checkpoint?.lastSavedAt = nil
                 checkpoint?.lastResumedAt = nil
             case .failure(let error):
@@ -919,26 +1083,32 @@ final class SessionController {
         }
     }
 
-    /// Ensure `network` exists. If it's already built, returns it. Otherwise
-    /// runs the same detached `performBuild()` path the menu's Build button
-    /// uses and wires the result in. Used by the load paths so the user doesn't
-    /// have to press Build first when the weights are about to be overwritten.
-    func ensureChampionBuilt() async -> Result<ChessMPSNetwork, Error> {
-        if let champion = network {
+    /// Ensure a champion exists at the requested architecture (defaults to
+    /// `buildArchitecture`). If one is already built at that arch, returns it;
+    /// otherwise builds (or rebuilds) one. Load paths pass the loaded file's
+    /// architecture so a non-default / historical model gets a matching graph
+    /// rather than the current build's default. Used so the user doesn't have to
+    /// press Build first before a load.
+    func ensureChampionBuilt(arch requestedArch: NetworkArchitecture? = nil) async -> Result<ChessMPSNetwork, Error> {
+        let targetArch = requestedArch ?? buildArchitecture
+        if let champion = network, champion.network.arch == targetArch {
             return .success(champion)
         }
+        // No champion, or the existing one is for a different architecture
+        // (resuming / loading a model of another arch) — (re)build to match.
         isBuilding = true
         networkStatus = ""
         onDropTrainer()
         onClearTrainingDisplay()
-        SessionLogger.shared.log("[BUILD] Auto-build before load")
+        SessionLogger.shared.log("[BUILD] Auto-build before load (\(targetArch.architectureSummary))")
         let result = await Task.detached(priority: .userInitiated) {
-            Self.performBuild()
+            Self.performBuild(arch: targetArch)
         }.value
         switch result {
         case .success(let net):
             net.identifier = ModelIDMinter.mint()
             network = net
+            net.network.commandQueue.label = "champion (self-play)"
             runner = ChessRunner(network: net)
             isBuilding = false
             return .success(net)
@@ -954,7 +1124,7 @@ final class SessionController {
     /// The actual network construction. Runs on a detached `.userInitiated`
     /// task at the call sites (MPSGraph build is long synchronous work), so
     /// this is `nonisolated`.
-    nonisolated static func performBuild() -> Result<ChessMPSNetwork, Error> {
-        Result { try ChessMPSNetwork(.randomWeights) }
+    nonisolated static func performBuild(arch: NetworkArchitecture = .current) -> Result<ChessMPSNetwork, Error> {
+        Result { try ChessMPSNetwork(.randomWeights, arch: arch) }
     }
 }

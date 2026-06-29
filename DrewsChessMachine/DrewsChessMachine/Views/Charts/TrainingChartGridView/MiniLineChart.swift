@@ -36,6 +36,13 @@ struct MiniLineChart: View {
     /// `nil` (or omitting the accessor) renders the header value
     /// alone.
     var annotationAccessor: ((TrainingBucket) -> String?)? = nil
+    /// Optional override for formatting the header's current value.
+    /// When nil the shared `FastChartFormatters.compact` is used, which
+    /// switches to scientific notation for small magnitudes. Tiles whose
+    /// values sit close to zero (e.g. vMean) pass a fixed-decimal
+    /// formatter here so the header reads `0.0092` rather than `9.2e-03`,
+    /// matching the plain-decimal style of the other tiles.
+    var valueFormat: ((Double) -> String)? = nil
 
     var body: some View {
         let yRange = observedYRange()
@@ -120,8 +127,11 @@ struct MiniLineChart: View {
         guard let b = bucket, let v = rangeAccessor(b)?.max else {
             return AttributedString(hoveredX != nil ? "— no data" : "--")
         }
-        let valueStr = wholeNumber ? String(Int(v))
-            : FastChartFormatters.compact(v)
+        // `Int(v)` traps on NaN/±Inf, so only take the whole-number path when the
+        // value is finite (an empty-window bucket aggregation can surface a
+        // non-finite max); otherwise fall back to the formatter, which handles it.
+        let valueStr = (wholeNumber && v.isFinite) ? String(Int(v))
+            : (valueFormat?(v) ?? FastChartFormatters.compact(v))
         let annotation = annotationAccessor?(b)
         if let suffix = annotation, !suffix.isEmpty {
             return AttributedString("\(valueStr)\(unitSuffix) \(suffix)")

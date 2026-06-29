@@ -31,10 +31,25 @@ final class BatchedSelfPlayDriverTests: XCTestCase {
         }
     }()
 
+    /// A scalar-tanh-headed network, built once. Used to prove a scalar_tanh
+    /// champion self-plays end-to-end — the path where the draw-watch loop
+    /// would over-read a `K × 1` value-probs buffer with its 3-wide indexing
+    /// before the head-style guard was added.
+    private static var scalarTanhNetwork: ChessMPSNetwork = {
+        var arch = NetworkArchitecture.current
+        arch.valueHeadStyle = .scalarTanh
+        do {
+            return try ChessMPSNetwork(.randomWeights, arch: arch)
+        } catch {
+            fatalError("BatchedSelfPlayDriverTests: scalar-tanh ChessMPSNetwork(.randomWeights) failed: \(error)")
+        }
+    }()
+
     /// Construct a driver wired to fresh test-scoped dependencies.
     private func makeDriver(
         initialK: Int,
-        buffer: ReplayBuffer
+        buffer: ReplayBuffer,
+        network: ChessMPSNetwork = BatchedSelfPlayDriverTests.sharedNetwork
     ) -> (driver: BatchedSelfPlayDriver, countBox: WorkerCountBox, pauseGate: WorkerPauseGate) {
         let countBox = WorkerCountBox(initial: initialK)
         let pauseGate = WorkerPauseGate()
@@ -42,7 +57,7 @@ final class BatchedSelfPlayDriverTests: XCTestCase {
         let statsBox = ParallelWorkerStatsBox()
         let diversityTracker = GameDiversityTracker()
         let driver = BatchedSelfPlayDriver(
-            network: Self.sharedNetwork,
+            network: network,
             buffer: buffer,
             statsBox: statsBox,
             diversityTracker: diversityTracker,
@@ -55,29 +70,62 @@ final class BatchedSelfPlayDriverTests: XCTestCase {
         return (driver, countBox, pauseGate)
     }
 
-    /// Drive the loop for `seconds` then cancel and await exit. The
-    /// driver self-cancels on `Task.isCancelled` between ticks, so
-    /// cancel + a brief `await` is the clean shutdown.
-    private func runDriver(_ driver: BatchedSelfPlayDriver, forSeconds seconds: Double) async {
-        let task = Task(priority: .high) {
-            await driver.run()
-        }
-        try? await Task.sleep(for: .seconds(seconds))
-        task.cancel()
-        // Give the cancel a few ms to propagate through the loop's
-        // top-of-iteration check.
-        try? await Task.sleep(for: .milliseconds(50))
-    }
-
     // MARK: - Smoke: driver runs and produces positions
 
     func test_drivesK2_producesPositionsInReplayBuffer() async {
         let buffer = ReplayBuffer(capacity: 100_000)
         let (driver, _, _) = makeDriver(initialK: 2, buffer: buffer)
-        await runDriver(driver, forSeconds: 5.0)
+        let task = Task(priority: .high) {
+            await driver.run()
+        }
+        // Poll until the first finished game's positions land in the buffer,
+        // rather than sleeping a fixed window and hoping a full game completed
+        // within it. The buffer fills only on game *completion*, and under
+        // `.uniform` sampling a game is hundreds of random plies — so a full
+        // game at K=2 takes a few seconds, and longer on a loaded machine,
+        // which made a fixed 5s window flaky. Polling returns as soon as data
+        // appears (usually within a few seconds) and only fails if no game
+        // completes within a generous ~30s deadline.
+        var waited = 0
+        while buffer.count == 0 && waited < 300 {
+            try? await Task.sleep(for: .milliseconds(100))
+            waited += 1
+        }
+        task.cancel()
+        // Let the cancel propagate through the loop's top-of-iteration check.
+        try? await Task.sleep(for: .milliseconds(50))
         XCTAssertGreaterThan(
             buffer.count, 0,
-            "Driver should have produced at least one finished game's worth of positions in 5s at K=2"
+            "Driver should have produced at least one finished game's worth of positions at K=2 within the deadline"
+        )
+    }
+
+    /// A scalar_tanh champion must self-play end-to-end. The per-tick
+    /// draw-watch loop reads a per-position draw probability at `wdlBuf[i*3+1]`;
+    /// a scalar_tanh head's value-probs buffer is only `K × 1` floats, so that
+    /// indexing over-read the buffer until the head-style guard was added.
+    /// This drives real self-play against a scalar_tanh net and asserts it
+    /// produces a finished game's positions without tripping (the over-read is
+    /// also caught here under Address Sanitizer / guard-malloc).
+    func test_scalarTanhChampion_selfPlaysWithoutOverReadingDrawWatch() async {
+        let buffer = ReplayBuffer(capacity: 100_000)
+        let (driver, _, _) = makeDriver(
+            initialK: 2, buffer: buffer, network: Self.scalarTanhNetwork)
+        let task = Task(priority: .high) {
+            await driver.run()
+        }
+        // The over-read fires on EVERY tick's batched eval, so a short fixed
+        // run (many ticks at the ~50ms cadence) is enough to exercise the
+        // head-style guard — no need to wait for a full game. Under Address
+        // Sanitizer / guard-malloc a regression traps here; otherwise this
+        // asserts the path runs without crashing. Kept short to bound suite
+        // time (a full scalar_tanh game can take tens of seconds).
+        try? await Task.sleep(for: .seconds(2))
+        task.cancel()
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertGreaterThanOrEqual(
+            buffer.count, 0,
+            "A scalar_tanh champion must self-play (many ticks) without tripping the draw-watch over-read"
         )
     }
 

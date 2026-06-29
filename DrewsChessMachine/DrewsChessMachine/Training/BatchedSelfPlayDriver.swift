@@ -105,10 +105,32 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
     /// `Training/DrawWatchTracker.swift` + `DRAW_WATCH_PLAN.md`.
     let drawWatchTracker: DrawWatchTracker?
 
+    /// Optional self-play game recorder. When set (by `SessionController` at
+    /// run start, gated on `recordSelfPlayGames`), every kept post-filter game
+    /// is tee'd into the corpus. nil ⇒ recording off (a cheap nil check).
+    let corpusRecorder: CorpusRecorder?
+
     // MARK: - Private state (driver-task-owned, no lock needed)
 
     private var games: [ActiveGame] = []
     private var nextWorkerId: UInt16 = 0
+
+    /// Live-tunable self-play params, refreshed off the hot path by
+    /// `run()`'s refresh task and read lock-free by `runOneTick` /
+    /// `handleGameEnds` / the grow path. The initial value here is a
+    /// never-triggers placeholder (draw-watch off, no ply cap); `run()`
+    /// overwrites it with `SelfPlayLiveParams.current()` before the first
+    /// tick, so the placeholder is never used for production. See
+    /// `SelfPlayLiveParams`.
+    private let liveParamsBox = SyncBox<SelfPlayLiveParams>(
+        SelfPlayLiveParams(
+            maxPlies: 1000,
+            drawWatchThreshold: 1.0,
+            drawWatchTerminate: false,
+            drawWatchStreakLen: .max,
+            drawKeepFraction: 1.0
+        )
+    )
 
     /// Pre-allocated per-tick board-encoding scratch. Sized to
     /// `tickScratchCapK × BoardEncoder.tensorLength` floats. Grows on
@@ -150,7 +172,8 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         gameWatcher: GameWatcher?,
         scheduleBox: SamplingScheduleBox,
         replayRatioController: ReplayRatioController? = nil,
-        drawWatchTracker: DrawWatchTracker? = nil
+        drawWatchTracker: DrawWatchTracker? = nil,
+        corpusRecorder: CorpusRecorder? = nil
     ) {
         self.network = network
         self.buffer = buffer
@@ -162,10 +185,11 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         self.scheduleBox = scheduleBox
         self.replayRatioController = replayRatioController
         self.drawWatchTracker = drawWatchTracker
+        self.corpusRecorder = corpusRecorder
     }
 
     deinit {
-        let boardFloats = BoardEncoder.tensorLength
+        let boardFloats = BoardEncoder.tensorLength(for: network.inputEncoding)
         if let p = tickScratch {
             p.deinitialize(count: tickScratchCapK * boardFloats); p.deallocate()
         }
@@ -189,6 +213,24 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         let P = max(1, ProcessInfo.processInfo.activeProcessorCount)
         SessionLogger.shared.log("[SP-TICK] driver starting, P=\(P)")
 
+        // Seed the live-params box once before the loop so the first tick
+        // reads real values, never the placeholder. Then spawn an
+        // off-hot-path refresh task that keeps the box current with a
+        // single MainActor hop per interval. The hot path (`runOneTick` /
+        // `handleGameEnds` / the grow path) reads the box lock-free and
+        // never hops to the MainActor — so a UI hang can delay a live edit
+        // by at most one interval but can never stall game production.
+        liveParamsBox.value = await MainActor.run { SelfPlayLiveParams.current() }
+        let paramsBox = self.liveParamsBox
+        let refreshTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(250))
+                if Task.isCancelled { break }
+                paramsBox.value = await MainActor.run { SelfPlayLiveParams.current() }
+            }
+        }
+        defer { refreshTask.cancel() }
+
         while !Task.isCancelled {
             // 1. Arena pause check.
             if pauseGate.isRequestedToPause {
@@ -211,7 +253,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             if games.count < targetK {
                 let priorCount = games.count
                 ensureScratchCapacity(targetK)
-                let cap = await MainActor.run { TrainingParameters.shared.selfPlayMaxPliesPerGame }
+                let cap = liveParamsBox.value.maxPlies
                 let liveSchedule = scheduleBox.selfPlay
                 while games.count < targetK {
                     let g = ActiveGame(
@@ -271,7 +313,11 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
 
     private func runOneTick(P: Int) async {
         let K = games.count
-        let boardFloats = BoardEncoder.tensorLength
+        // Encoding the champion network expects (per architecture). Hoisted
+        // into a Sendable local so the parallel encode closure below captures
+        // it without reaching for `self`.
+        let encoding = network.inputEncoding
+        let boardFloats = BoardEncoder.tensorLength(for: encoding)
         guard let scratch = tickScratch,
               let policyOut = policyResultScratch,
               let valueOut = valueResultScratch,
@@ -307,7 +353,9 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                         let dst = scratchCarrier.pointer + i * boardFloats
                         BoardEncoder.encode(
                             g.engine.state,
-                            into: UnsafeMutableBufferPointer(start: dst, count: boardFloats)
+                            history: g.engine.recentStates,
+                            into: UnsafeMutableBufferPointer(start: dst, count: boardFloats),
+                            encoding: encoding
                         )
                         i += P
                     }
@@ -345,13 +393,17 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         //     the streak first completes; sample-and-apply skips
         //     that slot's move and `handleGameEnds` drops the game
         //     on the same drop path the ply cap uses.
-        let (drawWatchThreshold, drawWatchTerminate, drawWatchStreakLen): (Float, Bool, Int) = await MainActor.run {
-            (
-                Float(TrainingParameters.shared.drawWatchPDrawThreshold),
-                TrainingParameters.shared.drawWatchTerminateGames,
-                TrainingParameters.shared.drawWatchStreakLength
-            )
-        }
+        let lp = liveParamsBox.value
+        let drawWatchThreshold = lp.drawWatchThreshold
+        let drawWatchTerminate = lp.drawWatchTerminate
+        let drawWatchStreakLen = lp.drawWatchStreakLen
+        // Draw-watch reads a per-position DRAW probability, which only exists
+        // for the W/D/L softmax head. For a scalar-tanh champion the value
+        // probs buffer is `count × 1` (just the tanh scalar), so the 3-wide
+        // `wdlBase[i*3 + 1]` indexing below would read off the end of the
+        // buffer. Hoisted as a Sendable Bool so the consume closure can skip
+        // the whole draw-watch block without reaching for `self`.
+        let drawWatchActive = network.arch.valueHeadStyle == .wdlSoftmax
         let floatCount = K * boardFloats
         let policyTarget = MutablePointerCarrier(pointer: policyOut)
         let valueTarget = MutablePointerCarrier(pointer: valueOut)
@@ -373,8 +425,12 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 // pDraw is wdlBuf[i*3 + 1]. Each slot's `ActiveGame` is
                 // touched by exactly this thread for the duration of
                 // consume, so no aliasing across slots; per-slot
-                // mutation is single-task-owned.
-                guard let wdlBase = wdlBuf.baseAddress else { return }
+                // mutation is single-task-owned. Skipped entirely for a
+                // non-W/D/L head (no draw probability; `wdlBuf` is only
+                // `K × 1` floats there) — this block is the last thing in
+                // the closure, so the early return just ends consume after
+                // the policy/value copies above.
+                guard drawWatchActive, let wdlBase = wdlBuf.baseAddress else { return }
                 let triggerLen = drawWatchStreakLen
                 for i in 0..<K {
                     let game = gamesSnapshot[i]
@@ -594,10 +650,9 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         // Read main-actor params once per pass — same cadence as the
         // legacy driver (which reads them per finished game). At the
         // few-finished-games-per-tick rate this is unmeasurably cheap.
-        let drawKeepFraction: Double
-            = await MainActor.run { TrainingParameters.shared.selfPlayDrawKeepFraction }
-        let nextMaxPlies: Int
-            = await MainActor.run { TrainingParameters.shared.selfPlayMaxPliesPerGame }
+        let lp = liveParamsBox.value
+        let drawKeepFraction: Double = lp.drawKeepFraction
+        let nextMaxPlies: Int = lp.maxPlies
 
         var finished = 0
         for i in 0..<K {
@@ -651,6 +706,9 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                         statsBox.recordEmittedGame(result: result, flushed: flushed)
                         replayRatioController?.recordSelfPlayEmittedGame(positions: flushed.positions)
                     }
+                    // Tee the kept (post-draw-filter) game into the recording
+                    // corpus. Async + best-effort; never stalls the tick.
+                    corpusRecorder?.record(moves: g.engine.moveHistory, result: result)
                 }
                 // If !kept: skip flush. The next resetForNewGame zeroes
                 // the per-side fill counters and the recorded scratch
@@ -742,7 +800,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
     private func ensureScratchCapacity(_ K: Int) {
         if K <= tickScratchCapK { return }
         let newCap = max(K, tickScratchCapK * 2)
-        let boardFloats = BoardEncoder.tensorLength
+        let boardFloats = BoardEncoder.tensorLength(for: network.inputEncoding)
         let policySize = ChessNetwork.policySize
         let scratchCap = MoveSampler.scratchCapacity
 
@@ -801,4 +859,43 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
 /// closure's entire lifetime.
 private struct MutablePointerCarrier: @unchecked Sendable {
     let pointer: UnsafeMutablePointer<Float>
+}
+
+/// Snapshot of the live-tunable self-play parameters the driver reads on
+/// its hot path. Mirrored from `TrainingParameters.shared` (which is
+/// `@MainActor`) by an off-hot-path refresh task in `BatchedSelfPlayDriver.run()`,
+/// so `runOneTick` / `handleGameEnds` read these lock-free from a `SyncBox`
+/// instead of doing `await MainActor.run { TrainingParameters.shared.X }`
+/// every tick.
+///
+/// Why this matters: those per-tick MainActor hops made self-play
+/// production hostage to MainActor availability — whenever the UI's
+/// 5-second heartbeat monopolized the MainActor (re-evaluating the giant
+/// `UpperContentView.body` and rebuilding its `@Observable` tracking set,
+/// a ~1s hang), every hop blocked and self-play stalled for the duration.
+/// Reading from the box decouples production entirely: a UI hang now only
+/// delays propagation of a live parameter edit by one refresh interval; it
+/// never blocks game production.
+struct SelfPlayLiveParams: Sendable {
+    let maxPlies: Int
+    let drawWatchThreshold: Float
+    let drawWatchTerminate: Bool
+    let drawWatchStreakLen: Int
+    let drawKeepFraction: Double
+
+    /// Read the current values off the singleton. `@MainActor` because
+    /// `TrainingParameters.shared` is main-actor isolated; called only
+    /// from inside `MainActor.run` on the driver's refresh task, never on
+    /// the per-tick path.
+    @MainActor
+    static func current() -> SelfPlayLiveParams {
+        let p = TrainingParameters.shared
+        return SelfPlayLiveParams(
+            maxPlies: p.selfPlayMaxPliesPerGame,
+            drawWatchThreshold: Float(p.drawWatchPDrawThreshold),
+            drawWatchTerminate: p.drawWatchTerminateGames,
+            drawWatchStreakLen: p.drawWatchStreakLength,
+            drawKeepFraction: p.selfPlayDrawKeepFraction
+        )
+    }
 }

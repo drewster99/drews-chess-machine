@@ -21,6 +21,7 @@ final class ChartDecimatorTests: XCTestCase {
         TrainingChartSample(
             id: id,
             elapsedSec: elapsedSec,
+            trainingStep: nil,
             rollingPolicyLoss: policyLoss,
             rollingValueLoss: nil,
             rollingPolicyEntropy: policyEntropy,
@@ -39,6 +40,10 @@ final class ChartDecimatorTests: XCTestCase {
             rollingValueProbWin: nil,
             rollingValueProbDraw: nil,
             rollingValueProbLoss: nil,
+            rollingAvgGameLength: nil,
+            rollingDrawFraction: nil,
+            rollingSampledBatchGameLength: nil,
+            rollingSampledBatchDrawFraction: nil,
             cpuPercent: cpuPercent,
             gpuBusyPercent: nil,
             gpuMemoryMB: nil,

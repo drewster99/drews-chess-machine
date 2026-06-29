@@ -37,8 +37,16 @@ final class EarlyStopCoordinator {
     /// then just exit cleanly without trying to flush.
     var earlyStopHandler: ((CliTrainingRecorder.TerminationReason) -> Void)?
 
+    /// Set by `SessionController` while a training session is active.
+    /// SIGUSR2 invokes it to write a full `.dcmsession` checkpoint and —
+    /// on success — shut the process down cleanly, so the session can be
+    /// resumed on next launch. Unlike `earlyStopHandler` (CLI-only), this
+    /// is registered for GUI sessions too. Nil ⇒ no active session to save.
+    var saveSessionHandler: (() -> Void)?
+
     private var sigusr1Source: DispatchSourceSignal?
     private var sighupSource: DispatchSourceSignal?
+    private var sigusr2Source: DispatchSourceSignal?
     private var stopRequested: Bool = false
 
     private init() {}
@@ -77,6 +85,19 @@ final class EarlyStopCoordinator {
         }
         hup.activate()
         sighupSource = hup
+
+        // SIGUSR2 — "checkpoint now and (on success) shut down": write a full
+        // .dcmsession so the next launch auto-resumes, then exit. Distinct from
+        // SIGUSR1/SIGHUP (which only flush CLI metrics and die without saving).
+        signal(SIGUSR2, SIG_IGN)
+        let usr2 = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+        usr2.setEventHandler {
+            Task.detached { @MainActor in
+                EarlyStopCoordinator.shared.requestSessionSave()
+            }
+        }
+        usr2.activate()
+        sigusr2Source = usr2
     }
 
     /// Idempotent early-stop entry point. Multiple signals + AppDelegate
@@ -111,5 +132,19 @@ final class EarlyStopCoordinator {
     /// `.terminateLater` (let the flush finish) and `.terminateNow`.
     var hasActiveCLIFlush: Bool {
         earlyStopHandler != nil
+    }
+
+    /// SIGUSR2 entry point — request a "save session, then (on success) shut
+    /// down." Re-entrancy is handled by the handler's own in-flight guard, so
+    /// repeated signals during a save are no-ops and a signal after a *failed*
+    /// save can retry. With no active session (`saveSessionHandler` nil) there's
+    /// nothing to checkpoint, so it logs and stays alive rather than killing the
+    /// process on a stray signal.
+    func requestSessionSave() {
+        guard let saveSessionHandler else {
+            SessionLogger.shared.log("[SIGUSR2] no active session to save; staying running")
+            return
+        }
+        saveSessionHandler()
     }
 }

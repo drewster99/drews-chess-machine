@@ -14,6 +14,18 @@ public enum FastChartInterpolation: Sendable, Equatable {
     case stepStart
 }
 
+/// Which Y axis a series is measured against. `.primary` is the
+/// left/leading axis (the chart's `yDomain`); `.secondary` is the
+/// right/trailing axis (the chart's `secondaryYDomain`). A chart with
+/// no `secondaryYDomain` treats every series as `.primary`. This is
+/// how one `FastLineChart` overlays two series on independent,
+/// independently-scaled Y axes — e.g. training loss on the left and a
+/// held-out eval loss on the right.
+public enum FastChartYAxis: Sendable, Equatable {
+    case primary
+    case secondary
+}
+
 /// Data payload for a single series.
 public enum FastChartSeriesData: Sendable, Equatable {
     /// Raw points. Must be non-decreasing in `x`. The chart draws a
@@ -38,6 +50,12 @@ public struct FastChartSeries: Sendable, Equatable, Identifiable {
     /// per-bucket dispersion visible — useful at zoomed-out levels
     /// where one bucket aggregates many raw samples.
     public let showMinMaxBand: Bool
+    /// Which Y axis this series is plotted against. Defaults to
+    /// `.primary` so existing single-axis callers are unaffected.
+    /// `.secondary` is honored only when the host `FastLineChart` was
+    /// given a `secondaryYDomain`; otherwise the series falls back to
+    /// the primary axis.
+    public let yAxis: FastChartYAxis
 
     public init(
         id: String,
@@ -45,7 +63,8 @@ public struct FastChartSeries: Sendable, Equatable, Identifiable {
         lineWidth: CGFloat = 1.5,
         interpolation: FastChartInterpolation = .linear,
         data: FastChartSeriesData,
-        showMinMaxBand: Bool = false
+        showMinMaxBand: Bool = false,
+        yAxis: FastChartYAxis = .primary
     ) {
         self.id = id
         self.color = color
@@ -53,5 +72,6 @@ public struct FastChartSeries: Sendable, Equatable, Identifiable {
         self.interpolation = interpolation
         self.data = data
         self.showMinMaxBand = showMinMaxBand
+        self.yAxis = yAxis
     }
 }

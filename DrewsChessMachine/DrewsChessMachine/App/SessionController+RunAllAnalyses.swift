@@ -35,6 +35,12 @@ extension SessionController {
         let bufferRef = replayBuffer
         let championRef = network
         let trainerRef = trainer
+        // Snapshot training-progress context once, on the main actor,
+        // before the detached work begins. Every file written in this
+        // pass shares this snapshot, so step/elapsed values line up
+        // across the replay / value-head / weight JSONs produced
+        // together.
+        let exportMetadata = currentAnalysisExportMetadata()
 
         if bufferRef == nil && championRef == nil && trainerRef == nil {
             Self.presentRunAllAlert(
@@ -44,20 +50,33 @@ extension SessionController {
             )
             return
         }
+        guard beginAnalysis("All Analyses") else { return }
 
         Task.detached(priority: .utility) {
+            defer { Task { @MainActor in self.endAnalysis() } }
             var summaryLines: [String] = []
             var firstSuccessURL: URL?
 
             // 1. Replay buffer (champion is what generates self-play,
             //    so the buffer is "champion's" data and its label
-            //    reflects that).
+            //    reflects that). The per-bucket policy-entropy probe,
+            //    however, is most useful against the *trainer* — the
+            //    champion's policy is frozen between promotions, so
+            //    probing it produces bit-identical entropy stats
+            //    across snapshots and obscures the "is illegal mass
+            //    falling?" signal that's the whole point of the
+            //    probe. When a trainer is available, snapshot its
+            //    current weights into a fresh inference-mode network
+            //    and probe that.
             if let buf = bufferRef {
                 let modelLabel = "champion:\(championRef?.identifier?.description ?? "<no-id>")"
+                let entropyProbe = await Self.buildTrainerEntropyProbeNetwork(trainer: trainerRef)
                 let step = await Self.runReplayBufferStep(
                     buffer: buf,
                     network: championRef,
-                    modelLabel: modelLabel
+                    modelLabel: modelLabel,
+                    entropyProbe: entropyProbe,
+                    metadata: exportMetadata
                 )
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
@@ -70,7 +89,8 @@ extension SessionController {
                 let modelLabel = "champion:\(net.identifier?.description ?? "<no-id>")"
                 let step = await Self.runValueHeadStep(
                     network: net,
-                    modelLabel: modelLabel
+                    modelLabel: modelLabel,
+                    metadata: exportMetadata
                 )
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
@@ -84,7 +104,8 @@ extension SessionController {
                 let step = await Self.runNetworkWeightsStep(
                     networkInner: net.network,
                     modelLabel: modelLabel,
-                    tag: "Champion"
+                    tag: "Champion",
+                    metadata: exportMetadata
                 )
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
@@ -98,7 +119,8 @@ extension SessionController {
                 let step = await Self.runNetworkWeightsStep(
                     networkInner: trainer.network,
                     modelLabel: modelLabel,
-                    tag: "Trainer"
+                    tag: "Trainer",
+                    metadata: exportMetadata
                 )
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
@@ -121,20 +143,160 @@ extension SessionController {
         }
     }
 
+    // MARK: - Export metadata
+
+    /// Snapshot the live training-progress context into an
+    /// `AnalysisExportMetadata` for stamping onto analysis exports.
+    /// Reads the trainer / self-play stats boxes, replay buffer, model
+    /// identifiers, and the static architecture constants, so it must run
+    /// on the main actor (the class's isolation) where that state is
+    /// reachable. The `selfPlay` and `training` sub-blocks are present
+    /// only when their backing context exists, so an export taken before
+    /// any run simply omits them rather than reporting misleading zeros.
+    ///
+    /// Used by both `Run All Analyses` (one snapshot shared across the
+    /// pass) and the three single-analysis Debug hooks.
+    func currentAnalysisExportMetadata() -> AnalysisExportMetadata {
+        // Describe the ACTUAL champion architecture, not the build's static
+        // defaults — they diverge once a non-default net is built.
+        let arch = network?.network.arch ?? .current
+        let notes = ChessNetwork.architectureNotes
+        let architecture = AnalysisExportMetadata.Architecture(
+            architectureVersion: arch.architectureVersionLabel,
+            parameterCount: arch.parameterCount,
+            // These legacy uniform scalars describe the FIRST block group
+            // (mixed towers carry the full structure in `summary`).
+            numBlocks: arch.numBlocks,
+            channels: arch.towerOutputChannels,
+            convKernelSize: arch.blockGroups[0].conv1KernelSize,
+            inputPlanes: arch.inputPlanes,
+            boardSize: arch.boardSize,
+            policyChannels: arch.policyChannels,
+            policySize: arch.policySize,
+            seReductionRatio: arch.blockGroups[0].seReductionRatio,
+            valueHead: AnalysisExportMetadata.Architecture.ValueHead(
+                classes: arch.valueHeadClasses,
+                convChannels: arch.valueHeadConvChannels,
+                hiddenUnits: arch.valueHeadHiddenUnits
+            ),
+            summary: arch.architectureSummary,
+            notes: notes.isEmpty ? nil : notes
+        )
+
+        let selfPlay: AnalysisExportMetadata.SelfPlay?
+        if let snap = parallelWorkerStatsBox?.snapshot() {
+            selfPlay = AnalysisExportMetadata.SelfPlay(
+                totalGames: snap.selfPlayGames,
+                totalMoves: snap.selfPlayPositions,
+                emittedGames: snap.emittedGames,
+                emittedMoves: snap.emittedPositions
+            )
+        } else {
+            selfPlay = nil
+        }
+
+        let training: AnalysisExportMetadata.Training?
+        if let snap = trainingBox?.snapshot() {
+            training = AnalysisExportMetadata.Training(
+                trainingSteps: snap.stats.steps,
+                cumulativeTrainingSeconds: checkpoint?.cumulativeActiveTrainingSec,
+                batchSize: TrainingParameters.shared.trainingBatchSize,
+                promoteThreshold: TrainingParameters.shared.arenaPromoteThreshold,
+                replayBufferPlies: replayBuffer?.count
+            )
+        } else {
+            training = nil
+        }
+
+        return AnalysisExportMetadata(
+            schemaVersion: AnalysisExportMetadata.currentSchemaVersion,
+            build: AnalysisExportMetadata.Build(
+                buildNumber: BuildInfo.buildNumber,
+                buildTimestamp: BuildInfo.buildTimestamp,
+                gitHash: BuildInfo.gitHash,
+                gitBranch: BuildInfo.gitBranch,
+                gitIsDirty: BuildInfo.gitDirty
+            ),
+            model: AnalysisExportMetadata.Model(
+                championModelID: network?.identifier?.description,
+                trainerModelID: trainer?.identifier?.description
+            ),
+            architecture: architecture,
+            selfPlay: selfPlay,
+            training: training
+        )
+    }
+
     // MARK: - Per-analysis runners
+
+    /// Build a fresh inference-mode `ChessMPSNetwork`, load the
+    /// trainer's current weights into it, and return it paired with a
+    /// "trainer:<id>" label, for use as the replay analyzer's entropy
+    /// probe. Returns `nil` if no trainer is available, or if the
+    /// snapshot path fails (logged; falls through to "no entropy
+    /// probe" in the caller — the analyzer's own fallback then picks
+    /// the champion).
+    ///
+    /// The network is short-lived — allocated for one Run All
+    /// Analyses pass and dropped when the closure exits. The build
+    /// includes the `.randomWeights` BN warmup whose stats are then
+    /// overwritten by `loadWeights`; that's wasted work but ~10s of
+    /// ms, negligible for a manual menu action.
+    nonisolated static func buildTrainerEntropyProbeNetwork(
+        trainer: ChessTrainer?
+    ) async -> (network: ChessMPSNetwork, label: String)? {
+        guard let trainer else { return nil }
+        do {
+            let weights = try await trainer.network.exportWeights()
+            let probe = try ChessMPSNetwork(.randomWeights, arch: trainer.arch)
+            try await probe.loadWeights(weights)
+            // Inherit the trainer's id so logs / JSON record exactly
+            // whose weights are being probed — same pattern as
+            // `fireCandidateProbeIfNeeded` uses for the candidate-test
+            // probe inference network.
+            probe.identifier = trainer.identifier
+            let label = "trainer:\(trainer.identifier?.description ?? "<no-id>")"
+            return (probe, label)
+        } catch {
+            SessionLogger.shared.log(
+                "[ANALYSIS] Trainer entropy-probe snapshot failed: \(error.localizedDescription)"
+                + " — replay analyzer will fall back to champion for the entropy probe."
+            )
+            return nil
+        }
+    }
 
     /// Runs the replay-buffer analyzer (with the optional live-network
     /// entropy probe when a network is available), writes the JSON,
     /// logs an `[ANALYSIS]` block. Returns the summary line + first
     /// success URL.
+    ///
+    /// `entropyProbe`, when non-nil, is the network the analyzer should
+    /// probe for per-bucket policy entropy / illegal mass. **It is
+    /// deliberately distinct from the champion** — the champion's
+    /// policy is frozen between promotions, so probing it produces
+    /// bit-identical entropy stats across snapshots and the "is
+    /// illegal mass falling?" training-progress signal is invisible.
+    /// Run All Analyses passes a fresh inference network freshly
+    /// loaded with the trainer's current weights so the entropy
+    /// section reflects the trainee's actual learning trajectory.
     nonisolated private static func runReplayBufferStep(
         buffer: ReplayBuffer,
         network: ChessMPSNetwork?,
-        modelLabel: String
+        modelLabel: String,
+        entropyProbe: (network: ChessMPSNetwork, label: String)? = nil,
+        metadata: AnalysisExportMetadata
     ) async -> AnalysisStepResult {
-        let result: ReplayBufferAnalyzer.Result
+        var result: ReplayBufferAnalyzer.Result
         do {
-            if let net = network {
+            if let probe = entropyProbe {
+                result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
+                    buffer: buffer,
+                    network: probe.network,
+                    modelLabel: modelLabel,
+                    entropyModelLabel: probe.label
+                )
+            } else if let net = network {
                 result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
                     buffer: buffer,
                     network: net,
@@ -151,6 +313,7 @@ extension SessionController {
             )
         }
 
+        result.exportMetadata = metadata
         let outcome = writeJSON(
             encodable: result,
             filenameStem: "replay_analysis",
@@ -182,9 +345,10 @@ extension SessionController {
     /// `[VALHEAD]` block.
     nonisolated private static func runValueHeadStep(
         network: ChessMPSNetwork,
-        modelLabel: String
+        modelLabel: String,
+        metadata: AnalysisExportMetadata
     ) async -> AnalysisStepResult {
-        let result: ValueHeadAnalyzer.Result
+        var result: ValueHeadAnalyzer.Result
         do {
             result = try await ValueHeadAnalyzer.run(
                 network: network,
@@ -198,6 +362,7 @@ extension SessionController {
             )
         }
 
+        result.exportMetadata = metadata
         let outcome = writeJSON(
             encodable: result,
             filenameStem: "valuehead_analysis",
@@ -231,9 +396,10 @@ extension SessionController {
     nonisolated private static func runNetworkWeightsStep(
         networkInner: ChessNetwork,
         modelLabel: String,
-        tag: String
+        tag: String,
+        metadata: AnalysisExportMetadata
     ) async -> AnalysisStepResult {
-        let result: NetworkWeightAnalyzer.Result
+        var result: NetworkWeightAnalyzer.Result
         do {
             result = try await NetworkWeightAnalyzer.run(
                 network: networkInner,
@@ -247,6 +413,7 @@ extension SessionController {
             )
         }
 
+        result.exportMetadata = metadata
         let outcome = writeJSON(
             encodable: result,
             filenameStem: "network_weights",
@@ -326,18 +493,10 @@ extension SessionController {
         message: String,
         revealURL: URL? = nil
     ) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        if revealURL != nil {
-            alert.addButton(withTitle: "Reveal in Finder")
-        }
-        let response = alert.runModal()
-        if let url = revealURL,
-           response == .alertSecondButtonReturn {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        }
+        NonBlockingAlert.presentInformational(
+            title: title,
+            message: message,
+            revealURL: revealURL
+        )
     }
 }

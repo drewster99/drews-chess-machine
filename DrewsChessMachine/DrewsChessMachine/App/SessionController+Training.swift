@@ -72,7 +72,15 @@ extension SessionController {
         if continueMode, let existing = replayBuffer {
             buffer = existing
         } else {
-            buffer = ReplayBuffer(capacity: TrainingParameters.shared.replayBufferCapacity)
+            // The buffer is keyed off the champion network's input encoding
+            // so it derives both the stored single-frame stride and the
+            // reconstructed full-stack stride. For a history encoding
+            // (full10ply200) it stores one mover-relative frame per ply and
+            // reconstructs the stacked network input at sample time; for
+            // single-frame encodings stored == reconstructed.
+            buffer = ReplayBuffer(
+                capacity: TrainingParameters.shared.replayBufferCapacity,
+                inputEncoding: network.inputEncoding)
             replayBuffer = buffer
         }
         // Seed the buffer's per-batch sampling constraints from the
@@ -150,6 +158,21 @@ extension SessionController {
                         "[RESUME-PARAM] weight_decay: saved=nil applied=\(TrainingParameters.shared.weightDecay) (defaulted)"
                     )
                 }
+                // saved=nil means the session predates channel dropout, so it
+                // factually trained at rate 0 — reproduce that, never inherit
+                // the live rate (which would inject dropout into an old run).
+                let resolvedDropout = SessionCheckpointState.resolvedDropoutRate(saved: rs.dropoutRate)
+                if let dr = rs.dropoutRate {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] dropout_rate: \(TrainingParameters.shared.dropoutRate) -> \(dr) (from session)"
+                    )
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] dropout_rate: saved=nil applied=\(resolvedDropout) (session predates the feature; no-dropout regime preserved)"
+                    )
+                }
+                trainer.dropoutRate = resolvedDropout
+                TrainingParameters.shared.dropoutRate = Double(resolvedDropout)
                 if let clip = rs.gradClipMaxNorm {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] grad_clip_max_norm: \(TrainingParameters.shared.gradClipMaxNorm) -> \(clip) (from session)"
@@ -186,54 +209,61 @@ extension SessionController {
                         "[RESUME-PARAM] value_loss_weight: saved=nil applied=\(TrainingParameters.shared.valueLossWeight) (defaulted)"
                     )
                 }
+                // For the next three (and lr_momentum_cycle /
+                // max_plies_from_any_one_game below): nil means the
+                // session predates the feature entirely, so the saved
+                // run factually trained without it. Resume reproduces
+                // that pre-feature regime instead of inheriting the
+                // live setting — see the pre-feature fallback resolvers
+                // in SessionCheckpointFile.swift.
+                let resolvedMu = SessionCheckpointState.resolvedMomentumCoeff(saved: rs.momentumCoeff)
                 if let mu = rs.momentumCoeff {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] momentum_coeff: \(TrainingParameters.shared.momentumCoeff) -> \(mu) (from session)"
                     )
-                    trainer.momentumCoeff = mu
-                    TrainingParameters.shared.momentumCoeff = Double(mu)
                 } else {
-                    trainer.momentumCoeff = Float(TrainingParameters.shared.momentumCoeff)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] momentum_coeff: saved=nil applied=\(TrainingParameters.shared.momentumCoeff) (defaulted)"
+                        "[RESUME-PARAM] momentum_coeff: saved=nil applied=\(resolvedMu) (session predates the feature; plain-SGD regime preserved)"
                     )
                 }
+                trainer.momentumCoeff = resolvedMu
+                TrainingParameters.shared.momentumCoeff = Double(resolvedMu)
+                let resolvedIllM = SessionCheckpointState.resolvedIllegalMassPenaltyWeight(saved: rs.illegalMassPenaltyWeight)
                 if let imw = rs.illegalMassPenaltyWeight {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] illegal_mass_weight: \(TrainingParameters.shared.illegalMassWeight) -> \(imw) (from session)"
                     )
-                    trainer.illegalMassPenaltyWeight = imw
-                    TrainingParameters.shared.illegalMassWeight = Double(imw)
                 } else {
-                    trainer.illegalMassPenaltyWeight = Float(TrainingParameters.shared.illegalMassWeight)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] illegal_mass_weight: saved=nil applied=\(TrainingParameters.shared.illegalMassWeight) (defaulted)"
+                        "[RESUME-PARAM] illegal_mass_weight: saved=nil applied=\(resolvedIllM) (session predates the feature; no-penalty regime preserved)"
                     )
                 }
+                trainer.illegalMassPenaltyWeight = resolvedIllM
+                TrainingParameters.shared.illegalMassWeight = Double(resolvedIllM)
+                let resolvedSmoothing = SessionCheckpointState.resolvedPolicyLabelSmoothingEpsilon(saved: rs.policyLabelSmoothingEpsilon)
                 if let lse = rs.policyLabelSmoothingEpsilon {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] policy_label_smoothing_epsilon: \(TrainingParameters.shared.policyLabelSmoothingEpsilon) -> \(lse) (from session)"
                     )
-                    trainer.policyLabelSmoothingEpsilon = lse
-                    TrainingParameters.shared.policyLabelSmoothingEpsilon = Double(lse)
                 } else {
-                    trainer.policyLabelSmoothingEpsilon = Float(TrainingParameters.shared.policyLabelSmoothingEpsilon)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] policy_label_smoothing_epsilon: saved=nil applied=\(TrainingParameters.shared.policyLabelSmoothingEpsilon) (defaulted)"
+                        "[RESUME-PARAM] policy_label_smoothing_epsilon: saved=nil applied=\(resolvedSmoothing) (session predates the feature; one-hot CE preserved)"
                     )
                 }
+                trainer.policyLabelSmoothingEpsilon = resolvedSmoothing
+                TrainingParameters.shared.policyLabelSmoothingEpsilon = Double(resolvedSmoothing)
+                let resolvedValueSmoothing = SessionCheckpointState.resolvedValueLabelSmoothingEpsilon(saved: rs.valueLabelSmoothingEpsilon)
                 if let vlse = rs.valueLabelSmoothingEpsilon {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] value_label_smoothing_epsilon: \(TrainingParameters.shared.valueLabelSmoothingEpsilon) -> \(vlse) (from session)"
                     )
-                    trainer.valueLabelSmoothingEpsilon = vlse
-                    TrainingParameters.shared.valueLabelSmoothingEpsilon = Double(vlse)
                 } else {
-                    trainer.valueLabelSmoothingEpsilon = Float(TrainingParameters.shared.valueLabelSmoothingEpsilon)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] value_label_smoothing_epsilon: saved=nil applied=\(TrainingParameters.shared.valueLabelSmoothingEpsilon) (defaulted)"
+                        "[RESUME-PARAM] value_label_smoothing_epsilon: saved=nil applied=\(resolvedValueSmoothing) (session predates the feature; hard one-hot W/D/L preserved)"
                     )
                 }
+                trainer.valueLabelSmoothingEpsilon = resolvedValueSmoothing
+                TrainingParameters.shared.valueLabelSmoothingEpsilon = Double(resolvedValueSmoothing)
                 if let bsi = rs.batchStatsInterval {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] batch_stats_interval: \(TrainingParameters.shared.batchStatsInterval) -> \(bsi) (from session)"
@@ -244,6 +274,95 @@ extension SessionController {
                     trainer.batchStatsInterval = TrainingParameters.shared.batchStatsInterval
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] batch_stats_interval: saved=nil applied=\(TrainingParameters.shared.batchStatsInterval) (defaulted)"
+                    )
+                }
+                // Range-validate before assigning: the value is written
+                // straight onto `TrainingParameters.shared` and then feeds
+                // `PeriodicSaveController(interval:)`, whose precondition is
+                // `interval > 0`. A direct property write bypasses the macro's
+                // decode-path validation, so a corrupt/hand-edited/future
+                // session could otherwise drive an out-of-range (or ≤ 0)
+                // interval into a Play-and-Train start and crash. Mirror the
+                // sibling `arena_auto_interval_sec` clamp-and-keep-current
+                // pattern. Range matches the `PeriodicAutosaveIntervalSec`
+                // definition (60 ... 604800).
+                if let pai = rs.periodicAutosaveIntervalSec {
+                    if (60.0...604800.0).contains(pai) {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] periodic_autosave_interval_sec: \(TrainingParameters.shared.periodicAutosaveIntervalSec) -> \(pai) (from session)"
+                        )
+                        TrainingParameters.shared.periodicAutosaveIntervalSec = pai
+                    } else {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] periodic_autosave_interval_sec: saved=\(pai) out of range — kept current \(TrainingParameters.shared.periodicAutosaveIntervalSec)"
+                        )
+                    }
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] periodic_autosave_interval_sec: saved=nil applied=\(TrainingParameters.shared.periodicAutosaveIntervalSec) (defaulted)"
+                    )
+                }
+                // Range matches the `MaxPeriodicAutosavesKept` definition
+                // (0 ... 10000); 0 = unlimited.
+                if let mpk = rs.maxPeriodicAutosavesKept {
+                    if (0...10000).contains(mpk) {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] max_periodic_autosaves_kept: \(TrainingParameters.shared.maxPeriodicAutosavesKept) -> \(mpk) (from session)"
+                        )
+                        TrainingParameters.shared.maxPeriodicAutosavesKept = mpk
+                    } else {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] max_periodic_autosaves_kept: saved=\(mpk) out of range — kept current \(TrainingParameters.shared.maxPeriodicAutosavesKept)"
+                        )
+                    }
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] max_periodic_autosaves_kept: saved=nil applied=\(TrainingParameters.shared.maxPeriodicAutosavesKept) (defaulted)"
+                    )
+                }
+                if let cid = rs.recordingCorpusID {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] recording_corpus_id: prior run recorded into corpus \(cid) (informational; this run starts a fresh corpus when recording is on)"
+                    )
+                }
+                // LR/momentum cycling. The 12 cycling params are written back
+                // onto the singleton (so UserDefaults + the popover reflect the
+                // resumed config) and the bundled struct is pushed onto the
+                // trainer (the off-main consumer in `buildFeeds`). The cycle's
+                // phase is a pure function of `trainingSteps`, already restored
+                // above, so the schedule continues exactly where it left off.
+                if let cyc = rs.lrMomentumCycle {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] lr_momentum_cycle: lrEnabled=\(cyc.lrEnabled) lr=[\(cyc.lrMin),\(cyc.lrMax)]^\(cyc.lrPeriodSteps)st inv=\(cyc.lrInvert) momEnabled=\(cyc.momentumEnabled) mom=[\(cyc.momentumMin),\(cyc.momentumMax)]^\(cyc.momentumPeriodSteps)st inv=\(cyc.momentumInvert) (from session)"
+                    )
+                    let p = TrainingParameters.shared
+                    p.lrCycleEnabled = cyc.lrEnabled
+                    p.lrCyclePeriodSteps = cyc.lrPeriodSteps
+                    p.lrCycleCount = cyc.lrCount
+                    p.lrCycleMin = cyc.lrMin
+                    p.lrCycleMax = cyc.lrMax
+                    p.lrCycleInvert = cyc.lrInvert
+                    p.momentumCycleEnabled = cyc.momentumEnabled
+                    p.momentumCyclePeriodSteps = cyc.momentumPeriodSteps
+                    p.momentumCycleCount = cyc.momentumCount
+                    p.momentumCycleMin = cyc.momentumMin
+                    p.momentumCycleMax = cyc.momentumMax
+                    p.momentumCycleInvert = cyc.momentumInvert
+                    trainer.lrMomentumCycle = cyc
+                } else {
+                    // nil ⇒ the session predates LR/momentum cycling.
+                    // Preserve the user's cycle numbers in the popover
+                    // but force both enabled flags off — a live cycle
+                    // must never be applied to a pre-feature session.
+                    let resolvedCycle = SessionCheckpointState.resolvedLRMomentumCycle(
+                        saved: nil,
+                        current: TrainingParameters.shared.lrMomentumCycle
+                    )
+                    TrainingParameters.shared.lrCycleEnabled = false
+                    TrainingParameters.shared.momentumCycleEnabled = false
+                    trainer.lrMomentumCycle = resolvedCycle
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] lr_momentum_cycle: saved=nil applied=disabled (session predates the feature; cycling off)"
                     )
                 }
                 // Composition-aware replay-buffer sampler constraints. Unlike
@@ -259,8 +378,13 @@ extension SessionController {
                     )
                     TrainingParameters.shared.maxPliesFromAnyOneGame = v
                 } else {
+                    // nil ⇒ the session predates the per-game sampling
+                    // cap: the saved run sampled uncapped. The range
+                    // maximum is the closest representable equivalent.
+                    let resolvedCap = SessionCheckpointState.resolvedMaxPliesFromAnyOneGame(saved: nil)
+                    TrainingParameters.shared.maxPliesFromAnyOneGame = resolvedCap
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] max_plies_from_any_one_game: saved=nil applied=\(TrainingParameters.shared.maxPliesFromAnyOneGame) (defaulted)"
+                        "[RESUME-PARAM] max_plies_from_any_one_game: saved=nil applied=\(resolvedCap) (session predates the feature; cap effectively off)"
                     )
                 }
                 if let v = rs.targetSampledGameLengthPlies {
@@ -375,28 +499,43 @@ extension SessionController {
                         "[RESUME-PARAM] sqrt_batch_scaling_lr: saved=nil applied=\(TrainingParameters.shared.sqrtBatchScalingLR) (defaulted)"
                     )
                 }
+                // An absent field means the session predates the
+                // complement-CE feature entirely, so the saved run
+                // trained in the legacy clamp-on regime — resume must
+                // reproduce that, not inherit the live default. See
+                // `SessionCheckpointState.resolvedSignedAdvantageComplementCE`.
+                // Both branches write the singleton as well as the
+                // trainer so the UI toggle reflects the regime the
+                // resumed run is actually in (and re-saves persist it).
+                let resolvedComplCE = rs.resolvedSignedAdvantageComplementCE
                 if let savedComplCE = rs.signedAdvantageComplementCE {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] signed_advantage_complement_ce: \(TrainingParameters.shared.signedAdvantageComplementCE) -> \(savedComplCE) (from session)"
                     )
-                    trainer.useSignedAdvantageComplementCE = savedComplCE
-                    TrainingParameters.shared.signedAdvantageComplementCE = savedComplCE
                 } else {
-                    trainer.useSignedAdvantageComplementCE = TrainingParameters.shared.signedAdvantageComplementCE
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] signed_advantage_complement_ce: saved=nil applied=\(TrainingParameters.shared.signedAdvantageComplementCE) (defaulted)"
+                        "[RESUME-PARAM] signed_advantage_complement_ce: saved=nil applied=\(resolvedComplCE) (session predates the feature; legacy clamp-on regime preserved)"
                     )
                 }
-                if let savedWarmup = rs.lrWarmupSteps, savedWarmup >= 0 {
-                    SessionLogger.shared.log(
-                        "[RESUME-PARAM] lr_warmup_steps: \(TrainingParameters.shared.lrWarmupSteps) -> \(savedWarmup) (from session)"
-                    )
-                    trainer.lrWarmupSteps = savedWarmup
-                    TrainingParameters.shared.lrWarmupSteps = savedWarmup
+                trainer.useSignedAdvantageComplementCE = resolvedComplCE
+                TrainingParameters.shared.signedAdvantageComplementCE = resolvedComplCE
+                if let savedWarmup = rs.lrWarmupSteps {
+                    if savedWarmup >= 0 {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] lr_warmup_steps: \(TrainingParameters.shared.lrWarmupSteps) -> \(savedWarmup) (from session)"
+                        )
+                        trainer.lrWarmupSteps = savedWarmup
+                        TrainingParameters.shared.lrWarmupSteps = savedWarmup
+                    } else {
+                        trainer.lrWarmupSteps = TrainingParameters.shared.lrWarmupSteps
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] lr_warmup_steps: saved=\(savedWarmup) out of range — kept current \(TrainingParameters.shared.lrWarmupSteps)"
+                        )
+                    }
                 } else {
                     trainer.lrWarmupSteps = TrainingParameters.shared.lrWarmupSteps
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] lr_warmup_steps: saved=nil applied=\(TrainingParameters.shared.lrWarmupSteps) (defaulted)"
+                        "[RESUME-PARAM] lr_warmup_steps: saved=nil applied=\(TrainingParameters.shared.lrWarmupSteps) (no saved value; using current setting)"
                     )
                 }
                 trainer.completedTrainSteps = rs.trainingSteps
@@ -406,93 +545,161 @@ extension SessionController {
                 // older session is resumed under post-`74839ee`
                 // defaults makes the silent-fallback regression that
                 // motivated this audit impossible.
-                if let v = rs.replayBufferMinPositionsBeforeTraining, v >= 0 {
-                    SessionLogger.shared.log(
-                        "[RESUME-PARAM] replay_buffer_min_positions_before_training: \(TrainingParameters.shared.replayBufferMinPositionsBeforeTraining) -> \(v) (from session)"
-                    )
-                    TrainingParameters.shared.replayBufferMinPositionsBeforeTraining = v
+                if let v = rs.replayBufferMinPositionsBeforeTraining {
+                    if v >= 0 {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] replay_buffer_min_positions_before_training: \(TrainingParameters.shared.replayBufferMinPositionsBeforeTraining) -> \(v) (from session)"
+                        )
+                        TrainingParameters.shared.replayBufferMinPositionsBeforeTraining = v
+                    } else {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] replay_buffer_min_positions_before_training: saved=\(v) out of range — kept current \(TrainingParameters.shared.replayBufferMinPositionsBeforeTraining)"
+                        )
+                    }
                 } else {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] replay_buffer_min_positions_before_training: saved=nil applied=\(TrainingParameters.shared.replayBufferMinPositionsBeforeTraining) (defaulted)"
+                        "[RESUME-PARAM] replay_buffer_min_positions_before_training: saved=nil applied=\(TrainingParameters.shared.replayBufferMinPositionsBeforeTraining) (no saved value; using current setting)"
                     )
                 }
-                if let v = rs.arenaAutoIntervalSec, v > 0 {
-                    SessionLogger.shared.log(
-                        "[RESUME-PARAM] arena_auto_interval_sec: \(TrainingParameters.shared.arenaAutoIntervalSec) -> \(v) (from session)"
-                    )
-                    TrainingParameters.shared.arenaAutoIntervalSec = v
+                if let v = rs.arenaAutoIntervalSec {
+                    if v > 0 {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] arena_auto_interval_sec: \(TrainingParameters.shared.arenaAutoIntervalSec) -> \(v) (from session)"
+                        )
+                        TrainingParameters.shared.arenaAutoIntervalSec = v
+                    } else {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] arena_auto_interval_sec: saved=\(v) out of range — kept current \(TrainingParameters.shared.arenaAutoIntervalSec)"
+                        )
+                    }
                 } else {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] arena_auto_interval_sec: saved=nil applied=\(TrainingParameters.shared.arenaAutoIntervalSec) (defaulted)"
+                        "[RESUME-PARAM] arena_auto_interval_sec: saved=nil applied=\(TrainingParameters.shared.arenaAutoIntervalSec) (no saved value; using current setting)"
                     )
                 }
-                if let v = rs.arenaConcurrency, v >= 1 {
-                    let clamped = min(UpperContentView.absoluteMaxArenaConcurrency, v)
-                    SessionLogger.shared.log(
-                        "[RESUME-PARAM] arena_concurrency: \(TrainingParameters.shared.arenaConcurrency) -> \(clamped) (from session)"
-                    )
-                    TrainingParameters.shared.arenaConcurrency = clamped
+                if let v = rs.arenaConcurrency {
+                    if v >= 1 {
+                        let clamped = min(UpperContentView.absoluteMaxArenaConcurrency, v)
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] arena_concurrency: \(TrainingParameters.shared.arenaConcurrency) -> \(clamped) (from session)"
+                        )
+                        TrainingParameters.shared.arenaConcurrency = clamped
+                    } else {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] arena_concurrency: saved=\(v) out of range — kept current \(TrainingParameters.shared.arenaConcurrency)"
+                        )
+                    }
                 } else {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] arena_concurrency: saved=nil applied=\(TrainingParameters.shared.arenaConcurrency) (defaulted)"
+                        "[RESUME-PARAM] arena_concurrency: saved=nil applied=\(TrainingParameters.shared.arenaConcurrency) (no saved value; using current setting)"
                     )
                 }
-                if let v = rs.candidateProbeIntervalSec, v > 0 {
-                    SessionLogger.shared.log(
-                        "[RESUME-PARAM] candidate_probe_interval_sec: \(TrainingParameters.shared.candidateProbeIntervalSec) -> \(v) (from session)"
-                    )
-                    TrainingParameters.shared.candidateProbeIntervalSec = v
+                if let v = rs.candidateProbeIntervalSec {
+                    if v > 0 {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] candidate_probe_interval_sec: \(TrainingParameters.shared.candidateProbeIntervalSec) -> \(v) (from session)"
+                        )
+                        TrainingParameters.shared.candidateProbeIntervalSec = v
+                    } else {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] candidate_probe_interval_sec: saved=\(v) out of range — kept current \(TrainingParameters.shared.candidateProbeIntervalSec)"
+                        )
+                    }
                 } else {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] candidate_probe_interval_sec: saved=nil applied=\(TrainingParameters.shared.candidateProbeIntervalSec) (defaulted)"
+                        "[RESUME-PARAM] candidate_probe_interval_sec: saved=nil applied=\(TrainingParameters.shared.candidateProbeIntervalSec) (no saved value; using current setting)"
                     )
                 }
-                if let v = rs.legalMassCollapseThreshold, v > 0, v < 1 {
-                    SessionLogger.shared.log(
-                        "[RESUME-PARAM] legal_mass_collapse_threshold: \(TrainingParameters.shared.legalMassCollapseThreshold) -> \(v) (from session)"
-                    )
-                    TrainingParameters.shared.legalMassCollapseThreshold = v
+                if let v = rs.legalMassCollapseThreshold {
+                    if v > 0 && v < 1 {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] legal_mass_collapse_threshold: \(TrainingParameters.shared.legalMassCollapseThreshold) -> \(v) (from session)"
+                        )
+                        TrainingParameters.shared.legalMassCollapseThreshold = v
+                    } else {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] legal_mass_collapse_threshold: saved=\(v) out of range — kept current \(TrainingParameters.shared.legalMassCollapseThreshold)"
+                        )
+                    }
                 } else {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] legal_mass_collapse_threshold: saved=nil applied=\(TrainingParameters.shared.legalMassCollapseThreshold) (defaulted)"
+                        "[RESUME-PARAM] legal_mass_collapse_threshold: saved=nil applied=\(TrainingParameters.shared.legalMassCollapseThreshold) (no saved value; using current setting)"
                     )
                 }
-                if let v = rs.legalMassCollapseGraceSeconds, v >= 0 {
-                    SessionLogger.shared.log(
-                        "[RESUME-PARAM] legal_mass_collapse_grace_seconds: \(TrainingParameters.shared.legalMassCollapseGraceSeconds) -> \(v) (from session)"
-                    )
-                    TrainingParameters.shared.legalMassCollapseGraceSeconds = v
+                if let v = rs.legalMassCollapseGraceSeconds {
+                    if v >= 0 {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] legal_mass_collapse_grace_seconds: \(TrainingParameters.shared.legalMassCollapseGraceSeconds) -> \(v) (from session)"
+                        )
+                        TrainingParameters.shared.legalMassCollapseGraceSeconds = v
+                    } else {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] legal_mass_collapse_grace_seconds: saved=\(v) out of range — kept current \(TrainingParameters.shared.legalMassCollapseGraceSeconds)"
+                        )
+                    }
                 } else {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] legal_mass_collapse_grace_seconds: saved=nil applied=\(TrainingParameters.shared.legalMassCollapseGraceSeconds) (defaulted)"
+                        "[RESUME-PARAM] legal_mass_collapse_grace_seconds: saved=nil applied=\(TrainingParameters.shared.legalMassCollapseGraceSeconds) (no saved value; using current setting)"
                     )
                 }
-                if let v = rs.legalMassCollapseNoImprovementProbes, v >= 1 {
-                    SessionLogger.shared.log(
-                        "[RESUME-PARAM] legal_mass_collapse_no_improvement_probes: \(TrainingParameters.shared.legalMassCollapseNoImprovementProbes) -> \(v) (from session)"
-                    )
-                    TrainingParameters.shared.legalMassCollapseNoImprovementProbes = v
+                if let v = rs.legalMassCollapseNoImprovementProbes {
+                    if v >= 1 {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] legal_mass_collapse_no_improvement_probes: \(TrainingParameters.shared.legalMassCollapseNoImprovementProbes) -> \(v) (from session)"
+                        )
+                        TrainingParameters.shared.legalMassCollapseNoImprovementProbes = v
+                    } else {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] legal_mass_collapse_no_improvement_probes: saved=\(v) out of range — kept current \(TrainingParameters.shared.legalMassCollapseNoImprovementProbes)"
+                        )
+                    }
                 } else {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] legal_mass_collapse_no_improvement_probes: saved=nil applied=\(TrainingParameters.shared.legalMassCollapseNoImprovementProbes) (defaulted)"
+                        "[RESUME-PARAM] legal_mass_collapse_no_improvement_probes: saved=nil applied=\(TrainingParameters.shared.legalMassCollapseNoImprovementProbes) (no saved value; using current setting)"
                     )
                 }
                 // Sampling schedule — TauConfigCodable is non-Optional on
                 // the session schema (added in v1), so no fallback branch.
                 // Writes to @AppStorage propagate through
                 // `buildSelfPlaySchedule` / `buildArenaSchedule` the next
-                // time the schedule box is built below.
+                // time the schedule box is built below. Logged BEFORE the
+                // writes so "current" in the audit line really is the
+                // pre-resume value.
+                SessionLogger.shared.log(
+                    "[RESUME-PARAM] self_play_tau: start=\(TrainingParameters.shared.selfPlayStartTau) floor=\(TrainingParameters.shared.selfPlayTargetTau) decay=\(TrainingParameters.shared.selfPlayTauDecayPerPly) -> start=\(rs.selfPlayTau.startTau) floor=\(rs.selfPlayTau.floorTau) decay=\(rs.selfPlayTau.decayPerPly) (from session)"
+                )
+                SessionLogger.shared.log(
+                    "[RESUME-PARAM] arena_tau: start=\(TrainingParameters.shared.arenaStartTau) floor=\(TrainingParameters.shared.arenaTargetTau) decay=\(TrainingParameters.shared.arenaTauDecayPerPly) -> start=\(rs.arenaTau.startTau) floor=\(rs.arenaTau.floorTau) decay=\(rs.arenaTau.decayPerPly) (from session)"
+                )
                 TrainingParameters.shared.selfPlayStartTau = Double(rs.selfPlayTau.startTau)
                 TrainingParameters.shared.selfPlayTargetTau = Double(rs.selfPlayTau.floorTau)
                 TrainingParameters.shared.selfPlayTauDecayPerPly = Double(rs.selfPlayTau.decayPerPly)
                 TrainingParameters.shared.arenaStartTau = Double(rs.arenaTau.startTau)
                 TrainingParameters.shared.arenaTargetTau = Double(rs.arenaTau.floorTau)
                 TrainingParameters.shared.arenaTauDecayPerPly = Double(rs.arenaTau.decayPerPly)
+                // Saved-but-not-applied trio: persisted for the resume
+                // sheet, but the resumed run deliberately reads the LIVE
+                // TrainingParameters values for these. Surface the saved
+                // value alongside the one actually used so a
+                // batch/threshold/games divergence between save and
+                // resume is never silent. (Via sqrt-batch LR scaling, a
+                // batch-size divergence also shifts the effective
+                // learning rate.)
+                func logResumeUsesCurrent<T: Equatable>(_ id: String, saved: T, current: T) {
+                    let marker = saved == current ? "matches" : "DIFFERS from"
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] \(id): saved=\(saved) \(marker) current=\(current) — resume uses current (saved value is informational)"
+                    )
+                }
+                logResumeUsesCurrent("batch_size", saved: rs.batchSize, current: TrainingParameters.shared.trainingBatchSize)
+                logResumeUsesCurrent("promote_threshold", saved: rs.promoteThreshold, current: TrainingParameters.shared.arenaPromoteThreshold)
+                logResumeUsesCurrent("arena_games", saved: rs.arenaGames, current: TrainingParameters.shared.arenaGamesPerTournament)
             } else {
                 trainer.learningRate = Float(TrainingParameters.shared.learningRate)
                 trainer.entropyRegularizationCoeff = Float(TrainingParameters.shared.entropyBonus)
                 trainer.drawPenalty = Float(TrainingParameters.shared.drawPenalty)
                 trainer.weightDecayC = Float(TrainingParameters.shared.weightDecay)
+                trainer.dropoutRate = Float(TrainingParameters.shared.dropoutRate)
                 trainer.gradClipMaxNorm = Float(TrainingParameters.shared.gradClipMaxNorm)
                 trainer.policyLossWeight = Float(TrainingParameters.shared.policyLossWeight)
                 trainer.valueLossWeight = Float(TrainingParameters.shared.valueLossWeight)
@@ -632,20 +839,68 @@ extension SessionController {
                 emittedThreefoldRepetitionDraws: rs.emittedThreefoldRepetitionDraws,
                 emittedInsufficientMaterialDraws: rs.emittedInsufficientMaterialDraws
             )
+            // Run-throughput knobs. Previously applied with no audit
+            // line at all; every branch now logs so nothing on this
+            // path changes a setting silently.
             if let workerCount = resumeState?.selfPlayWorkerCount {
-                TrainingParameters.shared.selfPlayConcurrency = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, workerCount))
+                let clamped = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, workerCount))
+                SessionLogger.shared.log(
+                    "[RESUME-PARAM] self_play_workers: \(TrainingParameters.shared.selfPlayConcurrency) -> \(clamped) (from session)"
+                )
+                TrainingParameters.shared.selfPlayConcurrency = clamped
             }
             if let delay = rs.stepDelayMs {
+                SessionLogger.shared.log(
+                    "[RESUME-PARAM] training_step_delay_ms: \(TrainingParameters.shared.trainingStepDelayMs) -> \(delay) (from session)"
+                )
                 TrainingParameters.shared.trainingStepDelayMs = delay
+            } else {
+                SessionLogger.shared.log(
+                    "[RESUME-PARAM] training_step_delay_ms: saved=nil applied=\(TrainingParameters.shared.trainingStepDelayMs) (no saved value; using current setting)"
+                )
             }
             if let spDelay = rs.selfPlayDelayMs {
+                SessionLogger.shared.log(
+                    "[RESUME-PARAM] self_play_delay_ms: \(TrainingParameters.shared.selfPlayDelayMs) -> \(spDelay) (from session)"
+                )
                 TrainingParameters.shared.selfPlayDelayMs = spDelay
+            } else {
+                SessionLogger.shared.log(
+                    "[RESUME-PARAM] self_play_delay_ms: saved=nil applied=\(TrainingParameters.shared.selfPlayDelayMs) (no saved value; using current setting)"
+                )
             }
             if let autoDelay = rs.lastAutoComputedDelayMs {
+                SessionLogger.shared.log(
+                    "[RESUME-PARAM] last_auto_computed_delay_ms: \(lastAutoComputedDelayMs) -> \(autoDelay) (from session)"
+                )
                 lastAutoComputedDelayMs = autoDelay
             }
-            TrainingParameters.shared.replayRatioTarget = rs.replayRatioTarget ?? 1.0
-            TrainingParameters.shared.replayRatioAutoAdjust = rs.replayRatioAutoAdjust ?? true
+            // Replay-ratio pair: these previously fell back to
+            // hard-coded values matching long-stale defaults, silently
+            // clobbering the user's current setting whenever the field
+            // was absent. nil now leaves the current setting in place
+            // (these are v1 schema fields, so nil should never occur in
+            // practice — the log line is the tripwire if it ever does).
+            if let target = rs.replayRatioTarget {
+                SessionLogger.shared.log(
+                    "[RESUME-PARAM] replay_ratio_target: \(TrainingParameters.shared.replayRatioTarget) -> \(target) (from session)"
+                )
+                TrainingParameters.shared.replayRatioTarget = target
+            } else {
+                SessionLogger.shared.log(
+                    "[RESUME-PARAM] replay_ratio_target: saved=nil applied=\(TrainingParameters.shared.replayRatioTarget) (no saved value; using current setting)"
+                )
+            }
+            if let autoAdjust = rs.replayRatioAutoAdjust {
+                SessionLogger.shared.log(
+                    "[RESUME-PARAM] replay_ratio_auto_adjust: \(TrainingParameters.shared.replayRatioAutoAdjust) -> \(autoAdjust) (from session)"
+                )
+                TrainingParameters.shared.replayRatioAutoAdjust = autoAdjust
+            } else {
+                SessionLogger.shared.log(
+                    "[RESUME-PARAM] replay_ratio_auto_adjust: saved=nil applied=\(TrainingParameters.shared.replayRatioAutoAdjust) (no saved value; using current setting)"
+                )
+            }
         } else {
             // Fresh session — no resumed steps to subtract.
             checkpoint?.trainingStepsAtSegmentStart = 0
@@ -688,6 +943,14 @@ extension SessionController {
             if let chartURLs = pendingLoadedSession?.chartDataURLs {
                 seedChartCoordinatorFromLoadedSession(chartURLs: chartURLs)
             }
+            // Probe-monitor histories ride inline in session.json (not a
+            // companion file like the charts). Restore from the loaded
+            // session when present; otherwise clear so a fresh start or
+            // an older session shows empty monitors rather than stale
+            // in-memory ticks from a previous session this launch. Both
+            // branches log so a desync is visible. Appears alongside the
+            // chart data when the user presses Continue Training.
+            restoreProbeHistoriesForStart(resumeState: pendingLoadedSession?.state)
         }
         // Single self-play gate. `BatchedSelfPlayDriver` is one driver
         // task that ticks K active games against the champion network
@@ -739,15 +1002,20 @@ extension SessionController {
         arenaOverrideBox = overrideBox
         isArenaRunning = false
         realTraining = true
-        // Arm the 4-hour periodic-save scheduler. Always construct
-        // a fresh controller on each start — a previous stop will
-        // have nil'd it out, and `.continueAfterStop` intentionally
-        // resets the next-save deadline to a full interval from
-        // now rather than inheriting whatever time was left on the
-        // prior arm, since the whole point of the scheduler is
-        // "saved within the last 4 hours" and the session was not
-        // being saved while stopped.
-        let controller = PeriodicSaveController(interval: UpperContentView.periodicSaveIntervalSec)
+        // Clear any divergence suspension from a prior run so this start begins
+        // with arenas and the periodic autosave un-gated.
+        trainingSuspendedByDivergence = false
+        // Arm the periodic-save scheduler. Always construct a fresh
+        // controller on each start — a previous stop will have nil'd it
+        // out, and `.continueAfterStop` intentionally resets the
+        // next-save deadline to a full interval from now rather than
+        // inheriting whatever time was left on the prior arm, since the
+        // whole point of the scheduler is "saved within the last
+        // interval" and the session was not being saved while stopped.
+        // The interval is the live `periodic_autosave_interval_sec`
+        // parameter (default 4 hours); mid-session changes are reconciled
+        // by the heartbeat via `PeriodicSaveController.updateInterval`.
+        let controller = PeriodicSaveController(interval: TrainingParameters.shared.periodicAutosaveIntervalSec)
         controller.arm(now: Date())
         periodicSaveController = controller
         periodicSaveLastPollAt = Date()
@@ -805,8 +1073,35 @@ extension SessionController {
         }
         let outputURL = cliOutputURL
         let cliTrainingTimeLimitSec = cliConfig?.trainingTimeLimitSec
+        let cliTrainingStepLimit = cliConfig?.trainingStepLimit
         let isAutoTrainRun = autoTrainOnLaunch
         let runStart = Date()
+
+        // Self-play corpus recording. Read once at run start (not
+        // live-tunable). When enabled, every kept (post-draw-filter) self-play
+        // game is tee'd into a standalone game corpus under Corpora/, referenced
+        // by id from session.json. nil when off or on a create failure —
+        // recording is best-effort and never blocks training.
+        let corpusRecorder: CorpusRecorder?
+        if TrainingParameters.shared.recordSelfPlayGames {
+            do {
+                let rec = try CorpusRecorder.create(
+                    name: "Self-play \(checkpoint?.currentSessionID ?? "session")",
+                    comment: "Recorded by build \(BuildInfo.buildNumber) (\(BuildInfo.gitHash))"
+                )
+                corpusRecorder = rec
+                activeRecordingCorpusID = rec.corpusID
+                recorder?.setRecordingCorpusID(rec.corpusID)
+                SessionLogger.shared.log("[CORPUS] recording self-play games → corpus \(rec.corpusID)")
+            } catch {
+                corpusRecorder = nil
+                activeRecordingCorpusID = nil
+                SessionLogger.shared.log("[CORPUS] failed to create recording corpus: \(error.localizedDescription)")
+            }
+        } else {
+            corpusRecorder = nil
+            activeRecordingCorpusID = nil
+        }
 
         // Register the early-stop flush handler so SIGUSR1 / SIGHUP /
         // applicationShouldTerminate can write `result.json` cleanly
@@ -814,6 +1109,15 @@ extension SessionController {
         // captures the recorder, outputURL, and runStart so the
         // coordinator doesn't need to know about ContentView's state
         // shape — it just calls the closure with the termination reason.
+
+        // SIGUSR2 "checkpoint + shutdown" handler — registered for EVERY active
+        // session (GUI and CLI), unlike the CLI-only earlyStopHandler below.
+        // Cleared in the same teardown block. `[weak self]` so a torn-down
+        // controller can't be retained by the long-lived coordinator.
+        EarlyStopCoordinator.shared.saveSessionHandler = { [weak self] in
+            self?.handleSaveSessionFromSignal()
+        }
+
         if let recorder {
             EarlyStopCoordinator.shared.earlyStopHandler = { reason in
                 let elapsed = Date().timeIntervalSince(runStart)
@@ -856,17 +1160,28 @@ extension SessionController {
             [trainer, network, buffer, box, tBox, pStatsBox, spDiversityTracker,
              selfPlayGate, trainingGate, arenaFlag, triggerBox, overrideBox, countBox,
              gameWatcher, ratioController, recorder, outputURL, cliTrainingTimeLimitSec,
+             cliTrainingStepLimit,
              isAutoTrainRun,
              sessionTrainingBatchSize, sessionMinBufferBeforeTraining,
              sessionTournamentGames, sessionPromoteThreshold] in
 
             // --- Setup: build any missing networks, reset the trainer ---
 
-            let needsCandidateBuild = await MainActor.run { candidateInferenceNetwork == nil }
+            // Every inference network below receives champion/trainer weight
+            // snapshots, so each must be built to the champion's architecture
+            // (the captured `network` is the champion). Sendable, so it crosses
+            // into the detached build tasks.
+            let champArch = network.network.arch
+
+            // Rebuild if absent OR if a previously-built net is for a different
+            // architecture (champion was rebuilt with a new arch this launch) —
+            // these persist for the app's life and receive champion/trainer
+            // weight snapshots, so a stale-arch net would shape-mismatch.
+            let needsCandidateBuild = await MainActor.run { candidateInferenceNetwork == nil || candidateInferenceNetwork?.network.arch != champArch }
             if needsCandidateBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights)
+                        try ChessMPSNetwork(.randomWeights, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining candidate Inference"
                     await MainActor.run {
@@ -882,11 +1197,11 @@ extension SessionController {
                 }
             }
 
-            let needsProbeBuild = await MainActor.run { probeInferenceNetwork == nil }
+            let needsProbeBuild = await MainActor.run { probeInferenceNetwork == nil || probeInferenceNetwork?.network.arch != champArch }
             if needsProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights)
+                        try ChessMPSNetwork(.randomWeights, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining probe Inference"
                     await MainActor.run {
@@ -903,11 +1218,11 @@ extension SessionController {
                 }
             }
 
-            let needsArenaChampionBuild = await MainActor.run { arenaChampionNetwork == nil }
+            let needsArenaChampionBuild = await MainActor.run { arenaChampionNetwork == nil || arenaChampionNetwork?.network.arch != champArch }
             if needsArenaChampionBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights)
+                        try ChessMPSNetwork(.randomWeights, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining arena champion"
                     await MainActor.run {
@@ -931,11 +1246,11 @@ extension SessionController {
             // `fireCandidateProbeIfNeeded`, which both snapshot into
             // `probeInferenceNetwork`. Cost: one extra network instance
             // (~2.4M params worth of MPSGraph state).
-            let needsLichessProbeBuild = await MainActor.run { lichessProbeInferenceNetwork == nil }
+            let needsLichessProbeBuild = await MainActor.run { lichessProbeInferenceNetwork == nil || lichessProbeInferenceNetwork?.network.arch != champArch }
             if needsLichessProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights)
+                        try ChessMPSNetwork(.randomWeights, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining lichess probe Inference"
                     await MainActor.run {
@@ -958,11 +1273,11 @@ extension SessionController {
             // weight snapshots. With its own network, neither consumer
             // can overwrite the other mid-cycle. Memory cost is the
             // same ~2.4M-param network instance.
-            let needsTacticalProbeBuild = await MainActor.run { tacticalProbeInferenceNetwork == nil }
+            let needsTacticalProbeBuild = await MainActor.run { tacticalProbeInferenceNetwork == nil || tacticalProbeInferenceNetwork?.network.arch != champArch }
             if needsTacticalProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights)
+                        try ChessMPSNetwork(.randomWeights, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining tactical probe Inference"
                     await MainActor.run {
@@ -1132,10 +1447,20 @@ extension SessionController {
                         "[CHECKPOINT] Restored replay buffer: stored=\(snap.storedCount)/\(snap.capacity) totalAdded=\(snap.totalPositionsAdded) writeIndex=\(snap.writeIndex)"
                     )
                 } catch {
-                    box.recordError("Replay buffer restore failed: \(error.localizedDescription)")
-                    SessionLogger.shared.log(
-                        "[CHECKPOINT] Replay buffer restore failed: \(error.localizedDescription) — continuing with empty buffer"
-                    )
+                    // Losing the entire replay buffer on resume is a heavy
+                    // degradation, so surface it on the user-facing checkpoint
+                    // status channel (the canonical load-failure surface) — not
+                    // just the trainer's `_error` (first-error-wins, so it can be
+                    // swallowed by a prior error) and the log. Training still
+                    // continues with an empty buffer rather than aborting the
+                    // resume, matching the "never auto-delete on a failed load"
+                    // stance: the user can stop and repair the folder manually.
+                    let message = "Replay buffer restore failed: \(error.localizedDescription) — continuing with empty buffer"
+                    box.recordError(message)
+                    await MainActor.run {
+                        self.checkpoint?.setCheckpointStatus(message, kind: .error)
+                    }
+                    SessionLogger.shared.log("[CHECKPOINT] \(message)")
                 }
             }
 
@@ -1225,7 +1550,8 @@ extension SessionController {
                 gameWatcher: gameWatcher,
                 scheduleBox: scheduleBox,
                 replayRatioController: ratioController,
-                drawWatchTracker: drawWatch
+                drawWatchTracker: drawWatch,
+                corpusRecorder: corpusRecorder
             )
 
             // Pin the probe inference network into a local the child
@@ -1335,6 +1661,23 @@ extension SessionController {
                             timing = sampledTiming
                         } catch {
                             box.recordError(error.localizedDescription)
+                            // A divergence (non-finite loss / GPU command
+                            // failure / gradient blow-up) poisons the in-memory
+                            // trainer weights. We deliberately do NOT call
+                            // `stopRealTraining` here: that cancels the whole
+                            // run and — critically — clears the alarm, so the
+                            // banner explaining *why* training stopped would
+                            // vanish before the user ever saw it. Instead we
+                            // SUSPEND: keep the alarm banner up, leave the rest
+                            // of the run (heartbeat, self-play, stats) alive,
+                            // and flip `trainingSuspendedByDivergence` so the
+                            // suspended state gates the two things that would
+                            // otherwise act on the poisoned net — arenas and the
+                            // 4-hour periodic autosave. The trainer worker exits
+                            // (it can't keep stepping a NaN net); the user can
+                            // inspect the session or reload an earlier
+                            // checkpoint, and an explicit Stop fully tears down.
+                            await self.suspendTrainingOnDivergence(reason: error.localizedDescription)
                             return
                         }
 
@@ -1419,6 +1762,17 @@ extension SessionController {
                         case .falseAlarm:
                             continue arenaLoop
                         case .fire:
+                            // Gate: a diverged/suspended trainer holds poisoned
+                            // (NaN) weights — running an arena would snapshot
+                            // them into a candidate and could promote garbage.
+                            // Skip the run entirely while suspended (covers both
+                            // a still-pending auto-trigger and a manual Run
+                            // Arena click). The trigger was already consumed by
+                            // `waitForTrigger`, so we just loop back and wait.
+                            if await MainActor.run(body: { self.trainingSuspendedByDivergence }) {
+                                SessionLogger.shared.log("[ARENA] skipped — training suspended (divergence)")
+                                continue arenaLoop
+                            }
                             await self.runArenaParallel(
                                 trainer: trainer,
                                 champion: network,
@@ -1504,7 +1858,7 @@ extension SessionController {
                         let workerN = countBox.count
                         let spSched = scheduleBox.selfPlay
                         let arSched = scheduleBox.arena
-                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac, maxPliesCap, complementCEOn) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, dropRate, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac, maxPliesCap, complementCEOn, cycle) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
@@ -1513,6 +1867,7 @@ extension SessionController {
                                 trainer.illegalMassPenaltyWeight,
                                 trainer.drawPenalty,
                                 trainer.weightDecayC,
+                                trainer.dropoutRate,
                                 trainer.gradClipMaxNorm,
                                 trainer.policyLossWeight,
                                 trainer.valueLossWeight,
@@ -1525,9 +1880,17 @@ extension SessionController {
                                 TrainingParameters.shared.arenaGamesPerTournament,
                                 TrainingParameters.shared.selfPlayDrawKeepFraction,
                                 TrainingParameters.shared.selfPlayMaxPliesPerGame,
-                                trainer.useSignedAdvantageComplementCE
+                                trainer.useSignedAdvantageComplementCE,
+                                trainer.lrMomentumCycle
                             )
                         }
+                        // Effective base LR / momentum for THIS step under the
+                        // active cycle (nil when that channel isn't cycling →
+                        // fall back to the static trainer values below). The LR
+                        // here is the pre-warmup/√batch base; the ·warmup / ·√b
+                        // markers on `lrStr` convey the remaining multipliers.
+                        let cycledLRBase: Double? = cycle.learningRate(forStep: completedSteps)
+                        let cycledMu: Double? = cycle.momentum(forStep: completedSteps)
                         let policyStr: String
                         if let p = trainingSnap.rollingPolicyLoss {
                             policyStr = String(format: "%+.4f", p)
@@ -1566,7 +1929,7 @@ extension SessionController {
                         } else {
                             vNormStr = "--"
                         }
-                        let muStr = String(format: "%.3f", momentum)
+                        let muStr = cycledMu.map { String(format: "%.3f·cyc", $0) } ?? String(format: "%.3f", momentum)
                         let vMeanStr: String
                         if let vm = trainingSnap.rollingValueMean {
                             vMeanStr = String(format: "%+.4f", vm)
@@ -1605,12 +1968,17 @@ extension SessionController {
                         let divStr = divSnap.gamesInWindow > 0
                         ? String(format: "unique=%d/%d(%.0f%%) diverge=%.1f", divSnap.uniqueGames, divSnap.gamesInWindow, divSnap.uniquePercent, divSnap.avgDivergencePly)
                         : "n/a"
-                        // Append a `·√b` marker when sqrt-batch scaling is on
-                        // and a `·warmup(i/N)` marker while warmup is still
-                        // active, so the reader can tell at a glance what
-                        // per-step multipliers the optimizer is actually
-                        // seeing. The displayed LR is always the base value.
-                        var lrStr = String(format: "%.1e", lr) + (sqrtLR ? "·√b" : "")
+                        // Append a `·cyc` marker when the LR cycle is driving the
+                        // base LR (the displayed value is then the cycle's
+                        // current geometric value, not the static base), a `·√b`
+                        // marker when sqrt-batch scaling is on, and a
+                        // `·warmup(i/N)` marker while warmup is still active, so
+                        // the reader can tell at a glance what per-step value and
+                        // multipliers the optimizer is actually seeing.
+                        let lrBaseForStats = cycledLRBase ?? Double(lr)
+                        var lrStr = String(format: "%.1e", lrBaseForStats)
+                            + (cycledLRBase != nil ? "·cyc" : "")
+                            + (sqrtLR ? "·√b" : "")
                         if warmupSteps > 0 && completedSteps < warmupSteps {
                             lrStr += "·warmup(\(completedSteps)/\(warmupSteps))"
                         }
@@ -1651,9 +2019,10 @@ extension SessionController {
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
                         let cfgStr = "batch=\(sessionTrainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", livePromoteThreshold)) arenaGames=\(liveTournamentGames) arenaAutoSec=\(Int(arenaAutoSec)) workers=\(workerN)"
                         let regStr = String(
-                            format: "clip=%.1f decay=%.0e ent=%.1e illM=%.1e drawPen=%.3f pLossW=%.2f vLossW=%.2f μ=%.2f complCE=%@",
+                            format: "clip=%.1f decay=%.0e drop=%.2f ent=%.1e illM=%.1e drawPen=%.3f pLossW=%.2f vLossW=%.2f μ=%.2f complCE=%@",
                             gradClip,
                             weightDec,
+                            dropRate,
                             entropyCoeff,
                             illegalMassW,
                             drawPen,
@@ -1791,6 +2160,16 @@ extension SessionController {
                             bufComp.meanGameLengthPerSampledPosition,
                             bufComp.winFraction, bufComp.drawFraction, bufComp.lossFraction
                         )
+                        // Realized sampled-batch composition (rolling mean over
+                        // the training-step window) — the post-constraint
+                        // counterpart to the pre-constraint buffer `comp=` above,
+                        // and the exact pair the game-length / draw-rate chart
+                        // tiles plot against the self-play series.
+                        let sampBatchLenStr = trainingSnap.rollingSampledBatchGameLength
+                            .map { String(format: "%.1f", $0) } ?? "--"
+                        let sampBatchDrawStr = trainingSnap.rollingSampledBatchDrawFraction
+                            .map { String(format: "%.3f", $0) } ?? "--"
+                        let sampBatchStr = "len=\(sampBatchLenStr) D=\(sampBatchDrawStr)"
                         // Per-step timing means over the rolling timing
                         // window. Splits `recentStepMs` into prep/gpu/
                         // read/queueWait/step so a slowdown can be
@@ -1855,7 +2234,7 @@ extension SessionController {
                         // inputs).
                         let shapesStr = "feedCache=\(trainer.feedCacheCount)"
 
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) spGamesEm=\(parallelSnap.emittedGames) spMovesEm=\(parallelSnap.emittedPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) spGamesEm=\(parallelSnap.emittedGames) spMovesEm=\(parallelSnap.emittedPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) sampBatch=(\(sampBatchStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // [DRAW-WATCH] summary — piggyback on the same
@@ -1990,10 +2369,15 @@ extension SessionController {
                                 workerCount: workerN,
                                 gradClipMaxNorm: Double(gradClip),
                                 weightDecayC: Double(weightDec),
+                                dropoutRate: Double(dropRate),
                                 entropyRegularizationCoeff: Double(entropyCoeff),
                                 drawPenalty: Double(drawPen),
                                 policyLossWeight: Double(policyW),
                                 valueLossWeight: Double(valueW),
+                                lrEffectiveBase: cycledLRBase ?? Double(lr),
+                                momentumEffective: cycledMu ?? Double(momentum),
+                                lrCycleActive: cycledLRBase != nil,
+                                momentumCycleActive: cycledMu != nil,
                                 buildNumber: BuildInfo.buildNumber,
                                 trainerID: trainerID,
                                 championID: championID
@@ -2152,6 +2536,22 @@ extension SessionController {
                 //     stdio buffer to flush),
                 //   - session log writes have already been
                 //     flushed by SessionLogger before this point.
+                // Single-winner guard shared by the three process-terminating
+                // paths (time-limit, step-limit, legal-mass collapse). Each
+                // `Darwin._exit(0)` would normally kill the process before a
+                // second path could also write, but the budgets are polled
+                // independently and two can cross their thresholds within the
+                // same poll window — both would then pass their guards and race
+                // to write the snapshot. The claim makes exactly one path write
+                // and exit; the losers return without touching the file.
+                let terminationClaimed = SyncBox(false)
+                let claimTermination: @Sendable () -> Bool = {
+                    terminationClaimed.mutate { claimed in
+                        if claimed { return false }
+                        claimed = true
+                        return true
+                    }
+                }
                 if isAutoTrainRun, let recorder, let deadlineSec = cliTrainingTimeLimitSec, deadlineSec > 0 {
                     group.addTask(priority: .utility) {
                         do {
@@ -2162,6 +2562,7 @@ extension SessionController {
                             return
                         }
                         if Task.isCancelled { return }
+                        guard claimTermination() else { return }
                         let elapsed = Date().timeIntervalSince(runStart)
                         let destDescription = outputURL?.path ?? "<stdout>"
                         SessionLogger.shared.log(
@@ -2185,6 +2586,52 @@ extension SessionController {
                         }
                         SessionLogger.shared.log("[APP] --train: exiting process after snapshot")
                         Darwin._exit(0)
+                    }
+                }
+
+                // `training_step_limit` watcher — the step-denominated twin
+                // of the time-limit task above. Polls the trainer's
+                // completed-step counter (SyncBox-backed, safe off-main) at
+                // a coarse cadence; on crossing the budget it writes the
+                // snapshot and exits with `step_limit_reached`. Both
+                // budgets may be armed; whichever claims termination first
+                // writes and exits, the other returns without writing (see
+                // `claimTermination`).
+                if isAutoTrainRun, let recorder, let stepLimit = cliTrainingStepLimit, stepLimit > 0 {
+                    group.addTask(priority: .utility) {
+                        while !Task.isCancelled {
+                            do {
+                                try await Task.sleep(for: .seconds(2))
+                            } catch {
+                                return
+                            }
+                            let steps = trainer.completedTrainSteps
+                            guard steps >= stepLimit else { continue }
+                            guard claimTermination() else { return }
+                            let elapsed = Date().timeIntervalSince(runStart)
+                            let destDescription = outputURL?.path ?? "<stdout>"
+                            SessionLogger.shared.log(
+                                "[APP] --train: training_step_limit=\(stepLimit) reached at steps=\(steps) elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
+                            )
+                            recorder.setTerminationReason(.stepLimitReached)
+                            let counts = recorder.countsSnapshot()
+                            do {
+                                if let outputURL {
+                                    try recorder.writeJSON(to: outputURL, totalTrainingSeconds: elapsed)
+                                } else {
+                                    try recorder.writeJSONToStdout(totalTrainingSeconds: elapsed)
+                                }
+                                SessionLogger.shared.log(
+                                    "[APP] --train: wrote snapshot to \(destDescription) (arenas=\(counts.arenas), stats=\(counts.stats), probes=\(counts.probes))"
+                                )
+                            } catch {
+                                SessionLogger.shared.log(
+                                    "[APP] --train: snapshot write FAILED for \(destDescription): \(error.localizedDescription)"
+                                )
+                            }
+                            SessionLogger.shared.log("[APP] --train: exiting process after step-limit snapshot")
+                            Darwin._exit(0)
+                        }
                     }
                 }
 
@@ -2223,7 +2670,7 @@ extension SessionController {
                 let collapseGracePeriodSec = TrainingParameters.shared.legalMassCollapseGraceSeconds
                 let collapseNoImprovementProbeCount = max(1, TrainingParameters.shared.legalMassCollapseNoImprovementProbes)
                 group.addTask(priority: .utility) {
-                    [trainer, buffer, box, probeInferenceForProbes] in
+                    [trainer, buffer, box, probeInferenceForProbes, claimTermination] in
                     let probeIntervalSec: UInt64 = 60
                     let sampleSize = 128
                     let gracePeriodSec: TimeInterval = collapseGracePeriodSec
@@ -2333,6 +2780,15 @@ extension SessionController {
                                     legalMassWindow.last ?? 0, legalMassWindow.first ?? 0)
                             )
                             await MainActor.run {
+                                // Don't clobber the divergence-suspend banner.
+                                // When training has already been suspended for
+                                // divergence, the network is frozen/poisoned and
+                                // this probe keeps seeing the downstream symptom;
+                                // raising here would replace the sticky
+                                // "Training Diverged (Suspended)" banner (which
+                                // explains *why* training stopped) with a
+                                // secondary alarm. Mirrors the heartbeat gate.
+                                guard !self.trainingSuspendedByDivergence else { return }
                                 self.trainingAlarm?.raise(
                                     severity: .critical,
                                     title: "Policy Collapse (legal mass)",
@@ -2356,7 +2812,7 @@ extension SessionController {
                                     legalMassWindow.count, illegalMassThreshold,
                                     legalMassWindow.first ?? 0, legalMassWindow.last ?? 0)
                             )
-                            if let rec = collapseRecorder {
+                            if let rec = collapseRecorder, claimTermination() {
                                 let destDescription = collapseOutputURL?.path ?? "<stdout>"
                                 SessionLogger.shared.log(
                                     "[APP] --train: legal-mass collapse abort at elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
@@ -2393,6 +2849,10 @@ extension SessionController {
                 for await _ in group { }
             }
 
+            // Flush + seal the recording corpus (if any) before teardown clears
+            // its references. Blocks briefly while the serial queue drains.
+            corpusRecorder?.finishAndSeal()
+
             await MainActor.run {
                 trainingAlarm?.clear()
                 realTraining = false
@@ -2417,14 +2877,62 @@ extension SessionController {
                 effectiveReplayRatioTarget = nil
                 lastReplayRatioCompensatorAt = nil
                 cliRecorder = nil
+                activeRecordingCorpusID = nil
                 EarlyStopCoordinator.shared.earlyStopHandler = nil
+                EarlyStopCoordinator.shared.saveSessionHandler = nil
             }
         }
     }
 
+    /// Suspend training after a divergence (non-finite loss / GPU failure /
+    /// gradient blow-up) WITHOUT tearing the run down.
+    ///
+    /// Unlike `stopRealTraining`, this keeps the run's other tasks (heartbeat,
+    /// self-play, stats ticker, arena coordinator) alive and — deliberately —
+    /// does NOT clear the alarm. The trainer worker that called this returns
+    /// immediately afterward (a NaN net can't keep stepping), but the session
+    /// stays loaded with the banner up so the user can see what happened and
+    /// reload an earlier checkpoint. `trainingSuspendedByDivergence` is the gate
+    /// that stops the now-poisoned trainer weights from doing further harm:
+    /// arenas won't run (no candidate snapshot of the NaN weights) and the
+    /// 4-hour periodic autosave won't persist the diverged session.
+    ///
+    /// Idempotent: a second diverging step (e.g. a brief window before the
+    /// worker fully unwinds) re-enters here and no-ops past the guard so the
+    /// banner detail isn't churned.
+    func suspendTrainingOnDivergence(reason: String) {
+        guard !trainingSuspendedByDivergence else { return }
+        trainingSuspendedByDivergence = true
+        // Raise the banner explicitly rather than relying on the heartbeat's
+        // gNorm/entropy streak detector having already tripped — an instant
+        // step-1 NaN can diverge before any streak threshold is met. A distinct
+        // title also makes the banner sticky: the divergence/value-head
+        // auto-clear paths only clear alarms whose title they own, so a later
+        // recovery streak (or a run of nil samples once stepping stops) can't
+        // silently wipe this one. The user dismisses it, or an explicit Stop
+        // clears it.
+        trainingAlarm?.raise(
+            severity: .critical,
+            title: "Training Diverged (Suspended)",
+            detail: "Trainer halted on a non-finite / blown-up step (\(reason)). Arenas and the 4-hour autosave are paused. Reload an earlier checkpoint or Stop."
+        )
+        // Close the in-progress training segment so cumulative wall-time totals
+        // exclude the suspended idle (the trainer is no longer stepping).
+        checkpoint?.closeActiveTrainingSegment(reason: "diverge-suspend")
+        SessionLogger.shared.log("[DIVERGE] training suspended (banner kept, arenas + 4h autosave gated): \(reason)")
+    }
+
+    /// Full teardown of a Play-and-Train run — the user-initiated Stop path.
+    /// Cancels the worker task group, clears any alarm banner (including a
+    /// divergence-suspend banner), closes the active training segment, and
+    /// disarms the periodic-save scheduler so a Stop-then-Start doesn't fire an
+    /// immediate save. (A training divergence no longer routes here — it calls
+    /// `suspendTrainingOnDivergence` instead, which keeps the banner and the
+    /// session alive.)
     func stopRealTraining() {
         realTrainingTask?.cancel()
         realTrainingTask = nil
+        trainingSuspendedByDivergence = false
         trainingAlarm?.clear()
         // Close the in-progress training segment so cumulative wall-time
         // totals exclude post-Stop idle. If saving immediately after,
@@ -2439,6 +2947,65 @@ extension SessionController {
         periodicSaveController = nil
         periodicSaveLastPollAt = nil
         periodicSaveInFlight = false
+    }
+
+    /// Restore (or clear) the probe-monitor histories on a non-continue
+    /// Play-and-Train start, mirroring the chart-data seed. Pulled out
+    /// of `startRealTraining` so its substantial body doesn't add to
+    /// that already-large function's type-check cost. When a loaded
+    /// session is present its saved snapshots are restored (or the
+    /// monitors are cleared if an older session lacks them); a fresh
+    /// start with no loaded session clears both. Both paths log under
+    /// `[RESUME-PROBE]` so a desync is visible.
+    private func restoreProbeHistoriesForStart(
+        resumeState: SessionCheckpointState?
+    ) {
+        guard let resumed = resumeState else {
+            lichessProbeHistory.clearAll()
+            lichessProbeWideHistory.clearAll()
+            tacticalProbeHistory.clearAll()
+            SessionLogger.shared.log(
+                "[RESUME-PROBE] Fresh session — probe monitors cleared"
+            )
+            return
+        }
+        if let snap = resumed.lichessProbeHistory {
+            lichessProbeHistory.restore(from: snap)
+            let overallCount = lichessProbeHistory.overallSeries.count
+            let themeCount = lichessProbeHistory.entries.count
+            let rowCount = lichessProbeHistory.latestPerPuzzleResults.count
+            SessionLogger.shared.log(
+                "[RESUME-PROBE] Restored Lichess probe history: \(overallCount) overall ticks, \(themeCount) themes, \(rowCount) latest puzzle rows"
+            )
+        } else {
+            lichessProbeHistory.clearAll()
+            SessionLogger.shared.log(
+                "[RESUME-PROBE] No saved Lichess probe history (older session) — starting empty"
+            )
+        }
+        if let snap = resumed.lichessProbeWideHistory {
+            lichessProbeWideHistory.restore(from: snap)
+            SessionLogger.shared.log(
+                "[RESUME-PROBE] Restored WIDE Lichess probe history: \(lichessProbeWideHistory.overallSeries.count) overall ticks"
+            )
+        } else {
+            lichessProbeWideHistory.clearAll()
+            SessionLogger.shared.log(
+                "[RESUME-PROBE] No saved WIDE Lichess probe history (older session) — starting empty"
+            )
+        }
+        if let snap = resumed.tacticalProbeHistory {
+            tacticalProbeHistory.restore(from: snap)
+            let seriesCount = tacticalProbeHistory.entries.count
+            SessionLogger.shared.log(
+                "[RESUME-PROBE] Restored tactical probe history: \(seriesCount) probe series"
+            )
+        } else {
+            tacticalProbeHistory.clearAll()
+            SessionLogger.shared.log(
+                "[RESUME-PROBE] No saved tactical probe history (older session) — starting empty"
+            )
+        }
     }
 
 }

@@ -42,9 +42,12 @@ final class TacticalProbeHistory {
     private(set) var entries: [String: [Entry]] = [:]
 
     /// Cap per series so a long-running monitor session doesn't grow
-    /// unboundedly. `maxEntriesPerProbe` × the watcher's `intervalSec`
-    /// determines the visible history window — enough to read short-term
-    /// drift in the spark line without filling the panel with stale data.
+    /// unboundedly. `maxEntriesPerProbe` × the watcher's effective
+    /// tick interval (`TacticalProbeWatcher.triggerEverySteps` × the
+    /// trainer's average step latency, ~0.4 s at default cadence)
+    /// determines the visible history window — enough to read
+    /// short-term drift in the spark line without filling the panel
+    /// with stale data.
     let maxEntriesPerProbe: Int
 
     init(maxEntriesPerProbe: Int = 120) {
@@ -116,6 +119,43 @@ final class TacticalProbeHistory {
     /// drop accumulated history without closing/reopening the window.
     func clearAll() {
         entries.removeAll()
+    }
+
+    // MARK: - Session persistence
+
+    /// Pack every per-probe series into a `Codable` snapshot for the
+    /// session checkpoint. Each `ProbeResult` is stored position-free as
+    /// a `ProbeResultCodable` (the board is reconstructed by probe name
+    /// on restore).
+    func makeSnapshot() -> TacticalProbeHistorySnapshot {
+        var out: [String: [TacticalProbeHistorySnapshot.EntryCodable]] = [:]
+        for (name, series) in entries {
+            out[name] = series.map {
+                TacticalProbeHistorySnapshot.EntryCodable(
+                    timestamp: $0.timestamp,
+                    result: ProbeResultCodable($0.result)
+                )
+            }
+        }
+        return TacticalProbeHistorySnapshot(entries: out)
+    }
+
+    /// Replace the entire history with a restored snapshot. Entries
+    /// whose probe name no longer resolves to a fixture are skipped; a
+    /// series left empty by that filter is dropped entirely.
+    func restore(from snapshot: TacticalProbeHistorySnapshot) {
+        let index = ProbeFixtureIndex.build()
+        var rebuilt: [String: [Entry]] = [:]
+        for (name, series) in snapshot.entries {
+            let restored: [Entry] = series.compactMap { encoded in
+                guard let result = encoded.result.reconstruct(using: index) else {
+                    return nil
+                }
+                return Entry(timestamp: encoded.timestamp, result: result)
+            }
+            if !restored.isEmpty { rebuilt[name] = restored }
+        }
+        entries = rebuilt
     }
 
     /// Aggregate "Tactical" score for the upper status bar: sum of

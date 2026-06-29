@@ -38,6 +38,12 @@ struct TitleBarView: View {
             .popover(isPresented: $showingInfoPopover) {
                 AboutPopoverContent(network: network)
             }
+            if let arch = network?.network.arch {
+                Text(arch.shortLabel)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
             Spacer()
             if network != nil {
                 Text("Self play ID: \(networkIdentifier?.description ?? "–")")

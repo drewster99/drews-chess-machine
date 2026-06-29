@@ -161,7 +161,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             let origIdx = PolicyEncoding.policyIndex(move, currentPlayer: state.currentPlayer)
 
             // Encode the board, then decodeSynthetic → "white" state.
-            let tensor = BoardEncoder.encode(state)
+            let tensor = BoardEncoder.encode(state, encoding: .basic30)
             let synth = tensor.withUnsafeBufferPointer { buf -> GameState in
                 BoardEncoder.decodeSynthetic(from: buf.baseAddress!)
             }
@@ -215,39 +215,36 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
     // (≈2% of uniform 30/4864) on multiple random seeds — and the
     // diagnostic in `testDiagnosticPrintInitNetworkPolicyDistribution`
     // showed that ONE policy channel was capturing 90%+ of all softmax
-    // mass. Root cause: `ChessNetwork`'s inference-mode BN initializes
-    // running_mean=0 and running_var=1 so the BN op becomes
+    // mass. Root cause: a raw random-init inference network whose BN
+    // running stats are (mean=0, var=1) computes BN as
     //   `(x - 0) / sqrt(1 + eps) = x ≈ identity`.
-    // For an 8-block residual tower with SE modules and He-init
-    // weights, "identity BN" lets activations grow uncapped through
-    // the tower (residual sum amplifies variance), producing logits
-    // whose distribution has very heavy tails. The softmax over 4864
-    // cells then collapses onto a single dominant channel determined
-    // by which output-channel weight vector happens to align best
-    // with the (un-normalized) tower output.
+    // With "identity BN," a deep residual tower with He-init weights
+    // lets activations grow uncapped through the tower (the residual
+    // sum amplifies variance), producing logits with very heavy tails.
+    // The softmax over 4864 cells then collapses onto a single dominant
+    // channel — the output-channel weight vector that happens to align
+    // best with the (un-normalized) tower output.
     //
-    // The live CHAMPION network used by self-play and Play Game runs
-    // in inference mode, so until an arena promotion replaces its
-    // weights+running-stats with values from the trainer (which has
-    // been training-mode BN-updating its running stats), the champion
-    // is in this degenerate state. Self-play with this champion plays
-    // legal moves uniformly (the legal-move masking + softmax happens
-    // CPU-side after gathering only the legal-cell logits, so the
-    // illegal cells with the runaway logit are excluded), which
-    // produces a no-signal replay buffer. The trainer can't learn
-    // chess from no-signal data, the candidate never beats the
-    // champion in arena, no promotion happens, and the champion stays
-    // degenerate forever. End result: pwNorm ~= init, legalMass ~=
-    // uniform, top1Legal = 0, training loss drifts but no real
-    // progress.
+    // What makes the production network well-conditioned at init is the
+    // **one-shot BN warmup** in `ChessMPSNetwork(.randomWeights)`: it
+    // runs one batched forward through a training-mode sibling and loads
+    // the resulting per-layer batch mean/var as the inference network's
+    // running stats, so inference BN actually normalizes. That warmup is
+    // generic over the BN-tensor arrays, so it primes every BN layer —
+    // including the pre-activation tower's `tower_final_bn`. The
+    // architecture also keeps each block's contribution small at init
+    // (ReZero α ≈ 1/√numBlocks scaling the residual branch, and the SE
+    // gate near 0.5), so the tower stays well-conditioned. (Historically
+    // this conditioning was instead provided by a zero-γ "identity block"
+    // init; that is gone — ReZero + the warmup do the job now.)
     //
-    // This test is the REGRESSION GATE — it will FAIL until the
-    // BN-init scheme is changed to actually normalize activations
-    // (e.g., warmup the running stats with a one-time forward pass
-    // through a small batch of starting-position-and-variants, or
-    // initialize `running_var` per layer to the value that makes the
-    // inference forward pass approximately preserve activation
-    // variance — fan-in × He-std² for the predecessor conv).
+    // Without the warmup the live CHAMPION (inference mode) would play
+    // legal moves ~uniformly (legal-move masking + softmax happens
+    // CPU-side over only the legal-cell logits, excluding the runaway
+    // illegal cell), producing a no-signal replay buffer the trainer
+    // can't learn from. This test is the REGRESSION GATE for that
+    // conditioning — it FAILS if `ChessMPSNetwork(.randomWeights)`'s BN
+    // warmup (or the init scaling) regresses.
     //
     // We average across `trialCount` random seeds so the assertion
     // is robust to occasional "lucky" inits where the dominant
@@ -278,7 +275,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             for state in states {
                 let legal = MoveGenerator.legalMoves(for: state)
                 if legal.isEmpty { continue }
-                let tensor = BoardEncoder.encode(state)
+                let tensor = BoardEncoder.encode(state, encoding: .basic30)
                 nonisolated(unsafe) var policy: [Float] = []
                 nonisolated(unsafe) var value: Float = 0
                 try await net.evaluate(board: tensor) { policyBuf, v in
@@ -333,7 +330,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         // 8 positions: starting + 7 random walks.
         let states = sampleStates(count: 8)
         XCTAssertEqual(states.count, 8)
-        let tensors = states.map { BoardEncoder.encode($0) }
+        let tensors = states.map { BoardEncoder.encode($0, encoding: .basic30) }
         let totalFloats = tensors.reduce(0) { $0 + $1.count }
 
         // Pack into one contiguous buffer.
@@ -359,78 +356,110 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
                 singlePolicy = Array(policyBuf)
                 singleValue = v
             }
-            XCTAssertEqual(singleValue, batchValues[i], accuracy: 1e-4,
+            // Tolerances derived from the active dtype. The two paths
+            // (batched vs single) differ only by accumulated rounding: a
+            // dtype-independent reduction-order floor (what fp32 needs) plus
+            // a per-element ULP term that scales with the value magnitude
+            // and `ChessNetwork.weightRelativeEpsilon` (what bf16 needs —
+            // its ULP is ~100× coarser than fp32's, so a fixed 1e-3 logit
+            // tolerance is below a single bf16 ULP and infeasible). Both
+            // still catch a gross batching bug, which differs by ~O(logit).
+            let eps = ChessNetwork.weightRelativeEpsilon(for: ChessNetwork.mpsDataType(for: .current))
+            let valueTol = max(1e-4, 8 * eps)   // value scalar ∈ [−1, 1]
+            XCTAssertEqual(singleValue, batchValues[i], accuracy: valueTol,
                            "Batched value differs from single-call value at slot \(i)")
 
             let base = i * ChessNetwork.policySize
-            // Compare a representative subset of the policy.
             var maxAbsDiff: Float = 0
+            var maxAbsLogit: Float = 1   // floor at 1 so the tol never collapses
             for k in 0..<ChessNetwork.policySize {
                 let d = abs(singlePolicy[k] - batchPolicy[base + k])
                 if d > maxAbsDiff { maxAbsDiff = d }
+                maxAbsLogit = max(maxAbsLogit, abs(singlePolicy[k]), abs(batchPolicy[base + k]))
             }
+            let policyTol = max(1e-3, 8 * eps * maxAbsLogit)
             XCTAssertLessThan(
-                maxAbsDiff, 1e-3,
-                "Batched policy logit max-abs-diff=\(maxAbsDiff) at slot \(i). " +
-                "Single-call vs batched evaluate must agree closely under inference-mode BN."
+                maxAbsDiff, policyTol,
+                "Batched policy logit max-abs-diff=\(maxAbsDiff) at slot \(i) (tol=\(policyTol), " +
+                "maxAbsLogit=\(maxAbsLogit)). Single-call vs batched evaluate must agree to dtype precision."
             )
         }
     }
 
-    // MARK: - Test 5: He-init weight sanity (statistical)
+    // MARK: - Test 5: init-weight sanity (statistical)
     //
-    // Build the network and sanity check that the weight distributions
-    // match the He-init recipe documented in `ChessNetwork.heInitData`.
-    // Specifically: per-tensor std should be within ±15% of
-    // sqrt(2/fanIn). A bug in `heInitDataConvOIHW` or `heInitDataFCInOut`
-    // (e.g., wrong fanIn axis) would shift the std by a noticeable
-    // factor.
+    // Sanity check that each layer's init weight distribution matches its
+    // documented recipe: He (`sqrt(2/fanIn)`) for conv/FC weights feeding a
+    // ReLU, Glorot (`sqrt(2/(fanIn+fanOut))`) for the SE FC2 weight feeding
+    // the sigmoid gate (see `ChessNetwork.glorotInitDataFCInOut`). A wrong
+    // fanIn axis or init recipe would shift the std by a noticeable factor.
+    //
+    // Shapes are derived from the live arch constants (not hardcoded), and
+    // the init `Data` is decoded per `ChessNetwork.dataType` — reinterpreting
+    // raw bytes as Float32 is wrong under the 16-bit dtypes. Tolerances pick
+    // up a `weightRelativeEpsilon` term so they track the active dtype's
+    // quantization, not an fp32-era constant.
 
-    func testHeInitWeightStdsMatchExpected() throws {
-        // We can't easily read MPSGraph variables directly; instead we
-        // poke `ChessNetwork.heInitData`'s output for each layer's
-        // shape and verify the std.
-        struct Shape { let name: String; let shape: [Int]; let fanIn: Int }
-        var shapes: [Shape] = [
-            Shape(name: "stem_conv", shape: [128, 20, 3, 3], fanIn: 20*3*3),
-            Shape(name: "value_conv", shape: [1, 128, 1, 1], fanIn: 128*1*1),
-            Shape(name: "policy_conv", shape: [76, 128, 1, 1], fanIn: 128*1*1),
-            Shape(name: "se_fc1", shape: [128, 32], fanIn: 128),
-            Shape(name: "se_fc2", shape: [32, 128], fanIn: 32),
-            Shape(name: "value_fc1", shape: [64, 64], fanIn: 64),
-            Shape(name: "value_fc2", shape: [64, 1], fanIn: 64),
+    func testInitWeightStdsMatchExpected() throws {
+        enum Kind { case he, glorot }
+        struct Spec { let name: String; let shape: [Int]; let fanIn: Int; let fanOut: Int; let kind: Kind }
+        let cur = NetworkArchitecture.current
+        let dtype = ChessNetwork.mpsDataType(for: cur)
+        let c = cur.towerOutputChannels
+        let reduced = c / cur.blockGroups[0].seReductionRatio
+        let vConv = cur.valueHeadConvChannels
+        let vFlat = ChessNetwork.boardSize * ChessNetwork.boardSize * vConv
+        let vHidden = cur.valueHeadHiddenUnits
+        let k = cur.blockGroups[0].conv1KernelSize
+        let kArea = k * k
+        var specs: [Spec] = [
+            Spec(name: "stem_conv", shape: [c, cur.inputPlanes, cur.stemConvKernelSize, cur.stemConvKernelSize], fanIn: cur.inputPlanes * cur.stemConvKernelSize * cur.stemConvKernelSize, fanOut: 0, kind: .he),
+            Spec(name: "value_conv", shape: [vConv, c, 1, 1], fanIn: c, fanOut: 0, kind: .he),
+            Spec(name: "policy_pre_conv", shape: [c, c, 1, 1], fanIn: c, fanOut: 0, kind: .he),
+            Spec(name: "policy_conv", shape: [ChessNetwork.policyChannels, c, 1, 1], fanIn: c, fanOut: 0, kind: .he),
+            Spec(name: "se_fc1", shape: [c, reduced], fanIn: c, fanOut: 0, kind: .he),
+            // SE FC2: [reduced, 2·channels] (gammas‖betas), Glorot-init.
+            Spec(name: "se_fc2", shape: [reduced, 2*c], fanIn: reduced, fanOut: 2*c, kind: .glorot),
+            Spec(name: "value_fc1", shape: [vFlat, vHidden], fanIn: vFlat, fanOut: 0, kind: .he),
+            Spec(name: "value_fc2", shape: [vHidden, cur.valueHeadClasses], fanIn: vHidden, fanOut: 0, kind: .he),
         ]
-        for i in 0..<8 {
-            shapes.append(Shape(name: "block\(i)_conv1", shape: [128, 128, 3, 3], fanIn: 128*3*3))
-            shapes.append(Shape(name: "block\(i)_conv2", shape: [128, 128, 3, 3], fanIn: 128*3*3))
+        for i in 0..<cur.numBlocks {
+            specs.append(Spec(name: "block\(i)_conv1", shape: [c, c, k, k], fanIn: c*kArea, fanOut: 0, kind: .he))
+            specs.append(Spec(name: "block\(i)_conv2", shape: [c, c, k, k], fanIn: c*kArea, fanOut: 0, kind: .he))
         }
-        for s in shapes {
+        let eps = ChessNetwork.weightRelativeEpsilon(for: dtype)
+        for s in specs {
             let count = s.shape.reduce(1, *)
-            let data = ChessNetwork.heInitData(shape: s.shape, fanIn: s.fanIn)
-            // Reinterpret as Float32 array.
-            let n = data.count / MemoryLayout<Float>.size
-            XCTAssertEqual(n, count, "Element count mismatch for \(s.name)")
-            var floats = [Float](repeating: 0, count: n)
-            data.withUnsafeBytes { raw in
-                _ = floats.withUnsafeMutableBytes { dst in
-                    raw.copyBytes(to: dst, count: data.count)
-                }
+            let data: Data
+            let expectedStd: Float
+            switch s.kind {
+            case .he:
+                data = ChessNetwork.heInitData(shape: s.shape, fanIn: s.fanIn, dataType: dtype)
+                expectedStd = sqrtf(2.0 / Float(s.fanIn))
+            case .glorot:
+                data = ChessNetwork.glorotInitDataFCInOut(shape: s.shape, dataType: dtype)
+                expectedStd = sqrtf(2.0 / Float(s.fanIn + s.fanOut))
             }
+            // Element count + decode per the active dtype.
+            let n = data.count / ChessNetwork.bytesPerWeightElement(for: dtype)
+            XCTAssertEqual(n, count, "Element count mismatch for \(s.name)")
+            let floats = ChessNetwork.decodeWeightData(data, dataType: dtype)
             let mean = floats.reduce(Float(0), +) / Float(floats.count)
             let varSum = floats.reduce(Float(0)) { acc, x in acc + (x - mean) * (x - mean) }
             let std = sqrtf(varSum / Float(floats.count))
-            let expectedStd = sqrtf(2.0 / Float(s.fanIn))
-            // Statistical tolerance: shrink as N grows.
-            let tol = expectedStd * 5.0 / sqrtf(Float(count))
-            let bound = max(tol, expectedStd * 0.05)
+            // Sampling tolerance (shrinks as N grows) + a dtype-quantization
+            // term (each weight is rounded to ~eps relative precision).
+            let samplingTol = expectedStd * 5.0 / sqrtf(Float(count))
+            let dtypeTol = expectedStd * eps * 4
+            let stdBound = max(samplingTol, expectedStd * 0.05) + dtypeTol
             XCTAssertEqual(
-                std, expectedStd, accuracy: bound,
-                "\(s.name) He-init std=\(std), expected \(expectedStd), tol=\(bound). " +
-                "An off std implies wrong fanIn axis in heInitData."
+                std, expectedStd, accuracy: stdBound,
+                "\(s.name) init std=\(std), expected \(expectedStd), tol=\(stdBound). " +
+                "An off std implies a wrong fanIn axis or init recipe."
             )
-            // Mean should be near zero
-            XCTAssertEqual(mean, 0, accuracy: expectedStd * 5.0 / sqrtf(Float(count)),
-                           "\(s.name) He-init mean=\(mean) far from 0 — biased generator?")
+            // Mean should be near zero.
+            XCTAssertEqual(mean, 0, accuracy: samplingTol + dtypeTol,
+                           "\(s.name) init mean=\(mean) far from 0 — biased generator?")
         }
     }
 
@@ -512,36 +541,66 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
     //   - A perpetually-zero gradient (stuck channel; less likely but
     //     would still warrant investigation).
 
-    func testEveryTrainableVariableUpdatesAfterOneStep() async throws {
+    func testEveryTrainableVariableReceivesGradient() async throws {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        // Disable LR warmup for this test. With the default
-        // `lrWarmupSteps = 100`, the very first step has
-        // `warmupMul = _completedTrainSteps / lrWarmupSteps = 0/100 = 0`,
-        // which forces `lr = 0` in the SGD update
-        // (`v - lr * (clipped_grad + wd * v) = v`). Every trainable
-        // would then be exactly unchanged regardless of graph
-        // connectivity, defeating the whole point of this test.
-        // `lrWarmupSteps: 0` short-circuits the warmup branch in
-        // `buildFeeds` (ChessTrainer.swift:2591) to `warmupMul = 1.0`,
-        // so the first step uses the full base learning rate.
-        let trainer = try ChessTrainer(lrWarmupSteps: 0)
-        let weightsBefore = try await trainer.network.exportWeights()
+        // This probes *connectivity* — every trainable must receive a nonzero
+        // loss-gradient. Under the canonical bf16 path the optimizer updates an
+        // fp32 *master* of each weight (the bf16 working copy is re-derived as
+        // `cast(master)` each step), so connectivity is read off the **master**,
+        // not the working copy: any nonzero gradient moves the fp32 master
+        // (relative ULP ~2⁻²³), whereas the bf16 working copy is ULP-limited
+        // (~2⁻⁷) and a small-but-nonzero gradient can leave it bit-identical
+        // for a step — which made a working-copy probe flaky (a single random
+        // weight would intermittently look "disconnected"). `exportTrainerWeights()`'s
+        // base portion is the masters under bf16 and the working weights under
+        // `.float32`, so this is unambiguous in both modes.
+        //
+        //  • `lrWarmupSteps: 0` — the default warmup forces lr = 0 on step 0,
+        //    freezing every weight regardless of wiring.
+        //  • `weightDecayC: 0` — removes the decoupled `wd·weight` term; with
+        //    decay on, a large lr would move *every* decayed weight even at
+        //    zero gradient, masking a genuine disconnection. With wd = 0 a
+        //    disconnected variable's master update is *exactly* zero and caught.
+        //
+        // Priming each block's residual gain (ReZero α and bn2 γ) to 1.0
+        // restores full-magnitude branch gradient (α inits to 1/√numBlocks ≈
+        // 0.29 and the SE gate sits near 0.5, so branch weights otherwise see
+        // only ≈ 0.14× gradient), keeping every gradient comfortably nonzero.
+        let trainer = try ChessTrainer(
+            learningRate: 10.0,
+            weightDecayC: 0,
+            sqrtBatchScalingForLR: false,
+            lrWarmupSteps: 0
+        )
+        var primed = try await trainer.network.exportWeights()
+        let trainableVars = trainer.network.trainableVariables
+        for (i, v) in trainableVars.enumerated()
+        where v.operation.name.hasSuffix("_bn2_gamma")
+            || v.operation.name.hasSuffix("_res_scale") {
+            primed[i] = [Float](repeating: 1.0, count: primed[i].count)
+        }
+        try await trainer.network.loadWeights(primed)
+
+        // Read the fp32 master (exportTrainerWeights' base portion; the working
+        // weights under .float32), where any nonzero gradient is unambiguously
+        // visible — no bf16-ULP rounding.
+        let masterBefore = try await trainer.exportTrainerWeights()
         // Run one step on synthetic random data via the public path.
         _ = try await trainer.trainStep(batchSize: 32)
-        let weightsAfter = try await trainer.network.exportWeights()
+        let masterAfter = try await trainer.exportTrainerWeights()
 
-        XCTAssertEqual(weightsBefore.count, weightsAfter.count)
-        // Trainables come first (then BN running stats). Use the
-        // network's internal split — we only care about trainables here.
+        XCTAssertEqual(masterBefore.count, masterAfter.count)
+        // Trainables come first (then BN running stats, then velocity). We
+        // only check the trainable masters.
         let nTrainables = trainer.network.trainableVariables.count
         XCTAssertGreaterThan(nTrainables, 0)
 
         var unchangedNames: [Int] = []
         for i in 0..<nTrainables {
-            let before = weightsBefore[i]
-            let after = weightsAfter[i]
+            let before = masterBefore[i]
+            let after = masterAfter[i]
             XCTAssertEqual(before.count, after.count, "Tensor \(i) shape changed")
             var anyDiff: Float = 0
             for k in 0..<before.count {
@@ -554,8 +613,8 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         }
         XCTAssertEqual(
             unchangedNames, [],
-            "After one trainStep, the following trainable indices did NOT change at all: \(unchangedNames). " +
-            "These variables receive no gradient — likely a build-time disconnect between the loss and the variable."
+            "After one trainStep, these trainable indices' fp32 master did NOT change at all: \(unchangedNames). " +
+            "They receive no gradient — likely a build-time disconnect between the loss and the variable."
         )
     }
 
@@ -673,21 +732,21 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
     func testRepetitionPlanesReflectCount() {
         var s = GameState.starting
         s = s.withRepetitionCount(0)
-        var t = BoardEncoder.encode(s)
+        var t = BoardEncoder.encode(s, encoding: .basic30)
         XCTAssertEqual(sumPlane(tensor: t, plane: 18), 0,
                        "rep plane 18 must be all zero when repCount=0")
         XCTAssertEqual(sumPlane(tensor: t, plane: 19), 0,
                        "rep plane 19 must be all zero when repCount=0")
 
         s = GameState.starting.withRepetitionCount(1)
-        t = BoardEncoder.encode(s)
+        t = BoardEncoder.encode(s, encoding: .basic30)
         XCTAssertEqual(sumPlane(tensor: t, plane: 18), 64,
                        "rep plane 18 must be all 1.0 when repCount=1")
         XCTAssertEqual(sumPlane(tensor: t, plane: 19), 0,
                        "rep plane 19 must remain zero when repCount=1")
 
         s = GameState.starting.withRepetitionCount(2)
-        t = BoardEncoder.encode(s)
+        t = BoardEncoder.encode(s, encoding: .basic30)
         XCTAssertEqual(sumPlane(tensor: t, plane: 18), 64,
                        "rep plane 18 must be all 1.0 when repCount=2")
         XCTAssertEqual(sumPlane(tensor: t, plane: 19), 64,
@@ -701,9 +760,9 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
     // input planes). Hard-coded constants in different files MUST match.
 
     func testEncoderTensorLengthMatchesNetworkInputShape() {
-        XCTAssertEqual(BoardEncoder.tensorLength,
-                       ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize)
-        XCTAssertEqual(BoardEncoder.tensorLength, 1920)
+        XCTAssertEqual(BoardEncoder.tensorLength(for: .basic30),
+                       NetworkArchitecture.current.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize)
+        XCTAssertEqual(BoardEncoder.tensorLength(for: .basic30), 1920)
         XCTAssertEqual(ChessNetwork.policySize,
                        ChessNetwork.policyChannels * ChessNetwork.boardSize * ChessNetwork.boardSize)
         XCTAssertEqual(ChessNetwork.policySize, 4864)
@@ -829,7 +888,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             let storedIdx = PolicyEncoding.policyIndex(
                 move, currentPlayer: state.currentPlayer
             )
-            let tensor = BoardEncoder.encode(state)
+            let tensor = BoardEncoder.encode(state, encoding: .basic30)
 
             // ---- Trainer-side legalMassSnapshot reconstruction ----
             let synth = tensor.withUnsafeBufferPointer { buf -> GameState in
@@ -895,7 +954,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             let net = try ChessMPSNetwork(.randomWeights)
             let state: GameState = .starting
             let legal = MoveGenerator.legalMoves(for: state)
-            let tensor = BoardEncoder.encode(state)
+            let tensor = BoardEncoder.encode(state, encoding: .basic30)
             nonisolated(unsafe) var policy: [Float] = []
             try await net.evaluate(board: tensor) { policyBuf, _ in
                 policy = Array(policyBuf)
@@ -992,7 +1051,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             throw XCTSkip("Metal not available")
         }
         let net = try ChessNetwork(bnMode: .inference)
-        let zeroBoard = [Float](repeating: 0, count: BoardEncoder.tensorLength)
+        let zeroBoard = [Float](repeating: 0, count: BoardEncoder.tensorLength(for: .basic30))
         nonisolated(unsafe) var policy: [Float] = []
         nonisolated(unsafe) var value: Float = 0
         try await net.evaluate(board: zeroBoard) { policyBuf, v in
@@ -1056,7 +1115,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
 
             var batchBoards: [Float] = []
             let states = sampleStates(count: 8)
-            for s in states { batchBoards.append(contentsOf: BoardEncoder.encode(s)) }
+            for s in states { batchBoards.append(contentsOf: BoardEncoder.encode(s, encoding: .basic30)) }
             nonisolated(unsafe) var infPolicy: [Float] = []
             try await infNet.evaluateBatched(batchBoards: batchBoards, count: 8) { policyBuf, _, _ in
                 infPolicy = Array(policyBuf)
@@ -1107,7 +1166,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         let net = try ChessNetwork(bnMode: .training)
         let states = sampleStates(count: 64)
         var batch: [Float] = []
-        for s in states { batch.append(contentsOf: BoardEncoder.encode(s)) }
+        for s in states { batch.append(contentsOf: BoardEncoder.encode(s, encoding: .basic30)) }
         nonisolated(unsafe) var policy: [Float] = []
         try await net.evaluateBatched(batchBoards: batch, count: states.count) { policyBuf, _, _ in
             policy = Array(policyBuf)
@@ -1220,8 +1279,8 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             blackKingsideCastle: false, blackQueensideCastle: false,
             enPassantSquare: nil, halfmoveClock: 0
         )
-        XCTAssertEqual(BoardEncoder.encode(whiteToMove),
-                       BoardEncoder.encode(blackToMove),
+        XCTAssertEqual(BoardEncoder.encode(whiteToMove, encoding: .basic30),
+                       BoardEncoder.encode(blackToMove, encoding: .basic30),
                        "Symmetric position must encode identically for both sides")
     }
 
@@ -1255,5 +1314,30 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             s += tensor[i]
         }
         return s
+    }
+
+    // MARK: - parameterCount matches the live persistent-tensor inventory
+    //
+    // `NetworkArchitecture.parameterCount` is a hand-maintained formula
+    // derived from the arch fields (see its doc comment). `exportWeights()`
+    // emits one [Float] per persistent variable (trainables + BN running
+    // stats) — exactly what `parameterCount` claims to count. They must
+    // agree, or the formula has silently desynced from a layer-shape
+    // change (the documented failure mode). This guards the v4 edits:
+    // wider SE FC2, the per-block ReZero scalar, and tower_final_bn.
+
+    func testParameterCountMatchesExportedTensorInventory() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal not available")
+        }
+        let net = try ChessNetwork(bnMode: .inference)
+        let weights = try await net.exportWeights()
+        let exportedElementCount = weights.reduce(0) { $0 + $1.count }
+        XCTAssertEqual(
+            exportedElementCount, net.arch.parameterCount,
+            "NetworkArchitecture.parameterCount (\(net.arch.parameterCount)) disagrees with the " +
+            "summed element count of exportWeights() (\(exportedElementCount)). The hand-maintained " +
+            "parameterCount formula has desynced from the actual layer shapes — update it in lockstep."
+        )
     }
 }

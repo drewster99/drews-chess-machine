@@ -35,10 +35,17 @@ protocol ChessPlayer: AnyObject {
     /// engine generates this once per ply and shares it with the player to
     /// avoid duplicate generation. The player must return a move from this
     /// list (or one that is otherwise legal).
+    ///
+    /// `recentHistory` is the engine's window of recent prior `GameState`s
+    /// (most-recent-first, index 0 = 1 ply ago), supplied so history-stacking
+    /// input encodings (`full10ply200`) can build their multi-frame tensor.
+    /// Players whose encoding ignores history disregard it; it is empty at the
+    /// start of a game.
     func onChooseNextMove(
         opponentMove: ChessMove?,
         newGameState gameState: GameState,
-        legalMoves: [ChessMove]
+        legalMoves: [ChessMove],
+        recentHistory: [GameState]
     ) async throws -> ChessMove
 
     /// Called when the game ends, regardless of outcome.
@@ -61,7 +68,8 @@ final class RandomPlayer: ChessPlayer {
     func onChooseNextMove(
         opponentMove: ChessMove?,
         newGameState gameState: GameState,
-        legalMoves: [ChessMove]
+        legalMoves: [ChessMove],
+        recentHistory: [GameState]
     ) async throws -> ChessMove {
         guard !legalMoves.isEmpty else {
             throw ChessPlayerError.noLegalMoves
@@ -85,7 +93,8 @@ final class NullPlayer: ChessPlayer {
     func onChooseNextMove(
         opponentMove: ChessMove?,
         newGameState gameState: GameState,
-        legalMoves: [ChessMove]
+        legalMoves: [ChessMove],
+        recentHistory: [GameState]
     ) async throws -> ChessMove {
         throw ChessPlayerError.noPlayerAvailable
     }

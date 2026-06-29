@@ -30,6 +30,9 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// or collapse detector). Readers should call
         /// `setTerminationReason(_:)` before `writeJSON(...)`.
         var terminationReason: TerminationReason?
+        /// Id of the corpus self-play games are recorded into, surfaced in
+        /// results.json provenance. Set via setRecordingCorpusID(_:).
+        var recordingCorpusID: String?
     }
     private let lock = OSAllocatedUnfairLock<State>(initialState: State())
 
@@ -37,6 +40,10 @@ final class CliTrainingRecorder: @unchecked Sendable {
 
     func setSessionID(_ id: String?) {
         lock.withLock { $0.sessionID = id }
+    }
+
+    func setRecordingCorpusID(_ id: String?) {
+        lock.withLock { $0.recordingCorpusID = id }
     }
 
     /// Record how the run ended. Safe to call from any thread — the
@@ -81,7 +88,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
                 positionsTrained: state.stats.last?.positionsTrained,
                 arenaResults: state.arenas,
                 stats: state.stats,
-                candidateTests: state.probes
+                candidateTests: state.probes,
+                recordingCorpusID: state.recordingCorpusID
             )
         }
 
@@ -132,6 +140,10 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// The `training_time_limit` deadline fired and the snapshot
         /// was written cleanly at its scheduled moment.
         case timerExpired = "timer_expired"
+        /// The `training_step_limit` step budget was reached (trainer
+        /// completed-step counter crossed the configured value) and the
+        /// snapshot was written cleanly.
+        case stepLimitReached = "step_limit_reached"
         /// The legal-mass collapse detector found `illegalMass`
         /// above threshold for enough consecutive probes that the
         /// run was aborted early; the snapshot is still written
@@ -191,6 +203,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let arenaResults: [Arena]
         let stats: [StatsLine]
         let candidateTests: [CandidateTest]
+        let recordingCorpusID: String?
 
         enum CodingKeys: String, CodingKey {
             case totalTrainingSeconds = "total_training_seconds"
@@ -202,6 +215,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case arenaResults = "arena_results"
             case stats
             case candidateTests = "candidate_tests"
+            case recordingCorpusID = "recording_corpus_id"
         }
     }
 
@@ -609,10 +623,24 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let workerCount: Int
         let gradClipMaxNorm: Double
         let weightDecayC: Double
+        /// Channel-dropout rate in effect this tick. Surfaced so a dropout
+        /// A/B sweep's `results.json` records which rate each arm ran at —
+        /// the parameter the harness exists to compare.
+        let dropoutRate: Double
         let entropyRegularizationCoeff: Double
         let drawPenalty: Double
         let policyLossWeight: Double
         let valueLossWeight: Double
+        /// Effective base learning rate actually applied this tick (the LR
+        /// cycle's geometric value when LR cycling is active, else the static
+        /// `learningRate`), BEFORE warmup/√batch multipliers. Distinct from
+        /// `learningRate` above, which is always the static configured base.
+        let lrEffectiveBase: Double
+        /// Effective Polyak momentum applied this tick (the momentum cycle's
+        /// value when active, else the static coefficient).
+        let momentumEffective: Double
+        let lrCycleActive: Bool
+        let momentumCycleActive: Bool
         let buildNumber: Int
         let trainerID: String
         let championID: String
@@ -698,10 +726,15 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case workerCount = "worker_count"
             case gradClipMaxNorm = "grad_clip_max_norm"
             case weightDecayC = "weight_decay"
+            case dropoutRate = "dropout_rate"
             case entropyRegularizationCoeff = "entropy_regularization_coeff"
             case drawPenalty = "draw_penalty"
             case policyLossWeight = "policy_loss_weight"
             case valueLossWeight = "value_loss_weight"
+            case lrEffectiveBase = "lr_effective_base"
+            case momentumEffective = "momentum_effective"
+            case lrCycleActive = "lr_cycle_active"
+            case momentumCycleActive = "momentum_cycle_active"
             case buildNumber = "build_number"
             case trainerID = "trainer_id"
             case championID = "champion_id"

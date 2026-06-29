@@ -41,7 +41,7 @@ final class ActiveGameTests: XCTestCase {
     /// real `BoardEncoder.encode` output here; for layout-only tests
     /// any reproducible content works.
     private func fakeBoardBytes(seed: UInt32) -> [Float] {
-        var arr = [Float](repeating: 0, count: BoardEncoder.tensorLength)
+        var arr = [Float](repeating: 0, count: BoardEncoder.tensorLength(for: .basic30))
         // Deterministic small-period pattern so different seeds produce
         // distinguishable bytes without pulling in an RNG.
         for i in 0..<arr.count {
@@ -209,7 +209,7 @@ final class ActiveGameTests: XCTestCase {
         // Spot-check: sample N positions; every outcome should be 0
         // for a draw (no per-side sign flip).
         let n = 6
-        var boards = [Float](repeating: 0, count: n * ReplayBuffer.floatsPerBoard)
+        var boards = [Float](repeating: 0, count: n * ReplayBuffer.defaultFloatsPerBoard)
         var moves  = [Int32](repeating: 0, count: n)
         var zs     = [Float](repeating: 0, count: n)
         let ok = boards.withUnsafeMutableBufferPointer { bBuf in
@@ -242,7 +242,7 @@ final class ActiveGameTests: XCTestCase {
         // requires count <= storedCount). With a 32/32 sign split, a 64-draw
         // batch missing either sign has probability ~2^-63.
         let n = 64
-        var boards = [Float](repeating: 0, count: n * ReplayBuffer.floatsPerBoard)
+        var boards = [Float](repeating: 0, count: n * ReplayBuffer.defaultFloatsPerBoard)
         var moves  = [Int32](repeating: 0, count: n)
         var zs     = [Float](repeating: 0, count: n)
         _ = boards.withUnsafeMutableBufferPointer { bBuf in

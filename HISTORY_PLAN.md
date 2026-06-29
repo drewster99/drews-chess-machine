@@ -1,5 +1,10 @@
 # Input Plane Redesign + History Banks
 
+> **Status: ABANDONED / SUPERSEDED** (2026-06-13 audit). The 22-plane redesign +
+> N-bank gather described here was never built; position history instead shipped via
+> the `full10ply200` / `full10Ply10Reps210` input encodings (see those plans). Kept
+> for design-history reference only.
+
 A design / implementation plan for two combined architectural changes to `DrewsChessMachine`:
 
 1. **Cleanup of the current 30-plane input encoding** — drop dead rep-related planes, replace the structurally-unused `rep≥2` plane with a useful lookahead-3fold indicator.

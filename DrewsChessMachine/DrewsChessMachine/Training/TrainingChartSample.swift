@@ -15,6 +15,19 @@ struct TrainingChartSample: Identifiable, Sendable, Codable, Equatable {
     let id: Int
     let elapsedSec: Double
 
+    /// Trainer step (`ChessTrainer.completedTrainSteps`) at sample
+    /// time — the same monotonic counter the Lichess probe records, so
+    /// training loss and held-out eval loss can be plotted on one
+    /// shared step axis (see the combined Training-vs-Eval-Loss window).
+    /// `nil` for samples collected before this field existed; those are
+    /// back-filled in memory by interpolating against the probe's exact
+    /// `(step, time)` anchors (`TrainingStepBackfill`). Declared `var`
+    /// (the rest of the struct is immutable) precisely so that one-time
+    /// back-fill can fill the gap in place without rebuilding every
+    /// field. Optional + additive, so older `.dcmsession` files keep
+    /// decoding (missing key → `nil`).
+    var trainingStep: Int?
+
     let rollingPolicyLoss: Double?
     let rollingValueLoss: Double?
     let rollingPolicyEntropy: Double?
@@ -90,6 +103,34 @@ struct TrainingChartSample: Identifiable, Sendable, Codable, Equatable {
     let rollingValueProbWin: Double?
     let rollingValueProbDraw: Double?
     let rollingValueProbLoss: Double?
+
+    /// Rolling-window mean self-play game length in plies — `recentMoves /
+    /// recentGames` from `ParallelWorkerStatsBox`, the same `rollingAvgLen`
+    /// the `[STATS]` line reports. A self-play metric (not a training-batch
+    /// one). Optional + additive: older `.dcmsession` files decode this nil.
+    let rollingAvgGameLength: Double?
+    /// Rolling-window self-play draw rate in `[0, 1]` — `recentDraws /
+    /// recentGames`, the fraction of recently-completed self-play games that
+    /// ended in a natural draw (stalemate / 50-move / 3-fold / insufficient
+    /// material; decisive and ply-capped games are the complement). Optional
+    /// + additive.
+    let rollingDrawFraction: Double?
+
+    /// Rolling-window position-weighted mean game length (plies) of the
+    /// minibatches the trainer sampled from the replay buffer —
+    /// `TrainingLiveStatsBox.Snapshot.rollingSampledBatchGameLength`. Plotted
+    /// on the same tile as `rollingAvgGameLength` so "what self-play produces"
+    /// and "what the trainer consumes" can be compared directly. Sits naturally
+    /// above the self-play line (position-weighting over-represents long games)
+    /// and diverges further when the length-tilt sampling constraint is active.
+    /// Optional + additive: older `.dcmsession` files decode this nil.
+    let rollingSampledBatchGameLength: Double?
+    /// Rolling-window realized draw rate of the sampled minibatches in `[0, 1]`
+    /// — `rollingSampledBatchDrawFraction`, the per-position fraction whose game
+    /// was a draw. Plotted alongside `rollingDrawFraction`; clamped below the
+    /// self-play draw rate when the draw-cap sampling constraint is active.
+    /// Optional + additive.
+    let rollingSampledBatchDrawFraction: Double?
 
     // System metrics
     let cpuPercent: Double?

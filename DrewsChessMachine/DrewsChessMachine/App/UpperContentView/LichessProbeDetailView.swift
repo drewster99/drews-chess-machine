@@ -13,6 +13,15 @@ import SwiftUI
 /// data — fully derived from the observed history.
 struct LichessProbeDetailView: View {
     @Bindable var history: LichessProbeHistory
+    /// Optional parallel WIDE-set history. When present, a second OVERALL
+    /// trend chart for the ~4,435-puzzle set is shown beneath the 200-set
+    /// chart. nil ⇒ no wide chart (200-set-only window).
+    let wideHistory: LichessProbeHistory?
+    /// Observed for `currentSessionStart*ExportURL` so the auto-compare
+    /// can load this session's start snapshot the moment it's written and
+    /// on window open. Optional so previews / non-session hosts can omit
+    /// it (auto-compare then simply finds no session-start file).
+    var sessionController: SessionController?
     let onProbeNow: @MainActor () -> Void
     let onExport: @MainActor () -> Void
 
@@ -29,12 +38,26 @@ struct LichessProbeDetailView: View {
     /// comparison cell.
     @State private var comparison: LichessProbeComparison?
 
+    /// Loaded comparison for the WIDE set — drives the wide OVERALL band
+    /// and the wide chart cmp lines. nil = no comparison.
+    @State private var comparisonWide: LichessProbeComparison?
+
+    /// When true, both sets auto-compare to THIS session's start-of-
+    /// training snapshot and re-load when it's (re)written. Set false the
+    /// moment the user picks a file manually or clears. State machine in
+    /// the `comparison`-helpers extension below.
+    @State private var autoUpdateSelectedComparison = false
+
     init(
         history: LichessProbeHistory,
+        wideHistory: LichessProbeHistory? = nil,
+        sessionController: SessionController? = nil,
         onProbeNow: @escaping @MainActor () -> Void = {},
         onExport: @escaping @MainActor () -> Void = {}
     ) {
         self.history = history
+        self.wideHistory = wideHistory
+        self.sessionController = sessionController
         self.onProbeNow = onProbeNow
         self.onExport = onExport
     }
@@ -221,11 +244,42 @@ struct LichessProbeDetailView: View {
             // rightmost columns rather than scrolling horizontally.
             ScrollView(.vertical, showsIndicators: true) {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    overallSummaryBand
+                    overallSummaryBand(history: history, comparison: comparison)
                         .padding(.vertical, 6)
                         .padding(.horizontal, 12)
                         .background(Color(NSColor.controlBackgroundColor).opacity(0.6))
                     Divider()
+                    LichessProbeOverallTrendChart(
+                        history: history,
+                        cmpNll: comparison?.overallSummary.meanNegLogProb,
+                        cmpElo: comparison.map(Self.cmpMlePuzzleElo)
+                    )
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 12)
+                    .background(Color(NSColor.controlBackgroundColor).opacity(0.4))
+                    Divider()
+                    if let wideHistory {
+                        Text("WIDE PROBE SET (\(LichessProbeData.wideSet.count) puzzles)")
+                            .font(.system(.caption, design: .default).weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.top, 6)
+                        overallSummaryBand(history: wideHistory, comparison: comparisonWide)
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 12)
+                            .background(Color(NSColor.controlBackgroundColor).opacity(0.6))
+                        Divider()
+                        LichessProbeOverallTrendChart(
+                            history: wideHistory,
+                            cmpNll: comparisonWide?.overallSummary.meanNegLogProb,
+                            cmpElo: comparisonWide.map(Self.cmpMlePuzzleElo)
+                        )
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 12)
+                        .background(Color(NSColor.controlBackgroundColor).opacity(0.4))
+                        Divider()
+                    }
                     columnHeader
                         .padding(.vertical, 4)
                         .padding(.horizontal, 12)
@@ -256,6 +310,21 @@ struct LichessProbeDetailView: View {
             }
             footer
         }
+        .onAppear { applyOpenWindowComparisonState() }
+        .onChange(of: sessionController?.currentSessionStartSet200ExportURL) {
+            guard autoUpdateSelectedComparison,
+                  let u = sessionController?.currentSessionStartSet200ExportURL else { return }
+            Task { @MainActor in
+                comparison = LichessProbeComparisonLoader.load(from: u, announce: false)
+            }
+        }
+        .onChange(of: sessionController?.currentSessionStartWideExportURL) {
+            guard autoUpdateSelectedComparison,
+                  let u = sessionController?.currentSessionStartWideExportURL else { return }
+            Task { @MainActor in
+                comparisonWide = LichessProbeComparisonLoader.load(from: u, announce: false)
+            }
+        }
     }
 
     /// Look up the comparison's matched entry for a live row by puzzle
@@ -272,80 +341,334 @@ struct LichessProbeDetailView: View {
         return comparison.byPuzzleId[meta.id]
     }
 
+    // MARK: - Comparison auto-load state machine
+
+    private enum CmpDefaultsKey {
+        static let set200 = "lichessCompareLastSet200Path"
+        static let wide = "lichessCompareLastWidePath"
+    }
+
+    /// Window-open default. A manually-pinned file (in UserDefaults) wins
+    /// and turns auto off; otherwise enter auto mode and load whichever of
+    /// this session's start-of-training snapshots have already been
+    /// written (point E fills the rest as they land).
+    private func applyOpenWindowComparisonState() {
+        let d = UserDefaults.standard
+        var loadedAnyPin = false
+
+        // Load each pinned comparison; if its file is gone, clear the dead pin
+        // (mirrors LastSessionPointer) rather than leaving a no-comparison +
+        // auto-off dead state.
+        if let p = d.string(forKey: CmpDefaultsKey.set200) {
+            if let cmp = LichessProbeComparisonLoader.load(from: URL(fileURLWithPath: p), announce: false) {
+                comparison = cmp
+                loadedAnyPin = true
+            } else {
+                d.removeObject(forKey: CmpDefaultsKey.set200)
+                SessionLogger.shared.log("[TACTICAL-LICHESS] cleared dead 200-set compare pin: \(p)")
+            }
+        }
+        if let p = d.string(forKey: CmpDefaultsKey.wide) {
+            if let cmp = LichessProbeComparisonLoader.load(from: URL(fileURLWithPath: p), announce: false) {
+                comparisonWide = cmp
+                loadedAnyPin = true
+            } else {
+                d.removeObject(forKey: CmpDefaultsKey.wide)
+                SessionLogger.shared.log("[TACTICAL-LICHESS] cleared dead wide compare pin: \(p)")
+            }
+        }
+
+        if loadedAnyPin {
+            autoUpdateSelectedComparison = false
+        } else {
+            // No live pins (none set, or all were dead and cleared) — fall back
+            // to auto + the session-start exports.
+            autoUpdateSelectedComparison = true
+            loadSessionStartComparisons()
+        }
+    }
+
+    /// Load whichever session-start exports exist now (nil paths skipped).
+    private func loadSessionStartComparisons() {
+        if let u = sessionController?.currentSessionStartSet200ExportURL {
+            comparison = LichessProbeComparisonLoader.load(from: u, announce: false)
+        }
+        if let u = sessionController?.currentSessionStartWideExportURL {
+            comparisonWide = LichessProbeComparisonLoader.load(from: u, announce: false)
+        }
+    }
+
+    /// Manual `Compare…`: route the picked file by its probe count, pin it
+    /// per-set in UserDefaults, and leave auto mode.
+    private func routeManualComparison(_ cmp: LichessProbeComparison) {
+        autoUpdateSelectedComparison = false
+        let d = UserDefaults.standard
+        // Route to whichever set's size the file's probe count is closer to,
+        // using the actual set sizes as the source of truth (no magic number).
+        let toWide = abs(cmp.payload.probeCount - LichessProbeData.wideSet.count)
+            <= abs(cmp.payload.probeCount - LichessProbeData.largeSet.count)
+        if toWide {
+            comparisonWide = cmp
+            d.set(cmp.sourceURL.path, forKey: CmpDefaultsKey.wide)
+            SessionLogger.shared.log("[TACTICAL-LICHESS] compare pinned (wide): \(cmp.sourceURL.lastPathComponent)")
+        } else {
+            comparison = cmp
+            d.set(cmp.sourceURL.path, forKey: CmpDefaultsKey.set200)
+            SessionLogger.shared.log("[TACTICAL-LICHESS] compare pinned (200): \(cmp.sourceURL.lastPathComponent)")
+        }
+    }
+
+    /// `Clear compare`: drop both comparisons + both pins, auto off.
+    private func clearComparisons() {
+        SessionLogger.shared.log("[TACTICAL-LICHESS] compare cleared (both sets)")
+        comparison = nil
+        comparisonWide = nil
+        autoUpdateSelectedComparison = false
+        let d = UserDefaults.standard
+        d.removeObject(forKey: CmpDefaultsKey.set200)
+        d.removeObject(forKey: CmpDefaultsKey.wide)
+    }
+
+    /// Header toggle. false→true: wipe the pins (so it's auto again next
+    /// launch) and load this session's start snapshot(s). true→false: keep
+    /// whatever's loaded, just stop auto-updating.
+    private func handleAutoToggleChange(to on: Bool) {
+        autoUpdateSelectedComparison = on
+        guard on else { return }
+        let d = UserDefaults.standard
+        d.removeObject(forKey: CmpDefaultsKey.set200)
+        d.removeObject(forKey: CmpDefaultsKey.wide)
+        loadSessionStartComparisons()
+    }
+
     // MARK: Header
 
+    /// Three stacked zones rather than one competing row: the earlier
+    /// single `HStack` multiplexed identity (title), read-only telemetry
+    /// (tick/model/step/…), comparison filenames, and actions into one
+    /// line, so the title wrapped, the telemetry stacked awkwardly in a
+    /// narrow center gap, and the filenames were `…`-truncated
+    /// (which hid *which* snapshot was loaded — the one thing those
+    /// strings exist to convey). Splitting into a title+controls row over
+    /// a full-width metadata grid lets the telemetry align into columns
+    /// and the filenames show in full.
     @ViewBuilder
     private var header: some View {
-        HStack(spacing: 16) {
-            Text("Lichess Probe Detail — 200 puzzles")
-                .font(.system(.title2).weight(.semibold))
-            Spacer()
-            tickMetadataText
-            comparisonMetadataText
-            Button("Probe now") {
-                onProbeNow()
-            }
-            .controlSize(.small)
-            Button("Compare…") {
-                if let loaded = LichessProbeComparisonLoader.loadFromFile() {
-                    comparison = loaded
+        VStack(alignment: .leading, spacing: 8) {
+            titleRow
+            Divider()
+            // Tick telemetry on the left; the loaded-comparison filenames to its
+            // right (separated by a vertical rule) so the header uses the wide
+            // window's horizontal space instead of stacking another two rows.
+            HStack(alignment: .top, spacing: 20) {
+                tickMetadataGrid
+                if comparison != nil || comparisonWide != nil {
+                    Divider().frame(height: 34)
+                    comparisonMetadataGrid
                 }
+                Spacer(minLength: 0)
             }
-            .controlSize(.small)
-            if comparison != nil {
-                Button("Clear compare") {
-                    SessionLogger.shared.log("[TACTICAL-LICHESS] compare cleared")
-                    comparison = nil
-                }
-                .controlSize(.small)
-            }
-            Button("Export latest…") {
-                onExport()
-            }
-            .controlSize(.small)
-            .disabled(history.latestPerPuzzleResults.isEmpty)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
     }
 
-    /// Right-aligned metadata block describing the currently-loaded
-    /// comparison snapshot — filename, model label, tick timestamp.
-    /// Renders nothing when no comparison is active.
+    /// Top row: window identity on the left, all actions on the right.
     @ViewBuilder
-    private var comparisonMetadataText: some View {
-        if let cmp = comparison {
-            VStack(alignment: .trailing, spacing: 1) {
-                Text("cmp: \(cmp.sourceURL.lastPathComponent)")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: 300, alignment: .trailing)
-                Text("cmp model: \(cmp.payload.modelLabel ?? "<unknown>")")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+    private var titleRow: some View {
+        HStack(spacing: 12) {
+            Text("Lichess Probe Detail — 200 puzzles")
+                .font(.system(.title2).weight(.semibold))
+                .lineLimit(1)
+            Spacer(minLength: 16)
+            headerControls
+        }
+    }
+
+    /// The toggle + action buttons, kept on a single trailing line.
+    @ViewBuilder
+    private var headerControls: some View {
+        Toggle("Auto vs session start", isOn: Binding(
+            get: { autoUpdateSelectedComparison },
+            set: { handleAutoToggleChange(to: $0) }
+        ))
+        .toggleStyle(.checkbox)
+        .controlSize(.small)
+        .help("""
+            When on, both sets compare against the start-of-training snapshot \
+            taken at the first training run after launch, updating the moment \
+            it's written. It is not re-armed for a later run in the same launch. \
+            Turns off automatically when you pick a file with Compare…
+            """)
+        Button("Probe now") {
+            onProbeNow()
+        }
+        .controlSize(.small)
+        Button("Compare…") {
+            if let loaded = LichessProbeComparisonLoader.loadFromFile() {
+                routeManualComparison(loaded)
+            }
+        }
+        .controlSize(.small)
+        if comparison != nil || comparisonWide != nil {
+            Button("Clear compare") {
+                clearComparisons()
+            }
+            .controlSize(.small)
+        }
+        Button("Export latest…") {
+            onExport()
+        }
+        .controlSize(.small)
+        .disabled(history.latestPerPuzzleResults.isEmpty)
+    }
+
+    /// Read-only tick telemetry, laid out as a fixed-column label/value
+    /// `Grid` so the three groups (when/where, training-progress,
+    /// arena-progress) align across the two rows. Each value field is
+    /// "—" when its source is nil (champion-target probes before
+    /// Play-and-Train, or a pre-checkpoint-controller session boot)
+    /// rather than dropping the field — the column stays dimensionally
+    /// stable as the run warms up.
+    @ViewBuilder
+    private var tickMetadataGrid: some View {
+        if let ts = history.latestTickTimestamp {
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 3) {
+                GridRow {
+                    metaLabel("Tick")
+                    metaValue(Self.timestampFormatter.string(from: ts))
+                    metaLabel("Step", groupGap: true)
+                    metaValue(stepValue)
+                    metaLabel("Active", groupGap: true)
+                    metaValue(activeValue)
+                }
+                GridRow {
+                    metaLabel("Model")
+                    metaValue(history.latestTickModelLabel ?? "<unknown>")
+                    metaLabel("Positions", groupGap: true)
+                    metaValue(positionsValue)
+                    metaLabel("Arenas", groupGap: true)
+                    metaValue(arenasValue)
+                }
+            }
+        } else {
+            Text("No tick yet")
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// The currently-loaded comparison snapshot(s), one `key: filename`
+    /// row each. Unlike the old fixed-width-capped trailing block, the
+    /// filename is shown in full (middle-truncating only when the window
+    /// is narrow) so the loaded snapshot is identifiable at a glance.
+    /// The "Compare" group label appears once, on the first present row.
+    @ViewBuilder
+    private var comparisonMetadataGrid: some View {
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 3) {
+            if let cmp = comparison {
+                GridRow {
+                    metaLabel("Compare")
+                    cmpKey("200:")
+                    cmpFilename(cmp.sourceURL.lastPathComponent)
+                }
+            }
+            if let cmp = comparisonWide {
+                GridRow {
+                    metaLabel(comparison == nil ? "Compare" : "")
+                    cmpKey("wide:")
+                    cmpFilename(cmp.sourceURL.lastPathComponent)
+                }
             }
         }
     }
 
+    /// Training step with locale grouping separators ("285,928") so the
+    /// digit count reads at a glance. "—" before any step has run.
+    private var stepValue: String {
+        history.latestTickTrainingStep.map { $0.formatted() } ?? "—"
+    }
+
+    private var positionsValue: String {
+        history.latestTickPositionsTrained.map { Self.compactCount($0) } ?? "—"
+    }
+
+    private var activeValue: String {
+        history.latestTickActiveTrainingSec.map { Self.formatHMS(seconds: $0) } ?? "—"
+    }
+
+    private var arenasValue: String {
+        let arenas = history.latestTickArenaCount.map(String.init) ?? "—"
+        let promoted = history.latestTickPromotionCount.map(String.init) ?? "—"
+        return "\(arenas) (\(promoted) promoted)"
+    }
+
+    /// Dimmer, semibold column label. `groupGap` adds leading inset so
+    /// the second and third label/value groups read as distinct clusters
+    /// rather than running together with the previous value.
     @ViewBuilder
-    private var tickMetadataText: some View {
-        if let ts = history.latestTickTimestamp {
-            VStack(alignment: .trailing, spacing: 1) {
-                Text("tick: \(Self.timestampFormatter.string(from: ts))")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                Text("model: \(history.latestTickModelLabel ?? "<unknown>")")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-        } else {
-            Text("no tick yet")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-        }
+    private func metaLabel(_ text: String, groupGap: Bool = false) -> some View {
+        Text(text)
+            .font(.system(.caption2, design: .monospaced).weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.leading, groupGap ? 20 : 0)
+            .gridColumnAlignment(.leading)
+    }
+
+    /// Brighter value cell paired with `metaLabel`.
+    @ViewBuilder
+    private func metaValue(_ text: String) -> some View {
+        Text(text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(.primary)
+            .gridColumnAlignment(.leading)
+    }
+
+    /// The "200:" / "wide:" set key in the comparison grid.
+    @ViewBuilder
+    private func cmpKey(_ text: String) -> some View {
+        Text(text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .gridColumnAlignment(.leading)
+    }
+
+    /// Comparison filename, shown in full up to its max width, then
+    /// middle-truncated. `.help` exposes the full name on hover even
+    /// when the window forces truncation.
+    @ViewBuilder
+    private func cmpFilename(_ name: String) -> some View {
+        Text(name)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .frame(maxWidth: 560, alignment: .leading)
+            .help(name)
+            .gridColumnAlignment(.leading)
+    }
+
+    /// "1,234,567" → "1.2M", "42,000" → "42.0K", "789" → "789".
+    /// Matches the compact formatter the status bar uses so the
+    /// Detail window's progress line reads the same as the bar.
+    fileprivate static func compactCount(_ n: Int) -> String {
+        let d = Double(n)
+        if abs(d) >= 1e9 { return String(format: "%.2fB", d / 1e9) }
+        if abs(d) >= 1e6 { return String(format: "%.1fM", d / 1e6) }
+        if abs(d) >= 1e3 { return String(format: "%.1fK", d / 1e3) }
+        return "\(n)"
+    }
+
+    /// Seconds → "H:MM:SS" (or "MM:SS" under one hour). Mirrors the
+    /// status bar's `GameWatcher.Snapshot.formatHMS` shape without
+    /// dragging that type into the Detail view's link surface.
+    fileprivate static func formatHMS(seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+        return String(format: "%d:%02d", m, s)
     }
 
     // MARK: Column header row
@@ -450,9 +773,11 @@ struct LichessProbeDetailView: View {
                     top5: liveAgg.top5Correct,
                     avgProb: liveAgg.avgExpectedProb,
                     avgRank: liveAgg.avgExpectedRank,
+                    meanNll: liveAgg.meanNegLogProb,
                     showLabels: true,
                     vsProb: nil,
-                    vsRank: nil
+                    vsRank: nil,
+                    vsNll: nil
                 )
             }
             if comparison != nil {
@@ -468,9 +793,11 @@ struct LichessProbeDetailView: View {
                             top5: c.top5Correct,
                             avgProb: c.avgExpectedProb,
                             avgRank: c.avgExpectedRank,
+                            meanNll: c.meanNegLogProb,
                             showLabels: false,
                             vsProb: liveAgg.avgExpectedProb,
-                            vsRank: liveAgg.avgExpectedRank
+                            vsRank: liveAgg.avgExpectedRank,
+                            vsNll: liveAgg.meanNegLogProb
                         )
                     } else {
                         // Comparison loaded but no entries for this
@@ -488,7 +815,30 @@ struct LichessProbeDetailView: View {
                         Text("—").font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .frame(width: 150, alignment: .leading)
+                        Text("—").font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 130, alignment: .leading)
                     }
+                }
+                HStack(spacing: 12) {
+                    Text("Δ live − cmp")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 180, alignment: .leading)
+                    diffMetricCells(
+                        liveTotal: liveAgg.total,
+                        liveArgmax: liveAgg.argmaxCorrect,
+                        liveTop5: liveAgg.top5Correct,
+                        liveProb: liveAgg.avgExpectedProb,
+                        liveRank: liveAgg.avgExpectedRank,
+                        liveNll: liveAgg.meanNegLogProb,
+                        cmpTotal: cmpAgg?.total,
+                        cmpArgmax: cmpAgg?.argmaxCorrect,
+                        cmpTop5: cmpAgg?.top5Correct,
+                        cmpProb: cmpAgg?.avgExpectedProb,
+                        cmpRank: cmpAgg?.avgExpectedRank,
+                        cmpNll: cmpAgg?.meanNegLogProb
+                    )
                 }
             }
         }
@@ -512,7 +862,8 @@ struct LichessProbeDetailView: View {
             errored: 0,
             sumExpectedProb: 0,
             sumExpectedRank: 0,
-            countWithRank: 0
+            countWithRank: 0,
+            sumNegLogProb: 0
         )
     }
 
@@ -534,9 +885,11 @@ struct LichessProbeDetailView: View {
         top5: Int,
         avgProb: Float,
         avgRank: Float?,
+        meanNll: Double,
         showLabels: Bool,
         vsProb: Float?,
-        vsRank: Float?
+        vsRank: Float?,
+        vsNll: Double?
     ) -> some View {
         let argmaxPct = total > 0
             ? String(format: "%.1f%%", 100.0 * Double(argmax) / Double(total))
@@ -562,6 +915,9 @@ struct LichessProbeDetailView: View {
                 return showLabels ? "avg rank —" : "—"
             }
         }()
+        let nllText = showLabels
+            ? "NLL \(String(format: "%.3f", meanNll))"
+            : String(format: "%.3f", meanNll)
 
         Text(argmaxText)
             .font(.system(.caption, design: .monospaced))
@@ -577,6 +933,121 @@ struct LichessProbeDetailView: View {
             .font(.system(.caption, design: .monospaced))
             .foregroundStyle(Self.summaryRankColor(value: avgRank, vs: vsRank))
             .frame(width: 150, alignment: .leading)
+        Text(nllText)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(Self.summaryNllColor(value: meanNll, vs: vsNll))
+            .frame(width: 130, alignment: .leading)
+    }
+
+    /// Color for an NLL cell. Lower is better (closer to 0 = perfect
+    /// prediction), so `value < vs - epsilon` → green (this side
+    /// better); `value > vs + epsilon` → red. Tied within ±0.005
+    /// renders primary (NLL changes of less than ~0.005 nats over
+    /// 200 probes are dominated by sampling noise on a single
+    /// errored probe).
+    fileprivate static func summaryNllColor(value: Double, vs: Double?) -> Color {
+        guard let vs else { return .primary }
+        if value < vs - 0.005 { return .green }
+        if value > vs + 0.005 { return .red }
+        return .primary
+    }
+
+    /// One cell rendering the MLE puzzle-Elo: `pElo 845`, or the
+    /// floor / ceiling / no-data sentinels. Width matches the NLL
+    /// cell so the OVERALL band's metric grid stays uniform.
+    @ViewBuilder
+    private func puzzleEloCell(elo: Double, showLabel: Bool, vsElo: Double?) -> some View {
+        Text(Self.formatPuzzleElo(elo, showLabel: showLabel))
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(Self.summaryEloColor(value: elo, vs: vsElo))
+            .frame(width: 130, alignment: .leading)
+    }
+
+    /// "pElo 845" / "pElo <floor" / "pElo >ceil" / "pElo —"
+    /// (NaN). The floor / ceiling sentinels render when MLE
+    /// goes unbounded — all-wrong or all-correct over the
+    /// probe set. Without a label prefix, the cmp/diff rows
+    /// drop "pElo " to align under the live row.
+    fileprivate static func formatPuzzleElo(_ elo: Double, showLabel: Bool) -> String {
+        let prefix = showLabel ? "pElo " : ""
+        if elo.isNaN { return "\(prefix)—" }
+        if elo == -.infinity { return "\(prefix)<floor" }
+        if elo == .infinity { return "\(prefix)>ceil" }
+        return "\(prefix)\(String(format: "%.0f", elo))"
+    }
+
+    /// Color for a pElo cell. Higher is better. `±5` Elo threshold
+    /// is wider than typical Elo noise on small probe sets — keeps
+    /// the cell from flickering on sub-significant moves.
+    fileprivate static func summaryEloColor(value: Double, vs: Double?) -> Color {
+        guard let vs, value.isFinite, vs.isFinite else { return .primary }
+        if value > vs + 5 { return .green }
+        if value < vs - 5 { return .red }
+        return .primary
+    }
+
+    /// "Δ +12" / "Δ -34" / "Δ —" pElo diff cell. Both sides must
+    /// be finite for a numeric delta — sentinel-vs-sentinel (e.g.
+    /// both "<floor") renders "Δ 0" if they match, "Δ —" otherwise.
+    @ViewBuilder
+    private func puzzleEloDiffCell(live: Double, cmp: Double) -> some View {
+        let cell = Self.diffCellForElo(live: live, cmp: cmp)
+        Text(cell.text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(cell.color)
+            .frame(width: 130, alignment: .leading)
+    }
+
+    /// Pure-data helper for `puzzleEloDiffCell` — `(text, color)`
+    /// the renderer can drop into a single `Text` cell without
+    /// branching inside the ViewBuilder (which chokes on
+    /// deferred-init `let` patterns).
+    private static func diffCellForElo(live: Double, cmp: Double) -> DiffCell {
+        if live.isFinite && cmp.isFinite {
+            let d = live - cmp
+            let signed = signedInt(Int(d.rounded()))
+            let color: Color = {
+                if d > 5 { return .green }
+                if d < -5 { return .red }
+                return .primary
+            }()
+            return DiffCell(text: "Δ \(signed)", color: color)
+        }
+        if live == cmp {
+            return DiffCell(text: "Δ 0", color: .primary)
+        }
+        return DiffCell(text: "Δ —", color: .secondary)
+    }
+
+    /// Build the per-puzzle (rating, correct) pairs needed by
+    /// `mlePuzzleElo`. Falls back to skipping any puzzle whose
+    /// metadata lookup fails (defensive — the 200-puzzle bundle is
+    /// stable but the lookup is by `probe.name`, which is a constructed
+    /// string).
+    private static func mlePuzzleElo(forHistory history: LichessProbeHistory) -> Double {
+        let pairs: [(rating: Int, correct: Bool)] = history.latestPerPuzzleResults.compactMap {
+            guard let meta = LichessProbeData.metadata[$0.probe.name] else { return nil }
+            let isArgmaxCorrect = $0.verdict == .correctAndConfident
+                || $0.verdict == .correctButFlat
+            return (rating: meta.rating, correct: isArgmaxCorrect)
+        }
+        return LichessProbeHistory.mlePuzzleElo(pairs: pairs)
+    }
+
+    /// Comparison-side pElo, computed from the loaded snapshot's
+    /// own `rating_glicko2` field (NOT the live bundle's metadata —
+    /// the snapshot's ratings are what the network was scored
+    /// against at export time, even if the bundle has since
+    /// changed). Returns NaN if the snapshot is missing the rating
+    /// field on every puzzle (older schema-v2 exports).
+    private static func cmpMlePuzzleElo(_ cmp: LichessProbeComparison) -> Double {
+        let pairs: [(rating: Int, correct: Bool)] = cmp.payload.puzzles.compactMap {
+            guard let rating = $0.puzzle.ratingGlicko2 else { return nil }
+            let isArgmaxCorrect = $0.probeResult.verdict == "correctAndConfident"
+                || $0.probeResult.verdict == "correctButFlat"
+            return (rating: rating, correct: isArgmaxCorrect)
+        }
+        return LichessProbeHistory.mlePuzzleElo(pairs: pairs)
     }
 
     /// Color for an avg-prob cell that's possibly a cmp value:
@@ -600,6 +1071,177 @@ struct LichessProbeDetailView: View {
         return .primary
     }
 
+    /// 4 fixed-width cells aligned under the live/cmp rows showing the
+    /// `live - cmp` delta for each metric. Sign + value with a "Δ"
+    /// prefix. Color follows the same "live-better = green" semantic as
+    /// the per-row CMP cell: positive delta on argmax/top-5/prob is
+    /// live-better-than-cmp = green; positive delta on rank is
+    /// live-worse-than-cmp (rank lower = better) = red.
+    ///
+    /// `cmp == nil` (per-theme cmp aggregate missing for a theme that
+    /// exists live) renders four "—" placeholders so the row stays
+    /// dimensionally aligned with the live / cmp rows above.
+    /// Three-string view-model for one diff cell. Built ahead-of-time
+    /// so `diffMetricCells` can stay a pure tuple-of-`Text` ViewBuilder
+    /// (which is the only shape SwiftUI's result builder reliably
+    /// composes across multiple sibling cells without choking on opaque
+    /// return types).
+    private struct DiffCell {
+        let text: String
+        let color: Color
+    }
+
+    private static func diffCellForCount(
+        liveTotal: Int,
+        liveCount: Int,
+        cmpTotal: Int?,
+        cmpCount: Int?
+    ) -> DiffCell {
+        guard let cmpCount, let cmpTotal else {
+            return DiffCell(text: "Δ —", color: .secondary)
+        }
+        let dCount = liveCount - cmpCount
+        let livePct = liveTotal > 0 ? 100.0 * Double(liveCount) / Double(liveTotal) : 0
+        let cmpPct = cmpTotal > 0 ? 100.0 * Double(cmpCount) / Double(cmpTotal) : 0
+        let dPp = livePct - cmpPct
+        return DiffCell(
+            text: "Δ \(signedInt(dCount)) (\(signedPp(dPp)))",
+            color: countBetterColor(delta: dCount)
+        )
+    }
+
+    private static func diffCellForProb(live: Float, cmp: Float?) -> DiffCell {
+        guard let cmp else { return DiffCell(text: "Δ —", color: .secondary) }
+        let d = live - cmp
+        return DiffCell(
+            text: "Δ \(signedFloat(d, decimals: 3))",
+            color: probBetterColor(delta: d)
+        )
+    }
+
+    private static func diffCellForRank(live: Float?, cmp: Float?) -> DiffCell {
+        guard let live, let cmp else { return DiffCell(text: "Δ —", color: .secondary) }
+        let d = live - cmp
+        return DiffCell(
+            text: "Δ \(signedFloat(d, decimals: 2))",
+            color: rankBetterColor(delta: d)
+        )
+    }
+
+    private static func diffCellForNll(live: Double, cmp: Double?) -> DiffCell {
+        guard let cmp else { return DiffCell(text: "Δ —", color: .secondary) }
+        let d = live - cmp
+        // Lower NLL = better, so positive delta = live worse = red.
+        let color: Color
+        if d < -0.005 { color = .green }
+        else if d > 0.005 { color = .red }
+        else { color = .primary }
+        let signed: String = {
+            let abs = String(format: "%.3f", abs(d))
+            if d > 0 { return "+\(abs)" }
+            if d < 0 { return "-\(abs)" }
+            return abs
+        }()
+        return DiffCell(text: "Δ \(signed)", color: color)
+    }
+
+    @ViewBuilder
+    private func diffMetricCells(
+        liveTotal: Int,
+        liveArgmax: Int,
+        liveTop5: Int,
+        liveProb: Float,
+        liveRank: Float?,
+        liveNll: Double,
+        cmpTotal: Int?,
+        cmpArgmax: Int?,
+        cmpTop5: Int?,
+        cmpProb: Float?,
+        cmpRank: Float?,
+        cmpNll: Double?
+    ) -> some View {
+        let argmax = Self.diffCellForCount(
+            liveTotal: liveTotal, liveCount: liveArgmax,
+            cmpTotal: cmpTotal, cmpCount: cmpArgmax
+        )
+        let top5 = Self.diffCellForCount(
+            liveTotal: liveTotal, liveCount: liveTop5,
+            cmpTotal: cmpTotal, cmpCount: cmpTop5
+        )
+        let prob = Self.diffCellForProb(live: liveProb, cmp: cmpProb)
+        let rank = Self.diffCellForRank(live: liveRank, cmp: cmpRank)
+        let nll = Self.diffCellForNll(live: liveNll, cmp: cmpNll)
+
+        Text(argmax.text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(argmax.color)
+            .frame(width: 180, alignment: .leading)
+        Text(top5.text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(top5.color)
+            .frame(width: 180, alignment: .leading)
+        Text(prob.text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(prob.color)
+            .frame(width: 150, alignment: .leading)
+        Text(rank.text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(rank.color)
+            .frame(width: 150, alignment: .leading)
+        Text(nll.text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(nll.color)
+            .frame(width: 130, alignment: .leading)
+    }
+
+    /// "+3" / "0" / "-2" with an explicit sign on positives.
+    fileprivate static func signedInt(_ v: Int) -> String {
+        v > 0 ? "+\(v)" : "\(v)"
+    }
+
+    /// "+1.0pp" / "0.0pp" / "-2.5pp" — percentage-points formatter with
+    /// an explicit sign on positives.
+    fileprivate static func signedPp(_ v: Double) -> String {
+        let abs = String(format: "%.1f", abs(v))
+        if v > 0 { return "+\(abs)pp" }
+        if v < 0 { return "-\(abs)pp" }
+        return "0.0pp"
+    }
+
+    /// "+0.123" / "0.000" / "-0.045" — float formatter with an explicit
+    /// sign on positives.
+    fileprivate static func signedFloat(_ v: Float, decimals: Int) -> String {
+        let format = "%.\(decimals)f"
+        let abs = String(format: format, abs(v))
+        if v > 0 { return "+\(abs)" }
+        if v < 0 { return "-\(abs)" }
+        return abs
+    }
+
+    /// For argmax/top-5 deltas: positive count = live improved = green.
+    fileprivate static func countBetterColor(delta: Int) -> Color {
+        if delta > 0 { return .green }
+        if delta < 0 { return .red }
+        return .primary
+    }
+
+    /// For avg-prob delta: positive = live more confident in bookmove
+    /// = better = green. Tied within ±0.001 renders primary.
+    fileprivate static func probBetterColor(delta: Float) -> Color {
+        let epsilon: Float = 0.001
+        if delta > epsilon { return .green }
+        if delta < -epsilon { return .red }
+        return .primary
+    }
+
+    /// For avg-rank delta: positive = live higher rank = worse = red
+    /// (lower rank is better). Tied within ±0.05 renders primary.
+    fileprivate static func rankBetterColor(delta: Float) -> Color {
+        if delta < -0.05 { return .green }
+        if delta > 0.05 { return .red }
+        return .primary
+    }
+
     // MARK: Overall summary band
 
     /// Top "OVERALL" summary band — same metric layout as the per-theme
@@ -607,12 +1249,22 @@ struct LichessProbeDetailView: View {
     /// row for live data and (when a comparison is loaded) a second
     /// "cmp" row aligned under it with avg-prob / avg-rank color-coded
     /// against the live row.
+    /// OVERALL summary band for a given set's history + optional comparison.
+    /// Set-agnostic: folds the latest per-puzzle results directly (so it
+    /// covers all of the wide set's 13 themes, not just the 200-set's 8),
+    /// and computes the live puzzle-Elo from the same results.
     @ViewBuilder
-    private var overallSummaryBand: some View {
-        let liveAggregates = themeOrder.compactMap {
-            history.latest($0)?.aggregate
-        }
-        let liveSummary = LichessProbeOverallSummary(folding: liveAggregates)
+    private func overallSummaryBand(
+        history: LichessProbeHistory,
+        comparison: LichessProbeComparison?
+    ) -> some View {
+        // Read the history's cached fold (recomputed only when the per-puzzle
+        // snapshot changes) rather than re-folding the whole set on every
+        // render. Fall back to a live fold only if the cache is somehow unset
+        // while data exists — with an empty snapshot the fallback folds [] (cheap).
+        let liveSummary = history.latestOverallSummary
+            ?? LichessProbeOverallSummary(folding: LichessProbeHistory.aggregates(from: history.latestPerPuzzleResults))
+        let liveElo = history.latestOverallElo ?? Self.mlePuzzleElo(forHistory: history)
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 12) {
                 Text("OVERALL")
@@ -624,13 +1276,17 @@ struct LichessProbeDetailView: View {
                     top5: liveSummary.top5Correct,
                     avgProb: liveSummary.avgExpectedProb,
                     avgRank: liveSummary.avgExpectedRank,
+                    meanNll: liveSummary.meanNegLogProb,
                     showLabels: true,
                     vsProb: nil,
-                    vsRank: nil
+                    vsRank: nil,
+                    vsNll: nil
                 )
+                puzzleEloCell(elo: liveElo, showLabel: true, vsElo: nil)
             }
             if let cmp = comparison {
                 let cmpSummary = cmp.overallSummary
+                let cmpElo = Self.cmpMlePuzzleElo(cmp)
                 HStack(spacing: 12) {
                     Text("cmp")
                         .font(.system(.caption, design: .monospaced))
@@ -642,10 +1298,34 @@ struct LichessProbeDetailView: View {
                         top5: cmpSummary.top5Correct,
                         avgProb: cmpSummary.avgExpectedProb,
                         avgRank: cmpSummary.avgExpectedRank,
+                        meanNll: cmpSummary.meanNegLogProb,
                         showLabels: false,
                         vsProb: liveSummary.avgExpectedProb,
-                        vsRank: liveSummary.avgExpectedRank
+                        vsRank: liveSummary.avgExpectedRank,
+                        vsNll: liveSummary.meanNegLogProb
                     )
+                    puzzleEloCell(elo: cmpElo, showLabel: false, vsElo: liveElo)
+                }
+                HStack(spacing: 12) {
+                    Text("Δ live − cmp")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 180, alignment: .leading)
+                    diffMetricCells(
+                        liveTotal: liveSummary.totalProbes,
+                        liveArgmax: liveSummary.argmaxCorrect,
+                        liveTop5: liveSummary.top5Correct,
+                        liveProb: liveSummary.avgExpectedProb,
+                        liveRank: liveSummary.avgExpectedRank,
+                        liveNll: liveSummary.meanNegLogProb,
+                        cmpTotal: cmpSummary.totalProbes,
+                        cmpArgmax: cmpSummary.argmaxCorrect,
+                        cmpTop5: cmpSummary.top5Correct,
+                        cmpProb: cmpSummary.avgExpectedProb,
+                        cmpRank: cmpSummary.avgExpectedRank,
+                        cmpNll: cmpSummary.meanNegLogProb
+                    )
+                    puzzleEloDiffCell(live: liveElo, cmp: cmpElo)
                 }
             }
         }

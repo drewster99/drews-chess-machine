@@ -50,6 +50,7 @@ final class ChartDataRoundTripTests: XCTestCase {
         TrainingChartSample(
             id: id,
             elapsedSec: elapsedSec,
+            trainingStep: id * 100,
             rollingPolicyLoss: 1.5,
             rollingValueLoss: 0.25,
             rollingPolicyEntropy: 6.5,
@@ -68,6 +69,10 @@ final class ChartDataRoundTripTests: XCTestCase {
             rollingValueProbWin: 0.3,
             rollingValueProbDraw: 0.5,
             rollingValueProbLoss: 0.2,
+            rollingAvgGameLength: 280.0,
+            rollingDrawFraction: 0.65,
+            rollingSampledBatchGameLength: 310.0,
+            rollingSampledBatchDrawFraction: 0.58,
             cpuPercent: 75.5,
             gpuBusyPercent: 88.0,
             gpuMemoryMB: 512.0,
@@ -81,6 +86,7 @@ final class ChartDataRoundTripTests: XCTestCase {
         TrainingChartSample(
             id: id,
             elapsedSec: elapsedSec,
+            trainingStep: nil,
             rollingPolicyLoss: nil,
             rollingValueLoss: nil,
             rollingPolicyEntropy: nil,
@@ -99,6 +105,10 @@ final class ChartDataRoundTripTests: XCTestCase {
             rollingValueProbWin: nil,
             rollingValueProbDraw: nil,
             rollingValueProbLoss: nil,
+            rollingAvgGameLength: nil,
+            rollingDrawFraction: nil,
+            rollingSampledBatchGameLength: nil,
+            rollingSampledBatchDrawFraction: nil,
             cpuPercent: nil,
             gpuBusyPercent: nil,
             gpuMemoryMB: nil,
@@ -151,6 +161,10 @@ final class ChartDataRoundTripTests: XCTestCase {
         assertBitEqual(a.rollingValueProbWin, b.rollingValueProbWin, "rollingValueProbWin", line: line)
         assertBitEqual(a.rollingValueProbDraw, b.rollingValueProbDraw, "rollingValueProbDraw", line: line)
         assertBitEqual(a.rollingValueProbLoss, b.rollingValueProbLoss, "rollingValueProbLoss", line: line)
+        assertBitEqual(a.rollingAvgGameLength, b.rollingAvgGameLength, "rollingAvgGameLength", line: line)
+        assertBitEqual(a.rollingDrawFraction, b.rollingDrawFraction, "rollingDrawFraction", line: line)
+        assertBitEqual(a.rollingSampledBatchGameLength, b.rollingSampledBatchGameLength, "rollingSampledBatchGameLength", line: line)
+        assertBitEqual(a.rollingSampledBatchDrawFraction, b.rollingSampledBatchDrawFraction, "rollingSampledBatchDrawFraction", line: line)
         assertBitEqual(a.cpuPercent, b.cpuPercent, "cpuPercent", line: line)
         assertBitEqual(a.gpuBusyPercent, b.gpuBusyPercent, "gpuBusyPercent", line: line)
         assertBitEqual(a.gpuMemoryMB, b.gpuMemoryMB, "gpuMemoryMB", line: line)

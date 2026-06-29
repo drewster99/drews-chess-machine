@@ -29,8 +29,13 @@ extension SessionController {
             return
         }
         let modelLabel = net.identifier?.description ?? "<no-id>"
+        guard beginAnalysis("Value Head") else { return }
+        // Snapshot training-progress context on the main actor before
+        // the detached work; stamped onto the result below.
+        let exportMetadata = currentAnalysisExportMetadata()
 
         Task.detached(priority: .utility) {
+            defer { Task { @MainActor in self.endAnalysis() } }
             // Off-main work: exportWeights() bounces through the
             // network's executionQueue (so it serializes against any
             // inference forward pass currently running) and the rest
@@ -38,7 +43,7 @@ extension SessionController {
             // under a second for a 2.4M-parameter network — but the
             // exportWeights await yields, so keep it off the main
             // actor.
-            let result: ValueHeadAnalyzer.Result
+            var result: ValueHeadAnalyzer.Result
             do {
                 result = try await ValueHeadAnalyzer.run(
                     network: net,
@@ -56,6 +61,7 @@ extension SessionController {
                 return
             }
 
+            result.exportMetadata = exportMetadata
             let summary = result.textSummary()
             let writeOutcome = Self.writeValueHeadJSON(
                 result: result,
@@ -156,18 +162,10 @@ extension SessionController {
         message: String,
         revealURL: URL?
     ) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        if revealURL != nil {
-            alert.addButton(withTitle: "Reveal in Finder")
-        }
-        let response = alert.runModal()
-        if let url = revealURL,
-           response == .alertSecondButtonReturn {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        }
+        NonBlockingAlert.presentInformational(
+            title: title,
+            message: message,
+            revealURL: revealURL
+        )
     }
 }

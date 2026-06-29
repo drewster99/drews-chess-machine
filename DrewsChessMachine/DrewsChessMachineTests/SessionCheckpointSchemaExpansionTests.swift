@@ -147,6 +147,68 @@ final class SessionCheckpointSchemaExpansionTests: XCTestCase {
         XCTAssertNil(state.legalMassCollapseNoImprovementProbes)
     }
 
+    // MARK: - lrMomentumCycle round-trip
+
+    /// The cyclical LR / inverse-momentum config rides the session as an
+    /// Optional nested Codable (`lrMomentumCycle`). A session written without it
+    /// decodes to nil (back-compat); a populated one survives the on-disk
+    /// encode → decode round-trip intact. A renamed or mistyped CodingKey on
+    /// either `SessionCheckpointState` or the nested `LRMomentumCycle` would
+    /// trip this before it could silently reset a user's schedule on resume.
+    func testLRMomentumCycleSurvivesRoundTrip() throws {
+        let formatVersion = SessionCheckpointState.currentFormatVersion
+        let baseJSON = """
+        {
+          "formatVersion": \(formatVersion),
+          "sessionID": "cycle-session",
+          "savedAtUnix": 1700000000,
+          "sessionStartUnix": 1699996400,
+          "elapsedTrainingSec": 100,
+          "trainingSteps": 0,
+          "selfPlayGames": 0,
+          "selfPlayMoves": 0,
+          "trainingPositionsSeen": 0,
+          "batchSize": 4096,
+          "learningRate": 5.0e-5,
+          "promoteThreshold": 0.55,
+          "arenaGames": 100,
+          "selfPlayTau": {"startTau": 1.0, "decayPerPly": 0.03, "floorTau": 0.4},
+          "arenaTau": {"startTau": 1.0, "decayPerPly": 0.01, "floorTau": 0.2},
+          "selfPlayWorkerCount": 4,
+          "championID": "champ",
+          "trainerID": "trainer",
+          "arenaHistory": []
+        }
+        """
+        // Back-compat: a session.json without the field decodes to nil.
+        let base = try SessionCheckpointState.decode(Data(baseJSON.utf8))
+        XCTAssertNil(base.lrMomentumCycle,
+                     "a session without lrMomentumCycle must decode to nil")
+
+        // Populate a non-default cycle (both channels active, momentum inverted
+        // and frozen after a count) and round-trip through the disk format.
+        var cycle = LRMomentumCycle.disabled
+        cycle.lrEnabled = true
+        cycle.lrMin = 1.0e-5
+        cycle.lrMax = 3.0e-3
+        cycle.lrPeriodSteps = 2000
+        cycle.lrCount = 5
+        cycle.lrInvert = false
+        cycle.momentumEnabled = true
+        cycle.momentumMin = 0.85
+        cycle.momentumMax = 0.95
+        cycle.momentumPeriodSteps = 2000
+        cycle.momentumCount = 3
+        cycle.momentumInvert = true
+
+        var populated = base
+        populated.lrMomentumCycle = cycle
+
+        let decoded = try SessionCheckpointState.decode(try populated.encode())
+        XCTAssertEqual(decoded.lrMomentumCycle, cycle,
+                       "lrMomentumCycle must survive session encode → decode intact")
+    }
+
     // MARK: - Cross-format compat (parameters JSON ↔ session.json)
 
     /// The expansion fields use camelCase keys in `session.json`

@@ -143,21 +143,37 @@ extension SessionController {
         // trainer yields nil so the Idle chip path doesn't accidentally
         // surface stale warmup numbers from a prior 
         if let trainer {
-            let completedTrainSteps = await trainer.asyncCompletedTrainSteps()
+            // Sync SyncBox read — NOT `asyncCompletedTrainSteps()`, which
+            // hops onto the trainer's serial `executionQueue` (the GPU work
+            // queue) and waits behind the in-flight ~0.8s training step,
+            // adding ~0.8s to every heartbeat tick. The count lives in its
+            // own `SyncBox`, independent of `executionQueue`, so a direct
+            // read is instant and thread-safe.
+            let completedTrainSteps = trainer.completedTrainSteps
             elap("after 3.1 (everything was awaited)")
             // Pass the locally-snapshotted step count so the LR uses the
             // same observation rather than re-acquiring the SyncBox; the
             // count and LR in the published snapshot are then guaranteed
             // consistent.
-            let effectiveLR = await trainer.asyncEffectiveLearningRate(
+            // Sync — NOT `asyncEffectiveLearningRate`, which dispatches to
+            // `DispatchQueue.global` and so waits for a free pool thread.
+            // Under load the global pool is starved (blocked GPU/lock
+            // threads), making that hop cost ~0.8s. The computation reads
+            // only the SyncBox step count + immutable LR config, so a direct
+            // call on the main actor is instant.
+            let effectiveLR = trainer.effectiveLearningRate(
                 forBatchSize: TrainingParameters.shared.trainingBatchSize,
                 completedSteps: completedTrainSteps
             )
+            // Same step observation as the LR so the published pair is
+            // self-consistent (cheap SyncBox-only read, no executionQueue hop).
+            let effectiveMomentum = trainer.effectiveMomentum(completedSteps: completedTrainSteps)
             elap("after 3.2 (awaited)")
             let next = SessionController.TrainerWarmupSnapshot(
                 completedSteps: completedTrainSteps,
                 warmupSteps: trainer.lrWarmupSteps,
-                effectiveLR: effectiveLR
+                effectiveLR: effectiveLR,
+                effectiveMomentum: effectiveMomentum
             )
             elap("after 3.3 (everything super fast)")
             if next != trainerWarmupSnap { trainerWarmupSnap = next }
@@ -355,12 +371,33 @@ extension SessionController {
             periodicSaveLastPollAt = nil
             return
         }
+        // Gate: never fire the 4-hour autosave while training is suspended on a
+        // divergence — persisting a poisoned (NaN-weights) session would write
+        // junk and could overwrite the user's last-session pointer. The banner
+        // stays up; the user can still save manually if they want it for
+        // debugging.
+        if trainingSuspendedByDivergence {
+            return
+        }
         let now = Date()
         if let lastPoll = periodicSaveLastPollAt,
            now.timeIntervalSince(lastPoll) < 1.0 {
             return
         }
         periodicSaveLastPollAt = now
+        // Reconcile a live change to the autosave interval. The user can
+        // edit `periodic_autosave_interval_sec` mid-session (Sessions tab);
+        // re-anchor the controller's deadline so the new cadence takes
+        // effect without a Play-and-Train restart. Compared with a small
+        // tolerance because the parameter is a Double persisted through
+        // UserDefaults.
+        let desiredInterval = TrainingParameters.shared.periodicAutosaveIntervalSec
+        if abs(controller.interval - desiredInterval) > 0.5 {
+            SessionLogger.shared.log(
+                "[CHECKPOINT] Periodic autosave interval changed: \(Int(controller.interval))s -> \(Int(desiredInterval))s (re-anchoring next save)"
+            )
+            controller.updateInterval(desiredInterval, now: now)
+        }
         if periodicSaveInFlight {
             return
         }
@@ -369,7 +406,7 @@ extension SessionController {
             return
         case .fire:
             SessionLogger.shared.log(
-                "[CHECKPOINT] Periodic save tick — firing (interval=\(Int(UpperContentView.periodicSaveIntervalSec))s)"
+                "[CHECKPOINT] Periodic save tick — firing (interval=\(Int(controller.interval))s)"
             )
             handleSaveSessionPeriodic()
         }
@@ -487,6 +524,18 @@ extension SessionController {
         // `parallelStats.sessionStart` and the back-dated
         // `checkpoint?.currentSessionStart` originally introduced).
         let elapsed = max(0, now.timeIntervalSince(chartCoordinator?.chartElapsedAnchor ?? Date()))
+        // Authoritative trainer step at sample time — the SAME counter
+        // the Lichess probe stamps onto its overall series, so the
+        // combined Training-vs-Eval-Loss window can share one step
+        // axis. Read off the trainer (not `stats.steps`, which is the
+        // current run's local count and diverges from the global
+        // counter across a resume). nil when no trainer exists, which
+        // only happens outside real training when no sample is appended
+        // anyway.
+        // Sync SyncBox read (see the note at the other call site) — avoids
+        // the ~0.8s `executionQueue` wait that `asyncCompletedTrainSteps()`
+        // incurs behind the in-flight training step.
+        let completedTrainStep = trainer?.completedTrainSteps
         let trainingSnap: TrainingLiveStatsBox.Snapshot?
         if let trainingBox {
             trainingSnap = await trainingBox.snapshot()
@@ -513,9 +562,19 @@ extension SessionController {
         // tile can render a continuous step trace rather than
         // sampling on hover.
         let pi = ProcessInfo.processInfo
+        // Self-play game-length + draw-rate over the rolling window, from the
+        // same `parallelStats` snapshot the [STATS] line reads. `recentGames`
+        // is the window denominator for both; nil until at least one self-play
+        // game has completed (chart skips the nil samples).
+        let (rollingAvgGameLength, rollingDrawFraction): (Double?, Double?) = {
+            guard let p = parallelStats, p.recentGames > 0 else { return (nil, nil) }
+            let games = Double(p.recentGames)
+            return (Double(p.recentMoves) / games, Double(p.recentDraws) / games)
+        }()
         let sample = TrainingChartSample(
             id: chartCoordinator?.trainingChartNextId ?? 0,
             elapsedSec: elapsed,
+            trainingStep: completedTrainStep,
             rollingPolicyLoss: trainingSnap?.rollingPolicyLoss,
             rollingValueLoss: trainingSnap?.rollingValueLoss,
             rollingPolicyEntropy: trainingSnap?.rollingPolicyEntropy,
@@ -534,6 +593,10 @@ extension SessionController {
             rollingValueProbWin: trainingSnap?.rollingValueProbWin,
             rollingValueProbDraw: trainingSnap?.rollingValueProbDraw,
             rollingValueProbLoss: trainingSnap?.rollingValueProbLoss,
+            rollingAvgGameLength: rollingAvgGameLength,
+            rollingDrawFraction: rollingDrawFraction,
+            rollingSampledBatchGameLength: trainingSnap?.rollingSampledBatchGameLength,
+            rollingSampledBatchDrawFraction: trainingSnap?.rollingSampledBatchDrawFraction,
             cpuPercent: cpuPercent,
             gpuBusyPercent: trainingSnap != nil ? gpuBusy : nil,
             gpuMemoryMB: gpuMemMB,
@@ -548,7 +611,16 @@ extension SessionController {
         // The training-alarm evaluation (divergence streaks → banner / beep)
         // lives on `TrainingAlarmController` — see `trainingAlarm`.
         await chartCoordinator?.appendTrainingChart(sample, totalGpuMs: currentGpuMs)
-        trainingAlarm?.evaluate(from: sample)
+        // Once a divergence has suspended training, leave the alarm banner
+        // exactly as `suspendTrainingOnDivergence` raised it. The trainer has
+        // stopped stepping so the rolling metrics are frozen on the last (often
+        // blown-up) step; re-running the streak detectors against that stale
+        // sample would only churn the banner (and its recovery path could
+        // eventually clear a divergence-titled banner). The chart keeps
+        // appending so live self-play data still plots.
+        if !trainingSuspendedByDivergence {
+            trainingAlarm?.evaluate(from: sample)
+        }
     }
 
     private func refreshProgressRateIfNeeded() async {

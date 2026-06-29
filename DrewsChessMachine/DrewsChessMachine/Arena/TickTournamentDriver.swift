@@ -99,7 +99,9 @@ final class TickTournamentDriver: @unchecked Sendable {
         // it only shrinks as the pool retires). Two encode + two
         // policy scratches because the partition by network produces
         // up to two disjoint sub-batches per tick.
-        let scratches = TickArenaScratches(capK: initialK)
+        let scratches = TickArenaScratches(
+            capK: initialK,
+            boardFloats: BoardEncoder.tensorLength(for: candidateNetwork.inputEncoding))
         defer { scratches.deallocate() }
 
         // Per-tick partition working storage. Sized to capK so the
@@ -328,7 +330,11 @@ final class TickTournamentDriver: @unchecked Sendable {
         perSlotCandidateValues: inout [[CandidateValueSample]]
     ) async throws {
         let K = games.count
-        let boardFloats = BoardEncoder.tensorLength
+        // Encoding both arena networks expect (candidate is forked from the
+        // champion, so they share an architecture). Hoisted to a Sendable
+        // local for the parallel encode closure below.
+        let encoding = candidateNetwork.inputEncoding
+        let boardFloats = BoardEncoder.tensorLength(for: encoding)
         let policySize = ChessNetwork.policySize
 
         // Partition K games by current-side network. Compute the
@@ -373,7 +379,9 @@ final class TickTournamentDriver: @unchecked Sendable {
                             + compactIdxSnap[i] * boardFloats
                         BoardEncoder.encode(
                             g.engine.state,
-                            into: UnsafeMutableBufferPointer(start: dst, count: boardFloats)
+                            history: g.engine.recentStates,
+                            into: UnsafeMutableBufferPointer(start: dst, count: boardFloats),
+                            encoding: encoding
                         )
                         i += P
                     }
@@ -631,6 +639,9 @@ final class TickTournamentDriver: @unchecked Sendable {
 /// write into the right contiguous sub-batch.
 private final class TickArenaScratches: @unchecked Sendable {
     let capK: Int
+    /// Encoded-board width (floats) for the arena networks' architecture.
+    /// Stored so the tick-scratch alloc and dealloc agree on the stride.
+    let boardFloats: Int
     let candTickScratch: UnsafeMutablePointer<Float>     // capK * boardFloats
     let champTickScratch: UnsafeMutablePointer<Float>    // capK * boardFloats
     let candPolicyScratch: UnsafeMutablePointer<Float>   // capK * policySize
@@ -641,10 +652,10 @@ private final class TickArenaScratches: @unchecked Sendable {
     let samplerProbsScratch: UnsafeMutablePointer<Float> // capK * MoveSampler.scratchCapacity
     let samplerEtaScratch: UnsafeMutablePointer<Float>   // capK * MoveSampler.scratchCapacity
 
-    init(capK: Int) {
+    init(capK: Int, boardFloats: Int) {
         precondition(capK >= 1, "TickArenaScratches.init: capK must be >= 1")
         self.capK = capK
-        let boardFloats = BoardEncoder.tensorLength
+        self.boardFloats = boardFloats
         let policySize = ChessNetwork.policySize
         let scratchCap = MoveSampler.scratchCapacity
 
@@ -666,7 +677,6 @@ private final class TickArenaScratches: @unchecked Sendable {
     }
 
     func deallocate() {
-        let boardFloats = BoardEncoder.tensorLength
         let policySize = ChessNetwork.policySize
         let scratchCap = MoveSampler.scratchCapacity
         candTickScratch.deinitialize(count: capK * boardFloats);   candTickScratch.deallocate()

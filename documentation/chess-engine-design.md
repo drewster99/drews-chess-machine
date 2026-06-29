@@ -271,6 +271,8 @@ Squares numbered 0–63, row by row from rank 8. Most outputs will be near zero 
 
 > **Update (2026-05-12): the value head is now a 3-way W/D/L softmax, not a scalar `tanh`.** The narrative below describes the *original* design (a single `tanh` scalar trained vs `z ∈ {−1, 0, +1}` with MSE — see the loss section). It was replaced because on a draw-heavy self-play buffer that head collapsed to ≈0 ("everything is a draw") and stopped producing useful gradient. The current head is `… → FC(64→3) → 3 raw logits` in `[win, draw, loss]` slot order (no `tanh`), trained with **categorical cross-entropy** against a one-hot on the game result (`slot = clamp(int(1 − z), 0, 2)`: z=+1→win, z=0→draw, z=−1→loss), optionally label-smoothed by `value_label_smoothing_epsilon`. Everything downstream that wants "am I winning?" as a scalar — move selection's readback, the dashboard, the policy-gradient baseline — reads the *derived* scalar `v = softmax(logits)·[+1, 0, −1] = p_win − p_loss`, which is naturally in `[−1, +1]` (a difference of two probabilities), so no `tanh` is needed; the full `(p_win, p_draw, p_loss)` distribution stays available inside the network for the value loss and the `pW=/pD=/pL=` diagnostics. The bias init `[0, ln 6, 0]` makes a fresh head's softmax `(0.125, 0.75, 0.125)` (the empirically draw-heavy prior) with the derived scalar starting at `0.125 − 0.125 = 0` — matching the old `tanh(0) = 0`. Full math and rationale: `wdl-value-head.md`. The shared-trunk, advantage-baseline, and policy-loss machinery below is unchanged by this.
 
+> **Update (2026-05-31): the value head's spatial path was widened (part of the architecture-v4 fresh start).** The `1×1 conv` now compresses the 128-channel trunk to **16** channels (was 1), so the flatten is `16 × 8 × 8 = 1024` numbers (was 64) and the FC stack is `1024 → 128 → 3` (was `64 → 64 → 3`). Rationale: a single conv channel forced the *entire* spatial value representation through one 8×8 scoring map, starving the FC layers (and leaving the 1-channel BN a near-no-op); 16 channels give the head 16 independent learned scoring maps — a deliberate middle ground between that bottleneck and lc0's 32-channel value head. Only the head's *capacity* changed: the W/D/L formulation, the `[0, ln 6, 0]` bias init, and the derived scalar `p_win − p_loss` (all described in the 2026-05-12 note above) are unchanged, as are the output shapes — so the inference readback and the training-graph CE loss are untouched. Dims live in `ChessNetwork.valueHeadConvChannels` / `valueHeadHiddenUnits`. The ASCII diagram and parameter table below still show the *original* single-channel `64→64→1` scalar design, kept as historical narrative.
+
 Takes the 128 × 8 × 8 trunk output and produces one float in [-1, 1].
 
 ```
@@ -796,3 +798,54 @@ PUCT = Q(s,a) + c_puct × P(s,a) × √(N(s)) / (1 + N(s,a))
 ```
 
 This lets the network's policy output guide which branches MCTS explores — moves the network thinks are promising get searched more deeply, moves it thinks are bad get fewer simulations. On a limited simulation budget (800 sims/move on one Mac), this is how you get strong play without exhaustive search.
+
+---
+
+## Model storage & Python interop (safetensors)
+
+Model weights are stored in the **safetensors** format (`.safetensors`), so a
+saved file is directly loadable by Python's `safetensors` with no conversion
+step. On-disk file = `[u64 little-endian header length][JSON header][contiguous
+F32 data]`. The header maps each tensor name → `{dtype:"F32", shape, data_offsets:[b,e]}`,
+plus a reserved `"__metadata__"` string→string map carrying `content_sha256`
+(SHA-256 over the data region — the integrity guard), `dcm_format_version`,
+`model_id`, provenance, and `architecture` (the full `NetworkArchitecture` as a
+JSON string, so a loader can rebuild the matching graph). Weights are always
+**Float32 on disk** regardless of the compute dtype (the GPU may compute in
+bf16; disk stays the f32 master). `SafetensorsFile` is the raw codec;
+`SafetensorsModelIO` bridges it to the in-memory `ModelCheckpointFile`. The
+legacy custom `.dcmmodel` binary (`DCMMODEL` magic, trailing SHA, positional
+tensor list) is still read for back-compat; new saves are safetensors.
+
+### Tensor layout & names — PyTorch-drop-in
+
+On disk the tensors are a real torch `state_dict`, so the conventions are
+PyTorch's, not the engine's internal MPSGraph layout:
+
+- **Conv weights:** `[outC, inC, kH, kW]` (OIHW) — matches `nn.Conv2d.weight`,
+  C-contiguous, little-endian Float32.
+- **Linear weights:** stored **transposed to `[out, in]`** (torch
+  `nn.Linear.weight`). The engine's native layout is `[in, out]`; the writer
+  transposes on save and the reader transposes back on load.
+- **Biases:** 1-D `[N]` (the engine carries them as `[1, N, 1, 1]` / `[1, N]`).
+- **BatchNorm:** `gamma→weight`, `beta→bias`, plus `running_mean` / `running_var`,
+  each `[C]`. There is **no `num_batches_tracked`** (the engine uses a fixed-EMA
+  BN update, not count-based momentum). A torch consumer should synthesize
+  `num_batches_tracked = 0` on import; importing a torch model into the engine
+  should drop that buffer.
+- **Names** are module paths (`stem.conv.weight`, `blocks.<i>.conv1.weight`,
+  `tower_final_bn.weight`, `policy.conv.weight`, `value.fc1.weight`, …).
+  Materially-different modules carry a flag token so they aren't mistaken for
+  stock components: **`se_scalebias`** (scale-and-bias SE — FC2 emits `2·C` =
+  `sigmoid(γ)·z + β`, not a stock channel gate), **`rezero_alpha`** (a learned
+  per-block scalar on the residual branch, `out = input + α·F(input)`), and
+  **`value.wdl_fc2`** (the value head emits **3 W/D/L logits**, not a scalar;
+  the derived value is `p_win − p_loss`, no tanh).
+- **Trainer files** append optimizer velocity as `opt.<trainable>.velocity`
+  (1-D, native order) — DCM-internal optimizer state, not part of the torch
+  model; a model-loading consumer ignores these.
+
+Do not expect bit-exact cross-framework numerics (different conv kernels diverge
+in the low bits); the promise is "same weights + equivalent topology." The
+`architecture` JSON in `__metadata__` plus these conventions are enough to
+rebuild an equivalent `nn.Module` and load the weights.

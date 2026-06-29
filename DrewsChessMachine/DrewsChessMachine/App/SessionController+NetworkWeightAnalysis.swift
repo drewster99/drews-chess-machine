@@ -70,8 +70,13 @@ extension SessionController {
         modelLabel: String,
         buttonContext: String
     ) {
+        guard beginAnalysis("Network Weights (\(buttonContext))") else { return }
+        // Snapshot training-progress context on the main actor before
+        // the detached work; stamped onto the result below.
+        let exportMetadata = currentAnalysisExportMetadata()
         Task.detached(priority: .utility) {
-            let result: NetworkWeightAnalyzer.Result
+            defer { Task { @MainActor in self.endAnalysis() } }
+            var result: NetworkWeightAnalyzer.Result
             do {
                 result = try await NetworkWeightAnalyzer.run(
                     network: networkInner,
@@ -89,6 +94,7 @@ extension SessionController {
                 return
             }
 
+            result.exportMetadata = exportMetadata
             let summary = result.textSummary()
             let writeOutcome = Self.writeNetworkWeightsJSON(
                 result: result,
@@ -181,18 +187,10 @@ extension SessionController {
         message: String,
         revealURL: URL?
     ) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        if revealURL != nil {
-            alert.addButton(withTitle: "Reveal in Finder")
-        }
-        let response = alert.runModal()
-        if let url = revealURL,
-           response == .alertSecondButtonReturn {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        }
+        NonBlockingAlert.presentInformational(
+            title: title,
+            message: message,
+            revealURL: revealURL
+        )
     }
 }

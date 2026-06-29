@@ -48,6 +48,7 @@ final class TrainingSettingsPopoverModel {
     var illegalMassWeightText = "" { didSet { illegalMassWeightError = false } }
     var gradClipText = "" { didSet { gradClipError = false } }
     var weightDecayText = "" { didSet { weightDecayError = false } }
+    var dropoutRateText = "" { didSet { dropoutRateError = false } }
     var policyLossWeightText = "" { didSet { policyLossWeightError = false } }
     var valueLossWeightText = "" { didSet { valueLossWeightError = false } }
     var valueLabelSmoothingText = "" { didSet { valueLabelSmoothingError = false } }
@@ -61,11 +62,44 @@ final class TrainingSettingsPopoverModel {
     private(set) var illegalMassWeightError = false
     private(set) var gradClipError = false
     private(set) var weightDecayError = false
+    private(set) var dropoutRateError = false
     private(set) var policyLossWeightError = false
     private(set) var valueLossWeightError = false
     private(set) var valueLabelSmoothingError = false
     private(set) var drawPenaltyError = false
     private(set) var trainingBatchSizeError = false
+
+    // MARK: - Cycling tab
+    //
+    // LR / momentum cycling (TRAINING_DYNAMICS_PLAN.md §3). Same edit-text +
+    // validate-on-Save pattern as the Optimizer tab — these are NOT live-
+    // propagated, so there is no Cancel stash for them (Cancel just re-seeds on
+    // the next open). The two `…Enabled` toggles also gate the Optimizer tab's
+    // LR / momentum text fields (disabled while the matching cycle is on); that
+    // cross-tab disable reads these pending model values, so it responds the
+    // instant the toggle flips, before Save.
+
+    var lrCycleEnabledValue = false
+    var lrCycleMinText = "" { didSet { lrCycleMinError = false } }
+    var lrCycleMaxText = "" { didSet { lrCycleMaxError = false } }
+    var lrCyclePeriodText = "" { didSet { lrCyclePeriodError = false } }
+    var lrCycleCountText = "" { didSet { lrCycleCountError = false } }
+    var lrCycleInvertValue = false
+    var momentumCycleEnabledValue = false
+    var momentumCycleMinText = "" { didSet { momentumCycleMinError = false } }
+    var momentumCycleMaxText = "" { didSet { momentumCycleMaxError = false } }
+    var momentumCyclePeriodText = "" { didSet { momentumCyclePeriodError = false } }
+    var momentumCycleCountText = "" { didSet { momentumCycleCountError = false } }
+    var momentumCycleInvertValue = true
+
+    private(set) var lrCycleMinError = false
+    private(set) var lrCycleMaxError = false
+    private(set) var lrCyclePeriodError = false
+    private(set) var lrCycleCountError = false
+    private(set) var momentumCycleMinError = false
+    private(set) var momentumCycleMaxError = false
+    private(set) var momentumCyclePeriodError = false
+    private(set) var momentumCycleCountError = false
 
     // MARK: - Self Play tab
 
@@ -115,6 +149,22 @@ final class TrainingSettingsPopoverModel {
     private(set) var maxPliesFromAnyOneGameError = false
     private(set) var targetSampledGameLengthPliesError = false
     private(set) var maxDrawPercentPerBatchError = false
+
+    // MARK: - Sessions tab
+    //
+    // Autosave-policy knobs. Not live-propagated like the Replay-tab fields:
+    // the periodic-save interval is reconciled mid-session by the heartbeat
+    // (which reads `periodicAutosaveIntervalSec` off the singleton and
+    // re-anchors the running `PeriodicSaveController`), and the retention cap
+    // is read at prune time after each periodic save — so a plain commit-on-Save
+    // write to `TrainingParameters.shared` is all that's needed, with no Cancel
+    // stash. The interval is edited in MINUTES for legibility (the parameter
+    // stores seconds); seeding rounds to the nearest minute.
+    var periodicAutosaveIntervalMinutesText = "" { didSet { periodicAutosaveIntervalError = false } }
+    var maxPeriodicAutosavesKeptText = "" { didSet { maxPeriodicAutosavesKeptError = false } }
+
+    private(set) var periodicAutosaveIntervalError = false
+    private(set) var maxPeriodicAutosavesKeptError = false
 
     // MARK: - Cancel stash (for the live-propagated replay-ratio fields)
 
@@ -191,11 +241,25 @@ final class TrainingSettingsPopoverModel {
         illegalMassWeightText = String(format: "%.2f", p.illegalMassWeight)
         gradClipText = String(format: "%.1f", p.gradClipMaxNorm)
         weightDecayText = String(format: "%.2e", p.weightDecay)
+        dropoutRateText = String(format: "%.2f", p.dropoutRate)
         policyLossWeightText = String(format: "%.2f", p.policyLossWeight)
         valueLossWeightText = String(format: "%.2f", p.valueLossWeight)
         valueLabelSmoothingText = String(format: "%.3f", p.valueLabelSmoothingEpsilon)
         drawPenaltyText = String(format: "%.3f", p.drawPenalty)
         trainingBatchSizeText = String(p.trainingBatchSize)
+        // --- Cycling tab ---
+        lrCycleEnabledValue = p.lrCycleEnabled
+        lrCycleMinText = String(format: "%.2e", p.lrCycleMin)
+        lrCycleMaxText = String(format: "%.2e", p.lrCycleMax)
+        lrCyclePeriodText = String(p.lrCyclePeriodSteps)
+        lrCycleCountText = String(p.lrCycleCount)
+        lrCycleInvertValue = p.lrCycleInvert
+        momentumCycleEnabledValue = p.momentumCycleEnabled
+        momentumCycleMinText = String(format: "%.2f", p.momentumCycleMin)
+        momentumCycleMaxText = String(format: "%.2f", p.momentumCycleMax)
+        momentumCyclePeriodText = String(p.momentumCyclePeriodSteps)
+        momentumCycleCountText = String(p.momentumCycleCount)
+        momentumCycleInvertValue = p.momentumCycleInvert
         // --- Self Play tab ---
         selfPlayConcurrencyText = String(p.selfPlayConcurrency)
         selfPlayStartTauText = String(format: "%.2f", p.selfPlayStartTau)
@@ -217,6 +281,9 @@ final class TrainingSettingsPopoverModel {
         targetSampledGameLengthPliesText = String(p.targetSampledGameLengthPlies)
         maxDrawPercentPerBatchText = String(p.maxDrawPercentPerBatch)
         replayBufferStratifyByMaterial = p.replayBufferStratifyByMaterial
+        // --- Sessions tab ---
+        periodicAutosaveIntervalMinutesText = String(Int((p.periodicAutosaveIntervalSec / 60.0).rounded()))
+        maxPeriodicAutosavesKeptText = String(p.maxPeriodicAutosavesKept)
         // Stash pre-edit values for the four replay-ratio control fields. The
         // Replay tab live-propagates changes to those fields; if the user hits
         // Cancel we restore from this stash, matching the standard
@@ -249,11 +316,20 @@ final class TrainingSettingsPopoverModel {
         illegalMassWeightError = false
         gradClipError = false
         weightDecayError = false
+        dropoutRateError = false
         policyLossWeightError = false
         valueLossWeightError = false
         valueLabelSmoothingError = false
         drawPenaltyError = false
         trainingBatchSizeError = false
+        lrCycleMinError = false
+        lrCycleMaxError = false
+        lrCyclePeriodError = false
+        lrCycleCountError = false
+        momentumCycleMinError = false
+        momentumCycleMaxError = false
+        momentumCyclePeriodError = false
+        momentumCycleCountError = false
         selfPlayConcurrencyError = false
         selfPlayStartTauError = false
         selfPlayDecayPerPlyError = false
@@ -270,6 +346,8 @@ final class TrainingSettingsPopoverModel {
         maxPliesFromAnyOneGameError = false
         targetSampledGameLengthPliesError = false
         maxDrawPercentPerBatchError = false
+        periodicAutosaveIntervalError = false
+        maxPeriodicAutosavesKeptError = false
     }
 
     /// Restore the seven live-propagated Replay-tab fields (four replay-ratio
@@ -573,6 +651,113 @@ final class TrainingSettingsPopoverModel {
             anyError = true
         }
 
+        // --- Cycling tab ---
+        // LR / momentum cycling params. Validated against the same ranges as
+        // the underlying @TrainingParameters and written to the singleton here.
+        // The per-change [PARAM] audit line AND the push onto the live trainer
+        // are both handled once, as a bundle, by `ControlSideEffectsProbe`'s
+        // `.onChange(of: trainingParams.lrMomentumCycle)` forwarder (which fires
+        // when any of these writes lands) — the same "write singleton → probe
+        // reacts" split the Replay tab's sampling constraints use, avoiding a
+        // 12-line-per-Save log spew.
+        if lrCycleEnabledValue != p.lrCycleEnabled { p.lrCycleEnabled = lrCycleEnabledValue }
+        if lrCycleInvertValue != p.lrCycleInvert { p.lrCycleInvert = lrCycleInvertValue }
+        if let v = Double(lrCycleMinText.trimmingCharacters(in: .whitespaces)),
+           v >= 1e-7, v <= 1.0, v.isFinite {
+            lrCycleMinError = false
+            if abs(v - p.lrCycleMin) > Double.ulpOfOne { p.lrCycleMin = v }
+        } else {
+            lrCycleMinError = true
+            anyError = true
+        }
+        if let v = Double(lrCycleMaxText.trimmingCharacters(in: .whitespaces)),
+           v >= 1e-7, v <= 1.0, v.isFinite {
+            lrCycleMaxError = false
+            if abs(v - p.lrCycleMax) > Double.ulpOfOne { p.lrCycleMax = v }
+        } else {
+            lrCycleMaxError = true
+            anyError = true
+        }
+        // Cross-field: LR max must be >= min. The cycle guards itself
+        // (`learningRate(forStep:)` returns nil and falls back to the static
+        // LR when lrMax < lrMin), so an inverted pair would silently make the
+        // cycle inert while the UI reads "enabled" — flag the max field so the
+        // misconfiguration is visible instead.
+        if !lrCycleMinError, !lrCycleMaxError, p.lrCycleMax < p.lrCycleMin {
+            lrCycleMaxError = true
+            anyError = true
+        }
+        if let n = Int(lrCyclePeriodText.trimmingCharacters(in: .whitespaces)),
+           n >= 1, n <= 10_000_000 {
+            lrCyclePeriodError = false
+            if n != p.lrCyclePeriodSteps { p.lrCyclePeriodSteps = n }
+        } else {
+            lrCyclePeriodError = true
+            anyError = true
+        }
+        if let n = Int(lrCycleCountText.trimmingCharacters(in: .whitespaces)),
+           n >= 0, n <= 1_000_000 {
+            lrCycleCountError = false
+            if n != p.lrCycleCount { p.lrCycleCount = n }
+        } else {
+            lrCycleCountError = true
+            anyError = true
+        }
+        if momentumCycleEnabledValue != p.momentumCycleEnabled { p.momentumCycleEnabled = momentumCycleEnabledValue }
+        if momentumCycleInvertValue != p.momentumCycleInvert { p.momentumCycleInvert = momentumCycleInvertValue }
+        if let v = Double(momentumCycleMinText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 0.99, v.isFinite {
+            momentumCycleMinError = false
+            if abs(v - p.momentumCycleMin) > Double.ulpOfOne { p.momentumCycleMin = v }
+        } else {
+            momentumCycleMinError = true
+            anyError = true
+        }
+        if let v = Double(momentumCycleMaxText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 0.99, v.isFinite {
+            momentumCycleMaxError = false
+            if abs(v - p.momentumCycleMax) > Double.ulpOfOne { p.momentumCycleMax = v }
+        } else {
+            momentumCycleMaxError = true
+            anyError = true
+        }
+        // Cross-field: momentum max must be >= min. Unlike LR, `momentum(forStep:)`
+        // has NO min<=max guard — an inverted pair would silently run the
+        // schedule reversed with no signal — so flagging it here is the only
+        // safeguard against a silent misconfiguration.
+        if !momentumCycleMinError, !momentumCycleMaxError, p.momentumCycleMax < p.momentumCycleMin {
+            momentumCycleMaxError = true
+            anyError = true
+        }
+        if let n = Int(momentumCyclePeriodText.trimmingCharacters(in: .whitespaces)),
+           n >= 1, n <= 10_000_000 {
+            momentumCyclePeriodError = false
+            if n != p.momentumCyclePeriodSteps { p.momentumCyclePeriodSteps = n }
+        } else {
+            momentumCyclePeriodError = true
+            anyError = true
+        }
+        if let n = Int(momentumCycleCountText.trimmingCharacters(in: .whitespaces)),
+           n >= 0, n <= 1_000_000 {
+            momentumCycleCountError = false
+            if n != p.momentumCycleCount { p.momentumCycleCount = n }
+        } else {
+            momentumCycleCountError = true
+            anyError = true
+        }
+        // Push the committed cycle config straight onto the live trainer
+        // (mirroring how the LR / momentum fields above push `trainer?.…`),
+        // so the popover path does not depend solely on
+        // `ControlSideEffectsProbe` being mounted. Unlike the sampling
+        // constraints — which the buffer re-reads from `TrainingParameters`
+        // every `sample(count:)` — the trainer reads the cycle from its own
+        // `SyncBox`, so it must be written across. `p.lrMomentumCycle` reflects
+        // exactly the just-committed state (valid fields updated, any invalid
+        // field left unchanged). The probe's `.onChange` still fires too (it
+        // owns the single bundled `[PARAM]` audit line and covers CLI / other
+        // write paths); a second identical write is harmless.
+        trainer?.lrMomentumCycle = p.lrMomentumCycle
+
         // √batch scaling toggle — Bool, cannot fail to parse.
         if sqrtBatchScalingValue != p.sqrtBatchScalingLR {
             SessionLogger.shared.log(
@@ -650,6 +835,24 @@ final class TrainingSettingsPopoverModel {
             }
         } else {
             weightDecayError = true
+            anyError = true
+        }
+
+        // Dropout rate — Double in [0, 0.95]. Drop probability
+        // (PyTorch/Keras convention); 0 disables. Pushed onto the live
+        // trainer via the graph-variable assign (`ChessTrainer.dropoutRate`).
+        if let v = Double(dropoutRateText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 0.95, v.isFinite {
+            dropoutRateError = false
+            if abs(v - p.dropoutRate) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] dropoutRate: %.3f -> %.3f", p.dropoutRate, v)
+                )
+                p.dropoutRate = v
+                trainer?.dropoutRate = Float(v)
+            }
+        } else {
+            dropoutRateError = true
             anyError = true
         }
 
@@ -951,6 +1154,40 @@ final class TrainingSettingsPopoverModel {
             replayTrainingStepDelayError = false
         } else {
             replayTrainingStepDelayError = true
+            anyError = true
+        }
+
+        // --- Sessions tab ---
+        // Autosave interval — edited in minutes, stored as seconds. Range
+        // [1, 10080] min = [60, 604800] sec, matching the parameter's range.
+        // Commit-on-Save: the heartbeat re-anchors the running controller from
+        // the new value, so no live trainer write is needed here.
+        if let mins = Int(periodicAutosaveIntervalMinutesText.trimmingCharacters(in: .whitespaces)),
+           mins >= 1, mins <= 10_080 {
+            periodicAutosaveIntervalError = false
+            let secs = Double(mins * 60)
+            if abs(secs - p.periodicAutosaveIntervalSec) > 0.5 {
+                SessionLogger.shared.log(
+                    "[PARAM] periodicAutosaveIntervalSec: \(Int(p.periodicAutosaveIntervalSec)) -> \(Int(secs))"
+                )
+                p.periodicAutosaveIntervalSec = secs
+            }
+        } else {
+            periodicAutosaveIntervalError = true
+            anyError = true
+        }
+        // Max periodic autosaves kept — Int in [0, 10000]; 0 = unlimited.
+        // Read live at prune time (after each periodic save), so a plain
+        // singleton write is all that's required.
+        if let n = Int(maxPeriodicAutosavesKeptText.trimmingCharacters(in: .whitespaces)),
+           n >= 0, n <= 10_000 {
+            maxPeriodicAutosavesKeptError = false
+            if n != p.maxPeriodicAutosavesKept {
+                SessionLogger.shared.log("[PARAM] maxPeriodicAutosavesKept: \(p.maxPeriodicAutosavesKept) -> \(n)")
+                p.maxPeriodicAutosavesKept = n
+            }
+        } else {
+            maxPeriodicAutosavesKeptError = true
             anyError = true
         }
 

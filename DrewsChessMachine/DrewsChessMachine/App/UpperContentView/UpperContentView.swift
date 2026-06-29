@@ -1,5 +1,5 @@
 import AppKit
-import Charts
+import Combine
 import Metal
 import SwiftUI
 import UniformTypeIdentifiers
@@ -24,6 +24,22 @@ struct UpperContentView: View {
     /// alongside the other process-scope wiring rather than
     /// being discovered via `CommandLine.arguments` at view time.
     let autoTrainOnLaunch: Bool
+
+    /// Forwarded from `DrewsChessMachineApp`'s `--playchess` flag. When
+    /// set, the first `.onAppear` resolves the opponent model and starts
+    /// a human-vs-network game (via the existing `.loadedFile` opponent
+    /// path) instead of presenting the resume-from-autosave sheet.
+    let autoPlayChessOnLaunch: Bool
+
+    /// Forwarded `--model <path>` value for `--playchess` (opponent
+    /// weights). Nil ⇒ the most recently saved session's trainer, resolved
+    /// the same way `--uci` resolves it (`UCIModelLoader.resolveModelURL`).
+    let playChessModelPath: String?
+
+    /// Forwarded `--start-model <path>` value for `--train`: load this
+    /// saved model as the starting champion instead of building a fresh
+    /// random network. Nil ⇒ the classic fresh-build auto-train path.
+    let trainStartModelPath: String?
 
     /// Parsed `--parameters <file>` JSON. Applied to the relevant
     /// `@AppStorage` / `@State` fields right before
@@ -52,12 +68,18 @@ struct UpperContentView: View {
     init(
         commandHub: AppCommandHub,
         autoTrainOnLaunch: Bool,
+        autoPlayChessOnLaunch: Bool,
+        playChessModelPath: String?,
+        trainStartModelPath: String?,
         cliConfig: CliTrainingConfig?,
         cliOutputURL: URL?,
         chartCoordinator: ChartCoordinator
     ) {
         self.commandHub = commandHub
         self.autoTrainOnLaunch = autoTrainOnLaunch
+        self.autoPlayChessOnLaunch = autoPlayChessOnLaunch
+        self.playChessModelPath = playChessModelPath
+        self.trainStartModelPath = trainStartModelPath
         self.cliConfig = cliConfig
         self.cliOutputURL = cliOutputURL
         self.chartCoordinator = chartCoordinator
@@ -71,6 +93,11 @@ struct UpperContentView: View {
     /// session. Flipped `true` the first time the sequence
     /// starts and never cleared.
     @State private var autoTrainFired: Bool = false
+
+    /// Idempotency guard for the `--playchess` launch sequence. `.onAppear`
+    /// can fire more than once; the human-game start is a one-shot launch
+    /// behavior, so this flips `true` on the first fire and never clears.
+    @State private var autoPlayChessFired: Bool = false
 
     /// Live recorder for `--output` runs. Moved to SessionController in
     /// Stage 4h — forwarding proxy. (Allocated at the start of startRealTraining
@@ -549,6 +576,7 @@ struct UpperContentView: View {
     /// configured to show only the promoted records, opened by
     /// clicking the "Promotions" cell in the top status bar.
     @State private var showPromotionsSheet: Bool = false
+    @State private var showBuildNewModelSheet: Bool = false
     // Sampling cadence (`chartCoordinator.progressRateLastFetch`,
     // `chartCoordinator.progressRateNextId`, `chartCoordinator.trainingChartNextId`,
     // `chartCoordinator.prevChartTotalGpuMs`), chart navigation (`chartCoordinator.scrollX`,
@@ -680,11 +708,17 @@ struct UpperContentView: View {
         get { session.periodicSaveInFlight } nonmutating set { session.periodicSaveInFlight = newValue }
     }
 
-    /// Interval between scheduled periodic saves while a
-    /// Play-and-Train session is active. 4 hours per the
-    /// product spec — long enough to keep disk churn low, short
-    /// enough that a crash never forfeits more than half a
-    /// working day of training.
+    /// Default interval between scheduled periodic saves while a
+    /// Play-and-Train session is active. 4 hours — long enough to
+    /// keep disk churn low, short enough that a crash never forfeits
+    /// more than half a working day of training.
+    ///
+    /// **Superseded as the live source of truth** by the
+    /// `periodicAutosaveIntervalSec` training parameter (same default,
+    /// `14400`), which is what `PeriodicSaveController` is now armed
+    /// with and what the heartbeat reconciles live. Editing this
+    /// constant no longer changes the running cadence — kept only as
+    /// the documented default value and as the doc/ROADMAP anchor.
     nonisolated static let periodicSaveIntervalSec: TimeInterval = 4 * 60 * 60
 
     // MARK: - Auto-resume sheet
@@ -805,6 +839,20 @@ struct UpperContentView: View {
     @State private var contentWindow: NSWindow?
 
     private var networkReady: Bool { network != nil }
+
+    /// Input-plane count of the live network (the net that produced any
+    /// `inferenceResult` overlay). Per-architecture; falls back to the
+    /// default arch's count when no net is built yet. Drives the channel
+    /// overlay stepper bounds so they never index past the encoded board.
+    private var liveInputPlanes: Int {
+        network?.network.arch.inputPlanes ?? NetworkArchitecture.current.inputPlanes
+    }
+    /// The live model's encoding (or the default when no model is built),
+    /// used to source per-plane channel names. Its `channelNames` /
+    /// `shortChannelNames` always have exactly `liveInputPlanes` entries.
+    private var liveInputEncoding: InputEncoding {
+        network?.network.arch.inputEncoding ?? NetworkArchitecture.current.inputEncoding
+    }
     private var isBusy: Bool {
         isBuilding
         || isEvaluating
@@ -937,6 +985,12 @@ struct UpperContentView: View {
         maxSelfPlayWorkers: UpperContentView.absoluteMaxSelfPlayWorkers
     )
 
+    /// State for the rich Load Session picker (File > Load Session…).
+    /// The bare `.fileImporter` remains reachable via the picker's
+    /// Browse… button for sessions outside the default directory.
+    @State private var sessionPicker = SessionPickerModel()
+    @State private var showingSessionPicker = false
+
     /// Binding for the side-to-move segmented picker. Writes rebuild
     /// `editableState` with the new current-player (nothing else changes)
     /// and kick off an auto re-eval so the arrows update for the new
@@ -979,10 +1033,11 @@ struct UpperContentView: View {
         if selectedOverlay < 0 { return "" }
         if selectedOverlay == 0 { return "Top Moves" }
         let i = selectedOverlay - 1
-        guard i >= 0, i < TensorChannelNames.names.count else {
+        let names = liveInputEncoding.channelNames
+        guard i >= 0, i < names.count else {
             return "Channel \(i)"
         }
-        return "Channel \(i): \(TensorChannelNames.names[i])"
+        return "Channel \(i): \(names[i])"
     }
 
     /// "Last saved: 5/6/26 at 4:34 PM", "Resumed 5/6/26 at 4:34 PM",
@@ -1137,7 +1192,8 @@ struct UpperContentView: View {
                     summary: autoResume.summary,
                     countdownRemaining: autoResume.countdownRemaining,
                     onDismiss: { autoResume.dismiss() },
-                    onResume: { autoResume.performResume() }
+                    onResume: { autoResume.performResume() },
+                    loadAsFloat32: $autoResume.loadAsFloat32
                 )
             }
         }
@@ -1147,6 +1203,17 @@ struct UpperContentView: View {
                 configuredGamesPerTournament: trainingParams.arenaGamesPerTournament,
                 promoteThreshold: trainingParams.arenaPromoteThreshold,
                 onClose: { showArenaHistorySheet = false }
+            )
+        }
+        .sheet(isPresented: $showBuildNewModelSheet) {
+            BuildNewModelView(
+                initial: ArchitecturePresetStore.currentNamed,
+                onBuild: { arch in
+                    session.buildArchitecture = arch
+                    showBuildNewModelSheet = false
+                    session.buildNetwork()
+                },
+                onCancel: { showBuildNewModelSheet = false }
             )
         }
         // Promotions sheet — reuses `ArenaHistoryView` filtered to the
@@ -1302,6 +1369,7 @@ struct UpperContentView: View {
                     overlay: currentOverlay,
                     selectedOverlay: selectedOverlay,
                     inferenceResultPresent: inferenceResult != nil,
+                    inputPlaneCount: liveInputPlanes,
                     forwardPassEditable: forwardPassEditable,
                     realTraining: realTraining,
                     isCandidateTestActive: isCandidateTestActive,
@@ -1481,9 +1549,10 @@ struct UpperContentView: View {
     @ViewBuilder
     private var inputTensorStripSection: some View {
         if let result = inferenceResult, showForwardPassUI, selectedOverlay >= 0 {
+            let shortNames = liveInputEncoding.shortChannelNames   // count == liveInputPlanes
             Divider()
             HStack(spacing: 2) {
-                ForEach(0..<ChessNetwork.inputPlanes, id: \.self) { channel in
+                ForEach(Array(0..<liveInputPlanes), id: \.self) { channel in
                     let start = channel * 64
                     let isSelected = selectedOverlay == channel + 1
                     VStack(spacing: 1) {
@@ -1497,7 +1566,7 @@ struct UpperContentView: View {
                                         lineWidth: isSelected ? 2 : 0.5
                                     )
                             )
-                        Text(TensorChannelNames.shortNames[channel])
+                        Text(channel < shortNames.count ? shortNames[channel] : "ch\(channel)")
                             .font(.system(size: 8))
                             .foregroundStyle(isSelected ? .primary : .tertiary)
                             .lineLimit(1)
@@ -1535,6 +1604,31 @@ struct UpperContentView: View {
                 }
             )
             .fileDialogDefaultDirectory(CheckpointPaths.sessionsDir)
+
+        Color.clear
+            .sheet(isPresented: $showingSessionPicker) {
+                SessionPickerSheet(
+                    model: sessionPicker,
+                    onLoad: { manifest in
+                        showingSessionPicker = false
+                        guard let url = sessionPicker.folderURL(for: manifest) else {
+                            SessionLogger.shared.log(
+                                "[BUTTON] Load Session (picker): no scan directory for \(manifest.folderName) — ignoring"
+                            )
+                            return
+                        }
+                        SessionLogger.shared.log(
+                            "[BUTTON] Load Session (picker): \(manifest.folderName)"
+                        )
+                        session.loadSessionFrom(url: url)
+                    },
+                    onBrowse: {
+                        showingSessionPicker = false
+                        checkpoint.showingLoadSessionImporter = true
+                    },
+                    onCancel: { showingSessionPicker = false }
+                )
+            }
 
         Color.clear
             .fileImporter(
@@ -1631,7 +1725,11 @@ struct UpperContentView: View {
         }
         // The auto-resume controller chains into the load-and-start path here.
         autoResume.onResume = { pointer in
-            session.loadSessionFrom(url: pointer.directoryURL, startAfterLoad: true)
+            session.loadSessionFrom(
+                url: pointer.directoryURL,
+                startAfterLoad: true,
+                forceFloat32: autoResume.loadAsFloat32
+            )
         }
         // The Load-Parameters file-import path needs to apply the picked
         // CliTrainingConfig over `trainingParams` and return the list of
@@ -1680,8 +1778,20 @@ struct UpperContentView: View {
         // nothing useful. Skipped under `--train` because the
         // headless launch path (`handleWindowAttached`) has
         // already kicked off training and the sheet would be
-        // confusing on top of an active session.
-        if !autoTrainOnLaunch {
+        // confusing on top of an active session. Skipped under
+        // `--playchess` for the same reason: that flag drives the
+        // window straight into a human-vs-network game, so the
+        // resume sheet would be in the way. The play-chess sequence
+        // fires here (after all `session.*` hooks above are wired,
+        // which `playController.start` relies on) rather than in
+        // `handleWindowAttached`, since human play is inherently
+        // interactive and wants the visible window.
+        if autoPlayChessOnLaunch {
+            if !autoPlayChessFired {
+                autoPlayChessFired = true
+                runAutoPlayChessLaunchSequence()
+            }
+        } else if !autoTrainOnLaunch {
             autoResume.maybePresentSheet(isTrainingActive: realTraining)
         }
     }
@@ -1773,7 +1883,7 @@ struct UpperContentView: View {
         // no overlay). 0 = Top Moves; 1..inputPlanes = channel views,
         // both of which require an inferenceResult to render.
         let next = selectedOverlay + direction
-        if next < -1 || next > ChessNetwork.inputPlanes { return }
+        if next < -1 || next > liveInputPlanes { return }
         if next >= 0 && inferenceResult == nil { return }
         selectedOverlay = next
     }
@@ -1879,6 +1989,30 @@ struct UpperContentView: View {
         // `applyCliConfigOverridesFromMenu(cfg:)`, so the override
         // logic is shared rather than CLI-only.
         applyCliConfigOverrides()
+
+        // `--start-model <path>`: load the given saved model as the
+        // starting champion (built at the FILE's architecture, weights
+        // applied) instead of a fresh random build. The trainer forks
+        // from the champion on session start, so both lineages begin at
+        // the loaded weights — the lever for controlled A/B runs from one
+        // identical starting net.
+        if let startPath = trainStartModelPath {
+            let startURL = URL(fileURLWithPath: (startPath as NSString).expandingTildeInPath)
+            SessionLogger.shared.log("[APP] --train: loading start model \(startURL.path)")
+            Task { @MainActor in
+                let loaded = await session.performLoadModel(url: startURL)
+                guard loaded, networkReady else {
+                    SessionLogger.shared.log("[APP] --train: --start-model load failed; aborting auto-train")
+                    return
+                }
+                SessionLogger.shared.log("[APP] --train: start model loaded as champion; starting Play-and-Train")
+                session.startRealTraining(mode: .freshOrFromLoadedSession)
+                playAndTrainBoardMode = .candidateTest
+                SessionLogger.shared.log("[APP] --train: switched to Candidate Test view")
+            }
+            return
+        }
+
         session.buildNetwork()
         Task { @MainActor in
             while isBuilding {
@@ -1903,6 +2037,38 @@ struct UpperContentView: View {
             playAndTrainBoardMode = .candidateTest
             SessionLogger.shared.log("[APP] --train: switched to Candidate Test view")
         }
+    }
+
+    /// Drive the `--playchess` launch: resolve the opponent weight file
+    /// (explicit `--model <path>`, else the most recent saved session's
+    /// trainer — the same precedence `--uci` uses), point the
+    /// `PlayController` at it through the existing `.loadedFile` opponent
+    /// path, and start a human-vs-network game. The human plays White by
+    /// default (moves first). If resolution fails (no `--model` and no
+    /// saved session), log it and open the Play setup popover so the user
+    /// can pick a model by hand rather than launching into nothing.
+    ///
+    /// Routing through `.loadedFile` deliberately avoids depending on a
+    /// built champion/trainer in this session — the opponent network is
+    /// built fresh from the file, so `--playchess` works on a cold launch.
+    @MainActor
+    private func runAutoPlayChessLaunchSequence() {
+        let resolved: (url: URL, sourceLabel: String)
+        do {
+            resolved = try UCIModelLoader.resolveModelURL(explicitPath: playChessModelPath)
+        } catch {
+            SessionLogger.shared.log(
+                "[APP] --playchess: could not resolve opponent model: \(error). Opening Play setup so you can pick one."
+            )
+            playController.openSetupPopover(trainerAvailable: session.trainer != nil)
+            return
+        }
+        SessionLogger.shared.log("[APP] --playchess: opponent = \(resolved.sourceLabel); starting human-vs-network game (you play White)")
+        playController.loadedFileURL = resolved.url
+        playController.loadedFileLabel = resolved.url.lastPathComponent
+        playController.noteUserOpponentChoice(.loadedFile)
+        playController.humanColor = .white
+        playController.start(session: session, gameWatcher: gameWatcher)
     }
 
     /// Write the `--parameters` JSON overrides into the relevant
@@ -1982,6 +2148,18 @@ struct UpperContentView: View {
         // Apply through TrainingParameters — definition.validate runs on each
         // typed setter; out-of-range values throw and are surfaced via the
         // catch below rather than silently dropped.
+        //
+        // Suppress UserDefaults persistence for the duration: a `--parameters`
+        // override (or a "Load Parameters…" file) is a TRANSIENT per-run
+        // setting, not a change to the user's saved defaults. Persisting it
+        // would also leak across processes — a headless `--train` arm and the
+        // GUI share one UserDefaults domain, so an experiment arm's value
+        // silently became the next launch's default (the 2026-06-12
+        // dropout=0.7 contamination). The in-memory singleton still updates,
+        // so the running session uses the override and the session checkpoint
+        // captures it for resume.
+        TrainingParameters.suppressPersistence = true
+        defer { TrainingParameters.suppressPersistence = false }
         do {
             try trainingParams.apply(values)
         } catch {
@@ -2077,6 +2255,7 @@ struct UpperContentView: View {
     /// by the struct value).
     private func wireMenuCommandHub() {
         commandHub.buildNetwork = { session.buildNetwork() }
+        commandHub.presentBuildNewModel = { showBuildNewModelSheet = true }
         commandHub.runForwardPass = { runForwardPass() }
         commandHub.playSingleGame = { playSingleGame() }
         commandHub.startContinuousPlay = { startContinuousPlay() }
@@ -2099,6 +2278,9 @@ struct UpperContentView: View {
         commandHub.runLichessProbe = { session.runLichessProbe() }
         commandHub.openLichessProbeMonitor = {
             LichessProbeMonitorLauncher.openWindow(sessionController: session)
+        }
+        commandHub.openCombinedLossWindow = {
+            CombinedLossWindowLauncher.openWindow(sessionController: session)
         }
         commandHub.openLichessProbeDetail = {
             LichessProbeDetailLauncher.openWindow(sessionController: session)
@@ -2126,7 +2308,8 @@ struct UpperContentView: View {
         }
         commandHub.loadSession = {
             SessionLogger.shared.log("[BUTTON] Load Session")
-            checkpoint.showingLoadSessionImporter = true
+            sessionPicker.beginScan(directory: CheckpointPaths.sessionsDir)
+            showingSessionPicker = true
         }
         commandHub.loadModel = {
             SessionLogger.shared.log("[BUTTON] Load Model")
@@ -2146,7 +2329,9 @@ struct UpperContentView: View {
         commandHub.chartZoomIn = { session.chartZoomIn() }
         commandHub.chartZoomOut = { session.chartZoomOut() }
         commandHub.chartZoomEnableAuto = { session.chartZoomEnableAuto() }
-        commandHub.openHumanPlaySetup = { playController.openSetupPopover() }
+        commandHub.openHumanPlaySetup = {
+            playController.openSetupPopover(trainerAvailable: session.trainer != nil)
+        }
         commandHub.stopHumanGame = { playController.stop(gameWatcher: gameWatcher) }
         commandHub.resetHumanGame = {
             playController.reset(session: session, gameWatcher: gameWatcher)
@@ -2650,12 +2835,12 @@ struct UpperContentView: View {
         let hasHistory = checkpoint.cumulativeRunCount > 0 || totalSteps > 0
         let canRunArena = !session.isArenaRunning && network != nil && trainer != nil
         let totalPositions = totalSteps * trainingParams.trainingBatchSize
-        let warmupLR: String? = {
-            if let snap = trainerWarmupSnap, snap.inWarmup {
-                return String(format: "%.2e", snap.effectiveLR)
-            }
-            return nil
-        }()
+        // Live actual LR + momentum the optimizer is being fed (cycle-aware,
+        // warmup-aware), shown whenever a trainer exists — not only during
+        // warm-up. During warm-up the LR value is the actual ramped value.
+        let liveLR: String? = trainerWarmupSnap.map { String(format: "%.2e", $0.effectiveLR) }
+        let liveMomentum: String? = trainerWarmupSnap.map { String(format: "%.3f", $0.effectiveMomentum) }
+        let liveLRInWarmup: Bool = trainerWarmupSnap?.inWarmup ?? false
         let legalMassStr = realLastLegalMassSnapshot.map {
             String(format: "%.4f%%", Double($0.legalMass) * 100)
         } ?? "--"
@@ -2663,7 +2848,9 @@ struct UpperContentView: View {
             hasHistory: hasHistory,
             canRunArena: canRunArena,
             activeTrainingTime: GameWatcher.Snapshot.formatHMS(seconds: checkpoint.cumulativeActiveTrainingSec),
-            warmupLREffective: warmupLR,
+            learningRate: liveLR,
+            learningRateInWarmup: liveLRInWarmup,
+            momentum: liveMomentum,
             trainingSteps: Int(totalSteps).formatted(),
             positionsTrained: Self.formatCompactCount(totalPositions),
             trainingRate: trainingRateStatusValue,
@@ -2683,6 +2870,7 @@ struct UpperContentView: View {
             scoreCell: scoreStatusBarCell,
             tacticalRankCell: tacticalRankStatusBarCell,
             tacticalProbCell: tacticalProbStatusBarCell,
+            widePEloCell: widePEloStatusBarCell,
             // Right-side chips. Built each parent render. The
             // popovers' bindings / error flags / callbacks remain
             // captured here exactly as before. The chip-side
@@ -2905,6 +3093,47 @@ struct UpperContentView: View {
         }
     }
 
+    /// "Wide pElo" cell — MLE puzzle-Elo from the latest wide-set
+    /// (~4,435-puzzle) Lichess battery tick, the cross-experiment
+    /// default strength metric (see ARCH_EXPERIMENTS.md). "—" before
+    /// the first tick; the "<floor" / ">ceil" sentinels mirror
+    /// `LichessProbeDetailView.formatPuzzleElo` for the unbounded-MLE
+    /// edges (all-wrong / all-correct). Click opens the Lichess Probe
+    /// Detail window.
+    private var widePEloStatusBarCell: StatusBarCell {
+        let elo = session.lichessProbeWideHistory.overallSeries.last?.puzzleElo
+        let value: String
+        let color: Color
+        if let e = elo, e.isFinite {
+            value = String(format: "%.0f", e)
+            // Primary, deliberately: the status bar's orange means "this
+            // band is unhealthy" (see the two Tactical cells), and pElo has
+            // no good/bad bands — its meaningful scale shifts run to run —
+            // so a normal reading must not claim the warning color.
+            // (Considered and reverted 2026-06-12.)
+            color = .primary
+        } else if let e = elo, e == -.infinity {
+            value = "<floor"
+            color = .secondary
+        } else if let e = elo, e == .infinity {
+            value = ">ceil"
+            color = .secondary
+        } else {
+            // nil (no tick yet) or NaN (tick had no rated puzzles).
+            value = "—"
+            color = .secondary
+        }
+        return StatusBarCell(
+            label: "Wide pElo",
+            value: value,
+            action: { [commandHub] in
+                SessionLogger.shared.log("[BUTTON] Open Lichess Probe Detail (status cell)")
+                commandHub.openLichessProbeDetail()
+            },
+            valueColor: color
+        )
+    }
+
     /// Apply attribute-based color highlighting to the multi-line
     /// body text of a stats panel. Wraps `AttributedMetricColor`
     /// with the live grad-clip ceiling and the project's
@@ -3109,7 +3338,9 @@ struct UpperContentView: View {
         if isSelfPlay {
             let bufCount = replayBuffer?.count ?? 0
             let bufCap = replayBuffer?.capacity ?? trainingParams.replayBufferCapacity
-            let bufRamMB = Double(bufCap * ReplayBuffer.bytesPerPosition) / (1024.0 * 1024.0)
+            let bytesPerPos = replayBuffer?.bytesPerPosition
+                ?? ReplayBuffer.bytesPerPosition(floatsPerBoard: ReplayBuffer.defaultFloatsPerBoard)
+            let bufRamMB = Double(bufCap * bytesPerPos) / (1024.0 * 1024.0)
             let bufStr = String(format: "%6d / %d  (%.0f MB)", bufCount, bufCap, bufRamMB)
             lines.append("  Buffer:     \(bufStr)")
             // Pre-constraint composition: game-weighted mean game length,
@@ -3496,7 +3727,8 @@ extension UpperContentView {
                 replayRatioCurrent: replayRatioSnapshot?.currentRatio,
                 replayRatioComputedDelayMs: replayRatioSnapshot?.computedDelayMs,
                 replayRatioComputedSelfPlayDelayMs: replayRatioSnapshot?.computedSelfPlayDelayMs,
-                bytesPerPosition: ReplayBuffer.bytesPerPosition,
+                bytesPerPosition: replayBuffer?.bytesPerPosition
+                    ?? ReplayBuffer.bytesPerPosition(floatsPerBoard: ReplayBuffer.defaultFloatsPerBoard),
                 bufferComposition: session.bufferComposition,
                 lastSamplingResult: session.lastSamplingResult,
                 parallelStats: session.parallelStats

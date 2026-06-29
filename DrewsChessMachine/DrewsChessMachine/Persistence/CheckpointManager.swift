@@ -161,6 +161,65 @@ enum CheckpointPaths {
         }
         sweep(sessionsDir, ".tmp")
         sweep(modelsDir, ".dcmmodel.tmp")
+        sweep(modelsDir, ".safetensors.tmp")
+    }
+
+    /// Suffix that uniquely identifies a periodic (4-hourly-by-default)
+    /// autosave session directory. Built from `SessionSaveTrigger.periodic`'s
+    /// disk tag so the two stay in lock-step — pruning must only ever touch
+    /// periodic saves, never `-manual` / `-promote` / `-sigusr2` ones.
+    static let periodicSessionSuffix = "-periodic.dcmsession"
+
+    /// Enforce the periodic-autosave retention cap: keep only the `keep` most
+    /// recent `-periodic.dcmsession` directories under `Sessions/`, deleting
+    /// the older ones. `keep <= 0` means **unlimited** (no pruning — the
+    /// legacy behavior) and returns immediately.
+    ///
+    /// Only periodic saves are candidates; manual, post-promotion, and signal
+    /// saves are filtered out by the filename suffix and are never deleted
+    /// here. Ordering is by filename, which is chronological because every
+    /// name is `YYYYMMDD-HHMMSS-…` (see `makeSessionDirectoryName`). `protecting`
+    /// — typically the just-written save and/or the current LastSessionPointer
+    /// target — is never deleted regardless of its rank, a belt-and-suspenders
+    /// guard against ever pruning the directory a resume would reach for.
+    ///
+    /// Each removal logs `[PRUNE]`; a per-item failure logs `[PRUNE-ERR]` and
+    /// does not abort the sweep (a stuck file should not strand the cap). Safe
+    /// to call off the main actor — pure FileManager work, no shared state.
+    static func prunePeriodicAutosaves(keeping keep: Int, protecting: URL? = nil) {
+        guard keep > 0 else { return }
+        let fm = FileManager.default
+        let entries: [URL]
+        do {
+            entries = try fm.contentsOfDirectory(
+                at: sessionsDir,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            SessionLogger.shared.log(
+                "[PRUNE-ERR] Could not list Sessions for periodic-autosave pruning: \(error.localizedDescription)"
+            )
+            return
+        }
+        let protectedName = protecting?.standardizedFileURL.lastPathComponent
+        let periodic = entries
+            .filter { $0.lastPathComponent.hasSuffix(periodicSessionSuffix) }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent } // newest first
+        guard periodic.count > keep else { return }
+        for url in periodic.dropFirst(keep) {
+            if let protectedName, url.lastPathComponent == protectedName { continue }
+            do {
+                try fm.removeItem(at: url)
+                SessionLogger.shared.log(
+                    "[PRUNE] Removed old periodic autosave \(url.lastPathComponent) (retention cap=\(keep))"
+                )
+            } catch {
+                SessionLogger.shared.log(
+                    "[PRUNE-ERR] Could not remove \(url.lastPathComponent): \(error.localizedDescription)"
+                )
+            }
+        }
     }
 
     /// POSIX/UTC timestamp formatter used as the leading sort key in
@@ -256,6 +315,19 @@ struct SessionResumeSummary: Sendable, Equatable {
     let trainingChartSampleCount: Int?
     let arenaCount: Int
     let promotionCount: Int
+    /// Champion `ModelID` description (`yyyymmdd-N-XXXX`) at save time —
+    /// the live champion the session would resume into. Surfaced in the
+    /// resume sheet's Models block so the user can verify the lineage
+    /// before confirming the resume.
+    let championID: String
+    /// Trainer `ModelID` description at save time. Distinct from
+    /// `championID` between promotions (every promotion forks a fresh
+    /// next-generation trainer ID off the promoted champion).
+    let trainerID: String
+    /// Architecture snapshot persisted in `session.json`. nil on
+    /// sessions saved before the field landed; the resume sheet
+    /// renders "unknown" in that case.
+    let architecture: ArchitectureMetadata?
     let buildNumber: Int?
     let buildGitHash: String?
     let buildGitDirty: Bool?
@@ -274,6 +346,9 @@ struct SessionResumeSummary: Sendable, Equatable {
         self.trainingChartSampleCount = state.trainingChartSampleCount
         self.arenaCount = state.arenaHistory.count
         self.promotionCount = state.arenaHistory.lazy.filter { $0.promoted }.count
+        self.championID = state.championID
+        self.trainerID = state.trainerID
+        self.architecture = state.architecture
         self.buildNumber = state.buildNumber
         self.buildGitHash = state.buildGitHash
         self.buildGitDirty = state.buildGitDirty
@@ -382,23 +457,25 @@ enum CheckpointManager {
         modelID: String,
         createdAtUnix: Int64,
         metadata: ModelCheckpointMetadata,
+        architecture: NetworkArchitecture = .current,
         trigger: String,
         at date: Date = Date()
     ) async throws -> URL {
         try CheckpointPaths.ensureDirectories()
 
-        let file = ModelCheckpointFile(
+        let encoded = try SafetensorsModelIO.encode(
             modelID: modelID,
             createdAtUnix: createdAtUnix,
             metadata: metadata,
-            weights: weights
+            weights: weights,
+            architecture: architecture,
+            includesVelocity: false
         )
-        let encoded = try file.encode()
 
         let filename = CheckpointPaths.makeFilename(
             modelID: modelID,
             trigger: trigger,
-            ext: "dcmmodel",
+            ext: "safetensors",
             at: date
         )
         let finalURL = CheckpointPaths.modelsDir.appendingPathComponent(filename)
@@ -447,7 +524,7 @@ enum CheckpointManager {
         // Verify BEFORE the rename so a failed check leaves nothing
         // with the final name.
         do {
-            try await verifyModelFile(at: tmpURL, expectedWeights: weights)
+            try await verifyModelFile(at: tmpURL, expectedWeights: weights, architecture: architecture)
         } catch {
             cleanupTmp()
             throw error
@@ -491,6 +568,7 @@ enum CheckpointManager {
         trainerMetadata: ModelCheckpointMetadata,
         trainerCreatedAtUnix: Int64,
         state: SessionCheckpointState,
+        architecture: NetworkArchitecture = .current,
         replayBuffer: ReplayBuffer? = nil,
         chartSnapshot: ChartCoordinatorSnapshot? = nil,
         trigger: String,
@@ -524,21 +602,26 @@ enum CheckpointManager {
         // the buffer write captured atomically under its own lock,
         // rather than from a stale snapshot the caller took before
         // self-play paused. See the writtenSnap section below.
-        let championFile = ModelCheckpointFile(
+        let championEncoded = try SafetensorsModelIO.encode(
             modelID: championID,
             createdAtUnix: championCreatedAtUnix,
             metadata: championMetadata,
-            weights: championWeights
+            weights: championWeights,
+            architecture: architecture,
+            includesVelocity: false
         )
-        let championEncoded = try championFile.encode()
 
-        let trainerFile = ModelCheckpointFile(
+        // Trainer file = base weights (trainables + BN running stats) followed by
+        // optimizer velocity (one per trainable, trainable order) — named
+        // opt.<trainable>.velocity by SafetensorsModelIO.
+        let trainerEncoded = try SafetensorsModelIO.encode(
             modelID: trainerID,
             createdAtUnix: trainerCreatedAtUnix,
             metadata: trainerMetadata,
-            weights: trainerWeights
+            weights: trainerWeights,
+            architecture: architecture,
+            includesVelocity: true
         )
-        let trainerEncoded = try trainerFile.encode()
 
         // Build the staging directory, write the three files, verify.
         let fm = FileManager.default
@@ -695,6 +778,30 @@ enum CheckpointManager {
             throw CheckpointManagerError.writeFailed(tmpDirURL, error)
         }
 
+        // manifest.json — the Load Session picker's at-a-glance summary,
+        // derived from the EXACT session.json bytes just written (single
+        // extraction code path; cannot drift from the file). A manifest
+        // failure must not abort the save: the manifest is regenerable
+        // derived data (the picker's indexer rebuilds it from
+        // session.json), the session files are the artifact. Log loudly
+        // and continue.
+        do {
+            let manifestData = try SessionManifest.makeManifestData(
+                sessionJSON: stateEncoded,
+                folderName: dirName,
+                sessionDirURL: tmpDirURL,
+                sessionJSONURL: stateTmpURL
+            )
+            try manifestData.write(
+                to: tmpDirURL.appendingPathComponent("manifest.json"),
+                options: [.atomic]
+            )
+        } catch {
+            SessionLogger.shared.log(
+                "[CHECKPOINT] manifest.json write FAILED (session save continues; picker will index from session.json): \(error.localizedDescription)"
+            )
+        }
+
         // F_FULLFSYNC every file we just wrote. `Data.write(...,
         // options: [.atomic])` gives an atomic rename on top of a
         // normal write, but does NOT imply platter-level durability —
@@ -723,7 +830,7 @@ enum CheckpointManager {
         }
 
         do {
-            try await verifyModelFile(at: championTmpURL, expectedWeights: championWeights)
+            try await verifyModelFile(at: championTmpURL, expectedWeights: championWeights, architecture: architecture)
             // Trainer file is v2 layout: trainables + bn + velocity.
             // The inference scratch network used by `verifyModelFile`
             // can only load trainables + bn, so the forward-pass
@@ -736,6 +843,7 @@ enum CheckpointManager {
             try await verifyModelFile(
                 at: trainerTmpURL,
                 expectedWeights: trainerWeights,
+                architecture: architecture,
                 forwardPassPrefixCount: championWeights.count
             )
             // Round-trip session.json: decode the bytes we just wrote
@@ -776,8 +884,13 @@ enum CheckpointManager {
             // deliberately differs on.
             if wantsReplayBuffer, let written = writtenSnap {
                 let scratchCapacity = max(1, written.storedCount)
-                let scratch = ReplayBuffer(capacity: scratchCapacity)
+                let scratch: ReplayBuffer
                 do {
+                    // Match the just-written file's per-position stride (per
+                    // architecture — e.g. basic20 = 1280) so the verify
+                    // restore doesn't reject it on a stride mismatch.
+                    let scratchFloatsPerBoard = try ReplayBuffer.peekFloatsPerBoard(at: bufferTmpURL)
+                    scratch = ReplayBuffer(capacity: scratchCapacity, floatsPerBoard: scratchFloatsPerBoard)
                     try scratch.restore(from: bufferTmpURL)
                 } catch {
                     throw CheckpointManagerError.replayVerificationFailed(
@@ -878,6 +991,16 @@ enum CheckpointManager {
     /// pipeline including SHA-256 and arch checks. Returns the
     /// parsed struct; the caller is responsible for loading the
     /// weights into a live network.
+    /// Decode a model file of either format: native safetensors (current) or
+    /// the legacy custom `.dcmmodel` binary, detected by its `DCMMODEL` magic.
+    /// Existing models stay loadable; new saves are safetensors.
+    static func decodeAnyModelFile(_ data: Data) throws -> ModelCheckpointFile {
+        if data.count >= 8, Array(data.prefix(8)) == ModelCheckpointFile.magic {
+            return try ModelCheckpointFile.decode(data)
+        }
+        return try SafetensorsModelIO.decode(data).file
+    }
+
     static func loadModelFile(at url: URL) throws -> ModelCheckpointFile {
         let data: Data
         do {
@@ -885,7 +1008,7 @@ enum CheckpointManager {
         } catch {
             throw CheckpointManagerError.readFailed(url, error)
         }
-        return try ModelCheckpointFile.decode(data)
+        return try decodeAnyModelFile(data)
     }
 
     /// Read just `session.json` from a `.dcmsession` directory and
@@ -920,8 +1043,8 @@ enum CheckpointManager {
     static func loadSession(at directoryURL: URL) throws -> LoadedSession {
         let (stateData, championData, trainerData) = try SessionCheckpointLayout.readAll(from: directoryURL)
         let state = try SessionCheckpointState.decode(stateData)
-        let championFile = try ModelCheckpointFile.decode(championData)
-        let trainerFile = try ModelCheckpointFile.decode(trainerData)
+        let championFile = try decodeAnyModelFile(championData)
+        let trainerFile = try decodeAnyModelFile(trainerData)
         let bufferURL = SessionCheckpointLayout.replayBufferURL(in: directoryURL)
         let bufferPresent = (state.hasReplayBuffer == true)
             && FileManager.default.fileExists(atPath: bufferURL.path)
@@ -982,6 +1105,7 @@ enum CheckpointManager {
     static func verifyModelFile(
         at url: URL,
         expectedWeights: [[Float]],
+        architecture: NetworkArchitecture = .current,
         forwardPassPrefixCount: Int? = nil
     ) async throws {
         // 1. Re-read and byte-compare.
@@ -993,7 +1117,7 @@ enum CheckpointManager {
         }
         let readBack: ModelCheckpointFile
         do {
-            readBack = try ModelCheckpointFile.decode(data)
+            readBack = try decodeAnyModelFile(data)
         } catch {
             throw error
         }
@@ -1026,13 +1150,13 @@ enum CheckpointManager {
         //    loadWeights → graph state is caught end-to-end.
         let scratch: ChessMPSNetwork
         do {
-            scratch = try ChessMPSNetwork(.randomWeights)
+            scratch = try ChessMPSNetwork(.randomWeights, arch: architecture)
             scratch.network.commandQueue.label = "verifyModelFile scratch"
         } catch {
             throw CheckpointManagerError.verificationScratchBuildFailed(error)
         }
 
-        let testBoard = BoardEncoder.encode(.starting)
+        let testBoard = BoardEncoder.encode(.starting, encoding: architecture.inputEncoding)
 
         // For v2 trainer files the scratch inference network can
         // only load the base prefix (trainables + bn), not the

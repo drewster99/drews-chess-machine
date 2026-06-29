@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A from-scratch self-play chess engine written in Swift/SwiftUI for macOS. The neural network runs on MetalPerformanceShadersGraph (MPSGraph) on Apple Silicon.
 
-**This project does not use MCTS.** There is no tree search of any kind — no MCTS, no alpha-beta, no minimax, no rollouts. Move selection is a single forward pass: network emits 4864 policy logits (76 channels × 64 squares, AlphaZero-shape encoding) + a value scalar, the CPU masks illegal moves, temperature-scales, softmaxes, and categorical-samples. That's it. Do not add search, and do not suggest "for MCTS you'd…" style edits — AlphaZero-style search is an explicit non-goal. Strength comes entirely from the network itself, bootstrapped through self-play + arena promotion. See `chess-engine-design.md` ("My Goal") and `sampling-parameters.md` ("Sampling method") for the explicit rationale.
+**This project does not use MCTS.** There is no tree search of any kind — no MCTS, no alpha-beta, no minimax, no rollouts. Move selection is a single forward pass: network emits 4864 policy logits (76 channels × 64 squares, AlphaZero-shape encoding) + a value scalar, the CPU masks illegal moves, temperature-scales, softmaxes, and categorical-samples. That's it. Do not add search, and do not suggest "for MCTS you'd…" style edits — AlphaZero-style search is an explicit non-goal. Strength comes entirely from the network itself, bootstrapped through self-play + arena promotion. See `documentation/chess-engine-design.md` ("My Goal") and `documentation/sampling-parameters.md` ("Sampling method") for the explicit rationale.
 
 There is also no opening book and no human training data.
 
@@ -26,7 +26,7 @@ The app terminal console only shows SwiftUI chart warnings and bring-up noise. A
 
 - `~/Library/Logs/DrewsChessMachine/dcm_log_YYYYMMDD-HHMMSS.txt` (one file per launch).
 - `xcode-mcp-server`'s `get_runtime_output` only returns output after the app has terminated; while the session is running, read the session log file directly.
-- Every log line is timestamped. Tags to look for: `[APP]` (launch banner with build+git), `[BUTTON]` (user actions), `[STATS]` (periodic training snapshot, 15-minute cadence plus every arena boundary), `[ARENA]` (arena start/end, W/L/D, kept vs promoted), `[ALARM]` (e.g. policy entropy below threshold), `[CHECKPOINT]` (autosaves), `[BATCHER]` (batched-eval startup correctness probe).
+- Every log line is timestamped. Tags to look for: `[APP]` (launch banner with build+git), `[BUTTON]` (user actions), `[STATS]` (periodic training snapshot — one line per training step for the first 500 steps, then one per 60 seconds), `[ARENA]` (arena start/end, W/L/D, kept vs promoted), `[ALARM]` (e.g. policy entropy below threshold), `[CHECKPOINT]` (autosaves), `[BATCHER]` (batched-eval startup correctness probe).
 
 ## Training parameters
 
@@ -48,7 +48,7 @@ The macro covers id + persistence + JSON encode/decode, but several touchpoints 
 
 Reading values:
 - **From SwiftUI views**: `@Bindable var trainingParams = TrainingParameters.shared`, then read `trainingParams.entropyBonus` or bind `$trainingParams.entropyBonus`. Re-renders fire automatically.
-- **From off-main / structured-concurrency code**: take a snapshot at session boundary — `let p = await TrainingParameters.shared.snapshot()` — then `p.entropyBonus`. The snapshot is `Sendable`, immutable, and lock-free; mid-iteration UI changes are picked up next snapshot. For the four currently-`liveTunable` params (`selfPlayWorkers`, `trainingStepDelayMs`, `replayRatioTarget`, `replayRatioAutoAdjust`), running consumers re-read from `TrainingParameters.shared` on a periodic reconcile loop instead of using a snapshot.
+- **From off-main / structured-concurrency code**: take a snapshot at session boundary — `let p = await TrainingParameters.shared.snapshot()` — then `p.entropyBonus`. The snapshot is `Sendable`, immutable, and lock-free; mid-iteration UI changes are picked up next snapshot. Most parameters are flagged `liveTunable` (≈52 of ~62), but only a handful are consumed by long-running loops that must re-read live — `selfPlayConcurrency`, `trainingStepDelayMs`, `replayRatioTarget`, `replayRatioAutoAdjust`, `periodicAutosaveIntervalSec`; for those, running consumers re-read from `TrainingParameters.shared` on a periodic reconcile loop instead of using a snapshot.
 
 Persistence is automatic: every property `didSet` writes to `UserDefaults` under the parameter's id, and the next `init` reads it back (validated). There is no `@AppStorage` for training parameters anywhere — the singleton owns all persistence.
 
@@ -58,13 +58,13 @@ CLI flags for emitting defaults:
 
 ## Saved model state
 
-`CheckpointManager` writes both single-model (`.dcmmodel`) and full-session (`.dcmsession`) checkpoints under `~/Library/Application Support/DrewsChessMachine/{Models,Sessions}/`. **Nothing is ever overwritten** — every save is a new file, naming scheme `<YYYYMMDD-HHMMSS>-<modelID>-<trigger>.<ext>`. See ROADMAP.md for the full design including the bit-exact forward-pass verification that runs on every save.
+`CheckpointManager` writes both single-model (`.safetensors`; legacy `.dcmmodel` still readable) and full-session (`.dcmsession`) checkpoints under `~/Library/Application Support/DrewsChessMachine/{Models,Sessions}/`. **Nothing is ever overwritten** — every save is a new file, naming scheme `<YYYYMMDD-HHMMSS>-<modelID>-<trigger>.<ext>`. See ROADMAP.md for the full design including the bit-exact forward-pass verification that runs on every save.
 
 Three triggers produce a `.dcmsession` — the trigger tag appears in the filename, the status bar, and the `[CHECKPOINT] Saved session (<trigger>): …` log line so every save is grep-distinct:
 
 - **`manual`** — user clicked File > Save Session.
 - **`post-promotion`** — fires automatically after each arena promotion (on by default; `autosaveSessionsOnPromote`). Re-uses the weight snapshots taken under the arena's self-play and training pauses.
-- **`periodic`** — 4-hour autosave while Play-and-Train is active. Driven by `PeriodicSaveController`; the controller defers a deadline crossing that lands inside an arena, then either swallows it (if a post-promotion save landed during the deferred window) or fires a little late (otherwise). Any successful save of any trigger resets the 4-hour clock.
+- **`periodic`** — interval autosave while Play-and-Train is active (cadence = the `periodicAutosaveIntervalSec` parameter, default 4 hours; live-tunable from the settings popover's **Sessions** tab — the heartbeat re-anchors the running `PeriodicSaveController` via `updateInterval`). The controller defers a deadline crossing that lands inside an arena, then either swallows it (if a post-promotion save landed during the deferred window) or fires a little late (otherwise). Any successful save of any trigger resets the clock. After each successful periodic save, `CheckpointPaths.prunePeriodicAutosaves` enforces the `maxPeriodicAutosavesKept` retention cap (0 = unlimited), deleting the oldest `-periodic.dcmsession` directories beyond the cap — manual and post-promotion saves are never pruned.
 
 The most recent save's path is persisted to `UserDefaults` as a `LastSessionPointer`. On app launch, if the pointer's target folder still exists, a sheet offers one-click "Resume Training" with a live 30-second countdown that auto-fires if the user doesn't interact; the File menu item "Resume Training from Autosave" covers the same flow for the rest of the launch. Load failures surface via `setCheckpointStatus(.error)` and stop — the session is never auto-deleted on a failed load (the user may want to repair the folder manually). Pointers whose target was deleted externally are cleared on first observation so they don't re-prompt.
 
@@ -74,16 +74,16 @@ The most recent save's path is persisted to `UserDefaults` as a `LastSessionPoin
 
 One run of Play-and-Train spins up, in parallel:
 
-1. **N self-play workers** (driven by `BatchedSelfPlayDriver`, live-tunable via a Stepper in the UI, bounded by `ContentView.absoluteMaxSelfPlayWorkers`). Every worker owns a fresh `ChessMachine` per game; all share one `BatchedMoveEvaluationSource` that coalesces N simultaneous per-ply evaluate calls into a single batched `graph.run`. Completed games push their whole position sequence into `ReplayBuffer` in one bulk copy.
+1. **N concurrent self-play games** (driven by the tick-based `BatchedSelfPlayDriver`, live-tunable via a Stepper in the UI, bounded by `UpperContentView.absoluteMaxSelfPlayWorkers`). One Swift task runs the outer loop; each *tick* advances all K games one ply in lockstep — parallel-encode the K positions, issue a single batched `network.evaluateBatched(...)`, parallel-sample + apply one move per game, then a serial game-end pass flushes completed games into `ReplayBuffer` in one bulk copy. Per-game state lives on an `ActiveGame` (no per-game `Task`, no actor barrier).
 2. **One trainer** (`ChessTrainer`) that pulls minibatches from `ReplayBuffer.sample(count:)` and runs MPSGraph SGD steps on a separate training-mode copy of the network.
 3. **Replay ratio controller** (`ReplayRatioController`) that auto-adjusts `stepDelay` so `cons/prod` approaches the configured target (default 1.0). The `[STATS]` line reports `ratio=(target=... cur=... prod=... cons=... auto=on/off delay=XXms)`.
-4. **Arena** on demand (`TournamentDriver` via the Run Arena button). Pauses self-play via `selfPlayGate` and training via `trainingGate`, snapshots the current trainer weights into a dedicated candidate inference network, and plays a fixed-game tournament candidate-vs-champion (candidate on one network, a dedicated `arenaChampionNetwork` holding a snapshot of champion weights on the other) using the arena `SamplingSchedule`. If score ≥ `promoteThreshold` (default 0.55), the candidate's weights are copied into **both** the live champion (`network`) and the live trainer (`trainer.network`), so both lineages converge on the arena-validated snapshot. Champion inherits the candidate's ModelID; trainer gets a freshly-minted next-generation trainer ID forked from the promoted champion. `CheckpointManager` writes a `-promote.dcmsession` snapshot when `autosaveSessionsOnPromote` is on.
+4. **Arena** on demand (`TickTournamentDriver` via the Run Arena button). Pauses self-play via `selfPlayGate` and training via `trainingGate`, snapshots the current trainer weights into a dedicated candidate inference network, and plays a fixed-game tournament candidate-vs-champion (candidate on one network, a dedicated `arenaChampionNetwork` holding a snapshot of champion weights on the other) using the arena `SamplingSchedule`. If score ≥ `promoteThreshold` (default 0.53), the candidate's weights are copied into **both** the live champion (`network`) and the live trainer (`trainer.network`), so both lineages converge on the arena-validated snapshot. Champion inherits the candidate's ModelID; trainer gets a freshly-minted next-generation trainer ID forked from the promoted champion. `CheckpointManager` writes a `-promote.dcmsession` snapshot when `autosaveSessionsOnPromote` is on.
 
 ### Networks are singular
 
 A session holds exactly:
-- `network` — the live champion. Also what every self-play worker evaluates against, through a shared `BatchedMoveEvaluationSource` barrier batcher. Source of the arena-champion snapshot.
-- `trainer.network` — internal to `ChessTrainer`, training-mode BN. The single source of weights for arena candidates. Forked from `network` on a fresh start, or loaded from `trainer.dcmmodel` on session resume, or overwritten by a promoted candidate's weights after an arena win.
+- `network` — the live champion. Also what every self-play game is evaluated against, via the tick driver's single batched `evaluateBatched` call per tick. Source of the arena-champion snapshot.
+- `trainer.network` — internal to `ChessTrainer`, training-mode BN. The single source of weights for arena candidates. Forked from `network` on a fresh start, or loaded from the session's safetensors trainer weights on session resume, or overwritten by a promoted candidate's weights after an arena win.
 - `candidateInferenceNetwork` — inference-mode, persists for the life of the app (lazy-built on first Play-and-Train start, reused across sessions). Receives the trainer's current weights at each arena start.
 - `arenaChampionNetwork` — inference-mode, also persists for the life of the app. Receives a snapshot of `network`'s weights at each arena start so the arena's "champion side" plays against a stable snapshot while the live champion remains free for continuous self-play.
 
@@ -91,29 +91,29 @@ There are no per-worker inference networks. The original design ran a single sel
 
 ### MoveEvaluationSource abstraction
 
-`MPSChessPlayer` doesn't talk to `ChessMPSNetwork` directly. It holds a `MoveEvaluationSource`:
+The interactive single-game players (`MPSChessPlayer`) don't talk to `ChessMPSNetwork` directly — they hold a `MoveEvaluationSource`:
 
-- `DirectMoveEvaluationSource` → single-position `network.evaluate(board:)`. Used by arena (one game at a time) and Play Game.
-- `BatchedMoveEvaluationSource` → actor-based barrier batcher. N self-play slots park at `evaluate`; when the N-th submission arrives, one `network.evaluate(batchBoards:count:)` fires and every slot resumes with its slice of the policy/value output.
-
-Shrink/grow the slot count carefully: the batcher's `expectedSlotCount` must be lowered **before** waiting on cancelled slots, or the barrier will deadlock — see the comments in `BatchedSelfPlayDriver.stopAll` / reconcile loop.
+- `DirectMoveEvaluationSource` → single-position `network.evaluate(board:)`. Used by **Play Game / Human-vs-Network and `--uci`** (the latter via `UCIEngine`; `LiveTrainerMoveEvaluationSource` / `UIGatedMoveEvaluationSource` wrap it for the live-trainer and UI-gated variants).
+- **Self-play and the arena do NOT use this abstraction.** Both run the tick-based drivers (`BatchedSelfPlayDriver` / `TickTournamentDriver`) that call `network.evaluateBatched(...)` once per tick and sample inline via `MoveSampler`. The older per-slot actor-barrier batcher (`BatchedMoveEvaluationSource`, with its `expectedSlotCount` grow/shrink protocol) was removed when the tick model landed — there is no slot-count deadlock window anymore (grow = append `ActiveGame`s, shrink = `removeLast` the tail).
 
 ### Board encoding and policy space
 
 - Input: **30 planes × 8 × 8** NCHW, always from the current player's perspective. Planes 0-15 are pieces + castling, plane 16 en passant, plane 17 halfmove clock normalized as `min(clock, 99) / 99` (Leela convention), planes 18-19 threefold-repetition *counts* (≥1× before, ≥2× before), planes 20-29 threefold-repetition *temporal pattern* — plane `20 + i` is all-1 iff the position `i + 1` plies ago is a strict chess-rules duplicate (PositionKey equality on board + STM + castling + EP) of the current position. The 10-ply history window is cleared on any irreversible move (halfmove clock = 0). See `BoardEncoder.swift` and `chess-engine-design.md` for the full plane table.
 - Policy output: **4864 logits** = 76 channels × 64 squares. AlphaZero-shape encoding: 56 queen-style (8 directions × 7 distances) + 8 knight + 9 underpromotion (3 pieces × 3 directions) + 3 queen-promotion. Indexed as `channel * 64 + row * 8 + col` in the (vertically-flipped for black) encoder frame. The bijection between `ChessMove` and `(channel, row, col)` lives in `PolicyEncoding.swift` — every site that converts moves ↔ indices must use it (deliberately no `policyIndex` property on `ChessMove` itself, so callers must think about the side to move).
 - Value output: a **3-logit win/draw/loss head** (slot order `[win, draw, loss]`), trained with categorical cross-entropy against a one-hot on the game result. Everything downstream that wants "am I winning?" as a scalar reads the derived `v = softmax(logits)·[+1, 0, −1] = p_win − p_loss ∈ [−1, +1]` — a difference of two probabilities, no `tanh`. (Switched from a single `tanh` scalar + MSE on 2026-05-12 because the scalar head went silent on a draw-heavy buffer; see `wdl-value-head.md` and the 2026-05-12 CHANGELOG entry.) Always relative to the current player.
-- Network: stem (20→128) → 8 residual blocks (each with an SE channel-attention module, reduction ratio 4) → fully-convolutional policy head (1×1 conv 128→76) + value head (1×1 conv 128→1 → BN/ReLU → flatten(64) → FC 64→64 → ReLU → FC 64→3 W/D/L logits) → ~2.4M parameters. See `ChessNetwork.swift`. SE blocks match modern lc0 practice; the fully-conv policy head replaces the prior FC bottleneck head.
+- Network: **architecture is runtime-configurable per model**, not a compile-time constant — every model embeds its full `NetworkArchitecture` (the single source of truth; see `NetworkArchitecture.swift` and `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md`). Shape = stem (inputPlanes→first-group width) → an ordered list of **block groups** (`blockGroups: [BlockGroup]`, each a count + a complete per-group recipe: channels, both conv kernels, SE style/ratio, ReZero α, activation function/style, skip merge, dropout multiplier) → tower-end BN (pre-act tail only) → policy head + value head. Towers may be **heterogeneous** (WRN-style width staircase): where adjacent groups differ in width, that block gets a bias-free 1×1 skip projection. The engine consumes only the flattened `expandedBlocks`; uniform towers (one group) build byte-identically to the pre-block-groups code. The current default preset is `v4_5block_7x7` (5 blocks, 7×7, 128ch, ~8.45M params); the policy head has three styles (simple_conv / intermediate_conv / fc_bottleneck) and the value head is the 3-logit W/D/L head. Build new towers via Build-New-Model (per-group editor + live `ArchitectureDiagramView`). See `ChessNetwork.swift` (graph builders) and `ARCHITECTURE_EXPANSION_PLAN.md` (block-groups design). SE blocks match modern lc0 practice.
 - Legal-move masking is done CPU-side in `MPSChessPlayer.chooseMove` after softmax; the graph emits raw logits, not a masked softmax.
 
 ### Sampling (temperature schedules)
 
-Move selection is temperature-softmax over legal-only logits — no top-k, no MCTS. Schedules live on `SamplingSchedule`:
-- `.selfPlay` — tau 1.0 → 0.4 over 20 plies per player. Exploration-heavy for replay-buffer coverage.
-- `.arena` — tau 1.0 → 0.2 over 20 plies per player. Tighter for signal-to-noise in scoring.
+Move selection is temperature-softmax over legal-only logits — no top-k, no MCTS. The self-play and arena schedules are **tunable** — built from `TrainingParameters` at session start and held on `MPSChessPlayer.SamplingSchedule` as resolved start/decay/floor. Temperature decays linearly per **game-total ply**: `tau(ply) = max(floor, start − decay·ply)`.
+- **self-play** — default start 1.0 → floor 0.5, decay 0.007/ply (`selfPlayStartTau` / `selfPlayTargetTau` / `selfPlayTauDecayPerPly`). Exploration-heavy for replay-buffer coverage; self-play also adds Dirichlet root noise.
+- **arena** — default start 0.6 → floor 0.2, decay 0.02/ply (`arenaStartTau` / `arenaTargetTau` / `arenaTauDecayPerPly`). Tighter for signal-to-noise in scoring.
 - `.uniform` — flat 1.0, used by Play Game / Forward Pass demo.
 
-See `sampling-parameters.md` for rationale.
+(The hardcoded `SamplingSchedule.selfPlay`/`.arena` constants — start 2.0 — are now only fallbacks; the live schedules use the parameters above.)
+
+See `documentation/sampling-parameters.md` for rationale.
 
 ### ModelID identity
 
@@ -121,9 +121,9 @@ See `sampling-parameters.md` for rationale.
 
 ## Reference docs in-repo
 
-- `chess-engine-design.md` — the original design document (input encoding, network topology, MPSGraph choices). Written as a learning narrative, but accurate and load-bearing.
-- `sampling-parameters.md` — temperature schedule design, ModelID mint/inherit rules, diversity tracking.
-- `mpsgraph-primitives.md` — cookbook for the MPSGraph APIs actually used. Useful when editing `ChessNetwork.swift`.
+- `documentation/chess-engine-design.md` — the original design document (input encoding, network topology, MPSGraph choices). Written as a learning narrative, but accurate and load-bearing.
+- `documentation/sampling-parameters.md` — temperature schedule design, ModelID mint/inherit rules, diversity tracking.
+- `documentation/mpsgraph-primitives.md` — cookbook for the MPSGraph APIs actually used. Useful when editing `ChessNetwork.swift`.
 - `ROADMAP.md` — deferred work, completed-with-design-notes, and the save/load design. **Completed items stay — move to "Completed" rather than delete, and preserve detail including any deviations from the original plan.**
 - `CHANGELOG.md` — commit-linked log of meaningful changes. Newest first, timestamped CDT, git-hash tagged.
 
@@ -137,13 +137,15 @@ See `sampling-parameters.md` for rationale.
 
 The `[STATS]` line carries a dense set of counters. A few that matter for diagnosing training health:
 - `pLoss` — outcome-weighted policy cross-entropy. **Unbounded on both sides** (negative is fine when well-predicted winning plays dominate). Read alongside `pEnt`, not in isolation.
-- `pEnt` — mean Shannon entropy of the policy softmax, in nats. `log(4864) ≈ 8.49` at uniform init for the current 4864-cell policy head. Below `policyEntropyAlarmThreshold` (5.0 in-repo, in `ContentView.swift`) triggers `[ALARM] policy may be collapsing`.
+- `pEnt` — mean Shannon entropy of the policy softmax, in nats. `log(4864) ≈ 8.49` at uniform init for the current 4864-cell policy head. Below `policyEntropyAlarmThreshold` (1.0 in-repo, in `TrainingAlarmController.swift`) triggers `[ALARM] policy may be collapsing`.
 - `vMean` / `vAbs` — mean / mean-abs of the derived value scalar `p_win − p_loss` (no tanh). `pW` / `pD` / `pL` — the W/D/L softmax batch-means (sum ≈ 1). The value-head collapse signature is `pD → 1.0` (equivalently `vAbs → 0` and staying there) — the post-WDL "everything is a draw"; watch `pD` falling off its `0.75` bias-init prior as the sign training is working. `vLoss` is now categorical-CE-scale (≈ `[0, ln 3]` at convergence), not the old MSE scale.
 - `gNorm` — pre-clip global gradient L2 norm, reported every step. Compare against `ChessTrainer.gradClipMaxNorm`; values above it are clip events, not bugs.
 - `diversity=unique=X/Y(%) diverge=N.N` — rolling `GameDiversityTracker` snapshot over the last 200 games; `diverge` is the avg ply at which pairs of games first differ. Steady-state healthy is `[0-5]`-heavy in the histogram tile.
 
 ## Conventions specific to this project
 
-- Most source comments are multi-paragraph design explanations, not function-summary boilerplate. When adding a tricky mechanism, match that style — explain *why*, including failure modes that motivated the design. See `BatchedSelfPlayDriver.stopAll` or `ReplayBuffer`'s class doc for the house style.
-- The UI layer follows **one SwiftUI `View` struct per file**. `ContentView.swift` (`App/ContentView.swift`) is just the small composer that owns the shared `ChartCoordinator` and stacks `UpperContentView` over `LowerContentView`. The bulk of the session-lifecycle wiring lives in `App/UpperContentView/UpperContentView.swift` (~9.6k lines, large on purpose). When adding new UI pieces, prefer a new file under `App/UpperContentView/` (or the matching `Views/.../` subdir for chart tiles) over wedging another `View` struct into an existing file. Helper `@ViewBuilder` properties on an existing `View` (added via an extension) are fine to keep in the same file as the View they belong to.
+- Most source comments are multi-paragraph design explanations, not function-summary boilerplate. When adding a tricky mechanism, match that style — explain *why*, including failure modes that motivated the design. See `BatchedSelfPlayDriver`'s class doc or `ReplayBuffer`'s class doc for the house style.
+- The UI layer follows **one SwiftUI `View` struct per file**. `ContentView.swift` (`App/ContentView.swift`) is just the small composer that owns the shared `ChartCoordinator` and stacks `UpperContentView` over `LowerContentView`. The bulk of the session-lifecycle wiring lives in `App/UpperContentView/UpperContentView.swift` (~9.6k lines, large on purpose). When adding new UI pieces, prefer a new file under `App/UpperContentView/` (or the matching `Views/.../` subdir for chart tiles) over wedging another `View` struct into an existing file. The only property with a `some View` signature allowed on a `View` is `body` itself — helper `@ViewBuilder`/`some View` properties are NOT blessed. Decompose a complex `body` into proper child `View` structs (which may live in the same file as their parent), never into helper view properties.
 - New architectural plans go into ROADMAP.md (with user's express permission, per the global rules). Don't silently invent a new markdown doc at the repo root.
+- Don't say "draw collapse". You tend to throw this phrase around like salt at a french fry convention and most of the time you're wrong because you never check the fucking data details. You shoot from the hip without paying any fucking attention. If you find yourself thinking about writing 'draw collapse', you've probably fucked up in some way. For example, if you start with a high number of draws -- which every single training round will do -- that's not draw collapse. That's just draws.
+- Details matter. Get them right. Verify them and make sure they're right -- Every time.

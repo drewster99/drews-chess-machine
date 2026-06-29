@@ -85,6 +85,60 @@ enum FENParser {
         )
     }
 
+    // MARK: - Encoding
+
+    /// Serialize a `GameState` back to FEN — the inverse of `parse`, used to log
+    /// reproducible positions (e.g. a move-generation cross-check divergence).
+    /// `GameState` doesn't track the fullmove number, so a constant placeholder
+    /// is emitted for it; that field doesn't affect move generation and the FEN
+    /// still round-trips through `parse`.
+    static func fen(from state: GameState) -> String {
+        var ranks: [String] = []
+        ranks.reserveCapacity(8)
+        for row in 0..<8 {
+            var rank = ""
+            var empty = 0
+            for col in 0..<8 {
+                if let piece = state.board[row * 8 + col] {
+                    if empty > 0 { rank += String(empty); empty = 0 }
+                    rank.append(fenChar(for: piece))
+                } else {
+                    empty += 1
+                }
+            }
+            if empty > 0 { rank += String(empty) }
+            ranks.append(rank)
+        }
+        let placement = ranks.joined(separator: "/")
+        let side = state.currentPlayer == .white ? "w" : "b"
+        var castling = ""
+        if state.whiteKingsideCastle { castling += "K" }
+        if state.whiteQueensideCastle { castling += "Q" }
+        if state.blackKingsideCastle { castling += "k" }
+        if state.blackQueensideCastle { castling += "q" }
+        if castling.isEmpty { castling = "-" }
+        let ep: String
+        if let e = state.enPassantSquare {
+            ep = "\(Character(UnicodeScalar(UInt8(97 + e.col))))\(8 - e.row)"
+        } else {
+            ep = "-"
+        }
+        return "\(placement) \(side) \(castling) \(ep) \(state.halfmoveClock) 1"
+    }
+
+    private static func fenChar(for piece: Piece) -> Character {
+        let base: Character
+        switch piece.type {
+        case .pawn:   base = "p"
+        case .knight: base = "n"
+        case .bishop: base = "b"
+        case .rook:   base = "r"
+        case .queen:  base = "q"
+        case .king:   base = "k"
+        }
+        return piece.color == .white ? Character(base.uppercased()) : base
+    }
+
     // MARK: - Field parsers
 
     private static func parseBoard(_ field: String) throws -> [Piece?] {

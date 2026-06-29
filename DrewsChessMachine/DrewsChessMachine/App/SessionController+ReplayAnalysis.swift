@@ -34,11 +34,21 @@ extension SessionController {
         // task can run the live-network entropy probe (analysis #7).
         // The network is `@unchecked Sendable` and the ref captured
         // here outlives the closure regardless of any concurrent
-        // session changes.
+        // session changes. The trainer ref is captured for the same
+        // reason — the entropy probe runs against a fresh inference
+        // network loaded with trainer weights when one is available,
+        // since the champion's policy is frozen between promotions
+        // and would produce a misleading bit-stable entropy section.
         let netForEntropy = network
+        let trainerForEntropy = trainer
         let modelLabel = netForEntropy?.identifier?.description ?? "<no-id>"
+        guard beginAnalysis("Replay Buffer") else { return }
+        // Snapshot training-progress context on the main actor before
+        // the detached heavy walk; stamped onto the result below.
+        let exportMetadata = currentAnalysisExportMetadata()
 
         Task.detached(priority: .utility) {
+            defer { Task { @MainActor in self.endAnalysis() } }
             // Off-main heavy walk + JSON write. Both the analyzer pass
             // and the file I/O are bounded — a sub-second analyzer pass
             // and a ~MB-sized JSON write — but neither belongs on the
@@ -46,9 +56,19 @@ extension SessionController {
             // training loop. When a network is available we also run
             // the stratified policy-entropy probe (a few extra seconds
             // of forward passes) so analysis #7 lands in the same JSON.
-            let result: ReplayBufferAnalyzer.Result
+            let entropyProbe = await Self.buildTrainerEntropyProbeNetwork(
+                trainer: trainerForEntropy
+            )
+            var result: ReplayBufferAnalyzer.Result
             do {
-                if let net = netForEntropy {
+                if let probe = entropyProbe {
+                    result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
+                        buffer: buf,
+                        network: probe.network,
+                        modelLabel: modelLabel,
+                        entropyModelLabel: probe.label
+                    )
+                } else if let net = netForEntropy {
                     result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
                         buffer: buf,
                         network: net,
@@ -72,6 +92,7 @@ extension SessionController {
                     modelLabel: modelLabel
                 )
             }
+            result.exportMetadata = exportMetadata
             let summary = result.textSummary()
             let writeOutcome = Self.writeAnalysisJSON(
                 result: result,
@@ -170,28 +191,20 @@ extension SessionController {
 
     // MARK: - Alert + Reveal in Finder
 
-    /// Present a modal NSAlert. If `revealURL` is non-nil, adds a
-    /// "Reveal in Finder" button that opens Finder with the file
-    /// selected; otherwise only the default OK button is shown.
-    /// Must be called on the main actor (NSAlert is an AppKit type).
+    /// Present a non-blocking result sheet. If `revealURL` is non-nil,
+    /// adds a "Reveal in Finder" button that selects the file. Routed
+    /// through `NonBlockingAlert` so a left-open dialog can never stall
+    /// the training pipeline — see that type's doc comment.
     @MainActor
     private static func presentAnalyzeAlert(
         title: String,
         message: String,
         revealURL: URL?
     ) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        if revealURL != nil {
-            alert.addButton(withTitle: "Reveal in Finder")
-        }
-        let response = alert.runModal()
-        if let url = revealURL,
-           response == .alertSecondButtonReturn {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        }
+        NonBlockingAlert.presentInformational(
+            title: title,
+            message: message,
+            revealURL: revealURL
+        )
     }
 }

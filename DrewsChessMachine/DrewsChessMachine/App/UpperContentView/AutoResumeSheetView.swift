@@ -23,6 +23,10 @@ struct AutoResumeSheetView: View {
     /// "Resume Training" (or the countdown firing) — tear down the sheet and
     /// start the load-and-resume chain.
     let onResume: () -> Void
+    /// Bound to `AutoResumeController.loadAsFloat32`: load the (bf16) session as
+    /// float32 and continue training in fp32 (workaround for the Xcode/macOS 27
+    /// beta bf16 training stomp).
+    @Binding var loadAsFloat32: Bool
 
     var body: some View {
         let savedAtString: String = {
@@ -60,6 +64,7 @@ struct AutoResumeSheetView: View {
             }
             if let summary {
                 AutoResumeProgressBlockView(summary: summary)
+                AutoResumeModelBlockView(summary: summary)
                 AutoResumeBuildBlockView(summary: summary)
             }
             Button {
@@ -78,6 +83,15 @@ struct AutoResumeSheetView: View {
             Text(countdownLine)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            Toggle(isOn: $loadAsFloat32) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Load as float32")
+                    Text("Continue training in fp32 (bf16 is unstable on the Xcode/macOS 27 beta). Weights load losslessly.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.checkbox)
             HStack(spacing: 12) {
                 Spacer()
                 Button("Not Now") { onDismiss() }

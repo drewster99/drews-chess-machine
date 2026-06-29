@@ -25,6 +25,12 @@ struct ArenaCountdownChip<PopoverContent: View>: View {
                     Text(countdownText(context.date))
                         .font(.callout)
                         .monospacedDigit()
+                        // HH:MM:SS (and the "--:--:--" placeholder) must
+                        // always render in full. Pin the text to its
+                        // intrinsic width and forbid wrapping/truncation so
+                        // a tight status bar can never clip it to "00:00…".
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
             }
             .padding(.horizontal, 10)

@@ -298,7 +298,33 @@ So early layers receive a strong gradient signal via the skip highway regardless
 
 ---
 
+## Tensor Slicing (channel split)
+
+`graph.sliceTensor(_:dimension:start:length:name:)` extracts a contiguous
+range along one axis — the idiom for splitting a single FC/conv output
+into two logical halves. The scale-and-bias SE module uses it: FC2 emits
+`[B, 256]`, and we slice the first 128 columns as the `gammas` (scale) and
+the last 128 as the `betas` (bias):
+
+```swift
+let gammas = graph.sliceTensor(s, dimension: 1, start: 0,   length: 128, name: "se_gammas")
+let betas  = graph.sliceTensor(s, dimension: 1, start: 128, length: 128, name: "se_betas")
+```
+
+Each slice is differentiable (gradients route back only to the columns
+that slice covered). `ChessTrainer` uses the same call to pull the W/D/L
+columns out of the value-head softmax. Cheaper and clearer than two
+separate FC layers; one matmul, one bias add, then split.
+
 ## A Complete Residual Block
+
+> **Note:** the walkthrough below is the *legacy v1 (post-activation)*
+> block, kept for the teaching sequence. The current network (architecture
+> v4) uses a **pre-activation / ResNet v2** block — `BN→ReLU→conv` ×2,
+> scale-and-bias SE, a per-block ReZero scalar α on the residual branch,
+> and a clean identity skip (no activation on the sum). See
+> `ChessNetwork.residualBlock` and the 2026-05-31 CHANGELOG entry for the
+> current form.
 
 Putting the above together into one full block:
 

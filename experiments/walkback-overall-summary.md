@@ -1,3 +1,5 @@
+> **ARCHIVED** — spent 2026-06-02 walkback sweep; conclusions distilled into `experiments/NOTES.md`. The sibling `walkback-T0..T5` / `walkback-build390` summaries are part of this same archived sweep. Body retained below.
+
 # Walkback overall — no tier reproducible under strict all-3 criterion
 
 | Tier | Config | Pass rate | Best run |

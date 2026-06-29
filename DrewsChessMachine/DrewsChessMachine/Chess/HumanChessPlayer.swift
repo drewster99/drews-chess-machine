@@ -73,7 +73,8 @@ final class HumanChessPlayer: ChessPlayer, @unchecked Sendable {
     func onChooseNextMove(
         opponentMove: ChessMove?,
         newGameState gameState: GameState,
-        legalMoves: [ChessMove]
+        legalMoves: [ChessMove],
+        recentHistory: [GameState]
     ) async throws -> ChessMove {
         guard !legalMoves.isEmpty else {
             throw ChessPlayerError.noLegalMoves

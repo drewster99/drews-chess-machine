@@ -19,6 +19,10 @@ struct LiveBoardWithNavigationView: View {
     let overlay: ChessBoardView.Overlay
     let selectedOverlay: Int
     let inferenceResultPresent: Bool
+    /// Number of input-tensor channels the live net produces — per
+    /// architecture, so the right chevron's ceiling tracks the actual
+    /// encoded-board plane count rather than a hardcoded constant.
+    let inputPlaneCount: Int
     let forwardPassEditable: Bool
     let realTraining: Bool
     let isCandidateTestActive: Bool
@@ -220,7 +224,7 @@ struct LiveBoardWithNavigationView: View {
             // of those require an inferenceResult to render meaningful
             // content, so right is disabled either when we are at the
             // ceiling or when there is no inference data to step into.
-            let rightDisabled = !inferenceResultPresent || selectedOverlay >= ChessNetwork.inputPlanes
+            let rightDisabled = !inferenceResultPresent || selectedOverlay >= inputPlaneCount
             HStack(spacing: 12) {
                 Spacer(minLength: 0)
                 Button(

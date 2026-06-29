@@ -18,6 +18,12 @@ struct FastChartCanvasContent: View {
     let referenceLines: [FastChartReferenceLine]
     let xDomain: ClosedRange<Double>
     let yDomain: ClosedRange<Double>
+    /// Domain for series whose `yAxis` is `.secondary`. `nil` for a
+    /// single-axis chart, in which case every series uses `yDomain`.
+    /// Gridlines and reference lines remain anchored to the primary
+    /// `yDomain` only — the secondary axis contributes labels (drawn
+    /// by `FastLineChart`) and series placement, not its own grid.
+    var secondaryYDomain: ClosedRange<Double>? = nil
     /// Y positions where gridlines are drawn. Must match the
     /// labels drawn outside this view.
     let yTicks: [Double]
@@ -43,10 +49,17 @@ struct FastChartCanvasContent: View {
             yDomain: yDomain,
             rect: rect
         )
+        // Secondary-axis transform shares the X mapping but scales Y
+        // against `secondaryYDomain`. Built only when a secondary axis
+        // exists; series tagged `.secondary` are drawn through it so
+        // their raw eval-space values land in the right pixel rows.
+        let secondaryTransform: ChartCoordTransform? = secondaryYDomain.map {
+            ChartCoordTransform(xDomain: xDomain, yDomain: $0, rect: rect)
+        }
 
         drawGridlines(context: &context, transform: transform, rect: rect)
         drawReferenceLines(context: &context, transform: transform, rect: rect)
-        drawSeries(context: &context, transform: transform)
+        drawSeries(context: &context, transform: transform, secondaryTransform: secondaryTransform)
     }
 
     private func drawGridlines(
@@ -93,9 +106,14 @@ struct FastChartCanvasContent: View {
 
     private func drawSeries(
         context: inout GraphicsContext,
-        transform: ChartCoordTransform
+        transform: ChartCoordTransform,
+        secondaryTransform: ChartCoordTransform?
     ) {
         for s in series {
+            // `.secondary` series use the trailing-axis transform when
+            // one exists; everything else (and every series on a
+            // single-axis chart) uses the primary transform.
+            let t = (s.yAxis == .secondary ? secondaryTransform : nil) ?? transform
             switch s.data {
             case .points(let pts):
                 let visible = ChartPathBuilder.visibleRange(in: pts, xDomain: xDomain)
@@ -104,7 +122,7 @@ struct FastChartCanvasContent: View {
                     points: pts,
                     visible: visible,
                     interpolation: s.interpolation,
-                    transform: transform
+                    transform: t
                 )
                 context.stroke(
                     path,
@@ -118,7 +136,7 @@ struct FastChartCanvasContent: View {
                     let band = ChartPathBuilder.bandPath(
                         buckets: bs,
                         visible: visible,
-                        transform: transform
+                        transform: t
                     )
                     context.stroke(
                         band,
@@ -130,7 +148,7 @@ struct FastChartCanvasContent: View {
                     buckets: bs,
                     visible: visible,
                     interpolation: s.interpolation,
-                    transform: transform
+                    transform: t
                 )
                 context.stroke(
                     path,

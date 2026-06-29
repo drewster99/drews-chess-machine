@@ -46,11 +46,11 @@ struct SessionStatusChipView: View {
     var body: some View {
         HStack(spacing: 6) {
             if kind != .idle {
-                ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.6)
+                // Custom arc spinner — the system ProgressView spinner
+                // ignores `.tint` on macOS and disappears against the
+                // chip's tinted background. See ChipActivitySpinner.
+                ChipActivitySpinner(color: kind.foreground)
                     .frame(width: 12, height: 12)
-                    .tint(kind.foreground)
             }
             Text(label)
                 .font(.callout.weight(.semibold))

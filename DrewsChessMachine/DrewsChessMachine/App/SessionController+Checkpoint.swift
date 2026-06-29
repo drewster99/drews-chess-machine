@@ -1,4 +1,5 @@
 import SwiftUI
+import Darwin
 
 /// `SessionController`'s checkpoint persistence — split out of
 /// `SessionController.swift` to keep that file navigable. Holds the manual /
@@ -89,6 +90,7 @@ extension SessionController {
                 notes: "Manual Save Champion export"
             )
             let createdAtUnix = Int64(Date().timeIntervalSince1970)
+            let championArch = champion.network.arch
 
             let outcome: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
                 do {
@@ -97,6 +99,7 @@ extension SessionController {
                         modelID: championID,
                         createdAtUnix: createdAtUnix,
                         metadata: metadata,
+                        architecture: championArch,
                         trigger: "manual"
                     )
                     return .success(url)
@@ -159,6 +162,54 @@ extension SessionController {
         )
     }
 
+    /// SIGUSR2 entry point — "checkpoint now, then shut down." Writes a full
+    /// `.dcmsession` through the same path as the manual save (gate dance,
+    /// weight export, resume-pointer record) tagged `.signalSave`, and on
+    /// SUCCESS exits the process so the next launch auto-resumes. On FAILURE it
+    /// logs loudly and STAYS RUNNING — never trade the live session for a failed
+    /// checkpoint. Also stays running (refuses) when there's no active session,
+    /// a save is already in flight, or an arena is running.
+    func handleSaveSessionFromSignal() {
+        SessionLogger.shared.log("[SIGUSR2] save-and-shutdown requested")
+        if checkpoint?.checkpointSaveInFlight == true {
+            SessionLogger.shared.log("[SIGUSR2] a save is already in progress; ignoring (staying running)")
+            return
+        }
+        if isArenaRunning {
+            SessionLogger.shared.log("[SIGUSR2] arena running; cannot checkpoint now — staying running")
+            return
+        }
+        guard realTraining,
+              let champion = network,
+              let trainer,
+              let selfPlayGate = activeSelfPlayGate,
+              let trainingGate = activeTrainingGate else {
+            SessionLogger.shared.log("[SIGUSR2] no active training session to save — staying running")
+            return
+        }
+        saveSessionInternal(
+            champion: champion,
+            trainer: trainer,
+            selfPlayGate: selfPlayGate,
+            trainingGate: trainingGate,
+            trigger: .signalSave,
+            onComplete: { success in
+                if success {
+                    SessionLogger.shared.log("[SIGUSR2] session checkpoint written — shutting down")
+                    // Graceful path (not a hard-kill): flush the log tail so the
+                    // deliberate shutdown is traceable, then exit. The
+                    // `.dcmsession` is already on disk (CheckpointManager writes
+                    // synchronously); `shutdown()` is `queue.sync` so it FIFOs
+                    // behind the pending log writes without deadlocking.
+                    SessionLogger.shared.shutdown()
+                    Darwin._exit(0)
+                } else {
+                    SessionLogger.shared.log("[SIGUSR2] session checkpoint FAILED — staying running (not shutting down)")
+                }
+            }
+        )
+    }
+
     /// Fired by `PeriodicSaveController` when its 4-hour deadline
     /// elapses (after any arena-deferral has resolved). Behaves
     /// exactly like the manual save path but tagged `.periodic` so
@@ -215,7 +266,8 @@ extension SessionController {
         trainer: ChessTrainer,
         selfPlayGate: WorkerPauseGate,
         trainingGate: WorkerPauseGate,
-        trigger: SessionSaveTrigger
+        trigger: SessionSaveTrigger,
+        onComplete: (@MainActor @Sendable (Bool) -> Void)? = nil
     ) {
         let championID = champion.identifier?.description ?? "unknown"
         let trainerID = trainer.identifier?.description ?? "unknown"
@@ -248,6 +300,15 @@ extension SessionController {
         let chartSnapshotForSave = chartCoordinator?.buildSnapshot()
 
         Task {
+            // Fire `onComplete(success)` exactly once on every exit path
+            // (all the error `return`s and the normal end) via `defer`, so a
+            // caller like the SIGUSR2 save-and-shutdown handler can act on the
+            // outcome. `didSucceed` flips true only in the success branch
+            // below; the defer reads its final value at scope exit. nil
+            // onComplete (manual / periodic / promotion callers) ⇒ no-op.
+            var didSucceed = false
+            defer { onComplete?(didSucceed) }
+
             // Helper to clear both in-flight flags consistently on
             // every early-return path below. The periodic flag is
             // only meaningful when `trigger == .periodic`, but it's
@@ -334,6 +395,9 @@ extension SessionController {
                 notes: "Trainer lineage at session checkpoint (\(diskTag))"
             )
             let now = Int64(Date().timeIntervalSince1970)
+            // Champion and trainer share a topology; the trainer was built to
+            // the champion's arch, so it's the authoritative source.
+            let sessionArch = trainer.arch
             let outcome: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
                 [bufferForSave, chartSnapshotForSave] in
                 do {
@@ -347,6 +411,7 @@ extension SessionController {
                         trainerMetadata: trainerMetadata,
                         trainerCreatedAtUnix: now,
                         state: sessionState,
+                        architecture: sessionArch,
                         replayBuffer: bufferForSave,
                         chartSnapshot: chartSnapshotForSave,
                         trigger: diskTag
@@ -360,6 +425,7 @@ extension SessionController {
             clearInFlight()
             switch outcome {
             case .success(let url):
+                didSucceed = true
                 checkpoint?.setCheckpointStatus("Saved \(url.lastPathComponent)\(uiSuffix)", kind: .success)
                 let bufStr: String
                 if let snap = bufferForSave?.stateSnapshot() {
@@ -378,6 +444,20 @@ extension SessionController {
                 periodicSaveController?.noteSuccessfulSave(at: Date())
                 checkpoint?.lastSavedAt = Date()
                 checkpoint?.lastResumedAt = nil
+                // Enforce the periodic-autosave retention cap. Only periodic
+                // saves trigger pruning (and `prunePeriodicAutosaves` only ever
+                // deletes `-periodic` directories); the just-written save is
+                // passed as `protecting` so it can never be the one removed.
+                // `maxPeriodicAutosavesKept` is read live here on the main actor;
+                // 0 = unlimited, in which case the prune is a no-op.
+                if trigger == .periodic {
+                    let keep = TrainingParameters.shared.maxPeriodicAutosavesKept
+                    if keep > 0 {
+                        Task.detached(priority: .utility) {
+                            CheckpointPaths.prunePeriodicAutosaves(keeping: keep, protecting: url)
+                        }
+                    }
+                }
             case .failure(let error):
                 checkpoint?.setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(error.localizedDescription)")
@@ -405,62 +485,99 @@ extension SessionController {
             onRefuseMenuAction(busyReasonProvider())
             return
         }
+        Task {
+            _ = await performLoadModel(url: url)
+        }
+    }
 
+    /// Awaitable core of `loadModelFrom(url:)` — read + decode the model
+    /// file, build (or rebuild) the champion at its architecture, and apply
+    /// the weights. Returns `true` on success. Exposed separately so the
+    /// `--train --start-model` launch sequence can sequence "load champion,
+    /// THEN start Play-and-Train" without polling UI state.
+    @discardableResult
+    func performLoadModel(url: URL) async -> Bool {
         checkpoint?.checkpointSaveInFlight = true
         checkpoint?.setCheckpointStatus("Loading \(url.lastPathComponent)…", kind: .progress)
+        return await withCheckedContinuation { continuation in
+            performLoadModelBody(url: url, completion: { continuation.resume(returning: $0) })
+        }
+    }
 
+    private func performLoadModelBody(url: URL, completion: @escaping @MainActor (Bool) -> Void) {
         Task {
-            // Auto-build the champion shell if it doesn't exist yet.
-            // The weights are about to be overwritten, so the random
-            // init is only satisfying graph compilation — no reason
-            // to require the user to press Build first.
-            let championResult = await self.ensureChampionBuilt()
-            switch championResult {
-            case .failure(let error):
+            // 1. Read + decode the file first (CPU) to learn its architecture.
+            //    The security scope is held across the read; loadWeights below
+            //    works off the in-memory decode and needs no file access.
+            let readResult: Result<ModelCheckpointFile, Error> = await Task.detached(priority: .userInitiated) {
+                let scopeAccessed = url.startAccessingSecurityScopedResource()
+                defer {
+                    if scopeAccessed {
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+                do {
+                    return .success(try CheckpointManager.loadModelFile(at: url))
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            guard case .success(let file) = readResult else {
                 checkpoint?.checkpointSaveInFlight = false
-                checkpoint?.setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
-                SessionLogger.shared.log("[CHECKPOINT] Load model auto-build failed: \(error.localizedDescription)")
-                return
-            case .success(let champion):
-                // Keep the security scope open across the entire
-                // detached read+load so files picked from outside the
-                // sandbox (Downloads, AirDrop, external volumes) stay
-                // accessible until the work finishes. Start/stop must
-                // happen inside the detached closure to bracket the
-                // actual I/O.
-                let outcome: Result<ModelCheckpointFile, Error> = await Task.detached(priority: .userInitiated) {
-                    let scopeAccessed = url.startAccessingSecurityScopedResource()
-                    defer {
-                        if scopeAccessed {
-                            url.stopAccessingSecurityScopedResource()
-                        }
-                    }
-                    do {
-                        let file = try CheckpointManager.loadModelFile(at: url)
-                        try await champion.loadWeights(file.weights)
-                        return .success(file)
-                    } catch {
-                        return .failure(error)
-                    }
-                }.value
-                checkpoint?.checkpointSaveInFlight = false
-                switch outcome {
-                case .success(let file):
-                    champion.identifier = ModelID(value: file.modelID)
-                    networkStatus = "Loaded model \(file.modelID)\nFrom: \(url.lastPathComponent)"
-                    checkpoint?.setCheckpointStatus("Loaded \(file.modelID)", kind: .success)
-                    SessionLogger.shared.log("[CHECKPOINT] Loaded model: \(url.lastPathComponent) → \(file.modelID)")
-                    onClearInferenceResult()
-                    // Flag champion-replaced for the post-Stop Start
-                    // dialog's "Continue" annotation. Cleared as
-                    // soon as a new training segment starts.
-                    if replayBuffer != nil {
-                        championLoadedSinceLastTrainingSegment = true
-                    }
-                case .failure(let error):
+                if case .failure(let error) = readResult {
                     checkpoint?.setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
                     SessionLogger.shared.log("[CHECKPOINT] Load model failed: \(error.localizedDescription)")
                 }
+                completion(false)
+                return
+            }
+
+            // 2. Build (or rebuild) the champion at the file's architecture so a
+            //    non-default / historical model gets a matching graph. The random
+            //    init only satisfies graph compilation; weights overwrite it next.
+            let championResult = await self.ensureChampionBuilt(arch: file.architecture)
+            guard case .success(let champion) = championResult else {
+                checkpoint?.checkpointSaveInFlight = false
+                if case .failure(let error) = championResult {
+                    checkpoint?.setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
+                    SessionLogger.shared.log("[CHECKPOINT] Load model auto-build failed: \(error.localizedDescription)")
+                }
+                completion(false)
+                return
+            }
+
+            // 3. Apply weights.
+            let applyResult: Result<Void, Error> = await Task.detached(priority: .userInitiated) {
+                do {
+                    try await champion.loadWeights(file.weights)
+                    return .success(())
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            checkpoint?.checkpointSaveInFlight = false
+            switch applyResult {
+            case .success:
+                champion.identifier = ModelID(value: file.modelID)
+                networkStatus = "Loaded model \(file.modelID)\nFrom: \(url.lastPathComponent)"
+                checkpoint?.setCheckpointStatus("Loaded \(file.modelID)", kind: .success)
+                SessionLogger.shared.log("[CHECKPOINT] Loaded model: \(url.lastPathComponent) → \(file.modelID)")
+                SessionLogger.shared.logArchitecture(
+                    event: "loaded model \(url.lastPathComponent) → \(file.modelID)",
+                    arch: file.architecture
+                )
+                onClearInferenceResult()
+                // Flag champion-replaced for the post-Stop Start dialog's
+                // "Continue" annotation. Cleared as soon as a new training
+                // segment starts.
+                if replayBuffer != nil {
+                    championLoadedSinceLastTrainingSegment = true
+                }
+                completion(true)
+            case .failure(let error):
+                checkpoint?.setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Load model failed: \(error.localizedDescription)")
+                completion(false)
             }
         }
     }
@@ -480,7 +597,14 @@ extension SessionController {
         }
     }
 
-    func loadSessionFrom(url: URL, startAfterLoad: Bool = false) {
+    /// `forceFloat32`: when true, the loaded session's `computeDataType` is
+    /// overridden to `.float32` for the champion — and therefore for the trainer
+    /// and every inference/arena network, which all derive their arch from
+    /// `network.network.arch`. Used to load a bf16-trained session and continue
+    /// training in fp32 (lossless bf16→fp32 widen on weight load), to dodge the
+    /// Xcode 27 / macOS 27 beta bf16 training stomp. Driven by the auto-resume
+    /// sheet's "Load as float32" checkbox.
+    func loadSessionFrom(url: URL, startAfterLoad: Bool = false, forceFloat32: Bool = false) {
         // In-function guards (belt-and-suspenders with menu disable).
         if isBuildingOrBusyProvider() {
             onRefuseMenuAction(busyReasonProvider())
@@ -491,20 +615,9 @@ extension SessionController {
         checkpoint?.setCheckpointStatus("Loading session \(url.lastPathComponent)…", kind: .progress)
 
         Task {
-            // Auto-build the champion shell if it doesn't exist yet.
-            // The weights are about to be overwritten, so the random
-            // init is only satisfying graph compilation — no reason
-            // to require the user to press Build first.
-            let championResult = await self.ensureChampionBuilt()
-            guard case .success(let champion) = championResult else {
-                checkpoint?.checkpointSaveInFlight = false
-                if case .failure(let error) = championResult {
-                    checkpoint?.setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
-                    SessionLogger.shared.log("[CHECKPOINT] Load session auto-build failed: \(error.localizedDescription)")
-                }
-                return
-            }
-            let outcome: Result<LoadedSession, Error> = await Task.detached(priority: .userInitiated) {
+            // 1. Decode the session first (CPU only, no graph) so we know the
+            //    architecture it was saved with before building anything.
+            let loadResult: Result<LoadedSession, Error> = await Task.detached(priority: .userInitiated) {
                 let scopeAccessed = url.startAccessingSecurityScopedResource()
                 defer {
                     if scopeAccessed {
@@ -512,18 +625,57 @@ extension SessionController {
                     }
                 }
                 do {
-                    let loaded = try CheckpointManager.loadSession(at: url)
-                    // Apply champion weights immediately; trainer
-                    // weights are held for the next startRealTraining.
+                    return .success(try CheckpointManager.loadSession(at: url))
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            guard case .success(let loaded) = loadResult else {
+                checkpoint?.checkpointSaveInFlight = false
+                if case .failure(let error) = loadResult {
+                    checkpoint?.setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
+                    SessionLogger.shared.log("[CHECKPOINT] Load session decode failed: \(error.localizedDescription)")
+                }
+                if startAfterLoad { onResumeFinished() }
+                return
+            }
+
+            // 2. Build (or rebuild) the champion at the SESSION's architecture —
+            //    not the current build default — so non-default / historical
+            //    sessions get a matching graph. The random init only satisfies
+            //    graph compilation; the weights are overwritten next.
+            var championArch = loaded.championFile.architecture
+            if forceFloat32 && championArch.computeDataType != .float32 {
+                SessionLogger.shared.log(
+                    "[RESUME] forceFloat32: overriding saved computeDataType "
+                    + "\(championArch.computeDataType.rawValue) -> float32 for champion + trainer + all inference nets"
+                )
+                championArch.computeDataType = .float32
+            }
+            let championResult = await self.ensureChampionBuilt(arch: championArch)
+            guard case .success(let champion) = championResult else {
+                checkpoint?.checkpointSaveInFlight = false
+                if case .failure(let error) = championResult {
+                    checkpoint?.setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
+                    SessionLogger.shared.log("[CHECKPOINT] Load session auto-build failed: \(error.localizedDescription)")
+                }
+                if startAfterLoad { onResumeFinished() }
+                return
+            }
+
+            // 3. Apply champion weights; trainer weights are held for the next
+            //    startRealTraining via `pendingLoadedSession`.
+            let applyResult: Result<Void, Error> = await Task.detached(priority: .userInitiated) {
+                do {
                     try await champion.loadWeights(loaded.championFile.weights)
-                    return .success(loaded)
+                    return .success(())
                 } catch {
                     return .failure(error)
                 }
             }.value
             checkpoint?.checkpointSaveInFlight = false
-            switch outcome {
-            case .success(let loaded):
+            switch applyResult {
+            case .success:
                 champion.identifier = ModelID(value: loaded.championFile.modelID)
                 pendingLoadedSession = loaded
                 networkStatus = """
@@ -546,6 +698,10 @@ extension SessionController {
                     bufStr = " replay=none"
                 }
                 SessionLogger.shared.log("[CHECKPOINT] Loaded session: \(url.lastPathComponent) savedBuild=\(savedBuild) savedGit=\(savedGit)\(bufStr)")
+                SessionLogger.shared.logArchitecture(
+                    event: "resumed session \(loaded.state.sessionID) (champion \(loaded.championFile.modelID))",
+                    arch: loaded.championFile.architecture
+                )
                 onClearInferenceResult()
                 if startAfterLoad {
                     // Auto-resume path (from the launch-time sheet or
@@ -573,7 +729,7 @@ extension SessionController {
 
     // MARK: - Session-state snapshot (Stage 4m)
 
-    nonisolated static let trainerLearningRateDefault: Float = 5e-5
+    nonisolated static let trainerLearningRateDefault: Float = 1e-3
     nonisolated static let entropyRegularizationCoeffDefault: Float = 1e-3
 
     /// Build the Codable snapshot of the current session state (counters,
@@ -627,6 +783,11 @@ extension SessionController {
         let entropyCoeff = trainer?.entropyRegularizationCoeff ?? Self.entropyRegularizationCoeffDefault
         let drawPen = trainer?.drawPenalty ?? Float(params.drawPenalty)
         let bufferSnap = replayBuffer?.stateSnapshot()
+        // Architecture metadata must reflect the ACTUAL built network, not the
+        // ChessNetwork static defaults (which only describe the current preset).
+        // Without this, a non-default session (e.g. a rebuilt v3 8-block) saved
+        // the wrong arch and the resume prompt showed v4/5-block.
+        let resolvedArch = network?.network.arch ?? trainer?.arch ?? .current
         let segments: [SessionCheckpointState.TrainingSegment]? =
             (checkpoint?.completedTrainingSegments.isEmpty ?? true)
             ? nil
@@ -653,6 +814,7 @@ extension SessionController {
             selfPlayWorkerCount: params.selfPlayConcurrency,
             gradClipMaxNorm: Float(params.gradClipMaxNorm),
             weightDecayCoeff: Float(params.weightDecay),
+            dropoutRate: trainer?.dropoutRate ?? Float(params.dropoutRate),
             policyLossWeight: Float(params.policyLossWeight),
             valueLossWeight: Float(params.valueLossWeight),
             momentumCoeff: Float(params.momentumCoeff),
@@ -678,6 +840,10 @@ extension SessionController {
             legalMassCollapseGraceSeconds: params.legalMassCollapseGraceSeconds,
             legalMassCollapseNoImprovementProbes: params.legalMassCollapseNoImprovementProbes,
             batchStatsInterval: params.batchStatsInterval,
+            periodicAutosaveIntervalSec: params.periodicAutosaveIntervalSec,
+            maxPeriodicAutosavesKept: params.maxPeriodicAutosavesKept,
+            recordingCorpusID: activeRecordingCorpusID,
+            lrMomentumCycle: params.lrMomentumCycle,
             maxPliesFromAnyOneGame: params.maxPliesFromAnyOneGame,
             targetSampledGameLengthPlies: params.targetSampledGameLengthPlies,
             maxDrawPercentPerBatch: params.maxDrawPercentPerBatch,
@@ -716,7 +882,28 @@ extension SessionController {
             championID: championID,
             trainerID: trainerID,
             arenaHistory: history
-        ).withTrainingSegments(segments)
+        )
+        .withTrainingSegments(segments)
+        .withArchitecture(
+            ArchitectureMetadata(
+                architectureVersion: resolvedArch.architectureVersionLabel,
+                // Legacy uniform scalars: tower-output width + the first
+                // group's SE ratio (mixed towers are fully described by the
+                // embedded config itself).
+                channels: resolvedArch.towerOutputChannels,
+                numBlocks: resolvedArch.numBlocks,
+                inputPlanes: resolvedArch.inputPlanes,
+                policySize: resolvedArch.policySize,
+                valueHeadClasses: resolvedArch.valueHeadClasses,
+                seReductionRatio: resolvedArch.blockGroups[0].seReductionRatio,
+                parameterCount: resolvedArch.parameterCount
+            )
+        )
+        .withProbeHistories(
+            lichess: lichessProbeHistory.makeSnapshot(),
+            wideLichess: lichessProbeWideHistory.makeSnapshot(),
+            tactical: tacticalProbeHistory.makeSnapshot()
+        )
     }
 
     // MARK: - Session resume (Stage 4k)

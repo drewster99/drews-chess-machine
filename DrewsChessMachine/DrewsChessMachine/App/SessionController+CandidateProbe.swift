@@ -193,7 +193,7 @@ extension SessionController {
         var lines: [String] = []
         var topMoves: [MoveVisualization] = []
         var rawInference: ChessRunner.InferenceResult? = nil
-        let board = BoardEncoder.encode(state)
+        let board = BoardEncoder.encode(state, encoding: runner.inputEncoding)
 
         do {
             let inference = try await runner.evaluate(board: board, state: state, pieces: state.board)

@@ -23,6 +23,15 @@ import SwiftUI
 struct ContentView: View {
     let commandHub: AppCommandHub
     let autoTrainOnLaunch: Bool
+    /// Forwarded from `DrewsChessMachineApp`'s `--playchess` flag. When
+    /// set, `UpperContentView` starts a human-vs-network game on launch.
+    let autoPlayChessOnLaunch: Bool
+    /// Forwarded `--model <path>` value (opponent weights for
+    /// `--playchess`). Nil ⇒ latest saved session's trainer.
+    let playChessModelPath: String?
+    /// Forwarded `--start-model <path>` value (starting champion for
+    /// `--train`). Nil ⇒ fresh random build.
+    let trainStartModelPath: String?
     let cliConfig: CliTrainingConfig?
     let cliOutputURL: URL?
     /// View > Show Training Graphs preference, forwarded from
@@ -92,6 +101,9 @@ struct ContentView: View {
         UpperContentView(
             commandHub: commandHub,
             autoTrainOnLaunch: autoTrainOnLaunch,
+            autoPlayChessOnLaunch: autoPlayChessOnLaunch,
+            playChessModelPath: playChessModelPath,
+            trainStartModelPath: trainStartModelPath,
             cliConfig: cliConfig,
             cliOutputURL: cliOutputURL,
             chartCoordinator: chartCoordinator
@@ -138,6 +150,9 @@ struct ContentView: View {
     ContentView(
         commandHub: AppCommandHub(),
         autoTrainOnLaunch: false,
+        autoPlayChessOnLaunch: false,
+        playChessModelPath: nil,
+        trainStartModelPath: nil,
         cliConfig: nil,
         cliOutputURL: nil,
         showTrainingGraphs: true,

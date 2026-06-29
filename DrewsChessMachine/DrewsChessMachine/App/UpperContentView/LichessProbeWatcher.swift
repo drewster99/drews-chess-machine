@@ -1,9 +1,9 @@
 import Foundation
 
-/// Periodic driver for the 200-puzzle Lichess probe set. Same
+/// Step-triggered driver for the 200-puzzle Lichess probe set. Same
 /// life-of-session shape as `TacticalProbeWatcher` — one task that
-/// fires `intervalSec` apart, plus an on-demand `triggerOnce()` for the
-/// monitor's "Probe now" button.
+/// fires every `triggerEverySteps` trainer SGD steps, plus an
+/// on-demand `triggerOnce()` for the monitor's "Probe now" button.
 ///
 /// Per tick: snapshot the trainer's current weights into the dedicated
 /// probe-inference network (or read the live champion, depending on
@@ -11,59 +11,141 @@ import Foundation
 /// through `TacticalProbeRunner.run` and fold the 200 results into 8
 /// per-theme aggregates that get appended to `LichessProbeHistory`.
 ///
+/// Cadence rationale: 30-minute time-based ticks decoupled the probe
+/// from training progress — at fast-warmup early steps the probe
+/// would lag the rapidly-shifting weights, and during slow / paused
+/// training it would fire on a stale snapshot. Tying the cadence to
+/// trainer steps (default 400) keeps probe density tracking actual
+/// learning progress, so each chart point represents a fixed amount
+/// of gradient applied rather than a fixed amount of wall-clock time.
+///
 /// Cost note: 200 probes × 2 forward passes each = 400 forward passes
-/// per tick. At the 30-minute default cadence that's ~13 single-position
-/// forward passes per minute — well under the per-ply rate the batched
-/// self-play evaluator already sustains. We deliberately do NOT log
-/// per-probe lines for the periodic ticks (only a one-line `[TACTICAL-
-/// LICHESS]` summary), to keep the session log readable; the manual
-/// "Run Lichess Probe" menu item produces a denser per-theme breakdown
-/// instead, see `SessionController.runLichessProbe()`.
+/// per tick. At the default 400-step cadence and ~2.5 trainer steps/s
+/// that's a tick every ~160 s (roughly 540 ticks/day at sustained
+/// training, vs. 48 ticks/day under the prior 30-minute time-based
+/// cadence — about 11× denser sampling, which is the whole point of
+/// switching to step-based triggering). Forward-pass load is still
+/// well under the per-ply rate the batched self-play evaluator
+/// already sustains. We deliberately do NOT log per-probe lines for
+/// the periodic ticks (only a one-line `[TACTICAL-LICHESS]` summary)
+/// to keep the session log readable; the manual "Run Lichess Probe"
+/// menu item produces a denser per-theme breakdown instead — see
+/// `SessionController.runLichessProbe()`.
 ///
 /// @MainActor isolated — same pattern as the small-set watcher.
 @MainActor
 final class LichessProbeWatcher {
     private weak var sessionController: SessionController?
     private let history: LichessProbeHistory
-    private let intervalSec: TimeInterval
+    /// The primary (200-puzzle) battery, destination = `history` above.
+    private let primaryProbes: [TacticalProbe]
+    /// Optional second battery — the ~4,435-puzzle WIDE longitudinal set
+    /// — evaluated off the SAME weight snapshot in the SAME batched
+    /// forward as the primary set, then recorded to its own history.
+    /// nil ⇒ this watcher runs the primary battery only.
+    private let wideProbes: [TacticalProbe]?
+    private let wideHistory: LichessProbeHistory?
+
+    /// Lazily built then cached: primary + wide probes concatenated, the
+    /// matching pre-encoded board tensor (boards are static — only the
+    /// weights change — so encode once and reuse every tick), and the
+    /// split boundary (= primary count).
+    private var combinedProbes: [TacticalProbe]?
+    private var combinedInput: [Float]?
+    private var primaryCount = 0
+    /// Fire one tick every time the trainer's `completedTrainSteps`
+    /// has advanced by this many steps since the last tick.
+    private let triggerEverySteps: Int
+    /// Polling cadence for the step-watch loop. Faster than the
+    /// expected tick interval (~160s at 400 steps and ~2.5 steps/s)
+    /// so a crossing is detected within a few seconds. Smaller
+    /// values are wasted CPU on a sleeping task; larger values
+    /// would smear the tick boundary across multiple chart points.
+    private let pollIntervalSec: TimeInterval = 2.0
     private var task: Task<Void, Never>?
 
     init(
         sessionController: SessionController,
         history: LichessProbeHistory,
-        intervalSec: TimeInterval = 30.0 * 60.0
+        primaryProbes: [TacticalProbe] = LichessProbeData.largeSet,
+        wideProbes: [TacticalProbe]? = nil,
+        wideHistory: LichessProbeHistory? = nil,
+        triggerEverySteps: Int = 400
     ) {
         self.sessionController = sessionController
         self.history = history
-        self.intervalSec = intervalSec
+        self.primaryProbes = primaryProbes
+        self.wideProbes = wideProbes
+        self.wideHistory = wideHistory
+        self.triggerEverySteps = max(1, triggerEverySteps)
     }
 
-    /// Begin the periodic loop. Two-phase startup:
-    ///  1. Poll every 5 seconds until the network needed by the current
-    ///     `probeNetworkTarget` is built (training has started).
-    ///  2. Sleep 60 seconds — a warm-up so the first tick lands well
-    ///     into training rather than right at the launch instant when
-    ///     the network is still random / tunable.
-    /// After the first tick, the regular `intervalSec` cadence kicks in.
+    /// Begin the step-watching loop. Three-phase startup:
+    ///  1. Poll every 5 seconds until the network needed by the
+    ///     current `probeNetworkTarget` is built (training has
+    ///     started).
+    ///  2. Sleep 60 seconds — a warm-up so the first tick lands
+    ///     past the launch instant when the network is still
+    ///     random / tunable.
+    ///  3. Fire one baseline tick so the chart has a first data
+    ///     point, then enter the step-watch loop: every
+    ///     `pollIntervalSec` seconds, read the trainer step count
+    ///     and fire when it's advanced by `triggerEverySteps`.
     /// Re-entrant: a second `start()` while running is a no-op.
     func start() {
         guard task == nil else { return }
-        task = Task { [weak self, intervalSec] in
+        task = Task { [weak self] in
             await self?.waitForFirstTickConditions()
             if Task.isCancelled { return }
 
+            // Baseline tick + record the step the first tick was
+            // anchored at, so the cadence stays "every N steps from
+            // first tick" rather than "every N steps from 0" (which
+            // could spam several initial ticks if startup conditions
+            // delay the watcher past N steps).
             await self?.tickOnce()
+            var lastTriggeredStep = self?.currentTrainerStep() ?? 0
+
             while !Task.isCancelled {
-                let nanos = UInt64(intervalSec * 1_000_000_000)
                 do {
+                    let nanos = UInt64(
+                        (self?.pollIntervalSec ?? 2.0) * 1_000_000_000
+                    )
                     try await Task.sleep(nanoseconds: nanos)
                 } catch {
                     return
                 }
                 if Task.isCancelled { return }
-                await self?.tickOnce()
+                guard let self else { return }
+                guard let step = self.currentTrainerStep() else { continue }
+                // Trainer rebuild / fresh session can roll step back —
+                // re-anchor so we don't lock out probes by holding a
+                // historical high-water mark.
+                if step < lastTriggeredStep {
+                    lastTriggeredStep = step
+                    continue
+                }
+                if step - lastTriggeredStep >= self.triggerEverySteps {
+                    await self.tickOnce()
+                    // Snap to the most recent multiple-of-N boundary
+                    // at or below `step`, so a slow tick (the 200
+                    // forward passes block the loop for a few seconds)
+                    // doesn't accumulate "missed" boundaries and
+                    // double-fire. Worst case the chart point's step
+                    // anchor is N-1 steps behind the snap; that's
+                    // already implicit in the cadence quantization.
+                    lastTriggeredStep = step - (step % self.triggerEverySteps)
+                }
             }
         }
+    }
+
+    /// Convenience accessor used by the step-watch loop. Returns nil
+    /// when no trainer is yet attached to the session (e.g. between
+    /// Play-and-Train stop and restart).
+    @MainActor
+    private func currentTrainerStep() -> Int? {
+        sessionController?.trainer?.completedTrainSteps
     }
 
     /// Poll-until-ready + 60s warm-up before the first tick. Same
@@ -119,14 +201,17 @@ final class LichessProbeWatcher {
         }
     }
 
-    /// One tick: pick network, run 200 probes, aggregate, record.
-    /// Mirrors `TacticalProbeWatcher.tickOnce()` for the network-target
-    /// selection and trainer-snapshot path so the two watchers behave
-    /// identically with respect to the existing
-    /// `probeNetworkTarget` toggle.
+    /// One tick: pick network, run the COMBINED battery (primary + optional
+    /// wide) in a single batched forward off one weight snapshot, split the
+    /// results, aggregate and record each set to its own history. Mirrors
+    /// `TacticalProbeWatcher.tickOnce()` for the network-target selection
+    /// and trainer-snapshot path so the two watchers behave identically
+    /// with respect to the existing `probeNetworkTarget` toggle.
     private func tickOnce() async {
         guard let session = sessionController else { return }
         let target = session.probeNetworkTarget
+        let tickStart = DispatchTime.now().uptimeNanoseconds
+        var snapshotMs = 0.0
 
         let net: ChessMPSNetwork
         switch target {
@@ -145,6 +230,7 @@ final class LichessProbeWatcher {
             // watcher's tickOnce is serial against itself.
             guard let trainer = session.trainer,
                   let probeNet = session.lichessProbeInferenceNetwork else { return }
+            let snapStart = DispatchTime.now().uptimeNanoseconds
             do {
                 let weights = try await trainer.network.exportWeights()
                 try await probeNet.loadWeights(weights)
@@ -155,51 +241,212 @@ final class LichessProbeWatcher {
                 return
             }
             probeNet.identifier = trainer.identifier
+            snapshotMs = elapsedMs(since: snapStart)
             net = probeNet
         }
 
-        // Run the full battery. 200 serial forward passes — the
-        // batched evaluator isn't wired through `TacticalProbeRunner`
-        // because per-probe top-5 / entropy bookkeeping wants the raw
-        // logits per position rather than a folded batch result.
-        let probes = LichessProbeData.largeSet
-        var allResults: [ProbeResult] = []
-        allResults.reserveCapacity(probes.count)
-        for probe in probes {
-            let r = await TacticalProbeRunner.run(probe, against: net)
-            allResults.append(r)
+        // ONE batched forward pass over the COMBINED battery (primary +
+        // optional wide) off this single weight snapshot. The pre-encoded
+        // board tensor is cached (boards are static), so only the GPU
+        // readback is fresh each tick. Results split back into the two
+        // sets, each recorded to its own history against identical
+        // weights — so the two trajectories are directly comparable.
+        let encodeStart = DispatchTime.now().uptimeNanoseconds
+        let combined = ensureCombined(encoding: net.inputEncoding)
+        let encodeMs = elapsedMs(since: encodeStart)
+
+        let batch = await TacticalProbeRunner.runBatch(
+            combined.probes,
+            encodedInput: combined.input,
+            against: net
+        )
+        let allResults = batch.results
+        guard allResults.count == combined.probes.count else {
+            SessionLogger.shared.log(
+                "[TACTICAL-LICHESS] tick aborted: batched result count \(allResults.count) != \(combined.probes.count)"
+            )
+            return
         }
 
-        let aggregates = LichessProbeHistory.aggregates(from: allResults)
+        // Progress fields captured once at tick time, shared by both
+        // batteries so an export reports values consistent with the
+        // probed weights even if minutes of training pass before export.
         let modelLabel = net.identifier?.description ?? "<no-id>"
-        history.record(aggregates, allResults: allResults, modelLabel: modelLabel)
-        logTickSummary(aggregates, modelLabel: modelLabel)
+        let trainingStep = session.trainer?.completedTrainSteps
+        let positionsTrained = trainingStep.map {
+            $0 * TrainingParameters.shared.trainingBatchSize
+        }
+        let activeTrainingSec = session.checkpoint?.cumulativeActiveTrainingSec
+        let arenaCount = session.tournamentHistory.count
+        let promotionCount = session.tournamentHistory.lazy.filter { $0.promoted }.count
+
+        let recordStart = DispatchTime.now().uptimeNanoseconds
+        let primaryResults = Array(allResults[0..<combined.primaryCount])
+        recordBattery(
+            primaryResults,
+            into: history,
+            modelLabel: modelLabel,
+            trainingStep: trainingStep,
+            positionsTrained: positionsTrained,
+            activeTrainingSec: activeTrainingSec,
+            arenaCount: arenaCount,
+            promotionCount: promotionCount,
+            setLabel: nil
+        )
+
+        if let wideHistory {
+            let wideResults = Array(allResults[combined.primaryCount...])
+            recordBattery(
+                wideResults,
+                into: wideHistory,
+                modelLabel: modelLabel,
+                trainingStep: trainingStep,
+                positionsTrained: positionsTrained,
+                activeTrainingSec: activeTrainingSec,
+                arenaCount: arenaCount,
+                promotionCount: promotionCount,
+                setLabel: "wide"
+            )
+        }
+        let recordMs = elapsedMs(since: recordStart)
+
+        // Probe-cost telemetry. encode = one-time board encode (≈0 after the
+        // first tick, cached); snapshot = trainer weight export+load (candidate
+        // target only); gpu = the single batched forward + readback; post =
+        // CPU fold (softmax + legal-mask + verdicts) over all positions;
+        // record = aggregate + history append + per-set summary log; total =
+        // the whole tick. Grep `[TACTICAL-LICHESS] timing`.
+        let totalMs = elapsedMs(since: tickStart)
+        SessionLogger.shared.log(
+            "[TACTICAL-LICHESS] timing n=\(combined.probes.count)"
+            + String(
+                format: " encodeMs=%.1f snapshotMs=%.1f gpuMs=%.1f postMs=%.1f recordMs=%.1f totalMs=%.1f",
+                encodeMs, snapshotMs, batch.gpuMs, batch.postMs, recordMs, totalMs
+            )
+        )
     }
 
-    /// One `[TACTICAL-LICHESS]` summary line per tick — total score
-    /// plus per-theme `correct/total` so the log is grep-friendly.
+    /// Monotonic elapsed milliseconds since a `DispatchTime` uptime mark.
+    private func elapsedMs(since startNs: UInt64) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds - startNs) / 1_000_000.0
+    }
+
+    /// Build (once) and cache the combined primary+wide probe list, its
+    /// pre-encoded board tensor, and the split boundary. Cached because
+    /// the boards never change — only the weights do — so the ~4,635-
+    /// position encode runs a single time, on the first tick.
+    private func ensureCombined(encoding: InputEncoding) -> (probes: [TacticalProbe], input: [Float], primaryCount: Int) {
+        if let probes = combinedProbes, let input = combinedInput {
+            return (probes, input, primaryCount)
+        }
+        var probes = primaryProbes
+        primaryCount = primaryProbes.count
+        if let wideProbes {
+            probes += wideProbes
+        }
+        var input = [Float]()
+        input.reserveCapacity(probes.count * BoardEncoder.tensorLength(for: encoding))
+        for probe in probes {
+            input.append(contentsOf: BoardEncoder.encode(probe.state, encoding: encoding))
+        }
+        combinedProbes = probes
+        combinedInput = input
+        return (probes, input, primaryCount)
+    }
+
+    /// Aggregate one battery's results, record them to `history`, and log
+    /// a one-line `[TACTICAL-LICHESS]` summary. Shared by the primary and
+    /// wide batteries; `setLabel` tags the wide line (`set=wide`) so the
+    /// two sets are grep-separable, and is nil for the primary so its log
+    /// line is unchanged from before.
+    private func recordBattery(
+        _ results: [ProbeResult],
+        into history: LichessProbeHistory,
+        modelLabel: String,
+        trainingStep: Int?,
+        positionsTrained: Int?,
+        activeTrainingSec: Double?,
+        arenaCount: Int,
+        promotionCount: Int,
+        setLabel: String?
+    ) {
+        let aggregates = LichessProbeHistory.aggregates(from: results)
+        history.record(
+            aggregates,
+            allResults: results,
+            modelLabel: modelLabel,
+            trainingStep: trainingStep,
+            positionsTrained: positionsTrained,
+            activeTrainingSec: activeTrainingSec,
+            arenaCount: arenaCount,
+            promotionCount: promotionCount
+        )
+        logTickSummary(
+            aggregates,
+            allResults: results,
+            modelLabel: modelLabel,
+            trainingStep: trainingStep,
+            setLabel: setLabel
+        )
+    }
+
+    /// One `[TACTICAL-LICHESS]` summary line per tick — overall
+    /// argmax / top-5 / avg-prob / avg-rank / NLL / puzzle-Elo, then
+    /// the per-theme `correct/total` breakdown. Grep-friendly,
+    /// reproducible across ticks (themes sorted alphabetically by
+    /// rawValue). Mirrors the OVERALL band of the Detail window so
+    /// the session log carries the same metrics the UI shows.
     private func logTickSummary(
         _ aggregates: [LichessProbeHistory.Aggregate],
-        modelLabel: String
+        allResults: [ProbeResult],
+        modelLabel: String,
+        trainingStep: Int?,
+        setLabel: String?
     ) {
-        var totalCorrect = 0
-        var totalProbes = 0
-        var perThemeParts: [String] = []
+        let overall = LichessProbeOverallSummary(folding: aggregates)
+        let totalCorrect = overall.argmaxCorrect
+        let top5Correct = overall.top5Correct
+        let totalProbes = overall.totalProbes
+        let pct: (Int) -> String = { num in
+            totalProbes > 0
+                ? String(format: "%.1f", 100.0 * Double(num) / Double(totalProbes))
+                : "0.0"
+        }
+        let avgProbStr = String(format: "%.3f", overall.avgExpectedProb)
+        let avgRankStr = overall.avgExpectedRank.map { String(format: "%.2f", $0) }
+            ?? "--"
+        let nllStr = String(format: "%.3f", overall.meanNegLogProb)
+        let pairs: [(rating: Int, correct: Bool)] = allResults.compactMap {
+            guard let meta = LichessProbeData.metadata[$0.probe.name] else { return nil }
+            let isArgmaxCorrect = $0.verdict == .correctAndConfident
+                || $0.verdict == .correctButFlat
+            return (rating: meta.rating, correct: isArgmaxCorrect)
+        }
+        let elo = LichessProbeHistory.mlePuzzleElo(pairs: pairs)
+        let eloStr: String = {
+            if elo.isNaN { return "--" }
+            if elo == -.infinity { return "<floor" }
+            if elo == .infinity { return ">ceil" }
+            return String(format: "%.0f", elo)
+        }()
+        let stepStr = trainingStep.map(String.init) ?? "--"
 
-        // Iterate in a stable order (rawValue alphabetical) so the
-        // log line is reproducible across ticks.
+        var perThemeParts: [String] = []
         for agg in aggregates.sorted(by: { $0.theme.rawValue < $1.theme.rawValue }) {
-            totalCorrect += agg.argmaxCorrect
-            totalProbes += agg.total
             perThemeParts.append(
                 "\(agg.theme.rawValue)=\(agg.argmaxCorrect)/\(agg.total)"
             )
         }
-        let pct = totalProbes > 0
-            ? String(format: "%.1f", 100.0 * Double(totalCorrect) / Double(totalProbes))
-            : "0.0"
+
         SessionLogger.shared.log(
-            "[TACTICAL-LICHESS] tick \(totalCorrect)/\(totalProbes) (\(pct)%) model=\(modelLabel) "
+            "[TACTICAL-LICHESS] tick"
+            + (setLabel.map { " set=\($0)" } ?? "")
+            + " step=\(stepStr)"
+            + " argmax=\(totalCorrect)/\(totalProbes)(\(pct(totalCorrect))%)"
+            + " top5=\(top5Correct)/\(totalProbes)(\(pct(top5Correct))%)"
+            + " avgProb=\(avgProbStr) avgRank=\(avgRankStr)"
+            + " NLL=\(nllStr) pElo=\(eloStr)"
+            + " model=\(modelLabel) "
             + perThemeParts.joined(separator: " ")
         )
     }

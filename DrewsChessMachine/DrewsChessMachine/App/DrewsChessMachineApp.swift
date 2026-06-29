@@ -58,6 +58,23 @@ struct DrewsChessMachineApp: App {
     /// Nil = no snapshot.
     private let cliOutputURL: URL?
 
+    /// True iff the process was launched with `--playchess`. A GUI-launch
+    /// flag (like `--train`, not a pre-flight exit): the window opens and
+    /// `UpperContentView` immediately starts a human-vs-network game
+    /// against the model resolved from `playChessModelPath` (the same
+    /// resolution `--uci` uses). Mutually exclusive with `--train`.
+    private let autoPlayChessOnLaunch: Bool
+
+    /// Value of `--model <path>` when `--playchess` is present. Nil ⇒ the
+    /// most recently saved session's trainer file is used. Resolved via
+    /// `UCIModelLoader.resolveModelURL` so it matches `--uci`'s behavior.
+    private let playChessModelPath: String?
+
+    /// Value of `--start-model <path>` when `--train` is present: the
+    /// saved model loaded as the starting champion instead of a fresh
+    /// random init. Nil ⇒ the classic fresh-build auto-train path.
+    private let trainStartModelPath: String?
+
     init() {
         // Parse launch-time CLI flags before any logging so the
         // [APP] banner can record whether auto-train mode is on
@@ -102,9 +119,54 @@ struct DrewsChessMachineApp: App {
         // JSON to stdout and a human-readable summary to stderr.
         Self.handleAnalyzeReplayBufferIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: handle UCI mode. When `--uci` is present, hand
+        // control to `UCIEngine.runAndExit` and never return — the
+        // process behaves as a pure stdin/stdout chess engine for
+        // cutechess and friends. Critically, this exits BEFORE the
+        // SwiftUI `WindowGroup` is created, so no window appears and
+        // the launch-time auto-resume countdown sheet (which would
+        // otherwise re-start training automatically) never runs.
+        Self.handleUciIfPresent(rawArgs: rawArgs)
+
+        // Pre-flight: headless batch-size sweep (--sweep). Builds a fresh net,
+        // runs the same ChessTrainer.runSweep the GUI button uses, prints the
+        // throughput table + [SWEEP] logs, and exits — before SwiftUI / Metal
+        // GUI init, so no window and no auto-resume sheet.
+        Self.handleSweepIfPresent(rawArgs: rawArgs)
+
+        // Pre-flight: headless depth (block-count) sweep (--arch-sweep). Builds a
+        // fresh trainer at each requested block count, times build + per-step, and
+        // streams JSONL — investigation tool for the deep-tower "hang". Exits
+        // before SwiftUI / Metal GUI init.
+        Self.handleArchSweepIfPresent(rawArgs: rawArgs)
+
+        // Pre-flight: headless checkpoint probe (--probe-model). Loads saved
+        // champions (a weight file, one .dcmsession, or a whole directory of
+        // sessions) and runs the Lichess probe batteries against each,
+        // emitting JSONL — retro-fills OOD measurements for runs that
+        // predate the live probes. Exits before SwiftUI / Metal GUI init.
+        Self.handleProbeModelIfPresent(rawArgs: rawArgs)
+
+        // Pre-flight: headless fresh-net mint (--new-model). Builds an untrained
+        // network from a --preset and writes it to a .safetensors for reuse as a
+        // fixed --start-model across runs. Must run BEFORE the replay handler,
+        // which also reads --preset. Exits before SwiftUI / Metal GUI init.
+        Self.handleNewModelIfPresent(rawArgs: rawArgs)
+
+        // Pre-flight: headless offline corpus-replay trainer (--replay-corpus).
+        // Builds a fresh net + trainer, fills the replay buffer from recorded
+        // games (no self-play, no arena, no promotion), runs a step-locked SGD
+        // loop to a --training-step-limit / --epochs budget, and exits before
+        // SwiftUI / Metal GUI init.
+        Self.handleReplayCorpusIfPresent(rawArgs: rawArgs)
+
+        // Pre-flight: PGN → game-corpus import (--import-pgn). Streams the
+        // .pgn(.zst), converts games to the corpus format, and exits.
+        Self.handleImportPGNIfPresent(rawArgs: rawArgs)
+
         // Known flags.
-        let booleanFlags: Set<String> = ["--train"]
-        let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit"]
+        let booleanFlags: Set<String> = ["--train", "--playchess"]
+        let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit", "--training-step-limit", "--start-model", "--model"]
 
         // Indices of rawArgs that were consumed by a known flag.
         // Anything NOT in this set after parsing is unknown and
@@ -152,6 +214,38 @@ struct DrewsChessMachineApp: App {
             errors.append("--train specified \(trainIndices.count) times; only one allowed")
         }
 
+        // `--playchess` — boolean GUI-launch flag. Opens the window and
+        // starts a human-vs-network game immediately (see `--model`).
+        // Mutually exclusive with `--train` (one launch mode at a time).
+        let playChessIndices = rawArgs.indices.filter { rawArgs[$0] == "--playchess" }
+        self.autoPlayChessOnLaunch = !playChessIndices.isEmpty
+        for idx in playChessIndices { consumedIndices.insert(idx) }
+        if playChessIndices.count > 1 {
+            errors.append("--playchess specified \(playChessIndices.count) times; only one allowed")
+        }
+        if !trainIndices.isEmpty && !playChessIndices.isEmpty {
+            errors.append("--train and --playchess are mutually exclusive")
+        }
+
+        // `--bf16-cast-in-forward` — experimental: train bf16 models with config
+        // D (weights stored fp32, cast to bf16 in the forward; no bf16 working
+        // variable / fp32 master), the workaround for the macOS-27-beta bf16
+        // training divergence. Read directly in `SessionController.ensureTrainer`
+        // via `CommandLine.arguments`; here we only consume the flag so the
+        // unknown-argument scan accepts it. A no-op for fp32 models.
+        let bf16CastIndices = rawArgs.indices.filter { rawArgs[$0] == "--bf16-cast-in-forward" }
+        for idx in bf16CastIndices { consumedIndices.insert(idx) }
+        if bf16CastIndices.count > 1 {
+            errors.append("--bf16-cast-in-forward specified \(bf16CastIndices.count) times; only one allowed")
+        }
+
+        // `--crosscheck-movegen` — diagnostic soak: every `MoveGenerator.legalMoves`
+        // call also runs the make/unmake and pin-based generators and logs any
+        // divergent position. Read in `MoveGenerator` via `CommandLine.arguments`;
+        // consumed here so the unknown-argument scan accepts it.
+        let crosscheckMovegenIndices = rawArgs.indices.filter { rawArgs[$0] == "--crosscheck-movegen" }
+        for idx in crosscheckMovegenIndices { consumedIndices.insert(idx) }
+
         // `--parameters <path>` — optional hyperparameter override
         // file. Values that the JSON doesn't name fall back to
         // the normal UI defaults. File-not-found and malformed
@@ -185,10 +279,35 @@ struct DrewsChessMachineApp: App {
             if parsedConfig == nil {
                 parsedConfig = CliTrainingConfig(
                     trainingParameters: [:],
-                    trainingTimeLimitSec: override
+                    trainingTimeLimitSec: override,
+                    trainingStepLimit: nil
                 )
             } else {
                 parsedConfig?.trainingTimeLimitSec = override
+            }
+        }
+
+        // `--training-step-limit <steps>` — stop after the trainer
+        // completes this many SGD steps (snapshot + exit, same dance
+        // as the time limit; whichever budget fires first wins). CLI
+        // flag wins over a `training_step_limit` key in --parameters.
+        var trainingStepLimitCliOverride: Int? = nil
+        if let raw = takeValue(for: "--training-step-limit") {
+            if let parsed = Int(raw), parsed > 0 {
+                trainingStepLimitCliOverride = parsed
+            } else {
+                errors.append("--training-step-limit value '\(raw)' is not a positive integer")
+            }
+        }
+        if let override = trainingStepLimitCliOverride {
+            if parsedConfig == nil {
+                parsedConfig = CliTrainingConfig(
+                    trainingParameters: [:],
+                    trainingTimeLimitSec: nil,
+                    trainingStepLimit: override
+                )
+            } else {
+                parsedConfig?.trainingStepLimit = override
             }
         }
         self.cliConfig = parsedConfig
@@ -202,6 +321,28 @@ struct DrewsChessMachineApp: App {
             parsedOutputURL = URL(fileURLWithPath: expanded)
         }
         self.cliOutputURL = parsedOutputURL
+
+        // `--model <path>` — opponent weights for `--playchess`. (Under
+        // `--uci` this flag is consumed by the UCI pre-flight above and
+        // never reaches here, so any `--model` seen now belongs to a
+        // GUI launch — valid only alongside `--playchess`.) Nil ⇒ the
+        // most recent saved session's trainer is used.
+        let parsedPlayChessModelPath = takeValue(for: "--model")
+        self.playChessModelPath = parsedPlayChessModelPath
+        if parsedPlayChessModelPath != nil && playChessIndices.isEmpty {
+            errors.append("--model is only valid alongside --playchess (UCI passes --model via --uci)")
+        }
+
+        // `--start-model <path>` — with --train, load this saved model's
+        // weights into the champion instead of random initialization (the
+        // trainer then forks from it as usual). The lever for controlled
+        // A/B experiments: N headless runs from one identical starting
+        // net, with per-arm hyperparameters from --parameters.
+        let parsedTrainStartModelPath = takeValue(for: "--start-model")
+        self.trainStartModelPath = parsedTrainStartModelPath
+        if parsedTrainStartModelPath != nil && trainIndices.isEmpty {
+            errors.append("--start-model is only valid alongside --train")
+        }
 
         // Unknown-argument scan. Anything that wasn't consumed
         // by a known flag above is rejected — including stray
@@ -226,18 +367,89 @@ struct DrewsChessMachineApp: App {
         // appearing briefly would be confusing.
         if !errors.isEmpty {
             let usage = """
-            Usage: DrewsChessMachine [--train] [--parameters <file>] [--output <file>] [--training-time-limit <seconds>]
+            Usage: DrewsChessMachine [mode] [options]          (flags may be given in any order)
 
-            Options (any order):
-              --train                         Headless mode: auto build fresh network, start Play-and-Train,
-                                              switch to Candidate Test view.
-              --parameters <file>             JSON file of hyperparameter overrides. Unknown keys are accepted
-                                              by the JSON decoder only if they match a known field.
-              --output <file>                 Write JSON snapshot to <file> on training_time_limit expiry.
+            Launch modes (pick at most one; default = open the normal training console GUI):
+              --train                         Headless: auto-build a fresh network, start Play-and-Train,
+                                              switch to the Candidate Test view.
+              --playchess                     Open the GUI and immediately start a human-vs-network game.
+                                              Opponent weights resolved like --uci (see --model below).
+
+            Training options (with --train):
+              --parameters <file>             JSON file of hyperparameter overrides (partial files allowed;
+                                              only keys matching a known field are applied).
+              --output <file>                 Write the JSON snapshot to <file> on training_time_limit expiry.
                                               Without this flag, the snapshot goes to stdout.
               --training-time-limit <seconds> Seconds of Play-and-Train before the JSON snapshot is written
                                               and the process exits. Overrides any value in --parameters.
                                               Only honored under --train.
+              --training-step-limit <steps>   Stop after the trainer completes this many SGD steps (snapshot
+                                              + exit, same as the time limit; first budget to fire wins).
+                                              Overrides any training_step_limit in --parameters.
+              --start-model <path>            Load this saved model (.safetensors / .dcmmodel) as the starting
+                                              champion instead of a fresh random init; the trainer forks from
+                                              it. For controlled A/B runs from one identical starting net.
+
+            Opponent selection (with --playchess):
+              --model <path>                  .safetensors or .dcmmodel weights to play against. Without it,
+                                              the most recently saved session's trainer is used.
+
+            Headless engine / tools (each runs without opening a window, then exits):
+              --uci [--model <path>]          Run as a UCI engine on stdin/stdout (cutechess, etc.). --model
+                                              selects weights (default: latest saved session's trainer).
+              --sweep [--sweep-sizes <csv>] [--sweep-seconds <n>]
+                                              Batch-size throughput sweep; print the table and exit.
+              --analyze-replay-buffer <path>  Analyze a replay_buffer.bin (or a .dcmsession dir); print JSON,
+                                              human summary to stderr, and exit.
+              --probe-model <path> [--probe-set 200|wide|both] [--probe-out <file>]
+                                              Run the Lichess probe batteries against saved checkpoints
+                                              (a weight file, one .dcmsession, or a directory of sessions);
+                                              one JSON line per checkpoint x set, then exit.
+              --show-default-parameters       Print every default training parameter as JSON and exit.
+              --create-parameters-file [<path>] [--force]
+                                              Write parameters.json + parameters.md (default: ./) and exit.
+
+            Offline corpus replay & PGN import (each runs headless, then exits):
+              --replay-corpus <dir|id>        Train on a fixed recorded game corpus — a path, or a bare corpus
+                                              ID resolved under Corpora/ (repeatable, to mix corpora):
+                                              no self-play, no arena, no promotion. Fills the replay buffer from
+                                              the games and runs a step-locked SGD loop (K = batch / replay-ratio
+                                              positions per step). Pair with --training-step-limit <n> OR
+                                              --epochs <n> (default: 1 pass) and --parameters <file> to pin the
+                                              hyperparameters. Pass --start-model <file> to continue training from a
+                                              saved model (its embedded architecture is used). Ctrl-C stops cleanly
+                                              and saves; press again to force-quit. The trainer model is saved every
+                                              1000 steps and on exit/abort to a single rolling file (overwritten):
+                                              --out-model <path>, else next to --start-model, else the app Models dir
+                                              named after the corpus (<corpusID>-replay-latest.safetensors).
+              --out-model <path>              Destination for the rolling trainer-model file (overwrites in place);
+                                              a .safetensors extension is appended if you don't supply one.
+              --epochs <n>                    Replay budget: number of full passes over the corpus.
+              --import-pgn <path>             Convert a .pgn / .pgn.zst (e.g. a Lichess monthly dump) into a
+                                              corpus, then exit. .zst needs the `zstd` CLI on PATH; standard-start
+                                              games only. Filters: --min-rating <elo> (both sides),
+                                              --max-games <n>, --min-plies <n>,
+                                              --time-control <bullet,blitz,rapid,classical>, --corpus-name <name>,
+                                              --shard-soft-limit-mb <mb> (default 64),
+                                              --max-storage <size> (e.g. 2GB; stops near that corpus body size),
+                                              --import-threads <n> (default cores-2),
+                                              --lenient (count parse failures instead of hard-failing on the first).
+
+            Self-play recording: set the `record_self_play_games` parameter (e.g. in a --parameters file) to
+            record every kept self-play game into a corpus under Corpora/ during a --train run.
+
+            Examples:
+              # Cross-architecture A/B on identical games (build is fresh each run; average over N runs):
+              DrewsChessMachine --replay-corpus <CorpusDir> --parameters frozen.json --training-step-limit 50000 --output archA.json
+
+              # Same-architecture hyperparameter A/B from one identical starting net:
+              DrewsChessMachine --train --start-model champ.safetensors --parameters lrA.json --training-step-limit 50000 --output lrA.json
+
+              # Import a Lichess dump (rated blitz/rapid, 1800+, first 1M games):
+              DrewsChessMachine --import-pgn lichess_2026-05.pgn.zst --min-rating 1800 --time-control blitz,rapid --max-games 1000000 --corpus-name lichess-2026-05
+
+              # Replay a corpus for 3 full passes:
+              DrewsChessMachine --replay-corpus <CorpusDir> --epochs 3 --parameters frozen.json
             """
             for err in errors {
                 let line = "DrewsChessMachine: error: \(err)\n"
@@ -252,16 +464,25 @@ struct DrewsChessMachineApp: App {
         // stats — lands in a single `dcm_log_yyyymmdd-HHMMSS.txt`
         // file under the app's Library/Logs directory.
         SessionLogger.shared.start()
-        precondition(
-            TensorChannelNames.names.count == ChessNetwork.inputPlanes
-                && TensorChannelNames.shortNames.count == ChessNetwork.inputPlanes,
-            "TensorChannelNames is out of sync with ChessNetwork.inputPlanes (\(ChessNetwork.inputPlanes)) — names=\(TensorChannelNames.names.count), shortNames=\(TensorChannelNames.shortNames.count). Update Views/Board/TensorChannelNames.swift."
-        )
+        // (Channel display names are now derived per-encoding from
+        // `InputEncoding.channelNames` — sized to `planeCount` by construction
+        // — so the old "TensorChannelNames must match the default inputPlanes"
+        // launch precondition is gone; a count test guards it instead.)
         let dirtyMarker = BuildInfo.gitDirty ? "*" : ""
-        let archHashHex = String(format: "0x%08x", ModelCheckpointFile.currentArchHash)
         let autoTrainMarker = autoTrainOnLaunch ? " autoTrain=on" : ""
+        let playChessMarker = autoPlayChessOnLaunch ? " playChess=on" : ""
         SessionLogger.shared.log(
-            "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp) arch_hash=\(archHashHex) inputPlanes=\(ChessNetwork.inputPlanes) policySize=\(ChessNetwork.policySize)\(autoTrainMarker)"
+            "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp)\(autoTrainMarker)\(playChessMarker)"
+        )
+        // The launch banner deliberately no longer prints arch fields: at
+        // launch nothing is loaded, so the only arch knowable here is the
+        // compile-time default — printing it as bare `inputPlanes=`/`arch_hash=`
+        // invited mistaking it for the live (runtime-configured) architecture.
+        // Log the default explicitly labelled instead; the real arch is logged
+        // via `[ARCH]` the moment a model is built, loaded, or resumed.
+        SessionLogger.shared.logArchitecture(
+            event: "default preset (no model loaded yet)",
+            arch: .current
         )
         if let path = SessionLogger.shared.activeLogPath {
             SessionLogger.shared.log("[APP] session log: \(path)")
@@ -271,6 +492,10 @@ struct DrewsChessMachineApp: App {
         }
         if autoTrainOnLaunch {
             SessionLogger.shared.log("[APP] --train flag detected; will build fresh network and start Play-and-Train on first appear")
+        }
+        if autoPlayChessOnLaunch {
+            let modelDesc = playChessModelPath ?? "latest saved session trainer"
+            SessionLogger.shared.log("[APP] --playchess flag detected; will start a human-vs-network game on first appear (opponent: \(modelDesc))")
         }
         // Reflect the chart-collection gate at launch so a perf
         // isolation run is unambiguously identifiable in the session
@@ -302,6 +527,9 @@ struct DrewsChessMachineApp: App {
             ContentView(
                 commandHub: commandHub,
                 autoTrainOnLaunch: autoTrainOnLaunch,
+                autoPlayChessOnLaunch: autoPlayChessOnLaunch,
+                playChessModelPath: playChessModelPath,
+                trainStartModelPath: trainStartModelPath,
                 cliConfig: cliConfig,
                 cliOutputURL: cliOutputURL,
                 showTrainingGraphs: showTrainingGraphs,
@@ -402,7 +630,7 @@ struct DrewsChessMachineApp: App {
             // to Train (before Window) as the closest SwiftUI
             // approximation.
             CommandMenu("Train") {
-                Button("Build Network") { commandHub.buildNetwork() }
+                Button("New Network…") { commandHub.presentBuildNewModel() }
                     .disabled(commandHub.isBusy || commandHub.networkReady)
                 Button(commandHub.pendingLoadedSessionExists ? "Continue Training" : "Play and Train") {
                     commandHub.startRealTraining()
@@ -465,6 +693,11 @@ struct DrewsChessMachineApp: App {
                 Button("Open Tactical Probe Monitor…") { commandHub.openTacticalProbeMonitor() }
                     .disabled(!commandHub.networkReady)
                 Button("Open Lichess Probe Monitor…") { commandHub.openLichessProbeMonitor() }
+                    .disabled(!commandHub.networkReady)
+                Button("Open Lichess Probe Detail…") { commandHub.openLichessProbeDetail() }
+                    .disabled(!commandHub.networkReady)
+                Divider()
+                Button("Open Training vs Eval Loss…") { commandHub.openCombinedLossWindow() }
                     .disabled(!commandHub.networkReady)
             }
 
@@ -593,6 +826,582 @@ struct DrewsChessMachineApp: App {
         runCreateParametersFileAndExit(path: path, force: force)
     }
 
+    // MARK: - UCI mode pre-flight (--uci [--model <path.dcmmodel>])
+
+    /// Inspects `rawArgs` for `--uci`. If present, validates the
+    /// allowed companion flag set (`--model <path>` is the only one),
+    /// hands control to `UCIEngine.runAndExit`, and never returns.
+    ///
+    /// `--uci` deliberately runs before the strict-CLI parser below
+    /// (which would reject it as unknown) AND before the SwiftUI
+    /// `WindowGroup` is created — so the cutechess-launched process
+    /// behaves as a pure stdin/stdout engine. No window, no menu bar,
+    /// no `AutoResumeController` countdown sheet auto-resuming a
+    /// training session under us.
+    ///
+    /// Model resolution lives in `UCIModelLoader`:
+    /// - `--model <path>` loads that `.dcmmodel` file directly.
+    /// - no `--model` ⇒ most recently saved session's
+    ///   `trainer.dcmmodel` via `LastSessionPointer`.
+    private static func handleUciIfPresent(rawArgs: [String]) {
+        let uciFlag = "--uci"
+        let modelFlag = "--model"
+        guard rawArgs.contains(uciFlag) else { return }
+
+        // Any other `--`-prefixed flag besides `--uci` / `--model` is
+        // a usage error — a typo in `--mode` would otherwise silently
+        // launch the GUI with a confusing model-load failure.
+        // `--crosscheck-movegen` is a global diagnostic (read in
+        // `MoveGenerator` via `CommandLine.arguments`); permit it so a UCI
+        // self-play run can exercise the move-generator cross-check.
+        let allowedFlags: Set<String> = [uciFlag, modelFlag, "--crosscheck-movegen"]
+        if let badFlag = rawArgs.first(where: {
+            $0.hasPrefix("--") && !allowedFlags.contains($0)
+        }) {
+            FileHandle.standardError.write(Data(
+                "error: \(uciFlag) does not accept '\(badFlag)' (only \(modelFlag) <path.dcmmodel> is allowed alongside)\n".utf8
+            ))
+            Darwin.exit(20)
+        }
+
+        // Extract `--model <path>` if present. Exactly zero or one
+        // occurrence allowed; if present, the immediately following
+        // token is the path.
+        var modelPath: String? = nil
+        let modelIndices = rawArgs.indices.filter { rawArgs[$0] == modelFlag }
+        if modelIndices.count > 1 {
+            FileHandle.standardError.write(Data(
+                "error: \(modelFlag) specified \(modelIndices.count) times; only one allowed\n".utf8
+            ))
+            Darwin.exit(21)
+        }
+        if let idx = modelIndices.first {
+            let valueIdx = idx + 1
+            guard valueIdx < rawArgs.count, !rawArgs[valueIdx].hasPrefix("--") else {
+                FileHandle.standardError.write(Data(
+                    "error: \(modelFlag) requires a path value\n".utf8
+                ))
+                Darwin.exit(22)
+            }
+            modelPath = rawArgs[valueIdx]
+        }
+
+        // Anything in rawArgs that isn't `--uci`, `--model`, or
+        // `--model`'s value is a stray positional we don't want to
+        // silently accept.
+        var consumed = Set<Int>()
+        for (i, arg) in rawArgs.enumerated() where arg == uciFlag {
+            consumed.insert(i)
+        }
+        if let idx = modelIndices.first {
+            consumed.insert(idx)
+            consumed.insert(idx + 1)
+        }
+        // `--crosscheck-movegen` is a global diagnostic read in `MoveGenerator`
+        // via `CommandLine.arguments`; consume it so it isn't flagged as a stray.
+        for (i, arg) in rawArgs.enumerated() where arg == "--crosscheck-movegen" {
+            consumed.insert(i)
+        }
+        for (i, arg) in rawArgs.enumerated() where !consumed.contains(i) {
+            FileHandle.standardError.write(Data(
+                "error: \(uciFlag) does not accept positional argument '\(arg)'\n".utf8
+            ))
+            Darwin.exit(23)
+        }
+
+        UCIEngine.runAndExit(modelPath: modelPath)
+    }
+
+    // MARK: - Offline corpus-replay pre-flight (--replay-corpus)
+
+    /// Inspects `rawArgs` for `--replay-corpus <dir>` (repeatable). If present,
+    /// snapshots the training parameters on the main actor (applying a
+    /// `--parameters` file first if given), builds a `CorpusReplayConfig`, hands
+    /// control to `CorpusReplayRunner.runAndExit`, and never returns. Runs
+    /// before the strict-CLI parser (which would reject `--replay-corpus` /
+    /// `--epochs` as unknown) and before the SwiftUI WindowGroup.
+    private static func handleReplayCorpusIfPresent(rawArgs: [String]) {
+        guard rawArgs.contains("--replay-corpus") else { return }
+
+        var corpusPaths: [String] = []
+        var epochs: Int? = nil
+        var stepLimit: Int? = nil
+        var parametersPath: String? = nil
+        var startModelPath: String? = nil
+        var outModelPath: String? = nil
+        var presetName: String? = nil
+        var startShard: Int? = nil
+        var startGameIndex: Int? = nil
+
+        // Strict validation: a recognized flag with a missing or unparseable
+        // value is a HARD error, never a silent default. A mistyped
+        // `--start-shard 9x` silently starting from shard 0 would waste a
+        // multi-hour pass landing nowhere near the intended resume point.
+        // Anything unexpected — an unknown `--flag` OR a stray/misplaced bare
+        // token — is a hard error, not a silent skip (this handler exits before
+        // the strict-CLI parser that would otherwise catch unknown flags, and
+        // `rawArgs` is `CommandLine.arguments.dropFirst()` so argv[0] is already
+        // gone and every flag consumes its own value — nothing legitimate lands
+        // in `default`). `nextValue` is nil when the next token is absent OR is
+        // itself a `--flag`, so "flag with no value" is caught even when another
+        // flag immediately follows.
+        func requireValue(_ flag: String, _ v: String?) -> String {
+            guard let v else {
+                FileHandle.standardError.write(Data("error: \(flag) requires a value\n".utf8))
+                Darwin.exit(2)
+            }
+            return v
+        }
+        func requireInt(_ flag: String, _ v: String?) -> Int {
+            let s = requireValue(flag, v)
+            guard let n = Int(s) else {
+                FileHandle.standardError.write(Data("error: \(flag) expects an integer value, got '\(s)'\n".utf8))
+                Darwin.exit(2)
+            }
+            return n
+        }
+
+        var i = 0
+        while i < rawArgs.count {
+            let arg = rawArgs[i]
+            let nextValue: String? = {
+                guard i + 1 < rawArgs.count else { return nil }
+                let v = rawArgs[i + 1]
+                return v.hasPrefix("--") ? nil : v
+            }()
+            switch arg {
+            case "--replay-corpus":
+                corpusPaths.append(requireValue(arg, nextValue)); i += 2
+            case "--epochs":
+                epochs = requireInt(arg, nextValue); i += 2
+            case "--training-step-limit":
+                stepLimit = requireInt(arg, nextValue); i += 2
+            case "--parameters":
+                parametersPath = requireValue(arg, nextValue); i += 2
+            case "--start-model":
+                startModelPath = requireValue(arg, nextValue); i += 2
+            case "--out-model":
+                outModelPath = requireValue(arg, nextValue); i += 2
+            case "--preset":
+                presetName = requireValue(arg, nextValue); i += 2
+            case "--start-shard":
+                startShard = requireInt(arg, nextValue); i += 2
+            case "--start-game-index":
+                startGameIndex = requireInt(arg, nextValue); i += 2
+            default:
+                FileHandle.standardError.write(Data("error: unexpected argument '\(arg)' (with --replay-corpus)\n".utf8))
+                Darwin.exit(2)
+            }
+        }
+
+        guard !corpusPaths.isEmpty else {
+            FileHandle.standardError.write(Data("error: --replay-corpus requires at least one corpus directory path\n".utf8))
+            Darwin.exit(2)
+        }
+
+        // Snapshot parameters on the main actor (init() runs on the main
+        // thread), applying a --parameters file first. Everything below the
+        // snapshot is plain Sendable data, so the off-actor replay task never
+        // touches the @MainActor singleton (which would deadlock against the
+        // syncWait semaphore held on this thread).
+        let params: ReplayParams = MainActor.assumeIsolated {
+            if let pp = parametersPath {
+                do {
+                    let url = URL(fileURLWithPath: (pp as NSString).expandingTildeInPath)
+                    let cfg = try CliTrainingConfig.load(from: url)
+                    try TrainingParameters.shared.apply(cfg.trainingParameters)
+                    if stepLimit == nil { stepLimit = cfg.trainingStepLimit }
+                } catch {
+                    FileHandle.standardError.write(Data("error: --parameters load/apply failed: \(error.localizedDescription)\n".utf8))
+                    Darwin.exit(2)
+                }
+            }
+            let tp = TrainingParameters.shared
+            return ReplayParams(
+                learningRate: tp.learningRate,
+                entropyBonus: tp.entropyBonus,
+                drawPenalty: tp.drawPenalty,
+                weightDecay: tp.weightDecay,
+                gradClipMaxNorm: tp.gradClipMaxNorm,
+                policyLossWeight: tp.policyLossWeight,
+                valueLossWeight: tp.valueLossWeight,
+                illegalMassWeight: tp.illegalMassWeight,
+                policyLabelSmoothingEpsilon: tp.policyLabelSmoothingEpsilon,
+                valueLabelSmoothingEpsilon: tp.valueLabelSmoothingEpsilon,
+                momentumCoeff: tp.momentumCoeff,
+                signedAdvantageComplementCE: tp.signedAdvantageComplementCE,
+                sqrtBatchScalingLR: tp.sqrtBatchScalingLR,
+                lrWarmupSteps: tp.lrWarmupSteps,
+                trainingBatchSize: tp.trainingBatchSize,
+                replayBufferCapacity: tp.replayBufferCapacity,
+                replayRatioTarget: tp.replayRatioTarget,
+                replayBufferMinPositionsBeforeTraining: tp.replayBufferMinPositionsBeforeTraining
+            )
+        }
+
+        // Mint the run's saved-model ModelID here on the main thread — the
+        // minter is main-actor isolated and the replay loop runs off-actor.
+        let runModelID = MainActor.assumeIsolated { ModelIDMinter.mint().value }
+
+        let config = CorpusReplayConfig(
+            corpusDirectories: corpusPaths.map { arg in
+                guard let dir = resolveCorpusDirectory(arg) else {
+                    let triedPath = URL(fileURLWithPath: (arg as NSString).expandingTildeInPath).path
+                    let triedID = CorpusPaths.corporaDir.appendingPathComponent(arg).path
+                    FileHandle.standardError.write(Data(
+                        "error: corpus not found for '\(arg)' — no corpus.json at \(triedPath) or \(triedID)\n".utf8))
+                    Darwin.exit(2)
+                }
+                return dir
+            },
+            stepLimit: stepLimit,
+            epochs: epochs,
+            startModelPath: startModelPath,
+            presetName: presetName,
+            startShard: startShard,
+            startGameIndex: startGameIndex,
+            outModelPath: outModelPath,
+            runModelID: runModelID
+        )
+        CorpusReplayRunner.runAndExit(config: config, params: params)
+    }
+
+    /// Resolve a `--replay-corpus` argument to a corpus directory: accepts
+    /// either a filesystem path (absolute, or relative to the working
+    /// directory) or a bare corpus ID resolved under the shared `Corpora/`
+    /// store. Prefers an existing path; returns the directory that contains a
+    /// `corpus.json`, or nil if neither location does. `corporaDir` is injected
+    /// for testing.
+    static func resolveCorpusDirectory(_ arg: String,
+                                       corporaDir: URL = CorpusPaths.corporaDir) -> URL? {
+        let fm = FileManager.default
+        let asPath = URL(fileURLWithPath: (arg as NSString).expandingTildeInPath, isDirectory: true)
+        if fm.fileExists(atPath: asPath.appendingPathComponent("corpus.json").path) { return asPath }
+        let asID = corporaDir.appendingPathComponent(arg, isDirectory: true)
+        if fm.fileExists(atPath: asID.appendingPathComponent("corpus.json").path) { return asID }
+        return nil
+    }
+
+    // MARK: - PGN import pre-flight (--import-pgn)
+
+    /// Inspects `rawArgs` for `--import-pgn <path>`. If present, parses the
+    /// import filters, hands control to `PGNImporter.runImportAndExit`, and
+    /// never returns. No GPU / no SwiftUI — pure parse + disk I/O.
+    private static func handleImportPGNIfPresent(rawArgs: [String]) {
+        guard rawArgs.contains("--import-pgn") else { return }
+
+        var inputPath: String? = nil
+        var corpusName: String? = nil
+        var minRating: Int? = nil
+        var maxGames: Int? = nil
+        var minPlies = 1
+        var timeControls: [String]? = nil
+        var shardSoftLimitMB = 64
+        var maxStorageBytes: Int? = nil
+        var importThreads: Int? = nil
+        var failOnError = true
+
+        var i = 0
+        while i < rawArgs.count {
+            let arg = rawArgs[i]
+            let nextValue: String? = {
+                guard i + 1 < rawArgs.count else { return nil }
+                let v = rawArgs[i + 1]
+                return v.hasPrefix("--") ? nil : v
+            }()
+            switch arg {
+            case "--import-pgn":
+                if let v = nextValue { inputPath = v; i += 2 } else { i += 1 }
+            case "--corpus-name":
+                if let v = nextValue { corpusName = v; i += 2 } else { i += 1 }
+            case "--min-rating":
+                if let v = nextValue { minRating = Int(v); i += 2 } else { i += 1 }
+            case "--max-games":
+                if let v = nextValue { maxGames = Int(v); i += 2 } else { i += 1 }
+            case "--min-plies":
+                if let v = nextValue { minPlies = max(1, Int(v) ?? 1); i += 2 } else { i += 1 }
+            case "--shard-soft-limit-mb":
+                if let v = nextValue { shardSoftLimitMB = max(1, Int(v) ?? 64); i += 2 } else { i += 1 }
+            case "--time-control":
+                if let v = nextValue {
+                    timeControls = v.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                    i += 2
+                } else { i += 1 }
+            case "--max-storage":
+                guard let v = nextValue, let bytes = parseByteSize(v) else {
+                    FileHandle.standardError.write(Data("error: --max-storage requires a valid size (e.g. 2GB, 500MB)\n".utf8))
+                    Darwin.exit(2)
+                }
+                maxStorageBytes = bytes; i += 2
+            case "--import-threads":
+                guard let v = nextValue, let n = Int(v), n >= 1 else {
+                    FileHandle.standardError.write(Data("error: --import-threads requires a positive integer\n".utf8))
+                    Darwin.exit(2)
+                }
+                importThreads = n; i += 2
+            case "--lenient":
+                failOnError = false; i += 1
+            default:
+                i += 1
+            }
+        }
+
+        guard let path = inputPath else {
+            FileHandle.standardError.write(Data("error: --import-pgn requires a file path (.pgn or .pgn.zst)\n".utf8))
+            Darwin.exit(2)
+        }
+
+        let config = PGNImportConfig(
+            inputPath: path,
+            corpusName: corpusName,
+            minRating: minRating,
+            maxGames: maxGames,
+            minPlies: minPlies,
+            timeControlClasses: timeControls,
+            shardSoftLimitMB: shardSoftLimitMB,
+            maxStorageBytes: maxStorageBytes,
+            importThreads: importThreads,
+            failOnError: failOnError
+        )
+        PGNImporter.runImportAndExit(config: config)
+    }
+
+    /// Parse a human byte size like `2GB`, `500MB`, `1.5G`, or a bare byte
+    /// count (binary units: KiB/MiB/GiB/TiB). Returns nil if unparseable.
+    private static func parseByteSize(_ s: String) -> Int? {
+        let t = s.trimmingCharacters(in: .whitespaces).uppercased()
+        let units: [(String, Double)] = [
+            ("TB", 1099511627776), ("GB", 1073741824), ("MB", 1048576), ("KB", 1024),
+            ("T", 1099511627776), ("G", 1073741824), ("M", 1048576), ("K", 1024), ("B", 1)
+        ]
+        for (suffix, mult) in units where t.hasSuffix(suffix) {
+            let numPart = t.dropLast(suffix.count).trimmingCharacters(in: .whitespaces)
+            guard let value = Double(numPart), value.isFinite, value >= 0 else { return nil }
+            let bytes = value * mult
+            guard bytes < Double(Int.max) else { return nil }
+            return Int(bytes)
+        }
+        return Int(t)
+    }
+
+    // MARK: - Batch-size sweep pre-flight (--sweep)
+
+    /// Inspects `rawArgs` for `--sweep`. If present, validates the optional
+    /// companions (`--sweep-sizes <csv>`, `--sweep-seconds <n>`), hands control
+    /// to `SweepCLI.runAndExit`, and never returns. Runs before the strict-CLI
+    /// parser (which would reject `--sweep` as unknown) and before the SwiftUI
+    /// `WindowGroup` — so it's a pure headless measurement, no window, no
+    /// auto-resume sheet starting training under us.
+    private static func handleSweepIfPresent(rawArgs: [String]) {
+        let sweepFlag = "--sweep"
+        let sizesFlag = "--sweep-sizes"
+        let secondsFlag = "--sweep-seconds"
+        guard rawArgs.contains(sweepFlag) else { return }
+
+        // Only the two companion flags are allowed alongside.
+        let allowedFlags: Set<String> = [sweepFlag, sizesFlag, secondsFlag]
+        if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
+            FileHandle.standardError.write(Data(
+                "error: \(sweepFlag) does not accept '\(bad)' (only \(sizesFlag) <csv> and \(secondsFlag) <n> allowed)\n".utf8
+            ))
+            Darwin.exit(40)
+        }
+
+        // --sweep-sizes <comma-separated positive ints>
+        var sizes: [Int]? = nil
+        if let idx = rawArgs.firstIndex(of: sizesFlag) {
+            let valueIdx = idx + 1
+            guard valueIdx < rawArgs.count, !rawArgs[valueIdx].hasPrefix("--") else {
+                FileHandle.standardError.write(Data(
+                    "error: \(sizesFlag) requires a comma-separated list, e.g. 256,512,1024\n".utf8
+                ))
+                Darwin.exit(41)
+            }
+            let parsed = rawArgs[valueIdx]
+                .split(separator: ",")
+                .compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            guard !parsed.isEmpty, parsed.allSatisfy({ $0 > 0 }) else {
+                FileHandle.standardError.write(Data(
+                    "error: \(sizesFlag) value '\(rawArgs[valueIdx])' is not a list of positive integers\n".utf8
+                ))
+                Darwin.exit(42)
+            }
+            sizes = parsed
+        }
+
+        // --sweep-seconds <positive double> (default: SessionController's)
+        var secondsPerSize = SessionController.sweepSecondsPerSize
+        if let idx = rawArgs.firstIndex(of: secondsFlag) {
+            let valueIdx = idx + 1
+            guard valueIdx < rawArgs.count, let v = Double(rawArgs[valueIdx]), v > 0 else {
+                FileHandle.standardError.write(Data(
+                    "error: \(secondsFlag) requires a positive number of seconds\n".utf8
+                ))
+                Darwin.exit(43)
+            }
+            secondsPerSize = v
+        }
+
+        SweepCLI.runAndExit(sizes: sizes, secondsPerSize: secondsPerSize)
+    }
+
+    // MARK: - Depth (block-count) sweep pre-flight (--arch-sweep)
+
+    /// Inspects `rawArgs` for `--arch-sweep`. If present, parses the optional
+    /// companions (`--arch-sweep-blocks <csv>`, `--arch-sweep-steps <n>`,
+    /// `--arch-sweep-batch <n>`, `--arch-sweep-out <path>`) and hands control to
+    /// `ArchSweepCLI.runAndExit`, which never returns. Investigation-only.
+    private static func handleArchSweepIfPresent(rawArgs: [String]) {
+        let flag = "--arch-sweep"
+        guard rawArgs.contains(flag) else { return }
+        let blocksFlag = "--arch-sweep-blocks"
+        let stepsFlag = "--arch-sweep-steps"
+        let batchFlag = "--arch-sweep-batch"
+        let outFlag = "--arch-sweep-out"
+
+        let allowedFlags: Set<String> = [flag, blocksFlag, stepsFlag, batchFlag, outFlag]
+        if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
+            FileHandle.standardError.write(Data(
+                "error: \(flag) does not accept '\(bad)'\n".utf8
+            ))
+            Darwin.exit(50)
+        }
+
+        func value(after f: String) -> String? {
+            guard let idx = rawArgs.firstIndex(of: f) else { return nil }
+            let vi = idx + 1
+            guard vi < rawArgs.count, !rawArgs[vi].hasPrefix("--") else {
+                FileHandle.standardError.write(Data("error: \(f) requires a value\n".utf8))
+                Darwin.exit(51)
+            }
+            return rawArgs[vi]
+        }
+
+        var blocks = [20, 50, 80, 110, 140]
+        if let raw = value(after: blocksFlag) {
+            let parsed = raw.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            guard !parsed.isEmpty, parsed.allSatisfy({ $0 > 0 }) else {
+                FileHandle.standardError.write(Data("error: \(blocksFlag) '\(raw)' is not a list of positive ints\n".utf8))
+                Darwin.exit(52)
+            }
+            blocks = parsed
+        }
+        var steps = 6
+        if let raw = value(after: stepsFlag) {
+            guard let v = Int(raw), v > 0 else {
+                FileHandle.standardError.write(Data("error: \(stepsFlag) requires a positive int\n".utf8))
+                Darwin.exit(53)
+            }
+            steps = v
+        }
+        var batch = 512
+        if let raw = value(after: batchFlag) {
+            guard let v = Int(raw), v > 0 else {
+                FileHandle.standardError.write(Data("error: \(batchFlag) requires a positive int\n".utf8))
+                Darwin.exit(54)
+            }
+            batch = v
+        }
+        let outPath = value(after: outFlag) ?? "/tmp/arch_bench.jsonl"
+
+        ArchSweepCLI.runAndExit(blocks: blocks, steps: steps, batch: batch, outPath: outPath)
+    }
+
+    // MARK: - Checkpoint probe pre-flight (--probe-model)
+
+    /// Inspects `rawArgs` for `--probe-model`. If present, parses the
+    /// optional companions (`--probe-set <200|wide|both>`,
+    /// `--probe-out <path>`) and hands control to
+    /// `ProbeModelCLI.runAndExit`, which never returns.
+    /// Investigation-only — retro-probes saved checkpoints with the
+    /// Lichess tactical batteries.
+    private static func handleProbeModelIfPresent(rawArgs: [String]) {
+        let flag = "--probe-model"
+        guard rawArgs.contains(flag) else { return }
+        let setFlag = "--probe-set"
+        let outFlag = "--probe-out"
+
+        let allowedFlags: Set<String> = [flag, setFlag, outFlag]
+        if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
+            FileHandle.standardError.write(Data(
+                "error: \(flag) does not accept '\(bad)'\n".utf8
+            ))
+            Darwin.exit(60)
+        }
+
+        func value(after f: String) -> String? {
+            guard let idx = rawArgs.firstIndex(of: f) else { return nil }
+            let vi = idx + 1
+            guard vi < rawArgs.count, !rawArgs[vi].hasPrefix("--") else {
+                FileHandle.standardError.write(Data("error: \(f) requires a value\n".utf8))
+                Darwin.exit(62)
+            }
+            return rawArgs[vi]
+        }
+
+        guard let modelPath = value(after: flag) else {
+            FileHandle.standardError.write(Data(
+                "error: \(flag) requires a path (weight file, .dcmsession dir, or a directory of sessions)\n".utf8
+            ))
+            Darwin.exit(63)
+        }
+        var set = ProbeModelCLI.ProbeSet.both
+        if let raw = value(after: setFlag) {
+            guard let parsed = ProbeModelCLI.ProbeSet(rawValue: raw) else {
+                FileHandle.standardError.write(Data(
+                    "error: \(setFlag) must be 200, wide, or both; got '\(raw)'\n".utf8
+                ))
+                Darwin.exit(64)
+            }
+            set = parsed
+        }
+        ProbeModelCLI.runAndExit(modelPath: modelPath, set: set, outPath: value(after: outFlag))
+    }
+
+    // MARK: - Fresh-net mint pre-flight (--new-model)
+
+    /// `--new-model --preset <name> [--out-model <path>]`: build an untrained
+    /// net from the preset and write it to safetensors, then exit. No training.
+    /// Mints the ModelID here (main actor) and hands the GPU build off to
+    /// `NewModelCLI.runAndExit`.
+    private static func handleNewModelIfPresent(rawArgs: [String]) {
+        let flag = "--new-model"
+        guard rawArgs.contains(flag) else { return }
+        let presetFlag = "--preset"
+        let outFlag = "--out-model"
+
+        let allowedFlags: Set<String> = [flag, presetFlag, outFlag]
+        if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
+            FileHandle.standardError.write(Data(
+                "error: \(flag) does not accept '\(bad)'\n".utf8
+            ))
+            Darwin.exit(75)
+        }
+
+        func value(after f: String) -> String? {
+            guard let idx = rawArgs.firstIndex(of: f) else { return nil }
+            let vi = idx + 1
+            guard vi < rawArgs.count, !rawArgs[vi].hasPrefix("--") else {
+                FileHandle.standardError.write(Data("error: \(f) requires a value\n".utf8))
+                Darwin.exit(76)
+            }
+            return rawArgs[vi]
+        }
+
+        guard let presetName = value(after: presetFlag) else {
+            let valid = NetworkArchitecture.Preset.allCases.map(\.rawValue).joined(separator: ", ")
+            FileHandle.standardError.write(Data(
+                "error: \(flag) requires --preset <name>. Valid: \(valid)\n".utf8
+            ))
+            Darwin.exit(77)
+        }
+
+        // Mint on the main actor (the minter is main-actor isolated); the build
+        // runs off-actor inside runAndExit.
+        let modelID = MainActor.assumeIsolated { ModelIDMinter.mint().value }
+        NewModelCLI.runAndExit(presetName: presetName, outPath: value(after: outFlag), modelID: modelID)
+    }
+
     // MARK: - Replay-buffer analyzer pre-flight (--analyze-replay-buffer)
 
     /// Inspects `rawArgs` for `--analyze-replay-buffer`. If present,
@@ -664,7 +1473,8 @@ struct DrewsChessMachineApp: App {
         let buffer: ReplayBuffer
         do {
             let cap = try ReplayBuffer.peekCapacity(at: bufferURL)
-            let b = ReplayBuffer(capacity: cap)
+            let fpb = try ReplayBuffer.peekFloatsPerBoard(at: bufferURL)
+            let b = ReplayBuffer(capacity: cap, floatsPerBoard: fpb)
             try b.restore(from: bufferURL)
             buffer = b
         } catch {

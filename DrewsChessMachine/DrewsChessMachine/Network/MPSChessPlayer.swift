@@ -184,9 +184,10 @@ struct SamplingSchedule: Sendable {
 /// game; Human-vs-Network the same). Access is single-threaded within
 /// the game task; no locking is needed on the player's internal state.
 final class MPSChessPlayer: ChessPlayer {
-    /// Number of floats in one encoded board position. Kept in sync
-    /// with `BoardEncoder.tensorLength`.
-    private static let boardFloats = BoardEncoder.tensorLength
+    /// Number of floats in one encoded board, for the encoding the
+    /// evaluation source's network expects (per architecture). Instance-
+    /// derived so a basic20 net encodes 1280 and a basic30 encodes 1920.
+    private var boardFloats: Int { BoardEncoder.tensorLength(for: source.inputEncoding) }
 
     /// Upper bound on the number of legal moves in any chess position.
     /// The mathematical maximum is around 218, so 256 leaves a safety
@@ -316,7 +317,8 @@ final class MPSChessPlayer: ChessPlayer {
     func onChooseNextMove(
         opponentMove: ChessMove?,
         newGameState gameState: GameState,
-        legalMoves: [ChessMove]
+        legalMoves: [ChessMove],
+        recentHistory: [GameState]
     ) async throws -> ChessMove {
         guard !legalMoves.isEmpty else {
             throw ChessPlayerError.noLegalMoves
@@ -328,9 +330,9 @@ final class MPSChessPlayer: ChessPlayer {
         // can't hand it a raw pointer. At arena's ~40 plies/sec
         // across K games this is microseconds of allocator pressure;
         // not worth a per-instance scratch buffer.
-        var encoded = [Float](repeating: 0, count: Self.boardFloats)
+        var encoded = [Float](repeating: 0, count: boardFloats)
         encoded.withUnsafeMutableBufferPointer { buf in
-            BoardEncoder.encode(gameState, into: buf)
+            BoardEncoder.encode(gameState, history: recentHistory, into: buf, encoding: source.inputEncoding)
         }
 
         // Run inference. The source writes `policySize` raw policy

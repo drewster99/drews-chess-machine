@@ -1,4 +1,5 @@
 import XCTest
+import os
 @testable import DrewsChessMachine
 
 /// Integration smoke tests for `TickTournamentDriver`. Spin up the
@@ -117,7 +118,9 @@ final class TickTournamentDriverTests: XCTestCase {
     func test_smallTournament_KEqualsGames_consistentTallies() async throws {
         let driver = TickTournamentDriver()
         let totalGames = 4
-        var completedSeen = 0
+        // The completion callback fires from concurrently-executing game
+        // slots; a lock-protected box keeps the accumulation Swift 6-safe.
+        let completedSeen = OSAllocatedUnfairLock(initialState: 0)
         let stats = try await driver.run(
             candidateNetwork: Self.networkPair.cand,
             championNetwork: Self.networkPair.champ,
@@ -125,12 +128,12 @@ final class TickTournamentDriverTests: XCTestCase {
             games: totalGames,
             concurrency: totalGames,
             onGameCompleted: { completed, _, _, _ in
-                completedSeen = max(completedSeen, completed)
+                completedSeen.withLock { $0 = max($0, completed) }
             }
         )
         assertStatsConsistent(stats, expectedGames: totalGames)
         XCTAssertEqual(
-            completedSeen, totalGames,
+            completedSeen.withLock { $0 }, totalGames,
             "onGameCompleted should fire once per finished game"
         )
     }
@@ -144,18 +147,18 @@ final class TickTournamentDriverTests: XCTestCase {
         // per-game ActiveGame allocation).
         let driver = TickTournamentDriver()
         let totalGames = 4
-        var recordCount = 0
+        let recordCount = OSAllocatedUnfairLock(initialState: 0)
         let stats = try await driver.run(
             candidateNetwork: Self.networkPair.cand,
             championNetwork: Self.networkPair.champ,
             arenaSchedule: .arena,
             games: totalGames,
             concurrency: 1,
-            onGameRecorded: { _ in recordCount += 1 }
+            onGameRecorded: { _ in recordCount.withLock { $0 += 1 } }
         )
         assertStatsConsistent(stats, expectedGames: totalGames)
         XCTAssertEqual(
-            recordCount, totalGames,
+            recordCount.withLock { $0 }, totalGames,
             "onGameRecorded should fire once per finished game across recycles"
         )
     }

@@ -11,16 +11,393 @@ original rationale is not lost.
 
 ## Future improvements (validated open)
 
-- **`BatchFeedsInput` struct for `ChessTrainer.buildFeeds`.** Still open.
-  Current implementation evidence: `ChessTrainer.buildFeeds(batchSize:boards:moves:zs:vBaselines:legalMasks:)`
-  in `Training/ChessTrainer.swift` still takes six positional arguments:
-  `batchSize`, `UnsafePointer<Float>` boards, `UnsafePointer<Int32>` moves,
-  `UnsafePointer<Float>` z outcomes, `UnsafePointer<Float>` value baselines,
-  and `UnsafePointer<Float>` legal masks. The same call sites still pass nested
-  `withUnsafeBufferPointer` base addresses from random-data sweep code and real
-  replay-buffer sample code. The original safety concern is still valid: three
-  same-typed `UnsafePointer<Float>` inputs can be silently swapped by a future
-  refactor and still produce a shaped batch.
+- **Corpus shard format v2 — rich provenance + per-game/per-ply metadata (PLAN ONLY, drafted 2026-06-27; no code yet).**
+
+  **Why.** The v1 `.dcmgames` format (see the shipped corpus entry below) is deliberately minimal. Per game it stores only `flags / outcome / terminationReason / moveCount / packed-moves / optional startFEN`; per shard only `corpusID / sourceID / shardSeq / createdAtUnix`. During PGN import everything else the PGN carried — White/Black Elo, `WhiteRatingDiff`/`BlackRatingDiff`, `TimeControl`, titles (incl. `BOT`), `ECO`/`Opening`, `UTCDate`/`UTCTime`, `Event`, `Site` (the unique lichess game id/URL), and per-move `[%eval]`/`[%clk]` annotations — is parsed *only* to apply the `minRating`/`timeControlClasses` filters and then **thrown away** (`PGNImporter.buildGame`). Consequences we hit on 2026-06-27 while debugging the ReZero runs: (a) no per-game unique id — a corpus game is addressable only positionally (shard seq + ordinal), so no dedup and no trace back to source; (b) cannot re-filter a built corpus (e.g. "≥2000 only", "classical only", "after date X") without a full re-import; (c) no record of *which* app build or *what* filter produced a corpus (`corpus.json` omits the filter spec); (d) no engine-eval signal, which is the single biggest missed opportunity (see below); (e) a latent enum bug (also below). Storage is cheap relative to the analyses this unlocks — **bias toward capturing more, not less.**
+
+  **Design principle: extensible, self-describing, lossless-enough.** Bump `frontMagic`/`version` to v2 but make per-record bodies **TLV-structured** (a required core followed by a sequence of `(fieldTag: u16, len: u32, bytes)` optional fields) so new fields can be added forever without a version break and old readers skip unknown tags. Reserve a version bump only for changes to the required core. Keep the good v1 bones: append-only, per-record CRC32, front header + sealed trailer, little-endian.
+
+  **Shard front header v2 (per-shard provenance).**
+  - `shardUID` (16-byte UUID) — globally unique shard identity (v1 has only `shardSeq`).
+  - `corpusID`, `sourceID`, `shardSeq`, `createdAtUnix` (carried over).
+  - **Writer identity:** app name, app version string, build number, git hash (we already stamp these into `BuildInfo`/`corpus.json` sources — put them in the shard too so a detached shard is self-describing).
+  - **Source descriptor block:**
+    - `sourceKind` enum (`pgnImport` / `selfPlay` / `arena` / `external`).
+    - `sourceText` free string — human description, e.g. `"Lichess standard rated games, lichess_db_standard_rated_2026-05, no filter"` or `"DCM self-play, champion 20260626-2-q2Bb"`.
+    - `sourceURL` (e.g. the lichess database URL), `inputFilePath` (for conversions), and `inputFileSHA256` (provenance / dedup of source files).
+    - **`filterSpec`** — the *exact* filter applied: `minRating`, `timeControlClasses`, date range, variant filter, "FEN/SetUp skipped" flag, etc. (Today this is unrecoverable — a corpus's filtering is invisible after the fact.)
+    - `dateRangeCovered` (min/max game date in this shard/source).
+  - **`featureFlags` bitset** — which optional per-game / per-ply fields this shard actually contains (`hasElo`, `hasRatingDiff`, `hasTimeControl`, `hasTitles`, `hasECO`, `hasOpeningName`, `hasNames`, `hasDate`, `hasEval`, `hasClock`, `hasRawTags`). Lets a reader/query know without scanning records.
+
+  **Sealed trailer v2 (cheap query without a full scan).** Carry over `gameCount`/`plyCount`/CRC and add an **aggregate stats block** computed at seal: W/D/L counts, rating histogram (coarse buckets per side), time-control-class mix, ECO/opening histogram, game-length histogram, termination-reason mix, eval-coverage %. Most "what's in this corpus?" questions then answer instantly from trailers; consider also a corpus-level `stats.json` aggregating across shards.
+
+  **Per-game record v2.**
+  - *Required core:* `gameUID` (our 16-byte id, content-or-random), `outcome`, `terminationReason` (fixed enum, see below), `moveCount`, packed moves, optional `startFEN`.
+  - *TLV optional fields:* `sourceGameID` (string — e.g. lichess 8-char id from `Site`), `sourceURL`, `whiteElo`/`blackElo` (u16), `whiteRatingDiff`/`blackRatingDiff` (i16), `ratingType`/`timeControlClass` enum, raw `TimeControl` (base seconds u16 + increment u8, or string), `whiteTitle`/`blackTitle` enum (incl. `BOT`), `whiteName`/`blackName` (strings — lichess data is public), `ecoCode` (pack `A00`–`E99` into u16), `openingName` (string), `utcDateTime` (i64 unix), `event`, `contentHash` (hash of `startFEN`+packed moves, for source-independent dedup), NAGs/comments if useful, and a **`rawTagsBlob`** (optional, compressed) holding the original PGN tag set verbatim as a full-fidelity escape hatch.
+
+  **Per-ply optional channels (the big one): `[%eval]` and `[%clk]`.** Lichess "analysed" games carry a Stockfish eval per move and clock per move. Capturing eval per ply (i16 centipawns, with a mate-in-N sentinel encoding) would let us **train the value head against engine eval** — a vastly stronger, denser signal than the single terminal WDL label we use today — and enable policy-distillation experiments. Clock per ply (u16 seconds) enables time-management modelling and quality filtering (e.g. down-weight moves played in time-scramble as noisy). Store as optional parallel arrays gated by `featureFlags`; they roughly double a game's bytes when present, which is acceptable per the "keep data" stance — but make them opt-in per shard so self-play (no eval) doesn't pay.
+
+  **Enum fixes (carry into v2).**
+  - **`terminationReason` nil→checkmate collision (latent bug).** v1 `encodeRecordPayload` writes `terminationReason?.rawValue ?? 0`, and `checkmate == 0`, so a *nil* (unknown) reason is indistinguishable from checkmate in the byte — PGN imports leave it nil, so every imported game looks like "checkmate" if a reader ignores the `0x02` "present" flag (this confused our 2026-06-27 corpus analysis). v2: make `0 = unknown/unspecified` an explicit first enum case (shift the real reasons up), so there is no collision and no reliance on a sidecar flag.
+  - **Expand `GameTerminationReason`** to cover PGN `[Termination]` reality: `unknown, checkmate, stalemate, fiftyMoveRule, insufficientMaterial, threefoldRepetition, resignation, timeForfeit, drawAgreement, abandoned, rulesInfraction/flagged, adjudication, other`. Termination quality matters for label trust (a timeout in a winning position is a noisy label).
+  - Add `RatingType`/`TimeControlClass` (`bullet/blitz/rapid/classical/correspondence/unknown`) and `PlayerTitle` (`none/GM/IM/FM/CM/NM/WGM/.../BOT`) enums.
+
+  **Reconsider loading PGNs directly (vs. the binary corpus).** Worth revisiting now that we want full PGN fidelity:
+  - *Direct-PGN pros:* zero conversion loss, single source of truth, re-filter anytime, human-readable.
+  - *Direct-PGN cons (why v1 went binary, still valid):* SAN parsing needs full legal-move generation per ply (slow); lichess monthly dumps are huge (tens of GB); no random access; no integrity check; and the parse cost repeats **every epoch** over millions of games.
+  - *Recommendation:* keep the binary corpus as the **canonical training fast-path** (throughput over millions of plies/epoch rules out re-parsing PGN each pass), but (1) capture ~all PGN metadata in v2 so we rarely need the original, and (2) optionally retain the compressed `rawTagsBlob` per game for full fidelity / re-derivation. A streaming PGN *reader* for ad-hoc one-pass jobs is a reasonable separate utility, but not the training path.
+
+  **Adjacent wins to consider while here:** a per-shard **offset index** (game→byte offset sidecar) to enable true shuffled/random sampling across the corpus instead of sequential replay (better training mix; also listed as a v1 "Deferred" item below); and content-hash **dedup** across multiple imported months/sources.
+
+  **Questions v2 should make answerable** (the litmus test for the field set): rating/time-control/ECO/length/result distributions over any slice; "train only on ≥N-rated / classical / titled / non-bot games" as a post-hoc replay filter; trace any training game back to its lichess source; dedup across sources/months; value-head training from engine eval; time-pressure analysis; provenance audit ("which build + filter produced this corpus, from which input file"); and detecting meta/distribution shift across date ranges.
+
+  **Migration / back-compat.** No in-place rewrite of v1 shards (append-only, and they're large); the reader keeps decoding v1 (`version == 1`) with the minimal field set, and new corpora are written v2. The TLV body means subsequent field additions are *not* version bumps. Note in the eventual commit that v1 corpora simply lack the richer fields (queries over them return "unknown" for absent fields).
+
+- **Self-play corpus recording + replay — ✅ SHIPPED 2026-06-20** (`f0c0012`
+  corpus format/store, `0ad27b3` recording tee, `c4243b5` offline replay
+  `--replay-corpus`/`--epochs`, `461c95c` provenance, `049e94f` PGN import,
+  `5a93c54` usage). The full design below is preserved as the as-built record;
+  only the **Deferred** sub-list (seeded shuffle, batch-level replay,
+  multi-writer ingestion, shard-index cache) and CLI-resume issues #1/#3/#4
+  remain open — this entry belongs in Completed. Record completed self-play games to a reusable,
+  architecture-independent **game corpus** so multiple architectures /
+  hyperparameter settings can be trained on *identical* inputs, and so external
+  PGN (Lichess `.pgn.zst`) can be imported as training data. PGN is an
+  import/export converter only; the replay path consumes only the native
+  `GameRecord`. Current scope: **game-level replay**; batch-level replay and
+  seeded shuffle are deferred (see end of entry).
+
+  **Why move-lists — not encoded tensors, not seeds.** A self-play game is just
+  a move list + result, which re-encodes into *any* architecture's input planes
+  at train time, so it is the only architecture-independent record. It is also
+  tiny: a move packs into 2 bytes (from 6b + to 6b + promo 3b; castling/EP
+  inferred on replay; per-ply tau is reconstructable from the deterministic
+  `SamplingSchedule`, so not stored), i.e. ~160 MB/h at 80M plies/h — versus
+  ~600 GB/h (F32) if we stored encoded `basic30` tensors (1920 floats/pos). We
+  do **not** chase seed-level reproducibility of self-play: MPSGraph/Metal
+  forward passes are not bit-reproducible run-to-run, so a categorical sample
+  can flip on a ULP — record the games that actually happened instead.
+
+  **`GameRecord`.** Start position (standard assumed; optional `startFEN` only
+  for imported setups), the 2-byte move list, result (W/D/L), and a `sourceID`
+  reference. The replay loader replays the moves through `ChessGameEngine` and
+  the target arch's `BoardEncoder`, appending each game as one contiguous
+  reverse-ply block via the **same append path self-play uses** — required so
+  the buffer's history-plane reconstruction (which reads neighboring ring slots)
+  stays correct.
+
+  **Corpus store + shard files.** A standalone `Corpora/<corpusID>/` store
+  (alongside `Models/`, `Sessions/`), **never embedded in a session folder** — a
+  corpus is unbounded and append-only, and sessions re-save to a fresh folder on
+  every trigger (today `replay_buffer.bin` + `training_chart.json` are
+  re-serialized in full each save, `CheckpointManager.swift:656`), so embedding
+  would be O(saves × corpus) copying. `session.json` instead carries a
+  `recordingCorpusID` *reference* + a high-water mark (games/shards/plies at
+  save) via the Optional-field + `[RESUME-PARAM]` pattern (mirror
+  `batchStatsInterval`) — a NEW pattern; nothing currently references data
+  outside its own session folder. Shards are **self-describing** and sized by a
+  soft byte target (`--shard-soft-limit-mb`, default 64) cut at a whole-game
+  boundary, so a shard always holds an integer number of complete games (the
+  game is the atomic replay unit). Layout: a fixed 256-byte **front header**
+  written once at create (magic, formatVersion, `corpusID`, shardSeq,
+  `sourceID`, createdAt — records start at offset 256); a **body** of
+  length-prefixed game records each with a CRC-32; and a fixed 64-byte
+  **trailer** appended at seal (trailerMagic, gameCount, plyCount, sealUnix,
+  SHA-256 over `[0, EOF−64)`). Seal-time facts (count, SHA) live in the trailer,
+  **not** backfilled into the front — the file is pure append, matching the
+  trailing-SHA pattern of `.dcmmodel`/`replay_buffer.bin`. Two checksums, two
+  jobs: per-record CRC for open-log recovery, whole-shard SHA for sealed
+  integrity. Open→seal: write the front header (fsync); append games with a
+  streaming SHA, fsync on a cadence (per game / ~1 s); seal = finalize SHA,
+  append trailer, fsync, atomic rename `.open`→final, fsync dir, then record the
+  source. Crash-safe at every step — the trailer's presence is the commit; an
+  `.open` file with no valid trailer is recovered by CRC-scanning to the last
+  complete game (loses only the un-fsync'd tail).
+
+  **Metadata — one `corpus.json`.** A single provenance-only file:
+  `{ corpusID, name, comment, state, createdAt, sources: [...] }`, where
+  `sources` is an **append-only** list with one record per ingestion (self-play
+  session or PGN import): `sourceID`, kind, `input{filename,url}`, options (incl.
+  shard size + import filters), `appBuild` (from `BuildInfo.swift`), timestamp,
+  counts. Written **only on ingestion events** (rare) — shard seals never touch
+  it. It holds only the **non-reconstructable** bits (name, comment, provenance);
+  the shard list and aggregate counts are **derived** by `readdir` + reading each
+  64-byte trailer, so a stale/lost `corpus.json` is never data loss (only
+  name/comment/provenance would be lost — hence atomic-write + fsync it). No
+  persisted shard index by default; add a throwaway `manifest.json` cache later
+  only if listing is slow. Per-shard sidecars were considered and rejected
+  (redundant with the trailer; two-file atomicity for no gain); per-source files
+  only become worthwhile under concurrent multi-writer ingestion into one corpus
+  — not a current need.
+
+  **Recording (post-filter, both train paths).** Tee the corpus writer at the
+  point games flush to the `ReplayBuffer` — i.e. **after** the random draw-keep
+  filter — so the corpus *is* the exact training set, frozen and identical for
+  every replay (recording raw would force re-applying a random filter at replay,
+  giving different inputs per run). `moveHistory` is already in hand there (the
+  same point `GameDiversityTracker` uses). Writes go through an async append
+  queue so recording never stalls the self-play hot path. Gated by a new
+  `recordSelfPlayGames` bool `@TrainingParameter`. Must be wired into **both** the
+  GUI and the `--train` paths — the headless path has no game-capture hook today.
+
+  **Corpus identity & lifecycle.** A recording run mints a **new corpus**
+  (auto-id) by default, with opt-in append-to-named for deliberate continuation.
+  State goes recording → sealed/frozen (replay uses a frozen corpus). Replay
+  accepts **multiple** `--replay-corpus` so self-play + Lichess can be mixed; the
+  feeder interleaves them.
+
+  **PGN import.** Stream `zstd -dc` via subprocess (libzstd fallback; Apple's
+  `Compression` framework lacks zstd) — never inflate a ~200 GB dump to disk.
+  SAN→`ChessMove` by generating legal moves per ply and matching. Standard-start
+  games only (skip FEN-setup / Chess960 / variants); filters `--min-rating`,
+  `--time-control`, `--max-games`, min-plies; skip malformed. Output =
+  `GameRecord` shards in a corpus; the import is one `sources[]` record with its
+  file/url/options/appBuild.
+
+  **Replay — offline, step-locked feeder.** Fixed corpus → `ReplayBuffer` →
+  trainer, with **no self-play and no replay-ratio controller**. Pre-fill the
+  ring, then append `K = batchSize / R` positions per training step (`R` = reuse;
+  reuse the existing `replayRatioTarget`, reinterpreted offline). Ring capacity
+  vs corpus selects the regime: fits → load once (fixed dataset); bigger →
+  streaming moving window. Stream shards in stored order (deterministic; shuffle
+  deferred). The random batch sampler is unchanged and **unseeded**, so for
+  game-replay the A/B protocol is "same frozen corpus + same step-locked feed (so
+  buffer contents are identical across runs), run each architecture N times and
+  average out sampling noise." Stop on a `--steps` or `--epochs` budget (not
+  corpus exhaustion); `--training-time-limit` stays opt-in for
+  hardware-vs-hardware comparison only.
+
+  **Replay run lifecycle (train-only).** Self-play workers off; the
+  arena/promotion/candidate/`arenaChampionNetwork` apparatus stays dormant; the
+  trainer trains `trainer.network` to the budget. Start fresh (build a new net of
+  the chosen arch) or from a built net (`--start-model`). Checkpoint triggers =
+  periodic + manual only (nothing promotes), and identity is stable (no mid-run
+  ModelID forks). Strength is measured read-only via the periodic Lichess probe
+  (eval-loss — deterministic, architecture-agnostic, the comparable metric); an
+  arena vs a *fixed reference* net is allowed as pure measurement (never copies
+  weights).
+
+  **Reproducibility & the linchpin invariant.** The A/B harness already mostly
+  exists: freeze params (`--create-parameters-file` → `--parameters
+  frozen.json`), freeze init (`--start-model` for same-arch, or fresh×N for
+  cross-arch), freeze budget (`--training-step-limit`/`--epochs`); the only new
+  axis is the frozen corpus. **Required invariant:** re-encoding a recorded
+  self-play game must reproduce *bit-for-bit* the input the trainer originally
+  saw — `BoardEncoder` is a pure function of (start + move sequence), with the
+  repetition/history planes determined by replaying the moves. This is testable
+  (record → re-encode → compare to the live-encoded frames) and must hold before
+  any replay result is trusted.
+
+  **CLI surface + usage.** New flags: `--record-games`, `--import-pgn <path>`
+  (+ `--min-rating`/`--time-control`/`--max-games`), `--corpus-name`,
+  `--shard-soft-limit-mb` (default 64), `--replay-corpus <path>` (repeatable),
+  `--epochs <n>`. Overhaul the usage banner to document **every** flag (new +
+  existing) with worked examples for the common scenarios: a cross-architecture
+  A/B, a same-init hyperparameter A/B, a PGN import, and a replay run from a built
+  model vs fresh. Record the corpus id(s), reuse `R`, budget, and import filters
+  in both `session.json` and the `--output` results.json for traceability.
+
+  **Build order.** (1) `GameRecord` + corpus store + writer (`corpus.json`,
+  self-describing shards, seal/recover); (2) recording tee'd off the self-play
+  flush, GUI + `--train`; (3) replay loader + step-locked feeder + offline mode +
+  `--replay-corpus`/`--epochs`; (4) train-only lifecycle wiring; (5) manifest
+  fields in session.json/results.json; (6) PGN import; (7) usage overhaul. The
+  same-init/same-params/same-budget pieces (`--start-model`, `--parameters`,
+  `--training-step-limit`) already exist and are verified.
+
+  **Deferred:** seeded game-level shard-shuffle (shard-order permutation +
+  in-shard shuffle + optional reservoir), batch-level replay (seeded sampler /
+  literal batches), concurrent multi-writer ingestion (would reintroduce
+  per-source files), and a persisted shard-index cache.
+
+  **Resume-from-non-latest provenance (must warn, must not silently destroy).**
+  On resume, compare the session's saved watermark against the corpus manifest's
+  current head. watermark == head → continue appending, no issue. watermark <
+  head (resuming *behind* the corpus's current state, e.g. loading an older
+  autosave) means the corpus already holds games "ahead" of the resume point.
+  Policy: **never truncate or overwrite previously-sealed shards** (violates the
+  project's "nothing is ever overwritten" + "never delete the user's data"
+  rules). Detect the condition, surface it explicitly in the resume UI/log, and
+  offer (a) **fork** — mint a new corpus id, original preserved sealed, new games
+  recorded into the fork (default; clean provenance), or (b) **continue same
+  corpus** — accept a superset containing both continuations past the watermark
+  (fine as training data, muddy provenance). Headless/CLI resume has no
+  interactive prompt, so it must default to fork + a loud log line stating
+  exactly what happened. Also handle corpus-id-points-at-missing-data
+  (deleted/moved externally) → warn + offer create-fresh or disable-recording,
+  mirroring the `LastSessionPointer` target-deleted handling.
+
+  **CLI resume open issues (documented 2026-06-20).**
+  1. **`results.json` is not cumulative across resume.** The `--output` snapshot
+     is an atomic overwrite written by a *per-run* `CliTrainingRecorder`
+     (`SessionController+Training.swift:1015`; `CliTrainingRecorder.writeJSON`
+     uses `.atomic`, no append). A stopped-then-resumed headless run writes a
+     results.json covering only the post-resume segment. GUI session state
+     (charts, counters, `TrainingSegment`s) *is* continuous on resume; the CLI
+     snapshot is not. Needs a continuation mode (load prior recorder state /
+     accumulate segments) if cumulative headless results are wanted.
+  2. ~~Self-play recording is not wired into the CLI train path.~~ **RESOLVED
+     2026-06-20.** Recording is wired into both the GUI and `--train` paths —
+     `TrainingParameters.shared.recordSelfPlayGames` is read at
+     `SessionController+Training.swift:1040` and tees games into the corpus.
+  3. **`results.json` flush is signal-gated and misses SIGINT.** Written only on
+     a budget firing (`--training-step-limit`/`--training-time-limit`) or
+     SIGUSR1/SIGHUP/AppKit-terminate — *not* SIGINT/Ctrl-C, and never on crash.
+     A Ctrl-C'd run intended for resume may have flushed nothing.
+  4. **Step-limit granularity.** The step watcher polls every 2 s
+     (`SessionController+Training.swift:2512`), so it stops a few steps past the
+     limit — fine for budgets, not bit-exact for strict A/B; gate exactly at N
+     if exactness is needed.
+
+- **History dropout (training-time input masking) — deferred future feature.**
+  For history-stacking input encodings (`full10ply200`), a
+  `historyDropoutProbability` ∈ [0,1] training augmentation: with probability *p*,
+  a sampled position has its history frames (planes 20–199) zeroed so the net
+  trains on frame N only — regularizing against over-reliance on history (a known
+  failure mode for history-input nets that AZ/Lc0 did not deliberately address).
+  **Binary** (not random-depth), applied at *sample* time in `ChessTrainer` (one
+  `vDSP_vclr` per masked position, before GPU upload) so the real full history
+  stays in the replay buffer and the same position can be seen with/without
+  history across epochs. `liveTunable`, default 0, **no-op for single-frame
+  encodings** (basic20/basic30). Self-play / arena / Play Game always feed real
+  full history (train-with-dropout, play-clean). Full spec + the
+  `@TrainingParameter`-checklist touchpoints live in `FULL10PLY200_PLAN.md`
+  (Phase 5). **Not in the current full10ply200 scope (Phases 1–4); revisit after
+  the encoding is training cleanly and we can measure whether history
+  over-reliance actually appears.**
+
+- **Long-run UI hang + throughput decline (investigated 2026-06-05).** Symptom:
+  after ~12 h a session develops a periodic ~1 s main-thread hang on the
+  heartbeat cadence, and self-play/training throughput declines ~25 % over a
+  day. **Root cause (proven by Instruments + the per-stage heartbeat traces):**
+  every 5 s the `snapshotTimer` re-evaluates the whole 9.6k-line
+  `UpperContentView.body`, which rebuilds a large `@Observable` tracking set —
+  the ~1 s is pure `ObservationRegistrar.cancel`/`registerTracking` +
+  `AnyKeyPath.hash` + `Set`/`Dictionary` churn, inside a `ViewThatFits`/
+  `GeometryReader` layout (SwiftUI `Charts` internals). The tracking set grows
+  with accumulated run state, so the hang only appears after many hours. The
+  **throughput** half was the *same event*: `BatchedSelfPlayDriver.runOneTick`
+  did `await MainActor.run { TrainingParameters.shared.X }` 3–5×/tick, so during
+  each UI hang self-play blocked on the hung MainActor. Ruled out (with data):
+  memory leak (rss/gpuMem flat), thermal (`thermalState` never above "fair"),
+  the lichess probe (its charts are already `FastLineChart`), and the replay
+  controller. Battery/clamshell-sleep episodes are a real but intermittent,
+  non-progressive contributor to throughput only.
+
+  **Phase 1 — DONE (2026-06-05, builds clean, not yet long-run-verified):**
+  decoupled training from the MainActor.
+  `BatchedSelfPlayDriver` now reads its 5 live-tunable params from a `SyncBox`
+  (`SelfPlayLiveParams`) refreshed by an off-hot-path task — zero per-tick
+  MainActor hops, so a UI hang can never stall game production again. Heartbeat
+  `asyncCompletedTrainSteps()`/`asyncEffectiveLearningRate()` (which dispatch to
+  the *starved* global pool, costing ~0.8 s each) swapped for the sync
+  `completedTrainSteps`/`effectiveLearningRate` getters. Net: self-play's hot
+  path does ~0 MainActor hops (was ~39/s), which also un-starves the global
+  dispatch pool and shortens the heartbeat tick. **This fixes the throughput
+  decline and shortens the tick; it does NOT remove the ~1 s observation
+  teardown.**
+
+  **Phase 2 — NOT done (the UI-hang cure), deliberately not shipped blind.** The
+  fix is to stop the heartbeat from re-evaluating the whole body: move every
+  read of the hot heartbeat-written `@Observable` props (`trainingStats`,
+  `parallelStats`, `gameSnapshot`, `trainerWarmupSnap`, `replayRatioSnapshot`)
+  out of `UpperContentView.body` into small dedicated observing `View` structs,
+  and migrate the 4 always-visible native-`Charts` tiles (`ArenaActivityChart`,
+  `ArenaWinChart`, `DrawWatchHistogramChart`, `DiversityHistogramChart`) to the
+  path-based `FastLineChart` (no `ViewThatFits`). Two blockers to doing it as a
+  one-shot: (a) it's **all-or-nothing per property** — partial moves yield no
+  measurable win because the body still re-evaluates; (b) those reads are spread
+  across the whole view, so it's a deep refactor, and there's **no fast feedback
+  loop** (the hang takes ~12 h to reproduce; a fresh launch shows nothing).
+  **Decisive next data point:** on the next long run, when the hang appears,
+  expand the Instruments call tree just *above* `ObservationRegistrar.cancel` to
+  the `DrewsChessMachine` view frame + the collection it iterates — that pins
+  the exact growing structure in one profile, after which the migration/
+  decomposition is targeted and confident rather than speculative. (Candidate
+  but unconfirmed: a native-`Charts` tile's `ForEach` over growing
+  `tournamentHistory`.) Also consider gating the heartbeat to a single
+  end-of-tick batch of `@State`/`@Observable` writes (reduces re-eval frequency
+  ~10×→1×) — contained to `SessionController+Heartbeat`, but a high-risk
+  restructure of the UI-state path.
+
+- **Safetensors-native storage + runtime-configurable architecture.** In
+  progress on branch `safetensors-storage`; full design + phase plan in
+  `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md`. **Done (tested):** model/session weight
+  files are now safetensors (`.safetensors`, PyTorch-drop-in layout, Python-
+  loadable, no exporter); legacy `.dcmmodel` still reads; `ChessNetwork` builds
+  from a `NetworkArchitecture` value type; build any architecture via
+  `architecture.json`. **Update 2026-06-23 — effectively all shipped:**
+  non-default architectures are trainable end to end (heterogeneous block-groups
+  towers, 2026-06-12) and saved with their embedded config; per-model compute
+  precision (f32/bf16/fp16) is selectable (fp16 added 2026-06-17, inference-only —
+  training NaNs by design); legacy `.dcmmodel` old-arch loading via the
+  `archHash→config` fallback is in place; `--uci` (`28cf394`) and `--playchess`
+  (`26c14e9`) both ship. The one genuinely-open item is the **headless
+  `--architecture-preset` / `--architecture-file` CLI flags** (the preset store is
+  GUI-only) — see `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md` for the authoritative
+  phase list.
+
+- **Standalone "Training vs Eval Loss" window.** Planned (added 2026-06-05).
+  A separate, freely-resizable `NSWindow` (following the established
+  `LichessProbeMonitorWindow` pattern: `NSWindowController` + single-instance
+  registry + `Launcher.openWindow(sessionController:)` + a `Performance` menu
+  button wired through `AppCommandHub`) that overlays two trajectories on **one
+  plot with two independent auto-scaling Y axes**, both indexed on the shared
+  X = trainer step (`ChessTrainer.completedTrainSteps`):
+  - **Training total loss** (leading axis): `rollingPolicyLoss + rollingValueLoss`
+    (`TrainingChartSample.rollingTotalLoss`), from `chartCoordinator.trainingRing`.
+  - **Eval loss** (trailing axis): wide-set (~4,435-puzzle) bookmove cross-entropy
+    `meanNegLogProb`, from `lichessProbeWideHistory.overallSeries`
+    (`OverallTickSample`, already step-indexed and persisted).
+
+  Interpretation caveat to keep in the docstring: the eval line is *pure* policy
+  cross-entropy, while the training line is *outcome-weighted* policy CE + value
+  CE (`pLoss` can go negative) — related but not the same metric, hence the dual
+  auto-scaled axes; the *trends* are the signal (both falling = healthy; train
+  falling while eval flattens = overfitting/plateau).
+
+  **Enabling schema change:** add `trainingStep: Int?` to `TrainingChartSample`
+  (Optional → additive-safe per that struct's own back-compat rule; persists
+  through `ChartFileFormat` automatically), populated at the existing heartbeat
+  construction site (`SessionController+Heartbeat.swift:516`) from the step the
+  heartbeat already fetches. Pre-existing samples carry `nil` step.
+
+  **Rendering:** mirror the lichess overall-trend look — reuse
+  `SwiftUIFastCharts.FastLineChart` + the existing EMA helper
+  (`LichessProbeOverallTrendChart.ema`) with the raw series faded to a faint
+  "noise cloud" (opacity ~0.28) behind a bold EMA line, per-series toggle/span.
+  Note `FastLineChart` exposes only a single `yDomain` with **leading-only** axis
+  labels, so the dual-axis overlay requires (a) linearly remapping the eval
+  series into the training-loss domain and (b) a hand-rolled trailing-axis label
+  column whose labels inverse-map the same pixel positions back to eval units.
+  (The lichess precedent stacks two single-axis charts sharing X instead — the
+  native-grain alternative if the dual-overlay custom work isn't wanted.)
+
+  **Decisions (locked 2026-06-05):**
+  1. *Back-fill:* interpolate a step for each pre-existing stepless
+     `TrainingChartSample` via piecewise-linear interpolation of its `elapsedSec`
+     against exact `(step ↔ elapsedSec)` anchors — the regular lichess probe's
+     `overallSeries` ticks every ~25 steps and stores `(trainingStep, timestamp)`
+     (timestamp → elapsedSec via `chartElapsedAnchor`), plus a terminal anchor at
+     `(current elapsedSec, current completedTrainSteps)`. Back-fill runs once
+     in-memory (guarded) when the window first opens and **persists on the next
+     save** (user OK'd saving estimated steps). Falls back to a global
+     linear-in-time map if no anchors exist.
+  2. *Layout:* single dual-axis overlay (leading = training total loss, trailing
+     = eval NLL), implemented by adding **real secondary/trailing-axis support to
+     `FastLineChart`** (per-series `yAxis: .primary/.secondary` + `secondaryYDomain`
+     + trailing label column; backward-compatible, defaults preserve current
+     behavior) so future charts reuse it — not a one-off overlay.
+
+  No `TrainingParameter` involved (the parameter checklist doesn't apply).
+  Pure-logic XCTests in scope: the step-interpolation function and the
+  `ChartAxisLayout` right-column geometry.
+
+- **`BatchFeedsInput` struct for `ChessTrainer.buildFeeds`.** ✅ **SHIPPED
+  2026-05-11** (`49878fa`). `buildFeeds(_ input: BatchFeedsInput)` now takes a
+  single named-field struct (`struct BatchFeedsInput` at `ChessTrainer.swift:5659`),
+  so the compiler binds inputs by name rather than position — the original
+  same-typed-`UnsafePointer<Float>`-swap safety concern is closed.
 
   Planned shape remains unchanged: wrap the inputs in a small `BatchFeedsInput`
   struct with named fields so the compiler binds by name rather than position.
@@ -32,7 +409,7 @@ original rationale is not lost.
   details. The old roadmap text was directionally right that autosaves are kept
   indefinitely, but it understated the current persistence payload: modern
   `.dcmsession` directories can include `replay_buffer.bin`, and the current
-  replay-buffer file format is v6, so disk growth can be larger than the older
+  replay-buffer file format is v7, so disk growth can be larger than the older
   "model + session.json only" session plan implied.
 
   Current implementation evidence:
@@ -57,14 +434,13 @@ original rationale is not lost.
   footprint is a demonstrated problem; the "never overwrite" invariant remains
   in force until retention is explicitly implemented.
 
-- **Human-vs-model play.** Still open, but the current UI state needed
-  correction. The existing File/View command "Play Game" is not human-vs-model:
-  `UpperContentView.playSingleGame()` constructs one `ChessMachine`, creates a
-  `DirectMoveEvaluationSource(network: network)`, then creates both White and
-  Black as `MPSChessPlayer` instances pointing at the same champion network.
-  `startContinuousPlay()` does the same in a loop. A search found no `HumanPlayer`,
-  user-move player, slot picker, side-to-play picker, or UI path that lets a
-  human supply moves.
+- **Human-vs-model play.** ✅ **SHIPPED 2026-05-14** (`15613c9`, "Add Chess menu
+  with human-vs-network Play…"). `App/UpperContentView/PlayController.swift` is a
+  full human-vs-network controller: a `HumanPlayOpponentChoice` model-slot picker
+  (champion snapshot / trainer snapshot / live trainer / loaded file), a
+  `humanColor` side picker, and tap-based human move entry. The distinct
+  network-vs-network **Play Game** demo (`playSingleGame()`) still exists
+  alongside it. The original "still open" analysis below is kept as design history.
 
   The original design goal remains valid: let a human play against either the
   champion or a trainer/candidate snapshot from the UI, for sanity-checking play
@@ -89,7 +465,8 @@ original rationale is not lost.
 
 - **Adaptive learning-rate schedule.** Still open, with important corrections.
   Current implementation is not a full schedule. `TrainingParameters.LearningRate`
-  defaults to `5e-5` and is live-tunable/persisted. `ChessTrainer.buildFeeds`
+  defaults to `1e-3` (raised for the bf16 weight path — see CHANGELOG) and is
+  live-tunable/persisted. `ChessTrainer.buildFeeds`
   feeds the effective LR each step after applying two local multipliers: optional
   `sqrtBatchScalingForLR` and linear warmup over `lrWarmupSteps`. The UI lets the
   user edit learning rate and warmup; `[PARAM] learningRate` and
@@ -182,8 +559,9 @@ original rationale is not lost.
   Batches cluster at 2,048 (AGZ, lc0, MuZero), with AZ doubling to
   4,096 and KataGo going small at 256. Outliers: KataGo in *shape*
   (mostly flat + late drop + EMA), MuZero in *mechanism* (continuous
-  exponential vs. discrete drops). At current `learningRate = 5e-5`,
-  the project is roughly at KataGo's paper per-sample scale before any
+  exponential vs. discrete drops). The default `learningRate` is now `1e-3`
+  (raised from `5e-5`/`5e-4` for the bf16 weight path), above KataGo's paper
+  per-sample scale before any
   future schedule overlay.
 
   ### Chosen design (not yet implemented)
@@ -223,15 +601,15 @@ original rationale is not lost.
   benefit), cosine/SGDR (no natural epoch in self-play; adds a tunable
   without a principled way to set it).
 
-- **Compiled `MPSGraphExecutable`.** Still open. `ChessNetwork.evaluate`,
-  `ChessNetwork.evaluate(batchBoards:count:)`, export/load helpers, BN stats,
-  and `ChessTrainer.runPreparedStep` still call `graph.run(...)` directly.
-  `ChessMPSNetwork.NetworkInitMode.package(URL)` still throws
-  `ChessMPSNetworkError.packageLoadingNotImplemented`, so package loading is not
-  implemented. Pre-compiling via `graph.compile(...)` may still remove per-call
-  executable-cache lookup and provide a reusable serialized executable for the
-  package path, but this should be revisited only after measuring current
-  steady-state `graph.run` overhead.
+- **Compiled `MPSGraphExecutable`.** Largely shipped. **Batched inference**
+  migrated to a compiled executable 2026-06-02 (`3f02ac4`,
+  `ChessNetwork.inferenceExecutables`, `.level1`), and the **training step** now
+  encodes through `ChessTrainer.trainingExecutables` (`graph.compile` +
+  `executable.encode`; see GPU_UTILIZATION_PLAN.md Phase 2). Still on the direct
+  `graph.run(...)` path: single-position `ChessNetwork.evaluate`, the export /
+  BN-stats helpers. **Still open:** `ChessMPSNetwork.NetworkInitMode.package(URL)`
+  throws `ChessMPSNetworkError.packageLoadingNotImplemented` — serialized-package
+  loading is not implemented.
 
 - **Replace `Engine ▸ Promote Trainee` (arena-only override) with a standalone
   "Promote Trainee Now" action.** **IMPLEMENTED 2026-05-11** (see CHANGELOG entry
@@ -542,6 +920,35 @@ original rationale is not lost.
   Play-and-Train pair from the same checkpoint, with success defined as
   15–22 bucket entropy falling ≥0.10 nats and value-scalar spread at least
   doubling, without arena promotion rate falling >25%.
+
+### Backlog migrated from standalone docs (2026-06-13)
+
+Consolidated here when `TODO_NEXT.md` / `NEW_PARAMETERS.md` were retired (their
+done/obsolete items live in CHANGELOG; only the still-open ones survive below).
+
+- **Per-tensor gradient-norm readback** (from TODO_NEXT). Today only the global
+  `gNorm` and a single `policyHeadWeightNorm` are read back; a per-tensor norm
+  breakdown would localize which layers drive clip events. Not built.
+- **Weight EMA / SWA for inference** (from TODO_NEXT). Maintain a slow-moving
+  average of weights and evaluate the arena/probe champion from it. No
+  SWA/EMA-inference code exists.
+- **Horizontal-mirror data augmentation** (from TODO_NEXT). Chess is left-right
+  symmetric; mirror board+policy at sample time to ~2× effective data. Detailed
+  design preserved in git history (TODO_NEXT @ pre-retirement); not built.
+- **Cosine (monotone) LR decay post-warmup** (from TODO_NEXT). Distinct from the
+  now-shipped *cyclical* LR/momentum (`LRMomentumCycle.swift`); folds into the
+  existing "Adaptive learning-rate schedule" item — reconcile against the cyclical
+  schedule before pursuing.
+- **Candidate training-parameter knobs** (from NEW_PARAMETERS). A parameter-design
+  backlog, almost none shipped as proposed: expose the existing hardcoded Dirichlet
+  config as `self_play_dirichlet_*` parameters; entropy-bonus schedule/controller;
+  replay `sample_mode` (recency / TD-priority / without-replacement) and explicit
+  per-outcome weights (NOTE: the composition-aware sampler — per-game cap, draw cap,
+  length tilt — already shipped 2026-05-12, so only these remain; TD-priority needs
+  real code beyond params because `vBaseline` goes stale); sample-time numeric knobs
+  (softmax logit clip, policy top-k cap, min-legal-prob floor); a `legalMassCollapse`
+  metric + min-batches guard. Full proposals in git history (NEW_PARAMETERS @
+  pre-retirement).
 
 ## Code-review remediation roadmap (added 2026-05-11)
 
@@ -908,6 +1315,43 @@ experiment artifacts (`results.json` ~6.8 MB, `experiment_results.js` ~921 KB, t
 
 ## Tech debt / migrations to remove
 
+- **Fully decouple training from the main thread / UI run loop** *(added
+  2026-05-31)*. The training pipeline is supposed to be almost completely
+  separated from the UI — emitting telemetry the user can read or ignore
+  — but several main-thread couplings let UI events silently stall it.
+  The concrete trigger: every analysis result dialog used a blocking
+  `NSAlert.runModal()`, which owns the main thread until dismissed. Both
+  the trainer step loop (`SessionController+Training.swift` —
+  `await fireCandidateProbeIfNeeded()` and
+  `await TrainingParameters.shared.snapshot()` per step) and the
+  self-play driver (`BatchedSelfPlayDriver` — per-cycle
+  `await MainActor.run { TrainingParameters.shared… }`) hop to the
+  MainActor every iteration, so a left-open modal starved the MainActor
+  job queue and halted ALL training. Observed in the field: a "Run All
+  Analyses" result dialog left open ~4 hours advanced the trainer by 11
+  steps total (`dcm_log_20260531-020125.txt`, steps 49632→49643 over
+  09:25→13:39), resuming the instant it was dismissed.
+  - **Done (point fix):** all analysis/result `NSAlert.runModal()` sites
+    now route through `Utils/NonBlockingAlert.swift`, which presents a
+    window-attached sheet via `beginSheetModal(for:)` and returns
+    immediately. File-picker `NSOpenPanel.runModal()` sites
+    (`LichessProbeComparisonLoader`) were deliberately left blocking —
+    they only block while the user is actively interacting, never
+    walked-away.
+  - **Remaining refactor (deferred):** the deeper issue is that the
+    training loops *read live-tunable parameters by hopping to the
+    MainActor every iteration*. Any future main-thread stall (a modal we
+    forget to make non-blocking, a long synchronous UI redraw, a
+    spinning event-tracking loop) can therefore throttle training. The
+    durable fix is to remove the per-iteration MainActor dependency:
+    have the live-tunable parameters pushed into a `Sendable`,
+    lock-protected snapshot box (`SyncBox`-style) that the loops read
+    without touching the MainActor, updated on the existing reconcile
+    cadence. Then training progress is structurally independent of the
+    main run loop. Also worth a lightweight guard: a check (test or
+    lint) that no new `NSAlert.runModal()` / blocking modal creeps into
+    the training-adjacent code paths.
+
 - **Drop v1 trainer.dcmmodel zero-pad migration** *(added 2026-05-04;
   remove after 2026-06-04)*. Trainer state persistence (Polyak momentum
   velocity) was added with `ModelCheckpointFile` format version 2,
@@ -925,6 +1369,17 @@ experiment artifacts (`results.json` ~6.8 MB, `experiment_results.js` ~921 KB, t
     comments in both files.
 
 ## Findings
+
+- **fp16 (float16) is inference-only on the macOS-27-beta stack (2026-06-17).**
+  fp16 forward + safetensors round-trip are sound and tested, but a real fp16
+  `trainStep` diverges to a NaN gradient on the first step at every batch (worse
+  than bf16, whose batch-1 is finite): forward CE components stay finite while
+  the aggregate loss and gradient norm go NaN, so the overflow is in the fp16
+  backward / auxiliary loss terms, not the fp32-accumulated CE. fp16's exponent
+  range is far narrower than bf16/fp32. Viable fp16 training would need loss
+  scaling and/or fp32 computation of the loss + aux terms — deferred. Captured by
+  the two known-failing `FP16ComputePathTests` trainStep cells; full MPSGraph
+  beta-stack writeup in `documentation/macos27-beta1-mpsgraph-findings.md`.
 
 - **Batch-size sweep is reliable at 1 s per batch size.** The Batch Size
   Sweep panel runs a training-mode copy of the network through real SGD
@@ -1033,6 +1488,107 @@ experiment artifacts (`results.json` ~6.8 MB, `experiment_results.js` ~921 KB, t
   policy-head distribution is a prerequisite for future promotions.
 
 ## Completed
+
+- **Fast legal-move generation: make/unmake + pin-based (2026-06-24, `81ac884`,
+  `d4becf6`).** Move-generation legality was a copy-make filter — for each
+  pseudo-legal move it allocated a whole new `GameState` (board-array COW) just
+  to test whether the mover's king was attacked, ~30 per position. Profiling an
+  import put 93% of CPU in `MoveGenerator.legalMoves`, roughly half of it in that
+  per-candidate allocation. Two faster generators were added, each required to
+  return the **identical** move set: `legalMovesMakeUnmake` (B) applies each move
+  in place on one board buffer, tests the king square, and unmakes — no
+  per-candidate allocation (~3× on perft); `legalMovesPinBased` (C) computes the
+  check status and a `UInt64` absolute-pin bitboard once from the king's rays,
+  then fast-paths any move that is not-in-check ∧ not-a-king-move ∧
+  not-en-passant ∧ not-from-a-pinned-square with no apply at all, verifying only
+  the residual via the shared make/unmake primitive (~6× on perft).
+  `isSquareAttacked` gained an `UnsafeBufferPointer` overload so the legality
+  test needs no `GameState` wrapper. Production `legalMoves` now calls
+  `legalMovesPinBased`; `legalMovesCopyMake` is retained as the perft and
+  cross-check reference. All three generators are pure (no shared mutable state),
+  so they run unchanged across concurrent self-play workers. The pin fast-path is
+  sound because the only ways a non-king move can newly expose its own king are
+  vacating a king ray (absolute pin) or an en-passant rank discovery, both
+  excluded. Validation: a `PerftTests` suite checks all three against published
+  node counts for six standard positions (incl. Kiwipete) and runs a per-node
+  differential of B and C against copy-make (~200K positions, zero divergence);
+  the `--crosscheck-movegen` flag makes `legalMoves` additionally run all three
+  per call and log any divergence (FEN + move diff) to stderr/SessionLogger,
+  soak-tested over ~8K real self-play positions (zero divergence); plus an
+  independent code review (no Critical findings).
+
+- **Parallel PGN importer; replay-by-legality; fsync removal (2026-06-24,
+  `81ac884`, `d4becf6`).** The PGN→corpus importer (`--import-pgn`) was a single
+  serial loop bottlenecked on per-ply move generation; it is now a worker pool
+  (`activeProcessorCount − 2`) that parses, replays, and encodes framed records
+  off-thread, feeding a single serial writer that drains a per-sequence reorder
+  buffer so the corpus preserves original file order, with `DispatchSemaphore`
+  backpressure and a `DispatchGroup` barrier. Output is deterministic and
+  independent of worker count. Each SAN token is resolved against the
+  *pseudo-legal* moves with legality checked only on the match (avoiding a full
+  legal-move generation per ply), and resolution rejects an ambiguous SAN
+  (more than one legal match) rather than guessing. Replay is by legality only,
+  so a game legally played through a claimable-but-unclaimed threefold-repetition
+  or fifty-move draw imports correctly — the engine's self-play auto-termination
+  is not applied to recorded games; the outcome comes from the `Result` tag.
+  Hard-fail by default on the first unparseable game (`--lenient` counts and
+  skips instead) and on a nonzero reader/decompressor exit (missing file, missing
+  `zstd`, corrupt `.zst`) so a bad input fails loudly instead of producing a
+  silent empty corpus. The shard writer's per-record fsync cadence (described in
+  the corpus entry above) was removed as unnecessary for a re-runnable import —
+  one `synchronize()` at seal remains; crash recovery still relies on the
+  per-record CRC-32 and the sealed-shard SHA-256. New flags: `--max-storage
+  <size>`, `--import-threads <n>`, `--lenient`. `FENParser` gained `GameState →
+  FEN` encoding (inverse of `parse`) for reproducible divergence logging. Tests
+  in `PGNImporterTests` (order-preservation, thread-count determinism, hard-fail,
+  lenient, exact max-games cap, threefold replay, ambiguous-SAN rejection,
+  missing-file hard-fail), `PerftTests`, and `FENParserTests`.
+
+- **fp16 (float16) selectable compute precision — inference (2026-06-17,
+  `b25f37e`).** `ComputeDataType` gains `.float16` beside `.float32` / `.bFloat16`,
+  selectable in Build-New-Model and embedded in safetensors metadata. Closed the
+  four remaining touchpoints over the pre-existing float16 conversion branches:
+  exhaustive `mpsDataType(for:)` switch, the `readFloats(into:)` hot-path readback
+  (vImage), and the trainer's two host-side feed narrows (vImage bulk / native
+  `Float16` scalar). In-graph casts + the fp32-master mixed-precision path are
+  dtype-generic so fp16 reuses them; config-D stays bf16-only. fp16 inference is
+  tested and sound; fp16 **training** NaNs immediately on this beta stack (see
+  Findings + `documentation/macos27-beta1-mpsgraph-findings.md`), so fp16 is an
+  inference precision for now. Tests: `FP16ConversionTests` (all pass),
+  `FP16ComputePathTests` (forward + checkpoint pass; trainStep cells fail by
+  design as tripwires).
+
+- **Block groups: heterogeneous towers with per-group widths (2026-06-12 →
+  2026-06-13).** `NetworkArchitecture`'s uniform block fields became
+  `blockGroups: [BlockGroup]` — an ordered list of (count + full per-group
+  recipe: channels, both conv kernels, SE style/ratio, ReZero α, activation
+  function/style, skip merge, dropout multiplier). The engine consumes only the
+  flattened `expandedBlocks`; width transitions insert a bias-free 1×1 skip
+  projection (WRN staircase). Encode writes `block_groups` only; legacy uniform
+  keys decode forever, and uniform towers build byte-identically to the prior
+  code (proven by the embedded bit-exact forward-pass save check). Phase B adds
+  a per-group Build-New-Model editor + a live `ArchitectureDiagramView` (shared
+  with the About popover). Per-conv stride was considered and dropped; two-level
+  group entries simplified to one recipe + count. CHANGELOG `73a1bdd` (Phase A)
+  / `120f46b` (Phase B) / `ed84386`, `54e3ca3` (recheck + review fixes). First
+  production heterogeneous tower (eBNC, ~10.66M params) running since 2026-06-12;
+  see ARCH_EXPERIMENTS Experiment 7.
+
+- **Channel dropout (live-tunable) + headless A/B harness (2026-06-12).**
+  Every training-mode residual block carries a channel (spatial) dropout node at
+  the WRN slot; live-tunable `DropoutRate` parameter, inference graphs untouched.
+  Headless `--start-model` + `--training-step-limit` CLI added for the A/B arms.
+  Finding: ≈ zero distinguishable effect at 600 steps from both a random-init
+  fork and the trained 5K7Z champion (machinery validated; any benefit is a
+  long-horizon question). CHANGELOG `eacced3` / `600c016` + two A/B FINDING
+  entries.
+
+- **Rich Load Session picker (2026-06-12).** File > Load Session opens a
+  lineage-grouped picker showing architecture / run-progress / performance /
+  hyperparameters per save, instead of the bare `.fileImporter` (kept reachable
+  via Browse…). `CheckpointManager` writes a small `manifest.json` at save;
+  legacy sessions are indexed once into an out-of-folder cache. CHANGELOG
+  `9939563`; edge-case fixes `54e3ca3`.
 
 - **Tabbed Training Settings popover + main-screen control sweep +
   save-verify v2 fix + chart hover bug fix + latent arena-tau push

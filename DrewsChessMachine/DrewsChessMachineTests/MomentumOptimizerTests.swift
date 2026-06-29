@@ -491,4 +491,163 @@ final class MomentumOptimizerTests: XCTestCase {
         XCTAssertTrue(baseChanged,
                       "Base weights should reflect the additional 5 training steps, not the pre-snapshot state — loadVelocitySnapshot must touch only velocity")
     }
+
+    // MARK: - fp32 master weights: sub-ULP accumulation ("money test")
+    //
+    // The point of the fp32 master path: under a reduced-precision (bf16)
+    // dtype, a per-step weight update below the bf16 weight ULP must still
+    // accumulate (in the fp32 master) instead of rounding away in the bf16
+    // working copy. This proves both halves by reading the fp32 master and
+    // the bf16 working weights *separately*:
+    //   - `trainer.exportTrainerWeights()`'s base portion = the fp32 masters.
+    //   - `trainer.network.exportWeights()` = the bf16 working weights.
+    // (both parallel: [trainables] + [BN running stats]).
+    //
+    // Regime forces the sub-ULP case: tiny LR so one step's update is far
+    // below a bf16 ULP for ~all weights; wd=0 / μ=0 / clip off so the only
+    // thing moving a weight is its raw gradient.
+    //
+    // A (capture): after ONE step, ≥1 element where the fp32 master moved but
+    //   the bf16 working weight stayed bit-identical — an update pure bf16
+    //   would have dropped.
+    // B (propagation): after many more steps, more working weights have
+    //   changed — the accumulated master crossed the bf16 ULP and moved the
+    //   working copy (also guards the per-step `working = cast(master)` sync).
+    func testFP32MasterAccumulatesSubULPUpdates() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal not available")
+        }
+        guard NetworkArchitecture.current.computeDataType != .float32 else {
+            throw XCTSkip("fp32 master path is inactive under .float32 dataType")
+        }
+        let trainer = try ChessTrainer(
+            learningRate: 1e-5,
+            weightDecayC: 0,
+            gradClipMaxNorm: 1e9,   // effectively no clipping
+            momentumCoeff: 0,
+            sqrtBatchScalingForLR: false,
+            lrWarmupSteps: 0
+        )
+        let baseCount = trainer.network.trainableVariables.count
+            + trainer.network.bnRunningStatsVariables.count
+
+        func working() async throws -> [[Float]] { try await trainer.network.exportWeights() }
+        func masters() async throws -> [[Float]] {
+            Array(try await trainer.exportTrainerWeights().prefix(baseCount))
+        }
+        func changedCount(_ a: [[Float]], _ b: [[Float]]) -> Int {
+            var c = 0
+            for i in 0..<a.count {
+                for k in 0..<a[i].count where a[i][k] != b[i][k] { c += 1 }
+            }
+            return c
+        }
+
+        let workingBefore = try await working()
+        let masterBefore = try await masters()
+        // Masters are seeded from the working weights at init, so they start
+        // element-wise equal.
+        XCTAssertEqual(changedCount(workingBefore, masterBefore), 0,
+                       "Masters should be seeded equal to the working weights at init")
+
+        _ = try await trainer.trainStep(batchSize: 256)
+        let working1 = try await working()
+        let master1 = try await masters()
+
+        let masterChanged1 = changedCount(masterBefore, master1)
+        let workingChanged1 = changedCount(workingBefore, working1)
+        var captured = 0
+        for i in 0..<masterBefore.count {
+            for k in 0..<masterBefore[i].count
+            where masterBefore[i][k] != master1[i][k] && workingBefore[i][k] == working1[i][k] {
+                captured += 1
+            }
+        }
+
+        XCTAssertGreaterThan(masterChanged1, 0, "fp32 master must move after a training step")
+        // A — master captured sub-ULP updates bf16 dropped.
+        XCTAssertGreaterThan(
+            captured, 0,
+            "Expected ≥1 element where the fp32 master moved but the bf16 working weight stayed " +
+            "bit-identical (sub-ULP capture). masterChanged=\(masterChanged1) workingChanged=\(workingChanged1)"
+        )
+        XCTAssertGreaterThan(
+            masterChanged1, workingChanged1,
+            "At sub-ULP LR the master should change more elements than the bf16 working copy " +
+            "(masterChanged=\(masterChanged1), workingChanged=\(workingChanged1))"
+        )
+
+        // B — accumulation eventually propagates to the working copy.
+        let extraSteps = 200
+        for _ in 0..<extraSteps { _ = try await trainer.trainStep(batchSize: 256) }
+        let workingN = try await working()
+        let workingChangedN = changedCount(workingBefore, workingN)
+        XCTAssertGreaterThan(
+            workingChangedN, workingChanged1,
+            "Accumulated fp32 master should cross the bf16 ULP and move more working weights over " +
+            "\(extraSteps) steps (after 1 step: \(workingChanged1); after \(extraSteps + 1): \(workingChangedN))"
+        )
+    }
+
+    // MARK: - fp32 master → bf16 working sync is faithful
+    //
+    // Complements the sub-ULP "money test": that proves the master accumulates
+    // and eventually *moves* the working copy. This proves the per-step
+    // `working = cast(master)` sync is *correct* — the bf16 working weights the
+    // forward pass actually multiplies are a faithful bf16 rounding of the fp32
+    // master, not stale or wrong. (A broken sync would train on bad weights
+    // while the master looked fine.) Checked at a normal LR so the masters move
+    // meaningfully and the working copy is exercised, over both the trainable
+    // weights and the BN running stats.
+    func testBF16WorkingWeightsTrackFP32Masters() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal not available")
+        }
+        guard NetworkArchitecture.current.computeDataType != .float32 else {
+            throw XCTSkip("fp32 master path is inactive under .float32 dataType")
+        }
+        let trainer = try ChessTrainer(learningRate: 1e-2, lrWarmupSteps: 0)
+        let baseCount = trainer.network.trainableVariables.count
+            + trainer.network.bnRunningStatsVariables.count
+
+        let workingBefore = try await trainer.network.exportWeights()
+        for _ in 0..<5 { _ = try await trainer.trainStep(batchSize: 128) }
+        let working = try await trainer.network.exportWeights()
+        let master = Array(try await trainer.exportTrainerWeights().prefix(baseCount))
+
+        XCTAssertEqual(working.count, baseCount)
+        XCTAssertEqual(master.count, baseCount)
+
+        // (1) Faithful sync: each bf16 working value is within one bf16 ULP of
+        //     its fp32 master (cast is round-to-nearest, ≤ ½ ULP; one ULP is a
+        //     safe bound, robust to GPU-vs-host rounding-mode differences).
+        let eps = ChessNetwork.weightRelativeEpsilon(for: ChessNetwork.mpsDataType(for: .current))   // 2⁻⁷ for bf16
+        var violations = 0
+        var worst = ""
+        for i in 0..<baseCount {
+            XCTAssertEqual(working[i].count, master[i].count, "Tensor \(i) shape mismatch working vs master")
+            for k in 0..<working[i].count {
+                let w = working[i][k]
+                let m = master[i][k]
+                let tol = abs(m) * eps
+                if abs(w - m) > tol {
+                    violations += 1
+                    if worst.isEmpty { worst = "[\(i)][\(k)] working=\(w) master=\(m) tol=\(tol)" }
+                }
+            }
+        }
+        XCTAssertEqual(
+            violations, 0,
+            "\(violations) bf16 working weights are not within one bf16 ULP of their fp32 master " +
+            "(first: \(worst)). The per-step working = cast(master) sync is broken or stale."
+        )
+
+        // (2) The working copy actually moved — the sync is doing real work,
+        //     not trivially matching because nothing changed.
+        var changed = 0
+        for i in 0..<baseCount {
+            for k in 0..<working[i].count where working[i][k] != workingBefore[i][k] { changed += 1 }
+        }
+        XCTAssertGreaterThan(changed, 0, "bf16 working weights should change over a few normal-LR steps")
+    }
 }

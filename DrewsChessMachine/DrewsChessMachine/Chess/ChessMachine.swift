@@ -238,7 +238,8 @@ final class ChessMachine: @unchecked Sendable {
                 let move = try await player.onChooseNextMove(
                     opponentMove: lastMove,
                     newGameState: engine.state,
-                    legalMoves: engine.currentLegalMoves
+                    legalMoves: engine.currentLegalMoves,
+                    recentHistory: engine.recentStates
                 )
                 let moveTimeMs = (CFAbsoluteTimeGetCurrent() - moveStart) * 1000
 

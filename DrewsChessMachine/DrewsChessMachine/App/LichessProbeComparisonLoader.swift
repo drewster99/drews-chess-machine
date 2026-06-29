@@ -9,10 +9,15 @@ import UniformTypeIdentifiers
 /// so the user can re-load a snapshot they exported earlier without
 /// hunting through Finder.
 ///
-/// Only schema v2 files are accepted — the JSON shape changed enough
-/// between v1 and v2 that supporting both would mean two parsers, and
-/// nobody has v1 files in the wild yet. Other versions surface a
-/// friendly error alert rather than a Codable decoding crash.
+/// Schema versions 2 through 4 are accepted — the JSON shape changed
+/// enough between v1 and v2 that supporting both would mean two
+/// parsers, and nobody has v1 files in the wild yet. v3 added the
+/// top-level `training_step`; v4 added `positions_trained`,
+/// `active_training_sec`, `arena_count`, and `promotion_count`. All
+/// of v3/v4's additions are top-level scalars that `LoadedPayload`
+/// silently ignores, so v2/v3/v4 decode identically here. Other
+/// versions surface a friendly error alert rather than a Codable
+/// decoding crash.
 @MainActor
 enum LichessProbeComparisonLoader {
 
@@ -34,14 +39,21 @@ enum LichessProbeComparisonLoader {
             return nil
         }
 
+        return load(from: url, announce: true)
+    }
+
+    /// Parse a previously-exported Lichess Probe JSON at a known path —
+    /// no panel. Used by `loadFromFile` (manual Compare…) and by the
+    /// Detail window's auto-compare. `announce` gates the error alerts:
+    /// the auto path passes `false` so a missing/garbage file logs
+    /// quietly instead of popping a warning.
+    static func load(from url: URL, announce: Bool = true) -> LichessProbeComparison? {
         let data: Data
         do {
             data = try Data(contentsOf: url)
         } catch {
-            presentLoaderError(
-                title: "Could not read file",
-                message: "Failed to read \(url.lastPathComponent):\n\n\(error.localizedDescription)"
-            )
+            reportLoadError(announce, "Could not read file",
+                "Failed to read \(url.lastPathComponent):\n\n\(error.localizedDescription)")
             return nil
         }
 
@@ -52,25 +64,16 @@ enum LichessProbeComparisonLoader {
                 from: data
             )
         } catch {
-            presentLoaderError(
-                title: "Could not parse file",
-                message: """
-                    \(url.lastPathComponent) is not a valid Lichess Probe export.
-
-                    \(error.localizedDescription)
-                    """
-            )
+            reportLoadError(announce, "Could not parse file",
+                "\(url.lastPathComponent) is not a valid Lichess Probe export.\n\n\(error.localizedDescription)")
             return nil
         }
 
-        guard decoded.schemaVersion == 2 else {
-            presentLoaderError(
-                title: "Unsupported schema",
-                message: """
-                    \(url.lastPathComponent) uses schema version \(decoded.schemaVersion).
-                    Only version 2 is supported.
-                    """
-            )
+        // v2/v3/v4 decode identically here (v3/v4's extra top-level
+        // fields aren't in `LoadedPayload`); accept all three.
+        guard (2...4).contains(decoded.schemaVersion) else {
+            reportLoadError(announce, "Unsupported schema",
+                "\(url.lastPathComponent) uses schema version \(decoded.schemaVersion). Only versions 2-4 are supported.")
             return nil
         }
 
@@ -84,15 +87,22 @@ enum LichessProbeComparisonLoader {
         return comparison
     }
 
+    /// Either pop a warning alert (manual path) or log quietly (auto path).
+    private static func reportLoadError(_ announce: Bool, _ title: String, _ message: String) {
+        if announce {
+            presentLoaderError(title: title, message: message)
+        } else {
+            SessionLogger.shared.log(
+                "[TACTICAL-LICHESS] auto-compare \(title): "
+                + message.replacingOccurrences(of: "\n", with: " ")
+            )
+        }
+    }
+
     private static func presentLoaderError(title: String, message: String) {
         SessionLogger.shared.log(
             "[TACTICAL-LICHESS] compare error: \(title) — \(message.replacingOccurrences(of: "\n", with: " | "))"
         )
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
-        _ = alert.runModal()
+        NonBlockingAlert.presentWarning(title: title, message: message)
     }
 }

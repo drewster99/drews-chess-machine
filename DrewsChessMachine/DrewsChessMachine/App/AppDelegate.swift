@@ -25,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // here is enough to stay off for the life of the process.
         ProcessInfo.processInfo.disableSuddenTermination()
         EarlyStopCoordinator.shared.installSignalHandlers()
-        SessionLogger.shared.log("[APP] sudden termination disabled; SIGUSR1/SIGHUP handlers installed")
+        SessionLogger.shared.log("[APP] sudden termination disabled; SIGUSR1/SIGHUP/SIGUSR2 handlers installed")
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

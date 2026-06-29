@@ -17,6 +17,12 @@ struct TrainingSettingsChip<PopoverContent: View>: View {
                 Image(systemName: "slider.horizontal.3")
                 Text("Training")
                     .font(.callout)
+                    // The label must always render in full. Pin it to its
+                    // intrinsic width and forbid wrapping/truncation so a
+                    // tight status bar can never clip it to "Traini…" —
+                    // same treatment as ArenaCountdownChip's countdown.
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 4)

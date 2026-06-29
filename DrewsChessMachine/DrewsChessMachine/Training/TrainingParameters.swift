@@ -166,7 +166,7 @@ public protocol TrainingParameterKey: Sendable {
 @TrainingParameter(
     name: "Entropy Bonus",
     description: "Entropy regularization coefficient. Higher keeps the policy diverse longer; too high stalls learning.",
-    default: 0.0025,
+    default: 0.0,
     range: 0.0...0.1,
     category: "Optimizer",
     liveTunable: true
@@ -224,6 +224,16 @@ public enum GradClipMaxNorm: TrainingParameterKey {}
 public enum WeightDecay: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Dropout Rate",
+    description: "Probability that a residual-branch CHANNEL is dropped (spatial dropout at the WRN slot inside every block, between the conv2-side activation and conv2; inverted scaling so train-time expectations match the dropout-free inference graphs). 0 disables: the graph nodes are exact identities at measurably zero cost. NOTE this is the DROP probability (PyTorch/Keras convention) — the 2014 paper and older tutorials quote the complement (retention p), so their p=0.5-0.8 equals 0.2-0.5 here. Conv-channel dropout typically wants far less than FC-era defaults; with continuous fresh self-play data there is little overfitting to fight, so treat nonzero values as an experiment, not a default.",
+    default: 0.0,
+    range: 0.0...0.95,
+    category: "Optimizer",
+    liveTunable: true
+)
+public enum DropoutRate: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "Policy Loss Weight",
     description: "Per-component weighting on the POLICY-LOSS TENSOR inside total_loss = valueLossWeight · valueLoss + policyLossWeight · policyLoss − entropyCoeff · policyEntropy. Pairs with valueLossWeight. Higher values shift shared-trunk gradients toward policy fitting and away from the value head's W/D/L cross-entropy: at policyLossWeight = valueLossWeight = 1 the trunk is pulled equally by both heads (AlphaZero canonical); at policyLossWeight=5+ the policy head dominates trunk shaping and the value head trails. NOT a multiplier on policy logits — that's a common misreading. Without MCTS-quality policy targets (this engine has none), values above ~3 amplify policy-target noise faster than the value head can supply a useful baseline.",
     default: 1.0,
@@ -247,8 +257,8 @@ public enum ValueLossWeight: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Learning Rate",
-    description: "SGD-with-momentum optimizer learning rate. Lower is slower but more stable. Pairs with sqrt_batch_scaling_lr.",
-    default: 5.0e-4,
+    description: "SGD-with-momentum optimizer learning rate. Lower is slower but more stable. Pairs with sqrt_batch_scaling_lr. Note: under the bf16 weight path, updates below the bf16 weight ULP (~0.8% of a weight's magnitude) round away, so LRs much below ~1e-3 are largely no-ops.",
+    default: 1.0e-2,
     range: 1.0e-7...1.0,
     category: "Optimizer",
     liveTunable: true
@@ -258,7 +268,7 @@ public enum LearningRate: TrainingParameterKey {}
 @TrainingParameter(
     name: "Momentum Coefficient",
     description: "Polyak momentum μ for SGD. 0.0 disables momentum (pure SGD); higher μ accumulates more gradient history. The optimizer uses decoupled weight decay (AdamW-style), so μ and Weight Decay tune independently — raising μ no longer amplifies decay. Effective step size in correlated-gradient regimes still scales ~1/(1−μ), so a high μ paired with the existing LR can be too aggressive — pair μ jumps with a proportional LR drop. Start low (≤0.5) and watch legalMass / pEntLegal before raising further.",
-    default: 0.65,
+    default: 0.9,
     range: 0.0...0.99,
     category: "Optimizer",
     liveTunable: true
@@ -346,7 +356,7 @@ public enum SelfPlayDrawKeepFraction: TrainingParameterKey {}
 @TrainingParameter(
     name: "Self-Play Max Plies Per Game",
     description: "Self-play games are auto-terminated when they reach this many plies. Acts as a safety net against games that fail to terminate via the 50-move rule or 3-fold repetition. Terminated games are NOT emitted — they're counted as 'dropped' in the Played stats and never reach the replay buffer. Applies to self-play only — arena games are not affected.",
-    default: 150,
+    default: 450,
     range: 25...500,
     category: "Self-Play Sampling",
     liveTunable: true
@@ -356,7 +366,7 @@ public enum SelfPlayMaxPliesPerGame: TrainingParameterKey {}
 @TrainingParameter(
     name: "Draw-Watch pDraw Threshold",
     description: "Per-ply pDraw value (W/D/L softmax draw slot) a self-play position must clear to count toward the draw-watch streak. When N consecutive plies in the same game clear this threshold (N from 'Draw-Watch Streak Length', default 8), the game is flagged on the Draw-watch chart tile. With the 'Terminate flagged games' toggle off (default) flagging is purely observational; with it on, the game is dropped immediately on flag fire. Lowering this catches more games (and earlier); raising it tightens the precision-toward-draw calibration.",
-    default: 0.95,
+    default: 0.985,
     range: 0.5...1.0,
     category: "Self-Play Sampling",
     liveTunable: true
@@ -415,7 +425,7 @@ public enum ArenaTauDecayPerPly: TrainingParameterKey {}
 @TrainingParameter(
     name: "Replay Ratio Target",
     description: "Target ratio of consumed (training) positions to produced (self-play) positions. ReplayRatioController auto-adjusts step delay to track this.",
-    default: 1.0,
+    default: 0.48,
     range: 0.01...100.0,
     category: "Replay Buffer",
     liveTunable: true
@@ -432,9 +442,18 @@ public enum ReplayRatioTarget: TrainingParameterKey {}
 public enum ReplayRatioAutoAdjust: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Record Self-Play Games",
+    description: "Record completed (post-draw-filter) self-play games to a reusable game corpus under Corpora/. Read once at run start (not live-tunable).",
+    default: false,
+    category: "Self-Play Sampling",
+    liveTunable: false
+)
+public enum RecordSelfPlayGames: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "Self-Play Concurrency",
     description: "Parallel self-play game count. More = faster replay-buffer fill but more GPU contention.",
-    default: 4000,
+    default: 800,
     range: 1...8192,
     category: "Training Window",
     liveTunable: true
@@ -454,7 +473,7 @@ public enum TrainingStepDelayMs: TrainingParameterKey {}
 @TrainingParameter(
     name: "Self-Play Delay (ms)",
     description: "Per-game-per-worker delay between self-play games in milliseconds. Used only when replay-ratio auto-adjust is OFF; auto-adjust on lets the controller manage it.",
-    default: 0,
+    default: 3000,
     range: 0...10000,
     category: "Training Window",
     liveTunable: true
@@ -474,7 +493,7 @@ public enum TrainingBatchSize: TrainingParameterKey {}
 @TrainingParameter(
     name: "Replay Buffer Capacity",
     description: "Maximum number of positions retained in the FIFO replay buffer.",
-    default: 1500000,
+    default: 1000000,
     range: 1000...10000000,
     category: "Replay Buffer",
     liveTunable: false
@@ -503,8 +522,8 @@ public enum MaxPliesFromAnyOneGame: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Target Sampled Game Length (plies)",
-    description: "When > 0, the batch sampler exponentially down-weights positions from long games so the position-weighted mean game length of the sampled batch approaches this value (in plies). 0 disables the length tilt. Intended to be set below the buffer's natural mean to de-weight shuffle-draw marathons.",
-    default: 124,
+    description: "When > 0, the batch sampler exponentially down-weights positions from long games so the position-weighted mean game length of the sampled batch approaches this value (in plies). 0 disables the length tilt, and any value at or above the buffer's natural mean game length leaves the batch effectively untilted. To de-weight shuffle-draw marathons, set it below the buffer's natural mean.",
+    default: 999,
     range: 0...10000,
     category: "Replay Buffer",
     liveTunable: true
@@ -514,7 +533,7 @@ public enum TargetSampledGameLengthPlies: TrainingParameterKey {}
 @TrainingParameter(
     name: "Max Draws Per Batch (%)",
     description: "Ceiling on the percentage of positions in a training batch that come from drawn games. If the buffer holds fewer drawn positions than the cap allows, the batch simply contains fewer (no padding); freed slots go to positions from decisive games. 100 disables the cap.",
-    default: 75,
+    default: 100,
     range: 0...100,
     category: "Replay Buffer",
     liveTunable: true
@@ -621,6 +640,165 @@ public enum ArenaConcurrency: TrainingParameterKey {}
 )
 public enum BatchStatsInterval: TrainingParameterKey {}
 
+// MARK: - LR / Momentum cycling (TRAINING_DYNAMICS_PLAN.md §3)
+//
+// Two independent repeating cycles — one for the learning rate (geometric
+// interpolation between absolute endpoints), one for Polyak momentum (linear).
+// The phase is a pure function of the trainer's global step, so resume is
+// seamless. See `LRMomentumCycle.swift` for the math. Inverse coupling (high
+// LR ↔ low momentum) is recovered by enabling the momentum cycle with
+// `momentum_cycle_invert = true` at an equal period.
+
+@TrainingParameter(
+    name: "LR Cycle Enabled",
+    description: "Enable the repeating learning-rate cycle. When on, the base LR each step is set by the cycle (geometric interpolation between LR Cycle Min and Max over LR Cycle Period Steps) instead of the static Learning Rate, then composed with the existing warmup × √batch multipliers. Overrides the static base-LR schedule while enabled.",
+    default: false,
+    category: "LR/Momentum Cycling",
+    id: "lr_cycle_enabled",
+    liveTunable: true
+)
+public enum LRCycleEnabled: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "LR Cycle Period (steps)",
+    description: "Full up-then-down period of the LR cycle, in optimizer steps. A sensible default is 2–8× the replay-buffer turnover (bufferCapacity / batchSize), the self-play analog of an epoch.",
+    default: 2000,
+    range: 1...10000000,
+    category: "LR/Momentum Cycling",
+    id: "lr_cycle_period_steps",
+    liveTunable: true
+)
+public enum LRCyclePeriodSteps: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "LR Cycle Count",
+    description: "Number of LR cycles to run before freezing at the cycle boundary (LR Cycle Min, or Max when inverted). 0 = unbounded (repeat forever), the default for open-ended self-play.",
+    default: 0,
+    range: 0...1000000,
+    category: "LR/Momentum Cycling",
+    id: "lr_cycle_count",
+    liveTunable: true
+)
+public enum LRCycleCount: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "LR Cycle Min",
+    description: "Absolute learning rate at the LR cycle's low point (the period boundaries when not inverted). Must be > 0 — geometric interpolation is undefined at zero, and LR Cycle Max must be ≥ this value or the cycle is ignored.",
+    default: 0.001,
+    range: 1.0e-7...1.0,
+    category: "LR/Momentum Cycling",
+    id: "lr_cycle_min",
+    liveTunable: true
+)
+public enum LRCycleMin: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "LR Cycle Max",
+    description: "Absolute learning rate at the LR cycle's high point (the period midpoint when not inverted). Must be ≥ LR Cycle Min.",
+    default: 0.03,
+    range: 1.0e-7...1.0,
+    category: "LR/Momentum Cycling",
+    id: "lr_cycle_max",
+    liveTunable: true
+)
+public enum LRCycleMax: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "LR Cycle Invert",
+    description: "Flip the LR waveform so the cycle starts at LR Cycle Max and dips to Min at the midpoint. Normally left off (LR rises to its peak at the midpoint); momentum is the channel usually inverted.",
+    default: false,
+    category: "LR/Momentum Cycling",
+    id: "lr_cycle_invert",
+    liveTunable: true
+)
+public enum LRCycleInvert: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Cycle Enabled",
+    description: "Enable the repeating Polyak-momentum cycle. When on, the momentum coefficient each step is set by the cycle (linear interpolation between Momentum Cycle Min and Max) instead of the static Momentum Coefficient.",
+    default: false,
+    category: "LR/Momentum Cycling",
+    id: "momentum_cycle_enabled",
+    liveTunable: true
+)
+public enum MomentumCycleEnabled: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Cycle Period (steps)",
+    description: "Full up-then-down period of the momentum cycle, in optimizer steps. Set equal to the LR Cycle Period (with Momentum Cycle Invert on) for Smith-style inverse coupling — high LR paired with low momentum.",
+    default: 2000,
+    range: 1...10000000,
+    category: "LR/Momentum Cycling",
+    id: "momentum_cycle_period_steps",
+    liveTunable: true
+)
+public enum MomentumCyclePeriodSteps: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Cycle Count",
+    description: "Number of momentum cycles before freezing at the cycle boundary. 0 = unbounded (the default).",
+    default: 0,
+    range: 0...1000000,
+    category: "LR/Momentum Cycling",
+    id: "momentum_cycle_count",
+    liveTunable: true
+)
+public enum MomentumCycleCount: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Cycle Min",
+    description: "Polyak momentum at the cycle's low point (the period midpoint when inverted, where LR peaks). Smith's recommendation is ~0.85.",
+    default: 0.85,
+    range: 0.0...0.99,
+    category: "LR/Momentum Cycling",
+    id: "momentum_cycle_min",
+    liveTunable: true
+)
+public enum MomentumCycleMin: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Cycle Max",
+    description: "Polyak momentum at the cycle's high point (the period boundaries when inverted, where LR bottoms). Smith's recommendation is ~0.95.",
+    default: 0.95,
+    range: 0.0...0.99,
+    category: "LR/Momentum Cycling",
+    id: "momentum_cycle_max",
+    liveTunable: true
+)
+public enum MomentumCycleMax: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Cycle Invert",
+    description: "Flip the momentum waveform so it starts at Momentum Cycle Max and dips to Min at the midpoint. Default ON: at an equal period this makes momentum the inverse of LR (high LR ↔ low momentum), Smith's super-convergence coupling.",
+    default: true,
+    category: "LR/Momentum Cycling",
+    id: "momentum_cycle_invert",
+    liveTunable: true
+)
+public enum MomentumCycleInvert: TrainingParameterKey {}
+
+// MARK: - Sessions / autosave policy
+
+@TrainingParameter(
+    name: "Periodic Autosave Interval (sec)",
+    description: "Cadence of the periodic full-session autosave while Play-and-Train is active, in seconds. The default 14400 = 4 hours. Read live: the heartbeat reconciles a mid-session change against the running PeriodicSaveController and re-anchors the next-save deadline, so a shorter interval takes effect without restarting Play-and-Train. Does not affect manual saves or post-promotion autosaves.",
+    default: 14400.0,
+    range: 60.0...604800.0,
+    category: "Sessions",
+    liveTunable: true
+)
+public enum PeriodicAutosaveIntervalSec: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Max Periodic Autosaves Kept",
+    description: "Retention cap on the number of periodic (`-periodic.dcmsession`) autosaves kept on disk. After each successful periodic save, older periodic saves beyond this count are deleted (newest kept). Default 3. 0 = unlimited (no pruning, the pre-2026-06-24 behavior). Manual (`-manual`), post-promotion (`-promote`), and signal (`-sigusr2`) saves are never pruned by this knob.",
+    default: 3,
+    range: 0...10000,
+    category: "Sessions",
+    liveTunable: true
+)
+public enum MaxPeriodicAutosavesKept: TrainingParameterKey {}
+
 // MARK: - TrainingParametersSnapshot
 
 public struct TrainingParametersSnapshot: Sendable {
@@ -660,6 +838,7 @@ public extension TrainingParametersSnapshot {
     var entropyBonus: Double { value(for: EntropyBonus.self) }
     var gradClipMaxNorm: Double { value(for: GradClipMaxNorm.self) }
     var weightDecay: Double { value(for: WeightDecay.self) }
+    var dropoutRate: Double { value(for: DropoutRate.self) }
     var policyLossWeight: Double { value(for: PolicyLossWeight.self) }
     var valueLossWeight: Double { value(for: ValueLossWeight.self) }
     var learningRate: Double { value(for: LearningRate.self) }
@@ -673,6 +852,7 @@ public extension TrainingParametersSnapshot {
     var selfPlayTauDecayPerPly: Double { value(for: SelfPlayTauDecayPerPly.self) }
     var selfPlayDrawKeepFraction: Double { value(for: SelfPlayDrawKeepFraction.self) }
     var selfPlayMaxPliesPerGame: Int { value(for: SelfPlayMaxPliesPerGame.self) }
+    var recordSelfPlayGames: Bool { value(for: RecordSelfPlayGames.self) }
     var drawWatchPDrawThreshold: Double { value(for: DrawWatchPDrawThreshold.self) }
     var drawWatchTerminateGames: Bool { value(for: DrawWatchTerminateGames.self) }
     var drawWatchStreakLength: Int { value(for: DrawWatchStreakLength.self) }
@@ -700,6 +880,20 @@ public extension TrainingParametersSnapshot {
     var legalMassCollapseNoImprovementProbes: Int { value(for: LegalMassCollapseNoImprovementProbes.self) }
     var arenaConcurrency: Int { value(for: ArenaConcurrency.self) }
     var batchStatsInterval: Int { value(for: BatchStatsInterval.self) }
+    var lrCycleEnabled: Bool { value(for: LRCycleEnabled.self) }
+    var lrCyclePeriodSteps: Int { value(for: LRCyclePeriodSteps.self) }
+    var lrCycleCount: Int { value(for: LRCycleCount.self) }
+    var lrCycleMin: Double { value(for: LRCycleMin.self) }
+    var lrCycleMax: Double { value(for: LRCycleMax.self) }
+    var lrCycleInvert: Bool { value(for: LRCycleInvert.self) }
+    var momentumCycleEnabled: Bool { value(for: MomentumCycleEnabled.self) }
+    var momentumCyclePeriodSteps: Int { value(for: MomentumCyclePeriodSteps.self) }
+    var momentumCycleCount: Int { value(for: MomentumCycleCount.self) }
+    var momentumCycleMin: Double { value(for: MomentumCycleMin.self) }
+    var momentumCycleMax: Double { value(for: MomentumCycleMax.self) }
+    var momentumCycleInvert: Bool { value(for: MomentumCycleInvert.self) }
+    var periodicAutosaveIntervalSec: Double { value(for: PeriodicAutosaveIntervalSec.self) }
+    var maxPeriodicAutosavesKept: Int { value(for: MaxPeriodicAutosavesKept.self) }
 }
 
 // MARK: - TrainingParameters singleton
@@ -717,6 +911,7 @@ public final class TrainingParameters {
     public var valueLabelSmoothingEpsilon: Double { didSet { Self.persist(ValueLabelSmoothingEpsilon.self, value: valueLabelSmoothingEpsilon) } }
     public var gradClipMaxNorm: Double { didSet { Self.persist(GradClipMaxNorm.self, value: gradClipMaxNorm) } }
     public var weightDecay: Double { didSet { Self.persist(WeightDecay.self, value: weightDecay) } }
+    public var dropoutRate: Double { didSet { Self.persist(DropoutRate.self, value: dropoutRate) } }
     public var policyLossWeight: Double { didSet { Self.persist(PolicyLossWeight.self, value: policyLossWeight) } }
     public var valueLossWeight: Double { didSet { Self.persist(ValueLossWeight.self, value: valueLossWeight) } }
     public var learningRate: Double { didSet { Self.persist(LearningRate.self, value: learningRate) } }
@@ -730,6 +925,7 @@ public final class TrainingParameters {
     public var selfPlayTauDecayPerPly: Double { didSet { Self.persist(SelfPlayTauDecayPerPly.self, value: selfPlayTauDecayPerPly) } }
     public var selfPlayDrawKeepFraction: Double { didSet { Self.persist(SelfPlayDrawKeepFraction.self, value: selfPlayDrawKeepFraction) } }
     public var selfPlayMaxPliesPerGame: Int { didSet { Self.persist(SelfPlayMaxPliesPerGame.self, value: selfPlayMaxPliesPerGame) } }
+    public var recordSelfPlayGames: Bool { didSet { Self.persist(RecordSelfPlayGames.self, value: recordSelfPlayGames) } }
     public var drawWatchPDrawThreshold: Double { didSet { Self.persist(DrawWatchPDrawThreshold.self, value: drawWatchPDrawThreshold) } }
     public var drawWatchTerminateGames: Bool { didSet { Self.persist(DrawWatchTerminateGames.self, value: drawWatchTerminateGames) } }
     public var drawWatchStreakLength: Int { didSet { Self.persist(DrawWatchStreakLength.self, value: drawWatchStreakLength) } }
@@ -757,6 +953,20 @@ public final class TrainingParameters {
     public var legalMassCollapseNoImprovementProbes: Int { didSet { Self.persist(LegalMassCollapseNoImprovementProbes.self, value: legalMassCollapseNoImprovementProbes) } }
     public var arenaConcurrency: Int { didSet { Self.persist(ArenaConcurrency.self, value: arenaConcurrency) } }
     public var batchStatsInterval: Int { didSet { Self.persist(BatchStatsInterval.self, value: batchStatsInterval) } }
+    public var lrCycleEnabled: Bool { didSet { Self.persist(LRCycleEnabled.self, value: lrCycleEnabled) } }
+    public var lrCyclePeriodSteps: Int { didSet { Self.persist(LRCyclePeriodSteps.self, value: lrCyclePeriodSteps) } }
+    public var lrCycleCount: Int { didSet { Self.persist(LRCycleCount.self, value: lrCycleCount) } }
+    public var lrCycleMin: Double { didSet { Self.persist(LRCycleMin.self, value: lrCycleMin) } }
+    public var lrCycleMax: Double { didSet { Self.persist(LRCycleMax.self, value: lrCycleMax) } }
+    public var lrCycleInvert: Bool { didSet { Self.persist(LRCycleInvert.self, value: lrCycleInvert) } }
+    public var momentumCycleEnabled: Bool { didSet { Self.persist(MomentumCycleEnabled.self, value: momentumCycleEnabled) } }
+    public var momentumCyclePeriodSteps: Int { didSet { Self.persist(MomentumCyclePeriodSteps.self, value: momentumCyclePeriodSteps) } }
+    public var momentumCycleCount: Int { didSet { Self.persist(MomentumCycleCount.self, value: momentumCycleCount) } }
+    public var momentumCycleMin: Double { didSet { Self.persist(MomentumCycleMin.self, value: momentumCycleMin) } }
+    public var momentumCycleMax: Double { didSet { Self.persist(MomentumCycleMax.self, value: momentumCycleMax) } }
+    public var momentumCycleInvert: Bool { didSet { Self.persist(MomentumCycleInvert.self, value: momentumCycleInvert) } }
+    public var periodicAutosaveIntervalSec: Double { didSet { Self.persist(PeriodicAutosaveIntervalSec.self, value: periodicAutosaveIntervalSec) } }
+    public var maxPeriodicAutosavesKept: Int { didSet { Self.persist(MaxPeriodicAutosavesKept.self, value: maxPeriodicAutosavesKept) } }
 
     private init() {
         // Read each value from UserDefaults (or definition default if absent / invalid).
@@ -767,6 +977,7 @@ public final class TrainingParameters {
         self.valueLabelSmoothingEpsilon = Self.read(ValueLabelSmoothingEpsilon.self)
         self.gradClipMaxNorm = Self.read(GradClipMaxNorm.self)
         self.weightDecay = Self.read(WeightDecay.self)
+        self.dropoutRate = Self.read(DropoutRate.self)
         self.policyLossWeight = Self.read(PolicyLossWeight.self)
         self.valueLossWeight = Self.read(ValueLossWeight.self)
         self.learningRate = Self.read(LearningRate.self)
@@ -780,6 +991,7 @@ public final class TrainingParameters {
         self.selfPlayTauDecayPerPly = Self.read(SelfPlayTauDecayPerPly.self)
         self.selfPlayDrawKeepFraction = Self.read(SelfPlayDrawKeepFraction.self)
         self.selfPlayMaxPliesPerGame = Self.read(SelfPlayMaxPliesPerGame.self)
+        self.recordSelfPlayGames = Self.read(RecordSelfPlayGames.self)
         self.drawWatchPDrawThreshold = Self.read(DrawWatchPDrawThreshold.self)
         self.drawWatchTerminateGames = Self.read(DrawWatchTerminateGames.self)
         self.drawWatchStreakLength = Self.read(DrawWatchStreakLength.self)
@@ -807,6 +1019,20 @@ public final class TrainingParameters {
         self.legalMassCollapseNoImprovementProbes = Self.read(LegalMassCollapseNoImprovementProbes.self)
         self.arenaConcurrency = Self.read(ArenaConcurrency.self)
         self.batchStatsInterval = Self.read(BatchStatsInterval.self)
+        self.lrCycleEnabled = Self.read(LRCycleEnabled.self)
+        self.lrCyclePeriodSteps = Self.read(LRCyclePeriodSteps.self)
+        self.lrCycleCount = Self.read(LRCycleCount.self)
+        self.lrCycleMin = Self.read(LRCycleMin.self)
+        self.lrCycleMax = Self.read(LRCycleMax.self)
+        self.lrCycleInvert = Self.read(LRCycleInvert.self)
+        self.momentumCycleEnabled = Self.read(MomentumCycleEnabled.self)
+        self.momentumCyclePeriodSteps = Self.read(MomentumCyclePeriodSteps.self)
+        self.momentumCycleCount = Self.read(MomentumCycleCount.self)
+        self.momentumCycleMin = Self.read(MomentumCycleMin.self)
+        self.momentumCycleMax = Self.read(MomentumCycleMax.self)
+        self.momentumCycleInvert = Self.read(MomentumCycleInvert.self)
+        self.periodicAutosaveIntervalSec = Self.read(PeriodicAutosaveIntervalSec.self)
+        self.maxPeriodicAutosavesKept = Self.read(MaxPeriodicAutosavesKept.self)
     }
 
     // MARK: Snapshot
@@ -823,6 +1049,7 @@ public final class TrainingParameters {
         v[ValueLabelSmoothingEpsilon.id] = ValueLabelSmoothingEpsilon.encode(valueLabelSmoothingEpsilon)
         v[GradClipMaxNorm.id] = GradClipMaxNorm.encode(gradClipMaxNorm)
         v[WeightDecay.id] = WeightDecay.encode(weightDecay)
+        v[DropoutRate.id] = DropoutRate.encode(dropoutRate)
         v[PolicyLossWeight.id] = PolicyLossWeight.encode(policyLossWeight)
         v[ValueLossWeight.id] = ValueLossWeight.encode(valueLossWeight)
         v[LearningRate.id] = LearningRate.encode(learningRate)
@@ -836,6 +1063,7 @@ public final class TrainingParameters {
         v[SelfPlayTauDecayPerPly.id] = SelfPlayTauDecayPerPly.encode(selfPlayTauDecayPerPly)
         v[SelfPlayDrawKeepFraction.id] = SelfPlayDrawKeepFraction.encode(selfPlayDrawKeepFraction)
         v[SelfPlayMaxPliesPerGame.id] = SelfPlayMaxPliesPerGame.encode(selfPlayMaxPliesPerGame)
+        v[RecordSelfPlayGames.id] = RecordSelfPlayGames.encode(recordSelfPlayGames)
         v[DrawWatchPDrawThreshold.id] = DrawWatchPDrawThreshold.encode(drawWatchPDrawThreshold)
         v[DrawWatchTerminateGames.id] = DrawWatchTerminateGames.encode(drawWatchTerminateGames)
         v[DrawWatchStreakLength.id] = DrawWatchStreakLength.encode(drawWatchStreakLength)
@@ -863,6 +1091,20 @@ public final class TrainingParameters {
         v[LegalMassCollapseNoImprovementProbes.id] = LegalMassCollapseNoImprovementProbes.encode(legalMassCollapseNoImprovementProbes)
         v[ArenaConcurrency.id] = ArenaConcurrency.encode(arenaConcurrency)
         v[BatchStatsInterval.id] = BatchStatsInterval.encode(batchStatsInterval)
+        v[LRCycleEnabled.id] = LRCycleEnabled.encode(lrCycleEnabled)
+        v[LRCyclePeriodSteps.id] = LRCyclePeriodSteps.encode(lrCyclePeriodSteps)
+        v[LRCycleCount.id] = LRCycleCount.encode(lrCycleCount)
+        v[LRCycleMin.id] = LRCycleMin.encode(lrCycleMin)
+        v[LRCycleMax.id] = LRCycleMax.encode(lrCycleMax)
+        v[LRCycleInvert.id] = LRCycleInvert.encode(lrCycleInvert)
+        v[MomentumCycleEnabled.id] = MomentumCycleEnabled.encode(momentumCycleEnabled)
+        v[MomentumCyclePeriodSteps.id] = MomentumCyclePeriodSteps.encode(momentumCyclePeriodSteps)
+        v[MomentumCycleCount.id] = MomentumCycleCount.encode(momentumCycleCount)
+        v[MomentumCycleMin.id] = MomentumCycleMin.encode(momentumCycleMin)
+        v[MomentumCycleMax.id] = MomentumCycleMax.encode(momentumCycleMax)
+        v[MomentumCycleInvert.id] = MomentumCycleInvert.encode(momentumCycleInvert)
+        v[PeriodicAutosaveIntervalSec.id] = PeriodicAutosaveIntervalSec.encode(periodicAutosaveIntervalSec)
+        v[MaxPeriodicAutosavesKept.id] = MaxPeriodicAutosavesKept.encode(maxPeriodicAutosavesKept)
         return v
     }
 
@@ -891,6 +1133,8 @@ public final class TrainingParameters {
             try GradClipMaxNorm.definition.validate(raw); gradClipMaxNorm = try GradClipMaxNorm.decode(raw)
         case WeightDecay.id:
             try WeightDecay.definition.validate(raw); weightDecay = try WeightDecay.decode(raw)
+        case DropoutRate.id:
+            try DropoutRate.definition.validate(raw); dropoutRate = try DropoutRate.decode(raw)
         case PolicyLossWeight.id:
             try PolicyLossWeight.definition.validate(raw); policyLossWeight = try PolicyLossWeight.decode(raw)
         case ValueLossWeight.id:
@@ -917,6 +1161,8 @@ public final class TrainingParameters {
             try SelfPlayDrawKeepFraction.definition.validate(raw); selfPlayDrawKeepFraction = try SelfPlayDrawKeepFraction.decode(raw)
         case SelfPlayMaxPliesPerGame.id:
             try SelfPlayMaxPliesPerGame.definition.validate(raw); selfPlayMaxPliesPerGame = try SelfPlayMaxPliesPerGame.decode(raw)
+        case RecordSelfPlayGames.id:
+            try RecordSelfPlayGames.definition.validate(raw); recordSelfPlayGames = try RecordSelfPlayGames.decode(raw)
         case DrawWatchPDrawThreshold.id:
             try DrawWatchPDrawThreshold.definition.validate(raw); drawWatchPDrawThreshold = try DrawWatchPDrawThreshold.decode(raw)
         case DrawWatchTerminateGames.id:
@@ -971,6 +1217,34 @@ public final class TrainingParameters {
             try ArenaConcurrency.definition.validate(raw); arenaConcurrency = try ArenaConcurrency.decode(raw)
         case BatchStatsInterval.id:
             try BatchStatsInterval.definition.validate(raw); batchStatsInterval = try BatchStatsInterval.decode(raw)
+        case LRCycleEnabled.id:
+            try LRCycleEnabled.definition.validate(raw); lrCycleEnabled = try LRCycleEnabled.decode(raw)
+        case LRCyclePeriodSteps.id:
+            try LRCyclePeriodSteps.definition.validate(raw); lrCyclePeriodSteps = try LRCyclePeriodSteps.decode(raw)
+        case LRCycleCount.id:
+            try LRCycleCount.definition.validate(raw); lrCycleCount = try LRCycleCount.decode(raw)
+        case LRCycleMin.id:
+            try LRCycleMin.definition.validate(raw); lrCycleMin = try LRCycleMin.decode(raw)
+        case LRCycleMax.id:
+            try LRCycleMax.definition.validate(raw); lrCycleMax = try LRCycleMax.decode(raw)
+        case LRCycleInvert.id:
+            try LRCycleInvert.definition.validate(raw); lrCycleInvert = try LRCycleInvert.decode(raw)
+        case MomentumCycleEnabled.id:
+            try MomentumCycleEnabled.definition.validate(raw); momentumCycleEnabled = try MomentumCycleEnabled.decode(raw)
+        case MomentumCyclePeriodSteps.id:
+            try MomentumCyclePeriodSteps.definition.validate(raw); momentumCyclePeriodSteps = try MomentumCyclePeriodSteps.decode(raw)
+        case MomentumCycleCount.id:
+            try MomentumCycleCount.definition.validate(raw); momentumCycleCount = try MomentumCycleCount.decode(raw)
+        case MomentumCycleMin.id:
+            try MomentumCycleMin.definition.validate(raw); momentumCycleMin = try MomentumCycleMin.decode(raw)
+        case MomentumCycleMax.id:
+            try MomentumCycleMax.definition.validate(raw); momentumCycleMax = try MomentumCycleMax.decode(raw)
+        case MomentumCycleInvert.id:
+            try MomentumCycleInvert.definition.validate(raw); momentumCycleInvert = try MomentumCycleInvert.decode(raw)
+        case PeriodicAutosaveIntervalSec.id:
+            try PeriodicAutosaveIntervalSec.definition.validate(raw); periodicAutosaveIntervalSec = try PeriodicAutosaveIntervalSec.decode(raw)
+        case MaxPeriodicAutosavesKept.id:
+            try MaxPeriodicAutosavesKept.definition.validate(raw); maxPeriodicAutosavesKept = try MaxPeriodicAutosavesKept.decode(raw)
         default:
             throw TrainingConfigError.unknownParameter(id: id)
         }
@@ -1019,7 +1293,21 @@ public final class TrainingParameters {
         }
     }
 
+    /// When true, the `didSet` persisters skip writing to `UserDefaults`.
+    /// Set only around a transient run-override apply (`--parameters` /
+    /// "Load Parameters…") so a per-run hyperparameter override does NOT
+    /// mutate the user's saved defaults — and, critically, does not leak
+    /// across processes (a headless `--train` arm and the GUI share the
+    /// same UserDefaults domain; without this, an experiment arm's value
+    /// silently became the next launch's default — the 2026-06-12
+    /// dropout=0.7 leak). Toggled and read only synchronously on the main
+    /// thread inside `applyCliConfigOverrides` (apply → didSet → persist is
+    /// one synchronous main-actor sequence), so the unchecked storage is
+    /// race-free in practice.
+    nonisolated(unsafe) static var suppressPersistence = false
+
     private nonisolated static func persist<K: TrainingParameterKey>(_ key: K.Type, value: K.Value) {
+        if suppressPersistence { return }
         let raw = K.encode(value)
         if (try? K.definition.validate(raw)) == nil {
             // Validation failed — programmer or CLI wrote a bad value through the typed setter.
@@ -1047,6 +1335,7 @@ public final class TrainingParameters {
         ValueLabelSmoothingEpsilon.self,
         GradClipMaxNorm.self,
         WeightDecay.self,
+        DropoutRate.self,
         PolicyLossWeight.self,
         ValueLossWeight.self,
         LearningRate.self,
@@ -1060,6 +1349,7 @@ public final class TrainingParameters {
         SelfPlayTauDecayPerPly.self,
         SelfPlayDrawKeepFraction.self,
         SelfPlayMaxPliesPerGame.self,
+        RecordSelfPlayGames.self,
         DrawWatchPDrawThreshold.self,
         DrawWatchTerminateGames.self,
         DrawWatchStreakLength.self,
@@ -1086,7 +1376,21 @@ public final class TrainingParameters {
         LegalMassCollapseGraceSeconds.self,
         LegalMassCollapseNoImprovementProbes.self,
         ArenaConcurrency.self,
-        BatchStatsInterval.self
+        BatchStatsInterval.self,
+        LRCycleEnabled.self,
+        LRCyclePeriodSteps.self,
+        LRCycleCount.self,
+        LRCycleMin.self,
+        LRCycleMax.self,
+        LRCycleInvert.self,
+        MomentumCycleEnabled.self,
+        MomentumCyclePeriodSteps.self,
+        MomentumCycleCount.self,
+        MomentumCycleMin.self,
+        MomentumCycleMax.self,
+        MomentumCycleInvert.self,
+        PeriodicAutosaveIntervalSec.self,
+        MaxPeriodicAutosavesKept.self
     ]
 
     public nonisolated static var allDefinitions: [TrainingParameterDefinition] {

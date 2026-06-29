@@ -1,5 +1,13 @@
 # Capture per-position legal-move mask during self-play; persist with replay records
 
+> **Status: PENDING / TODO** (2026-06-13 audit). Not implemented — the trainer
+> still regenerates legal-move masks every step (no persisted per-position mask).
+>
+> **Implementation details below have drifted (verified 2026-06-23) — the plan is still open, but re-anchor it before acting:**
+> - **Paths moved.** `ChessTrainer.swift` and `ReplayBuffer.swift` now live under `DrewsChessMachine/DrewsChessMachine/Training/`.
+> - **Line numbers are stale** (off by roughly 2000 lines); treat every `ChessTrainer.swift:NNNN` / `ReplayBuffer.swift:NNNN` reference below as approximate-at-best and re-locate by symbol.
+> - **The "bump `ReplayBuffer.fileVersion` to v7" persistence scheme is dead.** v7 already exists — it was minted for an unrelated change (it *dropped* `vBaselines`), so it already consumed that version number. The on-disk persistence plan must be re-anchored against the current **v7** format and target a new version (v8+), not the v7 described here.
+
 ## Context
 
 Today, every training step regenerates each batch position's legal-move mask from scratch:

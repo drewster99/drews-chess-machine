@@ -1,5 +1,7 @@
 # Comment Audit — DrewsChessMachine
 
+> **COMPLETED one-time sweep (2026-05-25) — historical artifact; code line-references are stale, do NOT use as a live checklist.** This punch list was acted upon in its own commit. The `file.swift:NNN` references throughout have since drifted and no longer point at the lines they describe. Kept for historical record only.
+
 A categorized punch list of correctness and fragility issues across the project's Swift `//` and `/* */` comments. Generated from a parallel sweep of every `.swift` file under `DrewsChessMachine/DrewsChessMachine/` (excluding `BuildInfo.swift`, `DrewsChessMachineTests/`, and `Packages/`). 13 partition agents read every file completely; this report is the merged output.
 
 **This file is the deliverable. No source files were modified.** Triage at your pace.

@@ -53,11 +53,6 @@ enum LogAnalysisLauncher {
     }
 
     private static func presentAlert(title: String, info: String) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = info
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+        NonBlockingAlert.presentWarning(title: title, message: info)
     }
 }

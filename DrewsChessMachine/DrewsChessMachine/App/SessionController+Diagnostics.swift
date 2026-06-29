@@ -124,17 +124,21 @@ extension SessionController {
             return false
         }
 
-        // 5. BoardEncoder shape check.
-        check("BoardEncoder produces tensorLength floats (= \(BoardEncoder.tensorLength))") {
-            let tensor = BoardEncoder.encode(.starting)
-            return tensor.count == BoardEncoder.tensorLength
+        // 5. BoardEncoder shape check. Tie both sides to the session's actual
+        //    encoding when a network exists, so the assertion validates the
+        //    stride the running net uses rather than a fixed default. With no
+        //    net built yet, fall back to an explicit `.basic30` probe encoding.
+        let probeEncoding = net?.inputEncoding ?? .basic30
+        check("BoardEncoder produces tensorLength floats (= \(BoardEncoder.tensorLength(for: probeEncoding)))") {
+            let tensor = BoardEncoder.encode(.starting, encoding: probeEncoding)
+            return tensor.count == BoardEncoder.tensorLength(for: probeEncoding)
         }
 
         // 6. Network forward-pass shape (only if a network is built).
         if let net = net {
             ran += 1
             do {
-                let board = BoardEncoder.encode(.starting)
+                let board = BoardEncoder.encode(.starting, encoding: net.inputEncoding)
                 // Uses `SyncBox<[Float]>` so the lock discipline is explicit
                 // — the `consume` closure's happens-before guarantee with the
                 // post-await read lives outside this file and would break
@@ -216,8 +220,8 @@ extension SessionController {
         )
 
         do {
-            let board1 = BoardEncoder.encode(pos1)
-            let board2 = BoardEncoder.encode(pos2)
+            let board1 = BoardEncoder.encode(pos1, encoding: net.inputEncoding)
+            let board2 = BoardEncoder.encode(pos2, encoding: net.inputEncoding)
             // SyncBox over the (policy, value) pair so the post-await
             // read sees both fields under a single lock, with no
             // nonisolated(unsafe) capture. See the matching note in

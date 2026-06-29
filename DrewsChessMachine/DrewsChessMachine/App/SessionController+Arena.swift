@@ -284,6 +284,13 @@ extension SessionController {
                         let weights = try await candidateInference.exportWeights()
                         try await champion.loadWeights(weights)
                         try await trainer.network.loadWeights(weights)
+                        // The trainer's working weights were just replaced by
+                        // the promoted candidate's. Re-seed the fp32 masters
+                        // from them so the optimizer accumulates from the
+                        // validated weights, not stale master values. No-op
+                        // under `.float32`. Gates are paused — safe to drive
+                        // the trainer's graph directly here.
+                        try await trainer.syncMastersFromWorking()
                         // The trainer's CURRENT velocity was built up
                         // against the post-arena weight surface (which
                         // we just discarded by overwriting with the
@@ -476,6 +483,9 @@ extension SessionController {
             // transfer to the detached task explicit).
             let championWeightsSnapshot = promotedChampionWeights
             let trainerWeightsSnapshot = trainerSnapshotWeights + trainerSnapshotVelocity
+            // Champion + trainer share the topology; capture it on the main
+            // actor (the detached task below must not touch `self`).
+            let promotedArch = trainer.arch
             let bufferForAutosave = replayBuffer
             // Same main-actor snapshot rule as the manual/periodic
             // path — rings are @MainActor-isolated, so the array
@@ -509,6 +519,7 @@ extension SessionController {
                         trainerMetadata: trainerMetadata,
                         trainerCreatedAtUnix: createdAtUnix,
                         state: sessionState,
+                        architecture: promotedArch,
                         replayBuffer: bufferForAutosave,
                         chartSnapshot: chartSnapshotForAutosave,
                         trigger: "promote"

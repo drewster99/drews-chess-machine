@@ -29,7 +29,7 @@ final class RepetitionPlaneTests: XCTestCase {
         let engine = ChessGameEngine()
         XCTAssertEqual(engine.state.recentRepetitionMask, 0,
                        "Mask should be 0 at game start (no prior positions)")
-        let tensor = BoardEncoder.encode(engine.state)
+        let tensor = BoardEncoder.encode(engine.state, encoding: .basic30)
         for i in 0..<10 {
             let sum = sumPlane(tensor: tensor, plane: 20 + i)
             XCTAssertEqual(sum, 0.0,
@@ -41,7 +41,7 @@ final class RepetitionPlaneTests: XCTestCase {
     /// test fixture, the UI's editable position, or the starting state)
     /// should produce all-zero history planes.
     func testRepetitionPlanesZeroForDefaultGameState() {
-        let tensor = BoardEncoder.encode(.starting)
+        let tensor = BoardEncoder.encode(.starting, encoding: .basic30)
         for i in 0..<10 {
             let sum = sumPlane(tensor: tensor, plane: 20 + i)
             XCTAssertEqual(sum, 0.0,
@@ -83,7 +83,7 @@ final class RepetitionPlaneTests: XCTestCase {
         XCTAssertEqual(engine.state.recentRepetitionMask, UInt16(1) << 3,
                        "After Nf3 Nc6 Ng1 Nb8, only bit 3 (4 plies ago) should be set; got mask=0x\(String(engine.state.recentRepetitionMask, radix: 16))")
 
-        let tensor = BoardEncoder.encode(engine.state)
+        let tensor = BoardEncoder.encode(engine.state, encoding: .basic30)
         XCTAssertEqual(sumPlane(tensor: tensor, plane: 23), 64.0,
                        "Plane 23 (4 plies ago) should be all-1")
         for i in 0..<10 where i != 3 {
@@ -119,7 +119,7 @@ final class RepetitionPlaneTests: XCTestCase {
         XCTAssertEqual(engine.state.recentRepetitionMask, expected,
                        "After two full knight cycles, bits 3 and 7 should be set; got mask=0x\(String(engine.state.recentRepetitionMask, radix: 16))")
 
-        let tensor = BoardEncoder.encode(engine.state)
+        let tensor = BoardEncoder.encode(engine.state, encoding: .basic30)
         XCTAssertEqual(sumPlane(tensor: tensor, plane: 23), 64.0,
                        "Plane 23 (4 plies ago) should be all-1")
         XCTAssertEqual(sumPlane(tensor: tensor, plane: 27), 64.0,
@@ -146,7 +146,7 @@ final class RepetitionPlaneTests: XCTestCase {
         // No matches yet (every position is novel). Mask = 0.
         XCTAssertEqual(engine.state.recentRepetitionMask, 0,
                        "Mask should be 0 with no cycles yet")
-        let tensor = BoardEncoder.encode(engine.state)
+        let tensor = BoardEncoder.encode(engine.state, encoding: .basic30)
         for i in 0..<10 {
             XCTAssertEqual(sumPlane(tensor: tensor, plane: 20 + i), 0.0,
                            "Plane \(20 + i) should be zero before any cycles")
@@ -182,7 +182,7 @@ final class RepetitionPlaneTests: XCTestCase {
         XCTAssertEqual(engine.state.halfmoveClock, 0,
                        "Sanity: halfmove clock is 0 after a pawn move")
 
-        let tensor = BoardEncoder.encode(engine.state)
+        let tensor = BoardEncoder.encode(engine.state, encoding: .basic30)
         for i in 0..<10 {
             XCTAssertEqual(sumPlane(tensor: tensor, plane: 20 + i), 0.0,
                            "Plane \(20 + i) should be zero after irreversible-move clear")
@@ -262,7 +262,7 @@ final class RepetitionPlaneTests: XCTestCase {
         // Set bits 0, 4, 9 (planes 20, 24, 29).
         let mask: UInt16 = (1 << 0) | (1 << 4) | (1 << 9)
         let state = GameState.starting.withRecentRepetitionMask(mask)
-        let tensor = BoardEncoder.encode(state)
+        let tensor = BoardEncoder.encode(state, encoding: .basic30)
         let setBits: Set<Int> = [0, 4, 9]
         for i in 0..<10 {
             let expected: Float = setBits.contains(i) ? 64.0 : 0.0
@@ -277,8 +277,8 @@ final class RepetitionPlaneTests: XCTestCase {
     /// `inputPlanes = 30`. If a future change moves the constant, this
     /// test still passes as long as the relationship holds.
     func testTensorLengthMatchesInputPlanes() {
-        XCTAssertEqual(BoardEncoder.tensorLength,
-                       ChessNetwork.inputPlanes * 8 * 8)
+        XCTAssertEqual(BoardEncoder.tensorLength(for: .basic30),
+                       NetworkArchitecture.current.inputPlanes * 8 * 8)
     }
 
     /// The engine exposes its window-size constant to match the encoder's
