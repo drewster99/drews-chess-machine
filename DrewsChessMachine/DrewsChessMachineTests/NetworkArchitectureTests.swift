@@ -189,6 +189,45 @@ final class NetworkArchitectureTests: XCTestCase {
         }
     }
 
+    /// Regression (#03): validate() must THROW for a ReZero group whose
+    /// `rezeroAlphaInit` is 0 / negative / non-finite. The forward builds the
+    /// bounded scale `C·tanh(α/C)` with `C = α_init · rezeroTanhCeilingMultiple`;
+    /// a zero (or non-finite) init makes `C == 0`, so the division produces a
+    /// `0/0` NaN that poisons the whole tower. The Build-New-Model α field is an
+    /// unvalidated TextField, so clearing it or typing 0 reaches here — this is
+    /// user-reachable, not just hand-edited JSON.
+    func testValidationRejectsNonPositiveRezeroAlphaInit() {
+        for bad: Float in [0.0, -0.5, .nan, .infinity] {
+            var a = NetworkArchitecture.current
+            a.blockGroups[0].useRezero = true
+            a.blockGroups[0].rezeroAlphaInit = bad
+            XCTAssertThrowsError(try a.validate(), "rezeroAlphaInit \(bad)")
+        }
+        // Pin the exact error for the catastrophic zero case.
+        var z = NetworkArchitecture.current
+        z.blockGroups[0].useRezero = true
+        z.blockGroups[0].rezeroAlphaInit = 0
+        XCTAssertThrowsError(try z.validate()) { error in
+            XCTAssertEqual(error as? NetworkArchitectureError,
+                           .mustBeFinitePositive(field: "blockGroups[0].rezeroAlphaInit", value: 0))
+        }
+    }
+
+    /// The α>0 guard must accept a positive finite init when ReZero is on, and
+    /// must NOT fire when ReZero is off (the field is unused in that case, so a
+    /// stored 0 there is harmless and must still validate).
+    func testValidationAllowsPositiveRezeroAndIgnoresAlphaWhenDisabled() throws {
+        var on = NetworkArchitecture.current
+        on.blockGroups[0].useRezero = true
+        on.blockGroups[0].rezeroAlphaInit = 0.5
+        XCTAssertNoThrow(try on.validate())
+
+        var off = NetworkArchitecture.current
+        off.blockGroups[0].useRezero = false
+        off.blockGroups[0].rezeroAlphaInit = 0   // unused when ReZero off → must not throw
+        XCTAssertNoThrow(try off.validate())
+    }
+
     func testSnakeCaseKeys() throws {
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys]

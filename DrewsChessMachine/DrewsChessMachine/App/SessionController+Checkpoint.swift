@@ -843,6 +843,7 @@ extension SessionController {
             periodicAutosaveIntervalSec: params.periodicAutosaveIntervalSec,
             maxPeriodicAutosavesKept: params.maxPeriodicAutosavesKept,
             recordingCorpusID: activeRecordingCorpusID,
+            recordSelfPlayGames: params.recordSelfPlayGames,
             lrMomentumCycle: params.lrMomentumCycle,
             maxPliesFromAnyOneGame: params.maxPliesFromAnyOneGame,
             targetSampledGameLengthPlies: params.targetSampledGameLengthPlies,

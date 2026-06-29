@@ -426,6 +426,13 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
     /// which would trap on the NaN/infinite values this case exists to
     /// reject.
     case mustBeFiniteNonNegative(field: String, value: Float)
+    /// A Float field that must be finite and strictly > 0. Distinct from
+    /// `mustBeFiniteNonNegative` because zero is itself the failure mode here:
+    /// `rezeroAlphaInit == 0` makes the ReZero ceiling `C = α_init · multiple`
+    /// zero, so the forward `C · tanh(α / C)` divides by zero (`0/0 → NaN`) and
+    /// poisons the whole tower. Carries the Float directly (never coerced to
+    /// Int) so it can report the NaN/infinite values it also rejects.
+    case mustBeFinitePositive(field: String, value: Float)
     /// Feature skip is enabled (`source != .none`) but no destination is routed.
     case featureSkipNoDestination
     /// A feature-skip combination that is config-carried but unsupported —
@@ -442,6 +449,8 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
             return "feature-skip combination '\(option)' is not supported"
         case .mustBeFiniteNonNegative(let field, let value):
             return "\(field) must be finite and >= 0 (got \(value))"
+        case .mustBeFinitePositive(let field, let value):
+            return "\(field) must be finite and > 0 (got \(value))"
         case .kernelMustBeOdd(let field, let value):
             return "\(field) must be odd for symmetric same-padding (got \(value))"
         case .nonPositive(let field, let value):
@@ -875,6 +884,18 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             guard g.dropoutMultiplier >= 0, g.dropoutMultiplier.isFinite else {
                 throw NetworkArchitectureError.mustBeFiniteNonNegative(
                     field: "blockGroups[\(gi)].dropoutMultiplier", value: g.dropoutMultiplier)
+            }
+            // ReZero ceiling C = rezeroAlphaInit · rezeroTanhCeilingMultiple feeds a
+            // division in the forward `C · tanh(α / C)`. A zero (or NaN/infinite)
+            // init makes C == 0 and produces a 0/0 NaN that propagates through the
+            // entire tower. The Build-New-Model α field is an unvalidated TextField,
+            // so a user clearing it or typing 0 reaches here; guard at the single
+            // chokepoint both the UI build path and JSON decode pass through.
+            if g.useRezero {
+                guard g.rezeroAlphaInit.isFinite, g.rezeroAlphaInit > 0 else {
+                    throw NetworkArchitectureError.mustBeFinitePositive(
+                        field: "blockGroups[\(gi)].rezeroAlphaInit", value: g.rezeroAlphaInit)
+                }
             }
         }
         try requirePositive("policyPreConvChannels", policyPreConvChannels)

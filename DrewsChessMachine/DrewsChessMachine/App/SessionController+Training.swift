@@ -325,6 +325,23 @@ extension SessionController {
                         "[RESUME-PARAM] recording_corpus_id: prior run recorded into corpus \(cid) (informational; this run starts a fresh corpus when recording is on)"
                     )
                 }
+                // `recordingCorpusID` above is provenance only; the *intent to
+                // record* lives in this boolean, which is read once at self-play
+                // start (below). A transient `--parameters record_self_play_games=true`
+                // run does not persist to UserDefaults (suppressPersistence), so
+                // without restoring it here a resume would silently drop recording
+                // back to the singleton's default. Restoring re-enables recording
+                // (into a fresh corpus, matching the line above).
+                if let saved = rs.recordSelfPlayGames {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] record_self_play_games: \(TrainingParameters.shared.recordSelfPlayGames) -> \(saved) (from session)"
+                    )
+                    TrainingParameters.shared.recordSelfPlayGames = saved
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] record_self_play_games: saved=nil applied=\(TrainingParameters.shared.recordSelfPlayGames) (defaulted)"
+                    )
+                }
                 // LR/momentum cycling. The 12 cycling params are written back
                 // onto the singleton (so UserDefaults + the popover reflect the
                 // resumed config) and the bundled struct is pushed onto the

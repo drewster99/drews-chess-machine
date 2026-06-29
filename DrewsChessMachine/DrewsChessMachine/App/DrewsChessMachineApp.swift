@@ -1027,6 +1027,16 @@ struct DrewsChessMachineApp: App {
                 do {
                     let url = URL(fileURLWithPath: (pp as NSString).expandingTildeInPath)
                     let cfg = try CliTrainingConfig.load(from: url)
+                    // A --parameters apply is transient to this process. Without
+                    // this guard each setter's didSet persists to UserDefaults,
+                    // and because this headless process shares the GUI's bundle id
+                    // (same UserDefaults domain) the overrides would silently
+                    // become the GUI's next-launch defaults — the same
+                    // cross-process contamination already guarded on the --train
+                    // path. Safe to toggle here: this block runs synchronously on
+                    // the main actor.
+                    TrainingParameters.suppressPersistence = true
+                    defer { TrainingParameters.suppressPersistence = false }
                     try TrainingParameters.shared.apply(cfg.trainingParameters)
                     if stepLimit == nil { stepLimit = cfg.trainingStepLimit }
                 } catch {

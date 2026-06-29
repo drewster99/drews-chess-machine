@@ -33,6 +33,16 @@ import MetalPerformanceShadersGraph
 
 final class MacOS27NaNIsolationTests: XCTestCase {
 
+    // This precision × batch × step-count forensic matrix is ~11.6 minutes
+    // (~60% of total exec) — by far the single biggest contributor to suite run
+    // time, with several batch64/steps1000 cells over a minute each. It is a
+    // diagnostic bug-map,
+    // not a correctness gate, so it is opt-in via DCM_RUN_SLOW_TESTS. See
+    // SlowTestGate.swift and CLAUDE.md ("Running the tests").
+    override func setUpWithError() throws {
+        try SlowTestGate.requireEnabled("MacOS27NaNIsolation")
+    }
+
     private func requireMetal() throws {
         guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("Metal not available") }
     }

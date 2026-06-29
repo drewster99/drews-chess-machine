@@ -397,6 +397,13 @@ struct SessionCheckpointState: Codable, Equatable {
     /// corpus lives outside the session folder. Optional + defaulted for
     /// back-compat with older session files.
     var recordingCorpusID: String? = nil
+    /// Whether self-play recording was enabled at save time
+    /// (`TrainingParameters.shared.recordSelfPlayGames`). `recordingCorpusID`
+    /// is provenance for the corpus the prior run wrote; this boolean is the
+    /// *intent to record*, which resume restores so a recording session keeps
+    /// recording (into a fresh corpus). Optional + defaulted for back-compat
+    /// with older session files (absent → loader falls through to current).
+    var recordSelfPlayGames: Bool? = nil
     /// LR/momentum cycling configuration in effect at save time (the 12
     /// `lr_cycle_*` / `momentum_cycle_*` parameters bundled into the runtime
     /// `LRMomentumCycle` struct). Optional for back-compat with session files

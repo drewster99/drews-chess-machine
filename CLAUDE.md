@@ -20,6 +20,15 @@ Always use **xcode-mcp-server** for building or running. Never invoke `xcodebuil
 - A pre-Compile Run Script phase invokes `DrewsChessMachine/generate-build-info.sh`, which bumps `DrewsChessMachine/build_counter.txt` and regenerates `DrewsChessMachine/DrewsChessMachine/BuildInfo.swift` every build. Both files are expected to show up as modified after any build — never edit `BuildInfo.swift` by hand, and don't fight the counter changes.
 - XCTest target `DrewsChessMachineTests` exists and covers the pure-logic components (PolicyEncoding bijection, BoardEncoder planes, repetition tracking, ReplayBuffer, MPSGraph gradient/reshape semantics, legal-move validation, sign consistency, ArenaEloStats, ChartZoom stops). Add tests for any new pure-logic component that has correctness invariants. Higher-level behaviors that require Metal/MPSGraph setup still rely on the Engine Diagnostics UI button and session-log observation rather than XCTest.
 
+### Running the tests
+
+The full suite is **slow — roughly an hour cold** on this machine: a cold build-for-testing of the large test target dominates, and on top of that test *execution* alone is ~19 min (865 cases). So:
+
+- **Most of the time, run only the specific test(s) / class you're touching.** The cold test-target build is the real cost; once it's warm, incremental rebuilds + targeted `-only-testing:DrewsChessMachineTests/<Class>[/<method>]` runs are quick. Run the **full suite only occasionally** — before merging, or after changes to the graph builders (`ChessNetwork`), training math (`ChessTrainer`), persistence/serialization, or move generation.
+- **Heavy *forensic* suites are gated off by default** behind the `DCM_RUN_SLOW_TESTS` env var (`1`/`true`). They are diagnostic bug-maps, not correctness gates, and dominate execution time. Gated today (see `DrewsChessMachineTests/SlowTestGate.swift`): `MacOS27NaNIsolationTests` (**~11.6 min — ~60% of the whole exec time**; the 63-case precision×batch×step NaN-isolation matrix, several cells 1m+ each) and `ConvKernelExecutionPathNumericsTests` (~37 s — the Winograd-blowup refutation). Gating both drops default exec from ~19 min to **~7 min**. To include them, set the var in the scheme's Test action (Edit Scheme… ▸ Test ▸ Arguments ▸ Environment Variables) or the driving shell: `DCM_RUN_SLOW_TESTS=1 xcodebuild test …`.
+- **Other heavy-but-core suites are NOT gated** (they assert real correctness, so they stay in the default run): `PolicyHeadCorrectnessTests` (~92 s), `CheckpointManagerSafetensorsTests` (~89 s, bit-exact round-trips), `MomentumOptimizerTests` (~86 s), `RuntimeArchReachTests` (~52 s). If one becomes a problem, prefer trimming its slowest cases over gating the whole class.
+- **Gating a new forensic suite:** add `override func setUpWithError() throws { try SlowTestGate.requireEnabled("<label>") }` to the class — it skips cleanly with a reason naming the env var. Don't gate a suite that pins a correctness invariant.
+
 ## Where to look for runtime state
 
 The app terminal console only shows SwiftUI chart warnings and bring-up noise. All meaningful runtime telemetry goes to the session log:

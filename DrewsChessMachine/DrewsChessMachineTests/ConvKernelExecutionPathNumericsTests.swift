@@ -44,6 +44,14 @@ import MetalPerformanceShadersGraph
 /// Run only with no training session live (Metal/MPSGraph).
 final class ConvKernelExecutionPathNumericsTests: XCTestCase {
 
+    // Conv-kernel execution-path numerics forensics (refutes the
+    // .level1/Winograd-blowup hypothesis). Diagnostic, not a correctness gate,
+    // and heavy (~37s). Opt-in via DCM_RUN_SLOW_TESTS — see SlowTestGate.swift
+    // and CLAUDE.md ("Running the tests").
+    override func setUpWithError() throws {
+        try SlowTestGate.requireEnabled("ConvKernelExecutionPathNumerics")
+    }
+
     // MARK: - Geometry
 
     /// Channel width matches the live net's tower so the conv shapes MPS sees

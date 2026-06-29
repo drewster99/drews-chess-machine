@@ -272,4 +272,78 @@ final class SessionCheckpointSchemaExpansionTests: XCTestCase {
         XCTAssertEqual(state.sqrtBatchScalingForLR, false)
         XCTAssertEqual(state.legalMassCollapseThreshold, 0.999)
     }
+
+    // MARK: - record_self_play_games round-trip (#05)
+
+    /// Regression (#05): `recordSelfPlayGames` is the *intent to record* (the
+    /// companion `recordingCorpusID` is provenance only). A transient
+    /// `--parameters record_self_play_games=true` run does not persist to
+    /// UserDefaults (suppressPersistence), so without saving/restoring this
+    /// boolean a resume would silently drop recording back to the singleton's
+    /// default. Pin that the field survives the on-disk encode → decode.
+    func testRecordSelfPlayGamesSurvivesRoundTrip() throws {
+        let formatVersion = SessionCheckpointState.currentFormatVersion
+        let jsonText = """
+        {
+          "formatVersion": \(formatVersion),
+          "sessionID": "rec-session",
+          "savedAtUnix": 1700000000,
+          "sessionStartUnix": 1699996400,
+          "elapsedTrainingSec": 100,
+          "trainingSteps": 0,
+          "selfPlayGames": 0,
+          "selfPlayMoves": 0,
+          "trainingPositionsSeen": 0,
+          "batchSize": 4096,
+          "learningRate": 5.0e-5,
+          "promoteThreshold": 0.55,
+          "arenaGames": 100,
+          "selfPlayTau": {"startTau": 1.0, "decayPerPly": 0.03, "floorTau": 0.4},
+          "arenaTau": {"startTau": 1.0, "decayPerPly": 0.01, "floorTau": 0.2},
+          "selfPlayWorkerCount": 4,
+          "recordSelfPlayGames": true,
+          "championID": "champ",
+          "trainerID": "trainer",
+          "arenaHistory": []
+        }
+        """
+        let original = try SessionCheckpointState.decode(Data(jsonText.utf8))
+        XCTAssertEqual(original.recordSelfPlayGames, true)
+
+        let decoded = try SessionCheckpointState.decode(try original.encode())
+        XCTAssertEqual(decoded.recordSelfPlayGames, true,
+                       "recordSelfPlayGames must survive session encode → decode intact")
+    }
+
+    /// Back-compat: a `.dcmsession` written before this field existed (key
+    /// absent) decodes with `recordSelfPlayGames == nil`. The resume path then
+    /// falls through to the current setting, matching pre-feature behavior.
+    func testLegacySessionWithoutRecordSelfPlayGamesDecodesNil() throws {
+        let formatVersion = SessionCheckpointState.currentFormatVersion
+        let jsonText = """
+        {
+          "formatVersion": \(formatVersion),
+          "sessionID": "legacy-rec",
+          "savedAtUnix": 1700000000,
+          "sessionStartUnix": 1699996400,
+          "elapsedTrainingSec": 100,
+          "trainingSteps": 0,
+          "selfPlayGames": 0,
+          "selfPlayMoves": 0,
+          "trainingPositionsSeen": 0,
+          "batchSize": 4096,
+          "learningRate": 5.0e-5,
+          "promoteThreshold": 0.55,
+          "arenaGames": 100,
+          "selfPlayTau": {"startTau": 1.0, "decayPerPly": 0.03, "floorTau": 0.4},
+          "arenaTau": {"startTau": 1.0, "decayPerPly": 0.01, "floorTau": 0.2},
+          "selfPlayWorkerCount": 4,
+          "championID": "legacy-champion",
+          "trainerID": "legacy-trainer",
+          "arenaHistory": []
+        }
+        """
+        let state = try SessionCheckpointState.decode(Data(jsonText.utf8))
+        XCTAssertNil(state.recordSelfPlayGames)
+    }
 }
