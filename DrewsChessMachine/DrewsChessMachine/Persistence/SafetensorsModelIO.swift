@@ -189,6 +189,51 @@ enum SafetensorsModelIO {
         return Decoded(file: file, architecture: architecture, hasVelocity: hasVelocity)
     }
 
+    // MARK: - Resume provenance
+
+    /// Resume provenance read back from a checkpoint's `__metadata__` — the
+    /// `replay_*` / `built_by_*` keys a corpus-replay run writes (Phase 1).
+    /// Present only on checkpoints saved by `CorpusReplayRunner`.
+    struct ReplayResumeMetadata: Sendable {
+        var corpusID: String
+        var corpusPath: String
+        var nextGameIndex: Int
+        var epoch: Int
+        var populatedPlies: Int
+        var capacity: Int
+        var builtByBuild: Int?
+        var builtByGit: String?
+    }
+
+    /// Header-only read of the resume metadata: parses just the safetensors JSON
+    /// header (8-byte little-endian length prefix + that many JSON bytes), with
+    /// no tensor decode — cheap even on a multi-MB checkpoint. Returns nil if the
+    /// file isn't a resumable replay checkpoint (no `replay_corpus_id` key) or
+    /// the header can't be read.
+    static func readResumeMetadata(at url: URL) -> ReplayResumeMetadata? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let lenData = try? handle.read(upToCount: 8), lenData.count == 8 else { return nil }
+        var n: UInt64 = 0
+        for (k, b) in lenData.enumerated() { n |= UInt64(b) << (8 * k) }
+        guard n > 0, n < 64_000_000,
+              let jsonData = try? handle.read(upToCount: Int(n)), jsonData.count == Int(n),
+              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              let md = obj["__metadata__"] as? [String: String],
+              let corpusID = md["replay_corpus_id"] else { return nil }
+        func intVal(_ key: String) -> Int? { md[key].flatMap { Int($0) } }
+        return ReplayResumeMetadata(
+            corpusID: corpusID,
+            corpusPath: md["replay_corpus_path"] ?? "",
+            nextGameIndex: intVal("replay_next_game_index") ?? 0,
+            epoch: intVal("replay_epoch") ?? 0,
+            populatedPlies: intVal("replay_populated_plies") ?? 0,
+            capacity: intVal("replay_capacity") ?? 0,
+            builtByBuild: intVal("built_by_build"),
+            builtByGit: md["built_by_git"]
+        )
+    }
+
     // MARK: - PyTorch layout transforms
 
     /// Native engine layout -> PyTorch state_dict layout (for the on-disk file).
