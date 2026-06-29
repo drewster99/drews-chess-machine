@@ -132,7 +132,10 @@ run's own step counter.
 | m0.93 | 10000 | 1475.9 | 2.160 | 2.73 | 0.83 | 0.9953 | 11.812 | 1.992 | 0.929 | 15.92 / 23.5 |
 | m0.93 | 11000 | 1511.3 | 2.232 | 2.75 | 0.80 | 0.9959 | 11.938 | 0.867 | 0.930 | 15.36 / 22.5 |
 | m0.93 | 12000 | 1550.3 | 2.170 | 2.72 | 0.80 | 0.9962 | 11.875 | 0.863 | 0.932 | 15.20 / 22.375 |
-| **m0.93** | **13000** | **1514.9** | **2.256** | **2.70** | **0.80** | **0.9956** | **11.812** | **1.133** | **0.934** | **14.98 / 22.0** |
+| m0.93 | 13000 | 1514.9 | 2.256 | 2.70 | 0.80 | 0.9956 | 11.812 | 1.133 | 0.934 | 14.98 / 22.0 |
+| m0.93 | 14000 | 1521.6 | 2.224 | 2.72 | 0.79 | 0.9958 | 12.062 | 0.828 | 0.935 | 15.22 / 22.375 |
+| m0.93 | 15000 | 1572.4 | 2.125 | 2.70 | 0.82 | 0.9959 | 12.125 | 0.871 | 0.937 | 15.44 / 22.0 |
+| **m0.93** | **16000** | **1496.9** | **2.245** | **2.70** | **0.81** | **0.9964** | **12.125** | **0.957** | **0.937** | **15.18 / 22.0** |
 
 Notes: the wd1e-4 17k row's `Σαeff²` and 2–4k `Σαeff²` cells, the wd1e-4 35k
 peak and wd5e-4 12k peak `pLogitAbsMax`, are gaps in collection, not data — left
@@ -416,20 +419,25 @@ fed-plies, not games.)
 
 ## Status / open
 
-All three runs are healthy. The base run topped ~1502 @ 44k; the WD/momentum
-continuation runs (above) carried the lineage to a 1577 high under `m0.93` with a
-~1525 band center, ~43% of one corpus epoch in. The only ongoing internal signal
-is the benign linear warming of §3 — `bn1Mean` ~11.8 and `Σαeff²` ~0.934 by
-m0.93 13k, both creeping straight through both run cutovers with zero inference
-cost (LayerNorm-on-output keeps it decoupled from the forward pass). `Σαeff²` is
-approaching its by-design saturation ceiling of 1.0 (all effective α at the
-`C = 1/√N` cap), which is variance-preserving, not a runaway.
+All three runs are healthy. The base run topped ~1502 @ 44k; the `m0.93`
+continuation (above) is now 16k in, in a noisy ~1476–1577 band centered ~1520,
+~46% of one corpus epoch. Its two highest marks — 1577 @ 7k and 1572 @ 15k,
+8000 steps apart and both with near-best nll — are repeatable highs rather than
+single spikes, but the band has **not** stepped up: every high is followed by a
+pullback into the same range. The only ongoing internal signal is the benign
+linear warming of §3 — `bn1Mean` ~12.1 and `Σαeff²` ~0.937 by m0.93 16k, creeping
+straight through both run cutovers with zero inference cost (LayerNorm-on-output
+keeps it decoupled from the forward pass). At 16k both went *flat* for the first
+tick (identical to 15k), consistent with `Σαeff²` leveling as it nears its
+by-design saturation ceiling of 1.0 (all effective α at the `C = 1/√N` cap) —
+variance-preserving, not a runaway.
 
 The WD experiment (§4) is **resolved**: weight decay at 5e-4 / 2.5e-4 is harmless
 and is not a strength lever; the strength lever is LR / momentum. Its effect on
 the logit *peak* is a clean modest reduction, and on the logit *mean* a slow
-cumulative ease (visible only over the longer m0.93 window: 15.65 → 14.98 across
-13k steps), not the no-effect the shorter wd5e-4 window suggested. Open question
-carried by the `m0.93` run: whether the higher effective LR's marginal ~+20 edge
-over the ~1529 ceiling consolidates into a clean step up, or stays inside the
-noise band (8 marks in, it has held but not separated).
+cumulative ease (visible only over the longer m0.93 window: ~15.7 → mid-15s,
+bouncing 14.98–15.92), not the no-effect the shorter wd5e-4 window suggested.
+Open question carried by the `m0.93` run: whether the higher effective LR's
+marginal ~+15–20 edge over wd5e-4's ~1505 band consolidates into a clean step up,
+or stays inside the noise band. 11 marks in (6k–16k) it has **held but not
+separated** — a marginal, real-but-noisy edge, not a decisive win.
