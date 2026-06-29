@@ -148,7 +148,17 @@ run's own step counter.
 | m0.93 | 26000 | 1586.2 | 2.155 | 2.70 | 0.80 | 0.9969 | 12.562 | 0.773 | 0.948 | 15.16 / 21.5 |
 | m0.93 | 27000 | 1549.8 | 2.114 | 2.70 | 0.80 | 0.9968 | 12.625 | 0.773 | 0.949 | 15.37 / 22.5 |
 | m0.93 | 28000 | 1564.2 | 2.141 | 2.77 | 0.80 | 0.9964 | 12.500 | 0.863 | 0.950 | 15.24 / 22.25 |
-| **m0.93** | **29000** | **1601.7** | **2.071** | **2.72** | **0.80** | **0.9966** | **12.500** | **0.836** | **0.951** | **15.19 / 21.0** |
+| m0.93 | 29000 | 1601.7 | 2.071 | 2.72 | 0.80 | 0.9966 | 12.500 | 0.836 | 0.951 | 15.19 / 21.0 |
+| m0.93 | 30000 | 1515.9 | 2.232 | 2.66 | 0.81 | 0.9967 | 12.438 | 1.391 | 0.952 | 14.91 / 21.25 |
+| m0.93 | 31000 | 1594.5 | 2.115 | 2.73 | 0.78 | 0.9964 | 12.438 | 0.848 | 0.952 | 14.96 / 21.5 |
+| m0.93 | 32000 | 1541.1 | 2.190 | 2.75 | 0.82 | 0.9966 | 12.812 | 0.809 | 0.953 | 14.83 / 21.625 |
+| m0.93 | 33000 | 1584.7 | 2.187 | 2.78 | 0.81 | 0.9964 | 12.812 | 0.984 | 0.953 | 14.59 / 20.75 |
+| m0.93 | 34000 | 1595.5 | 2.119 | 2.375 | 0.945 | 0.9965 | 12.500 | 8.562 | 0.954 | 14.89 / 21.375 |
+| m0.93 | 35000 | 1555.5 | 2.180 | 2.69 | 0.84 | 0.9964 | 12.438 | 0.875 | 0.955 | 14.79 / 21.375 |
+| m0.93 | 36000 | 1554.4 | 2.137 | 2.72 | 0.79 | 0.9971 | 12.312 | 0.750 | 0.956 | 15.04 / 21.25 |
+| m0.93 | 37000 | 1604.2 | 2.103 | 2.70 | 0.80 | 0.9972 | 12.375 | 0.684 | 0.956 | 14.94 / 20.875 |
+| m0.93 | 38000 | 1602.7 | 2.093 | 2.67 | 0.80 | 0.9968 | 12.500 | 0.836 | 0.957 | 14.88 / 20.75 |
+| **m0.93** | **39000** | **1583.2** | **2.149** | **2.72** | **0.80** | **0.9971** | **12.500** | **0.770** | **0.958** | **14.84 / 21.0** |
 
 Notes: the wd1e-4 17k row's `Σαeff²` and 2–4k `Σαeff²` cells, the wd1e-4 35k
 peak and wd5e-4 12k peak `pLogitAbsMax`, are gaps in collection, not data — left
@@ -441,25 +451,25 @@ fed-plies, not games.)
 
 ## Status / open
 
-All three runs are healthy. The base run topped ~1502 @ 44k; the `m0.93`
-continuation (above) is now 29k in, ~52% of one corpus epoch, and is the
-strongest lineage by a clear margin: it crossed **1601.7 @ 29k** (first >1600)
-with a run-best `nll` 2.071, on a plateau that has stepped up to ~1555–1570 and
-a ceiling that is *still rising* (1577 → 1589 → 1587 → 1601 across the run). What
-read as a marginal ~+20 noisy edge through 16k resolved into a decisive ~+65
-over wd5e-4's center once the plateau separated (24k onward). The only ongoing
-internal signal is the benign linear warming of §3 — `bn1Mean` ~12.5 and `Σαeff²`
-~0.951 by m0.93 29k, creeping straight through both run cutovers with zero
-inference cost (LayerNorm-on-output keeps it decoupled from the forward pass).
-Both have effectively leveled (`bn1Mean` flat ~12.5–12.6, `Σαeff²` inching the
-last hundredths toward its by-design saturation ceiling of 1.0 — all effective α
-at the `C = 1/√N` cap, variance-preserving, not a runaway). `pLogitAbsMax` peak
-keeps easing to run-lows (21.0 @ 29k).
+The v5 experiment is **concluded.** The base run topped ~1502 @ 44k; the `m0.93`
+continuation became the strongest lineage by a clear margin, crossing **1604 @
+37k** (its all-time high) with run-best `nll` 2.07–2.10 and back-to-back 1600+
+marks (37k/38k), on a plateau that climbed from ~1535 (18–24k) to ~1575–1600
+(37–39k). It was **stopped manually at step 39419** (final mark 1583 @ 39k; peak
+1604 @ 37k) to free the GPU for a fresh mini-net experiment. Internals stayed
+benign to the end — the §3 linear warming leveled off (`bn1Mean` flat ~12.5,
+`Σαeff²` ~0.958 inching toward its by-design 1.0 cap, variance-preserving not a
+runaway), and `pLogitAbsMax` *fell* over the long run to peak run-lows (~20.75)
+with the mean easing to ~14.9 — the lighter 2.5e-4 WD slowly compressing the
+logits exactly as §4 predicted over a long enough window.
 
 The WD experiment (§4) is **resolved**: weight decay at 5e-4 / 2.5e-4 is harmless
 and is not a strength lever; **LR / momentum is, decisively** — the μ=0.9→0.93
 bump (higher effective LR) is the sole change that turned the flat ~1505 wd
-plateau into the climbing m0.93 run (~1570 and rising, peak 1601). Open question
-now: how far the m0.93 climb continues before it tops out, and whether an even
-higher effective LR would extend it or destabilize — μ=0.93 has shown no
-instability so far (gNorm calm throughout).
+plateau into the climbing m0.93 run (peak 1604). The "used-up capacity" findings
+from the mid-run weight analysis (vestigial SE, conv2/deep-block rank headroom)
+fed the next experiment: a fresh **2-block, 2.25M mini net with SE removed**
+(`20260629-3-3MIV`), now training on the same corpus from scratch and tracked
+separately (not in this v5-specific doc). Open question it probes: how high a
+¼-size net climbs vs this v5's ~1604 — i.e. how capacity-bound the corpus-fit
+ceiling actually is.
