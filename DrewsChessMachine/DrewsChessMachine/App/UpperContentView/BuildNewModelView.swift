@@ -184,56 +184,70 @@ struct BuildNewModelView: View {
     @ViewBuilder
     private func groupFields(_ i: Int) -> some View {
         @Bindable var model = model
-        intField("Blocks (count)", $model.blockGroups[i].count)
-        intField("Channels", $model.blockGroups[i].channels)
-        intField("Conv 1 kernel size (odd)", $model.blockGroups[i].conv1KernelSize)
-        intField("Conv 2 kernel size (odd)", $model.blockGroups[i].conv2KernelSize)
-        enumPicker("SE style", $model.blockGroups[i].seStyle, SEStyle.allCases)
-        if model.blockGroups[i].seStyle != .none {
-            intField("SE reduction ratio", $model.blockGroups[i].seReductionRatio)
-        }
-        enumPicker("Activation", $model.blockGroups[i].activationFunction, ActivationFunction.allCases)
-        enumPicker("Activation style", $model.blockGroups[i].activationStyle, BlockActivationStyle.allCases)
-        enumPicker("Skip merge", $model.blockGroups[i].skipMerge, BlockSkipMerge.allCases)
-        // Optional output normalization (Optional in the model so old configs
-        // decode as nil); map nil <-> .none for the non-optional picker.
-        enumPicker("Output norm", Binding(
-            get: { model.blockGroups[i].outputNorm ?? .none },
-            set: { model.blockGroups[i].outputNorm = $0 }
-        ), BlockOutputNorm.allCases)
-        Toggle("Use ReZero", isOn: $model.blockGroups[i].useRezero)
-        if model.blockGroups[i].useRezero {
-            // The α init is seeded from the loaded preset and does NOT
-            // auto-track the TOTAL block count, so a deep net built off a
-            // shallow preset silently keeps the shallow α. Flag the mismatch
-            // and offer a one-click snap to 1/√(total blocks) rather than
-            // silently overwriting a deliberately-set value.
-            HStack {
-                floatField("ReZero α init", $model.blockGroups[i].rezeroAlphaInit)
-                // Two depth-appropriate inits are blessed: 1/√N (default,
-                // variance-preserving) and 1/N (DeepNorm-style, gentler — for
-                // deep towers where the stream *mean* accumulates). Offer a
-                // one-click snap to each; the forward soft-bound is α₀·tanh
-                // (asymptote ≈ α₀, mult 1.0) either way. Warn only when the init
-                // matches neither (a stale value carried from a shallower preset).
-                Button(String(format: "1/√%d=%.3f", model.totalBlocks, model.recommendedRezeroAlphaInit)) {
-                    model.blockGroups[i].rezeroAlphaInit = model.recommendedRezeroAlphaInit
-                }
-                .controlSize(.small)
-                .help("Default ReZero init: 1/√(total blocks), variance-preserving. Forward tanh soft-bound ≈ α₀.")
-                Button(String(format: "1/%d=%.3f", model.totalBlocks, model.recommendedRezeroAlphaInit1OverN)) {
-                    model.blockGroups[i].rezeroAlphaInit = model.recommendedRezeroAlphaInit1OverN
-                }
-                .controlSize(.small)
-                .help("DeepNorm-style init: 1/(total blocks). Gentler; preferable for very deep towers. Forward tanh soft-bound ≈ α₀.")
-                if model.rezeroAlphaInitMismatch(at: i) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                        .help("ReZero α init matches neither 1/√N nor 1/N for this depth — likely a stale value from a shallower preset.")
+        // Bounds guard. When a group is removed (or reordered), SwiftUI can
+        // re-evaluate the *disappearing* row's body — and any binding the row's
+        // controls still hold — one more time with its now-stale `i`, after
+        // `blockGroups` has already shrunk. Every `blockGroups[i]` access below
+        // (the `if seStyle`/`if useRezero` reads and the field bindings) would
+        // then subscript out of range and trap (this crashed the app on a group
+        // delete via the Output-norm Picker's selection binding). Gating the
+        // whole field set on `indices.contains(i)` makes the stale re-eval
+        // render empty instead of trapping; valid rows are unaffected.
+        if model.blockGroups.indices.contains(i) {
+            intField("Blocks (count)", $model.blockGroups[i].count)
+            intField("Channels", $model.blockGroups[i].channels)
+            intField("Conv 1 kernel size (odd)", $model.blockGroups[i].conv1KernelSize)
+            intField("Conv 2 kernel size (odd)", $model.blockGroups[i].conv2KernelSize)
+            enumPicker("SE style", $model.blockGroups[i].seStyle, SEStyle.allCases)
+            if model.blockGroups[i].seStyle != .none {
+                intField("SE reduction ratio", $model.blockGroups[i].seReductionRatio)
+            }
+            enumPicker("Activation", $model.blockGroups[i].activationFunction, ActivationFunction.allCases)
+            enumPicker("Activation style", $model.blockGroups[i].activationStyle, BlockActivationStyle.allCases)
+            enumPicker("Skip merge", $model.blockGroups[i].skipMerge, BlockSkipMerge.allCases)
+            // Optional output normalization (Optional in the model so old configs
+            // decode as nil); map nil <-> .none for the non-optional picker. The
+            // get/set re-check the index — this binding is retained by the Picker
+            // and can fire during the disappearing-row update even past the outer
+            // guard, so it must be self-defending.
+            enumPicker("Output norm", Binding(
+                get: { model.blockGroups.indices.contains(i) ? (model.blockGroups[i].outputNorm ?? .none) : .none },
+                set: { if model.blockGroups.indices.contains(i) { model.blockGroups[i].outputNorm = $0 } }
+            ), BlockOutputNorm.allCases)
+            Toggle("Use ReZero", isOn: $model.blockGroups[i].useRezero)
+            if model.blockGroups[i].useRezero {
+                // The α init is seeded from the loaded preset and does NOT
+                // auto-track the TOTAL block count, so a deep net built off a
+                // shallow preset silently keeps the shallow α. Flag the mismatch
+                // and offer a one-click snap to 1/√(total blocks) rather than
+                // silently overwriting a deliberately-set value.
+                HStack {
+                    floatField("ReZero α init", $model.blockGroups[i].rezeroAlphaInit)
+                    // Two depth-appropriate inits are blessed: 1/√N (default,
+                    // variance-preserving) and 1/N (DeepNorm-style, gentler — for
+                    // deep towers where the stream *mean* accumulates). Offer a
+                    // one-click snap to each; the forward soft-bound is α₀·tanh
+                    // (asymptote ≈ α₀, mult 1.0) either way. Warn only when the init
+                    // matches neither (a stale value carried from a shallower preset).
+                    Button(String(format: "1/√%d=%.3f", model.totalBlocks, model.recommendedRezeroAlphaInit)) {
+                        model.blockGroups[i].rezeroAlphaInit = model.recommendedRezeroAlphaInit
+                    }
+                    .controlSize(.small)
+                    .help("Default ReZero init: 1/√(total blocks), variance-preserving. Forward tanh soft-bound ≈ α₀.")
+                    Button(String(format: "1/%d=%.3f", model.totalBlocks, model.recommendedRezeroAlphaInit1OverN)) {
+                        model.blockGroups[i].rezeroAlphaInit = model.recommendedRezeroAlphaInit1OverN
+                    }
+                    .controlSize(.small)
+                    .help("DeepNorm-style init: 1/(total blocks). Gentler; preferable for very deep towers. Forward tanh soft-bound ≈ α₀.")
+                    if model.rezeroAlphaInitMismatch(at: i) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .help("ReZero α init matches neither 1/√N nor 1/N for this depth — likely a stale value from a shallower preset.")
+                    }
                 }
             }
+            floatField("Dropout multiplier", $model.blockGroups[i].dropoutMultiplier)
         }
-        floatField("Dropout multiplier", $model.blockGroups[i].dropoutMultiplier)
     }
 
     // MARK: Diagram pane (live-updating, renders the draft)
