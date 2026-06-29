@@ -416,7 +416,6 @@ enum CorpusReplayRunner {
                     withIntermediateDirectories: true
                 )
                 try encoded.write(to: outModelURL, options: [.atomic])
-
                 emit("[REPLAY] saved trainer model (\(reason)) step=\(step) nextGame=\(nextGameIndex) shard=\(shard) epoch=\(epoch) -> \(outModelURL.lastPathComponent)")
             } catch {
                 let msg = "[REPLAY] WARNING: trainer-model save (\(reason)) failed at step \(step): \(error.localizedDescription)"
@@ -499,6 +498,23 @@ enum CorpusReplayRunner {
             return g
         }
 
+        // Normalize the streaming cursor into a valid (nextGame, shard, epoch)
+        // tuple for a save. After the final game of an epoch is consumed,
+        // nextGameWithinEpoch sits at totalCorpusGames — one past the end — until
+        // the NEXT nextGame() call performs the wrap. A save taken in that window
+        // (a step-limit or abort breaking the loop right at an epoch boundary)
+        // would otherwise record next_game_index == totalCorpusGames and
+        // locate(...).shard == shardURLs.count, both outside the resume bounds
+        // this same file enforces on read. Fold the boundary state forward to the
+        // start of the next epoch — (game 0, shard 0, epoch + 1) — exactly as
+        // nextGame()'s wrap does, so the saved resume point is always consistent.
+        func resumePoint() -> (nextGame: Int, shard: Int, epoch: Int) {
+            if nextGameWithinEpoch >= totalCorpusGames {
+                return (0, 0, epochsCompleted + 1)
+            }
+            return (nextGameWithinEpoch, locate(nextGameWithinEpoch).shard, epochsCompleted)
+        }
+
         var positionsFed = 0
         var gamesFed = 0
         var corpusExhausted = false
@@ -563,9 +579,10 @@ enum CorpusReplayRunner {
             }
             // Periodic autosave (overwrites the rolling output file).
             if step % autosaveEvery == 0 {
+                let rp = resumePoint()
                 await saveTrainerModel(step: step, reason: "autosave",
-                    nextGameIndex: nextGameWithinEpoch, shard: locate(nextGameWithinEpoch).shard,
-                    epoch: epochsCompleted, populatedPlies: buffer.count,
+                    nextGameIndex: rp.nextGame, shard: rp.shard,
+                    epoch: rp.epoch, populatedPlies: buffer.count,
                     corpusID: resumeCorpusID, corpusPath: resumeCorpusPath)
             }
         }
@@ -574,9 +591,10 @@ enum CorpusReplayRunner {
         // exhaustion, or Ctrl-C abort. A thrown error skips this (it propagates
         // out of runReplay before we get here): the network state after a hard
         // failure isn't worth persisting over the last good autosave.
+        let finalResume = resumePoint()
         await saveTrainerModel(step: step, reason: aborted ? "abort" : "final",
-            nextGameIndex: nextGameWithinEpoch, shard: locate(nextGameWithinEpoch).shard,
-            epoch: epochsCompleted, populatedPlies: buffer.count,
+            nextGameIndex: finalResume.nextGame, shard: finalResume.shard,
+            epoch: finalResume.epoch, populatedPlies: buffer.count,
             corpusID: resumeCorpusID, corpusPath: resumeCorpusPath)
 
         return Result(steps: step, positionsFed: positionsFed, gamesFed: gamesFed, epochs: epochsCompleted)
