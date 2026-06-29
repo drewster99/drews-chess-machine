@@ -135,7 +135,20 @@ run's own step counter.
 | m0.93 | 13000 | 1514.9 | 2.256 | 2.70 | 0.80 | 0.9956 | 11.812 | 1.133 | 0.934 | 14.98 / 22.0 |
 | m0.93 | 14000 | 1521.6 | 2.224 | 2.72 | 0.79 | 0.9958 | 12.062 | 0.828 | 0.935 | 15.22 / 22.375 |
 | m0.93 | 15000 | 1572.4 | 2.125 | 2.70 | 0.82 | 0.9959 | 12.125 | 0.871 | 0.937 | 15.44 / 22.0 |
-| **m0.93** | **16000** | **1496.9** | **2.245** | **2.70** | **0.81** | **0.9964** | **12.125** | **0.957** | **0.937** | **15.18 / 22.0** |
+| m0.93 | 16000 | 1496.9 | 2.245 | 2.70 | 0.81 | 0.9964 | 12.125 | 0.957 | 0.937 | 15.18 / 22.0 |
+| m0.93 | 17000 | 1589.3 | 2.130 | 2.73 | 0.82 | 0.9961 | 12.250 | 0.977 | 0.939 | 15.19 / 22.625 |
+| m0.93 | 18000 | 1525.2 | 2.201 | 2.72 | 0.81 | 0.9964 | 12.375 | 0.809 | 0.939 | 15.07 / 21.625 |
+| m0.93 | 19000 | 1536.0 | 2.180 | 2.70 | 0.82 | 0.9964 | 12.125 | 0.855 | 0.941 | 15.26 / 22.625 |
+| m0.93 | 20000 | 1550.3 | 2.198 | 2.56 | 0.82 | 0.9964 | 12.062 | 1.805 | 0.943 | 15.11 / 21.875 |
+| m0.93 | 21000 | 1520.6 | 2.182 | 2.70 | 0.80 | 0.9965 | 12.312 | 0.758 | 0.943 | 15.16 / 22.5 |
+| m0.93 | 22000 | 1508.8 | 2.167 | 2.70 | 0.81 | 0.9958 | 12.125 | 0.867 | 0.944 | 15.19 / 21.625 |
+| m0.93 | 23000 | 1576.5 | 2.167 | 2.56 | 0.84 | 0.9961 | 12.375 | 1.812 | 0.945 | 14.99 / 21.375 |
+| m0.93 | 24000 | 1519.0 | 2.227 | 2.77 | 0.80 | 0.9965 | 12.375 | 0.922 | 0.946 | 15.06 / 21.875 |
+| m0.93 | 25000 | 1587.3 | 2.097 | 2.73 | 0.80 | 0.9967 | 12.500 | 0.871 | 0.947 | 15.26 / 22.0 |
+| m0.93 | 26000 | 1586.2 | 2.155 | 2.70 | 0.80 | 0.9969 | 12.562 | 0.773 | 0.948 | 15.16 / 21.5 |
+| m0.93 | 27000 | 1549.8 | 2.114 | 2.70 | 0.80 | 0.9968 | 12.625 | 0.773 | 0.949 | 15.37 / 22.5 |
+| m0.93 | 28000 | 1564.2 | 2.141 | 2.77 | 0.80 | 0.9964 | 12.500 | 0.863 | 0.950 | 15.24 / 22.25 |
+| **m0.93** | **29000** | **1601.7** | **2.071** | **2.72** | **0.80** | **0.9966** | **12.500** | **0.836** | **0.951** | **15.19 / 21.0** |
 
 Notes: the wd1e-4 17k row's `Σαeff²` and 2–4k `Σαeff²` cells, the wd1e-4 35k
 peak and wd5e-4 12k peak `pLogitAbsMax`, are gaps in collection, not data — left
@@ -169,19 +182,28 @@ three runs are otherwise one continuous pass over the corpus (games 0 → ~8.9M,
 - **m0.93** — `wd 2.5e-4` (lighter than 5e-4), `lr 0.01`, **`momentum 0.93`**
   (steady-state step amplification 1/(1−μ) = 14.3× vs 0.9's 10× — i.e. a higher
   *effective* LR without touching the warmup schedule). Resumed at game
-  7,851,549. **Finding (13k in):** the only run to poke above the ~1529 ceiling
-  — new all-time high 1577 @ 7k, then a noisy ~1476–1577 band whose center
-  (~1525 over marks 6–13k) sits ~+20 above wd5e-4's ~1505. The edge has held
-  across eight marks but is small and never consolidated into a clean step up —
-  honest read is a marginal win, not a decisive one. μ=0.93 stayed stable
-  throughout (gNorm calm, no instability from the larger effective step). One
-  late wrinkle contradicting the wd5e-4 read: across the m0.93 run the
-  `pLogitAbsMax` *mean* drifts slowly down (15.65 @ 1k → 14.98 @ 13k, first
-  sub-15 mark) — so the lighter 2.5e-4 WD *does* ease the logit mean, just
-  cumulatively over many more steps than wd5e-4's 15k window showed.
+  7,851,549. **Finding (29k in — a confirmed win):** early on (≤16k) this looked
+  like only a marginal, noisy ~+20 edge that wouldn't consolidate. It then
+  resolved cleanly: the plateau stepped up — center ~1535 (18–24k) → ~1555–1570
+  (22–29k), the floor lifted from the early ~1476 to ~1510–1550, and the *ceiling
+  itself kept rising* across the run: 1577 @ 7k → 1589 @ 17k → 1587 @ 25k → **new
+  all-time high 1601.7 @ 29k**. Crucially the highs land with record `nll`
+  (2.097 @ 25k, then **2.071 @ 29k**, both run-bests) and record `legalMass`
+  (0.9969 @ 26k) — pElo, nll, and legal-mass agreeing rules out scoring noise.
+  Back-to-back ceiling marks (1587/1586 @ 25/26k) and the >1600 cross put m0.93
+  at ~+65 over wd5e-4's ~1505 center and ~+95 over its 1529 best — decisively
+  past the noise band, and still slowly climbing at 29k (not yet plateaued).
+  μ=0.93 stayed stable throughout (gNorm calm, no instability from the larger
+  effective step). Side note: across the m0.93 run the `pLogitAbsMax` *peak*
+  drifts to new run-lows (21.0 @ 29k) and the mean bounces ~15.0–15.4 — so the
+  lighter 2.5e-4 WD eases the logits slowly over many steps, contra the flat read
+  the shorter wd5e-4 window gave.
 
-Takeaway: **weight decay is not a strength lever** on this corpus at this scale;
-LR / momentum is. WD's only clean effect was a slightly lower logit *peak*.
+Takeaway: **weight decay is not a strength lever** on this corpus at this scale —
+**LR / momentum is, and decisively so**: the only change between the flat-plateau
+wd runs (~1505) and the climbing m0.93 run (~1570 and rising, peak 1601) was the
+higher effective LR from μ=0.9→0.93. WD's only clean effect was a slightly lower
+logit peak.
 
 ## Failed runs — the v4 lineage that motivated v5
 
@@ -420,24 +442,24 @@ fed-plies, not games.)
 ## Status / open
 
 All three runs are healthy. The base run topped ~1502 @ 44k; the `m0.93`
-continuation (above) is now 16k in, in a noisy ~1476–1577 band centered ~1520,
-~46% of one corpus epoch. Its two highest marks — 1577 @ 7k and 1572 @ 15k,
-8000 steps apart and both with near-best nll — are repeatable highs rather than
-single spikes, but the band has **not** stepped up: every high is followed by a
-pullback into the same range. The only ongoing internal signal is the benign
-linear warming of §3 — `bn1Mean` ~12.1 and `Σαeff²` ~0.937 by m0.93 16k, creeping
-straight through both run cutovers with zero inference cost (LayerNorm-on-output
-keeps it decoupled from the forward pass). At 16k both went *flat* for the first
-tick (identical to 15k), consistent with `Σαeff²` leveling as it nears its
-by-design saturation ceiling of 1.0 (all effective α at the `C = 1/√N` cap) —
-variance-preserving, not a runaway.
+continuation (above) is now 29k in, ~52% of one corpus epoch, and is the
+strongest lineage by a clear margin: it crossed **1601.7 @ 29k** (first >1600)
+with a run-best `nll` 2.071, on a plateau that has stepped up to ~1555–1570 and
+a ceiling that is *still rising* (1577 → 1589 → 1587 → 1601 across the run). What
+read as a marginal ~+20 noisy edge through 16k resolved into a decisive ~+65
+over wd5e-4's center once the plateau separated (24k onward). The only ongoing
+internal signal is the benign linear warming of §3 — `bn1Mean` ~12.5 and `Σαeff²`
+~0.951 by m0.93 29k, creeping straight through both run cutovers with zero
+inference cost (LayerNorm-on-output keeps it decoupled from the forward pass).
+Both have effectively leveled (`bn1Mean` flat ~12.5–12.6, `Σαeff²` inching the
+last hundredths toward its by-design saturation ceiling of 1.0 — all effective α
+at the `C = 1/√N` cap, variance-preserving, not a runaway). `pLogitAbsMax` peak
+keeps easing to run-lows (21.0 @ 29k).
 
 The WD experiment (§4) is **resolved**: weight decay at 5e-4 / 2.5e-4 is harmless
-and is not a strength lever; the strength lever is LR / momentum. Its effect on
-the logit *peak* is a clean modest reduction, and on the logit *mean* a slow
-cumulative ease (visible only over the longer m0.93 window: ~15.7 → mid-15s,
-bouncing 14.98–15.92), not the no-effect the shorter wd5e-4 window suggested.
-Open question carried by the `m0.93` run: whether the higher effective LR's
-marginal ~+15–20 edge over wd5e-4's ~1505 band consolidates into a clean step up,
-or stays inside the noise band. 11 marks in (6k–16k) it has **held but not
-separated** — a marginal, real-but-noisy edge, not a decisive win.
+and is not a strength lever; **LR / momentum is, decisively** — the μ=0.9→0.93
+bump (higher effective LR) is the sole change that turned the flat ~1505 wd
+plateau into the climbing m0.93 run (~1570 and rising, peak 1601). Open question
+now: how far the m0.93 climb continues before it tops out, and whether an even
+higher effective LR would extend it or destabilize — μ=0.93 has shown no
+instability so far (gNorm calm throughout).
