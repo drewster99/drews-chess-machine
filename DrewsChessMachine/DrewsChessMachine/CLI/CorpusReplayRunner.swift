@@ -98,12 +98,20 @@ enum CorpusReplayRunner {
         var epochs: Int
     }
 
+    /// Write a line to BOTH the session log file and stdout. `SessionLogger.log`
+    /// targets only the per-launch log file, so a headless replay watched in a
+    /// terminal would otherwise see only the per-step lines — routing the
+    /// runner's own status/banner lines through here makes the whole run
+    /// visible there too. (Errors/warnings keep going to stderr separately.)
+    private static func emit(_ message: String) {
+        SessionLogger.shared.log(message)
+        print(message)
+    }
+
     /// Run the replay to completion and exit the process. Never returns.
     static func runAndExit(config: CorpusReplayConfig, params: ReplayParams) -> Never {
         SessionLogger.shared.start()
-        SessionLogger.shared.log(
-            "[REPLAY] starting offline corpus replay over \(config.corpusDirectories.count) corpus path(s)"
-        )
+        emit("[REPLAY] starting offline corpus replay over \(config.corpusDirectories.count) corpus path(s)")
 
         // Ctrl-C handling. Install BEFORE the run so an early interrupt is
         // honored. We ignore the default SIGINT disposition (which would kill
@@ -124,9 +132,7 @@ enum CorpusReplayRunner {
                 return
             }
             abort.request()
-            let msg = "[REPLAY] SIGINT received — finishing current step, saving, then exiting (Ctrl-C again to force-quit)"
-            print(msg)
-            SessionLogger.shared.log(msg)
+            emit("[REPLAY] SIGINT received — finishing current step, saving, then exiting (Ctrl-C again to force-quit)")
         }
         sigSource.resume()
 
@@ -149,8 +155,7 @@ enum CorpusReplayRunner {
             Darwin.exit(33)
         }
         let summary = "[REPLAY] done: steps=\(result.steps) positionsFed=\(result.positionsFed) gamesFed=\(result.gamesFed) epochs=\(result.epochs)"
-        print(summary)
-        SessionLogger.shared.log(summary)
+        emit(summary)
         SessionLogger.shared.shutdown()
         Darwin.exit(0)
     }
@@ -172,7 +177,7 @@ enum CorpusReplayRunner {
             startModelFile = file
             parentModelID = file.modelID
             arch = file.architecture
-            SessionLogger.shared.log("[REPLAY] start-model: \(url.lastPathComponent) modelID=\(file.modelID) encoding=\(arch.inputEncoding.rawValue)")
+            emit("[REPLAY] start-model: \(url.lastPathComponent) modelID=\(file.modelID) encoding=\(arch.inputEncoding.rawValue)")
         } else {
             startModelFile = nil
             parentModelID = ""
@@ -183,7 +188,7 @@ enum CorpusReplayRunner {
                     Darwin.exit(2)
                 }
                 arch = NetworkArchitecture.preset(preset)
-                SessionLogger.shared.log("[REPLAY] fresh net from preset: \(pn)")
+                emit("[REPLAY] fresh net from preset: \(pn)")
             } else {
                 arch = NetworkArchitecture.current
             }
@@ -195,7 +200,7 @@ enum CorpusReplayRunner {
         // fully-explicit form — version, encoding, block groups, heads, compute
         // dtype, and parameter count, with no silent defaults.
         let archSource = startModelFile == nil ? "default preset" : "start-model"
-        SessionLogger.shared.log("[REPLAY-ARCH] (\(archSource)) \(arch.architectureSummary)")
+        emit("[REPLAY-ARCH] (\(archSource)) \(arch.architectureSummary)")
         // Numeric knobs via String(format:) (%ld for Int, %g for Double); the
         // two on/off flags are interpolated rather than passed through %@ (Swift
         // String + %@ relies on NSString bridging — avoid it).
@@ -209,7 +214,7 @@ enum CorpusReplayRunner {
         )
             + " complementCE=\(p.signedAdvantageComplementCE ? "on" : "off")"
             + " sqrtBatchLR=\(p.sqrtBatchScalingLR ? "on" : "off")"
-        SessionLogger.shared.log(hparamsLine)
+        emit(hparamsLine)
         // Resolve the corpus + resume start BEFORE building the (expensive)
         // network/trainer, so a bad --start-shard / --start-game-index (or an
         // empty corpus) fails in milliseconds instead of after a multi-second
@@ -226,7 +231,7 @@ enum CorpusReplayRunner {
             let urls = try corpus.sealedShardURLs()
             shardURLs.append(contentsOf: urls)
             if di == 0 { resumeCorpusID = corpus.corpusID; resumeCorpusPath = dir.path }
-            SessionLogger.shared.log("[REPLAY] corpus \(corpus.corpusID): \(urls.count) sealed shard(s)")
+            emit("[REPLAY] corpus \(corpus.corpusID): \(urls.count) sealed shard(s)")
         }
         guard !shardURLs.isEmpty else { throw CorpusReplayError.noGames }
 
@@ -265,7 +270,7 @@ enum CorpusReplayRunner {
             }
             startShardCursor = ss
             let skipDesc = ss == 0 ? "no shards skipped" : "skipping shards 0…\(ss - 1), \(cumGames[ss]) games"
-            SessionLogger.shared.log("[REPLAY] --start-shard \(ss) -> \(shardURLs[ss].lastPathComponent) (\(skipDesc))")
+            emit("[REPLAY] --start-shard \(ss) -> \(shardURLs[ss].lastPathComponent) (\(skipDesc))")
         } else if let gi = config.startGameIndex {
             guard gi >= 0 && gi < totalCorpusGames else {
                 FileHandle.standardError.write(Data("error: --start-game-index \(gi) out of range; valid 0…\(totalCorpusGames - 1)\n".utf8))
@@ -274,12 +279,12 @@ enum CorpusReplayRunner {
             let (s, off) = locate(gi)
             startShardCursor = s
             startWithinShardSkip = off
-            SessionLogger.shared.log("[REPLAY] --start-game-index \(gi) -> \(shardURLs[s].lastPathComponent) offset \(off) (skipping \(gi) games on the first pass)")
+            emit("[REPLAY] --start-game-index \(gi) -> \(shardURLs[s].lastPathComponent) offset \(off) (skipping \(gi) games on the first pass)")
         }
         // Global within-epoch index of the resume start (first game fed).
         let startGlobalIndex = cumGames[startShardCursor] + startWithinShardSkip
 
-        SessionLogger.shared.log("[REPLAY] building network + trainer (encoding=\(arch.inputEncoding.rawValue))")
+        emit("[REPLAY] building network + trainer (encoding=\(arch.inputEncoding.rawValue))")
         let net = try ChessMPSNetwork(.randomWeights, arch: arch)
         let trainer = try ChessTrainer(
             learningRate: Float(p.learningRate),
@@ -326,7 +331,7 @@ enum CorpusReplayRunner {
             let base = Array(file.weights.prefix(baseCount))
             try await net.network.loadWeights(base)
             try await trainer.loadBaseWeightsResetVelocity(base)
-            SessionLogger.shared.log("[REPLAY] start-model weights loaded into trainer (working+masters, velocity zeroed) + feeder net (base tensors=\(baseCount))")
+            emit("[REPLAY] start-model weights loaded into trainer (working+masters, velocity zeroed) + feeder net (base tensors=\(baseCount))")
         }
 
         // Rolling trainer-model output file. The same file is overwritten by
@@ -362,7 +367,7 @@ enum CorpusReplayRunner {
             let corpusName = config.corpusDirectories[0].lastPathComponent
             return CheckpointPaths.modelsDir.appendingPathComponent("\(corpusName)-replay-latest.safetensors")
         }()
-        SessionLogger.shared.log("[REPLAY] trainer-model output: \(outModelURL.path)")
+        emit("[REPLAY] trainer-model output: \(outModelURL.path)")
 
         // Export the trainer's current base weights and overwrite the rolling
         // output file. Failures here are logged but non-fatal: a convenience
@@ -411,9 +416,8 @@ enum CorpusReplayRunner {
                     withIntermediateDirectories: true
                 )
                 try encoded.write(to: outModelURL, options: [.atomic])
-                let msg = "[REPLAY] saved trainer model (\(reason)) step=\(step) nextGame=\(nextGameIndex) shard=\(shard) epoch=\(epoch) -> \(outModelURL.lastPathComponent)"
-                print(msg)
-                SessionLogger.shared.log(msg)
+
+                emit("[REPLAY] saved trainer model (\(reason)) step=\(step) nextGame=\(nextGameIndex) shard=\(shard) epoch=\(epoch) -> \(outModelURL.lastPathComponent)")
             } catch {
                 let msg = "[REPLAY] WARNING: trainer-model save (\(reason)) failed at step \(step): \(error.localizedDescription)"
                 FileHandle.standardError.write(Data((msg + "\n").utf8))
@@ -433,9 +437,7 @@ enum CorpusReplayRunner {
         let stepLimit = config.stepLimit
         let epochLimit: Int? = config.epochs ?? (stepLimit == nil ? 1 : nil)
 
-        SessionLogger.shared.log(
-            "[REPLAY] batchSize=\(batchSize) reuse=\(String(format: "%.2f", reuse)) K=\(perStepFeed) minPrefill=\(minPrefill) stepLimit=\(stepLimit.map(String.init) ?? "none") epochLimit=\(epochLimit.map(String.init) ?? "none")"
-        )
+        emit("[REPLAY] batchSize=\(batchSize) reuse=\(String(format: "%.2f", reuse)) K=\(perStepFeed) minPrefill=\(minPrefill) stepLimit=\(stepLimit.map(String.init) ?? "none") epochLimit=\(epochLimit.map(String.init) ?? "none")")
 
         // Streaming game source, cycling the shard list for epochs.
         var shardCursor = startShardCursor
@@ -470,7 +472,7 @@ enum CorpusReplayRunner {
                 do {
                     currentGames = try GameCorpusShardIO.readSealed(at: url).games
                 } catch {
-                    SessionLogger.shared.log("[REPLAY] skipping unreadable shard \(url.lastPathComponent): \(error.localizedDescription)")
+                    emit("[REPLAY] skipping unreadable shard \(url.lastPathComponent): \(error.localizedDescription)")
                     currentGames = []
                 }
                 gameCursor = 0
@@ -508,7 +510,7 @@ enum CorpusReplayRunner {
             gamesFed += 1
         }
         let prefillPositions = positionsFed
-        SessionLogger.shared.log("[REPLAY] pre-filled: bufCount=\(buffer.count) positionsFed=\(positionsFed) gamesFed=\(gamesFed)")
+        emit("[REPLAY] pre-filled: bufCount=\(buffer.count) positionsFed=\(positionsFed) gamesFed=\(gamesFed)")
 
         // Format a possibly-not-measured diagnostic. The trainer only computes
         // the diagnostic bundle (entropy, value W/D/L, played-move prob, illegal
@@ -529,7 +531,7 @@ enum CorpusReplayRunner {
             // post-loop save captures a complete, non-mid-step state.
             if abort.isRequested {
                 aborted = true
-                SessionLogger.shared.log("[REPLAY] abort requested — stopping at step \(step)")
+                emit("[REPLAY] abort requested — stopping at step \(step)")
                 break
             }
             if let sl = stepLimit, step >= sl { break }
@@ -542,7 +544,7 @@ enum CorpusReplayRunner {
             if corpusExhausted && epochLimit != nil { break }
 
             guard let timing = try await trainer.trainStep(replayBuffer: buffer, batchSize: batchSize) else {
-                SessionLogger.shared.log("[REPLAY] trainStep returned nil (bufCount=\(buffer.count)); stopping")
+                emit("[REPLAY] trainStep returned nil (bufCount=\(buffer.count)); stopping")
                 break
             }
             step += 1
@@ -557,8 +559,7 @@ enum CorpusReplayRunner {
                     + " pW=\(dg(timing.valueProbWin, 2)) pD=\(dg(timing.valueProbDraw, 2)) pL=\(dg(timing.valueProbLoss, 2)) vAbs=\(dg(timing.valueAbsMean, 3))"
                     + String(format: " gNorm=%.3f lr=%.3g ms=%.1f", timing.gradGlobalNorm, liveLR, timing.totalMs)
                     + " buf=\(buffer.count) plies=\(positionsFed) games=\(gamesFed) epoch=\(epochsCompleted)"
-                SessionLogger.shared.log(line)
-                print(line)
+                emit(line)
             }
             // Periodic autosave (overwrites the rolling output file).
             if step % autosaveEvery == 0 {
