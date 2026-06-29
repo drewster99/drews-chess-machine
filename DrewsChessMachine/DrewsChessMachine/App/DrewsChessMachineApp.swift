@@ -932,6 +932,7 @@ struct DrewsChessMachineApp: App {
         var presetName: String? = nil
         var startShard: Int? = nil
         var startGameIndex: Int? = nil
+        var resumeExact = false
 
         // Strict validation: a recognized flag with a missing or unparseable
         // value is a HARD error, never a silent default. A mistyped
@@ -988,6 +989,8 @@ struct DrewsChessMachineApp: App {
                 startShard = requireInt(arg, nextValue); i += 2
             case "--start-game-index":
                 startGameIndex = requireInt(arg, nextValue); i += 2
+            case "--resume-exact":
+                resumeExact = true; i += 1   // boolean flag, no value
             default:
                 FileHandle.standardError.write(Data("error: unexpected argument '\(arg)' (with --replay-corpus)\n".utf8))
                 Darwin.exit(2)
@@ -997,6 +1000,21 @@ struct DrewsChessMachineApp: App {
         guard !corpusPaths.isEmpty else {
             FileHandle.standardError.write(Data("error: --replay-corpus requires at least one corpus directory path\n".utf8))
             Darwin.exit(2)
+        }
+
+        // --resume-exact preconditions (parse-time, before any GPU work): it
+        // reconstructs the buffer from the start-model's saved resume metadata,
+        // so it needs a --start-model and can't combine with the approximate
+        // cold-refill resume flags.
+        if resumeExact {
+            if startModelPath == nil {
+                FileHandle.standardError.write(Data("error: --resume-exact requires --start-model (a checkpoint carrying replay_* metadata)\n".utf8))
+                Darwin.exit(2)
+            }
+            if startShard != nil || startGameIndex != nil {
+                FileHandle.standardError.write(Data("error: --resume-exact is mutually exclusive with --start-shard / --start-game-index\n".utf8))
+                Darwin.exit(2)
+            }
         }
 
         // Snapshot parameters on the main actor (init() runs on the main
@@ -1060,6 +1078,7 @@ struct DrewsChessMachineApp: App {
             presetName: presetName,
             startShard: startShard,
             startGameIndex: startGameIndex,
+            resumeExact: resumeExact,
             outModelPath: outModelPath,
             runModelID: runModelID
         )

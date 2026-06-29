@@ -61,6 +61,14 @@ struct CorpusReplayConfig: Sendable {
     /// the per-shard game counts into a `(shard, within-shard offset)` start.
     /// Mutually exclusive with `startShard`.
     var startGameIndex: Int?
+    /// Exact resume (Phase 2): reconstruct the replay buffer to its contents at
+    /// the `--start-model`'s saved `next_game_index` (feed the preceding
+    /// capacity-worth of games so the ring self-trims to the exact last-C plies),
+    /// continue from there, and use a minimal momentum-refill warm-up instead of
+    /// the cold-start one. Requires a `--start-model` carrying `replay_*`
+    /// metadata for this same corpus; mutually exclusive with `startShard` /
+    /// `startGameIndex`.
+    var resumeExact: Bool = false
     /// Explicit destination for the rolling trainer-model file. When nil the
     /// runner derives a path next to `--start-model` (or inside the first
     /// corpus directory). The same file is overwritten by the periodic
@@ -240,7 +248,9 @@ enum CorpusReplayRunner {
         // the saved `next_game_index`. cumGames[i] = games in shards 0..<i, so
         // cumGames[i] is the global index of shard i's first game and
         // cumGames.last! the corpus total.
-        let shardGameCounts = try shardURLs.map { try GameCorpusShardIO.readSealedCounts(at: $0).gameCount }
+        let shardCounts = try shardURLs.map { try GameCorpusShardIO.readSealedCounts(at: $0) }
+        let shardGameCounts = shardCounts.map { $0.gameCount }
+        let totalPlies = shardCounts.reduce(0) { $0 + $1.plyCount }
         var cumGames: [Int] = [0]
         for c in shardGameCounts { cumGames.append(cumGames.last! + c) }
         let totalCorpusGames = cumGames.last ?? 0
@@ -252,18 +262,70 @@ enum CorpusReplayRunner {
             return (s, gi - cumGames[s])
         }
 
-        // Resolve the resume start from --start-shard / --start-game-index.
-        // Out-of-range is a HARD error (loud, not a silent wrong start). N is
-        // 0-based: --start-shard is the NNNNN in shard-NNNNN.dcmgames;
-        // --start-game-index is the global within-epoch game ordinal. These run
-        // before the network build, so a typo'd resume arg never pays for it.
+        // Resolve the resume start. Out-of-range is a HARD error (loud, not a
+        // silent wrong start). All run before the network build, so a typo'd
+        // resume arg never pays for it. --resume-exact (Phase 2) reconstructs the
+        // buffer; --start-shard / --start-game-index (Phase 1) are the
+        // approximate cold-refill resumes. Mutual exclusion is enforced at parse
+        // time in DrewsChessMachineApp; the guard here is a defensive backstop.
         if config.startShard != nil && config.startGameIndex != nil {
             FileHandle.standardError.write(Data("error: --start-shard and --start-game-index are mutually exclusive\n".utf8))
             Darwin.exit(2)
         }
         var startShardCursor = 0
         var startWithinShardSkip = 0
-        if let ss = config.startShard {
+        var reconstructUntil: Int? = nil   // resume-exact: refeed up to here, then train
+        var startEpoch = 0
+        if config.resumeExact {
+            // Read the saved resume metadata from the --start-model header (no
+            // tensor decode) and validate it's for THIS corpus.
+            guard let smPath = config.startModelPath else {
+                FileHandle.standardError.write(Data("error: --resume-exact requires --start-model\n".utf8))
+                Darwin.exit(2)
+            }
+            let smURL = URL(fileURLWithPath: (smPath as NSString).expandingTildeInPath)
+            guard let rm = SafetensorsModelIO.readResumeMetadata(at: smURL) else {
+                FileHandle.standardError.write(Data("error: --resume-exact: \(smURL.lastPathComponent) carries no replay_* resume metadata (not a corpus-replay checkpoint)\n".utf8))
+                Darwin.exit(2)
+            }
+            guard rm.corpusID == resumeCorpusID else {
+                FileHandle.standardError.write(Data("error: --resume-exact: checkpoint corpus_id '\(rm.corpusID)' != this corpus '\(resumeCorpusID)'\n".utf8))
+                Darwin.exit(2)
+            }
+            if let g = rm.builtByGit, g != BuildInfo.gitHash {
+                SessionLogger.shared.log("[REPLAY] WARNING --resume-exact: checkpoint built by git \(g) but running \(BuildInfo.gitHash) — if the encoder/feeder changed, the reconstructed buffer may differ from the original.")
+            }
+            // Refeed enough games before `until` to overflow the ring, which then
+            // self-trims to the exact last-capacity plies (so the precise refeed
+            // start doesn't matter as long as it covers >= capacity FED plies).
+            // Walk back by capacity/avgPly games with a 1.5x margin so skips and
+            // local short games can't under-fill. avgPly is the corpus's actual
+            // mean (trailer plies / games).
+            let until = max(0, min(rm.nextGameIndex, totalCorpusGames))
+            reconstructUntil = until
+            startEpoch = max(0, rm.epoch)
+            let cap = max(1, p.replayBufferCapacity)
+            let avgPly = totalCorpusGames > 0 ? max(1.0, Double(totalPlies) / Double(totalCorpusGames)) : 66.0
+            let gamesBack = Int((1.5 * Double(cap) / avgPly).rounded(.up))
+            // Cross-epoch reconstruction isn't supported yet: a checkpoint saved
+            // at epoch ≥ 1 with nextGame < the refeed window held PRIOR-epoch
+            // tail games we'd have to wrap backward to refeed, which also
+            // collides with the epoch-budget stop inside nextGame(). The
+            // epoch-completion checkpoint Phase 1 normalizes to (nextGame=0,
+            // epoch=N) is exactly this case. Fail loud with an actionable
+            // alternative rather than silently reconstruct a short/empty buffer.
+            // (epoch 0 is always fine — no prior epoch, so [0, until) IS the
+            // exact buffer contents, full or legitimately partial.)
+            if startEpoch > 0 && until < gamesBack {
+                FileHandle.standardError.write(Data("error: --resume-exact from an early-epoch checkpoint (epoch \(startEpoch), nextGame \(until) < \(gamesBack)-game reconstruction window) needs cross-epoch buffer reconstruction, not yet supported. Resume from a mid-epoch checkpoint, or use --start-game-index \(until) for an approximate cold-refill resume.\n".utf8))
+                Darwin.exit(2)
+            }
+            let reconstructStart = max(0, until - gamesBack)
+            let (s, off) = locate(reconstructStart)
+            startShardCursor = s
+            startWithinShardSkip = off
+            SessionLogger.shared.log("[REPLAY] --resume-exact: nextGame=\(until) epoch=\(startEpoch) cap=\(cap) savedPlies=\(rm.populatedPlies) -> refeed games [\(reconstructStart), \(until)) (\(until - reconstructStart) games ≈ \(Int(Double(until - reconstructStart) * avgPly)) plies) from \(shardURLs[s].lastPathComponent) offset \(off)")
+        } else if let ss = config.startShard {
             guard ss >= 0 && ss < shardURLs.count else {
                 FileHandle.standardError.write(Data("error: --start-shard \(ss) out of range; valid 0…\(shardURLs.count - 1)\n".utf8))
                 Darwin.exit(2)
@@ -281,8 +343,19 @@ enum CorpusReplayRunner {
             startWithinShardSkip = off
             emit("[REPLAY] --start-game-index \(gi) -> \(shardURLs[s].lastPathComponent) offset \(off) (skipping \(gi) games on the first pass)")
         }
-        // Global within-epoch index of the resume start (first game fed).
+        // Global within-epoch index of the resume start (first game fed). For
+        // --resume-exact this is the refeed start; the run continues from
+        // `reconstructUntil` once the buffer is rebuilt.
         let startGlobalIndex = cumGames[startShardCursor] + startWithinShardSkip
+
+        // Warm-up: on an exact resume the weights AND the (reconstructed) buffer
+        // are both warm — only SGD momentum is cold — so use a short
+        // momentum-refill ramp (~50 steps at momentum 0.9, ~5 time constants)
+        // rather than the cold-start warm-up. Never exceed the configured value.
+        let effectiveWarmupSteps = config.resumeExact ? min(50, p.lrWarmupSteps) : p.lrWarmupSteps
+        if config.resumeExact {
+            SessionLogger.shared.log("[REPLAY] --resume-exact: lrWarmupSteps \(p.lrWarmupSteps) -> \(effectiveWarmupSteps) (momentum-refill)")
+        }
 
         emit("[REPLAY] building network + trainer (encoding=\(arch.inputEncoding.rawValue))")
         let net = try ChessMPSNetwork(.randomWeights, arch: arch)
@@ -300,7 +373,7 @@ enum CorpusReplayRunner {
             momentumCoeff: Float(p.momentumCoeff),
             useSignedAdvantageComplementCE: p.signedAdvantageComplementCE,
             sqrtBatchScalingForLR: p.sqrtBatchScalingLR,
-            lrWarmupSteps: p.lrWarmupSteps,
+            lrWarmupSteps: effectiveWarmupSteps,
             arch: arch
         )
         let buffer = ReplayBuffer(capacity: p.replayBufferCapacity, inputEncoding: net.inputEncoding)
@@ -442,7 +515,7 @@ enum CorpusReplayRunner {
         var shardCursor = startShardCursor
         var currentGames: [GameRecord] = []
         var gameCursor = 0
-        var epochsCompleted = 0
+        var epochsCompleted = startEpoch   // resume-exact carries the saved epoch; else 0
         // One-shot within-shard skip applied to the FIRST loaded shard
         // (--start-game-index); cleared after that shard and on any epoch wrap.
         var firstShardSkip = startWithinShardSkip
@@ -519,11 +592,25 @@ enum CorpusReplayRunner {
         var gamesFed = 0
         var corpusExhausted = false
 
-        // Pre-fill.
-        while buffer.count < minPrefill {
-            guard let g = nextGame() else { corpusExhausted = true; break }
-            positionsFed += feeder.feed(g)
-            gamesFed += 1
+        // Pre-fill — or, for --resume-exact, RECONSTRUCT: refeed games up to the
+        // saved next_game_index so the fixed-capacity ring ends holding exactly
+        // the last-capacity plies the original run had there (the surplus is
+        // overwritten). Training then continues from next_game_index. The refeed
+        // stays within one epoch (reconstructStart..until are both in [0,
+        // totalCorpusGames)), so no wrap fires mid-reconstruction.
+        if let until = reconstructUntil {
+            while nextGameWithinEpoch < until {
+                guard let g = nextGame() else { corpusExhausted = true; break }
+                positionsFed += feeder.feed(g)
+                gamesFed += 1
+            }
+            SessionLogger.shared.log("[REPLAY] --resume-exact: buffer reconstructed bufCount=\(buffer.count)/\(p.replayBufferCapacity) (refed \(gamesFed) games / \(positionsFed) plies); resuming at game \(nextGameWithinEpoch) epoch \(epochsCompleted)")
+        } else {
+            while buffer.count < minPrefill {
+                guard let g = nextGame() else { corpusExhausted = true; break }
+                positionsFed += feeder.feed(g)
+                gamesFed += 1
+            }
         }
         let prefillPositions = positionsFed
         emit("[REPLAY] pre-filled: bufCount=\(buffer.count) positionsFed=\(positionsFed) gamesFed=\(gamesFed)")
