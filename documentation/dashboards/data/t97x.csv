@@ -1,0 +1,4 @@
+cum_step,meta_step,segment,elapsed_train_sec,wallclock_iso,ms_per_step,pElo,nll,pLoss,vLoss,legalMass,pIllM,bn1Mean,gNorm,sae2,eff_alpha,pLogit_mean,pLogit_peak,frozen_file,note
+1250,1250,0,406.3,2026-06-29T19:03:05,250.2,757.75,4.030,3.56,0.80,0.7959,,0.030,1.547,,,18.55,29.125,20260630-T97X-step1250-frozen.safetensors,
+2450,2450,0,801.9,2026-06-29T19:09:40,246.6,811.99,3.644,3.34,0.81,0.8525,,0.059,1.461,,,23.96,38.5,20260630-T97X-step2450-frozen.safetensors,
+3450,3450,0,1128.6,2026-06-29T19:15:07,243.6,815.55,3.572,3.27,0.82,0.8633,,0.082,1.438,,,28.74,48.75,20260630-T97X-step3450-frozen.safetensors,
