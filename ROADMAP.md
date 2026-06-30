@@ -911,7 +911,7 @@ original rationale is not lost.
   opt-in toggle that draws each minibatch with balanced weight from the four
   phase buckets, instead of uniformly from the buffer, compensating for the
   natural skew without changing self-play dynamics. See
-  `STRATIFIED_REPLAY_SAMPLING_PLAN.md` at the repo root for the full plan,
+  `documentation/plans-completed/STRATIFIED_REPLAY_SAMPLING_PLAN.md` for the full plan,
   including the no-op-on-existing-`.dcmsession`-files design (the on-disk
   buffer layout is unchanged; only an in-memory bucket index is added and
   rebuilt from the existing `materialCount` column on restore). V1 ignores
