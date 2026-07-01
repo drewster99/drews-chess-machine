@@ -228,8 +228,9 @@ def track(run):
                pLogit_peak=pr.get("pLogit_peak", ""),
                frozen_file=os.path.basename(frozen), note="")
     rows.append(row); write_csv(run, rows)
+    eh = f"{elapsed/3600:.2f}h" if isinstance(elapsed, (int, float)) else "n/a (log gone)"
     print(f"{run}: tracked cum_step {cum} (meta {meta}) pElo={row['pElo']} "
-          f"elapsed={elapsed}s ({elapsed/3600:.2f}h) seg={si}")
+          f"elapsed={elapsed}s ({eh}) seg={si}")
 
 # ---------- migrate from legacy loop_state.txt ----------
 LOOP_STATE = os.path.join(HERE, "loop_state.txt")  # symlinked/copied from scratchpad if present
@@ -358,11 +359,18 @@ def render():
                ("sae2", "Σαeff²"), ("pLogit_mean", "pLogitAbsMax mean")]
     import io, base64
     def png(fig):
-        b = io.BytesIO(); fig.savefig(b, format="png", dpi=120, bbox_inches="tight")
+        b = io.BytesIO(); fig.savefig(b, format="png", dpi=140, bbox_inches="tight")
         plt.close(fig); return base64.b64encode(b.getvalue()).decode()
 
-    def chart(key, title, xkey, xlabel, logy=False):
-        fig, ax = plt.subplots(figsize=(9, 4.0))
+    def _ema(ys, span):
+        a = 2.0 / (span + 1); s = None; out = []
+        for y in ys:
+            s = y if s is None else a * y + (1 - a) * s
+            out.append(s)
+        return out
+
+    def chart(key, title, xkey, xlabel, logy=False, xmax=None, ema=None, overlay_ema=None):
+        fig, ax = plt.subplots(figsize=(11, 4.8))
         for run, rows in runs.items():
             xs, ys = [], []
             for r in rows:
@@ -371,32 +379,52 @@ def render():
                     continue
                 xs.append(x / 3600 if xkey == "elapsed_train_sec" else x); ys.append(y)
             if xs:
-                ax.plot(xs, ys, "-o", ms=2.4, lw=1.0, color=COLOR[run], label=LAB[run])
+                if overlay_ema:
+                    ax.plot(xs, ys, "-o", ms=2.0, lw=0.8, color=COLOR[run], alpha=0.3)
+                    ax.plot(xs, _ema(ys, overlay_ema), "-", lw=1.9,
+                            color=COLOR[run], label=LAB[run])
+                elif ema:
+                    ax.plot(xs, _ema(ys, ema), "-", lw=1.8, color=COLOR[run], label=LAB[run])
+                else:
+                    ax.plot(xs, ys, "-o", ms=2.4, lw=1.0, color=COLOR[run], label=LAB[run])
         if logy:
             ax.set_yscale("log")
+        if xmax:
+            ax.set_xlim(0, xmax)
         ax.set_xlabel(xlabel); ax.set_ylabel(key); ax.set_title(title)
-        ax.grid(alpha=.22); ax.legend(fontsize=7.5)
+        ax.grid(alpha=.22); ax.legend(fontsize=9, handlelength=2.6, markerscale=2.2)
         return png(fig)
 
-    charts = []
-    for key, title in metrics:
-        logy = key == "bn1Mean"
-        charts.append((f"{key} vs step",
-                       chart(key, f"{title} vs step", "cum_step", "cumulative SGD step", logy)))
-        charts.append((f"{key} vs time",
-                       chart(key, f"{title} vs training time", "elapsed_train_sec",
-                             "elapsed training time (h)", logy)))
+    # early-window zoom target: clip x to the shortest substantial (newest/active) run
+    # so short runs fill the frame. Tracks min per-run max-step among runs past 5k.
+    run_max = {run: max((int(r["cum_step"]) for r in rows), default=0)
+               for run, rows in runs.items() if rows}
+    substantial = [s for s in run_max.values() if s >= 5000]
+    zx = 1.2 * min(substantial) if substantial else None
+    active = [r for r, s in run_max.items() if s == min(substantial)] if substantial else []
 
-    # pair each metric's two charts side-by-side: by step (left) | by training time (right)
+    # one chart set per metric: 10-pt EMA (foreground) over the raw marks at 30%
+    # opacity (background), by SGD step and by training time. Under the pElo pair,
+    # a collapsed <details> holds the same view clipped to the early-window zoom.
     ch = ""
-    for j in range(0, len(charts), 2):
-        (_, b_step), (_, b_time) = charts[j], charts[j + 1]
-        title = metrics[j // 2][1]
-        ch += (f"<h2>{j//2+1} · {title}</h2><div class=pair>"
+    for n, (key, title) in enumerate(metrics, 1):
+        logy = key == "bn1Mean"
+        b_step = chart(key, f"{title} vs step", "cum_step", "cumulative SGD step",
+                       logy, overlay_ema=10)
+        b_time = chart(key, f"{title} vs training time", "elapsed_train_sec",
+                       "elapsed training time (h)", logy, overlay_ema=10)
+        ch += (f"<h2>{n} · {title}</h2><div class=pair>"
                f"<figure><figcaption>by SGD step</figcaption>"
                f"<img src='data:image/png;base64,{b_step}'></figure>"
                f"<figure><figcaption>by training time</figcaption>"
                f"<img src='data:image/png;base64,{b_time}'></figure></div>")
+        if key == "pElo" and zx:
+            z_step = chart(key, f"{title} vs step — zoom ≤{int(zx):,}", "cum_step",
+                           "cumulative SGD step", overlay_ema=10, xmax=zx)
+            ch += (f"<details><summary>▸ early-window zoom — x clipped to ≤{int(zx):,} steps "
+                   f"(tracks shortest active run: {', '.join(active)})</summary>"
+                   f"<figure><figcaption>pElo by SGD step — zoom</figcaption>"
+                   f"<img src='data:image/png;base64,{z_step}'></figure></details>")
     cols = ["step", "elapsed(h)", "pElo", "nll", "pLoss", "vLoss", "legalMass",
             "bn1Mean", "gNorm", "Σαeff²", "pLogit μ/peak"]
     def html_table(rows):
@@ -420,17 +448,50 @@ def render():
         el = _f(rows[-1]["elapsed_train_sec"])
         tb += (f"<details open><summary><b>{LAB[run]}</b> — {len(rows)} marks, peak pElo {peak:.0f}, "
                f"{(el/3600 if el else 0):.1f}h training</summary>" + html_table(rows) + "</details>")
+    # ---- summary: one row per run (arch + final metrics) ----
+    def _last(rows, key):
+        for r in reversed(rows):
+            if _f(r.get(key)) is not None:
+                return r[key]
+        return "—"
+    scols = ["run", "input + stem", "blocks", "heads", "params", "steps", "hrs",
+             "final pElo", "final NLL", "final pLogitAbsMax"]
+    srows = ""
+    for run in REG["runs"]:
+        rows = runs.get(run) or []
+        cfg = REG["runs"][run]
+        stem = cfg.get("arch_stem", cfg.get("arch_summary", ""))
+        blocks = cfg.get("arch_blocks", "")
+        heads = cfg.get("arch_heads", "")
+        acells = (f"<td class=arch>{stem}</td><td class=arch>{blocks}</td>"
+                  f"<td class=arch>{heads}</td>")
+        if not rows:
+            srows += (f"<tr><td>{run}</td>{acells}<td>{cfg['params']:,}</td>"
+                      "<td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>")
+            continue
+        steps = max(int(r["cum_step"]) for r in rows)
+        hrs = max((_f(r["elapsed_train_sec"]) or 0) for r in rows) / 3600
+        srows += (f"<tr><td>{run}</td>{acells}<td>{cfg['params']:,}</td>"
+                  f"<td>{steps:,}</td><td>{hrs:.1f}</td>"
+                  f"<td>{_last(rows,'pElo')}</td><td>{_last(rows,'nll')}</td>"
+                  f"<td>{_last(rows,'pLogit_mean')}</td></tr>")
+    summ = ("<h2>Summary — architecture &amp; final metrics</h2>"
+            "<table class=summary><tr>" + "".join(f"<th>{c}</th>" for c in scols) +
+            "</tr>" + srows + "</table>")
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     html = f"""<!doctype html><html><head><meta charset=utf-8><title>DCM replay runs</title>
-<style>body{{font-family:-apple-system,Helvetica,Arial,sans-serif;margin:24px;max-width:1040px;color:#1a1a1a}}
+<style>body{{font-family:-apple-system,Helvetica,Arial,sans-serif;margin:24px;max-width:min(1900px,96vw);color:#1a1a1a}}
 h1{{font-size:21px}}h2{{font-size:14px;color:#444;margin-top:26px}}img{{max-width:100%;border:1px solid #ddd;border-radius:6px}}
 table{{border-collapse:collapse;font-size:11px;margin:8px 0}}td,th{{border:1px solid #ccc;padding:2px 7px;text-align:right}}
 summary{{cursor:pointer;font-size:13px;margin-top:10px}}.cap{{color:#666;font-size:12px}}
 .pair{{display:flex;gap:14px;align-items:flex-start;margin-top:6px}}.pair figure{{flex:1;width:50%;margin:0}}
-.pair img{{width:100%}}figcaption{{font-size:11px;color:#666;text-align:center;margin-bottom:2px}}</style></head><body>
+.pair img{{width:100%}}figcaption{{font-size:11px;color:#666;text-align:center;margin-bottom:2px}}
+table.summary td,table.summary th{{text-align:left;font-size:11.5px;vertical-align:top}}
+table.summary td.arch{{max-width:230px;white-space:normal;color:#333}}</style></head><body>
 <h1>DCM — replay-run dashboard</h1>
 <p class=cap>Auto-generated {now} from per-run CSVs in <code>data/</code> via <code>replay.py render</code>.
-Each metric is shown twice: vs cumulative SGD step and vs elapsed training time (pause-aware). Reload to refresh.</p>
+Each metric: 10-point EMA (foreground) over raw marks at 30% opacity (background), shown vs cumulative SGD step and vs elapsed training time (pause-aware). The pElo panel has a collapsible early-window zoom. Reload to refresh.</p>
+{summ}
 {ch}<h2>Data tables</h2>{tb}</body></html>"""
     out = os.path.join(HERE, "dcm_dashboard.html")
     open(out, "w").write(html)
