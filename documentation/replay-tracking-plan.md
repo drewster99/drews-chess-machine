@@ -48,6 +48,7 @@ Status legend: ✅ done · 🔧 in progress · ⬜ not started · 🔮 future (e
 - ⬜ **Retire old generators.** `refresh_dashboard.py` now collides with `replay.py` (both write `dcm_dashboard.html`); the standalone `mini2b_pElo.png` + `mini2b-resume-run.md` are made redundant by `render`. Delete on OK (they're committed).
 - ⬜ **v5 time axis (partial).** 80/95 rows populated; fill the remaining 15 (meta_steps not present in the matched segment logs).
 - ⬜ **Per-run markdown doc from the pipeline.** Have `render` also (re)write `mini2b-resume-run.md`-style docs from the CSV, so there's one generator.
+- ⬜ **Run manifest (`data/<run>.meta.json`).** Generate the run-level metadata (see "Run-level metadata" section): auto-fields from `__metadata__` + log now; hyperparameter snapshot blocked on the engine-side embed; surface it as a header block on the dashboard + per-run doc.
 - ⬜ **Rewire the monitoring loop.** Cron should call `replay.py track mini2b && replay.py render` instead of inline bash. (Loops currently **paused**.)
 
 ### 🔮 Future (explicitly deferred)
@@ -58,6 +59,113 @@ Status legend: ✅ done · 🔧 in progress · ⬜ not started · 🔮 future (e
 
 ---
 
+## Vocabulary — agreed direction (2026-06-30, revisit tomorrow)
+
+We converged on the entity model from Andrew's notes (`ml-training-lineage-notes.md`,
+copied into this repo). **This supersedes the ad-hoc "run/segment" language** and is
+the target model to migrate the tracker toward.
+
+**Two layers (the core principle):** a *normalized truth model* (the lineage graph) for
+ancestry/reproducibility/resumability, and a *flat `MetricPoint` table* for all charts.
+**Charts never walk the tree** — they group flat points by `seriesKey`.
+
+**Entities:**
+- **ModelVersion** — a node: weights at a point. kinds: randomInit / checkpoint / probeCheckpoint / completed / intermediate. (`parentModelVersionID`, `parentTrainingRunID`.) ← our `model_id`/`parent_model_id`.
+- **TrainingRun** — an *edge* M→M′: one start model + corpus + **config** + mode. Carries `seriesKey`/`seriesLabel`.
+- **TrainingSession** — one *uninterrupted execution chunk* of a run. Resume = a new Session; stores start/end step, machine, env (git SHA, build, Metal device).
+- **Checkpoint** — a saved artifact at a step/time. kinds: periodic / probe / manual / final; `retained` flag. ← our frozen `.safetensors` (retained) vs transient out-model.
+- **EvaluationRun** — a probe/eval suite run against a Checkpoint. ← our `--probe-set wide` (produces `eval.pElo`, `eval.nll`).
+- **MetricPoint** — one flat chart fact: `metricName`+`value`, x-axes (step / elapsedTrainingSeconds / wallClock), `seriesKey`/`seriesLabel`, provenance IDs. ← the flat store the dashboard reads.
+
+**Resolved questions:**
+- **Run vs Session vs "round":** stop+continue with **same config = new Session** of the same Run; **change config or branch = new Run**. So mini2b (same config) = 1 Run / 2 Sessions; v5 (wd1e-4→wd5e-4→m0.93) = 3 Runs, same `seriesKey`; a fork = new Runs off a shared ModelVersion. "Training round" is retired (= Run).
+- **Charted chain:** not an entity — it's a denormalized **`seriesKey`** stamped on runs/points; the chart does `GROUP BY series_key`.
+- **"Model" ambiguity:** split into **ModelVersion** (tree node) vs **Checkpoint** (every saved artifact).
+
+**Open decisions for tomorrow:**
+1. **Series-cumulative axis (gap in the notes).** `step`/`elapsed` are *run-local*; charting a multi-Run `seriesKey` (e.g. v5's 3 runs) needs a `seriesStep`/`seriesElapsed` offset (sum of prior runs in the series) or it overlaps at 0. Must be explicit.
+2. **Long vs wide store.** `MetricPoint` is long-format (one row per metric); current `data/<run>.csv` is wide. Adopt long as canonical, wide as a derived view.
+3. **(a) external tracker first vs (b) in-app Swift.** Notes are written as Swift structs → option (b) means the engine emits ModelVersion/Run/Session/Checkpoint/MetricPoint itself (closes the hyperparameter-capture gap for free). Recommendation: adopt vocabulary now, implement incrementally via the external tracker (a), treat in-app (b) as follow-on.
+4. **MetricPoint storage:** append-only JSONL (git-friendly) canonical + optional SQLite view built on demand for heavy queries.
+5. **No hand-edited registry:** auto-derive run config from model `__metadata__` + log + lineage; human input (comment/tags) is a `track --note` flag, not JSON editing.
+
+**Reference:** `documentation/ml-training-lineage-notes.md` (Andrew's full schema + Swift structs + SQL chart queries).
+
+## Run-level metadata (manifest)
+
+Separate from the per-mark CSV: one **manifest per run** capturing what the run
+*is* (not its time series). Proposed home: `data/<run>.meta.json`, populated
+mostly automatically and merged with a few hand-edited fields. A large fraction
+is **already embedded in every saved model's `__metadata__`**, so most of this
+is free to scrape.
+
+Source legend: **✅ metadata** = already in safetensors `__metadata__` · **📄 log** = scrapeable from `[REPLAY]` log · **⚙️ params** = from `TrainingParameters` snapshot · **✍️ manual** = hand-entered (registry/manifest) · **🔧 engine** = needs engine to emit / compute.
+
+### 1. Identity & lineage
+| Field | Source | Notes |
+|---|---|---|
+| run key/slug (`mini2b`) | ✍️ manual | registry key |
+| ModelID at start / end | ✅ metadata `model_id` | `yyyymmdd-N-XXXX` |
+| parent / start-model ModelID | ✅ metadata `parent_model_id` | warm-start source; builds the lineage chain |
+| content hash | ✅ metadata `content_sha256` | |
+| dcm format version | ✅ metadata `dcm_format_version` | |
+
+### 2. Model / architecture
+| Field | Source | Notes |
+|---|---|---|
+| model preset name (`v4_5block_7x7` / "custom") | 🔧 engine | only the full recipe is stored, not the preset label |
+| model description (human) | ✍️ manual | |
+| full `NetworkArchitecture` recipe | ✅ metadata `architecture` | blocks, channels, kernels, SE, ReZero cap/α₀, activation, norm, skip, heads |
+| param count | 🔧 engine | not stored; compute from tensors |
+| input encoding / policy size / value-head type / compute+storage dtype | ✅ metadata | inside `architecture` |
+
+### 3. Data source & regime
+| Field | Source | Notes |
+|---|---|---|
+| mode (replay-corpus / self-play / arena) | ✅ metadata `creator` | e.g. `replay` |
+| corpus id + path | ✅ metadata `replay_corpus_id`, `replay_corpus_path` | |
+| corpus size (plies / games / shards / epoch) | ✅ metadata `replay_populated_plies`, `replay_next_game_index`, `replay_epoch` | |
+| replay buffer capacity / prefill | ✅ metadata `replay_capacity` · ⚙️ params prefill | |
+| (self-play) concurrency, Dirichlet noise, sampling schedule | ⚙️ params | n/a for replay |
+
+### 4. Training hyperparameters — **the main gap**
+| Field | Source | Notes |
+|---|---|---|
+| full `TrainingParameters` snapshot (~62 knobs): lr, lr warmup/schedule, momentum, weight decay, grad-clip max norm, batch size, replay-ratio target + auto-adjust, step delay, entropy bonus, label smoothing, value/policy loss weights, temperature schedules (self-play + arena start/target/decay), LR-cycling plan params, … | ⚙️ params → 🔧 engine | **not in model metadata today** (lives in `UserDefaults`). Fix: embed a `training_params` JSON key at save time, or a run-manifest sidecar written at run start. Machinery already exists (`snapshot()`, `parameters.json`, `--show-default-parameters`). |
+
+### 5. Provenance / environment
+| Field | Source | Notes |
+|---|---|---|
+| app build number | ✅ metadata `built_by_build` | e.g. 2009 |
+| git hash | ✅ metadata `built_by_git` | e.g. e96e0b4 |
+| git branch | 🔧 engine | only hash stored; derivable from hash |
+| app version string | 🔧 engine | in BuildInfo, not in metadata |
+| host hardware (chip / RAM / macOS) | 🔧 engine | needed for cross-run step-time comparisons |
+| binary config (Release/Debug) | 🔧 engine | |
+
+### 6. Timestamps & lifecycle
+| Field | Source | Notes |
+|---|---|---|
+| save/created time | ✅ metadata `created_at_unix` | |
+| run start / per-segment start | 📄 log | first `[REPLAY]` line per segment |
+| run end + end reason (completed / aborted / crashed) | ✅ metadata `notes` (partial) · 🔧 engine status | `notes` e.g. "corpus replay abort @ step 120695" |
+| log file name(s) | ✍️ manual / 📄 log | registry `segments` |
+| out-model path + frozen-file naming | ✍️ manual | registry |
+| final training_step | ✅ metadata `training_step` | |
+
+### 7. Outcome summary (computed once, at run end)
+| Field | Source | Notes |
+|---|---|---|
+| total steps, total training time, peak pElo + its step/time, final pElo, best nll, final legalMass, status | 🔧 engine (derived) | computed from the per-mark CSV |
+
+### 8. Human annotation
+| Field | Source | Notes |
+|---|---|---|
+| comment / hypothesis ("Applies new LR cycling plan") | ✍️ manual | separate from auto-set `notes` |
+| tags (`["capacity-sweep","rezero","layernorm-out"]`) | ✍️ manual | |
+
+**Closing the gap:** everything except §4 (hyperparameters), preset name, param count, branch/version, host, and run-status is already free from `__metadata__` + log. The one change with real leverage is **embedding the `TrainingParameters` snapshot into the model metadata** (small, engine-side) — that makes a run fully reproducible and lets the manifest be ~100% auto-generated.
+
 ## File layout
 
 ```
@@ -67,7 +175,8 @@ documentation/
     registry.json                # run configs (label, color, cap, arch, segments)
     replay.py                    # track / migrate / render
     data/
-      mini2b.csv                 # canonical per-run store
+      <run>.csv                  # canonical per-mark store (v5, mini2b, coxw, ykkk, t97x)
+      <run>.meta.json            # per-run manifest (planned) — identity/arch/regime/hyperparams/provenance
     dcm_dashboard.html           # generated output (step | time side-by-side)
     refresh_dashboard.py         # OLD — to retire
     mini2b_pElo.png              # OLD — to retire

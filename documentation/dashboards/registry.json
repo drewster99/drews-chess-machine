@@ -50,14 +50,15 @@
     "ykkk": {
       "label": "ykkk — 0.24M, 2-block (SE)",
       "color": "#d62728",
-      "rezero_cap": 1.0,
+      "rezero_cap": 0.707,
       "n_blocks": 2,
-      "params": 240000,
-      "arch_summary": "2-block, SE",
-      "out_model": null,
+      "params": 242609,
+      "arch_summary": "stem 3×3→64 · 2×[3×3+3×3 @64, SE/4, ReLU/pre, ReZero(0.707·tanh≤0.707), LayerNorm out] · policy simple_conv · value WDL(16→FC64)",
+      "out_model": "20260630-mini-YkKk-resume-replay-latest.safetensors",
       "frozen_glob": "20260630-mini-YkKk-step*-frozen.safetensors",
       "segments": [
-        {"log": "dcm_log_20260629-170745.txt", "date": "20260629", "cumstep_base": 0, "label": "run"}
+        {"log": "dcm_log_20260629-170745.txt", "date": "20260629", "cumstep_base": 0,     "label": "run"},
+        {"log": "dcm_log_20260630-185515.txt", "date": "20260630", "cumstep_base": 40677, "label": "resume", "bn_reset": true}
       ]
     },
     "t97x": {
