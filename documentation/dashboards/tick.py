@@ -2,19 +2,41 @@
 """One per-mark monitoring tick for a run: track -> backfill missed 1000-marks
 from the log -> render dashboard -> print the FULL data table from the CSV
 (authoritative; never hand-typed). Usage: python3 tick.py <run>"""
-import sys, os, csv
+import sys, os, csv, subprocess
 import replay
 
-run = sys.argv[1] if len(sys.argv) > 1 else "ykkk"
+def active_run():
+    """Detect which registered run is currently training by matching the live
+    replay-corpus process's --out-model against each run's out_model."""
+    try:
+        ps = subprocess.check_output(["ps", "-Ao", "args="], text=True)
+    except Exception:
+        return None
+    for line in ps.splitlines():
+        if "replay-corpus" in line and "--out-model" in line:
+            for r, cfg in replay.REG["runs"].items():
+                om = cfg.get("out_model")
+                if om and om in line:
+                    return r
+    return None
+
+arg = sys.argv[1] if len(sys.argv) > 1 else "auto"
+run = active_run() if arg == "auto" else arg
+if not run:
+    print("no active replay run detected — nothing to track")
+    sys.exit(0)
 cfg = replay.REG["runs"][run]
 
 # 1. track current out-model mark (idempotent)
 replay.track(run)
 
+# 1b. recover pElo for any preserved-but-unprobed frozen (self-heals monitoring gaps)
+replay.probe_backfill(run)
+
 # 2. backfill any missed 1000-marks in the latest segment from the log
 seg = cfg["segments"][-1]; base = seg["cumstep_base"]
 out = os.path.join(replay.MODELS, cfg["out_model"])
-st = replay.SegTime(cfg["segments"])
+st = replay.SegTime(cfg["segments"], run)
 rows = replay.read_csv(run); filled = 0
 if os.path.exists(out):
     cur = replay.meta_step_of(out)
@@ -28,7 +50,7 @@ if os.path.exists(out):
             continue
         rows.append(dict(cum_step=cum, meta_step=meta, segment=si, elapsed_train_sec=el,
             wallclock_iso=clk, ms_per_step=met.get("ms", ""), pElo="", nll="",
-            pLoss=met.get("pLoss", ""), vLoss=met.get("vLoss", ""),
+            loss=met.get("loss", ""), pLoss=met.get("pLoss", ""), vLoss=met.get("vLoss", ""),
             legalMass=round(1 - met["pIllM"], 4) if "pIllM" in met else "", pIllM=met.get("pIllM", ""),
             bn1Mean="", gNorm=met.get("gNorm", ""), sae2="", eff_alpha="",
             pLogit_mean="", pLogit_peak="", frozen_file="", note="log-backfill (fast-net)"))

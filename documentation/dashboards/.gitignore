@@ -1,0 +1,2 @@
+# runtime logs from freezer.py / cron_tick.sh — not source
+*.log

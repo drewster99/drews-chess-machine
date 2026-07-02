@@ -35,7 +35,7 @@ BIN = ("/Users/andrew/Library/Developer/Xcode/DerivedData/"
        "DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine")
 
 FIELDS = ["cum_step", "meta_step", "segment", "elapsed_train_sec", "wallclock_iso",
-          "ms_per_step", "pElo", "nll", "pLoss", "vLoss", "legalMass", "pIllM",
+          "ms_per_step", "pElo", "nll", "loss", "pLoss", "vLoss", "legalMass", "pIllM",
           "bn1Mean", "gNorm", "sae2", "eff_alpha", "pLogit_mean", "pLogit_peak",
           "frozen_file", "note"]
 
@@ -86,7 +86,8 @@ def probe(path):
 
 # ---------- log parsing ----------
 _TS = re.compile(r"^(\d\d):(\d\d):(\d\d)\.(\d+)\s+\[REPLAY\] step=(\d+)\b")
-_METRICS = re.compile(r"pLoss=([\d.]+) vLoss=([\d.]+).*?pIllM=([\d.]+).*?gNorm=([\d.]+).*?ms=([\d.]+)")
+# `loss=` (combined total) is optional so older log formats without it still match.
+_METRICS = re.compile(r"(?:loss=([\d.]+) )?pLoss=([\d.]+) vLoss=([\d.]+).*?pIllM=([\d.]+).*?gNorm=([\d.]+).*?ms=([\d.]+)")
 
 def _log_index(logname):
     """Return {meta_step: abs_sec} with midnight rollover handled, + ordered list.
@@ -124,16 +125,19 @@ def _metrics_at(logname, meta_step):
         if st <= meta_step:
             mt = _METRICS.search(line)
             if mt:
-                best = (st, dict(pLoss=float(mt[1]), vLoss=float(mt[2]),
-                                 pIllM=float(mt[3]), gNorm=float(mt[4]), ms=float(mt[5])))
+                best = (st, dict(loss=float(mt[1]) if mt[1] else "",
+                                 pLoss=float(mt[2]), vLoss=float(mt[3]),
+                                 pIllM=float(mt[4]), gNorm=float(mt[5]), ms=float(mt[6])))
         else:
             break
     return best[1] if best else {}
 
 class SegTime:
     """Pause-aware elapsed-time across a run's segments."""
-    def __init__(self, segments):
+    def __init__(self, segments, run=None):
         self.segs = segments
+        self.run = run                      # enables CSV fallback when a prior log is gone
+        self._warned = set()
         self.idx, self.first, self.dur = [], [], []
         prior = 0.0
         for sg in segments:
@@ -143,6 +147,35 @@ class SegTime:
             self.idx.append(idx); self.first.append(first)
             self.dur.append(prior)          # cumulative seconds before this segment
             prior += (last - first)
+
+    def _base(self, si):
+        """Seconds of elapsed training before segment si begins. Resolution order:
+        (1) explicit elapsed_base_sec in the registry (precise, pinned);
+        (2) log-summed prior durations (dur[si]) when the prior logs exist;
+        (3) durable CSV fallback — the max elapsed already recorded for any earlier
+            cumstep — used when a prior segment's log was deleted (dur[si] would be a
+            wrong 0 and the by-time axis would restart at 0). Warns once so the silent
+            restart-to-0 that bit us on nt8y can never recur unnoticed."""
+        sg = self.segs[si]
+        if "elapsed_base_sec" in sg:
+            return sg["elapsed_base_sec"]
+        if si == 0 or self.dur[si] > 0:      # seg 0, or prior logs present -> trust dur
+            return self.dur[si]
+        # prior-segment log(s) missing: recover the base from the durable CSV
+        base = 0.0
+        if self.run:
+            for r in read_csv(self.run):
+                try:
+                    if int(r["cum_step"]) < sg["cumstep_base"] and r.get("elapsed_train_sec") not in ("", None):
+                        base = max(base, float(r["elapsed_train_sec"]))
+                except (ValueError, KeyError):
+                    pass
+        if si not in self._warned:
+            self._warned.add(si)
+            sys.stderr.write(f"[warn] SegTime {self.run}: segment {si} ('{sg.get('label','')}') has a "
+                             f"missing prior-segment log; anchored elapsed base to CSV = {base/3600:.2f}h. "
+                             f"Pin it by setting \"elapsed_base_sec\" on this segment in registry.json.\n")
+        return base
 
     def seg_for(self, cumstep):
         # last segment whose cumstep_base <= cumstep
@@ -163,7 +196,7 @@ class SegTime:
         else:  # nearest <= meta (e.g. abort save between log lines)
             le = [k for k in idx if k <= meta]
             abs_sec = idx[max(le)] if le else self.first[si]
-        elapsed = self.dur[si] + (abs_sec - self.first[si])
+        elapsed = self._base(si) + (abs_sec - self.first[si])
         # wallclock_iso reconstructed from segment date + abs offset within segment day-space
         d0 = datetime.datetime.strptime(self.segs[si]["date"], "%Y%m%d")
         clock = d0 + datetime.timedelta(seconds=abs_sec)
@@ -213,14 +246,14 @@ def track(run):
     cum, frozen = freeze(run, cfg, meta)
     pr = probe(frozen)
     bn1, sae2, effs = internals(frozen, cfg["rezero_cap"])
-    st = SegTime(cfg["segments"]); elapsed, clock, m2, si = st.elapsed_and_clock(cum)
+    st = SegTime(cfg["segments"], run); elapsed, clock, m2, si = st.elapsed_and_clock(cum)
     met = _metrics_at(cfg["segments"][si]["log"], meta)
     lm = round(1 - met["pIllM"], 4) if "pIllM" in met else ""
     row = dict(cum_step=cum, meta_step=meta, segment=si, elapsed_train_sec=elapsed,
                wallclock_iso=clock, ms_per_step=met.get("ms", ""),
                pElo=round(pr.get("pElo"), 2) if pr.get("pElo") else "",
                nll=round(pr.get("nll"), 4) if pr.get("nll") else "",
-               pLoss=met.get("pLoss", ""), vLoss=met.get("vLoss", ""),
+               loss=met.get("loss", ""), pLoss=met.get("pLoss", ""), vLoss=met.get("vLoss", ""),
                legalMass=lm, pIllM=met.get("pIllM", ""),
                bn1Mean=round(bn1, 4), gNorm=met.get("gNorm", ""),
                sae2=round(sae2, 4), eff_alpha=";".join(f"{e:.4f}" for e in effs),
@@ -231,6 +264,62 @@ def track(run):
     eh = f"{elapsed/3600:.2f}h" if isinstance(elapsed, (int, float)) else "n/a (log gone)"
     print(f"{run}: tracked cum_step {cum} (meta {meta}) pElo={row['pElo']} "
           f"elapsed={elapsed}s ({eh}) seg={si}")
+
+
+def probe_backfill(run, verbose=True):
+    """Recover pElo/nll/internals for any preserved frozen checkpoint whose CSV row
+    lacks pElo — i.e. marks that were only log-backfilled or went by while probing
+    lagged but the freezer still snapshotted the weights. Idempotent: skips frozens
+    already probed. This is what makes a monitoring gap self-heal instead of losing
+    pElo history: as long as the frozen exists, the pElo comes back."""
+    cfg = REG["runs"][run]
+    prefix, suffix = cfg["frozen_glob"].split("*")   # "...-step" , "-frozen.safetensors"
+    rows = read_csv(run)
+    by = {int(r["cum_step"]): r for r in rows}
+    st = SegTime(cfg["segments"], run)
+    filled = 0
+    for f in sorted(glob.glob(os.path.join(MODELS, cfg["frozen_glob"]))):
+        name = os.path.basename(f)
+        try:
+            cum = int(name[len(prefix):len(name) - len(suffix)])
+        except ValueError:
+            continue
+        r = by.get(cum)
+        if r and r.get("pElo") not in ("", None):
+            continue                                 # already has pElo
+        pr = probe(f)
+        if not pr.get("pElo"):
+            continue
+        bn1, sae2, effs = internals(f, cfg["rezero_cap"])
+        elapsed, clock, meta, si = st.elapsed_and_clock(cum)
+        met = _metrics_at(cfg["segments"][si]["log"], meta)
+        pf = dict(pElo=round(pr["pElo"], 2),
+                  nll=round(pr.get("nll"), 4) if pr.get("nll") else "",
+                  bn1Mean=round(bn1, 4), sae2=round(sae2, 4),
+                  eff_alpha=";".join(f"{e:.4f}" for e in effs),
+                  pLogit_mean=round(pr.get("pLogit_mean"), 3) if pr.get("pLogit_mean") else "",
+                  pLogit_peak=pr.get("pLogit_peak", ""), frozen_file=name)
+        if r:
+            r.update(pf)
+            if r.get("elapsed_train_sec") in ("", None):
+                r["elapsed_train_sec"] = elapsed
+        else:
+            lm = round(1 - met["pIllM"], 4) if "pIllM" in met else ""
+            r = dict(cum_step=cum, meta_step=meta, segment=si, elapsed_train_sec=elapsed,
+                     wallclock_iso=clock, ms_per_step=met.get("ms", ""),
+                     loss=met.get("loss", ""), pLoss=met.get("pLoss", ""), vLoss=met.get("vLoss", ""),
+                     legalMass=lm, pIllM=met.get("pIllM", ""), gNorm=met.get("gNorm", ""),
+                     note="probe-backfill", **pf)
+            rows.append(r); by[cum] = r
+        filled += 1
+        if verbose:
+            print(f"  probe-backfill cum {cum}: pElo {pr['pElo']:.0f}")
+    if filled:
+        rows.sort(key=lambda r: int(r["cum_step"]))
+        write_csv(run, rows)
+    if verbose:
+        print(f"probe-backfilled {filled}")
+    return filled
 
 # ---------- migrate from legacy loop_state.txt ----------
 LOOP_STATE = os.path.join(HERE, "loop_state.txt")  # symlinked/copied from scratchpad if present
@@ -304,6 +393,7 @@ def migrate(run, loop_state=None):
             elapsed_train_sec=elapsed, wallclock_iso=clock,
             ms_per_step=met.get("ms", ""),
             pElo=_kv(line, "pElo"), nll=_kv(line, "nll"),
+            loss=_kv(line, "loss") or met.get("loss", ""),
             pLoss=_kv(line, "pLoss") or met.get("pLoss", ""),
             vLoss=_kv(line, "vLoss") or met.get("vLoss", ""),
             legalMass=_kv(line, "lm"), pIllM=_kv(line, "pIllM"),
@@ -354,7 +444,7 @@ def render():
     # ---- charts: every metric, by-step AND by-time ----
     COLOR = {r: REG["runs"][r]["color"] for r in REG["runs"]}
     LAB = {r: REG["runs"][r]["label"] for r in REG["runs"]}
-    metrics = [("pElo", "pElo"), ("nll", "nll"), ("pLoss", "pLoss"), ("vLoss", "vLoss"),
+    metrics = [("pElo", "pElo"), ("nll", "nll"), ("loss", "loss (combined)"), ("pLoss", "pLoss"), ("vLoss", "vLoss"),
                ("legalMass", "legalMass"), ("gNorm", "gNorm"), ("bn1Mean", "bn1Mean (log y)"),
                ("sae2", "Σαeff²"), ("pLogit_mean", "pLogitAbsMax mean")]
     import io, base64
@@ -371,6 +461,10 @@ def render():
 
     def chart(key, title, xkey, xlabel, logy=False, xmax=None, ema=None, overlay_ema=None):
         fig, ax = plt.subplots(figsize=(11, 4.8))
+        # Collect each run's series first, then draw in LAYERED passes: all runs'
+        # raw points as a single background layer, then all runs' EMA lines on top —
+        # so no run's raw scatter ever buries another run's EMA line.
+        series = []
         for run, rows in runs.items():
             xs, ys = [], []
             for r in rows:
@@ -379,14 +473,18 @@ def render():
                     continue
                 xs.append(x / 3600 if xkey == "elapsed_train_sec" else x); ys.append(y)
             if xs:
-                if overlay_ema:
-                    ax.plot(xs, ys, "-o", ms=2.0, lw=0.8, color=COLOR[run], alpha=0.3)
-                    ax.plot(xs, _ema(ys, overlay_ema), "-", lw=1.9,
-                            color=COLOR[run], label=LAB[run])
-                elif ema:
-                    ax.plot(xs, _ema(ys, ema), "-", lw=1.8, color=COLOR[run], label=LAB[run])
-                else:
-                    ax.plot(xs, ys, "-o", ms=2.4, lw=1.0, color=COLOR[run], label=LAB[run])
+                series.append((run, xs, ys))
+        if overlay_ema:
+            for run, xs, ys in series:        # pass 1: all raw points (background)
+                ax.plot(xs, ys, "-o", ms=2.0, lw=0.8, color=COLOR[run], alpha=0.2)
+            for run, xs, ys in series:        # pass 2: all EMA lines (foreground)
+                ax.plot(xs, _ema(ys, overlay_ema), "-", lw=1.9, color=COLOR[run], label=LAB[run])
+        elif ema:
+            for run, xs, ys in series:
+                ax.plot(xs, _ema(ys, ema), "-", lw=1.8, color=COLOR[run], label=LAB[run])
+        else:
+            for run, xs, ys in series:
+                ax.plot(xs, ys, "-o", ms=2.4, lw=1.0, color=COLOR[run], label=LAB[run])
         if logy:
             ax.set_yscale("log")
         if xmax:
@@ -460,18 +558,21 @@ def render():
     for run in REG["runs"]:
         rows = runs.get(run) or []
         cfg = REG["runs"][run]
+        runcell = (f"<td><span style='display:inline-block;width:11px;height:11px;"
+                   f"background:{cfg['color']};border-radius:2px;margin-right:6px;"
+                   f"vertical-align:middle'></span>{run}</td>")
         stem = cfg.get("arch_stem", cfg.get("arch_summary", ""))
         blocks = cfg.get("arch_blocks", "")
         heads = cfg.get("arch_heads", "")
         acells = (f"<td class=arch>{stem}</td><td class=arch>{blocks}</td>"
                   f"<td class=arch>{heads}</td>")
         if not rows:
-            srows += (f"<tr><td>{run}</td>{acells}<td>{cfg['params']:,}</td>"
+            srows += (f"<tr>{runcell}{acells}<td>{cfg['params']:,}</td>"
                       "<td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>")
             continue
         steps = max(int(r["cum_step"]) for r in rows)
         hrs = max((_f(r["elapsed_train_sec"]) or 0) for r in rows) / 3600
-        srows += (f"<tr><td>{run}</td>{acells}<td>{cfg['params']:,}</td>"
+        srows += (f"<tr>{runcell}{acells}<td>{cfg['params']:,}</td>"
                   f"<td>{steps:,}</td><td>{hrs:.1f}</td>"
                   f"<td>{_last(rows,'pElo')}</td><td>{_last(rows,'nll')}</td>"
                   f"<td>{_last(rows,'pLogit_mean')}</td></tr>")
@@ -479,6 +580,16 @@ def render():
             "<table class=summary><tr>" + "".join(f"<th>{c}</th>" for c in scols) +
             "</tr>" + srows + "</table>")
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    # Click-to-fullscreen lightbox: click any chart to enlarge, click (or Esc) to close.
+    # Plain string (real braces) so the f-string template below doesn't parse its JS.
+    lightbox = ("<div id='lb'><img alt=''></div>"
+                "<script>(function(){"
+                "var lb=document.getElementById('lb'),g=lb.firstElementChild;"
+                "document.querySelectorAll('figure img').forEach(function(im){"
+                "im.addEventListener('click',function(){g.src=im.src;lb.classList.add('on');});});"
+                "lb.addEventListener('click',function(){lb.classList.remove('on');g.src='';});"
+                "document.addEventListener('keydown',function(e){if(e.key==='Escape'){lb.classList.remove('on');g.src='';}});"
+                "})();</script>")
     html = f"""<!doctype html><html><head><meta charset=utf-8><title>DCM replay runs</title>
 <style>body{{font-family:-apple-system,Helvetica,Arial,sans-serif;margin:24px;max-width:min(1900px,96vw);color:#1a1a1a}}
 h1{{font-size:21px}}h2{{font-size:14px;color:#444;margin-top:26px}}img{{max-width:100%;border:1px solid #ddd;border-radius:6px}}
@@ -487,12 +598,15 @@ summary{{cursor:pointer;font-size:13px;margin-top:10px}}.cap{{color:#666;font-si
 .pair{{display:flex;gap:14px;align-items:flex-start;margin-top:6px}}.pair figure{{flex:1;width:50%;margin:0}}
 .pair img{{width:100%}}figcaption{{font-size:11px;color:#666;text-align:center;margin-bottom:2px}}
 table.summary td,table.summary th{{text-align:left;font-size:11.5px;vertical-align:top}}
-table.summary td.arch{{max-width:230px;white-space:normal;color:#333}}</style></head><body>
+table.summary td.arch{{max-width:230px;white-space:normal;color:#333}}
+figure img{{cursor:zoom-in}}
+#lb{{display:none;position:fixed;inset:0;background:rgba(0,0,0,.93);z-index:9999;cursor:zoom-out;align-items:center;justify-content:center}}
+#lb.on{{display:flex}}#lb img{{max-width:98vw;max-height:96vh;width:auto;border:0;border-radius:0}}</style></head><body>
 <h1>DCM — replay-run dashboard</h1>
 <p class=cap>Auto-generated {now} from per-run CSVs in <code>data/</code> via <code>replay.py render</code>.
 Each metric: 10-point EMA (foreground) over raw marks at 30% opacity (background), shown vs cumulative SGD step and vs elapsed training time (pause-aware). The pElo panel has a collapsible early-window zoom. Reload to refresh.</p>
 {summ}
-{ch}<h2>Data tables</h2>{tb}</body></html>"""
+{ch}<h2>Data tables</h2>{tb}{lightbox}</body></html>"""
     out = os.path.join(HERE, "dcm_dashboard.html")
     open(out, "w").write(html)
     # markdown table to stdout for the run we care about
