@@ -74,6 +74,12 @@ struct CorpusReplayConfig: Sendable {
     /// corpus directory). The same file is overwritten by the periodic
     /// autosave and by the final save on exit/abort.
     var outModelPath: String?
+    /// When true, every trainer-model save also writes a step-enumerated copy
+    /// (`<stem>-replay-step<N>.safetensors`) next to the rolling `-replay-latest`
+    /// file, so no checkpoint is ever lost to the overwrite. The rolling latest
+    /// is still written (warm-start / probe / trackers key off it); the enumerated
+    /// files accumulate — mind disk. Off by default. (`--enumerate-checkpoints`.)
+    var enumerateCheckpoints: Bool = false
     /// Freshly-minted `ModelID` for this run's saved model, minted on the main
     /// actor in the pre-flight handler (the `ModelIDMinter` is main-actor
     /// isolated and the replay loop runs off-actor, so it can't mint there).
@@ -490,6 +496,26 @@ enum CorpusReplayRunner {
                 )
                 try encoded.write(to: outModelURL, options: [.atomic])
                 emit("[REPLAY] saved trainer model (\(reason)) step=\(step) nextGame=\(nextGameIndex) shard=\(shard) epoch=\(epoch) -> \(outModelURL.lastPathComponent)")
+                // Optional: also drop a step-enumerated copy so no checkpoint is
+                // lost to the rolling overwrite. Reuses `encoded` (no re-export).
+                // Non-fatal on failure, same as the rolling save above.
+                if config.enumerateCheckpoints {
+                    let stem = outModelURL.deletingPathExtension().lastPathComponent
+                    let enumName = stem.contains("-replay-latest")
+                        ? stem.replacingOccurrences(of: "-replay-latest", with: "-replay-step\(step)")
+                        : "\(stem)-step\(step)"
+                    let enumURL = outModelURL.deletingLastPathComponent()
+                        .appendingPathComponent(enumName)
+                        .appendingPathExtension("safetensors")
+                    do {
+                        try encoded.write(to: enumURL, options: [.atomic])
+                        emit("[REPLAY] enumerated checkpoint -> \(enumURL.lastPathComponent)")
+                    } catch {
+                        let msg = "[REPLAY] WARNING: enumerated checkpoint save failed at step \(step): \(error.localizedDescription)"
+                        FileHandle.standardError.write(Data((msg + "\n").utf8))
+                        SessionLogger.shared.log(msg)
+                    }
+                }
             } catch {
                 let msg = "[REPLAY] WARNING: trainer-model save (\(reason)) failed at step \(step): \(error.localizedDescription)"
                 FileHandle.standardError.write(Data((msg + "\n").utf8))

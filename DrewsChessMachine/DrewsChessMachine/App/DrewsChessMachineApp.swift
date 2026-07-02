@@ -933,6 +933,7 @@ struct DrewsChessMachineApp: App {
         var startShard: Int? = nil
         var startGameIndex: Int? = nil
         var resumeExact = false
+        var enumerateCheckpoints = false
 
         // Strict validation: a recognized flag with a missing or unparseable
         // value is a HARD error, never a silent default. A mistyped
@@ -991,6 +992,8 @@ struct DrewsChessMachineApp: App {
                 startGameIndex = requireInt(arg, nextValue); i += 2
             case "--resume-exact":
                 resumeExact = true; i += 1   // boolean flag, no value
+            case "--enumerate-checkpoints":
+                enumerateCheckpoints = true; i += 1   // boolean flag, no value
             default:
                 FileHandle.standardError.write(Data("error: unexpected argument '\(arg)' (with --replay-corpus)\n".utf8))
                 Darwin.exit(2)
@@ -1090,6 +1093,7 @@ struct DrewsChessMachineApp: App {
             startGameIndex: startGameIndex,
             resumeExact: resumeExact,
             outModelPath: outModelPath,
+            enumerateCheckpoints: enumerateCheckpoints,
             runModelID: runModelID
         )
         CorpusReplayRunner.runAndExit(config: config, params: params)
