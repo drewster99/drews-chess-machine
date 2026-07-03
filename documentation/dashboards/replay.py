@@ -132,21 +132,58 @@ def _metrics_at(logname, meta_step):
             break
     return best[1] if best else {}
 
+def _clamped_timeline(order, cap_factor=20.0):
+    """Given ordered [(step, abs_sec)] log lines, return ({step: cumulative TRAINING
+    seconds from the first line}, segment_total). Each inter-line interval contributes
+    its real wall gap UNLESS that gap exceeds cap_factor x the typical per-step pace —
+    a machine sleep / app-nap / thermal stall — in which case it contributes only the
+    EXPECTED training time its step delta can justify (Δsteps x median-sec-per-step).
+
+    cap_factor is deliberately wide (20x): a real slow/throttled batch (a few x normal)
+    is kept as genuine wall-time; only egregious idle (sleep is ~1000x normal pace) is
+    clamped. Widening the threshold cannot re-admit sleep — it only errs toward trusting
+    borderline-slow intervals as real training.
+
+    This is what keeps wall-clock idle out of "training time" at the source: an interval
+    can never bank more seconds than its own step count earns, so a 10-hour sleep across
+    50 steps counts as ~33 s (what 50 steps actually take), not 10 h. Runs with no stalls
+    are unaffected — every gap is under the cap, so this reduces to plain wall-clock."""
+    if not order:
+        return {}, 0.0
+    sps = [ (t1 - t0) / (s1 - s0)
+            for (s0, t0), (s1, t1) in zip(order, order[1:])
+            if s1 - s0 > 0 and t1 - t0 >= 0 ]
+    med = float(np.median(sps)) if sps else 0.0
+    train = {order[0][0]: 0.0}
+    cum = 0.0
+    for (s0, t0), (s1, t1) in zip(order, order[1:]):
+        ds, dt = s1 - s0, t1 - t0
+        if ds <= 0:
+            dur = 0.0                        # same-step re-log / out-of-order: no new work
+        elif med > 0 and dt > cap_factor * med * ds:
+            dur = med * ds                   # implausible gap -> expected training time only
+        else:
+            dur = max(dt, 0.0)
+        cum += dur
+        train[s1] = cum
+    return train, cum
+
+
 class SegTime:
-    """Pause-aware elapsed-time across a run's segments."""
+    """Pause-aware, sleep-clamped elapsed-training-time across a run's segments."""
     def __init__(self, segments, run=None):
         self.segs = segments
         self.run = run                      # enables CSV fallback when a prior log is gone
         self._warned = set()
-        self.idx, self.first, self.dur = [], [], []
+        self.idx, self.first, self.train, self.dur = [], [], [], []
         prior = 0.0
         for sg in segments:
             idx, order = _log_index(sg["log"])
             first = order[0][1] if order else 0.0
-            last = order[-1][1] if order else 0.0
-            self.idx.append(idx); self.first.append(first)
-            self.dur.append(prior)          # cumulative seconds before this segment
-            prior += (last - first)
+            train, total = _clamped_timeline(order)   # sleep-immune cumulative train-secs
+            self.idx.append(idx); self.first.append(first); self.train.append(train)
+            self.dur.append(prior)          # cumulative TRAINING seconds before this segment
+            prior += total
 
     def _base(self, si):
         """Seconds of elapsed training before segment si begins. Resolution order:
@@ -191,13 +228,21 @@ class SegTime:
         idx = self.idx[si]
         if not idx:                       # segment log missing -> no time axis
             return "", "", meta, si
+        # elapsed = sleep-clamped cumulative training seconds at (nearest <=) this step
+        train = self.train[si]
+        if meta in train:
+            sec = train[meta]
+        else:
+            le = [k for k in train if k <= meta]
+            sec = train[max(le)] if le else 0.0
+        # wallclock_iso is a real clock reading (NOT a duration), so it uses the raw
+        # timestamp — clamping only affects elapsed, never the wall-clock stamp.
         if meta in idx:
             abs_sec = idx[meta]
         else:  # nearest <= meta (e.g. abort save between log lines)
             le = [k for k in idx if k <= meta]
             abs_sec = idx[max(le)] if le else self.first[si]
-        elapsed = self._base(si) + (abs_sec - self.first[si])
-        # wallclock_iso reconstructed from segment date + abs offset within segment day-space
+        elapsed = self._base(si) + sec
         d0 = datetime.datetime.strptime(self.segs[si]["date"], "%Y%m%d")
         clock = d0 + datetime.timedelta(seconds=abs_sec)
         return round(elapsed, 1), clock.isoformat(timespec="seconds"), meta, si
@@ -373,6 +418,31 @@ def probe_backfill(run, verbose=True):
     if verbose:
         print(f"probe-backfilled {filled}")
     return filled
+
+def recompute_elapsed(run, verbose=True):
+    """Rewrite elapsed_train_sec for every existing row using the current SegTime
+    (sleep-clamped). One-time migration so historical marks match newly-tracked ones
+    after the clamp lands — otherwise old rows keep their wall-clock (sleep-inflated)
+    elapsed while new rows are clamped, and the by-time axis mixes the two."""
+    cfg = REG["runs"][run]
+    rows = read_csv(run)
+    if not rows:
+        if verbose:
+            print(f"{run}: no rows")
+        return 0
+    st = SegTime(cfg["segments"], run)
+    changed = 0
+    for r in rows:
+        el, _clk, _meta, _si = st.elapsed_and_clock(int(r["cum_step"]))
+        if el != "" and str(r.get("elapsed_train_sec", "")) != str(el):
+            r["elapsed_train_sec"] = el
+            changed += 1
+    if changed:
+        write_csv(run, rows)
+    if verbose:
+        print(f"{run}: recomputed elapsed on {changed} row(s)")
+    return changed
+
 
 # ---------- migrate from legacy loop_state.txt ----------
 LOOP_STATE = os.path.join(HERE, "loop_state.txt")  # symlinked/copied from scratchpad if present
@@ -674,11 +744,16 @@ if __name__ == "__main__":
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("track"); p.add_argument("run")
     p = sub.add_parser("migrate"); p.add_argument("run"); p.add_argument("--loop-state")
+    p = sub.add_parser("recompute"); p.add_argument("run", nargs="?", default="__all__")
     sub.add_parser("render")
     a = ap.parse_args()
     if a.cmd == "track":
         track(a.run)
     elif a.cmd == "migrate":
         migrate(a.run, a.loop_state)
+    elif a.cmd == "recompute":
+        targets = list(REG["runs"]) if a.run == "__all__" else [a.run]
+        for r in targets:
+            recompute_elapsed(r)
     elif a.cmd == "render":
         render()
