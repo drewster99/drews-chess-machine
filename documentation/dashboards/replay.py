@@ -223,10 +223,35 @@ def write_csv(run, rows):
 def has_step(rows, cum):
     return any(int(r["cum_step"]) == cum for r in rows)
 
+# ---------- enumerated checkpoints (app-side --enumerate-checkpoints) ----------
+# The corpus-replay runner, when launched with --enumerate-checkpoints, writes a
+# step-numbered copy of the weights next to the rolling out-model on every save:
+#   <stem>-replay-step<N>.safetensors   (N = the segment-local training step).
+# That makes the tracker's old habit of minting its OWN cum-named "-frozen" copies
+# redundant — the app already preserves every step. So for enumerated runs we probe
+# the app's files in place and map their local step N to the run-cumulative axis via
+# the latest segment's cumstep_base (cum = base + N). Legacy (pre-enumeration) runs
+# still fall back to the "-frozen" snapshots, so mini2b/coxw/v5/… are unaffected.
+def enum_glob(cfg):
+    om = cfg.get("out_model", "")
+    return om.replace("-replay-latest", "-replay-step*") if "-replay-latest" in om else None
+
+def enum_path(cfg, n):
+    om = cfg.get("out_model", "")
+    return (os.path.join(MODELS, om.replace("-replay-latest", f"-replay-step{n}"))
+            if "-replay-latest" in om else None)
+
 # ---------- track ----------
 def freeze(run, cfg, meta):
+    """Return (cum, checkpoint_path) for this mark. Prefer the app's enumerated
+    checkpoint for the exact step (no copy — it's already preserved on disk);
+    otherwise fall back to copying the rolling out-model into a cum-named -frozen
+    snapshot (legacy runs, or a mark taken between enumerated saves)."""
     base = cfg["segments"][-1]["cumstep_base"]
     cum = base + meta
+    ep = enum_path(cfg, meta)
+    if ep and os.path.exists(ep):
+        return cum, ep
     src = os.path.join(MODELS, cfg["out_model"])
     dst = os.path.join(MODELS, cfg["frozen_glob"].replace("step*", f"step{cum}"))
     if not os.path.exists(dst):
@@ -266,54 +291,82 @@ def track(run):
           f"elapsed={elapsed}s ({eh}) seg={si}")
 
 
+def _backfill_one(cfg, st, rows, by, cum, path, name, verbose):
+    """Probe `path` and fill/create the CSV row for `cum` if it lacks pElo.
+    Returns 1 if a row was filled/created, else 0. Shared by both the enumerated
+    -replay-step scan and the legacy -frozen scan so they stay bit-identical."""
+    r = by.get(cum)
+    if r and r.get("pElo") not in ("", None):
+        return 0                                     # already has pElo
+    pr = probe(path)
+    if not pr.get("pElo"):
+        return 0
+    bn1, sae2, effs = internals(path, cfg["rezero_cap"])
+    elapsed, clock, meta, si = st.elapsed_and_clock(cum)
+    met = _metrics_at(cfg["segments"][si]["log"], meta)
+    pf = dict(pElo=round(pr["pElo"], 2),
+              nll=round(pr.get("nll"), 4) if pr.get("nll") else "",
+              bn1Mean=round(bn1, 4), sae2=round(sae2, 4),
+              eff_alpha=";".join(f"{e:.4f}" for e in effs),
+              pLogit_mean=round(pr.get("pLogit_mean"), 3) if pr.get("pLogit_mean") else "",
+              pLogit_peak=pr.get("pLogit_peak", ""), frozen_file=name)
+    if r:
+        r.update(pf)
+        if r.get("elapsed_train_sec") in ("", None):
+            r["elapsed_train_sec"] = elapsed
+    else:
+        lm = round(1 - met["pIllM"], 4) if "pIllM" in met else ""
+        r = dict(cum_step=cum, meta_step=meta, segment=si, elapsed_train_sec=elapsed,
+                 wallclock_iso=clock, ms_per_step=met.get("ms", ""),
+                 loss=met.get("loss", ""), pLoss=met.get("pLoss", ""), vLoss=met.get("vLoss", ""),
+                 legalMass=lm, pIllM=met.get("pIllM", ""), gNorm=met.get("gNorm", ""),
+                 note="probe-backfill", **pf)
+        rows.append(r); by[cum] = r
+    if verbose:
+        print(f"  probe-backfill cum {cum}: pElo {pr['pElo']:.0f}")
+    return 1
+
+
 def probe_backfill(run, verbose=True):
-    """Recover pElo/nll/internals for any preserved frozen checkpoint whose CSV row
-    lacks pElo — i.e. marks that were only log-backfilled or went by while probing
-    lagged but the freezer still snapshotted the weights. Idempotent: skips frozens
-    already probed. This is what makes a monitoring gap self-heal instead of losing
-    pElo history: as long as the frozen exists, the pElo comes back."""
+    """Recover pElo/nll/internals for any preserved checkpoint whose CSV row lacks
+    pElo — marks that were only log-backfilled, or went by while probing lagged.
+    Idempotent: skips rows already probed. As long as a checkpoint exists on disk
+    the pElo comes back, so a monitoring gap self-heals instead of losing history.
+
+    Two checkpoint sources:
+      • enumerated  <stem>-replay-step<N>.safetensors  — app-side (--enumerate-
+        checkpoints), local step N, cum = latest-segment base + N;
+      • legacy      <...>-step<cum>-frozen.safetensors  — cum-named tracker snapshots
+        (pre-enumeration runs, and this run's earlier segments)."""
     cfg = REG["runs"][run]
-    prefix, suffix = cfg["frozen_glob"].split("*")   # "...-step" , "-frozen.safetensors"
     rows = read_csv(run)
     by = {int(r["cum_step"]): r for r in rows}
     st = SegTime(cfg["segments"], run)
     filled = 0
+
+    # (a) enumerated app-side checkpoints -> cum via the latest segment's base
+    eg = enum_glob(cfg)
+    if eg:
+        eprefix, esuffix = eg.split("*")
+        ebase = cfg["segments"][-1]["cumstep_base"]
+        for f in sorted(glob.glob(os.path.join(MODELS, eg))):
+            name = os.path.basename(f)
+            try:
+                n = int(name[len(eprefix):len(name) - len(esuffix)])
+            except ValueError:
+                continue
+            filled += _backfill_one(cfg, st, rows, by, ebase + n, f, name, verbose)
+
+    # (b) legacy cum-named -frozen snapshots
+    prefix, suffix = cfg["frozen_glob"].split("*")   # "...-step" , "-frozen.safetensors"
     for f in sorted(glob.glob(os.path.join(MODELS, cfg["frozen_glob"]))):
         name = os.path.basename(f)
         try:
             cum = int(name[len(prefix):len(name) - len(suffix)])
         except ValueError:
             continue
-        r = by.get(cum)
-        if r and r.get("pElo") not in ("", None):
-            continue                                 # already has pElo
-        pr = probe(f)
-        if not pr.get("pElo"):
-            continue
-        bn1, sae2, effs = internals(f, cfg["rezero_cap"])
-        elapsed, clock, meta, si = st.elapsed_and_clock(cum)
-        met = _metrics_at(cfg["segments"][si]["log"], meta)
-        pf = dict(pElo=round(pr["pElo"], 2),
-                  nll=round(pr.get("nll"), 4) if pr.get("nll") else "",
-                  bn1Mean=round(bn1, 4), sae2=round(sae2, 4),
-                  eff_alpha=";".join(f"{e:.4f}" for e in effs),
-                  pLogit_mean=round(pr.get("pLogit_mean"), 3) if pr.get("pLogit_mean") else "",
-                  pLogit_peak=pr.get("pLogit_peak", ""), frozen_file=name)
-        if r:
-            r.update(pf)
-            if r.get("elapsed_train_sec") in ("", None):
-                r["elapsed_train_sec"] = elapsed
-        else:
-            lm = round(1 - met["pIllM"], 4) if "pIllM" in met else ""
-            r = dict(cum_step=cum, meta_step=meta, segment=si, elapsed_train_sec=elapsed,
-                     wallclock_iso=clock, ms_per_step=met.get("ms", ""),
-                     loss=met.get("loss", ""), pLoss=met.get("pLoss", ""), vLoss=met.get("vLoss", ""),
-                     legalMass=lm, pIllM=met.get("pIllM", ""), gNorm=met.get("gNorm", ""),
-                     note="probe-backfill", **pf)
-            rows.append(r); by[cum] = r
-        filled += 1
-        if verbose:
-            print(f"  probe-backfill cum {cum}: pElo {pr['pElo']:.0f}")
+        filled += _backfill_one(cfg, st, rows, by, cum, f, name, verbose)
+
     if filled:
         rows.sort(key=lambda r: int(r["cum_step"]))
         write_csv(run, rows)

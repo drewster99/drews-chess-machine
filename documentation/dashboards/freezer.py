@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 """Lightweight checkpoint freezer — a backstop against monitoring gaps.
 
+DEPRECATED for runs launched with the app's --enumerate-checkpoints flag. The
+corpus-replay runner now writes a step-numbered <stem>-replay-step<N>.safetensors
+on every save, so preservation is already guaranteed by the app itself and
+probe_backfill reads those files directly (see replay.py::enum_glob). Do NOT run
+this alongside an --enumerate-checkpoints run — it only duplicates weights under a
+second (cum-named) filename and confuses nothing but the disk. Kept only to
+backstop legacy runs that do NOT enumerate.
+
 The per-mark tracker (tick.py) only freezes a checkpoint when IT runs, so if
 ticking lags the run overwrites its -latest and those checkpoints are lost for
 good (pElo becomes unrecoverable). This decouples *preservation* from *probing*:
@@ -8,7 +16,8 @@ every 60s it copies the active run's -latest to a step<cum>-frozen file at each
 new 1000-mark. No GPU, no probe — just durable copies, so pElo can always be
 backfilled later even after a gap. Aligns with the keep-all-frozen policy.
 
-Run detached:  nohup /usr/bin/python3 freezer.py >/dev/null 2>&1 &
+Run detached (legacy non-enumerated runs only):
+    nohup /usr/bin/python3 freezer.py >/dev/null 2>&1 &
 """
 import time, os, shutil, subprocess, replay
 

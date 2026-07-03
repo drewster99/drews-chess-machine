@@ -1,143 +1,230 @@
 {
-  "_comment": "Run registry for the replay-run tracker. One entry per run. `segments` lists each training segment in cumulative order (a fresh start or a warm-start/resume each begin a new segment); cum_step = segment.cumstep_base + meta_step. elapsed_train_sec is pause-aware: it sums completed segment durations + time-into-current-segment, computed from [REPLAY] log timestamps, so stop/resume gaps are excluded. If a segment's log is missing, elapsed is left blank (by-step charts still render). Logs live in ~/Library/Logs/DrewsChessMachine. Models live in ~/Library/Application Support/DrewsChessMachine/Models. Order here is the chart/legend order.",
-  "models_dir": "~/Library/Application Support/DrewsChessMachine/Models",
-  "logs_dir": "~/Library/Logs/DrewsChessMachine",
-  "runs": {
-    "v5": {
-      "label": "v5 — 8.45M, 5-block (wd1e-4→wd5e-4→m0.93)",
-      "color": "#1f77b4",
-      "rezero_cap": 1.0,
-      "n_blocks": 5,
-      "params": 8450000,
-      "arch_summary": "5-block 128ch lc0-style, LayerNorm output; lineage wd1e-4 → wd5e-4 → m0.93 (3 warm-start segments)",
-      "arch_stem": "basic30 → stem 7×7→128",
-      "arch_blocks": "5× @128, 7×7+7×7, SE scale+bias/4, ReLU/pre, ReZero cap 1.0, LN-out",
-      "arch_heads": "policy intermediate_conv (pre-conv 128) · value WDL(16→FC128)",
-      "source": "v5doc",
-      "v5doc_offsets": {"wd1e-4": 0, "wd5e-4": 45441, "m0.93": 60901},
-      "out_model": null,
-      "frozen_glob": "20260628-v5_5block_7x7_lnout-step*-frozen.safetensors",
-      "segments": [
-        {"log": "dcm_log_20260627-201127.txt", "date": "20260627", "cumstep_base": 0,     "label": "wd1e-4"},
-        {"log": "dcm_log_20260628-114648.txt", "date": "20260628", "cumstep_base": 45441, "label": "wd5e-4"},
-        {"log": "dcm_log_20260628-183831.txt", "date": "20260628", "cumstep_base": 60901, "label": "m0.93"}
-      ]
+ "_comment": "Run registry for the replay-run tracker. One entry per run. `segments` lists each training segment in cumulative order (a fresh start or a warm-start/resume each begin a new segment); cum_step = segment.cumstep_base + meta_step. elapsed_train_sec is pause-aware: it sums completed segment durations + time-into-current-segment, computed from [REPLAY] log timestamps, so stop/resume gaps are excluded. If a segment's log is missing, elapsed is left blank (by-step charts still render). Logs live in ~/Library/Logs/DrewsChessMachine. Models live in ~/Library/Application Support/DrewsChessMachine/Models. Order here is the chart/legend order.",
+ "models_dir": "~/Library/Application Support/DrewsChessMachine/Models",
+ "logs_dir": "~/Library/Logs/DrewsChessMachine",
+ "runs": {
+  "v5": {
+   "label": "v5 \u2014 8.45M, 5-block (wd1e-4\u2192wd5e-4\u2192m0.93)",
+   "color": "#1f77b4",
+   "rezero_cap": 1.0,
+   "n_blocks": 5,
+   "params": 8450000,
+   "arch_summary": "5-block 128ch lc0-style, LayerNorm output; lineage wd1e-4 \u2192 wd5e-4 \u2192 m0.93 (3 warm-start segments)",
+   "arch_stem": "basic30 \u2192 stem 7\u00d77\u2192128",
+   "arch_blocks": "5\u00d7 @128, 7\u00d77+7\u00d77, SE scale+bias/4, ReLU/pre, ReZero cap 1.0, LN-out",
+   "arch_heads": "policy intermediate_conv (pre-conv 128) \u00b7 value WDL(16\u2192FC128)",
+   "source": "v5doc",
+   "v5doc_offsets": {
+    "wd1e-4": 0,
+    "wd5e-4": 45441,
+    "m0.93": 60901
+   },
+   "out_model": null,
+   "frozen_glob": "20260628-v5_5block_7x7_lnout-step*-frozen.safetensors",
+   "segments": [
+    {
+     "log": "dcm_log_20260627-201127.txt",
+     "date": "20260627",
+     "cumstep_base": 0,
+     "label": "wd1e-4"
     },
-    "mini2b": {
-      "label": "mini2b — 2.25M, 2-block",
-      "color": "#ff7f0e",
-      "rezero_cap": 0.5,
-      "n_blocks": 2,
-      "params": 2252689,
-      "arch_summary": "stem 7×7→128 · block0 7×7+7×7 · block1 3×3+3×3 · pre-act ReLU, LayerNorm out-norm, ReZero α₀=0.5 (cap 0.5), no SE · policy intermediate_conv · value wdl_softmax",
-      "arch_stem": "basic30 → stem 7×7→128",
-      "arch_blocks": "blk0 7×7+7×7 · blk1 3×3+3×3 @128, no-SE, ReLU/pre, ReZero cap 0.5, LN-out",
-      "arch_heads": "policy intermediate_conv · value WDL(16→FC128)",
-      "out_model": "20260629-mini2b-3MIV-resume2-replay-latest.safetensors",
-      "frozen_glob": "20260629-mini2b-3MIV-step*-frozen.safetensors",
-      "segments": [
-        {"log": "dcm_log_20260629-091821.txt", "date": "20260629", "cumstep_base": 0,     "label": "original"},
-        {"log": "dcm_log_20260629-192108.txt", "date": "20260629", "cumstep_base": 13464, "label": "resume", "bn_reset": true},
-        {"log": "dcm_log_20260701-080946.txt", "date": "20260701", "cumstep_base": 134159, "label": "resume2", "bn_reset": true}
-      ]
+    {
+     "log": "dcm_log_20260628-114648.txt",
+     "date": "20260628",
+     "cumstep_base": 45441,
+     "label": "wd5e-4"
     },
-    "coxw": {
-      "label": "coxw — 1.86M, 1-block",
-      "color": "#2ca02c",
-      "rezero_cap": 1.0,
-      "n_blocks": 1,
-      "params": 1860000,
-      "arch_summary": "stem 5×5→128 · 1×[7×7+7×7 @128, no-SE, relu/pre, ReZero(cap 1.0), LayerNorm out] · policy intermediate_conv (pre-conv 128) · value WDL(16→FC128)",
-      "arch_stem": "basic30 → stem 5×5→128",
-      "arch_blocks": "1× @128, 7×7+7×7, no-SE, ReLU/pre, ReZero cap 1.0, LN-out",
-      "arch_heads": "policy intermediate_conv (pre-conv 128) · value WDL(16→FC128)",
-      "out_model": null,
-      "frozen_glob": "20260629-mini1b-Coxw-step*-frozen.safetensors",
-      "segments": [
-        {"log": "dcm_log_20260629-112618.txt", "date": "20260629", "cumstep_base": 0, "label": "run"}
-      ]
-    },
-    "ykkk": {
-      "label": "ykkk — 0.24M, 2-block (SE)",
-      "color": "#d62728",
-      "rezero_cap": 0.707,
-      "n_blocks": 2,
-      "params": 242609,
-      "arch_summary": "stem 3×3→64 · 2×[3×3+3×3 @64, SE/4, ReLU/pre, ReZero(0.707·tanh≤0.707), LayerNorm out] · policy simple_conv · value WDL(16→FC64)",
-      "arch_stem": "basic30 → stem 3×3→64",
-      "arch_blocks": "2× @64, 3×3+3×3, SE-4 attenuate, ReLU/pre, ReZero cap 0.707, LN-out",
-      "arch_heads": "policy simple_conv · value WDL(16→FC64)",
-      "out_model": "20260630-mini-YkKk-resume-replay-latest.safetensors",
-      "frozen_glob": "20260630-mini-YkKk-step*-frozen.safetensors",
-      "segments": [
-        {"log": "dcm_log_20260629-170745.txt", "date": "20260629", "cumstep_base": 0,     "label": "run"},
-        {"log": "dcm_log_20260630-185515.txt", "date": "20260630", "cumstep_base": 40677, "label": "resume", "bn_reset": true}
-      ]
-    },
-    "t97x": {
-      "label": "t97x — 1.70M, 2-block 9×9 (SE, GELU, no-ReZero)",
-      "color": "#9467bd",
-      "rezero_cap": 1.0,
-      "n_blocks": 2,
-      "params": 1700000,
-      "arch_summary": "stem 7×7→64 · 2×[9×9+9×9 @64, SE scale+bias/4, GELU/pre, no-ReZero, LayerNorm out] · policy intermediate_conv (pre-conv 5) · value WDL(64→FC64)",
-      "arch_stem": "basic30 → stem 7×7→64",
-      "arch_blocks": "2× @64, 9×9+9×9, SE-4 scale+bias, GELU/pre, no-ReZero, LN-out",
-      "arch_heads": "policy intermediate_conv (pre-conv 5) · value WDL(64→FC64)",
-      "out_model": null,
-      "frozen_glob": "20260630-T97X-step*-frozen.safetensors",
-      "segments": [
-        {"log": "dcm_log_20260629-185604.txt", "date": "20260629", "cumstep_base": 0, "label": "run"}
-      ]
-    },
-    "nt8y": {
-      "label": "nt8y — 1.53M, 3-block 15×15 fat-conv (v5)",
-      "color": "#000000",
-      "rezero_cap": 0.33333334,
-      "n_blocks": 3,
-      "params": 1533930,
-      "arch_summary": "stem 5×5→32 · 3×[15×15+15×15 @32, SE scale+bias/4, relu/pre, ReZero cap 0.333, LayerNorm out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64)",
-      "arch_stem": "basic30 → stem 5×5→32",
-      "arch_blocks": "3× @32, 15×15+15×15, SE-4 scale+bias, ReLU/pre, ReZero cap 0.333, LN-out",
-      "arch_heads": "policy intermediate_conv (pre-conv 512) · value WDL(16→FC64)",
-      "out_model": "20260701-nT8Y-fatconv-resume-replay-latest.safetensors",
-      "frozen_glob": "20260701-nT8Y-fatconv-step*-frozen.safetensors",
-      "segments": [
-        {"log": "dcm_log_20260701-091259.txt", "date": "20260701", "cumstep_base": 0,     "label": "run", "_note": "log deleted mid-run; steps 51000-65000 elapsed reconstructed from frozen mtime, log-only columns (pLoss/vLoss/legalMass/gNorm) unrecoverable"},
-        {"log": "dcm_log_20260701-152447.txt", "date": "20260701", "cumstep_base": 65883, "label": "resume", "bn_reset": true, "elapsed_base_sec": 22203.7, "_elapsed_base_note": "seg-0 end elapsed at cum 65883 (log deleted; reconstructed from frozen mtimes) so the by-time axis continues from ~6.17h instead of restarting at 0"}
-      ]
-    },
-    "b9x16se": {
-      "label": "b9x16se — 1.19M, 9-block 15×15 @16, 9×9 stem, +SE",
-      "color": "#bcbd22",
-      "rezero_cap": 0.33333334,
-      "n_blocks": 9,
-      "params": 1194652,
-      "arch_summary": "hand-crafted headless seed — SE ablation of b9x16 (identical + SE). stem 9×9→16 · 9×[15×15+15×15 @16, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64). Same as b9x16 except SE added.",
-      "arch_stem": "basic30 → stem 9×9→16",
-      "arch_blocks": "9× @16, 15×15+15×15, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out",
-      "arch_heads": "policy intermediate_conv (pre-conv 512) · value WDL(16→FC64)",
-      "out_model": "20260702-9blk16se-9x9stem-replay-latest.safetensors",
-      "frozen_glob": "20260702-9blk16se-9x9stem-step*-frozen.safetensors",
-      "segments": [
-        {"log": "dcm_log_20260702-024634.txt", "date": "20260702", "cumstep_base": 0, "label": "run"}
-      ]
-    },
-    "qeu8": {
-      "label": "qeu8 — 3.93M, 2-block 15×15 @64, 7×7 stem (SE)",
-      "color": "#8c564b",
-      "rezero_cap": 0.5,
-      "n_blocks": 2,
-      "params": 3929393,
-      "arch_summary": "GUI-built model 20260702-7-Qeu8. stem 7×7→64 · 2×[15×15+15×15 @64, SE scale+bias/4, ReLU/pre, ReZero cap 0.5, LN-out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64). Wide (64ch) shallow (2-block) fat-conv.",
-      "arch_stem": "basic30 → stem 7×7→64",
-      "arch_blocks": "2× @64, 15×15+15×15, SE scale+bias/4, ReLU/pre, ReZero cap 0.5, LN-out",
-      "arch_heads": "policy intermediate_conv (pre-conv 512) · value WDL(16→FC64)",
-      "out_model": "20260702-Qeu8-replay-latest.safetensors",
-      "frozen_glob": "20260702-Qeu8-step*-frozen.safetensors",
-      "segments": [
-        {"log": "dcm_log_20260702-095124.txt", "date": "20260702", "cumstep_base": 0, "label": "run"}
-      ]
+    {
+     "log": "dcm_log_20260628-183831.txt",
+     "date": "20260628",
+     "cumstep_base": 60901,
+     "label": "m0.93"
     }
+   ]
+  },
+  "mini2b": {
+   "label": "mini2b \u2014 2.25M, 2-block",
+   "color": "#ff7f0e",
+   "rezero_cap": 0.5,
+   "n_blocks": 2,
+   "params": 2252689,
+   "arch_summary": "stem 7\u00d77\u2192128 \u00b7 block0 7\u00d77+7\u00d77 \u00b7 block1 3\u00d73+3\u00d73 \u00b7 pre-act ReLU, LayerNorm out-norm, ReZero \u03b1\u2080=0.5 (cap 0.5), no SE \u00b7 policy intermediate_conv \u00b7 value wdl_softmax",
+   "arch_stem": "basic30 \u2192 stem 7\u00d77\u2192128",
+   "arch_blocks": "blk0 7\u00d77+7\u00d77 \u00b7 blk1 3\u00d73+3\u00d73 @128, no-SE, ReLU/pre, ReZero cap 0.5, LN-out",
+   "arch_heads": "policy intermediate_conv \u00b7 value WDL(16\u2192FC128)",
+   "out_model": "20260629-mini2b-3MIV-resume2-replay-latest.safetensors",
+   "frozen_glob": "20260629-mini2b-3MIV-step*-frozen.safetensors",
+   "segments": [
+    {
+     "log": "dcm_log_20260629-091821.txt",
+     "date": "20260629",
+     "cumstep_base": 0,
+     "label": "original"
+    },
+    {
+     "log": "dcm_log_20260629-192108.txt",
+     "date": "20260629",
+     "cumstep_base": 13464,
+     "label": "resume",
+     "bn_reset": true
+    },
+    {
+     "log": "dcm_log_20260701-080946.txt",
+     "date": "20260701",
+     "cumstep_base": 134159,
+     "label": "resume2",
+     "bn_reset": true
+    }
+   ]
+  },
+  "coxw": {
+   "label": "coxw \u2014 1.86M, 1-block",
+   "color": "#2ca02c",
+   "rezero_cap": 1.0,
+   "n_blocks": 1,
+   "params": 1860000,
+   "arch_summary": "stem 5\u00d75\u2192128 \u00b7 1\u00d7[7\u00d77+7\u00d77 @128, no-SE, relu/pre, ReZero(cap 1.0), LayerNorm out] \u00b7 policy intermediate_conv (pre-conv 128) \u00b7 value WDL(16\u2192FC128)",
+   "arch_stem": "basic30 \u2192 stem 5\u00d75\u2192128",
+   "arch_blocks": "1\u00d7 @128, 7\u00d77+7\u00d77, no-SE, ReLU/pre, ReZero cap 1.0, LN-out",
+   "arch_heads": "policy intermediate_conv (pre-conv 128) \u00b7 value WDL(16\u2192FC128)",
+   "out_model": null,
+   "frozen_glob": "20260629-mini1b-Coxw-step*-frozen.safetensors",
+   "segments": [
+    {
+     "log": "dcm_log_20260629-112618.txt",
+     "date": "20260629",
+     "cumstep_base": 0,
+     "label": "run"
+    }
+   ]
+  },
+  "ykkk": {
+   "label": "ykkk \u2014 0.24M, 2-block (SE)",
+   "color": "#d62728",
+   "rezero_cap": 0.707,
+   "n_blocks": 2,
+   "params": 242609,
+   "arch_summary": "stem 3\u00d73\u219264 \u00b7 2\u00d7[3\u00d73+3\u00d73 @64, SE/4, ReLU/pre, ReZero(0.707\u00b7tanh\u22640.707), LayerNorm out] \u00b7 policy simple_conv \u00b7 value WDL(16\u2192FC64)",
+   "arch_stem": "basic30 \u2192 stem 3\u00d73\u219264",
+   "arch_blocks": "2\u00d7 @64, 3\u00d73+3\u00d73, SE-4 attenuate, ReLU/pre, ReZero cap 0.707, LN-out",
+   "arch_heads": "policy simple_conv \u00b7 value WDL(16\u2192FC64)",
+   "out_model": "20260630-mini-YkKk-resume-replay-latest.safetensors",
+   "frozen_glob": "20260630-mini-YkKk-step*-frozen.safetensors",
+   "segments": [
+    {
+     "log": "dcm_log_20260629-170745.txt",
+     "date": "20260629",
+     "cumstep_base": 0,
+     "label": "run"
+    },
+    {
+     "log": "dcm_log_20260630-185515.txt",
+     "date": "20260630",
+     "cumstep_base": 40677,
+     "label": "resume",
+     "bn_reset": true
+    }
+   ]
+  },
+  "t97x": {
+   "label": "t97x \u2014 1.70M, 2-block 9\u00d79 (SE, GELU, no-ReZero)",
+   "color": "#9467bd",
+   "rezero_cap": 1.0,
+   "n_blocks": 2,
+   "params": 1700000,
+   "arch_summary": "stem 7\u00d77\u219264 \u00b7 2\u00d7[9\u00d79+9\u00d79 @64, SE scale+bias/4, GELU/pre, no-ReZero, LayerNorm out] \u00b7 policy intermediate_conv (pre-conv 5) \u00b7 value WDL(64\u2192FC64)",
+   "arch_stem": "basic30 \u2192 stem 7\u00d77\u219264",
+   "arch_blocks": "2\u00d7 @64, 9\u00d79+9\u00d79, SE-4 scale+bias, GELU/pre, no-ReZero, LN-out",
+   "arch_heads": "policy intermediate_conv (pre-conv 5) \u00b7 value WDL(64\u2192FC64)",
+   "out_model": null,
+   "frozen_glob": "20260630-T97X-step*-frozen.safetensors",
+   "segments": [
+    {
+     "log": "dcm_log_20260629-185604.txt",
+     "date": "20260629",
+     "cumstep_base": 0,
+     "label": "run"
+    }
+   ]
+  },
+  "nt8y": {
+   "label": "nt8y \u2014 1.53M, 3-block 15\u00d715 fat-conv (v5)",
+   "color": "#000000",
+   "rezero_cap": 0.33333334,
+   "n_blocks": 3,
+   "params": 1533930,
+   "arch_summary": "stem 5\u00d75\u219232 \u00b7 3\u00d7[15\u00d715+15\u00d715 @32, SE scale+bias/4, relu/pre, ReZero cap 0.333, LayerNorm out] \u00b7 policy intermediate_conv (pre-conv 512) \u00b7 value WDL(16\u2192FC64)",
+   "arch_stem": "basic30 \u2192 stem 5\u00d75\u219232",
+   "arch_blocks": "3\u00d7 @32, 15\u00d715+15\u00d715, SE-4 scale+bias, ReLU/pre, ReZero cap 0.333, LN-out",
+   "arch_heads": "policy intermediate_conv (pre-conv 512) \u00b7 value WDL(16\u2192FC64)",
+   "out_model": "20260701-nT8Y-fatconv-resume-replay-latest.safetensors",
+   "frozen_glob": "20260701-nT8Y-fatconv-step*-frozen.safetensors",
+   "segments": [
+    {
+     "log": "dcm_log_20260701-091259.txt",
+     "date": "20260701",
+     "cumstep_base": 0,
+     "label": "run",
+     "_note": "log deleted mid-run; steps 51000-65000 elapsed reconstructed from frozen mtime, log-only columns (pLoss/vLoss/legalMass/gNorm) unrecoverable"
+    },
+    {
+     "log": "dcm_log_20260701-152447.txt",
+     "date": "20260701",
+     "cumstep_base": 65883,
+     "label": "resume",
+     "bn_reset": true,
+     "elapsed_base_sec": 22203.7,
+     "_elapsed_base_note": "seg-0 end elapsed at cum 65883 (log deleted; reconstructed from frozen mtimes) so the by-time axis continues from ~6.17h instead of restarting at 0"
+    }
+   ]
+  },
+  "b9x16se": {
+   "label": "b9x16se \u2014 1.19M, 9-block 15\u00d715 @16, 9\u00d79 stem, +SE",
+   "color": "#bcbd22",
+   "rezero_cap": 0.33333334,
+   "n_blocks": 9,
+   "params": 1194652,
+   "arch_summary": "hand-crafted headless seed \u2014 SE ablation of b9x16 (identical + SE). stem 9\u00d79\u219216 \u00b7 9\u00d7[15\u00d715+15\u00d715 @16, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out] \u00b7 policy intermediate_conv (pre-conv 512) \u00b7 value WDL(16\u2192FC64). Same as b9x16 except SE added.",
+   "arch_stem": "basic30 \u2192 stem 9\u00d79\u219216",
+   "arch_blocks": "9\u00d7 @16, 15\u00d715+15\u00d715, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out",
+   "arch_heads": "policy intermediate_conv (pre-conv 512) \u00b7 value WDL(16\u2192FC64)",
+   "out_model": "20260702-9blk16se-9x9stem-replay-latest.safetensors",
+   "frozen_glob": "20260702-9blk16se-9x9stem-step*-frozen.safetensors",
+   "segments": [
+    {
+     "log": "dcm_log_20260702-024634.txt",
+     "date": "20260702",
+     "cumstep_base": 0,
+     "label": "run"
+    }
+   ]
+  },
+  "qeu8": {
+   "label": "qeu8 \u2014 3.93M, 2-block 15\u00d715 @64, 7\u00d77 stem (SE)",
+   "color": "#8c564b",
+   "rezero_cap": 0.5,
+   "n_blocks": 2,
+   "params": 3929393,
+   "arch_summary": "GUI-built model 20260702-7-Qeu8. stem 7\u00d77\u219264 \u00b7 2\u00d7[15\u00d715+15\u00d715 @64, SE scale+bias/4, ReLU/pre, ReZero cap 0.5, LN-out] \u00b7 policy intermediate_conv (pre-conv 512) \u00b7 value WDL(16\u2192FC64). Wide (64ch) shallow (2-block) fat-conv.",
+   "arch_stem": "basic30 \u2192 stem 7\u00d77\u219264",
+   "arch_blocks": "2\u00d7 @64, 15\u00d715+15\u00d715, SE scale+bias/4, ReLU/pre, ReZero cap 0.5, LN-out",
+   "arch_heads": "policy intermediate_conv (pre-conv 512) \u00b7 value WDL(16\u2192FC64)",
+   "out_model": "20260702-Qeu8-replay-latest.safetensors",
+   "frozen_glob": "20260702-Qeu8-step*-frozen.safetensors",
+   "segments": [
+    {
+     "log": "dcm_log_20260702-095124.txt",
+     "date": "20260702",
+     "cumstep_base": 0,
+     "label": "run"
+    },
+    {
+     "log": "dcm_log_20260702-182922.txt",
+     "date": "20260702",
+     "cumstep_base": 41407,
+     "label": "resume (enumerated)"
+    }
+   ]
   }
+ }
 }
