@@ -133,6 +133,7 @@ See `documentation/sampling-parameters.md` for rationale.
 - `documentation/chess-engine-design.md` — the original design document (input encoding, network topology, MPSGraph choices). Written as a learning narrative, but accurate and load-bearing.
 - `documentation/sampling-parameters.md` — temperature schedule design, ModelID mint/inherit rules, diversity tracking.
 - `documentation/mpsgraph-primitives.md` — cookbook for the MPSGraph APIs actually used. Useful when editing `ChessNetwork.swift`.
+- `documentation/disk-cleanup.md` — maintenance runbook for reclaiming disk from `Sessions/`: why `manual`/`promote` saves accumulate, the Time Machine local-snapshot reclaim step (deletion alone frees nothing until `tmutil thinlocalsnapshots`), and a guarded keeper-selection policy.
 - `ROADMAP.md` — deferred work, completed-with-design-notes, and the save/load design. **Completed items stay — move to "Completed" rather than delete, and preserve detail including any deviations from the original plan.**
 - `CHANGELOG.md` — commit-linked log of meaningful changes. Newest first, timestamped CDT, git-hash tagged.
 
