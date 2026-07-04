@@ -125,6 +125,30 @@ final class PGNImporterTests: XCTestCase {
         XCTAssertEqual(serial.games, parallel.games)                       // thread-count independent
     }
 
+    /// PGN files with CRLF (`\r\n`) line endings must import every game. The
+    /// reader splits on `\n`, leaving a trailing `\r` on each line; trimming
+    /// only `.whitespaces` (which excludes `\r`) left tag lines ending in "\r"
+    /// so `hasSuffix("]")` failed and blank lines were never `isEmpty` — every
+    /// tag/blank line was misread as movetext and whole games collapsed into
+    /// one. Regression for a mixed-line-ending corpus silently dropping most
+    /// games in its CRLF months; the fix trims `.whitespacesAndNewlines`.
+    func testImportsCRLFLineEndings() throws {
+        // Three complete games, CRLF throughout (tags, blank separators, moves).
+        let text = "[Event \"t\"]\r\n[Result \"1-0\"]\r\n\r\n1. e4 e5 2. Nf3 Nc6 1-0\r\n\r\n"
+                 + "[Event \"t\"]\r\n[Result \"0-1\"]\r\n\r\n1. d4 d5 2. c4 e6 0-1\r\n\r\n"
+                 + "[Event \"t\"]\r\n[Result \"1/2-1/2\"]\r\n\r\n1. c4 c5 1/2-1/2\r\n\r\n"
+        let (pgn, dir) = try writeTempPGN(text)
+        defer {
+            do { try FileManager.default.removeItem(at: dir) }
+            catch { /* best-effort temp cleanup */ }
+        }
+        let r = try importGames(pgn: pgn, into: dir.appendingPathComponent("crlf"), threads: 1)
+        XCTAssertEqual(r.summary.imported, 3)      // each game distinct, not merged into one
+        XCTAssertEqual(r.summary.parseErrors, 0)
+        XCTAssertEqual(r.games.count, 3)
+        XCTAssertEqual(r.games.map(\.moves.count), [4, 4, 2])
+    }
+
     func testHardFailsOnUnparseableGameByDefault() throws {
         let text = "[Event \"t\"]\n[Result \"1-0\"]\n\ne4 e5 Zz9 1-0\n\n"
         let (pgn, dir) = try writeTempPGN(text)
@@ -216,8 +240,9 @@ final class PGNImporterTests: XCTestCase {
         XCTAssertFalse(hasNc3e2(MoveGenerator.legalMoves(for: state)), "Nc3–e2 should be illegal (pinned)")
     }
 
-    /// A missing/unreadable input file must hard-fail (the reader subprocess
-    /// exits nonzero), not silently produce an empty corpus.
+    /// A missing/unreadable input file must hard-fail (a plain `.pgn` can't be
+    /// opened; a `.zst` reader subprocess exits nonzero), not silently produce
+    /// an empty corpus.
     func testImportFailsOnMissingInputFile() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("pgnimp-\(UUID().uuidString)", isDirectory: true)

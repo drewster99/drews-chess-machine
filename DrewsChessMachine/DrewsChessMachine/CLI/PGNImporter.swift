@@ -219,24 +219,43 @@ enum PGNImporter {
 
     // MARK: - Streaming reader
 
-    /// Decompress (if `.zst`) and stream the file, invoking `onGame(tags,
-    /// movetext)` for each complete game. Stops early (and kills the
-    /// decompressor) as soon as `shouldContinue()` turns false.
+    /// Stream the file, invoking `onGame(tags, movetext)` for each complete
+    /// game. A plain `.pgn` is read **directly** from its own file handle; a
+    /// `.zst` is decompressed by the `zstd` CLI and read from its stdout pipe.
+    /// Stops early (and reaps the decompressor) as soon as `shouldContinue()`
+    /// turns false.
+    ///
+    /// Plain files are read directly instead of piped through `cat`: shelling
+    /// out just to copy an uncompressed file into a pipe is pure overhead, and
+    /// reading the file with `read(upToCount:)` reports EOF only at genuine
+    /// end-of-file and throws real read errors instead of raising the way
+    /// `availableData` does. (`.zst` still needs the `zstd` CLI to decompress.)
     private static func streamGames(at path: String,
                                     shouldContinue: () -> Bool,
                                     onGame: (_ tags: [String: String], _ movetext: String) -> Void) throws {
-        let process = Process()
         let usesZstd = path.hasSuffix(".zst")
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = usesZstd ? ["zstd", "-dc", path] : ["cat", path]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        do {
-            try process.run()
-        } catch {
-            throw PGNImportError.openFailed(error.localizedDescription)
+        let process: Process?
+        let handle: FileHandle
+        if usesZstd {
+            let zstd = Process()
+            zstd.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            zstd.arguments = ["zstd", "-dc", path]
+            let pipe = Pipe()
+            zstd.standardOutput = pipe
+            do {
+                try zstd.run()
+            } catch {
+                throw PGNImportError.openFailed(error.localizedDescription)
+            }
+            handle = pipe.fileHandleForReading
+            process = zstd
+        } else {
+            guard let fileHandle = FileHandle(forReadingAtPath: path) else {
+                throw PGNImportError.openFailed("cannot open \(path)")
+            }
+            handle = fileHandle
+            process = nil
         }
-        let handle = pipe.fileHandleForReading
 
         // Per-game accumulation state.
         var tags: [String: String] = [:]
@@ -253,7 +272,16 @@ enum PGNImporter {
         }
 
         func processLine(_ raw: String) {
-            let line = raw.trimmingCharacters(in: .whitespaces)
+            // Trim newlines too, not just spaces/tabs. The reader splits on \n,
+            // so on a CRLF (\r\n) file every line keeps a trailing \r. Under
+            // `.whitespaces` (which excludes \r) that stray \r left tag lines
+            // ending in "\r" — so `hasSuffix("]")` failed — and blank lines were
+            // "\r" so never `isEmpty`; every tag/blank was then misread as
+            // movetext and whole games collapsed together. The Lichess Elite
+            // export mixes LF and CRLF months, which silently merged or dropped
+            // most games in the CRLF months until this used
+            // `.whitespacesAndNewlines`.
+            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if line.hasPrefix("[") && line.hasSuffix("]") {
                 // A tag line that arrives after movetext begins a new game.
                 if inMoves { finalizeGame() }
@@ -272,11 +300,22 @@ enum PGNImporter {
         // tail just once per chunk (cheap integer cursor, no per-line memmove).
         var carry = [UInt8]()
         let newline: UInt8 = 0x0A
+        let chunkSize = 1 << 20   // fixed-size read buffer
         var endedByStop = false
+        var readError: Error? = nil
         while true {
             if !shouldContinue() { endedByStop = true; break }
-            let chunk = handle.availableData
-            if chunk.isEmpty { break }   // natural EOF
+            let chunk: Data?
+            do {
+                chunk = try handle.read(upToCount: chunkSize)
+            } catch {
+                readError = error
+                break
+            }
+            // `read(upToCount:)` returns nil only at genuine EOF (and blocks for
+            // the pipe until bytes or EOF), so an empty result is unambiguously
+            // end-of-input — not the mid-stream false-empty `availableData` gave.
+            guard let chunk, !chunk.isEmpty else { break }
             carry.append(contentsOf: chunk)
             var lineStart = 0
             var i = 0
@@ -289,23 +328,31 @@ enum PGNImporter {
             }
             if lineStart > 0 { carry.removeFirst(lineStart) }
         }
-        // On natural EOF, flush the trailing partial line and emit the final
-        // game; on an early stop, skip it — those games would only be dropped.
-        if !endedByStop {
+        // On a clean read to EOF, flush the trailing partial line and emit the
+        // final game; on an early stop or a read error, skip it — those games
+        // would only be dropped (and any error is surfaced just below).
+        if !endedByStop && readError == nil {
             if !carry.isEmpty {
                 processLine(String(decoding: carry, as: UTF8.self))
             }
             finalizeGame()
         }
-        if process.isRunning { process.terminate() }
-        process.waitUntilExit()
-        // A nonzero exit on a natural read (not our own early termination) means
-        // the reader/decompressor failed — missing input file, missing `zstd`,
-        // or a corrupt `.zst` — which would otherwise yield a silently empty or
-        // truncated corpus. Fail loudly instead.
-        if !endedByStop && process.terminationStatus != 0 {
-            let tool = process.arguments?.first ?? "reader"
-            throw PGNImportError.openFailed("\(tool) exited with status \(process.terminationStatus) reading \(path)")
+        // Reap the decompressor (zstd path only); the direct file handle closes
+        // itself when it deallocates at scope exit.
+        if let process {
+            if process.isRunning { process.terminate() }
+            process.waitUntilExit()
+        }
+        // Surface a mid-stream read failure loudly rather than sealing a
+        // truncated corpus.
+        if let readError {
+            throw PGNImportError.openFailed("read failed on \(path): \(readError.localizedDescription)")
+        }
+        // A nonzero `zstd` exit on a clean read (not our own early stop) means
+        // decompression failed — missing `zstd` or a corrupt `.zst` — which
+        // would otherwise yield a silently truncated corpus. Fail loudly.
+        if let process, !endedByStop, process.terminationStatus != 0 {
+            throw PGNImportError.openFailed("zstd exited with status \(process.terminationStatus) reading \(path)")
         }
     }
 
