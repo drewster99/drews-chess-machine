@@ -25,10 +25,16 @@ import os, re, sys, csv, json, glob, struct, math, argparse, datetime
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REG = json.load(open(os.path.join(HERE, "registry.json")))
+# Config/data/output root. Defaults to the script dir, but can be pointed at a
+# separate chart set (its own registry.json + data/ + dcm_dashboard.html) via
+# DCM_DASH_ROOT — this is how the "elite"-corpus set lives alongside the main one
+# without forking the script. The script itself (and shared assets like the v5 doc)
+# still resolve against HERE.
+ROOT = os.path.abspath(os.environ.get("DCM_DASH_ROOT", HERE))
+REG = json.load(open(os.path.join(ROOT, "registry.json")))
 MODELS = os.path.expanduser(REG["models_dir"])
 LOGS = os.path.expanduser(REG["logs_dir"])
-DATA = os.path.join(HERE, "data")
+DATA = os.path.join(ROOT, "data")
 os.makedirs(DATA, exist_ok=True)
 BIN = ("/Users/andrew/Library/Developer/Xcode/DerivedData/"
        "DrewsChessMachine-duuojsefpqabteeapbtaobbiymfs/Build/Products/Release/"
@@ -730,7 +736,7 @@ figure img{{cursor:zoom-in}}
 Each metric: 10-point EMA (foreground) over raw marks at 30% opacity (background), shown vs cumulative SGD step and vs elapsed training time (pause-aware). The pElo panel has a collapsible early-window zoom. Reload to refresh.</p>
 {summ}
 {ch}<h2>Data tables</h2>{tb}{lightbox}</body></html>"""
-    out = os.path.join(HERE, "dcm_dashboard.html")
+    out = os.path.join(ROOT, "dcm_dashboard.html")
     open(out, "w").write(html)
     # markdown table to stdout for the run we care about
     for run in REG["runs"]:

@@ -1,0 +1,2 @@
+cum_step,meta_step,segment,elapsed_train_sec,wallclock_iso,ms_per_step,pElo,nll,loss,pLoss,vLoss,legalMass,pIllM,bn1Mean,gNorm,sae2,eff_alpha,pLogit_mean,pLogit_peak,frozen_file,note
+0,0,0,0,,,415.73,3.8554,,,,,,0.0021,,0.29,0.3808;0.3808,3.793,5.4375,20260702-164826-20260702-7-Qeu8-manual.safetensors,original start point (probe)
