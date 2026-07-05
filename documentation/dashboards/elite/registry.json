@@ -3,7 +3,7 @@
  "logs_dir": "~/Library/Logs/DrewsChessMachine",
  "runs": {
   "qeu8e": {
-   "label": "qeu8e \u2014 3.93M, NEW corpus (lichess-elite), 3 epochs from qeu8 init",
+   "label": "qeu8e \u2014 3.93M, NEW corpus (lichess-elite), 5 epochs from qeu8 init",
    "color": "#d62728",
    "rezero_cap": 0.5,
    "n_blocks": 2,
@@ -12,8 +12,8 @@
    "arch_stem": "basic30 \u2192 stem 7\u00d77\u219264",
    "arch_blocks": "2\u00d7 @64, 15\u00d715+15\u00d715, SE scale+bias/4, ReLU/pre, ReZero cap 0.5, LN-out",
    "arch_heads": "policy intermediate_conv (pre-conv 512) \u00b7 value WDL(16\u2192FC64)",
-   "out_model": "20260704-Qeu8e2-replay-latest.safetensors",
-   "frozen_glob": "20260704-Qeu8e2-step*-frozen.safetensors",
+   "out_model": "20260704-Qeu8e3-replay-latest.safetensors",
+   "frozen_glob": "20260704-Qeu8e3-step*-frozen.safetensors",
    "segments": [
     {
      "log": "dcm_log_20260703-175402.txt",
@@ -26,6 +26,12 @@
      "date": "20260704",
      "cumstep_base": 21224,
      "label": "epochs 2-3 (continued)"
+    },
+    {
+     "log": "dcm_log_20260704-110015.txt",
+     "date": "20260704",
+     "cumstep_base": 63731,
+     "label": "epochs 4-5 (continued)"
     }
    ]
   },
