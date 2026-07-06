@@ -191,7 +191,8 @@
      "label": "resume2 (enumerated)",
      "cumstep_base": 135883,
      "log": "dcm_log_20260706-125010.txt",
-     "date": "20260706"
+     "date": "20260706",
+     "elapsed_base_sec": 46279.8
     }
    ],
    "trainset": "std-2026-05"
