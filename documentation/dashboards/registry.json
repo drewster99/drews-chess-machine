@@ -222,7 +222,7 @@
    "arch_stem": "basic30 \u2192 stem 7\u00d77\u219264",
    "arch_blocks": "2\u00d7 @64, 15\u00d715+15\u00d715, SE scale+bias/4, ReLU/pre, ReZero cap 0.5, LN-out",
    "arch_heads": "policy intermediate_conv (pre-conv 512) \u00b7 value WDL(16\u2192FC64)",
-   "out_model": "20260702-Qeu8-replay-latest.safetensors",
+   "out_model": "20260702-Qeu8-resume2-replay-latest.safetensors",
    "frozen_glob": "20260702-Qeu8-step*-frozen.safetensors",
    "segments": [
     {
@@ -236,6 +236,12 @@
      "date": "20260702",
      "cumstep_base": 41407,
      "label": "resume (enumerated)"
+    },
+    {
+     "label": "resume2 (enumerated)",
+     "cumstep_base": 108915,
+     "log": "dcm_log_20260706-002713.txt",
+     "date": "20260706"
     }
    ],
    "trainset": "std-2026-05"
