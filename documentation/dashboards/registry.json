@@ -168,7 +168,7 @@
    "arch_stem": "basic30 \u2192 stem 5\u00d75\u219232",
    "arch_blocks": "3\u00d7 @32, 15\u00d715+15\u00d715, SE-4 scale+bias, ReLU/pre, ReZero cap 0.333, LN-out",
    "arch_heads": "policy intermediate_conv (pre-conv 512) \u00b7 value WDL(16\u2192FC64)",
-   "out_model": "20260701-nT8Y-fatconv-resume-replay-latest.safetensors",
+   "out_model": "20260701-nT8Y-resume2-replay-latest.safetensors",
    "frozen_glob": "20260701-nT8Y-fatconv-step*-frozen.safetensors",
    "segments": [
     {
@@ -186,6 +186,12 @@
      "bn_reset": true,
      "elapsed_base_sec": 22203.7,
      "_elapsed_base_note": "seg-0 end elapsed at cum 65883 (log deleted; reconstructed from frozen mtimes) so the by-time axis continues from ~6.17h instead of restarting at 0"
+    },
+    {
+     "label": "resume2 (enumerated)",
+     "cumstep_base": 135883,
+     "log": "dcm_log_20260706-125010.txt",
+     "date": "20260706"
     }
    ],
    "trainset": "std-2026-05"
