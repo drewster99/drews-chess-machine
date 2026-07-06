@@ -25,13 +25,15 @@
      "log": "dcm_log_20260704-015814.txt",
      "date": "20260704",
      "cumstep_base": 21224,
-     "label": "epochs 2-3 (continued)"
+     "label": "epochs 2-3 (continued)",
+     "elapsed_base_sec": 14867.8
     },
     {
      "log": "dcm_log_20260704-110015.txt",
      "date": "20260704",
      "cumstep_base": 63731,
-     "label": "epochs 4-5 (continued)"
+     "label": "epochs 4-5 (continued)",
+     "elapsed_base_sec": 43402.3
     }
    ],
    "trainset": "elite-2025-05_11"
@@ -59,7 +61,8 @@
      "log": "dcm_log_20260702-182922.txt",
      "date": "20260702",
      "cumstep_base": 41407,
-     "label": "resume (enumerated)"
+     "label": "resume (enumerated)",
+     "elapsed_base_sec": 26678.7
     }
    ],
    "trainset": "std-rated"
@@ -93,13 +96,15 @@
      "log": "dcm_log_20260628-114648.txt",
      "date": "20260628",
      "cumstep_base": 45441,
-     "label": "wd5e-4"
+     "label": "wd5e-4",
+     "elapsed_base_sec": 59620.0
     },
     {
      "log": "dcm_log_20260628-183831.txt",
      "date": "20260628",
      "cumstep_base": 60901,
-     "label": "m0.93"
+     "label": "m0.93",
+     "elapsed_base_sec": 59620.0
     }
    ],
    "trainset": "std-rated?"

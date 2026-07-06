@@ -32,13 +32,15 @@
      "log": "dcm_log_20260628-114648.txt",
      "date": "20260628",
      "cumstep_base": 45441,
-     "label": "wd5e-4"
+     "label": "wd5e-4",
+     "elapsed_base_sec": 59620.0
     },
     {
      "log": "dcm_log_20260628-183831.txt",
      "date": "20260628",
      "cumstep_base": 60901,
-     "label": "m0.93"
+     "label": "m0.93",
+     "elapsed_base_sec": 59620.0
     }
    ],
    "trainset": "std-2026-05"
@@ -67,20 +69,23 @@
      "date": "20260629",
      "cumstep_base": 13464,
      "label": "resume",
-     "bn_reset": true
+     "bn_reset": true,
+     "elapsed_base_sec": 5534.4
     },
     {
      "log": "dcm_log_20260701-080946.txt",
      "date": "20260701",
      "cumstep_base": 134159,
      "label": "resume2",
-     "bn_reset": true
+     "bn_reset": true,
+     "elapsed_base_sec": 55033.3
     },
     {
      "log": "dcm_log_20260705-091255.txt",
      "date": "20260705",
      "cumstep_base": 142159,
-     "label": "resume3"
+     "label": "resume3",
+     "elapsed_base_sec": 59569.8
     }
    ],
    "trainset": "std-2026-05"
@@ -131,7 +136,8 @@
      "date": "20260630",
      "cumstep_base": 40677,
      "label": "resume",
-     "bn_reset": true
+     "bn_reset": true,
+     "elapsed_base_sec": 6366.7
     }
    ],
    "trainset": "std-2026-05"
@@ -242,13 +248,15 @@
      "log": "dcm_log_20260702-182922.txt",
      "date": "20260702",
      "cumstep_base": 41407,
-     "label": "resume (enumerated)"
+     "label": "resume (enumerated)",
+     "elapsed_base_sec": 26678.7
     },
     {
      "label": "resume2 (enumerated)",
      "cumstep_base": 108915,
      "log": "dcm_log_20260706-002713.txt",
-     "date": "20260706"
+     "date": "20260706",
+     "elapsed_base_sec": 68105.0
     }
    ],
    "trainset": "std-2026-05"
