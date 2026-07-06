@@ -40,7 +40,8 @@
      "cumstep_base": 60901,
      "label": "m0.93"
     }
-   ]
+   ],
+   "trainset": "std-2026-05"
   },
   "mini2b": {
    "label": "mini2b \u2014 2.25M, 2-block",
@@ -52,7 +53,7 @@
    "arch_stem": "basic30 \u2192 stem 7\u00d77\u2192128",
    "arch_blocks": "blk0 7\u00d77+7\u00d77 \u00b7 blk1 3\u00d73+3\u00d73 @128, no-SE, ReLU/pre, ReZero cap 0.5, LN-out",
    "arch_heads": "policy intermediate_conv \u00b7 value WDL(16\u2192FC128)",
-   "out_model": "20260629-mini2b-3MIV-resume2-replay-latest.safetensors",
+   "out_model": "20260629-mini2b-3MIV-resume3-replay-latest.safetensors",
    "frozen_glob": "20260629-mini2b-3MIV-step*-frozen.safetensors",
    "segments": [
     {
@@ -74,8 +75,15 @@
      "cumstep_base": 134159,
      "label": "resume2",
      "bn_reset": true
+    },
+    {
+     "log": "dcm_log_20260705-091255.txt",
+     "date": "20260705",
+     "cumstep_base": 142159,
+     "label": "resume3"
     }
-   ]
+   ],
+   "trainset": "std-2026-05"
   },
   "coxw": {
    "label": "coxw \u2014 1.86M, 1-block",
@@ -96,7 +104,8 @@
      "cumstep_base": 0,
      "label": "run"
     }
-   ]
+   ],
+   "trainset": "std-2026-05"
   },
   "ykkk": {
    "label": "ykkk \u2014 0.24M, 2-block (SE)",
@@ -124,7 +133,8 @@
      "label": "resume",
      "bn_reset": true
     }
-   ]
+   ],
+   "trainset": "std-2026-05"
   },
   "t97x": {
    "label": "t97x \u2014 1.70M, 2-block 9\u00d79 (SE, GELU, no-ReZero)",
@@ -145,7 +155,8 @@
      "cumstep_base": 0,
      "label": "run"
     }
-   ]
+   ],
+   "trainset": "std-2026-05"
   },
   "nt8y": {
    "label": "nt8y \u2014 1.53M, 3-block 15\u00d715 fat-conv (v5)",
@@ -176,7 +187,8 @@
      "elapsed_base_sec": 22203.7,
      "_elapsed_base_note": "seg-0 end elapsed at cum 65883 (log deleted; reconstructed from frozen mtimes) so the by-time axis continues from ~6.17h instead of restarting at 0"
     }
-   ]
+   ],
+   "trainset": "std-2026-05"
   },
   "b9x16se": {
    "label": "b9x16se \u2014 1.19M, 9-block 15\u00d715 @16, 9\u00d79 stem, +SE",
@@ -197,7 +209,8 @@
      "cumstep_base": 0,
      "label": "run"
     }
-   ]
+   ],
+   "trainset": "std-2026-05"
   },
   "qeu8": {
    "label": "qeu8 \u2014 3.93M, 2-block 15\u00d715 @64, 7\u00d77 stem (SE)",
@@ -224,7 +237,8 @@
      "cumstep_base": 41407,
      "label": "resume (enumerated)"
     }
-   ]
+   ],
+   "trainset": "std-2026-05"
   }
  }
 }

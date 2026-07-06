@@ -33,7 +33,8 @@
      "cumstep_base": 63731,
      "label": "epochs 4-5 (continued)"
     }
-   ]
+   ],
+   "trainset": "elite-2025-05_11"
   },
   "qeu8": {
    "label": "qeu8 \u2014 3.93M, OLD corpus (w3aA5b) [reference]",
@@ -60,7 +61,8 @@
      "cumstep_base": 41407,
      "label": "resume (enumerated)"
     }
-   ]
+   ],
+   "trainset": "std-rated"
   },
   "v5": {
    "label": "v5 \u2014 8.45M, 5-block (wd1e-4\u2192wd5e-4\u2192m0.93) [ref]",
@@ -99,7 +101,8 @@
      "cumstep_base": 60901,
      "label": "m0.93"
     }
-   ]
+   ],
+   "trainset": "std-rated?"
   },
   "nt8y": {
    "label": "nt8y \u2014 1.53M, 3-block 15\u00d715 fat-conv (v5) [ref]",
@@ -130,7 +133,8 @@
      "elapsed_base_sec": 22203.7,
      "_elapsed_base_note": "seg-0 end elapsed at cum 65883 (log deleted; reconstructed from frozen mtimes) so the by-time axis continues from ~6.17h instead of restarting at 0"
     }
-   ]
+   ],
+   "trainset": "std-rated"
   },
   "coxw": {
    "label": "coxw \u2014 1.86M, 1-block [ref]",
@@ -151,7 +155,8 @@
      "cumstep_base": 0,
      "label": "run"
     }
-   ]
+   ],
+   "trainset": "std-rated?"
   },
   "qeu8init": {
    "label": "qeu8 init \u2014 original start point (both corpora)",
@@ -165,7 +170,8 @@
    "arch_heads": "policy intermediate_conv (pre-conv 512) \u00b7 value WDL(16\u2192FC64)",
    "out_model": "__baseline_no_track__",
    "frozen_glob": "__none__step*__none__",
-   "segments": []
+   "segments": [],
+   "trainset": "init"
   }
  }
 }
