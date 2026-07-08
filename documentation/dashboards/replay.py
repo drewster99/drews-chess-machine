@@ -2,6 +2,12 @@
 """
 Standardized tracker / renderer for DCM corpus-replay runs.
 
+NOTE: `render` produces the DEPRECATED static-PNG dashboard
+(dcm_dashboard_DEPRECATED.html). The current dashboard is the interactive
+master built by master.py -> dcm_master.html (repo root). The tracking/CSV
+side of this module (data/<run>.csv, registry.json) is still the live source
+of truth that master.py reads; only the HTML render here is superseded.
+
 One CSV per run under data/<run>.csv (canonical store); per-run config in
 registry.json. Every row carries BOTH a step axis (cum_step / meta_step) and a
 wall-time axis (elapsed_train_sec / wallclock_iso), so charts can be drawn vs
@@ -753,7 +759,7 @@ figure img{{cursor:zoom-in}}
 Each metric: 10-point EMA (foreground) over raw marks at 30% opacity (background), shown vs cumulative SGD step and vs elapsed training time (pause-aware). The pElo panel has a collapsible early-window zoom. Reload to refresh.</p>
 {summ}
 {ch}<h2>Data tables</h2>{tb}{lightbox}</body></html>"""
-    out = os.path.join(ROOT, "dcm_dashboard.html")
+    out = os.path.join(ROOT, "dcm_dashboard_DEPRECATED.html")
     open(out, "w").write(html)
     # markdown table to stdout for the run we care about
     for run in REG["runs"]:

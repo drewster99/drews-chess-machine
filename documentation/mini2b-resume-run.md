@@ -4,7 +4,7 @@ _Auto-generated from `loop_state.txt`. Run terminated at cumulative step **13415
 
 ![mini2b pElo vs step](dashboards/mini2b_pElo.png)
 
-Full interactive sweep (all runs, all metrics, stable-rank utilization): **[`dashboards/dcm_dashboard.html`](dashboards/dcm_dashboard.html)** — reload to refresh.
+Full interactive sweep (all runs, all metrics, stable-rank utilization): **[`dcm_master.html`](../dcm_master.html)** — reload to refresh.
 
 ## Architecture
 

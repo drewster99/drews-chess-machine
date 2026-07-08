@@ -17,17 +17,21 @@ Run:  python3 master.py
 import os, json, csv, html, subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(os.path.dirname(HERE))  # documentation/dashboards -> repo root
 K_POS_PER_STEP = 8533   # batch/replay-ratio = 4096/0.48; used to derive epochs
 
 # Every corpus that exists (used or not). `label` MUST equal the runs' `trainset`.
-# plies_n is numeric (for epoch math); std-2026-05 counts are estimates (its
-# manifest counters were never finalized -> complete:False).
+# plies_n is numeric (for epoch math). std-2026-05's counts are exact as of
+# 2026-07-07 (recovered from the shard trailers by --validate-corpus --fix after
+# its manifest counters were left at 0 by a disk-full recording); complete stays
+# False because the recording was truncated, not sealed.
 CORPORA = [
     {"label": "std-2026-05", "id": "20260624-192615-w3aA5b",
-     "name": "lichess_db_standard_rated_2026-05", "games": "~14.6M", "plies": "~1.1B",
-     "plies_n": 1.10e9, "complete": False,
+     "name": "lichess_db_standard_rated_2026-05", "games": "20.9M", "plies": "1.39B",
+     "plies_n": 1.386486078e9, "complete": False,
      "source": "lichess_db_standard_rated_2026-05.pgn",
-     "note": "PARTIAL import — stopped early (~15% of the full month)"},
+     "note": "disk-full-truncated prefix (never sealed); exact 20,935,171 games / "
+             "1,386,486,078 plies recovered from the 46 shard trailers 2026-07-07"},
     {"label": "std-2026-05-mini", "id": "20260627-first100k-7fms",
      "name": "lichess_2026-05_first100000", "games": "100,000", "plies": "6.6M",
      "plies_n": 6.6e6, "complete": True,
@@ -192,7 +196,7 @@ def render():
 
     tpl = (_HTML.replace("__DATA__", data_json).replace("__SROWS__", srows)
                 .replace("__CORPROWS__", corprows))
-    out = os.path.join(HERE, "dcm_master.html")
+    out = os.path.join(REPO_ROOT, "dcm_master.html")
     open(out, "w").write(tpl)
     print(f"wrote {out} ({len(tpl)//1024} KB, {len(runs)} runs)")
 
