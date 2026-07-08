@@ -263,7 +263,24 @@ def build_run(key, cfg):
     if pelo_cums and min(pelo_cums) > BASELINE_STEP:
         put_pelo(BASELINE_STEP, BASELINE_STEP, BASELINE_PELO, "", "baseline (random-init anchor)")
 
-    out = [rows[s] for s in sorted(rows)]
+    # Sample every ~1000 cum-steps to match the replay tracker's cadence. The raw
+    # sources are far denser — [STATS] telemetry is ~per-60s and the in-training
+    # probe pElo curve is ~per-25-steps — which is what bloated the embedded
+    # dashboard. Bucket rows by nearest 1000-step boundary and keep one per bucket,
+    # preferring a pElo-bearing row so the headline pElo trajectory is retained at
+    # 1000-step resolution rather than being thinned away by a [STATS]-only neighbor.
+    buckets = {}   # bucket index -> chosen cum_step
+    for s, r in rows.items():
+        b = round(s / 1000.0)
+        cur = buckets.get(b)
+        if cur is None:
+            buckets[b] = s
+            continue
+        has = r["pElo"] not in ("", None)
+        cur_has = rows[cur]["pElo"] not in ("", None)
+        if (has and not cur_has) or (has == cur_has and abs(s - b * 1000) < abs(cur - b * 1000)):
+            buckets[b] = s
+    out = [rows[s] for s in sorted(buckets.values())]
     p = os.path.join(DATA, f"{key}.csv")
     with open(p, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS)
