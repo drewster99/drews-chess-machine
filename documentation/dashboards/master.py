@@ -20,34 +20,56 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(HERE))  # documentation/dashboards -> repo root
 K_POS_PER_STEP = 8533   # batch/replay-ratio = 4096/0.48; used to derive epochs
 
-# Every corpus that exists (used or not). `label` MUST equal the runs' `trainset`.
-# plies_n is numeric (for epoch math). std-2026-05's counts are exact as of
-# 2026-07-07 (recovered from the shard trailers by --validate-corpus --fix after
-# its manifest counters were left at 0 by a disk-full recording); complete stays
-# False because the recording was truncated, not sealed.
-CORPORA = [
+# Curated corpus metadata: `label` (MUST equal the runs' `trainset`) + `source` +
+# `note`. Everything that can DRIFT — whether the corpus still exists on disk, its
+# game/ply counts, and completeness — is read LIVE from each corpus.json by
+# _load_corpora() at render time, so a deleted corpus disappears and the counts
+# never go stale against a hand-maintained list.
+_CORPORA_DIR = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/Corpora")
+_CURATED_CORPORA = [
     {"label": "std-2026-05", "id": "20260624-192615-w3aA5b",
-     "name": "lichess_db_standard_rated_2026-05", "games": "20.9M", "plies": "1.39B",
-     "plies_n": 1.386486078e9, "complete": False,
      "source": "lichess_db_standard_rated_2026-05.pgn",
-     "note": "disk-full-truncated prefix (never sealed); exact 20,935,171 games / "
-             "1,386,486,078 plies recovered from the 46 shard trailers 2026-07-07"},
-    {"label": "std-2026-05-mini", "id": "20260627-first100k-7fms",
-     "name": "lichess_2026-05_first100000", "games": "100,000", "plies": "6.6M",
-     "plies_n": 6.6e6, "complete": True,
-     "source": "lichess_db_standard_rated_2026-05.pgn (first 100k games)",
-     "note": "first-100k test corpus — never trained on"},
+     "note": "disk-full-truncated prefix (never sealed)"},
     {"label": "elite-2025-05_11", "id": "20260704-001142-lLOrLj",
-     "name": "lichess_elite_2025-05_to_11", "games": "2.02M", "plies": "182M",
-     "plies_n": 1.819e8, "complete": True,
      "source": "lichess_elite_2025-05_to_11.pgn",
      "note": "PARTIAL elite (7 months, 2025-05 → 11)"},
     {"label": "elite-2021_2025", "id": "20260704-215145-op24Gp",
-     "name": "lichess_elite_2021-12_to_2025-11", "games": "14.6M", "plies": "1.27B",
-     "plies_n": 1.2719e9, "complete": True,
      "source": "lichess_elite_2021-12_to_2025-11.pgn",
-     "note": "FULL elite (4 years) — staged in /Volumes/foo, not yet run"},
+     "note": "FULL elite (4 years)"},
 ]
+
+
+def _human(n):
+    for div, suf in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if n >= div:
+            return f"{n / div:.2f}".rstrip("0").rstrip(".") + suf
+    return str(n)
+
+
+def _load_corpora():
+    """Curated label/source/note overlaid with LIVE corpus.json: existence, per-
+    source game/ply totals, and completeness (sealed). A corpus whose directory is
+    gone is dropped (no phantom rows); a corpus.json that is present but unreadable
+    is a hard error (surfaced, not silently defaulted)."""
+    out = []
+    for c in _CURATED_CORPORA:
+        cj = os.path.join(_CORPORA_DIR, c["id"], "corpus.json")
+        if not os.path.exists(cj):
+            continue
+        m = json.load(open(cj))
+        srcs = m.get("sources", [])
+        g = sum((s.get("gamesAdded") or 0) for s in srcs)
+        p = sum((s.get("pliesAdded") or 0) for s in srcs)
+        # "complete" = every source finished importing (per-source flag), NOT sealed —
+        # the elite corpora are full imports left in the recording state.
+        complete = bool(srcs) and all(s.get("complete") is True for s in srcs)
+        out.append({**c, "name": m.get("name", c["id"]),
+                    "games": _human(g), "plies": _human(p), "plies_n": float(p),
+                    "complete": complete})
+    return out
+
+
+CORPORA = _load_corpora()
 CORP_BY_LABEL = {c["label"]: c for c in CORPORA}
 
 METRICS = [
@@ -104,7 +126,7 @@ def collect():
         corp = CORP_BY_LABEL.get(ts)
         peak = max([v for v in m["pElo"] if v is not None], default=None)
         final_cum = s[-1] if s else 0
-        epochs = (final_cum * K_POS_PER_STEP / corp["plies_n"]) if corp else None
+        epochs = (final_cum * K_POS_PER_STEP / corp["plies_n"]) if corp and corp.get("plies_n") else None
 
         def last(key):
             for r in reversed(rows):
@@ -113,6 +135,7 @@ def collect():
             return "—"
         return {
             "k": key, "label": cfg.get("label", key), "color": cfg.get("color", "#888"),
+            "type": cfg.get("type", "replay"),
             "trainset": ts, "corp": corp, "epochs": epochs,
             "active": bool(cfg.get("out_model")) and os.path.basename(cfg["out_model"]) in ACTIVE,
             "params": cfg.get("params", 0),
@@ -129,6 +152,12 @@ def collect():
     for key in ("qeu8e",):
         if key in elite["runs"]:
             runs.append(build(key, elite["runs"][key], os.path.join(HERE, "elite", "data")))
+    # self-play (non-replay) runs — same data/ dir + CSV schema, type=selfplay
+    sp_path = os.path.join(HERE, "selfplay_registry.json")
+    if os.path.exists(sp_path):
+        sp = json.load(open(sp_path))
+        for key, cfg in sp["runs"].items():
+            runs.append(build(key, cfg, os.path.join(HERE, "data")))
     return runs
 
 
@@ -163,12 +192,18 @@ def render():
                         f"<span class=chip>{html.escape(r['trainset'])}</span>"
                         f"<div class=csub>{html.escape(c['plies'])} plies</div>"
                         f"{epline}</td>")
+        elif r["type"] == "selfplay":
+            corpcell = ("<td class=corpus><span class=chip>self-play</span>"
+                        "<div class=csub>no corpus</div></td>")
         else:
             corpcell = "<td class=corpus><span class=chip>?</span></td>"
+        tp = r["type"]
+        typecell = f"<td><span class='tp {tp}'>{'self-play' if tp=='selfplay' else 'replay'}</span></td>"
         live = " <span class=live title='this run is training right now'>● running</span>" if r["active"] else ""
         srows += (
             f"<tr data-k='{r['k']}'{' class=liverow' if r['active'] else ''}>"
             f"<td class=run>{sw(r['color'])}{html.escape(r['k'])}{live}</td>"
+            f"{typecell}"
             f"{corpcell}"
             f"<td class=arch>{html.escape(r['stem'])}</td>"
             f"<td class=arch>{html.escape(r['blocks'])}</td>"
@@ -230,6 +265,9 @@ tr.liverow{background:#2e9d5714}
 .tblwrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--card)}
 .sw{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:7px;vertical-align:-1px}
 .chip{background:#efece6;border:1px solid var(--line);border-radius:999px;padding:1px 8px;font-size:11px;color:#4a463f;cursor:help}
+.tp{display:inline-block;border-radius:5px;padding:1px 7px;font-size:10.5px;font-weight:600;letter-spacing:.02em}
+.tp.replay{background:#2f6fed1a;color:#2f6fed;border:1px solid #2f6fed44}
+.tp.selfplay{background:#b4530e1a;color:#c8631a;border:1px solid #c8631a44}
 tr.off{opacity:.4}
 .controls{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:6px 0 14px}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--card)}
@@ -263,7 +301,7 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--mut);font-size:12.5px;pa
 
 <h2>All runs</h2>
 <div class=tblwrap><table id=summary><thead><tr>
-<th data-s=k>run</th><th data-s=trainset>corpus</th>
+<th data-s=k>run</th><th data-s=type>type</th><th data-s=trainset>corpus</th>
 <th>input + stem</th><th>blocks</th><th>heads</th>
 <th class=num data-s=params>params</th><th class=num data-s=steps>steps</th>
 <th class=num data-s=hrs>hrs</th><th class=num data-s=peak>peak pElo</th>
@@ -278,6 +316,7 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--mut);font-size:12.5px;pa
 
 <h2>Charts</h2>
 <div class=controls>
+ <div class=seg id=typeseg><button data-tp=all>all</button><button data-tp=replay>replay</button><button data-tp=selfplay>self-play</button></div>
  <div class=seg id=xseg><button data-x=step>by step</button><button data-x=time>by time</button></div>
  <div class=seg id=emaseg><button data-e=1>smoothed</button><button data-e=0>raw</button></div>
  <button class=mini id=all>all</button><button class=mini id=none>none</button>
@@ -297,15 +336,16 @@ const DARK = window.matchMedia && matchMedia("(prefers-color-scheme:dark)").matc
 // near-black is invisible on the dark card -> recolor to a medium gray (dark only)
 RUNS.forEach(r=>{ if(DARK && (r.color||"").toLowerCase()=="#000000") r.color="#9aa0a6"; });
 const byKey = Object.fromEntries(RUNS.map(r=>[r.k,r]));
-const LS="dcm_master_v2";
-let st = Object.assign({checked:RUNS.map(r=>r.k), x:"step", ema:1},
+const LS="dcm_master_v3";
+const REPLAY_KEYS=RUNS.filter(r=>r.type!="selfplay").map(r=>r.k);
+let st = Object.assign({checked:REPLAY_KEYS, x:"step", ema:1, tp:"replay"},
                        JSON.parse(localStorage.getItem(LS)||"{}"));
 const checked = new Set(st.checked.filter(k=>byKey[k]));
-if(!checked.size) RUNS.forEach(r=>checked.add(r.k));
-function save(){localStorage.setItem(LS,JSON.stringify({checked:[...checked],x:st.x,ema:st.ema}));}
+if(!checked.size) REPLAY_KEYS.forEach(k=>checked.add(k));
+function save(){localStorage.setItem(LS,JSON.stringify({checked:[...checked],x:st.x,ema:st.ema,tp:st.tp}));}
 
 document.getElementById("sub").textContent =
- RUNS.length+" runs · "+new Set(RUNS.map(r=>r.trainset)).size+" corpora · "
+ RUNS.length+" runs · "+new Set(RUNS.filter(r=>r.type!="selfplay").map(r=>r.trainset)).size+" corpora · "
  +"hover a chart to inspect (nearest line highlighted) · toggle series in the legend or table · saved across reloads";
 
 /* fix table swatches for the dark recolor (they were server-rendered) */
@@ -365,6 +405,7 @@ class Chart{
   c.textAlign="center";c.textBaseline="top";
   for(const t of ticksFor(this.x0,this.x1,6))c.fillText(fmtX(t),this.px(t),this.H-this.pad.b+5);
   for(const s of this.S){const col=s.run.color,pts=s.pts;
+   c.setLineDash(s.run.type=="selfplay"?[2,2]:[]);   // self-play series render tightly dotted
    let alpha=1,lw=st.ema?1.8:1.4;
    if(hi){if(hi.dim.has(s.run.k))alpha=.12;else if(s.run.k===hi.nearest){alpha=1;lw=2.9;}else alpha=.4;}
    if(!hi&&st.ema&&pts.length>3){c.globalAlpha=.2;c.strokeStyle=col;c.lineWidth=1;c.beginPath();
@@ -412,7 +453,8 @@ function syncUI(){
  document.querySelectorAll(".lg").forEach(e=>e.classList.toggle("off",!checked.has(e.dataset.k)));
  document.querySelectorAll("#summary tbody tr").forEach(e=>e.classList.toggle("off",!checked.has(e.dataset.k)));
  document.querySelectorAll("#xseg button").forEach(b=>b.classList.toggle("on",b.dataset.x==st.x));
- document.querySelectorAll("#emaseg button").forEach(b=>b.classList.toggle("on",(+b.dataset.e)==st.ema));}
+ document.querySelectorAll("#emaseg button").forEach(b=>b.classList.toggle("on",(+b.dataset.e)==st.ema));
+ document.querySelectorAll("#typeseg button").forEach(b=>b.classList.toggle("on",b.dataset.tp==st.tp));}
 function toggle(k){checked.has(k)?checked.delete(k):checked.add(k);save();syncUI();drawAll();}
 document.querySelectorAll("#summary tbody tr").forEach(tr=>tr.onclick=e=>{
  if(e.target.closest(".chip"))return; toggle(tr.dataset.k);});
@@ -424,6 +466,9 @@ const tsq=document.getElementById("tsquick");
   RUNS.filter(r=>r.trainset==ts).forEach(r=>checked.add(r.k));save();syncUI();drawAll();};tsq.appendChild(b);});
 document.querySelectorAll("#xseg button").forEach(b=>b.onclick=()=>{st.x=b.dataset.x;save();syncUI();drawAll();});
 document.querySelectorAll("#emaseg button").forEach(b=>b.onclick=()=>{st.ema=+b.dataset.e;save();syncUI();drawAll();});
+function applyType(tp){st.tp=tp;checked.clear();
+ RUNS.forEach(r=>{if(tp=="all"||r.type==tp)checked.add(r.k);});save();syncUI();drawAll();}
+document.querySelectorAll("#typeseg button").forEach(b=>b.onclick=()=>applyType(b.dataset.tp));
 
 /* ---- summary sort ---- */
 document.querySelectorAll("#summary th[data-s]").forEach(th=>{th.onclick=e=>{e.stopPropagation();
