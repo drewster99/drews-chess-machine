@@ -42,9 +42,24 @@ MODELS = os.path.expanduser(REG["models_dir"])
 LOGS = os.path.expanduser(REG["logs_dir"])
 DATA = os.path.join(ROOT, "data")
 os.makedirs(DATA, exist_ok=True)
-BIN = ("/Users/andrew/Library/Developer/Xcode/DerivedData/"
-       "DrewsChessMachine-duuojsefpqabteeapbtaobbiymfs/Build/Products/Release/"
-       "DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine")
+def _resolve_bin():
+    """Locate this machine's Release DrewsChessMachine binary. The DerivedData
+    hash is per-machine and changes on migration, so we GLOB for it rather than
+    hardcode a path that only exists on the Mac that first wrote this file.
+    Override with the DCM_BIN env var. Returns None if no build is present — only
+    the probing commands (track / probe-backfill) need it; render/recompute/migrate
+    work without a binary, so a missing build must not break them at import."""
+    env = os.environ.get("DCM_BIN")
+    if env:
+        return env
+    pat = os.path.expanduser(
+        "~/Library/Developer/Xcode/DerivedData/DrewsChessMachine-*/"
+        "Build/Products/Release/DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine")
+    hits = [p for p in glob.glob(pat) if os.access(p, os.X_OK)]
+    hits.sort(key=os.path.getmtime, reverse=True)   # newest build wins if several
+    return hits[0] if hits else None
+
+BIN = _resolve_bin()
 
 FIELDS = ["cum_step", "meta_step", "segment", "elapsed_train_sec", "wallclock_iso",
           "ms_per_step", "pElo", "nll", "loss", "pLoss", "vLoss", "legalMass", "pIllM",
@@ -86,6 +101,10 @@ def internals(path, cap):
 # ---------- probe ----------
 def probe(path):
     import subprocess
+    if not BIN:
+        raise RuntimeError(
+            "no DrewsChessMachine Release binary found under DerivedData "
+            "(build the app in Xcode, or set DCM_BIN). Probing requires it.")
     out = subprocess.run([BIN, "--probe-model", path, "--probe-set", "wide"],
                          capture_output=True, text=True).stdout
     m = re.search(r"\{.*\}", out, re.S)
