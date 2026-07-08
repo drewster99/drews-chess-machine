@@ -117,8 +117,18 @@ def _log_index(logname):
         order.append((step, absolute))
     return idx, order
 
-def _metrics_at(logname, meta_step):
-    """pLoss/vLoss/pIllM/gNorm/ms from the [REPLAY] step=<meta> line (nearest <=)."""
+def _metrics_at(logname, meta_step, stale_tol=1500):
+    """pLoss/vLoss/pIllM/gNorm/ms from the [REPLAY] step=<meta> line (nearest <=).
+
+    STALENESS GUARD: if the nearest matching line is more than `stale_tol` steps behind
+    the requested meta_step, return {} (blank) instead of that line's values. A gap that
+    large means the log went silent across this checkpoint — logging lost during a
+    disk-full / sleep / stall window — so this checkpoint's REAL training stats were
+    never written. Repeating the last-known line for every checkpoint in such a window is
+    exactly what produced the flat, identical-valued "notch" artifacts (e.g. nt8y's
+    pLoss/vLoss step during the 2026-07-06 disk-full). Blank is honest: no data, so the
+    charts skip it rather than drawing a stale plateau. Normal logging is every ~60 s
+    (~170 steps here), so 1500 only ever trips on a genuine multi-interval gap."""
     path = os.path.join(LOGS, logname)
     if not os.path.exists(path):
         return {}
@@ -136,24 +146,31 @@ def _metrics_at(logname, meta_step):
                                  pIllM=float(mt[4]), gNorm=float(mt[5]), ms=float(mt[6])))
         else:
             break
+    if best and meta_step - best[0] > stale_tol:
+        return {}                                    # log gap -> no real stats for this checkpoint
     return best[1] if best else {}
 
-def _clamped_timeline(order, cap_factor=20.0):
+def _clamped_timeline(order, grace_sec=120.0):
     """Given ordered [(step, abs_sec)] log lines, return ({step: cumulative TRAINING
     seconds from the first line}, segment_total). Each inter-line interval contributes
-    its real wall gap UNLESS that gap exceeds cap_factor x the typical per-step pace —
-    a machine sleep / app-nap / thermal stall — in which case it contributes only the
-    EXPECTED training time its step delta can justify (Δsteps x median-sec-per-step).
+    its real wall gap, HARD-CAPPED at the training time its step delta can justify
+    (Δsteps x median-sec-per-step) plus a small logging-jitter grace — so an interval
+    can NEVER bank more seconds than its own step count earns. Machine sleep / app-nap /
+    thermal stall / disk stall is excluded at the source, whether it lands in a tiny
+    interval (10-hour sleep across 50 steps -> ~33 s, not 10 h) OR is amortized across a
+    huge log gap.
 
-    cap_factor is deliberately wide (20x): a real slow/throttled batch (a few x normal)
-    is kept as genuine wall-time; only egregious idle (sleep is ~1000x normal pace) is
-    clamped. Widening the threshold cannot re-admit sleep — it only errs toward trusting
-    borderline-slow intervals as real training.
+    The amortized case is why this replaced an earlier `dt > cap_factor*med*ds` test:
+    that threshold scaled with Δsteps, so a gap merging tens of thousands of steps (log
+    goes silent during a disk-full/sleep window, then resumes) got an enormous threshold
+    and ~1.6 h of real sleep slid under it — producing a flat "notch" in the by-time
+    charts. The step-earned cap does not scale away: for a 59k-step gap the cap is the
+    step-earned ~4.2 h, and the extra ~1.6 h of wall time is dropped as idle.
 
-    This is what keeps wall-clock idle out of "training time" at the source: an interval
-    can never bank more seconds than its own step count earns, so a 10-hour sleep across
-    50 steps counts as ~33 s (what 50 steps actually take), not 10 h. Runs with no stalls
-    are unaffected — every gap is under the cap, so this reduces to plain wall-clock."""
+    grace_sec absorbs normal logging jitter on SMALL intervals (where med*ds is tiny);
+    on large intervals med*ds dominates and the grace is negligible, so the cap stays
+    tight. Runs with no stalls are essentially unaffected (every gap ~ its step-earned
+    time), so this reduces to plain wall-clock training time."""
     if not order:
         return {}, 0.0
     sps = [ (t1 - t0) / (s1 - s0)
@@ -166,10 +183,10 @@ def _clamped_timeline(order, cap_factor=20.0):
         ds, dt = s1 - s0, t1 - t0
         if ds <= 0:
             dur = 0.0                        # same-step re-log / out-of-order: no new work
-        elif med > 0 and dt > cap_factor * med * ds:
-            dur = med * ds                   # implausible gap -> expected training time only
         else:
             dur = max(dt, 0.0)
+            if med > 0:
+                dur = min(dur, med * ds + grace_sec)   # never bank more than step-earned (+jitter)
         cum += dur
         train[s1] = cum
     return train, cum
