@@ -408,6 +408,42 @@ enum GameCorpusShardIO {
         return (gameCount, plyCount)
     }
 
+    /// Cheap header+counts read: decode the 256-byte front header and the
+    /// 64-byte trailer, without reading or SHA/CRC-verifying the body. Gives the
+    /// per-shard `sourceID` (front header) alongside the sealed
+    /// `(gameCount, plyCount)` — enough for `CorpusValidator` to rebuild
+    /// per-source aggregate counts and check the header's corpus/source identity
+    /// in its fast (non-integrity) mode without paying to read shard bodies.
+    static func readSealedHeaderAndCounts(at url: URL) throws
+        -> (header: GameCorpusShardFormat.FrontHeader, gameCount: Int, plyCount: Int) {
+        let handle: FileHandle
+        do { handle = try FileHandle(forReadingFrom: url) }
+        catch { throw GameCorpusError.ioFailed("open \(url.lastPathComponent): \(error.localizedDescription)") }
+        defer { try? handle.close() }
+
+        let frontSize = GameCorpusShardFormat.frontHeaderSize
+        let trailerSize = GameCorpusShardFormat.trailerSize
+        let size = (try? handle.seekToEnd()) ?? 0
+        guard size >= UInt64(frontSize + trailerSize) else { throw GameCorpusError.truncatedHeader }
+
+        try handle.seek(toOffset: 0)
+        guard let fdata = try handle.read(upToCount: frontSize), fdata.count == frontSize else {
+            throw GameCorpusError.truncatedHeader
+        }
+        let header = try GameCorpusShardFormat.decodeFrontHeader(fdata)
+
+        try handle.seek(toOffset: size - UInt64(trailerSize))
+        guard let tdata = try handle.read(upToCount: trailerSize), tdata.count == trailerSize else {
+            throw GameCorpusError.truncatedHeader
+        }
+        var tr = CorpusByteReader(tdata)
+        let tmagic = try tr.readBytes(8)
+        guard tmagic == GameCorpusShardFormat.trailerMagic else { throw GameCorpusError.badTrailerMagic }
+        let gameCount = Int(try tr.readInt64LE())
+        let plyCount = Int(try tr.readInt64LE())
+        return (header, gameCount, plyCount)
+    }
+
     struct OpenShardScan {
         var header: GameCorpusShardFormat.FrontHeader
         var validByteCount: Int

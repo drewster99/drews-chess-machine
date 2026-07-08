@@ -4,7 +4,17 @@
       "id" : "B2485455-9014-4EDF-A0E0-446B991D2DBA",
       "name" : "Test Scheme Action",
       "options" : {
-
+        "environmentVariableEntries" : [
+          {
+            "enabled" : false,
+            "key" : "DCM_RUN_LEGACY_LOAD",
+            "value" : "1"
+          },
+          {
+            "key" : "DCM_RUN_SLOW_TESTS",
+            "value" : "1"
+          }
+        ]
       }
     }
   ],

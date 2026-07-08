@@ -164,6 +164,11 @@ struct DrewsChessMachineApp: App {
         // .pgn(.zst), converts games to the corpus format, and exits.
         Self.handleImportPGNIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: corpus validation (--validate-corpus). Verifies shard
+        // integrity + corpus.json consistency for one or more corpora, optionally
+        // repairs stale metadata counts (--fix), prints a report, and exits.
+        Self.handleValidateCorpusIfPresent(rawArgs: rawArgs)
+
         // Known flags.
         let booleanFlags: Set<String> = ["--train", "--playchess"]
         let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit", "--training-step-limit", "--start-model", "--model"]
@@ -434,6 +439,15 @@ struct DrewsChessMachineApp: App {
                                               --max-storage <size> (e.g. 2GB; stops near that corpus body size),
                                               --import-threads <n> (default cores-2),
                                               --lenient (count parse failures instead of hard-failing on the first).
+              --validate-corpus <dir|id>      Validate a corpus (repeatable): checks every sealed shard's integrity
+                                              (front magic, corpus-ID stamp, trailer, whole-shard SHA-256, per-record
+                                              CRC) and that corpus.json is consistent with the shards (per-source
+                                              game/ply counts, sequence numbers, recording state), then prints a
+                                              report and the true game/ply totals. Exit 0 if valid, 1 if any problem
+                                              remains. Add --fix to repair fixable metadata (recompute stale per-source
+                                              gamesAdded/pliesAdded from the shard trailers and rewrite corpus.json;
+                                              shard bytes are never modified). Add --quick to skip the SHA/CRC body
+                                              pass (header/trailer counts only — fast, no integrity check).
 
             Self-play recording: set the `record_self_play_games` parameter (e.g. in a --parameters file) to
             record every kept self-play game into a corpus under Corpora/ during a --train run.
@@ -1097,6 +1111,111 @@ struct DrewsChessMachineApp: App {
             runModelID: runModelID
         )
         CorpusReplayRunner.runAndExit(config: config, params: params)
+    }
+
+    // MARK: - Corpus validation pre-flight (--validate-corpus)
+
+    /// Inspects `rawArgs` for `--validate-corpus <dir|id>` (repeatable). If
+    /// present, validates each corpus (shard integrity + `corpus.json`
+    /// consistency), optionally repairs the fixable metadata with `--fix`, prints
+    /// a report, and exits: 0 if every corpus is valid, 1 if any problem remains
+    /// (or a target can't be resolved), 2 on a usage error. `--quick` skips the
+    /// shard-body SHA/CRC pass (header/trailer counts only). Runs before the
+    /// strict-CLI parser and the SwiftUI WindowGroup.
+    private static func handleValidateCorpusIfPresent(rawArgs: [String]) {
+        guard rawArgs.contains("--validate-corpus") else { return }
+
+        var targets: [String] = []
+        var fix = false
+        var quick = false
+
+        var i = 0
+        while i < rawArgs.count {
+            let arg = rawArgs[i]
+            let nextValue: String? = {
+                guard i + 1 < rawArgs.count else { return nil }
+                let v = rawArgs[i + 1]
+                return v.hasPrefix("--") ? nil : v
+            }()
+            switch arg {
+            case "--validate-corpus":
+                guard let v = nextValue else {
+                    FileHandle.standardError.write(Data("error: --validate-corpus requires a corpus directory path or ID\n".utf8))
+                    Darwin.exit(2)
+                }
+                targets.append(v); i += 2
+            case "--fix":
+                fix = true; i += 1   // boolean flag, no value
+            case "--quick":
+                quick = true; i += 1  // boolean flag, no value
+            default:
+                FileHandle.standardError.write(Data("error: unexpected argument '\(arg)' (with --validate-corpus)\n".utf8))
+                Darwin.exit(2)
+            }
+        }
+
+        guard !targets.isEmpty else {
+            FileHandle.standardError.write(Data("error: --validate-corpus requires at least one corpus directory path or ID\n".utf8))
+            Darwin.exit(2)
+        }
+
+        func out(_ s: String) { FileHandle.standardOutput.write(Data((s + "\n").utf8)) }
+
+        var worstExit: Int32 = 0
+        for target in targets {
+            guard let dir = resolveCorpusDirectory(target) else {
+                out("Corpus '\(target)': NOT FOUND (no corpus.json at that path or under Corpora/)")
+                worstExit = max(worstExit, 1)
+                continue
+            }
+            let report: CorpusValidationReport
+            do {
+                report = try CorpusValidator.validate(directory: dir, verifyIntegrity: !quick, fix: fix)
+            } catch {
+                out("Corpus at \(dir.path): ERROR — \(error.localizedDescription)")
+                worstExit = max(worstExit, 1)
+                continue
+            }
+            out(formatCorpusValidationReport(report))
+            if !report.isValid { worstExit = max(worstExit, 1) }
+        }
+        Darwin.exit(worstExit)
+    }
+
+    /// Render a `CorpusValidationReport` as a human-readable block for the
+    /// `--validate-corpus` CLI.
+    private static func formatCorpusValidationReport(_ r: CorpusValidationReport) -> String {
+        var lines: [String] = []
+        lines.append("Corpus \(r.corpusID)")
+        lines.append("  path    : \(r.directory.path)")
+        lines.append("  shards  : \(r.shardCount)   games: \(r.totalGames)   plies: \(r.totalPlies)   integrity: \(r.integrityVerified ? "verified (SHA+CRC)" : "counts-only")")
+        if r.findings.isEmpty {
+            lines.append("  result  : OK — no problems")
+            return lines.joined(separator: "\n")
+        }
+        for f in r.findings {
+            let tag: String
+            if f.fixed {
+                tag = "fixed"
+            } else {
+                switch f.severity {
+                case .error:   tag = "error"
+                case .warning: tag = f.fixable ? "warn*" : "warn "
+                case .info:    tag = "info "
+                }
+            }
+            lines.append("  [\(tag)] \(f.code): \(f.message)")
+        }
+        let remaining = r.unresolvedProblemCount
+        if remaining == 0 {
+            let fixedCount = r.findings.filter { $0.fixed }.count
+            lines.append("  result  : OK — \(fixedCount) fixed, no problems remain")
+        } else {
+            let hasFixable = r.findings.contains { $0.fixable && !$0.fixed }
+            let hint = hasFixable ? "; rerun with --fix to repair the fixable ones (marked warn*)" : ""
+            lines.append("  result  : \(remaining) problem(s) remain — \(r.errorCount) error, \(r.warningCount) warning\(hint)")
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// Resolve a `--replay-corpus` argument to a corpus directory: accepts

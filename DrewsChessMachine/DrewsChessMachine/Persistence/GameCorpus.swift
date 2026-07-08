@@ -309,7 +309,29 @@ final class GameCorpus {
     }
 
     private func writeMetadata() throws {
-        let url = directory.appendingPathComponent(Self.metadataFilename)
+        try Self.persistMetadata(metadata, to: directory)
+    }
+
+    /// Load and decode `corpus.json` from a corpus directory **without** opening
+    /// the corpus for writing — unlike `open(directory:)`, this has no side
+    /// effects (it does not recover/seal any leftover `.open` shard). Used by
+    /// read-only consumers such as `CorpusValidator`.
+    static func loadMetadata(directory: URL) throws -> CorpusMetadata {
+        let metaURL = directory.appendingPathComponent(metadataFilename)
+        let data: Data
+        do { data = try Data(contentsOf: metaURL) }
+        catch { throw GameCorpusError.ioFailed("read corpus.json: \(error.localizedDescription)") }
+        do { return try JSONDecoder().decode(CorpusMetadata.self, from: data) }
+        catch { throw GameCorpusError.corruptMetadata("corpus.json decode: \(error.localizedDescription)") }
+    }
+
+    /// Atomically write `corpus.json` in the canonical on-disk form (pretty,
+    /// sorted keys, fsync'd, temp-file + atomic replace). The single writer for
+    /// corpus metadata: the instance recorder path and `CorpusValidator`'s
+    /// metadata-repair path both go through here so they produce byte-identical
+    /// files.
+    static func persistMetadata(_ metadata: CorpusMetadata, to directory: URL) throws {
+        let url = directory.appendingPathComponent(metadataFilename)
         let tmp = url.appendingPathExtension("tmp")
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
