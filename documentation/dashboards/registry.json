@@ -174,7 +174,7 @@
    "arch_stem": "basic30 \u2192 stem 5\u00d75\u219232",
    "arch_blocks": "3\u00d7 @32, 15\u00d715+15\u00d715, SE-4 scale+bias, ReLU/pre, ReZero cap 0.333, LN-out",
    "arch_heads": "policy intermediate_conv (pre-conv 512) \u00b7 value WDL(16\u2192FC64)",
-   "out_model": "20260701-nT8Y-resume3-replay-latest.safetensors",
+   "out_model": "20260701-nT8Y-resume4-replay-latest.safetensors",
    "frozen_glob": "20260701-nT8Y-fatconv-step*-frozen.safetensors",
    "segments": [
     {
@@ -206,6 +206,13 @@
      "elapsed_base_sec": 51951.4,
      "log": "dcm_log_20260706-193601.txt",
      "date": "20260706"
+    },
+    {
+     "label": "resume4 (enumerated)",
+     "cumstep_base": 289883,
+     "elapsed_base_sec": 101447.6,
+     "log": "dcm_log_20260707-233038.txt",
+     "date": "20260707"
     }
    ],
    "trainset": "std-2026-05"
