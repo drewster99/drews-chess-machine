@@ -50,6 +50,14 @@ enum UCIModelLoader {
         let network: ChessMPSNetwork
         let modelID: String
         let sourceLabel: String
+        /// Total trainable parameter count of the loaded architecture.
+        let parameterCount: Int
+        /// One-line human-readable architecture description (blocks, channels,
+        /// kernels, SE, heads) — surfaced to the UCI GUI as an `info string`.
+        let archSummary: String
+        /// Absolute path the model resolved to — used to make `setoption Model`
+        /// idempotent (skip a redundant reload when a GUI re-sends the same value).
+        let resolvedPath: String
     }
 
     /// Resolve and load using the precedence: explicit `--model` if
@@ -101,14 +109,20 @@ enum UCIModelLoader {
         let (url, label) = try resolveModelURL(explicitPath: path)
         let file = try CheckpointManager.loadModelFile(at: url)
         let network = try await buildAndLoad(weights: file.weights, arch: file.architecture)
-        return Loaded(network: network, modelID: file.modelID, sourceLabel: label)
+        return Loaded(network: network, modelID: file.modelID, sourceLabel: label,
+                      parameterCount: file.architecture.parameterCount,
+                      archSummary: file.architecture.architectureSummary,
+                      resolvedPath: url.path)
     }
 
     private static func loadDefault() async throws -> Loaded {
         let (url, label) = try resolveModelURL(explicitPath: nil)
         let file = try CheckpointManager.loadModelFile(at: url)
         let network = try await buildAndLoad(weights: file.weights, arch: file.architecture)
-        return Loaded(network: network, modelID: file.modelID, sourceLabel: label)
+        return Loaded(network: network, modelID: file.modelID, sourceLabel: label,
+                      parameterCount: file.architecture.parameterCount,
+                      archSummary: file.architecture.architectureSummary,
+                      resolvedPath: url.path)
     }
 
     /// Build a fresh `ChessMPSNetwork` (inference BN mode) and load the

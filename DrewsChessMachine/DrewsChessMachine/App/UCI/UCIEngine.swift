@@ -55,27 +55,30 @@ enum UCIEngine {
             SessionLogger.shared.log("[UCI] session log: \(path)")
         }
 
-        let loaded: UCIModelLoader.Loaded
-        do {
-            // Bridge async → sync via a semaphore so the rest of the
-            // loop can run as plain synchronous stdin-driven code.
-            // Model load runs exactly once at startup.
-            loaded = try syncWait { try await UCIModelLoader.resolveAndLoad(explicitPath: modelPath) }
-        } catch {
-            let line = "DrewsChessMachine UCI: failed to load model: \(error)\n"
-            FileHandle.standardError.write(Data(line.utf8))
-            SessionLogger.shared.log("[UCI] model load failed: \(error)")
-            Darwin.exit(20)
+        var session = Session()
+        if let path = modelPath {
+            // Explicit `--model`: load eagerly. An explicit path that fails to
+            // resolve is a hard error — the user named a specific file.
+            do {
+                let loaded = try syncWait { try await UCIModelLoader.resolveAndLoad(explicitPath: path) }
+                session.apply(loaded)
+                SessionLogger.shared.log(
+                    "[UCI] model loaded (--model): id=\(loaded.modelID) source=\(loaded.sourceLabel) params=\(loaded.parameterCount) arch=\(loaded.archSummary)"
+                )
+            } catch {
+                let line = "DrewsChessMachine UCI: failed to load --model: \(error)\n"
+                FileHandle.standardError.write(Data(line.utf8))
+                SessionLogger.shared.log("[UCI] --model load failed: \(error)")
+                Darwin.exit(20)
+            }
+        } else {
+            // Deferred load: launched with no `--model` (the GUI case — cutechess
+            // passes no CLI args). Come up with no model so the `uci` handshake
+            // returns immediately; the model is loaded when a `setoption name
+            // Model` arrives, or lazily on the first `go` (latest session). This
+            // avoids dying at startup before the GUI can supply the model.
+            SessionLogger.shared.log("[UCI] no --model; model load deferred to 'setoption name Model' or first 'go'")
         }
-        SessionLogger.shared.log(
-            "[UCI] model loaded: id=\(loaded.modelID) source=\(loaded.sourceLabel)"
-        )
-
-        let source = DirectMoveEvaluationSource(network: loaded.network)
-        var session = Session(
-            source: source,
-            modelLabel: loaded.modelID
-        )
         runLoop(session: &session)
         Darwin.exit(0)
     }
@@ -86,8 +89,20 @@ enum UCIEngine {
     /// `ucinewgame` / `position`), the user-tunable `Temperature`
     /// option, and a label used in the `id name` line.
     private struct Session {
-        let source: MoveEvaluationSource
-        let modelLabel: String
+        /// The live move source. `nil` until a model is loaded — deferred so a
+        /// GUI-launched engine (no CLI args) comes up immediately and loads on
+        /// `setoption name Model` or lazily on the first `go`. Mutable so the
+        /// model can also be hot-swapped mid-session.
+        var source: MoveEvaluationSource? = nil
+        var modelLabel: String = "(none loaded)"
+        /// Trainable parameter count + one-line arch description of the loaded
+        /// model, surfaced to the GUI as `info string` lines.
+        var paramCount: Int = 0
+        var archSummary: String = ""
+        /// Absolute path the current model resolved to (`""` = none). Lets
+        /// `setoption Model` skip a redundant reload when a GUI re-sends the same
+        /// value each game.
+        var modelPath: String = ""
         /// Tracks the position the most recent `position` command
         /// established, plus all moves applied on top. Refreshed
         /// from scratch on every `position` command (UCI senders pass
@@ -97,9 +112,13 @@ enum UCIEngine {
         /// `.arena` schedule; otherwise flat tau = value / 100).
         var temperatureSpin: Int = temperatureDefault
 
-        init(source: MoveEvaluationSource, modelLabel: String) {
-            self.source = source
-            self.modelLabel = modelLabel
+        /// Install a freshly-loaded model, replacing any current one.
+        mutating func apply(_ loaded: UCIModelLoader.Loaded) {
+            source = DirectMoveEvaluationSource(network: loaded.network)
+            modelLabel = loaded.modelID
+            paramCount = loaded.parameterCount
+            archSummary = loaded.archSummary
+            modelPath = loaded.resolvedPath
         }
 
         /// Resolve the current `Temperature` option into a sampling
@@ -135,7 +154,7 @@ enum UCIEngine {
             case "position":
                 handlePosition(tokens: Array(tokens.dropFirst()), session: &session)
             case "go":
-                handleGo(session: session)
+                handleGo(session: &session)
             case "stop":
                 // We never start a long-running search, so there is
                 // nothing to stop — the next `go` will produce a
@@ -163,8 +182,20 @@ enum UCIEngine {
         let dirty = BuildInfo.gitDirty ? "*" : ""
         respond("id name DrewsChessMachine \(BuildInfo.buildNumber) (\(BuildInfo.gitHash)\(dirty)) model=\(session.modelLabel)")
         respond("id author Andrew Benson")
+        // Model: a filesystem path (or bare name/id UCIModelLoader can resolve) to
+        // the .safetensors/.dcmmodel to play. This is how a GUI (cutechess) selects
+        // the model, since it passes no CLI args — set it in the engine config.
+        respond("option name Model type string default \(session.modelPath)")
         respond("option name Temperature type spin default \(temperatureDefault) min \(temperatureMin) max \(temperatureMax)")
         respond("uciok")
+        // Informational lines (cutechess logs `info string`): engine build + the
+        // model currently loaded, with its parameter count and architecture.
+        respond("info string engine=DrewsChessMachine build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirty) branch=\(BuildInfo.gitBranch)")
+        if session.source != nil {
+            respond("info string model=\(session.modelLabel) params=\(session.paramCount) arch=\(session.archSummary)")
+        } else {
+            respond("info string no model loaded yet — set 'setoption name Model value <path>', or the first 'go' loads the latest session")
+        }
     }
 
     private static func handlePosition(tokens: [String], session: inout Session) {
@@ -237,7 +268,7 @@ enum UCIEngine {
         return buffer
     }
 
-    private static func handleGo(session: Session) {
+    private static func handleGo(session: inout Session) {
         let engine = session.engine
         // Game already over — emit a UCI null move so the GUI gets a
         // deterministic reply instead of hanging on an empty stdout.
@@ -248,8 +279,30 @@ enum UCIEngine {
             return
         }
 
+        // Deferred/lazy load: no model was set (no `--model`, no `setoption name
+        // Model`). Load the latest session's weights now — first `go` only;
+        // `apply` persists it so every later `go` (and later game) reuses it. This
+        // is what keeps a GUI-launched engine playable with no CLI args.
+        if session.source == nil {
+            do {
+                let loaded = try syncWait { try await UCIModelLoader.resolveAndLoad(explicitPath: nil) }
+                session.apply(loaded)
+                SessionLogger.shared.log("[UCI] go: lazy-loaded default model \(loaded.modelID) params=\(loaded.parameterCount)")
+                respond("info string loaded model=\(loaded.modelID) params=\(loaded.parameterCount) arch=\(loaded.archSummary)")
+            } catch {
+                SessionLogger.shared.log("[UCI] go: no model set and default load failed: \(error)")
+                respond("info string no model loaded — set 'setoption name Model value <path>' (default load failed: \(error))")
+                respond("bestmove 0000")
+                return
+            }
+        }
+        guard let source = session.source else {
+            respond("bestmove 0000")
+            return
+        }
+
         let state = engine.state
-        let encoding = session.source.inputEncoding
+        let encoding = source.inputEncoding
         // Encode via the shared seam, which threads `engine.recentStates` as
         // history. Returns a `let`, so the @Sendable closure passed to syncWait
         // below captures an immutable value (Swift 6 strict concurrency rejects
@@ -264,11 +317,9 @@ enum UCIEngine {
             policyPtr.deallocate()
         }
 
-        // Pull the Sendable pieces out of `session` before crossing
-        // the @Sendable boundary: `MoveEvaluationSource` is a class
-        // (Sendable) but `Session` itself contains a `ChessGameEngine`
-        // which is not.
-        let source = session.source
+        // `source` (unwrapped above) is a Sendable class; it's the only piece of
+        // `session` that crosses the @Sendable boundary below (`Session` itself
+        // holds a non-Sendable `ChessGameEngine`, so we never capture it).
         let value: Float
         do {
             let dest = PolicyDestination(UnsafeMutableBufferPointer(start: policyPtr, count: policySize))
@@ -359,8 +410,48 @@ enum UCIEngine {
             let clamped = max(temperatureMin, min(temperatureMax, v))
             session.temperatureSpin = clamped
             SessionLogger.shared.log("[UCI] setoption Temperature=\(clamped)\(clamped == temperatureUseSchedule ? " (use schedule)" : "")")
+        case "model":
+            handleSetModel(valueString: valueString, session: &session)
         default:
             SessionLogger.shared.log("[UCI] setoption: unknown option '\(name)'")
+        }
+    }
+
+    /// Load and hot-swap the model named by `setoption name Model value <…>`.
+    ///
+    /// Idempotent: the value is resolved to an absolute path WITHOUT loading, and
+    /// if it matches the model already in the session the (multi-second) reload is
+    /// skipped. That makes it safe for a GUI to re-send the option on every game —
+    /// cutechess may or may not re-run the `uci`/`setoption` handshake per game,
+    /// and we don't want to pay a needless network rebuild + weight load each time.
+    /// A resolution or load failure keeps the current model and reports via
+    /// `info string` rather than tearing down the session.
+    private static func handleSetModel(valueString: String, session: inout Session) {
+        let trimmed = valueString.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else {
+            respond("info string setoption Model: empty value ignored")
+            return
+        }
+        let resolvedPath: String
+        do {
+            resolvedPath = try UCIModelLoader.resolveModelURL(explicitPath: trimmed).url.path
+        } catch {
+            SessionLogger.shared.log("[UCI] setoption Model: cannot resolve '\(trimmed)': \(error)")
+            respond("info string model load FAILED: \(error) — keeping \(session.modelLabel)")
+            return
+        }
+        if resolvedPath == session.modelPath {
+            SessionLogger.shared.log("[UCI] setoption Model: '\(trimmed)' already loaded — no reload")
+            return
+        }
+        do {
+            let loaded = try syncWait { try await UCIModelLoader.resolveAndLoad(explicitPath: trimmed) }
+            session.apply(loaded)
+            SessionLogger.shared.log("[UCI] setoption Model -> \(loaded.modelID) (\(loaded.resolvedPath))")
+            respond("info string loaded model=\(loaded.modelID) params=\(loaded.parameterCount) arch=\(loaded.archSummary)")
+        } catch {
+            SessionLogger.shared.log("[UCI] setoption Model FAILED for '\(trimmed)': \(error)")
+            respond("info string model load FAILED: \(error) — keeping \(session.modelLabel)")
         }
     }
 
