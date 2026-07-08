@@ -89,12 +89,15 @@ struct CorpusReplayConfig: Sendable {
 enum CorpusReplayError: LocalizedError {
     case noGames
     case startModelTooSmall(have: Int, need: Int)
+    case diskFullDuringSave(step: Int, what: String)
     var errorDescription: String? {
         switch self {
         case .noGames:
             return "No sealed shards found in the provided corpus path(s)"
         case let .startModelTooSmall(have, need):
             return "--start-model has \(have) weight tensors but the network needs at least \(need) (trainables + BN running stats)"
+        case let .diskFullDuringSave(step, what):
+            return "Disk full while writing \(what) at step \(step) — training halted so it can resume from the last checkpoint once space is freed"
         }
     }
 }
@@ -120,6 +123,56 @@ enum CorpusReplayRunner {
     private static func emit(_ message: String) {
         SessionLogger.shared.log(message)
         print(message)
+    }
+
+    /// True when `error` means the filesystem is out of space (ENOSPC). Covers
+    /// the Cocoa `.fileWriteOutOfSpace` that `Data.write(to:options:)` throws, and
+    /// a raw POSIX ENOSPC surfaced directly or as an underlying error. Pure and
+    /// total, so the save-failure policy is unit-testable without a real full disk.
+    static func isOutOfSpace(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain, ns.code == CocoaError.Code.fileWriteOutOfSpace.rawValue {
+            return true
+        }
+        if ns.domain == NSPOSIXErrorDomain, ns.code == Int(ENOSPC) {
+            return true
+        }
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError,
+           underlying.domain == NSPOSIXErrorDomain, underlying.code == Int(ENOSPC) {
+            return true
+        }
+        return false
+    }
+
+    /// Handle a checkpoint-save write failure.
+    ///
+    /// A disk-full (ENOSPC) failure is FATAL: it emits a loud `[ALARM]` to stderr
+    /// AND the session log, then throws so the run halts. Training on through a
+    /// full disk is the one failure we must never tolerate — with no free space,
+    /// neither the enumerated checkpoints NOR the (tracking-critical) session log
+    /// can be written, so the run silently accrues hours of work that leaves no
+    /// probe data and punches an unrecoverable hole in the by-time/pElo charts
+    /// (exactly what happened to nt8y on 2026-07-06). Halting stops at the last
+    /// good checkpoint, so once space is freed the run resumes cleanly from there
+    /// losing only the steps since the last autosave.
+    ///
+    /// Any OTHER write failure (e.g. a read-only `--out-model` volume) stays
+    /// non-fatal: it is logged as a WARNING and the caller continues, preserving
+    /// the original contract that a convenience autosave which simply cannot write
+    /// to its derived path must not tear down an otherwise-healthy run.
+    static func reportSaveFailure(_ error: Error, step: Int, what: String) throws {
+        if isOutOfSpace(error) {
+            let msg = "[ALARM] [REPLAY] DISK FULL writing \(what) at step \(step): "
+                + "\(error.localizedDescription). Halting — free disk space, then resume from the last "
+                + "checkpoint. Training through a full disk loses checkpoints AND log lines, corrupting "
+                + "probe data and tracking."
+            FileHandle.standardError.write(Data((msg + "\n").utf8))
+            SessionLogger.shared.log(msg)
+            throw CorpusReplayError.diskFullDuringSave(step: step, what: what)
+        }
+        let msg = "[REPLAY] WARNING: \(what) failed at step \(step): \(error.localizedDescription)"
+        FileHandle.standardError.write(Data((msg + "\n").utf8))
+        SessionLogger.shared.log(msg)
     }
 
     /// Run the replay to completion and exit the process. Never returns.
@@ -449,10 +502,13 @@ enum CorpusReplayRunner {
         emit("[REPLAY] trainer-model output: \(outModelURL.path)")
 
         // Export the trainer's current base weights and overwrite the rolling
-        // output file. Failures here are logged but non-fatal: a convenience
-        // autosave that can't write (e.g. a read-only corpus volume) must not
-        // tear down an otherwise-healthy training run. Pass --out-model to a
-        // writable location if the derived path can't be written.
+        // output file. Failure handling splits on cause (see reportSaveFailure):
+        // a disk-full (ENOSPC) failure is FATAL — it alarms and throws so the run
+        // halts rather than training on into a window where nothing persists; any
+        // other failure (e.g. a read-only --out-model volume) stays a non-fatal
+        // WARNING so a convenience autosave that simply cannot write to its
+        // derived path does not tear down an otherwise-healthy run. Pass
+        // --out-model to a writable location if the derived path can't be written.
         // Resume info is passed in (not captured): the corpus index / stream
         // cursor are resolved AFTER this nested func, so the call sites — which
         // run inside the SGD loop where those are in scope — supply them. The
@@ -462,7 +518,12 @@ enum CorpusReplayRunner {
         // refuse a build whose encoding may differ.
         func saveTrainerModel(step: Int, reason: String,
                               nextGameIndex: Int, shard: Int, epoch: Int, populatedPlies: Int,
-                              corpusID: String, corpusPath: String) async {
+                              corpusID: String, corpusPath: String) async throws {
+            // Rolling save (overwrites the output file). `encoded` is reused by the
+            // enumerated copy below, so it outlives this do/catch. A disk-full
+            // failure re-throws (fatal, halts the run); any other failure is a
+            // non-fatal WARNING and we skip the enumerated copy (it would fail too).
+            let encoded: Data
             do {
                 let weights = try await trainer.network.exportWeights()
                 let metadata = ModelCheckpointMetadata(
@@ -481,7 +542,7 @@ enum CorpusReplayRunner {
                     "built_by_build": String(BuildInfo.buildNumber),
                     "built_by_git": BuildInfo.gitHash,
                 ]
-                let encoded = try SafetensorsModelIO.encode(
+                encoded = try SafetensorsModelIO.encode(
                     modelID: config.runModelID,
                     createdAtUnix: Int64(Date().timeIntervalSince1970),
                     metadata: metadata,
@@ -496,30 +557,31 @@ enum CorpusReplayRunner {
                 )
                 try encoded.write(to: outModelURL, options: [.atomic])
                 emit("[REPLAY] saved trainer model (\(reason)) step=\(step) nextGame=\(nextGameIndex) shard=\(shard) epoch=\(epoch) -> \(outModelURL.lastPathComponent)")
-                // Optional: also drop a step-enumerated copy so no checkpoint is
-                // lost to the rolling overwrite. Reuses `encoded` (no re-export).
-                // Non-fatal on failure, same as the rolling save above.
-                if config.enumerateCheckpoints {
-                    let stem = outModelURL.deletingPathExtension().lastPathComponent
-                    let enumName = stem.contains("-replay-latest")
-                        ? stem.replacingOccurrences(of: "-replay-latest", with: "-replay-step\(step)")
-                        : "\(stem)-step\(step)"
-                    let enumURL = outModelURL.deletingLastPathComponent()
-                        .appendingPathComponent(enumName)
-                        .appendingPathExtension("safetensors")
-                    do {
-                        try encoded.write(to: enumURL, options: [.atomic])
-                        emit("[REPLAY] enumerated checkpoint -> \(enumURL.lastPathComponent)")
-                    } catch {
-                        let msg = "[REPLAY] WARNING: enumerated checkpoint save failed at step \(step): \(error.localizedDescription)"
-                        FileHandle.standardError.write(Data((msg + "\n").utf8))
-                        SessionLogger.shared.log(msg)
-                    }
-                }
             } catch {
-                let msg = "[REPLAY] WARNING: trainer-model save (\(reason)) failed at step \(step): \(error.localizedDescription)"
-                FileHandle.standardError.write(Data((msg + "\n").utf8))
-                SessionLogger.shared.log(msg)
+                // Throws on disk-full (halt); returns on any other failure (non-fatal).
+                try Self.reportSaveFailure(error, step: step, what: "trainer-model save (\(reason))")
+                return
+            }
+
+            // Optional: also drop a step-enumerated copy so no checkpoint is lost
+            // to the rolling overwrite. Reuses `encoded` (no re-export). A separate
+            // do/catch so a disk-full throw here propagates OUT — it must not be
+            // caught by the rolling-save catch above (which would misclassify our
+            // own halt error as "some other failure" and swallow it).
+            if config.enumerateCheckpoints {
+                let stem = outModelURL.deletingPathExtension().lastPathComponent
+                let enumName = stem.contains("-replay-latest")
+                    ? stem.replacingOccurrences(of: "-replay-latest", with: "-replay-step\(step)")
+                    : "\(stem)-step\(step)"
+                let enumURL = outModelURL.deletingLastPathComponent()
+                    .appendingPathComponent(enumName)
+                    .appendingPathExtension("safetensors")
+                do {
+                    try encoded.write(to: enumURL, options: [.atomic])
+                    emit("[REPLAY] enumerated checkpoint -> \(enumURL.lastPathComponent)")
+                } catch {
+                    try Self.reportSaveFailure(error, step: step, what: "enumerated checkpoint")
+                }
             }
         }
 
@@ -690,10 +752,12 @@ enum CorpusReplayRunner {
                     + " buf=\(buffer.count) plies=\(positionsFed) games=\(gamesFed) epoch=\(epochsCompleted)"
                 emit(line)
             }
-            // Periodic autosave (overwrites the rolling output file).
+            // Periodic autosave (overwrites the rolling output file). A disk-full
+            // save throws here, halting the run (propagates out of runReplay) so it
+            // can resume cleanly from the last checkpoint after space is freed.
             if step % autosaveEvery == 0 {
                 let rp = resumePoint()
-                await saveTrainerModel(step: step, reason: "autosave",
+                try await saveTrainerModel(step: step, reason: "autosave",
                     nextGameIndex: rp.nextGame, shard: rp.shard,
                     epoch: rp.epoch, populatedPlies: buffer.count,
                     corpusID: resumeCorpusID, corpusPath: resumeCorpusPath)
@@ -705,7 +769,7 @@ enum CorpusReplayRunner {
         // out of runReplay before we get here): the network state after a hard
         // failure isn't worth persisting over the last good autosave.
         let finalResume = resumePoint()
-        await saveTrainerModel(step: step, reason: aborted ? "abort" : "final",
+        try await saveTrainerModel(step: step, reason: aborted ? "abort" : "final",
             nextGameIndex: finalResume.nextGame, shard: finalResume.shard,
             epoch: finalResume.epoch, populatedPlies: buffer.count,
             corpusID: resumeCorpusID, corpusPath: resumeCorpusPath)
