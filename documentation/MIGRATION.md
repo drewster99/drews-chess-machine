@@ -75,9 +75,46 @@ Source Mac: user `andrew`, home `/Users/andrew`.
 
 ---
 
-## After copying (target Mac) — resume the parity goal
-State is in the assistant's memory (`dcm-parity-goal`). In short: `mini2b` + `qeu8` are done at
-31.3 h; **`nt8y`** is paused at 28.18 h (cum 289883, +3.12 h) — resume from
-`20260701-nT8Y-resume3-replay-latest.safetensors` (new out-stem `-resume4`, registry segment
-`cumstep_base=289883`, pin `elapsed_base_sec ≈ 101448`), run to 31.3 h; then **`coxw`** (+25.7 h).
-Verify the corpus is mounted, build the app, then continue.
+## CURRENT RUN & how to resume it (target Mac)
+
+**We are currently on `nt8y`.** It was **stopped at 28.180 h of training time (cum_step 289883)**,
+which is **3.12 h short of the 31.3 h parity target**. `mini2b` and `qeu8` are already DONE at
+31.3 h; `coxw` has not started yet. Goal order: `nt8y` (finish) → `coxw`.
+
+Latest nt8y checkpoint to warm-start from:
+`20260701-nT8Y-resume3-replay-latest.safetensors`
+
+### Step 1 — build the app, set BIN, confirm the corpus is mounted
+```bash
+# BIN is machine-specific — re-derive it from the TARGET's DerivedData after building:
+BIN="$(ls -d ~/Library/Developer/Xcode/DerivedData/DrewsChessMachine-*/Build/Products/Release/DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine | head -1)"
+MODELS="$HOME/Library/Application Support/DrewsChessMachine/Models"
+CORPUS=/Volumes/20260624-192615-w3aA5b          # the already-mounted corpus DMG
+ls -d "$CORPUS" >/dev/null && echo "corpus OK" || echo "MOUNT THE CORPUS FIRST"
+```
+
+### Step 2 — resume nt8y (detached), running to the 31.3 h target
+```bash
+nohup "$BIN" --replay-corpus "$CORPUS" \
+  --start-model "$MODELS/20260701-nT8Y-resume3-replay-latest.safetensors" \
+  --out-model  "$MODELS/20260701-nT8Y-resume4-replay-latest.safetensors" \
+  --epochs 5 --enumerate-checkpoints >/dev/null 2>&1 &
+```
+
+### Step 3 — register the resume segment so tracking stays correct (PIN the baseline)
+In `documentation/dashboards/registry.json`, run key `nt8y`: set `out_model` to
+`20260701-nT8Y-resume4-replay-latest.safetensors` and append a segment:
+```json
+{ "label": "resume4 (enumerated)", "cumstep_base": 289883,
+  "elapsed_base_sec": 101447.6, "log": "<the new dcm_log_*.txt>", "date": "<yyyymmdd>" }
+```
+The `elapsed_base_sec` pin is **required** (nt8y's older logs are gone / unreliable — this keeps
+its elapsed continuous instead of restarting low). Then `python3 tick.py nt8y && python3 master.py`.
+
+### Step 4 — STOP nt8y at parity, then start coxw
+Kill the process when nt8y's `max(elapsed_train_sec)/3600 >= 31.3` (≈ +3.12 h of training from now),
+commit, then resume **`coxw`** the same way:
+`--start-model 20260629-mini1b-Coxw-replay-latest.safetensors`
+`--out-model 20260629-mini1b-Coxw-resume-replay-latest.safetensors`, registry `coxw` segment
+`cumstep_base=55000`, `elapsed_base_sec=20093.5`; run coxw to 31.3 h (+25.7 h). Full loop logic is
+in the assistant's memory `dcm-parity-goal`.
