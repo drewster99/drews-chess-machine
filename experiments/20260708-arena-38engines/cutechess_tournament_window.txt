@@ -1,0 +1,389 @@
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   1 Sloppy                        inf     nan    3700  100.0%    0.0% 
+   2 Stockfish                     581      31    3700   96.6%    0.4% 
+   3 DCM v5_5block_7x7_lnout-wd2.5e4-m93 (latest)     146      11    3700   69.9%   16.2% 
+   4 DCM v5                        144      11    3700   69.7%   16.6% 
+   5 DCM Qeu8-resume2 (latest)     132      11    3700   68.2%   17.6% 
+   6 DCM nT8Y-resume3 (latest)     123      11    3700   67.0%   19.5% 
+   7 DCM Qeu8 (latest)             115      10    3700   66.0%   19.0% 
+   8 DCM mini2b-3MIV-resume3 (latest)     111      10    3700   65.5%   20.2% 
+   9 DCM Qeu8e3 (latest)            90      10    3700   62.7%   20.2% 
+  10 DCM mini2b-3MIV-resume (latest)      89      10    3700   62.6%   21.5% 
+  11 DCM nT8Y-resume4 (latest)      88      10    3700   62.3%   19.4% 
+  12 DCM - Qeu8e5                   84      10    3700   61.9%   20.5% 
+  13 DCM v5_5block_7x7_lnout-wd5e4 (latest)      83      10    3700   61.7%   22.0% 
+  14 DCM nT8Y-fatconv-resume (latest)      82      10    3700   61.6%   21.9% 
+  15 DCM Qeu8e4 (latest)            77      10    3700   60.9%   23.2% 
+  16 DCM mini2b-3MIV-resume2 (latest)      74      10    3700   60.6%   23.2% 
+  17 DCM nT8Y-resume2 (latest)      68      10    3700   59.6%   21.6% 
+  18 DCM Qeu8e2 (latest)            62      10    3700   58.8%   22.8% 
+  19 DCM Qeu8e5 (latest)            62      10    3700   58.8%   27.0% 
+  20 DCM v5_5block_7x7_lnout (latest)      41      10    3700   55.9%   27.7% 
+  21 DCM mini1b-Coxw (latest)       33       9    3700   54.8%   29.9% 
+  22 DCM nT8Y-fatconv (latest)      21      10    3700   53.1%   26.6% 
+  23 DCM Qeu8e (latest)            -30       9    3700   45.7%   32.4% 
+  24 DCM mini-YkKk-resume (latest)     -34       9    3700   45.1%   30.8% 
+  25 DCM v3_8block_3x3 (latest)     -36       9    3700   44.9%   32.7% 
+  26 DCM 9blk16se-9x9stem (latest)     -67       9    3700   40.5%   33.0% 
+  27 DCM mini2b-3MIV (latest)      -71       9    3700   39.9%   36.6% 
+  28 DCM mini-YkKk (latest)        -89       9    3700   37.4%   39.4% 
+  29 DCM T97X (latest)            -187       9    3700   25.4%   35.2% 
+  30 DCM Early 2 - 373k-step 8-block v3 May25-29    -190      10    3700   25.1%   31.4% 
+  31 DCM uni16-9x9stem (latest)    -208      10    3700   23.2%   30.2% 
+  32 DCM Exp2 - full10ply200 + 7x7    -218      10    3700   22.2%   32.0% 
+  33 DCM q2Bb-tanh (latest)       -227       9    3700   21.3%   37.5% 
+  34 DCM q2Bb-clamp (latest)      -227       9    3700   21.3%   38.9% 
+  35 DCM 20260626-2-q2Bb-manual (latest)    -229       9    3700   21.1%   38.2% 
+  36 DCM q2Bb-tanhSqrtN (latest)    -283      10    3700   16.4%   32.2% 
+  37 DCM freshNet (latest)        -284      10    3700   16.3%   32.2% 
+  38 DCM Exp1 - 467k-step basic30 + 7x7    -284      10    3700   16.3%   31.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+70300 of 70300 games finished.
+
+Player: DCM - Qeu8e5
+   "Draw by 3-fold repetition": 169
+   "Draw by fifty moves rule": 10
+   "Draw by insufficient mating material": 52
+   "Draw by stalemate": 527
+   "Loss: Black mates": 511
+   "Loss: White mates": 519
+   "Win: Black mates": 951
+   "Win: White mates": 961
+Player: DCM 20260626-2-q2Bb-manual (latest)
+   "Draw by 3-fold repetition": 643
+   "Draw by fifty moves rule": 55
+   "Draw by stalemate": 715
+   "Loss: Black mates": 1121
+   "Loss: White mates": 1092
+   "Win: Black mates": 38
+   "Win: White mates": 36
+Player: DCM 9blk16se-9x9stem (latest)
+   "Draw by 3-fold repetition": 234
+   "Draw by fifty moves rule": 33
+   "Draw by insufficient mating material": 137
+   "Draw by stalemate": 817
+   "Loss: Black mates": 807
+   "Loss: White mates": 784
+   "Win: Black mates": 430
+   "Win: White mates": 458
+Player: DCM Early 2 - 373k-step 8-block v3 May25-29
+   "Draw by 3-fold repetition": 427
+   "Draw by fifty moves rule": 49
+   "Draw by insufficient mating material": 22
+   "Draw by stalemate": 663
+   "Loss: Black mates": 1089
+   "Loss: White mates": 1102
+   "Win: Black mates": 162
+   "Win: White mates": 186
+Player: DCM Exp1 - 467k-step basic30 + 7x7
+   "Draw by 3-fold repetition": 629
+   "Draw by fifty moves rule": 21
+   "Draw by stalemate": 497
+   "Loss: Black mates": 1268
+   "Loss: White mates": 1256
+   "Win: Black mates": 10
+   "Win: White mates": 19
+Player: DCM Exp2 - full10ply200 + 7x7
+   "Draw by 3-fold repetition": 460
+   "Draw by fifty moves rule": 71
+   "Draw by insufficient mating material": 3
+   "Draw by stalemate": 649
+   "Loss: Black mates": 1137
+   "Loss: White mates": 1150
+   "Win: Black mates": 115
+   "Win: White mates": 115
+Player: DCM freshNet (latest)
+   "Draw by 3-fold repetition": 807
+   "Draw by fifty moves rule": 14
+   "Draw by insufficient mating material": 4
+   "Draw by stalemate": 366
+   "Loss: Black mates": 1247
+   "Loss: White mates": 1255
+   "Win: Black mates": 4
+   "Win: White mates": 3
+Player: DCM mini-YkKk (latest)
+   "Draw by 3-fold repetition": 227
+   "Draw by fifty moves rule": 42
+   "Draw by insufficient mating material": 116
+   "Draw by stalemate": 1072
+   "Loss: Black mates": 811
+   "Loss: White mates": 775
+   "Win: Black mates": 332
+   "Win: White mates": 325
+Player: DCM mini-YkKk-resume (latest)
+   "Draw by 3-fold repetition": 271
+   "Draw by fifty moves rule": 25
+   "Draw by insufficient mating material": 106
+   "Draw by stalemate": 738
+   "Draw by timeout": 1
+   "Loss: Black mates": 751
+   "Loss: White mates": 711
+   "Win: Black mates": 562
+   "Win: White loses on time": 1
+   "Win: White mates": 534
+Player: DCM mini1b-Coxw (latest)
+   "Draw by 3-fold repetition": 229
+   "Draw by fifty moves rule": 25
+   "Draw by insufficient mating material": 115
+   "Draw by stalemate": 739
+   "Loss: Black mates": 573
+   "Loss: White mates": 547
+   "Win: Black mates": 741
+   "Win: White mates": 731
+Player: DCM mini2b-3MIV (latest)
+   "Draw by 3-fold repetition": 262
+   "Draw by fifty moves rule": 36
+   "Draw by insufficient mating material": 116
+   "Draw by stalemate": 939
+   "Loss: Black mates": 756
+   "Loss: White mates": 791
+   "Win: Black mates": 391
+   "Win: White mates": 409
+Player: DCM mini2b-3MIV-resume (latest)
+   "Draw by 3-fold repetition": 163
+   "Draw by fifty moves rule": 7
+   "Draw by insufficient mating material": 68
+   "Draw by stalemate": 556
+   "Draw by timeout": 1
+   "Loss: Black mates": 495
+   "Loss: White mates": 492
+   "Win: Black loses on time": 1
+   "Win: Black mates": 943
+   "Win: White mates": 974
+Player: DCM mini2b-3MIV-resume2 (latest)
+   "Draw by 3-fold repetition": 219
+   "Draw by fifty moves rule": 4
+   "Draw by insufficient mating material": 91
+   "Draw by stalemate": 545
+   "Loss: Black mates": 528
+   "Loss: White mates": 502
+   "Win: Black mates": 942
+   "Win: White mates": 869
+Player: DCM mini2b-3MIV-resume3 (latest)
+   "Draw by 3-fold repetition": 233
+   "Draw by fifty moves rule": 6
+   "Draw by insufficient mating material": 51
+   "Draw by stalemate": 459
+   "Loss: Black mates": 436
+   "Loss: White mates": 467
+   "Win: Black loses on time": 1
+   "Win: Black mates": 1027
+   "Win: White mates": 1020
+Player: DCM nT8Y-fatconv (latest)
+   "Draw by 3-fold repetition": 230
+   "Draw by fifty moves rule": 21
+   "Draw by insufficient mating material": 130
+   "Draw by stalemate": 604
+   "Loss: Black mates": 639
+   "Loss: White mates": 605
+   "Win: Black mates": 766
+   "Win: White mates": 705
+Player: DCM nT8Y-fatconv-resume (latest)
+   "Draw by 3-fold repetition": 216
+   "Draw by fifty moves rule": 25
+   "Draw by insufficient mating material": 83
+   "Draw by stalemate": 486
+   "Loss: Black mates": 510
+   "Loss: White mates": 506
+   "Win: Black mates": 951
+   "Win: White mates": 923
+Player: DCM nT8Y-resume2 (latest)
+   "Draw by 3-fold repetition": 219
+   "Draw by fifty moves rule": 14
+   "Draw by insufficient mating material": 95
+   "Draw by stalemate": 472
+   "Loss: Black mates": 550
+   "Loss: White mates": 543
+   "Win: Black loses on time": 2
+   "Win: Black mates": 914
+   "Win: White loses on time": 1
+   "Win: White mates": 890
+Player: DCM nT8Y-resume3 (latest)
+   "Draw by 3-fold repetition": 237
+   "Draw by fifty moves rule": 13
+   "Draw by insufficient mating material": 82
+   "Draw by stalemate": 389
+   "Loss: Black mates": 428
+   "Loss: White mates": 432
+   "Win: Black mates": 1059
+   "Win: White mates": 1060
+Player: DCM nT8Y-resume4 (latest)
+   "Draw by 3-fold repetition": 151
+   "Draw by fifty moves rule": 11
+   "Draw by insufficient mating material": 100
+   "Draw by stalemate": 457
+   "Loss: Black mates": 503
+   "Loss: White mates": 531
+   "Win: Black mates": 976
+   "Win: White mates": 971
+Player: DCM q2Bb-clamp (latest)
+   "Draw by 3-fold repetition": 620
+   "Draw by fifty moves rule": 85
+   "Draw by insufficient mating material": 1
+   "Draw by stalemate": 734
+   "Loss: Black mates": 1101
+   "Loss: White mates": 1092
+   "Win: Black mates": 37
+   "Win: White mates": 30
+Player: DCM q2Bb-tanh (latest)
+   "Draw by 3-fold repetition": 655
+   "Draw by fifty moves rule": 44
+   "Draw by stalemate": 687
+   "Loss: Black mates": 1097
+   "Loss: White mates": 1122
+   "Win: Black mates": 49
+   "Win: White mates": 46
+Player: DCM q2Bb-tanhSqrtN (latest)
+   "Draw by 3-fold repetition": 768
+   "Draw by fifty moves rule": 25
+   "Draw by stalemate": 399
+   "Loss: Black mates": 1249
+   "Loss: White mates": 1249
+   "Win: Black mates": 4
+   "Win: White mates": 6
+Player: DCM Qeu8 (latest)
+   "Draw by 3-fold repetition": 176
+   "Draw by fifty moves rule": 25
+   "Draw by insufficient mating material": 76
+   "Draw by stalemate": 424
+   "Draw by timeout": 2
+   "Loss: Black mates": 450
+   "Loss: White mates": 456
+   "Win: Black mates": 1039
+   "Win: White mates": 1052
+Player: DCM Qeu8-resume2 (latest)
+   "Draw by 3-fold repetition": 179
+   "Draw by fifty moves rule": 17
+   "Draw by insufficient mating material": 77
+   "Draw by stalemate": 379
+   "Loss: Black mates": 425
+   "Loss: White mates": 427
+   "Win: Black mates": 1103
+   "Win: White loses on time": 1
+   "Win: White mates": 1092
+Player: DCM Qeu8e (latest)
+   "Draw by 3-fold repetition": 291
+   "Draw by fifty moves rule": 31
+   "Draw by insufficient mating material": 117
+   "Draw by stalemate": 758
+   "Draw by timeout": 1
+   "Loss: Black mates": 701
+   "Loss: White mates": 708
+   "Win: Black mates": 545
+   "Win: White mates": 548
+Player: DCM Qeu8e2 (latest)
+   "Draw by 3-fold repetition": 199
+   "Draw by fifty moves rule": 8
+   "Draw by insufficient mating material": 80
+   "Draw by stalemate": 556
+   "Loss: Black mates": 533
+   "Loss: White mates": 569
+   "Win: Black mates": 863
+   "Win: White mates": 892
+Player: DCM Qeu8e3 (latest)
+   "Draw by 3-fold repetition": 159
+   "Draw by fifty moves rule": 3
+   "Draw by insufficient mating material": 56
+   "Draw by stalemate": 531
+   "Loss: Black mates": 506
+   "Loss: White mates": 499
+   "Win: Black mates": 988
+   "Win: White mates": 958
+Player: DCM Qeu8e4 (latest)
+   "Draw by 3-fold repetition": 210
+   "Draw by fifty moves rule": 13
+   "Draw by insufficient mating material": 85
+   "Draw by stalemate": 549
+   "Loss: Black mates": 526
+   "Loss: White mates": 493
+   "Win: Black mates": 902
+   "Win: White mates": 922
+Player: DCM Qeu8e5 (latest)
+   "Draw by 3-fold repetition": 302
+   "Draw by fifty moves rule": 13
+   "Draw by insufficient mating material": 96
+   "Draw by stalemate": 588
+   "Loss: Black mates": 520
+   "Loss: White mates": 506
+   "Win: Black mates": 831
+   "Win: White mates": 844
+Player: DCM T97X (latest)
+   "Draw by 3-fold repetition": 542
+   "Draw by fifty moves rule": 49
+   "Draw by insufficient mating material": 13
+   "Draw by stalemate": 698
+   "Loss: Black mates": 1052
+   "Loss: White mates": 1057
+   "Win: Black mates": 141
+   "Win: White mates": 148
+Player: DCM uni16-9x9stem (latest)
+   "Draw by 3-fold repetition": 475
+   "Draw by fifty moves rule": 63
+   "Draw by insufficient mating material": 10
+   "Draw by stalemate": 570
+   "Loss: Black mates": 1123
+   "Loss: White mates": 1160
+   "Win: Black mates": 133
+   "Win: White mates": 166
+Player: DCM v3_8block_3x3 (latest)
+   "Draw by 3-fold repetition": 248
+   "Draw by fifty moves rule": 41
+   "Draw by insufficient mating material": 108
+   "Draw by stalemate": 814
+   "Loss: Black mates": 733
+   "Loss: White mates": 702
+   "Win: Black mates": 535
+   "Win: White mates": 519
+Player: DCM v5
+   "Draw by 3-fold repetition": 177
+   "Draw by fifty moves rule": 6
+   "Draw by insufficient mating material": 58
+   "Draw by stalemate": 374
+   "Loss: Black mates": 398
+   "Loss: White mates": 417
+   "Win: Black loses on time": 1
+   "Win: Black mates": 1122
+   "Win: White mates": 1147
+Player: DCM v5_5block_7x7_lnout (latest)
+   "Draw by 3-fold repetition": 179
+   "Draw by fifty moves rule": 16
+   "Draw by insufficient mating material": 129
+   "Draw by stalemate": 700
+   "Draw by timeout": 1
+   "Loss: Black mates": 572
+   "Loss: White mates": 548
+   "Win: Black mates": 804
+   "Win: White mates": 751
+Player: DCM v5_5block_7x7_lnout-wd2.5e4-m93 (latest)
+   "Draw by 3-fold repetition": 148
+   "Draw by fifty moves rule": 10
+   "Draw by insufficient mating material": 54
+   "Draw by stalemate": 387
+   "Loss: Black mates": 393
+   "Loss: White mates": 422
+   "Win: Black mates": 1133
+   "Win: White mates": 1153
+Player: DCM v5_5block_7x7_lnout-wd5e4 (latest)
+   "Draw by 3-fold repetition": 220
+   "Draw by fifty moves rule": 21
+   "Draw by insufficient mating material": 78
+   "Draw by stalemate": 495
+   "Loss: Black mates": 513
+   "Loss: White mates": 498
+   "Win: Black mates": 933
+   "Win: White mates": 942
+Player: Sloppy
+   "Win: Black mates": 1850
+   "Win: White mates": 1850
+Player: Stockfish
+   "Draw by 3-fold repetition": 2
+   "Draw by insufficient mating material": 1
+   "Draw by stalemate": 5
+   "Draw by timeout": 6
+   "Loss: Black loses on time": 5
+   "Loss: Black mates": 53
+   "Loss: White loses on time": 3
+   "Loss: White mates": 58
+   "Win: Black mates": 1779
+   "Win: White mates": 1788
