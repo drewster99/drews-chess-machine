@@ -12,8 +12,8 @@
    "arch_stem": "basic30 \u2192 stem 7\u00d77\u219264",
    "arch_blocks": "2\u00d7 @64, 15\u00d715+15\u00d715, SE scale+bias/4, ReLU/pre, ReZero cap 0.5, LN-out",
    "arch_heads": "policy intermediate_conv (pre-conv 512) \u00b7 value WDL(16\u2192FC64)",
-   "out_model": "20260704-Qeu8e3-replay-latest.safetensors",
-   "frozen_glob": "20260704-Qeu8e3-step*-frozen.safetensors",
+   "out_model": "20260704-Qeu8e5-replay-latest.safetensors",
+   "frozen_glob": "20260704-Qeu8e5-step*-frozen.safetensors",
    "segments": [
     {
      "log": "dcm_log_20260703-175402.txt",
@@ -34,6 +34,20 @@
      "cumstep_base": 63731,
      "label": "epochs 4-5 (continued)",
      "elapsed_base_sec": 43402.3
+    },
+    {
+     "log": "dcm_log_20260708-023905.txt",
+     "date": "20260708",
+     "cumstep_base": 106238,
+     "label": "e4 (resume, stopped @26492)",
+     "elapsed_base_sec": 74361.8
+    },
+    {
+     "log": "dcm_log_20260708-081952.txt",
+     "date": "20260708",
+     "cumstep_base": 132730,
+     "label": "e5 (resume, live)",
+     "elapsed_base_sec": 94586.8
     }
    ],
    "trainset": "elite-2025-05_11"

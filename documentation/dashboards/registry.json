@@ -100,14 +100,21 @@
    "arch_stem": "basic30 \u2192 stem 5\u00d75\u2192128",
    "arch_blocks": "1\u00d7 @128, 7\u00d77+7\u00d77, no-SE, ReLU/pre, ReZero cap 1.0, LN-out",
    "arch_heads": "policy intermediate_conv (pre-conv 128) \u00b7 value WDL(16\u2192FC128)",
-   "out_model": null,
-   "frozen_glob": "20260629-mini1b-Coxw-step*-frozen.safetensors",
+   "out_model": "20260629-mini1b-Coxw-resume-replay-latest.safetensors",
+   "frozen_glob": "20260629-mini1b-Coxw-resume-step*-frozen.safetensors",
    "segments": [
     {
      "log": "dcm_log_20260629-112618.txt",
      "date": "20260629",
      "cumstep_base": 0,
      "label": "run"
+    },
+    {
+     "log": "dcm_log_20260709-000611.txt",
+     "date": "20260709",
+     "cumstep_base": 55000,
+     "label": "resume (enumerated)",
+     "elapsed_base_sec": 20093.5
     }
    ],
    "trainset": "std-2026-05"
