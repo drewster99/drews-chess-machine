@@ -27,15 +27,11 @@ selfplay_registry.json `logs`):
 Run:  python3 selfplay.py
 """
 import os, re, csv, json, bisect
+from _schema import FIELDS  # single source of the CSV column order (shared with replay.py)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOGDIR = os.path.expanduser("~/Library/Logs/DrewsChessMachine")
 DATA = os.path.join(HERE, "data")
-
-FIELDS = ["cum_step", "meta_step", "segment", "elapsed_train_sec", "wallclock_iso",
-          "ms_per_step", "pElo", "nll", "loss", "pLoss", "vLoss", "legalMass", "pIllM",
-          "bn1Mean", "gNorm", "sae2", "eff_alpha", "pLogit_mean", "pLogit_peak",
-          "frozen_file", "note"]
 
 # gNorm is the PRE-clip gradient L2 norm; at an eBNC divergence moment it spikes to
 # ~1e10 while the APPLIED update stays bounded by the clip threshold (reg clip=30).
@@ -52,6 +48,16 @@ LOSS_CEIL = 20.0
 # probe curve begins late (see build_run): a fresh net scores ~450 near step 1000.
 BASELINE_STEP = 1000
 BASELINE_PELO = 450
+
+# A launch is a FRESH restart (steps= counter returned to ~1) iff its first
+# [STATS] step is at/below this bound. The trainer logs one line PER STEP across
+# an initial window at least this large, so a genuinely fresh launch is
+# guaranteed to emit a first line at/below the bound — while a session RESUME
+# rewinds to the saved step (typically many thousands) and must overwrite in
+# place, not be offset. Keying off this absolute near-start bound (rather than a
+# fraction of running_max) is what keeps a mid-range resume-rewind from being
+# mis-scored as a fresh restart and double-counted onto the cumulative axis.
+RESET_FRESH_STEP = 500
 
 
 def _blank_row(cum, meta, seg):
@@ -153,11 +159,14 @@ def build_run(key, cfg):
                 foreign += 1
                 continue
             # On the launch's first stat line decide whether steps= reset. A raw
-            # step at/below half the running max means a FRESH restart (the counter
-            # went back to ~1), so continue numbering after the max; a small backward
-            # jump is a resume-rewind and is left to overwrite its steps in-place.
+            # step back at the near-start bound means a FRESH restart (the counter
+            # went back to ~1), so continue numbering after the max; any larger
+            # backward jump is a resume-rewind and is left to overwrite its steps
+            # in-place. (See RESET_FRESH_STEP: an absolute near-start bound, not a
+            # fraction of running_max, so a mid-range rewind can't be mis-scored as
+            # a restart and double-counted.)
             if not decided:
-                if running_max > 500 and st["step"] <= running_max * 0.5:
+                if running_max > RESET_FRESH_STEP and st["step"] <= RESET_FRESH_STEP:
                     step_base = running_max
                     resets += 1
                 decided = True

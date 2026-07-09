@@ -103,6 +103,12 @@ enum UCIEngine {
         /// `setoption Model` skip a redundant reload when a GUI re-sends the same
         /// value each game.
         var modelPath: String = ""
+        /// Modification time of `modelPath` at load. The idempotent-reload skip
+        /// compares BOTH path and mtime so a live `-replay-latest` file the
+        /// trainer overwrote in place (same path, new bytes) is picked up on the
+        /// next `setoption Model` rather than silently kept stale. `nil` = unknown
+        /// (stat failed) → never treated as a match, so we reload to be safe.
+        var modelMtime: Date? = nil
         /// Tracks the position the most recent `position` command
         /// established, plus all moves applied on top. Refreshed
         /// from scratch on every `position` command (UCI senders pass
@@ -119,6 +125,7 @@ enum UCIEngine {
             paramCount = loaded.parameterCount
             archSummary = loaded.archSummary
             modelPath = loaded.resolvedPath
+            modelMtime = UCIEngine.fileMtime(loaded.resolvedPath)
         }
 
         /// Resolve the current `Temperature` option into a sampling
@@ -455,8 +462,16 @@ enum UCIEngine {
             respond("info string model load FAILED: \(error) — keeping \(session.modelLabel)")
             return
         }
-        if resolvedPath == session.modelPath {
-            SessionLogger.shared.log("[UCI] setoption Model: '\(trimmed)' already loaded — no reload")
+        // Skip the reload only when the SAME file is BYTE-identical to what we
+        // already hold — same path AND same mtime. A live `-replay-latest`
+        // checkpoint keeps its path while the trainer rewrites it in place, so a
+        // path-only check would serve stale weights across games; the mtime guard
+        // reloads when the bytes changed. A failed stat (mtime nil) reloads.
+        let currentMtime = fileMtime(resolvedPath)
+        if resolvedPath == session.modelPath,
+           let loadedMtime = session.modelMtime, let nowMtime = currentMtime,
+           loadedMtime == nowMtime {
+            SessionLogger.shared.log("[UCI] setoption Model: '\(trimmed)' already loaded (unchanged) — no reload")
             return
         }
         do {
@@ -471,6 +486,19 @@ enum UCIEngine {
     }
 
     // MARK: - I/O helpers
+
+    /// Modification time of the file at `path`, or `nil` if it cannot be stat'd.
+    /// Used to detect an in-place overwrite of a live checkpoint (same path, new
+    /// bytes). A `nil` return (stat failure) is treated as "changed" by callers so
+    /// a redundant reload is preferred over serving possibly-stale weights.
+    static func fileMtime(_ path: String) -> Date? {
+        do {
+            let attrs = try FileManager.default.attributesOfItem(atPath: path)
+            return attrs[.modificationDate] as? Date
+        } catch {
+            return nil
+        }
+    }
 
     /// Write one UCI response line to stdout and flush. UCI senders
     /// are line-buffered readers; an un-flushed line can stall the

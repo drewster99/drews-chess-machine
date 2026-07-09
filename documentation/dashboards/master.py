@@ -14,7 +14,7 @@ Self-contained, dependency-free, Canvas-rendered. Features:
 
 Run:  python3 master.py
 """
-import os, json, csv, html, subprocess
+import os, sys, json, csv, html, subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(HERE))  # documentation/dashboards -> repo root
@@ -50,13 +50,23 @@ def _load_corpora():
     """Curated label/source/note overlaid with LIVE corpus.json: existence, per-
     source game/ply totals, and completeness (sealed). A corpus whose directory is
     gone is dropped (no phantom rows); a corpus.json that is present but unreadable
-    is a hard error (surfaced, not silently defaulted)."""
+    is surfaced as an explicit ERROR row + a stderr warning (never silently
+    defaulted) — but it does NOT abort the whole render, so one corrupt metadata
+    file can't blind the operator to every training chart."""
     out = []
     for c in _CURATED_CORPORA:
         cj = os.path.join(_CORPORA_DIR, c["id"], "corpus.json")
         if not os.path.exists(cj):
             continue
-        m = json.load(open(cj))
+        try:
+            with open(cj) as fh:
+                m = json.load(fh)
+        except (ValueError, OSError) as e:
+            sys.stderr.write(f"WARNING: corpus.json unreadable for {c['id']}: {e}\n")
+            out.append({**c, "name": f"{c['id']} (corpus.json UNREADABLE)",
+                        "games": "ERR", "plies": "ERR", "plies_n": 0.0,
+                        "complete": False})
+            continue
         srcs = m.get("sources", [])
         g = sum((s.get("gamesAdded") or 0) for s in srcs)
         p = sum((s.get("pliesAdded") or 0) for s in srcs)

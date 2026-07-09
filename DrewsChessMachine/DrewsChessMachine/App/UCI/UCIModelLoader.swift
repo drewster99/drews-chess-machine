@@ -3,21 +3,23 @@ import Foundation
 /// Resolves the weight checkpoint to use for a UCI session and loads
 /// it into a fresh inference network.
 ///
-/// Two entry shapes:
+/// `resolveAndLoad(explicitPath:)` applies one precedence and shares a
+/// single load body; `resolveModelURL(explicitPath:)` is the same
+/// resolution without loading (used by the `--playchess` launch path):
 ///
-/// - `loadExplicit(modelFileURL:)` — caller passed `--model <path>`.
-///   The path must name a `.dcmmodel` file (champion or trainer
-///   variant; we slice off optimizer velocity if present). Session
-///   directories are deliberately NOT accepted here — a `.dcmsession`
-///   has two `.dcmmodel` files inside and the user can name whichever
-///   they want directly.
+/// - explicit `--model <path>` given — the path must name a
+///   `.safetensors`/`.dcmmodel` file (champion or trainer variant; we
+///   slice off optimizer velocity if present). Session directories are
+///   deliberately NOT accepted — a `.dcmsession` has two model files
+///   inside and the user names whichever they want directly. A bare
+///   name (no separator) is resolved against the Models directory by
+///   `resolveModelName` (exact filename → +extension → run-name→latest).
 ///
-/// - `loadDefault()` — no `--model` flag. Resolves to the most
-///   recently saved session via `LastSessionPointer`, then loads
-///   that session's `trainer.dcmmodel` (the trainee, which is
-///   generally the most up-to-date weights). Hard-errors if no
-///   pointer exists or the pointed-to directory is missing — the
-///   caller is the UCI pre-flight, which prints the error and exits.
+/// - no `--model` flag — resolves to the most recently saved session
+///   via `LastSessionPointer`, then that session's trainer file (the
+///   trainee, generally the most up-to-date weights). Hard-errors if no
+///   pointer exists or the pointed-to directory is missing — the caller
+///   is the UCI pre-flight, which prints the error and exits.
 enum UCIModelLoader {
 
     enum LoadError: Swift.Error, CustomStringConvertible {
@@ -69,10 +71,15 @@ enum UCIModelLoader {
     /// Resolve and load using the precedence: explicit `--model` if
     /// given, otherwise the latest session's trainer file.
     static func resolveAndLoad(explicitPath: String?) async throws -> Loaded {
-        if let path = explicitPath {
-            return try await loadExplicit(path: path)
-        }
-        return try await loadDefault()
+        // `resolveModelURL` already applies the explicit-vs-default precedence, so
+        // both cases share one load body (no per-case duplication of the Loaded fields).
+        let (url, label) = try resolveModelURL(explicitPath: explicitPath)
+        let file = try CheckpointManager.loadModelFile(at: url)
+        let network = try await buildAndLoad(weights: file.weights, arch: file.architecture)
+        return Loaded(network: network, modelID: file.modelID, sourceLabel: label,
+                      parameterCount: file.architecture.parameterCount,
+                      archSummary: file.architecture.architectureSummary,
+                      resolvedPath: url.path)
     }
 
     /// Resolve the weight-file URL to use, WITHOUT loading it, using the
@@ -106,7 +113,10 @@ enum UCIModelLoader {
             // Bare name → resolve within Models/ (exact filename, +extension, or
             // run-name→latest). See resolveModelName for the precedence.
             let modelsDir = CheckpointPaths.modelsDir
-            let files = (try? FileManager.default.contentsOfDirectory(atPath: modelsDir.path)) ?? []
+            // Surface a real listing failure (missing / unreadable Models dir) rather
+            // than masking it as `.notFound` — an IO/permission error must not look
+            // like "no such model".
+            let files = try FileManager.default.contentsOfDirectory(atPath: modelsDir.path)
             switch resolveModelName(ref, among: files) {
             case .found(let filename):
                 if filename.hasSuffix("-replay-latest.safetensors") {
@@ -167,26 +177,6 @@ enum UCIModelLoader {
         if unique.count == 1 { return .found(unique[0]) }
         if unique.count > 1 { return .ambiguous(unique) }
         return .notFound
-    }
-
-    private static func loadExplicit(path: String) async throws -> Loaded {
-        let (url, label) = try resolveModelURL(explicitPath: path)
-        let file = try CheckpointManager.loadModelFile(at: url)
-        let network = try await buildAndLoad(weights: file.weights, arch: file.architecture)
-        return Loaded(network: network, modelID: file.modelID, sourceLabel: label,
-                      parameterCount: file.architecture.parameterCount,
-                      archSummary: file.architecture.architectureSummary,
-                      resolvedPath: url.path)
-    }
-
-    private static func loadDefault() async throws -> Loaded {
-        let (url, label) = try resolveModelURL(explicitPath: nil)
-        let file = try CheckpointManager.loadModelFile(at: url)
-        let network = try await buildAndLoad(weights: file.weights, arch: file.architecture)
-        return Loaded(network: network, modelID: file.modelID, sourceLabel: label,
-                      parameterCount: file.architecture.parameterCount,
-                      archSummary: file.architecture.architectureSummary,
-                      resolvedPath: url.path)
     }
 
     /// Build a fresh `ChessMPSNetwork` (inference BN mode) and load the

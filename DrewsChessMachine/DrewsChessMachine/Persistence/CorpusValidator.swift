@@ -74,8 +74,8 @@ enum CorpusValidator {
     ///   - directory: the corpus folder (contains `corpus.json` + shards).
     ///   - verifyIntegrity: when `true` (default) every sealed shard body is read
     ///     and SHA-256 + per-record CRC verified — authoritative but O(corpus
-    ///     bytes). When `false`, only the 256-byte front header and 64-byte
-    ///     trailer of each shard are read (fast, counts-only, no body integrity).
+    ///     bytes). When `false`, only the fixed-size front header and trailer of
+    ///     each shard are read (fast, counts-only, no body integrity).
     ///   - fix: when `true`, repair the fixable findings (rewrite per-source
     ///     `gamesAdded`/`pliesAdded` from the shard trailers) and persist
     ///     `corpus.json`. Never touches shard files.
@@ -101,8 +101,12 @@ enum CorpusValidator {
         }
 
         if metadata.formatVersion != CorpusMetadata.currentFormatVersion {
+            // Informational, not a validity failure: a routine bump of
+            // `currentFormatVersion` must not flip every previously-written corpus
+            // to invalid. The shards are still readable — the version delta is a
+            // note, not a data problem.
             findings.append(CorpusValidationFinding(
-                severity: .warning, code: "format-version",
+                severity: .info, code: "format-version",
                 message: "corpus.json formatVersion is \(metadata.formatVersion), expected \(CorpusMetadata.currentFormatVersion)",
                 fixable: false))
         }

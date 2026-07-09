@@ -29,6 +29,7 @@ Idempotent: track/migrate never duplicate a cum_step already present.
 """
 import os, re, sys, csv, json, glob, struct, math, argparse, datetime
 import numpy as np
+from _schema import FIELDS  # single source of the CSV column order (shared with selfplay.py)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Config/data/output root. Defaults to the script dir, but can be pointed at a
@@ -60,11 +61,6 @@ def _resolve_bin():
     return hits[0] if hits else None
 
 BIN = _resolve_bin()
-
-FIELDS = ["cum_step", "meta_step", "segment", "elapsed_train_sec", "wallclock_iso",
-          "ms_per_step", "pElo", "nll", "loss", "pLoss", "vLoss", "legalMass", "pIllM",
-          "bn1Mean", "gNorm", "sae2", "eff_alpha", "pLogit_mean", "pLogit_peak",
-          "frozen_file", "note"]
 
 # ---------- safetensors ----------
 def _st_load(path):
