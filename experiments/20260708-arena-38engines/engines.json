@@ -1,0 +1,1096 @@
+[
+	{
+		"command" : "sloppy",
+		"name" : "Sloppy",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : 32,
+				"max" : 2147483646,
+				"min" : 0,
+				"name" : "memory",
+				"type" : "spin",
+				"value" : 32
+			},
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "egtpath scorpio",
+				"type" : "text",
+				"value" : ""
+			}
+		],
+		"protocol" : "xboard",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "stockfish",
+		"name" : "Stockfish",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "<empty>",
+				"name" : "Debug Log File",
+				"type" : "file",
+				"value" : "/Users/andrew/checkouts/cutechess/sf_debug.log"
+			},
+			{
+				"alias" : "",
+				"default" : "auto",
+				"name" : "NumaPolicy",
+				"type" : "text",
+				"value" : "auto"
+			},
+			{
+				"alias" : "",
+				"default" : 1,
+				"max" : 1024,
+				"min" : 1,
+				"name" : "Threads",
+				"type" : "spin",
+				"value" : 1
+			},
+			{
+				"alias" : "",
+				"default" : 16,
+				"max" : 33554432,
+				"min" : 1,
+				"name" : "Hash",
+				"type" : "spin",
+				"value" : 16
+			},
+			{
+				"name" : "Clear Hash",
+				"type" : "button"
+			},
+			{
+				"alias" : "",
+				"default" : 1,
+				"max" : 256,
+				"min" : 1,
+				"name" : "MultiPV",
+				"type" : "spin",
+				"value" : 1
+			},
+			{
+				"alias" : "",
+				"default" : 20,
+				"max" : 20,
+				"min" : 0,
+				"name" : "Skill Level",
+				"type" : "spin",
+				"value" : 20
+			},
+			{
+				"alias" : "",
+				"default" : 10,
+				"max" : 5000,
+				"min" : 0,
+				"name" : "Move Overhead",
+				"type" : "spin",
+				"value" : 10
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 10000,
+				"min" : 0,
+				"name" : "nodestime",
+				"type" : "spin",
+				"value" : 0
+			},
+			{
+				"alias" : "",
+				"default" : false,
+				"name" : "UCI_LimitStrength",
+				"type" : "check",
+				"value" : true
+			},
+			{
+				"alias" : "",
+				"default" : 1320,
+				"max" : 3190,
+				"min" : 1320,
+				"name" : "UCI_Elo",
+				"type" : "spin",
+				"value" : 1320
+			},
+			{
+				"alias" : "",
+				"default" : "<empty>",
+				"name" : "SyzygyPath",
+				"type" : "folder",
+				"value" : "<empty>"
+			},
+			{
+				"alias" : "",
+				"default" : 1,
+				"max" : 100,
+				"min" : 1,
+				"name" : "SyzygyProbeDepth",
+				"type" : "spin",
+				"value" : 1
+			},
+			{
+				"alias" : "",
+				"default" : true,
+				"name" : "Syzygy50MoveRule",
+				"type" : "check",
+				"value" : true
+			},
+			{
+				"alias" : "",
+				"default" : 7,
+				"max" : 7,
+				"min" : 0,
+				"name" : "SyzygyProbeLimit",
+				"type" : "spin",
+				"value" : 7
+			},
+			{
+				"alias" : "",
+				"default" : "nn-71d6d32cb962.nnue",
+				"name" : "EvalFile",
+				"type" : "file",
+				"value" : "nn-71d6d32cb962.nnue"
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"variants" : [
+			"standard",
+			"fischerandom"
+		],
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM Exp2 - full10ply200 + 7x7",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "/Users/andrew/Library/Application Support/DrewsChessMachine/Sessions/20260607-195042-20260607-5-oItC-manual.dcmsession/trainer.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM Exp1 - 467k-step basic30 + 7x7",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "/Users/andrew/Library/Application Support/DrewsChessMachine/Sessions/20260607-015807-20260601-12-5K7Z-manual.dcmsession/trainer.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM Early 2 - 373k-step 8-block v3 May25-29",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "/Users/andrew/Library/Application Support/DrewsChessMachine/Sessions/20260529-182349-20260525-2-IWkd-manual.dcmsession/trainer.dcmmodel"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM v5",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "/Users/andrew/Downloads/20260628-v5_5block_7x7_lnout-wd2.5e4-m93-replay-latest.safetensors"
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM - Qeu8e5",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20260704-Qeu8e5-replay-step14000.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM 20260626-2-q2Bb-manual (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260626-202904-20260626-2-q2Bb-manual-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM q2Bb-clamp (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260626-q2Bb-clamp-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM q2Bb-tanh (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260626-q2Bb-tanh-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM q2Bb-tanhSqrtN (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260626-q2Bb-tanhSqrtN-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM freshNet (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260627-freshNet-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM v3_8block_3x3 (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260627-v3_8block_3x3-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM v5_5block_7x7_lnout (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260628-v5_5block_7x7_lnout-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM v5_5block_7x7_lnout-wd2.5e4-m93 (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260628-v5_5block_7x7_lnout-wd2.5e4-m93-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM v5_5block_7x7_lnout-wd5e4 (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260628-v5_5block_7x7_lnout-wd5e4-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM mini1b-Coxw (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260629-mini1b-Coxw-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM mini2b-3MIV (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260629-mini2b-3MIV-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM mini2b-3MIV-resume (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260629-mini2b-3MIV-resume-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM mini2b-3MIV-resume2 (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260629-mini2b-3MIV-resume2-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM mini2b-3MIV-resume3 (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260629-mini2b-3MIV-resume3-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM T97X (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260630-T97X-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM mini-YkKk (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260630-mini-YkKk-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM mini-YkKk-resume (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260630-mini-YkKk-resume-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM nT8Y-fatconv (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260701-nT8Y-fatconv-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM nT8Y-fatconv-resume (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260701-nT8Y-fatconv-resume-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM nT8Y-resume2 (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260701-nT8Y-resume2-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM nT8Y-resume3 (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260701-nT8Y-resume3-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM nT8Y-resume4 (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260701-nT8Y-resume4-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM uni16-9x9stem (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260701-uni16-9x9stem-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM 9blk16se-9x9stem (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260702-9blk16se-9x9stem-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM Qeu8 (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260702-Qeu8-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM Qeu8-resume2 (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260702-Qeu8-resume2-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM Qeu8e (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260704-Qeu8e-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM Qeu8e2 (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260704-Qeu8e2-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM Qeu8e3 (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260704-Qeu8e3-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM Qeu8e4 (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260704-Qeu8e4-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	},
+	{
+		"command" : "/Users/andrew/cursor/drews-chess-machine/run_uci.sh",
+		"name" : "DCM Qeu8e5 (latest)",
+		"options" : [
+			{
+				"alias" : "",
+				"default" : "",
+				"name" : "Model",
+				"type" : "text",
+				"value" : "20260704-Qeu8e5-replay-latest.safetensors"
+			},
+			{
+				"alias" : "",
+				"default" : 0,
+				"max" : 1000,
+				"min" : 0,
+				"name" : "Temperature",
+				"type" : "spin",
+				"value" : 0
+			}
+		],
+		"protocol" : "uci",
+		"stderrFile" : "",
+		"timeoutScaleFactor" : 1,
+		"workingDirectory" : ""
+	}
+]
