@@ -26,6 +26,8 @@ enum UCIModelLoader {
         case modelFileMissing(URL)
         case explicitMustBeDcmmodel(URL)
         case weightCountTooSmall(have: Int, need: Int)
+        case ambiguousModelName(String, [String])
+        case modelNameNotFound(String, URL)
 
         var description: String {
             switch self {
@@ -39,6 +41,10 @@ enum UCIModelLoader {
                 return "--model expects a .safetensors or .dcmmodel file; got: \(url.path) (session directories are not accepted)"
             case .weightCountTooSmall(let have, let need):
                 return "Model file has \(have) tensors but the network needs at least \(need)"
+            case .ambiguousModelName(let name, let candidates):
+                return "Model name '\(name)' is ambiguous — matches: \(candidates.joined(separator: ", ")). Use a full filename or a more specific run name."
+            case .modelNameNotFound(let name, let dir):
+                return "No model named '\(name)' in \(dir.path). Pass a full path, a filename (with or without extension), or a run name whose '<name>-replay-latest.safetensors' exists."
             }
         }
     }
@@ -79,17 +85,39 @@ enum UCIModelLoader {
     /// `LoadError`s as the load paths so the caller can surface one
     /// message regardless of resolution vs. load failure.
     static func resolveModelURL(explicitPath: String?) throws -> (url: URL, sourceLabel: String) {
-        if let path = explicitPath {
-            let expanded = (path as NSString).expandingTildeInPath
-            let url = URL(fileURLWithPath: expanded)
-            let ext = url.pathExtension.lowercased()
-            guard ext == "safetensors" || ext == "dcmmodel" else {
-                throw LoadError.explicitMustBeDcmmodel(url)
+        if let ref = explicitPath {
+            let expanded = (ref as NSString).expandingTildeInPath
+            // A reference is treated as a filesystem PATH if it contains a path
+            // separator, is tilde-rooted, or already exists on disk; otherwise
+            // it's a bare NAME resolved against the Models directory.
+            let looksLikePath = ref.contains("/") || ref.hasPrefix("~")
+                || FileManager.default.fileExists(atPath: expanded)
+            if looksLikePath {
+                let url = URL(fileURLWithPath: expanded)
+                let ext = url.pathExtension.lowercased()
+                guard ext == "safetensors" || ext == "dcmmodel" else {
+                    throw LoadError.explicitMustBeDcmmodel(url)
+                }
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    throw LoadError.modelFileMissing(url)
+                }
+                return (url, "--model \(url.path)")
             }
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                throw LoadError.modelFileMissing(url)
+            // Bare name → resolve within Models/ (exact filename, +extension, or
+            // run-name→latest). See resolveModelName for the precedence.
+            let modelsDir = CheckpointPaths.modelsDir
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: modelsDir.path)) ?? []
+            switch resolveModelName(ref, among: files) {
+            case .found(let filename):
+                if filename.hasSuffix("-replay-latest.safetensors") {
+                    SessionLogger.shared.log("[UCI] Model '\(ref)' → \(filename): this is a LIVE 'replay-latest' checkpoint the trainer overwrites — it can change mid-run. Use a frozen '-stepNNNN' file for a reproducible result.")
+                }
+                return (modelsDir.appendingPathComponent(filename), "Model \(filename)")
+            case .ambiguous(let candidates):
+                throw LoadError.ambiguousModelName(ref, candidates)
+            case .notFound:
+                throw LoadError.modelNameNotFound(ref, modelsDir)
             }
-            return (url, "--model \(url.path)")
         }
         guard let pointer = LastSessionPointer.read() else {
             throw LoadError.noSavedSession
@@ -103,6 +131,42 @@ enum UCIModelLoader {
             throw LoadError.modelFileMissing(trainerURL)
         }
         return (trainerURL, "session \(pointer.sessionID) trainer")
+    }
+
+    /// Result of resolving a bare model name against a directory listing.
+    enum NameResolution: Equatable {
+        case found(String)        // matching filename (not a path)
+        case ambiguous([String])  // several run-latest files matched
+        case notFound
+    }
+
+    /// Resolve a bare model NAME against `files` (a Models-directory listing),
+    /// in precedence order:
+    ///   1. exact filename            e.g. `20260704-Qeu8e5-replay-latest.safetensors`
+    ///   2. filename + extension      e.g. `…-step14000` → `…-step14000.safetensors` / `.dcmmodel`
+    ///   3. run name → latest         e.g. `Qeu8e` → `<date>-Qeu8e-replay-latest.safetensors`
+    /// The run-name match is anchored so the run token is bounded by a leading
+    /// `-` (or is the whole prefix), which keeps `Qeu8e` distinct from `Qeu8e5`.
+    /// Pure (no filesystem) so it is unit-testable. Returns the filename only.
+    static func resolveModelName(_ name: String, among files: [String]) -> NameResolution {
+        let fileSet = Set(files)
+        // 1. exact filename (full name incl. extension, or a folder name)
+        if fileSet.contains(name) { return .found(name) }
+        // 2. filename without extension
+        for ext in ["safetensors", "dcmmodel"] where fileSet.contains("\(name).\(ext)") {
+            return .found("\(name).\(ext)")
+        }
+        // 3. run name → latest checkpoint
+        let latestSuffix = "-replay-latest.safetensors"
+        let matches = files.filter { file in
+            guard file.hasSuffix(latestSuffix) else { return false }
+            let runToken = String(file.dropLast(latestSuffix.count))  // e.g. "20260704-Qeu8e5"
+            return runToken == name || runToken.hasSuffix("-\(name)")
+        }
+        let unique = Array(Set(matches)).sorted()
+        if unique.count == 1 { return .found(unique[0]) }
+        if unique.count > 1 { return .ambiguous(unique) }
+        return .notFound
     }
 
     private static func loadExplicit(path: String) async throws -> Loaded {

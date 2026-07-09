@@ -164,7 +164,7 @@ enum UCIEngine {
                 // No pondering. UCI permits engines to ignore this.
                 break
             case "setoption":
-                handleSetOption(tokens: Array(tokens.dropFirst()), session: &session)
+                handleSetOption(line: line, tokens: Array(tokens.dropFirst()), session: &session)
             case "quit":
                 SessionLogger.shared.log("[UCI] quit received; exiting")
                 return
@@ -387,8 +387,25 @@ enum UCIEngine {
         }
     }
 
-    private static func handleSetOption(tokens: [String], session: inout Session) {
-        // UCI shape: `setoption name <Name with possibly spaces> value <value tokens...>`
+    /// The verbatim value of a `setoption … value <x>` line: everything after
+    /// the first ` value ` delimiter, with all internal spacing preserved. Per
+    /// the UCI protocol the value is free-form text that may contain runs of
+    /// spaces, so it is taken as the remainder of the raw line rather than
+    /// reassembled from space-split tokens (which would collapse consecutive
+    /// spaces). Returns "" when the line ends in `… value` with no value text.
+    /// Internal (not private) so it is reachable from the test target.
+    static func setOptionValue(fromLine line: String) -> String {
+        guard let valueRange = line.range(of: " value ") else { return "" }
+        return String(line[valueRange.upperBound...])
+    }
+
+    private static func handleSetOption(line: String, tokens: [String], session: inout Session) {
+        // UCI shape: `setoption name <Name with possibly spaces> value <value>`.
+        // The value is free-form text and, per the protocol, is the remainder of
+        // the line after the `value` keyword taken verbatim — it may contain runs
+        // of spaces. It must therefore NOT be reassembled from the space-split
+        // tokens, which collapses consecutive spaces (e.g. a path like
+        // `/a/b  c`). Only the name is derived from tokens.
         guard tokens.first == "name" else {
             SessionLogger.shared.log("[UCI] setoption: missing 'name'")
             return
@@ -397,10 +414,8 @@ enum UCIEngine {
             SessionLogger.shared.log("[UCI] setoption: missing 'value'")
             return
         }
-        let nameTokens = tokens[1..<valueIdx]
-        let valueTokens = tokens[(valueIdx + 1)...]
-        let name = nameTokens.joined(separator: " ")
-        let valueString = valueTokens.joined(separator: " ")
+        let name = tokens[1..<valueIdx].joined(separator: " ")
+        let valueString = Self.setOptionValue(fromLine: line)
         switch name.lowercased() {
         case "temperature":
             guard let v = Int(valueString) else {
