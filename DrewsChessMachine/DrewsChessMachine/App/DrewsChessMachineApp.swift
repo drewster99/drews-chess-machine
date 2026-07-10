@@ -160,6 +160,12 @@ struct DrewsChessMachineApp: App {
         // SwiftUI / Metal GUI init.
         Self.handleReplayCorpusIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: headless train-vs-UCI trainer (--train-vs-uci). Plays
+        // the live trainer network against a pool of external UCI engines and
+        // trains on the resulting games (the live analog of --replay-corpus),
+        // then exits before SwiftUI / Metal GUI init.
+        Self.handleTrainVsUciIfPresent(rawArgs: rawArgs)
+
         // Pre-flight: PGN → game-corpus import (--import-pgn). Streams the
         // .pgn(.zst), converts games to the corpus format, and exits.
         Self.handleImportPGNIfPresent(rawArgs: rawArgs)
@@ -1111,6 +1117,179 @@ struct DrewsChessMachineApp: App {
             runModelID: runModelID
         )
         CorpusReplayRunner.runAndExit(config: config, params: params)
+    }
+
+    // MARK: - Train-vs-UCI pre-flight (--train-vs-uci)
+
+    /// Headless trainer that plays the live trainer network against external
+    /// UCI engines and trains on the games. Repeatable `--train-vs-uci
+    /// "cmd=/path/to/stockfish;n=3;go=nodes 1;UCI_Elo=1400"` declares one
+    /// opponent kind (cmd = path, n = instance count, go = per-move limit,
+    /// everything else = setoption pairs). Mirrors the --replay-corpus model
+    /// I/O (--start-model, --out-model, --enumerate-checkpoints, --preset,
+    /// --parameters, --training-step-limit, --training-time-limit).
+    private static func handleTrainVsUciIfPresent(rawArgs: [String]) {
+        guard rawArgs.contains("--train-vs-uci") else { return }
+
+        var opponentSpecStrings: [String] = []
+        var startModelPath: String? = nil
+        var outModelPath: String? = nil
+        var presetName: String? = nil
+        var parametersPath: String? = nil
+        var stepLimit: Int? = nil
+        var timeLimitSec: Double? = nil
+        var enumerateCheckpoints = false
+        var maxPliesPerGame = 400
+        var evalSyncEverySteps = 10
+
+        func requireValue(_ flag: String, _ v: String?) -> String {
+            guard let v else {
+                FileHandle.standardError.write(Data("error: \(flag) requires a value\n".utf8))
+                Darwin.exit(2)
+            }
+            return v
+        }
+        func requireInt(_ flag: String, _ v: String?) -> Int {
+            let s = requireValue(flag, v)
+            guard let n = Int(s) else {
+                FileHandle.standardError.write(Data("error: \(flag) expects an integer value, got '\(s)'\n".utf8))
+                Darwin.exit(2)
+            }
+            return n
+        }
+
+        var i = 0
+        while i < rawArgs.count {
+            let arg = rawArgs[i]
+            let nextValue: String? = {
+                guard i + 1 < rawArgs.count else { return nil }
+                let v = rawArgs[i + 1]
+                return v.hasPrefix("--") ? nil : v
+            }()
+            switch arg {
+            case "--train-vs-uci":
+                opponentSpecStrings.append(requireValue(arg, nextValue)); i += 2
+            case "--start-model":
+                startModelPath = requireValue(arg, nextValue); i += 2
+            case "--out-model":
+                outModelPath = requireValue(arg, nextValue); i += 2
+            case "--preset":
+                presetName = requireValue(arg, nextValue); i += 2
+            case "--parameters":
+                parametersPath = requireValue(arg, nextValue); i += 2
+            case "--training-step-limit":
+                stepLimit = requireInt(arg, nextValue); i += 2
+            case "--training-time-limit":
+                let s = requireValue(arg, nextValue)
+                guard let t = Double(s), t > 0 else {
+                    FileHandle.standardError.write(Data("error: --training-time-limit expects seconds > 0, got '\(s)'\n".utf8))
+                    Darwin.exit(2)
+                }
+                timeLimitSec = t; i += 2
+            case "--max-plies":
+                maxPliesPerGame = requireInt(arg, nextValue); i += 2
+            case "--eval-sync-steps":
+                evalSyncEverySteps = requireInt(arg, nextValue); i += 2
+            case "--enumerate-checkpoints":
+                enumerateCheckpoints = true; i += 1
+            default:
+                FileHandle.standardError.write(Data("error: unexpected argument '\(arg)' (with --train-vs-uci)\n".utf8))
+                Darwin.exit(2)
+            }
+        }
+
+        // Parse each opponent spec: "cmd=/path;n=3;go=nodes 1;UCI_Elo=1400".
+        func parseOpponent(_ s: String) -> TrainVsUciOpponentSpec {
+            var command: String? = nil
+            var count = 1
+            var goLimit = "depth 1"
+            var options: [UCIArbiter.Option] = []
+            for rawField in s.split(separator: ";") {
+                let field = rawField.trimmingCharacters(in: .whitespaces)
+                if field.isEmpty { continue }
+                guard let eq = field.firstIndex(of: "=") else {
+                    FileHandle.standardError.write(Data("error: --train-vs-uci field '\(field)' is not key=value\n".utf8))
+                    Darwin.exit(2)
+                }
+                let key = String(field[..<eq]).trimmingCharacters(in: .whitespaces)
+                let value = String(field[field.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
+                switch key.lowercased() {
+                case "cmd": command = value
+                case "n":
+                    guard let n = Int(value), n >= 1 else {
+                        FileHandle.standardError.write(Data("error: --train-vs-uci n= expects a positive integer, got '\(value)'\n".utf8))
+                        Darwin.exit(2)
+                    }
+                    count = n
+                case "go": goLimit = value
+                default: options.append(UCIArbiter.Option(name: key, value: value))
+                }
+            }
+            guard let command, !command.isEmpty else {
+                FileHandle.standardError.write(Data("error: --train-vs-uci spec '\(s)' is missing required cmd=<path>\n".utf8))
+                Darwin.exit(2)
+            }
+            let kind = URL(fileURLWithPath: (command as NSString).expandingTildeInPath)
+                .deletingPathExtension().lastPathComponent
+            return TrainVsUciOpponentSpec(command: command, count: count, goLimit: goLimit, options: options, kind: kind)
+        }
+        let opponents = opponentSpecStrings.map(parseOpponent)
+
+        // Snapshot training parameters on the main actor (mirrors the
+        // --replay-corpus handler), applying a --parameters file first.
+        let params: ReplayParams = MainActor.assumeIsolated {
+            if let pp = parametersPath {
+                do {
+                    let url = URL(fileURLWithPath: (pp as NSString).expandingTildeInPath)
+                    let cfg = try CliTrainingConfig.load(from: url)
+                    TrainingParameters.suppressPersistence = true
+                    defer { TrainingParameters.suppressPersistence = false }
+                    try TrainingParameters.shared.apply(cfg.trainingParameters)
+                    if stepLimit == nil { stepLimit = cfg.trainingStepLimit }
+                    if timeLimitSec == nil { timeLimitSec = cfg.trainingTimeLimitSec }
+                } catch {
+                    FileHandle.standardError.write(Data("error: --parameters load/apply failed: \(error.localizedDescription)\n".utf8))
+                    Darwin.exit(2)
+                }
+            }
+            let tp = TrainingParameters.shared
+            return ReplayParams(
+                learningRate: tp.learningRate,
+                entropyBonus: tp.entropyBonus,
+                drawPenalty: tp.drawPenalty,
+                weightDecay: tp.weightDecay,
+                gradClipMaxNorm: tp.gradClipMaxNorm,
+                policyLossWeight: tp.policyLossWeight,
+                valueLossWeight: tp.valueLossWeight,
+                illegalMassWeight: tp.illegalMassWeight,
+                policyLabelSmoothingEpsilon: tp.policyLabelSmoothingEpsilon,
+                valueLabelSmoothingEpsilon: tp.valueLabelSmoothingEpsilon,
+                momentumCoeff: tp.momentumCoeff,
+                signedAdvantageComplementCE: tp.signedAdvantageComplementCE,
+                sqrtBatchScalingLR: tp.sqrtBatchScalingLR,
+                lrWarmupSteps: tp.lrWarmupSteps,
+                trainingBatchSize: tp.trainingBatchSize,
+                replayBufferCapacity: tp.replayBufferCapacity,
+                replayRatioTarget: tp.replayRatioTarget,
+                replayBufferMinPositionsBeforeTraining: tp.replayBufferMinPositionsBeforeTraining
+            )
+        }
+
+        let runModelID = MainActor.assumeIsolated { ModelIDMinter.mint().value }
+
+        let config = TrainVsUciConfig(
+            opponents: opponents,
+            stepLimit: stepLimit,
+            timeLimitSec: timeLimitSec,
+            startModelPath: startModelPath,
+            presetName: presetName,
+            outModelPath: outModelPath,
+            enumerateCheckpoints: enumerateCheckpoints,
+            maxPliesPerGame: maxPliesPerGame,
+            evalSyncEverySteps: evalSyncEverySteps,
+            runModelID: runModelID
+        )
+        TrainVsUciRunner.runAndExit(config: config, params: params)
     }
 
     // MARK: - Corpus validation pre-flight (--validate-corpus)
