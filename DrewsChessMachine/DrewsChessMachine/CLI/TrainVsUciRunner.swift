@@ -307,6 +307,30 @@ enum TrainVsUciRunner {
         let driverDone = SyncBox<Bool>(false)
         let driverTask = Task { await driver.run(); driverDone.value = true }
 
+        // Periodic [VS-UCI-STATS] block: per-kind summary lines, then a
+        // per-instance breakdown, with rates over the window since the
+        // previous emit. Runs until teardown cancels it.
+        let statsIntervalSec: Double = 12
+        let statsTask = Task {
+            var previous: [TrainVsUciDriver.SlotStats] = []
+            var lastEmit = Date()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(statsIntervalSec))
+                if Task.isCancelled { break }
+                let now = Date()
+                let snapshot = driver.statsSnapshot()
+                for line in TrainVsUciStatsFormatter.lines(
+                    current: snapshot,
+                    previous: previous,
+                    intervalSec: now.timeIntervalSince(lastEmit)
+                ) {
+                    emit(line)
+                }
+                previous = snapshot
+                lastEmit = now
+            }
+        }
+
         func dg(_ v: Float, _ digits: Int) -> String { v.isFinite ? String(format: "%.\(digits)f", v) : "--" }
 
         let startWall = Date()
@@ -369,12 +393,14 @@ enum TrainVsUciRunner {
         } catch {
             // Tear the producer down (shuts every engine down) before the
             // error propagates to runAndExit's Darwin.exit.
+            statsTask.cancel()
             driverTask.cancel()
             _ = await driverTask.value
             throw error
         }
 
         // Stop the producer and wait for it to shut down its engines cleanly.
+        statsTask.cancel()
         driverTask.cancel()
         _ = await driverTask.value
 

@@ -1233,7 +1233,24 @@ struct DrewsChessMachineApp: App {
                 .deletingPathExtension().lastPathComponent
             return TrainVsUciOpponentSpec(command: command, count: count, goLimit: goLimit, options: options, kind: kind)
         }
-        let opponents = opponentSpecStrings.map(parseOpponent)
+        var opponents = opponentSpecStrings.map(parseOpponent)
+        // Disambiguate duplicate kind labels — two specs may name the same
+        // executable (e.g. one stockfish pool at UCI_Elo=1400 and another at
+        // 1800). Without this, both pools would merge in the per-kind stats
+        // and their instance labels (`stockfish#1`…) would collide. Suffix
+        // repeats with the spec ordinal so each spec stays its own kind.
+        var kindCounts: [String: Int] = [:]
+        for i in opponents.indices {
+            let base = opponents[i].kind
+            let n = (kindCounts[base] ?? 0) + 1
+            kindCounts[base] = n
+            if n > 1 {
+                let o = opponents[i]
+                opponents[i] = TrainVsUciOpponentSpec(
+                    command: o.command, count: o.count, goLimit: o.goLimit,
+                    options: o.options, kind: "\(base)-\(n)")
+            }
+        }
 
         // Snapshot training parameters on the main actor (mirrors the
         // --replay-corpus handler), applying a --parameters file first.

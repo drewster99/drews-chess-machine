@@ -11,7 +11,17 @@ original rationale is not lost.
 
 ## Future improvements (validated open)
 
-- **Train-vs-UCI — continuous live training by playing external UCI engines (PLAN ONLY, drafted 2026-07-09; no code yet).**
+- **Train-vs-UCI — continuous live training by playing external UCI engines (drafted 2026-07-09; IMPLEMENTED 2026-07-10 — all four components landed on main; end-to-end smoke vs real Stockfish still pending).**
+
+  **Implementation status (2026-07-10).** All four components below are implemented, unit-tested, and committed: `UCIArbiter` (App/UCI/), `TrainVsUciDriver` + `ActiveGame.flushTrainerSide` (Training/), `TrainVsUciRunner` + `handleTrainVsUciIfPresent` (CLI/ + App/), and `TrainVsUciStatsFormatter` with the `[VS-UCI-STATS]` emit. Deviations from the original plan, with reasons:
+  - **Separate `TrainVsUciDriver`, not a modification of `BatchedSelfPlayDriver`.** Follows the existing per-topology-driver precedent (`TickTournamentDriver` for arena); the self-play driver stays untouched.
+  - **Only the trainer's plies are recorded/flushed** (new one-sided `ActiveGame.flushTrainerSide`), because the trainer's policy loss is advantage-weighted REINFORCE — training the policy head on the opponent's (Stockfish's) moves weighted by game outcome would be semantically wrong. Consequence: **history input encodings (full10ply*) are rejected at pre-flight** — the replay buffer reconstructs history stacks from adjacent stored plies, which one-sided storage breaks; single-frame encodings (basic20/basic30, the current models) are fully supported. Supporting history encodings would need a per-row "context-only, don't train" flag in `ReplayBuffer`.
+  - **"Live weights" is near-live:** the driver plays a separate eval `ChessMPSNetwork` whose weights are re-synced from the live trainer every `--eval-sync-steps` trainer steps (default 10), rather than evaluating the trainer's own graph. Avoids concurrent eval/train access to one MPSGraph and the `ChessNetwork`/`ChessMPSNetwork` type split (`trainer.network` is the inner `ChessNetwork`).
+  - **Cap-hit games are dropped without a flush** (outcome unknown — no fake-draw label), tallied as `capDropped` in stats.
+  - **Duplicate opponent kinds are auto-disambiguated** (`stockfish`, `stockfish-2`) when two specs name the same executable (e.g. two Elo pools), so per-kind stats and instance labels never collide.
+  - **Validation still open:** the plan's end-to-end smoke (real Stockfish `nodes 1` + Sloppy; buffer fills, steps advance, checkpoints at the 1000-step cadence, `[VS-UCI-STATS]` cadence, spread sanity) has not yet run — deferred while a long `--replay-corpus` training run owns the GPU.
+
+  Original plan follows, unchanged:
 
   **Why.** Corpus replay trains the trainer network on a *static* PGN corpus. This mode replaces the static corpus with a **live stream of games the current trainer generates by playing real external opponents** (Stockfish, Sloppy, …) over UCI. It is on-policy: the games cover the positions the trainer actually reaches and misplays, which is more useful for improving *this* network than a fixed corpus of games it may never visit. It is the live-play analog of corpus replay — same live-trainer training loop, just a live rather than pre-recorded data source.
 
