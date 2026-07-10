@@ -31,14 +31,19 @@ import Foundation
 ///    turn — as an **async Task off the tick barrier** so a slow engine
 ///    never stalls the trainer batch. Results come back via a `SyncBox`.
 ///
-/// **On-policy, outcome-only recording.** Only the **trainer's** plies
-/// are recorded into the replay buffer (`recordPly` is called for the
-/// trainer's move, not the opponent's). Each recorded position carries
-/// the trainer's sampled move as its policy target and the game's
-/// terminal outcome (signed from the trainer's colour by
-/// `ActiveGame.flush`) as its value/return. Opponent (Stockfish/Sloppy)
-/// moves are applied to advance the game but are never training targets.
-/// This keeps the data strictly on-policy and reuses `flush` unchanged.
+/// **Whole-game recording (corpus-replay style).** BOTH sides' plies are
+/// recorded into the replay buffer: the trainer's sampled moves and the
+/// opponent's (Stockfish/Sloppy) moves alike, each with the mover's move
+/// as the policy target and the terminal outcome signed by the mover's
+/// colour via the standard two-sided `ActiveGame.flush`. Opponent rows
+/// are advantage-weighted imitation — exactly the mechanism
+/// `CorpusReplayFeeder` uses with human corpus games, and deliberately
+/// so: against a stronger opponent the imitation signal (learning the
+/// moves that beat you) is the richest data in the game. Whole-game
+/// recording also keeps the buffer's adjacent-ply history reconstruction
+/// valid, so history input encodings work normally. No forward pass is
+/// spent on opponent moves at play time; like corpus rows, they are
+/// evaluated by the trainer's forward pass at training time.
 ///
 /// **Live weights.** The `network` handed in is the live trainer network
 /// — it is being updated concurrently by the trainer loop. That is the
@@ -136,24 +141,6 @@ final class TrainVsUciDriver: @unchecked Sendable {
     func run() async {
         SessionLogger.shared.log("[VS-UCI] driver starting, opponents=\(opponents.count)")
 
-        // Guard: one-sided (trainer-only) recording is incompatible with a
-        // history input encoding — the replay buffer reconstructs each
-        // position's history stack from *adjacent* stored plies, but here
-        // adjacent stored rows are two half-moves apart (the opponent's
-        // moves are deliberately not recorded, to keep the REINFORCE policy
-        // gradient on-policy). Supporting history encodings would need a
-        // per-row "history-context, don't-train" flag the buffer doesn't
-        // have. Fail fast rather than silently corrupt training inputs.
-        // Single-frame encodings (basic20 / basic30) reconstruct via a
-        // byte copy, so they are correct.
-        guard network.inputEncoding.historyFrameCount <= 1 else {
-            SessionLogger.shared.log(
-                "[VS-UCI] ERROR: train-vs-UCI requires a single-frame input encoding; "
-                + "\(network.inputEncoding.rawValue) uses \(network.inputEncoding.historyFrameCount) "
-                + "history frames. Aborting driver (no games produced).")
-            return
-        }
-
         // 1. Launch + handshake all engines concurrently. A slot whose
         //    engine fails to come up is dropped (its stats stay zeroed).
         var readySlots: [Slot] = []
@@ -250,13 +237,9 @@ final class TrainVsUciDriver: @unchecked Sendable {
             guard slot.phase == .idle, slot.game.engine.result == nil else { continue }
             guard slot.game.engine.state.currentPlayer == slot.trainerColor else { continue }
             guard !slot.game.engine.currentLegalMoves.isEmpty else { continue }
-            // Stop recording at the game-length cap. Because ONLY the
-            // trainer's plies are recorded, the trainer's per-side
-            // `ActiveGame` scratch (sized `(cap+1)/2`) would overflow if
-            // we kept recording past `maxPliesCap` total plies — gate on
-            // the true game length (`moveHistory.count`), never on
-            // `totalPliesPlayed` (which counts trainer plies only). The
-            // game-end pass drops the game once this trips.
+            // Stop at the game-length cap: no further plies are recorded
+            // (the per-side scratch is sized `(cap+1)/2`) and the game-end
+            // pass drops the game once this trips.
             guard slot.game.engine.moveHistory.count < slot.game.maxPliesCap else { continue }
             evalSlots.append(idx)
         }
@@ -382,6 +365,42 @@ final class TrainVsUciDriver: @unchecked Sendable {
         }
     }
 
+    /// Record the opponent's about-to-be-played ply: encode the current
+    /// position, map the move into the mover-relative policy frame, and
+    /// stage it on the slot's `ActiveGame` — the same per-ply recipe
+    /// `CorpusReplayFeeder` uses for corpus moves. CPU-only; no forward
+    /// pass (like corpus rows, opponent rows are evaluated by the
+    /// trainer's forward pass at training time). Serial on the driver
+    /// task, so one shared encode scratch suffices.
+    private func recordOpponentPly(_ slot: Slot, move: ChessMove) {
+        guard let sc = scratches else { return }
+        let g = slot.game
+        // Cap guard mirrors the trainer-side eval gate: never record past
+        // the per-side staging capacity. (Unreachable in practice — a
+        // capped game is dropped before its next opponent dispatch.)
+        guard g.engine.moveHistory.count < g.maxPliesCap else { return }
+
+        BoardEncoder.encode(
+            g.engine.state,
+            history: g.engine.recentStates,
+            into: UnsafeMutableBufferPointer(start: sc.opponentEncodeScratch, count: sc.boardFloats),
+            encoding: network.inputEncoding
+        )
+        let sideToMove = g.engine.state.currentPlayer
+        let halfMove = g.engine.moveHistory.count
+        var matCount = 0
+        for sq in g.engine.state.board {
+            if let piece = sq, piece.type != .pawn { matCount += 1 }
+        }
+        g.recordPly(
+            side: sideToMove,
+            encodedBoardSrc: UnsafePointer(sc.opponentEncodeScratch),
+            policyIndex: PolicyEncoding.policyIndex(move, currentPlayer: sideToMove),
+            samplingTau: g.schedule.tau(forPly: halfMove),
+            materialCount: UInt8(min(matCount, Int(UInt8.max)))
+        )
+    }
+
     // MARK: - Opponent dispatch
 
     /// Fire the opponent's `bestMove` on a background Task. The Task only
@@ -418,6 +437,10 @@ final class TrainVsUciDriver: @unchecked Sendable {
                     abortGame(slot)
                     return
                 }
+                // Record the opponent's ply (whole-game recording — the
+                // opponent's move becomes an advantage-weighted imitation
+                // target, exactly like a corpus game's moves), then apply.
+                recordOpponentPly(slot, move: move)
                 do {
                     try slot.game.engine.applyMoveAndAdvance(move)
                 } catch {
@@ -455,17 +478,12 @@ final class TrainVsUciDriver: @unchecked Sendable {
         slot.phase = .idle
     }
 
-    /// Flush a naturally-finished game (trainer plies only, outcomes
-    /// signed by colour), tally stats, then recycle the slot.
+    /// Flush a naturally-finished game (both sides' plies, outcomes
+    /// signed by mover colour — the standard two-sided path), tally
+    /// stats, then recycle the slot.
     private func finishGame(_ slot: Slot, result: GameResult) {
         let totalPlies = slot.game.engine.moveHistory.count
-        // One-sided flush: only the trainer's plies were recorded, so the
-        // two-sided `flush` would read unrecorded opponent scratch.
-        // `totalPlies` (the true game length) is stamped as gameLength so
-        // replay metadata isn't skewed by the trainer-only row count.
-        _ = slot.game.flushTrainerSide(
-            buffer: buffer, result: result,
-            trainerColor: slot.trainerColor, totalPlies: totalPlies)
+        _ = slot.game.flush(buffer: buffer, result: result)
 
         let trainerScore = Self.trainerOutcome(result: result, trainerColor: slot.trainerColor)
         let stableIndex = slot.index
@@ -653,6 +671,9 @@ private final class Scratches: @unchecked Sendable {
     let policyScratch: UnsafeMutablePointer<Float>      // capK * policySize
     let samplerProbsScratch: UnsafeMutablePointer<Float> // capK * scratchCapacity
     let samplerEtaScratch: UnsafeMutablePointer<Float>   // capK * scratchCapacity
+    /// One full-width encode target for `recordOpponentPly` — serial use
+    /// on the driver task, so a single buffer covers every slot.
+    let opponentEncodeScratch: UnsafeMutablePointer<Float> // boardFloats
 
     init(capK: Int, boardFloats: Int) {
         precondition(capK >= 1, "Scratches.init: capK must be >= 1")
@@ -664,6 +685,7 @@ private final class Scratches: @unchecked Sendable {
         self.policyScratch = Self.alloc(capK * policySize)
         self.samplerProbsScratch = Self.alloc(capK * scratchCap)
         self.samplerEtaScratch = Self.alloc(capK * scratchCap)
+        self.opponentEncodeScratch = Self.alloc(boardFloats)
     }
 
     private static func alloc(_ count: Int) -> UnsafeMutablePointer<Float> {
@@ -679,6 +701,7 @@ private final class Scratches: @unchecked Sendable {
         policyScratch.deinitialize(count: capK * policySize); policyScratch.deallocate()
         samplerProbsScratch.deinitialize(count: capK * scratchCap); samplerProbsScratch.deallocate()
         samplerEtaScratch.deinitialize(count: capK * scratchCap); samplerEtaScratch.deallocate()
+        opponentEncodeScratch.deinitialize(count: boardFloats); opponentEncodeScratch.deallocate()
     }
 }
 

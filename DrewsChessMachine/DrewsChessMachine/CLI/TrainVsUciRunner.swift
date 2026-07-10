@@ -45,7 +45,6 @@ struct TrainVsUciConfig: Sendable {
 enum TrainVsUciError: LocalizedError {
     case noOpponents
     case startModelTooSmall(have: Int, need: Int)
-    case historyEncodingUnsupported(String)
     case noGamesProduced
 
     var errorDescription: String? {
@@ -54,8 +53,6 @@ enum TrainVsUciError: LocalizedError {
             return "--train-vs-uci requires at least one opponent engine"
         case let .startModelTooSmall(have, need):
             return "--start-model has \(have) weight tensors but the network needs at least \(need)"
-        case let .historyEncodingUnsupported(enc):
-            return "train-vs-uci requires a single-frame input encoding; '\(enc)' uses stacked history frames (unsupported)"
         case .noGamesProduced:
             return "no games were produced (all opponent engines failed to start or produce moves)"
         }
@@ -148,14 +145,6 @@ enum TrainVsUciRunner {
             } else {
                 arch = NetworkArchitecture.current
             }
-        }
-
-        // train-vs-UCI records only the trainer's plies (on-policy). That is
-        // incompatible with a history encoding, whose replay-buffer history
-        // reconstruction needs every consecutive ply. Fail fast (the driver
-        // guards too, but a clear pre-flight error beats a silent no-op).
-        guard arch.inputEncoding.historyFrameCount <= 1 else {
-            throw TrainVsUciError.historyEncodingUnsupported(arch.inputEncoding.rawValue)
         }
 
         emit("[VS-UCI-ARCH] (\(startModelFile == nil ? "default preset" : "start-model")) \(arch.architectureSummary)")
