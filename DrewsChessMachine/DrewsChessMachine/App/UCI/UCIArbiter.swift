@@ -120,6 +120,16 @@ actor UCIArbiter {
         guard process == nil else { return }
         _ = uciArbiterIgnoresSIGPIPE
 
+        // Reset line-reader state so a *relaunch* (after `shutdown()`)
+        // starts clean. The previous process's reader set `readerDone =
+        // true` at EOF; without this reset the first `receiveLine()` of
+        // the new session would throw `.engineTerminated` and the
+        // handshake would fail. `shutdown()` awaited the old reader task's
+        // completion, so nothing is racing to flip these back, and any
+        // parked `waiter` was already resumed there (so it is nil here).
+        readerDone = false
+        lineBuffer.removeAll(keepingCapacity: true)
+
         let proc = Process()
         proc.executableURL = config.command
         proc.arguments = config.arguments
@@ -198,10 +208,15 @@ actor UCIArbiter {
         return best
     }
 
-    /// Politely ask the engine to `quit`, then terminate the process.
-    /// Best-effort and non-throwing — used on teardown and after a
-    /// wedged-engine timeout.
-    func shutdown() {
+    /// Politely ask the engine to `quit`, then terminate the process and
+    /// wait for the stdout reader to finish. Best-effort and non-throwing
+    /// — used on teardown and before a relaunch after a wedged engine.
+    ///
+    /// Awaiting the reader task matters for relaunch: it guarantees the
+    /// old reader's final `finishReader()` has run before this returns, so
+    /// a subsequent `launch()` starts from clean reader state with no
+    /// stale reader task racing to set `readerDone`.
+    func shutdown() async {
         // Only send `quit` if the engine is still alive; writing to an
         // exited engine's stdin would fail (now as a caught EPIPE, but
         // there's no reason to attempt it).
@@ -214,10 +229,15 @@ actor UCIArbiter {
             }
         }
         process?.terminate()
-        readerTask?.cancel()
+        let oldReader = readerTask
         readerTask = nil
+        oldReader?.cancel()
         stdinHandle = nil
         process = nil
+        // Let the cancelled/EOF'd reader task run its final `finishReader`
+        // and complete. The actor is free during this await, so the reader
+        // task can make progress.
+        await oldReader?.value
     }
 
     // MARK: - Internals
