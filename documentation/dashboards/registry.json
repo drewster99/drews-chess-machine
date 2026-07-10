@@ -129,7 +129,7 @@
    "arch_stem": "basic30 \u2192 stem 3\u00d73\u219264",
    "arch_blocks": "2\u00d7 @64, 3\u00d73+3\u00d73, SE-4 attenuate, ReLU/pre, ReZero cap 0.707, LN-out",
    "arch_heads": "policy simple_conv \u00b7 value WDL(16\u2192FC64)",
-   "out_model": "20260630-mini-YkKk-resume-replay-latest.safetensors",
+   "out_model": "20260630-mini-YkKk-resume2-replay-latest.safetensors",
    "frozen_glob": "20260630-mini-YkKk-step*-frozen.safetensors",
    "segments": [
     {
@@ -145,6 +145,13 @@
      "label": "resume",
      "bn_reset": true,
      "elapsed_base_sec": 6366.7
+    },
+    {
+     "log": "dcm_log_20260710-015115.txt",
+     "date": "20260710",
+     "cumstep_base": 203007,
+     "label": "resume2 (enumerated)",
+     "elapsed_base_sec": 32206.5
     }
    ],
    "trainset": "std-2026-05"
