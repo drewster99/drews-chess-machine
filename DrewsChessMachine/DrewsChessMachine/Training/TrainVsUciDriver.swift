@@ -19,8 +19,9 @@ import Foundation
 /// is serial per process). K is fixed at the opponent count — it does
 /// not grow/shrink like self-play's `WorkerCountBox`. Each tick:
 ///
-/// 1. Drain any opponent moves that resolved since the last tick and
-///    apply them (advancing those slots to the trainer's turn).
+/// 1. Drain any opponent moves that resolved since the last tick,
+///    record and apply them (advancing those slots to the trainer's
+///    turn).
 /// 2. **Batch the trainer's move** across every slot where it is the
 ///    trainer's turn and the slot is ready — one `evaluateBatched` call
 ///    over that compacted sub-batch. This is the GPU win and it batches
@@ -325,12 +326,9 @@ final class TrainVsUciDriver: @unchecked Sendable {
                 start: sc.samplerEtaScratch + compact * MoveSampler.scratchCapacity,
                 count: MoveSampler.scratchCapacity)
 
-            // Game-total half-move index of the position being played.
-            // Must be the true move count (both sides), NOT
-            // `totalPliesPlayed` — that counts only the trainer's
-            // recorded plies here, so it would feed the tau schedule and
-            // Dirichlet gate a half-speed / colour-shifted ply (trainer-
-            // as-Black would sample its first move as ply 0, not ply 1).
+            // Game-total half-move index of the position being played —
+            // feeds the tau schedule and the Dirichlet opening gate, both
+            // expressed in game-total ply terms.
             let currentHalfMove = g.engine.moveHistory.count
             let result = MoveSampler.sampleMove(
                 logits: policySlice,
@@ -372,13 +370,13 @@ final class TrainVsUciDriver: @unchecked Sendable {
     /// pass (like corpus rows, opponent rows are evaluated by the
     /// trainer's forward pass at training time). Serial on the driver
     /// task, so one shared encode scratch suffices.
-    private func recordOpponentPly(_ slot: Slot, move: ChessMove) {
-        guard let sc = scratches else { return }
+    ///
+    /// Returns false without recording when the encode scratch is
+    /// unavailable (structurally impossible while ticking — the caller
+    /// aborts the game rather than risk a gapped ply sequence).
+    private func recordOpponentPly(_ slot: Slot, move: ChessMove) -> Bool {
+        guard let sc = scratches else { return false }
         let g = slot.game
-        // Cap guard mirrors the trainer-side eval gate: never record past
-        // the per-side staging capacity. (Unreachable in practice — a
-        // capped game is dropped before its next opponent dispatch.)
-        guard g.engine.moveHistory.count < g.maxPliesCap else { return }
 
         BoardEncoder.encode(
             g.engine.state,
@@ -399,6 +397,7 @@ final class TrainVsUciDriver: @unchecked Sendable {
             samplingTau: g.schedule.tau(forPly: halfMove),
             materialCount: UInt8(min(matCount, Int(UInt8.max)))
         )
+        return true
     }
 
     // MARK: - Opponent dispatch
@@ -437,10 +436,25 @@ final class TrainVsUciDriver: @unchecked Sendable {
                     abortGame(slot)
                     return
                 }
+                // Defensive: an in-flight move racing past the length cap is
+                // unreachable by phase ordering (capped games are dropped
+                // before any dispatch), but if it ever happened, neither
+                // record nor apply — the game-end pass drops the game this
+                // same tick. Recording-then-not-applying (or vice versa)
+                // would punch a hole in the ply sequence and corrupt the
+                // flush interleave.
+                guard slot.game.engine.moveHistory.count < slot.game.maxPliesCap else { return }
                 // Record the opponent's ply (whole-game recording — the
                 // opponent's move becomes an advantage-weighted imitation
                 // target, exactly like a corpus game's moves), then apply.
-                recordOpponentPly(slot, move: move)
+                // A failed record aborts the game rather than leaving a
+                // silent gap in the recorded sequence.
+                guard recordOpponentPly(slot, move: move) else {
+                    SessionLogger.shared.log(
+                        "[VS-UCI] could not record opponent ply on slot \(slot.index); aborting game")
+                    abortGame(slot)
+                    return
+                }
                 do {
                     try slot.game.engine.applyMoveAndAdvance(move)
                 } catch {
