@@ -3,6 +3,28 @@
  "models_dir": "~/Library/Application Support/DrewsChessMachine/Models",
  "logs_dir": "~/Library/Logs/DrewsChessMachine",
  "runs": {
+  "wxil": {
+   "label": "wxil — 1.05M, 8-block 15×15 @16 narrow-fat-conv (std)",
+   "color": "#17becf",
+   "rezero_cap": 0.125,
+   "n_blocks": 8,
+   "params": 1052183,
+   "arch_summary": "GUI-built model 20260711-1-wXIL. v5 · basic30(30) → stem 5×5→16 · 8×[15×15+15×15 @16, SE scale+bias/4, ReLU/pre, ReZero cap 0.125, LN-out] · policy intermediate_conv(4864) · value WDL(16→FC64). Deep-narrow (16ch×8) fat-conv.",
+   "arch_stem": "basic30 → stem 5×5→16",
+   "arch_blocks": "8× @16, 15×15+15×15, SE scale+bias/4, ReLU/pre, ReZero cap 0.125, LN-out",
+   "arch_heads": "policy intermediate_conv · value WDL(16→FC64)",
+   "out_model": "20260711-wXIL-std2026_05-replay-latest.safetensors",
+   "frozen_glob": "20260711-wXIL-std2026_05-replay-step*.safetensors",
+   "segments": [
+    {
+     "log": "dcm_log_20260710-210320.txt",
+     "date": "20260711",
+     "cumstep_base": 0,
+     "label": "run (12 epochs)"
+    }
+   ],
+   "trainset": "std-2026-05"
+  },
   "v5": {
    "label": "v5 \u2014 8.45M, 5-block (wd1e-4\u2192wd5e-4\u2192m0.93)",
    "color": "#1f77b4",
