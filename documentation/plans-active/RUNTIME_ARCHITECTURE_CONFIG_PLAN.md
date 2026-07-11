@@ -22,12 +22,14 @@ shipped:**
 - **Safetensors-native storage — SHIPPED** (`Persistence/SafetensorsModelIO.swift`); identity
   = embedded config, integrity = `content_sha256`.
 
-**The one genuinely-open item** is the headless **`--architecture-preset` /
-`--architecture-file` CLI flags** (§10): the preset store (`ArchitecturePresetStore`) exists
-and drives Build-New-Model, but it is GUI-only — those flags are *not* in the arg parser
-(grep-confirmed), so a fresh tower cannot yet be built/trained from the CLI. The deferred
+**The headless build flag — SHIPPED** as a single **`--new-model --architecture <value>`**
+flag (§10): `ArchitecturePresetStore.resolve(nameOrPath:)` accepts a built-in preset name, a
+user-saved preset name (with or without `.json`), or a path to a `NamedArchitecture` JSON, and
+`NewModelCLI` mints a fresh untrained safetensors from it. (This collapsed the originally-planned
+two flags `--architecture-preset` / `--architecture-file` into one — a name and a path are
+disambiguated by whether the value resolves as a known preset name first.) The deferred
 `architecture_version`-drop decision (free-text `label` instead) also remains open. See §15
-for the two invariants that constrain this remaining work.
+for the two invariants that constrain this work.
 
 **Design revision in progress (§5a / §6 / §10):** a component-by-component design
 walkthrough with the user has finalized the configurable-architecture surface, and it
@@ -35,8 +37,8 @@ walkthrough with the user has finalized the configurable-architecture surface, a
 monolithic `block_style` is **decomposed** into orthogonal axes (§5a); `arch_hash` is
 **removed from safetensors** (identity = embedded config; integrity = `content_sha256`)
 and demoted to a legacy-`.dcmmodel`-only lookup table (§6); the well-known
-`architecture.json` loader is **replaced** by `--architecture-preset` /
-`--architecture-file` + a Presets folder (§10); `architecture_version` is **dropped**
+`architecture.json` loader is **replaced** by a single `--architecture <name|preset.json|path>`
+flag + a Presets folder (§10); `architecture_version` is **dropped**
 in favor of a free-text `label`; `input_encoding` (`basic20`/`basic30`) and
 `value_head_style` (`scalar_tanh`/`wdl_softmax`) become first-class buildable+trainable
 axes. The §12 phase list will be re-sequenced once the spec walkthrough is complete.
@@ -518,9 +520,13 @@ the app.
   + free-form fields (every required topology knob) with live `parameterCount` /
   `architectureSummary` + validation (incl. the memory-budget check). "Save as preset"
   writes a new file to the Presets folder. Build constructs `ChessNetwork(arch:)`.
-- **Build-new-net (headless):** **no well-known `architecture.json`.** Arch comes from
-  `--architecture-preset <name>` (a built-in or user-saved preset) **or**
-  `--architecture-file <path>` (an explicit arch JSON at any path). Removes the Phase-4
+- **Build-new-net (headless) — SHIPPED:** **no well-known `architecture.json`.** Arch comes
+  from a single **`--new-model --architecture <value>`** flag, where `<value>` is a built-in
+  or user-saved preset **name** (with or without a trailing `.json`) **or** a **path** to an
+  arch JSON at any location. `ArchitecturePresetStore.resolve(nameOrPath:)` tries the value as
+  a known name first, then falls through to a filesystem path; `NewModelCLI` mints the fresh
+  untrained safetensors. (Collapses the originally-planned `--architecture-preset` /
+  `--architecture-file` pair into one flag.) Removes the Phase-4
   `ArchitectureConfig.loadDefaultIfPresent` well-known-file loader.
 - **`--uci`:** build from the model file's embedded config (shared resolver) — never
   needs a preset/arch file.
@@ -536,15 +542,15 @@ the app.
 - **Location:** `~/Library/Application Support/DrewsChessMachine/Presets/`, sibling to
   `Models/` / `Sessions/`. **One `.json` file per preset**, human-editable (snake_case
   keys per convention).
-- **A preset file = the full topology + the free-text `label`.** `--architecture-file`
+- **A preset file = the full topology + the free-text `label`.** `--architecture <path>`
   reads the *same* format from any path (a preset file *is* an arch file, just in the
   well-known folder).
-- **Identity:** the **filename stem is the preset name** (the `--architecture-preset`
+- **Identity:** the **filename stem is the preset name** (the `--architecture <name>`
   key + picker key); `label` is the prettier display string (may differ). No separate
   id field.
 - **Built-ins** stay compiled-in (the `Preset` enum — also the legacy-load table's
   targets) and are **never written to the folder** (immutable, can't drift).
-  `--architecture-preset` resolves built-ins **and** the folder, with **built-in names
+  `--architecture <name>` resolves built-ins **and** the folder, with **built-in names
   reserved** (a user file can't shadow a built-in).
 - This also settles `label` placement: it lives in the preset/arch-file wrapper and is
   embedded into saved-model metadata; `NetworkArchitecture` stays **purely topological**
@@ -670,10 +676,10 @@ unchanged. [**90% "build+train any arch" fully enabled.**]
 **H. Build UX + presets + CLI (rework Phase 4).** The **Build New Model screen** (full
 spec in §10: preset picker built-ins+user, every free-form field, live
 paramCount/summary, memory validation, Save-as-Preset, `label`) opened from the Build
-action + **File ▸ New Model…**; Presets folder (user-saved only); `--architecture-preset`
-/ `--architecture-file` (remove the `architecture.json` loader); `--uci` from embedded
-config; `--playchess`. *Validate:* the screen builds a free-form arch that trains; CLI
-build from preset + file; `--uci`/`--playchess` resolve.
+action + **File ▸ New Model…**; Presets folder (user-saved only); a single
+`--new-model --architecture <name|preset.json|path>` (remove the `architecture.json`
+loader); `--uci` from embedded config; `--playchess`. *Validate:* the screen builds a
+free-form arch that trains; CLI build from preset + file; `--uci`/`--playchess` resolve.
 
 **I. Capstone.** Build a fresh 8-block-v4 from preset; load every available historical
 file; full suite green; Python inference spot-check.

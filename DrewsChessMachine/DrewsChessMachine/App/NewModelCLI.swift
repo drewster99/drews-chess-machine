@@ -17,27 +17,23 @@ import Foundation
 
 enum NewModelCLI {
 
-    /// Build `preset`'s architecture with random weights, write the safetensors
-    /// to `outPath` (or a default under the Models dir), print the path, exit.
-    /// `modelID` is minted by the caller on the main actor (the minter is
-    /// main-actor isolated; this routine runs its GPU work off-actor).
-    static func runAndExit(presetName: String, outPath: String?, modelID: String) -> Never {
+    /// Build `arch` with random weights, write the safetensors to `outPath`
+    /// (or a default under the Models dir), print the path, exit. `name` is a
+    /// short source label (the built-in preset name, the user-saved preset
+    /// name, or an arch-file stem) used for the default filename and logs; the
+    /// caller has already resolved + validated `arch` (built-in preset or JSON
+    /// preset/file via `ArchitecturePresetStore`). `modelID` is minted by the
+    /// caller on the main actor (the minter is main-actor isolated; this
+    /// routine runs its GPU work off-actor).
+    static func runAndExit(architecture arch: NetworkArchitecture, name: String, outPath: String?, modelID: String) -> Never {
         SessionLogger.shared.start()
 
-        guard let preset = NetworkArchitecture.Preset(rawValue: presetName) else {
-            let valid = NetworkArchitecture.Preset.allCases.map(\.rawValue).joined(separator: ", ")
-            FileHandle.standardError.write(Data(
-                "error: --new-model: unknown preset '\(presetName)'. Valid: \(valid)\n".utf8
-            ))
-            Darwin.exit(70)
-        }
-
-        let arch = NetworkArchitecture.preset(preset)
+        // Defensive re-validation (the caller already validated via the store).
         do {
             try arch.validate()
         } catch {
             FileHandle.standardError.write(Data(
-                "error: --new-model: preset '\(presetName)' failed validation: \(error)\n".utf8
+                "error: --new-model: architecture '\(name)' failed validation: \(error)\n".utf8
             ))
             Darwin.exit(71)
         }
@@ -55,7 +51,7 @@ enum NewModelCLI {
                 : u.appendingPathExtension("safetensors")
         } else {
             outURL = CheckpointPaths.modelsDir
-                .appendingPathComponent("\(presetName)-fresh-\(modelID).safetensors")
+                .appendingPathComponent("\(name)-fresh-\(modelID).safetensors")
         }
 
         // Never overwrite — same discipline as CheckpointManager.saveModel. A
@@ -68,7 +64,7 @@ enum NewModelCLI {
         }
 
         FileHandle.standardError.write(Data(
-            "[NEW-MODEL] minting \(presetName) (v\(arch.architectureVersionLabel), \(arch.parameterCount) params) id=\(modelID)\n".utf8
+            "[NEW-MODEL] minting \(name) (v\(arch.architectureVersionLabel), \(arch.parameterCount) params) id=\(modelID)\n".utf8
         ))
 
         do {
@@ -92,7 +88,7 @@ enum NewModelCLI {
                 creator: "new-model",
                 trainingStep: nil,
                 parentModelID: "",
-                notes: "fresh \(presetName) net (untrained), arch v\(arch.architectureVersionLabel)"
+                notes: "fresh \(name) net (untrained), arch v\(arch.architectureVersionLabel)"
             )
             let encoded = try SafetensorsModelIO.encode(
                 modelID: modelID,

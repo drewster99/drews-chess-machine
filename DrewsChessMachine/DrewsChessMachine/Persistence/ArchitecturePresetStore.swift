@@ -3,7 +3,7 @@
 //  DrewsChessMachine
 //
 //  Resolves architecture presets for the Build-New-Model screen and the
-//  `--architecture-preset` / `--architecture-file` CLI flags (plan §10).
+//  `--new-model --architecture <value>` CLI flag (plan §10).
 //
 //  Two sources:
 //  - **Built-ins**: compiled-in (`NetworkArchitecture.Preset`), immutable, never
@@ -13,9 +13,9 @@
 //    `NamedArchitecture` ({label, architecture}). The filename stem is the
 //    preset *name* (the lookup key); `label` is the human display string.
 //
-//  A `.json` file in the Presets folder and an `--architecture-file <path>`
-//  target share the same on-disk format (`NamedArchitecture`), so a preset file
-//  *is* an arch file that just lives in the well-known folder.
+//  A `.json` file in the Presets folder and an `--architecture <path>` target
+//  share the same on-disk format (`NamedArchitecture`), so a preset file *is* an
+//  arch file that just lives in the well-known folder.
 //
 
 import Foundation
@@ -143,6 +143,36 @@ enum ArchitecturePresetStore {
             throw StoreError.presetNotFound(name)
         }
         return try loadFile(at: userURL)
+    }
+
+    /// Resolve a `--architecture` CLI value into an architecture + a short
+    /// source name. Accepts, in order:
+    ///  1. a **name** — a built-in preset, or a user-saved preset in the
+    ///     Presets folder, with or without a trailing `.json` (so `nt8y` and
+    ///     `nt8y.json` both resolve to `Presets/nt8y.json`);
+    ///  2. a **path** — any `NamedArchitecture` JSON file (absolute, `~`-, or
+    ///     cwd-relative) when the value is not a known name.
+    ///
+    /// A malformed/invalid named preset surfaces its `.invalid` error (it is
+    /// NOT silently retried as a path) — only "no such name" falls through to
+    /// the path interpretation.
+    static func resolve(nameOrPath value: String) throws -> (named: NamedArchitecture, sourceName: String) {
+        // 1. As a name (built-in, or Presets/<base>.json), tolerating a `.json`
+        //    suffix on the passed value.
+        let base = value.lowercased().hasSuffix(".json") ? String(value.dropLast(5)) : value
+        if !base.isEmpty {
+            do {
+                return (try resolve(name: base), base)
+            } catch StoreError.presetNotFound {
+                // Not a known name — try it as a filesystem path below.
+            }
+        }
+        // 2. As a filesystem path.
+        let url = URL(fileURLWithPath: (value as NSString).expandingTildeInPath)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw StoreError.presetNotFound(value)
+        }
+        return (try loadFile(at: url), url.deletingPathExtension().lastPathComponent)
     }
 
     /// Save a user preset as `<name>.json` (pretty-printed, sorted keys for a

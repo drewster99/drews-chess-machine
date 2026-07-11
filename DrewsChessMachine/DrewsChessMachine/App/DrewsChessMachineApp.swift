@@ -148,9 +148,10 @@ struct DrewsChessMachineApp: App {
         Self.handleProbeModelIfPresent(rawArgs: rawArgs)
 
         // Pre-flight: headless fresh-net mint (--new-model). Builds an untrained
-        // network from a --preset and writes it to a .safetensors for reuse as a
-        // fixed --start-model across runs. Must run BEFORE the replay handler,
-        // which also reads --preset. Exits before SwiftUI / Metal GUI init.
+        // network from --architecture (a built-in preset, a user-saved
+        // Presets/*.json by name, or a path to an arch JSON) and writes it to a
+        // .safetensors for reuse as a fixed --start-model across runs. Exits
+        // before SwiftUI / Metal GUI init.
         Self.handleNewModelIfPresent(rawArgs: rawArgs)
 
         // Pre-flight: headless offline corpus-replay trainer (--replay-corpus).
@@ -1713,17 +1714,21 @@ struct DrewsChessMachineApp: App {
 
     // MARK: - Fresh-net mint pre-flight (--new-model)
 
-    /// `--new-model --preset <name> [--out-model <path>]`: build an untrained
-    /// net from the preset and write it to safetensors, then exit. No training.
-    /// Mints the ModelID here (main actor) and hands the GPU build off to
+    /// `--new-model --architecture <name|preset.json|path> [--out-model <path>]`:
+    /// build an untrained net and write it to safetensors, then exit. No
+    /// training. `--architecture` accepts a built-in preset name, a user-saved
+    /// preset (a `Presets/<name>.json` written by the Build-New-Model screen,
+    /// with or without the `.json` suffix), or a path to any `NamedArchitecture`
+    /// JSON — resolved + validated through `ArchitecturePresetStore`. Mints the
+    /// ModelID here (main actor) and hands the GPU build off to
     /// `NewModelCLI.runAndExit`.
     private static func handleNewModelIfPresent(rawArgs: [String]) {
         let flag = "--new-model"
         guard rawArgs.contains(flag) else { return }
-        let presetFlag = "--preset"
+        let archFlag = "--architecture"
         let outFlag = "--out-model"
 
-        let allowedFlags: Set<String> = [flag, presetFlag, outFlag]
+        let allowedFlags: Set<String> = [flag, archFlag, outFlag]
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
             FileHandle.standardError.write(Data(
                 "error: \(flag) does not accept '\(bad)'\n".utf8
@@ -1740,19 +1745,37 @@ struct DrewsChessMachineApp: App {
             }
             return rawArgs[vi]
         }
+        func fail(_ message: String, _ code: Int32) -> Never {
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+            Darwin.exit(code)
+        }
 
-        guard let presetName = value(after: presetFlag) else {
-            let valid = NetworkArchitecture.Preset.allCases.map(\.rawValue).joined(separator: ", ")
-            FileHandle.standardError.write(Data(
-                "error: \(flag) requires --preset <name>. Valid: \(valid)\n".utf8
-            ))
-            Darwin.exit(77)
+        // --architecture accepts a built-in preset name, a user-saved preset
+        // name (with or without a `.json` suffix, from the Presets folder), or
+        // a path to a NamedArchitecture JSON. ArchitecturePresetStore resolves
+        // (name-in-normal-place first, then path) AND validates — a malformed
+        // arch is a clear error, not a silent bad build.
+        guard let archValue = value(after: archFlag) else {
+            let builtins = NetworkArchitecture.Preset.allCases.map(\.rawValue).joined(separator: ", ")
+            let saved = ArchitecturePresetStore.userPresets().map(\.name)
+            let savedStr = saved.isEmpty ? "(none)" : saved.joined(separator: ", ")
+            fail("error: \(flag) requires \(archFlag) <preset-name | preset.json | /path/to/arch.json>.\n"
+                 + "  built-in presets: \(builtins)\n"
+                 + "  saved presets in \(ArchitecturePresetStore.presetsDirURL.path): \(savedStr)", 77)
+        }
+        let named: NamedArchitecture
+        let sourceName: String
+        do {
+            (named, sourceName) = try ArchitecturePresetStore.resolve(nameOrPath: archValue)
+        } catch {
+            fail("error: \(flag) \(archFlag): \(error)", 77)
         }
 
         // Mint on the main actor (the minter is main-actor isolated); the build
         // runs off-actor inside runAndExit.
         let modelID = MainActor.assumeIsolated { ModelIDMinter.mint().value }
-        NewModelCLI.runAndExit(presetName: presetName, outPath: value(after: outFlag), modelID: modelID)
+        NewModelCLI.runAndExit(architecture: named.architecture, name: sourceName,
+                               outPath: value(after: outFlag), modelID: modelID)
     }
 
     // MARK: - Replay-buffer analyzer pre-flight (--analyze-replay-buffer)

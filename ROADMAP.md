@@ -376,10 +376,11 @@ original rationale is not lost.
   precision (f32/bf16/fp16) is selectable (fp16 added 2026-06-17, inference-only —
   training NaNs by design); legacy `.dcmmodel` old-arch loading via the
   `archHash→config` fallback is in place; `--uci` (`28cf394`) and `--playchess`
-  (`26c14e9`) both ship. The one genuinely-open item is the **headless
-  `--architecture-preset` / `--architecture-file` CLI flags** (the preset store is
-  GUI-only) — see `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md` for the authoritative
-  phase list.
+  (`26c14e9`) both ship. The headless build flag now ships too: a single
+  **`--new-model --architecture <name|preset.json|path>`** flag mints a fresh
+  untrained net from a built-in preset, a user-saved preset, or an arch JSON file
+  (`ArchitecturePresetStore.resolve(nameOrPath:)` + `NewModelCLI`) — see
+  `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md` for the authoritative phase list.
 
 - **Standalone "Training vs Eval Loss" window.** Planned (added 2026-06-05).
   A separate, freely-resizable `NSWindow` (following the established
