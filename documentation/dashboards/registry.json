@@ -3,6 +3,28 @@
  "models_dir": "~/Library/Application Support/DrewsChessMachine/Models",
  "logs_dir": "~/Library/Logs/DrewsChessMachine",
  "runs": {
+  "nt8y3x3": {
+   "label": "nt8y-3x3stem — 1.52M, nt8y with 3×3 stem (std)",
+   "color": "#e377c2",
+   "rezero_cap": 0.33333334,
+   "n_blocks": 3,
+   "params": 1518570,
+   "arch_summary": "Preset nt8y_3x3stem (fresh 20260711-3-pm4J). v5 · basic30(30) → stem 3×3→32 · 3×[15×15+15×15 @32, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64). Exactly nt8y but 3×3 stem (was 5×5).",
+   "arch_stem": "basic30 → stem 3×3→32",
+   "arch_blocks": "3× @32, 15×15+15×15, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out",
+   "arch_heads": "policy intermediate_conv (pre-conv 512) · value WDL(16→FC64)",
+   "out_model": "20260711-nt8y3x3stem-std-replay-latest.safetensors",
+   "frozen_glob": "20260711-nt8y3x3stem-std-replay-step*.safetensors",
+   "segments": [
+    {
+     "log": "dcm_log_20260711-002649.txt",
+     "date": "20260711",
+     "cumstep_base": 0,
+     "label": "run (12 epochs)"
+    }
+   ],
+   "trainset": "std-2026-05"
+  },
   "wxil": {
    "label": "wxil — 1.05M, 8-block 15×15 @16 narrow-fat-conv (std)",
    "color": "#17becf",

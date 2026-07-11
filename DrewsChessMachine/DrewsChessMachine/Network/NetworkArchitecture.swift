@@ -1246,6 +1246,7 @@ extension NetworkArchitecture {
         case v4_4block_3x3_fp32   // fp32 4-block 3x3 — beta-stack stable-precision run (2026-06-14)
         case v4_5block_7x7_fusion // current preset + feature skip (stem -> both heads, concat_direct)
         case v5_5block_7x7_lnout  // v4_5block_7x7 recipe + LayerNorm on each block's output
+        case nt8y_3x3stem         // exactly nt8y (3× @32 15×15 fat-conv, LN-out) but a 3×3 stem (nt8y's was 5×5)
 
         static let current = Preset.v4_5block_7x7
     }
@@ -1343,6 +1344,31 @@ extension NetworkArchitecture {
             // any future change to v4_5block_7x7's recipe. Adds 2·128 params/block
             // (γ/β) over v4 — 8,445,748 → 8,447,028.
             var a = NetworkArchitecture.preset(.v4_5block_7x7)
+            a.blockGroups = a.blockGroups.map { group in
+                var g = group
+                g.outputNorm = .layerNorm
+                return g
+            }
+            return a
+        case .nt8y_3x3stem:
+            // Exactly the nt8y architecture (GUI-built 20260701, 1,533,930 params:
+            // 3× @32 15×15+15×15 fat-conv, SE scale+bias/4, ReLU/pre, ReZero cap
+            // 1/3, LayerNorm-out, policy intermediate_conv pre-conv 512, value WDL
+            // 16→FC64, bf16) — but with a 3×3 stem instead of nt8y's 5×5. Only the
+            // stem kernel changes; every other field is copied from nt8y's embedded
+            // architecture JSON. LayerNorm-out isn't expressible in the flat
+            // initializer, so it's patched onto the block group afterward (same
+            // technique as v5_5block_7x7_lnout).
+            var a = NetworkArchitecture(
+                inputEncoding: .basic30, channels: 32, numBlocks: 3, stemConvKernelSize: 3,
+                activationFunction: .relu, blockActivationStyle: .pre,
+                blockSkipMerge: .cleanAdd, blockUseRezero: true, rezeroAlphaInit: 1.0 / Float(3),
+                blockConv1KernelSize: 15, blockConv2KernelSize: 15,
+                blockSeStyle: .scaleAndBias, blockSeReductionRatio: 4,
+                policyHeadStyle: .intermediateConv, policyPreConvChannels: 512,
+                valueHeadStyle: .wdlSoftmax, valueHeadConvChannels: 16, valueHeadHiddenUnits: 64,
+                computeDataType: .bFloat16
+            )
             a.blockGroups = a.blockGroups.map { group in
                 var g = group
                 g.outputNorm = .layerNorm
