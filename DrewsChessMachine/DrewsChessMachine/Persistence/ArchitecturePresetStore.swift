@@ -66,6 +66,7 @@ enum ArchitecturePresetStore {
         case .v4_5block_7x7_fusion: return "v4 · 5-block 7×7 + feature-skip"
         case .v5_5block_7x7_lnout: return "v5 · 5-block 7×7 + LayerNorm out"
         case .nt8y_3x3stem: return "nt8y · 3-block 15×15 @32 + 3×3 stem"
+        case .nt8y_15x15stem: return "nt8y · 3-block 15×15 @32 + 15×15 stem"
         }
     }
 

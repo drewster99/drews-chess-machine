@@ -1247,6 +1247,7 @@ extension NetworkArchitecture {
         case v4_5block_7x7_fusion // current preset + feature skip (stem -> both heads, concat_direct)
         case v5_5block_7x7_lnout  // v4_5block_7x7 recipe + LayerNorm on each block's output
         case nt8y_3x3stem         // exactly nt8y (3× @32 15×15 fat-conv, LN-out) but a 3×3 stem (nt8y's was 5×5)
+        case nt8y_15x15stem       // exactly nt8y but a 15×15 stem (matches the block conv kernel; nt8y's was 5×5)
 
         static let current = Preset.v4_5block_7x7
     }
@@ -1361,6 +1362,26 @@ extension NetworkArchitecture {
             // technique as v5_5block_7x7_lnout).
             var a = NetworkArchitecture(
                 inputEncoding: .basic30, channels: 32, numBlocks: 3, stemConvKernelSize: 3,
+                activationFunction: .relu, blockActivationStyle: .pre,
+                blockSkipMerge: .cleanAdd, blockUseRezero: true, rezeroAlphaInit: 1.0 / Float(3),
+                blockConv1KernelSize: 15, blockConv2KernelSize: 15,
+                blockSeStyle: .scaleAndBias, blockSeReductionRatio: 4,
+                policyHeadStyle: .intermediateConv, policyPreConvChannels: 512,
+                valueHeadStyle: .wdlSoftmax, valueHeadConvChannels: 16, valueHeadHiddenUnits: 64,
+                computeDataType: .bFloat16
+            )
+            a.blockGroups = a.blockGroups.map { group in
+                var g = group
+                g.outputNorm = .layerNorm
+                return g
+            }
+            return a
+        case .nt8y_15x15stem:
+            // Exactly the nt8y architecture (as in nt8y_3x3stem) but with a 15×15
+            // stem — matching the block conv kernel — instead of nt8y's 5×5. Only
+            // the stem kernel changes; every other field is copied verbatim.
+            var a = NetworkArchitecture(
+                inputEncoding: .basic30, channels: 32, numBlocks: 3, stemConvKernelSize: 15,
                 activationFunction: .relu, blockActivationStyle: .pre,
                 blockSkipMerge: .cleanAdd, blockUseRezero: true, rezeroAlphaInit: 1.0 / Float(3),
                 blockConv1KernelSize: 15, blockConv2KernelSize: 15,

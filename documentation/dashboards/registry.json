@@ -3,6 +3,28 @@
  "models_dir": "~/Library/Application Support/DrewsChessMachine/Models",
  "logs_dir": "~/Library/Logs/DrewsChessMachine",
  "runs": {
+  "nt8y15x15": {
+   "label": "nt8y-15x15stem — 1.73M, nt8y with 15×15 stem (std)",
+   "color": "#ff9896",
+   "rezero_cap": 0.33333334,
+   "n_blocks": 3,
+   "params": 1725930,
+   "arch_summary": "Preset nt8y_15x15stem (fresh 20260711-11-xE1v). Exactly nt8y but 15×15 stem (matches block conv kernel; nt8y's was 5×5). v5 · basic30(30) → stem 15×15→32 · 3×[15×15+15×15 @32, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64).",
+   "arch_stem": "basic30 → stem 15×15→32",
+   "arch_blocks": "3× @32, 15×15+15×15, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out",
+   "arch_heads": "policy intermediate_conv (pre-conv 512) · value WDL(16→FC64)",
+   "out_model": "20260711-nt8y15x15stem-std-replay-latest.safetensors",
+   "frozen_glob": "20260711-nt8y15x15stem-std-replay-step*.safetensors",
+   "segments": [
+    {
+     "log": "dcm_log_20260711-040005.txt",
+     "date": "20260711",
+     "cumstep_base": 0,
+     "label": "run (12 epochs)"
+    }
+   ],
+   "trainset": "std-2026-05"
+  },
   "nt8y3x3s2": {
    "label": "nt8y-3x3stem seed2 — variance control (std, →31.3h)",
    "color": "#9edae5",
