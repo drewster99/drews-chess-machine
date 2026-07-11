@@ -150,6 +150,20 @@ struct SamplingSchedule: Sendable {
         floorTau: 1.0
     )
 
+    /// Deterministic best-move play: a flat tau at the practical argmax
+    /// floor (0.01), no decay, no Dirichlet noise. This is the single
+    /// source of truth for "play the strongest move" — shared by the
+    /// `--uci` engine's default (`Temperature=0`) and the train-vs-UCI
+    /// driver's DCM side, so the two can't drift. Note it removes ALL
+    /// exploration, so any caller using it for game *generation* (rather
+    /// than evaluation) must supply move variety another way (varied
+    /// start positions) or every game from a position is identical.
+    static let argmax = SamplingSchedule(
+        startTau: 0.01,
+        decayPerPly: 0.0,
+        floorTau: 0.01
+    )
+
     /// The game-total ply at which tau reaches the floor. Returns
     /// `Int.max` when `decayPerPly` is zero (no decay).
     var pliesUntilFloor: Int {

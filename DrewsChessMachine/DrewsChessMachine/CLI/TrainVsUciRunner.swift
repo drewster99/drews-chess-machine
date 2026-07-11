@@ -218,7 +218,10 @@ enum TrainVsUciRunner {
             network: evalNet,
             buffer: buffer,
             opponents: opponents,
-            schedule: .selfPlay,
+            // DCM side plays deterministic best-move, exactly like the `--uci`
+            // engine's default (`Temperature=0` → `.argmax`). Game variety must
+            // come from start positions, not temperature (see `.argmax` doc).
+            schedule: .argmax,
             maxPliesPerGame: config.maxPliesPerGame)
 
         // Rolling trainer-model output file (mirrors CorpusReplayRunner).

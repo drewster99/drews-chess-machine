@@ -39,8 +39,9 @@ enum UCIEngine {
     private static let temperatureMin: Int = 0
     private static let temperatureMax: Int = 1000
     /// Floor tau applied to every Temperature value — the practical
-    /// argmax stand-in (tau 0 would divide-by-zero in the softmax).
-    private static let minTau: Float = 0.01
+    /// argmax stand-in (tau 0 would divide-by-zero in the softmax). Tied
+    /// to the shared `.argmax` schedule so the two can't drift.
+    private static let minTau: Float = SamplingSchedule.argmax.startTau
 
     /// Pre-flight entry point. Loads weights, runs the protocol loop,
     /// never returns. Process exits via `Darwin.exit(0)` on `quit`
@@ -138,7 +139,11 @@ enum UCIEngine {
         /// argmax-style play. There is no longer a schedule sentinel.
         var schedule: SamplingSchedule {
             let clamped = min(temperatureMax, max(temperatureMin, temperatureSpin))
-            let tau = max(minTau, Float(clamped) / 100.0)
+            // Temperature 0/1 → the shared `.argmax` schedule (tau 0.01), the same
+            // deterministic best-move play the train-vs-UCI driver's DCM side uses;
+            // higher values → a flat tau = value / 100.
+            if clamped <= 1 { return .argmax }
+            let tau = Float(clamped) / 100.0
             return SamplingSchedule(startTau: tau, decayPerPly: 0, floorTau: tau)
         }
     }
