@@ -1,0 +1,2 @@
+cum_step,meta_step,segment,elapsed_train_sec,wallclock_iso,ms_per_step,pElo,nll,loss,pLoss,vLoss,legalMass,pIllM,bn1Mean,gNorm,sae2,eff_alpha,pLogit_mean,pLogit_peak,frozen_file,note
+1000,1000,0,445.3,2026-07-11T04:07:36,392.1,769.58,3.4398,4.1562,3.2344,0.8125,0.8813,0.1187,0.1025,2.188,0.2874,0.3075;0.3108;0.3103,14.5,18.125,20260711-nt8y15x15stem-std-replay-step1000.safetensors,
