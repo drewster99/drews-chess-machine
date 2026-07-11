@@ -3,6 +3,28 @@
  "models_dir": "~/Library/Application Support/DrewsChessMachine/Models",
  "logs_dir": "~/Library/Logs/DrewsChessMachine",
  "runs": {
+  "nt8y3x3s2": {
+   "label": "nt8y-3x3stem seed2 — variance control (std, →31.3h)",
+   "color": "#9edae5",
+   "rezero_cap": 0.33333334,
+   "n_blocks": 3,
+   "params": 1518570,
+   "arch_summary": "Preset nt8y_3x3stem, SECOND fresh seed (20260711-9-dOjG). Byte-identical arch to nt8y3x3 (seed1) — different random init only. v5 · basic30(30) → stem 3×3→32 · 3×[15×15+15×15 @32, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64). Seed-variance control vs nt8y3x3; runs to full 31.3h.",
+   "arch_stem": "basic30 → stem 3×3→32",
+   "arch_blocks": "3× @32, 15×15+15×15, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out",
+   "arch_heads": "policy intermediate_conv (pre-conv 512) · value WDL(16→FC64)",
+   "out_model": "20260711-nt8y3x3stem-seed2-std-replay-latest.safetensors",
+   "frozen_glob": "20260711-nt8y3x3stem-seed2-std-replay-step*.safetensors",
+   "segments": [
+    {
+     "log": "dcm_log_20260711-031104.txt",
+     "date": "20260711",
+     "cumstep_base": 0,
+     "label": "run (12 epochs, to 31.3h)"
+    }
+   ],
+   "trainset": "std-2026-05"
+  },
   "nt8y3x3": {
    "label": "nt8y-3x3stem — 1.52M, nt8y with 3×3 stem (std)",
    "color": "#17becf",
