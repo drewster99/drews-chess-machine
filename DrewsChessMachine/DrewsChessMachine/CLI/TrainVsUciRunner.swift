@@ -281,6 +281,14 @@ enum TrainVsUciRunner {
         }
 
         /// Refresh the play network's weights from the live trainer.
+        ///
+        /// Runs on the training task while the driver task is calling
+        /// `evalNet.evaluateBatched` concurrently — but this is race-free:
+        /// `ChessNetwork` funnels BOTH `loadWeights` and `evaluateBatched`
+        /// (via `enqueue`) through its single serial `executionQueue`
+        /// (`drewschess.chessnetwork.serial`), so they strictly serialize and
+        /// any in-flight eval sees a complete pre- or post-sync weight set,
+        /// never a torn one.
         func syncEvalNet() async throws {
             let base = Array((try await trainer.network.exportWeights()).prefix(baseCount))
             try await evalNet.network.loadWeights(base)
