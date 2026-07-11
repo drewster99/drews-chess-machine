@@ -336,14 +336,15 @@ enum TrainVsUciRunner {
         var step = 0
         var aborted = false
         do {
-            // Wait for the producer to prefill the buffer (bounded, so an
-            // all-engines-dead run fails fast instead of hanging forever).
-            let prefillDeadline = Date().addingTimeInterval(120)
+            // Wait for the producer to prefill the buffer. Games are produced
+            // by actually playing the engines, so this takes as long as it
+            // takes (deep-search opponents, a large minPrefill) — there is no
+            // arbitrary time deadline. The only bail is a terminal condition:
+            // the driver task exited, which happens only when every engine
+            // failed to launch/handshake, so no games will ever be produced.
             while buffer.count < minPrefill {
                 if abort.isRequested || overTime() { break }
-                if driverDone.value || Date() >= prefillDeadline {
-                    throw TrainVsUciError.noGamesProduced
-                }
+                if driverDone.value { throw TrainVsUciError.noGamesProduced }
                 try await Task.sleep(for: .milliseconds(100))
             }
             emit("[VS-UCI] prefilled: bufCount=\(buffer.count)")
