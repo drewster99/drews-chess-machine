@@ -45,6 +45,15 @@ pre-processing was on the PGN: stripping the 100 stray warmup games (below).
   (the default `.arena` sampling schedule). Models resolve against
   `~/Library/Application Support/DrewsChessMachine/Models/`.
 
+  > **NOTE (behavior changed after this run):** at the time of this tournament,
+  > `Temperature = 0` meant the decaying `.arena` exploration schedule
+  > (`startTau 2.0 → 0.2`), so every DCM engine here played with real sampling
+  > noise through ~ply 45 — it did **not** play argmax. The UCI default was
+  > later changed so `Temperature = 0` floors to tau 0.01 (≈ argmax,
+  > deterministic best move). A rerun on the current build will therefore play
+  > stronger; get game variety from an opening book, not from temperature.
+  > These ratings understate the nets' best play accordingly.
+
 ## Time control
 
 - **40 moves / 5 s**, no increment.

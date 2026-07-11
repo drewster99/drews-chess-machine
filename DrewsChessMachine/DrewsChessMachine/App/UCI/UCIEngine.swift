@@ -17,26 +17,30 @@ import Foundation
 /// ignored. A single eval takes single-digit ms, well below any
 /// practical cutechess time control.
 ///
-/// The default sampling schedule is `.arena` (`startTau 2.0 → 0.2`
-/// over 45 game-total plies). UCI `Temperature` option lets the
-/// caller override with a flat tau for the entire game; values are
-/// passed as integers × 100 (UCI `spin` doesn't allow floats), so
-/// `Temperature=100` means tau=1.0, `Temperature=10` means tau=0.1
-/// (near-argmax), etc. Sentinel value `0` re-enables the default
-/// `.arena` schedule.
+/// Move selection is a flat temperature `tau` for the whole game — no
+/// decaying schedule. `Temperature` is a `spin` given as integer × 100
+/// (UCI `spin` doesn't allow floats), so `Temperature=100` means tau=1.0,
+/// `Temperature=10` means tau=0.1, and the default `Temperature=0` floors
+/// to tau=0.01 — **effectively argmax (deterministic best-move play)**.
+/// This makes DCM-as-engine play its strongest by default, as a UCI GUI /
+/// match runner expects; game variety for tournaments must come from
+/// varied start positions (an opening book), NOT from temperature noise.
+/// The old `0 = decaying .arena exploration schedule` behavior is gone —
+/// that was a self-play/training concept with no real UCI use case and it
+/// silently weakened engine-vs-engine play. Re-add it as an explicit
+/// option if a use case ever appears.
 enum UCIEngine {
 
-    /// UCI temperature option sentinel meaning "use the default
-    /// `.arena` schedule" (no flat-tau override).
-    private static let temperatureUseSchedule: Int = 0
-    /// UCI Temperature default — `0` = schedule on. Surfaced in `uci`
-    /// handshake so a GUI's "reset to default" button restores the
-    /// schedule rather than forcing a specific tau.
-    private static let temperatureDefault: Int = temperatureUseSchedule
-    /// Minimum / maximum for the Temperature spin option. `1` = tau
-    /// 0.01 (effectively argmax), `1000` = tau 10.0 (very flat).
+    /// UCI Temperature default. `0` floors to tau 0.01 ≈ argmax, so a
+    /// GUI's "reset to default" restores strongest (deterministic) play.
+    private static let temperatureDefault: Int = 0
+    /// Minimum / maximum for the Temperature spin option. `0`/`1` both
+    /// floor to tau 0.01 (effectively argmax); `1000` = tau 10.0 (flat).
     private static let temperatureMin: Int = 0
     private static let temperatureMax: Int = 1000
+    /// Floor tau applied to every Temperature value — the practical
+    /// argmax stand-in (tau 0 would divide-by-zero in the softmax).
+    private static let minTau: Float = 0.01
 
     /// Pre-flight entry point. Loads weights, runs the protocol loop,
     /// never returns. Process exits via `Darwin.exit(0)` on `quit`
@@ -114,8 +118,8 @@ enum UCIEngine {
         /// from scratch on every `position` command (UCI senders pass
         /// the full move list every time).
         var engine: ChessGameEngine = ChessGameEngine(state: .starting)
-        /// Current Temperature option value (0 = use default
-        /// `.arena` schedule; otherwise flat tau = value / 100).
+        /// Current Temperature option value. Flat tau = value / 100,
+        /// floored at 0.01; `0` (the default) ⇒ tau 0.01 ≈ argmax.
         var temperatureSpin: Int = temperatureDefault
 
         /// Install a freshly-loaded model, replacing any current one.
@@ -128,16 +132,13 @@ enum UCIEngine {
             modelMtime = UCIEngine.fileMtime(loaded.resolvedPath)
         }
 
-        /// Resolve the current `Temperature` option into a sampling
-        /// schedule. `0` = the default `.arena` schedule; any other
-        /// value clamps to the valid spin range and produces a
-        /// flat-tau schedule.
+        /// Resolve the current `Temperature` option into a flat-tau
+        /// sampling schedule (no decay). `tau = value / 100`, floored at
+        /// `minTau` (0.01) so `0` — the default — yields deterministic
+        /// argmax-style play. There is no longer a schedule sentinel.
         var schedule: SamplingSchedule {
-            if temperatureSpin == temperatureUseSchedule {
-                return .arena
-            }
-            let clamped = max(temperatureMin + 1, min(temperatureMax, temperatureSpin))
-            let tau = Float(clamped) / 100.0
+            let clamped = min(temperatureMax, max(temperatureMin, temperatureSpin))
+            let tau = max(minTau, Float(clamped) / 100.0)
             return SamplingSchedule(startTau: tau, decayPerPly: 0, floorTau: tau)
         }
     }
@@ -431,7 +432,8 @@ enum UCIEngine {
             }
             let clamped = max(temperatureMin, min(temperatureMax, v))
             session.temperatureSpin = clamped
-            SessionLogger.shared.log("[UCI] setoption Temperature=\(clamped)\(clamped == temperatureUseSchedule ? " (use schedule)" : "")")
+            let tau = max(minTau, Float(clamped) / 100.0)
+            SessionLogger.shared.log("[UCI] setoption Temperature=\(clamped) (tau=\(String(format: "%.2f", tau))\(clamped <= 1 ? ", argmax" : ""))")
         case "model":
             handleSetModel(valueString: valueString, session: &session)
         default:
