@@ -5,7 +5,7 @@
  "runs": {
   "nt8y3x3": {
    "label": "nt8y-3x3stem — 1.52M, nt8y with 3×3 stem (std)",
-   "color": "#e377c2",
+   "color": "#17becf",
    "rezero_cap": 0.33333334,
    "n_blocks": 3,
    "params": 1518570,
@@ -27,7 +27,7 @@
   },
   "wxil": {
    "label": "wxil — 1.05M, 8-block 15×15 @16 narrow-fat-conv (std)",
-   "color": "#17becf",
+   "color": "#e377c2",
    "rezero_cap": 0.125,
    "n_blocks": 8,
    "params": 1052183,
