@@ -1237,18 +1237,23 @@ struct DrewsChessMachineApp: App {
         // Disambiguate duplicate kind labels — two specs may name the same
         // executable (e.g. one stockfish pool at UCI_Elo=1400 and another at
         // 1800). Without this, both pools would merge in the per-kind stats
-        // and their instance labels (`stockfish#1`…) would collide. Suffix
-        // repeats with the spec ordinal so each spec stays its own kind.
-        var kindCounts: [String: Int] = [:]
+        // and their instance labels (`stockfish#1`…) would collide. A repeat
+        // gets the first `base-N` suffix that isn't already taken — probing
+        // past any that collide with another spec's real basename (e.g.
+        // `stockfish`, an actual `stockfish-2`, then another `stockfish`
+        // becomes `stockfish-3`, not a second `stockfish-2`).
+        var usedKinds = Set<String>()
         for i in opponents.indices {
             let base = opponents[i].kind
-            let n = (kindCounts[base] ?? 0) + 1
-            kindCounts[base] = n
-            if n > 1 {
+            var kind = base
+            var n = 2
+            while usedKinds.contains(kind) { kind = "\(base)-\(n)"; n += 1 }
+            usedKinds.insert(kind)
+            if kind != base {
                 let o = opponents[i]
                 opponents[i] = TrainVsUciOpponentSpec(
                     command: o.command, count: o.count, goLimit: o.goLimit,
-                    options: o.options, kind: "\(base)-\(n)")
+                    options: o.options, kind: kind)
             }
         }
 
