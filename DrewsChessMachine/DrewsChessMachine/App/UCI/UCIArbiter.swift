@@ -363,18 +363,47 @@ actor UCIArbiter {
 /// `FileHandle.readabilityHandler`, whose invocations the system
 /// serializes per handle — so the mutable `data` needs no lock.
 private final class LineBox: @unchecked Sendable {
-    private var data = Data()
+    /// Initial reserved capacity for the line accumulator, sized to hold a full
+    /// pipe-flush burst of `info`/`bestmove` lines — including long deep-search
+    /// `info … pv` lines at long time controls — without a resize. `Data` still
+    /// grows past it if a single read exceeds it; the compaction paths in
+    /// `appendAndExtractLines` retain whatever capacity is reached, so this is
+    /// also the steady-state allocation. Tunable in one place.
+    private static let initialCapacity = 16_384
+
+    /// Partial-line accumulator, pre-reserved to `initialCapacity` and reused
+    /// across reads (never rebuilt per line — see `appendAndExtractLines`).
+    private var data = Data(capacity: LineBox.initialCapacity)
 
     /// Append a chunk and return every complete line it now contains
     /// (newline-terminated), leaving any partial tail buffered.
+    ///
+    /// Extraction walks a `lineStart` cursor over the accumulated buffer,
+    /// decoding each line straight from a slice, and compacts the buffer
+    /// **once** at the end — either clearing it while retaining capacity (the
+    /// common case, when the read ended on a newline so everything was
+    /// consumed) or dropping just the consumed prefix and keeping the partial
+    /// tail. The previous version rebuilt `data = Data(data[after(newline)...])`
+    /// on *every* line, which is O(remaining) per line and a fresh allocation
+    /// each iteration; under a chatty engine (several `info` lines per read,
+    /// times N instances) that was the dominant `_platform_memmove` cost. The
+    /// cursor scans and copies each line exactly once and reallocates at most
+    /// once per chunk — usually zero, reusing the retained capacity.
     func appendAndExtractLines(_ chunk: Data) -> [String] {
         data.append(chunk)
         var lines: [String] = []
-        while let newline = data.firstIndex(of: 0x0A) {
-            var line = String(decoding: data[data.startIndex..<newline], as: UTF8.self)
+        lines.reserveCapacity(4)   // a chunk is usually a few lines; avoid regrowth
+        var lineStart = data.startIndex
+        while let newline = data[lineStart...].firstIndex(of: 0x0A) {
+            var line = String(decoding: data[lineStart..<newline], as: UTF8.self)
             if line.hasSuffix("\r") { line.removeLast() }
             lines.append(line)
-            data = Data(data[data.index(after: newline)...])
+            lineStart = data.index(after: newline)
+        }
+        if lineStart >= data.endIndex {
+            data.removeAll(keepingCapacity: true)          // fully consumed
+        } else if lineStart > data.startIndex {
+            data.removeSubrange(data.startIndex..<lineStart)  // keep partial tail
         }
         return lines
     }
@@ -383,7 +412,7 @@ private final class LineBox: @unchecked Sendable {
     func flush() -> String? {
         guard !data.isEmpty else { return nil }
         let tail = String(decoding: data, as: UTF8.self)
-        data.removeAll()
+        data.removeAll(keepingCapacity: true)
         return tail
     }
 }
@@ -467,14 +496,20 @@ enum UCIProtocol {
     /// `bestmove` line with no move token, or with `(none)` / `0000`,
     /// parses to `.null`. A trailing `ponder …` clause is ignored.
     static func parseBestMove(_ line: String) -> UCIBestMove? {
-        let tokens = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        // Called on *every* line the engine emits (the move loop filters
+        // with `parseBestMove(...) != nil`), so the common path is rejecting
+        // an `info …` line. Split into `Substring`s and compare those against
+        // the literals — no per-token `String` is materialised on a rejected
+        // line, and exactly one `String` is allocated (the move token) only
+        // when the line is a real `bestmove`.
+        let tokens = line.split(separator: " ", omittingEmptySubsequences: true)
         guard tokens.first == "bestmove" else { return nil }
         guard tokens.count >= 2 else { return .null }
         let moveToken = tokens[1]
         if moveToken == "(none)" || moveToken == "0000" {
             return .null
         }
-        return .move(moveToken)
+        return .move(String(moveToken))
     }
 }
 
