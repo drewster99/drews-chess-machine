@@ -134,6 +134,8 @@ See `documentation/sampling-parameters.md` for rationale.
 - `documentation/sampling-parameters.md` — temperature schedule design, ModelID mint/inherit rules, diversity tracking.
 - `documentation/mpsgraph-primitives.md` — cookbook for the MPSGraph APIs actually used. Useful when editing `ChessNetwork.swift`.
 - `documentation/disk-cleanup.md` — maintenance runbook for reclaiming disk from `Sessions/`: why `manual`/`promote` saves accumulate, the Time Machine local-snapshot reclaim step (deletion alone frees nothing until `tmutil thinlocalsnapshots`), and a guarded keeper-selection policy.
+- `documentation/UCI.md` — DCM and the UCI protocol, both directions: **DCM as a UCI engine** (`--uci` — options `Model`/`Temperature`, the single-forward-pass `go` that ignores all limits, Temperature-0 determinism) and **DCM driving external engines** (`--train-vs-uci` — CLI spec/per-pool-vs-global, fixed-per-move `go` timing, both-sides distillation, known limitations: UCI-native only, no `go` validation/compliance, bare-`go` pitfall, hardcoded 10 s/30 s timeouts).
+- `documentation/cutechess-setup.md` — concrete cutechess-cli match harness for benchmarking DCM vs Stockfish (engine registration, why TC goes on the opponent, mandatory opening book for Temperature-0 determinism, Elo-ladder rating). Linked from UCI.md.
 - `ROADMAP.md` — deferred work, completed-with-design-notes, and the save/load design. **Completed items stay — move to "Completed" rather than delete, and preserve detail including any deviations from the original plan.**
 - `CHANGELOG.md` — commit-linked log of meaningful changes. Newest first, timestamped CDT, git-hash tagged.
 
