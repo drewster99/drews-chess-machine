@@ -6,7 +6,7 @@ import Foundation
 /// wedged or slow instance inside a kind is visible at a glance.
 ///
 /// Each line reports cumulative games / plies / W-L-D (from the
-/// trainer's perspective) plus games/sec and plies/sec over the window
+/// trainer's perspective) plus games/hr and plies/hr over the window
 /// since the previous emit. Pure and side-effect-free so the format is
 /// unit-testable without a live run; the runner owns the cadence and
 /// the previous-snapshot bookkeeping.
@@ -38,8 +38,12 @@ enum TrainVsUciStatsFormatter {
             byKind[s.kind, default: []].append(s)
         }
 
+        // Per-hour rate over the window, humanized with a magnitude suffix
+        // (M / k) so the per-kind summaries read in millions — e.g. a
+        // ~2900 plies/sec pool prints `p/hr=10.4M` — while the much smaller
+        // per-instance lines stay legible as `k`. See `humanizedPerHour`.
         func rate(_ delta: Int) -> String {
-            String(format: "%.2f", Double(delta) / window)
+            humanizedPerHour(Double(delta) / window * 3600)
         }
 
         var out: [String] = []
@@ -58,7 +62,7 @@ enum TrainVsUciStatsFormatter {
             out.append(
                 "[VS-UCI-STATS] \(kind) n=\(group.count):"
                 + " games=\(games) plies=\(plies)"
-                + " g/s=\(rate(games - prevGames)) p/s=\(rate(plies - prevPlies))"
+                + " g/hr=\(rate(games - prevGames)) p/hr=\(rate(plies - prevPlies))"
                 + " W-L-D=\(wins)-\(losses)-\(draws)"
                 + (aborted > 0 ? " aborted=\(aborted)" : "")
                 + (capDropped > 0 ? " capDropped=\(capDropped)" : "")
@@ -70,13 +74,29 @@ enum TrainVsUciStatsFormatter {
             out.append(
                 "[VS-UCI-STATS]   \(s.instanceLabel):"
                 + " games=\(s.gamesCompleted) plies=\(s.pliesPlayed)"
-                + " g/s=\(rate(s.gamesCompleted - (prev?.gamesCompleted ?? 0)))"
-                + " p/s=\(rate(s.pliesPlayed - (prev?.pliesPlayed ?? 0)))"
+                + " g/hr=\(rate(s.gamesCompleted - (prev?.gamesCompleted ?? 0)))"
+                + " p/hr=\(rate(s.pliesPlayed - (prev?.pliesPlayed ?? 0)))"
                 + " W-L-D=\(s.trainerWins)-\(s.trainerLosses)-\(s.draws)"
                 + (s.aborted > 0 ? " aborted=\(s.aborted)" : "")
                 + (s.capDropped > 0 ? " capDropped=\(s.capDropped)" : "")
             )
         }
         return out
+    }
+
+    /// Formats a per-hour throughput rate with a magnitude suffix and one
+    /// decimal: `≥1e6 → "10.4M"`, `≥1e3 → "394.5k"`, else a bare integer.
+    /// Keeps the millions-scale pool summaries reading "in millions per
+    /// hour" without an unwieldy 8-digit integer, while per-instance rates
+    /// fall back to `k` (or raw) at their smaller scale.
+    static func humanizedPerHour(_ perHour: Double) -> String {
+        let magnitude = abs(perHour)
+        if magnitude >= 1_000_000 {
+            return String(format: "%.1fM", perHour / 1_000_000)
+        }
+        if magnitude >= 1_000 {
+            return String(format: "%.1fk", perHour / 1_000)
+        }
+        return String(format: "%.0f", perHour)
     }
 }

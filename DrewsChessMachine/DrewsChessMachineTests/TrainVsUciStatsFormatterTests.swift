@@ -3,7 +3,7 @@ import XCTest
 
 /// Pins the `[VS-UCI-STATS]` block format: per-kind summary lines first
 /// (aggregating that kind's instances), then one per-instance line each;
-/// cumulative games/plies/W-L-D plus windowed g/s & p/s rates.
+/// cumulative games/plies/W-L-D plus windowed g/hr & p/hr rates.
 final class TrainVsUciStatsFormatterTests: XCTestCase {
 
     private func slot(
@@ -52,17 +52,25 @@ final class TrainVsUciStatsFormatterTests: XCTestCase {
     }
 
     func testRatesUseWindowDeltaAgainstPrevious() {
-        let previous = [slot(kind: "sloppy", label: "sloppy#1", games: 10, plies: 400)]
-        let current = [slot(kind: "sloppy", label: "sloppy#1", games: 16, plies: 700)]
-        // Δgames=6, Δplies=300 over 12s → 0.50 g/s, 25.00 p/s.
+        let previous = [slot(kind: "sloppy", label: "sloppy#1", games: 0, plies: 0)]
+        let current = [slot(kind: "sloppy", label: "sloppy#1", games: 1315, plies: 34560)]
+        // Δgames=1315, Δplies=34560 over 12s → 1315/12*3600=394500 → 394.5k g/hr,
+        // 34560/12*3600=10368000 → 10.4M p/hr (humanized magnitude suffix).
         let lines = TrainVsUciStatsFormatter.lines(current: current, previous: previous, intervalSec: 12)
-        XCTAssertTrue(lines[0].contains("g/s=0.50"), "kind rate: \(lines[0])")
-        XCTAssertTrue(lines[0].contains("p/s=25.00"), "kind rate: \(lines[0])")
-        XCTAssertTrue(lines[1].contains("g/s=0.50"), "instance rate: \(lines[1])")
-        XCTAssertTrue(lines[1].contains("p/s=25.00"), "instance rate: \(lines[1])")
+        XCTAssertTrue(lines[0].contains("g/hr=394.5k"), "kind rate: \(lines[0])")
+        XCTAssertTrue(lines[0].contains("p/hr=10.4M"), "kind rate: \(lines[0])")
+        XCTAssertTrue(lines[1].contains("g/hr=394.5k"), "instance rate: \(lines[1])")
+        XCTAssertTrue(lines[1].contains("p/hr=10.4M"), "instance rate: \(lines[1])")
         // Cumulative counts still report the totals, not the delta.
-        XCTAssertTrue(lines[1].contains("games=16"))
-        XCTAssertTrue(lines[1].contains("plies=700"))
+        XCTAssertTrue(lines[1].contains("games=1315"))
+        XCTAssertTrue(lines[1].contains("plies=34560"))
+    }
+
+    func testHumanizedPerHourMagnitudeSuffixes() {
+        XCTAssertEqual(TrainVsUciStatsFormatter.humanizedPerHour(10_368_000), "10.4M")
+        XCTAssertEqual(TrainVsUciStatsFormatter.humanizedPerHour(394_500), "394.5k")
+        XCTAssertEqual(TrainVsUciStatsFormatter.humanizedPerHour(950), "950")
+        XCTAssertEqual(TrainVsUciStatsFormatter.humanizedPerHour(0), "0")
     }
 
     func testAbortAndCapDropAppearOnlyWhenNonzero() {
