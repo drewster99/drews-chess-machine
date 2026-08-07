@@ -351,7 +351,7 @@
       "arch_stem": "basic30 → stem 7×7→64",
       "arch_blocks": "2× @64, 15×15+15×15, SE scale+bias/4, ReLU/pre, ReZero cap 0.5, LN-out",
       "arch_heads": "policy intermediate_conv (pre-conv 512) · value WDL(16→FC64)",
-      "out_model": "20260702-Qeu8-resume2-replay-latest.safetensors",
+      "out_model": "20260702-Qeu8-resume3-replay-latest.safetensors",
       "frozen_glob": "20260702-Qeu8-step*-frozen.safetensors",
       "segments": [
         {
@@ -373,6 +373,13 @@
           "log": "dcm_log_20260706-002713.txt",
           "date": "20260706",
           "elapsed_base_sec": 68105.0
+        },
+        {
+          "log": "dcm_log_20260727-094049.txt",
+          "date": "20260727",
+          "cumstep_base": 175915,
+          "elapsed_base_sec": 112789.5,
+          "label": "resume3 (enumerated, indefinite)"
         }
       ],
       "trainset": "std-2026-05"

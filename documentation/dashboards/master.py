@@ -104,14 +104,16 @@ def read_rows(data_dir, run):
 
 
 def active_procs_text():
-    """Concatenated args of live `--replay-corpus` processes, so the currently-
-    training run can be flagged by matching its out-model basename (paths contain
-    spaces — 'Application Support' — so we substring-match rather than split)."""
+    """Concatenated args of live training processes (corpus-replay AND train-vs-uci),
+    so the currently-training run can be flagged by matching its out-model basename
+    (paths contain spaces — 'Application Support' — so we substring-match rather than
+    split)."""
     try:
         ps = subprocess.check_output(["ps", "-Ao", "args="], text=True)
     except Exception:
         return ""
-    return "\n".join(l for l in ps.splitlines() if "replay-corpus" in l)
+    return "\n".join(l for l in ps.splitlines()
+                     if "replay-corpus" in l or "train-vs-uci" in l)
 
 
 def collect():
@@ -151,6 +153,7 @@ def collect():
             "params": cfg.get("params", 0),
             "stem": cfg.get("arch_stem", cfg.get("arch_summary", "")),
             "blocks": cfg.get("arch_blocks", ""), "heads": cfg.get("arch_heads", ""),
+            "opponents": cfg.get("opponents", ""),
             "n": len(s), "peak": peak, "steps": final_cum,
             "hrs": max([x for x in t if x is not None], default=0.0),
             "final_pElo": last("pElo"), "final_nll": last("nll"),
@@ -167,6 +170,12 @@ def collect():
     if os.path.exists(sp_path):
         sp = json.load(open(sp_path))
         for key, cfg in sp["runs"].items():
+            runs.append(build(key, cfg, os.path.join(HERE, "data")))
+    # train-vs-UCI runs — same data/ dir + CSV schema, type=vsuci
+    vu_path = os.path.join(HERE, "vsuci_registry.json")
+    if os.path.exists(vu_path):
+        vu = json.load(open(vu_path))
+        for key, cfg in vu["runs"].items():
             runs.append(build(key, cfg, os.path.join(HERE, "data")))
     return runs
 
@@ -205,10 +214,15 @@ def render():
         elif r["type"] == "selfplay":
             corpcell = ("<td class=corpus><span class=chip>self-play</span>"
                         "<div class=csub>no corpus</div></td>")
+        elif r["type"] == "vsuci":
+            opp = html.escape(r["opponents"]) if r["opponents"] else "UCI engines"
+            corpcell = (f"<td class=corpus title=\"{opp}\"><span class=chip>vs-UCI</span>"
+                        f"<div class=csub>{opp}</div></td>")
         else:
             corpcell = "<td class=corpus><span class=chip>?</span></td>"
         tp = r["type"]
-        typecell = f"<td><span class='tp {tp}'>{'self-play' if tp=='selfplay' else 'replay'}</span></td>"
+        tplabel = {"selfplay": "self-play", "vsuci": "train-vs-UCI"}.get(tp, "replay")
+        typecell = f"<td><span class='tp {tp}'>{tplabel}</span></td>"
         live = " <span class=live title='this run is training right now'>● running</span>" if r["active"] else ""
         srows += (
             f"<tr data-k='{r['k']}'{' class=liverow' if r['active'] else ''}>"
@@ -278,6 +292,7 @@ tr.liverow{background:#2e9d5714}
 .tp{display:inline-block;border-radius:5px;padding:1px 7px;font-size:10.5px;font-weight:600;letter-spacing:.02em}
 .tp.replay{background:#2f6fed1a;color:#2f6fed;border:1px solid #2f6fed44}
 .tp.selfplay{background:#b4530e1a;color:#c8631a;border:1px solid #c8631a44}
+.tp.vsuci{background:#00857a1a;color:#00857a;border:1px solid #00857a55}
 tr.off{opacity:.4}
 .controls{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:6px 0 14px}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--card)}
@@ -326,7 +341,7 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--mut);font-size:12.5px;pa
 
 <h2>Charts</h2>
 <div class=controls>
- <div class=seg id=typeseg><button data-tp=all>all</button><button data-tp=replay>replay</button><button data-tp=selfplay>self-play</button></div>
+ <div class=seg id=typeseg><button data-tp=all>all</button><button data-tp=replay>replay</button><button data-tp=vsuci>vs-UCI</button><button data-tp=selfplay>self-play</button></div>
  <div class=seg id=xseg><button data-x=step>by step</button><button data-x=time>by time</button></div>
  <div class=seg id=emaseg><button data-e=1>smoothed</button><button data-e=0>raw</button></div>
  <button class=mini id=all>all</button><button class=mini id=none>none</button>
@@ -347,7 +362,7 @@ const DARK = window.matchMedia && matchMedia("(prefers-color-scheme:dark)").matc
 RUNS.forEach(r=>{ if(DARK && (r.color||"").toLowerCase()=="#000000") r.color="#9aa0a6"; });
 const byKey = Object.fromEntries(RUNS.map(r=>[r.k,r]));
 const LS="dcm_master_v3";
-const REPLAY_KEYS=RUNS.filter(r=>r.type!="selfplay").map(r=>r.k);
+const REPLAY_KEYS=RUNS.filter(r=>r.type=="replay").map(r=>r.k);
 let st = Object.assign({checked:REPLAY_KEYS, x:"step", ema:1, tp:"replay"},
                        JSON.parse(localStorage.getItem(LS)||"{}"));
 const checked = new Set(st.checked.filter(k=>byKey[k]));
@@ -355,7 +370,7 @@ if(!checked.size) REPLAY_KEYS.forEach(k=>checked.add(k));
 function save(){localStorage.setItem(LS,JSON.stringify({checked:[...checked],x:st.x,ema:st.ema,tp:st.tp}));}
 
 document.getElementById("sub").textContent =
- RUNS.length+" runs · "+new Set(RUNS.filter(r=>r.type!="selfplay").map(r=>r.trainset)).size+" corpora · "
+ RUNS.length+" runs · "+new Set(RUNS.filter(r=>r.type=="replay").map(r=>r.trainset)).size+" corpora · "
  +"hover a chart to inspect (nearest line highlighted) · toggle series in the legend or table · saved across reloads";
 
 /* fix table swatches for the dark recolor (they were server-rendered) */
@@ -415,7 +430,7 @@ class Chart{
   c.textAlign="center";c.textBaseline="top";
   for(const t of ticksFor(this.x0,this.x1,6))c.fillText(fmtX(t),this.px(t),this.H-this.pad.b+5);
   for(const s of this.S){const col=s.run.color,pts=s.pts;
-   c.setLineDash(s.run.type=="selfplay"?[2,2]:[]);   // self-play series render tightly dotted
+   c.setLineDash(s.run.type=="selfplay"?[2,2]:s.run.type=="vsuci"?[7,4]:[]);   // self-play dotted · vs-UCI dashed
    let alpha=1,lw=st.ema?1.8:1.4;
    if(hi){if(hi.dim.has(s.run.k))alpha=.12;else if(s.run.k===hi.nearest){alpha=1;lw=2.9;}else alpha=.4;}
    if(!hi&&st.ema&&pts.length>3){c.globalAlpha=.2;c.strokeStyle=col;c.lineWidth=1;c.beginPath();

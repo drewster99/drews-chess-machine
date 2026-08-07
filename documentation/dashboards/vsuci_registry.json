@@ -1,0 +1,51 @@
+{
+  "_comment": "Train-vs-UCI run registry — a THIRD run type alongside corpus-replay (registry.json) and self-play (selfplay_registry.json). These runs train against external UCI engines (Stockfish/Sloppy) as move oracles, distilling both sides' play into the replay buffer — not corpus replay, not self-play. vsuci.py parses [VS-UCI] step lines from each segment's log into data/<key>.csv using the SAME shared schema (_schema.FIELDS). Unlike self-play, vs-UCI HAS a full per-1000-step pElo/nll trajectory: probes were run live at each -latest autosave and stored in `pelo_jsonl` (keyed by cumulative step). A warm restart (train-vs-uci reloads weights only; optimizer/buffer/step reset) begins a new segment; cum_step = segment.cumstep_base + meta_step. type=vsuci distinguishes these from the other two.",
+  "logs_dir": "~/Library/Logs/DrewsChessMachine",
+  "runs": {
+    "sf100sl100": {
+      "label": "sf100sl100 — 3.93M, qeu8-init vs 100 SF + 100 Sloppy",
+      "color": "#00857a",
+      "type": "vsuci",
+      "trainset": "vs-uci",
+      "params": 3929393,
+      "opponents": "100 Stockfish + 100 Sloppy · go movetime 10",
+      "arch_summary": "qeu8-init (20260702-7-Qeu8) trained vs UCI engines. v5 · basic30(30) → stem 7×7→64 · 2×[15×15+15×15 @64, SE scale+bias/4, ReLU/pre, ReZero cap 0.5, LN-out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64). Both-sides distillation of Stockfish+Sloppy play.",
+      "arch_stem": "basic30 → stem 7×7→64",
+      "arch_blocks": "2× @64, 15×15+15×15, SE scale+bias/4, ReLU/pre, ReZero cap 0.5, LN-out",
+      "arch_heads": "policy intermediate_conv (pre-conv 512) · value WDL(16→FC64)",
+      "out_model": "20260712-qeu8init-sf100sl100-vsuci-latest.safetensors",
+      "pelo_jsonl": "~/dcm-sf100sl100-backup/sf100sl100_pelo.jsonl",
+      "_timing_comment": "elapsed_train_sec corrections. (1) IDLE is removed automatically everywhere: when a logged interval's wall-clock delta exceeds steps*ms, the excess is time the CPU was not running (system sleep/suspend) and is not training time. (2) THROTTLE rescaling is applied ONLY inside the declared throttled_windows below, because a slow step cannot be distinguished from a throttled one by duration alone -- seg1 contains legitimate ~9s stalls that must NOT be rescaled away. Inside a declared window, any interval slower than throttle_trigger x baseline_ms_per_step is rescaled to baseline; faster intervals are left untouched.",
+      "baseline_ms_per_step": 860,
+      "throttle_trigger": 1.25,
+      "throttled_windows": [
+        {"segment": 2, "from_step": 200, "to_step": 3900,
+         "reason": "on battery after macOS update reboot; Low Power Mode clamped clocks (~1947ms vs ~860ms baseline)"},
+        {"segment": 2, "from_step": 6650, "to_step": 6900,
+         "reason": "unplugged for transport; LPM again, then system sleep (sleep handled by idle removal)"},
+        {"segment": 2, "from_step": 226000, "to_step": 244500,
+         "reason": "Low Power Mode left on manually while plugged in at 100% (~1800ms vs ~860ms baseline); an ~82min system sleep mid-window is handled separately by idle removal"}
+      ],
+      "segments": [
+        {
+          "log": "dcm_log_20260712-180423.txt",
+          "date": "20260712",
+          "cumstep_base": 0,
+          "label": "run (to step 220k)"
+        },
+        {
+          "log": "dcm_log_20260714-123243.txt",
+          "date": "20260714",
+          "cumstep_base": 220000,
+          "label": "resume (warm restart after macOS update)"
+        },
+        {
+          "log": "dcm_log_20260722-102524.txt",
+          "date": "20260722",
+          "cumstep_base": 978000,
+          "label": "resume 2 (warm restart after macOS update reboot)"
+        }
+      ]
+    }
+  }
+}
