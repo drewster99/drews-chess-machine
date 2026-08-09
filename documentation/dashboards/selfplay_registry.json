@@ -44,7 +44,10 @@
     "dcm_log_20260529-125542.txt",
     "dcm_log_20260529-132619.txt",
     "dcm_log_20260529-135923.txt"
-   ]
+   ],
+   "arch_stem": "\u2014 arch not recorded (pre-[ARCH] build, model pruned)",
+   "arch_blocks": "",
+   "arch_heads": ""
   },
   "2Gd1": {
    "label": "2Gd1 \u2014 9.51M (11 promo, 20h)",
@@ -60,7 +63,10 @@
    "arch_summary": "self-play trainer 20260607-4-2Gd1-12 \u00b7 9,511,988 params",
    "logs": [
     "dcm_log_20260606-213834.txt"
-   ]
+   ],
+   "arch_stem": "\u2014 arch not recorded (pre-[ARCH] build, model pruned)",
+   "arch_blocks": "",
+   "arch_heads": ""
   },
   "LMGh": {
    "label": "LMGh \u2014 1.02M (3 promo, 10h)",
@@ -76,7 +82,10 @@
    "arch_summary": "self-play trainer 20260609-12-LMGh-4 \u00b7 1,022,481 params",
    "logs": [
     "dcm_log_20260609-004301.txt"
-   ]
+   ],
+   "arch_stem": "basic30 \u2192 stem 3\u00d73\u219232",
+   "arch_blocks": "v4 pre \u00b7 50\u00d7[3\u00d73 conv, SE+/4, clean_add, ReZero]",
+   "arch_heads": "policy intermediate_conv \u00b7 value WDL(16\u2192FC32)"
   },
   "eaRt": {
    "label": "eaRt \u2014 9.57M (14 promo, 17h)",
@@ -93,7 +102,10 @@
    "logs": [
     "dcm_log_20260607-174928.txt",
     "dcm_log_20260608-115345.txt"
-   ]
+   ],
+   "arch_stem": "full10Ply10Reps210 \u2192 stem 7\u00d77\u2192128",
+   "arch_blocks": "v4 pre \u00b7 5\u00d7[7\u00d77 conv, SE+/4, clean_add, ReZero]",
+   "arch_heads": "policy intermediate_conv \u00b7 value WDL(16\u2192FC128)"
   },
   "LWKa": {
    "label": "LWKa \u2014 3.90M (10 promo, 28h)",
@@ -117,7 +129,10 @@
     "dcm_log_20260601-001830.txt",
     "dcm_log_20260601-011033.txt",
     "dcm_log_20260601-090740.txt"
-   ]
+   ],
+   "arch_stem": "\u2014 arch not recorded (pre-[ARCH] build, model pruned)",
+   "arch_blocks": "",
+   "arch_heads": ""
   },
   "eBNC": {
    "label": "eBNC \u2014 10.66M (10 promo, 9h)",
@@ -142,7 +157,10 @@
     "dcm_log_20260614-104947.txt",
     "dcm_log_20260614-173901.txt",
     "dcm_log_20260614-195324.txt"
-   ]
+   ],
+   "arch_stem": "basic30 \u2192 stem 3\u00d73\u2192128",
+   "arch_blocks": "v4 \u00b7 3\u00d7[3\u00d73+3\u00d73 @128, SE+/2, relu/pre, clean_add, ReZero(0.408), drop*1] \u2192 3\u00d7[5\u00d75+5\u00d75 @256, SE+/2, relu/pre, clean_add, ReZero(0.408), drop*1]",
+   "arch_heads": "policy intermediate_conv \u00b7 value WDL(32\u2192FC128)"
   },
   "wTp3": {
    "label": "wTp3 \u2014 1.43M (3 promo, 7h)",
@@ -161,7 +179,10 @@
     "dcm_log_20260625-180306.txt",
     "dcm_log_20260625-180600.txt",
     "dcm_log_20260707-205235.txt"
-   ]
+   ],
+   "arch_stem": "basic30 \u2192 stem 3\u00d73\u2192128",
+   "arch_blocks": "v4 \u00b7 4\u00d7[3\u00d73+3\u00d73 @128, SE+/4, relu/pre, clean_add, ReZero(0.5), drop*1]",
+   "arch_heads": "policy intermediate_conv \u00b7 value WDL(16\u2192FC128)"
   },
   "JhJQ": {
    "label": "JhJQ \u2014 8.45M (9 promo, 32h)",
@@ -181,7 +202,10 @@
     "dcm_log_20260610-105214.txt",
     "dcm_log_20260610-123844.txt",
     "dcm_log_20260611-081931.txt"
-   ]
+   ],
+   "arch_stem": "basic30 \u2192 stem 7\u00d77\u2192128",
+   "arch_blocks": "v4 pre \u00b7 5\u00d7[7\u00d77 conv, SE+/4, clean_add, ReZero]",
+   "arch_heads": "policy intermediate_conv \u00b7 value WDL(16\u2192FC128)"
   },
   "KbHZ": {
    "label": "KbHZ \u2014 2.48M (24 promo, 257h)",
@@ -245,7 +269,10 @@
     "dcm_log_20260524-175621.txt",
     "dcm_log_20260524-182125.txt",
     "dcm_log_20260610-123913.txt"
-   ]
+   ],
+   "arch_stem": "basic30 \u2192 stem 3\u00d73\u2192128",
+   "arch_blocks": "v3 post \u00b7 8\u00d7[3\u00d73 conv, SE/4, activation_gated, no-ReZero]",
+   "arch_heads": "policy simple_conv \u00b7 value WDL(1\u2192FC64)"
   },
   "jaq1": {
    "label": "jaq1 \u2014 20.35M (4 promo, 8h)",
@@ -263,7 +290,10 @@
     "dcm_log_20260608-133428.txt",
     "dcm_log_20260608-140857.txt",
     "dcm_log_20260608-231918.txt"
-   ]
+   ],
+   "arch_stem": "full10Ply10Reps210 \u2192 stem 3\u00d73\u2192256",
+   "arch_blocks": "v4 pre \u00b7 5\u00d7[7\u00d77,3\u00d73 conv, SE+/2, clean_add, ReZero]",
+   "arch_heads": "policy intermediate_conv \u00b7 value WDL(16\u2192FC256)"
   },
   "KXvb": {
    "label": "KXvb \u2014 3.90M (0 promo, 12h)",
@@ -279,7 +309,10 @@
    "arch_summary": "self-play trainer 20260531-3-KXvb-1 \u00b7 3,898,139 params",
    "logs": [
     "dcm_log_20260531-020125.txt"
-   ]
+   ],
+   "arch_stem": "\u2014 arch not recorded (pre-[ARCH] build, model pruned)",
+   "arch_blocks": "",
+   "arch_heads": ""
   },
   "WjRY": {
    "label": "WjRY \u2014 2.66M (7 promo, 22h)",
@@ -295,7 +328,10 @@
    "arch_summary": "self-play trainer 20260609-14-WjRY-8 \u00b7 2,664,087 params",
    "logs": [
     "dcm_log_20260609-104356.txt"
-   ]
+   ],
+   "arch_stem": "basic30 \u2192 stem 3\u00d73\u2192128",
+   "arch_blocks": "v4 pre \u00b7 8\u00d7[3\u00d73 conv, SE+/4, clean_add, ReZero]",
+   "arch_heads": "policy intermediate_conv \u00b7 value WDL(16\u2192FC128)"
   },
   "ysdg": {
    "label": "ysdg \u2014 4.93M (3 promo, 33h)",
@@ -313,7 +349,10 @@
     "dcm_log_20260529-154054.txt",
     "dcm_log_20260529-202707.txt",
     "dcm_log_20260530-160307.txt"
-   ]
+   ],
+   "arch_stem": "\u2014 arch not recorded (pre-[ARCH] build, model pruned)",
+   "arch_blocks": "",
+   "arch_heads": ""
   },
   "bzw3": {
    "label": "bzw3 \u2014 8.45M (33 promo, 115h)",
@@ -354,7 +393,10 @@
     "dcm_log_20260612-145341.txt",
     "dcm_log_20260612-151312.txt",
     "dcm_log_20260612-153226.txt"
-   ]
+   ],
+   "arch_stem": "basic30 \u2192 stem 7\u00d77\u2192128",
+   "arch_blocks": "v4 pre \u00b7 5\u00d7[7\u00d77 conv, SE+/4, clean_add, ReZero]",
+   "arch_heads": "policy intermediate_conv \u00b7 value WDL(16\u2192FC128)"
   }
  }
 }

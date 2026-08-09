@@ -154,6 +154,7 @@ def collect():
             "stem": cfg.get("arch_stem", cfg.get("arch_summary", "")),
             "blocks": cfg.get("arch_blocks", ""), "heads": cfg.get("arch_heads", ""),
             "opponents": cfg.get("opponents", ""),
+            "final_modelID": cfg.get("final_modelID", ""),
             "n": len(s), "peak": peak, "steps": final_cum,
             "hrs": max([x for x in t if x is not None], default=0.0),
             "final_pElo": last("pElo"), "final_nll": last("nll"),
@@ -212,8 +213,9 @@ def render():
                         f"<div class=csub>{html.escape(c['plies'])} plies</div>"
                         f"{epline}</td>")
         elif r["type"] == "selfplay":
-            corpcell = ("<td class=corpus><span class=chip>self-play</span>"
-                        "<div class=csub>no corpus</div></td>")
+            mid = html.escape(r["final_modelID"]) if r["final_modelID"] else "no corpus"
+            corpcell = (f"<td class=corpus title=\"{mid}\"><span class=chip>self-play</span>"
+                        f"<div class=csub>{mid}</div></td>")
         elif r["type"] == "vsuci":
             opp = html.escape(r["opponents"]) if r["opponents"] else "UCI engines"
             corpcell = (f"<td class=corpus title=\"{opp}\"><span class=chip>vs-UCI</span>"
