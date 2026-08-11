@@ -37,14 +37,14 @@ The app is launched via `$ROOT/run_latest.sh` (a thin wrapper that picks the mos
   Sanity-bound check on a proposed parameters.json. Bounds are intentionally very wide — the point is to catch proposer hallucinations (`learning_rate: 5.0`, fractional worker counts, capacity > 1e8), not to gatekeep tuning. Exits 0 on valid, 1 on violations (printed to stderr). Invoked by the skill after step 5's proposal lands; a violation rejects the iteration before any training run happens.
 - `$ROOT/.claude/skills/autotrain/apply_code_proposal.py <folder>`
   CODE-CHANGE mode only (step 5b). Reads `<folder>/code_proposal.json`, validates touched files against an allowlist (`ChessTrainer.swift`, `ContentView.swift`, `MPSChessPlayer.swift`, `ReplayBuffer.swift`), overwrites them with the proposer's content, runs `xcrun xcodebuild` to verify, and reverts the working tree if the build fails. Writes `code_apply_status.json` and `build.log` next to the proposal. Exit codes: 0 = applied + built; 2 = schema/forbidden-file (tree unchanged); 3 = build failed (tree reverted); 4 = io error (manual intervention). Files explicitly forbidden from overwrite: `ChessNetwork.swift`, `ChessMPSNetwork.swift`, `BoardEncoder.swift`, `PolicyEncoding.swift`, `ChessGameEngine.swift`, `MoveGenerator.swift`, `ChessMove.swift`, `ReplayRatioController.swift`, anything under `DrewsChessMachineTests/`.
-  ***** NOTE ON ABOVE - THIS SHOULD USE xcode-mcp-server INSTEAD OF XCODEBUILD 
+  ***** NOTE ON ABOVE - THIS SHOULD USE drews-xcode-mcp INSTEAD OF XCODEBUILD 
   ***** Running xcode build will by default create a local .build folder. this 
   ***** is problematic but the runner scripts look in ~/Library/Developer/Xcode/DerivedData
   ***** for the Debug and Release executables and never the local .build folder.
   ***** Thus, a code change could be made but not really actually tested until the app
   ***** is rebuilt with Xcode in the more normal way.
   ***** TODO: Update this item above to clarify the build process and express the importance
-  ***** of using xcode-mcp-server rather than xcodebuidl (xcode-mcp-server instructs Xcode
+  ***** of using drews-xcode-mcp rather than xcodebuidl (drews-xcode-mcp instructs Xcode
   ***** to do the build).
 
 ## Iteration procedure
@@ -349,7 +349,7 @@ While the training run is in flight, every cron / wakeup tick must do **all** of
 
    These mirror H2/H3/H4/H6 in the analyzer's hard-reject criteria. The iteration will still go through the analyzer normally and be classified `regressed` from the partial `result.json`.
 
-   **Before killing, take a UI screenshot.** Call `mcp__xcode-mcp-server__take_app_screenshot` with `app_name: "Drew's Chess Machine"` (display name has spaces and an apostrophe; the binary `DrewsChessMachine` substring does NOT match — the matcher uses the AppKit display name, not the executable name). Save the returned screenshot path into the iteration folder for context — copy it to `<folder>/pre_kill_screenshot.png` so the post-mortem analyzer has it. If the screenshot call fails (app already exited, accessibility denied, etc.), log the error and proceed with the kill anyway — the screenshot is a nice-to-have, not a precondition.
+   **Before killing, take a UI screenshot.** Call `mcp__drews-xcode-mcp__take_app_screenshot` with `app_name: "Drew's Chess Machine"` (display name has spaces and an apostrophe; the binary `DrewsChessMachine` substring does NOT match — the matcher uses the AppKit display name, not the executable name). Save the returned screenshot path into the iteration folder for context — copy it to `<folder>/pre_kill_screenshot.png` so the post-mortem analyzer has it. If the screenshot call fails (app already exited, accessibility denied, etc.), log the error and proceed with the kill anyway — the screenshot is a nice-to-have, not a precondition.
 
    Then log a one-line summary to the conversation: `autotrain: early-kill on H<N> at <elapsed>s — <metric>=<value>`. Then `kill -SIGUSR1 <pid>`. Then proceed to step 7 with the partial result.
 

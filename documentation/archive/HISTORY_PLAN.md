@@ -332,8 +332,8 @@ Update the "Board encoding and policy space" section to describe the new 22-plan
 
 ### Stage A verification
 
-1. `mcp__xcode-mcp-server__build_project` — clean build, zero errors.
-2. `mcp__xcode-mcp-server__run_project_tests` — all tests pass. New lookahead test passes.
+1. `mcp__drews-xcode-mcp__build_project` — clean build, zero errors.
+2. `mcp__drews-xcode-mcp__run_project_tests` — all tests pass. New lookahead test passes.
 3. Update `tools/stem_plane_norms.py` constants — change `INPUT_PLANES = 30` to `22` and update plane labels list. Re-run against a freshly-built network (won't load old models since archHash changed).
 4. Launch DrewsChessMachine app, Build Network, observe `[APP]` log banner reports `inputPlanes=22 policySize=4864`.
 5. Run Play-and-Train for ~5 minutes, verify `[STATS]` lines emit normally, no encoding-size mismatches in the log.

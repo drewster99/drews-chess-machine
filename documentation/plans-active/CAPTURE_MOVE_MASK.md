@@ -121,8 +121,8 @@ The legal-move list is already known at self-play time — `MPSChessPlayer.onCho
 
 ## Verification
 
-- `mcp__xcode-mcp-server__build_project` on `DrewsChessMachine.xcodeproj` — must build clean (single end-of-implementation build per project rules).
-- `mcp__xcode-mcp-server__run_project_tests` — all existing tests pass; new tests pass.
+- `mcp__drews-xcode-mcp__build_project` on `DrewsChessMachine.xcodeproj` — must build clean (single end-of-implementation build per project rules).
+- `mcp__drews-xcode-mcp__run_project_tests` — all existing tests pass; new tests pass.
 - Launch the app, click **Play and Train**, watch the session log:
   - `[MASK CHECK]` at step 0 still reports `inLegalMask=true` for every of the first 8 positions (proves the mask the trainer sees from the buffer matches `moves[pos]`).
   - `[MASKED-SOFTMAX]` at step 200 still reports `legal_sum ≈ 1.0`, `illegal_sum ≈ 0.0`.

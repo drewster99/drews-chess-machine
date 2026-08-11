@@ -154,7 +154,7 @@ The `[LEGAL-COST]` data shows the in-trainer legal-mask loop is ~32 ms / step = 
 ## Verification (whole plan)
 
 End-to-end after pipelining:
-1. **Build:** `mcp__xcode-mcp-server__build_project` clean.
+1. **Build:** `mcp__drews-xcode-mcp__build_project` clean.
 2. **Tests:** All `DrewsChessMachineTests` pass without modification.
 3. **`[LEGAL-COST]` comparison:** Run a 15-minute training session; expect `interStepMs` p50 to drop from ~915 ms toward ~770 ms (P3 alone) ± GPU-pipelining efficiency. `gapMs` should remain near zero.
 4. **Training-quality regression check:** Run 1+ hour of training and compare `[STATS]` line outputs against a recent baseline session: `pEnt`, `pLoss`, `vLoss`, `pW/pD/pL`, `gNorm` should evolve in the same ranges. The pipelined version produces a slightly different per-step `vBaseline` (1 step staler) — this should be statistically invisible at lr=1e-4, but verify.

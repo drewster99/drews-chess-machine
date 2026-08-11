@@ -662,7 +662,7 @@ CLAUDE.md mentions a `[BATCHER]` correctness probe that runs at session start. I
 
 After all phases complete and Engine Diagnostics passes:
 
-1. **Build clean** with xcode-mcp-server. Zero errors, zero warnings.
+1. **Build clean** with drews-xcode-mcp. Zero errors, zero warnings.
 2. **Launch app**. Confirm `[APP]` banner shows new arch hash.
 3. **Click "Build Network"**. Confirm parameter count log shows ~2.47 M.
 4. **Click "Engine Diagnostics"**. All probes pass.
@@ -679,7 +679,7 @@ After all phases complete and Engine Diagnostics passes:
 
 If all 10 steps pass, the bundled change is shippable. Commit.
 
-**Plus: run the XCTest suite via `mcp__xcode-mcp-server__run_project_tests`** before commit. All Phase 11 tests must pass without modification (per CLAUDE.md "tests MUST NOT be modified to make them pass").
+**Plus: run the XCTest suite via `mcp__drews-xcode-mcp__run_project_tests`** before commit. All Phase 11 tests must pass without modification (per CLAUDE.md "tests MUST NOT be modified to make them pass").
 
 ---
 
@@ -691,7 +691,7 @@ This bundle introduces several pure-logic components with formal correctness inv
 
 User creates the target in Xcode (one-time): `File → New → Target → Unit Testing Bundle`, named `DrewsChessMachineTests`, host application set to `DrewsChessMachine`. Resulting `Tests/DrewsChessMachineTests.swift` is the entry-point file. Subsequent test files added to that target's compile sources.
 
-Build/run via `mcp__xcode-mcp-server__run_project_tests` against the project.
+Build/run via `mcp__drews-xcode-mcp__run_project_tests` against the project.
 
 ### 11.2 What goes into XCTest (high value, pure logic)
 
@@ -750,12 +750,12 @@ These probes are run from the "Engine Diagnostics" UI button (Phase 9.5) and fro
 
 ### 11.4 CI / pre-commit hook (out of scope)
 
-The plan does not introduce a CI pipeline or git pre-commit hook. Tests run on demand via xcode-mcp-server during development. If we want enforcement later, that's a separate piece of work.
+The plan does not introduce a CI pipeline or git pre-commit hook. Tests run on demand via drews-xcode-mcp during development. If we want enforcement later, that's a separate piece of work.
 
 ### 11.5 Validation
 
 Phase 11 itself is "complete" when:
-- `mcp__xcode-mcp-server__run_project_tests` runs all four test files, all green.
+- `mcp__drews-xcode-mcp__run_project_tests` runs all four test files, all green.
 - Total test runtime under 10 seconds (these are pure-logic tests).
 - Test target builds cleanly without warnings.
 

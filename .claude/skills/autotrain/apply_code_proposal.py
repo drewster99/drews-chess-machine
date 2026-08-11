@@ -115,7 +115,7 @@ def revert_files(paths):
 def run_xcode_build(log_path: Path):
     """Build via xcrun xcodebuild. Returns (ok, last_50_lines).
 
-    We don't use xcode-mcp-server here because this script is invoked by the
+    We don't use drews-xcode-mcp here because this script is invoked by the
     autotrain skill (which uses Bash), not by Claude directly. The MCP tool is
     Claude-facing. xcrun xcodebuild from the CLI builds the same target with
     the same toolchain — close enough for a verification gate.

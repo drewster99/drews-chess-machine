@@ -14,7 +14,7 @@ The app is a single-window macOS SwiftUI app used as an interactive training con
 
 ## Build / run
 
-Always use **xcode-mcp-server** for building or running. Never invoke `xcodebuild` / `swift build` directly.
+Always use **drews-xcode-mcp** for building or running. Never invoke `xcodebuild` / `swift build` directly.
 
 - Project: `DrewsChessMachine/DrewsChessMachine.xcodeproj` (scheme `DrewsChessMachine`, macOS only).
 - A pre-Compile Run Script phase invokes `DrewsChessMachine/generate-build-info.sh`, which bumps `DrewsChessMachine/build_counter.txt` and regenerates `DrewsChessMachine/DrewsChessMachine/BuildInfo.swift` every build. Both files are expected to show up as modified after any build — never edit `BuildInfo.swift` by hand, and don't fight the counter changes.
@@ -34,7 +34,7 @@ The full suite is **slow — roughly an hour cold** on this machine: a cold buil
 The app terminal console only shows SwiftUI chart warnings and bring-up noise. All meaningful runtime telemetry goes to the session log:
 
 - `~/Library/Logs/DrewsChessMachine/dcm_log_YYYYMMDD-HHMMSS.txt` (one file per launch).
-- `xcode-mcp-server`'s `get_runtime_output` only returns output after the app has terminated; while the session is running, read the session log file directly.
+- `drews-xcode-mcp`'s `get_runtime_output` only returns output after the app has terminated; while the session is running, read the session log file directly.
 - Every log line is timestamped. Tags to look for: `[APP]` (launch banner with build+git), `[BUTTON]` (user actions), `[STATS]` (periodic training snapshot — one line per training step for the first 500 steps, then one per 60 seconds), `[ARENA]` (arena start/end, W/L/D, kept vs promoted), `[ALARM]` (e.g. policy entropy below threshold), `[CHECKPOINT]` (autosaves), `[BATCHER]` (batched-eval startup correctness probe).
 
 ## Training parameters

@@ -772,7 +772,7 @@ original rationale is not lost.
 
   ### Validation
 
-  - Build via xcode-mcp-server (only when no live training session is running).
+  - Build via drews-xcode-mcp (only when no live training session is running).
   - XCTest suite green — including any `ArenaEloStats` 0-game-record case added
     for the history decision above; no existing test modified.
   - Manual, with Play-and-Train running and the trainer advanced a few hundred
@@ -1024,7 +1024,7 @@ reads only `chartCoordinator`) + small `View` structs; probe scaffolding and
 `AnyView` chains deleted; **zero behavior change** to the self-play→train→arena
 loop. Each stage: move state + the methods that mutate it together into a
 controller, leave then inline a one-line forwarding shim, build (compile check
-via xcode-mcp-server), commit + push. Stage ordering is load-bearing (Stage 4's
+via drews-xcode-mcp), commit + push. Stage ordering is load-bearing (Stage 4's
 `startRealTraining` move needs Stages 2–3's state already on controllers).
 
 - **Stage 0 — pure formatters out** (≈700 lines, near-zero risk; *first PR*):

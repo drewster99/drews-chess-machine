@@ -261,7 +261,7 @@ The change is mostly Metal/MPSGraph (not unit-testable directly), but:
 
 ## 7. Validation (success criteria)
 
-1. **Build** via xcode-mcp-server (`build_project`) — clean compile. *(No app/test
+1. **Build** via drews-xcode-mcp (`build_project`) — clean compile. *(No app/test
    run while a training session is live — confirm idle first.)*
 2. **Fresh-build sanity** (Engine Diagnostics / Run Forward Pass on a new network):
    - Policy entropy near uniform `log(4864) ≈ 8.49` nats at init (clean-skip + α

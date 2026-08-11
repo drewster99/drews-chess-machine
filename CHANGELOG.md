@@ -1157,7 +1157,7 @@ the deferred test target and engine diagnostics work.
   exact). Synthetic v2 file (with the older 1152-float board stride)
   rejected with `unsupportedVersion(2)`. Bad magic and truncated
   header also reject cleanly.
-- All 38 tests pass via `mcp__xcode-mcp-server__run_project_tests`.
+- All 38 tests pass via `mcp__drews-xcode-mcp__run_project_tests`.
 
 ### Misc
 

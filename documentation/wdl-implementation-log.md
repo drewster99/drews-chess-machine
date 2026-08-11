@@ -3,7 +3,7 @@
 Companion to `wdl-value-head.md` (the design). This is the implementation journal: stages, decisions made autonomously, concerns to review. Created 2026-05-12, overnight autonomous pass.
 
 ## Working mode (per user instruction)
-- Drive the whole implementation, stage by stage. After each stage: build via xcode-mcp-server → commit (no push) → run `/recheck` on the stage → fix any issues → if changed, build again + commit again → next stage. Don't stop, don't ask for permission. Log decisions/concerns here for morning review.
+- Drive the whole implementation, stage by stage. After each stage: build via drews-xcode-mcp → commit (no push) → run `/recheck` on the stage → fix any issues → if changed, build again + commit again → next stage. Don't stop, don't ask for permission. Log decisions/concerns here for morning review.
 
 ## Key architectural decision (made autonomously — please review)
 
