@@ -34,10 +34,3 @@ build/
 # or builds a package; regenerated on demand, not part of the project.
 .swiftpm/
 
-
-# Local training-run bundle. A self-contained kit for continuing the v5 network
-# on another machine: the ~2.9 GB Lichess corpus shards, a prebuilt app, and
-# checkpoint weights. Everything in it is either regenerable or archived
-# separately; none of it belongs in git history, and an accidental `git add -A`
-# would otherwise commit gigabytes of binary data.
-v5-continue-bundle/
