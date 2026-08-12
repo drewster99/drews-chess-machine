@@ -64,6 +64,41 @@ Two derivations that are easy to get wrong:
   46,000, not from run 4's end (§5). Because run 4 has no probe past 46,000, the series
   stays strictly monotonic with nothing invented.
 
+## 2a. Hyperparameters
+
+Recorded per segment in `registry.json` under `segments[i].hparams`, because for
+segments 0–2 this is the **only surviving record** — their session logs died with the VM,
+and safetensors headers carry no hyperparameters.
+
+Constant across all 8 segments: `lr 0.01` flat with a 500-step warmup and no decay ·
+`batch 4096` · `gradClip 30` · `replayRatio 0.48` · `bufCap 1M` · `minPrefill 500k`.
+
+What actually varied — which is what the segment labels encode:
+
+| seg | label | `wd` | `momentum` | source |
+|---:|---|---|---|---|
+| 0 | wd1e-4 | **1e-4** | **0.90** | `v5-layernorm-output.md` |
+| 1 | wd5e-4 | **5e-4** | 0.90 | `v5-layernorm-output.md` |
+| 2 | m0.93 | **2.5e-4** | **0.93** | `v5-layernorm-output.md` |
+| 3–7 | cont-run1…5 | 2.5e-4 | 0.93 | `[REPLAY-HPARAMS]`, identical in all five logs |
+
+Segments 0–2 were a deliberate sweep, not drift. The doc's finding: **weight decay is not
+a strength lever** on this corpus at this scale — LR/momentum is. Segment 2's
+`momentum 0.93` raises steady-state step amplification from 10× to 14.3×, i.e. a higher
+*effective* LR without touching the warmup schedule.
+
+**Segment 2's settings are the ones the whole rest of the lineage inherited.** Segments
+3–7 ran on `wd 2.5e-4, momentum 0.93` unchanged, so everything from cum 60,901 onward is
+one hyperparameter regime. (This also explains
+`data/v5-source/v5-bundle-staging-parameters.json`, which carries `0.90 / 1e-4` —
+*segment 0's* values, still sitting in the app's settings when the bundle was first
+assembled, corrected 55 minutes later.)
+
+⚠️ Segments 0–2 record **9 fields, not 18.** Label smoothing, loss weights,
+`complementCE` and `sqrtBatchLR` are **unknown** for that era — the doc does not state
+them, and they are deliberately left absent rather than copied down from segments 3–7,
+whose settings post-date it.
+
 ## 3. Three axes, none of them interchangeable
 
 The lineage spans two machines at very different speeds, so a single "time" axis
@@ -230,11 +265,14 @@ root file that happened to survive. Nothing deleted.
 only surviving weights. Run 1's enumerated checkpoints survive complete in `run1/`, and
 231 of run 2's survive at the bundle root.
 
-Every root checkpoint is now **hardlinked** into `run2/ run3/ run4/ run5/` beside the
+Each checkpoint was first **hardlinked** into `run2/ run3/ run4/ run5/` beside the
 existing `run1/`, named `run<N>-step<M>.safetensors` by verified `model_id` — 335 links,
-zero extra bytes, nothing renamed or removed. Note a hardlink only survives a future
-overwrite if the writer replaces atomically rather than truncating in place; that is
-unverified, so durability rests on the copies, not the links.
+zero extra bytes. Once the merge into `Models/` was verified, the 335 ambiguous root
+names (`v5-cont-replay-step*.safetensors`) were **deleted on 2026-08-12**: each shared an
+inode with its `run<N>/` twin, so removing them freed no space and lost no data — proven
+after the fact by regenerating the manifest and finding the set of 616 distinct SHA-256
+contents unchanged. Every checkpoint in the bundle now has exactly **one** name, and that
+name states which run produced it.
 
 ## 7. Where the data lives
 
@@ -249,6 +287,7 @@ unverified, so durability rests on the copies, not the links.
 | full per-step session logs | `~/Library/Logs/DrewsChessMachine/` **and** gzipped in `…/archive/logs/` (all 5 segments, integrity + line counts verified) |
 | **weights** | `~/Library/Application Support/DrewsChessMachine/Models/` on the M5 — 615 files under per-segment names (see §10) |
 | probe pre-image + checkpoint manifest | `documentation/dashboards/data/v5-source/` (in git) |
+| everything unique to the bundle | `documentation/dashboards/data/v5-source/bundle-provenance/` (in git) |
 | verified full backup | `~/v5-consolidation-backup-20260811/` |
 
 `~/Library/Logs/DrewsChessMachine/` is **excluded from Time Machine**. The gzipped
@@ -385,6 +424,13 @@ in a checkpoint), and segment 0's `games_fed`.
 
 ## 10. Merged into normal storage (2026-08-12)
 
+**The repo-root `v5-continue-bundle/` is gone** (deleted 2026-08-12, 2.9 GB). It was a
+staging copy: 57 of its 58 files were byte-identical to the `~/Downloads` bundle, and the
+58th — a `parameters.json` snapshot taken mid-assembly with segment 0's settings still in
+place — is committed at `documentation/dashboards/data/v5-source/v5-bundle-staging-parameters.json`.
+The repo working tree is clean as a result; there is no longer an untracked bundle in it.
+
+
 `v5-continue-bundle/` was a shipping container, not a storage location. Its contents now
 live where every other run's do.
 
@@ -407,6 +453,20 @@ it, byte-identical, as `20260628-v5_5block_7x7_lnout-wd2.5e4-m93-replay-latest.s
 also survived at root). Every target was assigned from its safetensors `model_id`, never
 its old filename, and verified by SHA-256 against `checkpoint_inventory.json` after
 writing.
+
+**The lineage's final state is also present as a rolling `-replay-latest`**, matching the
+convention every other run follows (39 such files on the M5):
+`20260804-v5cont-resume4-replay-latest.safetensors` — byte-identical to
+`…-resume4-replay-step2000`, which is what a `-replay-latest` always is. `registry.json`
+now sets `out_model` to it. Before that it was `null`, which is why `enum_glob()` raised
+on v5 and why the run fell through to the legacy `-frozen` path. Discovery does not depend
+on it (every segment carries `enum_stem`), but it is what `master.py` reads for its
+"currently training" indicator and what a future resume would point at.
+
+Both loose `.safetensors` at the bundle root are therefore already in normal storage:
+`v5-checkpoint.safetensors` is segment 2's rolling output
+(`…-wd2.5e4-m93-replay-latest`, sha-identical) and `v5-cont-replay-latest.safetensors` is
+the file above. Neither needs a new home when the bundle goes.
 
 **One file carries a deliberate marker:**
 `20260802-v5cont-resume3-replay-step49374-DO-NOT-RESUME.safetensors`. Its metadata claims

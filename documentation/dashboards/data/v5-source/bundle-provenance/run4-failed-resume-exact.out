@@ -1,0 +1,6 @@
+error: --resume-exact from an early-epoch checkpoint (epoch 5, nextGame 0 < 22650-game reconstruction window) needs cross-epoch buffer reconstruction, not yet supported. Resume from a mid-epoch checkpoint, or use --start-game-index 0 for an approximate cold-refill resume.
+[REPLAY] starting offline corpus replay over 1 corpus path(s)
+[REPLAY] start-model: v5-cont-replay-step106333.safetensors modelID=20260729-1-VZ2j encoding=basic30
+[REPLAY-ARCH] (start-model) v5 . in basic30(30) -> stem 128 (7x7) . 5x[7x7+7x7 @128, SE+/4, relu/pre, clean_add, ReZero(0.447·tanh≤0.447), out:layer_norm, drop*1] . act relu . policy intermediate_conv(4864) . value WDL(16->FC128) . bfloat16 . 8,447,028 params
+[REPLAY-HPARAMS] lr=0.01 batch=4096 wd=0.00025 momentum=0.93 gradClip=30 entropyBonus=0 drawPenalty=0 policyW=1 valueW=1 illegalW=1 pLabelSmooth=0.1 vLabelSmooth=0.013 lrWarmup=500 bufCap=1000000 replayRatio=0.48 minPrefill=500000 complementCE=on sqrtBatchLR=on
+[REPLAY] corpus 20260624-192615-w3aA5b: 46 sealed shard(s)
