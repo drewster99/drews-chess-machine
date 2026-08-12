@@ -92,12 +92,12 @@
       "trainset": "std-2026-05"
     },
     "v5": {
-      "label": "v5 — 8.45M, 5-block (wd1e-4→wd5e-4→m0.93)",
+      "label": "v5 — 8.45M, 5-block · full lineage: 3 warm-start segments (M5) + 5 corpus-replay continuations (M4 Pro)",
       "color": "#1f77b4",
       "rezero_cap": 1.0,
       "n_blocks": 5,
       "params": 8450000,
-      "arch_summary": "5-block 128ch lc0-style, LayerNorm output; lineage wd1e-4 → wd5e-4 → m0.93 (3 warm-start segments)",
+      "arch_summary": "5-block 128ch lc0-style, LayerNorm output; lineage wd1e-4 → wd5e-4 → m0.93 (3 warm-start segments, M5) then 5 corpus-replay continuation segments on M4 Pro to cum step ~859.8k",
       "arch_stem": "basic30 → stem 7×7→128",
       "arch_blocks": "5× @128, 7×7+7×7, SE scale+bias/4, ReLU/pre, ReZero cap 1.0, LN-out",
       "arch_heads": "policy intermediate_conv (pre-conv 128) · value WDL(16→FC128)",
@@ -114,21 +114,79 @@
           "log": "dcm_log_20260627-201127.txt",
           "date": "20260627",
           "cumstep_base": 0,
-          "label": "wd1e-4"
+          "label": "wd1e-4",
+          "device": "M5"
         },
         {
           "log": "dcm_log_20260628-114648.txt",
           "date": "20260628",
           "cumstep_base": 45441,
           "label": "wd5e-4",
-          "elapsed_base_sec": 59620.0
+          "elapsed_base_sec": 59620.0,
+          "device": "M5"
         },
         {
           "log": "dcm_log_20260628-183831.txt",
           "date": "20260628",
           "cumstep_base": 60901,
           "label": "m0.93",
-          "elapsed_base_sec": 59620.0
+          "elapsed_base_sec": 59620.0,
+          "device": "M5"
+        },
+        {
+          "cumstep_base": 100320,
+          "date": "20260702",
+          "device": "M4 Pro",
+          "elapsed_base_sec": 111967.7,
+          "games_base": 12933495,
+          "label": "cont-run1",
+          "log": "dcm_log_20260702-201756.txt",
+          "model_id": "20260703-1-Dg5v",
+          "wall_base_sec": 111967.7
+        },
+        {
+          "cumstep_base": 368826,
+          "date": "20260713",
+          "device": "M4 Pro",
+          "elapsed_base_sec": 1058304.3,
+          "games_base": 47582603,
+          "label": "cont-run2",
+          "log": "dcm_log_20260713-195047.txt",
+          "model_id": "20260714-1-h7vI",
+          "wall_base_sec": 1058304.3
+        },
+        {
+          "cumstep_base": 705436,
+          "date": "20260728",
+          "device": "M4 Pro",
+          "elapsed_base_sec": 2287238.7,
+          "games_base": 90998480,
+          "label": "cont-run3",
+          "log": "dcm_log_20260728-223132.txt",
+          "model_id": "20260729-1-VZ2j",
+          "wall_base_sec": 2361193.1
+        },
+        {
+          "cumstep_base": 811769,
+          "date": "20260802",
+          "device": "M4 Pro",
+          "elapsed_base_sec": 2664639.7,
+          "games_base": 104743805,
+          "label": "cont-run4",
+          "log": "dcm_log_20260802-152830.txt",
+          "model_id": "20260802-2-Xuub",
+          "wall_base_sec": 2738594.1
+        },
+        {
+          "cumstep_base": 857769,
+          "date": "20260804",
+          "device": "M4 Pro",
+          "elapsed_base_sec": 2826258.3,
+          "games_base": 110668628,
+          "label": "cont-run5",
+          "log": "dcm_log_20260804-221739.txt",
+          "model_id": "20260805-1-0pTW",
+          "wall_base_sec": 2900212.7
         }
       ],
       "trainset": "std-2026-05"

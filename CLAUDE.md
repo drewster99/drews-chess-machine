@@ -134,6 +134,7 @@ See `documentation/sampling-parameters.md` for rationale.
 - `documentation/sampling-parameters.md` — temperature schedule design, ModelID mint/inherit rules, diversity tracking.
 - `documentation/mpsgraph-primitives.md` — cookbook for the MPSGraph APIs actually used. Useful when editing `ChessNetwork.swift`.
 - `documentation/disk-cleanup.md` — maintenance runbook for reclaiming disk from `Sessions/`: why `manual`/`promote` saves accumulate, the Time Machine local-snapshot reclaim step (deletion alone frees nothing until `tmutil thinlocalsnapshots`), and a guarded keeper-selection policy.
+- `documentation/v5-lineage.md` — the consolidated v5 training record: the 8-segment / 2-machine chain with verified modelID links and every `cumstep_base` derivation, the three chart axes, the surviving-checkpoint inventory, run 4's shard-permission truncation, and the traps (repeated step numbers across segments, filenames not identifying checkpoints). **Read before touching any v5 number** — raw step numbers are ambiguous and cum steps shifted +100,320 from the retired bundle monitor's figures.
 - `documentation/UCI.md` — DCM and the UCI protocol, both directions: **DCM as a UCI engine** (`--uci` — options `Model`/`Temperature`, the single-forward-pass `go` that ignores all limits, Temperature-0 determinism) and **DCM driving external engines** (`--train-vs-uci` — CLI spec/per-pool-vs-global, fixed-per-move `go` timing, both-sides distillation, known limitations: UCI-native only, no `go` validation/compliance, bare-`go` pitfall, hardcoded 10 s/30 s timeouts).
 - `documentation/cutechess-setup.md` — concrete cutechess-cli match harness for benchmarking DCM vs Stockfish (engine registration, why TC goes on the opponent, mandatory opening book for Temperature-0 determinism, Elo-ladder rating). Linked from UCI.md.
 - `ROADMAP.md` — deferred work, completed-with-design-notes, and the save/load design. **Completed items stay — move to "Completed" rather than delete, and preserve detail including any deviations from the original plan.**
@@ -153,6 +154,21 @@ The `[STATS]` line carries a dense set of counters. A few that matter for diagno
 - `vMean` / `vAbs` — mean / mean-abs of the derived value scalar `p_win − p_loss` (no tanh). `pW` / `pD` / `pL` — the W/D/L softmax batch-means (sum ≈ 1). The value-head collapse signature is `pD → 1.0` (equivalently `vAbs → 0` and staying there) — the post-WDL "everything is a draw"; watch `pD` falling off its `0.75` bias-init prior as the sign training is working. `vLoss` is now categorical-CE-scale (≈ `[0, ln 3]` at convergence), not the old MSE scale.
 - `gNorm` — pre-clip global gradient L2 norm, reported every step. Compare against `ChessTrainer.gradClipMaxNorm`; values above it are clip events, not bugs.
 - `diversity=unique=X/Y(%) diverge=N.N` — rolling `GameDiversityTracker` snapshot over the last 200 games; `diverge` is the avg ply at which pairs of games first differ. Steady-state healthy is `[0-5]`-heavy in the histogram tile.
+
+## Run tracking: three axes (architectural decision, 2026-08-11)
+
+The dashboards (`documentation/dashboards/`) plot every run on **three separate x-axes**, and they are not interchangeable. `registry.json` holds per-run segment config; `data/<run>.csv` (columns in `_schema.py`) is the source of truth; `master.py` renders.
+
+- **step** — `cum_step = segment.cumstep_base + training_step`. Exact, but a *work* axis only while batch size and replay ratio hold constant.
+- **time** — `elapsed_train_sec`, which is **sleep-clamped**: `_clamped_timeline` banks `min(real_gap, segment_median_s_per_step × Δsteps + 120s)` per interval, one-directionally (faster-than-median intervals pass through uncapped). `wall_sec` is the same walk uncapped, so `wall_sec − elapsed_train_sec` is exactly what the clamp discarded. Keep both; the clamp must stay auditable rather than baked in.
+- **compute** — `games_fed`, cumulative corpus games from the runner's own `games=`. The device-independent axis, and the one to reach for when comparing across machines.
+
+Rules that follow from this, and that must not be quietly reversed:
+
+- **Never normalize time across devices.** Where a lineage spans machines the by-time curve genuinely changes slope (v5 breaks 2.59× at cum 100,320, M5 → M4 Pro). That break is hardware and stays visible. With batch and replay ratio fixed, a "normalized seconds" axis reduces to `steps × reference_ms` — a relabelled step axis that adds nothing while destroying the record of real cost.
+- **`games_fed` is measured, never modeled.** Where a segment's log is missing, leave it **blank** — not zero, not interpolated from an anchor. A modeled value in a measured column is worse than a gap because it still looks plottable.
+- Each segment carries `device`, `model_id`, `games_base`, and pinned `elapsed_base_sec` / `wall_base_sec` in `registry.json`. Pins exist because prior segments' logs may be absent; without them the time axis silently restarts at zero.
+- **Identify checkpoints by safetensors `__metadata__` (`model_id` + `training_step`), never by filename.** Segment-local step numbering means names repeat and get overwritten in place. `import-probes` enforces a modelID match per segment and refuses mismatches; `ckpt_inventory.py` builds a manifest from headers.
 
 ## Conventions specific to this project
 
