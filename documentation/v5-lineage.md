@@ -423,6 +423,13 @@ in a checkpoint), and segment 0's `games_fed`.
 
 ## 10. Merged into normal storage (2026-08-12)
 
+**The repo-root `v5-continue-bundle/` is gone** (deleted 2026-08-12, 2.9 GB). It was a
+staging copy: 57 of its 58 files were byte-identical to the `~/Downloads` bundle, and the
+58th — a `parameters.json` snapshot taken mid-assembly with segment 0's settings still in
+place — is committed at `documentation/dashboards/data/v5-source/v5-bundle-staging-parameters.json`.
+The repo working tree is clean as a result; there is no longer an untracked bundle in it.
+
+
 `v5-continue-bundle/` was a shipping container, not a storage location. Its contents now
 live where every other run's do.
 

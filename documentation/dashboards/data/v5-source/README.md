@@ -49,8 +49,10 @@ then-current settings; the values were corrected before it shipped. **No trainin
 ever used 0.90 / 1e-4** — all five continuation segments (3–7) ran on 0.93 / 2.5e-4, as
 every `[REPLAY-HPARAMS]` line in their session logs confirms.
 
-It is kept only because it was the sole non-duplicate content in a 2.9 GB directory that
-was otherwise a byte-for-byte copy (corpus, checkpoint, README all identical by hash).
+**The repo-root copy was deleted on 2026-08-12** — this file is all that survives of it,
+and is the reason it could be deleted. 57 of its 58 files were byte-identical to the
+`~/Downloads` bundle (corpus, checkpoint, README, all verified by hash); `parameters.json`
+was the only one that was not, and its exact bytes are here.
 Do not mistake `wd 1e-4` here for segment 0's `wd1e-4` label — that segment ran on
 2026-06-27, five days before this file was written.
 
