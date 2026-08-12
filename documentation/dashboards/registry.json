@@ -579,15 +579,15 @@
           "log": "dcm_log_20260702-095124.txt",
           "date": "20260702",
           "cumstep_base": 0,
-          "label": "run",
-          "enum_stem": "20260702-Qeu8"
+          "label": "run"
         },
         {
           "log": "dcm_log_20260702-182922.txt",
           "date": "20260702",
           "cumstep_base": 41407,
           "label": "resume (enumerated)",
-          "elapsed_base_sec": 26678.7
+          "elapsed_base_sec": 26678.7,
+          "enum_stem": "20260702-Qeu8"
         },
         {
           "label": "resume2 (enumerated)",

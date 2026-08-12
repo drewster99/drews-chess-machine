@@ -27,7 +27,7 @@ Subcommands:
 
 Idempotent: track/migrate never duplicate a cum_step already present.
 """
-import os, re, sys, csv, json, glob, struct, math, bisect, argparse, collections, datetime
+import os, re, sys, csv, json, glob, struct, math, bisect, argparse, collections, itertools, datetime
 import numpy as np
 from _schema import FIELDS  # single source of the CSV column order (shared with selfplay.py)
 
@@ -494,7 +494,7 @@ def enum_specs(cfg):
 
 _RESUME_SUFFIX = re.compile(r"^(?:run|original|resume\d*)$")
 
-def discover_enum_stems(cfg, verbose=True):
+def discover_enum_stems(cfg, run=None, verbose=True):
     """Propose an `enum_stem` for each segment by reading checkpoints on disk.
 
     Filling `enum_stem` by hand is error-prone and the cost of getting it wrong is
@@ -540,41 +540,93 @@ def discover_enum_stems(cfg, verbose=True):
         suffix = stem[len(root):].lstrip("-") or "run"
         if not _RESUME_SUFFIX.match(suffix):
             continue                                  # sibling run, not this one
-        if suffix not in lab and suffix == "run" and "original" in lab:
-            suffix = "original"
-        if suffix not in lab:
-            continue
-        by_stem[(lab[suffix], stem)].append(p)
+        by_stem[stem].append(p)
 
-    out, refused = {}, []
-    order = []
-    for (si, stem), paths in sorted(by_stem.items()):
-        ids, times = set(), []
+    # Which segment a stem belongs to is decided by EVIDENCE, not by its name.
+    # The obvious rule -- unsuffixed stem means the first segment -- is wrong:
+    # qeu8's segment 0 predates --enumerate-checkpoints (its marks are the legacy
+    # cum-named -frozen files), so the first segment to write enumerated files was
+    # segment 1, and it wrote them under the UNSUFFIXED stem. Trusting the name
+    # there maps 68 files onto segment 0's base and invents 68 rows at cum steps
+    # that never existed. So: score every segment by how many of the stem's files
+    # land on a cum_step the CSV already knows, and take the unambiguous winner.
+    csv_cums = {int(r["cum_step"]) for r in read_csv(run)} if run else set()
+    out, refused, order, pool = {}, [], [], []
+    for stem, paths in sorted(by_stem.items()):
+        ids, times, steps = set(), [], []
         for p in paths:
             try:
                 with open(p, "rb") as f:
                     n = struct.unpack("<Q", f.read(8))[0]
                     m = json.loads(f.read(n)).get("__metadata__", {})
-                ids.add(m.get("model_id"))
+                ids.add(m.get("model_id")); steps.append(int(m["training_step"]))
                 if m.get("created_at_unix"):
                     times.append(int(m["created_at_unix"]))
             except (OSError, ValueError, KeyError, struct.error):
                 pass
         if len(ids) > 1:
-            refused.append((si, stem, "spans %d model_ids %s" % (len(ids), sorted(ids))))
+            refused.append((stem, "spans %d model_ids %s" % (len(ids), sorted(ids))))
             continue
-        out[si] = stem
-        order.append((min(times) if times else 0, si, stem, len(paths)))
+        if not steps:
+            continue
+        # Score by how many of the stem's files land on a cum_step the CSV already
+        # knows. Deliberately NO hard cutoff on a segment's nominal length: a run
+        # routinely writes checkpoints past the point its successor resumed from
+        # (nt8y's resume3 reaches step 140,000 against a 139,000 span; v5's run 4
+        # ran to 49,374 while run 5 forked at 46,000). Those files are real but
+        # off-lineage, and excluding a segment because of them threw away the right
+        # answer. A genuinely wrong segment shows up as a low hit-rate instead.
+        # Two signals, because either alone is too weak. Hit-rate says "these files
+        # explain marks this run actually has" -- but with marks every 1000 steps and
+        # bases 1000 apart, several segments score 100% by coincidence. Span-closeness
+        # says "this segment is about as long as this stem reaches", which is sharp,
+        # but is NOT a hard cutoff: a run routinely writes checkpoints past the point
+        # its successor resumed from (nt8y's resume3 hits step 140,000 against a
+        # 139,000 span; v5's run 4 reached 49,374 while run 5 forked at 46,000). So
+        # hit-rate gates, and span-closeness ranks.
+        last_cum = max(csv_cums) if csv_cums else 0
+        cand = {}
+        for i, sg in enumerate(segs):
+            base = sg["cumstep_base"]
+            r = sum(1 for st in steps if base + st in csv_cums) / len(steps)
+            if r >= 0.5:
+                span = (segs[i + 1]["cumstep_base"] - base) if i + 1 < len(segs) else max(last_cum - base, 0)
+                cand[i] = (r, -abs(span - max(steps)))
+        if not cand:
+            refused.append((stem, "no segment's marks account for these files"))
+            continue
+        pool.append((min(times) if times else 0, stem, len(paths), cand))
 
-    order.sort()
-    if [si for _, si, _, _ in order] != sorted(si for _, si, _, _ in order):
-        refused.append((None, None, "creation order disagrees with segment order: %s"
-                        % [(si, stem) for _, si, stem, _ in order]))
-        out = {}
+    # Segments run one after another, so stems ordered by creation time must map to
+    # segments in STRICTLY INCREASING order. Hit-rate alone is too weak on its own --
+    # a two-file stem lands on known marks under several bases by coincidence. Taking
+    # the best monotonic assignment over all stems resolves those together, and is
+    # what distinguishes v5's seg 6 from seg 7 and nt8y's resume2/3/4.
+    pool.sort()
+    best, ties = None, 0
+    for combo in itertools.combinations(range(len(segs)), len(pool)):
+        if any(si not in c[3] for si, c in zip(combo, pool)):
+            continue
+        tot = (sum(c[3][si][0] for si, c in zip(combo, pool)),
+               sum(c[3][si][1] for si, c in zip(combo, pool)))
+        if best is None or tot > best[0]:
+            best, ties = (tot, combo), 1
+        elif tot == best[0]:
+            ties += 1
+    if best is None:
+        refused.append((None, "no monotonic assignment of %d stem(s) onto %d segments"
+                        % (len(pool), len(segs))))
+    elif ties > 1:
+        refused.append((None, "%d monotonic assignments score equally -- refusing to guess" % ties))
+    else:
+        for si, (t, stem, n, cand) in zip(best[1], pool):
+            out[si] = stem
+            order.append((t, si, stem, n, cand[si][0]))
+        order.sort()
     if verbose:
-        for _, si, stem, n in order:
-            print("  seg %d  %-46s %4d files" % (si, stem, n))
-        for si, stem, why in refused:
+        for _, si, stem, n, sc in order:
+            print("  seg %d  %-46s %4d files  %.0f%% land on known marks" % (si, stem, n, 100 * sc))
+        for stem, why in refused:
             print("  REFUSED %s: %s" % (stem or "(run)", why))
     return out
 
@@ -1251,7 +1303,7 @@ if __name__ == "__main__":
             if not (cfg.get("out_model") or ""):
                 continue
             print(f"{r}:")
-            found = discover_enum_stems(cfg)
+            found = discover_enum_stems(cfg, r)
             have = {i: s.get("enum_stem") for i, s in enumerate(cfg["segments"]) if s.get("enum_stem")}
             new = {i: st for i, st in found.items() if have.get(i) != st}
             if have:
