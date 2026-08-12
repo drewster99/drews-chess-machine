@@ -103,11 +103,12 @@ Reading the compute axis:
   seg5→6's is ~7,800 against run 4's logged `gamesFed=7563` (run 4 prefilled 500K
   positions rather than the usual 1M). Those games are really consumed, so they are
   really counted; they simply arrive with no steps attached.
-- **Segments 0–2 have blank `games_fed`, not zero.** Their logs are on the other
-  machine, so only one anchor survives (12,933,495 at cum 100,320, from the entry
-  checkpoint's `replay_next_game_index`). Interpolating 96 rows at 129.5 games/step
-  would look seamless and would be modeled data in a column whose entire point is that
-  it is measured. Left blank on purpose.
+- **Segment 0 has blank `games_fed`, not zero.** Its frozen checkpoints predate the
+  resume-metadata feature, so they carry no `replay_next_game_index` — the value was
+  never recorded anywhere. Interpolating its 41 rows at 129.5 games/step would look
+  seamless and would be modeled data in a column whose entire point is that it is
+  measured. Blank by necessity, not preference. Segments 1–2 **were** recovered — see
+  "Recovering segments 0–2".
 
 ### `elapsed_train_sec` is sleep-clamped; `wall_sec` is not
 
@@ -290,59 +291,50 @@ only non-measured row in the file.
 **Do not** point `probe_backfill()`'s enumerated scan at the bundle: it maps filenames
 to the latest segment's base and would mis-assign every colliding name.
 
-### Recovering segments 0–2 (the one untried source)
+### Recovering segments 0–2 — DONE (2026-08-12)
 
-Segments 0–2 are blank on the **time** axis (segment 1 only) and on the **compute** axis
-(all three), because their session logs are gone from both machines. But those logs are
-not the only place that data ever existed.
+Segments 0–2's session logs are gone from **both** machines. But their per-mark data
+survived in the `-frozen` checkpoints those rows already named, mounted from the M5 at
+`/Volumes/andrew/Library/Application Support/DrewsChessMachine/Models/`.
 
-Every one of those 95 rows names a surviving artifact in its `frozen_file` column:
+**Why nobody found them:** the registry's run-level `frozen_glob`
+(`20260628-v5_5block_7x7_lnout-step*-frozen`) matches only segment 0. Each segment has
+its own out-model family, now recorded per segment as `frozen_prefix`:
 
-```
-20260628-v5_5block_7x7_lnout-step<cum>-frozen.safetensors
-```
+| seg | frozen_prefix | files | steps | CSV rows |
+|---:|---|---:|---|---:|
+| 0 | `20260628-v5_5block_7x7_lnout` | 5 | 10000–45000 | 41 |
+| 1 | `20260628-v5_5block_7x7_lnout-wd5e4` | 15 | 1000–15000 | 15 ✓ |
+| 2 | `20260628-v5_5block_7x7_lnout-wd2.5e4-m93` | 39 | 1000–39000 | 39 ✓ |
 
-If those files still exist on the M5 machine under
-`~/Library/Application Support/DrewsChessMachine/Models/`, their safetensors
-`__metadata__` carries per-checkpoint facts that reconstruct both axes **as
-measurements**, not estimates:
+Segments 1 and 2 have a checkpoint for **every** mark. Their headers carry
+`created_at_unix` → `wallclock_iso`, and `replay_next_game_index` → `games_fed`.
+Segment 0's five survivors carry only `created_at_unix` (they predate the resume
+metadata), and its timestamps were already known, so it gained nothing.
 
-| header field | restores |
-|---|---|
-| `created_at_unix` | `wallclock_iso` for every mark |
-| `replay_next_game_index` | `games_fed` — extends the compute axis back to step 1 |
-| `training_step` | confirms each mark's identity, independent of filename |
+**Validated before anything was written.** Segments 0 and 2 already had log-derived
+timestamps, so the headers were checked against them first: segment 0 matched all 5
+exactly, segment 2 matched **37 of 39 exactly and 2 off by one second** — sub-second
+truncation in the log versus an integer `created_at_unix`. Only then was segment 1
+trusted.
 
-**The method validates itself before it is trusted.** Segments 0 and 2 already have
-known `wallclock_iso` values from their logs. Run the extraction on those first: if the
-headers reproduce the timestamps already in the CSV, the method is proven and segment 1's
-recovered values inherit that confidence. If they disagree, stop — nothing gets written.
+⚠️ **Timezone:** the M5 ran on Pacific, this Mac on Central. `created_at_unix` is an
+instant; the CSV's `wallclock_iso` is M5-local. Convert as **UTC − 7 h (PDT)**. Reading
+the header with a bare `datetime.fromtimestamp()` on a Central machine yields a
+consistent +2 h error that looks plausible and is wrong.
 
-Only the *headers* are needed, not the weights. Check cheaply on the M5 machine:
+Recovered: 15 × `wallclock_iso`, 15 × `elapsed_train_sec` (chained off segment 0's last
+known elapsed using measured wall deltas), and 54 × `games_fed`. The dataset is now
+**856/856 on the time axis** and **815/856 on the compute axis** — only segment 0's 41
+rows remain blank, unrecoverably.
 
-```bash
-cd ~/Library/Application\ Support/DrewsChessMachine/Models
-ls 20260628-v5_5block_7x7_lnout-step*-frozen.safetensors | wc -l    # expect ~95
+Segment 1's recovered duration also confirms the wall-clock bridge independently: its
+marks span 13:18:04 → 18:28:02, sitting exactly between segment 0's last (12:45:24) and
+segment 2's first (19:00:42), and the three sub-intervals measure 1.360 / 1.328 /
+1.342 s/step against a 1.327 in-segment rate.
 
-python3 - <<'EOF' > /tmp/v5-frozen-headers.json
-import json, glob, struct, os
-out = {}
-for p in sorted(glob.glob("20260628-v5_5block_7x7_lnout-step*-frozen.safetensors")):
-    with open(p, "rb") as f:
-        n = struct.unpack("<Q", f.read(8))[0]
-        out[os.path.basename(p)] = json.loads(f.read(n)).get("__metadata__", {})
-json.dump(out, open("/dev/stdout", "w"), indent=1)
-EOF
-```
-
-That yields a file of a few hundred KB — copy that across, not the ~3.2 GB of weights.
-
-What it cannot recover: `ms_per_step` (a per-log-line reading, not stored in a
-checkpoint), and `elapsed_train_sec` directly — though elapsed follows from consecutive
-`created_at_unix` values run through the same clamp, once the wallclock series exists.
-
-If the files are gone too, blank is the end of the line for segment 1's per-mark timing:
-the wall-clock bridge above recovers its aggregate 5.74 h and nothing finer.
+Still unrecoverable: `ms_per_step` for segments 0–2 (a per-log-line reading, never stored
+in a checkpoint), and segment 0's `games_fed`.
 
 ### Two traps when regenerating on this machine
 
