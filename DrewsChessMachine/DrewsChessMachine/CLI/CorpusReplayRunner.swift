@@ -30,6 +30,13 @@ struct ReplayParams: Sendable {
     var illegalMassWeight: Double
     var policyLabelSmoothingEpsilon: Double
     var valueLabelSmoothingEpsilon: Double
+    /// Channel-dropout rate. Unlike its neighbours here this one is NOT a
+    /// `ChessTrainer.init` argument — it is a property setter that pushes into
+    /// the training graph — so each runner must apply it explicitly after
+    /// constructing the trainer. It was absent from this struct entirely, which
+    /// is why the corpus and vs-UCI paths silently trained at rate 0 no matter
+    /// what `--parameters` specified.
+    var dropoutRate: Double
     var momentumCoeff: Double
     var signedAdvantageComplementCE: Bool
     var sqrtBatchScalingLR: Bool
@@ -84,6 +91,10 @@ struct CorpusReplayConfig: Sendable {
     /// actor in the pre-flight handler (the `ModelIDMinter` is main-actor
     /// isolated and the replay loop runs off-actor, so it can't mint there).
     var runModelID: String
+    /// Destination for the run's `results.json` (`--output`), or nil for no
+    /// JSON. Previously `--output` was parsed but reached only the self-play
+    /// controller, so passing it here produced nothing at all.
+    var outputURL: URL?
 }
 
 enum CorpusReplayError: LocalizedError {
@@ -230,6 +241,14 @@ enum CorpusReplayRunner {
     // MARK: - The run
 
     private static func runReplay(config: CorpusReplayConfig, params p: ReplayParams, abort: ReplayAbortFlag) async throws -> Result {
+        // `--output` support. Only allocated when a destination was given, so a
+        // run without `--output` carries no per-step recording cost at all.
+        let recorder: CliTrainingRecorder? = config.outputURL == nil ? nil : {
+            let r = CliTrainingRecorder()
+            r.setSessionID(config.runModelID)
+            return r
+        }()
+        let runStart = CFAbsoluteTimeGetCurrent()
         // --start-model: load a saved model and continue training from it. The
         // file embeds its own architecture, which then drives both the trainer
         // and the feeder net — a start model of a different shape than the
@@ -272,10 +291,10 @@ enum CorpusReplayRunner {
         // two on/off flags are interpolated rather than passed through %@ (Swift
         // String + %@ relies on NSString bridging — avoid it).
         let hparamsLine = String(
-            format: "[REPLAY-HPARAMS] lr=%.6g batch=%ld wd=%.4g momentum=%.3g gradClip=%.3g entropyBonus=%.4g drawPenalty=%.4g policyW=%.3g valueW=%.3g illegalW=%.4g pLabelSmooth=%.4g vLabelSmooth=%.4g lrWarmup=%ld bufCap=%ld replayRatio=%.3g minPrefill=%ld",
+            format: "[REPLAY-HPARAMS] lr=%.6g batch=%ld wd=%.4g momentum=%.3g gradClip=%.3g entropyBonus=%.4g drawPenalty=%.4g policyW=%.3g valueW=%.3g illegalW=%.4g pLabelSmooth=%.4g vLabelSmooth=%.4g dropout=%.4g lrWarmup=%ld bufCap=%ld replayRatio=%.3g minPrefill=%ld",
             p.learningRate, p.trainingBatchSize, p.weightDecay, p.momentumCoeff, p.gradClipMaxNorm,
             p.entropyBonus, p.drawPenalty, p.policyLossWeight, p.valueLossWeight, p.illegalMassWeight,
-            p.policyLabelSmoothingEpsilon, p.valueLabelSmoothingEpsilon,
+            p.policyLabelSmoothingEpsilon, p.valueLabelSmoothingEpsilon, p.dropoutRate,
             p.lrWarmupSteps, p.replayBufferCapacity, p.replayRatioTarget,
             p.replayBufferMinPositionsBeforeTraining
         )
@@ -435,6 +454,13 @@ enum CorpusReplayRunner {
             lrWarmupSteps: effectiveWarmupSteps,
             arch: arch
         )
+        // `dropout_rate` is the one training parameter with no `init` argument —
+        // it is a property setter that pushes into the graph — so unlike the
+        // constructor-supplied parameters above it has to be applied explicitly.
+        // Without this a corpus run silently trained at rate 0 no matter what
+        // `--parameters` asked for, which made a dropout A/B sweep impossible to
+        // run on this path.
+        trainer.dropoutRate = Float(p.dropoutRate)
         let buffer = ReplayBuffer(capacity: p.replayBufferCapacity, inputEncoding: net.inputEncoding)
         let feeder = CorpusReplayFeeder(network: net, buffer: buffer)
 
@@ -751,6 +777,39 @@ enum CorpusReplayRunner {
                     + String(format: " gNorm=%.3f lr=%.3g ms=%.1f", timing.gradGlobalNorm, liveLR, timing.totalMs)
                     + " buf=\(buffer.count) plies=\(positionsFed) games=\(gamesFed) epoch=\(epochsCompleted)"
                 emit(line)
+                // Same cadence as the log line, so results.json and the log
+                // describe the same ticks.
+                recorder?.appendStats(CliTrainingRecorder.StatsLine(
+                    elapsedSec: CFAbsoluteTimeGetCurrent() - runStart,
+                    steps: step,
+                    positionsTrained: positionsFed,
+                    bufferCount: buffer.count,
+                    bufferCapacity: p.replayBufferCapacity,
+                    policyLoss: Double(timing.policyLoss),
+                    valueLoss: Double(timing.valueLoss),
+                    policyEntropy: Double(timing.policyEntropy),
+                    policyIllegalMassPenalty: Double(timing.illegalMassPenalty),
+                    gradGlobalNorm: Double(timing.gradGlobalNorm),
+                    playedMoveProb: Double(timing.playedMoveProb),
+                    valueMean: Double(timing.valueMean),
+                    valueAbsMean: Double(timing.valueAbsMean),
+                    valueProbWin: Double(timing.valueProbWin),
+                    valueProbDraw: Double(timing.valueProbDraw),
+                    valueProbLoss: Double(timing.valueProbLoss),
+                    batchSize: batchSize,
+                    learningRate: Double(liveLR),
+                    gradClipMaxNorm: p.gradClipMaxNorm,
+                    weightDecayC: p.weightDecay,
+                    dropoutRate: p.dropoutRate,
+                    entropyRegularizationCoeff: p.entropyBonus,
+                    drawPenalty: p.drawPenalty,
+                    policyLossWeight: p.policyLossWeight,
+                    valueLossWeight: p.valueLossWeight,
+                    lrEffectiveBase: p.learningRate,
+                    momentumEffective: p.momentumCoeff,
+                    buildNumber: BuildInfo.buildNumber,
+                    trainerID: config.runModelID
+                ))
             }
             // Periodic autosave (overwrites the rolling output file). A disk-full
             // save throws here, halting the run (propagates out of runReplay) so it
@@ -773,6 +832,30 @@ enum CorpusReplayRunner {
             nextGameIndex: finalResume.nextGame, shard: finalResume.shard,
             epoch: finalResume.epoch, populatedPlies: buffer.count,
             corpusID: resumeCorpusID, corpusPath: resumeCorpusPath)
+
+        // `results.json` last, after the final model save — a run that dies
+        // saving weights should not also claim a clean results record.
+        if let recorder, let outputURL = config.outputURL {
+            // Ctrl-C maps to `manualStop`; every clean exit here (step limit,
+            // epoch limit, corpus exhaustion) reports `stepLimitReached` — the
+            // enum has no case distinguishing the latter two, and inventing one
+            // would change the results.json schema for the self-play path too.
+            recorder.setTerminationReason(aborted ? .manualStop : .stepLimitReached)
+            let counts = recorder.countsSnapshot()
+            // Logged, not thrown — matching the self-play path. The trainer
+            // model is already safely on disk by this point, so a failed
+            // results write (bad --output path, full volume) must not turn a
+            // completed multi-hour run into a nonzero exit.
+            do {
+                try recorder.writeJSON(
+                    to: outputURL,
+                    totalTrainingSeconds: CFAbsoluteTimeGetCurrent() - runStart
+                )
+                emit("[REPLAY] wrote results: \(outputURL.path) (stats=\(counts.stats))")
+            } catch {
+                emit("[REPLAY] results write FAILED for \(outputURL.path): \(error.localizedDescription)")
+            }
+        }
 
         return Result(steps: step, positionsFed: positionsFed, gamesFed: gamesFed, epochs: epochsCompleted)
     }
