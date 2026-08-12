@@ -11,7 +11,8 @@ because they are the *pre-image* of numbers that are otherwise only derived.
 | `new_ckpts_run4.jsonl` | segment 6 (cont-run4) — 46 |
 | `new_ckpts_run5.jsonl` | segment 7 (cont-run5) — 2 |
 | `checkpoint_inventory.json` | SHA-256 + safetensors metadata for all 650 surviving checkpoints |
-| `v5-run-parameters.json` | the hyperparameters all five continuation runs used, byte-identical across them |
+| `v5-run-parameters.json` | the hyperparameters all five continuation runs **actually used**, byte-identical across them |
+| `v5-bundle-staging-parameters.json` | a pre-finalisation snapshot — **never used for training**, see below |
 
 These 761 probes were imported into `../v5.csv` (`replay.py import-probes`), which is
 the **source of truth**. They are retained because each probe JSON holds more than the
@@ -23,5 +24,26 @@ checkpoints they describe no longer exist, so the probes cannot be re-run.
 `checkpoint_inventory.json` is what made the merge into `Models/` verifiable: it maps
 every file to its `model_id` + `training_step`, which is the only trustworthy identity —
 four distinct files have been named `v5-cont-replay-step1000.safetensors`.
+
+## The two parameter files
+
+`v5-continue-bundle/` existed in two places: the working copy in `~/Downloads` and a
+staging copy at the repo root. They were byte-identical except for `parameters.json`,
+and the difference is exactly two values:
+
+| | staging (repo root, Jul 2 17:41) | shipped (`~/Downloads`, Jul 2 18:36) |
+|---|---|---|
+| `momentum_coeff` | 0.90 | **0.93** |
+| `weight_decay` | 1e-4 | **2.5e-4** |
+
+The staging copy was captured 55 minutes into assembling the bundle, carrying the app's
+then-current settings; the values were corrected before it shipped. **No training run
+ever used 0.90 / 1e-4** — all five continuation segments (3–7) ran on 0.93 / 2.5e-4, as
+every `[REPLAY-HPARAMS]` line in their session logs confirms.
+
+It is kept only because it was the sole non-duplicate content in a 2.9 GB directory that
+was otherwise a byte-for-byte copy (corpus, checkpoint, README all identical by hash).
+Do not mistake `wd 1e-4` here for segment 0's `wd1e-4` label — that segment ran on
+2026-06-27, five days before this file was written.
 
 See `documentation/v5-lineage.md`.
