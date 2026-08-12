@@ -1360,6 +1360,74 @@ experiment artifacts (`results.json` ~6.8 MB, `experiment_results.js` ~921 KB, t
 
 ## Tech debt / migrations to remove
 
+- **UNTESTED: the `--parameters` round-trip has never been empirically
+  verified** *(added 2026-08-12, from the 2026-08-07 CLI audit)*. The chain
+  `--create-parameters-file` → hand-edit the JSON → `--parameters <file>` is
+  the documented way to configure a headless run, and every part of it is
+  believed correct — `--show-default-parameters` emits all 62 keys by
+  iterating `allKeys`/`definition` (macro-driven, so it cannot silently miss
+  one), and unknown keys `throw unknownParameter` at apply time, so typos are
+  loud. But **no test or manual run has ever confirmed that a value written by
+  the generator, edited, and fed back is the value the trainer actually
+  trains under.** Everything about it is inference from reading the code.
+  - Known gap it would expose: `CliTrainingConfig.load` bridges only
+    bool/int/double, so a string-valued parameter would throw `wrongType`.
+    Latent — no parameter is string-typed today, but adding one silently
+    breaks `--parameters` for it.
+  - Worth a single integration test: generate → mutate a couple of numeric
+    values → apply → assert `TrainingParameters.shared.snapshot()` reflects
+    exactly those values and nothing else moved. Cheap, and it pins the one
+    interface every headless experiment depends on.
+
+- **KNOWN DEFICIENCY: weight I/O cannot detect a same-shape position swap**
+  *(added 2026-08-12, commit 217aa4d)*. All weight transfer — in-memory
+  (`exportWeights()` → `loadWeights()`) and on disk — pairs values to meaning
+  purely by **index** against `NetworkArchitecture.weightTensorPlan()`. The
+  plan is the sole authority for what the tensor at each position is *called*
+  and which layout transform it gets: `SafetensorsModelIO.encode` labels
+  `weights[i]` with `plan[i].name` and reshapes per `plan[i].kind`, and
+  `loadWeights` assigns positionally.
+  - **Hardened (done):** `ChessNetwork.init` validates its weight variables
+    against the plan and throws `weightPlanMismatch`; `SafetensorsModelIO.decode`
+    checks each stored tensor's dimensions against the plan's torch-layout
+    shape (it previously discarded the shape and checked only element count,
+    so a `.linear` written `[in, out]` instead of `[out, in]` passed and was
+    silently scrambled by `fromTorchLayout`). Both compare **squeezed** shapes:
+    the plan records logical shapes (`[C]`) while the builder declares
+    broadcast-ready ones (`[1, C, 1, 1]`) — 132 positions differ that way in
+    the current preset with identical element counts, so raw comparison would
+    reject every correct network, and element count alone cannot tell
+    `[in, out]` from `[out, in]`.
+  - **Still deficient:** two tensors of the **same squeezed shape** swapping
+    positions is undetectable. A BN `weight`/`bias` pair is `[C]` either way,
+    as is `running_mean`/`running_var` — and they are adjacent in both the plan
+    and the builder's append order, so a refactor that reorders them inside
+    `batchNorm()` would mislabel every model written from that point and
+    mis-assign every load, with no error raised anywhere.
+  - **Why it is not closed:** the two sides use different naming schemes —
+    builder `block0_bn1_gamma` vs plan `blocks.0.bn1.weight` — so names cannot
+    be compared directly. Closing it means giving the builder the plan's
+    canonical names, which breaks `ValueHeadAnalyzer` (matches
+    `hasPrefix("value_")`, exact-matches `value_fc2_bias`) and
+    `NetworkWeightAnalyzer` (`section(forVariableNamed:)`). That analyzer
+    migration is the actual cost, not the rename.
+  - **Mitigating (not a reason to skip it):** a real gamma/beta or mean/var
+    swap produces a grossly broken network rather than a subtle regression, so
+    it would show up in behavior immediately. The value of closing it is
+    turning "mysteriously broken model, days of debugging" into an explicit
+    error — which is precisely what the 2026-08-07 −280 Elo arena hunt cost.
+  - Guards and their limits are documented in
+    `ChessNetwork.validateAgainstPlan` and at the `decode` dims check.
+  - Provenance: came out of the 2026-08-07 self-play/dropout audit. Two of
+    that audit's claims about this area were wrong and are worth not
+    re-deriving: the safetensors disk path was described as "loads by NAME and
+    is safe" (it resolves *by* name but pairs values to the plan **by index**
+    at both ends, which is why the contract matters for every saved model),
+    and `--parameters` was reported as leaking into `UserDefaults` (it does
+    not — `TrainingParameters.persist` returns early on `suppressPersistence`,
+    which every apply site sets; that leak was real once and was fixed on
+    2026-06-12 after the dropout=0.7 contamination).
+
 - **Fully decouple training from the main thread / UI run loop** *(added
   2026-05-31)*. The training pipeline is supposed to be almost completely
   separated from the UI — emitting telemetry the user can read or ignore
