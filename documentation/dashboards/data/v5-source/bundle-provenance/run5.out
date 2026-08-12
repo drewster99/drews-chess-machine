@@ -1,0 +1,46 @@
+[REPLAY] starting offline corpus replay over 1 corpus path(s)
+[REPLAY] start-model: v5-cont-replay-step46000.safetensors modelID=20260802-2-Xuub encoding=basic30
+[REPLAY-ARCH] (start-model) v5 . in basic30(30) -> stem 128 (7x7) . 5x[7x7+7x7 @128, SE+/4, relu/pre, clean_add, ReZero(0.447·tanh≤0.447), out:layer_norm, drop*1] . act relu . policy intermediate_conv(4864) . value WDL(16->FC128) . bfloat16 . 8,447,028 params
+[REPLAY-HPARAMS] lr=0.01 batch=4096 wd=0.00025 momentum=0.93 gradClip=30 entropyBonus=0 drawPenalty=0 policyW=1 valueW=1 illegalW=1 pLabelSmooth=0.1 vLabelSmooth=0.013 lrWarmup=500 bufCap=1000000 replayRatio=0.48 minPrefill=500000 complementCE=on sqrtBatchLR=on
+[REPLAY] corpus 20260624-192615-w3aA5b: 46 sealed shard(s)
+[REPLAY] building network + trainer (encoding=basic30)
+[REPLAY] start-model weights loaded into trainer (working+masters, velocity zeroed) + feeder net (base tensors=110)
+[REPLAY] trainer-model output: /Users/andrew/Downloads/v5-continue-bundle/v5-cont-replay-latest.safetensors
+[REPLAY] batchSize=4096 reuse=0.48 K=8533 minPrefill=500000 stepLimit=none epochLimit=1
+[REPLAY] pre-filled: bufCount=1000000 positionsFed=1494409 gamesFed=22650
+[REPLAY] step=1 loss=3.6406 pLoss=2.5156 vLoss=1.1250 pEnt=-- pIllM=0.0023 playedP=-- pW=-- pD=-- pL=-- vAbs=-- gNorm=3.906 lr=0.0002 ms=3537.4 buf=1000000 plies=1494409 games=22650 epoch=0
+[REPLAY] step=50 loss=4.2500 pLoss=2.9375 vLoss=1.3203 pEnt=2.547 pIllM=0.0017 playedP=0.165 pW=0.69 pD=0.04 pL=0.28 vAbs=0.447 gNorm=7.375 lr=0.01 ms=3410.1 buf=1000000 plies=1912539 games=29001 epoch=0
+[REPLAY] step=100 loss=3.5781 pLoss=2.4062 vLoss=1.1719 pEnt=2.469 pIllM=0.0018 playedP=0.204 pW=0.33 pD=0.08 pL=0.59 vAbs=0.381 gNorm=5.156 lr=0.01 ms=3424.7 buf=1000000 plies=2339177 games=35439 epoch=0
+[REPLAY] step=150 loss=3.7344 pLoss=2.6719 vLoss=1.0625 pEnt=2.531 pIllM=0.0018 playedP=0.189 pW=0.46 pD=0.04 pL=0.50 vAbs=0.279 gNorm=2.781 lr=0.01 ms=3410.9 buf=1000000 plies=2765843 games=41908 epoch=0
+[REPLAY] step=200 loss=3.8125 pLoss=2.7812 vLoss=1.0312 pEnt=2.688 pIllM=0.0014 playedP=0.183 pW=0.49 pD=0.06 pL=0.45 vAbs=0.216 gNorm=3.188 lr=0.01 ms=3400.0 buf=1000000 plies=3192524 games=48394 epoch=0
+[REPLAY] step=250 loss=3.5938 pLoss=2.6250 vLoss=0.9688 pEnt=2.578 pIllM=0.0027 playedP=0.194 pW=0.39 pD=0.11 pL=0.50 vAbs=0.277 gNorm=3.359 lr=0.01 ms=3428.2 buf=1000000 plies=3619148 games=54829 epoch=0
+[REPLAY] step=300 loss=3.8125 pLoss=2.7656 vLoss=1.0469 pEnt=2.750 pIllM=0.0019 playedP=0.175 pW=0.52 pD=0.14 pL=0.34 vAbs=0.279 gNorm=3.125 lr=0.01 ms=3424.1 buf=1000000 plies=4045819 games=61336 epoch=0
+[REPLAY] step=350 loss=3.6875 pLoss=2.6875 vLoss=0.9961 pEnt=2.766 pIllM=0.0012 playedP=0.181 pW=0.49 pD=0.09 pL=0.42 vAbs=0.262 gNorm=1.680 lr=0.01 ms=3399.7 buf=1000000 plies=4472450 games=67773 epoch=0
+[REPLAY] step=400 loss=3.6094 pLoss=2.5625 vLoss=1.0391 pEnt=2.578 pIllM=0.0020 playedP=0.209 pW=0.43 pD=0.06 pL=0.51 vAbs=0.281 gNorm=2.266 lr=0.01 ms=3424.8 buf=1000000 plies=4899121 games=74218 epoch=0
+[REPLAY] step=450 loss=3.6562 pLoss=2.6094 vLoss=1.0469 pEnt=2.516 pIllM=0.0020 playedP=0.215 pW=0.43 pD=0.10 pL=0.47 vAbs=0.271 gNorm=2.328 lr=0.01 ms=3451.7 buf=1000000 plies=5325744 games=80666 epoch=0
+[REPLAY] step=500 loss=3.5312 pLoss=2.2656 vLoss=1.2578 pEnt=2.875 pIllM=0.0016 playedP=0.167 pW=0.33 pD=0.04 pL=0.63 vAbs=0.410 gNorm=2.875 lr=0.01 ms=3421.8 buf=1000000 plies=5752436 games=87083 epoch=0
+[REPLAY] step=550 loss=3.7188 pLoss=2.5469 vLoss=1.1719 pEnt=2.562 pIllM=0.0015 playedP=0.192 pW=0.39 pD=0.08 pL=0.53 vAbs=0.332 gNorm=3.938 lr=0.01 ms=3435.5 buf=1000000 plies=6179033 games=93472 epoch=0
+[REPLAY] step=600 loss=3.7031 pLoss=2.7188 vLoss=0.9844 pEnt=2.797 pIllM=0.0011 playedP=0.167 pW=0.48 pD=0.06 pL=0.46 vAbs=0.233 gNorm=2.188 lr=0.01 ms=3422.2 buf=1000000 plies=6605724 games=99899 epoch=0
+[REPLAY] step=650 loss=3.7812 pLoss=2.8594 vLoss=0.9258 pEnt=2.656 pIllM=0.0013 playedP=0.178 pW=0.46 pD=0.09 pL=0.46 vAbs=0.186 gNorm=4.219 lr=0.01 ms=3431.3 buf=1000000 plies=7032328 games=106307 epoch=0
+[REPLAY] step=700 loss=3.7812 pLoss=2.6250 vLoss=1.1562 pEnt=2.750 pIllM=0.0012 playedP=0.188 pW=0.55 pD=0.06 pL=0.39 vAbs=0.348 gNorm=1.859 lr=0.01 ms=3423.6 buf=1000000 plies=7459012 games=112680 epoch=0
+[REPLAY] step=750 loss=3.8125 pLoss=2.7969 vLoss=1.0156 pEnt=2.609 pIllM=0.0012 playedP=0.190 pW=0.48 pD=0.01 pL=0.51 vAbs=0.185 gNorm=4.938 lr=0.01 ms=3414.5 buf=1000000 plies=7885687 games=119062 epoch=0
+[REPLAY] step=800 loss=3.7812 pLoss=2.8125 vLoss=0.9609 pEnt=2.719 pIllM=0.0011 playedP=0.181 pW=0.45 pD=0.12 pL=0.43 vAbs=0.196 gNorm=3.797 lr=0.01 ms=3427.0 buf=1000000 plies=8312317 games=125444 epoch=0
+[REPLAY] step=850 loss=3.5469 pLoss=2.5938 vLoss=0.9453 pEnt=2.531 pIllM=0.0018 playedP=0.205 pW=0.43 pD=0.05 pL=0.52 vAbs=0.273 gNorm=2.781 lr=0.01 ms=3441.9 buf=1000000 plies=8738967 games=131869 epoch=0
+[REPLAY] step=900 loss=3.7969 pLoss=2.7500 vLoss=1.0469 pEnt=2.609 pIllM=0.0011 playedP=0.159 pW=0.40 pD=0.05 pL=0.55 vAbs=0.307 gNorm=6.844 lr=0.01 ms=3405.1 buf=1000000 plies=9165614 games=138337 epoch=0
+[REPLAY] step=950 loss=3.7500 pLoss=2.6875 vLoss=1.0625 pEnt=2.469 pIllM=0.0013 playedP=0.205 pW=0.45 pD=0.07 pL=0.49 vAbs=0.273 gNorm=6.094 lr=0.01 ms=3425.8 buf=1000000 plies=9592358 games=144827 epoch=0
+[REPLAY] step=1000 loss=3.8281 pLoss=2.7500 vLoss=1.0781 pEnt=2.703 pIllM=0.0012 playedP=0.181 pW=0.57 pD=0.04 pL=0.39 vAbs=0.326 gNorm=3.531 lr=0.01 ms=3414.3 buf=1000000 plies=10018983 games=151256 epoch=0
+[REPLAY] saved trainer model (autosave) step=1000 nextGame=6053429 shard=13 epoch=0 -> v5-cont-replay-latest.safetensors
+[REPLAY] enumerated checkpoint -> v5-cont-replay-step1000.safetensors
+[REPLAY] step=1050 loss=3.6719 pLoss=2.6250 vLoss=1.0469 pEnt=2.516 pIllM=0.0015 playedP=0.204 pW=0.41 pD=0.09 pL=0.50 vAbs=0.277 gNorm=2.984 lr=0.01 ms=3407.4 buf=1000000 plies=10445537 games=157772 epoch=0
+[REPLAY] step=1100 loss=3.5625 pLoss=2.4219 vLoss=1.1406 pEnt=2.594 pIllM=0.0021 playedP=0.202 pW=0.37 pD=0.08 pL=0.55 vAbs=0.367 gNorm=2.625 lr=0.01 ms=3420.0 buf=1000000 plies=10872210 games=164241 epoch=0
+[REPLAY] step=1150 loss=4.1562 pLoss=2.8594 vLoss=1.2891 pEnt=2.531 pIllM=0.0011 playedP=0.195 pW=0.66 pD=0.06 pL=0.28 vAbs=0.447 gNorm=6.250 lr=0.01 ms=3422.2 buf=1000000 plies=11298854 games=170774 epoch=0
+[REPLAY] step=1200 loss=3.5625 pLoss=2.4219 vLoss=1.1406 pEnt=2.562 pIllM=0.0013 playedP=0.201 pW=0.35 pD=0.05 pL=0.60 vAbs=0.377 gNorm=3.766 lr=0.01 ms=3413.2 buf=1000000 plies=11725519 games=177228 epoch=0
+[REPLAY] step=1250 loss=3.9531 pLoss=2.8281 vLoss=1.1250 pEnt=2.609 pIllM=0.0013 playedP=0.186 pW=0.59 pD=0.06 pL=0.36 vAbs=0.324 gNorm=3.781 lr=0.01 ms=3429.6 buf=1000000 plies=12152167 games=183634 epoch=0
+[REPLAY] step=1300 loss=3.9375 pLoss=2.8281 vLoss=1.1094 pEnt=2.562 pIllM=0.0013 playedP=0.195 pW=0.61 pD=0.04 pL=0.35 vAbs=0.334 gNorm=4.094 lr=0.01 ms=3400.7 buf=1000000 plies=12578799 games=190135 epoch=0
+[REPLAY] step=1350 loss=3.8906 pLoss=2.8438 vLoss=1.0391 pEnt=2.594 pIllM=0.0012 playedP=0.199 pW=0.56 pD=0.02 pL=0.42 vAbs=0.273 gNorm=3.219 lr=0.01 ms=3422.8 buf=1000000 plies=13005442 games=196626 epoch=0
+[REPLAY] step=1400 loss=3.5469 pLoss=2.5469 vLoss=1.0000 pEnt=2.719 pIllM=0.0011 playedP=0.184 pW=0.43 pD=0.04 pL=0.53 vAbs=0.289 gNorm=2.438 lr=0.01 ms=3414.2 buf=1000000 plies=13432100 games=203141 epoch=0
+[REPLAY] step=1450 loss=3.7812 pLoss=2.8125 vLoss=0.9688 pEnt=2.609 pIllM=0.0018 playedP=0.185 pW=0.48 pD=0.05 pL=0.47 vAbs=0.202 gNorm=3.578 lr=0.01 ms=3443.3 buf=1000000 plies=13858726 games=209586 epoch=0
+[REPLAY] step=1500 loss=3.9219 pLoss=2.9062 vLoss=1.0078 pEnt=2.562 pIllM=0.0013 playedP=0.173 pW=0.50 pD=0.06 pL=0.44 vAbs=0.222 gNorm=7.438 lr=0.01 ms=3437.7 buf=1000000 plies=14285423 games=216017 epoch=0
+[REPLAY] step=1550 loss=3.5938 pLoss=2.1094 vLoss=1.4844 pEnt=2.609 pIllM=0.0013 playedP=0.190 pW=0.24 pD=0.02 pL=0.75 vAbs=0.543 gNorm=6.250 lr=0.01 ms=3421.8 buf=1000000 plies=14712027 games=222510 epoch=0
+[REPLAY] step=1600 loss=3.8594 pLoss=2.8750 vLoss=0.9844 pEnt=2.469 pIllM=0.0014 playedP=0.192 pW=0.46 pD=0.04 pL=0.50 vAbs=0.236 gNorm=7.969 lr=0.01 ms=3425.4 buf=1000000 plies=15138722 games=228969 epoch=0
+[REPLAY] step=1650 

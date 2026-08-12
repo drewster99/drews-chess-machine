@@ -56,4 +56,11 @@ was the only one that was not, and its exact bytes are here.
 Do not mistake `wd 1e-4` here for segment 0's `wd1e-4` label — that segment ran on
 2026-06-27, five days before this file was written.
 
+## `bundle-provenance/`
+
+Everything that existed **only** in `~/Downloads/v5-continue-bundle/` and nowhere else —
+the retired monitor's tooling, the forensic record of the fabricated-probe incident, the
+contemporaneous narrative docs, and each run's sampled console output. That subdirectory
+is what makes the bundle safe to delete. See its own README.
+
 See `documentation/v5-lineage.md`.

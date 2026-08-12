@@ -287,6 +287,7 @@ name states which run produced it.
 | full per-step session logs | `~/Library/Logs/DrewsChessMachine/` **and** gzipped in `…/archive/logs/` (all 5 segments, integrity + line counts verified) |
 | **weights** | `~/Library/Application Support/DrewsChessMachine/Models/` on the M5 — 615 files under per-segment names (see §10) |
 | probe pre-image + checkpoint manifest | `documentation/dashboards/data/v5-source/` (in git) |
+| everything unique to the bundle | `documentation/dashboards/data/v5-source/bundle-provenance/` (in git) |
 | verified full backup | `~/v5-consolidation-backup-20260811/` |
 
 `~/Library/Logs/DrewsChessMachine/` is **excluded from Time Machine**. The gzipped
