@@ -130,63 +130,65 @@
           "date": "20260628",
           "cumstep_base": 60901,
           "label": "m0.93",
-          "elapsed_base_sec": 59620.0,
-          "device": "M5"
+          "elapsed_base_sec": 80201.4,
+          "device": "M5",
+          "wall_base_sec": 80291.8,
+          "note": "base recovered from the wallclock bridge across segment 1, whose log is lost: seg0 last mark 2026-06-28T12:45:24 -> seg2 first mark 19:00:42 = 22518 s / 16901 steps = 1.332 s/step, matching the 1.325-1.329 measured in-segment rate to 0.4% (so ~90 s idle). Was 59620.0, which repeated segment 0's end value and omitted segment 1's ~5.74 h entirely."
         },
         {
           "cumstep_base": 100320,
           "date": "20260702",
           "device": "M4 Pro",
-          "elapsed_base_sec": 111967.7,
+          "elapsed_base_sec": 132549.1,
           "games_base": 12933495,
           "label": "cont-run1",
           "log": "dcm_log_20260702-201756.txt",
           "model_id": "20260703-1-Dg5v",
-          "wall_base_sec": 111967.7
+          "wall_base_sec": 132639.5
         },
         {
           "cumstep_base": 368826,
           "date": "20260713",
           "device": "M4 Pro",
-          "elapsed_base_sec": 1058304.3,
+          "elapsed_base_sec": 1078885.7,
           "games_base": 47582603,
           "label": "cont-run2",
           "log": "dcm_log_20260713-195047.txt",
           "model_id": "20260714-1-h7vI",
-          "wall_base_sec": 1058304.3
+          "wall_base_sec": 1078976.1
         },
         {
           "cumstep_base": 705436,
           "date": "20260728",
           "device": "M4 Pro",
-          "elapsed_base_sec": 2287238.7,
+          "elapsed_base_sec": 2307820.1,
           "games_base": 90998480,
           "label": "cont-run3",
           "log": "dcm_log_20260728-223132.txt",
           "model_id": "20260729-1-VZ2j",
-          "wall_base_sec": 2361193.1
+          "wall_base_sec": 2381864.9
         },
         {
           "cumstep_base": 811769,
           "date": "20260802",
           "device": "M4 Pro",
-          "elapsed_base_sec": 2664639.7,
+          "elapsed_base_sec": 2685221.1,
           "games_base": 104743805,
           "label": "cont-run4",
           "log": "dcm_log_20260802-152830.txt",
           "model_id": "20260802-2-Xuub",
-          "wall_base_sec": 2738594.1
+          "wall_base_sec": 2759265.9
         },
         {
           "cumstep_base": 857769,
           "date": "20260804",
           "device": "M4 Pro",
-          "elapsed_base_sec": 2826258.3,
+          "elapsed_base_sec": 2846839.7,
           "games_base": 110668628,
           "label": "cont-run5",
           "log": "dcm_log_20260804-221739.txt",
           "model_id": "20260805-1-0pTW",
-          "wall_base_sec": 2900212.7
+          "wall_base_sec": 2920884.5
         }
       ],
       "trainset": "std-2026-05"

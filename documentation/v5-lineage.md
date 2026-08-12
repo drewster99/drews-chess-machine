@@ -126,17 +126,49 @@ through untouched. `wall_sec` is the identical walk with the cap removed, so
 | 7 run5 | 2.00 h | 2.00 h | 0.00 h |
 
 One segment, 5.7%, across a 15-day span — consistent with real machine sleep. The clamp
-is working; it just needed to be visible. Lineage end: **787.0 h clamped / 807.6 h raw.**
+is working; it just needed to be visible. Lineage end: **792.7 h clamped / 813.3 h raw.**
 
 Two bounded caveats on that prefix:
 
-- Segments 0–2 contribute a *pinned* `elapsed_base_sec` of 111,967.7 s taken from v5.csv,
-  with no separate raw measurement, so `wall_sec − elapsed_train_sec` measures clamping
-  only within segments 3–7 — never inside the prefix.
-- That pin is v5.csv's last row (cum 99,901 = seg-2 step 39,000), but segment 3 begins at
-  step 39,419. The **419 steps in between (~557 s at 1.33 s/step) are not counted** in the
-  time axis. It is ~0.02% of the 787 h total; recorded here rather than silently
-  back-filled, since the seg-2 log needed to measure it is on the other machine.
+- Segments 0–2 contribute a *pinned* prefix with no separate raw measurement, so
+  `wall_sec − elapsed_train_sec` measures clamping only within segments 3–7 — never
+  inside it. (Segment 3's pin does carry a 90.4 s wall/elapsed split: the measured idle
+  between the segment-0 and segment-2 runs, see below.)
+- Segment 3's pin derives from v5.csv's last row (cum 99,901 = seg-2 step 39,000), but
+  segment 3 begins at step 39,419. The **419 steps in between (~557 s at 1.33 s/step) are
+  not counted**. That is ~0.02% of the total; recorded rather than silently back-filled,
+  since the seg-2 log needed to measure it no longer exists on either machine.
+
+### Segment 2's base, and the segment-1 hole (corrected 2026-08-12)
+
+Segment 1's session log is lost from **both** machines, so its 15,460 steps had no
+measured duration and `elapsed_base_sec` on segment 2 was originally pinned to
+`59620.0` — a repeat of *segment 0's* end value. Segment 1's ~5.74 h was therefore
+omitted from the time axis, and because segment 3's pin descends from segment 2's last
+row, the omission propagated through all 856 rows.
+
+Recovered from the **wall-clock bridge**, using timestamps already in the CSV rather
+than a modelled rate:
+
+| | |
+|---|---|
+| seg 0 last mark, cum 45,000 | `2026-06-28T12:45:24`, elapsed 59,620.0 |
+| seg 2 first mark, cum 61,901 | `2026-06-28T19:00:42` |
+| bridge | 22,518 s over 16,901 steps = **1.332 s/step** |
+| measured in-segment rate | 1.325–1.329 s/step → agreement to **0.4%**, i.e. ~90 s idle |
+
+So the machine ran essentially continuously across segment 1, and its duration is
+bracketed by two real readings. Segment 2's base becomes **80,201.4 s** (step-earned,
+clamp-consistent) and `wall_base_sec` **80,291.8 s** (raw bridge) — the 90.4 s between
+them being exactly the inter-run idle that `wall_sec − elapsed_train_sec` exists to show.
+All downstream pins shifted by the same offsets. Net **+5.72 h**; residual uncertainty
+drops from 20,672 s to **90 s** (0.003% of the total).
+
+**Still missing for segment 1:** per-mark timing. The bridge recovers only the aggregate,
+so its 15 rows keep blank `elapsed_train_sec` / `wall_sec` / `wallclock_iso` /
+`ms_per_step` / `games_fed`. Every *metric* is intact (pElo, nll, pLoss, vLoss,
+legalMass, bn1Mean, gNorm, sae2, pLogit_mean — 15/15), since those come from
+`v5-layernorm-output.md`, not the log. See "Recovering segments 0–2" below.
 
 ## 4. Records
 
@@ -257,6 +289,60 @@ only non-measured row in the file.
 
 **Do not** point `probe_backfill()`'s enumerated scan at the bundle: it maps filenames
 to the latest segment's base and would mis-assign every colliding name.
+
+### Recovering segments 0–2 (the one untried source)
+
+Segments 0–2 are blank on the **time** axis (segment 1 only) and on the **compute** axis
+(all three), because their session logs are gone from both machines. But those logs are
+not the only place that data ever existed.
+
+Every one of those 95 rows names a surviving artifact in its `frozen_file` column:
+
+```
+20260628-v5_5block_7x7_lnout-step<cum>-frozen.safetensors
+```
+
+If those files still exist on the M5 machine under
+`~/Library/Application Support/DrewsChessMachine/Models/`, their safetensors
+`__metadata__` carries per-checkpoint facts that reconstruct both axes **as
+measurements**, not estimates:
+
+| header field | restores |
+|---|---|
+| `created_at_unix` | `wallclock_iso` for every mark |
+| `replay_next_game_index` | `games_fed` — extends the compute axis back to step 1 |
+| `training_step` | confirms each mark's identity, independent of filename |
+
+**The method validates itself before it is trusted.** Segments 0 and 2 already have
+known `wallclock_iso` values from their logs. Run the extraction on those first: if the
+headers reproduce the timestamps already in the CSV, the method is proven and segment 1's
+recovered values inherit that confidence. If they disagree, stop — nothing gets written.
+
+Only the *headers* are needed, not the weights. Check cheaply on the M5 machine:
+
+```bash
+cd ~/Library/Application\ Support/DrewsChessMachine/Models
+ls 20260628-v5_5block_7x7_lnout-step*-frozen.safetensors | wc -l    # expect ~95
+
+python3 - <<'EOF' > /tmp/v5-frozen-headers.json
+import json, glob, struct, os
+out = {}
+for p in sorted(glob.glob("20260628-v5_5block_7x7_lnout-step*-frozen.safetensors")):
+    with open(p, "rb") as f:
+        n = struct.unpack("<Q", f.read(8))[0]
+        out[os.path.basename(p)] = json.loads(f.read(n)).get("__metadata__", {})
+json.dump(out, open("/dev/stdout", "w"), indent=1)
+EOF
+```
+
+That yields a file of a few hundred KB — copy that across, not the ~3.2 GB of weights.
+
+What it cannot recover: `ms_per_step` (a per-log-line reading, not stored in a
+checkpoint), and `elapsed_train_sec` directly — though elapsed follows from consecutive
+`created_at_unix` values run through the same clamp, once the wallclock series exists.
+
+If the files are gone too, blank is the end of the line for segment 1's per-mark timing:
+the wall-clock bridge above recovers its aggregate 5.74 h and nothing finer.
 
 ### Two traps when regenerating on this machine
 
