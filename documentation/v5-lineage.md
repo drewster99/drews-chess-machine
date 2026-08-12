@@ -247,8 +247,8 @@ unverified, so durability rests on the copies, not the links.
 | probe JSONL (pre-image) | `~/Downloads/v5-continue-bundle/monitor/new_ckpts*.jsonl` |
 | checkpoint manifest | `…/monitor/checkpoint_inventory.json` |
 | full per-step session logs | `~/Library/Logs/DrewsChessMachine/` **and** gzipped in `…/archive/logs/` (all 5 segments, integrity + line counts verified) |
-| weights | `…/{run1..run5,preserved-best,quarantine}/` |
-| 4 MB checksummed telemetry copy | `…/telemetry-snapshot-20260811/` (`SHA256SUMS.txt`) |
+| **weights** | `~/Library/Application Support/DrewsChessMachine/Models/` on the M5 — 615 files under per-segment names (see §10) |
+| probe pre-image + checkpoint manifest | `documentation/dashboards/data/v5-source/` (in git) |
 | verified full backup | `~/v5-consolidation-backup-20260811/` |
 
 `~/Library/Logs/DrewsChessMachine/` is **excluded from Time Machine**. The gzipped
@@ -381,3 +381,47 @@ in a checkpoint), and segment 0's `games_fed`.
 
    Sanity check after any such move — v5 should read **5.291 epochs**, which independently
    agrees with the compute axis: 110,949,479 / 20,935,171 = **5.300**.
+
+
+## 10. Merged into normal storage (2026-08-12)
+
+`v5-continue-bundle/` was a shipping container, not a storage location. Its contents now
+live where every other run's do.
+
+**Checkpoints.** 650 surviving files → **615 distinct** targets in
+`~/Library/Application Support/DrewsChessMachine/Models/` on the M5, following the
+project's per-segment convention (`<date>-<name>[-resumeN]-replay-step<N>.safetensors`,
+step segment-local):
+
+| seg | run | `enum_stem` | files |
+|---:|---|---|---:|
+| 3 | run 1 | `20260702-v5cont` | 268 |
+| 4 | run 2 | `20260713-v5cont-resume` | 231 |
+| 5 | run 3 | `20260728-v5cont-resume2` | 68 |
+| 6 | run 4 | `20260802-v5cont-resume3` | 46 |
+| 7 | run 5 | `20260804-v5cont-resume4` | 2 |
+
+The entry point (`20260629-1-Uf4p`, step 39,419) was **not** copied — the M5 already held
+it, byte-identical, as `20260628-v5_5block_7x7_lnout-wd2.5e4-m93-replay-latest.safetensors`.
+34 further sources collapsed as duplicate content (`preserved-best/` copies of files that
+also survived at root). Every target was assigned from its safetensors `model_id`, never
+its old filename, and verified by SHA-256 against `checkpoint_inventory.json` after
+writing.
+
+**One file carries a deliberate marker:**
+`20260802-v5cont-resume3-replay-step49374-DO-NOT-RESUME.safetensors`. Its metadata claims
+a completed epoch (`replay_epoch=1, replay_next_game_index=0`) when only 6,360,368 of
+~20,935,171 games were fed — `--resume-exact` from it would resume from a corpus position
+never reached (§5). The suffix also makes its step unparseable, so `probe_backfill` skips
+it rather than charting an off-lineage point.
+
+**Tracker support.** Enumerated checkpoints are named from the out-model stem, and every
+resumed segment gets its own stem — but `registry.json` names only the *latest* one, so a
+single glob was blind to every earlier segment. `enum_specs()` now resolves one glob per
+segment via an optional `enum_stem` key, falling back to the old single glob when no
+segment declares one. Five other runs are still under-finding for want of that key
+(nt8y 4 segments, mini2b 3, qeu8 3, ykkk 2, coxw 1); the mechanism is in place for them.
+
+**No data was recovered by any of this** — all 147 rows still lacking weight-derived
+internals correspond to checkpoints overwritten before archiving, none of which survive.
+The merge was about location and retirement, not recovery.

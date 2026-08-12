@@ -460,8 +460,37 @@ def has_step(rows, cum):
 # the latest segment's cumstep_base (cum = base + N). Legacy (pre-enumeration) runs
 # still fall back to the "-frozen" snapshots, so mini2b/coxw/v5/… are unaffected.
 def enum_glob(cfg):
-    om = cfg.get("out_model", "")
+    # `or ""` not `.get(k, "")`: legacy runs (v5, t97x) carry an explicit
+    # "out_model": null, so .get returns None and the membership test raises.
+    om = cfg.get("out_model") or ""
     return om.replace("-replay-latest", "-replay-step*") if "-replay-latest" in om else None
+
+def enum_specs(cfg):
+    """[(segment_index, glob)] naming each segment's enumerated checkpoints.
+
+    A run's enumerated files are named from its OUT-MODEL stem, and every resumed
+    segment normally gets its own stem (`…-Qeu8-replay-step*`, `…-Qeu8-resume2-replay-step*`,
+    …). The run-level `out_model` names only the LATEST segment, so a single glob built
+    from it finds that segment and is blind to every earlier one — nt8y hides 4 segments
+    that way, mini2b and qeu8 3 each, ykkk 2, coxw 1. Their marks were never wrong, just
+    absent.
+
+    A segment may therefore declare its own `enum_stem`. Resolution per segment:
+      1. explicit `enum_stem`  -> `<stem>-replay-step*.safetensors`
+      2. otherwise, the LAST segment falls back to the run-level `enum_glob`
+
+    With no `enum_stem` anywhere this returns exactly what the old single-glob code
+    used, so runs that do not opt in are bit-for-bit unaffected."""
+    segs = cfg.get("segments", [])
+    run_glob = enum_glob(cfg)
+    specs = []
+    for si, sg in enumerate(segs):
+        stem = sg.get("enum_stem")
+        if stem:
+            specs.append((si, f"{stem}-replay-step*.safetensors"))
+        elif run_glob and si == len(segs) - 1:
+            specs.append((si, run_glob))
+    return specs
 
 def enum_path(cfg, n):
     om = cfg.get("out_model", "")
@@ -518,10 +547,14 @@ def track(run):
           f"elapsed={elapsed}s ({eh}) seg={si}")
 
 
-def _backfill_one(cfg, st, rows, by, cum, path, name, verbose):
+def _backfill_one(cfg, st, rows, by, cum, path, name, verbose, segment=None):
     """Probe `path` and fill/create the CSV row for `cum` if it lacks pElo.
     Returns 1 if a row was filled/created, else 0. Shared by both the enumerated
-    -replay-step scan and the legacy -frozen scan so they stay bit-identical."""
+    -replay-step scan and the legacy -frozen scan so they stay bit-identical.
+
+    `segment` is passed by the enumerated scan, which already knows which segment a
+    file came from; without it `seg_for` has to guess from cum and mis-attributes any
+    mark sitting exactly on a segment boundary."""
     r = by.get(cum)
     if r and r.get("pElo") not in ("", None):
         return 0                                     # already has pElo
@@ -529,7 +562,7 @@ def _backfill_one(cfg, st, rows, by, cum, path, name, verbose):
     if not pr.get("pElo"):
         return 0
     bn1, sae2, effs = internals(path, cfg["rezero_cap"])
-    elapsed, clock, meta, si = st.elapsed_and_clock(cum)
+    elapsed, clock, meta, si = st.elapsed_and_clock(cum, segment)
     met = _metrics_at(cfg["segments"][si]["log"], meta)
     pf = dict(pElo=round(pr["pElo"], 2),
               nll=round(pr.get("nll"), 4) if pr.get("nll") else "",
@@ -571,18 +604,20 @@ def probe_backfill(run, verbose=True):
     st = SegTime(cfg["segments"], run)
     filled = 0
 
-    # (a) enumerated app-side checkpoints -> cum via the latest segment's base
-    eg = enum_glob(cfg)
-    if eg:
+    # (a) enumerated app-side checkpoints. One glob PER SEGMENT: the step in an
+    # enumerated filename is segment-local, so it only becomes a cumulative step
+    # against its own segment's base. Mapping every match onto one base would be
+    # wrong the moment two segments' files sit in the same directory.
+    for si, eg in enum_specs(cfg):
         eprefix, esuffix = eg.split("*")
-        ebase = cfg["segments"][-1]["cumstep_base"]
+        ebase = cfg["segments"][si]["cumstep_base"]
         for f in sorted(glob.glob(os.path.join(MODELS, eg))):
             name = os.path.basename(f)
             try:
                 n = int(name[len(eprefix):len(name) - len(esuffix)])
             except ValueError:
                 continue
-            filled += _backfill_one(cfg, st, rows, by, ebase + n, f, name, verbose)
+            filled += _backfill_one(cfg, st, rows, by, ebase + n, f, name, verbose, segment=si)
 
     # (b) legacy cum-named -frozen snapshots
     prefix, suffix = cfg["frozen_glob"].split("*")   # "...-step" , "-frozen.safetensors"

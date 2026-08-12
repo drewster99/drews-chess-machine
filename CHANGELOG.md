@@ -9,6 +9,19 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-08-12 CDT — v5's checkpoints merged into normal storage; per-segment checkpoint discovery (pending commit)
+
+`v5-continue-bundle/` was a shipping container built to move training to another machine, never a storage location. Its checkpoints now live where every other run's do, and the tracker can find them.
+
+- **615 checkpoints copied into `Models/`** on the master-record machine under the project's per-segment convention: `20260702-v5cont`, `20260713-v5cont-resume`, `20260728-v5cont-resume2`, `20260802-v5cont-resume3`, `20260804-v5cont-resume4` (268/231/68/46/2). 650 sources → 615 targets: the entry point was skipped (already present, byte-identical as `…-wd2.5e4-m93-replay-latest`) and 34 collapsed as duplicate content. **Every target was assigned from its safetensors `model_id`, never its filename** — four distinct files have been named `v5-cont-replay-step1000.safetensors`. Verified independently after writing: 0 missing, 0 SHA-256 mismatches, 0 header/prefix disagreements.
+- **One deliberate marker:** `20260802-v5cont-resume3-replay-step49374-DO-NOT-RESUME.safetensors`. Its metadata claims a completed epoch when only 6,360,368 of ~20,935,171 games were fed, so `--resume-exact` would resume from a position never reached. The suffix also makes its step unparseable, so discovery skips it rather than charting an off-lineage point.
+- **`enum_specs()` — per-segment enumerated-checkpoint discovery.** Enumerated files are named from the out-model stem and every resumed segment gets its own stem, but `registry.json` names only the LATEST one, so a single glob was blind to every earlier segment. Segments may now declare `enum_stem`; resolution falls back to the old single glob when none does, so runs that do not opt in are bit-for-bit unaffected (verified across all 13 corpus-replay runs — only v5 changes). **Five other runs are still under-finding for want of that key** (nt8y 4 segments, mini2b 3, qeu8 3, ykkk 2, coxw 1); the mechanism now exists for them.
+- **Latent crash fixed:** `enum_glob()` raised on any run with an explicit `"out_model": null` (v5, t97x) because `.get(k, "")` returns the stored `None`. Never fired — `probe_backfill` is not CLI-wired — but it would have the moment it was called.
+- `_backfill_one` takes an explicit `segment`, so the enumerated scan no longer relies on `seg_for` guessing from cum (which mis-attributes any mark on a segment boundary).
+- **`documentation/dashboards/data/v5-source/`** (new, ~1 MB) — the 761 probe JSONs, the 650-entry SHA-256 checkpoint manifest, and the run parameters. Retained because each probe holds more than the four fields the tracker keeps (top-1/top-5 accuracy, `avgProb`, `avgRank`, a 13-category tactical breakdown), none of it recoverable from the CSV, and most of those checkpoints can no longer be re-probed.
+
+**No data was recovered by any of this.** All 147 rows still lacking weight-derived internals correspond to checkpoints overwritten before archiving, none of which survive anywhere. The merge was about location and retirement. `v5.csv` is unchanged: 856 rows, cum 1,000–859,769, 792.7 h, 5.291 epochs.
+
 ## 2026-08-11 CDT — v5 lineage consolidated into one series; run tracking gains a compute axis (pending commit)
 
 The v5 training record was split across two systems that shared no step axis: `data/v5.csv` held only the first three segments (a Pacific-TZ VM on the M5 host, cum 1,000–99,901), while five continuation segments existed solely as probe JSONL in `~/Downloads/v5-continue-bundle/monitor/`. Both are now **one 856-row series** spanning **8 segments / 2 machines, cum step 1,000 → 859,769, 110.95M corpus games (≈5.30 epochs)**. No training was started or stopped; nothing was deleted.

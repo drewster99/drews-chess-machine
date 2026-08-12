@@ -149,7 +149,8 @@
           "label": "cont-run1",
           "log": "dcm_log_20260702-201756.txt",
           "model_id": "20260703-1-Dg5v",
-          "wall_base_sec": 132639.5
+          "wall_base_sec": 132639.5,
+          "enum_stem": "20260702-v5cont"
         },
         {
           "cumstep_base": 368826,
@@ -160,7 +161,8 @@
           "label": "cont-run2",
           "log": "dcm_log_20260713-195047.txt",
           "model_id": "20260714-1-h7vI",
-          "wall_base_sec": 1078976.1
+          "wall_base_sec": 1078976.1,
+          "enum_stem": "20260713-v5cont-resume"
         },
         {
           "cumstep_base": 705436,
@@ -171,7 +173,8 @@
           "label": "cont-run3",
           "log": "dcm_log_20260728-223132.txt",
           "model_id": "20260729-1-VZ2j",
-          "wall_base_sec": 2381864.9
+          "wall_base_sec": 2381864.9,
+          "enum_stem": "20260728-v5cont-resume2"
         },
         {
           "cumstep_base": 811769,
@@ -182,7 +185,8 @@
           "label": "cont-run4",
           "log": "dcm_log_20260802-152830.txt",
           "model_id": "20260802-2-Xuub",
-          "wall_base_sec": 2759265.9
+          "wall_base_sec": 2759265.9,
+          "enum_stem": "20260802-v5cont-resume3"
         },
         {
           "cumstep_base": 857769,
@@ -193,7 +197,8 @@
           "label": "cont-run5",
           "log": "dcm_log_20260804-221739.txt",
           "model_id": "20260805-1-0pTW",
-          "wall_base_sec": 2920884.5
+          "wall_base_sec": 2920884.5,
+          "enum_stem": "20260804-v5cont-resume4"
         }
       ],
       "trainset": "std-2026-05"
