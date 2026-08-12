@@ -453,6 +453,20 @@ also survived at root). Every target was assigned from its safetensors `model_id
 its old filename, and verified by SHA-256 against `checkpoint_inventory.json` after
 writing.
 
+**The lineage's final state is also present as a rolling `-replay-latest`**, matching the
+convention every other run follows (39 such files on the M5):
+`20260804-v5cont-resume4-replay-latest.safetensors` — byte-identical to
+`…-resume4-replay-step2000`, which is what a `-replay-latest` always is. `registry.json`
+now sets `out_model` to it. Before that it was `null`, which is why `enum_glob()` raised
+on v5 and why the run fell through to the legacy `-frozen` path. Discovery does not depend
+on it (every segment carries `enum_stem`), but it is what `master.py` reads for its
+"currently training" indicator and what a future resume would point at.
+
+Both loose `.safetensors` at the bundle root are therefore already in normal storage:
+`v5-checkpoint.safetensors` is segment 2's rolling output
+(`…-wd2.5e4-m93-replay-latest`, sha-identical) and `v5-cont-replay-latest.safetensors` is
+the file above. Neither needs a new home when the bundle goes.
+
 **One file carries a deliberate marker:**
 `20260802-v5cont-resume3-replay-step49374-DO-NOT-RESUME.safetensors`. Its metadata claims
 a completed epoch (`replay_epoch=1, replay_next_game_index=0`) when only 6,360,368 of

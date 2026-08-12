@@ -107,7 +107,7 @@
         "wd5e-4": 45441,
         "m0.93": 60901
       },
-      "out_model": null,
+      "out_model": "20260804-v5cont-resume4-replay-latest.safetensors",
       "frozen_glob": "20260628-v5_5block_7x7_lnout-step*-frozen.safetensors",
       "segments": [
         {
