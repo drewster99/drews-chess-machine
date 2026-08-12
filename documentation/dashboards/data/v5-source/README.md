@@ -10,7 +10,7 @@ because they are the *pre-image* of numbers that are otherwise only derived.
 | `new_ckpts_run3.jsonl` | segment 5 (cont-run3) — 107 |
 | `new_ckpts_run4.jsonl` | segment 6 (cont-run4) — 46 |
 | `new_ckpts_run5.jsonl` | segment 7 (cont-run5) — 2 |
-| `checkpoint_inventory.json` | SHA-256 + safetensors metadata for all 650 surviving checkpoints |
+| `checkpoint_inventory.json` | SHA-256 + safetensors metadata for all 650 surviving checkpoints. **`path` is ephemeral** — a snapshot of where each file sat on 2026-08-12, after the bundle's 335 ambiguous root names were removed. The durable identity is `model_id` + `training_step` + `sha256`; once the bundle is deleted the paths mean nothing, the hashes still do. |
 | `v5-run-parameters.json` | the hyperparameters all five continuation runs **actually used**, byte-identical across them |
 | `v5-bundle-staging-parameters.json` | a pre-finalisation snapshot — **never used for training**, see below |
 

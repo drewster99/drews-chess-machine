@@ -265,11 +265,14 @@ root file that happened to survive. Nothing deleted.
 only surviving weights. Run 1's enumerated checkpoints survive complete in `run1/`, and
 231 of run 2's survive at the bundle root.
 
-Every root checkpoint is now **hardlinked** into `run2/ run3/ run4/ run5/` beside the
+Each checkpoint was first **hardlinked** into `run2/ run3/ run4/ run5/` beside the
 existing `run1/`, named `run<N>-step<M>.safetensors` by verified `model_id` — 335 links,
-zero extra bytes, nothing renamed or removed. Note a hardlink only survives a future
-overwrite if the writer replaces atomically rather than truncating in place; that is
-unverified, so durability rests on the copies, not the links.
+zero extra bytes. Once the merge into `Models/` was verified, the 335 ambiguous root
+names (`v5-cont-replay-step*.safetensors`) were **deleted on 2026-08-12**: each shared an
+inode with its `run<N>/` twin, so removing them freed no space and lost no data — proven
+after the fact by regenerating the manifest and finding the set of 616 distinct SHA-256
+contents unchanged. Every checkpoint in the bundle now has exactly **one** name, and that
+name states which run produced it.
 
 ## 7. Where the data lives
 
