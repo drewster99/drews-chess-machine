@@ -25,6 +25,14 @@ checkpoints they describe no longer exist, so the probes cannot be re-run.
 every file to its `model_id` + `training_step`, which is the only trustworthy identity —
 four distinct files have been named `v5-cont-replay-step1000.safetensors`.
 
+## Where segment 0–2's hyperparameters live
+
+The two files here cover **segments 3–7 only**. Segments 0–2 (the M5-VM era) have no
+parameters file — their session logs died with the VM and safetensors headers carry no
+hyperparameters. Their settings survive solely as prose in
+`documentation/v5-layernorm-output.md`, and are now recorded structurally in
+`registry.json` under `segments[i].hparams`. See `documentation/v5-lineage.md` §2a.
+
 ## The two parameter files
 
 `v5-continue-bundle/` existed in two places: the working copy in `~/Downloads` and a

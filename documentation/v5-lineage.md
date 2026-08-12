@@ -64,6 +64,41 @@ Two derivations that are easy to get wrong:
   46,000, not from run 4's end (§5). Because run 4 has no probe past 46,000, the series
   stays strictly monotonic with nothing invented.
 
+## 2a. Hyperparameters
+
+Recorded per segment in `registry.json` under `segments[i].hparams`, because for
+segments 0–2 this is the **only surviving record** — their session logs died with the VM,
+and safetensors headers carry no hyperparameters.
+
+Constant across all 8 segments: `lr 0.01` flat with a 500-step warmup and no decay ·
+`batch 4096` · `gradClip 30` · `replayRatio 0.48` · `bufCap 1M` · `minPrefill 500k`.
+
+What actually varied — which is what the segment labels encode:
+
+| seg | label | `wd` | `momentum` | source |
+|---:|---|---|---|---|
+| 0 | wd1e-4 | **1e-4** | **0.90** | `v5-layernorm-output.md` |
+| 1 | wd5e-4 | **5e-4** | 0.90 | `v5-layernorm-output.md` |
+| 2 | m0.93 | **2.5e-4** | **0.93** | `v5-layernorm-output.md` |
+| 3–7 | cont-run1…5 | 2.5e-4 | 0.93 | `[REPLAY-HPARAMS]`, identical in all five logs |
+
+Segments 0–2 were a deliberate sweep, not drift. The doc's finding: **weight decay is not
+a strength lever** on this corpus at this scale — LR/momentum is. Segment 2's
+`momentum 0.93` raises steady-state step amplification from 10× to 14.3×, i.e. a higher
+*effective* LR without touching the warmup schedule.
+
+**Segment 2's settings are the ones the whole rest of the lineage inherited.** Segments
+3–7 ran on `wd 2.5e-4, momentum 0.93` unchanged, so everything from cum 60,901 onward is
+one hyperparameter regime. (This also explains
+`data/v5-source/v5-bundle-staging-parameters.json`, which carries `0.90 / 1e-4` —
+*segment 0's* values, still sitting in the app's settings when the bundle was first
+assembled, corrected 55 minutes later.)
+
+⚠️ Segments 0–2 record **9 fields, not 18.** Label smoothing, loss weights,
+`complementCE` and `sqrtBatchLR` are **unknown** for that era — the doc does not state
+them, and they are deliberately left absent rather than copied down from segments 3–7,
+whose settings post-date it.
+
 ## 3. Three axes, none of them interchangeable
 
 The lineage spans two machines at very different speeds, so a single "time" axis

@@ -117,7 +117,19 @@
           "label": "wd1e-4",
           "device": "M5 (VM)",
           "frozen_prefix": "20260628-v5_5block_7x7_lnout",
-          "note": "frozen checkpoints predate the resume-metadata feature, so no replay_next_game_index: games_fed is blank here by necessity, not choice. Segments 0-2 ran inside a Pacific-timezone VM on the M5 host; that VM has since been deleted, so their session logs are permanently lost. Per-step rates for these segments are VIRTUALIZED throughput, not bare-metal M5."
+          "note": "frozen checkpoints predate the resume-metadata feature, so no replay_next_game_index: games_fed is blank here by necessity, not choice. Segments 0-2 ran inside a Pacific-timezone VM on the M5 host; that VM has since been deleted, so their session logs are permanently lost. Per-step rates for these segments are VIRTUALIZED throughput, not bare-metal M5.",
+          "hparams": {
+            "lr": 0.01,
+            "batch": 4096,
+            "wd": 0.0001,
+            "momentum": 0.9,
+            "gradClip": 30,
+            "lrWarmup": 500,
+            "bufCap": 1000000,
+            "replayRatio": 0.48,
+            "minPrefill": 500000,
+            "_source": "documentation/v5-layernorm-output.md -- the ONLY surviving record; the session logs died with the VM. Fields absent here (label smoothing, loss weights, complementCE, sqrtBatchLR) are UNKNOWN for this segment, not assumed equal to segments 3-7."
+          }
         },
         {
           "log": "dcm_log_20260628-114648.txt",
@@ -127,7 +139,19 @@
           "elapsed_base_sec": 59620.0,
           "device": "M5 (VM)",
           "frozen_prefix": "20260628-v5_5block_7x7_lnout-wd5e4",
-          "note": "session log lost from both machines; wallclock_iso, games_fed and elapsed_train_sec recovered 2026-08-12 from the -wd5e4 frozen checkpoints' safetensors headers (created_at_unix / replay_next_game_index), validated against segments 0 and 2 whose timestamps were already known. Times are M5-local (PDT = UTC-7)."
+          "note": "session log lost from both machines; wallclock_iso, games_fed and elapsed_train_sec recovered 2026-08-12 from the -wd5e4 frozen checkpoints' safetensors headers (created_at_unix / replay_next_game_index), validated against segments 0 and 2 whose timestamps were already known. Times are M5-local (PDT = UTC-7).",
+          "hparams": {
+            "lr": 0.01,
+            "batch": 4096,
+            "wd": 0.0005,
+            "momentum": 0.9,
+            "gradClip": 30,
+            "lrWarmup": 500,
+            "bufCap": 1000000,
+            "replayRatio": 0.48,
+            "minPrefill": 500000,
+            "_source": "documentation/v5-layernorm-output.md -- the ONLY surviving record; the session logs died with the VM. Fields absent here (label smoothing, loss weights, complementCE, sqrtBatchLR) are UNKNOWN for this segment, not assumed equal to segments 3-7."
+          }
         },
         {
           "log": "dcm_log_20260628-183831.txt",
@@ -138,7 +162,19 @@
           "device": "M5 (VM)",
           "wall_base_sec": 80291.8,
           "note": "base recovered from the wallclock bridge across segment 1, whose log is lost: seg0 last mark 2026-06-28T12:45:24 -> seg2 first mark 19:00:42 = 22518 s / 16901 steps = 1.332 s/step, matching the 1.325-1.329 measured in-segment rate to 0.4% (so ~90 s idle). Was 59620.0, which repeated segment 0's end value and omitted segment 1's ~5.74 h entirely.",
-          "frozen_prefix": "20260628-v5_5block_7x7_lnout-wd2.5e4-m93"
+          "frozen_prefix": "20260628-v5_5block_7x7_lnout-wd2.5e4-m93",
+          "hparams": {
+            "lr": 0.01,
+            "batch": 4096,
+            "wd": 0.00025,
+            "momentum": 0.93,
+            "gradClip": 30,
+            "lrWarmup": 500,
+            "bufCap": 1000000,
+            "replayRatio": 0.48,
+            "minPrefill": 500000,
+            "_source": "documentation/v5-layernorm-output.md -- the ONLY surviving record; the session logs died with the VM. Fields absent here (label smoothing, loss weights, complementCE, sqrtBatchLR) are UNKNOWN for this segment, not assumed equal to segments 3-7."
+          }
         },
         {
           "cumstep_base": 100320,
@@ -150,7 +186,28 @@
           "log": "dcm_log_20260702-201756.txt",
           "model_id": "20260703-1-Dg5v",
           "wall_base_sec": 132639.5,
-          "enum_stem": "20260702-v5cont"
+          "enum_stem": "20260702-v5cont",
+          "hparams": {
+            "lr": 0.01,
+            "batch": 4096,
+            "wd": 0.00025,
+            "momentum": 0.93,
+            "gradClip": 30,
+            "entropyBonus": 0,
+            "drawPenalty": 0,
+            "policyW": 1,
+            "valueW": 1,
+            "illegalW": 1,
+            "pLabelSmooth": 0.1,
+            "vLabelSmooth": 0.013,
+            "lrWarmup": 500,
+            "bufCap": 1000000,
+            "replayRatio": 0.48,
+            "minPrefill": 500000,
+            "complementCE": "on",
+            "sqrtBatchLR": "on",
+            "_source": "[REPLAY-HPARAMS] in each segment's session log; identical across segments 3-7"
+          }
         },
         {
           "cumstep_base": 368826,
@@ -162,7 +219,28 @@
           "log": "dcm_log_20260713-195047.txt",
           "model_id": "20260714-1-h7vI",
           "wall_base_sec": 1078976.1,
-          "enum_stem": "20260713-v5cont-resume"
+          "enum_stem": "20260713-v5cont-resume",
+          "hparams": {
+            "lr": 0.01,
+            "batch": 4096,
+            "wd": 0.00025,
+            "momentum": 0.93,
+            "gradClip": 30,
+            "entropyBonus": 0,
+            "drawPenalty": 0,
+            "policyW": 1,
+            "valueW": 1,
+            "illegalW": 1,
+            "pLabelSmooth": 0.1,
+            "vLabelSmooth": 0.013,
+            "lrWarmup": 500,
+            "bufCap": 1000000,
+            "replayRatio": 0.48,
+            "minPrefill": 500000,
+            "complementCE": "on",
+            "sqrtBatchLR": "on",
+            "_source": "[REPLAY-HPARAMS] in each segment's session log; identical across segments 3-7"
+          }
         },
         {
           "cumstep_base": 705436,
@@ -174,7 +252,28 @@
           "log": "dcm_log_20260728-223132.txt",
           "model_id": "20260729-1-VZ2j",
           "wall_base_sec": 2381864.9,
-          "enum_stem": "20260728-v5cont-resume2"
+          "enum_stem": "20260728-v5cont-resume2",
+          "hparams": {
+            "lr": 0.01,
+            "batch": 4096,
+            "wd": 0.00025,
+            "momentum": 0.93,
+            "gradClip": 30,
+            "entropyBonus": 0,
+            "drawPenalty": 0,
+            "policyW": 1,
+            "valueW": 1,
+            "illegalW": 1,
+            "pLabelSmooth": 0.1,
+            "vLabelSmooth": 0.013,
+            "lrWarmup": 500,
+            "bufCap": 1000000,
+            "replayRatio": 0.48,
+            "minPrefill": 500000,
+            "complementCE": "on",
+            "sqrtBatchLR": "on",
+            "_source": "[REPLAY-HPARAMS] in each segment's session log; identical across segments 3-7"
+          }
         },
         {
           "cumstep_base": 811769,
@@ -186,7 +285,28 @@
           "log": "dcm_log_20260802-152830.txt",
           "model_id": "20260802-2-Xuub",
           "wall_base_sec": 2759265.9,
-          "enum_stem": "20260802-v5cont-resume3"
+          "enum_stem": "20260802-v5cont-resume3",
+          "hparams": {
+            "lr": 0.01,
+            "batch": 4096,
+            "wd": 0.00025,
+            "momentum": 0.93,
+            "gradClip": 30,
+            "entropyBonus": 0,
+            "drawPenalty": 0,
+            "policyW": 1,
+            "valueW": 1,
+            "illegalW": 1,
+            "pLabelSmooth": 0.1,
+            "vLabelSmooth": 0.013,
+            "lrWarmup": 500,
+            "bufCap": 1000000,
+            "replayRatio": 0.48,
+            "minPrefill": 500000,
+            "complementCE": "on",
+            "sqrtBatchLR": "on",
+            "_source": "[REPLAY-HPARAMS] in each segment's session log; identical across segments 3-7"
+          }
         },
         {
           "cumstep_base": 857769,
@@ -198,7 +318,28 @@
           "log": "dcm_log_20260804-221739.txt",
           "model_id": "20260805-1-0pTW",
           "wall_base_sec": 2920884.5,
-          "enum_stem": "20260804-v5cont-resume4"
+          "enum_stem": "20260804-v5cont-resume4",
+          "hparams": {
+            "lr": 0.01,
+            "batch": 4096,
+            "wd": 0.00025,
+            "momentum": 0.93,
+            "gradClip": 30,
+            "entropyBonus": 0,
+            "drawPenalty": 0,
+            "policyW": 1,
+            "valueW": 1,
+            "illegalW": 1,
+            "pLabelSmooth": 0.1,
+            "vLabelSmooth": 0.013,
+            "lrWarmup": 500,
+            "bufCap": 1000000,
+            "replayRatio": 0.48,
+            "minPrefill": 500000,
+            "complementCE": "on",
+            "sqrtBatchLR": "on",
+            "_source": "[REPLAY-HPARAMS] in each segment's session log; identical across segments 3-7"
+          }
         }
       ],
       "trainset": "std-2026-05"
