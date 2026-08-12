@@ -27,7 +27,7 @@ Subcommands:
 
 Idempotent: track/migrate never duplicate a cum_step already present.
 """
-import os, re, sys, csv, json, glob, struct, math, argparse, datetime
+import os, re, sys, csv, json, glob, struct, math, bisect, argparse, datetime
 import numpy as np
 from _schema import FIELDS  # single source of the CSV column order (shared with selfplay.py)
 
@@ -115,28 +115,101 @@ def probe(path):
 _TS = re.compile(r"^(\d\d):(\d\d):(\d\d)\.(\d+)\s+\[REPLAY\] step=(\d+)\b")
 # `loss=` (combined total) is optional so older log formats without it still match.
 _METRICS = re.compile(r"(?:loss=([\d.]+) )?pLoss=([\d.]+) vLoss=([\d.]+).*?pIllM=([\d.]+).*?gNorm=([\d.]+).*?ms=([\d.]+)")
+_STEP = re.compile(r"\[REPLAY\] step=(\d+)\b")
+_GAMES = re.compile(r"\bgames=(\d+)\b")
+# The closing summary, e.g.
+#   [REPLAY] done: steps=268506 positionsFed=2292646157 gamesFed=34649108 epochs=2
+# It is the only EXACT games total for a segment: per-step lines are emitted every
+# ~50 steps, so a run that stops between them leaves its last `games=` reading short
+# of the truth (34,648,331 vs 34,649,108 for run 1). Segments' final checkpoints are
+# routinely saved on that same off-cadence step, so without this the last row of each
+# segment would silently under-report the compute axis.
+_DONE = re.compile(r"\[REPLAY\] done: steps=(\d+)\b.*?\bgamesFed=(\d+)\b")
+
+
+class LogIndex:
+    """One parse of one session log, answering every question we ask of it.
+
+    These logs are big: the v5 lineage's five run logs total 6.4 GB, the largest
+    single file 3.0 GB. The earlier shape of this code re-read a log from the top
+    on EVERY checkpoint lookup — fine for the handful of marks `track` takes live,
+    ruinous in bulk, since importing v5's 761 probes that way would have re-read
+    roughly a terabyte. Parsing once into memory and serving lookups from it turns
+    that into a single streaming pass per log.
+
+    Everything is keyed by the SEGMENT-LOCAL step (each resumed segment restarts
+    its counter at 1; the cumulative axis is applied by the caller):
+
+      order    ordered [(step, abs_sec)] over timestamped lines, midnight rollover
+               resolved — the timeline `_clamped_timeline` walks.
+      at_time  {step: abs_sec} for those same lines.
+      metrics  {step: {loss,pLoss,vLoss,pIllM,gNorm,ms}} for lines carrying them;
+               a later line for the same step wins, matching the old forward scan.
+      games    {step: cumulative games fed} — raw material for the compute axis.
+      m_steps / g_steps  sorted keys, for nearest-<= lookup.
+
+    One deliberate behavior note: the old scan stopped at the first line whose step
+    exceeded the target, so on a log holding two concatenated runs it would never
+    read past the seam. This class indexes the whole file, so a step appearing twice
+    resolves to the LAST occurrence. Session logs are one-run-per-file and strictly
+    monotonic, so the two agree; the only concatenated artifact in this project
+    (`run.out`) is not a session log and is never passed here.
+    """
+    __slots__ = ("order", "at_time", "metrics", "games", "m_steps", "g_steps")
+
+    def __init__(self, path):
+        self.order, self.at_time, self.metrics, self.games = [], {}, {}, {}
+        day, prev = 0, None
+        if os.path.exists(path):
+            for line in open(path, errors="replace"):
+                dm = _DONE.search(line)
+                if dm:
+                    self.games[int(dm.group(1))] = int(dm.group(2))
+                    continue
+                sm = _STEP.search(line)
+                if not sm:
+                    continue
+                step = int(sm.group(1))
+                t = _TS.match(line)
+                if t:
+                    h, mi, s, frac = int(t[1]), int(t[2]), int(t[3]), t[4]
+                    sod = h * 3600 + mi * 60 + s + int(frac) / (10 ** len(frac))
+                    if prev is not None and sod < prev - 1:
+                        day += 1                       # crossed midnight
+                    prev = sod
+                    absolute = day * 86400 + sod
+                    self.at_time[step] = absolute
+                    self.order.append((step, absolute))
+                mt = _METRICS.search(line)
+                if mt:
+                    self.metrics[step] = dict(loss=float(mt[1]) if mt[1] else "",
+                                              pLoss=float(mt[2]), vLoss=float(mt[3]),
+                                              pIllM=float(mt[4]), gNorm=float(mt[5]),
+                                              ms=float(mt[6]))
+                g = _GAMES.search(line)
+                if g:
+                    self.games[step] = int(g.group(1))
+        self.m_steps = sorted(self.metrics)
+        self.g_steps = sorted(self.games)
+
+
+_INDEX_CACHE = {}
+
+def log_index(logname):
+    """Memoized LogIndex for a log under LOGS. A missing file yields an empty index
+    rather than raising, so every caller degrades to blanks the same way."""
+    if logname not in _INDEX_CACHE:
+        _INDEX_CACHE[logname] = LogIndex(os.path.join(LOGS, logname))
+    return _INDEX_CACHE[logname]
+
+def _nearest_at_or_below(sorted_steps, step):
+    i = bisect.bisect_right(sorted_steps, step)
+    return sorted_steps[i - 1] if i else None
 
 def _log_index(logname):
-    """Return {meta_step: abs_sec} with midnight rollover handled, + ordered list.
-    Missing log -> empty (elapsed will be left blank)."""
-    path = os.path.join(LOGS, logname)
-    idx, order = {}, []
-    if not os.path.exists(path):
-        return idx, order
-    day, prev = 0, None
-    for line in open(path, errors="replace"):
-        m = _TS.match(line)
-        if not m:
-            continue
-        h, mi, s, ms, step = int(m[1]), int(m[2]), int(m[3]), m[4], int(m[5])
-        sod = h * 3600 + mi * 60 + s + int(ms) / (10 ** len(ms))
-        if prev is not None and sod < prev - 1:
-            day += 1
-        prev = sod
-        absolute = day * 86400 + sod
-        idx[step] = absolute
-        order.append((step, absolute))
-    return idx, order
+    """Back-compat shim returning (at_time, order) as the old helper did."""
+    li = log_index(logname)
+    return li.at_time, li.order
 
 def _metrics_at(logname, meta_step, stale_tol=1500):
     """pLoss/vLoss/pIllM/gNorm/ms from the [REPLAY] step=<meta> line (nearest <=).
@@ -150,30 +223,37 @@ def _metrics_at(logname, meta_step, stale_tol=1500):
     pLoss/vLoss step during the 2026-07-06 disk-full). Blank is honest: no data, so the
     charts skip it rather than drawing a stale plateau. Normal logging is every ~60 s
     (~170 steps here), so 1500 only ever trips on a genuine multi-interval gap."""
-    path = os.path.join(LOGS, logname)
-    if not os.path.exists(path):
-        return {}
-    best = None
-    for line in open(path, errors="replace"):
-        mm = re.search(r"\[REPLAY\] step=(\d+)\b", line)
-        if not mm:
-            continue
-        st = int(mm.group(1))
-        if st <= meta_step:
-            mt = _METRICS.search(line)
-            if mt:
-                best = (st, dict(loss=float(mt[1]) if mt[1] else "",
-                                 pLoss=float(mt[2]), vLoss=float(mt[3]),
-                                 pIllM=float(mt[4]), gNorm=float(mt[5]), ms=float(mt[6])))
-        else:
-            break
-    if best and meta_step - best[0] > stale_tol:
+    li = log_index(logname)
+    st = _nearest_at_or_below(li.m_steps, meta_step)
+    if st is None or meta_step - st > stale_tol:
         return {}                                    # log gap -> no real stats for this checkpoint
-    return best[1] if best else {}
+    return li.metrics[st]
+
+def _games_at(logname, meta_step, stale_tol=1500):
+    """Cumulative games fed at (nearest <=) meta_step — this segment's compute reading.
+
+    Carries the same staleness guard as `_metrics_at`, and for a sharper reason: a
+    stale `games=` does not merely repeat a value, it UNDERSTATES the compute axis by
+    however much the corpus advanced while the log was silent, and an understated
+    compute axis is worse than an absent one because it still looks plottable."""
+    li = log_index(logname)
+    st = _nearest_at_or_below(li.g_steps, meta_step)
+    if st is None or meta_step - st > stale_tol:
+        return None
+    return li.games[st]
 
 def _clamped_timeline(order, grace_sec=120.0):
-    """Given ordered [(step, abs_sec)] log lines, return ({step: cumulative TRAINING
-    seconds from the first line}, segment_total). Each inter-line interval contributes
+    """Given ordered [(step, abs_sec)] log lines, return
+    ({step: cumulative TRAINING seconds}, clamped_total,
+     {step: cumulative RAW WALL seconds}, raw_total).
+
+    The raw pair is the same walk with the cap removed. It exists so the clamp is
+    auditable instead of invisible: `wall_sec - elapsed_train_sec` is exactly how
+    much this function decided was not training. Across the v5 lineage that is 0.00 h
+    on four of five segments and 20.54 h (5.7%) on run 2's 15-day span — plausible
+    machine sleep, but a number you should be able to SEE rather than infer.
+
+    Each inter-line interval contributes
     its real wall gap, HARD-CAPPED at the training time its step delta can justify
     (Δsteps x median-sec-per-step) plus a small logging-jitter grace — so an interval
     can NEVER bank more seconds than its own step count earns. Machine sleep / app-nap /
@@ -193,24 +273,28 @@ def _clamped_timeline(order, grace_sec=120.0):
     tight. Runs with no stalls are essentially unaffected (every gap ~ its step-earned
     time), so this reduces to plain wall-clock training time."""
     if not order:
-        return {}, 0.0
+        return {}, 0.0, {}, 0.0
     sps = [ (t1 - t0) / (s1 - s0)
             for (s0, t0), (s1, t1) in zip(order, order[1:])
             if s1 - s0 > 0 and t1 - t0 >= 0 ]
     med = float(np.median(sps)) if sps else 0.0
     train = {order[0][0]: 0.0}
-    cum = 0.0
+    wall = {order[0][0]: 0.0}
+    cum = raw = 0.0
     for (s0, t0), (s1, t1) in zip(order, order[1:]):
         ds, dt = s1 - s0, t1 - t0
         if ds <= 0:
-            dur = 0.0                        # same-step re-log / out-of-order: no new work
+            dur = raw_dur = 0.0              # same-step re-log / out-of-order: no new work
         else:
-            dur = max(dt, 0.0)
+            raw_dur = max(dt, 0.0)
+            dur = raw_dur
             if med > 0:
                 dur = min(dur, med * ds + grace_sec)   # never bank more than step-earned (+jitter)
         cum += dur
+        raw += raw_dur
         train[s1] = cum
-    return train, cum
+        wall[s1] = raw
+    return train, cum, wall, raw
 
 
 class SegTime:
@@ -220,14 +304,20 @@ class SegTime:
         self.run = run                      # enables CSV fallback when a prior log is gone
         self._warned = set()
         self.idx, self.first, self.train, self.dur = [], [], [], []
-        prior = 0.0
+        self.wall, self.wall_dur, self.wall_keys = [], [], []
+        prior = raw_prior = 0.0
         for sg in segments:
             idx, order = _log_index(sg["log"])
             first = order[0][1] if order else 0.0
-            train, total = _clamped_timeline(order)   # sleep-immune cumulative train-secs
+            # sleep-immune cumulative train-secs, plus the same walk uncapped
+            train, total, wall, raw_total = _clamped_timeline(order)
             self.idx.append(idx); self.first.append(first); self.train.append(train)
+            self.wall.append(wall)
+            self.wall_keys.append(sorted(wall))   # sorted once, not per lookup
             self.dur.append(prior)          # cumulative TRAINING seconds before this segment
+            self.wall_dur.append(raw_prior) # cumulative RAW WALL seconds before this segment
             prior += total
+            raw_prior += raw_total
 
     def _base(self, si):
         """Seconds of elapsed training before segment si begins. Resolution order:
@@ -258,16 +348,64 @@ class SegTime:
                              f"Pin it by setting \"elapsed_base_sec\" on this segment in registry.json.\n")
         return base
 
+    def _wall_base(self, si):
+        """Raw wall seconds before segment si begins. Same resolution ladder as
+        `_base`, with one extra rung on top: an explicit `wall_base_sec`. Where a
+        segment pins only `elapsed_base_sec`, that pinned value is reused as the wall
+        base too — for the v5 lineage the pinned prefix comes from a machine whose
+        logs are not on this host, so there is no separate raw measurement to pin and
+        pretending otherwise would invent one. The consequence is bounded and worth
+        stating: `wall_sec - elapsed_train_sec` measures clamping only WITHIN the
+        logged segments, never inside a pinned prefix."""
+        sg = self.segs[si]
+        if "wall_base_sec" in sg:
+            return sg["wall_base_sec"]
+        if "elapsed_base_sec" in sg:
+            return sg["elapsed_base_sec"]
+        if si == 0 or self.wall_dur[si] > 0:
+            return self.wall_dur[si]
+        base = 0.0
+        if self.run:
+            for r in read_csv(self.run):
+                try:
+                    if int(r["cum_step"]) < sg["cumstep_base"] and r.get("wall_sec") not in ("", None):
+                        base = max(base, float(r["wall_sec"]))
+                except (ValueError, KeyError):
+                    pass
+        return base
+
+    def wall_at(self, cumstep, segment=None):
+        """Raw (unclamped) cumulative wall-training seconds at cumstep, or "" when the
+        segment's log is absent. Mirrors `elapsed_and_clock`'s nearest-<= lookup so the
+        two columns are always read at the same point and stay directly comparable —
+        including the `segment` override, which must be passed in tandem with it."""
+        si = self.seg_for(cumstep) if segment is None else segment
+        meta = cumstep - self.segs[si]["cumstep_base"]
+        wall = self.wall[si]
+        if not wall:
+            return ""
+        st = _nearest_at_or_below(self.wall_keys[si], meta)
+        return round(self._wall_base(si) + (wall[st] if st is not None else 0.0), 1)
+
     def seg_for(self, cumstep):
-        # last segment whose cumstep_base <= cumstep
+        """Last segment whose cumstep_base <= cumstep.
+
+        ⚠️ This is a GUESS, correct only while segments tile the axis end-to-end. A
+        segment that resumes from PART-WAY THROUGH its predecessor breaks it: v5's
+        segment 7 forked from segment 6 at step 46,000, so its base (857,769) lands
+        inside segment 6's span (811,769–861,143), and segment 6's own final mark at
+        cum 857,769 resolves here to 7 with meta=0. Callers that already KNOW the
+        segment must pass it explicitly rather than rely on this."""
         best = 0
         for i, sg in enumerate(self.segs):
             if sg["cumstep_base"] <= cumstep:
                 best = i
         return best
 
-    def elapsed_and_clock(self, cumstep):
-        si = self.seg_for(cumstep)
+    def elapsed_and_clock(self, cumstep, segment=None):
+        """`segment` overrides `seg_for`; pass it whenever the caller knows which
+        segment a mark belongs to (see seg_for's warning about forked segments)."""
+        si = self.seg_for(cumstep) if segment is None else segment
         meta = cumstep - self.segs[si]["cumstep_base"]
         idx = self.idx[si]
         if not idx:                       # segment log missing -> no time axis
@@ -477,9 +615,21 @@ def recompute_elapsed(run, verbose=True):
     st = SegTime(cfg["segments"], run)
     changed = 0
     for r in rows:
-        el, _clk, _meta, _si = st.elapsed_and_clock(int(r["cum_step"]))
+        cum = int(r["cum_step"])
+        # Trust the row's recorded segment over re-deriving it from cum, which
+        # `seg_for` cannot do correctly across a forked segment.
+        seg = int(r["segment"]) if str(r.get("segment", "")).isdigit() else None
+        el, _clk, _meta, _si = st.elapsed_and_clock(cum, seg)
         if el != "" and str(r.get("elapsed_train_sec", "")) != str(el):
             r["elapsed_train_sec"] = el
+            changed += 1
+        # wall_sec must move WITH elapsed_train_sec. They are the clamped and unclamped
+        # readings of one walk, and `wall_sec - elapsed_train_sec` is only meaningful
+        # while both are computed from the same timeline — recomputing one alone would
+        # leave a stale difference that still looks like a clamp measurement.
+        wl = st.wall_at(cum, seg)
+        if wl != "" and str(r.get("wall_sec", "")) != str(wl):
+            r["wall_sec"] = wl
             changed += 1
     if changed:
         write_csv(run, rows)
@@ -497,9 +647,17 @@ def _kv(line, key):
 V5_DOC = os.path.join(HERE, "..", "v5-layernorm-output.md")
 
 def migrate_v5():
-    """v5 lives in the markdown table (per-subrun step), not loop_state.
-    cum_step = subrun_step + offset. Three warm-start segments; elapsed left
-    blank unless segment logs are present."""
+    """v5's FIRST THREE segments live in the markdown table (per-subrun step), not
+    loop_state. cum_step = subrun_step + offset. Elapsed left blank unless segment
+    logs are present.
+
+    ⚠️ Those three segments are no longer the whole run. v5 continued for five more
+    segments whose probes were imported from JSONL (see `import_probes` and
+    documentation/v5-lineage.md), and the markdown doc knows nothing about them. So
+    this rebuilds ONLY the doc-sourced rows and carries every row from a later segment
+    through untouched — otherwise re-running a migration would silently delete 761
+    imported rows that cannot be re-probed, since most of their weight files no longer
+    exist."""
     cfg = REG["runs"]["v5"]
     off = cfg["v5doc_offsets"]
     seg_for_name = {"wd1e-4": 0, "wd5e-4": 1, "m0.93": 2}
@@ -528,8 +686,161 @@ def migrate_v5():
             pIllM="", bn1Mean=c[6], gNorm=c[7], sae2=c[8], eff_alpha="",
             pLogit_mean=pl[0], pLogit_peak=(pl[1] if len(pl) > 1 else ""),
             frozen_file=os.path.basename(frozen), note=name))
-    write_csv("v5", rows)
-    print(f"migrate v5: {len(rows)} rows -> {csv_path('v5')} (from v5-layernorm-output.md)")
+    doc_segs = set(seg_for_name.values())
+    existing = read_csv("v5")
+    kept = [r for r in existing
+            if str(r.get("segment", "")).isdigit() and int(r["segment"]) not in doc_segs]
+
+    # Never let a rebuild REPLACE a real reading with a blank one. These three segments
+    # ran on a different machine and their session logs are not on this host, so SegTime
+    # above resolves their elapsed/wall to "" — while the CSV still carries the values
+    # measured back when the logs were present. Blank is honest for something never
+    # measured; it is data loss for something measured elsewhere.
+    prior = {int(r["cum_step"]): r for r in existing if str(r.get("cum_step", "")).isdigit()}
+    restored = 0
+    for r in rows:
+        old = prior.get(int(r["cum_step"]))
+        if not old:
+            continue
+        for col in ("elapsed_train_sec", "wallclock_iso", "wall_sec", "games_fed"):
+            if r.get(col) in ("", None) and old.get(col) not in ("", None):
+                r[col] = old[col]
+                restored += 1
+
+    write_csv("v5", rows + kept)
+    print(f"migrate v5: {len(rows)} doc rows rebuilt ({restored} field(s) preserved from the "
+          f"existing CSV), {len(kept)} imported rows preserved -> {csv_path('v5')}")
+
+# ---------- import probes recorded outside the tracker ----------
+def _ckpt_index(dirs):
+    """Map (model_id, training_step) -> path over every .safetensors in `dirs`.
+
+    Keyed by METADATA, never by filename. The corpus-replay runner numbers its
+    enumerated checkpoints per segment, restarting at 1 on every resume, so across
+    the v5 lineage five segments competed for the same names and later runs
+    overwrote earlier ones in place — four distinct files have been called
+    `v5-cont-replay-step1000.safetensors`. Only the header's `model_id` (minted per
+    segment) plus `training_step` names a checkpoint uniquely."""
+    out = {}
+    for d in dirs:
+        for p in sorted(glob.glob(os.path.join(os.path.expanduser(d), "*.safetensors"))):
+            try:
+                with open(p, "rb") as f:
+                    n = struct.unpack("<Q", f.read(8))[0]
+                    m = json.loads(f.read(n)).get("__metadata__", {})
+                mid, ts = m.get("model_id"), m.get("training_step")
+                if mid and ts is not None:
+                    out.setdefault((mid, int(ts)), p)
+            except (OSError, ValueError, KeyError, struct.error):
+                continue                     # unreadable file: absent, not fatal
+    return out
+
+
+def import_probes(run, jsonl, segment, ckpt_dirs=(), verbose=True):
+    """Fold probe results recorded OUTSIDE this tracker into a run's CSV.
+
+    The v5 lineage was monitored for five continuation segments by a separate
+    bundle-side loop that appended one probe JSON per line to `new_ckpts*.jsonl`.
+    Those probes are the only surviving record of most of those checkpoints — the
+    weight files they describe were largely overwritten by later segments — so they
+    are imported rather than re-derived. `pElo`/`nll` come straight from the JSON;
+    everything else is joined from the segment's session log at the same step.
+
+    Integrity gate: every probe's `modelID` must equal the segment's registry
+    `model_id`. A monitor that trusted filenames alone once re-probed nine
+    month-old files and published a fabricated curve from them; requiring the
+    minted-per-segment ID makes that class of error impossible to import silently.
+    Mismatches are reported and skipped, never written.
+
+    Idempotent on cum_step, same as `track`."""
+    cfg = REG["runs"][run]
+    sg = cfg["segments"][segment]
+    base = sg["cumstep_base"]
+    want_id = sg.get("model_id")
+    games_base = sg.get("games_base")
+    st = SegTime(cfg["segments"], run)
+    ck = _ckpt_index(ckpt_dirs) if ckpt_dirs else {}
+
+    rows = read_csv(run)
+    by = {int(r["cum_step"]): r for r in rows}
+    added = skipped = rejected = 0
+
+    for line in open(os.path.expanduser(jsonl)):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        m = re.search(r"step(\d+)", os.path.basename(d.get("model", "")))
+        if not m:
+            continue
+        meta = int(m.group(1))
+        # Provenance gate. Three outcomes, deliberately distinct:
+        #   modelID matches            -> measured, import clean
+        #   modelID absent + recovered -> the probe itself declares it was reconstructed
+        #                                 (weights overwritten before archiving, values
+        #                                 read back off a published chart). Import, but
+        #                                 stamp the row so no reader mistakes it for a
+        #                                 measurement.
+        #   anything else              -> unverifiable or wrong segment; refuse.
+        recovered = bool(d.get("recovered"))
+        got_id = d.get("modelID")
+        if want_id and got_id != want_id and not (got_id is None and recovered):
+            rejected += 1
+            if verbose:
+                print(f"  REJECT step{meta}: modelID {got_id} != segment {segment} {want_id}")
+            continue
+        cum = base + meta
+        if cum in by:
+            skipped += 1
+            continue
+
+        met = _metrics_at(sg["log"], meta)
+        # Pass `segment` explicitly: a forked segment's base can fall inside its
+        # predecessor's span, so cum alone would misattribute this segment's own final
+        # mark (v5 seg 6's last probe sits exactly on seg 7's base).
+        elapsed, clock, _meta, si = st.elapsed_and_clock(cum, segment)
+        g = _games_at(sg["log"], meta)
+        lm = round(1 - met["pIllM"], 4) if "pIllM" in met else ""
+        row = dict(cum_step=cum, meta_step=meta, segment=segment,
+                   elapsed_train_sec=elapsed, wall_sec=st.wall_at(cum, segment),
+                   wallclock_iso=clock, ms_per_step=met.get("ms", ""),
+                   pElo=round(d["pElo"], 2) if d.get("pElo") else "",
+                   nll=round(d["nll"], 4) if d.get("nll") else "",
+                   loss=met.get("loss", ""), pLoss=met.get("pLoss", ""),
+                   vLoss=met.get("vLoss", ""), legalMass=lm, pIllM=met.get("pIllM", ""),
+                   gNorm=met.get("gNorm", ""),
+                   pLogit_mean=d.get("policy_logit_abs_max", ""),
+                   pLogit_peak=d.get("policy_logit_abs_max_peak", ""),
+                   games_fed=(games_base + g) if (games_base is not None and g is not None) else "",
+                   frozen_file=os.path.basename(d.get("model", "")),
+                   note=("recovered:" + d.get("recovered_note", "reconstructed, not measured")
+                         if recovered else f"import:{os.path.basename(jsonl)}"))
+
+        # bn1Mean / sae2 / eff_alpha need the actual weights. Most of these
+        # checkpoints no longer exist; fill them where the file survives and leave
+        # them blank where it does not, rather than carrying a neighbour's value.
+        p = ck.get((d.get("modelID"), meta))
+        if p:
+            try:
+                bn1, sae2, effs = internals(p, cfg["rezero_cap"])
+                row.update(bn1Mean=round(bn1, 4), sae2=round(sae2, 4),
+                           eff_alpha=";".join(f"{e:.4f}" for e in effs))
+            except (OSError, KeyError, ValueError):
+                pass
+
+        rows.append(row); by[cum] = row; added += 1
+
+    if added:
+        rows.sort(key=lambda r: int(r["cum_step"]))
+        write_csv(run, rows)
+    if verbose:
+        print(f"{run} seg {segment} ({sg.get('label','')}): +{added} rows, "
+              f"{skipped} already present, {rejected} rejected -> {csv_path(run)}")
+    return added
+
 
 def migrate(run, loop_state=None):
     if run == "v5" or REG["runs"][run].get("source") == "v5doc":
@@ -789,6 +1100,12 @@ if __name__ == "__main__":
     p = sub.add_parser("track"); p.add_argument("run")
     p = sub.add_parser("migrate"); p.add_argument("run"); p.add_argument("--loop-state")
     p = sub.add_parser("recompute"); p.add_argument("run", nargs="?", default="__all__")
+    p = sub.add_parser("import-probes")
+    p.add_argument("run"); p.add_argument("--jsonl", required=True)
+    p.add_argument("--segment", type=int, required=True)
+    p.add_argument("--ckpt-dir", action="append", default=[],
+                   help="directory of .safetensors to source bn1Mean/sae2/eff_alpha from "
+                        "(matched by model_id+training_step, never by filename); repeatable")
     sub.add_parser("render")
     a = ap.parse_args()
     if a.cmd == "track":
@@ -799,5 +1116,7 @@ if __name__ == "__main__":
         targets = list(REG["runs"]) if a.run == "__all__" else [a.run]
         for r in targets:
             recompute_elapsed(r)
+    elif a.cmd == "import-probes":
+        import_probes(a.run, a.jsonl, a.segment, a.ckpt_dir)
     elif a.cmd == "render":
         render()

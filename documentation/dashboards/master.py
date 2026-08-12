@@ -124,14 +124,28 @@ def collect():
 
     def build(key, cfg, data_dir):
         rows = read_rows(data_dir, key)
-        s, t, m = [], [], {k: [] for k in NUMKEYS}
+        # Three x-axes, deliberately kept separate rather than reconciled:
+        #   s  cumulative SGD step   — exact, but only a work axis while batch size
+        #                              and replay ratio hold constant.
+        #   t  elapsed training hours — real cost, but DEVICE-SPECIFIC. v5 spans an
+        #                              M5 and an M4 Pro at 1.33 vs 3.43 s/step, so its
+        #                              by-time curve genuinely changes slope 2.59x at
+        #                              the hand-off. That break is hardware, not the
+        #                              network, and is never normalized away.
+        #   g  cumulative corpus games (millions) — the device-independent compute
+        #                              axis, measured from the runner's own `games=`.
+        # A run with no games_fed column simply has a g of Nones and drops out of the
+        # compute view, exactly as a run with no log drops out of the time view.
+        s, t, g, m = [], [], [], {k: [] for k in NUMKEYS}
         for r in rows:
             cum = _f(r.get("cum_step"))
             if cum is None:
                 continue
             el = _f(r.get("elapsed_train_sec"))
+            gf = _f(r.get("games_fed"))
             s.append(int(cum))
             t.append(round(el / 3600.0, 4) if el is not None else None)
+            g.append(round(gf / 1e6, 4) if gf is not None else None)
             for k in NUMKEYS:
                 m[k].append(_f(r.get(k)))
         ts = cfg.get("trainset") or "?"
@@ -158,7 +172,7 @@ def collect():
             "n": len(s), "peak": peak, "steps": final_cum,
             "hrs": max([x for x in t if x is not None], default=0.0),
             "final_pElo": last("pElo"), "final_nll": last("nll"),
-            "s": s, "t": t, "m": m,
+            "s": s, "t": t, "g": g, "m": m,
         }
 
     for key, cfg in main["runs"].items():
@@ -344,7 +358,7 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--mut);font-size:12.5px;pa
 <h2>Charts</h2>
 <div class=controls>
  <div class=seg id=typeseg><button data-tp=all>all</button><button data-tp=replay>replay</button><button data-tp=vsuci>vs-UCI</button><button data-tp=selfplay>self-play</button></div>
- <div class=seg id=xseg><button data-x=step>by step</button><button data-x=time>by time</button></div>
+ <div class=seg id=xseg><button data-x=step>by step</button><button data-x=time>by time</button><button data-x=compute>by compute</button></div>
  <div class=seg id=emaseg><button data-e=1>smoothed</button><button data-e=0>raw</button></div>
  <button class=mini id=all>all</button><button class=mini id=none>none</button>
  <span id=tsquick></span>
@@ -388,8 +402,10 @@ function ticksFor(lo,hi,n){if(!(hi>lo))return[lo];let stp=niceStep(hi-lo,n),a=[]
 function ema(ys,span){let a=2/(span+1),s=null,o=[];for(const y of ys){s=(s==null)?y:a*y+(1-a)*s;o.push(s);}return o;}
 function fmtY(v){let a=Math.abs(v);if(a>=1000)return v.toFixed(0);if(a>=10)return v.toFixed(1);
  if(a>=1)return v.toFixed(2);if(a===0)return"0";return v.toFixed(3);}
-function fmtX(v){return st.x=="time"?v.toFixed(1)+"h":(v>=1000?(v/1000).toFixed(0)+"k":v.toFixed(0));}
-function rawSeries(run,key){const xa=st.x=="step"?run.s:run.t,ya=run.m[key],o=[];
+function fmtX(v){if(st.x=="time")return v.toFixed(1)+"h";if(st.x=="compute")return v.toFixed(0)+"M";
+ return v>=1000?(v/1000).toFixed(0)+"k":v.toFixed(0);}
+function xArr(run){return st.x=="step"?run.s:st.x=="compute"?(run.g||[]):run.t;}
+function rawSeries(run,key){const xa=xArr(run),ya=run.m[key],o=[];
  for(let i=0;i<xa.length;i++){let x=xa[i],y=ya[i];if(x==null||y==null)continue;o.push([x,y]);}return o;}
 /* what actually gets drawn (ema line or raw) — used for both drawing and hover */
 function drawnSeries(run,key){let pts=rawSeries(run,key);
@@ -455,7 +471,8 @@ class Chart{
     items.push({run:s.run,val:best[1],ended:false});}
    else{items.push({run:s.run,val:lastY,ended:true});dim.add(s.run.k);}}
   items.sort((a,b)=>b.val-a.val);
-  tip.innerHTML="<div class=hd>"+(st.x=="time"?"~"+xv.toFixed(1)+"h":"~cum "+Math.round(xv))+"</div>"+
+  tip.innerHTML="<div class=hd>"+(st.x=="time"?"~"+xv.toFixed(1)+"h":
+    st.x=="compute"?"~"+xv.toFixed(1)+"M games":"~cum "+Math.round(xv))+"</div>"+
    items.map(it=>{const on=it.run.k===nearest,cls=on?"hi":(it.ended?"dim":"");
     return "<div class='r "+cls+"'><span><span class=sw style='display:inline-block;background:"+it.run.color+
      ";border-radius:2px;margin-right:5px'></span>"+it.run.k+(it.ended?"<span class=fin>final</span>":"")+
@@ -505,13 +522,13 @@ document.querySelectorAll("#summary th[data-s]").forEach(th=>{th.onclick=e=>{e.s
  [...tb.rows].sort((a,b)=>{let x=val(a),y=val(b);return (x<y?-1:x>y?1:0)*(asc?1:-1);}).forEach(r=>tb.appendChild(r));};});
 
 /* ---- per-run data tables ---- */
-const tcols=[["cum","s"],["h","t"]].concat(METRICS.map(m=>[m.title,m.key]));
+const tcols=[["cum","s"],["h","t"],["Mgames","g"]].concat(METRICS.map(m=>[m.title,m.key]));
 const tw=document.getElementById("tables");
 RUNS.forEach(r=>{if(!r.n)return;const d=document.createElement("details");
  let h="<summary><span class=sw style='background:"+r.color+";display:inline-block'></span> "+
   r.k+" — "+r.trainset+" · "+r.n+" marks · peak "+(r.peak?r.peak.toFixed(0):"—")+"</summary>";
  h+="<div class=tblwrap><table><thead><tr>"+tcols.map(c=>"<th class=num>"+c[0]+"</th>").join("")+"</tr></thead><tbody>";
- for(let i=0;i<r.n;i++){h+="<tr>"+tcols.map(c=>{let v=(c[1]=="s"||c[1]=="t")?r[c[1]][i]:r.m[c[1]][i];
+ for(let i=0;i<r.n;i++){h+="<tr>"+tcols.map(c=>{let v=(c[1]=="s"||c[1]=="t"||c[1]=="g")?(r[c[1]]||[])[i]:r.m[c[1]][i];
   return "<td class=num>"+(v==null?"—":(typeof v=="number"?(Math.abs(v)>=100?v.toFixed(0):v.toFixed(3)):v))+"</td>";}).join("")+"</tr>";}
  h+="</tbody></table></div>";d.innerHTML=h;tw.appendChild(d);});
 

@@ -92,12 +92,12 @@
       "trainset": "std-2026-05"
     },
     "v5": {
-      "label": "v5 — 8.45M, 5-block (wd1e-4→wd5e-4→m0.93)",
+      "label": "v5 — 8.45M, 5-block · full lineage: 3 warm-start segments (M5 VM) + 5 corpus-replay continuations (M4 Pro)",
       "color": "#1f77b4",
       "rezero_cap": 1.0,
       "n_blocks": 5,
       "params": 8450000,
-      "arch_summary": "5-block 128ch lc0-style, LayerNorm output; lineage wd1e-4 → wd5e-4 → m0.93 (3 warm-start segments)",
+      "arch_summary": "5-block 128ch lc0-style, LayerNorm output; lineage wd1e-4 → wd5e-4 → m0.93 (3 warm-start segments, M5 VM) then 5 corpus-replay continuation segments on M4 Pro to cum step ~859.8k",
       "arch_stem": "basic30 → stem 7×7→128",
       "arch_blocks": "5× @128, 7×7+7×7, SE scale+bias/4, ReLU/pre, ReZero cap 1.0, LN-out",
       "arch_heads": "policy intermediate_conv (pre-conv 128) · value WDL(16→FC128)",
@@ -114,21 +114,86 @@
           "log": "dcm_log_20260627-201127.txt",
           "date": "20260627",
           "cumstep_base": 0,
-          "label": "wd1e-4"
+          "label": "wd1e-4",
+          "device": "M5 (VM)",
+          "frozen_prefix": "20260628-v5_5block_7x7_lnout",
+          "note": "frozen checkpoints predate the resume-metadata feature, so no replay_next_game_index: games_fed is blank here by necessity, not choice. Segments 0-2 ran inside a Pacific-timezone VM on the M5 host; that VM has since been deleted, so their session logs are permanently lost. Per-step rates for these segments are VIRTUALIZED throughput, not bare-metal M5."
         },
         {
           "log": "dcm_log_20260628-114648.txt",
           "date": "20260628",
           "cumstep_base": 45441,
           "label": "wd5e-4",
-          "elapsed_base_sec": 59620.0
+          "elapsed_base_sec": 59620.0,
+          "device": "M5 (VM)",
+          "frozen_prefix": "20260628-v5_5block_7x7_lnout-wd5e4",
+          "note": "session log lost from both machines; wallclock_iso, games_fed and elapsed_train_sec recovered 2026-08-12 from the -wd5e4 frozen checkpoints' safetensors headers (created_at_unix / replay_next_game_index), validated against segments 0 and 2 whose timestamps were already known. Times are M5-local (PDT = UTC-7)."
         },
         {
           "log": "dcm_log_20260628-183831.txt",
           "date": "20260628",
           "cumstep_base": 60901,
           "label": "m0.93",
-          "elapsed_base_sec": 59620.0
+          "elapsed_base_sec": 80201.4,
+          "device": "M5 (VM)",
+          "wall_base_sec": 80291.8,
+          "note": "base recovered from the wallclock bridge across segment 1, whose log is lost: seg0 last mark 2026-06-28T12:45:24 -> seg2 first mark 19:00:42 = 22518 s / 16901 steps = 1.332 s/step, matching the 1.325-1.329 measured in-segment rate to 0.4% (so ~90 s idle). Was 59620.0, which repeated segment 0's end value and omitted segment 1's ~5.74 h entirely.",
+          "frozen_prefix": "20260628-v5_5block_7x7_lnout-wd2.5e4-m93"
+        },
+        {
+          "cumstep_base": 100320,
+          "date": "20260702",
+          "device": "M4 Pro",
+          "elapsed_base_sec": 132549.1,
+          "games_base": 12933495,
+          "label": "cont-run1",
+          "log": "dcm_log_20260702-201756.txt",
+          "model_id": "20260703-1-Dg5v",
+          "wall_base_sec": 132639.5
+        },
+        {
+          "cumstep_base": 368826,
+          "date": "20260713",
+          "device": "M4 Pro",
+          "elapsed_base_sec": 1078885.7,
+          "games_base": 47582603,
+          "label": "cont-run2",
+          "log": "dcm_log_20260713-195047.txt",
+          "model_id": "20260714-1-h7vI",
+          "wall_base_sec": 1078976.1
+        },
+        {
+          "cumstep_base": 705436,
+          "date": "20260728",
+          "device": "M4 Pro",
+          "elapsed_base_sec": 2307820.1,
+          "games_base": 90998480,
+          "label": "cont-run3",
+          "log": "dcm_log_20260728-223132.txt",
+          "model_id": "20260729-1-VZ2j",
+          "wall_base_sec": 2381864.9
+        },
+        {
+          "cumstep_base": 811769,
+          "date": "20260802",
+          "device": "M4 Pro",
+          "elapsed_base_sec": 2685221.1,
+          "games_base": 104743805,
+          "label": "cont-run4",
+          "log": "dcm_log_20260802-152830.txt",
+          "model_id": "20260802-2-Xuub",
+          "wall_base_sec": 2759265.9
+        },
+        {
+          "cumstep_base": 857769,
+          "date": "20260804",
+          "device": "M4 Pro",
+          "elapsed_base_sec": 2846839.7,
+          "games_base": 110668628,
+          "label": "cont-run5",
+          "log": "dcm_log_20260804-221739.txt",
+          "model_id": "20260805-1-0pTW",
+          "wall_base_sec": 2920884.5
         }
       ],
       "trainset": "std-2026-05"
