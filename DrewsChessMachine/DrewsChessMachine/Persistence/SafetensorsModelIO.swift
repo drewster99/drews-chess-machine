@@ -22,6 +22,11 @@ enum SafetensorsModelIO {
         case missingArchitecture
         case badArchitectureJSON(String)
         case tensorShapeMismatch(name: String, expected: Int, got: Int)
+        /// The stored DIMENSIONS disagree with the plan even though the element
+        /// count may match — e.g. a `.linear` written `[in, out]` instead of
+        /// `[out, in]`, which `fromTorchLayout` would transpose with swapped
+        /// dims and silently scramble.
+        case tensorDimsMismatch(name: String, expected: [Int], got: [Int])
 
         var description: String {
             switch self {
@@ -31,6 +36,10 @@ enum SafetensorsModelIO {
             case .badArchitectureJSON(let d): return "safetensors model: architecture JSON failed to decode (\(d))"
             case .tensorShapeMismatch(let name, let expected, let got):
                 return "safetensors model: tensor '\(name)' has \(got) elements but the embedded architecture's plan expects \(expected)"
+            case .tensorDimsMismatch(let name, let expected, let got):
+                return "safetensors model: tensor '\(name)' is stored with shape \(got) but the embedded "
+                    + "architecture's plan expects \(expected) — same element count is not enough, the "
+                    + "dimensions decide how the tensor is un-transposed on load"
             }
         }
     }
@@ -131,9 +140,13 @@ enum SafetensorsModelIO {
     /// in trainable order, if present).
     static func decode(_ data: Data) throws -> Decoded {
         let (tensors, md) = try SafetensorsFile.decode(data)
-        var byName: [String: [Float]] = [:]
+        // Keep each tensor's stored SHAPE, not just its data: the dimensions are
+        // what decide whether `fromTorchLayout` un-transposes correctly, and
+        // discarding them here is what left the load guard unable to see a
+        // transposed tensor (see the dims check below).
+        var byName: [String: SafetensorsTensor] = [:]
         byName.reserveCapacity(tensors.count)
-        for t in tensors { byName[t.name] = t.data }
+        for t in tensors { byName[t.name] = t }
 
         guard let archJSON = md[Key.architecture] else { throw IOError.missingArchitecture }
         let architecture: NetworkArchitecture
@@ -150,21 +163,51 @@ enum SafetensorsModelIO {
         let names = tensorNames(for: architecture, includesVelocity: hasVelocity)
         let plan = architecture.weightTensorPlan()
 
+        // Pass 1 — element counts, across EVERY plan position before any
+        // dimension is judged.
+        //
+        // The file's per-tensor element count (validated against its own header
+        // shape in `SafetensorsFile.decode`) must also agree with the embedded
+        // architecture's plan — they are two independent shape sources and
+        // `fromTorchLayout` indexes by the plan's dims. A mismatch (hand-edited
+        // config, buggy external writer) would otherwise run `transpose2D` off
+        // the end of the data; surface it as a clean error so the embedded arch
+        // stays the single source of truth for what shapes we accept.
+        //
+        // Deliberately a separate pass rather than folded into the loop below: a
+        // truncated or overlong tensor is a grosser failure than a mis-declared
+        // shape, so it should be reported wherever it sits. Interleaved, a
+        // dimension complaint about position 0 would mask a truncated tensor at
+        // position 90 and send the reader chasing the wrong thing.
+        for (i, name) in names.enumerated() where i < plan.count {
+            guard let tensor = byName[name] else { throw IOError.missingTensor(name) }
+            guard tensor.data.count == plan[i].elementCount else {
+                throw IOError.tensorShapeMismatch(
+                    name: name, expected: plan[i].elementCount, got: tensor.data.count
+                )
+            }
+        }
+
         var weights: [[Float]] = []
         weights.reserveCapacity(names.count)
         for (i, name) in names.enumerated() {
-            guard let torchData = byName[name] else { throw IOError.missingTensor(name) }
+            guard let tensor = byName[name] else { throw IOError.missingTensor(name) }
+            let torchData = tensor.data
             if i < plan.count {
-                // The file's per-tensor element count (validated against its own
-                // header shape in `SafetensorsFile.decode`) must also agree with
-                // the embedded architecture's plan — they are two independent shape
-                // sources and `fromTorchLayout` indexes by the plan's dims. A
-                // mismatch (hand-edited config, buggy external writer) would
-                // otherwise run `transpose2D` off the end of `torchData`; surface
-                // it as a clean error so the embedded arch stays the single source
-                // of truth for what shapes we accept.
-                guard torchData.count == plan[i].elementCount else {
-                    throw IOError.tensorShapeMismatch(name: name, expected: plan[i].elementCount, got: torchData.count)
+                // Count alone is not sufficient. `fromTorchLayout` un-transposes a
+                // `.linear` using the PLAN's dims, so a tensor stored `[in, out]`
+                // instead of `[out, in]` has an identical element count, sails past
+                // the check above, and comes back silently scrambled. Compare the
+                // stored dimensions against what this position is supposed to look
+                // like in torch layout. Squeezed, so a writer that spells a bias
+                // `[1, C, 1, 1]` rather than `[C]` is still accepted — the axes that
+                // carry no values are not worth rejecting a file over.
+                let expectedDims = WeightTensorSpec.squeeze(Self.torchShape(for: plan[i]))
+                let actualDims = WeightTensorSpec.squeeze(tensor.shape)
+                guard actualDims == expectedDims else {
+                    throw IOError.tensorDimsMismatch(
+                        name: name, expected: Self.torchShape(for: plan[i]), got: tensor.shape
+                    )
                 }
                 // Reverse the PyTorch layout back to the engine's native flat order.
                 weights.append(Self.fromTorchLayout(kind: plan[i].kind, nativeShape: plan[i].shape, torchData: torchData))
@@ -239,17 +282,36 @@ enum SafetensorsModelIO {
     /// Native engine layout -> PyTorch state_dict layout (for the on-disk file).
     /// Only Linear weights need a data transpose; biases reshape to 1-D; conv
     /// (OIHW) and BN params ([C]) already match torch.
+    /// The shape a plan entry takes ON DISK, in PyTorch state_dict layout.
+    ///
+    /// Single definition shared by the writer (`toTorchLayout`) and the
+    /// load-time dimension guard in `decode`, so the two cannot drift apart —
+    /// a guard computing "expected" differently from how the file is actually
+    /// written would either reject valid files or wave through the very
+    /// transposition it exists to catch.
+    static func torchShape(kind: WeightKind, nativeShape: [Int]) -> [Int] {
+        switch kind {
+        case .linear:
+            return [nativeShape[1], nativeShape[0]]   // native [in, out] -> torch [out, in]
+        case .bias:
+            return [nativeShape.reduce(1, *)]         // [1,N,1,1] / [1,N] -> [N]
+        case .conv, .bnAffine, .bnRunningStat, .scalar:
+            return nativeShape
+        }
+    }
+
+    static func torchShape(for spec: WeightTensorSpec) -> [Int] {
+        torchShape(kind: spec.kind, nativeShape: spec.shape)
+    }
+
     private static func toTorchLayout(kind: WeightKind, nativeShape: [Int], data: [Float]) -> (shape: [Int], data: [Float]) {
+        let shape = torchShape(kind: kind, nativeShape: nativeShape)
         switch kind {
         case .linear:
             // native [in, out] -> torch [out, in]
-            let inDim = nativeShape[0]
-            let outDim = nativeShape[1]
-            return ([outDim, inDim], transpose2D(data, rows: inDim, cols: outDim))
-        case .bias:
-            return ([data.count], data)            // [1,N,1,1] / [1,N] -> [N]
-        case .conv, .bnAffine, .bnRunningStat, .scalar:
-            return (nativeShape, data)
+            return (shape, transpose2D(data, rows: nativeShape[0], cols: nativeShape[1]))
+        case .bias, .conv, .bnAffine, .bnRunningStat, .scalar:
+            return (shape, data)
         }
     }
 

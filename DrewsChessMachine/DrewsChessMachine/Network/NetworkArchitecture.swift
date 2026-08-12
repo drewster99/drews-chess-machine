@@ -412,6 +412,24 @@ struct WeightTensorSpec: Sendable, Equatable {
     let shape: [Int]
     let kind: WeightKind
     var elementCount: Int { shape.reduce(1, *) }
+
+    /// `shape` with size-1 axes removed — the comparable form when checking a
+    /// plan entry against a tensor from somewhere else.
+    ///
+    /// The plan records LOGICAL shapes (torch/state_dict convention: a BN gamma
+    /// is `[C]`), while the MPSGraph builder declares the same tensor in
+    /// broadcast-ready form (`[1, C, 1, 1]`) so it can be applied across NCHW
+    /// without a reshape. Both describe the same values in the same order;
+    /// only the degenerate axes differ. Comparing raw shapes would therefore
+    /// reject every correctly-built network, while comparing element counts
+    /// alone is too weak — it cannot tell `[in, out]` from `[out, in]`.
+    /// Squeezing is the useful middle: tolerant of broadcast axes, still
+    /// sensitive to a transposed or re-factored tensor.
+    var squeezedShape: [Int] { Self.squeeze(shape) }
+
+    /// Drop size-1 axes. A tensor that is all-ones squeezes to `[]`, which is
+    /// fine as long as both sides of a comparison are squeezed the same way.
+    static func squeeze(_ shape: [Int]) -> [Int] { shape.filter { $0 != 1 } }
 }
 
 // MARK: - Errors

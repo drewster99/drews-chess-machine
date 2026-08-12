@@ -14,6 +14,10 @@ enum ChessNetworkError: LocalizedError {
     case outputMissing(String)
     case weightLoadMismatch(String)
     case variableShapeMissing(String)
+    /// The graph's weight variables disagree with `weightTensorPlan()` — the
+    /// contract that makes positional weight I/O safe. See
+    /// `ChessNetwork.validateAgainstPlan`.
+    case weightPlanMismatch(String)
     case boardSizeMismatch(expected: Int, got: Int)
     /// A GPU command buffer we committed finished in a non-`completed` state
     /// (out-of-memory, timeout, kernel fault). Surfaced instead of consuming
@@ -36,6 +40,8 @@ enum ChessNetworkError: LocalizedError {
             return "Weight load mismatch: \(detail)"
         case .variableShapeMissing(let name):
             return "Variable '\(name)' has no shape — cannot size load placeholder"
+        case .weightPlanMismatch(let detail):
+            return "Weight plan mismatch: \(detail)"
         case .boardSizeMismatch(let expected, let got):
             return "Inference input size mismatch: expected \(expected) floats, got \(got)"
         case .gpuCommandFailed(let stage, let status, let error):
@@ -960,6 +966,23 @@ final class ChessNetwork: @unchecked Sendable {
         trainableShouldDecay = shouldDecay
         bnRunningStatsVariables = runningStats
         bnRunningStatsAssignOps = runningStatsAssigns
+
+        // Enforce the plan↔builder contract, which everything downstream assumes
+        // and nothing previously checked.
+        //
+        // `weightTensorPlan()` is the sole authority for what the tensor at each
+        // position is CALLED and what layout transform it gets, but values are
+        // paired to it purely by INDEX: `SafetensorsModelIO.encode` labels
+        // `weights[i]` with `plan[i].name` and reshapes it per `plan[i].kind`,
+        // and `loadWeights` assigns positionally. So if this builder's append
+        // order ever drifts from the plan, every model written from that point
+        // is mislabeled on disk and every load lands in the wrong variable —
+        // with no error raised anywhere, because the only guard downstream is an
+        // element count. Checking it here, once, at the one place both sides
+        // exist, is what makes the naming honest.
+        try Self.validateAgainstPlan(
+            trainables: trainables, runningStats: runningStats, arch: arch
+        )
         bnBatchMeanTensors = batchMeans
         bnBatchVarTensors = batchVars
 
@@ -2033,6 +2056,55 @@ final class ChessNetwork: @unchecked Sendable {
     /// for variables (they have concrete shapes at creation time).
     /// Exposed `internal` so `ChessTrainer` can size its velocity-tensor
     /// readback buffers identically.
+    /// Verify the graph's weight variables line up, position for position, with
+    /// `arch.weightTensorPlan()`.
+    ///
+    /// Compares SQUEEZED shapes: the plan records logical shapes (a BN gamma is
+    /// `[C]`, torch convention) while the builder declares the same tensor
+    /// broadcast-ready (`[1, C, 1, 1]`) so it applies across NCHW without a
+    /// reshape. Those describe identical values in identical order, so raw
+    /// shape equality would reject every correct network — but element-count
+    /// equality is too weak, since it cannot distinguish `[in, out]` from
+    /// `[out, in]`. Squeezing keeps the check sensitive to a transposed or
+    /// re-factored tensor while tolerating the degenerate axes.
+    ///
+    /// What this still cannot catch: two tensors of the SAME squeezed shape
+    /// swapping positions (a BN `weight`/`bias` pair is `[C]` either way).
+    /// Closing that needs the builder and the plan to share one naming scheme;
+    /// they currently do not (`block0_bn1_gamma` vs `blocks.0.bn1.weight`).
+    private static func validateAgainstPlan(
+        trainables: [MPSGraphTensor],
+        runningStats: [MPSGraphTensor],
+        arch: NetworkArchitecture
+    ) throws {
+        let plan = arch.weightTensorPlan()
+        let allVars = trainables + runningStats
+        guard allVars.count == plan.count else {
+            throw ChessNetworkError.weightPlanMismatch(
+                "graph built \(allVars.count) weight variables "
+                + "(\(trainables.count) trainable + \(runningStats.count) BN running stat) "
+                + "but the plan for this architecture describes \(plan.count). "
+                + "The builder and NetworkArchitecture.weightTensorPlan() have diverged; "
+                + "positional weight I/O (safetensors naming, loadWeights) is unsafe until they agree."
+            )
+        }
+        for (i, spec) in plan.enumerated() {
+            guard let rawShape = allVars[i].shape else {
+                throw ChessNetworkError.variableShapeMissing(allVars[i].operation.name)
+            }
+            let actual = WeightTensorSpec.squeeze(rawShape.map(\.intValue))
+            guard actual == spec.squeezedShape else {
+                throw ChessNetworkError.weightPlanMismatch(
+                    "position \(i): plan calls this '\(spec.name)' with shape \(spec.shape) "
+                    + "but the graph variable '\(allVars[i].operation.name)' has shape "
+                    + "\(rawShape.map(\.intValue)) (squeezed \(actual) vs \(spec.squeezedShape)). "
+                    + "Every saved model labels values by plan position, so this tensor would be "
+                    + "written under the wrong name and reloaded into the wrong variable."
+                )
+            }
+        }
+    }
+
     static func elementCount(of tensor: MPSGraphTensor) throws -> Int {
         guard let shape = tensor.shape else {
             throw ChessNetworkError.variableShapeMissing(tensor.operation.name)
