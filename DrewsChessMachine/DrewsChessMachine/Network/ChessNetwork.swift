@@ -205,15 +205,37 @@ final class ChessNetwork: @unchecked Sendable {
 
     // MARK: Dropout (training-mode graphs only; all nil on inference graphs)
 
-    /// Global dropout rate, a graph VARIABLE (not a placeholder) so no run
-    /// site on this graph is forced to feed it — forwards read its current
-    /// value directly. Built holding 0.0, which makes every dropout node an
-    /// exact identity (mask all-ones, scale 1.0; ×1.0 is exact in bf16 too),
-    /// so a rate-0 training graph is numerically indistinguishable from one
-    /// without the nodes — only the random-generation cost remains, which is
-    /// precisely what the perf probe measures. fp32 scalar; compared against
-    /// fp32 uniforms regardless of compute dtype.
-    let dropoutRateVariable: MPSGraphTensor?
+    /// Global dropout rate, a graph PLACEHOLDER fed per execution. fp32
+    /// scalar; compared against fp32 uniforms regardless of compute dtype. At
+    /// rate 0 every dropout node is an exact identity (mask all-ones, scale
+    /// 1.0; ×1.0 is exact in bf16 too), so a rate-0 graph is numerically
+    /// indistinguishable from one without the nodes — only the
+    /// random-generation cost remains, which is precisely what the perf probe
+    /// measures.
+    ///
+    /// This was a graph VARIABLE until the value baseline was found to be
+    /// reading it. `valueBaselineExecutable` targets `valueOutputFP32`, which
+    /// sits downstream of every block's dropout node, so one shared mutable
+    /// rate meant v(s) was computed through the *training step's* mask and the
+    /// advantage `(z − vBaseline)` became a function of that step's random
+    /// draw rather than of the position. A variable cannot be overridden
+    /// per-executable, and zeroing it around the baseline is not an option
+    /// either: the baseline deliberately commits WITHOUT waiting so its GPU
+    /// work overlaps the training-step encode, so mutating a shared rate would
+    /// race that step's own forward.
+    ///
+    /// As a placeholder each execution states its own rate. The training step
+    /// binds the live rate; every other consumer — value baseline, BN warmup,
+    /// and batched/single inference on a training-mode graph (the diagnostics
+    /// readbacks) — binds 0 and is therefore exactly dropout-free. The cost is
+    /// one extra `[1]` fp32 feed per run, which is why the feed is attached
+    /// centrally (`batchInputEntry` / `inferenceFeeds` / `runPreparedStep`)
+    /// rather than at each call site.
+    let dropoutRateFeedPlaceholder: MPSGraphTensor?
+    /// Preallocated `[1]` fp32 zero — the binding every dropout-free consumer
+    /// uses. Immutable after construction, so it is safe to share across
+    /// concurrently-encoding executions.
+    let dropoutRateZeroTensorData: MPSGraphTensorData?
     /// Philox RNG state threaded through the per-block channel-mask draws.
     /// Variable (persists across executions); seeded once via
     /// `dropoutRngSeedOp` and advanced once per training step via
@@ -231,15 +253,18 @@ final class ChessNetwork: @unchecked Sendable {
     /// `assignOps` so the compiled training executable advances the stream
     /// exactly once per step.
     let dropoutRngAdvanceOp: MPSGraphOperation?
-    /// Setter plumbing for `dropoutRateVariable`: a `[1]` fp32 placeholder +
-    /// assign op + pre-allocated ND array, run out-of-band by
-    /// `ChessTrainer.dropoutRate` when the parameter changes (loadWeights
-    /// pattern — never part of the forward/training executables, so the
-    /// placeholder imposes no feed requirement on any other run).
-    let dropoutRateLoadPlaceholder: MPSGraphTensor?
-    let dropoutRateAssignOp: MPSGraphOperation?
-    let dropoutRateLoadNDArray: MPSNDArray?
-    let dropoutRateLoadTensorData: MPSGraphTensorData?
+    /// Preallocated `[1]` fp32 holding the LIVE rate — the binding used by the
+    /// training step, and by nothing else. `ChessTrainer.dropoutRate` rewrites
+    /// these bytes on the trainer's execution queue, which serializes the write
+    /// against any in-flight step that binds the same buffer. Starts at 0, so a
+    /// trainer that never sets a rate trains dropout-free.
+    ///
+    /// Replaces the old variable-assign plumbing (`dropoutRateLoadPlaceholder`
+    /// + assign op + `graph.run`): with the rate fed per execution there is no
+    /// graph state to update, so setting it is now a buffer write rather than a
+    /// graph execution.
+    let dropoutRateLiveNDArray: MPSNDArray?
+    let dropoutRateLiveTensorData: MPSGraphTensorData?
 
     let policyOutput: MPSGraphTensor
     /// fp32 cast of `policyOutput`, used only as the inference readback
@@ -706,29 +731,34 @@ final class ChessNetwork: @unchecked Sendable {
         // the node is an exact identity by default; see the property docs.
         // The channel mask shape [N, C, 1, 1] is derived at runtime from the
         // stem output's shape (batch is dynamic in this graph).
-        var dropoutRateVar: MPSGraphTensor?
+        var dropoutRatePh: MPSGraphTensor?
         var dropoutStateVar: MPSGraphTensor?
         var dropoutSeedOp: MPSGraphOperation?
         var dropoutAdvanceOp: MPSGraphOperation?
         var dropoutMaskShapes: [Int: MPSGraphTensor] = [:]
         var dropoutState: MPSGraphTensor?
-        var dropoutRateLoadPh: MPSGraphTensor?
-        var dropoutRateAssign: MPSGraphOperation?
-        var dropoutRateNDArray: MPSNDArray?
-        var dropoutRateTensorData: MPSGraphTensorData?
+        var dropoutRateZeroTD: MPSGraphTensorData?
+        var dropoutRateLiveNDA: MPSNDArray?
+        var dropoutRateLiveTD: MPSGraphTensorData?
         if bnMode == .training {
-            let rateVar = g.variable(
-                with: withUnsafeBytes(of: Float(0)) { Data($0) },
+            // Rate is fed, not stored, so each execution picks its own — see
+            // `dropoutRateFeedPlaceholder` for why a variable was unworkable.
+            dropoutRatePh = g.placeholder(
                 shape: [1], dataType: .float32, name: "dropout_rate"
             )
-            dropoutRateVar = rateVar
-            let ratePh = g.placeholder(shape: [1], dataType: .float32, name: "dropout_rate_load")
-            dropoutRateLoadPh = ratePh
-            dropoutRateAssign = g.assign(rateVar, tensor: ratePh, name: "dropout_rate_load_assign")
             let rateDesc = MPSNDArrayDescriptor(dataType: .float32, shape: [1])
-            let rateNDA = MPSNDArray(device: mtlDevice, descriptor: rateDesc)
-            dropoutRateNDArray = rateNDA
-            dropoutRateTensorData = MPSGraphTensorData(rateNDA)
+            // Two distinct buffers: an immutable zero for the dropout-free
+            // consumers, and a mutable one the trainer rewrites. Sharing one
+            // would reintroduce exactly the coupling this change removes.
+            let zeroNDA = MPSNDArray(device: mtlDevice, descriptor: rateDesc)
+            var zero = Float(0)
+            zeroNDA.writeBytes(&zero, strideBytes: nil)
+            dropoutRateZeroTD = MPSGraphTensorData(zeroNDA)
+            let liveNDA = MPSNDArray(device: mtlDevice, descriptor: rateDesc)
+            var live = Float(0)
+            liveNDA.writeBytes(&live, strideBytes: nil)
+            dropoutRateLiveNDA = liveNDA
+            dropoutRateLiveTD = MPSGraphTensorData(liveNDA)
             let stateVar = g.variable(
                 with: Data(count: 7 * MemoryLayout<Int32>.size),
                 shape: [7], dataType: .int32, name: "dropout_rng_state"
@@ -793,7 +823,7 @@ final class ChessNetwork: @unchecked Sendable {
                 bnMode: bnMode,
                 weightStorageDataType: weightStorageDType,
                 castInForward: castInForward,
-                dropoutRate: dropoutRateVar,
+                dropoutRate: dropoutRatePh,
                 dropoutMaskShape: dropoutMaskShapes[spec.channels],
                 dropoutRngState: &dropoutState,
                 trainables: &trainables,
@@ -813,14 +843,13 @@ final class ChessNetwork: @unchecked Sendable {
         if let stateVar = dropoutStateVar, let finalState = dropoutState, finalState !== stateVar {
             dropoutAdvanceOp = g.assign(stateVar, tensor: finalState, name: "dropout_rng_advance")
         }
-        self.dropoutRateVariable = dropoutRateVar
+        self.dropoutRateFeedPlaceholder = dropoutRatePh
+        self.dropoutRateZeroTensorData = dropoutRateZeroTD
+        self.dropoutRateLiveNDArray = dropoutRateLiveNDA
+        self.dropoutRateLiveTensorData = dropoutRateLiveTD
         self.dropoutRngStateVariable = dropoutStateVar
         self.dropoutRngSeedOp = dropoutSeedOp
         self.dropoutRngAdvanceOp = dropoutAdvanceOp
-        self.dropoutRateLoadPlaceholder = dropoutRateLoadPh
-        self.dropoutRateAssignOp = dropoutRateAssign
-        self.dropoutRateLoadNDArray = dropoutRateNDArray
-        self.dropoutRateLoadTensorData = dropoutRateTensorData
 
         // --- Tower-end normalization (pre-activation only) ---
         //
@@ -1010,7 +1039,17 @@ final class ChessNetwork: @unchecked Sendable {
         // ND array backing `inferenceInputTensorData` is written
         // through `writeBytes` on the same underlying storage every
         // call.
-        inferenceFeeds = [inputPlaceholder: inferenceInputTensorData]
+        // On a training-mode graph the single-position `evaluate` path is a
+        // DIAGNOSTIC read of the trainer's network, so it binds rate 0 and sees
+        // a clean forward — previously it inherited whatever rate the training
+        // step had set, quietly masking the diagnostics it exists to report.
+        var builtInferenceFeeds: [MPSGraphTensor: MPSGraphTensorData] = [
+            inputPlaceholder: inferenceInputTensorData
+        ]
+        if let ratePlaceholder = dropoutRatePh, let zeroRate = dropoutRateZeroTD {
+            builtInferenceFeeds[ratePlaceholder] = zeroRate
+        }
+        inferenceFeeds = builtInferenceFeeds
         // Policy is read back as fp32 (GPU-cast); the value scalar and WDL
         // probs stay compute-dtype and are widened on the host — far too
         // small to be worth a GPU cast + its readback dispatch.
@@ -1403,7 +1442,15 @@ final class ChessNetwork: @unchecked Sendable {
         let nda = MPSNDArray(device: metalDevice, descriptor: desc)
         nda.label = "inference.input[\(count)]"
         let tensorData = MPSGraphTensorData(nda)
-        let feeds: [MPSGraphTensor: MPSGraphTensorData] = [inputPlaceholder: tensorData]
+        var feeds: [MPSGraphTensor: MPSGraphTensorData] = [inputPlaceholder: tensorData]
+        // Every consumer of this entry — value baseline, BN warmup, batched
+        // inference — must run dropout-free, so they all bind rate 0. Only the
+        // training step binds the live rate, and it builds its own feeds. Nil on
+        // inference graphs, which have no dropout nodes to feed.
+        if let ratePlaceholder = dropoutRateFeedPlaceholder,
+           let zeroRate = dropoutRateZeroTensorData {
+            feeds[ratePlaceholder] = zeroRate
+        }
         let entry = BatchInputEntry(ndArray: nda, tensorData: tensorData, feeds: feeds)
         batchInputCache[count] = entry
         return entry
@@ -2363,9 +2410,10 @@ final class ChessNetwork: @unchecked Sendable {
         // otherwise). One fresh [N, C, 1, 1] uniform draw per block per
         // step, chained through `dropoutRngState`; keep-mask = (u >= rate);
         // survivors scaled by 1/(1-rate) so train-time expectations match
-        // the dropout-free inference graphs. At rate 0 (the build-time
-        // value) the whole node is an exact identity — see
-        // `dropoutRateVariable`.
+        // the dropout-free inference graphs. The rate arrives as a fed
+        // placeholder, so each execution chooses it: the training step binds
+        // the live rate and every other consumer binds 0, at which the whole
+        // node is an exact identity — see `dropoutRateFeedPlaceholder`.
         //
         // WHY CHANNEL GRANULARITY: the mask broadcasts one coin per
         // (sample, channel) across the whole board, so a dropped feature

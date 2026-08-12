@@ -40,6 +40,10 @@ struct TrainVsUciConfig: Sendable {
     /// from the live trainer. Small = closer to truly-live play.
     var evalSyncEverySteps: Int
     var runModelID: String
+    /// Destination for the run's `results.json` (`--output`), or nil for no
+    /// JSON. Previously `--output` was parsed but reached only the self-play
+    /// controller, so passing it here produced nothing at all.
+    var outputURL: URL?
 }
 
 enum TrainVsUciError: LocalizedError {
@@ -117,6 +121,14 @@ enum TrainVsUciRunner {
     // MARK: - The run
 
     private static func runTraining(config: TrainVsUciConfig, params p: ReplayParams, abort: TrainVsUciAbortFlag) async throws -> Result {
+        // `--output` support. Only allocated when a destination was given, so a
+        // run without `--output` carries no per-step recording cost at all.
+        let recorder: CliTrainingRecorder? = config.outputURL == nil ? nil : {
+            let r = CliTrainingRecorder()
+            r.setSessionID(config.runModelID)
+            return r
+        }()
+        let runStart = CFAbsoluteTimeGetCurrent()
         guard !config.opponents.isEmpty else { throw TrainVsUciError.noOpponents }
 
         // Resolve architecture from --start-model (embeds its own arch) or a
@@ -174,6 +186,22 @@ enum TrainVsUciRunner {
             lrWarmupSteps: p.lrWarmupSteps,
             arch: arch
         )
+        // See CorpusReplayRunner: `dropout_rate` has no `init` argument, so it
+        // must be applied explicitly or the run silently trains at rate 0
+        // regardless of `--parameters`.
+        trainer.dropoutRate = Float(p.dropoutRate)
+        // This path logged no hyperparameters at all, so a finished run left no
+        // record of what it trained under. Mirrors `[REPLAY-HPARAMS]` field for
+        // field so the two CLI paths can be diffed directly.
+        emit(String(
+            format: "[VS-UCI-HPARAMS] lr=%.6g batch=%ld wd=%.4g momentum=%.3g gradClip=%.3g entropyBonus=%.4g drawPenalty=%.4g policyW=%.3g valueW=%.3g illegalW=%.4g pLabelSmooth=%.4g vLabelSmooth=%.4g dropout=%.4g lrWarmup=%ld bufCap=%ld",
+            p.learningRate, p.trainingBatchSize, p.weightDecay, p.momentumCoeff, p.gradClipMaxNorm,
+            p.entropyBonus, p.drawPenalty, p.policyLossWeight, p.valueLossWeight, p.illegalMassWeight,
+            p.policyLabelSmoothingEpsilon, p.valueLabelSmoothingEpsilon, p.dropoutRate,
+            p.lrWarmupSteps, p.replayBufferCapacity
+        )
+            + " complementCE=\(p.signedAdvantageComplementCE ? "on" : "off")"
+            + " sqrtBatchLR=\(p.sqrtBatchScalingLR ? "on" : "off")")
         let buffer = ReplayBuffer(capacity: p.replayBufferCapacity, inputEncoding: evalNet.inputEncoding)
 
         // Number of base tensors (trainables + BN running stats) — the prefix
@@ -343,6 +371,10 @@ enum TrainVsUciRunner {
         // and orphan the external UCI engine subprocesses.
         var step = 0
         var aborted = false
+        // Which condition actually ended the loop, for the recorded termination
+        // reason. Inferring it from the configured limits is wrong when both a
+        // step limit and a time limit are set.
+        var timedOut = false
         do {
             // Wait for the producer to prefill the buffer. Games are produced
             // by actually playing the engines, so this takes as long as it
@@ -351,7 +383,8 @@ enum TrainVsUciRunner {
             // the driver task exited, which happens only when every engine
             // failed to launch/handshake, so no games will ever be produced.
             while buffer.count < minPrefill {
-                if abort.isRequested || overTime() { break }
+                if abort.isRequested { break }
+                if overTime() { timedOut = true; break }
                 if driverDone.value { throw TrainVsUciError.noGamesProduced }
                 try await Task.sleep(for: .milliseconds(100))
             }
@@ -363,7 +396,7 @@ enum TrainVsUciRunner {
             while true {
                 if abort.isRequested { aborted = true; emit("[VS-UCI] abort requested — stopping at step \(step)"); break }
                 if let sl = config.stepLimit, step >= sl { break }
-                if overTime() { emit("[VS-UCI] time limit reached at step \(step)"); break }
+                if overTime() { timedOut = true; emit("[VS-UCI] time limit reached at step \(step)"); break }
 
                 // The buffer is filled asynchronously; if the producer transiently
                 // falls behind, wait rather than stopping.
@@ -386,6 +419,45 @@ enum TrainVsUciRunner {
                         + String(format: " gNorm=%.3f lr=%.3g ms=%.1f", timing.gradGlobalNorm, liveLR, timing.totalMs)
                         + " buf=\(buffer.count)"
                     emit(line)
+                    // Same cadence as the log line, so results.json and the log
+                    // describe the same ticks.
+                    recorder?.appendStats(CliTrainingRecorder.StatsLine(
+                        elapsedSec: CFAbsoluteTimeGetCurrent() - runStart,
+                        steps: step,
+                        // Positions PRODUCED, matching what the corpus runner
+                        // (`positionsFed`) and the self-play path
+                        // (`selfPlayPositions`) put in this field. Using
+                        // `step * batchSize` here instead would have made the
+                        // same JSON key mean "positions consumed" on this path
+                        // alone, silently mis-comparing runs across paths.
+                        positionsTrained: driver.statsSnapshot().reduce(0) { $0 + $1.pliesPlayed },
+                        bufferCount: buffer.count,
+                        bufferCapacity: p.replayBufferCapacity,
+                        policyLoss: Double(timing.policyLoss),
+                        valueLoss: Double(timing.valueLoss),
+                        policyEntropy: Double(timing.policyEntropy),
+                        policyIllegalMassPenalty: Double(timing.illegalMassPenalty),
+                        gradGlobalNorm: Double(timing.gradGlobalNorm),
+                        playedMoveProb: Double(timing.playedMoveProb),
+                        valueMean: Double(timing.valueMean),
+                        valueAbsMean: Double(timing.valueAbsMean),
+                        valueProbWin: Double(timing.valueProbWin),
+                        valueProbDraw: Double(timing.valueProbDraw),
+                        valueProbLoss: Double(timing.valueProbLoss),
+                        batchSize: batchSize,
+                        learningRate: Double(liveLR),
+                        gradClipMaxNorm: p.gradClipMaxNorm,
+                        weightDecayC: p.weightDecay,
+                        dropoutRate: p.dropoutRate,
+                        entropyRegularizationCoeff: p.entropyBonus,
+                        drawPenalty: p.drawPenalty,
+                        policyLossWeight: p.policyLossWeight,
+                        valueLossWeight: p.valueLossWeight,
+                        lrEffectiveBase: p.learningRate,
+                        momentumEffective: p.momentumCoeff,
+                        buildNumber: BuildInfo.buildNumber,
+                        trainerID: config.runModelID
+                    ))
                 }
                 if step % autosaveEvery == 0 {
                     try await saveTrainerModel(step: step, reason: "autosave")
@@ -408,6 +480,30 @@ enum TrainVsUciRunner {
         // Sync one last time so the saved model reflects the final weights,
         // then final save.
         try await saveTrainerModel(step: step, reason: aborted ? "abort" : "final")
+
+        // `results.json` last, after the final model save — a run that dies
+        // saving weights should not also claim a clean results record.
+        if let recorder, let outputURL = config.outputURL {
+            // Reported from the cause the loop actually exited on, not inferred
+            // from which limits were configured: a run with BOTH a step limit
+            // and a time limit can exit on either, and inferring would mislabel
+            // a timeout as `stepLimitReached`.
+            recorder.setTerminationReason(
+                aborted ? .manualStop : (timedOut ? .timerExpired : .stepLimitReached)
+            )
+            let counts = recorder.countsSnapshot()
+            // Logged, not thrown — see CorpusReplayRunner: the trainer model is
+            // already saved, so a failed results write must not fail the run.
+            do {
+                try recorder.writeJSON(
+                    to: outputURL,
+                    totalTrainingSeconds: CFAbsoluteTimeGetCurrent() - runStart
+                )
+                emit("[VS-UCI] wrote results: \(outputURL.path) (stats=\(counts.stats))")
+            } catch {
+                emit("[VS-UCI] results write FAILED for \(outputURL.path): \(error.localizedDescription)")
+            }
+        }
 
         let totalGames = driver.statsSnapshot().reduce(0) { $0 + $1.gamesCompleted }
         return Result(steps: step, gamesCompleted: totalGames)

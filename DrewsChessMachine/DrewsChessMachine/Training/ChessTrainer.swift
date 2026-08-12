@@ -2233,6 +2233,19 @@ final class ChessTrainer: @unchecked Sendable {
         // for the new graph as well.
         runSyncMastersOnQueue()
         runDropoutSeedOnQueue()
+        // Re-apply the configured dropout rate to the NEW network. The rate
+        // lives in a per-network buffer that is built holding 0, while
+        // `_dropoutRate` (the value every reader sees) survives the reset — so
+        // without this a reset silently drops training to rate 0 while still
+        // reporting the configured rate. Pre-dated the fed-placeholder change:
+        // the old graph variable was likewise built at 0 and never re-pushed.
+        // Written directly rather than through `dropoutRate`'s setter because
+        // we are already on `executionQueue`; the setter would enqueue a second
+        // hop behind this one and log a redundant `[PARAM]` line.
+        if let liveRateNDArray = network.dropoutRateLiveNDArray {
+            var rate = _dropoutRate.value
+            liveRateNDArray.writeBytes(&rate, strideBytes: nil)
+        }
     }
 
     /// Build the training subgraph (loss + gradients + SGD assigns) on top
@@ -5544,60 +5557,38 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
-    /// Push a new dropout rate into the training graph's `dropout_rate`
-    /// variable. Stores the clamped value immediately (so readers see it)
-    /// and runs the assign asynchronously on `executionQueue`, serialized
-    /// behind any in-flight training step. Logs the application so a
-    /// mid-run change is visible in the session log next to its effects.
+    /// Push a new dropout rate into the buffer the training step binds to the
+    /// graph's `dropout_rate` placeholder. Stores the clamped value immediately
+    /// (so readers see it) and rewrites the buffer asynchronously on
+    /// `executionQueue`, serialized behind any in-flight training step. Logs the
+    /// application so a mid-run change is visible in the session log next to its
+    /// effects.
+    ///
+    /// This used to run a `graph.run` to assign a graph variable. With the rate
+    /// fed per execution there is no graph state to update — only the live
+    /// buffer's bytes — so the whole assign/`weightAccessLock` dance is gone.
+    /// The `executionQueue` hop remains, and is load-bearing: the training step
+    /// binds this exact buffer, so writing it off-queue would race an
+    /// encode-in-flight.
     private func pushDropoutRateToGraph(_ rate: Float) {
         let clamped = min(max(rate, 0.0), 0.95)
         _dropoutRate.value = clamped
-        // Eligibility gate only. The dropout-scaffolding objects are
-        // non-Sendable MPS class instances, so they must not be captured into
-        // the `@Sendable` `executionQueue.async` closure as locals — instead
-        // the closure re-reads them through `self.network` (the same channel it
-        // already uses for `graph`/`commandQueue`/`inputPlaceholder`). The
-        // scaffolding properties are `let`s on `ChessNetwork`, so the reference
-        // each name resolves to is stable for the network's lifetime; reading
-        // them at execution time rather than scheduling time also keeps every
-        // tensor in the `graph.run` sourced from one consistent network.
-        guard network.dropoutRateLoadPlaceholder != nil,
-              network.dropoutRateAssignOp != nil,
-              network.dropoutRateLoadNDArray != nil,
-              network.dropoutRateLoadTensorData != nil,
-              network.dropoutRateVariable != nil else {
+        // Eligibility gate only. The buffer is a non-Sendable MPS class
+        // instance, so it must not be captured into the `@Sendable`
+        // `executionQueue.async` closure as a local — the closure re-reads it
+        // through `self.network`, the same channel used for
+        // `graph`/`commandQueue`. It is a `let` on `ChessNetwork`, so the
+        // reference is stable for the network's lifetime.
+        guard network.dropoutRateLiveNDArray != nil else {
             SessionLogger.shared.log(
                 "[PARAM] dropoutRate set on a network without dropout scaffolding — ignored (inference-mode graph?)"
             )
             return
         }
         executionQueue.async {
-            guard let ph = self.network.dropoutRateLoadPlaceholder,
-                  let assign = self.network.dropoutRateAssignOp,
-                  let nda = self.network.dropoutRateLoadNDArray,
-                  let td = self.network.dropoutRateLoadTensorData,
-                  let rateVar = self.network.dropoutRateVariable else { return }
+            guard let nda = self.network.dropoutRateLiveNDArray else { return }
             var v = clamped
             nda.writeBytes(&v, strideBytes: nil)
-            autoreleasepool {
-                // Serialize against a concurrent probe `exportWeights`
-                // `graph.run` on the network queue: two `graph.run` calls on
-                // one `MPSGraph`/`commandQueue` from different queues is the
-                // same hazard the SGD weight-write closes. This assign touches
-                // only the `dropout_rate` variable (not `trainableVariables`),
-                // so it can't corrupt an export result, but it shares the graph.
-                self.network.weightAccessLock.wait()
-                _ = self.network.graph.run(
-                    with: self.network.commandQueue,
-                    feeds: [
-                        self.network.inputPlaceholder: self.network.dummyInferenceInputTensorData,
-                        ph: td
-                    ],
-                    targetTensors: [rateVar],
-                    targetOperations: [assign]
-                )
-                self.network.weightAccessLock.signal()
-            }
             SessionLogger.shared.log(String(format: "[PARAM] dropoutRate applied to training graph: %.4f", clamped))
         }
     }
@@ -6058,7 +6049,7 @@ final class ChessTrainer: @unchecked Sendable {
     /// and read the loss scalar back. The two public `trainStep` entry
     /// points share this so they produce identical timing breakdowns.
     private func runPreparedStep(
-        feeds: [MPSGraphTensor: MPSGraphTensorData],
+        feeds incomingFeeds: [MPSGraphTensor: MPSGraphTensorData],
         prepMs: Double,
         queueWaitMs: Double,
         totalStart: CFAbsoluteTime,
@@ -6066,6 +6057,17 @@ final class ChessTrainer: @unchecked Sendable {
         vBaselineOverride: MPSGraphTensorData? = nil,
         includeDiagnostics: Bool
     ) throws -> TrainStepTiming {
+        // The training step is the ONE execution that applies dropout, so it is
+        // the one that binds the live rate; every other consumer of this graph
+        // binds the preallocated zero (see `dropoutRateFeedPlaceholder`).
+        // Attaching it here rather than at each caller means both entry points
+        // get it, and the shapes derived from these feeds below carry it into
+        // the compiled executable automatically.
+        var feeds = incomingFeeds
+        if let ratePlaceholder = network.dropoutRateFeedPlaceholder,
+           let liveRate = network.dropoutRateLiveTensorData {
+            feeds[ratePlaceholder] = liveRate
+        }
         // Wrap the graph.run + readback in an autoreleasepool so the
         // results dictionary and its MPSGraphTensorData values — which
         // are returned autoreleased by MPSGraph — drain each step

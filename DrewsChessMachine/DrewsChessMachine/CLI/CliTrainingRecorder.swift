@@ -829,3 +829,154 @@ final class CliTrainingRecorder: @unchecked Sendable {
         }
     }
 }
+
+// MARK: - Stats lines for non-self-play CLI runs
+
+extension CliTrainingRecorder.StatsLine {
+    /// Build a stats line for a CLI training run that has **no self-play loop
+    /// and no arena** — corpus replay (`--replay-corpus`) and train-vs-UCI
+    /// (`--train-vs-uci`).
+    ///
+    /// Those paths previously wrote no `results.json` at all: `--output` was
+    /// parsed globally but only ever read by the self-play controller, so
+    /// `--replay-corpus … --output x.json` silently produced nothing. That made
+    /// the one thing this recorder's `dropoutRate` field exists for — comparing
+    /// the arms of a dropout sweep — impossible to do on the CLI paths.
+    ///
+    /// The zeros and empty strings below are the honest value for "this run type
+    /// does not have that", not placeholders standing in for data we failed to
+    /// collect: a corpus run plays no self-play games, runs no replay-ratio
+    /// controller, tallies no game outcomes, and has no champion lineage. Every
+    /// field such a run genuinely does have — step counters, the training step's
+    /// losses and diagnostics, and the hyperparameters it trained under — is a
+    /// required argument here, so none of them can be forgotten at a call site.
+    ///
+    /// Declared in an extension deliberately: an initializer in the struct body
+    /// would suppress the memberwise init the self-play path relies on.
+    init(
+        elapsedSec: Double,
+        steps: Int,
+        positionsTrained: Int,
+        bufferCount: Int,
+        bufferCapacity: Int,
+        policyLoss: Double?,
+        valueLoss: Double?,
+        policyEntropy: Double?,
+        policyIllegalMassPenalty: Double?,
+        gradGlobalNorm: Double?,
+        playedMoveProb: Double?,
+        valueMean: Double?,
+        valueAbsMean: Double?,
+        valueProbWin: Double?,
+        valueProbDraw: Double?,
+        valueProbLoss: Double?,
+        batchSize: Int,
+        learningRate: Double,
+        gradClipMaxNorm: Double,
+        weightDecayC: Double,
+        dropoutRate: Double,
+        entropyRegularizationCoeff: Double,
+        drawPenalty: Double,
+        policyLossWeight: Double,
+        valueLossWeight: Double,
+        lrEffectiveBase: Double,
+        momentumEffective: Double,
+        buildNumber: Int,
+        trainerID: String
+    ) {
+        self.init(
+            elapsedSec: elapsedSec,
+            steps: steps,
+            selfPlayGames: 0,
+            positionsTrained: positionsTrained,
+            emittedGames: 0,
+            emittedPositions: 0,
+            selfPlayDrawKeepFraction: 0,
+            selfPlayMaxPliesPerGame: 0,
+            maxPliesDropped: 0,
+            avgLen: 0,
+            rollingAvgLen: 0,
+            gameLenP50: nil,
+            gameLenP95: nil,
+            bufferCount: bufferCount,
+            bufferCapacity: bufferCapacity,
+            policyLoss: policyLoss,
+            valueLoss: valueLoss,
+            policyEntropy: policyEntropy,
+            policyIllegalMassPenalty: policyIllegalMassPenalty,
+            gradGlobalNorm: gradGlobalNorm,
+            policyHeadWeightNorm: nil,
+            policyLogitAbsMax: nil,
+            playedMoveProb: playedMoveProb,
+            playedMoveProbPosAdv: nil,
+            playedMoveProbPosAdvSkipped: 0,
+            playedMoveProbNegAdv: nil,
+            playedMoveProbNegAdvSkipped: 0,
+            playedMoveCondWindowSize: 0,
+            legalMass: nil,
+            top1LegalFraction: nil,
+            legalEntropy: nil,
+            policyLossWin: nil,
+            policyLossLoss: nil,
+            batchStats: nil,
+            valueMean: valueMean,
+            valueAbsMean: valueAbsMean,
+            valueProbWin: valueProbWin,
+            valueProbDraw: valueProbDraw,
+            valueProbLoss: valueProbLoss,
+            advMean: nil,
+            advStd: nil,
+            advMin: nil,
+            advMax: nil,
+            advFracPositive: nil,
+            advFracSmall: nil,
+            advP05: nil,
+            advP50: nil,
+            advP95: nil,
+            spStartTau: 0,
+            spFloorTau: 0,
+            spDecayPerPly: 0,
+            arStartTau: 0,
+            arFloorTau: 0,
+            arDecayPerPly: 0,
+            diversityUniqueGames: 0,
+            diversityGamesInWindow: 0,
+            diversityUniquePercent: 0,
+            diversityAvgDivergencePly: 0,
+            ratioTarget: 0,
+            ratioCurrent: 0,
+            ratioProductionRate: 0,
+            ratioProducedRate: 0,
+            ratioConsumptionRate: 0,
+            selfPlayMovesPerHour: 0,
+            trainingMovesPerHour: 0,
+            ratioAutoAdjust: false,
+            ratioComputedDelayMs: 0,
+            whiteCheckmates: 0,
+            blackCheckmates: 0,
+            stalemates: 0,
+            fiftyMoveDraws: 0,
+            threefoldRepetitionDraws: 0,
+            insufficientMaterialDraws: 0,
+            batchSize: batchSize,
+            learningRate: learningRate,
+            promoteThreshold: 0,
+            arenaGames: 0,
+            workerCount: 0,
+            gradClipMaxNorm: gradClipMaxNorm,
+            weightDecayC: weightDecayC,
+            dropoutRate: dropoutRate,
+            entropyRegularizationCoeff: entropyRegularizationCoeff,
+            drawPenalty: drawPenalty,
+            policyLossWeight: policyLossWeight,
+            valueLossWeight: valueLossWeight,
+            lrEffectiveBase: lrEffectiveBase,
+            momentumEffective: momentumEffective,
+            lrCycleActive: false,
+            momentumCycleActive: false,
+            buildNumber: buildNumber,
+            trainerID: trainerID,
+            championID: ""
+        )
+    }
+}

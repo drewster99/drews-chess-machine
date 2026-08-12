@@ -950,6 +950,10 @@ struct DrewsChessMachineApp: App {
         var parametersPath: String? = nil
         var startModelPath: String? = nil
         var outModelPath: String? = nil
+        // `--output` is also parsed by the instance-level CLI init, but this
+        // pre-flight handler is static and never reaches that instance, so it
+        // has to read the flag itself.
+        var outputPath: String? = nil
         var presetName: String? = nil
         var startShard: Int? = nil
         var startGameIndex: Int? = nil
@@ -1005,6 +1009,8 @@ struct DrewsChessMachineApp: App {
                 startModelPath = requireValue(arg, nextValue); i += 2
             case "--out-model":
                 outModelPath = requireValue(arg, nextValue); i += 2
+            case "--output":
+                outputPath = requireValue(arg, nextValue); i += 2
             case "--preset":
                 presetName = requireValue(arg, nextValue); i += 2
             case "--start-shard":
@@ -1080,6 +1086,7 @@ struct DrewsChessMachineApp: App {
                 illegalMassWeight: tp.illegalMassWeight,
                 policyLabelSmoothingEpsilon: tp.policyLabelSmoothingEpsilon,
                 valueLabelSmoothingEpsilon: tp.valueLabelSmoothingEpsilon,
+                dropoutRate: tp.dropoutRate,
                 momentumCoeff: tp.momentumCoeff,
                 signedAdvantageComplementCE: tp.signedAdvantageComplementCE,
                 sqrtBatchScalingLR: tp.sqrtBatchScalingLR,
@@ -1115,7 +1122,8 @@ struct DrewsChessMachineApp: App {
             resumeExact: resumeExact,
             outModelPath: outModelPath,
             enumerateCheckpoints: enumerateCheckpoints,
-            runModelID: runModelID
+            runModelID: runModelID,
+            outputURL: outputPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
         )
         CorpusReplayRunner.runAndExit(config: config, params: params)
     }
@@ -1135,6 +1143,9 @@ struct DrewsChessMachineApp: App {
         var opponentSpecStrings: [String] = []
         var startModelPath: String? = nil
         var outModelPath: String? = nil
+        // See the corpus handler: this static pre-flight must parse `--output`
+        // itself.
+        var outputPath: String? = nil
         var presetName: String? = nil
         var parametersPath: String? = nil
         var stepLimit: Int? = nil
@@ -1174,6 +1185,8 @@ struct DrewsChessMachineApp: App {
                 startModelPath = requireValue(arg, nextValue); i += 2
             case "--out-model":
                 outModelPath = requireValue(arg, nextValue); i += 2
+            case "--output":
+                outputPath = requireValue(arg, nextValue); i += 2
             case "--preset":
                 presetName = requireValue(arg, nextValue); i += 2
             case "--parameters":
@@ -1287,6 +1300,7 @@ struct DrewsChessMachineApp: App {
                 illegalMassWeight: tp.illegalMassWeight,
                 policyLabelSmoothingEpsilon: tp.policyLabelSmoothingEpsilon,
                 valueLabelSmoothingEpsilon: tp.valueLabelSmoothingEpsilon,
+                dropoutRate: tp.dropoutRate,
                 momentumCoeff: tp.momentumCoeff,
                 signedAdvantageComplementCE: tp.signedAdvantageComplementCE,
                 sqrtBatchScalingLR: tp.sqrtBatchScalingLR,
@@ -1310,7 +1324,8 @@ struct DrewsChessMachineApp: App {
             enumerateCheckpoints: enumerateCheckpoints,
             maxPliesPerGame: maxPliesPerGame,
             evalSyncEverySteps: evalSyncEverySteps,
-            runModelID: runModelID
+            runModelID: runModelID,
+            outputURL: outputPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
         )
         TrainVsUciRunner.runAndExit(config: config, params: params)
     }
