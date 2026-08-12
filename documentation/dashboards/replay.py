@@ -27,7 +27,7 @@ Subcommands:
 
 Idempotent: track/migrate never duplicate a cum_step already present.
 """
-import os, re, sys, csv, json, glob, struct, math, bisect, argparse, datetime
+import os, re, sys, csv, json, glob, struct, math, bisect, argparse, collections, datetime
 import numpy as np
 from _schema import FIELDS  # single source of the CSV column order (shared with selfplay.py)
 
@@ -491,6 +491,93 @@ def enum_specs(cfg):
         elif run_glob and si == len(segs) - 1:
             specs.append((si, run_glob))
     return specs
+
+_RESUME_SUFFIX = re.compile(r"^(?:run|original|resume\d*)$")
+
+def discover_enum_stems(cfg, verbose=True):
+    """Propose an `enum_stem` for each segment by reading checkpoints on disk.
+
+    Filling `enum_stem` by hand is error-prone and the cost of getting it wrong is
+    silent (a segment's marks simply never fill). This derives it instead, and
+    refuses rather than guesses when the evidence disagrees.
+
+    Method, in order of trust:
+      1. The family root comes from `out_model` minus `-replay-latest` and any
+         trailing `-resume<N>`. Candidate files are globbed from that root.
+      2. A candidate is accepted only if its stem is the root or the root plus a
+         RESUME-SHAPED suffix that matches one of this run's segment labels. That
+         is what keeps a sibling run out: `20260702-Qeu8e5-…` yields the suffix
+         `e5`, which is not resume-shaped, so it is rejected rather than silently
+         folded into Qeu8's marks.
+      3. Every file under one stem must agree on `model_id` — the header, not the
+         filename, is the authority. A stem spanning two model_ids means the
+         files were overwritten in place (exactly what happened inside the v5
+         bundle) and is refused.
+      4. Stems must appear in the same order by earliest `created_at_unix` as
+         their segments appear in the registry. A disagreement means the
+         label→segment mapping is wrong, and is reported rather than written.
+
+    Returns {segment_index: stem}. Segments with no surviving files are simply
+    absent — that is not an error, it is the normal state for a run whose early
+    checkpoints were cleaned up."""
+    segs = cfg.get("segments", [])
+    om = (cfg.get("out_model") or "")
+    if "-replay-latest" not in om:
+        return {}
+    root = om.split("-replay-latest")[0]
+    root = re.sub(r"-resume\d*$", "", root)
+
+    # label -> segment index, using the leading token of each segment's label
+    lab = {}
+    for i, s in enumerate(segs):
+        m = re.match(r"(run|original|resume\d*)", (s.get("label") or "").strip())
+        if m:
+            lab.setdefault(m.group(1), i)
+
+    by_stem = collections.defaultdict(list)
+    for p in glob.glob(os.path.join(MODELS, root + "*-replay-step*.safetensors")):
+        stem = os.path.basename(p).split("-replay-step")[0]
+        suffix = stem[len(root):].lstrip("-") or "run"
+        if not _RESUME_SUFFIX.match(suffix):
+            continue                                  # sibling run, not this one
+        if suffix not in lab and suffix == "run" and "original" in lab:
+            suffix = "original"
+        if suffix not in lab:
+            continue
+        by_stem[(lab[suffix], stem)].append(p)
+
+    out, refused = {}, []
+    order = []
+    for (si, stem), paths in sorted(by_stem.items()):
+        ids, times = set(), []
+        for p in paths:
+            try:
+                with open(p, "rb") as f:
+                    n = struct.unpack("<Q", f.read(8))[0]
+                    m = json.loads(f.read(n)).get("__metadata__", {})
+                ids.add(m.get("model_id"))
+                if m.get("created_at_unix"):
+                    times.append(int(m["created_at_unix"]))
+            except (OSError, ValueError, KeyError, struct.error):
+                pass
+        if len(ids) > 1:
+            refused.append((si, stem, "spans %d model_ids %s" % (len(ids), sorted(ids))))
+            continue
+        out[si] = stem
+        order.append((min(times) if times else 0, si, stem, len(paths)))
+
+    order.sort()
+    if [si for _, si, _, _ in order] != sorted(si for _, si, _, _ in order):
+        refused.append((None, None, "creation order disagrees with segment order: %s"
+                        % [(si, stem) for _, si, stem, _ in order]))
+        out = {}
+    if verbose:
+        for _, si, stem, n in order:
+            print("  seg %d  %-46s %4d files" % (si, stem, n))
+        for si, stem, why in refused:
+            print("  REFUSED %s: %s" % (stem or "(run)", why))
+    return out
+
 
 def enum_path(cfg, n):
     om = cfg.get("out_model", "")
@@ -1135,6 +1222,11 @@ if __name__ == "__main__":
     p = sub.add_parser("track"); p.add_argument("run")
     p = sub.add_parser("migrate"); p.add_argument("run"); p.add_argument("--loop-state")
     p = sub.add_parser("recompute"); p.add_argument("run", nargs="?", default="__all__")
+    p = sub.add_parser("discover-stems")
+    p.add_argument("run", nargs="?", default="__all__")
+    p.add_argument("--write", action="store_true",
+                   help="write the proposed enum_stem values into registry.json "
+                        "(default: propose only, change nothing)")
     p = sub.add_parser("import-probes")
     p.add_argument("run"); p.add_argument("--jsonl", required=True)
     p.add_argument("--segment", type=int, required=True)
@@ -1151,6 +1243,35 @@ if __name__ == "__main__":
         targets = list(REG["runs"]) if a.run == "__all__" else [a.run]
         for r in targets:
             recompute_elapsed(r)
+    elif a.cmd == "discover-stems":
+        targets = list(REG["runs"]) if a.run == "__all__" else [a.run]
+        proposed = {}
+        for r in targets:
+            cfg = REG["runs"][r]
+            if not (cfg.get("out_model") or ""):
+                continue
+            print(f"{r}:")
+            found = discover_enum_stems(cfg)
+            have = {i: s.get("enum_stem") for i, s in enumerate(cfg["segments"]) if s.get("enum_stem")}
+            new = {i: st for i, st in found.items() if have.get(i) != st}
+            if have:
+                print(f"  ({len(have)} segment(s) already declare enum_stem)")
+            if new:
+                proposed[r] = new
+                for i, st in sorted(new.items()):
+                    print(f"  + seg {i}: enum_stem = {st}")
+            else:
+                print("  nothing to add")
+        if a.write and proposed:
+            reg = json.load(open(os.path.join(ROOT, "registry.json")))
+            for r, new in proposed.items():
+                for i, st in new.items():
+                    reg["runs"][r]["segments"][i]["enum_stem"] = st
+            with open(os.path.join(ROOT, "registry.json"), "w") as fh:
+                json.dump(reg, fh, indent=2, ensure_ascii=False)
+            print(f"\nwrote {sum(len(v) for v in proposed.values())} enum_stem value(s) to registry.json")
+        elif proposed:
+            print("\n(proposal only — re-run with --write to apply)")
     elif a.cmd == "import-probes":
         import_probes(a.run, a.jsonl, a.segment, a.ckpt_dir)
     elif a.cmd == "render":

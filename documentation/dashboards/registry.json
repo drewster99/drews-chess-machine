@@ -20,7 +20,8 @@
           "log": "dcm_log_20260711-040005.txt",
           "date": "20260711",
           "cumstep_base": 0,
-          "label": "run (12 epochs)"
+          "label": "run (12 epochs)",
+          "enum_stem": "20260711-nt8y15x15stem-std"
         }
       ],
       "trainset": "std-2026-05"
@@ -42,7 +43,8 @@
           "log": "dcm_log_20260711-031104.txt",
           "date": "20260711",
           "cumstep_base": 0,
-          "label": "run (12 epochs, to 31.3h)"
+          "label": "run (12 epochs, to 31.3h)",
+          "enum_stem": "20260711-nt8y3x3stem-seed2-std"
         }
       ],
       "trainset": "std-2026-05"
@@ -64,7 +66,8 @@
           "log": "dcm_log_20260711-002649.txt",
           "date": "20260711",
           "cumstep_base": 0,
-          "label": "run (12 epochs)"
+          "label": "run (12 epochs)",
+          "enum_stem": "20260711-nt8y3x3stem-std"
         }
       ],
       "trainset": "std-2026-05"
@@ -86,7 +89,8 @@
           "log": "dcm_log_20260710-210320.txt",
           "date": "20260711",
           "cumstep_base": 0,
-          "label": "run (12 epochs)"
+          "label": "run (12 epochs)",
+          "enum_stem": "20260711-wXIL-std2026_05"
         }
       ],
       "trainset": "std-2026-05"
@@ -384,7 +388,8 @@
           "date": "20260705",
           "cumstep_base": 142159,
           "label": "resume3",
-          "elapsed_base_sec": 59569.8
+          "elapsed_base_sec": 59569.8,
+          "enum_stem": "20260629-mini2b-3MIV-resume3"
         }
       ],
       "trainset": "std-2026-05"
@@ -413,7 +418,8 @@
           "date": "20260709",
           "cumstep_base": 55000,
           "label": "resume (enumerated)",
-          "elapsed_base_sec": 20093.5
+          "elapsed_base_sec": 20093.5,
+          "enum_stem": "20260629-mini1b-Coxw-resume"
         }
       ],
       "trainset": "std-2026-05"
@@ -450,7 +456,8 @@
           "date": "20260710",
           "cumstep_base": 203007,
           "label": "resume2 (enumerated)",
-          "elapsed_base_sec": 32206.5
+          "elapsed_base_sec": 32206.5,
+          "enum_stem": "20260630-mini-YkKk-resume2"
         }
       ],
       "trainset": "std-2026-05"
@@ -511,21 +518,24 @@
           "cumstep_base": 135883,
           "log": "dcm_log_20260706-125010.txt",
           "date": "20260706",
-          "elapsed_base_sec": 46279.8
+          "elapsed_base_sec": 46279.8,
+          "enum_stem": "20260701-nT8Y-resume2"
         },
         {
           "label": "resume3 (enumerated)",
           "cumstep_base": 150883,
           "elapsed_base_sec": 51951.4,
           "log": "dcm_log_20260706-193601.txt",
-          "date": "20260706"
+          "date": "20260706",
+          "enum_stem": "20260701-nT8Y-resume3"
         },
         {
           "label": "resume4 (enumerated)",
           "cumstep_base": 289883,
           "elapsed_base_sec": 101447.6,
           "log": "dcm_log_20260707-233038.txt",
-          "date": "20260707"
+          "date": "20260707",
+          "enum_stem": "20260701-nT8Y-resume4"
         }
       ],
       "trainset": "std-2026-05"
@@ -569,7 +579,8 @@
           "log": "dcm_log_20260702-095124.txt",
           "date": "20260702",
           "cumstep_base": 0,
-          "label": "run"
+          "label": "run",
+          "enum_stem": "20260702-Qeu8"
         },
         {
           "log": "dcm_log_20260702-182922.txt",
@@ -583,14 +594,16 @@
           "cumstep_base": 108915,
           "log": "dcm_log_20260706-002713.txt",
           "date": "20260706",
-          "elapsed_base_sec": 68105.0
+          "elapsed_base_sec": 68105.0,
+          "enum_stem": "20260702-Qeu8-resume2"
         },
         {
           "log": "dcm_log_20260727-094049.txt",
           "date": "20260727",
           "cumstep_base": 175915,
           "elapsed_base_sec": 112789.5,
-          "label": "resume3 (enumerated, indefinite)"
+          "label": "resume3 (enumerated, indefinite)",
+          "enum_stem": "20260702-Qeu8-resume3"
         }
       ],
       "trainset": "std-2026-05"
@@ -612,7 +625,8 @@
           "log": "dcm_log_20260711-101346.txt",
           "date": "20260711",
           "cumstep_base": 0,
-          "label": "run (12 epochs)"
+          "label": "run (12 epochs)",
+          "enum_stem": "20260711-qeu8-1blk128-std"
         }
       ],
       "trainset": "std-2026-05"
