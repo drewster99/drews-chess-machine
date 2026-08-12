@@ -1191,13 +1191,29 @@ final class ChessTrainer: @unchecked Sendable {
     /// every step via a scalar placeholder, so edits take effect on
     /// the next step without graph rebuild.
     var weightDecayC: Float
-    /// Live channel-dropout rate (drop probability, 0 = off). Unlike the
-    /// per-step scalar feeds above, the rate lives in a GRAPH VARIABLE
-    /// (`dropout_rate`) read by the training-mode forward pass — a
-    /// placeholder there would impose a feed requirement on every forward
-    /// run site. Setting this property therefore pushes the value into the
-    /// graph via a tiny out-of-band assign on `executionQueue` (the
-    /// loadWeights pattern); it takes effect on the next training step.
+    /// Live channel-dropout rate (drop probability, 0 = off). Like the
+    /// per-step scalar feeds above, the rate is FED per execution — through the
+    /// `dropout_rate` placeholder — rather than stored in a graph variable, so
+    /// each execution states its own: the training step binds the live buffer,
+    /// and every other consumer of a training-mode graph (value baseline, BN
+    /// warmup, batched/single inference) binds a preallocated zero, at which the
+    /// dropout node is an exact identity. The feed requirement that implies is
+    /// satisfied centrally at three sites, not at every run site — see
+    /// `ChessNetwork.dropoutRateFeedPlaceholder` for why a variable could not
+    /// work here (it let the value baseline read the training step's mask).
+    ///
+    /// Setting this property stores the clamped value synchronously and rewrites
+    /// the live buffer's bytes on `executionQueue`. There is no `graph.run` and
+    /// no `weightAccessLock` involved: that lock only ever serialized
+    /// graph.run-against-graph.run, and the buffer write was outside it even
+    /// before. The `executionQueue` hop is what makes the write safe —
+    /// `runPreparedStep` holds that queue across encode → commit →
+    /// waitUntilCompleted, so a write can only land strictly before an encode or
+    /// strictly after GPU completion, never while the GPU is reading the buffer.
+    /// If the pipelining plan ever stops waiting (GPU_UTILIZATION_PLAN Phase 3,
+    /// Increment 2 — keeping N command buffers in flight), that guarantee dies
+    /// and this buffer needs double-buffering or a completion-gated write.
+    ///
     /// Reads return the last value pushed. Clamped to the parameter's
     /// [0, 0.95] range defensively — a rate of 1.0 would divide by zero in
     /// the inverted-dropout scale.
@@ -1206,6 +1222,15 @@ final class ChessTrainer: @unchecked Sendable {
         set { pushDropoutRateToGraph(newValue) }
     }
     private let _dropoutRate = SyncBox<Float>(0)
+    /// True once a training step has bound the LIVE dropout-rate buffer (as
+    /// opposed to the preallocated zero every other consumer binds). Nil until
+    /// the first step runs on a graph that has dropout scaffolding.
+    ///
+    /// Internal purely so `DropoutGraphWiringTests` can assert it — the same
+    /// carve-out `readMasterValues()` documents. See the write site in
+    /// `runPreparedStep` for why no other test can observe this.
+    var lastStepBoundLiveDropoutRate: Bool? { _lastStepBoundLiveDropoutRate.value }
+    private let _lastStepBoundLiveDropoutRate = SyncBox<Bool?>(nil)
     /// Live gradient-clip max norm. Fed via scalar placeholder each
     /// step.
     var gradClipMaxNorm: Float
@@ -5612,6 +5637,29 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
+    /// Suspend until every unit of work already enqueued on `executionQueue` has
+    /// finished. The queue is serial and FIFO, so a block appended here cannot
+    /// begin until everything submitted before it has completed — which is
+    /// exactly the question "has the asynchronous half of an async setter landed
+    /// yet?".
+    ///
+    /// Internal rather than private so the tests can see it, the same carve-out
+    /// `readMasterValues()` documents. It exists because several setters —
+    /// `dropoutRate` above all — apply asynchronously by design (the write must
+    /// not race an encode in flight), which otherwise leaves an observer no way
+    /// to know the value landed except guessing at a clock. That matters most
+    /// across objects: the rate is written on THIS queue while the value
+    /// baseline runs on `ChessNetwork.executionQueue`, so there is no incidental
+    /// ordering between them to lean on.
+    ///
+    /// Cannot deadlock: it suspends the caller rather than blocking a thread, so
+    /// it is safe even from work already running on this queue.
+    func awaitPendingWork() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            executionQueue.async { continuation.resume() }
+        }
+    }
+
     private func enqueue<T: Sendable>(_ work: @Sendable @escaping () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             executionQueue.async {
@@ -6060,13 +6108,37 @@ final class ChessTrainer: @unchecked Sendable {
         // The training step is the ONE execution that applies dropout, so it is
         // the one that binds the live rate; every other consumer of this graph
         // binds the preallocated zero (see `dropoutRateFeedPlaceholder`).
-        // Attaching it here rather than at each caller means both entry points
-        // get it, and the shapes derived from these feeds below carry it into
+        //
+        // Why here and not baked into `buildFeeds`' cached dictionary, which
+        // would avoid a copy-on-write copy per step: the copy is ~150 ns against
+        // a ~660 ms step (1 part in 4.4 million — the staging writes in
+        // `buildFeeds` itself cost ~20 ms, five orders of magnitude more), so
+        // there is nothing to win. What this placement buys is that the
+        // assignment is an OVERRIDE rather than a default. `ChessNetwork` bakes
+        // the ZERO rate into its own cached feed dicts, so the plausible future
+        // mistake is a caller assembling feeds by copying that pattern; done
+        // here, the live rate overwrites that zero and training stays correct.
+        // Baked into `buildFeeds`, the same mistake would train dropout-free
+        // with no crash and no log line.
+        //
+        // Attaching it at this chokepoint also means both `runPreparedStep`
+        // entry points get it, and the feed shapes derived below carry it into
         // the compiled executable automatically.
         var feeds = incomingFeeds
         if let ratePlaceholder = network.dropoutRateFeedPlaceholder,
            let liveRate = network.dropoutRateLiveTensorData {
             feeds[ratePlaceholder] = liveRate
+            // Record that this step bound the LIVE rate rather than the zero.
+            // An identity compare plus one unfair-lock write, i.e. nanoseconds
+            // against a ~660 ms step. It exists because nothing else can see
+            // this: every dropout suite passes unchanged if this binding is
+            // dropped or points at `dropoutRateZeroTensorData`, and the result
+            // would be training silently running dropout-free. A numeric
+            // end-to-end check is not available as an alternative — both
+            // `trainStep` entry points synthesize or sample their data
+            // randomly, so a weights-diverged assertion would pass for the
+            // wrong reason.
+            _lastStepBoundLiveDropoutRate.value = (feeds[ratePlaceholder] === liveRate)
         }
         // Wrap the graph.run + readback in an autoreleasepool so the
         // results dictionary and its MPSGraphTensorData values — which

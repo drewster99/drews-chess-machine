@@ -126,6 +126,7 @@ enum TrainVsUciRunner {
         let recorder: CliTrainingRecorder? = config.outputURL == nil ? nil : {
             let r = CliTrainingRecorder()
             r.setSessionID(config.runModelID)
+            r.setRunKind(.trainVsUci)
             return r
         }()
         let runStart = CFAbsoluteTimeGetCurrent()
@@ -421,16 +422,18 @@ enum TrainVsUciRunner {
                     emit(line)
                     // Same cadence as the log line, so results.json and the log
                     // describe the same ticks.
+                    // One snapshot, reused: `statsSnapshot()` is a lock-guarded
+                    // COW array read, but taking it once keeps every derived
+                    // field describing the same instant.
+                    let slots = driver.statsSnapshot()
                     recorder?.appendStats(CliTrainingRecorder.StatsLine(
                         elapsedSec: CFAbsoluteTimeGetCurrent() - runStart,
                         steps: step,
-                        // Positions PRODUCED, matching what the corpus runner
-                        // (`positionsFed`) and the self-play path
-                        // (`selfPlayPositions`) put in this field. Using
-                        // `step * batchSize` here instead would have made the
-                        // same JSON key mean "positions consumed" on this path
-                        // alone, silently mis-comparing runs across paths.
-                        positionsTrained: driver.statsSnapshot().reduce(0) { $0 + $1.pliesPlayed },
+                        // Plies appended to the replay buffer. `pliesPlayed`
+                        // accrues only in the driver's `finishGame`, the same
+                        // path that flushes the game, so aborted and
+                        // cap-dropped games contribute nothing.
+                        positionsFed: slots.reduce(0) { $0 + $1.pliesPlayed },
                         bufferCount: buffer.count,
                         bufferCapacity: p.replayBufferCapacity,
                         policyLoss: Double(timing.policyLoss),
@@ -445,7 +448,8 @@ enum TrainVsUciRunner {
                         valueProbDraw: Double(timing.valueProbDraw),
                         valueProbLoss: Double(timing.valueProbLoss),
                         batchSize: batchSize,
-                        learningRate: Double(liveLR),
+                        // Static configured base — see CorpusReplayRunner.
+                        learningRate: p.learningRate,
                         gradClipMaxNorm: p.gradClipMaxNorm,
                         weightDecayC: p.weightDecay,
                         dropoutRate: p.dropoutRate,
@@ -456,7 +460,22 @@ enum TrainVsUciRunner {
                         lrEffectiveBase: p.learningRate,
                         momentumEffective: p.momentumCoeff,
                         buildNumber: BuildInfo.buildNumber,
-                        trainerID: config.runModelID
+                        trainerID: config.runModelID,
+                        // `positionsProduced` deliberately omitted: the driver
+                        // counts dropped GAMES (`capDropped`), never their
+                        // plies, so the produced total is genuinely unmeasured
+                        // here. `positions_trained` therefore falls back to the
+                        // fed count — a lower bound, not the self-play
+                        // raw-produced convention. `run_kind` disambiguates.
+                        // Games this run completed. Recorded under the
+                        // self-play-shaped `self_play_games` key; `run_kind`
+                        // at top level says what that means here.
+                        gamesPlayed: slots.reduce(0) { $0 + $1.gamesCompleted },
+                        pliesCapDropped: slots.reduce(0) { $0 + $1.capDropped },
+                        maxPliesPerGame: config.maxPliesPerGame
+                        // `replayRatioTarget` deliberately omitted: this path
+                        // never reads it, so emitting it would be a fresh false
+                        // claim rather than a recovered one.
                     ))
                 }
                 if step % autosaveEvery == 0 {

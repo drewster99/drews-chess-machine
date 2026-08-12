@@ -246,6 +246,7 @@ enum CorpusReplayRunner {
         let recorder: CliTrainingRecorder? = config.outputURL == nil ? nil : {
             let r = CliTrainingRecorder()
             r.setSessionID(config.runModelID)
+            r.setRunKind(.corpusReplay)
             return r
         }()
         let runStart = CFAbsoluteTimeGetCurrent()
@@ -782,7 +783,7 @@ enum CorpusReplayRunner {
                 recorder?.appendStats(CliTrainingRecorder.StatsLine(
                     elapsedSec: CFAbsoluteTimeGetCurrent() - runStart,
                     steps: step,
-                    positionsTrained: positionsFed,
+                    positionsFed: positionsFed,
                     bufferCount: buffer.count,
                     bufferCapacity: p.replayBufferCapacity,
                     policyLoss: Double(timing.policyLoss),
@@ -797,7 +798,14 @@ enum CorpusReplayRunner {
                     valueProbDraw: Double(timing.valueProbDraw),
                     valueProbLoss: Double(timing.valueProbLoss),
                     batchSize: batchSize,
-                    learningRate: Double(liveLR),
+                    // The STATIC configured base, matching this field's doc
+                    // ("always the static configured base") and the self-play
+                    // path. `liveLR` is warmup- and sqrt-batch-scaled, so
+                    // recording it here made the key time-varying on this path
+                    // and constant on self-play — the first line, at step 1
+                    // inside warmup, read base/lrWarmupSteps. It stays in the
+                    // [REPLAY] log line, where `lr=` is the honest label for it.
+                    learningRate: p.learningRate,
                     gradClipMaxNorm: p.gradClipMaxNorm,
                     weightDecayC: p.weightDecay,
                     dropoutRate: p.dropoutRate,
@@ -808,7 +816,11 @@ enum CorpusReplayRunner {
                     lrEffectiveBase: p.learningRate,
                     momentumEffective: p.momentumCoeff,
                     buildNumber: BuildInfo.buildNumber,
-                    trainerID: config.runModelID
+                    trainerID: config.runModelID,
+                    // Corpus replay feeds every ply it reads, so produced == fed.
+                    positionsProduced: positionsFed,
+                    // A real knob here: `perStepFeed = batchSize / target`.
+                    replayRatioTarget: p.replayRatioTarget
                 ))
             }
             // Periodic autosave (overwrites the rolling output file). A disk-full

@@ -86,7 +86,7 @@ final class DropoutGraphWiringTests: XCTestCase {
     /// buffer by mistake, or if both bindings aliased one buffer. Either
     /// mistake silently turns off regularization while every other dropout
     /// suite stays green, so the distinctness is asserted directly.
-    func testLiveRateBufferIsSeparateFromZeroAndTracksTheSetter() throws {
+    func testLiveRateBufferIsSeparateFromZeroAndTracksTheSetter() async throws {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
@@ -99,7 +99,7 @@ final class DropoutGraphWiringTests: XCTestCase {
         XCTAssertEqual(readRate(zero), 0, accuracy: 1e-7, "zero rate must start at 0")
 
         trainer.dropoutRate = 0.25
-        try waitForLiveRate(trainer, toReach: 0.25)
+        await trainer.awaitPendingWork()
 
         XCTAssertEqual(readRate(live), 0.25, accuracy: 1e-6,
                        "setting the rate must write the live buffer the training step binds")
@@ -118,7 +118,9 @@ final class DropoutGraphWiringTests: XCTestCase {
         }
         let trainer = try ChessTrainer(arch: archWithDropout())
         trainer.dropoutRate = 0.3
-        try waitForLiveRate(trainer, toReach: 0.3)
+        // No wait needed: the setter stores `_dropoutRate` synchronously, and
+        // `resetNetwork()` is itself a FIFO barrier on the same queue whose last
+        // act is re-writing the NEW network's buffer from that stored value.
 
         try await trainer.resetNetwork()
 
@@ -130,25 +132,37 @@ final class DropoutGraphWiringTests: XCTestCase {
                        + "otherwise the reset silently trains dropout-free")
     }
 
-    /// Poll the live-rate buffer until it reads `expected`, or fail. The rate
-    /// setter applies asynchronously on the trainer's execution queue, so a
-    /// bare read straight after assignment can race it.
-    private func waitForLiveRate(
-        _ trainer: ChessTrainer,
-        toReach expected: Float,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) throws {
-        let live = try XCTUnwrap(trainer.network.dropoutRateLiveNDArray, file: file, line: line)
-        let deadline = Date().addingTimeInterval(5)
-        while Date() < deadline {
-            if abs(readRate(live) - expected) < 1e-6 { return }
-            Thread.sleep(forTimeInterval: 0.02)
+    /// The training step must bind the LIVE rate buffer — the one thing that
+    /// makes dropout actually apply during training.
+    ///
+    /// This closes a hole every other dropout test misses. `testValueBaseline…`
+    /// asserts the baseline is invariant to the rate; the buffer test above
+    /// asserts the two buffers are distinct and that the setter moves the live
+    /// one. **All of them still pass if `runPreparedStep` binds
+    /// `dropoutRateZeroTensorData`**, because none of them observes what the
+    /// training step binds. The result would be training silently running
+    /// dropout-free while the whole dropout suite stays green — the exact
+    /// failure the fed-placeholder design is supposed to make impossible.
+    ///
+    /// Asserted structurally rather than numerically: both `trainStep` entry
+    /// points synthesize or randomly sample their minibatch, so a "weights
+    /// diverge at rate 0 vs rate 0.9" comparison would differ because the DATA
+    /// differed and pass for the wrong reason.
+    func testTrainingStepBindsTheLiveDropoutRate() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal not available")
         }
-        XCTFail(
-            "live rate never reached \(expected) (last read \(readRate(live)))",
-            file: file, line: line
-        )
+        let trainer = try ChessTrainer(arch: archWithDropout())
+        XCTAssertNil(trainer.lastStepBoundLiveDropoutRate,
+                     "nothing should be recorded before the first step")
+
+        trainer.dropoutRate = 0.5
+        _ = try await trainer.trainStep(batchSize: 8)
+
+        XCTAssertEqual(trainer.lastStepBoundLiveDropoutRate, true,
+                       "the training step must bind the live rate buffer; binding the "
+                       + "preallocated zero instead would train dropout-free with no "
+                       + "other test noticing")
     }
 
     /// The value baseline v(s) feeding the advantage `(z − vBaseline)` must be a
@@ -184,13 +198,20 @@ final class DropoutGraphWiringTests: XCTestCase {
             boards[i] = Float((i &* 7919) % 13) / 13.0
         }
 
+        let liveRate = try XCTUnwrap(trainer.network.dropoutRateLiveNDArray)
         func baseline(atRate rate: Float) async throws -> [Float] {
             trainer.dropoutRate = rate
-            // The rate setter applies the value to the graph asynchronously on
-            // the trainer's execution queue, so give that assign time to land
-            // before sampling. Without this the sample could read the previous
-            // rate and mask a real regression as a pass.
-            try await Task.sleep(for: .milliseconds(250))
+            // The setter writes the live buffer on the TRAINER's execution
+            // queue; the baseline below runs on the NETWORK's. Two independent
+            // serial queues with no ordering between them, so drain the trainer
+            // queue and then PIN the buffer's contents. Both halves matter: a
+            // build that wrongly fed the live rate into the baseline could
+            // otherwise be sampled while the buffer still read 0, compare two
+            // rate-0 baselines, and pass while the regression walked free.
+            await trainer.awaitPendingWork()
+            XCTAssertEqual(readRate(liveRate), rate, accuracy: 1e-6,
+                           "live rate must read \(rate) before the baseline is sampled, "
+                           + "otherwise this comparison proves nothing about dropout")
             nonisolated(unsafe) var out: [Float] = []
             try await trainer.network.computeValueBaselineGPU(
                 batchBoards: boards,

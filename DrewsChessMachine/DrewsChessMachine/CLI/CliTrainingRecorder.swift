@@ -33,6 +33,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// Id of the corpus self-play games are recorded into, surfaced in
         /// results.json provenance. Set via setRecordingCorpusID(_:).
         var recordingCorpusID: String?
+        /// Which driver is producing this run. See `RunKind`.
+        var runKind: RunKind?
     }
     private let lock = OSAllocatedUnfairLock<State>(initialState: State())
 
@@ -44,6 +46,12 @@ final class CliTrainingRecorder: @unchecked Sendable {
 
     func setRecordingCorpusID(_ id: String?) {
         lock.withLock { $0.recordingCorpusID = id }
+    }
+
+    /// Declare which driver is producing this run. Call once at setup, next to
+    /// `setSessionID(_:)`.
+    func setRunKind(_ kind: RunKind) {
+        lock.withLock { $0.runKind = kind }
     }
 
     /// Record how the run ended. Safe to call from any thread — the
@@ -80,6 +88,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
     func encodedJSONData(totalTrainingSeconds: Double) throws -> Data {
         let snapshot = lock.withLock { state in
             Snapshot(
+                runKind: state.runKind,
                 totalTrainingSeconds: totalTrainingSeconds,
                 trainingElapsedSeconds: totalTrainingSeconds,
                 terminationReason: state.terminationReason,
@@ -176,7 +185,22 @@ final class CliTrainingRecorder: @unchecked Sendable {
         case appWillTerminate = "app-will-terminate"
     }
 
+    /// Which driver produced this run. Emitted once at top level so a consumer
+    /// can tell what the per-line fields mean before reading them: `StatsLine`
+    /// was shaped for self-play, so on the CLI paths some of its keys carry the
+    /// analogous quantity under a self-play name (`self_play_games` holds
+    /// completed train-vs-UCI games) and others are omitted entirely because the
+    /// run never measured them.
+    enum RunKind: String, Encodable, Sendable {
+        case selfPlay = "self_play"
+        case corpusReplay = "corpus_replay"
+        case trainVsUci = "train_vs_uci"
+    }
+
     struct Snapshot: Encodable, Sendable {
+        /// See `RunKind`. Nil only for a snapshot written by a path that never
+        /// declared itself.
+        let runKind: RunKind?
         let totalTrainingSeconds: Double
         /// Duplicate of `totalTrainingSeconds` under a more
         /// self-explanatory key. `total_training_seconds` has
@@ -206,6 +230,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let recordingCorpusID: String?
 
         enum CodingKeys: String, CodingKey {
+            case runKind = "run_kind"
             case totalTrainingSeconds = "total_training_seconds"
             case trainingElapsedSeconds = "training_elapsed_seconds"
             case terminationReason = "termination_reason"
@@ -488,10 +513,19 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let elapsedSec: Double
         let steps: Int
         let selfPlayGames: Int
-        /// Total self-play positions added to the replay buffer
-        /// since the session began — this is the "positions
-        /// trained" counter in the top-level JSON when it's the
-        /// last stats line at exit time.
+        /// Total positions PRODUCED since the session began — every ply played,
+        /// including games later dropped by the ply cap or the draw filter. This
+        /// is the "positions trained" counter in the top-level JSON when it's
+        /// the last stats line at exit time.
+        ///
+        /// Raw produced, NOT fed-to-buffer: `maxPliesDropped`'s doc below states
+        /// the same thing from the other side ("Included in `selfPlayGames` and
+        /// `positionsTrained` — the games WERE played"), and self-play's source
+        /// `ParallelWorkerStatsBox` bumps this counter in `recordDroppedGame` as
+        /// well as `recordCompletedGame`. The fed-to-buffer count is
+        /// `emittedPositions`. This doc previously said "added to the replay
+        /// buffer", contradicting both — that was wrong, and it is what led the
+        /// CLI runners to describe their own value against the wrong field.
         let positionsTrained: Int
         /// Lifetime count of self-play games that survived the
         /// per-game keep/drop filter (`selfPlayDrawKeepFraction`)
@@ -575,17 +609,17 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let advP05: Double?
         let advP50: Double?
         let advP95: Double?
-        let spStartTau: Double
-        let spFloorTau: Double
-        let spDecayPerPly: Double
-        let arStartTau: Double
-        let arFloorTau: Double
-        let arDecayPerPly: Double
-        let diversityUniqueGames: Int
-        let diversityGamesInWindow: Int
-        let diversityUniquePercent: Double
-        let diversityAvgDivergencePly: Double
-        let ratioTarget: Double
+        let spStartTau: Double?
+        let spFloorTau: Double?
+        let spDecayPerPly: Double?
+        let arStartTau: Double?
+        let arFloorTau: Double?
+        let arDecayPerPly: Double?
+        let diversityUniqueGames: Int?
+        let diversityGamesInWindow: Int?
+        let diversityUniquePercent: Double?
+        let diversityAvgDivergencePly: Double?
+        let ratioTarget: Double?
         let ratioCurrent: Double
         /// Self-play EMITTED-positions rate (positions/sec) — the
         /// rate the replay-ratio target is computed against. Equals
@@ -618,8 +652,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let insufficientMaterialDraws: Int
         let batchSize: Int
         let learningRate: Double
-        let promoteThreshold: Double
-        let arenaGames: Int
+        let promoteThreshold: Double?
+        let arenaGames: Int?
         let workerCount: Int
         let gradClipMaxNorm: Double
         let weightDecayC: Double
@@ -643,7 +677,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let momentumCycleActive: Bool
         let buildNumber: Int
         let trainerID: String
-        let championID: String
+        let championID: String?
 
         enum CodingKeys: String, CodingKey {
             case elapsedSec = "elapsed_sec"
@@ -856,7 +890,7 @@ extension CliTrainingRecorder.StatsLine {
     init(
         elapsedSec: Double,
         steps: Int,
-        positionsTrained: Int,
+        positionsFed: Int,
         bufferCount: Int,
         bufferCapacity: Int,
         policyLoss: Double?,
@@ -882,18 +916,36 @@ extension CliTrainingRecorder.StatsLine {
         lrEffectiveBase: Double,
         momentumEffective: Double,
         buildNumber: Int,
-        trainerID: String
+        trainerID: String,
+        /// Positions PRODUCED — every ply played, including games later
+        /// dropped. Pass the same value as `positionsFed` on a path with no
+        /// drop concept. Pass nil where the count is genuinely UNMEASURED, in
+        /// which case `positions_trained` falls back to the fed count and is
+        /// therefore a lower bound rather than the self-play convention.
+        positionsProduced: Int? = nil,
+        /// Games this run actually played, if it plays any. Corpus replay
+        /// passes nil (it plays none); train-vs-UCI passes its completed-game
+        /// count.
+        gamesPlayed: Int? = nil,
+        /// Games dropped for hitting the per-game ply cap, and the cap itself.
+        /// Both nil on a path with no cap.
+        pliesCapDropped: Int? = nil,
+        maxPliesPerGame: Int? = nil,
+        /// Replay-ratio TARGET, where one governs the run. Corpus replay has a
+        /// real one (it sets `perStepFeed = batchSize / target`); train-vs-UCI
+        /// never reads it, so passing it there would be a fresh false claim.
+        replayRatioTarget: Double? = nil
     ) {
         self.init(
             elapsedSec: elapsedSec,
             steps: steps,
-            selfPlayGames: 0,
-            positionsTrained: positionsTrained,
+            selfPlayGames: gamesPlayed ?? 0,
+            positionsTrained: positionsProduced ?? positionsFed,
             emittedGames: 0,
-            emittedPositions: 0,
+            emittedPositions: positionsFed,
             selfPlayDrawKeepFraction: 0,
-            selfPlayMaxPliesPerGame: 0,
-            maxPliesDropped: 0,
+            selfPlayMaxPliesPerGame: maxPliesPerGame ?? 0,
+            maxPliesDropped: pliesCapDropped ?? 0,
             avgLen: 0,
             rollingAvgLen: 0,
             gameLenP50: nil,
@@ -933,17 +985,17 @@ extension CliTrainingRecorder.StatsLine {
             advP05: nil,
             advP50: nil,
             advP95: nil,
-            spStartTau: 0,
-            spFloorTau: 0,
-            spDecayPerPly: 0,
-            arStartTau: 0,
-            arFloorTau: 0,
-            arDecayPerPly: 0,
-            diversityUniqueGames: 0,
-            diversityGamesInWindow: 0,
-            diversityUniquePercent: 0,
-            diversityAvgDivergencePly: 0,
-            ratioTarget: 0,
+            spStartTau: nil,
+            spFloorTau: nil,
+            spDecayPerPly: nil,
+            arStartTau: nil,
+            arFloorTau: nil,
+            arDecayPerPly: nil,
+            diversityUniqueGames: nil,
+            diversityGamesInWindow: nil,
+            diversityUniquePercent: nil,
+            diversityAvgDivergencePly: nil,
+            ratioTarget: replayRatioTarget,
             ratioCurrent: 0,
             ratioProductionRate: 0,
             ratioProducedRate: 0,
@@ -960,8 +1012,8 @@ extension CliTrainingRecorder.StatsLine {
             insufficientMaterialDraws: 0,
             batchSize: batchSize,
             learningRate: learningRate,
-            promoteThreshold: 0,
-            arenaGames: 0,
+            promoteThreshold: nil,
+            arenaGames: nil,
             workerCount: 0,
             gradClipMaxNorm: gradClipMaxNorm,
             weightDecayC: weightDecayC,
@@ -976,7 +1028,7 @@ extension CliTrainingRecorder.StatsLine {
             momentumCycleActive: false,
             buildNumber: buildNumber,
             trainerID: trainerID,
-            championID: ""
+            championID: nil
         )
     }
 }

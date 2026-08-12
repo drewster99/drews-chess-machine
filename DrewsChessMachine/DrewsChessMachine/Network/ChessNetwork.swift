@@ -732,9 +732,10 @@ final class ChessNetwork: @unchecked Sendable {
         // --- Dropout scaffolding (training-mode graphs only) ---
         //
         // Built unconditionally into every training-mode block at the WRN
-        // slot (after the conv2-side BN+activation, before conv2). The rate
-        // lives in a graph variable holding 0.0 until something sets it, so
-        // the node is an exact identity by default; see the property docs.
+        // slot (after the conv2-side BN+activation, before conv2). The rate is a
+        // fed placeholder, and every consumer other than the training step binds
+        // the preallocated zero built below, so the node is an exact identity by
+        // default; see the property docs.
         // The channel mask shape [N, C, 1, 1] is derived at runtime from the
         // stem output's shape (batch is dynamic in this graph).
         var dropoutRatePh: MPSGraphTensor?
@@ -1467,9 +1468,14 @@ final class ChessNetwork: @unchecked Sendable {
         let tensorData = MPSGraphTensorData(nda)
         var feeds: [MPSGraphTensor: MPSGraphTensorData] = [inputPlaceholder: tensorData]
         // Every consumer of this entry — value baseline, BN warmup, batched
-        // inference — must run dropout-free, so they all bind rate 0. Only the
-        // training step binds the live rate, and it builds its own feeds. Nil on
-        // inference graphs, which have no dropout nodes to feed.
+        // inference — must run dropout-free, so they all bind rate 0. The
+        // training step is the sole binder of the LIVE rate, and it does so by
+        // overwriting this key on a copy of its own cached feed dict
+        // (`ChessTrainer.runPreparedStep`) — not by building feeds from scratch.
+        // That override is deliberate: it means a caller who assembles feeds by
+        // copying the zero-rate pattern from here still trains at the live rate
+        // rather than silently training dropout-free. Nil on inference graphs,
+        // which have no dropout nodes to feed.
         if let ratePlaceholder = dropoutRateFeedPlaceholder,
            let zeroRate = dropoutRateZeroTensorData {
             feeds[ratePlaceholder] = zeroRate

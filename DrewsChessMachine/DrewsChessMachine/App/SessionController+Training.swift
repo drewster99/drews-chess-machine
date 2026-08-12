@@ -1083,6 +1083,10 @@ extension SessionController {
         if cliOutputURL != nil || autoTrainOnLaunch {
             let r = CliTrainingRecorder()
             r.setSessionID(checkpoint?.currentSessionID)
+            // Declare the run kind here too, not just on the CLI paths: a
+            // discriminator only present on some records cannot be used to tell
+            // a self-play record from one written before the key existed.
+            r.setRunKind(.selfPlay)
             recorder = r
             cliRecorder = r
         } else {
