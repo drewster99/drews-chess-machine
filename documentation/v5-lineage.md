@@ -41,17 +41,19 @@ v5-checkpoint (20260629-1-Uf4p, step 39419, parent 20260628-9-OdUt)
 
 | seg | label | device | `cumstep_base` | steps | `games_base` | probes | session log |
 |---:|---|---|---:|---:|---:|---:|---|
-| 0 | wd1e-4 | M5 | 0 | 45,441 | — | *in v5.csv* | `dcm_log_20260627-201127.txt` ✗ |
-| 1 | wd5e-4 | M5 | 45,441 | 15,460 | — | *in v5.csv* | `dcm_log_20260628-114648.txt` ✗ |
-| 2 | m0.93 | M5 | 60,901 | 39,419 | — | *in v5.csv* | `dcm_log_20260628-183831.txt` ✗ |
+| 0 | wd1e-4 | M5 (VM) | 0 | 45,441 | — | *in v5.csv* | `dcm_log_20260627-201127.txt` ✗ |
+| 1 | wd5e-4 | M5 (VM) | 45,441 | 15,460 | — | *in v5.csv* | `dcm_log_20260628-114648.txt` ✗ |
+| 2 | m0.93 | M5 (VM) | 60,901 | 39,419 | — | *in v5.csv* | `dcm_log_20260628-183831.txt` ✗ |
 | 3 | cont-run1 | M4 Pro | 100,320 | 268,506 | 12,933,495 | 269 | `dcm_log_20260702-201756.txt` |
 | 4 | cont-run2 | M4 Pro | 368,826 | 336,610 | 47,582,603 | 337 | `dcm_log_20260713-195047.txt` |
 | 5 | cont-run3 | M4 Pro | 705,436 | 106,333 | 90,998,480 | 107 | `dcm_log_20260728-223132.txt` |
 | 6 | cont-run4 | M4 Pro | 811,769 | 49,374 † | 104,743,805 | 46 | `dcm_log_20260802-152830.txt` |
 | 7 | cont-run5 | M4 Pro | 857,769 | 2,050 | 110,668,628 | 2 | `dcm_log_20260804-221739.txt` |
 
-✗ = log is on the original machine, not this one. † run 4 ran 49,374 steps but only
-46,000 are usable — see §5.
+✗ = **session log permanently lost.** Segments 0–2 ran inside a Pacific-timezone VM on
+the M5 host; that VM has been deleted. Their per-mark data was recovered from checkpoint
+headers instead (see "Recovering segments 0–2"). † run 4 ran 49,374 steps but only 46,000
+are usable — see §5.
 
 Two derivations that are easy to get wrong:
 
@@ -77,11 +79,13 @@ Measured per-step speed:
 
 | segments | device | median s/step | p05→p95 |
 |---|---|---:|---|
-| 0–2 | M5 | **1.327** | 1.303–1.348 |
-| 3–7 | M4 Pro | **3.42–3.45** | 3.39–3.74 |
+| 0–2 | M5 (VM) | **1.327** | 1.303–1.348 |
+| 3–7 | M4 Pro (native) | **3.42–3.45** | 3.39–3.74 |
 
-The **2.59× slope break in the by-time chart at cum 100,320 is hardware** and is left
-in deliberately. It is never normalized away, because with batch 4096 and replayRatio
+The **2.59× slope break in the by-time chart at cum 100,320 is the machine change** and is
+left in deliberately. ⚠️ Do not read it as "M5 silicon is 2.59× an M4 Pro": segments 0–2
+ran **virtualized** inside a VM, segments 3–7 natively, so the comparison is
+VM-on-M5 vs native-M4-Pro and says nothing clean about either chip. It is never normalized away, because with batch 4096 and replayRatio
 0.48 constant on both machines a "normalized seconds" axis would reduce to
 `steps × reference_ms` — a relabelled step axis that carries no new information while
 destroying the only record of real cost. Both devices are individually stable and
@@ -138,11 +142,11 @@ Two bounded caveats on that prefix:
 - Segment 3's pin derives from v5.csv's last row (cum 99,901 = seg-2 step 39,000), but
   segment 3 begins at step 39,419. The **419 steps in between (~557 s at 1.33 s/step) are
   not counted**. That is ~0.02% of the total; recorded rather than silently back-filled,
-  since the seg-2 log needed to measure it no longer exists on either machine.
+  since the seg-2 log needed to measure it died with the VM.
 
 ### Segment 2's base, and the segment-1 hole (corrected 2026-08-12)
 
-Segment 1's session log is lost from **both** machines, so its 15,460 steps had no
+Segment 1's session log died with the VM, so its 15,460 steps had no
 measured duration and `elapsed_base_sec` on segment 2 was originally pinned to
 `59620.0` — a repeat of *segment 0's* end value. Segment 1's ~5.74 h was therefore
 omitted from the time axis, and because segment 3's pin descends from segment 2's last
@@ -237,6 +241,7 @@ unverified, so durability rests on the copies, not the links.
 | what | where |
 |---|---|
 | **the unified series (source of truth)** | `documentation/dashboards/data/v5.csv` — 856 rows |
+| segments 0–2 per-mark source | `-frozen` checkpoint headers on the M5 host (their logs died with the VM) |
 | segment/axis config | `documentation/dashboards/registry.json` → `runs.v5` |
 | dashboard | `dcm_master.html` (+ hosted copy), 3 axes: by step / by time / by compute |
 | probe JSONL (pre-image) | `~/Downloads/v5-continue-bundle/monitor/new_ckpts*.jsonl` |
@@ -293,8 +298,9 @@ to the latest segment's base and would mis-assign every colliding name.
 
 ### Recovering segments 0–2 — DONE (2026-08-12)
 
-Segments 0–2's session logs are gone from **both** machines. But their per-mark data
-survived in the `-frozen` checkpoints those rows already named, mounted from the M5 at
+Segments 0–2 ran in a Pacific-timezone VM on the M5 host, and **that VM has been
+deleted — their session logs are gone for good.** But their per-mark data survived in the
+`-frozen` checkpoints those rows already named, on the M5 host itself at
 `/Volumes/andrew/Library/Application Support/DrewsChessMachine/Models/`.
 
 **Why nobody found them:** the registry's run-level `frozen_glob`
@@ -318,7 +324,7 @@ exactly, segment 2 matched **37 of 39 exactly and 2 off by one second** — sub-
 truncation in the log versus an integer `created_at_unix`. Only then was segment 1
 trusted.
 
-⚠️ **Timezone:** the M5 ran on Pacific, this Mac on Central. `created_at_unix` is an
+⚠️ **Timezone:** the VM ran on Pacific, this Mac on Central. `created_at_unix` is an
 instant; the CSV's `wallclock_iso` is M5-local. Convert as **UTC − 7 h (PDT)**. Reading
 the header with a bare `datetime.fromtimestamp()` on a Central machine yields a
 consistent +2 h error that looks plausible and is wrong.
