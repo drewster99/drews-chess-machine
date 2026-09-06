@@ -290,21 +290,43 @@ def build_run(key, cfg):
     # Sample every ~1000 cum-steps to match the replay tracker's cadence. The raw
     # sources are far denser — [STATS] telemetry is ~per-60s and the in-training
     # probe pElo curve is ~per-25-steps — which is what bloated the embedded
-    # dashboard. Bucket rows by nearest 1000-step boundary and keep one per bucket,
-    # preferring a pElo-bearing row so the headline pElo trajectory is retained at
-    # 1000-step resolution rather than being thinned away by a [STATS]-only neighbor.
-    buckets = {}   # bucket index -> chosen cum_step
+    # dashboard. Bucket rows by nearest 1000-step boundary and emit one row per
+    # bucket.
+    #
+    # Within a bucket the two sources are complementary, not competing: a [STATS]
+    # row carries loss/gNorm/pIllM/... and the real elapsed clock, a probe row
+    # carries pElo/nll at an interpolated elapsed. The bucket's row is therefore the
+    # [STATS] row nearest the boundary, with the nearest probe row's pElo/nll copied
+    # onto it when the [STATS] row has none of its own. Simply picking one row per
+    # bucket (the earlier behaviour, which preferred the pElo-bearing row) meant a
+    # probe firing more often than once per 1000 steps evicted essentially every
+    # [STATS] row, leaving the loss charts empty for exactly the runs with the best
+    # pElo curves. Buckets with no [STATS] row keep the probe row as before.
+    def _nearer(a, b, target):
+        return a if abs(a - target) <= abs(b - target) else b
+
+    stats_pick = {}   # bucket index -> cum_step of the nearest [STATS] row
+    pelo_pick = {}    # bucket index -> cum_step of the nearest pElo-bearing row
     for s, r in rows.items():
         b = round(s / 1000.0)
-        cur = buckets.get(b)
-        if cur is None:
-            buckets[b] = s
+        if r["loss"] not in ("", None):
+            stats_pick[b] = s if b not in stats_pick else _nearer(stats_pick[b], s, b * 1000)
+        if r["pElo"] not in ("", None):
+            pelo_pick[b] = s if b not in pelo_pick else _nearer(pelo_pick[b], s, b * 1000)
+    out = []
+    for b in sorted(set(stats_pick) | set(pelo_pick)):
+        if b not in stats_pick:
+            out.append(rows[pelo_pick[b]])
             continue
-        has = r["pElo"] not in ("", None)
-        cur_has = rows[cur]["pElo"] not in ("", None)
-        if (has and not cur_has) or (has == cur_has and abs(s - b * 1000) < abs(cur - b * 1000)):
-            buckets[b] = s
-    out = [rows[s] for s in sorted(buckets.values())]
+        row = dict(rows[stats_pick[b]])
+        if row["pElo"] in ("", None) and b in pelo_pick:
+            src = rows[pelo_pick[b]]
+            row["pElo"] = src["pElo"]
+            row["nll"] = src["nll"]
+            if src["note"] and not row["note"]:
+                row["note"] = src["note"]
+        out.append(row)
+    out.sort(key=lambda r: r["cum_step"])
     p = os.path.join(DATA, f"{key}.csv")
     with open(p, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS)
