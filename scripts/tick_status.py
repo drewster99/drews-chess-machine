@@ -45,10 +45,27 @@ LOG_GLOB = os.path.expanduser('~/Library/Logs/DrewsChessMachine/dcm_log_*.txt')
 BANDS = {
     'pEnt':         {'in': (1.5, 3.5), 'watch': (1.0, 1.5),  'fmt': '{:.2f}'},
     'gNorm':        {'in': (0, 60),    'watch': (60, 100),   'fmt': '{:.1f}'},
-    'pLogitAbsMax': {'in': (3, 25),    'watch': (25, 40),    'fmt': '{:.1f}'},
     'vAbs':         {'in': (0.05, 0.50), 'watch': (0.50, 0.85), 'fmt': '{:.3f}'},
-    'avgLen':       {'in': (200, 500), 'watch': (100, 700),  'fmt': '{:.0f}'},
+    'pD':           {'in': (0.0, 0.60), 'watch': (0.60, 0.85), 'fmt': '{:.3f}'},
+    'pIllM':        {'in': (0.0, 0.10), 'watch': (0.10, 0.30), 'fmt': '{:.4f}'},
+    # avgLen is a CONFIG-dependent quantity, not a health signal on its own: it is
+    # bounded above by self_play_max_plies_per_game (450 today) and self-play games
+    # in this regime settle around 85 plies. The old (200,500) band was tuned when
+    # games ran far longer and flagged every healthy tick as OUT.
+    'avgLen':       {'in': (40, 450),  'watch': (20, 700),   'fmt': '{:.0f}'},
+    # pLogitAbsMax deliberately has NO fixed band — see pLogit_label(). A net forked
+    # from a corpus-distilled seed INHERITS a large logit scale (this lineage started
+    # at 169 on step 10 and has drifted DOWN to ~159 over 938k steps), so any absolute
+    # threshold either screams on every tick or is too loose to catch a real blow-up.
+    # What matters is growth relative to where this run started.
 }
+
+# pLogitAbsMax growth multipliers, measured against the FIRST [STATS] line of the
+# same log (exact, needs no tick history). Absolute backstop catches a true runaway
+# even if the run somehow started high.
+PLOGIT_WATCH_RATIO = 2.0
+PLOGIT_TRIP_RATIO = 3.0
+PLOGIT_ABS_BACKSTOP = 500.0
 
 
 @dataclass
@@ -89,7 +106,7 @@ def parse_stats(line: str) -> dict[str, Any]:
         'steps', 'spGames', 'spMoves', 'avgLen', 'pEnt', 'pEntLegal', 'gNorm',
         'pLogitAbsMax', 'pwNorm', 'legalMass', 'top1Legal', 'pLoss',
         'pLossWin', 'pLossLoss', 'vLoss', 'vMean', 'vAbs', 'playedMoveProb',
-        'buffer',
+        'buffer', 'pW', 'pD', 'pL', 'pIllM',
     ]:
         m = re.search(rf'{re.escape(key)}=' + _NUM, line)
         if m:
@@ -185,6 +202,42 @@ def collect_alarms(path: Path) -> list[str]:
     return out
 
 
+def first_stats_pLogit(path: Path) -> float | None:
+    """pLogitAbsMax from the FIRST [STATS] line of this log — the scale the run
+    started at. A fork of a distilled net inherits its teacher's logit scale, so
+    "is the policy blowing up?" is only answerable relative to this, never against
+    a fixed constant. Returns None when the log has no parseable [STATS] line."""
+    with open(path, 'r', errors='replace') as f:
+        for line in f:
+            if '[STATS]' not in line:
+                continue
+            m = re.search(r'pLogitAbsMax=([\d.]+)', line)
+            if m:
+                return float(m.group(1))
+    return None
+
+
+def pLogit_label(value: float | None, baseline: float | None) -> str:
+    """Band pLogitAbsMax by growth over this run's own starting scale."""
+    if value is None:
+        return ''
+    if baseline is None or baseline <= 0:
+        return 'no-base'
+    r = value / baseline
+    if value > PLOGIT_ABS_BACKSTOP or r > PLOGIT_TRIP_RATIO:
+        return 'OUT'
+    if r > PLOGIT_WATCH_RATIO:
+        return 'watch'
+    return 'in-band'
+
+
+def _plogit_note(value: float | None, baseline: float | None) -> str:
+    if value is None or baseline is None or baseline <= 0:
+        return 'no starting scale readable from this log — criterion not evaluated'
+    return (f'{value / baseline:.2f}x this run\'s start ({baseline:.1f}); '
+            f'>{PLOGIT_TRIP_RATIO:.0f}x = hard kill, >{PLOGIT_WATCH_RATIO:.0f}x = watch')
+
+
 def label_band(value: float | None, key: str) -> str:
     if value is None or key not in BANDS:
         return ''
@@ -198,11 +251,22 @@ def label_band(value: float | None, key: str) -> str:
     return 'OUT'
 
 
-def hard_rejects(m: dict[str, Any]) -> list[str]:
+def hard_rejects(m: dict[str, Any], pLogit_base: float | None = None) -> list[str]:
     issues: list[str] = []
     e = m.get('elapsed_sec', 0)
-    if m.get('pLogitAbsMax', 0) > 50:
-        issues.append(f'H3 pLogitAbsMax={m["pLogitAbsMax"]:.1f} > 50')
+    cur = m.get('pLogitAbsMax')
+    if cur is not None:
+        if pLogit_base is None or pLogit_base <= 0:
+            # Do not silently pass: say that the criterion could not be evaluated.
+            issues.append(
+                f'H3 NOT EVALUATED — pLogitAbsMax={cur:.1f} but this log has no '
+                f'readable starting scale to compare against')
+        elif cur > PLOGIT_ABS_BACKSTOP:
+            issues.append(f'H3 pLogitAbsMax={cur:.1f} > {PLOGIT_ABS_BACKSTOP:.0f} (absolute backstop)')
+        elif cur / pLogit_base > PLOGIT_TRIP_RATIO:
+            issues.append(
+                f'H3 pLogitAbsMax={cur:.1f} = {cur / pLogit_base:.1f}x this run\'s '
+                f'starting scale {pLogit_base:.1f} (> {PLOGIT_TRIP_RATIO:.0f}x)')
     if e > 3600 and m.get('pEnt', 99) < 1.0:
         issues.append(f'H2 pEnt={m["pEnt"]:.2f} < 1.0 at {e}s')
     if (e > 3600 and m.get('legalMass', 1) < 0.005
@@ -264,10 +328,11 @@ def app_running() -> tuple[bool, int | None]:
     return False, None
 
 
-def render(t: Tick, prev: dict[str, Any] | None, pid: int | None) -> tuple[str, int]:
+def render(t: Tick, prev: dict[str, Any] | None, pid: int | None,
+           pLogit_base: float | None = None) -> tuple[str, int]:
     m = t.metrics
     pm = (prev or {}).get('metrics', {}) if prev else {}
-    issues = hard_rejects(m)
+    issues = hard_rejects(m, pLogit_base)
 
     # Header
     lines: list[str] = []
@@ -296,20 +361,27 @@ def render(t: Tick, prev: dict[str, Any] | None, pid: int | None) -> tuple[str, 
         ('pEnt',         m.get('pEnt'),         '{:+.3f}', 'post-mask legal-only entropy; ceiling≈ln(legal)≈3.4'),
         ('pEntLegal',    m.get('pEntLegal'),    '{:+.3f}', 'redundant w/ pEnt post-mask'),
         ('gNorm',        m.get('gNorm'),        '{:+.2f}', 'pre-clip gradient L2 norm'),
-        ('pLogitAbsMax', m.get('pLogitAbsMax'), '{:+.2f}', '>50 = hard kill, >30 = soft watch'),
-        ('vAbs',         m.get('vAbs'),         '{:+.3f}', 'value head |v|; >0.85 = tanh saturated'),
+        ('pLogitAbsMax', m.get('pLogitAbsMax'), '{:+.2f}', _plogit_note(m.get('pLogitAbsMax'), pLogit_base)),
+        ('vAbs',         m.get('vAbs'),         '{:+.3f}', 'mean |p_win - p_loss| (no tanh); 0 = indecisive'),
         ('vMean',        m.get('vMean'),        '{:+.3f}', 'should sit near 0 (chess avg ≈ draw)'),
+        ('pW',           m.get('pW'),           '{:+.3f}', 'W/D/L softmax batch-mean: win'),
+        ('pD',           m.get('pD'),           '{:+.3f}', 'draw; collapse signature is pD -> 1, not merely high'),
+        ('pL',           m.get('pL'),           '{:+.3f}', 'loss'),
+        ('pIllM',        m.get('pIllM'),        '{:+.4f}', 'illegal-move probability mass; should fall well below 0.1'),
         ('legalMass',    m.get('legalMass'),    '{:+.4f}', 'softmax mass on legal moves (replay sample, n=128)'),
         ('top1Legal',    m.get('top1Legal'),    '{:+.3f}', 'fraction of positions where argmax is legal'),
         ('pLoss',        m.get('pLoss'),        '{:+.4f}', 'outcome-weighted policy CE'),
-        ('vLoss',        m.get('vLoss'),        '{:+.4f}', 'value head MSE'),
+        ('vLoss',        m.get('vLoss'),        '{:+.4f}', 'W/D/L categorical CE, scale ~[0, ln 3]'),
         ('avgLen',       m.get('avgLen'),       '{:+.1f}', 'avg ply per game'),
     ]
     for key, val, dfmt, note in rows:
         if val is None:
             continue
         band_key = key
-        label = label_band(val, band_key) if band_key in BANDS else ''
+        if band_key == 'pLogitAbsMax':
+            label = pLogit_label(val, pLogit_base)
+        else:
+            label = label_band(val, band_key) if band_key in BANDS else ''
         fmt = BANDS.get(band_key, {}).get('fmt', '{:.4f}')
         delta = fmt_delta(val, pm.get(key), dfmt)
         lines.append(f'{key:<14}{fmt.format(val):>12}  {label:<8}  {delta:>14}  {note}')
@@ -401,7 +473,8 @@ def main() -> int:
 
     hist = load_history()
     prev = hist[-1] if hist else None
-    out_text, rc = render(tick, prev, pid)
+    pLogit_base = first_stats_pLogit(log_path)
+    out_text, rc = render(tick, prev, pid, pLogit_base)
     print(out_text)
 
     if not running:
