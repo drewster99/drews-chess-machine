@@ -67,7 +67,7 @@ def main():
             if not m:
                 continue
             step = int(m.group(1))
-            if step <= last or step - last < a.spacing:
+            if step <= last or (last >= 0 and step - last < a.spacing):
                 continue
             if base and not m.group(4).startswith(base):
                 continue

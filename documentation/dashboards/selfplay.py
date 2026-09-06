@@ -302,15 +302,29 @@ def build_run(key, cfg):
     # probe firing more often than once per 1000 steps evicted essentially every
     # [STATS] row, leaving the loss charts empty for exactly the runs with the best
     # pElo curves. Buckets with no [STATS] row keep the probe row as before.
+    #
+    # A [STATS]-derived row is recognised by its launch index (`segment`), which the
+    # probe-only and anchor rows leave blank — not by whether `loss` parsed, because
+    # a truncated [STATS] line yields a row with a timestamp and little else, and
+    # such a row must still be able to stand in for a bucket that has nothing
+    # better. Within a bucket a loss-bearing row beats a loss-less one outright;
+    # distance to the boundary only breaks ties between equals.
     def _nearer(a, b, target):
         return a if abs(a - target) <= abs(b - target) else b
 
-    stats_pick = {}   # bucket index -> cum_step of the nearest [STATS] row
+    def _better_stats(a, b, target):
+        a_has = rows[a]["loss"] not in ("", None)
+        b_has = rows[b]["loss"] not in ("", None)
+        if a_has != b_has:
+            return a if a_has else b
+        return _nearer(a, b, target)
+
+    stats_pick = {}   # bucket index -> cum_step of the chosen [STATS] row
     pelo_pick = {}    # bucket index -> cum_step of the nearest pElo-bearing row
     for s, r in rows.items():
         b = round(s / 1000.0)
-        if r["loss"] not in ("", None):
-            stats_pick[b] = s if b not in stats_pick else _nearer(stats_pick[b], s, b * 1000)
+        if r["segment"] != "":
+            stats_pick[b] = s if b not in stats_pick else _better_stats(stats_pick[b], s, b * 1000)
         if r["pElo"] not in ("", None):
             pelo_pick[b] = s if b not in pelo_pick else _nearer(pelo_pick[b], s, b * 1000)
     out = []
