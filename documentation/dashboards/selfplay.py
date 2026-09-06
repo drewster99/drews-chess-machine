@@ -137,6 +137,7 @@ def build_run(key, cfg):
     foreign = 0             # [STATS] lines from a different model in a shared log
     expected_base = cfg.get("base_modelID")  # this lineage's champion base
     base_by_raw = {}        # raw meta_step -> step_base applied (for probe merge)
+    seg_base = {}           # launch index -> step_base applied to that launch
     for seg_i, log in enumerate(cfg["logs"]):
         path = os.path.join(LOGDIR, log)
         if not os.path.exists(path):
@@ -206,6 +207,7 @@ def build_run(key, cfg):
                 "pLogit_mean": st["pLogit"] if st["pLogit"] is not None else "",
                 "pLogit_peak": "", "frozen_file": "", "note": "; ".join(clamp_notes),
             }
+        seg_base[seg_i] = step_base
         launch_offset += seg_max_elapsed
 
     # (cum, elapsed) from the [STATS] rows — to interpolate elapsed onto any pElo-
@@ -238,18 +240,31 @@ def build_run(key, cfg):
 
     # Merge the in-training probe pElo/NLL curve (selfplay_probe/<key>.csv),
     # recorded by the app's periodic lichess probe during this run. Each probe raw
-    # step maps to a cum_step via the same per-launch offset the [STATS] pass applied
-    # (base_by_raw: exact for the cumulative lineages, nearest-prior for the reset-
-    # reconstructed ones). NOTE: this puzzleElo is on the RECORDING BUILD's scale,
-    # which differs from the current-binary replay pElo — use the replay/self-play
-    # toggle to compare within one consistent scale.
+    # step maps to a cum_step via the same per-launch offset the [STATS] pass applied.
+    #
+    # A probe CSV MAY carry a `segment` column naming the launch (index into the
+    # registry `logs` list) the row came from; when present that is the only exact
+    # mapping. A lineage that restarted from step 1 more than once has the SAME raw
+    # step number under several different bases, and the flat raw->base dict keeps
+    # only the last writer — so without the column every probe row from an earlier
+    # restart lands on the last restart's base and the pElo curve is scrambled onto
+    # step ranges it never occupied. Rows without the column keep the old behaviour
+    # (exact for cumulative lineages, nearest-prior otherwise), which is why the
+    # older imported probe curves are unchanged by this.
+    #
+    # NOTE: this puzzleElo is on the RECORDING BUILD's scale, which differs from the
+    # current-binary replay pElo — use the replay/self-play toggle to compare within
+    # one consistent scale.
     probe_path = os.path.join(HERE, "selfplay_probe", f"{key}.csv")
     has_traj = os.path.exists(probe_path)
     if has_traj and base_by_raw:
         raws = sorted(base_by_raw)
         for pr in csv.DictReader(open(probe_path)):
             raw = int(pr["step"])
-            if raw in base_by_raw:
+            seg = pr.get("segment", "")
+            if seg != "" and int(seg) in seg_base:
+                base = seg_base[int(seg)]
+            elif raw in base_by_raw:
                 base = base_by_raw[raw]
             else:
                 i = bisect.bisect_right(raws, raw) - 1
