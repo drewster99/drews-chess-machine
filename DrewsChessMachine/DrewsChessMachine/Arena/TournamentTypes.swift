@@ -27,6 +27,46 @@ struct TournamentStats: Sendable {
     let playerADrawsAsWhite: Int
     let playerADrawsAsBlack: Int
 
+    /// The sequential test's latched verdict, when the tournament ran under
+    /// the SPRT promotion criterion. `nil` under the score-threshold
+    /// criterion, and `nil` in SPRT mode only if the run was cancelled before
+    /// the test decided.
+    ///
+    /// Note that `verdict.gamesAtDecision` is generally *less* than
+    /// `gamesPlayed`: the games still in flight when the ratio crossed its
+    /// bound finish and are tallied here, but they are description, not
+    /// evidence. See `ArenaSPRT.Monitor`.
+    let sprtVerdict: ArenaSPRT.Verdict?
+
+    /// Written out rather than relying on the memberwise init so
+    /// `sprtVerdict` can default — every score-threshold construction site,
+    /// including the ones in tests, stays as it was.
+    init(
+        gamesPlayed: Int,
+        playerAWins: Int,
+        playerBWins: Int,
+        draws: Int,
+        playerAWinsAsWhite: Int,
+        playerAWinsAsBlack: Int,
+        playerALossesAsWhite: Int,
+        playerALossesAsBlack: Int,
+        playerADrawsAsWhite: Int,
+        playerADrawsAsBlack: Int,
+        sprtVerdict: ArenaSPRT.Verdict? = nil
+    ) {
+        self.gamesPlayed = gamesPlayed
+        self.playerAWins = playerAWins
+        self.playerBWins = playerBWins
+        self.draws = draws
+        self.playerAWinsAsWhite = playerAWinsAsWhite
+        self.playerAWinsAsBlack = playerAWinsAsBlack
+        self.playerALossesAsWhite = playerALossesAsWhite
+        self.playerALossesAsBlack = playerALossesAsBlack
+        self.playerADrawsAsWhite = playerADrawsAsWhite
+        self.playerADrawsAsBlack = playerADrawsAsBlack
+        self.sprtVerdict = sprtVerdict
+    }
+
     var playerAWinRate: Double {
         gamesPlayed > 0 ? Double(playerAWins) / Double(gamesPlayed) : 0
     }

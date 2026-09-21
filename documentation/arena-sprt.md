@@ -201,6 +201,47 @@ llr <= lower  ->  reject H₁  ->  do not promote, stop the tournament early
 otherwise     ->  continue
 ```
 
+### Zero-variance records — an open question, found in phase 3
+
+The GSPRT's denominator is the **empirical** score variance, and that is
+exactly zero when every game had the same result. `logLikelihoodRatio` returns
+`nil` there, `decide` never reaches the boundary check, and the test runs to
+`arena_sprt_max_games` and returns **inconclusive — which does not promote**.
+
+So, under the statistic as implemented:
+
+| record | LLR | decision |
+|---|---|---|
+| 64W / 0D / 0L | undefined (var = 0) | inconclusive → **no promotion** |
+| 1000W / 0D / 0L | undefined (var = 0) | inconclusive → **no promotion** |
+| 0W / 1000D / 0L | undefined (var = 0) | inconclusive |
+| 31W / 0D / 1L | +7.02 | accept |
+| 39W / 0D / 1L | +11.05 | accept |
+| 400W / 0D / 1L | +1137.16 | accept |
+
+A flawless candidate is the most promotable one there is, and this refuses it.
+The saving grace is that the degeneracy breaks the instant a single game
+differs — 31W/1L already accepts comfortably — so it can only bite a candidate
+that stays perfect for an entire run. Against a weak early champion over a
+`min_games` of 32 that is not impossible; in the engine's usual ~85%-draw
+regime it is vanishingly unlikely, and the draw-side version (an all-draw
+opening stretch) resolves on the first decisive game.
+
+This is pinned by `testPerfectRecordNeverDecidesUntilTheGuardFires` and
+`testAllDrawRecordIsUnscoreableUntilOneDecisiveGame` — as a record of current
+behaviour, **not** as a blessing of it. Changing it means changing the
+statistic, which is a decision to take deliberately rather than patch around:
+
+- Use the variance implied by the hypotheses rather than the sample
+  (`mu·(1−mu)`-style), which is never zero. Changes the LLR everywhere, so the
+  calibration simulation must be re-run.
+- Clamp the empirical variance to a small floor. Cheap, but the floor is an
+  arbitrary constant that sets how fast a near-degenerate record decides.
+- Leave it, and rely on the guard. Defensible if `min_games` is large enough
+  that a perfect record over it is not credible.
+
+Not decided. Nothing in phases 1–3 depends on which way it goes.
+
 ### Runaway guard
 
 If `arena_sprt_max_games` is reached with the LLR still between the bounds, the

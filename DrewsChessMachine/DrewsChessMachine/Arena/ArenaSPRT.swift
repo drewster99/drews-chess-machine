@@ -192,6 +192,85 @@ enum ArenaSPRT {
         return count * (mu1 - mu0) * (xbar - (mu0 + mu1) / 2.0) / variance
     }
 
+    // MARK: - Latched verdict
+
+    /// The decision a tournament actually stopped on, together with the tally
+    /// it was made from.
+    ///
+    /// This is a distinct type from `Decision` because *when* the test stopped
+    /// is part of the result. A tournament runs `concurrency` games at once,
+    /// so when the log-likelihood ratio crosses a bound there are still up to
+    /// `K − 1` games in flight; they finish, and they are reported. The tally
+    /// here is the one at the crossing, not the one at the end.
+    struct Verdict: Equatable, Sendable {
+        /// Always a final decision — `.accept`, `.reject` or `.inconclusive`.
+        /// `.continueTesting` never reaches a verdict.
+        let decision: Decision
+        /// The ratio at the crossing. `nil` only in the degenerate tallies
+        /// `logLikelihoodRatio` declines to score, which means this verdict
+        /// came from the runaway guard.
+        let llr: Double?
+        let wins: Int
+        let draws: Int
+        let losses: Int
+        /// The hypotheses this was decided against. Carried so a persisted
+        /// record is interpretable later without also knowing what the
+        /// parameters happened to be on the day.
+        let config: SPRTConfig
+
+        /// Games completed when the test stopped. Less than the tournament's
+        /// final `gamesPlayed` whenever `concurrency > 1`.
+        var gamesAtDecision: Int { wins + draws + losses }
+
+        /// Only an accepted test promotes.
+        var promotes: Bool { decision.promotes }
+    }
+
+    /// Tracks a running sequential test and latches the first final verdict.
+    ///
+    /// **Why latch rather than re-decide at the end.** Recomputing `decide`
+    /// on the tournament's final tally looks equivalent and is not. The extra
+    /// games are a variable number of observations admitted *because* the test
+    /// already stopped, which is exactly the optional-stopping bias the
+    /// calibration assumes away; and a re-decision can land on
+    /// `.continueTesting`, for which there is no action once the tournament is
+    /// over. The stopping rule is the thing that carries the error-rate
+    /// guarantee, so the answer is fixed at the moment it fires.
+    ///
+    /// Holds no tally of its own — the driver already owns one, and a second
+    /// copy is a second source of truth. Callers pass the tally *including*
+    /// the game just completed.
+    ///
+    /// Value type, mutated only by the single task that owns the tournament
+    /// loop, so it needs no lock.
+    struct Monitor: Sendable {
+        let config: SPRTConfig
+        private(set) var verdict: Verdict?
+
+        init(config: SPRTConfig) {
+            self.config = config
+        }
+
+        /// True while the tournament should keep spawning games.
+        var shouldKeepPlaying: Bool { verdict == nil }
+
+        /// Feed one completed game's updated tally. Ignored once a verdict is
+        /// latched, so the drain of in-flight games cannot overwrite it.
+        mutating func observeCompletedGame(wins: Int, draws: Int, losses: Int) {
+            guard verdict == nil else { return }
+            let decision = ArenaSPRT.decide(wins: wins, draws: draws, losses: losses, config: config)
+            guard decision.isFinal else { return }
+            verdict = Verdict(
+                decision: decision,
+                llr: ArenaSPRT.logLikelihoodRatio(wins: wins, draws: draws, losses: losses, config: config),
+                wins: wins,
+                draws: draws,
+                losses: losses,
+                config: config
+            )
+        }
+    }
+
     /// Verdict for a W/D/L tally under `config`.
     ///
     /// Order matters: the minimum-games floor is checked before the boundaries

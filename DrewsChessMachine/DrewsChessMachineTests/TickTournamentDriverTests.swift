@@ -208,6 +208,92 @@ final class TickTournamentDriverTests: XCTestCase {
             "tallies must still be consistent on cancellation"
         )
     }
+
+    // MARK: - SPRT mode
+
+    /// The score-threshold path must be bit-for-bit the behaviour it was.
+    /// Passing no `sprt:` config leaves `sprtVerdict` nil and the fixed
+    /// schedule in charge, which is what every existing call site relies on.
+    func test_noSPRTConfig_behavesAsFixedScheduleAndReportsNoVerdict() async throws {
+        let driver = TickTournamentDriver()
+        let totalGames = 4
+        let stats = try await driver.run(
+            candidateNetwork: Self.networkPair.cand,
+            championNetwork: Self.networkPair.champ,
+            arenaSchedule: .arena,
+            games: totalGames,
+            concurrency: 2
+        )
+        assertStatsConsistent(stats, expectedGames: totalGames)
+        XCTAssertNil(stats.sprtVerdict, "a threshold-mode tournament has no sequential verdict")
+    }
+
+    /// In SPRT mode `games` is ignored — the test owns the sample size — so a
+    /// `games: 0` call must still play. This is the one behaviour that would
+    /// silently do nothing if the old `guard totalGames > 0` short-circuit
+    /// were left in place, and nothing else in the suite would catch it.
+    ///
+    /// The outcome is a coin flip (random-weight networks), so this asserts
+    /// termination and internal consistency, not which way it decided. A tiny
+    /// `maxGames` guarantees the run ends quickly whichever way the evidence
+    /// goes: it will either cross a bound or hit the guard.
+    func test_sprtMode_ignoresGameCountAndAlwaysTerminates() async throws {
+        let driver = TickTournamentDriver()
+        let config = try ArenaSPRT.SPRTConfig(
+            elo0: 0, elo1: 10, alpha: 0.05, beta: 0.05,
+            minGames: 2, maxGames: 4
+        )
+        let stats = try await driver.run(
+            candidateNetwork: Self.networkPair.cand,
+            championNetwork: Self.networkPair.champ,
+            arenaSchedule: .arena,
+            games: 0,
+            sprt: config,
+            concurrency: 2
+        )
+
+        XCTAssertGreaterThan(stats.gamesPlayed, 0, "SPRT mode must not honour games: 0")
+        XCTAssertEqual(
+            stats.playerAWins + stats.playerBWins + stats.draws,
+            stats.gamesPlayed,
+            "tallies must be internally consistent"
+        )
+
+        let verdict = try XCTUnwrap(stats.sprtVerdict, "an uncancelled SPRT run must reach a verdict")
+        XCTAssertTrue(verdict.decision.isFinal)
+        XCTAssertEqual(verdict.config, config)
+
+        // The verdict's tally is the one at the crossing; the tournament's is
+        // that plus whatever drained. Never the other way round.
+        XCTAssertLessThanOrEqual(verdict.gamesAtDecision, stats.gamesPlayed)
+        XCTAssertGreaterThanOrEqual(verdict.gamesAtDecision, config.minGames)
+    }
+
+    /// Cancelling before the test decides leaves no verdict — and a `nil`
+    /// verdict must never be read as "did not promote for statistical
+    /// reasons". It means the run was interrupted.
+    func test_sprtMode_cancelledBeforeDecisionLeavesNoVerdict() async throws {
+        let driver = TickTournamentDriver()
+        let cancelFlag = ManagedAtomicFlag()
+        cancelFlag.signal()
+        let stats = try await driver.run(
+            candidateNetwork: Self.networkPair.cand,
+            championNetwork: Self.networkPair.champ,
+            arenaSchedule: .arena,
+            games: 0,
+            sprt: try ArenaSPRT.SPRTConfig(
+                elo0: 0, elo1: 10, alpha: 0.05, beta: 0.05,
+                minGames: 64, maxGames: 0
+            ),
+            concurrency: 2,
+            isCancelled: { cancelFlag.isSet }
+        )
+        XCTAssertNil(stats.sprtVerdict)
+        XCTAssertEqual(
+            stats.playerAWins + stats.playerBWins + stats.draws,
+            stats.gamesPlayed
+        )
+    }
 }
 
 /// Minimal one-shot signal-flag for the cancellation test. Backed by

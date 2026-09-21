@@ -45,6 +45,33 @@ enum TickTournamentDriverError: LocalizedError {
 /// slot count shrinks as the remaining in-flight games complete.
 /// Driver exits when K reaches 0.
 ///
+/// **SPRT mode.** Passing a `sprt:` config replaces the fixed schedule
+/// with a sequential test: `games` is ignored, initial K is the full
+/// requested concurrency, and slots recycle until the test decides
+/// rather than until a count is exhausted. Everything else — the tick
+/// loop, the partition, colour alternation, slot retirement — is
+/// untouched, because "stop spawning" is the same predicate flip that
+/// exhausting the schedule already produced.
+///
+/// Two consequences worth stating plainly, both of which follow from K
+/// games being in flight at the moment the log-likelihood ratio crosses
+/// a bound:
+///
+///   - **The verdict is latched, not recomputed.** Those in-flight games
+///     finish and are tallied, so `TournamentStats.gamesPlayed` exceeds
+///     `sprtVerdict.gamesAtDecision`. Re-deciding on the final tally
+///     would admit observations the test only saw *because* it had
+///     already stopped — the optional-stopping bias SPRT exists to
+///     remove — so the verdict is fixed when it fires and the drained
+///     games are description, not evidence. Same reason the runaway
+///     guard can be overshot by up to `K − 1` games without that being
+///     a violation.
+///   - **K bounds how early the test can stop.** The test cannot decide
+///     before K games exist, and the remainder drains afterwards, so a
+///     concurrency far above the expected decision point spends most of
+///     the saving the sequential test was meant to buy. Larger `elo1`
+///     (faster decisions) wants lower arena concurrency.
+///
 /// **Cancellation.** Checked at top of each tick body via
 /// `Task.isCancelled || isCancelled?() == true`.
 /// On cancel, the driver finishes the current tick (so we don't
@@ -74,13 +101,17 @@ final class TickTournamentDriver: @unchecked Sendable {
         championNetwork: ChessMPSNetwork,
         arenaSchedule: SamplingSchedule,
         games totalGames: Int,
+        sprt sprtConfig: ArenaSPRT.SPRTConfig? = nil,
         concurrency: Int = 1,
         diversityTracker: GameDiversityTracker? = nil,
         isCancelled: (@Sendable () -> Bool)? = nil,
         onGameCompleted: (@Sendable (Int, Int, Int, Int) -> Void)? = nil,
         onGameRecorded: (@Sendable (TournamentGameRecord) -> Void)? = nil
     ) async throws -> TournamentStats {
-        guard totalGames > 0 else {
+        // In SPRT mode the sequential test owns the sample size, so
+        // `totalGames` is ignored and there is nothing to short-circuit on.
+        // Under the score threshold it is still the whole schedule.
+        guard sprtConfig != nil || totalGames > 0 else {
             return TournamentStats(
                 gamesPlayed: 0,
                 playerAWins: 0, playerBWins: 0, draws: 0,
@@ -89,11 +120,31 @@ final class TickTournamentDriver: @unchecked Sendable {
                 playerADrawsAsWhite: 0, playerADrawsAsBlack: 0
             )
         }
-        let initialK = max(1, min(concurrency, totalGames))
+        // SPRT has no target game count to clamp against, so K is purely the
+        // requested concurrency. Note the consequence: the test cannot decide
+        // before K games have been spawned, and once it does, the in-flight
+        // remainder still drains. A concurrency far above the expected
+        // decision point therefore spends most of the saving the sequential
+        // test was supposed to buy — at `elo1 = 35` (median ~60 games) a
+        // K of 400 plays the whole first wave regardless. Higher `elo1`
+        // wants lower arena concurrency.
+        let initialK = sprtConfig != nil
+            ? max(1, concurrency)
+            : max(1, min(concurrency, totalGames))
         let P = max(1, ProcessInfo.processInfo.activeProcessorCount)
-        SessionLogger.shared.log(
-            "[ARENA-TICK] driver starting, totalGames=\(totalGames) initialK=\(initialK) P=\(P)"
-        )
+        if let sprtConfig {
+            let (lower, upper) = sprtConfig.bounds
+            SessionLogger.shared.log(
+                "[ARENA-TICK] driver starting (SPRT), elo0=\(sprtConfig.elo0) elo1=\(sprtConfig.elo1) "
+                + String(format: "alpha=%.4f beta=%.4f bounds=[%.4f, %.4f] ", sprtConfig.alpha, sprtConfig.beta, lower, upper)
+                + "minGames=\(sprtConfig.minGames) maxGames=\(sprtConfig.maxGames == 0 ? "unbounded" : String(sprtConfig.maxGames)) "
+                + "initialK=\(initialK) P=\(P)"
+            )
+        } else {
+            SessionLogger.shared.log(
+                "[ARENA-TICK] driver starting, totalGames=\(totalGames) initialK=\(initialK) P=\(P)"
+            )
+        }
 
         // Allocate scratches sized to initialK (arena K never grows;
         // it only shrinks as the pool retires). Two encode + two
@@ -144,6 +195,23 @@ final class TickTournamentDriver: @unchecked Sendable {
         var aDrawsAsBlack = 0
         var completed = 0
         var nextGameIndexToSpawn = 0
+        // Owned by this task alone, like the tally accumulators above, so no
+        // lock. Holds no tally of its own — it is fed the driver's.
+        var sprtMonitor = sprtConfig.map { ArenaSPRT.Monitor(config: $0) }
+        // Games completed after the verdict latched, i.e. the in-flight
+        // remainder. Reported so the drain is visible rather than looking
+        // like the test kept playing past its own stopping rule.
+        var gamesDrainedAfterVerdict = 0
+
+        /// Whether a retiring slot should pick up another game.
+        ///
+        /// Under the score threshold this is the original fixed-schedule
+        /// comparison, unchanged. Under SPRT it is "the test has not decided
+        /// yet" — the sequential test, not a count, owns the sample size.
+        func shouldSpawnAnotherGame() -> Bool {
+            if let sprtMonitor { return sprtMonitor.shouldKeepPlaying }
+            return nextGameIndexToSpawn < totalGames
+        }
 
         // Initial slot fan-out. Each slot's ActiveGame is initialized
         // with the right (whiteNetwork, blackNetwork) assignment for
@@ -263,8 +331,30 @@ final class TickTournamentDriver: @unchecked Sendable {
                 onGameRecorded?(record)
                 onGameCompleted?(completed, aWins, bWins, draws)
 
+                // Feed the sequential test the tally that now includes this
+                // game. `bWins` is the champion's wins, which from the
+                // candidate's perspective — the perspective every tally here
+                // is kept in — is the candidate's losses.
+                //
+                // The monitor ignores everything after the first final
+                // decision, so the drain below cannot overwrite the verdict.
+                if sprtMonitor != nil {
+                    let alreadyDecided = sprtMonitor?.verdict != nil
+                    sprtMonitor?.observeCompletedGame(wins: aWins, draws: draws, losses: bWins)
+                    if alreadyDecided {
+                        gamesDrainedAfterVerdict += 1
+                    } else if let verdict = sprtMonitor?.verdict {
+                        SessionLogger.shared.log(
+                            "[ARENA-TICK] SPRT decided \(verdict.decision.rawValue) at game \(verdict.gamesAtDecision) "
+                            + "W/D/L=\(verdict.wins)/\(verdict.draws)/\(verdict.losses) "
+                            + (verdict.llr.map { String(format: "llr=%.4f", $0) } ?? "llr=undefined")
+                            + " — draining \(games.count - 1) in-flight games"
+                        )
+                    }
+                }
+
                 // Recycle slot for next game, or retire it.
-                if nextGameIndexToSpawn < totalGames {
+                if shouldSpawnAnotherGame() {
                     let nextIdx = nextGameIndexToSpawn
                     let candIsWhiteNext = (nextIdx % 2 == 0)
                     // Slot keeps its per-side scratches and per-ply
@@ -298,9 +388,20 @@ final class TickTournamentDriver: @unchecked Sendable {
             }
         }
 
-        SessionLogger.shared.log(
-            "[ARENA-TICK] driver done, completed=\(completed)/\(totalGames)"
-        )
+        if let verdict = sprtMonitor?.verdict {
+            SessionLogger.shared.log(
+                "[ARENA-TICK] driver done (SPRT \(verdict.decision.rawValue)), completed=\(completed), "
+                + "decided at \(verdict.gamesAtDecision), drained \(gamesDrainedAfterVerdict) after the verdict"
+            )
+        } else if sprtConfig != nil {
+            SessionLogger.shared.log(
+                "[ARENA-TICK] driver done (SPRT undecided — cancelled), completed=\(completed)"
+            )
+        } else {
+            SessionLogger.shared.log(
+                "[ARENA-TICK] driver done, completed=\(completed)/\(totalGames)"
+            )
+        }
 
         return TournamentStats(
             gamesPlayed: aWins + bWins + draws,
@@ -312,7 +413,8 @@ final class TickTournamentDriver: @unchecked Sendable {
             playerALossesAsWhite: aLossesAsWhite,
             playerALossesAsBlack: aLossesAsBlack,
             playerADrawsAsWhite: aDrawsAsWhite,
-            playerADrawsAsBlack: aDrawsAsBlack
+            playerADrawsAsBlack: aDrawsAsBlack,
+            sprtVerdict: sprtMonitor?.verdict
         )
     }
 
