@@ -450,3 +450,311 @@ final class ArenaLogFormatterHumanReadableTests: XCTestCase {
         XCTAssertTrue(lines[11].contains("avgDiverge=8.3"))
     }
 }
+
+// MARK: - SPRT reporting
+
+/// The `[ARENA]` block is the only durable record of why an arena decided what
+/// it did, so these tests are mostly about the three non-promoting SPRT
+/// outcomes staying distinguishable from each other and from a threshold-mode
+/// "kept". Collapsing any two of them turns "the guard fired on ambiguous
+/// evidence" into "the candidate was rejected", which is a different claim.
+final class ArenaLogFormatterSPRTTests: XCTestCase {
+
+    private func makeConfig(
+        elo0: Double = 0, elo1: Double = 10,
+        alpha: Double = 0.05, beta: Double = 0.05,
+        minGames: Int = 32, maxGames: Int = 20000
+    ) throws -> ArenaSPRT.SPRTConfig {
+        try ArenaSPRT.SPRTConfig(
+            elo0: elo0, elo1: elo1, alpha: alpha, beta: beta,
+            minGames: minGames, maxGames: maxGames
+        )
+    }
+
+    private func makeRecord(
+        criterion: ArenaPromotionCriterion?,
+        verdict: ArenaSPRT.Verdict?,
+        promoted: Bool = false,
+        gamesPlayed: Int = 60
+    ) -> TournamentRecord {
+        var record = TournamentRecord(
+            finishedAtStep: 5000,
+            gamesPlayed: gamesPlayed,
+            candidateWins: 20, championWins: 10, draws: gamesPlayed - 30,
+            score: ArenaEloStats.score(wins: 20, draws: gamesPlayed - 30, losses: 10),
+            promoted: promoted,
+            promotionKind: promoted ? .automatic : nil,
+            promotedID: promoted ? ModelID(value: "20260420-3-ABCD") : nil,
+            durationSec: 120,
+            candidateWinsAsWhite: 10, candidateWinsAsBlack: 10,
+            candidateLossesAsWhite: 5, candidateLossesAsBlack: 5,
+            candidateDrawsAsWhite: (gamesPlayed - 30) / 2,
+            candidateDrawsAsBlack: (gamesPlayed - 30) - (gamesPlayed - 30) / 2
+        )
+        record.promotionCriterion = criterion
+        record.sprtVerdict = verdict
+        return record
+    }
+
+    private func verdict(
+        _ decision: ArenaSPRT.Decision,
+        llr: Double?,
+        wins: Int = 20, draws: Int = 12, losses: Int = 10,
+        config: ArenaSPRT.SPRTConfig
+    ) -> ArenaSPRT.Verdict {
+        ArenaSPRT.Verdict(
+            decision: decision, llr: llr,
+            wins: wins, draws: draws, losses: losses, config: config
+        )
+    }
+
+    private func makeParameters() -> ArenaLogFormatter.Parameters {
+        ArenaLogFormatter.Parameters(
+            batchSize: 4096, learningRate: 1e-4,
+            promoteThreshold: 0.53, tournamentGames: 400,
+            spStartTau: 1.0, spFloorTau: 0.5, spDecayPerPly: 0.007,
+            arStartTau: 0.6, arFloorTau: 0.2, arDecayPerPly: 0.02,
+            workerCount: 8, buildNumber: 2400
+        )
+    }
+
+    private func makeDiversity() -> ArenaLogFormatter.Diversity {
+        ArenaLogFormatter.Diversity(
+            uniqueGames: 58, gamesInWindow: 60,
+            uniquePercent: 96.7, avgDivergencePly: 6.1
+        )
+    }
+
+    private func humanBlock(_ record: TournamentRecord) -> [String] {
+        ArenaLogFormatter.formatHumanReadable(
+            record: record, index: 1,
+            candidateID: "C", championID: "M", trainerID: "T",
+            parameters: makeParameters(), diversity: makeDiversity()
+        )
+    }
+
+    // MARK: Criterion token
+
+    /// Legacy records carry no criterion. They all predate SPRT, so they ran
+    /// the threshold — reporting them as "unknown" would be less accurate,
+    /// not more.
+    func testLegacyRecordWithoutCriterionReportsScore() {
+        XCTAssertEqual(
+            ArenaLogFormatter.criterionToken(makeRecord(criterion: nil, verdict: nil)),
+            "score"
+        )
+    }
+
+    func testCriterionTokenAppearsInBothOutputs() throws {
+        let scoreRecord = makeRecord(criterion: .scoreThreshold, verdict: nil)
+        XCTAssertTrue(
+            humanBlock(scoreRecord).contains { $0.contains("crit=score") },
+            "the params line must name the criterion"
+        )
+        XCTAssertTrue(
+            ArenaLogFormatter.formatKVLine(
+                record: scoreRecord, index: 1,
+                candidateID: "C", championID: "M", trainerID: "T", buildNumber: 2400
+            ).contains("crit=score")
+        )
+
+        let config = try makeConfig()
+        let sprtRecord = makeRecord(
+            criterion: .sprt,
+            verdict: verdict(.accept, llr: 3.21, config: config),
+            promoted: true
+        )
+        XCTAssertTrue(humanBlock(sprtRecord).contains { $0.contains("crit=sprt") })
+        XCTAssertTrue(
+            ArenaLogFormatter.formatKVLine(
+                record: sprtRecord, index: 1,
+                candidateID: "C", championID: "M", trainerID: "T", buildNumber: 2400
+            ).contains("crit=sprt")
+        )
+    }
+
+    // MARK: Threshold mode is untouched
+
+    func testThresholdModeEmitsNoSPRTLinesOrFields() {
+        let record = makeRecord(criterion: .scoreThreshold, verdict: nil)
+        XCTAssertTrue(ArenaLogFormatter.formatSPRTBlock(record: record).isEmpty)
+        XCTAssertEqual(ArenaLogFormatter.formatSPRTKV(record: record), "")
+
+        let kv = ArenaLogFormatter.formatKVLine(
+            record: record, index: 1,
+            candidateID: "C", championID: "M", trainerID: "T", buildNumber: 2400
+        )
+        XCTAssertFalse(kv.contains("sprt"), "no sprt_* keys in threshold mode: \(kv)")
+        XCTAssertEqual(ArenaLogFormatter.formatVerdict(record: record), "kept")
+    }
+
+    func testThresholdModeStillPrintsTheScheduledDenominator() {
+        let lines = humanBlock(makeRecord(criterion: .scoreThreshold, verdict: nil))
+        XCTAssertTrue(
+            lines.contains { $0.contains("Games: 60/400") },
+            "threshold mode reports games against the schedule: \(lines)"
+        )
+    }
+
+    /// Under SPRT there was no schedule, so printing "60/400" would report a
+    /// denominator the run never had.
+    func testSPRTModeDoesNotInventAScheduledDenominator() throws {
+        let record = makeRecord(
+            criterion: .sprt,
+            verdict: verdict(.reject, llr: -3.5, config: try makeConfig())
+        )
+        let lines = humanBlock(record)
+        XCTAssertFalse(lines.contains { $0.contains("Games: 60/400") })
+        XCTAssertTrue(lines.contains { $0.contains("Games: 60 (SPRT") })
+    }
+
+    // MARK: The three non-promoting outcomes stay distinct
+
+    func testRejectInconclusiveAndUndecidedRenderDifferently() throws {
+        let config = try makeConfig()
+        let rejected = makeRecord(
+            criterion: .sprt, verdict: verdict(.reject, llr: -3.5, config: config))
+        let inconclusive = makeRecord(
+            criterion: .sprt, verdict: verdict(.inconclusive, llr: 0.4, config: config))
+        let undecided = makeRecord(criterion: .sprt, verdict: nil)
+
+        let verdicts = [rejected, inconclusive, undecided].map(ArenaLogFormatter.formatVerdict)
+        XCTAssertEqual(Set(verdicts).count, 3, "all three must be distinguishable: \(verdicts)")
+        for line in verdicts {
+            XCTAssertFalse(line.isEmpty)
+            XCTAssertTrue(line.hasPrefix("kept"), "none of these promote: \(line)")
+        }
+
+        // And specifically: an inconclusive run must not read as a rejection.
+        XCTAssertTrue(ArenaLogFormatter.formatVerdict(record: inconclusive).contains("inconclusive"))
+        XCTAssertFalse(ArenaLogFormatter.formatVerdict(record: inconclusive).contains("reject"))
+    }
+
+    func testInconclusiveBlockSaysItIsNotARejection() throws {
+        let record = makeRecord(
+            criterion: .sprt,
+            verdict: verdict(.inconclusive, llr: 0.4, config: try makeConfig())
+        )
+        let block = ArenaLogFormatter.formatSPRTBlock(record: record)
+        XCTAssertTrue(
+            block.contains { $0.contains("NOT a rejection") },
+            "the guard's meaning must be spelled out, not inferred: \(block)"
+        )
+    }
+
+    func testUndecidedSPRTRunSaysSoRatherThanShowingAnEmptyBlock() {
+        let block = ArenaLogFormatter.formatSPRTBlock(
+            record: makeRecord(criterion: .sprt, verdict: nil))
+        XCTAssertEqual(block.count, 1)
+        XCTAssertTrue(block[0].contains("no verdict"))
+        XCTAssertEqual(ArenaLogFormatter.formatSPRTKV(
+            record: makeRecord(criterion: .sprt, verdict: nil)), "sprt=none ")
+    }
+
+    // MARK: The drain is reported, not hidden
+
+    /// At `concurrency > 1` the verdict's tally and the tournament's differ.
+    /// The block has to say which one carried the decision.
+    func testDrainedGamesAreCalledOutWhenTheTalliesDiffer() throws {
+        let config = try makeConfig()
+        let record = makeRecord(
+            criterion: .sprt,
+            verdict: verdict(.accept, llr: 3.1, wins: 20, draws: 12, losses: 10, config: config),
+            promoted: true,
+            gamesPlayed: 60
+        )
+        let block = ArenaLogFormatter.formatSPRTBlock(record: record)
+        XCTAssertTrue(block.contains { $0.contains("decided at game 42") })
+        XCTAssertTrue(
+            block.contains { $0.contains("18 further game(s) drained") },
+            "60 played − 42 at decision = 18: \(block)"
+        )
+        XCTAssertTrue(block.contains { $0.contains("not evidence") })
+    }
+
+    func testNoDrainWordingWhenTheTalliesAgree() throws {
+        let config = try makeConfig()
+        let record = makeRecord(
+            criterion: .sprt,
+            verdict: verdict(.accept, llr: 3.1, wins: 20, draws: 12, losses: 10, config: config),
+            promoted: true,
+            gamesPlayed: 42
+        )
+        let block = ArenaLogFormatter.formatSPRTBlock(record: record)
+        XCTAssertTrue(block.contains { $0.contains("decided at game 42") })
+        XCTAssertFalse(block.contains { $0.contains("drained") })
+    }
+
+    // MARK: Hypotheses travel with the verdict
+
+    func testBlockCarriesTheHypothesesSoTheLLRIsInterpretable() throws {
+        let config = try makeConfig(elo0: -5, elo1: 25, alpha: 0.01, beta: 0.2, minGames: 64, maxGames: 0)
+        let record = makeRecord(
+            criterion: .sprt, verdict: verdict(.accept, llr: 4.5, config: config), promoted: true)
+        let block = ArenaLogFormatter.formatSPRTBlock(record: record)
+        let joined = block.joined(separator: "\n")
+
+        XCTAssertTrue(joined.contains("H0: elo=-5"))
+        XCTAssertTrue(joined.contains("H1: elo=+25"))
+        XCTAssertTrue(joined.contains("alpha=0.0100"))
+        XCTAssertTrue(joined.contains("beta=0.2000"))
+        XCTAssertTrue(joined.contains("minGames=64"))
+        XCTAssertTrue(joined.contains("maxGames=unbounded"), "0 must render as unbounded, not 0")
+        XCTAssertTrue(joined.contains("bounds="), "the LLR is meaningless without its bounds")
+    }
+
+    func testKVCarriesEveryConfigFieldAndTheDecisionTally() throws {
+        let config = try makeConfig(elo0: -5, elo1: 25, alpha: 0.01, beta: 0.2, minGames: 64, maxGames: 500)
+        let record = makeRecord(
+            criterion: .sprt,
+            verdict: verdict(.accept, llr: 4.5, wins: 20, draws: 12, losses: 10, config: config),
+            promoted: true
+        )
+        let kv = ArenaLogFormatter.formatKVLine(
+            record: record, index: 1,
+            candidateID: "C", championID: "M", trainerID: "T", buildNumber: 2400
+        )
+        for expected in [
+            "sprt=accept", "sprt_llr=4.5000",
+            "sprt_games=42", "sprt_w=20", "sprt_d=12", "sprt_l=10",
+            "sprt_elo0=-5.0000", "sprt_elo1=25.0000",
+            "sprt_alpha=0.0100", "sprt_beta=0.2000",
+            "sprt_min_games=64", "sprt_max_games=500",
+            "sprt_lower=", "sprt_upper="
+        ] {
+            XCTAssertTrue(kv.contains(expected), "missing \(expected) in: \(kv)")
+        }
+        XCTAssertFalse(kv.contains("\n"), "the KV line must stay one line")
+    }
+
+    /// A guard-fired verdict on an unscoreable record has no ratio. The KV
+    /// line renders `nan` rather than omitting the key, so a parser sees the
+    /// same column count on every SPRT row.
+    func testUndefinedLLRRendersAsNanInKVAndIsNamedInTheBlock() throws {
+        let config = try makeConfig(maxGames: 64)
+        let record = makeRecord(
+            criterion: .sprt,
+            verdict: verdict(.inconclusive, llr: nil, wins: 64, draws: 0, losses: 0, config: config)
+        )
+        let kv = ArenaLogFormatter.formatKVLine(
+            record: record, index: 1,
+            candidateID: "C", championID: "M", trainerID: "T", buildNumber: 2400
+        )
+        XCTAssertTrue(kv.contains("sprt_llr=nan"))
+        XCTAssertTrue(
+            ArenaLogFormatter.formatSPRTBlock(record: record)
+                .contains { $0.contains("zero-variance") },
+            "the reason the ratio is undefined must be stated"
+        )
+    }
+
+    // MARK: Elo formatting
+
+    func testEloHypothesesRenderWholeWhenWholeAndSignedAlways() {
+        XCTAssertEqual(ArenaLogFormatter.formatElo(0), "+0")
+        XCTAssertEqual(ArenaLogFormatter.formatElo(10), "+10")
+        XCTAssertEqual(ArenaLogFormatter.formatElo(-5), "-5")
+        XCTAssertEqual(ArenaLogFormatter.formatElo(2.5), "+2.5")
+        XCTAssertEqual(ArenaLogFormatter.formatElo(-2.5), "-2.5")
+    }
+}

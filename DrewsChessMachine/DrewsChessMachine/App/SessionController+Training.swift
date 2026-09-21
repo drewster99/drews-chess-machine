@@ -276,6 +276,7 @@ extension SessionController {
                         "[RESUME-PARAM] batch_stats_interval: saved=nil applied=\(TrainingParameters.shared.batchStatsInterval) (defaulted)"
                     )
                 }
+                restoreArenaPromotionCriterion(from: rs)
                 // Range-validate before assigning: the value is written
                 // straight onto `TrainingParameters.shared` and then feeds
                 // `PeriodicSaveController(interval:)`, whose precondition is
@@ -802,6 +803,22 @@ extension SessionController {
                     candidateDrawsAsBlack: entry.candidateDrawsAsBlack ?? 0
                 )
                 rec.extendedSummary = entry.extendedSummary
+                // Every session file written before SPRT existed ran the
+                // score threshold, so a missing token is `.scoreThreshold`
+                // rather than "unknown". An unrecognised token is a forward-
+                // versioned or hand-edited file: leave the criterion nil so
+                // the history row says "unknown" instead of asserting a rule
+                // the arena may not have used.
+                if let token = entry.promotionCriterion {
+                    // Unrecognised token = forward-versioned or hand-edited
+                    // file. Leave it nil so the row reads "unknown" rather
+                    // than asserting a rule the arena may not have used.
+                    rec.promotionCriterion = ArenaPromotionCriterion.allCases
+                        .first { $0.logToken == token }
+                } else {
+                    rec.promotionCriterion = .scoreThreshold
+                }
+                rec.sprtVerdict = entry.sprt?.verdict()
                 return rec
             }
         } else {
@@ -3027,6 +3044,88 @@ extension SessionController {
                 "[RESUME-PROBE] No saved tactical probe history (older session) — starting empty"
             )
         }
+    }
+
+
+    // MARK: - Arena promotion criterion restore
+
+    /// Writes a resumed session's arena promotion criterion and SPRT
+    /// hypotheses back onto `TrainingParameters.shared`, logging both the
+    /// restored and the defaulted branch.
+    ///
+    /// The seven values are restored as a **set**, and an incomplete set is
+    /// refused rather than part-applied. A session that stored `criterion =
+    /// sprt` but is missing (say) `elo1` would otherwise resume running a
+    /// sequential test against whatever hypotheses happen to be in
+    /// `UserDefaults` today — a different experiment under the same session's
+    /// name, with nothing in the log to say so.
+    ///
+    /// The criterion is likewise refused rather than guessed when the stored
+    /// token is unrecognised, which is what a forward-versioned or
+    /// hand-edited file looks like.
+    func restoreArenaPromotionCriterion(from rs: SessionCheckpointState) {
+        let p = TrainingParameters.shared
+
+        guard let token = rs.arenaPromotionCriterion else {
+            SessionLogger.shared.log(
+                "[RESUME-PARAM] arena_promotion_criterion: saved=nil applied=\(p.arenaPromotionCriterion.logToken) "
+                + "(session predates the parameter; score threshold preserved)"
+            )
+            return
+        }
+
+        guard let criterion = ArenaPromotionCriterion.allCases.first(where: { $0.logToken == token }) else {
+            SessionLogger.shared.log(
+                "[RESUME-PARAM] arena_promotion_criterion: saved=\"\(token)\" is not a known criterion; "
+                + "keeping \(p.arenaPromotionCriterion.logToken) (not guessed)"
+            )
+            return
+        }
+
+        guard let elo0 = rs.arenaSPRTElo0,
+              let elo1 = rs.arenaSPRTElo1,
+              let alpha = rs.arenaSPRTAlpha,
+              let beta = rs.arenaSPRTBeta,
+              let minGames = rs.arenaSPRTMinGames,
+              let maxGames = rs.arenaSPRTMaxGames else {
+            SessionLogger.shared.log(
+                "[RESUME-PARAM] arena_promotion_criterion: saved=\(token) but the SPRT block is incomplete; "
+                + "keeping \(p.arenaPromotionCriterion.logToken) and today's hypotheses rather than "
+                + "running a half-restored test"
+            )
+            return
+        }
+
+        // Validate the restored set the same way a fresh arena start would,
+        // so a hand-edited file cannot install hypotheses that throw later at
+        // the point where an arena is already underway.
+        do {
+            _ = try ArenaSPRT.SPRTConfig(
+                elo0: elo0, elo1: elo1, alpha: alpha, beta: beta,
+                minGames: minGames, maxGames: maxGames
+            )
+        } catch {
+            SessionLogger.shared.log(
+                "[RESUME-PARAM] arena_promotion_criterion: saved SPRT block is invalid (\(error)); "
+                + "keeping \(p.arenaPromotionCriterion.logToken) and today's hypotheses"
+            )
+            return
+        }
+
+        SessionLogger.shared.log(
+            "[RESUME-PARAM] arena_promotion_criterion: \(p.arenaPromotionCriterion.logToken) -> \(criterion.logToken) (from session)"
+        )
+        SessionLogger.shared.log(
+            "[RESUME-PARAM] arena_sprt: elo0=\(elo0) elo1=\(elo1) alpha=\(alpha) beta=\(beta) "
+            + "min_games=\(minGames) max_games=\(maxGames) (from session)"
+        )
+        p.arenaPromotionCriterion = criterion
+        p.arenaSPRTElo0 = elo0
+        p.arenaSPRTElo1 = elo1
+        p.arenaSPRTAlpha = alpha
+        p.arenaSPRTBeta = beta
+        p.arenaSPRTMinGames = minGames
+        p.arenaSPRTMaxGames = maxGames
     }
 
 }

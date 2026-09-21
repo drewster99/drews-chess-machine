@@ -776,7 +776,9 @@ extension SessionController {
                 finishedAtUnix: record.finishedAt.map { Int64($0.timeIntervalSince1970) },
                 candidateID: record.candidateID?.description,
                 championID: record.championID?.description,
-                extendedSummary: record.extendedSummary
+                extendedSummary: record.extendedSummary,
+                promotionCriterion: record.promotionCriterion?.logToken,
+                sprt: record.sprtVerdict.map(ArenaSPRTVerdictCodable.init)
             )
         }
         let lr = trainer?.learningRate ?? Self.trainerLearningRateDefault
@@ -842,6 +844,13 @@ extension SessionController {
             batchStatsInterval: params.batchStatsInterval,
             periodicAutosaveIntervalSec: params.periodicAutosaveIntervalSec,
             maxPeriodicAutosavesKept: params.maxPeriodicAutosavesKept,
+            arenaPromotionCriterion: params.arenaPromotionCriterion.logToken,
+            arenaSPRTElo0: params.arenaSPRTElo0,
+            arenaSPRTElo1: params.arenaSPRTElo1,
+            arenaSPRTAlpha: params.arenaSPRTAlpha,
+            arenaSPRTBeta: params.arenaSPRTBeta,
+            arenaSPRTMinGames: params.arenaSPRTMinGames,
+            arenaSPRTMaxGames: params.arenaSPRTMaxGames,
             recordingCorpusID: activeRecordingCorpusID,
             recordSelfPlayGames: params.recordSelfPlayGames,
             lrMomentumCycle: params.lrMomentumCycle,

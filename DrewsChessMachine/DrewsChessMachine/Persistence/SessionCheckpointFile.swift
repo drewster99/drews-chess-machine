@@ -110,6 +110,81 @@ struct ArenaHistoryEntryCodable: Codable, Equatable {
     /// is itself Codable, so the persisted shape is just a nested
     /// object inside this entry.
     var extendedSummary: ArenaExtendedSummary?
+    /// Which rule decided this arena, as `ArenaPromotionCriterion.logToken`
+    /// (`"score"` / `"sprt"`). Optional for back-compat: every session file
+    /// written before SPRT existed ran the score threshold, so a missing
+    /// value loads as `.scoreThreshold` rather than as "unknown".
+    ///
+    /// Stored as the token rather than the raw `Int` so a persisted history
+    /// stays readable and survives any future renumbering of the enum.
+    var promotionCriterion: String?
+    /// The sequential test's latched verdict. Nil under the score threshold,
+    /// and nil for an SPRT arena that was cut short before deciding.
+    var sprt: ArenaSPRTVerdictCodable?
+}
+
+/// Codable mirror of `ArenaSPRT.Verdict`, including the configuration it was
+/// decided under.
+///
+/// The config travels with the verdict deliberately. A persisted arena
+/// history spans parameter edits, so "accepted at LLR +3.1" is uninterpretable
+/// without knowing which hypotheses and error rates produced that number —
+/// and re-reading today's `TrainingParameters` to fill them in would silently
+/// attribute the current settings to an old run.
+struct ArenaSPRTVerdictCodable: Codable, Equatable {
+    /// `ArenaSPRT.Decision.rawValue` — always a final one.
+    let decision: String
+    /// The ratio at the crossing. Nil when the verdict came from the runaway
+    /// guard on a record the GSPRT could not score (see "Zero-variance
+    /// records" in `documentation/arena-sprt.md`).
+    let llr: Double?
+    let wins: Int
+    let draws: Int
+    let losses: Int
+    let elo0: Double
+    let elo1: Double
+    let alpha: Double
+    let beta: Double
+    let minGames: Int
+    let maxGames: Int
+
+    init(_ verdict: ArenaSPRT.Verdict) {
+        self.decision = verdict.decision.rawValue
+        self.llr = verdict.llr
+        self.wins = verdict.wins
+        self.draws = verdict.draws
+        self.losses = verdict.losses
+        self.elo0 = verdict.config.elo0
+        self.elo1 = verdict.config.elo1
+        self.alpha = verdict.config.alpha
+        self.beta = verdict.config.beta
+        self.minGames = verdict.config.minGames
+        self.maxGames = verdict.config.maxGames
+    }
+
+    /// Rebuilds the in-memory verdict.
+    ///
+    /// Returns nil rather than repairing a file whose stored decision or
+    /// config no longer forms a valid test — a hand-edited or
+    /// forward-versioned session should lose the verdict and say so, not
+    /// silently acquire a different one. `.continueTesting` is rejected for
+    /// the same reason: it is not a state a verdict can be in.
+    func verdict() -> ArenaSPRT.Verdict? {
+        guard let decoded = ArenaSPRT.Decision(rawValue: decision), decoded.isFinal,
+              let config = try? ArenaSPRT.SPRTConfig(
+                  elo0: elo0, elo1: elo1, alpha: alpha, beta: beta,
+                  minGames: minGames, maxGames: maxGames
+              )
+        else { return nil }
+        return ArenaSPRT.Verdict(
+            decision: decoded,
+            llr: llr,
+            wins: wins,
+            draws: draws,
+            losses: losses,
+            config: config
+        )
+    }
 }
 
 /// Network-architecture snapshot captured at save time so the
@@ -392,6 +467,23 @@ struct SessionCheckpointState: Codable, Equatable {
     /// Optional for back-compat; absent → loader falls through to the current
     /// value.
     var maxPeriodicAutosavesKept: Int?
+    // --- Arena promotion criterion ---
+    //
+    // All Optional for back-compat; absent → the loader falls through to the
+    // current `TrainingParameters` value. They are saved together because a
+    // sequential test is only interpretable as a set: resuming a session with
+    // the criterion restored but the hypotheses defaulted would run a
+    // different experiment under the same name.
+    /// `ArenaPromotionCriterion.logToken` in effect at save time. Stored as
+    /// the token, not the raw `Int`, so the file stays readable and survives
+    /// any future renumbering.
+    var arenaPromotionCriterion: String?
+    var arenaSPRTElo0: Double?
+    var arenaSPRTElo1: Double?
+    var arenaSPRTAlpha: Double?
+    var arenaSPRTBeta: Double?
+    var arenaSPRTMinGames: Int?
+    var arenaSPRTMaxGames: Int?
     /// Id of the standalone game corpus this run recorded self-play games into
     /// (under Corpora/), or nil when recording was off. Provenance only — the
     /// corpus lives outside the session folder. Optional + defaulted for

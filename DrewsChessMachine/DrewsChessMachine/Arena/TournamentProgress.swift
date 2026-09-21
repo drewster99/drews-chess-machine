@@ -7,6 +7,12 @@ import Foundation
 /// any chess color. Colors alternate every game.
 struct TournamentProgress: Sendable {
     let currentGame: Int
+    /// Scheduled game count, or **0 meaning "no fixed schedule"** — which is
+    /// what an arena running the SPRT promotion criterion has, since the
+    /// sequential test decides its own sample size. Readers must not render a
+    /// `currentGame / totalGames` fraction without checking for it; a
+    /// denominator of 0, or a substituted one borrowed from the
+    /// score-threshold parameter, both misreport the run.
     let totalGames: Int
     let candidateWins: Int
     let championWins: Int

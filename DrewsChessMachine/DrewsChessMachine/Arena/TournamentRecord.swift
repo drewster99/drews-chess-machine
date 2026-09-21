@@ -61,6 +61,24 @@ struct TournamentRecord: Sendable, Identifiable {
     let candidateDrawsAsWhite: Int
     let candidateDrawsAsBlack: Int
 
+    /// Which rule decided this arena. `nil` on records loaded from
+    /// session files written before SPRT existed — read as
+    /// `.scoreThreshold`, which is what those arenas actually ran.
+    var promotionCriterion: ArenaPromotionCriterion? = nil
+
+    /// The sequential test's latched verdict, when this arena ran under
+    /// the SPRT criterion. Always `nil` under the score threshold.
+    ///
+    /// `nil` while `promotionCriterion == .sprt` means the run was
+    /// cancelled or aborted before the test decided — which is a
+    /// different thing from a rejection, and must not be rendered as one.
+    ///
+    /// `sprtVerdict?.gamesAtDecision` is generally **less** than
+    /// `gamesPlayed`: the games still in flight when the ratio crossed its
+    /// bound were finished and tallied, but they are not evidence. See
+    /// `ArenaSPRT.Monitor`.
+    var sprtVerdict: ArenaSPRT.Verdict? = nil
+
     /// Post-arena breakdown of W/D/L by game length and the
     /// candidate value scalar + arena-style score by absolute ply
     /// and game progress. `nil` in two cases:

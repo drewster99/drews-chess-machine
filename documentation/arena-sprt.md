@@ -1,10 +1,12 @@
 # Arena promotion: SPRT mode — design
 
-Status: **phase 1 implemented; phases 2–5 outstanding.** Written 2026-09-20.
+Status: **phases 1–4 implemented; phase 5 (UI) outstanding.** Written 2026-09-20.
 
-Phase 1 (`Arena/ArenaSPRT.swift` + `ArenaSPRTTests.swift`) landed in commit
-`703dc77`. Everything below the "Where the changes land" heading still describes
-work to do, except item 2, which is now a description of shipped code.
+Phases 1–4 have landed (`703dc77`, `26a747e`, `f21ff44`, and this one). SPRT is
+selectable only by editing `parameters.json` or `UserDefaults` until phase 5
+adds the picker; with the criterion left at its default the arena behaves
+exactly as before. Items 1–6 and 8 under "Where the changes land" now describe
+shipped code; item 7 is the remaining work.
 
 ## Goal
 
@@ -352,6 +354,19 @@ too close together rather than a normal outcome.
    `elo=/elo_lo=/elo_hi=` fields stay: they remain the right descriptive
    summary regardless of which criterion decided.
 
+   **Shipped wider than planned**, because three non-promoting SPRT outcomes
+   have to stay distinguishable and a bare `kept` collapses them:
+   `formatVerdict` now renders `kept (SPRT reject)`, `kept (SPRT inconclusive
+   — guard, not a rejection)` and `kept (SPRT undecided — run ended early)`.
+   A multi-line `formatSPRTBlock` carries the decision, the ratio, the
+   boundaries, the full hypothesis set, and — when they differ — both the
+   tally at the crossing and the count of games drained after it. The KV line
+   gains `crit=` plus a `sprt_*` group including every config field, so a
+   persisted LLR stays interpretable without knowing what the parameters were
+   that day; `sprt=none` marks an SPRT run that never decided, which `crit=`
+   alone cannot express. Threshold-mode output is unchanged apart from
+   `crit=score`.
+
 7. **`App/UpperContentView/ArenaSettingsPopover.swift` +
    `ArenaSettingsPopoverModel.swift`** — a `Picker` bound to the criterion, and
    the four SPRT fields `.disabled(criterion != .sprt)`. The popover is
@@ -417,14 +432,21 @@ Existing suites to extend:
 
 1. ~~`ArenaSPRT.swift` + its tests, including calibration. No wiring. Fully
    verifiable in isolation.~~ **Done** — `703dc77`, 24 tests.
-2. Parameters + registry + validation, with tests.
-3. Driver early-stop, behind an optional config, with tests proving the
-   no-config path is unchanged.
-4. Gate branch in `SessionController+Arena`, record, log formatter.
-5. UI: picker + conditional enabling.
+2. ~~Parameters + registry + validation, with tests.~~ **Done** — `26a747e`.
+   Registry 62 → 69. Also fixed `testZeroMaxGamesMeansUnbounded`, which had
+   been committed red in phase 1.
+3. ~~Driver early-stop, behind an optional config, with tests proving the
+   no-config path is unchanged.~~ **Done** — `f21ff44`. Added
+   `ArenaSPRT.Monitor` / `Verdict` for the latching, which this plan had not
+   anticipated; found the zero-variance degeneracy above.
+4. ~~Gate branch in `SessionController+Arena`, record, log formatter.~~
+   **Done.** Also covered persistence (item 8) and the busy label, which
+   needed to stop printing `game 37/400` for a run that had no schedule.
+5. UI: picker + conditional enabling. **Outstanding.**
 
-Each phase builds and passes the full suite before the next. Phase 1 is where
-the risk is; phases 2–5 are plumbing.
+Phase 1 was where the risk was; the rest is plumbing. Note that phases 2–4
+were each built but the full suite was run only once, after phase 2 — the
+accumulated test code from phases 3 and 4 still needs a run.
 
 ## Open questions
 

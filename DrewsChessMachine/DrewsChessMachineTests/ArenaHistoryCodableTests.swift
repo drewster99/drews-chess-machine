@@ -289,3 +289,182 @@ final class ArenaHistoryEntryCodableRoundTripTests: XCTestCase {
         XCTAssertEqual(decoded, zeroed)
     }
 }
+
+// MARK: - SPRT verdict persistence
+
+/// Persisting a sequential test's verdict is not just persisting a decision:
+/// an LLR of +3.1 says nothing without the hypotheses and error rates that
+/// produced it, and those can be edited between the arena and the resume.
+/// These tests pin that the config travels with the verdict, that a session
+/// written before SPRT existed still loads, and that a file whose stored
+/// config no longer forms a valid test loses the verdict rather than
+/// acquiring a different one.
+final class ArenaSPRTVerdictCodableTests: XCTestCase {
+
+    private func makeConfig(
+        elo0: Double = -5, elo1: Double = 25,
+        alpha: Double = 0.01, beta: Double = 0.2,
+        minGames: Int = 64, maxGames: Int = 500
+    ) throws -> ArenaSPRT.SPRTConfig {
+        try ArenaSPRT.SPRTConfig(
+            elo0: elo0, elo1: elo1, alpha: alpha, beta: beta,
+            minGames: minGames, maxGames: maxGames
+        )
+    }
+
+    private func makeVerdict(
+        _ decision: ArenaSPRT.Decision = .accept,
+        llr: Double? = 4.5
+    ) throws -> ArenaSPRT.Verdict {
+        ArenaSPRT.Verdict(
+            decision: decision, llr: llr,
+            wins: 40, draws: 18, losses: 12,
+            config: try makeConfig()
+        )
+    }
+
+    func testVerdictRoundTripsIncludingItsHypotheses() throws {
+        let original = try makeVerdict()
+        let data = try JSONEncoder().encode(ArenaSPRTVerdictCodable(original))
+        let decoded = try JSONDecoder().decode(ArenaSPRTVerdictCodable.self, from: data)
+        XCTAssertEqual(decoded.verdict(), original)
+    }
+
+    func testEveryFinalDecisionRoundTrips() throws {
+        for decision in [ArenaSPRT.Decision.accept, .reject, .inconclusive] {
+            let original = try makeVerdict(decision)
+            let decoded = ArenaSPRTVerdictCodable(original).verdict()
+            XCTAssertEqual(decoded?.decision, decision)
+        }
+    }
+
+    /// A guard-fired verdict on an unscoreable record has no ratio, and `nil`
+    /// has to survive as `nil` — coercing it to 0.0 would read as "the
+    /// evidence was exactly balanced", which is a claim the run never made.
+    func testNilLLRSurvivesRatherThanBecomingZero() throws {
+        let decoded = ArenaSPRTVerdictCodable(try makeVerdict(.inconclusive, llr: nil)).verdict()
+        XCTAssertNotNil(decoded)
+        XCTAssertNil(decoded?.llr)
+    }
+
+    /// `.continueTesting` is not a state a verdict can be in. A file claiming
+    /// one is corrupt, and must lose the verdict rather than have it repaired
+    /// into a decision the arena never reached.
+    func testNonFinalStoredDecisionIsRefused() throws {
+        var json = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(ArenaSPRTVerdictCodable(try makeVerdict()))
+        ) as! [String: Any]
+        json["decision"] = "continueTesting"
+        let decoded = try JSONDecoder().decode(
+            ArenaSPRTVerdictCodable.self,
+            from: try JSONSerialization.data(withJSONObject: json)
+        )
+        XCTAssertNil(decoded.verdict())
+    }
+
+    func testUnknownStoredDecisionIsRefused() throws {
+        var json = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(ArenaSPRTVerdictCodable(try makeVerdict()))
+        ) as! [String: Any]
+        json["decision"] = "somethingFromAFutureBuild"
+        let decoded = try JSONDecoder().decode(
+            ArenaSPRTVerdictCodable.self,
+            from: try JSONSerialization.data(withJSONObject: json)
+        )
+        XCTAssertNil(decoded.verdict())
+    }
+
+    /// A hand-edited file can hold a config that no longer forms a valid test.
+    /// Repairing it would silently reinterpret the stored LLR against
+    /// different hypotheses than the ones that produced it.
+    func testInvalidStoredConfigIsRefusedRatherThanRepaired() throws {
+        var json = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(ArenaSPRTVerdictCodable(try makeVerdict()))
+        ) as! [String: Any]
+        json["elo1"] = -99.0   // now below elo0, so the hypotheses are inverted
+        let decoded = try JSONDecoder().decode(
+            ArenaSPRTVerdictCodable.self,
+            from: try JSONSerialization.data(withJSONObject: json)
+        )
+        XCTAssertNil(decoded.verdict())
+    }
+}
+
+// MARK: - Criterion on the history entry
+
+final class ArenaHistoryCriterionCodableTests: XCTestCase {
+
+    private func makeEntry(
+        criterion: String?,
+        sprt: ArenaSPRTVerdictCodable? = nil
+    ) -> ArenaHistoryEntryCodable {
+        ArenaHistoryEntryCodable(
+            finishedAtStep: 5000,
+            candidateWins: 40, championWins: 12, draws: 18,
+            score: 0.7,
+            promoted: false,
+            promotedID: nil,
+            durationSec: 120,
+            gamesPlayed: 70,
+            promotionKind: nil,
+            promotionCriterion: criterion,
+            sprt: sprt
+        )
+    }
+
+    func testEntryWithSPRTRoundTrips() throws {
+        let config = try ArenaSPRT.SPRTConfig(
+            elo0: 0, elo1: 10, alpha: 0.05, beta: 0.05, minGames: 32, maxGames: 20000)
+        let verdict = ArenaSPRT.Verdict(
+            decision: .reject, llr: -3.2, wins: 10, draws: 40, losses: 20, config: config)
+        let original = makeEntry(criterion: "sprt", sprt: ArenaSPRTVerdictCodable(verdict))
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(ArenaHistoryEntryCodable.self, from: data)
+        XCTAssertEqual(decoded, original)
+        XCTAssertEqual(decoded.promotionCriterion, "sprt")
+        XCTAssertEqual(decoded.sprt?.verdict(), verdict)
+    }
+
+    /// Every session file written before SPRT existed carries neither field.
+    /// They must still decode, with both absent rather than defaulted into
+    /// something the arena did not do.
+    func testLegacyEntryWithoutCriterionOrSPRTStillDecodes() throws {
+        let legacy = """
+        {
+          "finishedAtStep": 5000,
+          "candidateWins": 40,
+          "championWins": 12,
+          "draws": 18,
+          "score": 0.7,
+          "promoted": false,
+          "durationSec": 120,
+          "gamesPlayed": 70
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(ArenaHistoryEntryCodable.self, from: legacy)
+        XCTAssertNil(decoded.promotionCriterion)
+        XCTAssertNil(decoded.sprt)
+        XCTAssertEqual(decoded.gamesPlayed, 70)
+    }
+
+    /// A threshold-mode arena stores its criterion but no verdict — that pair
+    /// is meaningful and must not be confused with the legacy shape above.
+    func testThresholdEntryStoresCriterionWithoutAVerdict() throws {
+        let original = makeEntry(criterion: "score")
+        let decoded = try JSONDecoder().decode(
+            ArenaHistoryEntryCodable.self, from: try JSONEncoder().encode(original))
+        XCTAssertEqual(decoded.promotionCriterion, "score")
+        XCTAssertNil(decoded.sprt)
+    }
+
+    /// The stored token is the criterion's `logToken`, so the two must agree
+    /// or a saved history will not load back as the rule that produced it.
+    func testStoredTokensMatchTheEnumsOwnTokens() {
+        for criterion in ArenaPromotionCriterion.allCases {
+            let matched = ArenaPromotionCriterion.allCases.first { $0.logToken == criterion.logToken }
+            XCTAssertEqual(matched, criterion, "logToken must round-trip for \(criterion)")
+        }
+    }
+}

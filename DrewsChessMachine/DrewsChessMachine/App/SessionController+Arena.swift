@@ -60,6 +60,36 @@ extension SessionController {
             trainer: trainer, champion: champion, tBox: tBox, arenaFlag: arenaFlag
         )
 
+        // --- Promotion criterion ---
+        //
+        // Snapshotted once, here, before any weights are copied. Two reasons
+        // for the position: an unusable SPRT configuration should fail before
+        // the expensive trainer/champion syncs rather than after them, and a
+        // sequential test is only meaningful against hypotheses that hold for
+        // its whole run, so nothing below may re-read these.
+        //
+        // The cross-field constraints (`elo1 > elo0`, `alpha + beta < 1`)
+        // cannot be expressed as parameter ranges, so a parameters.json can
+        // set every field legally and still describe no valid test. That
+        // throws here, and the arena stops — it does not silently fall back
+        // to the score threshold, which would run a different experiment
+        // than the user asked for and report it as if it were theirs.
+        let promotionCriterion = TrainingParameters.shared.arenaPromotionCriterion
+        let sprtConfig: ArenaSPRT.SPRTConfig?
+        switch promotionCriterion {
+        case .scoreThreshold:
+            sprtConfig = nil
+        case .sprt:
+            do {
+                sprtConfig = try TrainingParameters.shared.snapshot().arenaSPRTConfig()
+            } catch {
+                trainingBox?.recordError("Arena SPRT configuration invalid: \(error)")
+                SessionLogger.shared.log("[ARENA] aborted — SPRT configuration invalid: \(error)")
+                cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
+                return
+            }
+        }
+
         // --- Trainer → candidate inference snapshot ---
         //
         // Pause the training worker briefly (a few ms, at most one
@@ -164,7 +194,19 @@ extension SessionController {
         // and shrinks as games finish without replacement during the
         // tail — no per-batcher slot bookkeeping, no coalescing window,
         // no actor.
-        let liveK = max(1, min(TrainingParameters.shared.arenaConcurrency, totalGames))
+        // Under the score threshold there is no point running more games in
+        // parallel than remain to be played. SPRT has no such number, so K is
+        // the requested concurrency outright — with the caveat that K also
+        // bounds how early the test can stop (see `TickTournamentDriver`).
+        let liveK = sprtConfig != nil
+            ? max(1, TrainingParameters.shared.arenaConcurrency)
+            : max(1, min(TrainingParameters.shared.arenaConcurrency, totalGames))
+
+        // What the progress display should use as a denominator. In SPRT mode
+        // there is no target game count — the test decides when it has
+        // enough — so 0 is passed to mean "unknown", which the busy label
+        // renders without a denominator rather than inventing one.
+        let progressTotalGames = sprtConfig != nil ? 0 : totalGames
 
         // Update the live progress box with the chosen concurrency so
         // the arena's busy-label suffix can render "(×K concurrent)"
@@ -196,13 +238,14 @@ extension SessionController {
         do {
             stats = try await withTaskCancellationHandler {
                 try await Task.detached(priority: .userInitiated) {
-                    [tBox, cancelBox, overrideBox, arenaDiversity, arenaScheduleSnapshot, liveK, recordsBox] in
+                    [tBox, cancelBox, overrideBox, arenaDiversity, arenaScheduleSnapshot, liveK, recordsBox, sprtConfig, progressTotalGames] in
                     let driver = TickTournamentDriver()
                     return try await driver.run(
                         candidateNetwork: candidateInference,
                         championNetwork: arenaChampion,
                         arenaSchedule: arenaScheduleSnapshot,
                         games: totalGames,
+                        sprt: sprtConfig,
                         concurrency: liveK,
                         diversityTracker: arenaDiversity,
                         // Driver checks this between ticks. Either a
@@ -214,7 +257,7 @@ extension SessionController {
                         onGameCompleted: { gameIndex, aWins, bWins, draws in
                             tBox.update(TournamentProgress(
                                 currentGame: gameIndex,
-                                totalGames: totalGames,
+                                totalGames: progressTotalGames,
                                 candidateWins: aWins,
                                 championWins: bWins,
                                 draws: draws,
@@ -239,13 +282,8 @@ extension SessionController {
         // --- Score and promotion ---
         //
         // A user Abort ends the tournament with no promotion regardless
-        // of score. Otherwise the usual score-threshold check decides:
-        // a full tournament must have been played AND the candidate's
-        // score must meet `arenaPromoteThreshold`. (There is no
-        // force-promote override anymore — `Train ▸ Promote Trainee
-        // Now` covers "promote the current trainer right now" without
-        // an arena.) The consume also clears the box for the next
-        // tournament.
+        // of score or verdict, under either criterion. The consume also
+        // clears the box for the next tournament.
         let aborted = overrideBox.consume()
         let playedGames = stats.gamesPlayed
         let score: Double
@@ -256,9 +294,38 @@ extension SessionController {
         }
         var promoted = false
         var promotedID: ModelID?
-        let shouldPromote = !aborted
-            && playedGames >= totalGames
-            && score >= TrainingParameters.shared.arenaPromoteThreshold
+
+        // The two criteria ask different questions and therefore have
+        // different failure shapes.
+        //
+        // `.scoreThreshold` (unchanged, byte for byte): a full tournament must
+        // have been played AND the candidate's raw score must meet
+        // `arenaPromoteThreshold`. (There is no force-promote override anymore
+        // — `Train ▸ Promote Trainee Now` covers "promote the current trainer
+        // right now" without an arena.)
+        //
+        // `.sprt`: promote iff the sequential test latched `.accept`. There is
+        // deliberately no game-count condition — a test that decided at 60
+        // games decided, and requiring some further number would reintroduce
+        // exactly the fixed sample size that destroys the calibration. Note
+        // what the three non-promoting outcomes mean, because they are not
+        // interchangeable:
+        //   - `.reject`        — the evidence favours H₀. A real answer.
+        //   - `.inconclusive`  — the runaway guard fired with the evidence
+        //                        still ambiguous. Usually says elo0 and elo1
+        //                        are too close together for the guard's
+        //                        budget, not that the candidate is bad.
+        //   - no verdict       — the run was cancelled or aborted before the
+        //                        test decided. Not a statistical result at all.
+        let shouldPromote: Bool
+        switch promotionCriterion {
+        case .scoreThreshold:
+            shouldPromote = !aborted
+                && playedGames >= totalGames
+                && score >= TrainingParameters.shared.arenaPromoteThreshold
+        case .sprt:
+            shouldPromote = !aborted && (stats.sprtVerdict?.promotes == true)
+        }
         // `promotionKind` is `.automatic` for any arena-driven
         // promotion (the only kind this path can produce); `.manual`
         // is reserved for `promoteTrainerNow()`. Only read if
@@ -374,7 +441,9 @@ extension SessionController {
             candidateLossesAsWhite: stats.playerALossesAsWhite,
             candidateLossesAsBlack: stats.playerALossesAsBlack,
             candidateDrawsAsWhite: stats.playerADrawsAsWhite,
-            candidateDrawsAsBlack: stats.playerADrawsAsBlack
+            candidateDrawsAsBlack: stats.playerADrawsAsBlack,
+            promotionCriterion: promotionCriterion,
+            sprtVerdict: stats.sprtVerdict
         )
         // Store the breakdown on the record only when at least one
         // game was played. A zero-game abort yields an all-empty

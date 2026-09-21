@@ -1818,12 +1818,27 @@ struct UpperContentView: View {
             let thresholdPercent = trainingParams.arenaPromoteThreshold * 100
             let scoreColor: Color = scorePercent >= thresholdPercent ? .green : .red
 
-            let head = Text(String(
-                format: "Arena game %d/%d  candidate %d-%d-%d  score ",
-                tp.currentGame, tp.totalGames,
-                tp.candidateWins, tp.championWins, tp.draws
-            ))
-                .foregroundStyle(Color.blue)
+            // `totalGames == 0` means the arena is running SPRT, which has no
+            // scheduled game count — the sequential test stops when the
+            // evidence is decisive. Printing "game 37/0" (or inventing the
+            // threshold-mode number) would claim a denominator the run
+            // never had.
+            let head: Text
+            if tp.totalGames > 0 {
+                head = Text(String(
+                    format: "Arena game %d/%d  candidate %d-%d-%d  score ",
+                    tp.currentGame, tp.totalGames,
+                    tp.candidateWins, tp.championWins, tp.draws
+                ))
+                    .foregroundStyle(Color.blue)
+            } else {
+                head = Text(String(
+                    format: "Arena game %d (SPRT)  candidate %d-%d-%d  score ",
+                    tp.currentGame,
+                    tp.candidateWins, tp.championWins, tp.draws
+                ))
+                    .foregroundStyle(Color.blue)
+            }
 
             let score = Text(String(format: "%.2f%%", scorePercent))
                 .foregroundStyle(scoreColor)

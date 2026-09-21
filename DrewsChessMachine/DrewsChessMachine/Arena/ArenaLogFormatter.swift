@@ -95,7 +95,11 @@ enum ArenaLogFormatter {
         let eloCI = ArenaEloStats.formatEloWithCI(elo)
         let drawRatePct = drawRateFraction(record: record) * 100.0
 
-        let gamesStr = "\(record.gamesPlayed)/\(p.tournamentGames)"
+        // Under SPRT there is no scheduled game count, so "N/400" would be
+        // reporting a denominator the run never had.
+        let gamesStr = record.promotionCriterion == .sprt
+            ? "\(record.gamesPlayed) (SPRT — no fixed schedule)"
+            : "\(record.gamesPlayed)/\(p.tournamentGames)"
         let resultStr = "\(record.candidateWins)W / \(record.draws)D / \(record.championWins)L"
 
         let whiteN = record.candidateWinsAsWhite + record.candidateLossesAsWhite + record.candidateDrawsAsWhite
@@ -121,18 +125,97 @@ enum ArenaLogFormatter {
             "[ARENA]       Candidate as black: \(blackScoreStr)  (\(blackWDL), n=\(blackN))"
         ]
 
+        lines.append(contentsOf: formatSPRTBlock(record: record))
+
         if let ext = extended {
             lines.append(contentsOf: formatExtendedBlock(extended: ext))
         }
 
         lines.append(contentsOf: [
-            "[ARENA]     batch=\(p.batchSize) lr=\(lrStr) promote>=\(threshStr) games=\(p.tournamentGames) sp.tau=\(spTauStr) ar.tau=\(arTauStr) workers=\(p.workerCount) build=\(p.buildNumber)",
+            "[ARENA]     crit=\(criterionToken(record)) batch=\(p.batchSize) lr=\(lrStr) promote>=\(threshStr) games=\(p.tournamentGames) sp.tau=\(spTauStr) ar.tau=\(arTauStr) workers=\(p.workerCount) build=\(p.buildNumber)",
             "[ARENA]     candidate=\(candidateID)  champion=\(championID)  trainer=\(trainerID)",
             "[ARENA]     diversity: \(divStr)",
             "[ARENA]     Verdict: \(verdictStr)    dur=\(durationStr)"
         ])
 
         return lines
+    }
+
+    /// Render the sequential-test lines, or nothing at all under the score
+    /// threshold.
+    ///
+    /// Three states have to stay visually distinct here, because collapsing
+    /// any two of them would misreport the arena:
+    ///   - a decided test (`accept` / `reject`), with the tally and ratio it
+    ///     decided on;
+    ///   - `inconclusive`, which is the runaway guard firing on ambiguous
+    ///     evidence, not a rejection;
+    ///   - no verdict at all, which means the run was cut short before the
+    ///     test decided and is not a statistical result.
+    ///
+    /// The games-at-decision figure is printed next to `gamesPlayed` whenever
+    /// they differ, which they normally do: the in-flight remainder finishes
+    /// after the crossing and is tallied but is not evidence.
+    static func formatSPRTBlock(record: TournamentRecord) -> [String] {
+        guard record.promotionCriterion == .sprt else { return [] }
+
+        guard let v = record.sprtVerdict else {
+            return [
+                "[ARENA]     SPRT: no verdict — run ended before the test decided (cancelled or aborted)"
+            ]
+        }
+
+        let cfg = v.config
+        let (lower, upper) = cfg.bounds
+        let llrStr = v.llr.map { String(format: "%+.4f", $0) } ?? "undefined (zero-variance record)"
+        let guardStr = cfg.maxGames == 0 ? "unbounded" : String(cfg.maxGames)
+
+        var lines = [
+            "[ARENA]     SPRT: \(v.decision.rawValue.uppercased())"
+                + "  llr=\(llrStr)"
+                + String(format: "  bounds=[%.4f, %.4f]", lower, upper),
+            "[ARENA]       H0: elo=\(formatElo(cfg.elo0))   H1: elo=\(formatElo(cfg.elo1))"
+                + String(format: "   alpha=%.4f beta=%.4f", cfg.alpha, cfg.beta)
+                + "   minGames=\(cfg.minGames) maxGames=\(guardStr)"
+        ]
+
+        if v.gamesAtDecision == record.gamesPlayed {
+            lines.append(
+                "[ARENA]       decided at game \(v.gamesAtDecision) on \(v.wins)W/\(v.draws)D/\(v.losses)L"
+            )
+        } else {
+            // The drain is the normal case at concurrency > 1, so say plainly
+            // which tally carried the decision and which is just the record.
+            lines.append(
+                "[ARENA]       decided at game \(v.gamesAtDecision) on \(v.wins)W/\(v.draws)D/\(v.losses)L"
+                + "; \(record.gamesPlayed - v.gamesAtDecision) further game(s) drained and are counted but not evidence"
+            )
+        }
+
+        if v.decision == .inconclusive {
+            lines.append(
+                "[ARENA]       inconclusive is NOT a rejection — the guard fired with the evidence still between the bounds;"
+            )
+            lines.append(
+                "[ARENA]       usually means elo0 and elo1 are too close together for maxGames to separate them."
+            )
+        }
+
+        return lines
+    }
+
+    /// Short token for the criterion that decided an arena. Legacy records
+    /// carry no criterion; they all predate SPRT, so they ran the threshold.
+    static func criterionToken(_ record: TournamentRecord) -> String {
+        (record.promotionCriterion ?? .scoreThreshold).logToken
+    }
+
+    /// Elo hypotheses print as whole numbers when they are whole, which the
+    /// defaults (0 and 10) are, and to one decimal otherwise.
+    static func formatElo(_ elo: Double) -> String {
+        elo == elo.rounded()
+            ? String(format: "%+d", Int(elo.rounded()))
+            : String(format: "%+.1f", elo)
     }
 
     /// Render the three post-arena breakdowns as `[ARENA]` lines.
@@ -261,7 +344,31 @@ enum ArenaLogFormatter {
             + "cand_black_w=\(record.candidateWinsAsBlack) cand_black_d=\(record.candidateDrawsAsBlack) cand_black_l=\(record.candidateLossesAsBlack) "
             + "cand_white_score=\(String(format: "%.4f", record.candidateScoreAsWhite)) cand_black_score=\(String(format: "%.4f", record.candidateScoreAsBlack)) "
             + "promoted=\(record.promoted ? 1 : 0) kind=\(kindKV) dur_sec=\(String(format: "%.1f", record.durationSec)) build=\(buildNumber) "
+            + "crit=\(criterionToken(record)) \(formatSPRTKV(record: record))"
             + "candidate=\(candidateID) champion=\(championID) trainer=\(trainerID)"
+    }
+
+    /// The `sprt_*` half of the KV line. Empty under the score threshold, so
+    /// a threshold-mode line is byte-identical to what it was apart from the
+    /// new `crit=score` field.
+    ///
+    /// `sprt=none` is emitted — rather than the fields being omitted — when an
+    /// SPRT arena ended without deciding, so a parser can tell "ran SPRT, was
+    /// cut short" apart from "did not run SPRT", which `crit=` alone cannot
+    /// express once a row is filtered.
+    static func formatSPRTKV(record: TournamentRecord) -> String {
+        guard record.promotionCriterion == .sprt else { return "" }
+        guard let v = record.sprtVerdict else { return "sprt=none " }
+
+        let cfg = v.config
+        let (lower, upper) = cfg.bounds
+        let llrStr = v.llr.map { String(format: "%.4f", $0) } ?? "nan"
+        return "sprt=\(v.decision.rawValue) sprt_llr=\(llrStr) "
+            + String(format: "sprt_lower=%.4f sprt_upper=%.4f ", lower, upper)
+            + "sprt_games=\(v.gamesAtDecision) sprt_w=\(v.wins) sprt_d=\(v.draws) sprt_l=\(v.losses) "
+            + String(format: "sprt_elo0=%.4f sprt_elo1=%.4f sprt_alpha=%.4f sprt_beta=%.4f ",
+                     cfg.elo0, cfg.elo1, cfg.alpha, cfg.beta)
+            + "sprt_min_games=\(cfg.minGames) sprt_max_games=\(cfg.maxGames) "
     }
 
     // MARK: - Shared helpers
@@ -289,9 +396,21 @@ enum ArenaLogFormatter {
             return "PROMOTED\(kindSuffix)=\(pid.description)"
         } else if record.promoted {
             return "PROMOTED\(kindSuffix)"
-        } else {
-            return "kept"
         }
+
+        // Under SPRT, "kept" alone hides the distinction that matters most:
+        // rejected on the evidence, stopped by the guard with the evidence
+        // still ambiguous, or never decided at all.
+        if record.promotionCriterion == .sprt {
+            switch record.sprtVerdict?.decision {
+            case .reject:       return "kept (SPRT reject)"
+            case .inconclusive: return "kept (SPRT inconclusive — guard, not a rejection)"
+            case .accept:       return "kept (SPRT accept but promotion did not run)"
+            case .continueTesting, .none:
+                return "kept (SPRT undecided — run ended early)"
+            }
+        }
+        return "kept"
     }
 
     /// Draw rate as a fraction in `[0, 1]`. Guarded against empty
