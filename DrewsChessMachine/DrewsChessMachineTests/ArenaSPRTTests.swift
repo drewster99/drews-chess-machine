@@ -67,8 +67,18 @@ final class ArenaSPRTTests: XCTestCase {
     func testZeroMaxGamesMeansUnbounded() throws {
         let config = try makeConfig(minGames: 100, maxGames: 0)
         XCTAssertEqual(config.maxGames, 0)
-        // A large ambiguous tally must not be declared inconclusive.
-        let decision = ArenaSPRT.decide(wins: 5000, draws: 40000, losses: 5000, config: config)
+        // 50,000 games with the score sitting at the midpoint of the two
+        // hypotheses (x̄ = 0.5072 against μ0 = 0.5000 and μ1 = 0.5144, LLR
+        // ≈ +0.09): the evidence genuinely has not decided, and with the
+        // guard disabled the test must keep going rather than time out
+        // into `.inconclusive` on sample size alone.
+        //
+        // The tally has to be chosen this way. An *even* record is not the
+        // ambiguous case it looks like — at N = 50,000, x̄ = 0.5 is
+        // overwhelming evidence AGAINST "the candidate is 10 Elo better"
+        // (LLR ≈ −103, some 35× past the rejection bound), and this test
+        // originally asserted `.continueTesting` on exactly that record.
+        let decision = ArenaSPRT.decide(wins: 5360, draws: 40000, losses: 4640, config: config)
         XCTAssertEqual(decision, .continueTesting)
     }
 

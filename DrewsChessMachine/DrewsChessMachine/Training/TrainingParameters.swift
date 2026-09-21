@@ -629,6 +629,89 @@ public enum LegalMassCollapseNoImprovementProbes: TrainingParameterKey {}
 )
 public enum ArenaConcurrency: TrainingParameterKey {}
 
+// MARK: Arena promotion criterion (score threshold vs SPRT)
+//
+// The SPRT knobs below are inert while the criterion is Score Threshold, and
+// `Arena Games Per Tournament` is inert while it is SPRT: a sequential test
+// decides its own sample size, and capping it at a fixed count destroys the
+// calibration the test exists to provide (measured: ~0.6% accept where β
+// promises 95%). See `documentation/arena-sprt.md`.
+//
+// All are `liveTunable: false`. The likelihood ratio is only meaningful
+// against hypotheses fixed for the whole test, so these are snapshotted at
+// arena start and a mid-arena edit takes effect on the next arena.
+
+@TrainingParameter(
+    name: "Arena Promotion Criterion",
+    description: "Which rule decides promotion: 0 = score threshold (candidate score over a fixed game count must clear Arena Promote Threshold), 1 = SPRT (sequential test of elo0 vs elo1 at error rates alpha/beta, running until the evidence crosses a bound). SPRT ignores Arena Games Per Tournament and Arena Promote Threshold.",
+    default: 0,
+    range: 0...1,
+    category: "Arena",
+    id: "arena_promotion_criterion",
+    liveTunable: false
+)
+public enum ArenaPromotionCriterionParameter: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Arena SPRT elo0 (H0)",
+    description: "SPRT null hypothesis, in Elo: the candidate is exactly this many Elo stronger than the champion. Usually 0 -- 'no improvement'. Must be below elo1.",
+    default: 0.0,
+    range: -50.0...50.0,
+    category: "Arena",
+    liveTunable: false
+)
+public enum ArenaSPRTElo0: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Arena SPRT elo1 (H1)",
+    description: "SPRT alternative hypothesis, in Elo: the smallest improvement the test is asked to detect. Smaller values need far more games (simulated at an 0.85 draw rate: ~720 median games at 10 Elo, ~190 at 20, ~60 at 35).",
+    default: 10.0,
+    range: -50.0...50.0,
+    category: "Arena",
+    liveTunable: false
+)
+public enum ArenaSPRTElo1: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Arena SPRT alpha",
+    description: "SPRT type I error rate: long-run probability of promoting a candidate that is only elo0 strong. Lower = stricter promotion, more games per decision.",
+    default: 0.05,
+    range: 0.001...0.5,
+    category: "Arena",
+    liveTunable: false
+)
+public enum ArenaSPRTAlpha: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Arena SPRT beta",
+    description: "SPRT type II error rate: long-run probability of rejecting a candidate that genuinely is elo1 strong. Lower = fewer missed improvements, more games per decision. alpha + beta must be below 1.",
+    default: 0.05,
+    range: 0.001...0.5,
+    category: "Arena",
+    liveTunable: false
+)
+public enum ArenaSPRTBeta: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Arena SPRT Min Games",
+    description: "Games that must complete before the SPRT may fire at all. Guards against an early streak crossing a boundary on almost no evidence.",
+    default: 32,
+    range: 2...10000,
+    category: "Arena",
+    liveTunable: false
+)
+public enum ArenaSPRTMinGames: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Arena SPRT Max Games",
+    description: "Runaway guard for the SPRT; 0 means unbounded. Reaching it with the evidence still between the bounds is INCONCLUSIVE and never promotes. Set it far above the expected decision point -- hitting it routinely means elo0 and elo1 are too close together, not that the candidate is bad.",
+    default: 20000,
+    range: 0...1000000,
+    category: "Arena",
+    liveTunable: false
+)
+public enum ArenaSPRTMaxGames: TrainingParameterKey {}
+
 
 @TrainingParameter(
     name: "Batch Stats Interval",
@@ -879,6 +962,15 @@ public extension TrainingParametersSnapshot {
     var legalMassCollapseGraceSeconds: Double { value(for: LegalMassCollapseGraceSeconds.self) }
     var legalMassCollapseNoImprovementProbes: Int { value(for: LegalMassCollapseNoImprovementProbes.self) }
     var arenaConcurrency: Int { value(for: ArenaConcurrency.self) }
+    var arenaPromotionCriterion: ArenaPromotionCriterion {
+        ArenaPromotionCriterion(persistedRawValue: value(for: ArenaPromotionCriterionParameter.self))
+    }
+    var arenaSPRTElo0: Double { value(for: ArenaSPRTElo0.self) }
+    var arenaSPRTElo1: Double { value(for: ArenaSPRTElo1.self) }
+    var arenaSPRTAlpha: Double { value(for: ArenaSPRTAlpha.self) }
+    var arenaSPRTBeta: Double { value(for: ArenaSPRTBeta.self) }
+    var arenaSPRTMinGames: Int { value(for: ArenaSPRTMinGames.self) }
+    var arenaSPRTMaxGames: Int { value(for: ArenaSPRTMaxGames.self) }
     var batchStatsInterval: Int { value(for: BatchStatsInterval.self) }
     var lrCycleEnabled: Bool { value(for: LRCycleEnabled.self) }
     var lrCyclePeriodSteps: Int { value(for: LRCyclePeriodSteps.self) }
@@ -894,6 +986,34 @@ public extension TrainingParametersSnapshot {
     var momentumCycleInvert: Bool { value(for: MomentumCycleInvert.self) }
     var periodicAutosaveIntervalSec: Double { value(for: PeriodicAutosaveIntervalSec.self) }
     var maxPeriodicAutosavesKept: Int { value(for: MaxPeriodicAutosavesKept.self) }
+
+}
+
+
+// `arenaSPRTConfig()` returns `ArenaSPRT.SPRTConfig`, which is internal, so it
+// cannot sit in the public accessor extension above.
+extension TrainingParametersSnapshot {
+
+    /// Builds the validated SPRT configuration these parameters describe.
+    ///
+    /// Per-field ranges are enforced by the parameter definitions, but the
+    /// cross-field constraints (`elo1 > elo0`, `alpha + beta < 1`,
+    /// `minGames <= maxGames`) are relationships the registry cannot express,
+    /// and a `parameters.json` or CLI override can set each field to a legal
+    /// value while making the pair meaningless. `ArenaSPRT.SPRTConfig`'s
+    /// throwing init is the single place those are checked, so this rethrows
+    /// rather than repairing the combination: an arena that cannot form a
+    /// valid test must say so, not quietly run a different test.
+    func arenaSPRTConfig() throws -> ArenaSPRT.SPRTConfig {
+        try ArenaSPRT.SPRTConfig(
+            elo0: arenaSPRTElo0,
+            elo1: arenaSPRTElo1,
+            alpha: arenaSPRTAlpha,
+            beta: arenaSPRTBeta,
+            minGames: arenaSPRTMinGames,
+            maxGames: arenaSPRTMaxGames
+        )
+    }
 }
 
 // MARK: - TrainingParameters singleton
@@ -952,6 +1072,18 @@ public final class TrainingParameters {
     public var legalMassCollapseGraceSeconds: Double { didSet { Self.persist(LegalMassCollapseGraceSeconds.self, value: legalMassCollapseGraceSeconds) } }
     public var legalMassCollapseNoImprovementProbes: Int { didSet { Self.persist(LegalMassCollapseNoImprovementProbes.self, value: legalMassCollapseNoImprovementProbes) } }
     public var arenaConcurrency: Int { didSet { Self.persist(ArenaConcurrency.self, value: arenaConcurrency) } }
+    /// Stored as the enum rather than its raw value so no use site ever sees
+    /// the persisted integer; the `didSet` unwraps it at the persistence
+    /// boundary, which is the only place the raw form is meaningful.
+    public var arenaPromotionCriterion: ArenaPromotionCriterion {
+        didSet { Self.persist(ArenaPromotionCriterionParameter.self, value: arenaPromotionCriterion.rawValue) }
+    }
+    public var arenaSPRTElo0: Double { didSet { Self.persist(ArenaSPRTElo0.self, value: arenaSPRTElo0) } }
+    public var arenaSPRTElo1: Double { didSet { Self.persist(ArenaSPRTElo1.self, value: arenaSPRTElo1) } }
+    public var arenaSPRTAlpha: Double { didSet { Self.persist(ArenaSPRTAlpha.self, value: arenaSPRTAlpha) } }
+    public var arenaSPRTBeta: Double { didSet { Self.persist(ArenaSPRTBeta.self, value: arenaSPRTBeta) } }
+    public var arenaSPRTMinGames: Int { didSet { Self.persist(ArenaSPRTMinGames.self, value: arenaSPRTMinGames) } }
+    public var arenaSPRTMaxGames: Int { didSet { Self.persist(ArenaSPRTMaxGames.self, value: arenaSPRTMaxGames) } }
     public var batchStatsInterval: Int { didSet { Self.persist(BatchStatsInterval.self, value: batchStatsInterval) } }
     public var lrCycleEnabled: Bool { didSet { Self.persist(LRCycleEnabled.self, value: lrCycleEnabled) } }
     public var lrCyclePeriodSteps: Int { didSet { Self.persist(LRCyclePeriodSteps.self, value: lrCyclePeriodSteps) } }
@@ -1018,6 +1150,15 @@ public final class TrainingParameters {
         self.legalMassCollapseGraceSeconds = Self.read(LegalMassCollapseGraceSeconds.self)
         self.legalMassCollapseNoImprovementProbes = Self.read(LegalMassCollapseNoImprovementProbes.self)
         self.arenaConcurrency = Self.read(ArenaConcurrency.self)
+        self.arenaPromotionCriterion = ArenaPromotionCriterion(
+            persistedRawValue: Self.read(ArenaPromotionCriterionParameter.self)
+        )
+        self.arenaSPRTElo0 = Self.read(ArenaSPRTElo0.self)
+        self.arenaSPRTElo1 = Self.read(ArenaSPRTElo1.self)
+        self.arenaSPRTAlpha = Self.read(ArenaSPRTAlpha.self)
+        self.arenaSPRTBeta = Self.read(ArenaSPRTBeta.self)
+        self.arenaSPRTMinGames = Self.read(ArenaSPRTMinGames.self)
+        self.arenaSPRTMaxGames = Self.read(ArenaSPRTMaxGames.self)
         self.batchStatsInterval = Self.read(BatchStatsInterval.self)
         self.lrCycleEnabled = Self.read(LRCycleEnabled.self)
         self.lrCyclePeriodSteps = Self.read(LRCyclePeriodSteps.self)
@@ -1090,6 +1231,13 @@ public final class TrainingParameters {
         v[LegalMassCollapseGraceSeconds.id] = LegalMassCollapseGraceSeconds.encode(legalMassCollapseGraceSeconds)
         v[LegalMassCollapseNoImprovementProbes.id] = LegalMassCollapseNoImprovementProbes.encode(legalMassCollapseNoImprovementProbes)
         v[ArenaConcurrency.id] = ArenaConcurrency.encode(arenaConcurrency)
+        v[ArenaPromotionCriterionParameter.id] = ArenaPromotionCriterionParameter.encode(arenaPromotionCriterion.rawValue)
+        v[ArenaSPRTElo0.id] = ArenaSPRTElo0.encode(arenaSPRTElo0)
+        v[ArenaSPRTElo1.id] = ArenaSPRTElo1.encode(arenaSPRTElo1)
+        v[ArenaSPRTAlpha.id] = ArenaSPRTAlpha.encode(arenaSPRTAlpha)
+        v[ArenaSPRTBeta.id] = ArenaSPRTBeta.encode(arenaSPRTBeta)
+        v[ArenaSPRTMinGames.id] = ArenaSPRTMinGames.encode(arenaSPRTMinGames)
+        v[ArenaSPRTMaxGames.id] = ArenaSPRTMaxGames.encode(arenaSPRTMaxGames)
         v[BatchStatsInterval.id] = BatchStatsInterval.encode(batchStatsInterval)
         v[LRCycleEnabled.id] = LRCycleEnabled.encode(lrCycleEnabled)
         v[LRCyclePeriodSteps.id] = LRCyclePeriodSteps.encode(lrCyclePeriodSteps)
@@ -1215,6 +1363,23 @@ public final class TrainingParameters {
             try LegalMassCollapseNoImprovementProbes.definition.validate(raw); legalMassCollapseNoImprovementProbes = try LegalMassCollapseNoImprovementProbes.decode(raw)
         case ArenaConcurrency.id:
             try ArenaConcurrency.definition.validate(raw); arenaConcurrency = try ArenaConcurrency.decode(raw)
+        case ArenaPromotionCriterionParameter.id:
+            try ArenaPromotionCriterionParameter.definition.validate(raw)
+            arenaPromotionCriterion = ArenaPromotionCriterion(
+                persistedRawValue: try ArenaPromotionCriterionParameter.decode(raw)
+            )
+        case ArenaSPRTElo0.id:
+            try ArenaSPRTElo0.definition.validate(raw); arenaSPRTElo0 = try ArenaSPRTElo0.decode(raw)
+        case ArenaSPRTElo1.id:
+            try ArenaSPRTElo1.definition.validate(raw); arenaSPRTElo1 = try ArenaSPRTElo1.decode(raw)
+        case ArenaSPRTAlpha.id:
+            try ArenaSPRTAlpha.definition.validate(raw); arenaSPRTAlpha = try ArenaSPRTAlpha.decode(raw)
+        case ArenaSPRTBeta.id:
+            try ArenaSPRTBeta.definition.validate(raw); arenaSPRTBeta = try ArenaSPRTBeta.decode(raw)
+        case ArenaSPRTMinGames.id:
+            try ArenaSPRTMinGames.definition.validate(raw); arenaSPRTMinGames = try ArenaSPRTMinGames.decode(raw)
+        case ArenaSPRTMaxGames.id:
+            try ArenaSPRTMaxGames.definition.validate(raw); arenaSPRTMaxGames = try ArenaSPRTMaxGames.decode(raw)
         case BatchStatsInterval.id:
             try BatchStatsInterval.definition.validate(raw); batchStatsInterval = try BatchStatsInterval.decode(raw)
         case LRCycleEnabled.id:
@@ -1376,6 +1541,13 @@ public final class TrainingParameters {
         LegalMassCollapseGraceSeconds.self,
         LegalMassCollapseNoImprovementProbes.self,
         ArenaConcurrency.self,
+        ArenaPromotionCriterionParameter.self,
+        ArenaSPRTElo0.self,
+        ArenaSPRTElo1.self,
+        ArenaSPRTAlpha.self,
+        ArenaSPRTBeta.self,
+        ArenaSPRTMinGames.self,
+        ArenaSPRTMaxGames.self,
         BatchStatsInterval.self,
         LRCycleEnabled.self,
         LRCyclePeriodSteps.self,

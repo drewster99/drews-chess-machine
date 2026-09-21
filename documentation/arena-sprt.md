@@ -1,6 +1,10 @@
 # Arena promotion: SPRT mode — design
 
-Status: **plan, not implemented.** Written 2026-09-20.
+Status: **phase 1 implemented; phases 2–5 outstanding.** Written 2026-09-20.
+
+Phase 1 (`Arena/ArenaSPRT.swift` + `ArenaSPRTTests.swift`) landed in commit
+`703dc77`. Everything below the "Where the changes land" heading still describes
+work to do, except item 2, which is now a description of shipped code.
 
 ## Goal
 
@@ -212,21 +216,39 @@ too close together rather than a normal outcome.
 
 1. **`Training/TrainingParameters.swift`** — seven `@TrainingParameter`
    declarations, seven accessors, and the `ArenaPromotionCriterion` enum.
-   Registry count 36 → 43; `TrainingParametersTests.test_registry_size` pins it
-   and must be updated.
+   Registry count **62 → 69**; `TrainingParametersTests.test_registry_size`
+   pins it and must be updated. *(An earlier draft said "36 → 43" and "six new
+   parameters" — both were wrong; the registry held 62 keys when phase 1
+   landed, and the table above lists seven.)*
 
-2. **`Arena/ArenaSPRT.swift` (new)** — pure, dependency-free statistics:
+2. **`Arena/ArenaSPRT.swift`** — **done** (`703dc77`). Pure, dependency-free
+   statistics, no actors, no UI, no I/O, mirroring how `ArenaEloStats` is
+   structured:
    ```swift
-   struct SPRTConfig { elo0, elo1, alpha, beta, minGames, maxGames }
-   enum SPRTDecision { case accept, reject, continueTesting }
    enum ArenaSPRT {
+       enum ConfigError: Error, Equatable, CustomStringConvertible { ... }
+       struct SPRTConfig: Equatable, Sendable {   // throwing init validates
+           let elo0, elo1, alpha, beta: Double
+           let minGames, maxGames: Int
+           var bounds: (lower: Double, upper: Double)
+       }
+       enum Decision: String, Equatable, Sendable {
+           case accept, reject, continueTesting, inconclusive
+           var promotes: Bool      // only .accept
+           var isFinal: Bool       // != .continueTesting
+       }
+       static func expectedScore(forElo:) -> Double
        static func bounds(alpha:beta:) -> (lower: Double, upper: Double)
        static func logLikelihoodRatio(wins:draws:losses:config:) -> Double?
-       static func decide(wins:draws:losses:config:) -> SPRTDecision
+       static func decide(wins:draws:losses:config:) -> Decision
    }
    ```
-   No actors, no UI, no I/O — directly unit-testable, mirroring how
-   `ArenaEloStats` is structured.
+   Two deviations from this plan as written: the decision type is nested as
+   `ArenaSPRT.Decision` rather than a free-standing `SPRTDecision`, and it
+   carries a fourth case, `.inconclusive`, so the runaway guard is
+   distinguishable from a real rejection at every call site rather than only in
+   the log line. `SPRTConfig`'s init throws `ConfigError` so an invalid
+   hypothesis pair cannot reach the decision function at all.
 
 3. **`Arena/TickTournamentDriver.swift`** — the change is smaller than it looks.
    The loop already gates spawning on a single predicate:
@@ -246,6 +268,26 @@ too close together rather than a normal outcome.
 
    `candIsWhiteNext = (nextIdx % 2 == 0)` continues to alternate correctly since
    `nextIdx` simply keeps incrementing.
+
+   **The verdict must be latched at the crossing, not recomputed at the end.**
+   This is the one place the drain behaviour is not free. With `concurrency`
+   games in flight, the tally when the LLR crosses a bound is not the tally the
+   driver returns: up to `K − 1` further games finish while the slots retire,
+   and `TournamentStats` reports all of them. Re-running `decide` on that final
+   tally would be wrong in both directions — the extra games are a variable
+   number of observations admitted *because* the test already stopped, which is
+   precisely the optional-stopping bias SPRT's calibration assumes away, and a
+   re-decision can land on `.continueTesting`, for which there is no action once
+   the tournament is over. So the driver latches the first `isFinal` decision
+   together with the `(W, D, L)` it was made on, and that is what the gate and
+   the record read; the drained games are still reported, in the Elo summary and
+   as `gamesPlayed`, as description rather than as evidence. The same applies to
+   the runaway guard: `n >= maxGames` is evaluated per completed game, so the
+   returned `gamesPlayed` can exceed `maxGames` by up to `K − 1` without that
+   being a violation.
+
+   Tests should pin this directly — a driver run at `concurrency > 1` whose
+   latched decision disagrees with `decide(...)` applied to the final tally.
 
 4. **`App/SessionController+Arena.swift`** — snapshot all arena config into a
    value struct at run start (it already reads from `TrainingParameters.shared`
@@ -280,6 +322,17 @@ too close together rather than a normal outcome.
    saved-config block, or deliberately excluded, matching how
    `value_label_smoothing_epsilon` was handled (it is *not* in that block — a
    known gap, not a precedent to copy blindly).
+
+   **Deliberately deferred to phase 4, not skipped.** `CLAUDE.md`'s
+   add-a-parameter checklist puts session save/load in the same step as the
+   declaration, but until the gate branch exists these seven parameters change
+   nothing a resumed session could observe — an `Optional` field and a
+   `[RESUME-PARAM]` block written in phase 2 would be dead code that the phase-4
+   tests could not distinguish from correct. They land with the gate, in
+   `SessionCheckpointState` + `buildCurrentSessionState` + the
+   `[RESUME-PARAM]` block in `SessionController+Training.swift`, mirroring
+   `batchStatsInterval`, with both the "from session" and "saved=nil
+   (defaulted)" branches logged.
 
 ## Tests
 
@@ -316,13 +369,13 @@ Existing suites to extend:
   tournaments will hit the cap undecided and nothing will ever promote. The UI
   hint should say so, and the log should make "inconclusive" visually distinct
   from "rejected".
-- **Registry size is pinned by a test** — six new parameters will fail it until
-  updated. Expected, not a surprise.
+- **Registry size is pinned by a test** — the seven new parameters will fail it
+  until updated. Expected, not a surprise.
 
 ## Phasing
 
-1. `ArenaSPRT.swift` + its tests, including calibration. No wiring. Fully
-   verifiable in isolation.
+1. ~~`ArenaSPRT.swift` + its tests, including calibration. No wiring. Fully
+   verifiable in isolation.~~ **Done** — `703dc77`, 24 tests.
 2. Parameters + registry + validation, with tests.
 3. Driver early-stop, behind an optional config, with tests proving the
    no-config path is unchanged.
@@ -334,8 +387,9 @@ the risk is; phases 2–5 are plumbing.
 
 ## Open questions
 
-1. **GSPRT or BayesElo trinomial** for the LLR. Recommendation is GSPRT, now
-   supported by the simulated calibration above.
+1. ~~**GSPRT or BayesElo trinomial** for the LLR.~~ — **decided: GSPRT**,
+   shipped in phase 1. Revisit the BayesElo trinomial only if the shipped form
+   proves mis-calibrated against real arena records.
 2. ~~Defaults for `elo0`/`elo1`~~ — **decided: `0 / 10`**.
 3. **Should an inconclusive run be visually distinct from a rejection** in the
    arena history UI, or is the log line enough?
