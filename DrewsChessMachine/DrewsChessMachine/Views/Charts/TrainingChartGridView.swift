@@ -138,6 +138,89 @@ struct TrainingChartGridView: View {
                     head is doing better than uniform.
                     """)
             )
+            MiniLineChart(
+                title: "Policy KL per step (nats)",
+                buckets: frame.trainingBuckets,
+                rangeAccessor: { $0.klMean },
+                unit: "",
+                color: .purple,
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec,
+                titleHelp: AttributedString("""
+                    How far one SGD step moves the policy in FUNCTION space: KL(policy before the \
+                    step ‖ policy after), measured on the same minibatch the step trained on. The \
+                    complement to gNorm, which measures the step in parameter space — a large \
+                    gradient across a flat region barely moves the distribution, and a small one \
+                    across a sharp region can move it a lot. Sampled on the KL probe's interval, so \
+                    this updates less often than its neighbours, and is empty when the probe is off.
+                    """)
+            )
+            MiniLineChart(
+                title: "Policy KL spread σ (nats)",
+                buckets: frame.trainingBuckets,
+                rangeAccessor: { $0.klStdDev },
+                unit: "",
+                color: .indigo,
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec,
+                titleHelp: AttributedString("""
+                    Standard deviation, across the batch, of the per-position policy KL. Read it as \
+                    a ratio against the KL mean: a spread much larger than the mean means the update \
+                    rewrote a handful of positions wholesale and left the rest untouched — a step \
+                    driven by outliers rather than one that generalizes. A spread near the mean means \
+                    the batch moved together.
+                    """)
+            )
+            MiniLineChart(
+                title: "Effective step lr/(1−μ)",
+                buckets: frame.trainingBuckets,
+                rangeAccessor: { $0.effectiveStepSize },
+                unit: "",
+                color: .orange,
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec,
+                titleHelp: AttributedString("""
+                    The asymptotic per-step displacement of SGD with momentum — what actually \
+                    governs how far the weights travel, and the reason neither the learning rate nor \
+                    the momentum tells the story alone. Raising μ from 0.75 to 0.90 multiplies the \
+                    step by 2.5x at an unchanged learning rate, so an LR curve and a momentum curve \
+                    that both look tame can still combine into a large effective step.
+                    """)
+            )
+            MiniLineChart(
+                title: "Learning rate (effective)",
+                buckets: frame.trainingBuckets,
+                rangeAccessor: { $0.learningRate },
+                unit: "",
+                color: .teal,
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec,
+                titleHelp: AttributedString("""
+                    The learning rate actually fed to the optimizer: the LR cycle's value (or the \
+                    static rate when cycling is off), after sqrt-batch scaling and warmup. This is \
+                    the resolved number the SGD step applies, not the configured base.
+                    """)
+            )
+            MiniLineChart(
+                title: "Momentum μ (effective)",
+                buckets: frame.trainingBuckets,
+                rangeAccessor: { $0.momentum },
+                unit: "",
+                color: .brown,
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec,
+                titleHelp: AttributedString("""
+                    Polyak momentum actually fed to the optimizer — the momentum cycle's value, or \
+                    the static coefficient when cycling is off. Pair it with the learning rate: the \
+                    two are meant to move in opposition (high LR with low μ), and the effective-step \
+                    tile shows what they combine into.
+                    """)
+            )
             ReplayRatioChart(
                 buckets: frame.trainingBuckets,
                 target: replayRatioTarget,

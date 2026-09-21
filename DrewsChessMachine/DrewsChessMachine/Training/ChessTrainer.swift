@@ -65,6 +65,33 @@ struct TrainStepTiming: Sendable {
     let queueWaitMs: Double
     /// Total wall-clock time for the whole step.
     let totalMs: Double
+    /// Batch-mean `KL(policy_before ‖ policy_after)` in nats for this step, or
+    /// `nil` on steps where the probe did not run.
+    ///
+    /// Measures how far one SGD step moved the policy in *function* space,
+    /// which is the thing `gNorm` (parameter space) cannot tell you: a large
+    /// gradient in a flat region moves the distribution barely at all, and a
+    /// small one in a sharp region can move it a lot.
+    var klMean: Double?
+    /// Standard deviation of the per-position KL across the batch, or `nil`
+    /// when the probe did not run.
+    ///
+    /// The companion to `klMean`, and the more diagnostic of the two: a small
+    /// mean with a large spread means the update rewrote a handful of
+    /// positions wholesale and left the rest untouched, which is the
+    /// signature of a step dominated by outliers rather than one that
+    /// generalizes.
+    var klStdDev: Double?
+    /// Wall-clock cost of the second (forward-only) pass used by the KL probe,
+    /// or 0 on steps where the probe did not run.
+    ///
+    /// This is the quantity that decides whether per-step KL telemetry is
+    /// affordable: measuring `KL(policy_before ‖ policy_after)` on the same
+    /// minibatch requires evaluating the network again with the post-update
+    /// weights, and there is no way around that second evaluation. Reported
+    /// separately from `gpuRunMs` so the training step's own cost stays
+    /// comparable across probe and non-probe steps.
+    var klProbeMs: Double = 0
     /// Total loss (policy + value) reported by the graph — what SGD minimizes.
     /// Lets us spot NaNs / explosions at a glance.
     let loss: Float
@@ -591,6 +618,15 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         /// so velocity-vs-gradient magnitude can be compared at a
         /// glance when raising μ. Nil before any step has executed.
         let rollingVelocityNorm: Double?
+        /// Rolling-window means of the per-step policy KL and its across-batch
+        /// spread (`TrainStepTiming.klMean` / `klStdDev`), in nats.
+        ///
+        /// Windowed over *probes*, not steps: the probe runs on an interval,
+        /// so these advance far more slowly than the other rolling values and
+        /// stay `nil` entirely when the probe is disabled. A reader comparing
+        /// them against a per-step metric should keep that cadence in mind.
+        let rollingKLMean: Double?
+        let rollingKLStdDev: Double?
         /// Rolling-window means of the sampled-minibatch composition —
         /// `TrainStepTiming.sampledBatchMeanGameLength` (position-weighted mean
         /// game length, plies) and `…DrawFraction` (realized post-constraint
@@ -659,6 +695,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _policyLossWinWindow: RollingDoubleWindow
     private var _policyLossLossWindow: RollingDoubleWindow
     private var _velocityNormWindow: RollingDoubleWindow
+    private var _klMeanWindow: RollingDoubleWindow
+    private var _klStdDevWindow: RollingDoubleWindow
     /// Realized sampled-minibatch composition windows — appended on EVERY step
     /// (not gated on `hasDiagnostics`, since the sampler tallies these on the
     /// uniform fast path too). NaN entries (the random-data sweep path) are
@@ -744,6 +782,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         self._policyLossWinWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyLossLossWindow = RollingDoubleWindow(limit: rollingWindow)
         self._velocityNormWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._klMeanWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._klStdDevWindow = RollingDoubleWindow(limit: rollingWindow)
         self._sampledBatchGameLengthWindow = RollingDoubleWindow(limit: rollingWindow)
         self._sampledBatchDrawFractionWindow = RollingDoubleWindow(limit: rollingWindow)
         self._dataPrepMsWindow = RollingDoubleWindow(limit: Self.rollingTimingWindow)
@@ -859,6 +899,15 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             }
             if timing.velocityNorm.isFinite {
                 self._velocityNormWindow.append(Double(timing.velocityNorm))
+                // Only probe steps carry these. Appending a placeholder on
+                // non-probe steps would drag the rolling mean toward that
+                // placeholder and make a sparse metric look dense.
+                if let klMean = timing.klMean {
+                    self._klMeanWindow.append(klMean)
+                }
+                if let klStdDev = timing.klStdDev {
+                    self._klStdDevWindow.append(klStdDev)
+                }
             }
             if let raw = timing.advantageRaw, !raw.isEmpty {
                 self.pushAdvRaw(raw)
@@ -944,6 +993,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._policyLossWinWindow.removeAll()
             self._policyLossLossWindow.removeAll()
             self._velocityNormWindow.removeAll()
+            self._klMeanWindow.removeAll()
+            self._klStdDevWindow.removeAll()
             self._sampledBatchGameLengthWindow.removeAll()
             self._sampledBatchDrawFractionWindow.removeAll()
             self._dataPrepMsWindow.removeAll()
@@ -1001,6 +1052,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             let rollingPLossWin = _policyLossWinWindow.mean
             let rollingPLossLoss = _policyLossLossWindow.mean
             let rollingVNorm = _velocityNormWindow.mean
+            let rollingKLMeanValue = _klMeanWindow.mean
+            let rollingKLStdDevValue = _klStdDevWindow.mean
             let rollingSampledBatchLen = _sampledBatchGameLengthWindow.mean
             let rollingSampledBatchDraw = _sampledBatchDrawFractionWindow.mean
             let (advP05, advP50, advP95) = Self.percentiles(
@@ -1042,6 +1095,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
                 rollingPolicyLossWin: rollingPLossWin,
                 rollingPolicyLossLoss: rollingPLossLoss,
                 rollingVelocityNorm: rollingVNorm,
+                rollingKLMean: rollingKLMeanValue,
+                rollingKLStdDev: rollingKLStdDevValue,
                 rollingSampledBatchGameLength: rollingSampledBatchLen,
                 rollingSampledBatchDrawFraction: rollingSampledBatchDraw,
                 recentDataPrepMs: _dataPrepMsWindow.mean,
@@ -1570,6 +1625,9 @@ final class ChessTrainer: @unchecked Sendable {
     private var policyLossTensor: MPSGraphTensor        // scalar
     private var valueLossTensor: MPSGraphTensor         // scalar
     private var policyEntropyTensor: MPSGraphTensor     // scalar (diagnostic)
+    /// `[batch, policySize]` softmax over legal-masked logits — the sampler's
+    /// own distribution. Source for both halves of the KL probe.
+    private var policySoftmaxLegalTensor: MPSGraphTensor
     private var illegalMassPenaltyTensor: MPSGraphTensor // scalar (diagnostic)
     private var policyNonNegCountTensor: MPSGraphTensor // scalar (diagnostic)
     private var policyNonNegIllegalCountTensor: MPSGraphTensor // scalar (diagnostic, illegal cells)
@@ -1707,6 +1765,21 @@ final class ChessTrainer: @unchecked Sendable {
     private struct TrainingExecutableKey: Hashable {
         let batchSize: Int
         let includeDiagnostics: Bool
+        /// Whether this variant also stashes the pre-update policy for the KL
+        /// probe.
+        ///
+        /// A separate variant so the stash is paid only on probe steps: it
+        /// materializes the whole `[batch, policySize]` masked softmax into a
+        /// variable, which is work the other steps have no use for. Keying it
+        /// here rather than compiling it in unconditionally is what lets the
+        /// probe interval actually reduce the cost.
+        ///
+        /// Note the combinatorics: this key is
+        /// `batchSize × includeDiagnostics × includeKLStash`, so enabling the
+        /// probe can double the number of compiled training graphs held for a
+        /// given batch size. Each is a separate MPSGraph compile (seconds) and
+        /// a separate resident executable.
+        let includeKLStash: Bool
     }
     private var trainingExecutables: [TrainingExecutableKey: MPSGraphExecutable] = [:]
 
@@ -1921,6 +1994,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
         self.policyEntropyTensor = built.policyEntropy
+        self.policySoftmaxLegalTensor = built.policySoftmaxLegal
         self.illegalMassPenaltyTensor = built.illegalMassPenalty
         self.policyNonNegCountTensor = built.policyNonNegCount
         self.policyNonNegIllegalCountTensor = built.policyNonNegIllegalCount
@@ -2145,6 +2219,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
         self.policyEntropyTensor = built.policyEntropy
+        self.policySoftmaxLegalTensor = built.policySoftmaxLegal
         self.illegalMassPenaltyTensor = built.illegalMassPenalty
         self.policyNonNegCountTensor = built.policyNonNegCount
         self.policyNonNegIllegalCountTensor = built.policyNonNegIllegalCount
@@ -2340,6 +2415,11 @@ final class ChessTrainer: @unchecked Sendable {
         policyLoss: MPSGraphTensor,
         valueLoss: MPSGraphTensor,
         policyEntropy: MPSGraphTensor,
+        /// Per-position softmax over the LEGAL-masked policy logits,
+        /// `[batch, policySize]`. The KL probe needs the distribution the
+        /// sampler would actually draw from, which is the masked one — the raw
+        /// softmax includes illegal mass that never reaches a move.
+        policySoftmaxLegal: MPSGraphTensor,
         illegalMassPenalty: MPSGraphTensor,
         policyNonNegCount: MPSGraphTensor,
         policyNonNegIllegalCount: MPSGraphTensor,
@@ -4157,7 +4237,7 @@ final class ChessTrainer: @unchecked Sendable {
             velLoadPlaceholders, velLoadAssignOps, velLoadNDArrays, velLoadTensorData,
             masterVariables, masterLoadPlaceholders, masterLoadAssignOps, masterLoadNDArrays, masterLoadTensorData, syncMastersOps,
             totalLossTensor, policyLoss, valueLoss,
-            policyEntropy, illegalMassPenalty, policyNonNegCount, policyNonNegIllegalCount, gradGlobalNorm, valueMean, valueAbsMean,
+            policyEntropy, softmaxLegal, illegalMassPenalty, policyNonNegCount, policyNonNegIllegalCount, gradGlobalNorm, valueMean, valueAbsMean,
             valueProbWin, valueProbDraw, valueProbLoss,
             policyHeadWeightNormTensor,
             policyLogitAbsMax, playedMoveProbTensor,
@@ -6029,6 +6109,209 @@ final class ChessTrainer: @unchecked Sendable {
         return feeds
     }
 
+    // MARK: - KL probe (second forward pass)
+
+    /// How often to run the KL probe's second forward pass, in training steps.
+    /// `0` (the default) disables it entirely.
+    ///
+    /// Live-tunable and seeded from `TrainingParameters.klProbeInterval`, the
+    /// same shape as `batchStatsInterval`: the training loop re-reads it on its
+    /// reconcile pass, so turning the probe on or off mid-run takes effect on
+    /// the next step rather than the next session. Flipping it on compiles a
+    /// second training-executable variant on first use (the one that stashes);
+    /// flipping it off simply stops selecting that variant.
+    var klProbeInterval: Int = 0
+
+    /// Per-batch-size KL probe subgraph: the stash variable, the assign that
+    /// fills it during the training step, and the two readback scalars.
+    ///
+    /// Built lazily per batch size because an MPSGraph *variable* needs a
+    /// concrete shape, while the graph's own tensors carry a `-1` batch dim.
+    ///
+    /// One stash variable is allocated per distinct batch size ever trained at
+    /// and is never released — the graph owns it for the trainer's lifetime.
+    /// Steady-state training uses a single batch size, so that is one
+    /// allocation; a harness that sweeps sizes pays for each.
+    private struct KLProbeGraph {
+        /// `[batch, policySize]` fp32 holder for `policy_before`.
+        let previousPolicy: MPSGraphTensor
+        /// Writes the pre-update masked softmax into `previousPolicy`. Runs as
+        /// a target operation of the *training* executable, so it captures the
+        /// distribution before the SGD assigns land.
+        let stashAssign: MPSGraphOperation
+        /// Batch-mean KL(previous ‖ current), nats. Scalar.
+        let klMean: MPSGraphTensor
+        /// Batch-mean of KL², for deriving the variance host-side as
+        /// `E[KL²] − E[KL]²` without a second pass over the batch.
+        let klMeanSquare: MPSGraphTensor
+    }
+
+    private var klProbeGraphs: [Int: KLProbeGraph] = [:]
+
+    /// Build (once per batch size) the stash variable and the divergence
+    /// reductions.
+    ///
+    /// **Direction.** `KL(before ‖ current)` — expectation taken under the
+    /// *pre-update* policy. That is the "how much did this step move the
+    /// distribution I was actually sampling from" reading, and it is the
+    /// direction that stays finite when the new policy drives a move's
+    /// probability to zero: `p·log(p/q)` weights by `p`, so cells the old
+    /// policy never used cannot blow it up.
+    ///
+    /// **Dropout confounds this whenever the rate is above zero.** The
+    /// training executable advances the dropout RNG (`dropoutRngAdvanceOp` is
+    /// one of `assignOps`), so by the time the probe's forward runs, the state
+    /// variable holds the *next* value and the probe draws a **different mask**
+    /// than the training forward used. The resulting number then mixes "the
+    /// weights moved" with "the mask changed", and the two are not separable
+    /// after the fact. At rate 0 every dropout node is an exact identity (see
+    /// `ChessNetwork.dropoutRateFeedPlaceholder`), so the measurement is clean.
+    /// The `[KL-PROBE]` line reports the live rate for exactly this reason —
+    /// a non-zero `drop=` means read the value as an upper bound, not as the
+    /// policy shift.
+    ///
+    /// **Epsilon.** Both logs are clamped at 1e-7 in fp32, for the same reason
+    /// the entropy path is: a legal-masked softmax has exact zeros in every
+    /// illegal cell, and `0·log(0/0)` is NaN. In fp32 the clamp is
+    /// representable (fp16 would flush it to zero — see the entropy comment).
+    /// Cells where `p_before ≈ 0` contribute ≈ 0 regardless, which is the
+    /// correct limit.
+    private func klProbeGraph(batchSize: Int) -> KLProbeGraph {
+        if let existing = klProbeGraphs[batchSize] { return existing }
+
+        let graph = network.graph
+        let policySize = network.arch.policySize
+
+        let previousPolicy = graph.variable(
+            with: Data(count: batchSize * policySize * MemoryLayout<Float>.size),
+            shape: [NSNumber(value: batchSize), NSNumber(value: policySize)],
+            dataType: .float32,
+            name: "kl_previous_policy_\(batchSize)"
+        )
+
+        // fp32 throughout: this is a difference of logs of small numbers, and
+        // the whole point of the metric is resolving small moves.
+        let current32 = graph.cast(policySoftmaxLegalTensor, to: .float32, name: nil)
+        let stashAssign = graph.assign(previousPolicy, tensor: current32, name: "kl_stash_\(batchSize)")
+
+        let eps = graph.constant(1e-7, dataType: .float32)
+        let pClamped = graph.addition(previousPolicy, eps, name: nil)
+        let qClamped = graph.addition(current32, eps, name: nil)
+        let logRatio = graph.subtraction(
+            graph.logarithm(with: pClamped, name: nil),
+            graph.logarithm(with: qClamped, name: nil),
+            name: nil
+        )
+        // Σ_j p_j · log(p_j / q_j) over the policy axis → per-position KL.
+        let perPosition = graph.reductionSum(
+            with: graph.multiplication(previousPolicy, logRatio, name: nil),
+            axis: 1,
+            name: "kl_per_position_\(batchSize)"
+        )
+        let klMean = graph.mean(of: perPosition, axes: [0, 1], name: "kl_mean_\(batchSize)")
+        let klMeanSquare = graph.mean(
+            of: graph.square(with: perPosition, name: nil),
+            axes: [0, 1],
+            name: "kl_mean_square_\(batchSize)"
+        )
+
+        let built = KLProbeGraph(
+            previousPolicy: previousPolicy,
+            stashAssign: stashAssign,
+            klMean: klMean,
+            klMeanSquare: klMeanSquare
+        )
+        klProbeGraphs[batchSize] = built
+        SessionLogger.shared.log(
+            "[KL-PROBE] built subgraph batch=\(batchSize) policySize=\(policySize) "
+            + "stash=\(batchSize * policySize * MemoryLayout<Float>.size / (1024 * 1024))MB"
+        )
+        if dropoutRate > 0 {
+            SessionLogger.shared.log(String(
+                format: "[KL-PROBE] WARNING dropout_rate=%.3f > 0: the probe's forward draws a "
+                    + "different mask than the training forward, so kl= mixes the weight change "
+                    + "with the mask change. Treat it as an upper bound.",
+                Double(dropoutRate)
+            ))
+        }
+        return built
+    }
+
+    /// Probe-local step counter, incremented once per executed training step.
+    ///
+    /// Deliberately NOT `_completedTrainSteps`: that counter is maintained by
+    /// the session-level training loop and stays at 0 under harnesses that
+    /// call `trainStep` directly (the batch-size sweep is one), which silently
+    /// turns `value % interval == 0` into "every step". Owning the counter
+    /// here makes the interval mean the same thing on every path.
+    ///
+    /// A plain `var`, not a `SyncBox`, matching `trainingExecutables` and
+    /// `feedCache`: it is read-modify-written once per step from
+    /// `runPreparedStep`, which only ever runs on the serial `executionQueue`.
+    /// A lock here would advertise a concurrency guarantee that the
+    /// read-then-write pattern does not actually provide.
+    private var klProbeStepCounter: Int = 0
+
+    /// Forward-only executables, keyed by batch size.
+    ///
+    /// Compiled against the *same* graph and the same weight variables as the
+    /// training executable, but with **no `targetOperations`** — so the SGD
+    /// assigns, and with them the whole backward pass, are off the path to the
+    /// requested targets and MPSGraph never encodes them. Critically that also
+    /// excludes `dropoutRngAdvanceOp`, so the probe cannot perturb the RNG
+    /// stream the next training step will draw its mask from: this observes,
+    /// it does not participate.
+    ///
+    /// Because the executable shares the graph's variables, running it *after*
+    /// the training step observes the post-update weights — which is exactly
+    /// the `policy_after` the KL needs.
+    private var forwardOnlyExecutables: [Int: MPSGraphExecutable] = [:]
+
+    /// Compile-and-cache the forward-only executable for this batch size.
+    /// Must run on `executionQueue`, same discipline as `trainingExecutables`.
+    ///
+    /// Targets the two KL scalars, which depend on the full forward (through
+    /// `policySoftmaxLegalTensor`) and on the stash variable. Two floats come
+    /// back per probe rather than the `[batch, policySize]` distributions
+    /// themselves — reading those back would be ~80 MB twice per probe and
+    /// would dwarf the forward pass this is meant to measure.
+    private func forwardOnlyExecutable(
+        batchSize: Int,
+        feeds: [MPSGraphTensor: MPSGraphTensorData]
+    ) throws -> MPSGraphExecutable {
+        if let existing = forwardOnlyExecutables[batchSize] {
+            return existing
+        }
+        let probe = klProbeGraph(batchSize: batchSize)
+        var feedShapes: [MPSGraphTensor: MPSGraphShapedType] = [:]
+        feedShapes.reserveCapacity(feeds.count)
+        for (placeholder, tensorData) in feeds {
+            feedShapes[placeholder] = MPSGraphShapedType(
+                shape: tensorData.shape,
+                dataType: placeholder.dataType
+            )
+        }
+        let des = MPSGraphCompilationDescriptor()
+        des.optimizationLevel = self.executableOptimizationLevel
+        if self.disableAutoLayoutConversion, #available(macOS 27.0, *) {
+            des.disableAutoLayoutConversion()
+        }
+        let executable = try withLargeBuildStack {
+            self.network.graph.compile(
+                with: MPSGraphDevice(mtlDevice: self.network.metalDevice),
+                feeds: feedShapes,
+                targetTensors: [probe.klMean, probe.klMeanSquare],
+                targetOperations: nil,
+                compilationDescriptor: des
+            )
+        }
+        forwardOnlyExecutables[batchSize] = executable
+        SessionLogger.shared.log(
+            "[KL-PROBE] compiled forward-only executable batch=\(batchSize)"
+        )
+        return executable
+    }
+
     /// Return the compiled training-step executable for `(batchSize,
     /// includeDiagnostics)`, compiling and caching it on first use. Must run on
     /// `executionQueue` (same discipline as `feedCache`/`trainingExecutables`).
@@ -6042,10 +6325,15 @@ final class ChessTrainer: @unchecked Sendable {
     private func trainingExecutable(
         batchSize: Int,
         includeDiagnostics: Bool,
+        includeKLStash: Bool = false,
         targets: [MPSGraphTensor],
         feeds: [MPSGraphTensor: MPSGraphTensorData]
     ) throws -> MPSGraphExecutable {
-        let key = TrainingExecutableKey(batchSize: batchSize, includeDiagnostics: includeDiagnostics)
+        let key = TrainingExecutableKey(
+            batchSize: batchSize,
+            includeDiagnostics: includeDiagnostics,
+            includeKLStash: includeKLStash
+        )
         if let existing = trainingExecutables[key] {
             return existing
         }
@@ -6077,18 +6365,32 @@ final class ChessTrainer: @unchecked Sendable {
         // compile traverses the full op DAG (now including the gradient ops),
         // so a deep tower can overflow the default dispatch-worker stack here as
         // well. See `withLargeBuildStack`.
+        // With the KL probe enabled, the training step additionally stashes
+        // its pre-update masked softmax.
+        //
+        // Ordering is guaranteed by dataflow, not by luck: the stash's input
+        // is `policySoftmaxLegal`, a value computed during the forward from
+        // the weights as they were read; the SGD assigns consume gradients
+        // derived from that same forward, so they cannot execute before the
+        // forward has read the weights. The stashed distribution is therefore
+        // always the pre-update one, whatever order MPSGraph picks for the
+        // assign itself.
+        var targetOps = self.assignOps
+        if includeKLStash {
+            targetOps.append(klProbeGraph(batchSize: batchSize).stashAssign)
+        }
         let executable = try withLargeBuildStack {
             self.network.graph.compile(
                 with: MPSGraphDevice(mtlDevice: self.network.metalDevice),
                 feeds: feedShapes,
                 targetTensors: targets,
-                targetOperations: self.assignOps,
+                targetOperations: targetOps,
                 compilationDescriptor: des
             )
         }
         trainingExecutables[key] = executable
         SessionLogger.shared.log(
-            "[EXEC] compiled training executable batch=\(batchSize) diagnostics=\(includeDiagnostics) targets=\(targets.count)"
+            "[EXEC] compiled training executable batch=\(batchSize) diagnostics=\(includeDiagnostics) klStash=\(includeKLStash) targets=\(targets.count)"
         )
         return executable
     }
@@ -6176,6 +6478,17 @@ final class ChessTrainer: @unchecked Sendable {
             velocityGlobalNormTensor
         ]
         let targets = includeDiagnostics ? leanTargets + diagnosticTargets : leanTargets
+        // Decided once, here, because the executable variant and the probe
+        // block below must agree: the stash runs as a target operation of the
+        // training executable, so a step that stashes and a step that probes
+        // have to be the same step.
+        let klStepIndex = klProbeStepCounter
+        klProbeStepCounter += 1
+        // Snapshot once: this is live-tunable, and the executable choice and
+        // the probe block below must agree on a single value even if the
+        // parameter changes mid-step.
+        let klInterval = klProbeInterval
+        let isKLProbeStep = klInterval > 0 && klStepIndex % klInterval == 0
         // Phase 2: run through a compiled MPSGraphExecutable (cached per
         // batchSize × target set) rather than `graph.run`, which re-derives the
         // execution plan each call. The executable shares the graph's weight
@@ -6188,6 +6501,7 @@ final class ChessTrainer: @unchecked Sendable {
         let executable = try trainingExecutable(
             batchSize: batchSize,
             includeDiagnostics: includeDiagnostics,
+            includeKLStash: isKLProbeStep,
             targets: targets,
             feeds: feeds
         )
@@ -6502,7 +6816,127 @@ final class ChessTrainer: @unchecked Sendable {
             )
         }
 
+        // --- KL probe: the second forward pass ---
+        //
+        // Runs AFTER the training step's command buffer has completed, so the
+        // shared weight variables now hold the post-update weights. That makes
+        // this evaluation `policy_after` on the same minibatch the step just
+        // trained on — the other half of `KL(policy_before ‖ policy_after)`.
+        //
+        // Timed separately and excluded from `gpuRunMs` so a probe step's
+        // training cost stays directly comparable to a non-probe step's. The
+        // measured value is the whole point: it decides whether per-step KL
+        // telemetry is affordable, or whether it has to be amortized over an
+        // interval the way `[BATCH-STATS]` is.
+        var klProbeMs: Double = 0
+        var klMean: Double?
+        var klStdDev: Double?
+        if isKLProbeStep {
+            // EVERYTHING in here is telemetry, so nothing in here may abort a
+            // training step. By the time we get here the weights have already
+            // been updated and the step is a success; throwing now would
+            // destroy an otherwise-good multi-hour run to report a diagnostic.
+            // Hence the blanket catch, and hence no `preconditionFailure` on
+            // any of these paths — a missing feed or a failed compile costs
+            // this step's metric and nothing else.
+            do {
+                let klStart = CFAbsoluteTimeGetCurrent()
+                let fwdExecutable = try forwardOnlyExecutable(batchSize: batchSize, feeds: feeds)
+                guard let fwdFeedTensors = fwdExecutable.feedTensors else {
+                    throw ChessTrainerError.lossOutputMissing
+                }
+                // Bind in the forward-only executable's OWN feed order. Its
+                // feed set is a subset of the training step's (no label or
+                // advantage inputs reach the forward path), so this cannot be
+                // positional.
+                var fwdInputs: [MPSGraphTensorData] = []
+                fwdInputs.reserveCapacity(fwdFeedTensors.count)
+                for tensor in fwdFeedTensors {
+                    if let vBaselineOverride, tensor === vBaselinePlaceholder {
+                        fwdInputs.append(vBaselineOverride)
+                        continue
+                    }
+                    guard let data = feeds[tensor] else {
+                        throw ChessTrainerError.lossOutputMissing
+                    }
+                    fwdInputs.append(data)
+                }
+                guard let klCommandBuffer = network.commandQueue.makeCommandBuffer() else {
+                    throw ChessTrainerError.lossOutputMissing
+                }
+                let klMpsBuffer = MPSCommandBuffer(commandBuffer: klCommandBuffer)
+                let klResults = fwdExecutable.encode(
+                    to: klMpsBuffer,
+                    inputs: fwdInputs,
+                    results: nil,
+                    executionDescriptor: nil
+                )
+                // Take the same weight lock as the training step: this reads
+                // the variables an `exportWeights` probe could be writing.
+                network.weightAccessLock.wait()
+                klMpsBuffer.commit()
+                klMpsBuffer.waitUntilCompleted()
+                let klStatus = klCommandBuffer.status
+                network.weightAccessLock.signal()
+
+                guard klStatus != .error else {
+                    throw ChessTrainerError.gpuCommandFailed(
+                        stage: "KL probe forward",
+                        status: klStatus,
+                        error: klCommandBuffer.error?.localizedDescription
+                    )
+                }
+                guard klResults.count >= 2 else {
+                    throw ChessTrainerError.lossOutputMissing
+                }
+                // Two fp32 scalars, in the order they were requested. The KL
+                // reductions are built in fp32 regardless of the compute
+                // dtype, so this is a raw read with no conversion.
+                let meanScalar = ChessNetwork.readFloatsFP32(from: klResults[0], count: 1)[0]
+                let meanSquareScalar = ChessNetwork.readFloatsFP32(from: klResults[1], count: 1)[0]
+                guard meanScalar.isFinite, meanSquareScalar.isFinite else {
+                    throw ChessTrainerError.lossOutputMissing
+                }
+                // Var(KL) = E[KL²] − E[KL]². Clamped at 0: the identity is
+                // exact in real arithmetic, but the two means are reduced
+                // independently, so rounding can put the difference a hair
+                // below zero when the true variance is ~0 — which is exactly
+                // what a tiny-learning-rate step looks like.
+                let variance = max(0, Double(meanSquareScalar) - Double(meanScalar) * Double(meanScalar))
+                klMean = Double(meanScalar)
+                klStdDev = variance.squareRoot()
+                klProbeMs = (CFAbsoluteTimeGetCurrent() - klStart) * 1000
+            } catch {
+                // Log once per failure and carry on with no metric for this
+                // step. `klMean`/`klStdDev` stay nil, which every consumer
+                // already treats as "not measured".
+                SessionLogger.shared.log("[KL-PROBE] skipped this step: \(error)")
+                klProbeMs = 0
+                klMean = nil
+                klStdDev = nil
+            }
+        }
+
         let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1000
+
+        // One line per probe, carrying everything the A/B needs: the training
+        // step's own GPU time (unchanged by the probe), the probe's cost, and
+        // the resulting overhead both per probe and amortized over the probe
+        // interval. `overhead` is the number that decides the feature.
+        if klProbeMs > 0 {
+            let pct = gpuMs > 0 ? klProbeMs / gpuMs * 100 : 0
+            // `kl` is the step's movement in function space; `klSd/kl` is how
+            // unevenly that movement was spread across the batch.
+            let ratio = (klMean ?? 0) > 0 ? (klStdDev ?? 0) / (klMean ?? 1) : 0
+            SessionLogger.shared.log(String(
+                format: "[KL-PROBE] step=%d batch=%d kl=%.6f klSd=%.6f klSd/kl=%.2f drop=%.3f "
+                    + "gpu=%.1fms probe=%.1fms overhead=%.1f%% amortized@%d=%.2f%%",
+                klStepIndex, batchSize,
+                klMean ?? Double.nan, klStdDev ?? Double.nan, ratio, Double(dropoutRate),
+                gpuMs, klProbeMs, pct,
+                klInterval, pct / Double(max(1, klInterval))
+            ))
+        }
 
         return TrainStepTiming(
             dataPrepMs: prepMs,
@@ -6510,6 +6944,9 @@ final class ChessTrainer: @unchecked Sendable {
             readbackMs: readbackMs,
             queueWaitMs: queueWaitMs,
             totalMs: totalMs,
+            klMean: klMean,
+            klStdDev: klStdDev,
+            klProbeMs: klProbeMs,
             loss: totalBufValue,
             policyLoss: policyBufValue,
             valueLoss: valueBufValue,

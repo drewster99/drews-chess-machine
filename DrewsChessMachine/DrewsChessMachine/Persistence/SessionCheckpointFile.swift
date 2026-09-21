@@ -458,6 +458,10 @@ struct SessionCheckpointState: Codable, Equatable {
     /// Optional for back-compat; absent → loader falls through to
     /// `TrainingParameters.shared.batchStatsInterval`.
     var batchStatsInterval: Int?
+    /// KL-probe cadence in training steps (0 = off) in effect at save time.
+    /// Optional for back-compat; absent → the loader falls through to the
+    /// current `TrainingParameters.klProbeInterval`.
+    var klProbeInterval: Int?
     /// Periodic-autosave cadence (seconds) in effect at save time
     /// (`TrainingParameters.shared.periodicAutosaveIntervalSec`). Optional for
     /// back-compat; absent → loader falls through to the current value.

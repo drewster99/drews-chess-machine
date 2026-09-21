@@ -723,6 +723,16 @@ public enum ArenaSPRTMaxGames: TrainingParameterKey {}
 )
 public enum BatchStatsInterval: TrainingParameterKey {}
 
+@TrainingParameter(
+    name: "KL Probe Interval",
+    description: "Measure KL(policy before the SGD step || policy after) on the training minibatch every N steps, and chart it with its across-batch spread. 0 disables. This is the only metric that shows how far a step moves the policy in FUNCTION space -- gNorm measures the step in parameter space, and the two diverge: a large gradient across a flat region barely moves the distribution, a small one across a sharp region can move it a lot. Costs one extra forward pass on probe steps only (roughly 8-11% of a training step at batch 4096, so ~1% at interval 10). NOTE: the reading is only clean at dropout_rate = 0 -- above that the probe's forward draws a different dropout mask than the training forward did, and the number mixes the weight change with the mask change.",
+    default: 0,
+    range: 0...10000,
+    category: "Observability",
+    liveTunable: true
+)
+public enum KLProbeInterval: TrainingParameterKey {}
+
 // MARK: - LR / Momentum cycling (TRAINING_DYNAMICS_PLAN.md §3)
 //
 // Two independent repeating cycles — one for the learning rate (geometric
@@ -972,6 +982,7 @@ public extension TrainingParametersSnapshot {
     var arenaSPRTMinGames: Int { value(for: ArenaSPRTMinGames.self) }
     var arenaSPRTMaxGames: Int { value(for: ArenaSPRTMaxGames.self) }
     var batchStatsInterval: Int { value(for: BatchStatsInterval.self) }
+    var klProbeInterval: Int { value(for: KLProbeInterval.self) }
     var lrCycleEnabled: Bool { value(for: LRCycleEnabled.self) }
     var lrCyclePeriodSteps: Int { value(for: LRCyclePeriodSteps.self) }
     var lrCycleCount: Int { value(for: LRCycleCount.self) }
@@ -1085,6 +1096,7 @@ public final class TrainingParameters {
     public var arenaSPRTMinGames: Int { didSet { Self.persist(ArenaSPRTMinGames.self, value: arenaSPRTMinGames) } }
     public var arenaSPRTMaxGames: Int { didSet { Self.persist(ArenaSPRTMaxGames.self, value: arenaSPRTMaxGames) } }
     public var batchStatsInterval: Int { didSet { Self.persist(BatchStatsInterval.self, value: batchStatsInterval) } }
+    public var klProbeInterval: Int { didSet { Self.persist(KLProbeInterval.self, value: klProbeInterval) } }
     public var lrCycleEnabled: Bool { didSet { Self.persist(LRCycleEnabled.self, value: lrCycleEnabled) } }
     public var lrCyclePeriodSteps: Int { didSet { Self.persist(LRCyclePeriodSteps.self, value: lrCyclePeriodSteps) } }
     public var lrCycleCount: Int { didSet { Self.persist(LRCycleCount.self, value: lrCycleCount) } }
@@ -1160,6 +1172,7 @@ public final class TrainingParameters {
         self.arenaSPRTMinGames = Self.read(ArenaSPRTMinGames.self)
         self.arenaSPRTMaxGames = Self.read(ArenaSPRTMaxGames.self)
         self.batchStatsInterval = Self.read(BatchStatsInterval.self)
+        self.klProbeInterval = Self.read(KLProbeInterval.self)
         self.lrCycleEnabled = Self.read(LRCycleEnabled.self)
         self.lrCyclePeriodSteps = Self.read(LRCyclePeriodSteps.self)
         self.lrCycleCount = Self.read(LRCycleCount.self)
@@ -1239,6 +1252,7 @@ public final class TrainingParameters {
         v[ArenaSPRTMinGames.id] = ArenaSPRTMinGames.encode(arenaSPRTMinGames)
         v[ArenaSPRTMaxGames.id] = ArenaSPRTMaxGames.encode(arenaSPRTMaxGames)
         v[BatchStatsInterval.id] = BatchStatsInterval.encode(batchStatsInterval)
+        v[KLProbeInterval.id] = KLProbeInterval.encode(klProbeInterval)
         v[LRCycleEnabled.id] = LRCycleEnabled.encode(lrCycleEnabled)
         v[LRCyclePeriodSteps.id] = LRCyclePeriodSteps.encode(lrCyclePeriodSteps)
         v[LRCycleCount.id] = LRCycleCount.encode(lrCycleCount)
@@ -1382,6 +1396,8 @@ public final class TrainingParameters {
             try ArenaSPRTMaxGames.definition.validate(raw); arenaSPRTMaxGames = try ArenaSPRTMaxGames.decode(raw)
         case BatchStatsInterval.id:
             try BatchStatsInterval.definition.validate(raw); batchStatsInterval = try BatchStatsInterval.decode(raw)
+        case KLProbeInterval.id:
+            try KLProbeInterval.definition.validate(raw); klProbeInterval = try KLProbeInterval.decode(raw)
         case LRCycleEnabled.id:
             try LRCycleEnabled.definition.validate(raw); lrCycleEnabled = try LRCycleEnabled.decode(raw)
         case LRCyclePeriodSteps.id:
@@ -1416,6 +1432,23 @@ public final class TrainingParameters {
     }
 
     // MARK: Persistence (per-key UserDefaults)
+
+    /// Current persisted value for `key`, readable from **any** thread.
+    ///
+    /// The singleton is `@MainActor`, which makes it unreachable from the
+    /// pre-flight CLI paths — and, worse, actively dangerous from any thread
+    /// the main actor might need: `SweepCLI`/`ProbeModelCLI`-style `syncWait`
+    /// helpers block the calling thread on a semaphore while a detached task
+    /// runs, so an `await TrainingParameters.shared.…` from inside one can
+    /// never complete and deadlocks the process.
+    ///
+    /// This goes through the same validated `UserDefaults` path `init` uses,
+    /// with no actor hop. Note it reads what is *persisted*: a transient
+    /// `--parameters` run-override applied under `suppressPersistence` will
+    /// not be visible here.
+    public nonisolated static func persistedValue<K: TrainingParameterKey>(_ key: K.Type) -> K.Value {
+        read(key)
+    }
 
     private nonisolated static func read<K: TrainingParameterKey>(_ key: K.Type) -> K.Value {
         let defaults = UserDefaults.standard
@@ -1549,6 +1582,7 @@ public final class TrainingParameters {
         ArenaSPRTMinGames.self,
         ArenaSPRTMaxGames.self,
         BatchStatsInterval.self,
+        KLProbeInterval.self,
         LRCycleEnabled.self,
         LRCyclePeriodSteps.self,
         LRCycleCount.self,

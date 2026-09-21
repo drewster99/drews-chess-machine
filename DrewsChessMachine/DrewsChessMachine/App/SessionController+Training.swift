@@ -276,6 +276,18 @@ extension SessionController {
                         "[RESUME-PARAM] batch_stats_interval: saved=nil applied=\(TrainingParameters.shared.batchStatsInterval) (defaulted)"
                     )
                 }
+                if let kpi = rs.klProbeInterval {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] kl_probe_interval: \(TrainingParameters.shared.klProbeInterval) -> \(kpi) (from session)"
+                    )
+                    trainer.klProbeInterval = kpi
+                    TrainingParameters.shared.klProbeInterval = kpi
+                } else {
+                    trainer.klProbeInterval = TrainingParameters.shared.klProbeInterval
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] kl_probe_interval: saved=nil applied=\(TrainingParameters.shared.klProbeInterval) (session predates the parameter)"
+                    )
+                }
                 restoreArenaPromotionCriterion(from: rs)
                 // Range-validate before assigning: the value is written
                 // straight onto `TrainingParameters.shared` and then feeds
@@ -1745,6 +1757,16 @@ extension SessionController {
                         // to 'now' so the first auto-arena occurs exactly
                         // one interval after the model matures.
                         let liveParams = await TrainingParameters.shared.snapshot()
+                        // Reconcile the live-tunable KL probe cadence. Cheap
+                        // (an Int write), and it is what makes turning the
+                        // probe on or off from the settings popover take
+                        // effect on the next step instead of the next session.
+                        if trainer.klProbeInterval != liveParams.klProbeInterval {
+                            SessionLogger.shared.log(
+                                "[PARAM] klProbeInterval: \(trainer.klProbeInterval) -> \(liveParams.klProbeInterval)"
+                            )
+                            trainer.klProbeInterval = liveParams.klProbeInterval
+                        }
                         let liveInterval = liveParams.arenaAutoIntervalSec
                         let isWarmup = trainer.completedTrainSteps < liveParams.lrWarmupSteps
                         if isWarmup {
@@ -2272,7 +2294,16 @@ extension SessionController {
                         // inputs).
                         let shapesStr = "feedCache=\(trainer.feedCacheCount)"
 
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) spGamesEm=\(parallelSnap.emittedGames) spMovesEm=\(parallelSnap.emittedPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) sampBatch=(\(sampBatchStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        // KL block. Present only when the probe is enabled AND
+                        // has produced at least one sample, so its absence is
+                        // unambiguous rather than reading as a zero.
+                        let klStr: String = {
+                            guard let klMean = trainingSnap.rollingKLMean else { return "" }
+                            let sd = trainingSnap.rollingKLStdDev ?? 0
+                            let ratio = klMean > 0 ? sd / klMean : 0
+                            return String(format: " kl=%.3e klSd=%.3e klSd/kl=%.2f", klMean, sd, ratio)
+                        }()
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) spGamesEm=\(parallelSnap.emittedGames) spMovesEm=\(parallelSnap.emittedPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr)\(klStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) sampBatch=(\(sampBatchStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // [DRAW-WATCH] summary — piggyback on the same

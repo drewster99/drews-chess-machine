@@ -948,6 +948,7 @@ final class SessionController {
             trainer.sqrtBatchScalingForLR = params.sqrtBatchScalingLR
             trainer.lrWarmupSteps = params.lrWarmupSteps
             trainer.batchStatsInterval = params.batchStatsInterval
+            trainer.klProbeInterval = params.klProbeInterval
             trainer.lrMomentumCycle = params.lrMomentumCycle
             return trainer
         }

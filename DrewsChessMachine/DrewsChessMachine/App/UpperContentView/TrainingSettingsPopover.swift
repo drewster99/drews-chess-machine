@@ -333,8 +333,10 @@ struct TrainingSettingsPopover: View {
                 SessionsTab(
                     periodicAutosaveIntervalMinutesText: $model.periodicAutosaveIntervalMinutesText,
                     maxPeriodicAutosavesKeptText: $model.maxPeriodicAutosavesKeptText,
+                    klProbeIntervalText: $model.klProbeIntervalText,
                     periodicAutosaveIntervalError: model.periodicAutosaveIntervalError,
-                    maxPeriodicAutosavesKeptError: model.maxPeriodicAutosavesKeptError
+                    maxPeriodicAutosavesKeptError: model.maxPeriodicAutosavesKeptError,
+                    klProbeIntervalError: model.klProbeIntervalError
                 )
             }
             }
@@ -1008,8 +1010,10 @@ private struct OptimizerTab: View {
 private struct SessionsTab: View {
     @Binding var periodicAutosaveIntervalMinutesText: String
     @Binding var maxPeriodicAutosavesKeptText: String
+    @Binding var klProbeIntervalText: String
     let periodicAutosaveIntervalError: Bool
     let maxPeriodicAutosavesKeptError: Bool
+    let klProbeIntervalError: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1048,6 +1052,31 @@ private struct SessionsTab: View {
 
             Divider()
 
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Telemetry")
+                    .font(.subheadline.weight(.semibold))
+                PopoverRow(
+                    label: "KL probe every N steps:",
+                    text: $klProbeIntervalText,
+                    error: klProbeIntervalError,
+                    placeholder: "0",
+                    hint: klProbeHint
+                ) {
+                    Stepper(
+                        "",
+                        value: PopoverBindings.intBinding(text: $klProbeIntervalText, fallback: 0),
+                        in: 0...10_000,
+                        step: 5
+                    )
+                }
+                Text("Measures KL(policy before the step ‖ policy after) on the training minibatch, charted with its across-batch spread. It is the only view of how far a step moves the policy in function space — gNorm measures the step in parameter space, and the two come apart. Costs one extra forward pass on probe steps only, so roughly 1% of training throughput at interval 10. 0 disables it. Only meaningful at dropout 0: above that the probe's forward draws a different mask than the training forward, and the number mixes the weight change with the mask change.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+
             Text("The periodic autosave writes a full session checkpoint on this cadence while Play-and-Train runs; an interval change takes effect mid-session. The retention cap deletes the oldest periodic autosaves beyond the kept count after each new one is written — manual saves and post-promotion autosaves are never pruned. 0 keeps every periodic autosave (no pruning).")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
@@ -1065,6 +1094,12 @@ private struct SessionsTab: View {
     }
 
     /// Clarifies that 0 disables pruning; blank otherwise.
+    private var klProbeHint: String {
+        let n = Int(klProbeIntervalText.trimmingCharacters(in: .whitespaces)) ?? 0
+        guard n > 0 else { return "(off)" }
+        return String(format: "(~%.1f%% of throughput)", 100.0 / Double(n))
+    }
+
     private var keptHint: String {
         let trimmed = maxPeriodicAutosavesKeptText.trimmingCharacters(in: .whitespaces)
         if let n = Int(trimmed), n == 0 { return "0 = keep all" }

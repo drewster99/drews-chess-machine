@@ -52,6 +52,17 @@ struct TrainingBucket: Sendable, Equatable, Identifiable {
     let policyNonNegIllegalCount: ChartBucketRange?
     let gradNorm: ChartBucketRange?
     let velocityNorm: ChartBucketRange?
+    /// Per-step policy KL and its across-batch spread, both in nats. Sampled
+    /// on the KL probe's interval, so these buckets are sparser than their
+    /// neighbours and are nil entirely when the probe is off.
+    let klMean: ChartBucketRange?
+    let klStdDev: ChartBucketRange?
+    /// Optimizer state at sample time: the effective learning rate, the
+    /// effective momentum, and `lr / (1 − μ)` — the displacement the two
+    /// combine into, which is what actually moves the weights.
+    let learningRate: ChartBucketRange?
+    let momentum: ChartBucketRange?
+    let effectiveStepSize: ChartBucketRange?
     let policyHeadWeightNorm: ChartBucketRange?
     let replayRatio: ChartBucketRange?
     let policyLossWin: ChartBucketRange?
@@ -284,6 +295,11 @@ private struct TrainingBucketBuilder {
     var policyNonNegIllegalCount = NumericAccumulator()
     var gradNorm = NumericAccumulator()
     var velocityNorm = NumericAccumulator()
+    var klMean = NumericAccumulator()
+    var klStdDev = NumericAccumulator()
+    var learningRate = NumericAccumulator()
+    var momentum = NumericAccumulator()
+    var effectiveStepSize = NumericAccumulator()
     var policyHeadWeightNorm = NumericAccumulator()
     var replayRatio = NumericAccumulator()
     var policyLossWin = NumericAccumulator()
@@ -318,6 +334,11 @@ private struct TrainingBucketBuilder {
         policyNonNegIllegalCount.absorb(s.rollingPolicyNonNegIllegalCount)
         gradNorm.absorb(s.rollingGradNorm)
         velocityNorm.absorb(s.rollingVelocityNorm)
+        klMean.absorb(s.rollingKLMean)
+        klStdDev.absorb(s.rollingKLStdDev)
+        learningRate.absorb(s.learningRate)
+        momentum.absorb(s.momentum)
+        effectiveStepSize.absorb(s.effectiveStepSize)
         policyHeadWeightNorm.absorb(s.rollingPolicyHeadWeightNorm)
         replayRatio.absorb(s.replayRatio)
         policyLossWin.absorb(s.rollingPolicyLossWin)
@@ -353,6 +374,11 @@ private struct TrainingBucketBuilder {
             policyNonNegIllegalCount: policyNonNegIllegalCount.range,
             gradNorm: gradNorm.range,
             velocityNorm: velocityNorm.range,
+            klMean: klMean.range,
+            klStdDev: klStdDev.range,
+            learningRate: learningRate.range,
+            momentum: momentum.range,
+            effectiveStepSize: effectiveStepSize.range,
             policyHeadWeightNorm: policyHeadWeightNorm.range,
             replayRatio: replayRatio.range,
             policyLossWin: policyLossWin.range,

@@ -40,6 +40,34 @@ struct TrainingChartSample: Identifiable, Sendable, Codable, Equatable {
     /// at a glance — informative when raising the momentum coefficient
     /// μ. Source: `TrainingRunStats.rollingVelocityNorm`.
     let rollingVelocityNorm: Double?
+    /// Rolling mean of the per-step policy KL, `KL(before ‖ after)` in nats —
+    /// how far one SGD step moves the policy in *function* space. The
+    /// complement to `rollingGradNorm`, which measures the step in *parameter*
+    /// space: a large gradient across a flat region barely moves the
+    /// distribution, and a small one across a sharp region can move it a lot.
+    /// `nil` when the KL probe is disabled, and sampled on the probe's
+    /// interval rather than every step.
+    let rollingKLMean: Double?
+    /// Rolling mean of the across-batch standard deviation of that KL. Read as
+    /// a ratio against `rollingKLMean`: a spread much larger than the mean
+    /// means the step rewrote a few positions wholesale and left the rest
+    /// alone, rather than moving the whole batch together.
+    let rollingKLStdDev: Double?
+    /// Effective learning rate actually fed to the optimizer at sample time —
+    /// the cycle's value (or the static LR), after sqrt-batch scaling and
+    /// warmup. Not a rolling mean: it is an exact function of the step index,
+    /// so the instantaneous value is the true one.
+    let learningRate: Double?
+    /// Effective Polyak momentum at sample time, from the momentum cycle or
+    /// the static coefficient.
+    let momentum: Double?
+    /// `lr / (1 − μ)` — the asymptotic per-step displacement of SGD with
+    /// momentum, and the number that actually governs how far the weights
+    /// travel. Charted because neither input tells the story alone: raising μ
+    /// from 0.75 to 0.90 multiplies the step by 2.5× at unchanged LR, so an
+    /// LR curve and a momentum curve that both look tame can still combine
+    /// into a large effective step.
+    let effectiveStepSize: Double?
     /// Rolling-window mean of the policy head's final 1×1 conv weight
     /// L2 norm (`pwNorm` on the [STATS] line). Tracks the magnitude of
     /// the layer that emits raw logits — monotonic growth with low

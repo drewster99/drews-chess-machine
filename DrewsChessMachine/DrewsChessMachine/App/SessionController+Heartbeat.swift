@@ -571,6 +571,28 @@ extension SessionController {
             let games = Double(p.recentGames)
             return (Double(p.recentMoves) / games, Double(p.recentDraws) / games)
         }()
+        // Learning rate / momentum / effective step size. All three are exact
+        // functions of the step index rather than measured quantities, so they
+        // are read directly instead of being rolled — and they are read here,
+        // on the heartbeat, because `effectiveLearningRate` and
+        // `effectiveMomentum` resolve the cycle without touching
+        // `executionQueue` (so a UI sample never blocks on a training step).
+        let optimizerReadout: (learningRate: Double, momentum: Double, effectiveStepSize: Double)? = {
+            guard let trainer else { return nil }
+            // Same batch size the optimizer is actually stepping at, so the
+            // sqrt-batch scaling inside `effectiveLearningRate` matches what
+            // the SGD step applied rather than a nominal default.
+            let batchSize = TrainingParameters.shared.trainingBatchSize
+            let lr = Double(trainer.effectiveLearningRate(forBatchSize: batchSize))
+            let mu = Double(trainer.effectiveMomentum())
+            // `lr / (1 − μ)`. Guarded because μ = 1 is a legal parameter value
+            // in principle and would divide by zero; there is no meaningful
+            // effective step at that point, so report nothing rather than an
+            // infinity that would wreck the chart's y-domain.
+            let effective: Double? = mu < 1 ? lr / (1 - mu) : nil
+            guard let effective else { return nil }
+            return (lr, mu, effective)
+        }()
         let sample = TrainingChartSample(
             id: chartCoordinator?.trainingChartNextId ?? 0,
             elapsedSec: elapsed,
@@ -582,6 +604,11 @@ extension SessionController {
             rollingPolicyNonNegIllegalCount: trainingSnap?.rollingPolicyNonNegIllegalCount,
             rollingGradNorm: trainingSnap?.rollingGradGlobalNorm,
             rollingVelocityNorm: trainingSnap?.rollingVelocityNorm,
+            rollingKLMean: trainingSnap?.rollingKLMean,
+            rollingKLStdDev: trainingSnap?.rollingKLStdDev,
+            learningRate: optimizerReadout?.learningRate,
+            momentum: optimizerReadout?.momentum,
+            effectiveStepSize: optimizerReadout?.effectiveStepSize,
             rollingPolicyHeadWeightNorm: trainingSnap?.rollingPolicyHeadWeightNorm,
             replayRatio: ratioSnap?.currentRatio,
             rollingPolicyLossWin: trainingSnap?.rollingPolicyLossWin,

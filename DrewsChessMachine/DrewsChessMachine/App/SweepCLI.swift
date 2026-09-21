@@ -39,6 +39,19 @@ enum SweepCLI {
                 // Fresh trainer ⇒ fresh `ChessNetwork` (built in the init), so
                 // no resetNetwork / model load is needed.
                 let trainer = try ChessTrainer()
+                // Honour the KL-probe cadence here too. The trainer's own
+                // property default would otherwise silently win on this path
+                // (the sweep never goes through `SessionController`, which is
+                // where the session wiring applies parameters), so a
+                // parameter the user has switched on would appear to do
+                // nothing when measured with `--sweep` — which is exactly the
+                // tool you would reach for to measure its cost.
+                //
+                // Read nonisolated, NOT via `TrainingParameters.shared`: this
+                // closure runs inside `syncWait`, which blocks its caller on a
+                // semaphore, so awaiting the `@MainActor` singleton here
+                // deadlocks the process outright.
+                trainer.klProbeInterval = TrainingParameters.persistedValue(KLProbeInterval.self)
                 return try await trainer.runSweep(
                     sizes: sweepSizes,
                     targetSecondsPerSize: secondsPerSize,

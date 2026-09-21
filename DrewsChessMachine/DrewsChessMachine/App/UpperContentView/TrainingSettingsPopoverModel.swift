@@ -162,9 +162,11 @@ final class TrainingSettingsPopoverModel {
     // stores seconds); seeding rounds to the nearest minute.
     var periodicAutosaveIntervalMinutesText = "" { didSet { periodicAutosaveIntervalError = false } }
     var maxPeriodicAutosavesKeptText = "" { didSet { maxPeriodicAutosavesKeptError = false } }
+    var klProbeIntervalText = "" { didSet { klProbeIntervalError = false } }
 
     private(set) var periodicAutosaveIntervalError = false
     private(set) var maxPeriodicAutosavesKeptError = false
+    private(set) var klProbeIntervalError = false
 
     // MARK: - Cancel stash (for the live-propagated replay-ratio fields)
 
@@ -284,6 +286,7 @@ final class TrainingSettingsPopoverModel {
         // --- Sessions tab ---
         periodicAutosaveIntervalMinutesText = String(Int((p.periodicAutosaveIntervalSec / 60.0).rounded()))
         maxPeriodicAutosavesKeptText = String(p.maxPeriodicAutosavesKept)
+        klProbeIntervalText = String(p.klProbeInterval)
         // Stash pre-edit values for the four replay-ratio control fields. The
         // Replay tab live-propagates changes to those fields; if the user hits
         // Cancel we restore from this stash, matching the standard
@@ -348,6 +351,7 @@ final class TrainingSettingsPopoverModel {
         maxDrawPercentPerBatchError = false
         periodicAutosaveIntervalError = false
         maxPeriodicAutosavesKeptError = false
+        klProbeIntervalError = false
     }
 
     /// Restore the seven live-propagated Replay-tab fields (four replay-ratio
@@ -1188,6 +1192,20 @@ final class TrainingSettingsPopoverModel {
             }
         } else {
             maxPeriodicAutosavesKeptError = true
+            anyError = true
+        }
+        // KL probe interval — Int in [0, 10000]; 0 = off. `liveTunable`, and
+        // the training loop reconciles it against the running trainer on its
+        // poll, so a plain singleton write is all that is required here.
+        if let n = Int(klProbeIntervalText.trimmingCharacters(in: .whitespaces)),
+           n >= 0, n <= 10_000 {
+            klProbeIntervalError = false
+            if n != p.klProbeInterval {
+                SessionLogger.shared.log("[PARAM] klProbeInterval: \(p.klProbeInterval) -> \(n)")
+                p.klProbeInterval = n
+            }
+        } else {
+            klProbeIntervalError = true
             anyError = true
         }
 

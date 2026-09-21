@@ -842,6 +842,7 @@ extension SessionController {
             legalMassCollapseGraceSeconds: params.legalMassCollapseGraceSeconds,
             legalMassCollapseNoImprovementProbes: params.legalMassCollapseNoImprovementProbes,
             batchStatsInterval: params.batchStatsInterval,
+            klProbeInterval: params.klProbeInterval,
             periodicAutosaveIntervalSec: params.periodicAutosaveIntervalSec,
             maxPeriodicAutosavesKept: params.maxPeriodicAutosavesKept,
             arenaPromotionCriterion: params.arenaPromotionCriterion.logToken,
