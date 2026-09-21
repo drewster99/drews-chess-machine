@@ -625,9 +625,14 @@ final class ArenaLogFormatterSPRTTests: XCTestCase {
             XCTAssertTrue(line.hasPrefix("kept"), "none of these promote: \(line)")
         }
 
-        // And specifically: an inconclusive run must not read as a rejection.
-        XCTAssertTrue(ArenaLogFormatter.formatVerdict(record: inconclusive).contains("inconclusive"))
-        XCTAssertFalse(ArenaLogFormatter.formatVerdict(record: inconclusive).contains("reject"))
+        // And specifically: an inconclusive run must not be LABELLED a
+        // rejection. Matching on the bare word "reject" would be wrong here —
+        // the label deliberately contains "rejection", because saying that is
+        // the whole point of the wording.
+        let inconclusiveText = ArenaLogFormatter.formatVerdict(record: inconclusive)
+        XCTAssertTrue(inconclusiveText.contains("inconclusive"))
+        XCTAssertFalse(inconclusiveText.contains("SPRT reject"))
+        XCTAssertNotEqual(inconclusiveText, ArenaLogFormatter.formatVerdict(record: rejected))
     }
 
     func testInconclusiveBlockSaysItIsNotARejection() throws {

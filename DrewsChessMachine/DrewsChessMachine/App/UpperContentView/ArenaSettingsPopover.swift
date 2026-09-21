@@ -126,6 +126,19 @@ struct ArenaSettingsPopover: View {
 
             Divider()
 
+            // --- Promotion criterion section ---
+            //
+            // The two criteria use disjoint sets of the knobs below: the score
+            // threshold reads "# of games" and "Promote threshold" and ignores
+            // the SPRT block; SPRT ignores both of those and reads its own
+            // hypotheses. Rather than hide whichever group is inactive — which
+            // would make the popover jump in height and hide the reason a
+            // setting appears to have no effect — both stay visible, and the
+            // inactive one is dimmed and disabled.
+            ArenaPromotionCriterionSection(model: model)
+
+            Divider()
+
             // --- Options section ---
             VStack(alignment: .leading, spacing: 8) {
                 Text("Options")
@@ -137,6 +150,8 @@ struct ArenaSettingsPopover: View {
                     placeholder: "200",
                     width: 100
                 )
+                .disabled(model.promotionCriterion == .sprt)
+                .opacity(model.promotionCriterion == .sprt ? 0.4 : 1)
                 ArenaPopoverField(
                     label: "Concurrency:",
                     text: $model.concurrencyText,
@@ -164,6 +179,8 @@ struct ArenaSettingsPopover: View {
                     width: 100,
                     hint: "(score in [0.5, 1.0])"
                 )
+                .disabled(model.promotionCriterion == .sprt)
+                .opacity(model.promotionCriterion == .sprt ? 0.4 : 1)
             }
 
             HStack {
@@ -175,7 +192,7 @@ struct ArenaSettingsPopover: View {
             }
         }
         .padding(16)
-        .frame(width: 380)
+        .frame(width: 420)
         .onAppear { model.seedFromParams() }
     }
 
@@ -200,11 +217,25 @@ struct ArenaSettingsPopover: View {
         }()
         let wdl = "\(lastArena.candidateWins)–\(lastArena.draws)–\(lastArena.championWins)"
         let scoreText = String(format: "%.3f", lastArena.score)
+        // A non-promotion under SPRT is three different outcomes, and the
+        // one that matters most to act on — inconclusive — is not a verdict
+        // against the candidate at all. Orange rather than the neutral
+        // secondary, because it usually means the hypotheses need widening.
         let (verdict, verdictColor): (String, Color) = {
             switch lastArena.promotionKind {
             case .automatic: return ("PROMOTED (auto)", .green)
             case .manual:    return ("PROMOTED (manual)", .green)
-            case .none:      return ("kept", .secondary)
+            case .none:
+                guard lastArena.promotionCriterion == .sprt else {
+                    return ("kept", .secondary)
+                }
+                switch lastArena.sprtVerdict?.decision {
+                case .reject:        return ("kept (SPRT reject)", .secondary)
+                case .inconclusive:  return ("inconclusive (guard)", .orange)
+                case .accept:        return ("kept (accept, not applied)", .orange)
+                case .continueTesting, .none:
+                    return ("undecided (ended early)", .orange)
+                }
             }
         }()
 

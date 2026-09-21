@@ -22,6 +22,15 @@ final class ArenaSettingsPopoverModel {
     /// `showArenaPopover` `@State` on `UpperContentView`.
     var isPresented = false
 
+    /// Which rule decides promotion. Bound directly to a `Picker` rather than
+    /// parsed from text, so unlike every other field here it cannot be
+    /// invalid and has no matching `*Error` flag.
+    ///
+    /// It is still transactional: the picker writes to this scratch value and
+    /// `save()` is what reaches `TrainingParameters`, so Cancel discards a
+    /// criterion change exactly as it discards a typed one.
+    var promotionCriterion: ArenaPromotionCriterion = .scoreThreshold
+
     var gamesText = "" { didSet { gamesError = false } }
     var concurrencyText = "" { didSet { concurrencyError = false } }
     var intervalText = "" { didSet { intervalError = false } }
@@ -29,6 +38,12 @@ final class ArenaSettingsPopoverModel {
     var tauStartText = "" { didSet { tauStartError = false } }
     var tauDecayText = "" { didSet { tauDecayError = false } }
     var tauFloorText = "" { didSet { tauFloorError = false } }
+    var sprtElo0Text = "" { didSet { sprtElo0Error = false } }
+    var sprtElo1Text = "" { didSet { sprtElo1Error = false } }
+    var sprtAlphaText = "" { didSet { sprtAlphaError = false } }
+    var sprtBetaText = "" { didSet { sprtBetaError = false } }
+    var sprtMinGamesText = "" { didSet { sprtMinGamesError = false } }
+    var sprtMaxGamesText = "" { didSet { sprtMaxGamesError = false } }
 
     private(set) var gamesError = false
     private(set) var concurrencyError = false
@@ -37,6 +52,17 @@ final class ArenaSettingsPopoverModel {
     private(set) var tauStartError = false
     private(set) var tauDecayError = false
     private(set) var tauFloorError = false
+    private(set) var sprtElo0Error = false
+    private(set) var sprtElo1Error = false
+    private(set) var sprtAlphaError = false
+    private(set) var sprtBetaError = false
+    private(set) var sprtMinGamesError = false
+    private(set) var sprtMaxGamesError = false
+    /// Cross-field complaint that belongs to no single box — `elo1 > elo0`,
+    /// `alpha + beta < 1`, `minGames <= maxGames`. Shown as a line under the
+    /// SPRT group, because marking one of the two fields red would be picking
+    /// a culprit arbitrarily.
+    private(set) var sprtRelationError: String?
 
     private let maxConcurrency: Int
     private let formatDurationSpec: (Double) -> String
@@ -71,6 +97,13 @@ final class ArenaSettingsPopoverModel {
         tauStartText = String(format: "%.2f", p.arenaStartTau)
         tauDecayText = String(format: "%.3f", p.arenaTauDecayPerPly)
         tauFloorText = String(format: "%.2f", p.arenaTargetTau)
+        promotionCriterion = p.arenaPromotionCriterion
+        sprtElo0Text = Self.formatElo(p.arenaSPRTElo0)
+        sprtElo1Text = Self.formatElo(p.arenaSPRTElo1)
+        sprtAlphaText = String(format: "%.3f", p.arenaSPRTAlpha)
+        sprtBetaText = String(format: "%.3f", p.arenaSPRTBeta)
+        sprtMinGamesText = String(p.arenaSPRTMinGames)
+        sprtMaxGamesText = String(p.arenaSPRTMaxGames)
         gamesError = false
         concurrencyError = false
         intervalError = false
@@ -78,6 +111,19 @@ final class ArenaSettingsPopoverModel {
         tauStartError = false
         tauDecayError = false
         tauFloorError = false
+        sprtElo0Error = false
+        sprtElo1Error = false
+        sprtAlphaError = false
+        sprtBetaError = false
+        sprtMinGamesError = false
+        sprtMaxGamesError = false
+        sprtRelationError = nil
+    }
+
+    /// Elo hypotheses are whole numbers at their defaults (0 and 10) and read
+    /// better that way; anything else keeps one decimal.
+    private static func formatElo(_ v: Double) -> String {
+        v == v.rounded() ? String(Int(v.rounded())) : String(format: "%.1f", v)
     }
 
     func cancel() {
@@ -189,6 +235,18 @@ final class ArenaSettingsPopoverModel {
             anyError = true
         }
 
+        // --- SPRT block ---
+        //
+        // Validated unconditionally, not just when SPRT is selected. The
+        // fields stay editable under the score threshold (greyed but not
+        // erased), and letting an invalid value save while it happens to be
+        // inactive means the failure surfaces later, at the start of the
+        // first SPRT arena, which is exactly where a statistics
+        // configuration error is most expensive to discover.
+        if !applySPRTFields(to: p) {
+            anyError = true
+        }
+
         // Push the freshly-edited arena schedule into the live
         // `samplingScheduleBox` so the next arena tournament picks
         // up the new τ curve. Without this push the box keeps its
@@ -196,7 +254,121 @@ final class ArenaSettingsPopoverModel {
         // don't take effect until the next Play-and-Train restart.
         onAfterSave()
 
-        if !anyError { isPresented = false }
+        if !anyError {
+            // The criterion is written last, after every field it depends on
+            // has been accepted. Flipping it to `.sprt` alongside a rejected
+            // hypothesis would leave the next arena running the new rule with
+            // the old numbers.
+            if promotionCriterion != p.arenaPromotionCriterion {
+                SessionLogger.shared.log(
+                    "[PARAM] arenaPromotionCriterion: \(p.arenaPromotionCriterion.logToken) -> \(promotionCriterion.logToken)"
+                )
+                p.arenaPromotionCriterion = promotionCriterion
+            }
+            isPresented = false
+        }
+    }
+
+    /// Parse, range-check and cross-check the six SPRT fields, writing them
+    /// back on success. Returns false if anything failed.
+    ///
+    /// Per-field ranges mirror the parameter declarations. The cross-field
+    /// constraints are checked afterwards by asking `ArenaSPRT.SPRTConfig` to
+    /// construct itself — the same validator the arena uses — rather than
+    /// restating the rules here, so the popover cannot drift out of agreement
+    /// with what the arena will accept. A cross-field failure marks no single
+    /// box red; it reports on its own line, because blaming one of the two
+    /// values in a relation is arbitrary.
+    private func applySPRTFields(to p: TrainingParameters) -> Bool {
+        sprtRelationError = nil
+        var ok = true
+
+        func parseDouble(
+            _ text: String,
+            range: ClosedRange<Double>,
+            error: (Bool) -> Void
+        ) -> Double? {
+            guard let v = Double(text.trimmingCharacters(in: .whitespaces)),
+                  v.isFinite, range.contains(v) else {
+                error(true)
+                ok = false
+                return nil
+            }
+            error(false)
+            return v
+        }
+
+        func parseInt(
+            _ text: String,
+            range: ClosedRange<Int>,
+            error: (Bool) -> Void
+        ) -> Int? {
+            guard let v = Int(text.trimmingCharacters(in: .whitespaces)),
+                  range.contains(v) else {
+                error(true)
+                ok = false
+                return nil
+            }
+            error(false)
+            return v
+        }
+
+        let elo0 = parseDouble(sprtElo0Text, range: -50...50) { self.sprtElo0Error = $0 }
+        let elo1 = parseDouble(sprtElo1Text, range: -50...50) { self.sprtElo1Error = $0 }
+        let alpha = parseDouble(sprtAlphaText, range: 0.001...0.5) { self.sprtAlphaError = $0 }
+        let beta = parseDouble(sprtBetaText, range: 0.001...0.5) { self.sprtBetaError = $0 }
+        let minGames = parseInt(sprtMinGamesText, range: 2...10000) { self.sprtMinGamesError = $0 }
+        let maxGames = parseInt(sprtMaxGamesText, range: 0...1_000_000) { self.sprtMaxGamesError = $0 }
+
+        guard ok,
+              let elo0, let elo1, let alpha, let beta, let minGames, let maxGames else {
+            return false
+        }
+
+        do {
+            _ = try ArenaSPRT.SPRTConfig(
+                elo0: elo0, elo1: elo1, alpha: alpha, beta: beta,
+                minGames: minGames, maxGames: maxGames
+            )
+        } catch let error as ArenaSPRT.ConfigError {
+            sprtRelationError = error.description
+            return false
+        } catch {
+            sprtRelationError = "\(error)"
+            return false
+        }
+
+        func assign(_ new: Double, to current: Double, name: String, write: (Double) -> Void) {
+            guard abs(new - current) > Double.ulpOfOne else { return }
+            SessionLogger.shared.log(String(format: "[PARAM] %@: %.4f -> %.4f", name, current, new))
+            write(new)
+        }
+
+        assign(elo0, to: p.arenaSPRTElo0, name: "arenaSPRTElo0") { p.arenaSPRTElo0 = $0 }
+        assign(elo1, to: p.arenaSPRTElo1, name: "arenaSPRTElo1") { p.arenaSPRTElo1 = $0 }
+        assign(alpha, to: p.arenaSPRTAlpha, name: "arenaSPRTAlpha") { p.arenaSPRTAlpha = $0 }
+        assign(beta, to: p.arenaSPRTBeta, name: "arenaSPRTBeta") { p.arenaSPRTBeta = $0 }
+        if minGames != p.arenaSPRTMinGames {
+            SessionLogger.shared.log("[PARAM] arenaSPRTMinGames: \(p.arenaSPRTMinGames) -> \(minGames)")
+            p.arenaSPRTMinGames = minGames
+        }
+        if maxGames != p.arenaSPRTMaxGames {
+            SessionLogger.shared.log("[PARAM] arenaSPRTMaxGames: \(p.arenaSPRTMaxGames) -> \(maxGames)")
+            p.arenaSPRTMaxGames = maxGames
+        }
+        return true
+    }
+
+    /// One-line summary of what the selected criterion will do, for the hint
+    /// under the picker. Live — it reads the scratch fields, so it updates as
+    /// the user types rather than after Save.
+    var criterionHint: String {
+        switch promotionCriterion {
+        case .scoreThreshold:
+            return "Fixed \(gamesText.isEmpty ? "N" : gamesText) games; promote if score ≥ \(promoteThresholdText)."
+        case .sprt:
+            return "Plays until the evidence decides. # of games and promote threshold are unused."
+        }
     }
 
     /// Live "reached at N plies" hint for the floor field, computed from the

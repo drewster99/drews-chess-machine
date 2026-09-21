@@ -1,12 +1,15 @@
 # Arena promotion: SPRT mode — design
 
-Status: **phases 1–4 implemented; phase 5 (UI) outstanding.** Written 2026-09-20.
+Status: **implemented, phases 1–5.** Written 2026-09-20.
 
-Phases 1–4 have landed (`703dc77`, `26a747e`, `f21ff44`, and this one). SPRT is
-selectable only by editing `parameters.json` or `UserDefaults` until phase 5
-adds the picker; with the criterion left at its default the arena behaves
-exactly as before. Items 1–6 and 8 under "Where the changes land" now describe
-shipped code; item 7 is the remaining work.
+All five phases have landed (`703dc77`, `26a747e`, `f21ff44`, `ea85025`, and
+this one). Everything under "Where the changes land" now describes shipped
+code. **The default is still the score threshold**, so an arena behaves exactly
+as it did until someone picks SPRT in the Arena settings popover.
+
+The one design question this plan left open and the implementation did not
+settle is "Zero-variance records", below — found in phase 3, pinned by test,
+not fixed.
 
 ## Goal
 
@@ -369,10 +372,33 @@ too close together rather than a normal outcome.
 
 7. **`App/UpperContentView/ArenaSettingsPopover.swift` +
    `ArenaSettingsPopoverModel.swift`** — a `Picker` bound to the criterion, and
-   the four SPRT fields `.disabled(criterion != .sprt)`. The popover is
-   hand-built (`ArenaPopoverField` rows, transactional parse/validate/apply on
-   Save), so this fits the existing shape; `Picker` is already used elsewhere in
-   the app (`ArenaSurfaceView`, `BoardSideView`).
+   the SPRT fields dimmed when it is not selected. The popover is hand-built
+   (`ArenaPopoverField` rows, transactional parse/validate/apply on Save), so
+   this fits the existing shape; `Picker` is already used elsewhere in the app
+   (`ArenaSurfaceView`, `BoardSideView`).
+
+   **Shipped with four decisions worth recording:**
+
+   - The picker + hypothesis fields live in their own
+     `ArenaPromotionCriterionSection` view struct, per the project's
+     one-view-struct-per-file rule (a `@ViewBuilder` helper property would
+     have been the smaller diff and is not blessed).
+   - **Both groups stay visible; the inactive one dims.** `# of games` and
+     `Promote threshold` grey out under SPRT, and the hypothesis block greys
+     out under the threshold. Hiding either would resize the popover on every
+     criterion change and, worse, remove the only on-screen explanation for
+     why a setting appears to do nothing.
+   - **The SPRT fields are validated even while inactive.** Letting a bad
+     `alpha` save because SPRT is not currently selected defers the failure to
+     the start of the first SPRT arena, which is the most expensive place to
+     discover a statistics misconfiguration.
+   - **The criterion is written last, after every field is accepted.** A flip
+     to `.sprt` alongside a rejected hypothesis set would leave the next arena
+     running the new rule against the old numbers. Cross-field failures report
+     on their own line rather than reddening one of the two fields in a
+     relation, and they are checked by asking `ArenaSPRT.SPRTConfig` to
+     construct itself — the same validator the arena uses — so the popover
+     cannot drift out of agreement with what the arena will accept.
 
 8. **`Persistence`** — confirm the new ids are carried in the `.dcmsession`
    saved-config block, or deliberately excluded, matching how
@@ -442,11 +468,12 @@ Existing suites to extend:
 4. ~~Gate branch in `SessionController+Arena`, record, log formatter.~~
    **Done.** Also covered persistence (item 8) and the busy label, which
    needed to stop printing `game 37/400` for a run that had no schedule.
-5. UI: picker + conditional enabling. **Outstanding.**
+5. ~~UI: picker + conditional enabling.~~ **Done** — plus the last-arena
+   summary in the popover, which showed every non-promotion as a neutral
+   "kept" and now distinguishes an inconclusive run (orange — usually says the
+   hypotheses need widening) from a rejection.
 
-Phase 1 was where the risk was; the rest is plumbing. Note that phases 2–4
-were each built but the full suite was run only once, after phase 2 — the
-accumulated test code from phases 3 and 4 still needs a run.
+Phase 1 was where the risk was; the rest was plumbing.
 
 ## Open questions
 
@@ -454,5 +481,16 @@ accumulated test code from phases 3 and 4 still needs a run.
    shipped in phase 1. Revisit the BayesElo trinomial only if the shipped form
    proves mis-calibrated against real arena records.
 2. ~~Defaults for `elo0`/`elo1`~~ — **decided: `0 / 10`**.
-3. **Should an inconclusive run be visually distinct from a rejection** in the
-   arena history UI, or is the log line enough?
+3. ~~**Should an inconclusive run be visually distinct from a rejection** in
+   the arena history UI, or is the log line enough?~~ — **decided: yes,
+   distinct, everywhere.** The log block spells out that the guard is not a
+   rejection; `formatVerdict` renders three different strings; and the
+   popover's last-arena line colours inconclusive orange rather than the
+   neutral secondary used for "kept". The three states are not
+   interchangeable, and a reader who cannot tell them apart will read a
+   too-narrow hypothesis gap as a bad candidate.
+
+4. **New, unresolved: the zero-variance degeneracy.** See the section above.
+   A candidate that wins every game does not promote. Pinned by test, not
+   fixed, because fixing it means changing the statistic and re-running the
+   calibration.

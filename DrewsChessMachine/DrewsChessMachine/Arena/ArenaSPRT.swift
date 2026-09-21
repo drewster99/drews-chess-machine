@@ -162,8 +162,24 @@ enum ArenaSPRT {
     ///
     /// where `variance` is the empirical per-game score variance over the three
     /// outcome buckets — the same quantity `ArenaEloStats` uses for its
-    /// confidence interval, which is what makes draws reduce the evidence per
-    /// game rather than being treated as half a win.
+    /// confidence interval.
+    ///
+    /// Note the direction of that denominator, which is easy to get backwards:
+    /// because `LLR ∝ 1/variance`, **draws make the test decide faster**, not
+    /// slower. At equal `xbar` and equal `N`, a draw-heavy tally carries a
+    /// larger `|LLR|` than a decisive one (110W/0D/90L → 0.498; 80W/60D/60L →
+    /// 0.714), because draws shrink the noise in the score estimate. This is
+    /// the same variance-reduction idea that makes fishtest's pentanomial
+    /// (game-pair) form stronger still — see `documentation/arena-sprt.md`.
+    /// The folk claim that "draws make Elo hard to measure" is about a
+    /// different thing: a very drawish pairing caps how much Elo can be
+    /// *expressed* at all, since `mu = 0.5144` (10 Elo) needs at least 2.9%
+    /// decisive games.
+    ///
+    /// The degenerate endpoint of that same relationship is the zero-variance
+    /// case below: a record where every game had the same result carries
+    /// "infinite" evidence, which the formula cannot express, so it returns
+    /// `nil` instead.
     ///
     /// Returns `nil` when the ratio is undefined: fewer than two games, or a
     /// zero-variance tally (every game the same result), where the normalised
