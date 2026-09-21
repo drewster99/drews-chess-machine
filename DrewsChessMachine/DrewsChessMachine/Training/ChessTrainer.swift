@@ -1662,6 +1662,17 @@ final class ChessTrainer: @unchecked Sendable {
     /// observable when raising μ.
     private var velocityGlobalNormTensor: MPSGraphTensor
     private var assignOps: [MPSGraphOperation]
+    /// `assignOps` WITHOUT the dropout-RNG advance.
+    ///
+    /// The KL probe needs both of its forward passes to draw the *same*
+    /// dropout mask, otherwise the divergence it reports mixes the weight
+    /// update with a mask change and there is no way to separate them. The
+    /// mask comes from an RNG state variable that the training executable
+    /// normally advances as part of its own assigns — so on probe steps we
+    /// compile this variant instead and run the advance *after* the probe's
+    /// forward. Each step still advances exactly once; only the ordering
+    /// moves, and only on probe steps.
+    private var assignOpsWithoutDropoutAdvance: [MPSGraphOperation]
 
     /// Pre-allocated scalar ND array for the learning-rate feed.
     /// Written with the current `learningRate` on each step so
@@ -2020,6 +2031,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossLossTensor = built.policyLossLoss
         self.velocityGlobalNormTensor = built.velocityGlobalNorm
         self.assignOps = built.assignOps
+        self.assignOpsWithoutDropoutAdvance = built.assignOps
         // Advance the dropout RNG stream exactly once per training step,
         // compiled into the same executable as the SGD assigns.
         if let advance = network.dropoutRngAdvanceOp {
@@ -2245,6 +2257,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossLossTensor = built.policyLossLoss
         self.velocityGlobalNormTensor = built.velocityGlobalNorm
         self.assignOps = built.assignOps
+        self.assignOpsWithoutDropoutAdvance = built.assignOps
         // Advance the dropout RNG stream exactly once per training step
         // (same as the designated init).
         if let advance = network.dropoutRngAdvanceOp {
@@ -4918,6 +4931,16 @@ final class ChessTrainer: @unchecked Sendable {
                 // `totalMs` is the user-facing "this step took N ms"
                 // figure that controllers throttle against.
                 totalMs: baseTiming.totalMs + freshBaselineMs,
+                // Carry the KL probe's results through the rebuild. These are
+                // Optional with an implicit nil default, so omitting them here
+                // compiles cleanly and silently drops the metric — which is
+                // exactly what happened: the [KL-PROBE] log line is emitted
+                // inside `runPreparedStep`, before this rebuild, so the probe
+                // looked healthy while every downstream consumer (rolling
+                // windows, [STATS], the charts) received nil.
+                klMean: baseTiming.klMean,
+                klStdDev: baseTiming.klStdDev,
+                klProbeMs: baseTiming.klProbeMs,
                 loss: baseTiming.loss,
                 policyLoss: baseTiming.policyLoss,
                 valueLoss: baseTiming.valueLoss,
@@ -6158,17 +6181,20 @@ final class ChessTrainer: @unchecked Sendable {
     /// probability to zero: `p·log(p/q)` weights by `p`, so cells the old
     /// policy never used cannot blow it up.
     ///
-    /// **Dropout confounds this whenever the rate is above zero.** The
-    /// training executable advances the dropout RNG (`dropoutRngAdvanceOp` is
-    /// one of `assignOps`), so by the time the probe's forward runs, the state
-    /// variable holds the *next* value and the probe draws a **different mask**
-    /// than the training forward used. The resulting number then mixes "the
-    /// weights moved" with "the mask changed", and the two are not separable
-    /// after the fact. At rate 0 every dropout node is an exact identity (see
-    /// `ChessNetwork.dropoutRateFeedPlaceholder`), so the measurement is clean.
-    /// The `[KL-PROBE]` line reports the live rate for exactly this reason —
-    /// a non-zero `drop=` means read the value as an upper bound, not as the
-    /// policy shift.
+    /// **Both forwards draw the same dropout mask, by construction.** The
+    /// mask comes from an RNG state variable that the training executable
+    /// normally advances as one of its `assignOps`. Left alone, that would
+    /// mean the probe's forward — which runs after the step — draws a
+    /// *different* mask, and the reported divergence would be the weight
+    /// change plus a mask change with no way to separate them. So on probe
+    /// steps the training executable is compiled from
+    /// `assignOpsWithoutDropoutAdvance`, and the advance is issued separately
+    /// once the probe's forward is done. Both passes therefore see identical
+    /// masks and the KL isolates the weight update, at any dropout rate; the
+    /// stream still advances exactly once per step, so training is unchanged.
+    /// (At rate 0 the question is moot anyway — every dropout node is an exact
+    /// identity; see `ChessNetwork.dropoutRateFeedPlaceholder`.) The
+    /// `[KL-PROBE]` line still reports the live rate as context.
     ///
     /// **Epsilon.** Both logs are clamped at 1e-7 in fp32, for the same reason
     /// the entropy path is: a legal-masked softmax has exact zeros in every
@@ -6226,14 +6252,6 @@ final class ChessTrainer: @unchecked Sendable {
             "[KL-PROBE] built subgraph batch=\(batchSize) policySize=\(policySize) "
             + "stash=\(batchSize * policySize * MemoryLayout<Float>.size / (1024 * 1024))MB"
         )
-        if dropoutRate > 0 {
-            SessionLogger.shared.log(String(
-                format: "[KL-PROBE] WARNING dropout_rate=%.3f > 0: the probe's forward draws a "
-                    + "different mask than the training forward, so kl= mixes the weight change "
-                    + "with the mask change. Treat it as an upper bound.",
-                Double(dropoutRate)
-            ))
-        }
         return built
     }
 
@@ -6257,10 +6275,11 @@ final class ChessTrainer: @unchecked Sendable {
     /// Compiled against the *same* graph and the same weight variables as the
     /// training executable, but with **no `targetOperations`** — so the SGD
     /// assigns, and with them the whole backward pass, are off the path to the
-    /// requested targets and MPSGraph never encodes them. Critically that also
-    /// excludes `dropoutRngAdvanceOp`, so the probe cannot perturb the RNG
-    /// stream the next training step will draw its mask from: this observes,
-    /// it does not participate.
+    /// requested targets and MPSGraph never encodes them — so the probe does
+    /// not itself advance the dropout RNG. Combined with the probe-step
+    /// training variant omitting the advance too, both forwards read the same
+    /// RNG state and draw the same mask; the advance is issued once,
+    /// explicitly, after the probe.
     ///
     /// Because the executable shares the graph's variables, running it *after*
     /// the training step observes the post-update weights — which is exactly
@@ -6375,7 +6394,12 @@ final class ChessTrainer: @unchecked Sendable {
         // forward has read the weights. The stashed distribution is therefore
         // always the pre-update one, whatever order MPSGraph picks for the
         // assign itself.
-        var targetOps = self.assignOps
+        // On probe steps, compile the variant that does NOT advance the
+        // dropout RNG: the probe's forward has to draw the same mask the
+        // training forward drew, or the KL it reports is the weight change
+        // plus a mask change. The advance is issued separately once the probe
+        // has run, so the per-step count is unchanged.
+        var targetOps = includeKLStash ? self.assignOpsWithoutDropoutAdvance : self.assignOps
         if includeKLStash {
             targetOps.append(klProbeGraph(batchSize: batchSize).stashAssign)
         }
@@ -6914,6 +6938,27 @@ final class ChessTrainer: @unchecked Sendable {
                 klProbeMs = 0
                 klMean = nil
                 klStdDev = nil
+            }
+
+            // Issue the dropout-RNG advance the probe-step executable left
+            // out, so this step still advances the stream exactly once and the
+            // NEXT step draws a fresh mask.
+            //
+            // Outside the do/catch on purpose: if the probe failed we lose the
+            // metric, but the RNG must still move or the next step silently
+            // reuses this step's mask — a correctness bug in training, caused
+            // by telemetry, which is precisely what must not happen. A failure
+            // here is logged and swallowed for the same reason.
+            if let advance = network.dropoutRngAdvanceOp,
+               let stateVariable = network.dropoutRngStateVariable {
+                network.weightAccessLock.wait()
+                _ = network.graph.run(
+                    with: network.commandQueue,
+                    feeds: [:],
+                    targetTensors: [stateVariable],
+                    targetOperations: [advance]
+                )
+                network.weightAccessLock.signal()
             }
         }
 

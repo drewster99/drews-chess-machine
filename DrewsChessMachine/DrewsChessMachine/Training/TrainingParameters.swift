@@ -725,7 +725,7 @@ public enum BatchStatsInterval: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "KL Probe Interval",
-    description: "Measure KL(policy before the SGD step || policy after) on the training minibatch every N steps, and chart it with its across-batch spread. 0 disables. This is the only metric that shows how far a step moves the policy in FUNCTION space -- gNorm measures the step in parameter space, and the two diverge: a large gradient across a flat region barely moves the distribution, a small one across a sharp region can move it a lot. Costs one extra forward pass on probe steps only (roughly 8-11% of a training step at batch 4096, so ~1% at interval 10). NOTE: the reading is only clean at dropout_rate = 0 -- above that the probe's forward draws a different dropout mask than the training forward did, and the number mixes the weight change with the mask change.",
+    description: "Measure KL(policy before the SGD step || policy after) on the training minibatch every N steps, and chart it with its across-batch spread. 0 disables. This is the only metric that shows how far a step moves the policy in FUNCTION space -- gNorm measures the step in parameter space, and the two diverge: a large gradient across a flat region barely moves the distribution, a small one across a sharp region can move it a lot. Costs one extra forward pass on probe steps only (roughly 8-11% of a training step at batch 4096, so ~1% at interval 10). The probe holds the dropout RNG steady across both of its forward passes, so the measurement isolates the weight update at any dropout rate.",
     default: 0,
     range: 0...10000,
     category: "Observability",

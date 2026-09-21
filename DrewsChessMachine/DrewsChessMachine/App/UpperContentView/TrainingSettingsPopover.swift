@@ -1069,7 +1069,7 @@ private struct SessionsTab: View {
                         step: 5
                     )
                 }
-                Text("Measures KL(policy before the step ‖ policy after) on the training minibatch, charted with its across-batch spread. It is the only view of how far a step moves the policy in function space — gNorm measures the step in parameter space, and the two come apart. Costs one extra forward pass on probe steps only, so roughly 1% of training throughput at interval 10. 0 disables it. Only meaningful at dropout 0: above that the probe's forward draws a different mask than the training forward, and the number mixes the weight change with the mask change.")
+                Text("Measures KL(policy before the step ‖ policy after) on the training minibatch, charted with its across-batch spread. It is the only view of how far a step moves the policy in function space — gNorm measures the step in parameter space, and the two come apart. Costs one extra forward pass on probe steps only, so roughly 1% of training throughput at interval 10. 0 disables it. The probe holds the dropout RNG steady across both of its forward passes, so the reading isolates the weight update at any dropout rate.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
