@@ -137,6 +137,7 @@ def build_run(key, cfg):
     foreign = 0             # [STATS] lines from a different model in a shared log
     expected_base = cfg.get("base_modelID")  # this lineage's champion base
     base_by_raw = {}        # raw meta_step -> step_base applied (for probe merge)
+    seg_base = {}           # launch index -> step_base applied to that launch
     for seg_i, log in enumerate(cfg["logs"]):
         path = os.path.join(LOGDIR, log)
         if not os.path.exists(path):
@@ -206,6 +207,7 @@ def build_run(key, cfg):
                 "pLogit_mean": st["pLogit"] if st["pLogit"] is not None else "",
                 "pLogit_peak": "", "frozen_file": "", "note": "; ".join(clamp_notes),
             }
+        seg_base[seg_i] = step_base
         launch_offset += seg_max_elapsed
 
     # (cum, elapsed) from the [STATS] rows — to interpolate elapsed onto any pElo-
@@ -238,18 +240,31 @@ def build_run(key, cfg):
 
     # Merge the in-training probe pElo/NLL curve (selfplay_probe/<key>.csv),
     # recorded by the app's periodic lichess probe during this run. Each probe raw
-    # step maps to a cum_step via the same per-launch offset the [STATS] pass applied
-    # (base_by_raw: exact for the cumulative lineages, nearest-prior for the reset-
-    # reconstructed ones). NOTE: this puzzleElo is on the RECORDING BUILD's scale,
-    # which differs from the current-binary replay pElo — use the replay/self-play
-    # toggle to compare within one consistent scale.
+    # step maps to a cum_step via the same per-launch offset the [STATS] pass applied.
+    #
+    # A probe CSV MAY carry a `segment` column naming the launch (index into the
+    # registry `logs` list) the row came from; when present that is the only exact
+    # mapping. A lineage that restarted from step 1 more than once has the SAME raw
+    # step number under several different bases, and the flat raw->base dict keeps
+    # only the last writer — so without the column every probe row from an earlier
+    # restart lands on the last restart's base and the pElo curve is scrambled onto
+    # step ranges it never occupied. Rows without the column keep the old behaviour
+    # (exact for cumulative lineages, nearest-prior otherwise), which is why the
+    # older imported probe curves are unchanged by this.
+    #
+    # NOTE: this puzzleElo is on the RECORDING BUILD's scale, which differs from the
+    # current-binary replay pElo — use the replay/self-play toggle to compare within
+    # one consistent scale.
     probe_path = os.path.join(HERE, "selfplay_probe", f"{key}.csv")
     has_traj = os.path.exists(probe_path)
     if has_traj and base_by_raw:
         raws = sorted(base_by_raw)
         for pr in csv.DictReader(open(probe_path)):
             raw = int(pr["step"])
-            if raw in base_by_raw:
+            seg = pr.get("segment", "")
+            if seg != "" and int(seg) in seg_base:
+                base = seg_base[int(seg)]
+            elif raw in base_by_raw:
                 base = base_by_raw[raw]
             else:
                 i = bisect.bisect_right(raws, raw) - 1
@@ -275,21 +290,57 @@ def build_run(key, cfg):
     # Sample every ~1000 cum-steps to match the replay tracker's cadence. The raw
     # sources are far denser — [STATS] telemetry is ~per-60s and the in-training
     # probe pElo curve is ~per-25-steps — which is what bloated the embedded
-    # dashboard. Bucket rows by nearest 1000-step boundary and keep one per bucket,
-    # preferring a pElo-bearing row so the headline pElo trajectory is retained at
-    # 1000-step resolution rather than being thinned away by a [STATS]-only neighbor.
-    buckets = {}   # bucket index -> chosen cum_step
+    # dashboard. Bucket rows by nearest 1000-step boundary and emit one row per
+    # bucket.
+    #
+    # Within a bucket the two sources are complementary, not competing: a [STATS]
+    # row carries loss/gNorm/pIllM/... and the real elapsed clock, a probe row
+    # carries pElo/nll at an interpolated elapsed. The bucket's row is therefore the
+    # [STATS] row nearest the boundary, with the nearest probe row's pElo/nll copied
+    # onto it when the [STATS] row has none of its own. Simply picking one row per
+    # bucket (the earlier behaviour, which preferred the pElo-bearing row) meant a
+    # probe firing more often than once per 1000 steps evicted essentially every
+    # [STATS] row, leaving the loss charts empty for exactly the runs with the best
+    # pElo curves. Buckets with no [STATS] row keep the probe row as before.
+    #
+    # A [STATS]-derived row is recognised by its launch index (`segment`), which the
+    # probe-only and anchor rows leave blank — not by whether `loss` parsed, because
+    # a truncated [STATS] line yields a row with a timestamp and little else, and
+    # such a row must still be able to stand in for a bucket that has nothing
+    # better. Within a bucket a loss-bearing row beats a loss-less one outright;
+    # distance to the boundary only breaks ties between equals.
+    def _nearer(a, b, target):
+        return a if abs(a - target) <= abs(b - target) else b
+
+    def _better_stats(a, b, target):
+        a_has = rows[a]["loss"] not in ("", None)
+        b_has = rows[b]["loss"] not in ("", None)
+        if a_has != b_has:
+            return a if a_has else b
+        return _nearer(a, b, target)
+
+    stats_pick = {}   # bucket index -> cum_step of the chosen [STATS] row
+    pelo_pick = {}    # bucket index -> cum_step of the nearest pElo-bearing row
     for s, r in rows.items():
         b = round(s / 1000.0)
-        cur = buckets.get(b)
-        if cur is None:
-            buckets[b] = s
+        if r["segment"] != "":
+            stats_pick[b] = s if b not in stats_pick else _better_stats(stats_pick[b], s, b * 1000)
+        if r["pElo"] not in ("", None):
+            pelo_pick[b] = s if b not in pelo_pick else _nearer(pelo_pick[b], s, b * 1000)
+    out = []
+    for b in sorted(set(stats_pick) | set(pelo_pick)):
+        if b not in stats_pick:
+            out.append(rows[pelo_pick[b]])
             continue
-        has = r["pElo"] not in ("", None)
-        cur_has = rows[cur]["pElo"] not in ("", None)
-        if (has and not cur_has) or (has == cur_has and abs(s - b * 1000) < abs(cur - b * 1000)):
-            buckets[b] = s
-    out = [rows[s] for s in sorted(buckets.values())]
+        row = dict(rows[stats_pick[b]])
+        if row["pElo"] in ("", None) and b in pelo_pick:
+            src = rows[pelo_pick[b]]
+            row["pElo"] = src["pElo"]
+            row["nll"] = src["nll"]
+            if src["note"] and not row["note"]:
+                row["note"] = src["note"]
+        out.append(row)
+    out.sort(key=lambda r: r["cum_step"])
     p = os.path.join(DATA, f"{key}.csv")
     with open(p, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS)
