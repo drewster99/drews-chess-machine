@@ -117,7 +117,14 @@ final class LichessBotController {
     private(set) var alarms: [Alarm] = []
     private(set) var unreconciledGameIDs: [String] = []
     private(set) var finishing: FinishingPurpose?
-    private(set) var index: LichessBotIndex.File?
+    private(set) var index: LichessBotIndex.File? {
+        didSet {
+            recordsByOpponent = LichessBotRecordSummary.byOpponent(rows: index?.rows ?? [])
+        }
+    }
+    /// DCM's results against each opponent (lowercased id), rebuilt when the
+    /// games index loads, so tables can show them without scanning records.
+    private(set) var recordsByOpponent: [String: LichessBotResultTally] = [:]
     private(set) var onlineBots: [LichessBotUserSummary] = []
     /// When `onlineBots` was last fetched successfully.
     private(set) var onlineBotsFetchedAt: Date?
@@ -277,17 +284,8 @@ final class LichessBotController {
 
     /// Our record against `opponentID` from the finished-games index.
     func headToHead(against opponentID: String?) -> (wins: Int, draws: Int, losses: Int) {
-        guard let opponentID, let rows = index?.rows else { return (0, 0, 0) }
-        var record = (wins: 0, draws: 0, losses: 0)
-        for row in rows where row.opponentID == opponentID {
-            switch row.ourScore {
-            case 1: record.wins += 1
-            case 0.5: record.draws += 1
-            case 0: record.losses += 1
-            default: break
-            }
-        }
-        return record
+        guard let opponentID, let tally = recordsByOpponent[opponentID.lowercased()] else { return (0, 0, 0) }
+        return (tally.wins, tally.draws, tally.losses)
     }
 
     // MARK: - Settings

@@ -9,6 +9,17 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-28 16:40 CDT — Lichess bot: challenge-sheet filtering and player columns (pending commit)
+
+- **Bug: a minimum rating alone could empty the list.** The min/max fields used value-formatted text fields, which update only on commit and can keep a stale value when cleared. They are now plain text parsed on every keystroke: empty means no bound, and non-numbers are outlined in red. Regression test: `LichessBotRatingBoundTests`.
+- **Rating filter toggle.** The range applies only when the "<speed> rating" toggle is on. The toggle, min, max and "Hide provisional" are remembered across sheets and launches (`@AppStorage`, a viewing preference).
+- **Player columns:**
+  - **Best**: the highest-rated speed the player has actually played, e.g. a bullet-only player shows "bullet 2899" instead of looking unrated.
+  - **Games**: counts rated games at every speed. It used to count blitz + rapid only, which disagreed with the profile's total.
+  - **vs DCM**: DCM's W–D–L from its own records, via a per-opponent tally rebuilt when the games index loads; no requests. The game view's and sheet's head-to-head read the same tally, so there is one source.
+- **Online Players tab:** one-line header, "Player" column title.
+- **Profile summary** under the table wraps to two lines instead of truncating.
+
 ## 2026-09-28 16:10 CDT — Lichess bot: live-testing fixes and features (`f01a6d2`)
 
 Changes from the first live games on Lichess. **The challenge settings changed shape: after updating, click Reset to Defaults in the bot's Settings once** (no migration, by decision).

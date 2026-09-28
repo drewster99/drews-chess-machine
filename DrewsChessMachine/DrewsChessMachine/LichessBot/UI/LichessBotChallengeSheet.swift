@@ -17,9 +17,14 @@ struct LichessBotChallengeSheet: View {
     @State private var sendError: String?
     @State private var sending = false
     @State private var search = ""
-    @State private var minimumRating: Int?
-    @State private var maximumRating: Int?
-    @State private var hidesProvisional = false
+    /// The rating filter, remembered across sheets and launches (a viewing
+    /// preference, not a bot setting). The bounds are plain text parsed on
+    /// every keystroke: a value-formatted field updates only on commit and
+    /// can keep a stale value when cleared. Empty means no bound.
+    @AppStorage("lichessBot.challenge.ratingFilterEnabled") private var ratingFilterEnabled = false
+    @AppStorage("lichessBot.challenge.minimumRatingText") private var minimumRatingText = ""
+    @AppStorage("lichessBot.challenge.maximumRatingText") private var maximumRatingText = ""
+    @AppStorage("lichessBot.challenge.hidesProvisional") private var hidesProvisional = false
     @State private var sortOrder = [KeyPathComparator(\LichessBotBotRow.usernameSortKey)]
     @State private var selectedLeaderboardID: String?
     @State private var onlinePlayersError: String?
@@ -93,8 +98,9 @@ struct LichessBotChallengeSheet: View {
                 LichessBotBotListHeader(controller: controller, source: source)
                 LichessBotBotFilterBar(
                     search: $search,
-                    minimumRating: $minimumRating,
-                    maximumRating: $maximumRating,
+                    ratingFilterEnabled: $ratingFilterEnabled,
+                    minimumRatingText: $minimumRatingText,
+                    maximumRatingText: $maximumRatingText,
                     hidesProvisional: $hidesProvisional,
                     speed: clock.speed
                 )
@@ -116,6 +122,7 @@ struct LichessBotChallengeSheet: View {
                 )
                 .shown(source == .favorites)
                 LichessBotBotTable(
+                    nameTitle: "Player",
                     rows: LichessBotBotList.ordered(onlinePlayerRows, filter: filter, sortOrder: sortOrder),
                     selection: $selectedBotID,
                     sortOrder: $sortOrder,
@@ -151,7 +158,7 @@ struct LichessBotChallengeSheet: View {
                     LichessBotOpponentCard(controller: controller, username: username, compact: true)
                 }
             }
-            .frame(height: 40, alignment: .topLeading)
+            .frame(height: 58, alignment: .topLeading)
             .shown(source != .username)
             Form {
                 Picker("Time control", selection: $clock) {
@@ -217,19 +224,25 @@ struct LichessBotChallengeSheet: View {
     }
 
     private var filter: LichessBotBotListFilter {
-        LichessBotBotListFilter(search: search, minimumRating: minimumRating, maximumRating: maximumRating, speed: clock.speed, hidesProvisional: hidesProvisional)
+        LichessBotBotListFilter(
+            search: search,
+            minimumRating: ratingFilterEnabled ? LichessBotBotListFilter.bound(from: minimumRatingText) : nil,
+            maximumRating: ratingFilterEnabled ? LichessBotBotListFilter.bound(from: maximumRatingText) : nil,
+            speed: clock.speed,
+            hidesProvisional: hidesProvisional
+        )
     }
 
     private var onlineRows: [LichessBotBotRow] {
-        LichessBotBotList.onlineRows(bots: controller.onlineBots, notes: controller.playerNotes, now: Date())
+        LichessBotBotList.onlineRows(bots: controller.onlineBots, notes: controller.playerNotes, now: Date(), records: controller.recordsByOpponent)
     }
 
     private var onlinePlayerRows: [LichessBotBotRow] {
-        LichessBotBotList.onlineRows(bots: controller.onlinePlayers?.users ?? [], notes: controller.playerNotes, now: Date())
+        LichessBotBotList.onlineRows(bots: controller.onlinePlayers?.users ?? [], notes: controller.playerNotes, now: Date(), records: controller.recordsByOpponent)
     }
 
     private var favoriteRows: [LichessBotBotRow] {
-        LichessBotBotList.favoriteRows(notes: controller.playerNotes, bots: controller.onlineBots, statuses: controller.favoriteStatuses, now: Date())
+        LichessBotBotList.favoriteRows(notes: controller.playerNotes, bots: controller.onlineBots, statuses: controller.favoriteStatuses, now: Date(), records: controller.recordsByOpponent)
     }
 
     /// The selected row on the current tab.
@@ -320,6 +333,7 @@ struct LichessBotBotListHeader: View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             HStack(spacing: 12) {
                 Text(countText)
+                    .lineLimit(1)
                 Text(ageText(now: context.date))
                 Text(ownLimitText(now: context.date))
                     .help("Lichess allows a BOT account \(LichessBotLimits.botGamesPerDay) games against other bots per rolling day")
@@ -342,8 +356,8 @@ struct LichessBotBotListHeader: View {
             guard let notes = controller.playerNotes else { return "favorites not loaded" }
             return "\(notes.favoriteIDs.count) favorites"
         case .onlinePlayers:
-            guard let players = controller.onlinePlayers else { return "online players: loading" }
-            return "Top \(players.users.count) online players by rating · updated \(players.fetchedAt.formatted(date: .omitted, time: .shortened)) · many humans refuse bot challenges"
+            guard let players = controller.onlinePlayers else { return "Online players: loading" }
+            return "Top \(players.users.count) online players by rating · many refuse bots"
         case .onlineBots, .leaderboard, .username:
             let count = controller.onlineBots.count
             let capped = count >= LichessBotLimits.onlineBotsMaximum ? " (Lichess lists at most \(LichessBotLimits.onlineBotsMaximum))" : ""
@@ -352,7 +366,8 @@ struct LichessBotBotListHeader: View {
     }
 
     private func ageText(now: Date) -> String {
-        guard let fetchedAt = controller.onlineBotsFetchedAt else { return "not loaded" }
+        let fetched = source == .onlinePlayers ? controller.onlinePlayers?.fetchedAt : controller.onlineBotsFetchedAt
+        guard let fetchedAt = fetched else { return "not loaded" }
         let minutes = Int(now.timeIntervalSince(fetchedAt) / 60)
         return minutes < 1 ? "updated just now" : "updated \(minutes) min ago"
     }
@@ -366,8 +381,9 @@ struct LichessBotBotListHeader: View {
 /// Search, and a rating range for the selected time control's speed.
 struct LichessBotBotFilterBar: View {
     @Binding var search: String
-    @Binding var minimumRating: Int?
-    @Binding var maximumRating: Int?
+    @Binding var ratingFilterEnabled: Bool
+    @Binding var minimumRatingText: String
+    @Binding var maximumRatingText: String
     @Binding var hidesProvisional: Bool
     let speed: LichessBotSpeed
 
@@ -375,17 +391,16 @@ struct LichessBotBotFilterBar: View {
         HStack(spacing: 10) {
             TextField("Search name, real name or bio", text: $search)
                 .textFieldStyle(.roundedBorder)
-            Text("\(speed.rawValue) rating")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            TextField("min", value: $minimumRating, format: .number.grouping(.never))
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 64)
+            Toggle("\(speed.rawValue) rating", isOn: $ratingFilterEnabled)
+                .help("Filter by rating for the selected time control's speed; the range is kept while off")
+            LichessBotRatingBoundField(placeholder: "min", text: $minimumRatingText)
+                .disabled(!ratingFilterEnabled)
+                .opacity(ratingFilterEnabled ? 1 : 0.5)
             Text("–")
                 .foregroundStyle(.secondary)
-            TextField("max", value: $maximumRating, format: .number.grouping(.never))
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 64)
+            LichessBotRatingBoundField(placeholder: "max", text: $maximumRatingText)
+                .disabled(!ratingFilterEnabled)
+                .opacity(ratingFilterEnabled ? 1 : 0.5)
             Toggle("Hide provisional", isOn: $hidesProvisional)
         }
     }
@@ -394,6 +409,8 @@ struct LichessBotBotFilterBar: View {
 /// Bots in a sortable table: a favorite star on the left, then blitz and
 /// rapid ratings and games. Favorites always sort first.
 struct LichessBotBotTable: View {
+    /// "Bot" or "Player", for the name column.
+    var nameTitle = "Bot"
     let rows: [LichessBotBotRow]
     @Binding var selection: String?
     @Binding var sortOrder: [KeyPathComparator<LichessBotBotRow>]
@@ -412,7 +429,7 @@ struct LichessBotBotTable: View {
                 .help(row.isFavorite ? "Remove from favorites" : "Add to favorites")
             }
             .width(24)
-            TableColumn("Bot", value: \.usernameSortKey) { row in
+            TableColumn(nameTitle, value: \.usernameSortKey) { row in
                 LichessBotBotNameCell(row: row)
             }
             TableColumn("Blitz", value: \.blitzSortKey) { row in
@@ -425,10 +442,22 @@ struct LichessBotBotTable: View {
                     .font(.system(.body, design: .monospaced))
             }
             .width(min: 70, ideal: 80)
-            TableColumn("Games", value: \.gamesSortKey) { row in
-                Text(row.summary.map { String(format: "%6d", $0.blitzAndRapidGames) } ?? "")
+            TableColumn("Best", value: \.bestSortKey) { row in
+                Text(row.summary?.bestSpeed.map { "\($0.speed) \($0.rating)\($0.provisional ? "?" : "")" } ?? "")
                     .font(.system(.body, design: .monospaced))
-                    .help("Blitz and rapid rated games")
+                    .help("The player's highest-rated speed among those they have played")
+            }
+            .width(min: 110, ideal: 130)
+            TableColumn("vs DCM", value: \.recordSortKey) { row in
+                Text(row.record.map { "\($0.wins)–\($0.draws)–\($0.losses)" } ?? "")
+                    .font(.system(.body, design: .monospaced))
+                    .help("DCM's wins–draws–losses against them, from its own records")
+            }
+            .width(min: 70, ideal: 80)
+            TableColumn("Games", value: \.gamesSortKey) { row in
+                Text(row.summary.map { String(format: "%6d", $0.ratedSpeedGames) } ?? "")
+                    .font(.system(.body, design: .monospaced))
+                    .help("Rated games at every speed")
             }
             .width(min: 70, ideal: 80)
         }
@@ -666,5 +695,25 @@ struct LichessBotLeaderboardList: View {
         } catch {
             loadError = "Couldn't load the \(speed.rawValue) leaderboard: \(error.localizedDescription)"
         }
+    }
+}
+
+/// One rating bound: digits only, empty for no bound; anything else is
+/// outlined in red and not applied.
+struct LichessBotRatingBoundField: View {
+    let placeholder: String
+    @Binding var text: String
+
+    var body: some View {
+        let invalid = !text.trimmingCharacters(in: .whitespaces).isEmpty && LichessBotBotListFilter.bound(from: text) == nil
+        TextField(placeholder, text: $text)
+            .textFieldStyle(.roundedBorder)
+            .font(.system(.body, design: .monospaced))
+            .frame(width: 64)
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .stroke(Color.red, lineWidth: invalid ? 1.5 : 0)
+            )
+            .help(invalid ? "Whole numbers only" : "Leave empty for no bound")
     }
 }

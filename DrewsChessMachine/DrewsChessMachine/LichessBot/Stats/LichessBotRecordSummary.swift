@@ -73,6 +73,16 @@ enum LichessBotRecordSummary {
         }
     }
 
+    /// DCM's results against each opponent, by lowercased user id.
+    static func byOpponent(rows: [LichessBotGameSummary]) -> [String: LichessBotResultTally] {
+        var tallies: [String: LichessBotResultTally] = [:]
+        for row in rows {
+            guard let opponentID = row.opponentID else { continue }
+            tallies[opponentID.lowercased(), default: LichessBotResultTally()].add(ourScore: row.ourScore)
+        }
+        return tallies
+    }
+
     /// Games against bots started at or after `since`.
     static func botGames(rows: [LichessBotGameSummary], since: Date) -> Int {
         rows.filter { $0.opponentKind == .bot && $0.createdAt >= since }.count

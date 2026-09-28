@@ -62,12 +62,13 @@ struct LichessBotOpponentCardContent: View {
     var body: some View {
         if compact {
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     LichessBotFavoriteStar(controller: controller, userID: user.id)
-                    Text([identityText, totalsText, lichessHeadToHead].filter { !$0.isEmpty }.joined(separator: " · "))
-                        .lineLimit(1)
+                    Text([identityText, totalsText].filter { !$0.isEmpty }.joined(separator: " · "))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Text(user.bioFirstLine ?? "")
+                Text([lichessHeadToHead, user.bioFirstLine ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }

@@ -87,7 +87,28 @@ struct LichessBotUserSummary: Sendable, Hashable, Codable, Identifiable {
     var blitzSortKey: Int { rating("blitz")?.rating ?? Int.min }
     var rapidSortKey: Int { rating("rapid")?.rating ?? Int.min }
     var usernameSortKey: String { username.lowercased() }
-    var blitzAndRapidGames: Int { (rating("blitz")?.games ?? 0) + (rating("rapid")?.games ?? 0) }
+
+    /// The chess speeds, fastest first (variants and puzzles excluded).
+    static let speedPerfs = ["ultraBullet", "bullet", "blitz", "rapid", "classical", "correspondence"]
+
+    /// Rated games across every speed. A player may play only bullet, so
+    /// blitz and rapid alone can read zero for a very active account.
+    var ratedSpeedGames: Int {
+        Self.speedPerfs.reduce(0) { total, speed in total + (rating(speed)?.games ?? 0) }
+    }
+
+    /// The highest-rated speed the player has actually played (at least one
+    /// game there).
+    var bestSpeed: (speed: String, rating: Int, provisional: Bool)? {
+        var best: (speed: String, rating: Int, provisional: Bool)?
+        for speed in Self.speedPerfs {
+            guard let perf = rating(speed), let value = perf.rating, (perf.games ?? 0) > 0 else { continue }
+            if best.map({ value > $0.rating }) ?? true {
+                best = (speed, value, perf.prov == true)
+            }
+        }
+        return best
+    }
 }
 
 /// Seconds played in total, and against humans.

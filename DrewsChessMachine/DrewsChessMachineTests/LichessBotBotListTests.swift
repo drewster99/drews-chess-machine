@@ -139,3 +139,21 @@ final class LichessBotBotListTests: XCTestCase {
         XCTAssertEqual(LichessBotRecordSummary.botGames(rows: rows, since: Date(timeIntervalSince1970: 60)), 1)
     }
 }
+
+/// Regression (live, 2026-09-28): a minimum rating alone must filter, not
+/// empty the list; typed bounds parse to nil when empty.
+final class LichessBotRatingBoundTests: XCTestCase {
+
+    func testMinimumAloneAndTypedBounds() throws {
+        func bot(_ name: String, blitz: Int) throws -> LichessBotUserSummary {
+            let object: [String: Any] = ["id": name.lowercased(), "username": name, "title": "BOT", "perfs": ["blitz": ["rating": blitz, "games": 50, "rd": 60, "prog": 0]]]
+            return try JSONDecoder().decode(LichessBotUserSummary.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        let rows = LichessBotBotList.onlineRows(bots: [try bot("Low", blitz: 1200), try bot("High", blitz: 2000)], notes: nil, now: Date())
+        let filter = LichessBotBotListFilter(minimumRating: LichessBotBotListFilter.bound(from: "1500"), maximumRating: LichessBotBotListFilter.bound(from: ""), speed: .blitz)
+        XCTAssertEqual(rows.filter(filter.matches).map(\.username), ["High"])
+        XCTAssertNil(LichessBotBotListFilter.bound(from: "   "))
+        XCTAssertNil(LichessBotBotListFilter.bound(from: "abc"))
+        XCTAssertEqual(LichessBotBotListFilter.bound(from: " 1800 "), 1800)
+    }
+}
