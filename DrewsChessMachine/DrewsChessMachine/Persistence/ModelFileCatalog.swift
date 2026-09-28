@@ -1,0 +1,244 @@
+import Foundation
+
+/// One `.safetensors` model file, identified by the metadata inside it —
+/// never by its filename, which can repeat across segments and be
+/// overwritten in place (see CLAUDE.md, "Identify checkpoints by safetensors
+/// `__metadata__`").
+struct ModelFileEntry: Sendable, Identifiable, Equatable {
+    var id: URL { url }
+    let url: URL
+    let modelID: String
+    /// Nil for files that record no step (a fresh build, a champion export).
+    let trainingStep: Int?
+    let createdAt: Date?
+    let architectureLabel: String
+    let fileModifiedAt: Date
+    /// The `model_id` this model was forked from; nil when the file names
+    /// none (a fresh build, or a session champion, which records "").
+    var parentModelID: String? = nil
+    /// Who wrote the file: "manual", "replay", "train-vs-uci", "sigusr2", …
+    var creator: String? = nil
+}
+
+/// Every file of one model line (one `model_id`), newest step first.
+struct ModelLine: Sendable, Identifiable, Equatable {
+    var id: String { modelID }
+    let modelID: String
+    let files: [ModelFileEntry]
+
+    /// The line's most advanced file: the highest training step, then the
+    /// newest.
+    var latest: ModelFileEntry {
+        files[0]
+    }
+}
+
+/// A self-play session's champion file.
+struct SessionChampion: Sendable, Equatable {
+    let sessionName: String
+    let entry: ModelFileEntry
+}
+
+/// A `.safetensors` file the catalog could not read, and why.
+struct UnreadableModelFile: Sendable, Identifiable, Equatable {
+    var id: URL { url }
+    let url: URL
+    let reason: String
+}
+
+enum ModelFileCatalogError: LocalizedError, Equatable {
+    case notSafetensors(file: String, detail: String)
+    case missingModelID(file: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .notSafetensors(let file, let detail):
+            return "\(file) is not a readable safetensors model: \(detail)"
+        case .missingModelID(let file):
+            return "\(file) records no model_id"
+        }
+    }
+}
+
+/// Lists the model files in a folder grouped into lines by `model_id`, for
+/// finding the latest model of each line quickly. Reads only each file's
+/// safetensors header (an 8-byte length and a JSON block), never the
+/// weights, so scanning thousands of files is cheap.
+enum ModelFileCatalog {
+
+    struct Scan: Sendable {
+        /// Newest activity first.
+        let lines: [ModelLine]
+        /// Files that could not be read, with the reason, by filename.
+        let unreadable: [UnreadableModelFile]
+    }
+
+    /// Scan `directory` (not recursive) off the caller's thread.
+    static func scan(directory: URL) async throws -> Scan {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result { try scanSynchronously(directory: directory) })
+            }
+        }
+    }
+
+    static func scanSynchronously(directory: URL) throws -> Scan {
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ).filter { $0.pathExtension == "safetensors" }
+
+        var byModel: [String: [ModelFileEntry]] = [:]
+        var unreadable: [UnreadableModelFile] = []
+        for url in urls {
+            do {
+                let entry = try entry(for: url)
+                byModel[entry.modelID, default: []].append(entry)
+            } catch {
+                unreadable.append(UnreadableModelFile(url: url, reason: error.localizedDescription))
+            }
+        }
+        let lines = byModel.map { modelID, files in
+            ModelLine(modelID: modelID, files: files.sorted(by: isMoreAdvanced))
+        }
+        .sorted { $0.latest.fileModifiedAt > $1.latest.fileModifiedAt }
+        return Scan(lines: lines, unreadable: unreadable.sorted { $0.url.lastPathComponent < $1.url.lastPathComponent })
+    }
+
+    /// Higher step first; files without a step after those with one; ties
+    /// by newest file.
+    static func isMoreAdvanced(_ lhs: ModelFileEntry, _ rhs: ModelFileEntry) -> Bool {
+        switch (lhs.trainingStep, rhs.trainingStep) {
+        case let (left?, right?) where left != right:
+            return left > right
+        case (.some, .none):
+            return true
+        case (.none, .some):
+            return false
+        default:
+            return lhs.fileModifiedAt > rhs.fileModifiedAt
+        }
+    }
+
+    static func entry(for url: URL) throws -> ModelFileEntry {
+        let metadata = try headerMetadata(at: url)
+        guard let modelID = metadata["model_id"], !modelID.isEmpty else {
+            throw ModelFileCatalogError.missingModelID(file: url.lastPathComponent)
+        }
+        let values = try url.resourceValues(forKeys: [.contentModificationDateKey])
+        guard let modified = values.contentModificationDate else {
+            throw ModelFileCatalogError.notSafetensors(file: url.lastPathComponent, detail: "no modification date")
+        }
+        let name = url.lastPathComponent
+        let label: String
+        if let architectureJSON = metadata["architecture"] {
+            do {
+                label = try JSONDecoder().decode(NetworkArchitecture.self, from: Data(architectureJSON.utf8)).shortLabel
+            } catch {
+                throw ModelFileCatalogError.notSafetensors(file: name, detail: "unreadable architecture: \(error.localizedDescription)")
+            }
+        } else {
+            label = "no architecture recorded"
+        }
+        var trainingStep: Int?
+        if let text = metadata["training_step"] {
+            guard let step = Int(text) else {
+                throw ModelFileCatalogError.notSafetensors(file: name, detail: "training_step \"\(text)\" is not an integer")
+            }
+            trainingStep = step
+        }
+        var createdAt: Date?
+        if let text = metadata["created_at_unix"] {
+            guard let seconds = TimeInterval(text) else {
+                throw ModelFileCatalogError.notSafetensors(file: name, detail: "created_at_unix \"\(text)\" is not a number")
+            }
+            createdAt = Date(timeIntervalSince1970: seconds)
+        }
+        return ModelFileEntry(
+            url: url,
+            modelID: modelID,
+            trainingStep: trainingStep,
+            createdAt: createdAt,
+            architectureLabel: label,
+            fileModifiedAt: modified,
+            parentModelID: metadata["parent_model_id"].flatMap { $0.isEmpty ? nil : $0 },
+            creator: metadata["creator"].flatMap { $0.isEmpty ? nil : $0 }
+        )
+    }
+
+    /// The `__metadata__` map from a safetensors header, reading only the
+    /// header.
+    static func headerMetadata(at url: URL) throws -> [String: String] {
+        let name = url.lastPathComponent
+        let handle = try FileHandle(forReadingFrom: url)
+        defer {
+            do {
+                try handle.close()
+            } catch {
+                SessionLogger.shared.log("[MODELS] closing \(name) failed: \(error.localizedDescription)")
+            }
+        }
+        guard let lengthBytes = try handle.read(upToCount: 8), lengthBytes.count == 8 else {
+            throw ModelFileCatalogError.notSafetensors(file: name, detail: "shorter than the header length")
+        }
+        var length: UInt64 = 0
+        for (index, byte) in lengthBytes.enumerated() {
+            length |= UInt64(byte) << (8 * UInt64(index))
+        }
+        guard length > 0, length < maximumHeaderBytes else {
+            throw ModelFileCatalogError.notSafetensors(file: name, detail: "implausible header length \(length)")
+        }
+        guard let headerBytes = try handle.read(upToCount: Int(length)), headerBytes.count == Int(length) else {
+            throw ModelFileCatalogError.notSafetensors(file: name, detail: "truncated header")
+        }
+        let object: Any
+        do {
+            object = try JSONSerialization.jsonObject(with: headerBytes)
+        } catch {
+            throw ModelFileCatalogError.notSafetensors(file: name, detail: "header is not JSON")
+        }
+        guard let header = object as? [String: Any] else {
+            throw ModelFileCatalogError.notSafetensors(file: name, detail: "header is not a JSON object")
+        }
+        guard let metadata = header["__metadata__"] as? [String: String] else {
+            throw ModelFileCatalogError.notSafetensors(file: name, detail: "no __metadata__ string map")
+        }
+        return metadata
+    }
+
+    /// `scanSessionChampions` off the caller's thread.
+    static func scanSessionChampionsInBackground(directory: URL) async throws -> (champions: [SessionChampion], unreadable: [UnreadableModelFile]) {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result { try scanSessionChampions(directory: directory) })
+            }
+        }
+    }
+
+    /// Every session's champion (`<session>.dcmsession/champion.safetensors`),
+    /// newest session first. A session without a readable champion is
+    /// reported, not skipped.
+    static func scanSessionChampions(directory: URL) throws -> (champions: [SessionChampion], unreadable: [UnreadableModelFile]) {
+        let sessions = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ).filter { $0.pathExtension == "dcmsession" }
+        var champions: [SessionChampion] = []
+        var unreadable: [UnreadableModelFile] = []
+        for session in sessions {
+            let champion = session.appendingPathComponent("champion.safetensors")
+            do {
+                champions.append(SessionChampion(sessionName: session.deletingPathExtension().lastPathComponent, entry: try entry(for: champion)))
+            } catch {
+                unreadable.append(UnreadableModelFile(url: champion, reason: error.localizedDescription))
+            }
+        }
+        return (champions.sorted { $0.entry.fileModifiedAt > $1.entry.fileModifiedAt }, unreadable)
+    }
+
+    /// Headers are small (the architecture JSON and a tensor index); a
+    /// length beyond this means the file is not a safetensors model.
+    private static let maximumHeaderBytes: UInt64 = 64 << 20
+}

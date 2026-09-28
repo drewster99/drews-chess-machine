@@ -479,6 +479,8 @@ struct LichessBotPerfRating: Sendable, Hashable, Codable {
     let rd: Int?
     let prog: Int?
     let prov: Bool?
+    /// Global ranking; present only for recently active players.
+    var rank: Int? = nil
 }
 
 struct LichessBotAccountCount: Sendable, Hashable, Codable {
@@ -488,6 +490,10 @@ struct LichessBotAccountCount: Sendable, Hashable, Codable {
     let loss: Int?
     let draw: Int?
     let playing: Int?
+    /// The same results against humans only.
+    var winH: Int? = nil
+    var lossH: Int? = nil
+    var drawH: Int? = nil
 }
 
 /// `GET /api/account`. `title == "BOT"` means the account has been upgraded.

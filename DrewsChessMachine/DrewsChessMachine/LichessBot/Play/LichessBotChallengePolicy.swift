@@ -137,9 +137,9 @@ enum LichessBotChallengePolicy {
         if todayAgainst >= settings.maxGamesPerOpponentPerDay {
             return .decline(.later, rule: "daily limit against this opponent reached")
         }
-        if isBot && todayAgainst >= settings.botPairDailyStop {
-            return .decline(.later, rule: "bot-pair daily stop reached")
-        }
+        // Lichess itself limits each bot to a fixed number of games against
+        // other bots per rolling day, and refuses challenges beyond it
+        // (observed live); DCM keeps no copy of that rule.
 
         return .accept
     }

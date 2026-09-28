@@ -67,6 +67,7 @@ struct LichessBotLiveSingleView: View {
                 .shown(controller.displayedGame == nil)
             ForEach(controller.displayedGame.map { [$0] } ?? []) { game in
                 LichessBotGameDetailView(
+                    controller: controller,
                     game: game,
                     headToHead: controller.headToHead(against: game.opponent?.id),
                     onPopOut: { LichessBotGameWindowLauncher.open(game: game, controller: controller) },
@@ -82,17 +83,25 @@ struct LichessBotLiveSingleView: View {
 struct LichessBotGameGridView: View {
     let controller: LichessBotController
 
+    /// Games in progress first, oldest start first (the order they began);
+    /// then finished games, most recently finished first.
+    static func ordered(_ games: [LichessBotLiveGame]) -> [LichessBotLiveGame] {
+        let live = games.filter { !$0.isFinished }.sorted { $0.startedAt < $1.startedAt }
+        let finished = games
+            .compactMap { game in game.finishedAt.map { (game: game, finishedAt: $0) } }
+            .sorted { $0.finishedAt > $1.finishedAt }
+            .map(\.game)
+        return live + finished
+    }
+
     var body: some View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 240, maximum: 340), spacing: 12)], spacing: 12) {
-                ForEach(controller.games) { game in
+                ForEach(Self.ordered(controller.games)) { game in
                     LichessBotGameTileView(
+                        controller: controller,
                         game: game,
-                        isFocused: game.id == controller.displayedGame?.id,
-                        onFocus: {
-                            controller.focusedGameID = game.id
-                            controller.showsGrid = false
-                        },
+                        onOpen: { LichessBotGameWindowLauncher.open(game: game, controller: controller) },
                         onDismiss: { controller.dismissGame(game.id) }
                     )
                 }

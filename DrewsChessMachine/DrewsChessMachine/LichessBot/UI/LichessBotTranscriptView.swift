@@ -7,6 +7,9 @@ import SwiftUI
 /// jumping.
 struct LichessBotTranscriptView: View {
     let entries: [LichessBotTranscriptEntry]
+    /// Whether the transcript is on screen; coming back into view scrolls
+    /// to the newest entry while following.
+    let isVisible: Bool
     @State private var expanded: Set<Int> = []
     @State private var follows = true
 
@@ -23,7 +26,7 @@ struct LichessBotTranscriptView: View {
             }
             .padding(.horizontal, 6)
             .padding(.top, 4)
-            LichessBotTranscriptList(entries: entries, expanded: $expanded, follows: follows)
+            LichessBotTranscriptList(entries: entries, expanded: $expanded, follows: follows, isVisible: isVisible)
         }
     }
 }
@@ -33,6 +36,7 @@ struct LichessBotTranscriptList: View {
     let entries: [LichessBotTranscriptEntry]
     @Binding var expanded: Set<Int>
     let follows: Bool
+    let isVisible: Bool
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -60,6 +64,16 @@ struct LichessBotTranscriptList: View {
                     proxy.scrollTo(last, anchor: .bottom)
                 }
             }
+            .onChange(of: isVisible) {
+                if isVisible, follows, let last = entries.last?.id {
+                    proxy.scrollTo(last, anchor: .bottom)
+                }
+            }
+            .onAppear {
+                if follows, let last = entries.last?.id {
+                    proxy.scrollTo(last, anchor: .bottom)
+                }
+            }
         }
     }
 }
@@ -75,17 +89,20 @@ struct LichessBotTranscriptRow: View {
             Spacer(minLength: 0)
                 .frame(maxWidth: entry.direction == .outgoing ? .infinity : 0)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(entry.at.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).second(.twoDigits)))
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
                     Text(directionLabel)
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
+                    // Expanding shows the whole title too: notes and
+                    // anomalies carry all their text there, with no detail.
                     Text(entry.title)
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(entry.isProblem ? Color.red : Color.primary)
-                        .lineLimit(1)
+                        .lineLimit(isExpanded ? nil : 1)
+                        .fixedSize(horizontal: false, vertical: isExpanded)
                     Text("×\(entry.repeatCount)")
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -103,9 +120,13 @@ struct LichessBotTranscriptRow: View {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(bubbleColor)
             )
+            // At most 75% of the panel, so long lines wrap less (plan §14.3c).
+            .containerRelativeFrame(.horizontal, alignment: entry.direction == .outgoing ? .trailing : .leading) { length, _ in
+                length * 0.75
+            }
             .contentShape(Rectangle())
             .onTapGesture(perform: onToggle)
-            .help(entry.detail.isEmpty ? "" : "Click to show the raw text")
+            .help(isExpanded ? "Click to collapse" : (entry.detail.isEmpty ? "Click to show the full text" : "Click to show the raw text"))
             Spacer(minLength: 0)
                 .frame(maxWidth: entry.direction == .incoming ? .infinity : 0)
         }

@@ -173,12 +173,6 @@ final class LichessBotPolicyTests: XCTestCase {
         XCTAssertEqual(decide(challenge(), settings: settings, context: context(activeGames: 2)), .accept, "a human may take the reserved slot")
     }
 
-    func testBotPairDailyStop() {
-        var settings = defaults
-        settings.maxGamesPerOpponentPerDay = 200
-        XCTAssertEqual(reason(decide(challenge(title: "BOT"), settings: settings, context: context(todayByOpponent: ["alice": settings.botPairDailyStop]))), .later)
-    }
-
     // MARK: - Play policy
 
     private func readings(_ values: [(ply: Int, win: Float, draw: Float, loss: Float)]) -> [LichessBotValueReading] {
@@ -274,7 +268,7 @@ final class LichessBotPolicyTests: XCTestCase {
         settings.challenge.allowedSpeeds = []
         settings.play.temperatureFloor = 0
         settings.connection.eventStreamStallTimeoutSeconds = LichessBotLimits.eventStreamKeepAliveSeconds
-        settings.challenge.botPairDailyStop = LichessBotLimits.botPairDailyCap
+        settings.challenge.outgoingChallengeTimeoutSeconds = -1
         XCTAssertEqual(settings.validationProblems().count, 4)
     }
 }

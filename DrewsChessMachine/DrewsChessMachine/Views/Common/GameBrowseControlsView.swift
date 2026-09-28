@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Start / back / forward / live buttons for browsing a game's positions,
-/// and the "Viewing ply N · live at ply M" banner while not live (plan
+/// and a banner saying which ply is shown and how many were played (plan
 /// §14.3a). Browsing is for viewing only; nothing here changes the game.
 struct GameBrowseControlsView: View {
     @Binding var cursor: GameBrowseCursor
@@ -59,8 +59,8 @@ struct GameBrowseControlsView: View {
     private var bannerText: String {
         let displayed = cursor.displayedPlyCount(totalPlies: totalPlies)
         if cursor.isLive {
-            return String(format: "Live · ply %3d", totalPlies)
+            return String(format: "Live · %3d plies played", totalPlies)
         }
-        return String(format: "Viewing ply %3d · live at ply %3d", displayed, totalPlies)
+        return String(format: "Viewing after ply %3d · %3d played", displayed, totalPlies)
     }
 }

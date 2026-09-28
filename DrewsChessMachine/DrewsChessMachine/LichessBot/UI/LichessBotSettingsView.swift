@@ -158,7 +158,7 @@ struct LichessBotChallengeSettingsSection: View {
             LichessBotIntegerField(label: "Games at once per opponent", value: $settings.maxSimultaneousGamesPerOpponent)
             LichessBotIntegerField(label: "Games per day", value: $settings.maxGamesPerDay)
             LichessBotIntegerField(label: "Games per opponent per day", value: $settings.maxGamesPerOpponentPerDay)
-            LichessBotIntegerField(label: "Stop vs one bot at", value: $settings.botPairDailyStop, unit: "/day")
+            LichessBotIntegerField(label: "Withdraw unanswered challenges after", value: $settings.outgoingChallengeTimeoutSeconds, unit: "s (0 = never)")
             LichessBotIntegerField(label: "Challenge responses at most", value: $settings.challengeResponseBudgetPerMinute, unit: "/min")
             LabeledContent("Blocked players") {
                 TextField("Blocked players", text: $blockedText, prompt: Text("ids, comma-separated"))
@@ -237,6 +237,7 @@ struct LichessBotChatSettingsSection: View {
 /// Which model plays (plan §9).
 struct LichessBotModelSettingsSection: View {
     @Binding var settings: LichessBotModelSettings
+    @State private var showingLinePicker = false
 
     var body: some View {
         Section("Model — applies to the next game") {
@@ -253,12 +254,21 @@ struct LichessBotModelSettingsSection: View {
                     Text(settings.filePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "None")
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    Button("Choose…") {
+                    Button("Latest by lineage") {
+                        showingLinePicker = true
+                    }
+                    .help("Every model lineage in the models folder, with its latest file")
+                    Button("Choose File…") {
                         chooseFile()
                     }
                 }
             }
             .disabled(settings.source != .file)
+            .sheet(isPresented: $showingLinePicker) {
+                LichessBotModelLinePicker(isPresented: $showingLinePicker) { url in
+                    settings.filePath = url.path
+                }
+            }
             LichessBotIntegerField(label: "Live-trainer refresh every", value: $settings.liveTrainerRefreshIntervalSeconds, unit: "s")
                 .disabled(settings.source != .liveTrainer)
             Toggle("Live trainer: games in progress switch to each new snapshot", isOn: $settings.midGameRefresh)

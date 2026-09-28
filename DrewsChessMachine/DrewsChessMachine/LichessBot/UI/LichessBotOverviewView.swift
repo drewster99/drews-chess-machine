@@ -11,6 +11,7 @@ struct LichessBotOverviewView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 LichessBotControlsCard(controller: controller, onChallenge: { showingChallengeSheet = true })
+                LichessBotRecordCard(controller: controller)
                 HStack(alignment: .top, spacing: 16) {
                     LichessBotAccountCard(controller: controller)
                         .frame(maxHeight: .infinity, alignment: .top)
@@ -94,22 +95,23 @@ struct LichessBotControlsCard: View {
                     }
                     Spacer()
                     Button("Challenge…", action: onChallenge)
-                        .disabled(connection != .online || !controller.hasChallengeScope || controller.pendingChallenge != nil)
+                        .disabled(connection != .online || !controller.hasChallengeScope)
                         .help(controller.hasChallengeScope ? "Challenge an online bot or any player" : "The token lacks challenge:write")
                 }
-                HStack(spacing: 8) {
-                    Text(pendingText)
-                        .font(.callout)
-                    Button("Cancel Challenge") {
-                        Task { await controller.cancelChallenge() }
+                ForEach(controller.pendingChallenges, id: \.id) { pending in
+                    HStack(spacing: 8) {
+                        LichessBotFavoriteStar(controller: controller, userID: pending.username)
+                        Text("Challenge to \(pending.username) waiting since \(pending.sentAt.formatted(date: .omitted, time: .standard))")
+                            .font(.callout)
+                        Button("Cancel") {
+                            Task { await controller.cancelChallenge(id: pending.id) }
+                        }
                     }
-                    .shown(controller.pendingChallenge != nil)
-                    Text(controller.lastChallengeOutcome ?? "")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .shown(controller.pendingChallenge == nil && controller.lastChallengeOutcome != nil)
                 }
-                .shown(controller.pendingChallenge != nil || controller.lastChallengeOutcome != nil)
+                Text(controller.lastChallengeOutcome ?? "")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .shown(controller.lastChallengeOutcome != nil)
             }
             .padding(6)
         }
@@ -139,9 +141,61 @@ struct LichessBotControlsCard: View {
         return ""
     }
 
-    private var pendingText: String {
-        guard let pending = controller.pendingChallenge else { return "" }
-        return "Challenge to \(pending.username) waiting since \(pending.sentAt.formatted(date: .omitted, time: .standard))"
+}
+
+/// The account's rating in each speed, its rated games there (from
+/// Lichess), and its unrated games there. Lichess reports unrated games only
+/// as an account-wide total, so the unrated column counts DCM's own game
+/// records — every game this BOT account plays goes through DCM.
+struct LichessBotAccountRatingsGrid: View {
+    let controller: LichessBotController
+
+    private static let speeds = ["bullet", "blitz", "rapid", "classical"]
+
+    var body: some View {
+        let unrated = unratedGamesBySpeed
+        Grid(alignment: .trailing, horizontalSpacing: 16, verticalSpacing: 2) {
+            GridRow {
+                Text("")
+                Text("Rating")
+                Text("Rated")
+                Text("Unrated")
+                    .help("From DCM's game records; Lichess doesn't report unrated games per speed")
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            ForEach(ratedRows, id: \.speed) { row in
+                GridRow {
+                    Text(row.speed)
+                        .font(.callout)
+                        .gridColumnAlignment(.leading)
+                    Text(row.rating)
+                    Text(row.ratedGames)
+                    Text(unrated.map { "\($0[row.speed] ?? 0)" } ?? "…")
+                }
+                .font(.system(.callout, design: .monospaced))
+            }
+        }
+    }
+
+    /// Speeds the account has a rating in, in speed order.
+    private var ratedRows: [(speed: String, rating: String, ratedGames: String)] {
+        guard let perfs = controller.account?.perfs else { return [] }
+        return Self.speeds.compactMap { speed in
+            guard let rating = perfs[speed], let value = rating.rating else { return nil }
+            let ratingText = "\(value)" + (rating.prov == true ? "?" : " ")
+            return (speed, ratingText, rating.games.map { "\($0)" } ?? "–")
+        }
+    }
+
+    /// Unrated games per speed in DCM's records; nil until the index loads.
+    private var unratedGamesBySpeed: [String: Int]? {
+        guard let rows = controller.index?.rows else { return nil }
+        var counts: [String: Int] = [:]
+        for row in rows where !row.rated {
+            counts[row.speed, default: 0] += 1
+        }
+        return counts
     }
 }
 
@@ -157,29 +211,12 @@ struct LichessBotAccountCard: View {
                 Text(accountStatus)
                     .font(.callout)
                     .foregroundStyle(controller.account?.isBot == true ? Color.green : Color.orange)
-                ForEach(ratingRows, id: \.perf) { row in
-                    HStack {
-                        Text(row.perf)
-                            .font(.callout)
-                            .frame(width: 80, alignment: .leading)
-                        Text(row.text)
-                            .font(.system(.callout, design: .monospaced))
-                    }
-                }
+                LichessBotAccountRatingsGrid(controller: controller)
                 Text(tokenText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        }
-    }
-
-    private var ratingRows: [(perf: String, text: String)] {
-        guard let perfs = controller.account?.perfs else { return [] }
-        return ["bullet", "blitz", "rapid", "classical"].compactMap { perf in
-            guard let rating = perfs[perf], let value = rating.rating else { return nil }
-            let games = rating.games.map { "  \($0) games" } ?? ""
-            return (perf, String(format: "%4d", value) + (rating.prov == true ? "?" : " ") + games)
         }
     }
 

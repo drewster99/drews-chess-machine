@@ -10,6 +10,7 @@ import Foundation
 ///   InProgress/<gameId>.journal.jsonl                       journal while live
 ///   Protocol/events-YYYYMMDD.jsonl                          protocol event log
 ///   index.json                                              derived stats cache
+///   player-notes.json                                       favorites, bot limit times
 ///   bot.lock                                                instance lock
 /// ```
 ///
@@ -27,6 +28,7 @@ struct LichessBotDataDirectory: Sendable, Equatable {
     var protocolDirectory: URL { root.appendingPathComponent("Protocol", isDirectory: true) }
     var indexURL: URL { root.appendingPathComponent("index.json", isDirectory: false) }
     var lockURL: URL { root.appendingPathComponent("bot.lock", isDirectory: false) }
+    var playerNotesURL: URL { root.appendingPathComponent("player-notes.json", isDirectory: false) }
 
     static let journalExtension = "journal.jsonl"
 

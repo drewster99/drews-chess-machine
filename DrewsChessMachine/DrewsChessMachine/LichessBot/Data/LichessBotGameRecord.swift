@@ -273,7 +273,7 @@ enum LichessBotRecordBuilder {
             moves: replay.moves,
             retractions: replay.retractions,
             events: replay.events,
-            chat: replay.chat,
+            chat: replay.mergedChat(),
             anomalies: replay.anomalies,
             rejectedMoves: replay.rejectedMoves,
             streamReconnects: max(0, replay.streamOpens - 1),
@@ -404,6 +404,15 @@ enum LichessBotRecordBuilder {
         var retractions: [LichessBotGameRecord.Retraction] = []
         var events: [LichessBotGameRecord.TimedNote] = []
         var chat: [LichessBotGameRecord.ChatMessage] = []
+        /// Every message DCM sent, from its successful POST. Merged into
+        /// `chat` by `mergedChat()`: the stream echoes a message only while
+        /// it is open, so the goodbye (sent after it closes) is known only
+        /// from here.
+        var sentChat: [LichessBotGameRecord.ChatMessage] = []
+        /// Player-room lines found by fetching the chat after the game. A
+        /// session resumed after a relaunch fetches lines the journal
+        /// already holds, so these are matched against it when merged.
+        var fetchedChat: [LichessBotGameRecord.ChatMessage] = []
         var anomalies: [LichessBotGameRecord.TimedNote] = []
         var rejectedMoves: [LichessBotGameRecord.RejectedMove] = []
         var generations: [LichessBotGenerationInfo] = []
@@ -450,11 +459,53 @@ enum LichessBotRecordBuilder {
                 }
             case .action(let text):
                 events.append(.init(at: entry.at, text: text))
+            case .chatSent(let room, let text, _):
+                sentChat.append(.init(at: entry.at, room: room, username: ourAccountID, text: text))
+            case .chatFetched(let username, let text):
+                fetchedChat.append(.init(at: entry.at, room: LichessBotChatRoom.player.rawValue, username: username, text: text))
             case .anomaly(let text):
                 anomalies.append(.init(at: entry.at, text: text))
             case .finished(let status, let winner, let localDrawCondition):
                 finish = Finish(status: status, winner: winner, localDrawCondition: localDrawCondition)
             }
+        }
+
+        /// The stream's chat plus each sent message the stream never echoed,
+        /// in time order. Each echo (our account, same room and text)
+        /// accounts for one sent message.
+        func mergedChat() -> [LichessBotGameRecord.ChatMessage] {
+            var echoes = chat.filter { $0.username.lowercased() == ourAccountID.lowercased() }
+            var merged = chat
+            // Our display name as the game showed it, when known.
+            let ourName: String
+            if let full = firstFull, full.white.id == ourAccountID, let name = full.white.name {
+                ourName = name
+            } else if let full = firstFull, full.black.id == ourAccountID, let name = full.black.name {
+                ourName = name
+            } else {
+                ourName = ourAccountID
+            }
+            for sent in sentChat {
+                if let index = echoes.firstIndex(where: { $0.room == sent.room && $0.text == sent.text }) {
+                    echoes.remove(at: index)
+                } else {
+                    merged.append(.init(at: sent.at, room: sent.room, username: ourName, text: sent.text))
+                }
+            }
+            // Each fetched line already known (same author and text, player
+            // room) accounts for one known line; the rest are new.
+            let player = LichessBotChatRoom.player.rawValue
+            var known = merged.filter { $0.room == player }.map { (user: $0.username.lowercased(), text: $0.text) }
+            let ourNameLowercased = ourName.lowercased()
+            for fetched in fetchedChat {
+                let user = fetched.username.lowercased()
+                if let index = known.firstIndex(where: { ($0.user == user || ($0.user == ourNameLowercased && user == ourAccountID.lowercased())) && $0.text == fetched.text }) {
+                    known.remove(at: index)
+                } else {
+                    merged.append(fetched)
+                }
+            }
+            return merged.sorted { $0.at < $1.at }
         }
 
         private mutating func applyLine(_ data: Data, at: Date) {

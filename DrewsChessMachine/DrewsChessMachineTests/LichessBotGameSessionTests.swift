@@ -654,6 +654,26 @@ final class LichessBotGameSessionTests: XCTestCase {
         XCTAssertEqual(disagreements.count, 1)
     }
 
+    /// Lichess streams the move that completes a threefold with status
+    /// `started`, then ends the game in the next `gameState` a moment later
+    /// (observed live, game zZMhCXrX). The two agree, so that is not a
+    /// disagreement: no anomaly may be logged.
+    func testThreefoldEndedInTheNextStateIsNotAnAnomaly() async throws {
+        // White's rook shuffles a1–a2 against a knight shuffle; the bot
+        // plays the first legal move in UCI order, which is a1a2 here and
+        // completes the third occurrence.
+        let setup = ["a2a4", "g8f6", "a1a2", "f6g8", "a2a1", "g8f6", "a1a2", "f6g8", "a2a1", "g8f6"]
+        let server = try LichessBotFakeGameServer(initialTokens: setup)
+        await server.setScript(afterOurMoves: [.finish(status: "draw", winner: nil)])
+        let h = makeHarness(server: server)
+        await runToEnd(h)
+        let record = await server.record()
+        XCTAssertEqual(record.acceptedPlies, [setup.count])
+        XCTAssertEqual(h.observer.finishedStatus, "draw")
+        XCTAssertEqual(h.observer.finishedLocalDrawCondition, .threefoldRepetition)
+        XCTAssertEqual(h.observer.anomalies.filter { $0.contains("threefoldRepetition") }, [])
+    }
+
     /// The final position's local draw rule is recorded beside the
     /// server's status.
     func testFinishRecordsTheLocalDrawCondition() async throws {

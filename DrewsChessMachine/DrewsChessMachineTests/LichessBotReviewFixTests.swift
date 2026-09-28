@@ -193,6 +193,34 @@ final class LichessBotReviewFixTests: XCTestCase {
         await run.value
     }
 
+    /// Lichess echoes our own outgoing challenge on the event stream without
+    /// a `direction` field (observed live); it must never be answered.
+    func testOwnOutgoingChallengeEchoIsIgnored() async throws {
+        let echo = #"{"type":"challenge","challenge":{"id":"ZQRPySw4","status":"created","challenger":{"id":"drewschessmachine","name":"DrewsChessMachine","title":"BOT","rating":3000,"provisional":true},"destUser":{"id":"dala-700","name":"dala-700","title":"BOT","rating":837},"variant":{"key":"standard"},"rated":false,"speed":"blitz","timeControl":{"type":"clock","limit":300,"increment":3},"color":"random","finalColor":"black"},"compat":{"bot":true,"board":true}}"#
+        let account = LichessBotFakeAccountAPI(script: [.openThenClose(lines: [echo])])
+        let time = LichessBotManualTime()
+        let manager = LichessBotSessionManager(
+            accountAPI: account,
+            gameAPI: try LichessBotFakeGameServer(),
+            gate: LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in },
+            slots: LichessBotModelSlots(provider: LichessBotFakeModelProvider.unbuildableChampion(), time: time) { _ in },
+            ourAccountID: LichessBotFakeGameServer.botID,
+            time: time,
+            settingsProvider: { LichessBotSettings() },
+            gameObserver: LichessBotRecordingGameObserver(),
+            onEvent: { _ in }
+        )
+        let run = Task { await manager.run() }
+        try await waitUntil("the stream is read", advancing: time) { await account.opens >= 1 }
+        try await Task.sleep(for: .milliseconds(100))
+        run.cancel()
+        await run.value
+        let accepted = await account.accepted
+        let declined = await account.declined.count
+        XCTAssertEqual(accepted, [])
+        XCTAssertEqual(declined, 0)
+    }
+
     /// The answer to our challenge can arrive before its POST returns; it
     /// is still reported when the challenge is noted.
     func testChallengeAnswerBeforeNoteIsReported() async throws {

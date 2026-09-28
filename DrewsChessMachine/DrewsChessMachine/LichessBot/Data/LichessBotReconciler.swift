@@ -88,6 +88,16 @@ actor LichessBotReconciler {
         items[gameID] = Item(gameID: gameID, firstAttemptAt: dueAt, attempts: 0, dueAt: dueAt, unreconciled: false)
     }
 
+    /// Bring forward games still waiting for their first attempt (going
+    /// offline shouldn't wait out a filing delay). Games already retrying
+    /// or unreconciled keep their schedule and retry window.
+    func expediteUnattempted() {
+        let now = time.now()
+        for (gameID, item) in items where item.attempts == 0 && !item.unreconciled {
+            items[gameID]?.dueAt = min(item.dueAt, now)
+        }
+    }
+
     var queuedGameIDs: [String] {
         items.keys.sorted()
     }

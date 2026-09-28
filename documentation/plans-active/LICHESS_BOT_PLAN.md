@@ -567,6 +567,25 @@ they now move into **Phase 5**.
 
 **Status: implemented 2026-09-28** (`LichessBotBotList`, `LichessBotPlayerNotes`, `LichessBotChallengeSheet`; tests in `LichessBotBotListTests`).
 
+**Added the same day:**
+- **Username tab:**
+  - DCM's past opponents with nothing typed.
+  - Lichess's username autocomplete after 3+ characters (`GET /api/player/autocomplete?object=true`). It is prefix-only, about 10 results, and shortest names first (lila `userIdsLikeFilter`, `regexStart`).
+  - Selecting a row loads the player.
+- **Leaderboard tab:**
+  - `GET /api/player/top/{nb}/{perf}`, where `nb` is at most 100 (spec).
+  - It ranks players with a stable rating who played a rated game in that speed within 7 days (lila `RankingApi`: each rated game writes an entry that expires in 7 days).
+  - Every entry carries `online`, so there is an "online only" filter.
+- **Online Players tab:** lila's undocumented `GET /player/online?nb=50` with `Accept: application/json`. It returns the 50 highest-rated online humans, bots excluded (`byIdsSortRatingNoBot`, cached for 2 min).
+  - It was added in 2015 (lila PR #541) for the old mobile app. It has no per-route rate limit and isn't blocked for crawlers. Nothing forbids it, but it is undocumented, and staff say they'd "much rather add an endpoint than have people use web-scraping" (api-tips page).
+  - So it is called at most once per 2 min, at housekeeping priority, and a failure says the undocumented route may have changed.
+  - There is no documented way to list online humans.
+- **Bots may challenge humans** (verified in lila `ChallengeGranter`):
+  - The human's preferences decide: a block or **Never** denies; **Friends** requires the human to follow the bot; **Rating** needs non-provisional ratings on both sides within ±300; **Registered** (the default) and **Always** allow it.
+  - Rate limits for a bot challenging a human who doesn't follow it are about **5 a minute and 40 a day** (5 credits each, from 25 a minute and 200 a day), against 25 and 200 for bot targets.
+  - Humans can't pick `noBot` in the web decline menu, but can decline, block, or change preferences.
+  - `GET /api/user/{name}?challenge=true` (used by the mobile app, not in the spec) returns `canChallenge`, without the rating-range check.
+
 **Source facts** (verified in `lichess-org/api` and lila source, 2026-09-28):
 - `GET /api/bot/online?nb=N` has one parameter, `nb`, the most bots to return (1–512, default 100). It needs no login and returns NDJSON, one full `User` per line: perfs, flair, verified, `createdAt`, `seenAt`, `playTime`, and `profile` (`bio`, `realName`, `links`, `flag`).
 - lila builds the list from bots seen in the last 10 s, caches it for 10 s, and then **takes the first N lines**. There is no paging, sorting or filtering. With more than 512 bots online, the API returns an arbitrary 512 (the web page `/player/bots` lists them all). Favorites therefore never depend on this list; see below.
@@ -724,6 +743,11 @@ summed in Stats as "training time spent on bot snapshots", so the cost to
 training is visible.
 
 ### 9.1 Choosing a model file by lineage (added 2026-09-28)
+
+**Status: tree implemented 2026-09-28** (`ModelLineageTree`, `LichessBotModelLinePicker`; tests in `ModelLineageTreeTests`). Deviations:
+- **Probe pElo ("strongest (probe)") is not shown.** The app has no access to the dashboards' `data/*.csv`, which live in the repo, not in the app's data. Showing it needs an import step or the ROADMAP's in-file provenance, so it is deferred rather than guessed.
+- Session champions hang under their base ModelID's segment, labeled with the session folder.
+- A parent cycle, which should never happen, is broken by placing each id once, and ids reachable only through a cycle are listed as roots.
 
 **Status.** A first version shipped with the live-testing fixes: "Latest by lineage" (`ModelFileCatalog`, `LichessBotModelLinePicker`). It groups files by `model_id`, shows the highest-step file first, and lists the lineage's earlier files underneath. Live use showed the grouping is too fine, and the result misleads:
 - The untrained seed "Qeu8" appears as its own lineage, and its trained continuations appear as unrelated rows (GLu5, Lnji, PVZp, Ejp0).
@@ -1334,6 +1358,12 @@ status area, which is always visible:
 
 **14.3b Opponent card, and keeping our own account current (added 2026-09-28).**
 
+**Status: implemented 2026-09-28** (`LichessBotOpponentCard`; tests in `LichessBotOpponentProfileTests`).
+- Placement: a third panel ("Opponent") beside Transcript and Chat in the game view, and a compact summary under the Challenge sheet's table.
+- Fetch triggers: sending a challenge; accepting one (before the game starts); selecting a bot in the sheet; opening the Opponent panel.
+- Lichess's own AI has no account, so it shows a note instead of a card.
+- The rating-history trend and per-speed stats remain optional, not built.
+
 *Our account.*
 - The Overview's Account card (ratings, rated and unrated counts) is refreshed after **every filed game**: one `GET /api/account` once the reconciler finalizes the record. **Implemented 2026-09-28.**
 - It runs at housekeeping priority, and a failure is logged while the previous values stay on screen.
@@ -1367,6 +1397,12 @@ status area, which is always visible:
   - the Account card updates after a filed game
 
 **14.3c Chat panel: wider bubbles, operator chat, per-game move delay or hold (added 2026-09-28).**
+
+**Status: implemented 2026-09-28.** Deviations from the text below:
+- Operator messages are journaled as a general `chatSent(room:text:origin:)` event, with origin greeting, goodbye, command reply or operator, rather than an operator-only event. It is sent with the request label "operator chat".
+- That event also fixed the missing-goodbye bug (live findings).
+- "Play move" also ends a plain delay early.
+- Tests: `LichessBotMovePacingTests`, `LichessBotSentChatTests`.
 
 - **Bubble width.** In both the Transcript and the Chat panel, each bubble may take up to **75%** of the panel's width, aligned left (Lichess) or right (DCM), so long lines wrap less.
 - **Operator chat input**, under the Chat panel of a live game:
@@ -1894,7 +1930,12 @@ These come from the first live session: account `DrewsChessMachine`, upgraded to
 - **The token-test response** reported the scopes as a comma-separated list, as assumed.
 - **Filing:** the game was reconciled against the export with no mismatches, and written as `.json`, `.pgn` and `.journal.jsonl` under `Games/2026/09/`.
 - **Bot-vs-bot limit:** Lichess limits each BOT account to 100 games against other bots per rolling day, counted **in total, not per pairing**. It refuses further challenges with its own message ("… played 100 games against other bots today, please wait until …"). DCM's per-pairing stop was removed; Lichess's message is shown instead.
-- **A game-ending move arrives twice.** For a threefold (game zZMhCXrX), the `gameState` carrying the move came with status `started`, and a second `gameState` with the same 60-ply move list and status `draw` followed about 1 ms later. The final move list is the only "ended at ply N" marker. DCM logged a false local-draw-rule disagreement on the first message. *Fix pending:* report the disagreement only if the next `gameState` is still live; the regression test is `testThreefoldEndedInTheNextStateIsNotAnAnomaly`.
+- **A game-ending move arrives twice.** For a threefold (game zZMhCXrX), the `gameState` carrying the move came with status `started`, and a second `gameState` with the same 60-ply move list and status `draw` followed about 1 ms later. The final move list is the only "ended at ply N" marker. DCM logged a false local-draw-rule disagreement on the first message. **Fixed 2026-09-28:** the disagreement is reported only if the next `gameState` is still live. The regression test is `testThreefoldEndedInTheNextStateIsNotAnAnomaly`.
+- **Our own chat is echoed only while the game stream is open.** The greeting's echo arrived about 220 ms after its POST. The goodbye, POSTed after the game finished (the session stops reading then), was never echoed, so it was missing from the Chat tab and the record. **Fixed:** sent messages are recorded from their successful POST (`chatSent`) and matched to echoes.
+- **Lichess closes the game stream right after a game's final state.** lila's `GameStateStream` pushes the final state, then stops the stream (`PoisonPill` → `queue.complete()`); the 10 s delay there only affects the rematch signal. Reopening the stream for a finished game sends `gameFull` and closes. So post-game chat can't arrive on the stream. **Fixed:** the player-room chat is fetched with `GET /api/bot/game/{id}/chat` (`[{text, user}]`) at +60 s and +5 min, and unseen lines are added and journaled (`chatFetched`). Filing waits for the first fetch unless going offline or quitting.
+- **A declined "classical" challenge (2026-09-28) was correspondence.** The challenge had `"timeControl":{"type":"unlimited"}`, `speed: correspondence`, so it was declined with `timeControl`. That was correct; there was no stale-settings bug. Separately, a game session did keep one settings copy per stream. **Fixed:** settings are read per stream line.
+- **Several pending outgoing challenges** are now allowed (bounded by `maxConcurrentGames` together with games in progress). A pending outgoing challenge never blocks accepting incoming ones: the policy counts only games in progress and accepted-awaiting-start.
+- **`+` in a form body:** `URLComponents.percentEncodedQuery` leaves `+` literal, which the server reads as a space. **Fixed:** form bodies are strictly percent-encoded.
 - **Draw statuses:** Lichess reports every agreed or rule draw as `draw`. DCM names the rule from its own engine's view of the final position.
 
 ## 20. Where DCM's normal handling and Lichess disagree: edge cases

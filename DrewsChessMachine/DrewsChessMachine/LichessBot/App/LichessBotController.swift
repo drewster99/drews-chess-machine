@@ -80,6 +80,15 @@ final class LichessBotController {
         let sentAt: Date
     }
 
+    /// An opponent's public profile, fetched once per app session (plan
+    /// §14.3b).
+    enum OpponentProfile: Equatable {
+        case loading
+        /// `crosstableError` is set when only the head-to-head failed.
+        case loaded(LichessBotUserSummary, crosstable: LichessBotCrosstable?, crosstableError: String?)
+        case failed(String)
+    }
+
     struct Alarm: Identifiable, Equatable {
         let id: Int
         let at: Date
@@ -98,7 +107,11 @@ final class LichessBotController {
     /// Games in progress plus finished games kept for a while, oldest first.
     private(set) var games: [LichessBotLiveGame] = []
     private(set) var activeGameIDs: Set<String> = []
-    private(set) var pendingChallenge: PendingChallenge?
+    /// Outgoing challenges still unanswered, oldest first (plan §7.1: games
+    /// from them run in parallel, within the concurrent-game limit).
+    private(set) var pendingChallenges: [PendingChallenge] = []
+    /// Challenge POSTs under way, counted against the concurrent-game limit.
+    private var challengeSendsInFlight = 0
     private(set) var lastChallengeOutcome: String?
     private(set) var oneGameRequested = false
     private(set) var alarms: [Alarm] = []
@@ -106,12 +119,36 @@ final class LichessBotController {
     private(set) var finishing: FinishingPurpose?
     private(set) var index: LichessBotIndex.File?
     private(set) var onlineBots: [LichessBotUserSummary] = []
+    /// When `onlineBots` was last fetched successfully.
+    private(set) var onlineBotsFetchedAt: Date?
+    /// Favorites and bot limit times (plan §7.2); nil until loaded.
+    private(set) var playerNotes: LichessBotPlayerNotes?
+    /// Online flags for favorites missing from `onlineBots`, by user id.
+    private(set) var favoriteStatuses: [String: LichessBotUserStatus] = [:]
+    /// Opponent profiles by lowercased user id (plan §14.3b). Not
+    /// persisted: each app session fetches fresh.
+    private(set) var opponentProfiles: [String: OpponentProfile] = [:]
     /// A drain has finished its games and is filing their records before
     /// going offline.
     private(set) var isFilingRecords = false
+    /// Outgoing challenges an automatic withdrawal was attempted for. One
+    /// attempt per challenge: a failure raises an alarm once and leaves the
+    /// Cancel button to the operator, rather than retrying (and alarming)
+    /// on every poll.
+    private var autoWithdrawAttemptedChallengeIDs: Set<String> = []
     /// Games in the grid/list the operator has dismissed.
-    var focusedGameID: String?
-    var showsGrid = false
+    /// The Live tab's single-game choice; nil means "First in progress".
+    /// Remembered across launches (a specific game shows again only while it
+    /// is listed).
+    var focusedGameID: String? {
+        didSet { defaults.set(focusedGameID, forKey: Self.focusedGameIDKey) }
+    }
+    /// The Live tab's Single / Grid choice, remembered across launches.
+    var showsGrid = false {
+        didSet { defaults.set(showsGrid, forKey: Self.showsGridKey) }
+    }
+    private static let focusedGameIDKey = "lichessBot.live.focusedGameID"
+    private static let showsGridKey = "lichessBot.live.showsGrid"
 
     // MARK: - Configuration
 
@@ -178,6 +215,8 @@ final class LichessBotController {
             settingsError = error.localizedDescription
         }
         settings = loadedSettings
+        showsGrid = defaults.bool(forKey: Self.showsGridKey)
+        focusedGameID = defaults.string(forKey: Self.focusedGameIDKey)
         let log = protocolLog
         let sink = gateEventSink
         gate = LichessBotRequestGate(
@@ -192,6 +231,11 @@ final class LichessBotController {
     /// The configured account id. Lichess ids are lowercase.
     private var accountID: String {
         settings.connection.expectedAccountID.lowercased()
+    }
+
+    /// Our account id, for views that key data by it (a crosstable).
+    var botAccountID: String {
+        accountID
     }
 
     /// An error's text, safe to show and log (plan §10.3).
@@ -435,6 +479,9 @@ final class LichessBotController {
             connection = rateLimitHoldUntil == nil ? .online : .draining
             protocolLog.record(.lifecycle, oneGame ? "online (one game)" : "online")
             SessionLogger.shared.log("[LICHESS-BOT] online\(oneGame ? " (one game)" : "") as \(accountID)")
+            for failure in HardwareInfo.current.readFailures {
+                SessionLogger.shared.log("[LICHESS-BOT] hardware fact unavailable for chat replies: \(failure)")
+            }
         } catch {
             tearDownRuntime()
             oneGameRequested = false
@@ -442,6 +489,61 @@ final class LichessBotController {
             connection = .error(text)
             protocolLog.record(.lifecycle, "going online failed: \(text)")
             SessionLogger.shared.log("[ALARM] LICHESS-BOT going online failed: \(text)")
+        }
+    }
+
+    // MARK: - Post-game chat
+
+    /// When to fetch a finished game's chat. Lichess closes the game stream
+    /// right after the final state, so chat after that (an opponent's "gg")
+    /// arrives only through `GET /api/bot/game/{id}/chat`.
+    static let postGameChatFetchDelays: [Duration] = [.seconds(60), .seconds(300)]
+
+    /// Finished games whose filing waits for the first post-game chat
+    /// fetch. Going offline files them at once.
+    private var gamesAwaitingPostGameChat: Set<String> = []
+
+    private func schedulePostGameChatFetches(_ gameID: String) {
+        let generationAtStart = runtimeGeneration
+        for (index, delay) in Self.postGameChatFetchDelays.enumerated() {
+            Task {
+                do {
+                    try await Task.sleep(for: delay)
+                } catch {
+                    return
+                }
+                guard runtimeGeneration == generationAtStart else { return }
+                await fetchPostGameChat(gameID)
+                if index == 0 {
+                    fileAfterPostGameChat(gameID)
+                }
+            }
+        }
+    }
+
+    /// Queue a game for filing now that its first post-game chat fetch is
+    /// done (whether it found anything or failed).
+    private func fileAfterPostGameChat(_ gameID: String) {
+        guard gamesAwaitingPostGameChat.remove(gameID) != nil, let reconciler = runtime?.reconciler else { return }
+        Task {
+            await reconciler.enqueue(gameID: gameID)
+        }
+    }
+
+    private func fetchPostGameChat(_ gameID: String) async {
+        guard let runtime, let game = games.first(where: { $0.id == gameID }) else {
+            protocolLog.record(.game, "post-game chat not fetched: the game is no longer listed or the bot is offline", gameID: gameID)
+            return
+        }
+        do {
+            let fetched = try await runtime.client.gameChat(gameID: gameID)
+            for line in game.unseenChatLines(in: fetched) {
+                let event = LichessBotGameEvent.chatFetched(username: line.user, text: line.text)
+                game.apply(event)
+                await runtime.journal.gameEvent(gameID: gameID, event)
+            }
+        } catch {
+            protocolLog.record(.anomaly, "post-game chat fetch failed: \(Self.safeDescription(error))", gameID: gameID)
         }
     }
 
@@ -453,6 +555,15 @@ final class LichessBotController {
         await manager.setAcceptingNewGames(false)
         guard self.runtime?.manager === manager, connection == .online || connection == .draining else { return }
         connection = .draining
+        // Games waiting for their post-game chat fetch, or for a filing
+        // delay, are filed now, so going offline doesn't wait for them.
+        let reconciler = runtime.reconciler
+        let waiting = gamesAwaitingPostGameChat
+        gamesAwaitingPostGameChat = []
+        for gameID in waiting {
+            await reconciler.enqueue(gameID: gameID)
+        }
+        await reconciler.expediteUnattempted()
         protocolLog.record(.lifecycle, "draining")
         SessionLogger.shared.log("[LICHESS-BOT] draining (\(activeGameIDs.count) game(s) in progress)")
         finishIfDrained()
@@ -528,15 +639,192 @@ final class LichessBotController {
     func refreshOnlineBots() async {
         do {
             let client = try await accountClient()
-            onlineBots = try await client.onlineBots(count: 100).sorted { $0.username.lowercased() < $1.username.lowercased() }
+            onlineBots = try await client.onlineBots(count: LichessBotLimits.onlineBotsMaximum)
+            onlineBotsFetchedAt = Date()
         } catch {
             raiseAlarm("Loading online bots failed: \(Self.safeDescription(error))")
         }
     }
 
+    // MARK: - Player notes (plan §7.2)
+
+    /// Load favorites and bot limit times from disk. A missing file is an
+    /// empty set of notes; an unreadable one raises an alarm and leaves the
+    /// notes unloaded (so nothing overwrites the file).
+    func loadPlayerNotes() async {
+        let url = dataDirectory.playerNotesURL
+        do {
+            var notes = try await fileQueue.run {
+                try LichessBotPlayerNotes.load(from: url)
+            }
+            notes.pruneExpiredLimits(now: Date())
+            playerNotes = notes
+        } catch {
+            raiseAlarm("Loading favorites failed (\(url.lastPathComponent)): \(error.localizedDescription)")
+        }
+    }
+
+    func toggleFavorite(_ userID: String) {
+        guard var notes = playerNotes else {
+            raiseAlarm("Favorites aren't loaded; not changing them")
+            return
+        }
+        notes.toggleFavorite(userID)
+        playerNotes = notes
+        savePlayerNotes(notes)
+    }
+
+    private func recordBotLimit(_ refusal: LichessBotBotLimitRefusal.Parsed) {
+        protocolLog.record(.challenge, "\(refusal.userID) is at its bot-game limit (\(refusal.gamesPlayed)) until \(refusal.until.formatted(date: .abbreviated, time: .standard))")
+        guard var notes = playerNotes else { return }
+        notes.botLimitUntil[refusal.userID] = refusal.until
+        playerNotes = notes
+        savePlayerNotes(notes)
+    }
+
+    private func savePlayerNotes(_ notes: LichessBotPlayerNotes) {
+        let url = dataDirectory.playerNotesURL
+        let queue = fileQueue
+        Task {
+            do {
+                try await queue.run {
+                    try notes.save(to: url)
+                }
+            } catch {
+                raiseAlarm("Saving favorites failed (\(url.lastPathComponent)): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Online flags for favorites that aren't in the online list, in
+    /// batches of at most `LichessBotLimits.userStatusMaximumIDs`, at
+    /// housekeeping priority.
+    func refreshFavoriteStatuses() async {
+        guard let notes = playerNotes else { return }
+        let listed = Set(onlineBots.map(\.id))
+        let missing = notes.favoriteIDs.filter { !listed.contains($0) }
+        guard !missing.isEmpty else { return }
+        do {
+            let client = try await accountClient()
+            var statuses: [String: LichessBotUserStatus] = [:]
+            var start = 0
+            while start < missing.count {
+                let batch = Array(missing[start..<min(start + LichessBotLimits.userStatusMaximumIDs, missing.count)])
+                for status in try await client.usersStatus(ids: batch) {
+                    statuses[status.id.lowercased()] = status
+                }
+                start += LichessBotLimits.userStatusMaximumIDs
+            }
+            favoriteStatuses = statuses
+        } catch {
+            raiseAlarm("Checking favorites' online status failed: \(Self.safeDescription(error))")
+        }
+    }
+
+    // MARK: - Opponent profiles (plan §14.3b)
+
+    /// Start fetching an opponent's profile and Lichess head-to-head, once
+    /// per app session, in the background at housekeeping priority (the gate
+    /// never starts it while a move is due). `retry` refetches after a
+    /// failure; nothing retries on its own.
+    func loadOpponentProfile(_ username: String, retry: Bool = false) {
+        let id = username.lowercased()
+        guard id != accountID else { return }
+        if let existing = opponentProfiles[id] {
+            guard retry, case .failed = existing else { return }
+        }
+        opponentProfiles[id] = .loading
+        Task {
+            await fetchOpponentProfile(username: username, id: id)
+        }
+    }
+
+    private func fetchOpponentProfile(username: String, id: String) async {
+        do {
+            let client = try await accountClient()
+            let user = try await client.user(username: username)
+            var crosstable: LichessBotCrosstable?
+            var crosstableError: String?
+            do {
+                crosstable = try await client.crosstable(accountID, id)
+            } catch {
+                crosstableError = Self.safeDescription(error)
+            }
+            opponentProfiles[id] = .loaded(user, crosstable: crosstable, crosstableError: crosstableError)
+        } catch {
+            opponentProfiles[id] = .failed(Self.safeDescription(error))
+        }
+    }
+
+    /// DCM's games against bots started in the 24 hours before `now`:
+    /// filed games plus live ones not yet filed; nil until the games index
+    /// is loaded. Lichess limits this to `LichessBotLimits.botGamesPerDay`.
+    func botGamesInLastDay(now: Date) -> Int? {
+        guard let rows = index?.rows else { return nil }
+        let since = now.addingTimeInterval(-24 * 3600)
+        let filedIDs = Set(rows.map(\.gameID))
+        let live = games.filter { game in
+            !filedIDs.contains(game.id) && game.opponent?.title == "BOT" && game.startedAt >= since
+        }.count
+        return LichessBotRecordSummary.botGames(rows: rows, since: since) + live
+    }
+
+    /// A speed's leaderboard, fetched when asked for and kept for
+    /// `leaderboardMaximumAge` (Lichess itself recomputes it every few
+    /// minutes).
+    private(set) var leaderboards: [LichessBotSpeed: (fetchedAt: Date, users: [LichessBotLeaderboardUser])] = [:]
+    private static let leaderboardMaximumAge: TimeInterval = 300
+
+    func refreshLeaderboard(_ speed: LichessBotSpeed, force: Bool = false) async throws {
+        if !force, let cached = leaderboards[speed], Date().timeIntervalSince(cached.fetchedAt) < Self.leaderboardMaximumAge {
+            return
+        }
+        let client = try await accountClient()
+        leaderboards[speed] = (Date(), try await client.leaderboard(speed: speed, count: LichessBotLimits.leaderboardMaximum))
+    }
+
+    /// The highest-rated online humans from Lichess's undocumented
+    /// `/player/online`, refetched only after `onlinePlayersMaximumAge`
+    /// (matching how often Lichess refreshes it).
+    private(set) var onlinePlayers: (fetchedAt: Date, users: [LichessBotUserSummary])?
+    private static let onlinePlayersMaximumAge: TimeInterval = 120
+
+    func refreshOnlinePlayers() async throws {
+        if let onlinePlayers, Date().timeIntervalSince(onlinePlayers.fetchedAt) < Self.onlinePlayersMaximumAge {
+            return
+        }
+        let client = try await accountClient()
+        onlinePlayers = (Date(), try await client.onlinePlayers())
+    }
+
+    func autocompleteUsers(_ term: String) async throws -> [LichessBotLightUser] {
+        let client = try await accountClient()
+        return try await client.autocompleteUsers(term: term)
+    }
+
+    /// Opponents from DCM's own records, most recent game first, one row
+    /// each (the Username tab before anything is typed). Nil until the
+    /// games index loads.
+    var recentOpponents: [LichessBotLightUser]? {
+        guard let rows = index?.rows else { return nil }
+        var seen: Set<String> = []
+        var result: [LichessBotLightUser] = []
+        for row in rows.sorted(by: { $0.createdAt > $1.createdAt }) {
+            guard let id = row.opponentID, let name = row.opponentName, seen.insert(id).inserted else { continue }
+            result.append(LichessBotLightUser(id: id, name: name, title: row.opponentTitle, online: nil))
+        }
+        return result
+    }
+
     func lookUpUser(_ username: String) async throws -> LichessBotUserSummary {
         let client = try await accountClient()
-        return try await client.user(username: username)
+        do {
+            return try await client.user(username: username)
+        } catch LichessBotAPIError.http(404, _) {
+            // Lichess answers an unknown username with its HTML "not found"
+            // page; say what it means instead.
+            throw LichessBotControllerError.noSuchPlayer(username)
+        }
     }
 
     /// Send a challenge. The bot must be online (the game arrives on its
@@ -545,50 +833,61 @@ final class LichessBotController {
         guard let runtime, connection == .online else {
             throw LichessBotControllerError.notOnline
         }
-        guard pendingChallenge == nil else {
-            throw LichessBotControllerError.challengeAlreadyPending
+        let limit = settings.challenge.maxConcurrentGames
+        let committed = activeGameIDs.count + acceptedAwaitingStartIDs.count + pendingChallenges.count + challengeSendsInFlight
+        guard committed < limit else {
+            throw LichessBotControllerError.concurrentGameLimit(limit: limit, committed: committed)
         }
+        // Held for the POST, so a second send started meanwhile counts it.
+        challengeSendsInFlight += 1
+        defer { challengeSendsInFlight -= 1 }
         guard hasChallengeScope else {
             throw LichessBotControllerError.missingChallengeScope
         }
         let manager = runtime.manager
         let client = runtime.client
-        let target = username.lowercased()
-        let today = await manager.gamesToday(against: target)
-        if today >= settings.challenge.botPairDailyStop {
-            throw LichessBotControllerError.dailyLimitReached(opponent: username, games: today)
+        let created: LichessBotChallenge
+        do {
+            created = try await client.challenge(username: username, request: request)
+        } catch let error as LichessBotAPIError {
+            // A bot at its bot-vs-bot daily limit is refused with the exact
+            // time it frees up (plan §7.2); remember it for the list.
+            if case .http(_, let message?) = error, let refusal = LichessBotBotLimitRefusal.parse(message) {
+                recordBotLimit(refusal)
+            }
+            throw error
         }
-        let created = try await client.challenge(username: username, request: request)
         guard self.runtime?.manager === manager else {
             // The bot went offline while the challenge was being sent:
             // withdraw it, or an acceptance would start an abandoned game.
             withdraw(challengeID: created.id, client: client)
             throw LichessBotControllerError.notOnline
         }
-        pendingChallenge = PendingChallenge(id: created.id, username: username, sentAt: Date())
+        pendingChallenges.append(PendingChallenge(id: created.id, username: username, sentAt: Date()))
+        loadOpponentProfile(username)
         lastChallengeOutcome = nil
         // May resolve at once, if the answer already arrived.
         await manager.noteOutgoingChallenge(id: created.id)
         protocolLog.record(.challenge, "challenge sent to \(username)", fields: ["id": created.id, "rated": "\(request.rated)", "clock": "\(request.clockLimitSeconds)+\(request.clockIncrementSeconds)", "color": request.color.rawValue])
     }
 
-    func cancelChallenge() async {
-        guard let runtime, let pendingChallenge else { return }
+    func cancelChallenge(id: String) async {
+        guard let runtime, let pending = pendingChallenges.first(where: { $0.id == id }) else { return }
         do {
-            try await runtime.client.cancelChallenge(id: pendingChallenge.id)
-            await runtime.manager.clearOutgoingChallenge()
-            if self.pendingChallenge?.id == pendingChallenge.id {
-                self.pendingChallenge = nil
-                lastChallengeOutcome = "\(pendingChallenge.username): canceled"
+            try await runtime.client.cancelChallenge(id: id)
+            await runtime.manager.clearOutgoingChallenge(id: id)
+            if pendingChallenges.contains(where: { $0.id == id }) {
+                pendingChallenges.removeAll { $0.id == id }
+                lastChallengeOutcome = "\(pending.username): canceled"
             }
         } catch LichessBotAPIError.http(let status, let message) where status == 400 || status == 404 {
             // Lichess no longer knows the challenge: it expired or was
-            // answered. Nothing is pending any more.
-            await runtime.manager.clearOutgoingChallenge()
-            self.pendingChallenge = nil
-            lastChallengeOutcome = "\(pendingChallenge.username): no longer pending (\(message ?? "HTTP \(status)"))"
+            // answered. It is no longer pending.
+            await runtime.manager.clearOutgoingChallenge(id: id)
+            pendingChallenges.removeAll { $0.id == id }
+            lastChallengeOutcome = "\(pending.username): no longer pending (\(message ?? "HTTP \(status)"))"
         } catch {
-            raiseAlarm("Cancelling the challenge to \(pendingChallenge.username) failed: \(Self.safeDescription(error))")
+            raiseAlarm("Cancelling the challenge to \(pending.username) failed: \(Self.safeDescription(error))")
         }
     }
 
@@ -702,7 +1001,11 @@ final class LichessBotController {
             time: time,
             settingsProvider: settingsProvider,
             gameObserver: LichessBotGameObserverFanOut(observers: [journal, LichessBotControllerFeed(continuation: continuation)]),
-            onEvent: { event in continuation.yield(.manager(event)) }
+            onEvent: { event in continuation.yield(.manager(event)) },
+            pacingProvider: { [weak self] gameID in
+                // No controller means the app is quitting: no pacing.
+                await self?.pacingSnapshot(for: gameID) ?? LichessBotMovePacingSnapshot()
+            }
         )
         let reconciler = LichessBotReconciler(
             api: client,
@@ -836,10 +1139,10 @@ final class LichessBotController {
         runtimeGeneration += 1
         settingsBox = nil
         gateEventSink.value = nil
-        if let pendingChallenge {
-            withdraw(challengeID: pendingChallenge.id, client: runtime.client)
+        for pending in pendingChallenges {
+            withdraw(challengeID: pending.id, client: runtime.client)
         }
-        pendingChallenge = nil
+        pendingChallenges = []
         oneGameRequested = false
         drainRequested = false
         acceptedAwaitingStartIDs = []
@@ -883,6 +1186,19 @@ final class LichessBotController {
             if let until = rateLimitHoldUntil, Date() >= until {
                 await endRateLimitHold()
                 guard current() else { return }
+            }
+            let timeout = settings.challenge.outgoingChallengeTimeoutSeconds
+            if timeout > 0 {
+                let now = Date()
+                let expired = pendingChallenges.filter {
+                    !autoWithdrawAttemptedChallengeIDs.contains($0.id) && now.timeIntervalSince($0.sentAt) >= TimeInterval(timeout)
+                }
+                for pending in expired {
+                    autoWithdrawAttemptedChallengeIDs.insert(pending.id)
+                    protocolLog.record(.challenge, "withdrawing unanswered challenge to \(pending.username) after \(timeout) s")
+                    await cancelChallenge(id: pending.id)
+                    guard current() else { return }
+                }
             }
             if Date().timeIntervalSince(lastRefresh) >= 15 {
                 lastRefresh = Date()
@@ -973,12 +1289,19 @@ final class LichessBotController {
             raiseAlarm("Journal write failed for game \(gameID): \(error)")
         case .gameFinished(let gameID):
             if let reconciler = runtime?.reconciler {
-                // A short delay lets any last request (a goodbye chat) land
-                // in the journal before it is filed.
-                Task {
-                    await reconciler.enqueue(gameID: gameID, after: .seconds(5))
+                if drainRequested || finishing != nil {
+                    // Going offline or quitting: file once the last
+                    // request (the goodbye) has landed.
+                    Task {
+                        await reconciler.enqueue(gameID: gameID, after: .seconds(5))
+                    }
+                } else {
+                    // File after the first post-game chat fetch, so the
+                    // record includes an opponent's "gg".
+                    gamesAwaitingPostGameChat.insert(gameID)
                 }
             }
+            schedulePostGameChatFetches(gameID)
         }
     }
 
@@ -996,17 +1319,21 @@ final class LichessBotController {
             failRuntime("Lichess rejected the token: \(detail)")
         case .challengeDecision(let challengeID, let challengerID, let decision):
             protocolLog.record(.challenge, "\(challengerID): \(Self.describe(decision))", fields: ["challenge": challengeID])
+            if decision == .accept {
+                // Fetch before the game starts, so it never competes
+                // with a move (plan §14.3b).
+                loadOpponentProfile(challengerID)
+            }
         case .challengeResponseFailed(let challengeID, let error):
             protocolLog.record(.anomaly, "challenge response failed: \(error)", fields: ["challenge": challengeID])
         case .gameSessionStarted(let gameID, let generation):
-            if let pending = pendingChallenge, pending.id == gameID {
+            if let pending = pendingChallenges.first(where: { $0.id == gameID }) {
                 // The accepted challenge's game can start before the
                 // manager was told about the challenge.
                 lastChallengeOutcome = "\(pending.username): accepted"
-                pendingChallenge = nil
-                focusedGameID = gameID
+                pendingChallenges.removeAll { $0.id == gameID }
                 if let manager = runtime?.manager {
-                    Task { await manager.clearOutgoingChallenge() }
+                    Task { await manager.clearOutgoingChallenge(id: gameID) }
                 }
             }
             activeGameIDs.insert(gameID)
@@ -1039,18 +1366,17 @@ final class LichessBotController {
             switch outcome {
             case .accepted(let gameID):
                 text = "accepted; game \(gameID)"
-                focusedGameID = gameID
             case .declined(let reason):
                 text = "declined" + (reason.map { ": \($0)" } ?? "")
             case .canceled:
                 text = "canceled"
             }
-            if let pendingChallenge {
-                lastChallengeOutcome = "\(pendingChallenge.username): \(text)"
+            if let pending = pendingChallenges.first(where: { $0.id == challengeID }) {
+                lastChallengeOutcome = "\(pending.username): \(text)"
             } else {
                 lastChallengeOutcome = "challenge \(challengeID): \(text)"
             }
-            pendingChallenge = nil
+            pendingChallenges.removeAll { $0.id == challengeID }
             protocolLog.record(.challenge, "outgoing challenge \(text)", fields: ["challenge": challengeID])
         case .oneGameStarted(let gameID):
             drainRequested = true
@@ -1105,6 +1431,19 @@ final class LichessBotController {
         protocolLog.record(.lifecycle, "rate-limit hold over; accepting games again")
     }
 
+    /// Refresh the Overview's account (ratings, game counts) once a game is
+    /// filed. Housekeeping priority, so the gate never starts it while any
+    /// game awaits our move; a failure is logged and the previous values
+    /// stay on screen.
+    private func refreshAccountAfterGame() async {
+        do {
+            let client = try await accountClient()
+            account = try await client.account()
+        } catch {
+            protocolLog.record(.account, "account refresh after a game failed: \(Self.safeDescription(error))")
+        }
+    }
+
     private func handle(_ event: LichessBotReconcilerEvent) {
         switch event {
         case .finalized(let finalized):
@@ -1114,6 +1453,7 @@ final class LichessBotController {
             protocolLog.record(.game, "finalized (\(finalized.record.reconciliation.outcome.rawValue))", gameID: finalized.record.gameID, fields: ["mismatches": finalized.record.reconciliation.mismatches.joined(separator: "; ")])
             Task {
                 await refreshIndex()
+                await refreshAccountAfterGame()
             }
         case .waiting(let gameID, let reason, let retryIn):
             protocolLog.record(.game, "reconciliation waiting: \(reason); retry in \(retryIn)", gameID: gameID)
@@ -1177,6 +1517,29 @@ final class LichessBotController {
 
     /// Longest a drain waits for records to be filed before going offline.
     private static let filingTimeLimitSeconds: TimeInterval = 120
+
+    /// A game's operator move pacing (plan §14.3c). A game not in the list
+    /// has no controls on screen, so no pacing.
+    private func pacingSnapshot(for gameID: String) -> LichessBotMovePacingSnapshot {
+        games.first { $0.id == gameID }?.pacingSnapshot ?? LichessBotMovePacingSnapshot()
+    }
+
+    /// Send the operator's own chat message in a live game (plan §14.3c).
+    /// It is labeled "operator chat" in the transcript and journal, apart
+    /// from DCM's automatic messages.
+    func sendOperatorChat(gameID: String, room: LichessBotChatRoom, text: String) async throws {
+        guard let runtime else {
+            throw LichessBotControllerError.notOnline
+        }
+        let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let problem = LichessBotOperatorChat.problem(with: message) {
+            throw LichessBotControllerError.chatNotSendable(problem)
+        }
+        try await runtime.client.chat(gameID: gameID, room: room, text: message, label: "operator chat")
+        let sent = LichessBotGameEvent.chatSent(room: room, text: message, origin: .operator)
+        liveGame(gameID).apply(sent)
+        await runtime.journal.gameEvent(gameID: gameID, sent)
+    }
 
     private func liveGame(_ gameID: String) -> LichessBotLiveGame {
         if let existing = games.first(where: { $0.id == gameID }) {
@@ -1270,9 +1633,10 @@ enum LichessBotControllerError: LocalizedError, Equatable {
     case tokenForWrongAccount(String)
     case notABot
     case notOnline
-    case challengeAlreadyPending
+    case concurrentGameLimit(limit: Int, committed: Int)
+    case noSuchPlayer(String)
     case missingChallengeScope
-    case dailyLimitReached(opponent: String, games: Int)
+    case chatNotSendable(String)
 
     var errorDescription: String? {
         switch self {
@@ -1285,13 +1649,15 @@ enum LichessBotControllerError: LocalizedError, Equatable {
         case .notABot:
             return "The account is not a BOT account yet. Upgrade it in Settings ▸ Account."
         case .notOnline:
-            return "The bot must be online to send a challenge"
-        case .challengeAlreadyPending:
-            return "A challenge is already waiting for an answer"
+            return "The bot must be online to do that"
+        case .concurrentGameLimit(let limit, let committed):
+            return "Games in progress, accepted, and challenges waiting already total \(committed); the concurrent-game limit is \(limit)"
         case .missingChallengeScope:
             return "The token lacks the challenge:write scope needed to send challenges"
-        case .dailyLimitReached(let opponent, let games):
-            return "Already \(games) games against \(opponent) today (the bot-pair daily stop)"
+        case .noSuchPlayer(let username):
+            return "No Lichess player is named “\(username)”"
+        case .chatNotSendable(let problem):
+            return "Chat not sent: \(problem)"
         }
     }
 }

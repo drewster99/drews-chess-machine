@@ -129,6 +129,8 @@ actor LichessBotSessionManager {
     private let settingsProvider: @Sendable () async -> LichessBotSettings
     private let gameObserver: any LichessBotGameObserver
     private let onEvent: @Sendable (LichessBotManagerEvent) -> Void
+    /// Each game's operator move pacing (plan §14.3c), by game id.
+    private let pacingProvider: @Sendable (String) async -> LichessBotMovePacingSnapshot
 
     /// Online (true) or Draining (false) — the operator's choice, or "one
     /// game" once its game started.
@@ -145,7 +147,12 @@ actor LichessBotSessionManager {
     private var gamesToday = 0
     private var gamesTodayByOpponent: [String: Int] = [:]
     private var countedGames: Set<String> = []
-    private var pendingOutgoingChallengeID: String?
+    /// Challenges DCM sent that are still unanswered, oldest first. Several
+    /// may be pending at once; games from them run in parallel.
+    private var pendingOutgoingChallengeIDs: [String] = []
+    /// Games whose session is being set up (a model build can take a while);
+    /// they hold a slot like a running game.
+    private var startingSessionIDs: Set<String> = []
     /// Challenges accepted whose `gameStart` hasn't arrived yet. They count
     /// against capacity, so two quick challenges can't both be accepted into
     /// one free slot. An accepted challenge's game has the challenge's id.
@@ -170,7 +177,8 @@ actor LichessBotSessionManager {
         time: any LichessBotTimeSource,
         settingsProvider: @escaping @Sendable () async -> LichessBotSettings,
         gameObserver: any LichessBotGameObserver,
-        onEvent: @escaping @Sendable (LichessBotManagerEvent) -> Void
+        onEvent: @escaping @Sendable (LichessBotManagerEvent) -> Void,
+        pacingProvider: @escaping @Sendable (String) async -> LichessBotMovePacingSnapshot = { _ in LichessBotMovePacingSnapshot() }
     ) {
         self.accountAPI = accountAPI
         self.gameAPI = gameAPI
@@ -181,6 +189,7 @@ actor LichessBotSessionManager {
         self.settingsProvider = settingsProvider
         self.gameObserver = gameObserver
         self.onEvent = onEvent
+        self.pacingProvider = pacingProvider
     }
 
     // MARK: - Controls
@@ -239,7 +248,7 @@ actor LichessBotSessionManager {
             onEvent(.outgoingChallengeResolved(challengeID: id, outcome: known.outcome))
             return
         }
-        pendingOutgoingChallengeID = id
+        pendingOutgoingChallengeIDs.append(id)
     }
 
     /// Ask every game session to reopen its stream (after the Mac wakes:
@@ -250,21 +259,19 @@ actor LichessBotSessionManager {
         }
     }
 
+    var outgoingChallengeIDs: [String] {
+        pendingOutgoingChallengeIDs
+    }
+
+    /// The most recently sent challenge still pending.
     var outgoingChallengeID: String? {
-        pendingOutgoingChallengeID
+        pendingOutgoingChallengeIDs.last
     }
 
-    /// Forget the pending outgoing challenge (it expired, or Lichess no
+    /// Forget a pending outgoing challenge (it expired, or Lichess no
     /// longer knows it).
-    func clearOutgoingChallenge() {
-        pendingOutgoingChallengeID = nil
-    }
-
-    /// Games started today against `opponentID` (for the Challenge sheet's
-    /// bot-pair check).
-    func gamesToday(against opponentID: String) -> Int {
-        rollDayIfNeeded()
-        return gamesTodayByOpponent[opponentID] ?? 0
+    func clearOutgoingChallenge(id: String) {
+        pendingOutgoingChallengeIDs.removeAll { $0 == id }
     }
 
     /// Seed today's counts from the record store after a relaunch, so the
@@ -311,14 +318,18 @@ actor LichessBotSessionManager {
                 let chunks = try await accountAPI.openEventStream()
                 openedAt = time.now()
                 onEvent(.eventStreamOpened(attempt: attempt))
+                // Refreshed on every line, so a Settings change applies to
+                // the open stream, not just the next one.
+                let stallSeconds = SyncBox(settings.connection.eventStreamStallTimeoutSeconds)
                 let items = LichessBotStreamReader.items(
                     from: chunks,
                     time: time,
-                    stallTimeout: { .seconds(settings.connection.eventStreamStallTimeoutSeconds) },
+                    stallTimeout: { .seconds(stallSeconds.value) },
                     checkInterval: .seconds(1)
                 )
                 gapTracker.reset()
                 for try await item in items {
+                    stallSeconds.value = await settingsProvider().connection.eventStreamStallTimeoutSeconds
                     for report in gapTracker.arrival(at: time.now()) {
                         switch report {
                         case .longGap(let seconds):
@@ -424,12 +435,14 @@ actor LichessBotSessionManager {
         case .challenge(let challenge, let compat):
             await handleChallenge(challenge, compat: compat)
         case .gameStart(let info):
-            if info.gameId == pendingOutgoingChallengeID {
+            if pendingOutgoingChallengeIDs.contains(info.gameId) {
                 // An accepted challenge's game has the challenge's id.
-                pendingOutgoingChallengeID = nil
+                pendingOutgoingChallengeIDs.removeAll { $0 == info.gameId }
                 onEvent(.outgoingChallengeResolved(challengeID: info.gameId, outcome: .accepted(gameID: info.gameId)))
             }
+            startingSessionIDs.insert(info.gameId)
             await startSessionIfNeeded(info)
+            startingSessionIDs.remove(info.gameId)
         case .gameFinish(let info):
             countGame(info)
             // The game stream may never deliver the final state (plan E22).
@@ -447,8 +460,8 @@ actor LichessBotSessionManager {
     /// Report the answer to our outgoing challenge, or remember it in case
     /// the challenge is noted as ours a moment later.
     private func resolveChallenge(_ id: String, outcome: LichessBotOutgoingChallengeOutcome) {
-        if id == pendingOutgoingChallengeID {
-            pendingOutgoingChallengeID = nil
+        if pendingOutgoingChallengeIDs.contains(id) {
+            pendingOutgoingChallengeIDs.removeAll { $0 == id }
             onEvent(.outgoingChallengeResolved(challengeID: id, outcome: outcome))
             return
         }
@@ -459,6 +472,13 @@ actor LichessBotSessionManager {
     }
 
     private func handleChallenge(_ challenge: LichessBotChallenge, compat: LichessBotCompat?) async {
+        // Our own outgoing challenges are echoed on the event stream. Lichess
+        // omits `direction` there (observed live, contrary to the spec's
+        // example), so they are recognized by the challenger being us.
+        if challenge.challenger.id.lowercased() == ourAccountID.lowercased() {
+            onEvent(.challengeDecision(challengeID: challenge.id, challengerID: challenge.challenger.id, decision: .ignore(rule: "our own outgoing challenge")))
+            return
+        }
         let settings = await settingsProvider()
         rollDayIfNeeded()
         let now = time.now()
@@ -475,7 +495,10 @@ actor LichessBotSessionManager {
         let context = LichessBotChallengeContext(
             acceptingNewGames: acceptingNewGames && !rateLimitHold,
             modelReady: modelReady,
-            activeGames: sessions.count + acceptedAwaitingStart.count,
+            // Our pending outgoing challenges hold their slots too, so an
+            // incoming game plus their later acceptance can never exceed
+            // the concurrent-game limit.
+            activeGames: Set(sessions.keys).union(startingSessionIDs).union(acceptedAwaitingStart.keys).count + pendingOutgoingChallengeIDs.count,
             activeGamesByOpponent: byOpponent,
             gamesToday: gamesToday,
             gamesTodayByOpponent: gamesTodayByOpponent,
@@ -564,6 +587,7 @@ actor LichessBotSessionManager {
         let slots = self.slots
         let settingsProvider = self.settingsProvider
         let onEvent = self.onEvent
+        let pacingProvider = self.pacingProvider
         let session = LichessBotGameSession(
             gameID: gameID,
             ourAccountID: ourAccountID,
@@ -583,7 +607,8 @@ actor LichessBotSessionManager {
             time: time,
             onTurnStatus: { [weak self] gameID, status in
                 await self?.updateTurnStatus(gameID: gameID, status: status)
-            }
+            },
+            pacing: { await pacingProvider(gameID) }
         )
         sessions[gameID] = session
         onEvent(.gameSessionStarted(gameID: gameID, generation: generation.info))

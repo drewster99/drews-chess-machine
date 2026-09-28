@@ -54,6 +54,11 @@ final class LichessBotLiveGame: Identifiable {
         let room: String
         let username: String
         let text: String
+        /// Set for a message DCM sent, from its successful POST; nil for a
+        /// message known only from the stream.
+        let origin: LichessBotChatOrigin?
+        /// A sent message whose echo Lichess streamed back.
+        var echoed: Bool
     }
 
     let id: String
@@ -77,6 +82,9 @@ final class LichessBotLiveGame: Identifiable {
 
     private(set) var status: String = "started"
     private(set) var winner: String?
+    /// The draw rule DCM's own engine sees in the final position, if any.
+    /// Lichess's status says only "draw"; this says which rule.
+    private(set) var localDrawCondition: ChessDrawCondition?
     private(set) var finishedAt: Date?
     private(set) var whiteClockMilliseconds: Int?
     private(set) var blackClockMilliseconds: Int?
@@ -86,6 +94,82 @@ final class LichessBotLiveGame: Identifiable {
     private(set) var opponentOffersDraw = false
     private(set) var opponentProposesTakeback = false
     private(set) var opponentGoneClaimableInSeconds: Int?
+
+    struct HeldMove: Equatable {
+        let ply: Int
+        let uci: String
+        let san: String
+    }
+
+    /// The operator's move pacing for this game (plan §14.3c): a delay
+    /// before each of DCM's moves after its first, or holding each move
+    /// until Play move. Belongs to this game only and is never persisted.
+    var moveDelaySeconds = 0
+    var holdsMoves = false
+    /// The move DCM has decided and is holding or delaying, if any.
+    private(set) var heldMove: HeldMove?
+    private(set) var releaseRequested = false
+
+    /// A message DCM sent: shown at once, and matched to Lichess's echo if
+    /// that already arrived (the echo and the POST's reply can come in
+    /// either order), so it is listed once.
+    private func recordSentChat(room: String, text: String, origin: LichessBotChatOrigin) {
+        if let index = chat.firstIndex(where: { $0.origin == nil && !$0.echoed && $0.room == room && $0.text == text && isFromUs($0) }) {
+            let echo = chat[index]
+            chat[index] = ChatMessage(id: echo.id, at: echo.at, room: echo.room, username: echo.username, text: echo.text, origin: origin, echoed: true)
+            return
+        }
+        let ourName = (ourColor == .white ? white?.name : black?.name) ?? ourAccountID
+        chat.append(ChatMessage(id: nextChatID, at: Date(), room: room, username: ourName, text: text, origin: origin, echoed: false))
+        nextChatID += 1
+    }
+
+    /// A message from the stream. Our own echo confirms the matching sent
+    /// message instead of listing it twice.
+    private func recordStreamedChat(_ line: LichessBotChatLine, at: Date) {
+        if line.username.lowercased() == ourAccountID.lowercased(),
+           let index = chat.firstIndex(where: { $0.origin != nil && !$0.echoed && $0.room == line.room.raw && $0.text == line.text }) {
+            chat[index].echoed = true
+            return
+        }
+        chat.append(ChatMessage(id: nextChatID, at: at, room: line.room.raw, username: line.username, text: line.text, origin: nil, echoed: false))
+        nextChatID += 1
+    }
+
+    /// The lines of a fetched player-room chat not already shown, in order.
+    /// Each known player-room message (streamed or sent) accounts for one
+    /// fetched line with the same author and text.
+    func unseenChatLines(in fetched: [LichessBotFetchedChatLine]) -> [LichessBotFetchedChatLine] {
+        var known = chat
+            .filter { $0.room == LichessBotChatRoom.player.rawValue }
+            .map { (user: isFromUs($0) ? ourAccountID.lowercased() : $0.username.lowercased(), text: $0.text) }
+        var unseen: [LichessBotFetchedChatLine] = []
+        for line in fetched {
+            let user = line.user.lowercased()
+            if let index = known.firstIndex(where: { $0.user == user && $0.text == line.text }) {
+                known.remove(at: index)
+            } else {
+                unseen.append(line)
+            }
+        }
+        return unseen
+    }
+
+    /// Whether a chat line was written by our own account (DCM's automatic
+    /// messages and the operator's).
+    func isFromUs(_ message: ChatMessage) -> Bool {
+        message.username.lowercased() == ourAccountID.lowercased()
+    }
+
+    /// The operator's Play move for the held move.
+    func requestRelease() {
+        guard heldMove != nil else { return }
+        releaseRequested = true
+    }
+
+    var pacingSnapshot: LichessBotMovePacingSnapshot {
+        LichessBotMovePacingSnapshot(delaySeconds: moveDelaySeconds, holds: holdsMoves, releaseRequested: releaseRequested)
+    }
 
     private(set) var transcript: [LichessBotTranscriptEntry] = []
     private(set) var chat: [ChatMessage] = []
@@ -103,6 +187,14 @@ final class LichessBotLiveGame: Identifiable {
 
     var isFinished: Bool {
         finishedAt != nil
+    }
+
+    /// DCM's score (1, ½ or 0) by the same rule as the game record's; nil
+    /// while playing, for a game without a result (aborted, never started,
+    /// left unfinished), or before our color is known.
+    var ourScore: Double? {
+        guard isFinished, let ourColor else { return nil }
+        return LichessBotRecordBuilder.ourScore(status: status, winner: winner, ourColor: ourColor == .white ? .white : .black)
     }
 
     var opponent: Player? {
@@ -161,8 +253,22 @@ final class LichessBotLiveGame: Identifiable {
             anomalies.append("move \(uci) at ply \(ply) rejected: \(error)")
         case .action(let text):
             note(text, isProblem: false)
+        case .moveHeld(let ply, let uci, let san):
+            heldMove = HeldMove(ply: ply, uci: uci, san: san)
+            releaseRequested = false
+            note("holding \(san) at ply \(ply)", isProblem: false)
+        case .moveReleased(let ply, let reason):
+            heldMove = nil
+            releaseRequested = false
+            note("released the held move at ply \(ply): \(reason)", isProblem: false)
         case .chat:
             break
+        case .chatSent(let room, let text, let origin):
+            recordSentChat(room: room.rawValue, text: text, origin: origin)
+        case .chatFetched(let username, let text):
+            chat.append(ChatMessage(id: nextChatID, at: Date(), room: LichessBotChatRoom.player.rawValue, username: username, text: text, origin: nil, echoed: false))
+            nextChatID += 1
+            note("post-game chat from \(username)", isProblem: false)
         case .anomaly(let text):
             anomalies.append(text)
             note(text, isProblem: true)
@@ -172,9 +278,10 @@ final class LichessBotLiveGame: Identifiable {
         case .tokenRejected(let detail):
             anomalies.append("token rejected: \(detail)")
             note("token rejected: \(detail)", isProblem: true)
-        case .finished(let status, let winner, _):
+        case .finished(let status, let winner, let localDrawCondition):
             self.status = status.raw
             self.winner = winner?.raw
+            self.localDrawCondition = localDrawCondition
             if finishedAt == nil {
                 finishedAt = Date()
             }
@@ -188,6 +295,9 @@ final class LichessBotLiveGame: Identifiable {
         guard finishedAt == nil else { return }
         finishedAt = Date()
         status = "left unfinished"
+        // A held move ends with its session.
+        heldMove = nil
+        releaseRequested = false
         note("DCM stopped following this game: \(reason)", isProblem: true)
     }
 
@@ -238,8 +348,7 @@ final class LichessBotLiveGame: Identifiable {
             applyState(state, at: at)
         case .chatLine(let message):
             appendTranscript(at: at, direction: .incoming, title: "chat · \(message.username)", detail: raw, isProblem: false)
-            chat.append(ChatMessage(id: nextChatID, at: at, room: message.room.raw, username: message.username, text: message.text))
-            nextChatID += 1
+            recordStreamedChat(message, at: at)
         case .opponentGone(let gone):
             appendTranscript(at: at, direction: .incoming, title: gone.gone ? "opponentGone" : "opponent back", detail: raw, isProblem: false)
             opponentGoneClaimableInSeconds = gone.gone ? gone.claimWinInSeconds : nil

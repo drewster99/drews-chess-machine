@@ -9,7 +9,114 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-28 11:06 CDT — Lichess bot: recheck fixes (pending commit)
+## 2026-09-28 16:10 CDT — Lichess bot: live-testing fixes and features (pending commit)
+
+Changes from the first live games on Lichess. **The challenge settings changed shape: after updating, click Reset to Defaults in the bot's Settings once** (no migration, by decision).
+
+- **Own challenge echo:** Lichess echoes our outgoing challenges on the event stream without the documented `direction` field, so DCM tried to accept its own challenge (a harmless 404). It is now recognized by the challenger being our account.
+- **Bot-game limit:** the per-pairing "bot-pair daily stop" is removed (setting, policy rule, send-time check, and its test, with approval). Lichess's actual limit is a bot's *total* bot-vs-bot games per rolling day, not per pairing, and Lichess refuses beyond it with its own message, which DCM shows.
+- **Unanswered challenges:** an outgoing challenge nobody answers is withdrawn automatically, after 3 minutes by default (`outgoingChallengeTimeoutSeconds`, 0 = never). One attempt per challenge; a failure raises one alarm and leaves Cancel to the operator.
+- **Online bots:** a sortable table (Bot, Blitz, Rapid, Games) of up to 512 bots (the API's maximum), with "?" marking provisional ratings.
+- **Model picker:** "Latest by lineage" lists every `model_id` in the models folder. Each row is the lineage's highest-step file; expanding it lists only its earlier files, so no file appears twice (`ModelFileCatalog`). It reads only safetensors headers and identifies files by metadata, never filename. A file whose header or metadata can't be read (not safetensors, no `model_id`, or an unparseable `training_step`, `created_at_unix` or architecture) is never dropped silently. It appears in an orange "N model files could not be read" group at the top of the list, with its reason, and is logged as `[MODELS] unreadable model file …`.
+- **Colors:** player lines, tiles and clocks show White/Black discs.
+- **Results:** the game header names the winner, their color, how the game ended, and whether DCM won. The tile says "DCM won", "DCM lost" or "Draw". Both use the game record's scoring rule, so a draw on time with insufficient material reads as a draw everywhere.
+- **Record card** on the Overview: today, this week and all time. It shows games, W–D–L, score, vs bots, vs humans, as White and as Black, from the games index. W–D–L counts are padded to the widest count in the table, with light dashes between them.
+- **Account card:** a grid of Rating, Rated (from Lichess) and Unrated games per speed. Lichess reports unrated games only as an account-wide total, so the Unrated column counts DCM's own game records.
+- **Research:** `documentation/research/bf16-head-offset/` holds a read-only survey of the value and policy heads across every model line, with scripts and per-model results. bf16 lines grow a softmax-invisible shared offset in value fc2 (and, on five lines, in the policy logits) that bf16 then quantizes into ties. No fix yet.
+- **Fixes from an independent review of this work:**
+  - **A held move could be posted twice.** A same-ply state arriving between the release and the POST could start a second decision and POST, which the foreign-move check reads as another client, so DCM would stop moving. The held ply now stays reserved until `post` marks it posted, and `playMove` re-checks that it is still our move right before posting.
+  - **A takeback during a hold could post a stale move.** The held move records the position it was decided in and is dropped if the position changes before release.
+  - **Going offline reset the reconciler's retry state.** Now only games awaiting their first attempt are brought forward.
+  - **Filing now waits for the first post-game chat fetch to finish**, success or failure, instead of a fixed timer that a delayed fetch could miss.
+  - **Slot counting:**
+    - A game whose session is still being set up holds its slot.
+    - A challenge POST in flight counts against the limit.
+    - Each game is counted once.
+  - **Duplicate chat after a relaunch:** fetched chat is deduplicated against the journal's chat in records.
+  - **Stale hold state:** a held move's state is cleared when its session ends.
+  - **Smaller fixes:** autocomplete terms use an ASCII-only encoding set; an empty sysctl value is reported as such; numbers removed from comments; stale docs fixed.
+  - The limit regression test now pins the exact rule.
+- **Live grid:**
+  - Games in progress come first (in start order), then finished games (newest first).
+  - A finished tile is grayed as a whole: gray background, board, clocks and bar desaturated and dimmed, with the result label kept at full strength. Live tiles get a green outline.
+  - Clicking a tile opens the game in its own window instead of switching to Single view, and the grid keeps no "selected" outline.
+- **Favorite stars everywhere a player is named** (except chat and the transcript), via one shared `LichessBotFavoriteStar`: every Challenge-sheet tab, the recent games list and the all-games window, the game view's opponent line, grid tiles, the opponent card, and pending challenges. Players without an account (Lichess AI) get none.
+- **Recent games** scrolls within the Record card (the latest 200). "More…" opens a sortable window of every filed game with links to lichess.org.
+- **Challenge sheet: classical clocks** 30+0 and 30+20.
+- **Challenge sheet: Online Players tab.**
+  - The 50 highest-rated online humans from Lichess's undocumented `GET /player/online` (JSON on request).
+  - Fetched at most every 2 minutes (its cache) at housekeeping priority. A failure says the undocumented route may have changed.
+  - Shares the bot table: stars, search, rating range.
+- **Challenge sheet: Leaderboard tab.**
+  - Lichess's top 100 for the selected time control's speed (`GET /api/player/top/100/{speed}`: stable ratings, a rated game in that speed within 7 days), with rank, rating and recent change.
+  - Online dots and an "Online only" filter, on by default.
+  - Cached for 5 minutes; Refresh forces a new fetch.
+- **Record card: recent games.** The eight newest filed games sit beside the record grid, each with a colored W/D/L chip, DCM's color, the opponent and their kind and rating, speed/rated, and when.
+- **Bug: the concurrent-game limit didn't hold** (live: 8–9 games at once).
+  - Challenges DCM sent were never checked against `maxConcurrentGames`, and incoming challenges didn't count DCM's pending outgoing ones.
+  - Now sending is refused once games in progress, accepted games and pending challenges reach the limit. Incoming challenges count pending outgoing ones too, so the limit can't be exceeded by any mix.
+  - Regression test: `testPendingOutgoingChallengesCountTowardTheLimit`.
+- **Live tab remembers Single/Grid and the game choice** across launches (UserDefaults, via the controller). An accepted challenge no longer switches the selected game on its own.
+- **Username tab.**
+  - With nothing typed, it lists DCM's past opponents from its records, most recent first.
+  - Typing 3+ characters shows Lichess's username matches (`GET /api/player/autocomplete`, debounced, housekeeping priority), with online dots.
+  - Clicking a row selects that player and loads their ratings, shown as "Selected: …".
+  - An unknown username now reads "No Lichess player is named “a”" instead of an excerpt of Lichess's HTML 404 page.
+- **Post-game chat.**
+  - Lichess closes the game stream right after the final state (verified in lila's `GameStateStream`), so an opponent's post-game "gg" never arrived.
+  - DCM now fetches the player-room chat (`GET /api/bot/game/{id}/chat`) at +60 s and +5 min after a game, at housekeeping priority, and adds only unseen lines (by author and text). They are journaled as `chatFetched`, so records include them.
+  - Filing waits for the first fetch (about 65 s), except when going offline or quitting, when games are filed right away.
+  - Tests: `LichessBotPostGameChatTests`.
+- **Settings apply to games in progress.** A game session used one settings copy for its whole stream (so for the whole game): resign/draw thresholds, temperature, think delay and chat didn't change mid-game. It now reads settings fresh for every stream line. The event stream's stall timeout is also refreshed per line.
+- **Several pending challenges.** Challenges no longer wait for each other; games from them run in parallel. Sending is refused only when games in progress, accepted games and pending challenges would exceed `maxConcurrentGames`. Each pending challenge has its own Cancel and its own unanswered-timeout. Test: `LichessBotMultipleChallengesTests`.
+- **Model picker as a lineage tree (plan §9.1).**
+  - Each root seed opens into its training segments, following `parent_model_id` in the files. Each segment row selects its latest file and shows its step range, file count and creator; earlier files sit under it.
+  - Branch tips show the full chain (e.g. Qeu8 → GLu5 → Lnji → PVZp → Ejp0), and untrained seeds are labeled and sorted last.
+  - Self-play session champions sit under their base ModelID. Conflicting parents show as an error row.
+  - Search matches any ID in the family.
+  - Probe pElo isn't shown: the app can't read the dashboards' data.
+- **Opponent card (plan §14.3b).**
+  - Shows title, verified and patron marks, account age and last seen; ratings per speed (rating, ±, recent change, games, rank); totals and vs-humans results; play time; Lichess's crosstable against DCM plus our own records; OTB ratings; and the bio.
+  - Appears as an "Opponent" panel in the game view and as a compact line in the Challenge sheet.
+  - Fetched once per app session in the background at housekeeping priority, when a challenge is sent or accepted, a bot is selected, or the panel opens. A failure shows Retry.
+- **Bug: the goodbye never showed.**
+  - The goodbye (sent after a game ends) was missing from the Chat tab and the record. Lichess echoes our messages on the game stream, but the session stops reading it when the game finishes.
+  - Every message DCM sends (greeting, goodbye, command reply, operator) is now a `chatSent` event from its successful POST. It is journaled as a new `chatSent` journal event, shown at once, and matched to Lichess's echo in either order so it is listed once.
+  - Records merge unechoed sends into `chat`.
+  - Tests: `LichessBotSentChatTests`.
+- **Bug: `+` in chat arrived as a space.** Form bodies were built with `URLComponents.percentEncodedQuery`, which leaves `+` literal, and a form decoder reads that as a space. `!cpu`'s "6 super + 12 performance" would have arrived mangled. Bodies are now strictly percent-encoded (`LichessBotAPIClient.formBody`, tested).
+- **False threefold anomaly fixed.** Lichess sends a game-ending move with status `started`, then the result about 1 ms later. The local-draw-rule disagreement is now reported only if the *next* state is still live. Regression test: `testThreefoldEndedInTheNextStateIsNotAnAnomaly`.
+- **Chat panel (plan §14.3c):**
+  - Transcript and chat bubbles take up to 75% of the panel width; chat shows ours on the right, with the origin.
+  - **Operator chat input:** room picker, a UTF-16 counter against 140, and a link warning. Messages are sent as "operator chat" and recorded as `chatSent(origin: operator)`.
+  - **Per-game move delay (0–30 s) or Hold with Play move,** after DCM's first move only. The held move posts from its own task so the stream keeps being read, and is auto-played at 30 s plus twice the last move's round trip on DCM's clock.
+- **Challenge sheet (plan §7.2):**
+  - **Tabs:** Online Bots · Favorites · Username.
+  - **Filters:** search over name, real name and bio, a min/max rating for the selected time control's speed, and "hide provisional".
+  - **Favorites:** a star column on the left; favorites sort first.
+  - **Favorites tab:** lists offline favorites too, with online status from one `GET /api/users/status` call.
+  - **Detail line:** real name, account age, the bio's first line, and DCM's record.
+  - **Daily limits:** a bot's bot-game daily limit is learned from Lichess's refusal text, which carries the exact "please wait until" time, and shown as "limit until …".
+  - **Header:** "updated N min ago" and DCM's own bot games in the last 24 h against the limit of 100.
+  - **Refresh:** automatic after 5 minutes while the sheet is open.
+  - **Storage:** favorites and limit times persist in `LichessBot/player-notes.json`, outside Settings.
+- **Account refresh:** the Overview's Account card refetches `/api/account` after every filed game, at housekeeping priority. A failure is logged and the old values stay. Plan §14.3b also designs an opponent card (profile, ratings, counts, Lichess crosstable), fetched in the background once per opponent per session.
+- **Chat commands (plan §12.5a):** `!help`, `!name`, `!about`, `!motor`, `!cpu`, `!gpu` and `!ram`.
+  - They are answered in the room they were asked in. A command matches as a case-insensitive prefix, so repeats like `!name2` still work.
+  - Our own lines and the `lichess` system user are ignored.
+  - Replies are read-only facts: model ID and step, build, a short about text, and this Mac's CPU/GPU/memory (`HardwareInfo`, read once from sysctl and the IORegistry). Nothing reveals the value head's evaluation or the policy.
+  - Per-game budget: one reply per 3 s, at most 20 per game, and none when our clock is under 30 s. Skips and failures are journaled.
+  - Chat length checks now count UTF-16 units, which is how Lichess counts, instead of `Character`s.
+  - The default greeting ends "Type !help for commands." (existing saved settings keep their text until reset).
+- **Material:** each player line in the game view shows that side's material in standard points (pawn 1, knight 3, bishop 3, rook 5, queen 9) for the position on the board, including browsed plies, plus a green "+N" lead for the side ahead (`MaterialCount`, with tests).
+- **Challenge sheet:** the out-of-settings warning reads "“rated” is outside the acceptance settings" (or "“rated” and “bullet” are …").
+- **Docs:** `documentation/research/lichess-bot/chat-commands.md` covers bot chat commands and Lichess's chat rules, verified in lila, lichess-bot and BotLi source. The Lichess bot plan gains §9.1, choosing a model file by lineage (a seed → branch → segment tree from file metadata, with no dependence on `cumstep_base`), plus new live findings. The ROADMAP gains "Lineage provenance in every checkpoint".
+- **Draw reason:** Lichess reports every agreed or rule draw as status `draw`. The header now names the rule DCM's engine saw in the final position ("Draw by threefold repetition", "…by the fifty-move rule", "…by insufficient material"), or "by agreement" when no rule applied.
+- **Transcript notes:** anomalies and notes keep all their text in the one-line title, so they couldn't be expanded. Clicking now unwraps the title too.
+- **Transcript:** it was blank after switching back from the Chat tab (hiding collapsed its scroll view). Hidden panels now keep their size, and the transcript re-scrolls to the newest entry when shown while following.
+- **Labels:** "N plies" on tiles; the browse banner reads "Live · N plies played" or "Viewing after ply N · M played".
+
+## 2026-09-28 11:06 CDT — Lichess bot: recheck fixes (`e66fc02`)
 
 A second independent review of the Phase 5 commit found these; each has a regression test in `LichessBotReviewFixTests` where it can be unit-tested.
 

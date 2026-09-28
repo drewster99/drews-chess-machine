@@ -151,19 +151,14 @@ final class LichessBotAPIClient: Sendable {
     /// ordinary `gameStart` event if they accept.
     func challenge(username: String, request outgoing: LichessBotOutgoingChallenge) async throws -> LichessBotChallenge {
         var request = try makeRequest(path: "/api/challenge/\(try Self.pathComponent(username))", method: "POST")
-        var form = URLComponents()
-        form.queryItems = [
-            URLQueryItem(name: "rated", value: outgoing.rated ? "true" : "false"),
-            URLQueryItem(name: "clock.limit", value: String(outgoing.clockLimitSeconds)),
-            URLQueryItem(name: "clock.increment", value: String(outgoing.clockIncrementSeconds)),
-            URLQueryItem(name: "color", value: outgoing.color.rawValue),
-            URLQueryItem(name: "variant", value: "standard"),
-        ]
-        guard let encoded = form.percentEncodedQuery else {
-            throw LichessBotAPIError.invalidURL("challenge form body")
-        }
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Data(encoded.utf8)
+        request.httpBody = try Self.formBody([
+            ("rated", outgoing.rated ? "true" : "false"),
+            ("clock.limit", String(outgoing.clockLimitSeconds)),
+            ("clock.increment", String(outgoing.clockIncrementSeconds)),
+            ("color", outgoing.color.rawValue),
+            ("variant", "standard"),
+        ])
         let body = try await send(request, priority: .challengeResponse, label: "challenge \(username)", gameID: nil)
         return try LichessBotOutgoingChallenge.decodeCreated(body)
     }
@@ -191,6 +186,68 @@ final class LichessBotAPIClient: Sendable {
             users.append(try decode(LichessBotUserSummary.self, from: line, endpoint: "/api/bot/online"))
         }
         return users
+    }
+
+    /// `GET /api/bot/game/{id}/chat`: the player room's whole chat. Works
+    /// after the game ends, when the game stream has closed (Lichess closes
+    /// it right after the final state).
+    func gameChat(gameID: String) async throws -> [LichessBotFetchedChatLine] {
+        let request = try makeRequest(path: "/api/bot/game/\(try Self.pathComponent(gameID))/chat", method: "GET")
+        return try decode([LichessBotFetchedChatLine].self, from: try await send(request, priority: .housekeeping, label: "fetch chat", gameID: gameID), endpoint: "/api/bot/game/chat")
+    }
+
+    /// `GET /player/online?nb=…` with `Accept: application/json`: the highest-
+    /// rated online humans (bots excluded), at most
+    /// `LichessBotLimits.onlinePlayersMaximum`. **Undocumented**: a web
+    /// route that negotiates JSON (lila `User.online`, added for the old
+    /// mobile app). Lichess caches it briefly, so callers should fetch no
+    /// more often than it refreshes; if it changes or disappears, the error
+    /// says so.
+    func onlinePlayers() async throws -> [LichessBotUserSummary] {
+        var request = try makeRequest(path: "/player/online?nb=\(LichessBotLimits.onlinePlayersMaximum)", method: "GET", authorized: false)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return try decode([LichessBotUserSummary].self, from: try await send(request, priority: .housekeeping, label: "online players", gameID: nil), endpoint: "/player/online (undocumented)")
+    }
+
+    /// `GET /api/player/top/{nb}/{perfType}`: the leaderboard for one speed,
+    /// at most `LichessBotLimits.leaderboardMaximum` players. Lichess ranks
+    /// players with a stable rating who played a rated game in that speed
+    /// within its recent-activity window.
+    func leaderboard(speed: LichessBotSpeed, count: Int) async throws -> [LichessBotLeaderboardUser] {
+        var request = try makeRequest(path: "/api/player/top/\(count)/\(speed.rawValue)", method: "GET", authorized: false)
+        request.setValue("application/vnd.lichess.v3+json", forHTTPHeaderField: "Accept")
+        struct Wrapped: Decodable { let users: [LichessBotLeaderboardUser] }
+        return try decode(Wrapped.self, from: try await send(request, priority: .housekeeping, label: "leaderboard \(speed.rawValue)", gameID: nil), endpoint: "/api/player/top").users
+    }
+
+    /// `GET /api/player/autocomplete`: players whose usernames start with
+    /// `term` (at least `LichessBotLimits.autocompleteMinimumCharacters`).
+    func autocompleteUsers(term: String) async throws -> [LichessBotLightUser] {
+        guard let encoded = term.addingPercentEncoding(withAllowedCharacters: Self.asciiAlphanumerics) else {
+            throw LichessBotAPIError.invalidURL("autocomplete term \"\(term)\"")
+        }
+        let request = try makeRequest(path: "/api/player/autocomplete?term=\(encoded)&object=true", method: "GET", authorized: false)
+        struct Wrapped: Decodable { let result: [LichessBotLightUser] }
+        return try decode(Wrapped.self, from: try await send(request, priority: .housekeeping, label: "autocomplete \(term)", gameID: nil), endpoint: "/api/player/autocomplete").result
+    }
+
+    /// `GET /api/crosstable/{user1}/{user2}`: the two players' all-time
+    /// scores against each other.
+    func crosstable(_ user1: String, _ user2: String) async throws -> LichessBotCrosstable {
+        let request = try makeRequest(path: "/api/crosstable/\(try Self.pathComponent(user1))/\(try Self.pathComponent(user2))", method: "GET", authorized: false)
+        return try decode(LichessBotCrosstable.self, from: try await send(request, priority: .housekeeping, label: "crosstable \(user2)", gameID: nil), endpoint: "/api/crosstable")
+    }
+
+    /// `GET /api/users/status?ids=…`: online flags for up to
+    /// `LichessBotLimits.userStatusMaximumIDs` players in one request.
+    func usersStatus(ids: [String]) async throws -> [LichessBotUserStatus] {
+        guard !ids.isEmpty else { return [] }
+        guard ids.count <= LichessBotLimits.userStatusMaximumIDs else {
+            throw LichessBotAPIError.invalidURL("users/status with \(ids.count) ids; Lichess takes at most \(LichessBotLimits.userStatusMaximumIDs)")
+        }
+        let joined = try ids.map { try Self.pathComponent($0) }.joined(separator: ",")
+        let request = try makeRequest(path: "/api/users/status?ids=\(joined)", method: "GET", authorized: false)
+        return try decode([LichessBotUserStatus].self, from: try await send(request, priority: .housekeeping, label: "users status (\(ids.count))", gameID: nil), endpoint: "/api/users/status")
     }
 
     /// `GET /api/user/{username}`: a player's public profile and ratings.
@@ -248,16 +305,36 @@ final class LichessBotAPIClient: Sendable {
     }
 
     func chat(gameID: String, room: LichessBotChatRoom, text: String) async throws {
-        var request = try makeRequest(path: "/api/bot/game/\(try Self.pathComponent(gameID))/chat", method: "POST")
-        var form = URLComponents()
-        form.queryItems = [URLQueryItem(name: "room", value: room.rawValue), URLQueryItem(name: "text", value: text)]
-        guard let encoded = form.percentEncodedQuery else {
-            throw LichessBotAPIError.invalidURL("chat form body")
-        }
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Data(encoded.utf8)
-        _ = try await send(request, priority: .chat, label: "chat", gameID: gameID)
+        try await chat(gameID: gameID, room: room, text: text, label: "chat")
     }
+
+    /// `label` distinguishes the operator's own messages ("operator chat")
+    /// from DCM's automatic ones in the transcript and journal.
+    func chat(gameID: String, room: LichessBotChatRoom, text: String, label: String) async throws {
+        var request = try makeRequest(path: "/api/bot/game/\(try Self.pathComponent(gameID))/chat", method: "POST")
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try Self.formBody([("room", room.rawValue), ("text", text)])
+        _ = try await send(request, priority: .chat, label: label, gameID: gameID)
+    }
+
+    /// An `application/x-www-form-urlencoded` body. Everything but the RFC
+    /// 3986 unreserved characters is percent-encoded — in particular `+`,
+    /// which `URLComponents.percentEncodedQuery` leaves literal and a form
+    /// decoder then reads as a space ("6 super + 12" would arrive as
+    /// "6 super   12").
+    static func formBody(_ fields: [(name: String, value: String)]) throws -> Data {
+        var parts: [String] = []
+        for field in fields {
+            guard let name = field.name.addingPercentEncoding(withAllowedCharacters: formUnreserved),
+                  let value = field.value.addingPercentEncoding(withAllowedCharacters: formUnreserved) else {
+                throw LichessBotAPIError.invalidURL("form field \(field.name)")
+            }
+            parts.append("\(name)=\(value)")
+        }
+        return Data(parts.joined(separator: "&").utf8)
+    }
+
+    private static let formUnreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
     // MARK: - Records
 

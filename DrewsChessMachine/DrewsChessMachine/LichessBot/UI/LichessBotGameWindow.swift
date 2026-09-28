@@ -39,6 +39,7 @@ struct LichessBotGameWindowView: View {
 
     var body: some View {
         LichessBotGameDetailView(
+            controller: controller,
             game: game,
             headToHead: controller.headToHead(against: game.opponent?.id),
             onPopOut: nil,

@@ -24,10 +24,10 @@ struct LichessBotChallengeSettings: Sendable, Equatable, Codable {
     var maxSimultaneousGamesPerOpponent = 1
     var maxGamesPerDay = 200
     var maxGamesPerOpponentPerDay = 20
-    /// Stop accepting from one bot opponent at this many games in a day,
-    /// short of Lichess's hard per-pairing cap
-    /// (`LichessBotLimits.botPairDailyCap`).
-    var botPairDailyStop = 95
+    /// Withdraw an outgoing challenge nobody has answered after this long.
+    /// Zero waits indefinitely. Busy bots often leave challenges unanswered
+    /// rather than declining them.
+    var outgoingChallengeTimeoutSeconds = 180
     /// Past this many challenge responses in a minute, further challenges
     /// are left unanswered (they expire on Lichess's side) rather than
     /// spending requests (plan §5.3).
@@ -69,7 +69,7 @@ struct LichessBotPlaySettings: Sendable, Equatable, Codable {
 /// Greeting and goodbye messages (plan §12.5).
 struct LichessBotChatSettings: Sendable, Equatable, Codable {
     var greetingEnabled = true
-    var greetingTemplate = "DrewsChessMachine: a from-scratch neural net, no search. Model {modelID}."
+    var greetingTemplate = "DrewsChessMachine: a from-scratch neural net, no search. Model {modelID}. Type !help for commands."
     var goodbyeEnabled = false
     var goodbyeTemplate = "Thanks for the game, {opponent}!"
     var room: LichessBotChatRoom = .player
@@ -162,7 +162,7 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         require(c.gamesReservedForHumans >= 0 && c.gamesReservedForHumans <= c.maxConcurrentGames, "Reserved human slots must be between zero and the concurrent-game limit")
         require(c.maxSimultaneousGamesPerOpponent >= 1, "Allow at least one game per opponent")
         require(c.maxGamesPerDay >= 1 && c.maxGamesPerOpponentPerDay >= 1, "Daily limits must be at least one")
-        require(c.botPairDailyStop >= 1 && c.botPairDailyStop < LichessBotLimits.botPairDailyCap, "The bot-pair stop must be below Lichess's cap of \(LichessBotLimits.botPairDailyCap)")
+        require(c.outgoingChallengeTimeoutSeconds >= 0, "The unanswered-challenge timeout cannot be negative")
         require(c.challengeResponseBudgetPerMinute >= 1, "The challenge-response budget must be at least one per minute")
 
         let p = play
@@ -205,8 +205,6 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
 
 /// Fixed limits that are facts about Lichess or about DCM, not preferences.
 enum LichessBotLimits {
-    /// Lichess's cap on bot-vs-bot games per pairing per day.
-    static let botPairDailyCap = 100
     /// Lichess's documented event-stream keep-alive interval.
     static let eventStreamKeepAliveSeconds = 7
     /// `SamplingSchedule` needs a strictly positive temperature; the argmax
@@ -215,4 +213,17 @@ enum LichessBotLimits {
     /// A live-trainer snapshot briefly holds the lock SGD needs, so it may
     /// not run too often.
     static let minimumLiveTrainerRefreshSeconds = 30
+    /// The most bots `GET /api/bot/online` returns in one request.
+    static let onlineBotsMaximum = 512
+    /// The most players `GET /player/online` returns (lila caps `nb`).
+    static let onlinePlayersMaximum = 50
+    /// The most players `GET /api/player/top/{nb}/{perfType}` returns.
+    static let leaderboardMaximum = 100
+    /// `GET /api/player/autocomplete` needs at least this many characters.
+    static let autocompleteMinimumCharacters = 3
+    /// The most ids `GET /api/users/status` accepts in one request.
+    static let userStatusMaximumIDs = 100
+    /// Lichess's limit on a BOT account's games against other bots in a
+    /// rolling day (observed in its refusal text, 2026-09-28).
+    static let botGamesPerDay = 100
 }

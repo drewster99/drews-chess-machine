@@ -44,11 +44,37 @@ actor LichessBotGameSession {
     private var readings: [LichessBotValueReading] = []
     private var takebacksAccepted = 0
     private var greeted = false
+    private var commandBudget = LichessBotChatCommandBudget()
+    /// Our clock as of the latest `gameState`, for the command budget's
+    /// low-clock rule.
+    private var ourClockMilliseconds: Int?
     private var finished = false
     private var unplayableHandled = false
     private var pendingClaim: Task<Void, Never>?
+    /// The operator's move pacing for this game (plan §14.3c).
+    private let pacing: @Sendable () async -> LichessBotMovePacingSnapshot
+    /// A decided move being held or delayed. It posts from its own task so
+    /// the stream keeps being read (an opponent's resignation, a flag, a
+    /// takeback) while it waits.
+    private var pacedMove: Task<Void, Never>?
+    private var pacedMovePly: Int?
+    /// The position the held move was decided in (its FEN). A takeback and
+    /// a different reply can return to the same ply in a new position; the
+    /// held move is then dropped rather than played there.
+    private var pacedMovePosition: String?
+    /// The held move has been released and its POST may be in flight: it is
+    /// no longer dropped when the position moves (its own echo moves it).
+    private var pacedMoveReleased = false
+    /// When `ourClockMilliseconds` was received, to run it down locally.
+    private var ourClockReceivedAt: Duration?
+    private var lastMoveRoundTripMilliseconds: Double?
     private var keepAlivesSeen = false
     private var loggedDrawDisagreementPly: Int?
+    /// A local draw rule seen while Lichess said "started", held until the
+    /// next `gameState`: Lichess sends a game-ending move with status
+    /// `started` and the result a moment later in a second message, so the
+    /// two only disagree if the game is *still* live in the next one.
+    private var pendingDrawDisagreement: String?
     /// Resyncs in a row without the game advancing; each waits longer.
     private var consecutiveResyncs = 0
     /// Of those, the ones caused by a disagreement with Lichess; enough of
@@ -91,7 +117,8 @@ actor LichessBotGameSession {
         settingsProvider: @escaping @Sendable () async -> LichessBotSettings,
         observer: any LichessBotGameObserver,
         time: any LichessBotTimeSource,
-        onTurnStatus: @escaping @Sendable (String, LichessBotTurnStatus) async -> Void
+        onTurnStatus: @escaping @Sendable (String, LichessBotTurnStatus) async -> Void,
+        pacing: @escaping @Sendable () async -> LichessBotMovePacingSnapshot = { LichessBotMovePacingSnapshot() }
     ) {
         self.gameID = gameID
         self.ourAccountID = ourAccountID
@@ -102,6 +129,7 @@ actor LichessBotGameSession {
         self.observer = observer
         self.time = time
         self.onTurnStatus = onTurnStatus
+        self.pacing = pacing
     }
 
     var isFinished: Bool {
@@ -139,7 +167,12 @@ actor LichessBotGameSession {
                     checkInterval: .seconds(1)
                 )
                 for try await item in items {
-                    try await handle(item, settings: settings)
+                    // Settings are read fresh for every line, so a change
+                    // in Settings reaches games already in progress; one
+                    // line's handling uses one consistent copy.
+                    let current = await settingsProvider()
+                    updateStallTimeout(settings: current.connection)
+                    try await handle(item, settings: current)
                     if finished { break }
                 }
                 if !finished {
@@ -211,6 +244,7 @@ actor LichessBotGameSession {
             attempt += 1
         }
         pendingClaim?.cancel()
+        pacedMove?.cancel()
         await onTurnStatus(gameID, LichessBotTurnStatus(awaitingOurMove: false, ourClock: nil))
     }
 
@@ -265,6 +299,7 @@ actor LichessBotGameSession {
             try await handleState(state, settings: settings)
         case .chatLine(let chat):
             await observer.gameEvent(gameID: gameID, .chat(chat))
+            await answerCommand(in: chat)
         case .opponentGone(let gone):
             await handleOpponentGone(gone, settings: settings)
         case .unknown(let type):
@@ -397,6 +432,11 @@ actor LichessBotGameSession {
             break
         }
 
+        if let pending = pendingDrawDisagreement {
+            pendingDrawDisagreement = nil
+            await observer.gameEvent(gameID: gameID, .anomaly(pending))
+        }
+
         guard let tracker, let ourColor else {
             if unplayableHandled { return }
             await observer.gameEvent(gameID: gameID, .anomaly("gameState before gameFull"))
@@ -405,10 +445,11 @@ actor LichessBotGameSession {
         guard !movingStopped else { return }
 
         if let condition = tracker.engine.drawCondition, loggedDrawDisagreementPly != tracker.ply {
-            // Lichess ends bot games on these rules itself, so a live game
-            // here means the two rule sets disagree (plan E10, E11).
+            // Lichess ends bot games on these rules itself (plan E10, E11).
+            // Report it only if the next state is still live; see
+            // `pendingDrawDisagreement`.
             loggedDrawDisagreementPly = tracker.ply
-            await observer.gameEvent(gameID: gameID, .anomaly("local draw rule \(condition.rawValue) applies at ply \(tracker.ply) (\(FENParser.fen(from: tracker.engine.state))) but Lichess reports the game as \(state.status)"))
+            pendingDrawDisagreement = "local draw rule \(condition.rawValue) applies at ply \(tracker.ply) (\(FENParser.fen(from: tracker.engine.state))) but Lichess kept the game live"
         }
 
         let opponentColor: LichessBotColorName = ourColor == .white ? .black : .white
@@ -421,9 +462,15 @@ actor LichessBotGameSession {
 
         let ourPieceColor: PieceColor = ourColor == .white ? .white : .black
         let ourTurn = tracker.sideToMove == ourPieceColor && tracker.engine.result == nil
+        ourClockMilliseconds = state.remaining(for: ourColor).value
+        ourClockReceivedAt = time.now()
         await onTurnStatus(gameID, LichessBotTurnStatus(awaitingOurMove: ourTurn && lastPostedPly != tracker.ply, ourClock: state.remaining(for: ourColor)))
 
-        if ourTurn && lastPostedPly != tracker.ply {
+        if let heldPly = pacedMovePly, !pacedMoveReleased,
+           heldPly != tracker.ply || pacedMovePosition != FENParser.fen(from: tracker.engine.state) {
+            await dropPacedMove(reason: "the position changed")
+        }
+        if ourTurn && lastPostedPly != tracker.ply && pacedMovePly != tracker.ply {
             try await playMove(state: state, ourColor: ourColor, opponentColor: opponentColor, settings: settings)
         } else if !ourTurn && state.isOfferingDraw(opponentColor), let last = readings.last,
                   LichessBotPlayPolicy.shouldAcceptDraw(current: last, settings: settings.play) {
@@ -436,7 +483,7 @@ actor LichessBotGameSession {
         if !greeted {
             greeted = true
             if tracker.ply <= 1 {
-                await sendChat(settings.chat.greetingEnabled ? settings.chat.greetingTemplate : nil, settings: settings)
+                await sendChat(settings.chat.greetingEnabled ? settings.chat.greetingTemplate : nil, origin: .greeting, settings: settings)
             }
         }
     }
@@ -493,7 +540,115 @@ actor LichessBotGameSession {
         let opponentOffering = state.isOfferingDraw(opponentColor)
         let acceptDraw = opponentOffering && LichessBotPlayPolicy.shouldAcceptDraw(current: reading, settings: settings.play)
         let offerDraw = !opponentOffering && LichessBotPlayPolicy.shouldOfferDraw(readings: readings, settings: settings.play)
+
+        // The operator's delay or hold applies only after DCM's first move
+        // (each side's first ply is below this), so our own wait can never
+        // abort a game.
+        if ply > 1, await pacing().isActive {
+            guard stillOurMove(at: ply) else { return }
+            await schedulePacedMove(decision: decision, ply: ply, offeringDraw: acceptDraw || offerDraw, settings: settings)
+            return
+        }
+        // The awaits above can let another state for this ply in; post only
+        // if it is still ours to play.
+        guard stillOurMove(at: ply), pacedMovePly != ply else { return }
         try await post(decision: decision, ply: ply, offeringDraw: acceptDraw || offerDraw, settings: settings)
+    }
+
+    // MARK: - Operator pacing (plan §14.3c)
+
+    private func schedulePacedMove(decision: LichessBotMoveDecision, ply: Int, offeringDraw: Bool, settings: LichessBotSettings) async {
+        guard let tracker else { return }
+        pacedMovePly = ply
+        pacedMovePosition = FENParser.fen(from: tracker.engine.state)
+        pacedMoveReleased = false
+        await observer.gameEvent(gameID: gameID, .moveHeld(ply: ply, uci: decision.uci, san: decision.san))
+        let started = time.now()
+        pacedMove = Task { [weak self] in
+            await self?.runPacedMove(decision: decision, ply: ply, offeringDraw: offeringDraw, settings: settings, started: started)
+        }
+    }
+
+    /// Forget a held move that no longer applies, and say why.
+    private func dropPacedMove(reason: String) async {
+        guard let ply = pacedMovePly else { return }
+        pacedMove?.cancel()
+        pacedMove = nil
+        pacedMovePly = nil
+        pacedMovePosition = nil
+        pacedMoveReleased = false
+        await observer.gameEvent(gameID: gameID, .moveReleased(ply: ply, reason: "dropped: \(reason)"))
+    }
+
+    private func runPacedMove(decision: LichessBotMoveDecision, ply: Int, offeringDraw: Bool, settings: LichessBotSettings, started: Duration) async {
+        guard let reason = await pacedMoveReleaseReason(ply: ply, started: started) else {
+            // Cancelled: the game ended, the session stopped, or the move
+            // was dropped; whoever cancelled has cleared the state.
+            return
+        }
+        // `pacedMovePly` stays set until `post` has marked the ply posted,
+        // so no state arriving during the awaits below can start a second
+        // decision and POST for this ply.
+        pacedMoveReleased = true
+        await observer.gameEvent(gameID: gameID, .moveReleased(ply: ply, reason: reason))
+        guard pacedMovePly == ply, stillOurMove(at: ply) else {
+            clearPacedMove(ply: ply)
+            return
+        }
+        defer { clearPacedMove(ply: ply) }
+        do {
+            try await post(decision: decision, ply: ply, offeringDraw: offeringDraw, settings: settings)
+        } catch is CancellationError {
+            return
+        } catch let resync as ResyncNeeded {
+            requestResync(reason: resync.reason)
+        } catch let error as LichessBotAPIError {
+            if case .unauthorized = error {
+                await observer.gameEvent(gameID: gameID, .tokenRejected(error.localizedDescription))
+            } else {
+                await observer.gameEvent(gameID: gameID, .anomaly("posting the held move at ply \(ply) failed: \(error.localizedDescription)"))
+                requestResync(reason: "held move post failed")
+            }
+        } catch {
+            await observer.gameEvent(gameID: gameID, .anomaly("posting the held move at ply \(ply) failed: \(error.localizedDescription)"))
+            requestResync(reason: "held move post failed")
+        }
+    }
+
+    private func clearPacedMove(ply: Int) {
+        guard pacedMovePly == ply else { return }
+        pacedMove = nil
+        pacedMovePly = nil
+        pacedMovePosition = nil
+        pacedMoveReleased = false
+    }
+
+    /// Wait until the held move should go out, and say why; nil when
+    /// cancelled. The clock floor overrides both the delay and the hold.
+    private func pacedMoveReleaseReason(ply: Int, started: Duration) async -> String? {
+        while true {
+            guard stillOurMove(at: ply) else { return "the position moved on" }
+            let now = time.now()
+            if let clock = ourClockMilliseconds, let receivedAt = ourClockReceivedAt {
+                let remaining = clock - Int(LichessBotBackoff.seconds(now - receivedAt) * 1000)
+                let floor = LichessBotMovePacingSnapshot.clockFloorMilliseconds(lastMoveRoundTripMilliseconds: lastMoveRoundTripMilliseconds)
+                if remaining <= floor {
+                    return "our clock reached \(floor / 1000) s, so it was played automatically"
+                }
+            }
+            let current = await pacing()
+            if current.releaseRequested {
+                return "the operator played it"
+            }
+            if !current.holds && now - started >= .seconds(current.delaySeconds) {
+                return current.delaySeconds > 0 ? "the \(current.delaySeconds) s delay elapsed" : "pacing was turned off"
+            }
+            do {
+                try await time.sleep(for: .milliseconds(250))
+            } catch {
+                return nil
+            }
+        }
     }
 
     private func stillOurMove(at ply: Int) -> Bool {
@@ -514,6 +669,7 @@ actor LichessBotGameSession {
             do {
                 try await api.makeMove(gameID: gameID, uci: decision.uci, offeringDraw: offeringDraw)
                 let elapsed = LichessBotBackoff.seconds(time.now() - started) * 1000
+                lastMoveRoundTripMilliseconds = elapsed
                 await observer.gameEvent(gameID: gameID, .movePosted(ply: ply, uci: decision.uci, offeringDraw: offeringDraw, milliseconds: elapsed))
                 await onTurnStatus(gameID, LichessBotTurnStatus(awaitingOurMove: false, ourClock: nil))
                 return
@@ -631,16 +787,70 @@ actor LichessBotGameSession {
     private func finish(status: LichessBotOpenValue<LichessBotGameStatusName>, winner: LichessBotOpenValue<LichessBotColorName>?, settings: LichessBotSettings) async {
         guard !finished else { return }
         finished = true
+        pendingDrawDisagreement = nil
+        pacedMove?.cancel()
+        pacedMove = nil
+        pacedMovePly = nil
+        pacedMovePosition = nil
+        pacedMoveReleased = false
         pendingClaim?.cancel()
         pendingClaim = nil
         await observer.gameEvent(gameID: gameID, .finished(status: status, winner: winner, localDrawCondition: tracker?.engine.drawCondition))
         await onTurnStatus(gameID, LichessBotTurnStatus(awaitingOurMove: false, ourClock: nil))
         if status.known != .aborted && status.known != .noStart {
-            await sendChat(settings.chat.goodbyeEnabled ? settings.chat.goodbyeTemplate : nil, settings: settings)
+            await sendChat(settings.chat.goodbyeEnabled ? settings.chat.goodbyeTemplate : nil, origin: .goodbye, settings: settings)
         }
     }
 
-    private func sendChat(_ template: String?, settings: LichessBotSettings) async {
+    /// Answer a chat command (plan §12.5a) in the room it came from, within
+    /// the per-game budget. Skips and failures are journaled, never retried.
+    private func answerCommand(in line: LichessBotChatLine) async {
+        guard let command = LichessBotChatCommands.parse(line, ourAccountID: ourAccountID) else { return }
+        guard let room = line.room.known else {
+            await observer.gameEvent(gameID: gameID, .anomaly("!\(command.rawValue) from \(line.username) in unknown room \(line.room.raw); not answered"))
+            return
+        }
+        switch commandBudget.decide(now: time.now(), ourClockMilliseconds: ourClockMilliseconds) {
+        case .skip(let reason):
+            await observer.gameEvent(gameID: gameID, .action("not answering !\(command.rawValue) from \(line.username): \(reason)"))
+            return
+        case .reply:
+            break
+        }
+        let ourUsername: String
+        if let full = gameFull, let ourColor {
+            ourUsername = (ourColor == .white ? full.white.name : full.black.name) ?? ourAccountID
+        } else {
+            ourUsername = ourAccountID
+        }
+        let info = pinnedMoveSource.info
+        let context = LichessBotChatCommandContext(
+            ourUsername: ourUsername,
+            modelID: info.modelID,
+            trainingStep: info.trainingStep,
+            build: BuildInfo.buildNumber,
+            hardware: HardwareInfo.current
+        )
+        let replies: [String]
+        do {
+            replies = try LichessBotChatCommands.replies(to: command, context: context)
+        } catch {
+            await observer.gameEvent(gameID: gameID, .anomaly("!\(command.rawValue) not answered: \(error.localizedDescription)"))
+            return
+        }
+        for text in replies {
+            do {
+                try await api.chat(gameID: gameID, room: room, text: text)
+            } catch {
+                await observer.gameEvent(gameID: gameID, .anomaly("reply to !\(command.rawValue) failed: \(error.localizedDescription)"))
+                return
+            }
+            await observer.gameEvent(gameID: gameID, .chatSent(room: room, text: text, origin: .commandReply))
+        }
+        await observer.gameEvent(gameID: gameID, .action("replied to !\(command.rawValue) from \(line.username) (\(room.rawValue))"))
+    }
+
+    private func sendChat(_ template: String?, origin: LichessBotChatOrigin, settings: LichessBotSettings) async {
         guard let template else { return }
         let opponent: String
         if let full = gameFull, let ourColor {
@@ -660,7 +870,7 @@ actor LichessBotGameSession {
         }
         do {
             try await api.chat(gameID: gameID, room: settings.chat.room, text: text)
-            await observer.gameEvent(gameID: gameID, .action("chat sent"))
+            await observer.gameEvent(gameID: gameID, .chatSent(room: settings.chat.room, text: text, origin: origin))
         } catch {
             await observer.gameEvent(gameID: gameID, .anomaly("chat failed: \(error.localizedDescription)"))
         }

@@ -5,12 +5,13 @@ import Foundation
 /// Templates may use `{modelID}`, `{source}`, `{build}` and `{opponent}`.
 /// A message is checked against Lichess's length limit after expansion, and
 /// an over-limit template is rejected in Settings rather than truncated when
-/// sent. Opponent chat is never interpreted: there are no chat commands, so
-/// nothing an opponent types can trigger a request or an action.
+/// sent. Opponent chat is interpreted only as the read-only commands in
+/// `LichessBotChatCommands` (plan §12.5a), within a per-game budget.
 enum LichessBotChat {
 
-    /// Lichess's chat message length limit, as currently understood. Plan
-    /// §20.11 lists confirming it on a live game.
+    /// Lichess's chat message length limit (`Line.textMaxSize` in lila),
+    /// counted in UTF-16 code units (Java `String.length`); a longer message
+    /// is rejected with HTTP 400. Count with `.utf16.count`, never `.count`.
     static let maximumLength = 140
 
     static let placeholders = ["modelID", "source", "build", "opponent"]
@@ -45,8 +46,8 @@ enum LichessBotChat {
         if let unknown = unknownPlaceholder(in: expanded) {
             return "unknown placeholder {\(unknown)}; use \(placeholders.map { "{\($0)}" }.joined(separator: ", "))"
         }
-        if expanded.count > maximumLength {
-            return "can reach \(expanded.count) characters with long values; Lichess allows \(maximumLength)"
+        if expanded.utf16.count > maximumLength {
+            return "can reach \(expanded.utf16.count) characters with long values; Lichess allows \(maximumLength)"
         }
         return nil
     }
@@ -55,7 +56,7 @@ enum LichessBotChat {
     /// these actual values (then it is not sent, and the skip is logged).
     static func message(from template: String, values: [String: String]) -> String? {
         let expanded = expand(template, values: values)
-        return expanded.count <= maximumLength ? expanded : nil
+        return expanded.utf16.count <= maximumLength ? expanded : nil
     }
 
     private static func unknownPlaceholder(in text: String) -> String? {
@@ -64,5 +65,39 @@ enum LichessBotChat {
             return nil
         }
         return String(text[text.index(after: open)..<close])
+    }
+}
+
+/// Rules for the operator's own chat messages (plan §14.3c), which Lichess
+/// applies to every bot message: at most `LichessBotChat.maximumLength`
+/// UTF-16 units, and anything link-like is dropped silently (with HTTP 200).
+enum LichessBotOperatorChat {
+    /// Lichess's count: UTF-16 code units.
+    static func length(of text: String) -> Int {
+        text.utf16.count
+    }
+
+    /// A URL, or a word followed by a dot and a top-level-domain-like word
+    /// ("lichess.org", "github.com"): Lichess drops link-bearing bot
+    /// messages without an error.
+    static func looksLikeLink(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        if lowered.contains("http://") || lowered.contains("https://") || lowered.contains("www.") {
+            return true
+        }
+        return lowered.contains(#/[a-z0-9-]+\.[a-z]{2,}(?:[/?#]|\b)/#)
+    }
+
+    /// Why `text` can't be sent, or nil if it can. A link-like message can
+    /// still be sent (the heuristic can be wrong); the UI warns about it.
+    static func problem(with text: String) -> String? {
+        if text.isEmpty {
+            return "the message is empty"
+        }
+        let length = length(of: text)
+        if length > LichessBotChat.maximumLength {
+            return "\(length) characters; Lichess allows \(LichessBotChat.maximumLength)"
+        }
+        return nil
     }
 }

@@ -62,7 +62,19 @@ enum LichessBotGameEvent: Sendable {
     case movePosted(ply: Int, uci: String, offeringDraw: Bool, milliseconds: Double)
     case moveRejected(ply: Int, uci: String, error: String)
     case action(String)
+    /// DCM decided `uci` at `ply` and is holding it for the operator's
+    /// Play move, or waiting out a per-game delay (plan §14.3c).
+    case moveHeld(ply: Int, uci: String, san: String)
+    /// A held or delayed move was released for posting, and why.
+    case moveReleased(ply: Int, reason: String)
     case chat(LichessBotChatLine)
+    /// DCM posted a chat message (Lichess answered 200). Lichess echoes it
+    /// on the game stream only while the stream is open, so a message sent
+    /// after the game ends (the goodbye) is known only from this event.
+    case chatSent(room: LichessBotChatRoom, text: String, origin: LichessBotChatOrigin)
+    /// A player-room message found by fetching the chat after the game (the
+    /// stream had closed); only lines not already known are reported.
+    case chatFetched(username: String, text: String)
     case anomaly(String)
     /// The session stopped moving in this game: its moves keep being
     /// rejected, or a move on our side appeared that this client did not
@@ -80,4 +92,34 @@ enum LichessBotGameEvent: Sendable {
 /// implement it. Called in order from the session's actor.
 protocol LichessBotGameObserver: Sendable {
     func gameEvent(gameID: String, _ event: LichessBotGameEvent) async
+}
+
+/// Who had DCM's account say something in chat.
+enum LichessBotChatOrigin: String, Sendable, Codable, Equatable {
+    case greeting
+    case goodbye
+    case commandReply
+    case `operator`
+}
+
+/// The operator's per-game move pacing as the session reads it (plan
+/// §14.3c). The default is no pacing: DCM moves as soon as it decides.
+struct LichessBotMovePacingSnapshot: Sendable, Equatable {
+    /// Seconds to wait before posting each move after DCM's first.
+    var delaySeconds = 0
+    /// Hold each move after DCM's first until the operator releases it.
+    var holds = false
+    /// The operator clicked Play move for the held move.
+    var releaseRequested = false
+
+    var isActive: Bool {
+        delaySeconds > 0 || holds
+    }
+
+    /// Our clock at or below this forces a held or delayed move out: a
+    /// margin plus a multiple of the last move's round trip, so the post lands in
+    /// time (plan §14.3c).
+    static func clockFloorMilliseconds(lastMoveRoundTripMilliseconds: Double?) -> Int {
+        30_000 + Int(2 * (lastMoveRoundTripMilliseconds ?? 0))
+    }
 }

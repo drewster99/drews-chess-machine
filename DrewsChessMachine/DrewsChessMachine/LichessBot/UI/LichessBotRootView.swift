@@ -45,6 +45,7 @@ struct LichessBotRootView: View {
         }
         .task {
             await controller.refreshIndex()
+            await controller.loadPlayerNotes()
             if controller.tokenState == .unknown {
                 await controller.refreshTokenState()
             }
