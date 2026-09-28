@@ -9,7 +9,9 @@ import Foundation
 /// Castling in UCI is encoded as the king's source-and-destination
 /// pair (`e1g1`, `e1c1`, `e8g8`, `e8c8`). That happens to match the
 /// engine's internal representation of castling (king moves two
-/// squares), so no special-casing is needed.
+/// squares), so no special-casing is needed. Sources that use the
+/// Chess960-compatible king-to-rook form (`e1h1`) go through
+/// `parseUCI(_:legal:state:)`.
 ///
 /// En passant in UCI is just the diagonal pawn move (e.g. `e5d6`);
 /// again, no special notation. The engine's legal-move list already
@@ -74,6 +76,61 @@ extension ChessMove {
                 && move.toRow == toSq.row
                 && move.toCol == toSq.col
                 && move.promotion == promo
+        }
+    }
+
+    /// Parse a UCI move that may express castling in the king-to-rook form
+    /// (`e1h1`, `e1a1`, `e8h8`, `e8a8`) as well as the standard
+    /// king-to-destination form (`e1g1`, …), resolving both against `legal`.
+    ///
+    /// The Lichess Bot API documents its move lists as "UCI format (King to
+    /// rook for Chess960-compatible castling notation)", so a client must
+    /// accept either form. The plain `parseUCI(_:legal:)` only accepts the
+    /// standard form, and the legal-move list alone cannot tell a king's
+    /// castling move from a rook or queen that happens to make the same
+    /// from/to journey — so the alias needs the board: it applies only when
+    /// the source square holds a king, the target square holds a rook of the
+    /// same color on the same rank, and the corresponding castling move is in
+    /// `legal`. Outside that case a king-to-rook token is not a move at all in
+    /// standard chess (apart from castling a king never moves more than one
+    /// square, and it can never land on its own rook), so there is no
+    /// ambiguity to resolve.
+    ///
+    /// An exact match is always tried first, so every token the plain parser
+    /// accepts resolves identically here.
+    static func parseUCI(
+        _ token: String,
+        legal: [ChessMove],
+        state: GameState
+    ) -> ChessMove? {
+        if let exact = parseUCI(token, legal: legal) {
+            return exact
+        }
+        let chars = Array(token)
+        guard chars.count == 4,
+              let fromSq = parseSquare(file: chars[0], rank: chars[1]),
+              let toSq = parseSquare(file: chars[2], rank: chars[3]),
+              fromSq.row == toSq.row,
+              fromSq.col == 4,
+              let mover = state.board[fromSq.row * 8 + fromSq.col],
+              mover.type == .king,
+              let target = state.board[toSq.row * 8 + toSq.col],
+              target.type == .rook,
+              target.color == mover.color else {
+            return nil
+        }
+        let castlingDestinationCol: Int
+        switch toSq.col {
+        case 7: castlingDestinationCol = 6
+        case 0: castlingDestinationCol = 2
+        default: return nil
+        }
+        return legal.first { move in
+            move.fromRow == fromSq.row
+                && move.fromCol == fromSq.col
+                && move.toRow == fromSq.row
+                && move.toCol == castlingDestinationCol
+                && move.promotion == nil
         }
     }
 

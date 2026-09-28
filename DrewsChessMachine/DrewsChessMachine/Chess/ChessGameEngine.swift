@@ -33,6 +33,41 @@ enum RawGameResult: Sendable {
     case terminatedNormally(GameResult)
 }
 
+/// A draw condition the engine's own rules detect in the current position.
+/// Under `.automatic` adjudication the first one found ends the game; under
+/// `.serverAuthoritative` it is only reported (via
+/// `ChessGameEngine.drawCondition`) so a caller can compare its view with an
+/// external authority's.
+enum ChessDrawCondition: Sendable, Equatable {
+    case fiftyMoveRule
+    case threefoldRepetition
+    case insufficientMaterial
+
+    var gameResult: GameResult {
+        switch self {
+        case .fiftyMoveRule: return .drawByFiftyMoveRule
+        case .threefoldRepetition: return .drawByThreefoldRepetition
+        case .insufficientMaterial: return .drawByInsufficientMaterial
+        }
+    }
+}
+
+/// Who decides that a game has ended in a draw.
+enum ChessGameAdjudication: Sendable, Equatable {
+    /// The engine ends the game on every termination it detects: checkmate,
+    /// stalemate, the fifty-move rule, threefold repetition and insufficient
+    /// material. Self-play, arena and human play all use this.
+    case automatic
+    /// An external authority (the Lichess server) decides draws. The engine
+    /// ends the game only when the side to move has no legal move
+    /// (checkmate or stalemate), because then there is literally no move to
+    /// make. Draw conditions never end the game locally, so the engine can
+    /// never refuse a move while the authority still considers the game live
+    /// — which matters wherever the two rule sets' definitions differ (the
+    /// en-passant component of `PositionKey`, insufficient-material cases).
+    case serverAuthoritative
+}
+
 // MARK: - Position Key (for repetition detection)
 
 /// A hashable identifier for a chess position. Two positions match for the
@@ -107,6 +142,10 @@ final class ChessGameEngine {
     private(set) var result: GameResult?
     private(set) var moveHistory: [ChessMove] = []
 
+    /// Who decides draws; see `ChessGameAdjudication`. Fixed for the life of
+    /// the engine.
+    let adjudication: ChessGameAdjudication
+
     /// Legal moves for `state`'s side-to-move. Refreshed inside
     /// `applyMoveAndAdvance`; callers can read this instead of calling
     /// `MoveGenerator.legalMoves(for: engine.state)` themselves.
@@ -117,6 +156,11 @@ final class ChessGameEngine {
     /// (pawn moves and captures), since no prior position can recur after
     /// an irreversible move.
     private var positionCounts: [PositionKey: Int] = [:]
+
+    /// Occurrences of the current position since the last irreversible move,
+    /// including this one — `positionCounts` for the current key, cached so
+    /// `drawCondition` needs no second hash of the board per ply.
+    private var currentPositionVisits: Int = 1
 
     /// Ordered window of up to the `recentPositionKeyWindow` most recent
     /// prior positions, with index 0 = position 1 ply ago, index
@@ -152,13 +196,14 @@ final class ChessGameEngine {
     /// semantics: this window does not clear on irreversible moves).
     static let recentStateWindow: Int = 9
 
-    init(state: GameState = .starting) {
+    init(state: GameState = .starting, adjudication: ChessGameAdjudication = .automatic) {
         // The starting position has occurred zero times before — fold that
         // into the state itself so encoders downstream see a consistent
         // `repetitionCount` and `recentRepetitionMask`. Every state
         // subsequently produced by applyMoveAndAdvance also carries both.
         let seeded = state.withRepetitionCount(0).withRecentRepetitionMask(0)
         self.state = seeded
+        self.adjudication = adjudication
         self.currentLegalMoves = MoveGenerator.legalMoves(for: seeded)
         positionCounts[PositionKey(from: state)] = 1
     }
@@ -227,7 +272,7 @@ final class ChessGameEngine {
         let key = PositionKey(from: appliedState)
         let totalVisits = (positionCounts[key] ?? 0) + 1
         positionCounts[key] = totalVisits
-        let isThreefold = totalVisits >= 3
+        currentPositionVisits = totalVisits
 
         // Compute the temporal-repetition mask (one bit per windowed
         // prior position): bit `i` is set iff `recentPositionKeys[i] == key`.
@@ -253,13 +298,31 @@ final class ChessGameEngine {
 
         let nextMoves = MoveGenerator.legalMoves(for: state)
         currentLegalMoves = nextMoves
-        updateResult(nextLegalMoves: nextMoves, isThreefoldRepetition: isThreefold)
+        updateResult(nextLegalMoves: nextMoves)
         return nextMoves
     }
 
     // MARK: - Game End Detection
 
-    private func updateResult(nextLegalMoves: [ChessMove], isThreefoldRepetition: Bool) {
+    /// The draw condition the engine's own rules detect in the current
+    /// position, checked in the order `.automatic` adjudication applies them
+    /// (fifty-move rule, then threefold repetition, then insufficient
+    /// material). Reported under either adjudication mode; under
+    /// `.automatic` a non-nil value has already ended the game.
+    var drawCondition: ChessDrawCondition? {
+        if state.halfmoveClock >= 100 {
+            return .fiftyMoveRule
+        }
+        if currentPositionVisits >= 3 {
+            return .threefoldRepetition
+        }
+        if isInsufficientMaterial() {
+            return .insufficientMaterial
+        }
+        return nil
+    }
+
+    private func updateResult(nextLegalMoves: [ChessMove]) {
         if nextLegalMoves.isEmpty {
             if MoveGenerator.isInCheck(state, color: state.currentPlayer) {
                 result = .checkmate(winner: state.currentPlayer.opposite)
@@ -268,19 +331,13 @@ final class ChessGameEngine {
             }
             return
         }
-
-        if state.halfmoveClock >= 100 {
-            result = .drawByFiftyMoveRule
-            return
-        }
-
-        if isThreefoldRepetition {
-            result = .drawByThreefoldRepetition
-            return
-        }
-
-        if isInsufficientMaterial() {
-            result = .drawByInsufficientMaterial
+        switch adjudication {
+        case .automatic:
+            if let draw = drawCondition {
+                result = draw.gameResult
+            }
+        case .serverAuthoritative:
+            break
         }
     }
 

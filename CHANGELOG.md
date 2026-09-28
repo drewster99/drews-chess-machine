@@ -9,6 +9,22 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-28 02:49 CDT — Lichess bot Phase 1: engine prerequisites (pending commit)
+
+Lichess bot plan §8 (`documentation/plans-active/LICHESS_BOT_PLAN.md`). These are changes to shared engine code that the bot needs. Self-play, the arena, human play and `--uci` behave exactly as before.
+
+- **`ChessGameEngine` adjudication mode.** `.automatic` (the default, unchanged) ends games on the 50-move rule, threefold and insufficient material. `.serverAuthoritative` ends a game locally only on checkmate or stalemate, so a difference between DCM's and Lichess's draw rules can never make DCM stop moving in a game the server still considers live (E8). `drawCondition` reports which draw rule currently applies, whichever mode is in use.
+- **State-aware UCI parsing.** `ChessMove.parseUCI(_:legal:state:)` accepts Lichess's king-to-rook castling tokens (`e1h1`, `e1a1`, `e8h8`, `e8a8`) as an alias for castling (E1). It accepts one only when:
+  - a king stands on the e-file source square
+  - a rook of the same color stands on the target square
+  - the castling move is legal
+
+  The original parser is unchanged, so `--uci` keeps its strict behavior.
+- **Single-pass W/D/L readback.** `evaluateWithValueDistribution(board:consume:)` returns the policy and the full win/draw/loss distribution from one forward pass, without a second pass for the distribution. `evaluate` shares the same core. The helper `valueDistribution(fromProbs:style:)` is also used by `evaluateValueDistribution`.
+- **`SANFormatter`.** Converts moves to SAN for the journal and PGN output. It covers castling, disambiguation (file, then rank, then both), captures, en passant, promotions, check and mate. Tests round-trip more than 5000 moves through `PGNImporter`'s SAN resolver.
+- **`InferenceNetworkFactory`.** Network construction moves off the cooperative pool, with and without loaded weights. `PlayController` now uses it instead of its own private copy.
+- **Test-target compile fix.** `ChartDataRoundTripTests` and `ChartDecimatorTests` had not compiled since `0c170e3` added fields to `TrainingChartSample`. They now pass `nil` for the new fields. No production defaults were added.
+
 ## 2026-09-28 01:14 CDT — Lichess bot plan, autosave-retention plan, research (DESIGN)
 
 - **`documentation/plans-active/LICHESS_BOT_PLAN.md`:** plan for DCM to play on lichess.org as the BOT account `DrewsChessMachine`. It is a native Swift client inside the app: no Python bridge, no UCI subprocess. The plan covers:

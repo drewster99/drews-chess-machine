@@ -1155,6 +1155,25 @@ final class ChessNetwork: @unchecked Sendable {
         board: UnsafeBufferPointer<Float>,
         consume: (UnsafeBufferPointer<Float>, Float) -> Void
     ) throws {
+        try internalEvaluateCore(board: board) { policy, value, _ in
+            consume(policy, value)
+        }
+    }
+
+    /// The single-position forward pass behind both `evaluate` variants. One
+    /// `graph.run` produces the policy logits, the value scalar and the W/D/L
+    /// softmax (`inferenceTargets` always includes `valueProbs`). The W/D/L
+    /// triple is read back only if `consume` calls the `readValueDistribution`
+    /// accessor it is handed, so the scalar-only path does exactly the
+    /// readbacks it always did. The accessor is valid only during `consume`.
+    private func internalEvaluateCore(
+        board: UnsafeBufferPointer<Float>,
+        consume: (
+            UnsafeBufferPointer<Float>,
+            Float,
+            _ readValueDistribution: () throws -> (win: Float, draw: Float, loss: Float)
+        ) throws -> Void
+    ) throws {
         let expected = 1 * arch.inputPlanes * Self.boardSize * Self.boardSize
         guard board.count == expected else {
             throw ChessNetworkError.boardSizeMismatch(expected: expected, got: board.count)
@@ -1190,10 +1209,66 @@ final class ChessNetwork: @unchecked Sendable {
             Self.readFloatsFP32(from: policyData, into: inferencePolicyScratchPtr, count: Self.policySize)
             Self.readFloats(from: valueData, into: inferenceValueScratchPtr, count: 1, dataType: Self.mpsDataType(for: arch))
 
-            consume(
+            try consume(
                 UnsafeBufferPointer(start: inferencePolicyScratchPtr, count: Self.policySize),
-                inferenceValueScratchPtr.pointee
+                inferenceValueScratchPtr.pointee,
+                {
+                    guard let probsData = results[self.valueProbs] else {
+                        throw ChessNetworkError.outputMissing("valueProbs")
+                    }
+                    Self.readFloats(
+                        from: probsData,
+                        into: self.inferenceValueProbsScratchPtr,
+                        count: self.arch.valueHeadClasses,
+                        dataType: Self.mpsDataType(for: self.arch)
+                    )
+                    return Self.valueDistribution(
+                        fromProbs: UnsafePointer(self.inferenceValueProbsScratchPtr),
+                        style: self.arch.valueHeadStyle
+                    )
+                }
             )
+        }
+    }
+
+    /// Evaluate a single board and hand `consume` the policy logits together
+    /// with the value head's full `(p_win, p_draw, p_loss)` distribution —
+    /// the same one forward pass as `evaluate(board:consume:)`, with one more
+    /// small readback, so callers that want W/D/L on every move (the Lichess
+    /// bot) never pay for the second pass `evaluateValueDistribution` runs.
+    /// Same contract as `evaluate(board:consume:)`: the policy buffer aliases
+    /// shared scratch and is valid only during the closure call.
+    func evaluateWithValueDistribution(
+        board: [Float],
+        consume: @Sendable @escaping (UnsafeBufferPointer<Float>, (win: Float, draw: Float, loss: Float)) -> Void
+    ) async throws {
+        try await enqueue {
+            try board.withUnsafeBufferPointer { buf in
+                try self.internalEvaluateCore(board: buf) { policy, _, readValueDistribution in
+                    consume(policy, try readValueDistribution())
+                }
+            }
+        }
+    }
+
+    /// Project the value head's softmax readback onto `(p_win, p_draw,
+    /// p_loss)`. The one place both W/D/L paths turn raw probabilities into
+    /// the triple, so the scalar-head projection can't drift between them.
+    ///
+    /// - `.wdlSoftmax`: `probs` holds 3 elements in slot order win, draw, loss.
+    /// - `.scalarTanh`: `probs` holds a single `v = p_win − p_loss ∈ [−1, +1]`.
+    ///   A scalar head carries no separable draw mass, so the triple keeps
+    ///   `win − loss = v` and reports draw as 0.
+    static func valueDistribution(
+        fromProbs probs: UnsafePointer<Float>,
+        style: ValueHeadStyle
+    ) -> (win: Float, draw: Float, loss: Float) {
+        switch style {
+        case .wdlSoftmax:
+            return (win: probs[0], draw: probs[1], loss: probs[2])
+        case .scalarTanh:
+            let v = probs[0]
+            return (win: max(v, 0), draw: 0, loss: max(-v, 0))
         }
     }
 
@@ -1239,23 +1314,10 @@ final class ChessNetwork: @unchecked Sendable {
                     throw ChessNetworkError.outputMissing("valueProbs")
                 }
                 Self.readFloats(from: probsData, into: inferenceValueProbsScratchPtr, count: arch.valueHeadClasses, dataType: Self.mpsDataType(for: arch))
-                switch arch.valueHeadStyle {
-                case .wdlSoftmax:
-                    // Three-slot W/D/L softmax: the scratch holds 3 elements.
-                    return (
-                        win: inferenceValueProbsScratchPtr[0],
-                        draw: inferenceValueProbsScratchPtr[1],
-                        loss: inferenceValueProbsScratchPtr[2]
-                    )
-                case .scalarTanh:
-                    // Single-slot tanh value v = p_win − p_loss ∈ [−1, +1]; the
-                    // scratch is sized `valueHeadClasses` == 1, so reading slots
-                    // 1/2 would run off the allocation. Project the scalar back
-                    // onto a W/D/L triple that preserves win − loss = v. A scalar
-                    // head carries no separable draw mass, so draw is reported 0.
-                    let v = inferenceValueProbsScratchPtr[0]
-                    return (win: max(v, 0), draw: 0, loss: max(-v, 0))
-                }
+                return Self.valueDistribution(
+                    fromProbs: UnsafePointer(inferenceValueProbsScratchPtr),
+                    style: arch.valueHeadStyle
+                )
             }
         }
     }

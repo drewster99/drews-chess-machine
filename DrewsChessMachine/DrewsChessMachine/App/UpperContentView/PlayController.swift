@@ -980,34 +980,23 @@ final class PlayController {
         }
     }
 
-    /// Build a fresh `.randomWeights` `ChessMPSNetwork` and overlay the
-    /// supplied weights. Runs on a detached `.userInitiated` task so
-    /// the MPSGraph build (long synchronous work) never sits on the
-    /// Swift Concurrency executor. Mirrors the pattern
-    /// `SessionController.performBuild()` uses, plus an immediate
-    /// `loadWeights` to overwrite the randomly-initialized graph.
+    /// Build a network carrying `weights`; see `InferenceNetworkFactory`.
     private nonisolated static func buildInferenceNetwork(
         loading weights: [[Float]],
-        arch: NetworkArchitecture = .current
+        arch: NetworkArchitecture
     ) async throws -> ChessMPSNetwork {
-        let net = try await Task.detached(priority: .userInitiated) {
-            try ChessMPSNetwork(.randomWeights, arch: arch)
-        }.value
-        try await net.loadWeights(weights)
-        return net
+        try await InferenceNetworkFactory.build(loading: weights, arch: arch)
     }
 
-    /// Build a `.randomWeights` `ChessMPSNetwork` *without* overlaying
-    /// weights. Used as the lazy initializer for the live-trainer
-    /// mirror — the mirror's initial weights are immaterial because
-    /// `LiveTrainerMoveEvaluationSource.evaluate` overwrites them on
-    /// every AI move via `loadWeights(...)`.
+    /// Build a network *without* overlaying weights. Used as the lazy
+    /// initializer for the live-trainer mirror — the mirror's initial
+    /// weights are immaterial because
+    /// `LiveTrainerMoveEvaluationSource.evaluate` overwrites them on every AI
+    /// move via `loadWeights(...)`.
     private nonisolated static func buildBareInferenceNetwork(
-        arch: NetworkArchitecture = .current
+        arch: NetworkArchitecture
     ) async throws -> ChessMPSNetwork {
-        try await Task.detached(priority: .userInitiated) {
-            try ChessMPSNetwork(.randomWeights, arch: arch)
-        }.value
+        try await InferenceNetworkFactory.build(arch: arch)
     }
 
     /// Compact human-readable form of a `RawGameResult` for the session log.

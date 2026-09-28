@@ -241,6 +241,18 @@ final class ChessMPSNetwork: @unchecked Sendable {
         try await network.evaluate(board: board, consume: consume)
     }
 
+    /// Run the forward pass on a board tensor and hand `consume` the policy
+    /// logits plus the value head's full `(p_win, p_draw, p_loss)` — one
+    /// forward pass, same as `evaluate(board:consume:)`. Passthrough to
+    /// `ChessNetwork.evaluateWithValueDistribution(board:consume:)`; same
+    /// closure-validity contract.
+    func evaluateWithValueDistribution(
+        board: [Float],
+        consume: @Sendable @escaping (UnsafeBufferPointer<Float>, (win: Float, draw: Float, loss: Float)) -> Void
+    ) async throws {
+        try await network.evaluateWithValueDistribution(board: board, consume: consume)
+    }
+
     /// Forward-only pass returning the value head's W/D/L softmax
     /// `(p_win, p_draw, p_loss)` for a single position — passthrough to
     /// `ChessNetwork.evaluateValueDistribution(board:)`. For diagnostics
