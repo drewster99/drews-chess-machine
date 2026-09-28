@@ -130,7 +130,12 @@ actor LichessBotSessionManager {
     private let gameObserver: any LichessBotGameObserver
     private let onEvent: @Sendable (LichessBotManagerEvent) -> Void
 
+    /// Online (true) or Draining (false) — the operator's choice, or "one
+    /// game" once its game started.
     private var acceptingNewGames = true
+    /// A 429 hold is in force (plan §5.4). Kept apart from
+    /// `acceptingNewGames` so the hold ending can never undo a drain.
+    private var rateLimitHold = false
     private var sessions: [String: LichessBotGameSession] = [:]
     private var sessionTasks: [String: Task<Void, Never>] = [:]
     private var opponentByGame: [String: String] = [:]
@@ -182,6 +187,25 @@ actor LichessBotSessionManager {
 
     /// Online (true) or Draining (false). Draining declines new challenges
     /// with `later`; games in progress continue.
+    /// Hold (or release) new games after a 429. Independent of draining.
+    func setRateLimitHold(_ held: Bool) {
+        rateLimitHold = held
+    }
+
+    /// Whether a new challenge could be accepted right now.
+    var isAcceptingNewGames: Bool {
+        acceptingNewGames && !rateLimitHold
+    }
+
+    /// Accepted challenges whose game hasn't started yet (expired ones
+    /// dropped). The controller counts them as games in progress, so a
+    /// drain or quit waits for them.
+    func acceptedAwaitingStartIDs() -> Set<String> {
+        let now = time.now()
+        acceptedAwaitingStart = acceptedAwaitingStart.filter { now - $0.value.acceptedAt < Self.acceptedStartTimeout }
+        return Set(acceptedAwaitingStart.keys)
+    }
+
     func setAcceptingNewGames(_ accepting: Bool) {
         acceptingNewGames = accepting
     }
@@ -449,7 +473,7 @@ actor LichessBotSessionManager {
             byOpponent[pending.opponentID, default: 0] += 1
         }
         let context = LichessBotChallengeContext(
-            acceptingNewGames: acceptingNewGames,
+            acceptingNewGames: acceptingNewGames && !rateLimitHold,
             modelReady: modelReady,
             activeGames: sessions.count + acceptedAwaitingStart.count,
             activeGamesByOpponent: byOpponent,

@@ -1475,6 +1475,22 @@ before final sign-off.
     - `fullId` and any token-bearing text are redacted.
     - Game streams resync on wake (E34).
     - File stems use UTC (E50).
+  - **Second review (recheck) fixes:**
+    - A 5xx on a move is retried as a Lichess failure. It is never counted
+      as a rejection, and only disagreements count toward giving up on a
+      game.
+    - Foreign-move checks cover only plies the session has never seen, so
+      a resync in a resumed game can't flag DCM's own earlier moves.
+    - Events and polls from a torn-down runtime are dropped.
+    - The finishing sheet appears even when quitting opens the window.
+    - A quit during record filing is still answered.
+    - Accepted-but-not-started games count as games in play for drain and
+      quit.
+    - The sleep option really allows idle sleep when off.
+    - The daily seed counts only today's leftover journals.
+    - The post-429 hold is a separate manager flag, so it can't undo a
+      drain, and it survives going offline and back.
+    - Resetting settings reaches the running bot.
   - **Still open:** scaling the game-stream stall limit to the time control
     (§6). It depends on whether game streams carry keep-alives, a §20.11
     live check.

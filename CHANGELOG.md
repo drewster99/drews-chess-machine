@@ -9,6 +9,21 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-28 11:06 CDT — Lichess bot: recheck fixes (pending commit)
+
+A second independent review of the Phase 5 commit found these; each has a regression test in `LichessBotReviewFixTests` where it can be unit-tested.
+
+- **A Lichess 5xx on a move** counted as a "rejection". Three 503s during a Lichess outage would have taken the whole bot to Error and abandoned every game. A 5xx is now retried as a transient failure, and only real disagreements count toward giving up on a game.
+- **Foreign-move false positive:** after a resync in a game resumed after a relaunch, DCM's own pre-relaunch moves were flagged as another client's. Only plies the session has never seen are checked now.
+- **Stale events:** events still queued from a torn-down runtime could change state. One queued `oneGameStarted`, for example, left the bot stuck in Draining with no runtime. Each runtime now has a generation, and its consumer and poll loop stop acting once it changes.
+- **Missing sheet:** quitting or going offline with the bot window closed opened the window without the "Finishing games" sheet (`.onChange` now uses `initial: true`).
+- **Unanswered quit:** a quit that arrived while records were being filed could go unanswered.
+- **Abandoned games at quit:** accepted-but-not-started games now count as games in play, so a drain or quit no longer abandons them.
+- **Sleep option:** "Prevent system sleep" off had no effect (`.userInitiated` already disables idle sleep); it now uses `.userInitiatedAllowingIdleSystemSleep`.
+- **Daily counts:** the seed now counts only leftover journals created today.
+- **Post-429 hold:** it is now its own manager flag. Its end can no longer re-enable accepting after a drain or "one game", and it survives going offline and back.
+- **Settings reset:** resetting settings now updates the running bot's copy and the gate's breaker window.
+
 ## 2026-09-28 10:15 CDT — Lichess bot Phase 5: controller, window, live views, browse-only stepping (`5538a59`)
 
 The Lichess bot is now usable from the app. The plan is `documentation/plans-active/LICHESS_BOT_PLAN.md` §7.1, §13 and §14.

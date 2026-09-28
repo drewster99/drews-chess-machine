@@ -51,6 +51,9 @@ actor LichessBotGameSession {
     private var loggedDrawDisagreementPly: Int?
     /// Resyncs in a row without the game advancing; each waits longer.
     private var consecutiveResyncs = 0
+    /// Of those, the ones caused by a disagreement with Lichess; enough of
+    /// them and the session stops moving.
+    private var consecutiveDisagreements = 0
     private var highestPlySeen = 0
     /// Rejected move POSTs per ply (plan §6.1 B, §5.5).
     private var rejectionsByPly: [Int: Int] = [:]
@@ -73,6 +76,10 @@ actor LichessBotGameSession {
     /// for a fresh `gameFull`.
     private struct ResyncNeeded: Error {
         let reason: String
+        /// Lichess and this client disagree about the game. False when
+        /// Lichess itself is failing (5xx, network): that is waited out
+        /// with backoff, never counted toward giving up on the game.
+        let isDisagreement: Bool
     }
 
     init(
@@ -143,8 +150,11 @@ actor LichessBotGameSession {
                 await observer.gameEvent(gameID: gameID, .streamEnded(reason: "resync: \(resync.reason)"))
                 attempt = 0
                 consecutiveResyncs += 1
-                if consecutiveResyncs >= Self.maximumConsecutiveResyncs {
-                    await stopMoving("\(consecutiveResyncs) resyncs in a row without the game advancing (last: \(resync.reason))")
+                if resync.isDisagreement {
+                    consecutiveDisagreements += 1
+                }
+                if consecutiveDisagreements >= Self.maximumConsecutiveResyncs {
+                    await stopMoving("\(consecutiveDisagreements) resyncs in a row without the game advancing (last: \(resync.reason))")
                     break
                 }
                 // The first resync is immediate; repeats back off, so a
@@ -342,18 +352,24 @@ actor LichessBotGameSession {
                 sync = try tracker.sync(to: state.moveTokens)
             } catch {
                 await observer.gameEvent(gameID: gameID, .anomaly("divergence: \(error.localizedDescription)"))
-                throw ResyncNeeded(reason: "move list did not replay")
+                throw ResyncNeeded(reason: "move list did not replay", isDisagreement: true)
             }
             if sync != .unchanged {
                 await observer.gameEvent(gameID: gameID, .positionSynced(sync, ply: tracker.ply))
             }
+            let previouslySeenPlies = highestPlySeen
             if tracker.ply > highestPlySeen {
                 highestPlySeen = tracker.ply
                 consecutiveResyncs = 0
+                consecutiveDisagreements = 0
             }
-            if checksForeignMoves, case .extended(let fromPly, let toPly) = sync, let ourColor {
+            // Only plies this session has never seen are checked: earlier
+            // ones were checked when they arrived, or predate this session
+            // (a game resumed after a relaunch), and a tracker rebuilt after
+            // a resync replays them all again.
+            if checksForeignMoves, let ourColor, tracker.ply > previouslySeenPlies {
                 let ourPieceColor: PieceColor = ourColor == .white ? .white : .black
-                for ply in fromPly..<toPly where Self.mover(atPly: ply) == ourPieceColor {
+                for ply in previouslySeenPlies..<tracker.ply where Self.mover(atPly: ply) == ourPieceColor {
                     let played = tracker.moves[ply].uci
                     if attemptedPosts[ply] != played {
                         await stopMoving("move \(played) at ply \(ply) is on our side but this client did not send it; another client may be playing this account")
@@ -507,7 +523,9 @@ actor LichessBotGameSession {
                 lastPostedPly = nil
                 await observer.gameEvent(gameID: gameID, .moveRejected(ply: ply, uci: decision.uci, error: "rate limited; waiting for the cooldown"))
                 guard stillOurMove(at: ply) else { return }
-            } catch let error as LichessBotAPIError {
+            } catch let error as LichessBotAPIError where !Self.isServerFailure(error) {
+                // A 4xx: Lichess refused the move. (A 5xx is Lichess failing,
+                // not refusing; it is retried below like a network error.)
                 lastPostedPly = nil
                 await observer.gameEvent(gameID: gameID, .moveRejected(ply: ply, uci: decision.uci, error: error.localizedDescription))
                 if case .unauthorized = error { throw error }
@@ -521,7 +539,7 @@ actor LichessBotGameSession {
                 }
                 // A 4xx means Lichess disagrees about the position (or the
                 // game just ended). Reopen for a fresh gameFull (§5.5, E21).
-                throw ResyncNeeded(reason: "move rejected: \(error.localizedDescription)")
+                throw ResyncNeeded(reason: "move rejected: \(error.localizedDescription)", isDisagreement: true)
             } catch let error as LichessBotGateError {
                 throw error
             } catch is CancellationError {
@@ -530,7 +548,7 @@ actor LichessBotGameSession {
                 lastPostedPly = nil
                 await observer.gameEvent(gameID: gameID, .moveRejected(ply: ply, uci: decision.uci, error: String(describing: error)))
                 guard transientFailures < LichessBotGameSession.maximumTransientPostRetries, stillOurMove(at: ply) else {
-                    throw ResyncNeeded(reason: "move post kept failing: \(error)")
+                    throw ResyncNeeded(reason: "move post kept failing: \(error)", isDisagreement: false)
                 }
                 try await time.sleep(for: retries.delay(attempt: transientFailures, unitRandom: Double.random(in: 0...1)))
                 transientFailures += 1
@@ -540,6 +558,15 @@ actor LichessBotGameSession {
     }
 
     private static let maximumTransientPostRetries = 3
+
+    /// A 5xx: Lichess failed to process the request, which says nothing
+    /// about whether the move was acceptable.
+    private static func isServerFailure(_ error: LichessBotAPIError) -> Bool {
+        if case .http(let status, _) = error {
+            return (500..<600).contains(status)
+        }
+        return false
+    }
 
     /// Who moves at `ply` in a game from the standard start.
     private static func mover(atPly ply: Int) -> PieceColor {

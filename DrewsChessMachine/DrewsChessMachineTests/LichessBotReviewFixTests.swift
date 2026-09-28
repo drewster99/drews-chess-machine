@@ -79,6 +79,71 @@ final class LichessBotReviewFixTests: XCTestCase {
         await run.value
     }
 
+    /// A 5xx is Lichess failing, not refusing the move: it is retried, and
+    /// never counted toward giving up on the game.
+    func testServerErrorsOnAMoveAreRetriedNotCountedAsRejections() async throws {
+        let server = try LichessBotFakeGameServer()
+        await server.setScript(
+            moveOutcomes: [.rejected(status: 503), .rejected(status: 502), .rejected(status: 503), .rejected(status: 500)],
+            afterOurMoves: [.finish(status: "resign", winner: "white")]
+        )
+        let observer = LichessBotRecordingGameObserver()
+        let time = LichessBotManualTime()
+        let session = makeSession(server: server, observer: observer, time: time)
+        let run = Task { await session.run() }
+        try await waitUntil("the game ends", advancing: time) { observer.finishedStatus != nil }
+        await run.value
+        let record = await server.record()
+        XCTAssertEqual(record.acceptedPlies, [0])
+        XCTAssertEqual(record.moveAttempts, 5)
+        XCTAssertEqual(stoppedReasons(observer), [])
+    }
+
+    /// The end of a post-429 hold must not undo a stop that "one game"
+    /// (or a drain) made.
+    func testRateLimitHoldEndingKeepsADrainInForce() async throws {
+        let time = LichessBotManualTime()
+        let manager = LichessBotSessionManager(
+            accountAPI: LichessBotFakeAccountAPI(script: []),
+            gameAPI: try LichessBotFakeGameServer(),
+            gate: LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in },
+            slots: LichessBotModelSlots(provider: LichessBotFakeModelProvider.unbuildableChampion(), time: time) { _ in },
+            ourAccountID: LichessBotFakeGameServer.botID,
+            time: time,
+            settingsProvider: { LichessBotSettings() },
+            gameObserver: LichessBotRecordingGameObserver(),
+            onEvent: { _ in }
+        )
+        await manager.setRateLimitHold(true)
+        var accepting = await manager.isAcceptingNewGames
+        XCTAssertFalse(accepting)
+        await manager.setAcceptingNewGames(false)
+        await manager.setRateLimitHold(false)
+        accepting = await manager.isAcceptingNewGames
+        XCTAssertFalse(accepting, "the drain is still in force")
+        await manager.setAcceptingNewGames(true)
+        accepting = await manager.isAcceptingNewGames
+        XCTAssertTrue(accepting)
+    }
+
+    /// A resync in a game resumed after a relaunch must not mistake DCM's
+    /// own moves from before the relaunch for another client's.
+    func testResyncInAResumedGameIsNotAForeignMove() async throws {
+        let server = try LichessBotFakeGameServer(initialTokens: ["e2e4", "e7e5"])
+        await server.setScript(afterOurMoves: [.opponentThinks])
+        let observer = LichessBotRecordingGameObserver()
+        let time = LichessBotManualTime()
+        let session = makeSession(server: server, observer: observer, time: time)
+        let run = Task { await session.run() }
+        try await waitUntil("the first move is posted") { await server.record().acceptedPlies == [2] }
+        await server.sendBogusState(["e2e4", "e7e5", "a1a8"])
+        try await waitUntil("the stream reopens after the divergence") { await server.record().streamOpens == 2 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(stoppedReasons(observer), [])
+        run.cancel()
+        await run.value
+    }
+
     /// A failed sync must not leave a half-applied position to extend next
     /// time.
     func testFailedSyncLeavesAnEmptyTracker() throws {

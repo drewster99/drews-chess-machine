@@ -140,6 +140,13 @@ final class LichessBotController {
     }
 
     private var runtime: Runtime?
+    /// Bumped each time a runtime starts or stops. Work tied to one runtime
+    /// (its event consumer, its poll loop) stops acting as soon as this
+    /// moves on, so nothing queued by a torn-down runtime can change state.
+    private var runtimeGeneration = 0
+    /// Accepted challenges whose games haven't started (from the manager).
+    /// A drain or quit waits for them like games in progress.
+    private(set) var acceptedAwaitingStartIDs: Set<String> = []
     private var quitReplyPending = false
     /// The account-wide request gate (plan §5). One for the controller's
     /// lifetime — not one per runtime — so a 429 cooldown and the breaker's
@@ -198,6 +205,11 @@ final class LichessBotController {
         runtime != nil
     }
 
+    /// Games in progress, or accepted and about to start.
+    var hasGamesInPlay: Bool {
+        !activeGameIDs.isEmpty || !acceptedAwaitingStartIDs.isEmpty
+    }
+
     var gamesInProgress: [LichessBotLiveGame] {
         games.filter { activeGameIDs.contains($0.id) }
     }
@@ -239,6 +251,18 @@ final class LichessBotController {
     /// Apply new settings. Invalid settings are rejected whole (plan §12.1).
     func updateSettings(_ newSettings: LichessBotSettings) throws {
         try LichessBotSettingsStore.save(newSettings, to: defaults)
+        apply(newSettings)
+    }
+
+    /// The operator's explicit reset after unreadable saved settings.
+    func resetSettings() throws {
+        try LichessBotSettingsStore.reset(in: defaults)
+        apply(LichessBotSettings())
+    }
+
+    /// Make saved settings the ones in force: the UI's copy, the running
+    /// bot's copy, and the request gate's breaker window.
+    private func apply(_ newSettings: LichessBotSettings) {
         settings = newSettings
         settingsError = nil
         settingsBox?.value = newSettings
@@ -247,13 +271,6 @@ final class LichessBotController {
         Task {
             await gate.setBreakerWindow(window)
         }
-    }
-
-    /// The operator's explicit reset after unreadable saved settings.
-    func resetSettings() throws {
-        try LichessBotSettingsStore.reset(in: defaults)
-        settings = LichessBotSettings()
-        settingsError = nil
     }
 
     // MARK: - Token and account (plan §12.2)
@@ -410,12 +427,12 @@ final class LichessBotController {
         connection = .connecting
         oneGameRequested = oneGame
         drainRequested = false
-        rateLimitHoldUntil = nil
         do {
             try await startRuntime(oneGame: oneGame)
             // Something may have stopped the new runtime while it started.
             guard connection == .connecting, runtime != nil else { return }
-            connection = .online
+            // A post-429 hold outlives going offline and back (plan §5.4).
+            connection = rateLimitHoldUntil == nil ? .online : .draining
             protocolLog.record(.lifecycle, oneGame ? "online (one game)" : "online")
             SessionLogger.shared.log("[LICHESS-BOT] online\(oneGame ? " (one game)" : "") as \(accountID)")
         } catch {
@@ -445,7 +462,7 @@ final class LichessBotController {
     /// "Finishing games" sheet instead (plan §13).
     func goOffline() async {
         guard runtime != nil else { return }
-        if activeGameIDs.isEmpty {
+        if !hasGamesInPlay {
             stopRuntime(reason: "operator went offline")
             return
         }
@@ -485,7 +502,7 @@ final class LichessBotController {
     /// games; otherwise drain, show the sheet, and quit when the games end.
     func applicationShouldTerminate() -> NSApplication.TerminateReply {
         guard runtime != nil else { return .terminateNow }
-        if activeGameIDs.isEmpty {
+        if !hasGamesInPlay {
             stopRuntime(reason: "app quit")
             return .terminateNow
         }
@@ -632,6 +649,8 @@ final class LichessBotController {
         let (stream, continuation) = AsyncStream<LichessBotControllerEvent>.makeStream()
         let time = LichessBotSystemTimeSource()
         let gate = self.gate
+        runtimeGeneration += 1
+        let generation = runtimeGeneration
         if case .closed(let reason) = await gate.snapshot().phase {
             // Going online is the operator's explicit action after a
             // breaker trip (plan §5.4).
@@ -696,10 +715,15 @@ final class LichessBotController {
         if oneGame {
             await manager.setOneGameMode(true)
         }
+        if rateLimitHoldUntil != nil {
+            await manager.setRateLimitHold(true)
+        }
         await seedDailyCounts(manager: manager, store: recordStore)
 
         let sleepActivity = ProcessInfo.processInfo.beginActivity(
-            options: settings.connection.preventSleepWhileOnline ? [.userInitiated, .idleSystemSleepDisabled] : [.userInitiated],
+            // `.userInitiated` alone already includes idle-sleep prevention;
+            // the variant that allows idle sleep is its own option.
+            options: settings.connection.preventSleepWhileOnline ? [.userInitiated] : [.userInitiatedAllowingIdleSystemSleep],
             reason: "Lichess bot online"
         )
         // After a wake, connections held across sleep are usually dead:
@@ -718,7 +742,10 @@ final class LichessBotController {
         var tasks: [Task<Void, Never>] = []
         tasks.append(Task { [weak self] in
             for await event in stream {
-                self?.handle(event)
+                // Events still queued when this runtime was torn down are
+                // dropped: they describe a runtime that no longer exists.
+                guard let self, self.runtimeGeneration == generation else { break }
+                self.handle(event)
             }
         })
         tasks.append(Task {
@@ -728,7 +755,7 @@ final class LichessBotController {
             await reconciler.run()
         })
         tasks.append(Task { [weak self] in
-            await self?.pollLoop(slots: slots)
+            await self?.pollLoop(slots: slots, manager: manager, generation: generation)
         })
         tasks.append(Task { [weak self] in
             // Launch recovery (plan §10.2): after the event stream has had
@@ -764,7 +791,9 @@ final class LichessBotController {
                     opponents[row.gameID] = opponentID
                 }
             }
-            let leftovers = try await store.inProgressGameIDs()
+            let leftovers = try await store.inProgressJournalCreationDates()
+                .filter { Calendar.current.isDateInToday($0.value) }
+                .map(\.key)
             await manager.seedDailyCounts(gameIDs: today.map(\.gameID) + leftovers, opponentByGame: opponents)
         } catch {
             raiseAlarm("Seeding today's game counts failed: \(Self.safeDescription(error)); daily limits count from now")
@@ -804,6 +833,7 @@ final class LichessBotController {
     private func tearDownRuntime(reason: String = "offline") {
         guard let runtime else { return }
         self.runtime = nil
+        runtimeGeneration += 1
         settingsBox = nil
         gateEventSink.value = nil
         if let pendingChallenge {
@@ -812,7 +842,7 @@ final class LichessBotController {
         pendingChallenge = nil
         oneGameRequested = false
         drainRequested = false
-        rateLimitHoldUntil = nil
+        acceptedAwaitingStartIDs = []
         let manager = runtime.manager
         for task in runtime.tasks {
             task.cancel()
@@ -833,21 +863,36 @@ final class LichessBotController {
         generation = nil
     }
 
-    private func pollLoop(slots: LichessBotModelSlots) async {
+    private func pollLoop(slots: LichessBotModelSlots, manager: LichessBotSessionManager, generation runtimeGenerationAtStart: Int) async {
         var lastRefresh = Date.distantPast
+        // Every await can outlive this runtime; nothing is written after it.
+        func current() -> Bool { runtimeGeneration == runtimeGenerationAtStart }
         while !Task.isCancelled {
-            gateSnapshot = await gate.snapshot()
-            generation = await slots.current?.info
+            let snapshot = await gate.snapshot()
+            guard current() else { return }
+            gateSnapshot = snapshot
+            let info = await slots.current?.info
+            guard current() else { return }
+            generation = info
+            let accepted = await manager.acceptedAwaitingStartIDs()
+            guard current() else { return }
+            if accepted != acceptedAwaitingStartIDs {
+                acceptedAwaitingStartIDs = accepted
+                finishIfDrained()
+            }
             if let until = rateLimitHoldUntil, Date() >= until {
                 await endRateLimitHold()
+                guard current() else { return }
             }
             if Date().timeIntervalSince(lastRefresh) >= 15 {
                 lastRefresh = Date()
                 do {
                     try await slots.refreshIfDue(for: settings.model)
                 } catch {
+                    guard current() else { return }
                     raiseAlarm("Model refresh failed: \(Self.safeDescription(error))")
                 }
+                guard current() else { return }
             }
             pruneFinishedGames()
             do {
@@ -1039,20 +1084,23 @@ final class LichessBotController {
     /// (plan §5.4). Accepting resumes when the hold ends, unless the
     /// operator drained meanwhile.
     private func startRateLimitHold(minutes: Int) async {
-        guard let manager = runtime?.manager else { return }
         rateLimitHoldUntil = Date().addingTimeInterval(TimeInterval(minutes * 60))
-        await manager.setAcceptingNewGames(false)
+        guard let manager = runtime?.manager else { return }
+        await manager.setRateLimitHold(true)
         guard runtime?.manager === manager else { return }
         if connection == .online {
             connection = .draining
         }
     }
 
+    /// The hold is over. The manager accepts again only if nothing else
+    /// (a drain, "one game") stopped it; the state follows the manager.
     private func endRateLimitHold() async {
         rateLimitHoldUntil = nil
-        guard let manager = runtime?.manager, !drainRequested, connection == .draining else { return }
-        await manager.setAcceptingNewGames(true)
-        guard runtime?.manager === manager, !drainRequested, connection == .draining else { return }
+        guard let manager = runtime?.manager else { return }
+        await manager.setRateLimitHold(false)
+        let accepting = await manager.isAcceptingNewGames
+        guard runtime?.manager === manager, connection == .draining, accepting, !drainRequested else { return }
         connection = .online
         protocolLog.record(.lifecycle, "rate-limit hold over; accepting games again")
     }
@@ -1086,12 +1134,13 @@ final class LichessBotController {
     /// reconciler a bounded time to file the finished games' records, then
     /// go offline.
     private func finishIfDrained() {
-        guard connection == .draining, drainRequested, activeGameIDs.isEmpty, !isFilingRecords else { return }
+        guard connection == .draining, drainRequested, !hasGamesInPlay else { return }
         if finishing == .quit {
             stopRuntime(reason: "drained for quit")
             completeQuitIfPending(quit: true)
             return
         }
+        guard !isFilingRecords else { return }
         isFilingRecords = true
         Task {
             await fileRecordsThenStop()
@@ -1114,7 +1163,7 @@ final class LichessBotController {
                 return
             }
         }
-        guard runtime != nil, connection == .draining, activeGameIDs.isEmpty else { return }
+        guard runtime != nil, connection == .draining, !hasGamesInPlay else { return }
         if let reconciler = runtime?.reconciler {
             let unfiled = await reconciler.queuedGameIDs
             if !unfiled.isEmpty {
@@ -1122,9 +1171,8 @@ final class LichessBotController {
             }
         }
         stopRuntime(reason: oneGameRequested ? "one game finished" : "drained")
-        if finishing == .quit {
-            completeQuitIfPending(quit: true)
-        }
+        // A quit asked for while records were being filed is answered now.
+        completeQuitIfPending(quit: true)
     }
 
     /// Longest a drain waits for records to be filed before going offline.

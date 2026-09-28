@@ -41,7 +41,8 @@ struct LichessBotRequestRecord: Sendable, Codable, Equatable {
     let formFields: [String: String]
     /// Nil when no HTTP response arrived (a gate refusal or transport error).
     let status: Int?
-    /// Time spent waiting in the request gate before the request went out.
+    /// Time spent waiting in the request gate: until the request went out,
+    /// or, for a request the gate refused, until it refused.
     let queuedMilliseconds: Double
     /// Time from sending the request to receiving the response headers.
     let roundTripMilliseconds: Double?
@@ -399,8 +400,16 @@ final class LichessBotAPIClient: Sendable {
             respondedAt.value = ContinuousClock.now
         }
 
+        /// Read when the request is recorded: a request never sent was
+        /// refused by the gate at that moment.
         var queuedMilliseconds: Double {
-            LichessBotBackoff.seconds((sentAt.value ?? ContinuousClock.now) - queuedAt) * 1000
+            let leftQueue: ContinuousClock.Instant
+            if let sent = sentAt.value {
+                leftQueue = sent
+            } else {
+                leftQueue = ContinuousClock.now
+            }
+            return LichessBotBackoff.seconds(leftQueue - queuedAt) * 1000
         }
 
         var roundTripMilliseconds: Double? {

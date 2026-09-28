@@ -46,6 +46,26 @@ final class LichessBotRecordStore: Sendable {
         }
     }
 
+    /// When each `InProgress/` journal was created — roughly when its game
+    /// started, for seeding today's game counts.
+    func inProgressJournalCreationDates() async throws -> [String: Date] {
+        let directory = self.directory
+        return try await fileQueue.run {
+            let fm = FileManager.default
+            guard fm.fileExists(atPath: directory.inProgressDirectory.path) else { return [:] }
+            let suffix = "." + LichessBotDataDirectory.journalExtension
+            var dates: [String: Date] = [:]
+            for name in try fm.contentsOfDirectory(atPath: directory.inProgressDirectory.path) where name.hasSuffix(suffix) {
+                let url = directory.inProgressDirectory.appendingPathComponent(name, isDirectory: false)
+                guard let created = try url.resourceValues(forKeys: [.creationDateKey]).creationDate else {
+                    throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: url.path, NSLocalizedDescriptionKey: "no creation date for \(name)"])
+                }
+                dates[String(name.dropLast(suffix.count))] = created
+            }
+            return dates
+        }
+    }
+
     func readJournal(gameID: String) async throws -> LichessBotJSONLines.Decoded<LichessBotJournalEntry> {
         let url = directory.inProgressJournalURL(gameID: gameID)
         return try await fileQueue.run {

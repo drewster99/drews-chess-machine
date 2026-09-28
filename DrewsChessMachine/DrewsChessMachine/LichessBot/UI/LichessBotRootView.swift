@@ -49,7 +49,9 @@ struct LichessBotRootView: View {
                 await controller.refreshTokenState()
             }
         }
-        .onChange(of: controller.finishing) {
+        // `initial`: the window may open with the sheet already due — a quit
+        // or Go Offline opens it after setting `finishing`.
+        .onChange(of: controller.finishing, initial: true) {
             Task { @MainActor in
                 if let purpose = controller.finishing {
                     finishingPurpose = purpose

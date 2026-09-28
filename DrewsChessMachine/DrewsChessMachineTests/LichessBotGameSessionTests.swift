@@ -294,6 +294,12 @@ actor LichessBotFakeGameServer: LichessBotGameAPI {
         sendState()
     }
 
+    /// Stream a `gameState` whose move list is `tokens` without changing
+    /// the server's game — a state the client cannot replay.
+    func sendBogusState(_ tokens: [String]) {
+        send(#"{"type":"gameState","moves":"\#(tokens.joined(separator: " "))","wtime":180000,"btime":180000,"winc":2000,"binc":2000,"status":"started"}"#)
+    }
+
     /// Reject every move POST from now on.
     func rejectAllMoves() {
         moveOutcomes = Array(repeating: .rejected(status: 400), count: 100)
