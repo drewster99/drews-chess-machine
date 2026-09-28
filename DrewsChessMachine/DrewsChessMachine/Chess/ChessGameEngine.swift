@@ -38,7 +38,7 @@ enum RawGameResult: Sendable {
 /// `.serverAuthoritative` it is only reported (via
 /// `ChessGameEngine.drawCondition`) so a caller can compare its view with an
 /// external authority's.
-enum ChessDrawCondition: Sendable, Equatable {
+enum ChessDrawCondition: String, Sendable, Equatable, Codable {
     case fiftyMoveRule
     case threefoldRepetition
     case insufficientMaterial

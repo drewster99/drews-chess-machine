@@ -9,7 +9,37 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-28 02:52 CDT — Lichess bot Phase 2: API client and request gate (pending commit)
+## 2026-09-28 03:21 CDT — Lichess bot Phase 3: play layer (pending commit)
+
+Lichess bot plan §7, §9, §12.4 and §20; the code is in `LichessBot/Play/` and `LichessBotSettings.swift`. Nothing in the app calls it yet. The tests play complete games against an in-process fake Lichess, and the manager tests run a real random-weight network.
+
+- **`LichessBotGameSession` (actor, one per game).** Plays one game from its first `gameFull` to a finished status.
+  - The position is rebuilt from the server's move list (`LichessBotPositionTracker`, `.serverAuthoritative` engine). A list that fails to replay leads to a resync, never a move.
+  - It posts at most once per ply. The ply is marked as posted before the POST goes out.
+  - A 429 re-posts the same decision after the cooldown, but only if it is still our move.
+  - A 400 reopens the stream for a fresh `gameFull` instead of resending.
+  - A takeback that removes a ply we moved at lets us move at that ply again (E30).
+  - A game DCM can't play (variant, from-position, no clock) is aborted while that is allowed, and resigned otherwise (E20).
+  - An opponent-gone claim claims victory, then a draw if victory is refused.
+  - Draw offers ride on the move and are accepted only by policy (E31).
+  - A `gameFinish` on the event stream forces a resync, because a resignation may send no final state (E22).
+  - A local draw rule on a game the server keeps live is logged, and the local condition is recorded at game end (E10).
+- **`LichessBotSessionManager` (actor).** Holds the event stream, answers challenges, and starts one session per game.
+  - A `gameStart` replayed on reconnect is ignored for a game that already has a session.
+  - Takeover detection counts only streams that the server closed right after opening.
+  - Reconnect backoff resets after 5 min of healthy streaming.
+  - Turn status feeds the gate's housekeeping deferral and low-clock urgency. Both are now visible in the gate snapshot.
+- **`LichessBotModelSlots` (actor).** Model generations for the four sources: champion (re-snapshotted on promotion), trainer snapshot, live trainer on a cadence, and file.
+  - Concurrent callers share one in-flight build, so a network is never built twice for one snapshot.
+  - A generation is built before a challenge is accepted, so the first move never waits on a build (E15).
+- **Pure policies:**
+  - challenge policy: every §7 rule, with the most specific decline reason, and ignore-when-over-budget
+  - play policy: resign, offer draw and accept draw from W/D/L streaks; takebacks
+  - chat templates, validated against the length limit using long plausible values
+- **`LichessBotMoveChooser`.** One forward pass for policy plus W/D/L, then legal masking, temperature sampling and the top-k record.
+- **`LichessBotSettings`.** Conservative defaults: casual only, blitz and rapid, and every eval-driven action off. Validation rejects invalid settings as a whole.
+
+## 2026-09-28 02:52 CDT — Lichess bot Phase 2: API client and request gate (`fcdbb67`)
 
 Lichess bot plan §5, §6 and §12.2. This is the networking layer, `LichessBot/API/`. Nothing calls it yet; it is covered by unit tests against scripted transports and a virtual clock.
 

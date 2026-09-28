@@ -328,7 +328,7 @@ its category, status, latency, and `Retry-After` in the protocol log (§10.3).
   The Stats view shows requests per game and per minute, so the operator
   can see the budget and tune concurrency against it.
 - **Reconnects** (§6):
-  - Exponential backoff with jitter: start 2 s, cap 60 s.
+  - Exponential backoff with jitter (equal jitter as implemented; §6): start 2 s, cap 60 s.
   - At most one stream open in flight (via the gate).
   - Takeover detection stops ping-pong loops.
 
@@ -422,9 +422,19 @@ See §20.5 (E32–E34).
 - **On connect or reconnect**, the event stream replays current challenges
   and games. Every `gameStart` for a game without an active session starts
   or resumes one, which covers app relaunch.
-- **Reconnect backoff** is exponential with full jitter (start 2 s, ×2, cap
+- **Reconnect backoff** is exponential with jitter (start 2 s, ×2, cap
   60 s) and resets after 5 min of healthy streaming. Every attempt is
   logged.
+  - *As implemented:* **equal** jitter rather than full jitter — each delay
+    is uniform in `[base/2, base]` (`LichessBotBackoff`). Full jitter can
+    draw a near-zero delay, which after a server-side close would hammer
+    the stream-open path; equal jitter keeps a floor while still
+    decorrelating reconnects.
+  - *As implemented:* a **game** stream that ends normally reconnects
+    starting from the first backoff step, and a resync (a `400` on a move,
+    or a move list that fails to replay) reopens at once with no backoff:
+    the game's clock is running. Stream opens still pass through the
+    gate, so this cannot bypass rate limiting.
 
 ### 6.1 Protection against a second bot instance
 
@@ -1217,6 +1227,28 @@ before final sign-off.
   full-game tests play complete games end to end, including a takeback, a
   mid-game stream drop with resync, a draw offer, and the resignation-gap
   scenario.
+- *As implemented (2026-09-28):*
+  - The pure reducer is `LichessBotPositionTracker`. It replays the
+    server's move list through `ChessGameEngine` in `.serverAuthoritative`
+    mode: incrementally when the list extends, and from scratch on a shrink
+    or divergence.
+  - A game session reads its stream **sequentially**. A line that arrives
+    while inference or a POST is in flight waits in the stream buffer until
+    the current step finishes. So the §15 "[T] a stub delivers a
+    `gameState` while inference is in flight" case cannot interleave, and it
+    is not tested as such. The post-`await` re-validation stays, because
+    other entry points (operator resign, the opponent-gone claim task) do
+    run on the actor during those awaits.
+  - The full-game tests run against an in-process fake Lichess (an actor
+    implementing `LichessBotGameAPI`) rather than a `URLProtocol` stub. The
+    wire format is covered separately by the Phase 2 client tests.
+  - E22: a `gameFinish` on the event stream makes the game's session drop
+    and reopen its stream (`requestResync`). The fresh `gameFull` carries
+    the finished status. Export reconciliation, in Phase 4, remains the
+    backstop.
+  - Takeover detection counts only streams that the **server** closed
+    within the window. Stalls and transport errors are network problems and
+    go to the backoff.
 
 **Phase 4: data layer**
 - Journal, finalize, export reconciliation, PGN writer, protocol log,
