@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-28 CDT — Lichess bot: audit fixes, challenge-sheet features (pending commit)
+## 2026-09-28 17:48 CDT — Lichess bot: audit fixes, challenge-sheet features (`99b341b`)
 
 A full audit of the day's Lichess bot work, with every fix reviewed twice before landing and the whole diff rechecked after. **Not yet run: the test suite.** Every new test file below was written but has not been compiled or run. `ChessTrainer` and `ChessNetwork` changed, so the full suite is due. The one existing test changed, with approval, is `LichessBotViewRenderTests`, updated to the current view initializers; it had not compiled since the live-testing commit.
 
