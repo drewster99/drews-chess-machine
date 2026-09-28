@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-28 10:15 CDT — Lichess bot Phase 5: controller, window, live views, browse-only stepping (pending commit)
+## 2026-09-28 10:15 CDT — Lichess bot Phase 5: controller, window, live views, browse-only stepping (`5538a59`)
 
 The Lichess bot is now usable from the app. The plan is `documentation/plans-active/LICHESS_BOT_PLAN.md` §7.1, §13 and §14.
 

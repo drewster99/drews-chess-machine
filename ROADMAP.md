@@ -11,7 +11,7 @@ original rationale is not lost.
 
 ## Future improvements (validated open)
 
-- **Lichess bot — DCM plays on lichess.org as a BOT account (planned 2026-09-28; not started).** A native Swift client built into the app: no Python bridge, no UCI subprocess. It includes:
+- **Lichess bot — DCM plays on lichess.org as a BOT account (planned 2026-09-28; Phases 1–5 implemented 2026-09-28, awaiting live verification).** A native Swift client built into the app: no Python bridge, no UCI subprocess. It includes:
   - a dedicated window with live games and settings that apply immediately
   - a model-source picker modeled on human play: champion / trainer snapshot / live trainer / file
   - a local game record for every game, checked against Lichess's export, plus a protocol event log
@@ -20,6 +20,11 @@ original rationale is not lost.
   - strict handling of Lichess's 429 rate limit
 
   Full plan, including the 55-item "where DCM's handling and Lichess disagree" review, phases and validation: `documentation/plans-active/LICHESS_BOT_PLAN.md`. Research: `documentation/research/lichess-bot/`. Bot account: `DrewsChessMachine`.
+
+  Status (2026-09-28):
+  - **Done:** Phases 1–5 (engine prerequisites, API/gate, play layer, data layer, controller and core UI), commits `4ebcbfb`…`5538a59`.
+  - **Next:** Phase 5's live steps, all operator actions: mint the token (`bot:play` + `challenge:write`), save it in Settings ▸ Account, run the guarded BOT upgrade, then the §20.11 live verification checklist.
+  - **After that:** Phase 6 (Games, Stats, Events views) and Phase 7 (hardening and soak).
 
 - **Prevent system sleep during training (noted 2026-09-28; not started).** The app holds no sleep or App-Nap assertion anywhere today; verified, there is no `ProcessInfo.beginActivity` / IOPM use. Idle system sleep can therefore pause a long unattended Play-and-Train or corpus-replay run. Add an option, default on, to hold `ProcessInfo.beginActivity([.userInitiated, .idleSystemSleepDisabled])` while training is active, and log when it is taken and released. The Lichess bot plan (§13) adds the same option for bot play.
 
