@@ -22,9 +22,47 @@ original rationale is not lost.
   Full plan, including the 55-item "where DCM's handling and Lichess disagree" review, phases and validation: `documentation/plans-active/LICHESS_BOT_PLAN.md`. Research: `documentation/research/lichess-bot/`. Bot account: `DrewsChessMachine`.
 
   Status (2026-09-28):
-  - **Done:** Phases 1–5 (engine prerequisites, API/gate, play layer, data layer, controller and core UI), commits `4ebcbfb`…`5538a59`.
-  - **Next:** Phase 5's live steps, all operator actions: mint the token (`bot:play` + `challenge:write`), save it in Settings ▸ Account, run the guarded BOT upgrade, then the §20.11 live verification checklist.
+  - **Done:** Phases 1–5 (engine prerequisites, API/gate, play layer, data layer, controller and core UI), commits `4ebcbfb`…`e66fc02`.
+  - **Done (was "next"):** Phase 5's live steps. The token was minted and saved, the account upgraded to BOT through the app, and live games were played. Findings are in the plan's "Live verification findings".
+  - **Added during live testing, implemented:**
+    - the Record card
+    - the model-line picker (first version)
+    - chat commands (§12.5a)
+    - search, favorites and daily limits in the Challenge sheet (§7.2)
+    - account refresh after games
+  - **Added during live testing, planned:**
+    - the lineage tree picker (§9.1)
+    - the opponent card (§14.3b)
+    - chat-panel operator input and move delay/hold (§14.3c)
   - **After that:** Phase 6 (Games, Stats, Events views) and Phase 7 (hardening and soak).
+
+- **Lineage provenance in every checkpoint (added 2026-09-28; not started).** Record a checkpoint's place in its training lineage *inside the file*, so cumulative progress and exact ancestry never depend on the dashboards' `registry.json` (`cumstep_base`, `enum_stem`) or on session logs.
+
+  **Why.** Today a safetensors file carries `model_id`, `parent_model_id`, a *segment-local* `training_step`, `created_at_unix`, `creator` and, for replay runs, the `replay_*` corpus cursor (`Persistence/SafetensorsModelIO.swift`). That is enough to rebuild the family tree (verified 2026-09-28 across 3,754 Models files: 18 roots, no `model_id` with conflicting parents). It is not enough for cumulative progress:
+  - `training_step` restarts every segment.
+  - No file records *where in its parent* it forked. For example, the Ejp0 self-play runs forked at the parent's step 1,300,000, and qeu8's GLu5 segment ended at step 41,000 while the dashboard puts the next segment's base at 41,407.
+
+  So a cumulative step can only come from the dashboard's hand-maintained `cumstep_base`. Summing per-segment maxima is wrong wherever a resume starts from a mid-run checkpoint. The dashboard run names ("qeu8") also live only in the registries, which confuses them with `model_id`s: "qeu8" is a run whose trained weights carry the IDs GLu5 / Lnji / PVZp / Ejp0.
+
+  **What to record at every save,** computed from the loaded parent file's metadata at session or run start. The values are then exact by construction.
+  - `parent_content_sha256`: the exact file the run was loaded from, not just its `model_id`. This disambiguates resumes from different checkpoints of one parent.
+  - `parent_training_step`: the parent file's `training_step` at the fork.
+  - `lineage_cumulative_step`: the parent's `lineage_cumulative_step` at the fork plus the steps taken in this segment. It is blank when the parent has none (see below), never estimated.
+  - `lineage_root_model_id`: the untrained seed at the top of the chain, e.g. Qeu8.
+  - `lineage_cumulative_games`: cumulative games fed, where the mode has a measured count (corpus cursor, self-play or vs-UCI games). Blank otherwise.
+  - `run_label`: optional operator name for the run (e.g. "qeu8"), set at launch, so the dashboard's name lives in the file.
+
+  **Rules.**
+  - Measured, never modeled. Files saved before this change keep these fields absent. A child of a file without `lineage_cumulative_step` writes it absent too; it does not guess (same rule as `games_fed` in the dashboards).
+  - Session saves (`.dcmsession` champion and trainer files) and every Models save path (replay, vs-UCI, manual, promote, periodic) write the same fields.
+  - Self-play champions renamed on promotion (`…-N`) also record `parent_content_sha256`. Today, two runs forked from one seed both mint Ejp0-1…-10, so those IDs are ambiguous across runs.
+  - `ModelFileCatalog` and the dashboards then read cumulative progress from the file when it is present, and fall back to showing the segment-local step and chain position, never a derived sum.
+
+  **Validation.**
+  - Unit tests round-trip each new key.
+  - A chain test covers seed → segment → resume-from-mid-checkpoint → fork. Each child's `lineage_cumulative_step` must equal parent-at-fork plus its own steps, and a pre-change parent must leave the child's value absent.
+  - A live replay resume shows the expected values in `[CHECKPOINT]` log lines.
+  - The dashboard tracker reads them and matches `cumstep_base`-derived values on a run where both exist.
 
 - **Prevent system sleep during training (noted 2026-09-28; not started).** The app holds no sleep or App-Nap assertion anywhere today; verified, there is no `ProcessInfo.beginActivity` / IOPM use. Idle system sleep can therefore pause a long unattended Play-and-Train or corpus-replay run. Add an option, default on, to hold `ProcessInfo.beginActivity([.userInitiated, .idleSystemSleepDisabled])` while training is active, and log when it is taken and released. The Lichess bot plan (§13) adds the same option for bot play.
 

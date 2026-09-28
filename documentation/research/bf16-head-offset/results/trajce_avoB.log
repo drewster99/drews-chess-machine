@@ -1,0 +1,13 @@
+yqMI   10000 | value CE fp64 0.7497 bf16-out 0.7499 | shared logit med     -6.0 | ties 0.080 | policy CE(legal) fp64 2.3697 bf16-out 2.3710
+yqMI   55550 | value CE fp64 0.7375 bf16-out 0.7377 | shared logit med    -21.0 | ties 0.192 | policy CE(legal) fp64 2.2597 bf16-out 2.2589
+avoB   21000 | value CE fp64 0.7331 bf16-out 0.7547 | shared logit med   -257.7 | ties 0.591 | policy CE(legal) fp64 2.2653 bf16-out 2.2647
+avoB   61000 | value CE fp64 0.7343 bf16-out 0.7577 | shared logit med   -233.4 | ties 0.592 | policy CE(legal) fp64 2.2669 bf16-out 2.2672
+avoB  101000 | value CE fp64 0.8908 bf16-out 0.9205 | shared logit med   -233.3 | ties 0.112 | policy CE(legal) fp64 2.2346 bf16-out 2.2353
+avoB  141000 | value CE fp64 0.7252 bf16-out 0.7259 | shared logit med      7.3 | ties 0.058 | policy CE(legal) fp64 2.1983 bf16-out 2.1987
+avoB  161000 | value CE fp64 0.9780 bf16-out 1.0835 | shared logit med   -270.2 | ties 0.670 | policy CE(legal) fp64 2.4011 bf16-out 2.4012
+avoB  181000 | value CE fp64 0.7606 bf16-out 0.8388 | shared logit med      0.6 | ties 0.407 | policy CE(legal) fp64 2.2444 bf16-out 2.2448
+avoB  201000 | value CE fp64 0.9514 bf16-out 1.0098 | shared logit med    494.2 | ties 0.316 | policy CE(legal) fp64 2.2028 bf16-out 2.2029
+avoB  221000 | value CE fp64 0.8314 bf16-out 0.9559 | shared logit med    533.9 | ties 0.498 | policy CE(legal) fp64 2.2841 bf16-out 2.2846
+avoB  241000 | value CE fp64 0.7472 bf16-out 0.9367 | shared logit med    530.3 | ties 0.974 | policy CE(legal) fp64 2.1807 bf16-out 2.1812
+avoB  261000 | value CE fp64 0.7237 bf16-out 0.7928 | shared logit med    505.0 | ties 0.840 | policy CE(legal) fp64 2.2089 bf16-out 2.2099
+avoB  277000 | value CE fp64 0.7233 bf16-out 0.8293 | shared logit med    520.8 | ties 0.957 | policy CE(legal) fp64 2.1935 bf16-out 2.1945

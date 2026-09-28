@@ -1,6 +1,11 @@
 # Lichess Bot — native Swift client
 
-Status: **planned, not started.** Nothing in this document is implemented.
+Status (2026-09-28):
+- **Phases 1–5 implemented** (commits `4ebcbfb`…`e66fc02`). The bot is live on lichess.org, and the live verification findings are recorded below.
+- **Implemented alongside the live testing:** the additions of 2026-09-28 in §7.2, §9.1 (first version), §12.5a and §14.3b (account refresh), as each section notes. §9.1's lineage tree and §14.3b's opponent card are planned.
+- Phases 6–7 are not started.
+
+*(Original status line, kept for history: "planned, not started. Nothing in this document is implemented.")*
 
 Research behind it:
 - `documentation/research/lichess-bot/chess-bot-api-integration-options.md`
@@ -11,9 +16,7 @@ Research behind it:
   and `github.com/lichess-org/scalachess` on 2026-09-28, where the spec was
   silent (§4 draw rules).
 
-Bot account: **`DrewsChessMachine`**. It exists on lichess.org (created
-2026-09-28 05:37 UTC), has 0 games played, and is not yet upgraded to BOT,
-so it is still eligible. **Play no games on it before the upgrade.**
+Bot account: **`DrewsChessMachine`**. It was created on lichess.org 2026-09-28 05:37 UTC and upgraded to BOT through the app the same day. *(Before the upgrade: 0 games played, so it was eligible; "play no games on it before the upgrade" applied then.)*
 
 ## 1. Summary
 
@@ -560,6 +563,49 @@ they now move into **Phase 5**.
   requires `bot:play` and reports whether `challenge:write` is present. The
   Challenge… sheet is disabled, with the reason shown, when it isn't.
 
+### 7.2 Finding bots to challenge: search, rating range, favorites, daily limits (added 2026-09-28)
+
+**Status: implemented 2026-09-28** (`LichessBotBotList`, `LichessBotPlayerNotes`, `LichessBotChallengeSheet`; tests in `LichessBotBotListTests`).
+
+**Source facts** (verified in `lichess-org/api` and lila source, 2026-09-28):
+- `GET /api/bot/online?nb=N` has one parameter, `nb`, the most bots to return (1–512, default 100). It needs no login and returns NDJSON, one full `User` per line: perfs, flair, verified, `createdAt`, `seenAt`, `playTime`, and `profile` (`bio`, `realName`, `links`, `flag`).
+- lila builds the list from bots seen in the last 10 s, caches it for 10 s, and then **takes the first N lines**. There is no paging, sorting or filtering. With more than 512 bots online, the API returns an arbitrary 512 (the web page `/player/bots` lists them all). Favorites therefore never depend on this list; see below.
+- A perf's `prog` is lila's `Perf.progress`: the newest minus the oldest of the last (up to 12) recorded ratings, i.e. the rating change over roughly the last 12 rated games. Recording starts after the player's 10th game in that perf. It is 0 when there is no history.
+- **Bot-vs-bot daily limit:** no endpoint reports it. A challenge beyond it is refused with HTTP 400 and the text `<user> played 100 games against other bots today, please wait until <ISO-8601 time> to challenge them.` (observed 2026-09-28). The time is exact.
+
+**Sheet** (`LichessBotChallengeSheet`):
+- **Tabs:** Online Bots · Favorites · Username.
+- **Star column** on the left of the Online Bots table. Starred bots sort to the top, ahead of the table's chosen sort.
+- **Search:** case-insensitive substring over username, real name and bio.
+- **Rating range:** min and max fields applied to the rating for the *selected time control's speed* (5+3 filters on blitz, 10+5 on rapid). The fields follow the time control, and "hide provisional" is a toggle. Blank means no bound.
+- **Detail line** under the table for the selected bot: real name, the first line of the bio, account age, and our head-to-head.
+- **Freshness:**
+  - "updated N min ago".
+  - The list refreshes when the sheet opens, on Refresh, and automatically once it is more than 5 minutes old while the sheet is open, checked every 60 s.
+  - Always at `.housekeeping` priority, so a fetch never starts while a move is due.
+- **Daily limits:**
+  - A refusal in that form records the bot's "available again at" time, and the bot shows "limit until 1:57 AM" in orange until then.
+  - The same parse applies when the named user is *us*.
+  - The header shows DCM's own count: bot games in the last 24 h, from our records, against Lichess's 100.
+
+**Favorites and limit times** persist in `LichessBot/player-notes.json` (atomic write, through the file queue), not in Settings, so the settings schema is untouched. Ids are lowercased Lichess user ids.
+
+The Favorites tab lists every favorite, online or not:
+- Online status for favorites missing from the online list comes from one `GET /api/users/status?ids=…` (up to 100 ids, `.housekeeping`).
+- Offline favorites are shown dimmed.
+
+**Validation.**
+- Unit tests:
+  - refusal parsing: exact text, fractional-second ISO time, a different count, a non-matching message
+  - notes round-trip and a missing file (empty notes)
+  - filtering: search, range on the selected speed, provisional hidden, favorites first
+  - our 24 h bot-game count
+- Live checks:
+  - star a bot; it sorts first and persists across relaunch
+  - a refused challenge marks the bot with the parsed time
+  - the Favorites tab shows an offline favorite dimmed
+  - the auto-refresh fires after 5 minutes at housekeeping priority
+
 ## 8. Engine-side prerequisites (changes to shared code, tests first)
 
 Each item keeps one source of truth. Existing behavior is unchanged for
@@ -676,6 +722,44 @@ records it. Games in progress keep their generation and finish normally.
 **Snapshot cost** is logged per refresh (`[LICHESS-BOT] snapshot ms=…`) and
 summed in Stats as "training time spent on bot snapshots", so the cost to
 training is visible.
+
+### 9.1 Choosing a model file by lineage (added 2026-09-28)
+
+**Status.** A first version shipped with the live-testing fixes: "Latest by lineage" (`ModelFileCatalog`, `LichessBotModelLinePicker`). It groups files by `model_id`, shows the highest-step file first, and lists the lineage's earlier files underneath. Live use showed the grouping is too fine, and the result misleads:
+- The untrained seed "Qeu8" appears as its own lineage, and its trained continuations appear as unrelated rows (GLu5, Lnji, PVZp, Ejp0).
+- The operator picked the seed by mistake: game qgwVLXEV was played by an untrained network.
+
+**Design (no dependence on `cumstep_base`).** Everything comes from the files' own metadata: `model_id`, `parent_model_id`, `training_step`, `created_at_unix`, `creator` and `replay_*`. The dashboards' registries are not read. A cumulative step is shown only once files record it (ROADMAP "Lineage provenance in every checkpoint"); until then it is left out, not estimated.
+- **Tree by seed.** Follow `parent_model_id` up to a root, a file with no parent or whose parent isn't in the folder. The top level is one row per root, e.g. "Qeu8 · untrained seed · built 2026-07-02".
+  - Checked 2026-09-28: 18 roots across 3,754 files, and no `model_id` has conflicting parents.
+  - If one ever does, show it as an error row naming both parents rather than picking one.
+- **Branches.** Under a root, each chain from the root to a leaf is a branch, labeled with its path (Qeu8 → GLu5 → Lnji → PVZp → Ejp0) and its training kind from `creator` (replay, vs-UCI, manual).
+  - Segments shared by several branches (e.g. X79T under Qeu8) are not duplicated. A branch lists only its own segments beyond the fork point.
+- **Per segment:** the `model_id`, its step range (first–last `training_step` in the folder), its date range, and the number of files. Expanding it lists the files, newest step first. Each file appears exactly once, and the segment row itself selects that segment's latest file.
+- **Which file to suggest.** The branch tip, i.e. the leaf segment's highest-step file, is the default, marked "latest".
+  - When `data/<run>.csv` in the dashboards has pElo for a file, show it next to the file, with a rolling mean of ±25 checkpoints next to the raw value. These values are keyed by the file's `model_id` plus `training_step`, never by filename.
+  - The best-by-rolling-mean file is marked "strongest (probe)". Raw probe scores scatter by about ±35 between checkpoints, so a single spike is not the peak.
+  - When there is no probe data the columns stay blank.
+- **Untrained seeds are labeled** "untrained (no training_step)" and sorted after trained branches, so they can't be mistaken for a line's latest model.
+- **Session champions** (`Sessions/*.dcmsession`, e.g. Ejp0-3 … Ejp0-66) are shown as further branches.
+  - A session's `champion.safetensors` records an **empty** `parent_model_id` (checked 2026-09-28 on `…-Mh5n-sigusr2.dcmsession`: champion `20260921-2-Mh5n-3`, parent `""`; its trainer file does name the champion as parent).
+  - So a champion is placed by its **base ModelID**, the ID minus the `-N` promotion suffix (Ejp0-66 → `20260727-1-Ejp0`). That branch is labeled "self-play from <base>", and which checkpoint of the base it started from is shown as unknown rather than guessed.
+  - The Ejp0 self-play runs 1 and 2 both minted Ejp0-1…-10 from the same seed. They are told apart by the session folder, and shown as separate runs.
+  - The ROADMAP item "Lineage provenance in every checkpoint" makes this exact for future saves.
+- **Search** matches any `model_id` in a branch's path, so "Qeu8" finds Ejp0.
+
+**Validation.**
+- Unit tests cover the tree builder:
+  - roots, including a parent missing from the folder
+  - shared prefixes, not duplicated
+  - a conflicting parent, reported as an error
+  - a seed with no step, labeled untrained
+  - ordering: each file in exactly one place
+- A test on probe data keyed by `model_id` plus `training_step` checks that a filename which disagrees with the metadata is ignored.
+- Live check on this Mac's Models folder:
+  - Qeu8 shows the replay branch ending in Ejp0 (step 1,397,000), the Qeu8e branch ending in sFzi, and the vs-UCI branch ending in syxR.
+  - Selecting the Qeu8 root row makes it obvious that it is untrained.
+  - The count of files listed equals the file count in the header.
 
 **Suggested extra (optional, Phase 8): Rotation / A-B.** Alternate between
 two sources per game, for example champion vs. a pinned baseline file.
@@ -1000,6 +1084,57 @@ to earn that trust before turning them on.
 to on: "DrewsChessMachine: a from-scratch neural net, no search. Model
 {modelID}." The room is selectable.
 
+**12.5a Chat commands (added 2026-09-28; supersedes E53's "no chat commands").** Research: `documentation/research/lichess-bot/chat-commands.md`, verified in lila, lichess-bot and BotLi source.
+
+**Status: implemented 2026-09-28** (`LichessBotChatCommands`, `HardwareInfo`; tests in `LichessBotChatCommandsTests`).
+
+- **Commands:** `!help`, `!name`, `!about`, `!motor`, `!cpu`, `!gpu`, `!ram`.
+  - Every command is safe to answer in both rooms: none reveals the value head's evaluation or the policy for the current position. `!eval` and `!top` are deliberately out of scope for now, because they leak engine help to the opponent.
+  - A reply goes to the room the command came from.
+- **Parsing:**
+  - A line counts as a command when, after trimming, it starts with `!` followed by a known command word, matched case-insensitively as a *prefix*. So `!name2` or `!help please` still work: Lichess's duplicate filter blocks a human who repeats the exact same text, and lichess-bot's PR #967 does the same.
+  - Lines from our own account are ignored, because our greeting mentions `!help`. So are lines from the system user `lichess`.
+  - Anything else is displayed as before and never interpreted.
+- **Replies:** each is a single message, except `!about`, which sends three, each at most 140 UTF-16 code units (Lichess counts `String.length`).
+  - `!about` is three messages, not one message with newlines. lila keeps a single `\n` through cleanup, but how the chat renders it is unverified, and each message gets its own 140.
+  - Replies are built by a pure function and checked against the limit. An optional tail, such as `!name`'s "no search" note, is appended only when it fits. A reply whose core doesn't fit is not sent, and an anomaly is logged.
+  - Replies avoid emoji, chess symbols, anything link-like (including "github.com") and all-caps text. lila strips or lowercases those, or drops the message silently with a 200.
+- **Budget:** replies are requests through the one request gate, so an opponent must not be able to spend our budget.
+  - Per game: at most one command reply every 3 s, and at most 20 command replies per game.
+  - No replies when our clock is under 30 s.
+  - A skipped command is logged as a note, not answered.
+  - The greeting and goodbye are separate and unchanged.
+- **Content:**
+  - `!name`: `<our username> running DCM <modelID> step <n> (build <b>) · no search, one forward pass per move`. The step is omitted when the model has none.
+  - `!motor`: `DCM <modelID> step <n>`.
+  - `!about`:
+    1. "Drew's Chess Machine is a from-scratch chess engine by drewster99 (GitHub). A neural net picks each move in one forward pass: no search."
+    2. "It learns from self-play and from replayed games. It's written in Swift and runs on Apple silicon, on the GPU through Metal's MPSGraph."
+    3. "This machine: <cpu>, <cores>-core CPU (<per-level counts>), <gpu cores>-core GPU, <memory> GB unified memory."
+  - `!cpu`, `!gpu` and `!ram` are the corresponding pieces of message 3.
+  - `!help`: "Commands: !name, !about, !motor, !cpu, !gpu, !ram. I answer in the chat you ask in."
+- **Hardware facts** are read once at launch (`HardwareInfo`), never per command:
+  - the CPU brand (`machdep.cpu.brand_string`)
+  - per-performance-level core counts and names (`hw.nperflevels`, `hw.perflevel<i>.physicalcpu` / `.name`)
+  - memory (`hw.memsize`, reported in base-2 GB)
+  - the GPU model and core count (IORegistry `AGXAccelerator` `model` / `gpu-core-count`)
+  - A fact that can't be read makes the command's reply say "unknown" for that fact, and the failure is logged. Nothing is guessed.
+- **Record:**
+  - Each incoming command line is already journaled as chat.
+  - Each reply is journaled as its request, plus an action note: "replied to !name (spectator)".
+  - A budget skip is journaled as a note.
+- **Validation:**
+  - Unit tests cover:
+    - parsing: prefix match, case, ignoring our own lines, non-commands
+    - every reply built from maximal-length inputs stays ≤ 140 UTF-16 units
+    - the optional tail is dropped when it doesn't fit
+    - budget: cooldown, per-game cap, and the low-clock skip
+    - `LichessBotChat.message` / `templateProblem` counting UTF-16 units rather than `Character`s. The old `Character` count undercounted surrogate pairs; fixed with this change.
+  - Live checks:
+    - `!help` and `!about` in the player room and from a logged-in spectator, with replies arriving in the same room
+    - a repeated `!name` still answered
+    - `!about`'s three messages shown intact on lichess.org
+
 **12.6 Connection / safety:**
 - **Auto-connect on launch:** default **off**.
 - **Prevent system sleep while online:** default **on** (§13).
@@ -1196,6 +1331,66 @@ status area, which is always visible:
   record against an opponent is also shown on that opponent's live game
   card and in the challenge log.
 - **One game at a time:** see §7.1.
+
+**14.3b Opponent card, and keeping our own account current (added 2026-09-28).**
+
+*Our account.*
+- The Overview's Account card (ratings, rated and unrated counts) is refreshed after **every filed game**: one `GET /api/account` once the reconciler finalizes the record. **Implemented 2026-09-28.**
+- It runs at housekeeping priority, and a failure is logged while the previous values stay on screen.
+
+*Opponent card.* Shown in the Challenge sheet (for the selected or looked-up player) and beside the opponent in the game view. It is built from public endpoints, with no extra token scope. Fields are from the `User` / `UserExtended` schemas in `lichess-org/api`, checked 2026-09-28:
+- **Identity:** username, title (BOT, GM, …), flair, verified; patron (`patronColor` present; the `patron` boolean is deprecated); account age (`createdAt`); last seen (`seenAt`); and `disabled` / `tosViolation` flags when present.
+- **Ratings:** per speed (bullet, blitz, rapid, classical, correspondence): rating, provisional mark, `rd`, recent `prog`, rated `games`, and global `rank` when present.
+- **Record:**
+  - their `count` totals (all, rated, W/D/L, and vs humans: `winH` / `lossH` / `drawH`), and `playTime.total`
+  - **our head-to-head**, from both DCM's own records and Lichess's crosstable (`GET /api/crosstable/{us}/{them}`). The crosstable covers games DCM never recorded.
+- **Profile** (humans; shown as plain text, links never followed): flag, location, OTB ratings when set.
+- **Later, optional:** the rating-history trend (`GET /api/user/{u}/rating-history`) and per-speed stats (`GET /api/user/{u}/perf/{perf}`: best wins, streaks). Game exports are out of scope; they are the most rate-limited call.
+
+*Fetching: background only, never blocking.*
+- Each opponent is fetched **at most once per app session**, into an in-memory cache keyed by lowercased user id. The cache is not persisted, so each launch gets fresh data.
+- Fetches run in a detached background task at **`.housekeeping` priority** through the one request gate. The gate never *starts* housekeeping while any game awaits our move, and in a low-clock game only moves and game-critical actions are eligible (E18).
+- The irreducible cost: a housekeeping request **already in flight** when an opponent moves makes our move POST wait for that one round trip (about 100–400 ms observed). To keep even that out of games:
+  - Prefer fetching when a challenge **arrives** or is **sent**, before the game exists.
+  - In the game view, fetch only if the cache has no entry.
+- A card never waits on a fetch. It shows what's cached and fills in when the fetch lands. A failed fetch shows "couldn't load (reason)" with a Retry button; it is never retried automatically.
+- Nothing about an opponent affects challenge acceptance or play.
+
+*Validation.*
+- Unit tests:
+  - decoding the full `UserExtended` / crosstable example payloads, including absent optional fields
+  - the cache: one fetch per id per session; concurrent requests for the same id share one fetch
+  - a fetch never enqueued while a move is awaited (gate eligibility, with a fake gate)
+- Live checks:
+  - send a challenge and watch the protocol log: the opponent fetch is `housekeeping` and lands before the game starts
+  - during a game, no opponent fetch starts while a move is due
+  - the Account card updates after a filed game
+
+**14.3c Chat panel: wider bubbles, operator chat, per-game move delay or hold (added 2026-09-28).**
+
+- **Bubble width.** In both the Transcript and the Chat panel, each bubble may take up to **75%** of the panel's width, aligned left (Lichess) or right (DCM), so long lines wrap less.
+- **Operator chat input**, under the Chat panel of a live game:
+  - A text field, a **room picker** (Player / Spectator), and Send.
+  - A live counter shows UTF-16 units against 140; Send is disabled over the limit.
+  - A warning appears when the text looks like a link (a URL, or `name.tld`), because Lichess silently drops link-bearing messages from bots.
+  - Sending uses the same `POST /api/bot/game/{id}/chat` through the request gate at `.chat` priority.
+  - The message is journaled as an **operator** message (a new `operatorChat(room:text:)` journal/transcript event), distinct from DCM's automatic greeting, goodbye and command replies. The game record keeps who said what.
+  - Lichess allows this: bot rules restrict moves, not chat (research doc, "Can a human type chat through the BOT account?").
+- **Per-game move delay / hold**, in the game view:
+  - **Delay:** a per-game "wait before moving" of 0–30 s (default 0), applied before posting DCM's move.
+  - **Hold:** DCM decides its move, shows it, and posts only when the operator clicks **Play move**.
+  - **Clock safety** for both: the wait ends early, and a held move is posted automatically, once our clock falls to **30 s + 2 × the last move round trip**. The auto-post is logged.
+  - Neither applies before DCM's first move, so a game can't be aborted by our own wait.
+  - Neither is persisted: they belong to that one game and end with it. Changing them mid-game takes effect on the next move.
+- **Validation:**
+  - Unit tests:
+    - the link heuristic and the UTF-16 counter
+    - the clock-safety rule (release time from clock and round trip)
+    - delay/hold never applied at ply 0 or 1 of our moves
+    - the journal round-trip of the operator-chat event
+  - Live checks:
+    - an operator message in each room shows on lichess.org and in the transcript as an operator message
+    - Hold with a short clock auto-plays at the threshold and logs it
 
 **14.4 Circuit breakers** are configurable and shown in Overview. Each trip
 logs, alarms, and moves the bot to Draining or Offline:
@@ -1491,9 +1686,9 @@ before final sign-off.
     - The post-429 hold is a separate manager flag, so it can't undo a
       drain, and it survives going offline and back.
     - Resetting settings reaches the running bot.
-  - **Still open:** scaling the game-stream stall limit to the time control
-    (§6). It depends on whether game streams carry keep-alives, a §20.11
-    live check.
+  - ~~**Still open:** scaling the game-stream stall limit to the time
+    control (§6).~~ Not needed: game streams carry keep-alives (live
+    verification findings, below).
 
 **Phase 6: games, stats, events UI**
 - *Validation:*
@@ -1686,6 +1881,22 @@ game id)
   already-exercised inference path, plus a readback of a tensor that is
   already computed. No new graph construction.
 
+## Live verification findings (2026-09-28)
+
+These come from the first live session: account `DrewsChessMachine`, upgraded to BOT through the app, and game `ZQRPySw4`, a DCM win by mate as Black against dala-700, casual 5+3.
+
+- **Our own outgoing challenge is echoed on the event stream without a `direction` field**, unlike the spec's example. The bot tried to accept its own challenge and got a harmless 404. The fix recognizes our own challenges by `challenger.id` before the policy runs; `direction` alone can't be relied on.
+- **Event-stream response headers arrive after about 7.4 s**: Lichess holds them until the first keep-alive. Stream opens hold the request gate until headers arrive, so a move could wait behind an event-stream reconnect. Game streams answered in 288 ms. *Open:* hold the gate only to dispatch a stream request, not for its header wait.
+- **Keep-alives:** every 7.0 s on the event stream (maximum 7.4 s). Game streams send them too; one arrived in a 9-second game. The §6 "scale the game-stream stall limit to the time control" item is therefore not needed: after the first keep-alive, the event-stream limit applies.
+- **Latency:** a move POST takes about 107 ms round trip over h2, and a challenge POST about 394 ms. `accept` returns 404 for a challenge the bot itself sent.
+- **The challenge-creation response decoded** through `decodeCreated`, and `gameStart.fullId` appears in the event stream and is redacted in the log (E26).
+- **A new BOT account shows provisional 3000? ratings** in every perf.
+- **The token-test response** reported the scopes as a comma-separated list, as assumed.
+- **Filing:** the game was reconciled against the export with no mismatches, and written as `.json`, `.pgn` and `.journal.jsonl` under `Games/2026/09/`.
+- **Bot-vs-bot limit:** Lichess limits each BOT account to 100 games against other bots per rolling day, counted **in total, not per pairing**. It refuses further challenges with its own message ("… played 100 games against other bots today, please wait until …"). DCM's per-pairing stop was removed; Lichess's message is shown instead.
+- **A game-ending move arrives twice.** For a threefold (game zZMhCXrX), the `gameState` carrying the move came with status `started`, and a second `gameState` with the same 60-ply move list and status `draw` followed about 1 ms later. The final move list is the only "ended at ply N" marker. DCM logged a false local-draw-rule disagreement on the first message. *Fix pending:* report the disagreement only if the next `gameState` is still live; the regression test is `testThreefoldEndedInTheNextStateIsNotAnAnomaly`.
+- **Draw statuses:** Lichess reports every agreed or rule draw as `draw`. DCM names the rule from its own engine's view of the final position.
+
 ## 20. Where DCM's normal handling and Lichess disagree: edge cases
 
 DCM's code was built for self-play, where DCM controls both sides, the
@@ -1804,7 +2015,7 @@ Phase 6.
 | # | Situation | Handling |
 |---|---|---|
 | E52 | Lichess limits chat message length (believed to be 140 characters) | Templates are validated against the limit **after** placeholder expansion, and a message is never truncated mid-word silently: an over-limit template is rejected in Settings. **[LIVE]** confirm the limit. **[T]** |
-| E53 | Opponent chat is arbitrary untrusted text | Stored verbatim and displayed as plain text. It never drives any behavior, and there are no chat commands, so no opponent can trigger requests or actions through chat (§5.3). **[D]** |
+| E53 | Opponent chat is arbitrary untrusted text | Stored verbatim and displayed as plain text. *(Original decision: no chat commands at all, so no opponent could trigger requests or actions through chat, §5.3. Superseded 2026-09-28 by §12.5a.)* The only behavior chat can trigger is a §12.5a command reply: a fixed, read-only text within a per-game budget (a cooldown, a cap, and no replies when our clock is low). Nothing else an opponent types changes any state. **[D]** **[T]** |
 
 ### 20.11 Live verification checklist (consolidated [LIVE] items; run in Phase 5)
 
