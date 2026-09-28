@@ -34,9 +34,9 @@ enum LichessBotManagerEvent: Sendable {
     /// "Play one game": its game started, and the manager has stopped
     /// accepting new games.
     case oneGameStarted(gameID: String)
-    /// The manager's `run()` returned; `reason` says why.
-    /// Lichess rejected the token (401/403) on an account request.
+    /// Lichess rejected the token on an account request.
     case tokenRejected(String)
+    /// The manager's `run()` returned; `reason` says why.
     case stopped(reason: String)
 }
 
@@ -147,9 +147,16 @@ actor LichessBotSessionManager {
     private var gamesToday = 0
     private var gamesTodayByOpponent: [String: Int] = [:]
     private var countedGames: Set<String> = []
-    /// Challenges DCM sent that are still unanswered, oldest first. Several
-    /// may be pending at once; games from them run in parallel.
-    private var pendingOutgoingChallengeIDs: [String] = []
+    /// Challenges DCM sent that are still unanswered, oldest first, with the
+    /// challenged player's lowercased id when known. Several may be pending
+    /// at once; each holds a slot, and a place against its opponent, until
+    /// answered.
+    private var pendingOutgoingChallenges: [(id: String, opponentID: String?)] = []
+    /// Challenges being sent (their POST not yet answered), by lowercased
+    /// opponent id. They count like pending challenges, so an incoming
+    /// challenge from the same player during the POST can't make one game
+    /// too many.
+    private var outgoingChallengeReservations: [String: Int] = [:]
     /// Games whose session is being set up (a model build can take a while);
     /// they hold a slot like a running game.
     private var startingSessionIDs: Set<String> = []
@@ -194,8 +201,6 @@ actor LichessBotSessionManager {
 
     // MARK: - Controls
 
-    /// Online (true) or Draining (false). Draining declines new challenges
-    /// with `later`; games in progress continue.
     /// Hold (or release) new games after a 429. Independent of draining.
     func setRateLimitHold(_ held: Bool) {
         rateLimitHold = held
@@ -210,11 +215,17 @@ actor LichessBotSessionManager {
     /// dropped). The controller counts them as games in progress, so a
     /// drain or quit waits for them.
     func acceptedAwaitingStartIDs() -> Set<String> {
-        let now = time.now()
-        acceptedAwaitingStart = acceptedAwaitingStart.filter { now - $0.value.acceptedAt < Self.acceptedStartTimeout }
+        dropExpiredAcceptances()
         return Set(acceptedAwaitingStart.keys)
     }
 
+    private func dropExpiredAcceptances() {
+        let now = time.now()
+        acceptedAwaitingStart = acceptedAwaitingStart.filter { now - $0.value.acceptedAt < Self.acceptedStartTimeout }
+    }
+
+    /// Online (true) or Draining (false). Draining declines new challenges
+    /// with `later`; games in progress continue.
     func setAcceptingNewGames(_ accepting: Bool) {
         acceptingNewGames = accepting
     }
@@ -238,9 +249,12 @@ actor LichessBotSessionManager {
     }
 
     /// Note a challenge DCM just sent, so its acceptance, decline or cancel
-    /// on the event stream is reported.
-    func noteOutgoingChallenge(id: String) {
-        if sessions[id] != nil {
+    /// on the event stream is reported. `opponentID` counts it against that
+    /// player until it is answered.
+    func noteOutgoingChallenge(id: String, opponentID: String? = nil) {
+        // Its game may already be running, or starting (the model builds
+        // first).
+        if sessions[id] != nil || startingSessionIDs.contains(id) {
             onEvent(.outgoingChallengeResolved(challengeID: id, outcome: .accepted(gameID: id)))
             return
         }
@@ -248,7 +262,65 @@ actor LichessBotSessionManager {
             onEvent(.outgoingChallengeResolved(challengeID: id, outcome: known.outcome))
             return
         }
-        pendingOutgoingChallengeIDs.append(id)
+        pendingOutgoingChallenges.append((id, opponentID?.lowercased()))
+    }
+
+    /// Hold a place for a challenge about to be sent to `opponentID`, unless
+    /// the per-opponent limit is already reached. Returns what was committed
+    /// against the opponent before it. A reservation ends with
+    /// `noteSentChallenge` or `releaseOutgoingChallengeReservation`.
+    func reserveOutgoingChallenge(against opponentID: String, perOpponentLimit: Int) -> (committedBefore: Int, reserved: Bool) {
+        let opponent = opponentID.lowercased()
+        dropExpiredAcceptances()
+        let committed = commitmentsByOpponent()[opponent, default: 0]
+        guard committed < perOpponentLimit else { return (committed, false) }
+        outgoingChallengeReservations[opponent, default: 0] += 1
+        return (committed, true)
+    }
+
+    /// A reserved challenge was created: its reservation becomes a pending
+    /// challenge (or the answer already seen is reported) in one step, so it
+    /// is never counted twice or not at all.
+    func noteSentChallenge(id: String, opponentID: String) {
+        releaseOutgoingChallengeReservation(against: opponentID)
+        noteOutgoingChallenge(id: id, opponentID: opponentID)
+    }
+
+    /// The reserved challenge wasn't sent: give its place back.
+    func releaseOutgoingChallengeReservation(against opponentID: String) {
+        let opponent = opponentID.lowercased()
+        guard let held = outgoingChallengeReservations[opponent] else {
+            onEvent(.anomaly("released a challenge reservation against \(opponent) that wasn't held"))
+            return
+        }
+        outgoingChallengeReservations[opponent] = held > 1 ? held - 1 : nil
+    }
+
+    /// Games in progress or starting, accepted challenges awaiting their
+    /// game, our unanswered challenges and those being sent, per opponent id:
+    /// what the per-opponent limit counts, whichever side challenged.
+    private func commitmentsByOpponent() -> [String: Int] {
+        var byOpponent: [String: Int] = [:]
+        for opponent in opponentByGame.values {
+            byOpponent[opponent.lowercased(), default: 0] += 1
+        }
+        for pending in acceptedAwaitingStart.values {
+            byOpponent[pending.opponentID.lowercased(), default: 0] += 1
+        }
+        for case let opponent? in pendingOutgoingChallenges.map(\.opponentID) {
+            byOpponent[opponent, default: 0] += 1
+        }
+        for (opponent, count) in outgoingChallengeReservations {
+            byOpponent[opponent, default: 0] += count
+        }
+        return byOpponent
+    }
+
+    /// Games started today (local day) per opponent id, for the Challenge
+    /// sheet's warning.
+    func todaysGamesByOpponent() -> [String: Int] {
+        rollDayIfNeeded()
+        return gamesTodayByOpponent
     }
 
     /// Ask every game session to reopen its stream (after the Mac wakes:
@@ -260,18 +332,18 @@ actor LichessBotSessionManager {
     }
 
     var outgoingChallengeIDs: [String] {
-        pendingOutgoingChallengeIDs
+        pendingOutgoingChallenges.map(\.id)
     }
 
     /// The most recently sent challenge still pending.
     var outgoingChallengeID: String? {
-        pendingOutgoingChallengeIDs.last
+        pendingOutgoingChallenges.last?.id
     }
 
     /// Forget a pending outgoing challenge (it expired, or Lichess no
     /// longer knows it).
     func clearOutgoingChallenge(id: String) {
-        pendingOutgoingChallengeIDs.removeAll { $0 == id }
+        pendingOutgoingChallenges.removeAll { $0.id == id }
     }
 
     /// Seed today's counts from the record store after a relaunch, so the
@@ -282,7 +354,7 @@ actor LichessBotSessionManager {
             countedGames.insert(gameID)
             gamesToday += 1
             if let opponent = opponentByGame[gameID] {
-                gamesTodayByOpponent[opponent, default: 0] += 1
+                gamesTodayByOpponent[opponent.lowercased(), default: 0] += 1
             }
         }
     }
@@ -435,9 +507,9 @@ actor LichessBotSessionManager {
         case .challenge(let challenge, let compat):
             await handleChallenge(challenge, compat: compat)
         case .gameStart(let info):
-            if pendingOutgoingChallengeIDs.contains(info.gameId) {
+            if pendingOutgoingChallenges.contains(where: { $0.id == info.gameId }) {
                 // An accepted challenge's game has the challenge's id.
-                pendingOutgoingChallengeIDs.removeAll { $0 == info.gameId }
+                pendingOutgoingChallenges.removeAll { $0.id == info.gameId }
                 onEvent(.outgoingChallengeResolved(challengeID: info.gameId, outcome: .accepted(gameID: info.gameId)))
             }
             startingSessionIDs.insert(info.gameId)
@@ -460,8 +532,8 @@ actor LichessBotSessionManager {
     /// Report the answer to our outgoing challenge, or remember it in case
     /// the challenge is noted as ours a moment later.
     private func resolveChallenge(_ id: String, outcome: LichessBotOutgoingChallengeOutcome) {
-        if pendingOutgoingChallengeIDs.contains(id) {
-            pendingOutgoingChallengeIDs.removeAll { $0 == id }
+        if pendingOutgoingChallenges.contains(where: { $0.id == id }) {
+            pendingOutgoingChallenges.removeAll { $0.id == id }
             onEvent(.outgoingChallengeResolved(challengeID: id, outcome: outcome))
             return
         }
@@ -483,23 +555,19 @@ actor LichessBotSessionManager {
         rollDayIfNeeded()
         let now = time.now()
         challengeResponseTimes.removeAll { now - $0 > .seconds(60) }
-        acceptedAwaitingStart = acceptedAwaitingStart.filter { now - $0.value.acceptedAt < Self.acceptedStartTimeout }
         let modelReady = await slots.sourceAvailable(for: settings.model)
-        var byOpponent: [String: Int] = [:]
-        for opponent in opponentByGame.values {
-            byOpponent[opponent, default: 0] += 1
-        }
-        for pending in acceptedAwaitingStart.values {
-            byOpponent[pending.opponentID, default: 0] += 1
-        }
+        // After the await: another call may have changed the commitments.
+        dropExpiredAcceptances()
         let context = LichessBotChallengeContext(
             acceptingNewGames: acceptingNewGames && !rateLimitHold,
             modelReady: modelReady,
             // Our pending outgoing challenges hold their slots too, so an
             // incoming game plus their later acceptance can never exceed
             // the concurrent-game limit.
-            activeGames: Set(sessions.keys).union(startingSessionIDs).union(acceptedAwaitingStart.keys).count + pendingOutgoingChallengeIDs.count,
-            activeGamesByOpponent: byOpponent,
+            activeGames: Set(sessions.keys).union(startingSessionIDs).union(acceptedAwaitingStart.keys).count
+                + pendingOutgoingChallenges.count
+                + outgoingChallengeReservations.values.reduce(0, +),
+            activeGamesByOpponent: commitmentsByOpponent(),
             gamesToday: gamesToday,
             gamesTodayByOpponent: gamesTodayByOpponent,
             challengeResponsesInLastMinute: challengeResponseTimes.count
@@ -529,6 +597,29 @@ actor LichessBotSessionManager {
                 await decline(challenge, reason: .later)
                 return
             }
+            // The model build suspended this actor: a drain or a 429 hold may
+            // have stopped new games since the decision was made.
+            guard isAcceptingNewGames else {
+                acceptedAwaitingStart[challenge.id] = nil
+                onEvent(.challengeDecision(challengeID: challenge.id, challengerID: challenge.challenger.id, decision: .decline(.later, rule: "stopped accepting new games while the model was prepared")))
+                await decline(challenge, reason: .later)
+                return
+            }
+            // A long build can outlast the acceptance timeout, which drops the
+            // held slot, and another game may have taken it meanwhile. Hold
+            // it again, timed from this acceptance, only if there is still
+            // room.
+            if acceptedAwaitingStart[challenge.id] == nil {
+                let committed = Set(sessions.keys).union(startingSessionIDs).union(acceptedAwaitingStart.keys).count
+                    + pendingOutgoingChallenges.count
+                    + outgoingChallengeReservations.values.reduce(0, +)
+                guard committed < challengeSettings.maxConcurrentGames else {
+                    onEvent(.challengeDecision(challengeID: challenge.id, challengerID: challenge.challenger.id, decision: .decline(.later, rule: "the concurrent-game limit filled while the model was prepared")))
+                    await decline(challenge, reason: .later)
+                    return
+                }
+            }
+            acceptedAwaitingStart[challenge.id] = (challenge.challenger.id, time.now())
             await accept(challenge)
         case .decline(let reason, _):
             await decline(challenge, reason: reason)
@@ -568,40 +659,37 @@ actor LichessBotSessionManager {
         let gameID = info.gameId
         acceptedAwaitingStart[gameID] = nil
         guard sessions[gameID] == nil else { return }
+        // Counted against the opponent from here, before the first
+        // suspension: the accepted or pending entry that counted it is gone.
+        if let opponent = info.opponent?.id {
+            opponentByGame[gameID] = opponent
+        }
         let settings = await settingsProvider()
         let generation: LichessBotModelGeneration
         do {
             generation = try await slots.ready(for: settings.model)
         } catch {
+            opponentByGame[gameID] = nil
             // A game is running and there is no model to play it: the
             // session can't move. Say so loudly; the game will be lost on
             // time or aborted by Lichess, and reconciled afterwards.
             onEvent(.anomaly("game \(gameID) started but no model is available: \(error.localizedDescription)"))
             return
         }
-        if let opponent = info.opponent?.id {
-            opponentByGame[gameID] = opponent
-        }
         countGame(info)
 
         let slots = self.slots
         let settingsProvider = self.settingsProvider
-        let onEvent = self.onEvent
         let pacingProvider = self.pacingProvider
         let session = LichessBotGameSession(
             gameID: gameID,
             ourAccountID: ourAccountID,
             api: gameAPI,
             moveSource: generation,
-            latestMoveSource: {
-                let settings = await settingsProvider()
-                do {
-                    return try await slots.ready(for: settings.model)
-                } catch {
-                    onEvent(.anomaly("game \(gameID): no current model for mid-game refresh: \(error.localizedDescription)"))
-                    return nil
-                }
-            },
+            // A mid-game refresh may only switch to a generation that is
+            // already built (the poll loop builds them); building one here
+            // would run while our clock does.
+            latestMoveSource: { await slots.current },
             settingsProvider: settingsProvider,
             observer: gameObserver,
             time: time,
@@ -638,7 +726,7 @@ actor LichessBotSessionManager {
         countedGames.insert(info.gameId)
         gamesToday += 1
         if let opponent = info.opponent?.id {
-            gamesTodayByOpponent[opponent, default: 0] += 1
+            gamesTodayByOpponent[opponent.lowercased(), default: 0] += 1
         }
     }
 

@@ -57,7 +57,7 @@ struct LichessBotOpponentCardContent: View {
     let ourRecord: (wins: Int, draws: Int, losses: Int)
     let compact: Bool
 
-    private static let speeds = ["bullet", "blitz", "rapid", "classical", "correspondence"]
+    private static let speeds = ["ultraBullet", "bullet", "blitz", "rapid", "classical", "correspondence"]
 
     var body: some View {
         if compact {
@@ -70,7 +70,9 @@ struct LichessBotOpponentCardContent: View {
                 }
                 Text([lichessHeadToHead, user.bioFirstLine ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(user.profile?.bio ?? "")
             }
         } else {
             ScrollView {
@@ -158,7 +160,8 @@ struct LichessBotOpponentCardContent: View {
         return parts.joined(separator: " · ")
     }
 
-    /// "12,345 games (8,000 rated) · 6,000–1,000–5,345 · vs humans 1–0–2".
+    /// Total games (and rated), W–D–L overall and against humans, and hours
+    /// played.
     private var totalsText: String {
         guard let count = user.count else { return "" }
         var text = "\(count.all) games"

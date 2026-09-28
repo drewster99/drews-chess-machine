@@ -1,28 +1,31 @@
 import SwiftUI
 
-/// The bot's status in the main window's title bar (plan §14.2): a state dot
-/// and "Online · 2 games". Click to open the Lichess Bot window; the context
-/// menu has the on/off controls.
+/// The bot's status in the main window's title bar (plan §14.2): a state
+/// dot, the state, and the number of games in progress. Click to open the
+/// Lichess Bot window; the context menu has the on/off controls.
 struct LichessBotStatusChip: View {
     let controller: LichessBotController
 
     var body: some View {
-        Button {
-            LichessBotWindowLauncher.openWindow(controller: controller)
-        } label: {
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(LichessBotStatusStyle.color(for: controller.connection))
-                    .frame(width: 8, height: 8)
-                Text(text)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        Button(
+            action: {
+                LichessBotWindowLauncher.openWindow(controller: controller)
+            },
+            label: {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(LichessBotStatusStyle.color(for: controller.connection))
+                        .frame(width: 8, height: 8)
+                    Text(text)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Color.gray.opacity(0.12)))
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(Color.gray.opacity(0.12)))
-        }
+        )
         .buttonStyle(.plain)
         .help("Lichess bot — click to open")
         .contextMenu {

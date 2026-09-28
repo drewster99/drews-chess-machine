@@ -27,22 +27,25 @@ struct LichessBotRootView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            List(Section.allCases, selection: $section) { section in
-                Label(section.rawValue, systemImage: section.systemImage)
-                    .tag(section)
+        NavigationSplitView(
+            sidebar: {
+                List(Section.allCases, selection: $section) { section in
+                    Label(section.rawValue, systemImage: section.systemImage)
+                        .tag(section)
+                }
+                .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 220)
+            },
+            detail: {
+                ZStack {
+                    LichessBotOverviewView(controller: controller)
+                        .shown(section == .overview)
+                    LichessBotLiveView(controller: controller, isVisible: section == .live)
+                        .shown(section == .live)
+                    LichessBotSettingsView(controller: controller)
+                        .shown(section == .settings)
+                }
             }
-            .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 220)
-        } detail: {
-            ZStack {
-                LichessBotOverviewView(controller: controller)
-                    .shown(section == .overview)
-                LichessBotLiveView(controller: controller, isVisible: section == .live)
-                    .shown(section == .live)
-                LichessBotSettingsView(controller: controller)
-                    .shown(section == .settings)
-            }
-        }
+        )
         .task {
             await controller.refreshIndex()
             await controller.loadPlayerNotes()

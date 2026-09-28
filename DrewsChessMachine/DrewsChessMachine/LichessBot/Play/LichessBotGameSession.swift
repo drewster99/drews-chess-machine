@@ -14,15 +14,22 @@ import Foundation
 /// position DCM can't vouch for (E5).
 ///
 /// **Moving, and actor reentrancy.** While the session awaits inference or
-/// a POST, other calls can run on the actor. So after every await it
-/// re-checks that the position is still the one it decided for, that it is
-/// still our turn, and that nothing has been posted for this ply. The ply is
-/// recorded as posted before the POST goes out, so a second decision for
-/// the same ply can never be sent.
+/// a POST, other calls can run on the actor — above all a held move's own
+/// task, which posts while the stream keeps being read. So before every POST
+/// attempt, the first and each retry, it re-checks that it is still our turn
+/// at the ply it decided for, in the position it decided from (its FEN: a
+/// takeback and a different reply can return to the same ply in a new
+/// position), and that nothing has been posted for this ply. The ply is
+/// recorded as posted before the POST goes out, so a second decision for the
+/// same ply can never be sent. A POST already waiting inside the request gate
+/// goes out without a further check; so while one may be pending, a takeback
+/// (the only way the position at its ply can legitimately change) is not
+/// accepted.
 ///
 /// **Requests.** Every call goes through the account-wide gate via the API.
 /// A 429 means waiting out the cooldown (the gate does that) and posting
-/// again only if it is still our turn at the same ply (§5.4). A 400 on a
+/// again only if it is still our turn at the same ply, in the same position
+/// (§5.4). A 400 on a
 /// move means state disagreement: reopen the stream, never resend blindly
 /// (§5.5).
 actor LichessBotGameSession {
@@ -33,9 +40,14 @@ actor LichessBotGameSession {
     private let observer: any LichessBotGameObserver
     private let time: any LichessBotTimeSource
     private let settingsProvider: @Sendable () async -> LichessBotSettings
+    /// The newest model generation already built. Read while our clock runs,
+    /// so it never builds one.
     private let latestMoveSource: @Sendable () async -> (any LichessBotMoveSource)?
     private let onTurnStatus: @Sendable (String, LichessBotTurnStatus) async -> Void
-    private let pinnedMoveSource: any LichessBotMoveSource
+    /// The generation playing this game: the one it started with, or, for a
+    /// live-trainer game with mid-game refresh on, the newest snapshot since.
+    /// Chat reports this one.
+    private var playingMoveSource: any LichessBotMoveSource
 
     private var gameFull: LichessBotGameFull?
     private var ourColor: LichessBotColorName?
@@ -49,8 +61,26 @@ actor LichessBotGameSession {
     /// low-clock rule.
     private var ourClockMilliseconds: Int?
     private var finished = false
-    private var unplayableHandled = false
+    /// This game is one DCM can't play; it is never tracked.
+    private var isUnplayable = false
+    /// Lichess accepted our abort or resignation of the unplayable game.
+    /// Set only after success: a failure leaves it false, so the next
+    /// `gameFull` (after the stream reopens) tries again.
+    private var unplayableResolved = false
     private var pendingClaim: Task<Void, Never>?
+    /// A chat-command reply waiting to be sent.
+    private struct PendingCommandReply: Sendable {
+        let command: LichessBotChatCommand
+        let username: String
+        let room: LichessBotChatRoom
+        let texts: [String]
+    }
+    /// Command replies not yet sent, oldest first.
+    private var pendingCommandReplies: [PendingCommandReply] = []
+    /// Sends `pendingCommandReplies` in order, off the stream loop: each
+    /// reply is a request through the shared gate, and awaiting it in the
+    /// loop would hold up reading the next line, and so our next move.
+    private var commandReplySender: Task<Void, Never>?
     /// The operator's move pacing for this game (plan §14.3c).
     private let pacing: @Sendable () async -> LichessBotMovePacingSnapshot
     /// A decided move being held or delayed. It posts from its own task so
@@ -94,9 +124,10 @@ actor LichessBotGameSession {
     private static let maximumConsecutiveResyncs = 8
     private static let resyncBackoff = LichessBotBackoff(initial: .seconds(1), multiplier: 2, cap: .seconds(30))
     private let stallTimeout = SyncBox<Duration?>(nil)
-    /// Set from outside the actor to make the stream loop drop its
-    /// connection and reopen it for a fresh `gameFull`.
-    private let resyncRequest = SyncBox<String?>(nil)
+    /// Set from outside the stream loop to make it drop its connection and
+    /// reopen it for a fresh `gameFull`; counted like a thrown
+    /// `ResyncNeeded`.
+    private let resyncRequest = SyncBox<ResyncNeeded?>(nil)
 
     /// Raised inside the stream loop to drop the connection and reopen it
     /// for a fresh `gameFull`.
@@ -123,7 +154,7 @@ actor LichessBotGameSession {
         self.gameID = gameID
         self.ourAccountID = ourAccountID
         self.api = api
-        self.pinnedMoveSource = moveSource
+        self.playingMoveSource = moveSource
         self.latestMoveSource = latestMoveSource
         self.settingsProvider = settingsProvider
         self.observer = observer
@@ -142,7 +173,17 @@ actor LichessBotGameSession {
     /// reopened stream carries the finished status. Takes effect at the
     /// stream watchdog's next check.
     nonisolated func requestResync(reason: String) {
-        resyncRequest.value = reason
+        requestResync(ResyncNeeded(reason: reason, isDisagreement: false))
+    }
+
+    /// Queue a resync for the stream loop's next watchdog check, counted like
+    /// a thrown `ResyncNeeded`. A pending disagreement is never downgraded by
+    /// a later request that is not one.
+    private nonisolated func requestResync(_ resync: ResyncNeeded) {
+        resyncRequest.modify { pending in
+            let disagreement = resync.isDisagreement || pending?.isDisagreement == true
+            pending = ResyncNeeded(reason: resync.reason, isDisagreement: disagreement)
+        }
     }
 
     // MARK: - Running
@@ -180,34 +221,23 @@ actor LichessBotGameSession {
                 }
                 attempt = 0
             } catch let resync as ResyncNeeded {
-                await observer.gameEvent(gameID: gameID, .streamEnded(reason: "resync: \(resync.reason)"))
                 attempt = 0
-                consecutiveResyncs += 1
-                if resync.isDisagreement {
-                    consecutiveDisagreements += 1
+                // A request queued meanwhile is satisfied by this reopen; left
+                // pending, it would force a second, counted reopen at once.
+                let queued = resyncRequest.mutate { request -> ResyncNeeded? in
+                    defer { request = nil }
+                    return request
                 }
-                if consecutiveDisagreements >= Self.maximumConsecutiveResyncs {
-                    await stopMoving("\(consecutiveDisagreements) resyncs in a row without the game advancing (last: \(resync.reason))")
-                    break
-                }
-                // The first resync is immediate; repeats back off, so a
-                // disagreement that persists can never turn into a request
-                // storm.
-                if consecutiveResyncs > 1 {
-                    do {
-                        try await time.sleep(for: Self.resyncBackoff.delay(attempt: consecutiveResyncs - 2, unitRandom: Double.random(in: 0...1)))
-                    } catch {
-                        break
-                    }
-                }
+                let merged = ResyncNeeded(reason: resync.reason, isDisagreement: resync.isDisagreement || queued?.isDisagreement == true)
+                guard await continueAfterResync(merged) else { break }
                 continue
             } catch LichessBotStreamError.stalled(let silence) {
-                if let reason = resyncRequest.mutate({ request -> String? in
+                if let requested = resyncRequest.mutate({ request -> ResyncNeeded? in
                     defer { request = nil }
                     return request
                 }) {
-                    await observer.gameEvent(gameID: gameID, .streamEnded(reason: "resync: \(reason)"))
                     attempt = 0
+                    guard await continueAfterResync(requested) else { break }
                     continue
                 }
                 await observer.gameEvent(gameID: gameID, .streamEnded(reason: LichessBotStreamError.stalled(silence: silence).localizedDescription))
@@ -245,7 +275,33 @@ actor LichessBotGameSession {
         }
         pendingClaim?.cancel()
         pacedMove?.cancel()
+        await stopCommandReplies(reason: "the game session stopped")
         await onTurnStatus(gameID, LichessBotTurnStatus(awaitingOurMove: false, ourClock: nil))
+    }
+
+    /// Count a resync (thrown in the loop or requested from elsewhere),
+    /// report it, and back off on repeats; false when the loop should end
+    /// (too many disagreements in a row, or cancelled while backing off).
+    private func continueAfterResync(_ resync: ResyncNeeded) async -> Bool {
+        await observer.gameEvent(gameID: gameID, .streamEnded(reason: "resync: \(resync.reason)"))
+        consecutiveResyncs += 1
+        if resync.isDisagreement {
+            consecutiveDisagreements += 1
+        }
+        if consecutiveDisagreements >= Self.maximumConsecutiveResyncs {
+            await stopMoving("\(consecutiveDisagreements) resyncs in a row without the game advancing (last: \(resync.reason))")
+            return false
+        }
+        // The first resync is immediate; repeats back off, so a
+        // disagreement that persists can never turn into a request storm.
+        if consecutiveResyncs > 1 {
+            do {
+                try await time.sleep(for: Self.resyncBackoff.delay(attempt: consecutiveResyncs - 2, unitRandom: Double.random(in: 0...1)))
+            } catch {
+                return false
+            }
+        }
+        return true
     }
 
     /// Resign now (the operator's per-game or Resign-all button).
@@ -357,27 +413,26 @@ actor LichessBotGameSession {
     /// lichess.org, or left over from before a restart): abort while that
     /// is still allowed, otherwise resign (plan E20).
     private func handleUnplayable(reason: String, full: LichessBotGameFull) async throws {
-        guard !unplayableHandled else { return }
-        unplayableHandled = true
+        guard !unplayableResolved else { return }
+        isUnplayable = true
         guard full.state.status.isLive == true else { return }
-        let plies = full.state.moveTokens.count
         await observer.gameEvent(gameID: gameID, .anomaly("unplayable game (\(reason))"))
-        if plies < 2 {
+        if full.state.moveTokens.count < 2 {
             do {
                 try await api.abort(gameID: gameID)
+                unplayableResolved = true
                 await observer.gameEvent(gameID: gameID, .action("aborted unplayable game"))
                 return
-            } catch let error as LichessBotAPIError {
-                if case .unauthorized = error { throw error }
+            } catch let error as LichessBotAPIError where Self.isRefusal(error) {
                 // Too late to abort (the opponent moved meanwhile): resign.
+                // Any other failure propagates: the stream reopens with
+                // backoff and the next gameFull tries the abort again.
                 await observer.gameEvent(gameID: gameID, .anomaly("abort refused (\(error.localizedDescription)); resigning instead"))
             }
-            try await api.resign(gameID: gameID)
-            await observer.gameEvent(gameID: gameID, .action("resigned unplayable game"))
-        } else {
-            try await api.resign(gameID: gameID)
-            await observer.gameEvent(gameID: gameID, .action("resigned unplayable game"))
         }
+        try await api.resign(gameID: gameID)
+        unplayableResolved = true
+        await observer.gameEvent(gameID: gameID, .action("resigned unplayable game"))
     }
 
     private func handleState(_ state: LichessBotGameState, settings: LichessBotSettings) async throws {
@@ -408,7 +463,9 @@ actor LichessBotGameSession {
                     let played = tracker.moves[ply].uci
                     if attemptedPosts[ply] != played {
                         await stopMoving("move \(played) at ply \(ply) is on our side but this client did not send it; another client may be playing this account")
-                        return
+                        // Not a return: this same state may carry the finished
+                        // status, which must still end the session.
+                        break
                     }
                 }
             }
@@ -438,7 +495,7 @@ actor LichessBotGameSession {
         }
 
         guard let tracker, let ourColor else {
-            if unplayableHandled { return }
+            if isUnplayable { return }
             await observer.gameEvent(gameID: gameID, .anomaly("gameState before gameFull"))
             return
         }
@@ -453,31 +510,55 @@ actor LichessBotGameSession {
         }
 
         let opponentColor: LichessBotColorName = ourColor == .white ? .black : .white
-        if state.isProposingTakeback(opponentColor) && LichessBotPlayPolicy.shouldAcceptTakeback(acceptedSoFar: takebacksAccepted, settings: settings.play) {
-            takebacksAccepted += 1
-            try await api.respondToTakeback(gameID: gameID, accept: true)
-            await observer.gameEvent(gameID: gameID, .action("accepted takeback"))
-            return
+        // A released held move may still be waiting in the request gate,
+        // where nothing re-checks its position before it is sent. A takeback
+        // is the only way the position at its ply can legitimately change,
+        // so the proposal is left unanswered until that move is resolved; a
+        // later state answers it if it still stands.
+        if state.isProposingTakeback(opponentColor),
+           !pacedMoveReleased,
+           LichessBotPlayPolicy.shouldAcceptTakeback(acceptedSoFar: takebacksAccepted, settings: settings.play) {
+            do {
+                try await api.respondToTakeback(gameID: gameID, accept: true)
+                takebacksAccepted += 1
+                await observer.gameEvent(gameID: gameID, .action("accepted takeback"))
+                return
+            } catch let error where Self.endsTheStreamLoop(error) {
+                throw error
+            } catch {
+                // Accepting is optional. The proposal is still pending, so a
+                // later state can try again with the allowance unspent; play
+                // on meanwhile, since our clock may be running.
+                await observer.gameEvent(gameID: gameID, .anomaly("accepting the takeback failed: \(error.localizedDescription); playing on"))
+            }
         }
 
         let ourPieceColor: PieceColor = ourColor == .white ? .white : .black
         let ourTurn = tracker.sideToMove == ourPieceColor && tracker.engine.result == nil
         ourClockMilliseconds = state.remaining(for: ourColor).value
         ourClockReceivedAt = time.now()
-        await onTurnStatus(gameID, LichessBotTurnStatus(awaitingOurMove: ourTurn && lastPostedPly != tracker.ply, ourClock: state.remaining(for: ourColor)))
-
         if let heldPly = pacedMovePly, !pacedMoveReleased,
            heldPly != tracker.ply || pacedMovePosition != FENParser.fen(from: tracker.engine.state) {
             await dropPacedMove(reason: "the position changed")
         }
+        // After any drop, so a dropped held move is not reported as still
+        // holding while its replacement is decided.
+        await reportTurnStatus()
         if ourTurn && lastPostedPly != tracker.ply && pacedMovePly != tracker.ply {
             try await playMove(state: state, ourColor: ourColor, opponentColor: opponentColor, settings: settings)
         } else if !ourTurn && state.isOfferingDraw(opponentColor), let last = readings.last,
                   LichessBotPlayPolicy.shouldAcceptDraw(current: last, settings: settings.play) {
             // An offer made while it is not our turn can't ride on our next
-            // move yet; answer it directly.
-            try await api.respondToDraw(gameID: gameID, accept: true)
-            await observer.gameEvent(gameID: gameID, .action("accepted draw offer"))
+            // move yet; answer it directly. Accepting is optional, so a
+            // failure is journaled and the stream kept.
+            do {
+                try await api.respondToDraw(gameID: gameID, accept: true)
+                await observer.gameEvent(gameID: gameID, .action("accepted draw offer"))
+            } catch let error where Self.endsTheStreamLoop(error) {
+                throw error
+            } catch {
+                await observer.gameEvent(gameID: gameID, .anomaly("accepting the draw offer failed: \(error.localizedDescription)"))
+            }
         }
 
         if !greeted {
@@ -494,6 +575,9 @@ actor LichessBotGameSession {
         guard let tracker else { return }
         let ply = tracker.ply
         let engine = tracker.engine
+        // The position this decision is for: every later check compares it,
+        // since a takeback and a different reply can return to the same ply.
+        let position = FENParser.fen(from: engine.state)
         let request = LichessBotMoveRequest(
             state: engine.state,
             history: engine.recentStates,
@@ -501,21 +585,32 @@ actor LichessBotGameSession {
             ply: ply
         )
 
-        var source = pinnedMoveSource
-        if settings.model.midGameRefresh {
+        // Only a live-trainer game follows new snapshots, and only to one
+        // already built: this runs on our clock, so it must never start or
+        // wait on a network build.
+        if settings.model.midGameRefresh,
+           settings.model.source == .liveTrainer,
+           playingMoveSource.info.sourceKind == .liveTrainer {
             if let latest = await latestMoveSource() {
-                source = latest
+                if latest.info.sourceKind == .liveTrainer {
+                    playingMoveSource = latest
+                }
             } else {
-                await observer.gameEvent(gameID: gameID, .anomaly("mid-game refresh: no current model; continuing with generation \(pinnedMoveSource.info.generationID)"))
+                await observer.gameEvent(gameID: gameID, .anomaly("mid-game refresh: no model generation is built; continuing with generation \(playingMoveSource.info.generationID)"))
             }
         }
+        let source = playingMoveSource
 
         let decision = try await source.decide(request, schedule: settings.play.samplingSchedule)
-        guard stillOurMove(at: ply) else {
+        guard stillOurMove(at: ply, in: position) else {
             await observer.gameEvent(gameID: gameID, .anomaly("discarded a decision for ply \(ply): the position moved on while deciding"))
             return
         }
         let reading = LichessBotValueReading(ply: ply, win: decision.win, draw: decision.draw, loss: decision.loss)
+        // One reading per ply: a ply decided again (after a resync or a
+        // rejected move) replaces its earlier reading, so a streak counts our
+        // moves, not our decisions.
+        readings.removeAll { $0.ply >= ply }
         readings.append(reading)
         await observer.gameEvent(gameID: gameID, .moveDecided(ply: ply, decision: decision, generation: source.info))
 
@@ -523,18 +618,22 @@ actor LichessBotGameSession {
             lastPostedPly = ply
             do {
                 try await api.resign(gameID: gameID)
-            } catch {
-                // Not resigned: this ply is still ours to play.
+                await observer.gameEvent(gameID: gameID, .action("resigned (value head: p_loss \(decision.loss))"))
+                return
+            } catch let error where Self.endsTheStreamLoop(error) {
                 lastPostedPly = nil
                 throw error
+            } catch {
+                // Not resigned: this ply is still ours to play, on our clock,
+                // so play the decided move; the next reading can resign again.
+                lastPostedPly = nil
+                await observer.gameEvent(gameID: gameID, .anomaly("resigning failed: \(error.localizedDescription); playing the move instead"))
             }
-            await observer.gameEvent(gameID: gameID, .action("resigned (value head: p_loss \(decision.loss))"))
-            return
         }
 
         if settings.play.minimumThinkMilliseconds > 0 {
             try await time.sleep(for: .milliseconds(settings.play.minimumThinkMilliseconds))
-            guard stillOurMove(at: ply) else { return }
+            guard stillOurMove(at: ply, in: position) else { return }
         }
 
         let opponentOffering = state.isOfferingDraw(opponentColor)
@@ -545,28 +644,28 @@ actor LichessBotGameSession {
         // (each side's first ply is below this), so our own wait can never
         // abort a game.
         if ply > 1, await pacing().isActive {
-            guard stillOurMove(at: ply) else { return }
-            await schedulePacedMove(decision: decision, ply: ply, offeringDraw: acceptDraw || offerDraw, settings: settings)
+            guard stillOurMove(at: ply, in: position) else { return }
+            await schedulePacedMove(decision: decision, ply: ply, position: position, offeringDraw: acceptDraw || offerDraw, settings: settings)
             return
         }
         // The awaits above can let another state for this ply in; post only
         // if it is still ours to play.
-        guard stillOurMove(at: ply), pacedMovePly != ply else { return }
-        try await post(decision: decision, ply: ply, offeringDraw: acceptDraw || offerDraw, settings: settings)
+        guard stillOurMove(at: ply, in: position), pacedMovePly != ply else { return }
+        try await post(decision: decision, ply: ply, position: position, offeringDraw: acceptDraw || offerDraw, settings: settings)
     }
 
     // MARK: - Operator pacing (plan §14.3c)
 
-    private func schedulePacedMove(decision: LichessBotMoveDecision, ply: Int, offeringDraw: Bool, settings: LichessBotSettings) async {
-        guard let tracker else { return }
+    private func schedulePacedMove(decision: LichessBotMoveDecision, ply: Int, position: String, offeringDraw: Bool, settings: LichessBotSettings) async {
         pacedMovePly = ply
-        pacedMovePosition = FENParser.fen(from: tracker.engine.state)
+        pacedMovePosition = position
         pacedMoveReleased = false
         await observer.gameEvent(gameID: gameID, .moveHeld(ply: ply, uci: decision.uci, san: decision.san))
         let started = time.now()
         pacedMove = Task { [weak self] in
-            await self?.runPacedMove(decision: decision, ply: ply, offeringDraw: offeringDraw, settings: settings, started: started)
+            await self?.runPacedMove(decision: decision, ply: ply, position: position, offeringDraw: offeringDraw, settings: settings, started: started)
         }
+        await reportTurnStatus()
     }
 
     /// Forget a held move that no longer applies, and say why.
@@ -580,10 +679,14 @@ actor LichessBotGameSession {
         await observer.gameEvent(gameID: gameID, .moveReleased(ply: ply, reason: "dropped: \(reason)"))
     }
 
-    private func runPacedMove(decision: LichessBotMoveDecision, ply: Int, offeringDraw: Bool, settings: LichessBotSettings, started: Duration) async {
-        guard let reason = await pacedMoveReleaseReason(ply: ply, started: started) else {
-            // Cancelled: the game ended, the session stopped, or the move
-            // was dropped; whoever cancelled has cleared the state.
+    private func runPacedMove(decision: LichessBotMoveDecision, ply: Int, position: String, offeringDraw: Bool, settings: LichessBotSettings, started: Duration) async {
+        // Cancelled (the game ended, the session stopped, or the move was
+        // dropped): whoever cancelled has cleared the state. A task cancelled
+        // while its release check was suspended must not touch the held-move
+        // state either: it may already belong to a newer held move, possibly
+        // for the same ply.
+        guard let reason = await pacedMoveReleaseReason(ply: ply, started: started),
+              !Task.isCancelled, pacedMovePly == ply else {
             return
         }
         // `pacedMovePly` stays set until `post` has marked the ply posted,
@@ -591,28 +694,45 @@ actor LichessBotGameSession {
         // decision and POST for this ply.
         pacedMoveReleased = true
         await observer.gameEvent(gameID: gameID, .moveReleased(ply: ply, reason: reason))
-        guard pacedMovePly == ply, stillOurMove(at: ply) else {
+        await reportTurnStatus()
+        guard pacedMovePly == ply, stillOurMove(at: ply, in: position) else {
             clearPacedMove(ply: ply)
+            await reportTurnStatus()
+            await resyncIfHeldPlyWasLeftUndecided(ply: ply)
             return
         }
-        defer { clearPacedMove(ply: ply) }
         do {
-            try await post(decision: decision, ply: ply, offeringDraw: offeringDraw, settings: settings)
-        } catch is CancellationError {
+            try await post(decision: decision, ply: ply, position: position, offeringDraw: offeringDraw, settings: settings)
+            clearPacedMove(ply: ply)
+            await resyncIfHeldPlyWasLeftUndecided(ply: ply)
             return
+        } catch is CancellationError {
+            // The game ended or the session stopped; nothing more to post.
         } catch let resync as ResyncNeeded {
-            requestResync(reason: resync.reason)
+            requestResync(resync)
         } catch let error as LichessBotAPIError {
             if case .unauthorized = error {
                 await observer.gameEvent(gameID: gameID, .tokenRejected(error.localizedDescription))
             } else {
                 await observer.gameEvent(gameID: gameID, .anomaly("posting the held move at ply \(ply) failed: \(error.localizedDescription)"))
-                requestResync(reason: "held move post failed")
+                requestResync(ResyncNeeded(reason: "held move post failed", isDisagreement: false))
             }
         } catch {
             await observer.gameEvent(gameID: gameID, .anomaly("posting the held move at ply \(ply) failed: \(error.localizedDescription)"))
-            requestResync(reason: "held move post failed")
+            requestResync(ResyncNeeded(reason: "held move post failed", isDisagreement: false))
         }
+        clearPacedMove(ply: ply)
+    }
+
+    /// A held move for `ply` was not posted because the position changed
+    /// under it at the same ply. The stream loop skipped deciding for that
+    /// state (the held move occupied the ply) and may receive no further line
+    /// while our clock runs, so reopen the stream: its `gameFull` decides
+    /// afresh.
+    private func resyncIfHeldPlyWasLeftUndecided(ply: Int) async {
+        guard !movingStopped, stillOurMove(at: ply) else { return }
+        await observer.gameEvent(gameID: gameID, .anomaly("the held move for ply \(ply) no longer fits the position; reopening the stream to decide again"))
+        requestResync(ResyncNeeded(reason: "held move's position changed at ply \(ply)", isDisagreement: false))
     }
 
     private func clearPacedMove(ply: Int) {
@@ -629,8 +749,7 @@ actor LichessBotGameSession {
         while true {
             guard stillOurMove(at: ply) else { return "the position moved on" }
             let now = time.now()
-            if let clock = ourClockMilliseconds, let receivedAt = ourClockReceivedAt {
-                let remaining = clock - Int(LichessBotBackoff.seconds(now - receivedAt) * 1000)
+            if let remaining = ourClockNow()?.value {
                 let floor = LichessBotMovePacingSnapshot.clockFloorMilliseconds(lastMoveRoundTripMilliseconds: lastMoveRoundTripMilliseconds)
                 if remaining <= floor {
                     return "our clock reached \(floor / 1000) s, so it was played automatically"
@@ -657,9 +776,42 @@ actor LichessBotGameSession {
         return tracker.ply == ply && tracker.sideToMove == ourPieceColor && lastPostedPly != ply
     }
 
+    /// `stillOurMove(at:)`, and the position is still `position` (a FEN): a
+    /// takeback and a different reply can return to the same ply in a new
+    /// position, where a move decided before is wrong or illegal.
+    private func stillOurMove(at ply: Int, in position: String) -> Bool {
+        guard stillOurMove(at: ply), let tracker else { return false }
+        return FENParser.fen(from: tracker.engine.state) == position
+    }
+
+    /// Our clock, run down locally from the latest `gameState`. It runs down
+    /// whether or not it is our turn, so it means something only while we
+    /// are to move — the only time the manager and the clock floor use it.
+    private func ourClockNow() -> LichessBotMilliseconds? {
+        guard let clock = ourClockMilliseconds, let receivedAt = ourClockReceivedAt else { return nil }
+        return LichessBotMilliseconds(clock - Int(LichessBotBackoff.seconds(time.now() - receivedAt) * 1000))
+    }
+
+    /// Tell the session manager whether this game waits on our move now, and
+    /// our clock. A move held for the operator does not count as waiting:
+    /// nothing is posted until it is released, and counting it would hold
+    /// back every housekeeping request in the gate for the whole hold.
+    private func reportTurnStatus() async {
+        var awaiting = false
+        if !finished, !movingStopped, let tracker, let ourColor {
+            let ourPieceColor: PieceColor = ourColor == .white ? .white : .black
+            let holdingOurMove = pacedMovePly == tracker.ply && !pacedMoveReleased
+            awaiting = tracker.sideToMove == ourPieceColor
+                && tracker.engine.result == nil
+                && lastPostedPly != tracker.ply
+                && !holdingOurMove
+        }
+        await onTurnStatus(gameID, LichessBotTurnStatus(awaitingOurMove: awaiting, ourClock: ourClockNow()))
+    }
+
     /// Post the move. The ply is marked posted first, so no second POST for
     /// it can start while this one is in flight.
-    private func post(decision: LichessBotMoveDecision, ply: Int, offeringDraw: Bool, settings: LichessBotSettings) async throws {
+    private func post(decision: LichessBotMoveDecision, ply: Int, position: String, offeringDraw: Bool, settings: LichessBotSettings) async throws {
         let retries = LichessBotBackoff(initial: .seconds(1), multiplier: 2, cap: .seconds(4))
         var transientFailures = 0
         while true {
@@ -678,13 +830,16 @@ actor LichessBotGameSession {
                 // again only if it is still our move at this ply (§5.4).
                 lastPostedPly = nil
                 await observer.gameEvent(gameID: gameID, .moveRejected(ply: ply, uci: decision.uci, error: "rate limited; waiting for the cooldown"))
-                guard stillOurMove(at: ply) else { return }
-            } catch let error as LichessBotAPIError where !Self.isServerFailure(error) {
+                guard stillOurMove(at: ply, in: position) else { return }
+            } catch let error as LichessBotAPIError where Self.isTokenRejection(error) {
+                lastPostedPly = nil
+                await observer.gameEvent(gameID: gameID, .moveRejected(ply: ply, uci: decision.uci, error: error.localizedDescription))
+                throw error
+            } catch let error as LichessBotAPIError where Self.isRefusal(error) {
                 // A 4xx: Lichess refused the move. (A 5xx is Lichess failing,
                 // not refusing; it is retried below like a network error.)
                 lastPostedPly = nil
                 await observer.gameEvent(gameID: gameID, .moveRejected(ply: ply, uci: decision.uci, error: error.localizedDescription))
-                if case .unauthorized = error { throw error }
                 let rejections = rejectionsByPly[ply, default: 0] + 1
                 rejectionsByPly[ply] = rejections
                 if rejections >= Self.maximumRejectionsPerPly {
@@ -696,6 +851,14 @@ actor LichessBotGameSession {
                 // A 4xx means Lichess disagrees about the position (or the
                 // game just ended). Reopen for a fresh gameFull (§5.5, E21).
                 throw ResyncNeeded(reason: "move rejected: \(error.localizedDescription)", isDisagreement: true)
+            } catch let error as LichessBotAPIError where !Self.isServerFailure(error) {
+                // The request could not be built or its answer read: a fault
+                // in this client, not a refusal by Lichess, and sending the
+                // same move again can't fix it.
+                lastPostedPly = nil
+                await observer.gameEvent(gameID: gameID, .moveRejected(ply: ply, uci: decision.uci, error: error.localizedDescription))
+                await stopMoving("the move at ply \(ply) could not be sent: \(error.localizedDescription)")
+                return
             } catch let error as LichessBotGateError {
                 throw error
             } catch is CancellationError {
@@ -703,12 +866,12 @@ actor LichessBotGameSession {
             } catch {
                 lastPostedPly = nil
                 await observer.gameEvent(gameID: gameID, .moveRejected(ply: ply, uci: decision.uci, error: String(describing: error)))
-                guard transientFailures < LichessBotGameSession.maximumTransientPostRetries, stillOurMove(at: ply) else {
+                guard transientFailures < LichessBotGameSession.maximumTransientPostRetries, stillOurMove(at: ply, in: position) else {
                     throw ResyncNeeded(reason: "move post kept failing: \(error)", isDisagreement: false)
                 }
                 try await time.sleep(for: retries.delay(attempt: transientFailures, unitRandom: Double.random(in: 0...1)))
                 transientFailures += 1
-                guard stillOurMove(at: ply) else { return }
+                guard stillOurMove(at: ply, in: position) else { return }
             }
         }
     }
@@ -721,6 +884,33 @@ actor LichessBotGameSession {
         if case .http(let status, _) = error {
             return (500..<600).contains(status)
         }
+        return false
+    }
+
+    /// Lichess answered and refused the request (a client error other than a
+    /// token rejection), as opposed to failing to answer it or the gate
+    /// holding it back. The API maps a rejected token to `.unauthorized` and
+    /// the gate turns a 429 into its own error, so neither lands here.
+    private static func isRefusal(_ error: LichessBotAPIError) -> Bool {
+        if case .http(let status, _) = error {
+            return (400..<500).contains(status)
+        }
+        return false
+    }
+
+    private static func isTokenRejection(_ error: LichessBotAPIError) -> Bool {
+        if case .unauthorized = error {
+            return true
+        }
+        return false
+    }
+
+    /// Errors that must end the stream loop rather than be journaled while
+    /// play continues: cancellation, the gate closing, a rejected token.
+    private static func endsTheStreamLoop(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let gateError = error as? LichessBotGateError, case .closed = gateError { return true }
+        if let apiError = error as? LichessBotAPIError, isTokenRejection(apiError) { return true }
         return false
     }
 
@@ -762,23 +952,48 @@ actor LichessBotGameSession {
 
     private static let claimGrace: Duration = .seconds(1)
 
-    /// Claim victory; if Lichess refuses, claim a draw once. Lichess checks
-    /// that the opponent is really gone, so a stale `opponentGone` (plan
-    /// §12.4) is refused rather than acted on.
+    /// Claim victory; if Lichess refuses it, claim a draw once. Lichess
+    /// checks that the opponent is really gone, so a stale `opponentGone`
+    /// (plan §12.4) is refused rather than acted on. Only a refusal leads to
+    /// the draw claim: a claim that got no answer says nothing about the win.
     private func claimAfterOpponentLeft() async {
-        pendingClaim = nil
-        guard !finished else { return }
+        // `pendingClaim` stays set while the claim is in flight, so the
+        // opponent returning or the game ending still cancels it.
+        guard !finished, !Task.isCancelled else { return }
         do {
             try await api.claimVictory(gameID: gameID)
             await observer.gameEvent(gameID: gameID, .action("claimed victory (opponent gone)"))
-        } catch {
+        } catch let error as LichessBotAPIError where Self.isRefusal(error) {
+            guard !finished, !Task.isCancelled else {
+                await observer.gameEvent(gameID: gameID, .action("victory claim refused: \(error.localizedDescription); the claim was cancelled meanwhile, so no draw is claimed"))
+                return
+            }
             await observer.gameEvent(gameID: gameID, .action("victory claim refused: \(error.localizedDescription); claiming a draw"))
             do {
                 try await api.claimDraw(gameID: gameID)
                 await observer.gameEvent(gameID: gameID, .action("claimed draw (opponent gone)"))
             } catch {
+                if let apiError = error as? LichessBotAPIError, Self.isTokenRejection(apiError) {
+                    await observer.gameEvent(gameID: gameID, .tokenRejected(apiError.localizedDescription))
+                }
                 await observer.gameEvent(gameID: gameID, .action("draw claim refused: \(error.localizedDescription)"))
             }
+        } catch {
+            if Task.isCancelled {
+                // The opponent returned, the game ended or the session
+                // stopped while the claim was queued or in flight; the
+                // cancellation surfaces from the gate or from URLSession.
+                await observer.gameEvent(gameID: gameID, .action("victory claim cancelled: \(error.localizedDescription)"))
+                return
+            }
+            if let apiError = error as? LichessBotAPIError, Self.isTokenRejection(apiError) {
+                await observer.gameEvent(gameID: gameID, .tokenRejected(apiError.localizedDescription))
+            }
+            // Lichess did not answer the claim: nothing says the victory is
+            // refused, and a draw claim would give a won game away. A new
+            // `opponentGone` schedules a new claim; if the opponent stays
+            // away, their clock ends the game.
+            await observer.gameEvent(gameID: gameID, .anomaly("victory claim failed: \(error.localizedDescription); not claiming a draw"))
         }
     }
 
@@ -795,6 +1010,7 @@ actor LichessBotGameSession {
         pacedMoveReleased = false
         pendingClaim?.cancel()
         pendingClaim = nil
+        await stopCommandReplies(reason: "the game ended")
         await observer.gameEvent(gameID: gameID, .finished(status: status, winner: winner, localDrawCondition: tracker?.engine.drawCondition))
         await onTurnStatus(gameID, LichessBotTurnStatus(awaitingOurMove: false, ourClock: nil))
         if status.known != .aborted && status.known != .noStart {
@@ -810,6 +1026,11 @@ actor LichessBotGameSession {
             await observer.gameEvent(gameID: gameID, .anomaly("!\(command.rawValue) from \(line.username) in unknown room \(line.room.raw); not answered"))
             return
         }
+        // Before the budget, so a skip here doesn't spend it.
+        guard let ourUsername = ourDisplayName() else {
+            await observer.gameEvent(gameID: gameID, .anomaly("!\(command.rawValue) from \(line.username) not answered: no display name for our account in gameFull"))
+            return
+        }
         switch commandBudget.decide(now: time.now(), ourClockMilliseconds: ourClockMilliseconds) {
         case .skip(let reason):
             await observer.gameEvent(gameID: gameID, .action("not answering !\(command.rawValue) from \(line.username): \(reason)"))
@@ -817,13 +1038,7 @@ actor LichessBotGameSession {
         case .reply:
             break
         }
-        let ourUsername: String
-        if let full = gameFull, let ourColor {
-            ourUsername = (ourColor == .white ? full.white.name : full.black.name) ?? ourAccountID
-        } else {
-            ourUsername = ourAccountID
-        }
-        let info = pinnedMoveSource.info
+        let info = playingMoveSource.info
         let context = LichessBotChatCommandContext(
             ourUsername: ourUsername,
             modelID: info.modelID,
@@ -838,32 +1053,92 @@ actor LichessBotGameSession {
             await observer.gameEvent(gameID: gameID, .anomaly("!\(command.rawValue) not answered: \(error.localizedDescription)"))
             return
         }
-        for text in replies {
+        pendingCommandReplies.append(PendingCommandReply(command: command, username: line.username, room: room, texts: replies))
+        if commandReplySender == nil {
+            commandReplySender = Task { [weak self] in
+                await self?.sendPendingCommandReplies()
+            }
+        }
+    }
+
+    /// Send queued command replies in order until none are left or the
+    /// sender is cancelled.
+    private func sendPendingCommandReplies() async {
+        while !Task.isCancelled, !pendingCommandReplies.isEmpty {
+            let reply = pendingCommandReplies.removeFirst()
+            await sendCommandReply(reply)
+        }
+        // A cancelled sender was cleared by whoever cancelled it; only one
+        // that ran out of work clears itself.
+        if !Task.isCancelled {
+            commandReplySender = nil
+        }
+    }
+
+    private func sendCommandReply(_ reply: PendingCommandReply) async {
+        for text in reply.texts {
             do {
-                try await api.chat(gameID: gameID, room: room, text: text)
+                try await api.chat(gameID: gameID, room: reply.room, text: text)
             } catch {
-                await observer.gameEvent(gameID: gameID, .anomaly("reply to !\(command.rawValue) failed: \(error.localizedDescription)"))
+                if Task.isCancelled {
+                    await observer.gameEvent(gameID: gameID, .action("reply to !\(reply.command.rawValue) from \(reply.username) cut short: \(error.localizedDescription)"))
+                } else {
+                    await observer.gameEvent(gameID: gameID, .anomaly("reply to !\(reply.command.rawValue) failed: \(error.localizedDescription)"))
+                }
                 return
             }
-            await observer.gameEvent(gameID: gameID, .chatSent(room: room, text: text, origin: .commandReply))
+            await observer.gameEvent(gameID: gameID, .chatSent(room: reply.room, text: text, origin: .commandReply))
         }
-        await observer.gameEvent(gameID: gameID, .action("replied to !\(command.rawValue) from \(line.username) (\(room.rawValue))"))
+        await observer.gameEvent(gameID: gameID, .action("replied to !\(reply.command.rawValue) from \(reply.username) (\(reply.room.rawValue))"))
+    }
+
+    /// Stop sending command replies (the game or the session ended); any
+    /// not yet sent are journaled as unanswered, with `reason`.
+    private func stopCommandReplies(reason: String) async {
+        commandReplySender?.cancel()
+        commandReplySender = nil
+        let unsent = pendingCommandReplies
+        pendingCommandReplies.removeAll()
+        for reply in unsent {
+            await observer.gameEvent(gameID: gameID, .action("not answering !\(reply.command.rawValue) from \(reply.username): \(reason)"))
+        }
+    }
+
+    /// Our display name in this game. Lichess always names an account's
+    /// player, so nil means no `gameFull` has identified us.
+    private func ourDisplayName() -> String? {
+        guard let full = gameFull, let ourColor else { return nil }
+        return (ourColor == .white ? full.white : full.black).name
+    }
+
+    /// The opponent as Lichess shows them: their username, or, for Lichess's
+    /// built-in AI (no account, so no name), the label Lichess itself uses.
+    /// Nil when neither is known.
+    private func opponentDisplayName() -> String? {
+        guard let full = gameFull, let ourColor else { return nil }
+        let opponent = ourColor == .white ? full.black : full.white
+        if let name = opponent.name { return name }
+        if let level = opponent.aiLevel { return "Stockfish level \(level)" }
+        return nil
     }
 
     private func sendChat(_ template: String?, origin: LichessBotChatOrigin, settings: LichessBotSettings) async {
         guard let template else { return }
-        let opponent: String
-        if let full = gameFull, let ourColor {
-            opponent = (ourColor == .white ? full.black.name : full.white.name) ?? "opponent"
-        } else {
-            opponent = "opponent"
-        }
-        let values = [
-            "modelID": pinnedMoveSource.info.modelID,
-            "source": pinnedMoveSource.info.sourceKind.rawValue,
+        let info = playingMoveSource.info
+        var values = [
+            "modelID": info.modelID,
+            "source": info.sourceKind.rawValue,
             "build": "\(BuildInfo.buildNumber)",
-            "opponent": opponent,
         ]
+        // A template that names the opponent needs a name for them; one that
+        // doesn't is never held back by a missing name.
+        if template.contains("{opponent}") {
+            guard let opponent = opponentDisplayName() else {
+                await observer.gameEvent(gameID: gameID, .anomaly("chat message skipped: it names the opponent, and gameFull gives no name for them"))
+                return
+            }
+            values["opponent"] = opponent
+        }
         guard let text = LichessBotChat.message(from: template, values: values) else {
             await observer.gameEvent(gameID: gameID, .anomaly("chat message skipped: longer than \(LichessBotChat.maximumLength) characters"))
             return

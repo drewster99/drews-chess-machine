@@ -307,9 +307,16 @@ final class ChessGameEngine {
     /// The draw condition the engine's own rules detect in the current
     /// position, checked in the order `.automatic` adjudication applies them
     /// (fifty-move rule, then threefold repetition, then insufficient
-    /// material). Reported under either adjudication mode; under
-    /// `.automatic` a non-nil value has already ended the game.
+    /// material). Nil when the side to move has no legal move: checkmate and
+    /// stalemate take precedence over every draw rule, so a mating move that
+    /// also completes the fifty-move count is a checkmate, not a draw.
+    ///
+    /// Reported under either adjudication mode. Under `.automatic`, a non-nil
+    /// value after `applyMoveAndAdvance` means that move ended the game in
+    /// this draw. A position handed to `init` is never adjudicated, so it can
+    /// report a draw condition while `result` stays nil.
     var drawCondition: ChessDrawCondition? {
+        guard !currentLegalMoves.isEmpty else { return nil }
         if state.halfmoveClock >= 100 {
             return .fiftyMoveRule
         }

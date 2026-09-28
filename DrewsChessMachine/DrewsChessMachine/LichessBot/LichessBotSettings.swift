@@ -193,7 +193,11 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         require(n.reconnectInitialSeconds >= 1 && n.reconnectInitialSeconds <= n.reconnectCapSeconds, "Reconnect delay must be at least one second and at most the cap")
         require(n.eventStreamStallTimeoutSeconds > LichessBotLimits.eventStreamKeepAliveSeconds, "Event-stream stall timeout must exceed Lichess's keep-alive interval of \(LichessBotLimits.eventStreamKeepAliveSeconds) seconds")
         require(n.gameStreamResyncSeconds >= 10, "Game-stream resync must be at least ten seconds")
-        require(n.rateLimitBreakerWindowMinutes >= 1 && n.postRateLimitDrainMinutes >= 0, "Rate-limit window must be at least a minute")
+        // A second 429 cannot come before the first one's cooldown ends, so a
+        // breaker window no longer than the cooldown could never trip.
+        let minimumCooldownMinutes = Int(LichessBotRateLimit.minimumCooldown.components.seconds / 60)
+        require(n.rateLimitBreakerWindowMinutes > minimumCooldownMinutes, "The rate-limit breaker window must be longer than the cooldown after a 429, or a second 429 could never fall inside it")
+        require(n.postRateLimitDrainMinutes >= 0, "The post-rate-limit hold cannot be negative")
         require(n.accountRefreshMinimumIntervalSeconds >= 60 && n.exportMinimumSpacingSeconds >= 1, "Housekeeping spacing is too aggressive")
         require(n.lowClockThresholdMilliseconds >= 0, "Low-clock threshold cannot be negative")
         require(n.lostOnTimeBreakerCount >= 1 && n.lostOnTimeBreakerWindowGames >= n.lostOnTimeBreakerCount, "Lost-on-time breaker must trip within its window")

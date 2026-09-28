@@ -6,6 +6,9 @@ import SwiftUI
 struct LichessBotAccountSettingsSection: View {
     let controller: LichessBotController
     @Binding var expectedAccountID: String
+    /// The account id being typed; applied only on Return or Apply, since
+    /// the token, the records and a running bot are all tied to it.
+    @State private var accountIDText = ""
     @State private var tokenText = ""
     @State private var upgradeConfirmation = ""
     @State private var confirmingRemove = false
@@ -14,10 +17,21 @@ struct LichessBotAccountSettingsSection: View {
     var body: some View {
         Section("Account") {
             LabeledContent("Lichess account") {
-                TextField("Lichess account", text: $expectedAccountID, prompt: Text("account id"))
-                    .labelsHidden()
-                    .font(.system(.body, design: .monospaced))
-                    .frame(width: 220)
+                HStack {
+                    TextField("Lichess account", text: $accountIDText, prompt: Text("account id"))
+                        .labelsHidden()
+                        .font(.system(.body, design: .monospaced))
+                        .frame(width: 220)
+                        .onSubmit { commitAccountID() }
+                    Button("Apply") {
+                        commitAccountID()
+                    }
+                    .disabled(accountIDText.trimmingCharacters(in: .whitespaces).lowercased() == expectedAccountID.lowercased())
+                }
+                // The running bot, its token and its records are tied to this
+                // account; it changes only while offline.
+                .disabled(controller.isRunning || controller.connection == .connecting)
+                .help(controller.isRunning ? "Go offline to change the account" : "Press Return or Apply to use this account")
             }
             LabeledContent("Token") {
                 Text(statusText)
@@ -31,18 +45,18 @@ struct LichessBotAccountSettingsSection: View {
                         .frame(width: 280)
                         .onSubmit { submit() }
                     Button("Check & Save") {
-                    submit()
-                }
-                .disabled(tokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || controller.tokenState == .checking)
-                Button("Remove…", role: .destructive) {
-                    confirmingRemove = true
-                }
-                .disabled(!hasSavedToken)
-                .confirmationDialog("Remove the saved token from the Keychain?", isPresented: $confirmingRemove) {
-                    Button("Remove Token", role: .destructive) {
-                        Task { await controller.removeToken() }
+                        submit()
                     }
-                }
+                    .disabled(tokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || controller.tokenState == .checking)
+                    Button("Remove…", role: .destructive) {
+                        confirmingRemove = true
+                    }
+                    .disabled(!hasSavedToken)
+                    .confirmationDialog("Remove the saved token from the Keychain?", isPresented: $confirmingRemove) {
+                        Button("Remove Token", role: .destructive) {
+                            Task { await controller.removeToken() }
+                        }
+                    }
                 }
             }
             Text("Mint the token at lichess.org ▸ Preferences ▸ API access tokens, with only “Play games with the bot API” and “Create, accept, decline challenges”. One bot token, one machine.")
@@ -59,6 +73,18 @@ struct LichessBotAccountSettingsSection: View {
                 await controller.refreshTokenState()
             }
         }
+        .onAppear {
+            accountIDText = expectedAccountID
+        }
+        .onChange(of: expectedAccountID) {
+            Task { @MainActor in
+                accountIDText = expectedAccountID
+            }
+        }
+    }
+
+    private func commitAccountID() {
+        expectedAccountID = accountIDText.trimmingCharacters(in: .whitespaces).lowercased()
     }
 
     private var hasSavedToken: Bool {
@@ -125,14 +151,19 @@ struct LichessBotUpgradeBox: View {
                     confirmingUpgrade = true
                 }
                 .disabled(!controller.canUpgradeToBot || confirmationText != username || username.isEmpty)
-                .confirmationDialog("Permanently upgrade \(username) to a BOT account?", isPresented: $confirmingUpgrade) {
-                    Button("Upgrade Permanently", role: .destructive) {
-                        confirmationText = ""
-                        Task { await controller.upgradeToBot() }
+                .confirmationDialog(
+                    "Permanently upgrade \(username) to a BOT account?",
+                    isPresented: $confirmingUpgrade,
+                    actions: {
+                        Button("Upgrade Permanently", role: .destructive) {
+                            confirmationText = ""
+                            Task { await controller.upgradeToBot() }
+                        }
+                    },
+                    message: {
+                        Text("This cannot be undone.")
                     }
-                } message: {
-                    Text("This cannot be undone.")
-                }
+                )
             }
         }
         .padding(8)

@@ -39,11 +39,12 @@ enum LichessBotStreamReader {
     ///     a slow game, if Lichess sends no keep-alives on game streams.
     ///   - checkInterval: how often the watchdog looks.
     ///
-    /// Any bytes — a keep-alive, or part of a line — reset the silence
-    /// clock. The stream ends with `LichessBotStreamError.stalled` when the
-    /// watchdog fires, with the transport's error if the connection fails,
-    /// or normally when the server closes it. Stopping iteration cancels the
-    /// underlying connection.
+    /// Each chunk the transport delivers resets the silence clock. The real
+    /// transport delivers at every line end (so a keep-alive counts) and in
+    /// bounded pieces of a long line. The stream ends with
+    /// `LichessBotStreamError.stalled` when the watchdog fires, with the
+    /// transport's error if the connection fails, or normally when the server
+    /// closes it. Stopping iteration cancels the underlying connection.
     static func items(
         from chunks: LichessBotChunkStream,
         time: any LichessBotTimeSource,
@@ -53,55 +54,64 @@ enum LichessBotStreamReader {
         AsyncThrowingStream { continuation in
             let lastActivity = SyncBox<Duration>(time.now())
 
-            let pump = Task {
-                var splitter = LichessBotNDJSONSplitter()
-                do {
-                    for try await chunk in chunks {
-                        lastActivity.value = time.now()
-                        for item in splitter.append(chunk) {
-                            switch item {
-                            case .line(let data):
-                                continuation.yield(.line(data))
-                            case .keepAlive:
-                                continuation.yield(.keepAlive)
-                            case .oversizeLineDiscarded(let byteCount):
-                                continuation.yield(.oversizeLineDiscarded(byteCount: byteCount))
+            // The pump and the watchdog are children of one task: whichever
+            // ends the stream returns, and the group then cancels the other.
+            // Neither relies on `onTermination` for that, because a handler
+            // assigned after the stream has already finished is never called.
+            // `onTermination` is only for the consumer stopping.
+            let reader = Task {
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        var splitter = LichessBotNDJSONSplitter()
+                        do {
+                            for try await chunk in chunks {
+                                lastActivity.value = time.now()
+                                for item in splitter.append(chunk) {
+                                    switch item {
+                                    case .line(let data):
+                                        continuation.yield(.line(data))
+                                    case .keepAlive:
+                                        continuation.yield(.keepAlive)
+                                    case .oversizeLineDiscarded(let byteCount):
+                                        continuation.yield(.oversizeLineDiscarded(byteCount: byteCount))
+                                    }
+                                }
+                            }
+                            if splitter.pendingByteCount > 0 {
+                                continuation.yield(.truncatedAtEnd(byteCount: splitter.pendingByteCount))
+                            }
+                            continuation.finish()
+                        } catch {
+                            continuation.finish(throwing: error)
+                        }
+                    }
+                    group.addTask {
+                        while !Task.isCancelled {
+                            do {
+                                try await time.sleep(for: checkInterval)
+                            } catch is CancellationError {
+                                return
+                            } catch {
+                                continuation.finish(throwing: error)
+                                return
+                            }
+                            guard let limit = stallTimeout() else { continue }
+                            let silence = time.now() - lastActivity.value
+                            if silence > limit {
+                                continuation.finish(throwing: LichessBotStreamError.stalled(silence: silence))
+                                return
                             }
                         }
                     }
-                    if splitter.pendingByteCount > 0 {
-                        continuation.yield(.truncatedAtEnd(byteCount: splitter.pendingByteCount))
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            let watchdog = Task {
-                while !Task.isCancelled {
-                    do {
-                        try await time.sleep(for: checkInterval)
-                    } catch is CancellationError {
-                        return
-                    } catch {
-                        continuation.finish(throwing: error)
-                        pump.cancel()
-                        return
-                    }
-                    guard let limit = stallTimeout() else { continue }
-                    let silence = time.now() - lastActivity.value
-                    if silence > limit {
-                        continuation.finish(throwing: LichessBotStreamError.stalled(silence: silence))
-                        pump.cancel()
-                        return
-                    }
+                    // Whichever side ends first has ended the stream; the
+                    // other has nothing left to do.
+                    _ = await group.next()
+                    group.cancelAll()
                 }
             }
 
             continuation.onTermination = { _ in
-                pump.cancel()
-                watchdog.cancel()
+                reader.cancel()
             }
         }
     }

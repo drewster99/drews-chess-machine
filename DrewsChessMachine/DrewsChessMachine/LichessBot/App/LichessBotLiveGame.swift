@@ -14,7 +14,8 @@ struct LichessBotTranscriptEntry: Identifiable, Sendable, Equatable {
     let id: Int
     let at: Date
     let direction: Direction
-    /// A one-line summary ("gameState ply 12", "POST move e2e4 · 200 · 41 ms").
+    /// A one-line summary: the stream line's type, or the request's method,
+    /// label, status and time.
     let title: String
     /// The full raw text: the JSON line, or the request's method, path and
     /// fields.
@@ -176,6 +177,14 @@ final class LichessBotLiveGame: Identifiable {
     private(set) var anomalies: [String] = []
     private(set) var streamConnections = 0
 
+    /// A move token that failed to replay, reported once per ply: every later
+    /// state repeats the whole move list.
+    private struct UnreplayableMove: Hashable {
+        let ply: Int
+        let token: String
+    }
+    @ObservationIgnored private var reportedUnreplayableMoves: Set<UnreplayableMove> = []
+
     private var nextTranscriptID = 0
     private var nextChatID = 0
 
@@ -288,17 +297,35 @@ final class LichessBotLiveGame: Identifiable {
         }
     }
 
+    /// The status of a game DCM stopped following before it ended: the only
+    /// ending a later session for the same game undoes.
+    static let leftUnfinishedStatus = "left unfinished"
+
     /// The session for this game ended without the game finishing (the bot
     /// went offline, the gate closed, the token was rejected). The view
     /// stops its clocks; the record is settled later by reconciliation.
     func markSessionEnded(_ reason: String) {
         guard finishedAt == nil else { return }
         finishedAt = Date()
-        status = "left unfinished"
+        status = Self.leftUnfinishedStatus
         // A held move ends with its session.
         heldMove = nil
         releaseRequested = false
         note("DCM stopped following this game: \(reason)", isProblem: true)
+    }
+
+    /// A new session for this game started: it was left unfinished (DCM went
+    /// offline, or its session ended) while the game was still live on
+    /// Lichess. Undo that ending so the clocks, pacing controls and chat input
+    /// come back; the session's `gameFull` then restores status, clocks and
+    /// offers. A game that really ended is left alone. The operator's pacing
+    /// stays: it is their choice for this game, and a held or delayed move is
+    /// still played automatically when DCM's clock gets low.
+    func resumeFollowing() {
+        guard finishedAt != nil, status == Self.leftUnfinishedStatus else { return }
+        finishedAt = nil
+        status = "started"
+        note("DCM is following this game again", isProblem: false)
     }
 
     /// A request DCM made for this game.
@@ -370,14 +397,18 @@ final class LichessBotLiveGame: Identifiable {
                 let token = tokens[index]
                 let legal = MoveGenerator.legalMoves(for: current)
                 guard let move = ChessMove.parseUCI(token, legal: legal, state: current) else {
-                    anomalies.append("move \(token) at ply \(index) does not replay; the board stops here")
+                    if reportedUnreplayableMoves.insert(UnreplayableMove(ply: index, token: token)).inserted {
+                        anomalies.append("move \(token) at ply \(index) does not replay; the board stops here")
+                    }
                     break
                 }
                 let san: String
                 do {
                     san = try SANFormatter.san(for: move, in: current, legalMoves: legal)
                 } catch {
-                    anomalies.append("SAN for \(token) at ply \(index): \(error.localizedDescription)")
+                    if reportedUnreplayableMoves.insert(UnreplayableMove(ply: index, token: token)).inserted {
+                        anomalies.append("SAN for \(token) at ply \(index): \(error.localizedDescription)")
+                    }
                     break
                 }
                 let color = current.currentPlayer

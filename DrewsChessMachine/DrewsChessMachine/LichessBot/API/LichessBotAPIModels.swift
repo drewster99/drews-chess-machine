@@ -118,10 +118,30 @@ enum LichessBotSpeed: String, Sendable, Hashable, CaseIterable, Codable, Compara
 
     /// Fastest first, so "faster than every allowed speed" is a comparison.
     static func < (lhs: LichessBotSpeed, rhs: LichessBotSpeed) -> Bool {
-        guard let left = allCases.firstIndex(of: lhs), let right = allCases.firstIndex(of: rhs) else {
-            return false
+        lhs.fastestFirstRank < rhs.fastestFirstRank
+    }
+
+    /// As Lichess shows it ("UltraBullet", "Blitz", …).
+    var displayName: String {
+        switch self {
+        case .ultraBullet: return "UltraBullet"
+        case .bullet: return "Bullet"
+        case .blitz: return "Blitz"
+        case .rapid: return "Rapid"
+        case .classical: return "Classical"
+        case .correspondence: return "Correspondence"
         }
-        return left < right
+    }
+
+    private var fastestFirstRank: Int {
+        switch self {
+        case .ultraBullet: return 0
+        case .bullet: return 1
+        case .blitz: return 2
+        case .rapid: return 3
+        case .classical: return 4
+        case .correspondence: return 5
+        }
     }
 }
 

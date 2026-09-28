@@ -18,10 +18,15 @@ struct LichessBotBotRow: Identifiable, Sendable, Equatable {
     /// DCM's results against this player from its own records; nil when
     /// they have never played.
     var record: LichessBotResultTally? = nil
+    /// Lichess title ("BOT", "GM", …), when known.
+    var title: String? = nil
+    /// Playing a game right now, from a status fetch; nil when unknown.
+    var isPlaying: Bool? = nil
 
     // Sort keys for `Table`; unrated or unknown sorts below every value.
     var favoriteSortKey: Int { isFavorite ? 0 : 1 }
     var usernameSortKey: String { username.lowercased() }
+    var bulletSortKey: Int { summary?.bulletSortKey ?? Int.min }
     var blitzSortKey: Int { summary?.blitzSortKey ?? Int.min }
     var rapidSortKey: Int { summary?.rapidSortKey ?? Int.min }
     var gamesSortKey: Int { summary?.ratedSpeedGames ?? Int.min }
@@ -73,18 +78,23 @@ struct LichessBotBotListFilter: Sendable, Equatable {
 
 enum LichessBotBotList {
 
-    /// Rows for the Online Bots tab: every online bot, marked with favorites
-    /// and limit times.
-    static func onlineRows(bots: [LichessBotUserSummary], notes: LichessBotPlayerNotes?, now: Date, records: [String: LichessBotResultTally] = [:]) -> [LichessBotBotRow] {
+    /// Rows for the Online Bots and Online Players tabs: every listed
+    /// player, marked with favorites, limit times, and whether they are
+    /// playing (from `statuses`; the online lists don't say).
+    static func onlineRows(bots: [LichessBotUserSummary], notes: LichessBotPlayerNotes?, now: Date, records: [String: LichessBotResultTally] = [:], statuses: [String: LichessBotUserStatus] = [:]) -> [LichessBotBotRow] {
         bots.map { bot in
-            LichessBotBotRow(
-                id: bot.id.lowercased(),
+            let id = bot.id.lowercased()
+            return LichessBotBotRow(
+                id: id,
                 username: bot.username,
                 isFavorite: notes?.isFavorite(bot.id) == true,
-                isOnline: true,
+                // Listed means online; a status fetched since outranks the list.
+                isOnline: statuses[id].map { $0.online == true } ?? true,
                 summary: bot,
                 limitUntil: notes?.limitUntil(bot.id, now: now),
-                record: records[bot.id.lowercased()]
+                record: records[id],
+                title: bot.title,
+                isPlaying: statuses[id].map { $0.playing == true }
             )
         }
     }
@@ -95,10 +105,13 @@ enum LichessBotBotList {
         guard let notes else { return [] }
         let online = Dictionary(bots.map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
         return notes.favoriteIDs.map { id in
-            if let bot = online[id] {
-                return LichessBotBotRow(id: id, username: bot.username, isFavorite: true, isOnline: true, summary: bot, limitUntil: notes.limitUntil(id, now: now), record: records[id])
-            }
             let status = statuses[id]
+            let isPlaying = status.map { $0.playing == true }
+            if let bot = online[id] {
+                return LichessBotBotRow(id: id, username: bot.username, isFavorite: true, isOnline: status.map { $0.online == true } ?? true, summary: bot, limitUntil: notes.limitUntil(id, now: now), record: records[id], title: bot.title, isPlaying: isPlaying)
+            }
+            // Not in the online list: its status, if fetched, is all we know.
+            // Without one the name falls back to the stored lowercased id.
             return LichessBotBotRow(
                 id: id,
                 username: status?.name ?? id,
@@ -106,7 +119,9 @@ enum LichessBotBotList {
                 isOnline: status.map { $0.online == true },
                 summary: nil,
                 limitUntil: notes.limitUntil(id, now: now),
-                record: records[id]
+                record: records[id],
+                title: status?.title,
+                isPlaying: isPlaying
             )
         }
     }

@@ -6,7 +6,8 @@ import Foundation
 /// Lichess mixes units across its payloads: challenges carry seconds, while
 /// game streams (`gameFull.clock`, `gameState.wtime`/`btime`/`winc`/`binc`)
 /// carry milliseconds. Distinct wrapper types make passing one where the
-/// other is expected a compile error instead of a 1000× bug (plan E17).
+/// other is expected a compile error instead of a silent seconds-for-milliseconds
+/// bug (plan E17).
 struct LichessBotSeconds: Sendable, Hashable, Comparable, Codable {
     let value: Int
 

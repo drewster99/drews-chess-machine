@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// The per-game fields Stats needs (plan §10.5, §11), derived from a
@@ -55,47 +56,79 @@ struct LichessBotGameSummary: Sendable, Codable, Equatable {
 }
 
 /// `index.json`: a derived cache of `LichessBotGameSummary` rows, never
-/// authoritative (plan §10.5). It records how many record files it was
-/// built from and the newest one's modification time; when either no
-/// longer matches the `Games/` folder, it is rebuilt from the records.
-/// Every function here runs on `LichessBotFileQueue`.
+/// authoritative (plan §10.5). It records a signature of the record files it
+/// was built from (every path, size and modification time); when that no
+/// longer matches the `Games/` folder, it is rebuilt from the records. Every
+/// function here runs on a `LichessBotFileQueue` — the controller's
+/// general-purpose one, never the journal queue, since a rebuild decodes
+/// every record.
 enum LichessBotIndex {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
+
+    /// A record file the index left out because it doesn't decode.
+    struct UnreadableRecord: Sendable, Codable, Equatable {
+        let path: String
+        let error: String
+    }
 
     struct File: Sendable, Codable, Equatable {
         let schemaVersion: Int
         let recordCount: Int
-        /// Seconds since the epoch, stored as a Double so it survives the
-        /// JSON round trip exactly and the staleness check can compare it.
-        let newestRecordModified: Double?
+        /// Digest of every record file's path, size and modification time:
+        /// any record added, removed, replaced or touched changes it, so a
+        /// stale index is always noticed.
+        let recordSignature: String
         /// Newest game first.
         let rows: [LichessBotGameSummary]
+        /// Record files that don't decode, left out of `rows` (see `rebuild`).
+        let unreadableRecords: [UnreadableRecord]
+    }
+
+    struct RecordFile {
+        let url: URL
+        let size: Int
+        let modified: Date
     }
 
     /// Every `*.json` record file under `Games/` (journals and PGNs
-    /// excluded), with its modification time.
-    static func recordFiles(in directory: LichessBotDataDirectory) throws -> [(url: URL, modified: Double)] {
+    /// excluded), with its size and modification time.
+    static func recordFiles(in directory: LichessBotDataDirectory) throws -> [RecordFile] {
         let fm = FileManager.default
         guard fm.fileExists(atPath: directory.gamesDirectory.path) else {
             return []
         }
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey, .fileSizeKey]
         guard let enumerator = fm.enumerator(
             at: directory.gamesDirectory,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles]
         ) else {
             throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: directory.gamesDirectory.path])
         }
-        var files: [(url: URL, modified: Double)] = []
+        var files: [RecordFile] = []
         for case let url as URL in enumerator where url.pathExtension == "json" {
-            let values = try url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
+            let values = try url.resourceValues(forKeys: Set(keys))
             guard values.isRegularFile == true else { continue }
             guard let modified = values.contentModificationDate else {
                 throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: url.path, NSLocalizedDescriptionKey: "no modification date for \(url.lastPathComponent)"])
             }
-            files.append((url, modified.timeIntervalSince1970))
+            guard let size = values.fileSize else {
+                throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: url.path, NSLocalizedDescriptionKey: "no size for \(url.lastPathComponent)"])
+            }
+            files.append(RecordFile(url: url, size: size, modified: modified))
         }
         return files
+    }
+
+    /// A cheap signature of the record files: one stat each (already taken by
+    /// `recordFiles`), no reads. The modification time goes in by bit
+    /// pattern, so it compares exactly.
+    static func signature(of files: [RecordFile]) -> String {
+        var hasher = SHA256()
+        for file in files.sorted(by: { $0.url.path < $1.url.path }) {
+            hasher.update(data: Data("\(file.url.path)\t\(file.size)\t\(file.modified.timeIntervalSince1970.bitPattern)\n".utf8))
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     static func readRecord(at url: URL) throws -> LichessBotGameRecord {
@@ -104,15 +137,29 @@ enum LichessBotIndex {
         return try decoder.decode(LichessBotGameRecord.self, from: Data(contentsOf: url))
     }
 
-    /// Build the index from the record files.
+    /// Build the index from the record files. A record that doesn't decode
+    /// is left out and reported, never thrown: one bad file must not stop the
+    /// index — and with it the filing of every later game — from working.
     static func rebuild(_ directory: LichessBotDataDirectory) throws -> File {
         let files = try recordFiles(in: directory)
-        let rows = try files.map { try LichessBotGameSummary(record: readRecord(at: $0.url)) }
+        var rows: [LichessBotGameSummary] = []
+        var unreadable: [UnreadableRecord] = []
+        for file in files {
+            do {
+                rows.append(LichessBotGameSummary(record: try readRecord(at: file.url)))
+            } catch {
+                unreadable.append(UnreadableRecord(path: file.url.path, error: String(describing: error)))
+            }
+        }
+        if !unreadable.isEmpty {
+            SessionLogger.shared.log("[ALARM] LICHESS-BOT index: \(unreadable.count) record file(s) don't decode and are left out: \(unreadable.map(\.path).joined(separator: ", "))")
+        }
         return File(
             schemaVersion: schemaVersion,
             recordCount: files.count,
-            newestRecordModified: files.map(\.modified).max(),
-            rows: sorted(rows)
+            recordSignature: signature(of: files),
+            rows: sorted(rows),
+            unreadableRecords: unreadable.sorted { $0.path < $1.path }
         )
     }
 
@@ -122,7 +169,7 @@ enum LichessBotIndex {
         let files = try recordFiles(in: directory)
         if let stored = readStored(directory),
            stored.recordCount == files.count,
-           stored.newestRecordModified == files.map(\.modified).max() {
+           stored.recordSignature == signature(of: files) {
             return stored
         }
         let rebuilt = try rebuild(directory)
@@ -142,7 +189,7 @@ enum LichessBotIndex {
               let stored = readStored(directory),
               !stored.rows.contains(where: { $0.gameID == summary.gameID }),
               stored.recordCount == others.count,
-              stored.newestRecordModified == others.map(\.modified).max() else {
+              stored.recordSignature == signature(of: others) else {
             let rebuilt = try rebuild(directory)
             try write(rebuilt, to: directory)
             return rebuilt
@@ -150,8 +197,9 @@ enum LichessBotIndex {
         let updated = File(
             schemaVersion: schemaVersion,
             recordCount: files.count,
-            newestRecordModified: files.map(\.modified).max(),
-            rows: sorted(stored.rows + [summary])
+            recordSignature: signature(of: files),
+            rows: sorted(stored.rows + [summary]),
+            unreadableRecords: stored.unreadableRecords
         )
         try write(updated, to: directory)
         return updated

@@ -6,7 +6,7 @@ enum LichessBotRequestPriority: Int, Sendable, Hashable, Comparable, CaseIterabl
     case move = 0
     /// Claim victory / draw, resign, abort, draw and takeback responses.
     case gameCritical = 1
-    /// Accepting or declining a challenge.
+    /// Answering a challenge, and sending or withdrawing our own.
     case challengeResponse = 2
     /// Opening (not holding) an event or game stream.
     case streamOpen = 3
@@ -35,8 +35,9 @@ enum LichessBotGateEvent: Sendable {
     case requestStarted(id: UInt64, priority: LichessBotRequestPriority, label: String)
     case requestFinished(id: UInt64, priority: LichessBotRequestPriority, label: String, status: Int, latency: Duration, retryAfterHeader: String?)
     case requestFailed(id: UInt64, priority: LichessBotRequestPriority, label: String, error: String, latency: Duration)
-    /// A 429 closed the gate for `cooldown`. `recentRequestCounts` is how many
-    /// requests of each priority started in the preceding minute — the
+    /// A 429 arrived; the gate cools down for `cooldown` unless it was
+    /// already closed. `recentRequestCounts` is how many requests of each
+    /// priority started within the gate's recent window before it — the
     /// diagnosis of what spent the budget.
     case rateLimited(cooldown: Duration, triggerLabel: String, triggerPriority: LichessBotRequestPriority, recentRequestCounts: [LichessBotRequestPriority: Int])
     case cooldownEnded
@@ -48,7 +49,8 @@ enum LichessBotGateEvent: Sendable {
 }
 
 enum LichessBotGateError: LocalizedError, Equatable {
-    /// The gate is closed (breaker tripped, or the bot went offline).
+    /// The gate is closed (the rate-limit breaker tripped, or the cooldown
+    /// timer failed) and stays closed until `reopen()`.
     case closed(reason: String)
     /// The request got a 429. The gate is now cooling down; nothing is
     /// retried automatically (plan §5.4).
@@ -116,10 +118,14 @@ actor LichessBotRequestGate {
 
     /// Times of 429s still inside the breaker window.
     private var rateLimitTimes: [Duration] = []
+    /// When the latest 429's cooldown ends. Kept apart from `state` so that
+    /// reopening a closed gate resumes a cooldown still running instead of
+    /// sending straight after a 429.
+    private var rateLimitCooldownEnd: Duration?
     private var breakerWindow: Duration
 
-    /// Start times and priorities of requests in the last minute, for
-    /// telemetry and 429 diagnosis.
+    /// Start times and priorities of requests in the last `recentWindow`,
+    /// for telemetry and 429 diagnosis.
     private var recentStarts: [(time: Duration, priority: LichessBotRequestPriority)] = []
     private static let recentWindow: Duration = .seconds(60)
 
@@ -200,7 +206,9 @@ actor LichessBotRequestGate {
     // MARK: - Opening and closing
 
     /// Close the gate: every waiter and every later request fails with
-    /// `.closed(reason)`. Used for Go Offline and by the breaker.
+    /// `.closed(reason)` until `reopen()`. The breaker and a failed cooldown
+    /// timer close it. Going offline does not: the gate lives as long as the
+    /// controller, so a cooldown outlives going offline and back.
     func close(reason: String) {
         if case .closed = state { return }
         state = .closed(reason: reason)
@@ -210,12 +218,18 @@ actor LichessBotRequestGate {
         onEvent(.closed(reason: reason))
     }
 
-    /// Reopen after `close` or a breaker trip. Clears the 429 history, since
-    /// reopening is an explicit operator decision.
+    /// Reopen after a close. Going online calls this, which makes it the
+    /// operator's explicit decision to resume after a breaker trip. Clears
+    /// the breaker's 429 history; a cooldown still running resumes as a
+    /// cooldown, so nothing is sent before it ends.
     func reopen() {
         guard case .closed = state else { return }
-        state = .open
         rateLimitTimes.removeAll()
+        if let end = rateLimitCooldownEnd, end > time.now() {
+            state = .cooldown(until: end)
+        } else {
+            state = .open
+        }
         onEvent(.reopened)
         dispatchNext()
     }
@@ -231,7 +245,7 @@ actor LichessBotRequestGate {
         let phase: Phase
         let busy: Bool
         let waiting: Int
-        /// Requests started in the last minute, per priority.
+        /// Requests started within the gate's recent window, per priority.
         let recentRequestCounts: [LichessBotRequestPriority: Int]
         /// Games waiting on our move (housekeeping is deferred while any are).
         let gamesAwaitingOurMove: Int
@@ -262,18 +276,21 @@ actor LichessBotRequestGate {
         }
         nextID += 1
         let waiterID = nextID
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                if Task.isCancelled {
-                    continuation.resume(throwing: CancellationError())
-                    return
+        try await withTaskCancellationHandler(
+            operation: {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    if Task.isCancelled {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    waiters.append(Waiter(id: waiterID, priority: priority, continuation: continuation))
+                    dispatchNext()
                 }
-                waiters.append(Waiter(id: waiterID, priority: priority, continuation: continuation))
-                dispatchNext()
+            },
+            onCancel: {
+                Task { await self.cancelWaiter(id: waiterID) }
             }
-        } onCancel: {
-            Task { await self.cancelWaiter(id: waiterID) }
-        }
+        )
     }
 
     private func cancelWaiter(id: UInt64) {
@@ -358,6 +375,12 @@ actor LichessBotRequestGate {
 
         rateLimitTimes = rateLimitTimes.filter { now - $0 <= breakerWindow }
         rateLimitTimes.append(now)
+        let end = now + cooldown
+        if let existing = rateLimitCooldownEnd, existing > end {
+            rateLimitCooldownEnd = existing
+        } else {
+            rateLimitCooldownEnd = end
+        }
 
         onEvent(.rateLimited(cooldown: cooldown, triggerLabel: triggerLabel, triggerPriority: triggerPriority, recentRequestCounts: recentRequestCounts(now: now)))
 
@@ -365,7 +388,16 @@ actor LichessBotRequestGate {
             onEvent(.breakerTripped(rateLimitsInWindow: rateLimitTimes.count, window: breakerWindow))
             close(reason: "rate-limit breaker: \(rateLimitTimes.count) HTTP 429 responses within \(breakerWindow)")
         } else {
-            state = .cooldown(until: now + cooldown)
+            switch state {
+            case .open:
+                state = .cooldown(until: end)
+            case .cooldown(let until):
+                state = .cooldown(until: max(until, end))
+            case .closed:
+                // Closed while this request was in flight. A 429 is no
+                // reason to open it; only `reopen()` does that.
+                break
+            }
         }
         return cooldown
     }
@@ -379,15 +411,20 @@ actor LichessBotRequestGate {
             } catch is CancellationError {
                 return
             } catch {
-                self?.reportWakeFailure(error)
+                await self?.cooldownTimerFailed(error)
                 return
             }
             await self?.wakeFromCooldown()
         }
     }
 
-    private nonisolated func reportWakeFailure(_ error: Error) {
-        onEvent(.requestFailed(id: 0, priority: .housekeeping, label: "gate cooldown timer", error: String(describing: error), latency: .zero))
+    /// Without its timer the gate cannot know when the cooldown ends, and
+    /// opening early would send during a 429 cooldown. Closing makes the
+    /// failure visible instead of leaving waiters parked; going online again
+    /// reopens it.
+    private func cooldownTimerFailed(_ error: Error) {
+        wakeTask = nil
+        close(reason: "cooldown timer failed: \(String(describing: error))")
     }
 
     private func wakeFromCooldown() {

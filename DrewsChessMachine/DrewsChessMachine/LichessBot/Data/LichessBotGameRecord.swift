@@ -13,8 +13,11 @@ enum LichessBotOpponentKind: String, Sendable, Codable, Equatable, CaseIterable 
 }
 
 /// A finished game: the single source of truth for everything the bot
-/// shows about it (plan §10.6). Written once, after reconciliation with
-/// Lichess's export; the journal it was built from is kept beside it.
+/// shows about it (plan §10.6). Written when the game is filed, after
+/// reconciliation with Lichess's export, and rewritten only if the game is
+/// filed again: after a crash before its journal left InProgress/, or when a
+/// later journal for the game arrives (then rebuilt from every journal kept
+/// for it). Its journals are kept beside it.
 struct LichessBotGameRecord: Sendable, Codable, Equatable {
     static let currentSchemaVersion = 1
 
@@ -42,12 +45,16 @@ struct LichessBotGameRecord: Sendable, Codable, Equatable {
     }
 
     struct Outcome: Sendable, Codable, Equatable {
-        /// Lichess's status name (`mate`, `resign`, `outoftime`, …).
+        /// Lichess's status name, spelled as Lichess spells it (see
+        /// `LichessBotGameStatusName`).
         let status: String
         let winner: String?
-        /// `1-0`, `0-1`, `1/2-1/2`, or `*` for a game that never counted.
+        /// The PGN result token (`LichessBotRecordBuilder.pgnResult`): a win
+        /// for either side, a draw, or the unfinished-game token for a game
+        /// that never counted.
         let pgnResult: String
-        /// 1, ½ or 0 for DCM; nil for aborted games.
+        /// DCM's score: a win, half a point for a draw, or a loss; nil for a
+        /// game that never counted.
         let ourScore: Double?
         let plies: Int
         /// The draw rule DCM's own engine saw in the final position (E10).
@@ -60,14 +67,19 @@ struct LichessBotGameRecord: Sendable, Codable, Equatable {
         /// Nil only if the move list could not be replayed from this ply.
         let san: String?
         /// The token exactly as Lichess sent it (opponent) or as DCM sent it
-        /// (ours) — never normalized (E1).
+        /// (ours) — never normalized (E1). For a move known only from the
+        /// export (`receivedAt` nil), the UCI DCM derived from the export's
+        /// SAN.
         let uciAsGiven: String
         /// Server clocks after this move, when the state that first carried
         /// it carried only it (a reconnect's `gameFull` brings several moves
         /// with one pair of clocks, which belongs to the last).
         let whiteClockMilliseconds: Int?
         let blackClockMilliseconds: Int?
-        let receivedAt: Date
+        /// When the stream line that first carried the move arrived; nil for
+        /// a move known only from Lichess's export (the journal ended before
+        /// it).
+        let receivedAt: Date?
         let ours: Bool
         let decision: LichessBotMoveDecision?
         let generationID: Int?
@@ -143,6 +155,9 @@ struct LichessBotGameRecord: Sendable, Codable, Equatable {
     let rejectedMoves: [RejectedMove]
     /// Game-stream connections after the first.
     let streamReconnects: Int
+    /// Bytes of unterminated final journal lines dropped when the record was
+    /// built. A line cut before an append is recorded as an anomaly instead
+    /// (see `LichessBotJSONLines.cutUnterminatedFinalLine`).
     let droppedTrailingJournalBytes: Int
     let reconciliation: Reconciliation
 }
@@ -152,6 +167,8 @@ enum LichessBotRecordError: LocalizedError, Equatable {
     case noGameInformation(gameID: String)
     /// Neither player in the game is our account.
     case notOurGame(gameID: String, ourAccountID: String)
+    /// There is no export, and the journal never recorded how the game ended.
+    case noOutcome(gameID: String)
 
     var errorDescription: String? {
         switch self {
@@ -159,6 +176,8 @@ enum LichessBotRecordError: LocalizedError, Equatable {
             return "Game \(gameID): the journal has no gameFull and there is no export to build a record from"
         case .notOurGame(let gameID, let ourAccountID):
             return "Game \(gameID): neither player is \(ourAccountID)"
+        case .noOutcome(let gameID):
+            return "Game \(gameID): there is no export and the journal never recorded how the game ended"
         }
     }
 }
@@ -170,10 +189,45 @@ enum LichessBotRecordError: LocalizedError, Equatable {
 ///
 /// The move list is replayed from the journal's raw stream lines — the
 /// same lines the game session played from — and DCM's own decisions and
-/// POSTs are attached to our moves by ply. The export wins for status,
+/// POSTs are attached to our moves by ply once the whole journal is
+/// replayed. The export wins for status,
 /// winner, rating changes and opening; every disagreement is listed in the
 /// record's reconciliation block.
 enum LichessBotRecordBuilder {
+
+    /// The status of a record built with neither an export nor a finish in
+    /// the journal. Only a direct `build` can produce one:
+    /// `LichessBotRecordStore.finalize` refuses to file such a game
+    /// (`noOutcome`), so it never reaches disk. It maps to the unfinished
+    /// result and no score.
+    static let statusNotRecorded = "unknown"
+
+    /// The journal's first `gameFull`, if any.
+    static func firstGameFull(in entries: [LichessBotJournalEntry]) -> LichessBotGameFull? {
+        for entry in entries {
+            guard case .streamLine(let raw) = entry.event else { continue }
+            do {
+                if case .gameFull(let full) = try LichessBotGameStreamLine.decode(Data(raw.utf8)) {
+                    return full
+                }
+            } catch {
+                // An undecodable line is not a gameFull; `build` reports it
+                // as an anomaly.
+            }
+        }
+        return nil
+    }
+
+    /// When the game was created, from its `gameFull`.
+    static func creationDate(of full: LichessBotGameFull) -> Date {
+        Date(timeIntervalSince1970: Double(full.createdAt) / 1000)
+    }
+
+    /// When the game was created, from Lichess's export; nil when the export
+    /// doesn't say.
+    static func creationDate(of export: LichessBotGameExport) -> Date? {
+        export.createdAt.map { Date(timeIntervalSince1970: Double($0) / 1000) }
+    }
 
     static func build(
         gameID: String,
@@ -194,7 +248,6 @@ enum LichessBotRecordBuilder {
         guard let ourColor = facts.color(of: ourAccountID) else {
             throw LichessBotRecordError.notOurGame(gameID: gameID, ourAccountID: ourAccountID)
         }
-        replay.finishMoves(ourColor: ourColor)
 
         var mismatches: [String] = []
         let journalStatus = replay.finish?.status
@@ -216,14 +269,26 @@ enum LichessBotRecordBuilder {
                 // while the app was down.
                 mismatches.append("journal has no finished status; export says \(status)")
             }
-            let ourSANs = replay.moves.map(\.san)
             let exportSANs = export.sanMoves
-            if ourSANs.allSatisfy({ $0 != nil }) {
-                let journalSANs = ourSANs.compactMap { $0 }
-                if journalSANs != exportSANs {
-                    let firstDifference = zip(journalSANs, exportSANs).enumerated().first { $0.element.0 != $0.element.1 }?.offset
-                        ?? min(journalSANs.count, exportSANs.count)
-                    mismatches.append("moves differ from ply \(firstDifference): journal has \(journalSANs.count), export has \(exportSANs.count)")
+            let journalSANs = replay.pending.compactMap(\.san)
+            if journalSANs.count == replay.pending.count {
+                // The export is authoritative. A journal that agrees with it
+                // up to its own end, and ends early (the app was down, or
+                // crashed before journaling the last lines), is extended
+                // from the export so the record holds the whole game.
+                if exportSANs.count > journalSANs.count && Array(exportSANs.prefix(journalSANs.count)) == journalSANs {
+                    let tail = Array(exportSANs[journalSANs.count...])
+                    if let failure = replay.extendFromExport(tail, clocksCentiseconds: export.clocks) {
+                        mismatches.append("the journal ends at ply \(journalSANs.count); the export's later moves could not all be added: \(failure)")
+                    } else {
+                        mismatches.append("the journal ends at ply \(journalSANs.count); the export's \(tail.count) later move(s) were added")
+                    }
+                }
+                let recordSANs = replay.pending.compactMap(\.san)
+                if recordSANs != exportSANs {
+                    let firstDifference = zip(recordSANs, exportSANs).enumerated().first { $0.element.0 != $0.element.1 }?.offset
+                        ?? min(recordSANs.count, exportSANs.count)
+                    mismatches.append("moves differ from ply \(firstDifference): record has \(recordSANs.count), export has \(exportSANs.count)")
                 }
             } else {
                 mismatches.append("journal moves could not be fully replayed; export has \(exportSANs.count) moves")
@@ -232,9 +297,13 @@ enum LichessBotRecordBuilder {
             status = journalFinish.status
             winner = journalFinish.winner
         } else {
-            status = "unknown"
+            status = Self.statusNotRecorded
             winner = nil
             mismatches.append("no export and no finished status in the journal")
+        }
+        replay.finishMoves(ourColor: ourColor, exportNoteTime: checkedAt)
+        if journal.droppedTrailingByteCount > 0 {
+            replay.anomalies.append(.init(at: checkedAt, text: "the journal ended in an unterminated line of \(journal.droppedTrailingByteCount) bytes (an interrupted write), which was dropped"))
         }
 
         let reconciliation: LichessBotGameRecord.Reconciliation
@@ -316,7 +385,7 @@ enum LichessBotRecordBuilder {
 
         init?(full: LichessBotGameFull?, export: LichessBotGameExport?) {
             if let full {
-                createdAt = Date(timeIntervalSince1970: Double(full.createdAt) / 1000)
+                createdAt = LichessBotRecordBuilder.creationDate(of: full)
                 setup = LichessBotGameRecord.Setup(
                     speed: full.speed.raw,
                     perf: full.perf?.name,
@@ -328,14 +397,14 @@ enum LichessBotRecordBuilder {
                 )
                 white = (full.white.id, full.white.name, full.white.title, full.white.rating, full.white.provisional, full.white.aiLevel)
                 black = (full.black.id, full.black.name, full.black.title, full.black.rating, full.black.provisional, full.black.aiLevel)
-            } else if let export, let exportCreatedAt = export.createdAt, let speed = export.speed, let variant = export.variant, let rated = export.rated {
-                createdAt = Date(timeIntervalSince1970: Double(exportCreatedAt) / 1000)
+            } else if let export, let exportCreatedAt = LichessBotRecordBuilder.creationDate(of: export), let speed = export.speed, let variant = export.variant, let rated = export.rated {
+                createdAt = exportCreatedAt
                 setup = LichessBotGameRecord.Setup(
                     speed: speed,
                     perf: export.perf,
                     rated: rated,
                     variant: variant,
-                    initialFen: "startpos",
+                    initialFen: export.initialPosition,
                     clockInitialMilliseconds: export.clock?.initial.map { $0 * 1000 },
                     clockIncrementMilliseconds: export.clock?.increment.map { $0 * 1000 }
                 )
@@ -391,7 +460,8 @@ enum LichessBotRecordBuilder {
         let san: String?
         let whiteClock: Int?
         let blackClock: Int?
-        let receivedAt: Date
+        /// Nil for a move known only from Lichess's export.
+        let receivedAt: Date?
     }
 
     private struct Replay {
@@ -419,12 +489,13 @@ enum LichessBotRecordBuilder {
         var builds: [Int] = []
         var streamOpens = 0
         var finish: Finish?
-        /// Our decisions and POSTs, by ply. A decision is consumed by the
-        /// move it produced; a takeback leaves room for a new one.
-        var decisions: [Int: (decision: LichessBotMoveDecision, generationID: Int)] = [:]
-        var posts: [Int: (uci: String, offeringDraw: Bool, milliseconds: Double)] = [:]
-        /// Our moves, resolved when the move list is final.
-        var ourMoveAttachments: [Int: (decision: LichessBotMoveDecision?, generationID: Int?, postMilliseconds: Double?, offeredDraw: Bool?)] = [:]
+        /// Our decisions and POSTs by ply, each in journal order. A ply can
+        /// have several (a takeback and replay). They are matched to the move
+        /// finally at each ply only in `finishMoves`, once the whole journal
+        /// is replayed: a held move's echo is often journaled before its
+        /// POST, so matching at the stream line would miss it.
+        var decisions: [Int: [(decision: LichessBotMoveDecision, generationID: Int)]] = [:]
+        var posts: [Int: [(uci: String, offeringDraw: Bool, milliseconds: Double)]] = [:]
         var offerFlags: [String: Bool] = [:]
 
         init(ourAccountID: String) {
@@ -446,17 +517,17 @@ enum LichessBotRecordBuilder {
             case .streamEnded, .positionSynced, .keepAlive, .request:
                 break
             case .moveDecided(let ply, let decision, let generation):
-                decisions[ply] = (decision, generation.generationID)
+                decisions[ply, default: []].append((decision, generation.generationID))
                 if !generations.contains(where: { $0.generationID == generation.generationID }) {
                     generations.append(generation)
                 }
             case .movePosted(let ply, let uci, let offeringDraw, let milliseconds):
-                posts[ply] = (uci, offeringDraw, milliseconds)
+                posts[ply, default: []].append((uci, offeringDraw, milliseconds))
             case .moveRejected(let ply, let uci, let error):
+                // A refused attempt is journaled instead of `movePosted`, never
+                // after it, so there is no POST of this attempt to take back.
+                // An earlier accepted POST of the same move stays: it happened.
                 rejectedMoves.append(.init(at: entry.at, ply: ply, uci: uci, error: error))
-                if posts[ply]?.uci == uci {
-                    posts[ply] = nil
-                }
             case .action(let text):
                 events.append(.init(at: entry.at, text: text))
             case .chatSent(let room, let text, _):
@@ -552,7 +623,6 @@ enum LichessBotRecordBuilder {
             if common < pending.count {
                 for removed in pending[common...].reversed() {
                     retractions.append(.init(ply: removed.ply, uciAsGiven: removed.uciAsGiven, retractedAt: at))
-                    ourMoveAttachments[removed.ply] = nil
                 }
                 pending.removeLast(pending.count - common)
                 if let tracker, replayable {
@@ -575,7 +645,6 @@ enum LichessBotRecordBuilder {
                         blackClock: isLast ? state.btime.value : nil,
                         receivedAt: at
                     ))
-                    attachOurMove(ply: index, token: token)
                 }
             }
             noteOffers(state, at: at)
@@ -600,21 +669,6 @@ enum LichessBotRecordBuilder {
             }
         }
 
-        /// Record what DCM decided and posted for this ply, if this client
-        /// posted it. Which side the move belongs to is settled later, once
-        /// our color is known; a post whose token differs is left for the
-        /// our-side check to flag.
-        private mutating func attachOurMove(ply: Int, token: String) {
-            guard let post = posts[ply], post.uci == token else {
-                ourMoveAttachments[ply] = (nil, nil, nil, nil)
-                return
-            }
-            let decision = decisions[ply].flatMap { $0.decision.uci == token ? $0 : nil }
-            ourMoveAttachments[ply] = (decision?.decision, decision?.generationID, post.milliseconds, post.offeringDraw)
-            posts[ply] = nil
-            decisions[ply] = nil
-        }
-
         private mutating func noteOffers(_ state: LichessBotGameState, at: Date) {
             let flags: [(key: String, value: Bool?, text: String)] = [
                 ("wdraw", state.wdraw, "white offers a draw"),
@@ -631,17 +685,71 @@ enum LichessBotRecordBuilder {
             }
         }
 
-        /// Turn the replayed move list into record moves, now that our color
-        /// is known. A move on our side that this client did not post is
-        /// the other-client signal (plan §6.1 B) and is recorded as an
-        /// anomaly.
-        mutating func finishMoves(ourColor: LichessBotColorName) {
+        private static let millisecondsPerCentisecond = 10
+
+        /// Append the export's moves past the end of the journal's list — a
+        /// game that went on after the journal stopped (the app was down, or
+        /// crashed before journaling the last lines). Called only when the
+        /// journal's SAN list is a strict prefix of the export's. Returns why
+        /// it stopped early, if it did. The export's `clocks` give each ply
+        /// the mover's clock after the move, so only the mover's clock is set.
+        mutating func extendFromExport(_ sans: [String], clocksCentiseconds: [Int]?) -> String? {
+            guard replayable, let tracker else {
+                return "the journal's position can't be extended"
+            }
+            for exportSAN in sans {
+                let ply = pending.count
+                let engine = tracker.engine
+                guard let move = PGNImporter.resolveLegalSANMove(exportSAN, state: engine.state) else {
+                    replayable = false
+                    return "export move \(exportSAN) at ply \(ply) does not replay"
+                }
+                let san: String
+                do {
+                    san = try SANFormatter.san(for: move, in: engine.state, legalMoves: engine.currentLegalMoves)
+                    try tracker.sync(to: pending.map(\.uciAsGiven) + [move.uci])
+                } catch {
+                    replayable = false
+                    return "export move \(exportSAN) at ply \(ply) does not replay: \(error.localizedDescription)"
+                }
+                let moverClock: Int?
+                if let clocksCentiseconds, ply < clocksCentiseconds.count {
+                    moverClock = clocksCentiseconds[ply] * Self.millisecondsPerCentisecond
+                } else {
+                    moverClock = nil
+                }
+                let whiteMoved = ply % 2 == 0
+                pending.append(PendingMove(
+                    ply: ply,
+                    uciAsGiven: move.uci,
+                    san: san,
+                    whiteClock: whiteMoved ? moverClock : nil,
+                    blackClock: whiteMoved ? nil : moverClock,
+                    receivedAt: nil
+                ))
+            }
+            return nil
+        }
+
+        /// Turn the move list into record moves, now that our color is known
+        /// and the whole journal has been replayed. Our move at a ply takes
+        /// the last POST of its exact token at that ply, and — only then —
+        /// the last decision for that token. A move on our side that this
+        /// client did not post is the other-client signal (plan §6.1 B) and
+        /// is recorded as an anomaly; one known only from the export is noted
+        /// at `exportNoteTime`, the reconciliation time.
+        mutating func finishMoves(ourColor: LichessBotColorName, exportNoteTime: Date) {
             moves = pending.map { move in
                 let color: LichessBotColorName = move.ply % 2 == 0 ? .white : .black
                 let ours = color == ourColor
-                let attachment = ourMoveAttachments[move.ply]
-                if ours && attachment?.postMilliseconds == nil {
-                    anomalies.append(.init(at: move.receivedAt, text: "move \(move.uciAsGiven) at ply \(move.ply) is on our side but was not posted by this client"))
+                let post = ours ? posts[move.ply]?.last(where: { $0.uci == move.uciAsGiven }) : nil
+                let decision = post == nil ? nil : decisions[move.ply]?.last(where: { $0.decision.uci == move.uciAsGiven })
+                if ours && post == nil {
+                    if let receivedAt = move.receivedAt {
+                        anomalies.append(.init(at: receivedAt, text: "move \(move.uciAsGiven) at ply \(move.ply) is on our side but was not posted by this client"))
+                    } else {
+                        anomalies.append(.init(at: exportNoteTime, text: "move \(move.uciAsGiven) at ply \(move.ply), known only from the export, is on our side but was not posted by this client"))
+                    }
                 }
                 return LichessBotGameRecord.Move(
                     ply: move.ply,
@@ -652,10 +760,10 @@ enum LichessBotRecordBuilder {
                     blackClockMilliseconds: move.blackClock,
                     receivedAt: move.receivedAt,
                     ours: ours,
-                    decision: ours ? attachment?.decision : nil,
-                    generationID: ours ? attachment?.generationID : nil,
-                    postMilliseconds: ours ? attachment?.postMilliseconds : nil,
-                    offeredDraw: ours ? attachment?.offeredDraw : nil
+                    decision: decision?.decision,
+                    generationID: decision?.generationID,
+                    postMilliseconds: post?.milliseconds,
+                    offeredDraw: post?.offeringDraw
                 )
             }
         }

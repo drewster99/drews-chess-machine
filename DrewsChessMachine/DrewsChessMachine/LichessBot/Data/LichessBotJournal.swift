@@ -126,11 +126,16 @@ enum LichessBotJournal {
 ///
 /// Each append hops onto the file queue and back, so a game session never
 /// does file I/O on a cooperative-pool thread, and events land in the order
-/// the session reported them. The file is synchronized to disk at the end
-/// of each move cycle (after a move is posted) and when the game finishes.
-/// The first time a game is seen by this app launch, a header is written —
-/// marked `resumed` when the journal already existed (plan §10.2 launch
-/// recovery).
+/// the session reported them. The first time a game is seen by this app
+/// launch, a header is written — marked `resumed` when the journal already
+/// existed (plan §10.2 launch recovery).
+///
+/// The file is synchronized to disk after each posted move and at the
+/// finish, and at no other time — not per anomaly, although plan E38 says
+/// so. Every other line is written to the file before the session
+/// continues, so it survives an app crash (it is in the kernel's cache);
+/// only a kernel panic or power loss can lose lines written since the last
+/// synchronize.
 ///
 /// Write failures are reported through `onWriteFailure` (an alarm), never
 /// dropped silently; the game keeps playing either way.
@@ -139,7 +144,15 @@ final class LichessBotJournalWriter: LichessBotGameObserver {
     private let fileQueue: LichessBotFileQueue
     private let onWriteFailure: @Sendable (String, Error) -> Void
     private let onGameFinished: @Sendable (String) async -> Void
+    /// Games this launch has written a header for. Read and changed only
+    /// inside file-queue closures, so each append's decision and write are
+    /// one serial step.
     private let headerWritten = SyncBox<Set<String>>([])
+    /// Games whose journal this launch knows ends in a newline (its own last
+    /// append succeeded). Any other existing journal — one from an earlier
+    /// launch, or one whose last append failed partway — has its end checked
+    /// and an unterminated line cut before the next append.
+    private let tailVerified = SyncBox<Set<String>>([])
     /// Games whose journal has been filed; nothing more is written for them.
     private let finalized = SyncBox<Set<String>>([])
 
@@ -183,47 +196,62 @@ final class LichessBotJournalWriter: LichessBotGameObserver {
     }
 
     /// Append entries (with a header first if this launch hasn't written
-    /// one for the game yet).
+    /// one for the game yet). The header decision, the tail check and the
+    /// write all happen inside one file-queue closure, so concurrent appends
+    /// (a session's events and the controller's request records) can't
+    /// reorder a headerless write ahead of the one carrying the header.
     func append(_ entries: [LichessBotJournalEntry], gameID: String, synchronize: Bool) async throws {
         let url = directory.inProgressJournalURL(gameID: gameID)
-        let needsHeader = headerWritten.mutate { written -> Bool in
-            written.insert(gameID).inserted
-        }
-        let headerBox = headerWritten
-        do {
-            try await fileQueue.run {
-                if !needsHeader && !FileManager.default.fileExists(atPath: url.path) {
-                    // This launch wrote the journal, and it is gone: the game
-                    // was filed. A late write must not recreate a headerless
-                    // fragment that would later be filed over the record.
-                    return
-                }
-                var data = Data()
-                if needsHeader {
-                    let resumed = FileManager.default.fileExists(atPath: url.path)
-                    let header = LichessBotJournalEntry(
-                        at: Date(),
-                        event: .header(
-                            schemaVersion: LichessBotJournal.schemaVersion,
-                            gameID: gameID,
-                            build: BuildInfo.buildNumber,
-                            gitHash: BuildInfo.gitHash,
-                            resumed: resumed
-                        )
-                    )
-                    data.append(try LichessBotJSONLines.encodeLine(header))
-                }
-                for entry in entries {
-                    data.append(try LichessBotJSONLines.encodeLine(entry))
-                }
-                try LichessBotJSONLines.append(data, to: url, synchronize: synchronize)
+        let headerWritten = self.headerWritten
+        let tailVerified = self.tailVerified
+        let finalized = self.finalized
+        try await fileQueue.run {
+            let fileExists = FileManager.default.fileExists(atPath: url.path)
+            let needsHeader = !headerWritten.value.contains(gameID)
+            if !fileExists && (!needsHeader || finalized.value.contains(gameID)) {
+                // This launch wrote the journal, or has filed the game, and
+                // the file is gone: the game was filed. A late write must not
+                // start a fragment in InProgress/.
+                SessionLogger.shared.log("[LICHESS-BOT] game \(gameID): \(entries.count) late journal entr(ies) not written: the game is filed")
+                return
             }
-        } catch {
+            var data = Data()
             if needsHeader {
-                // Nothing reached the file; write the header next time.
-                headerBox.modify { $0.remove(gameID) }
+                data.append(try LichessBotJSONLines.encodeLine(LichessBotJournalEntry(
+                    at: Date(),
+                    event: .header(
+                        schemaVersion: LichessBotJournal.schemaVersion,
+                        gameID: gameID,
+                        build: BuildInfo.buildNumber,
+                        gitHash: BuildInfo.gitHash,
+                        resumed: fileExists
+                    )
+                )))
             }
-            throw error
+            if fileExists && !tailVerified.value.contains(gameID) {
+                let cut = try LichessBotJSONLines.cutUnterminatedFinalLine(of: url)
+                if !cut.isEmpty {
+                    let note = "cut an unterminated final line of \(cut.count) bytes left by an interrupted write; base64 \(cut.base64EncodedString())"
+                    SessionLogger.shared.log("[ALARM] LICHESS-BOT game \(gameID) journal: \(note)")
+                    data.append(try LichessBotJSONLines.encodeLine(LichessBotJournalEntry(at: Date(), event: .anomaly(note))))
+                }
+            }
+            for entry in entries {
+                data.append(try LichessBotJSONLines.encodeLine(entry))
+            }
+            do {
+                try LichessBotJSONLines.append(data, to: url, synchronize: synchronize)
+            } catch {
+                // A failed append may have left part of a line (and of the
+                // header, if it carried one): check the end again, and write a
+                // header again, next time.
+                tailVerified.modify { $0.remove(gameID) }
+                throw error
+            }
+            tailVerified.modify { $0.insert(gameID) }
+            if needsHeader {
+                headerWritten.modify { $0.insert(gameID) }
+            }
         }
     }
 
@@ -240,10 +268,11 @@ final class LichessBotJournalWriter: LichessBotGameObserver {
     }
 
     /// The game's journal has been moved out of `InProgress/`: write nothing
-    /// more for it.
+    /// more for it. The game stays in `headerWritten` on purpose: a write
+    /// already past the `finalized` check then finds "headered, file gone" on
+    /// the queue and skips, instead of starting a new fragment.
     func markFinalized(gameID: String) {
         finalized.modify { $0.insert(gameID) }
-        headerWritten.modify { $0.remove(gameID) }
     }
 }
 

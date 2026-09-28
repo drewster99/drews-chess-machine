@@ -8,21 +8,21 @@ import IOKit
 /// reason is kept in `readFailures` so a caller can log it. Nothing is
 /// guessed: a consumer shows "unknown" for a missing fact.
 struct HardwareInfo: Sendable, Equatable {
-    /// One CPU performance level, e.g. 6 "Super" cores.
+    /// One CPU performance level: its sysctl name and physical core count.
     struct CorePerformanceLevel: Sendable, Equatable {
         let name: String
         let physicalCores: Int
     }
 
-    /// `machdep.cpu.brand_string`, e.g. "Apple M5 Max".
+    /// `machdep.cpu.brand_string`: the CPU's marketing name.
     let cpuBrand: String?
     /// `hw.physicalcpu`.
     let cpuPhysicalCores: Int?
-    /// `hw.perflevel<i>`, highest performance first (level 0).
+    /// `hw.perflevel<i>`, highest performance first.
     let cpuPerformanceLevels: [CorePerformanceLevel]
     /// `hw.memsize`, in bytes.
     let memoryBytes: UInt64?
-    /// The IORegistry `AGXAccelerator` service's `model`, e.g. "Apple M5 Max".
+    /// The IORegistry `AGXAccelerator` service's `model`: the GPU's marketing name.
     let gpuModel: String?
     /// The IORegistry `AGXAccelerator` service's `gpu-core-count`.
     let gpuCoreCount: Int?
@@ -32,7 +32,7 @@ struct HardwareInfo: Sendable, Equatable {
     /// This Mac's facts, read on first use and kept for the life of the app.
     static let current = HardwareInfo.read()
 
-    /// Read everything now. Cheap (a handful of sysctls and one IORegistry
+    /// Read everything now. Cheap (a handful of sysctls and an IORegistry
     /// lookup), but call it once and keep the value.
     static func read() -> HardwareInfo {
         var failures: [String] = []
@@ -99,7 +99,8 @@ struct HardwareInfo: Sendable, Equatable {
         return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 
-    /// Integer sysctls are 4 or 8 bytes depending on the name.
+    /// Integer sysctls are `Int32` or `Int64` wide depending on the name; the
+    /// size query says which.
     private static func sysctlInteger(_ name: String, failures: inout [String]) -> Int? {
         var size = 0
         guard sysctlbyname(name, nil, &size, nil, 0) == 0 else {

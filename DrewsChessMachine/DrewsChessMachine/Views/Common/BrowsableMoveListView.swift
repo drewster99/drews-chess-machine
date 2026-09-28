@@ -31,14 +31,12 @@ struct BrowsableMoveListView: View {
                 }
                 .padding(.vertical, 4)
             }
-            .onChange(of: sanMoves.count) {
-                if isLive, rowCount > 0 {
-                    proxy.scrollTo(rowCount - 1, anchor: .bottom)
-                }
-            }
+            // While live, the displayed position is the last one played, so a
+            // new move and a return to live both change `displayedPlyCount`:
+            // one handler covers both and never scrolls twice for one move.
             .onChange(of: displayedPlyCount) {
                 if displayedPlyCount > 0 {
-                    proxy.scrollTo((displayedPlyCount - 1) / 2)
+                    proxy.scrollTo((displayedPlyCount - 1) / 2, anchor: isLive ? UnitPoint.bottom : nil)
                 }
             }
         }
@@ -85,20 +83,21 @@ struct BrowsableMoveCell: View {
     let onSelectPlyCount: (Int) -> Void
 
     var body: some View {
-        Button {
-            onSelectPlyCount(ply + 1)
-        } label: {
-            Text(san ?? "")
-                .font(.system(.callout, design: .monospaced))
-                .frame(width: 64, alignment: .leading)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 1)
-                .background(
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Color.accentColor.opacity(isHighlighted ? 0.30 : 0))
-                )
-                .contentShape(Rectangle())
-        }
+        Button(
+            action: { onSelectPlyCount(ply + 1) },
+            label: {
+                Text(san ?? "")
+                    .font(.system(.callout, design: .monospaced))
+                    .frame(width: 64, alignment: .leading)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(Color.accentColor.opacity(isHighlighted ? 0.30 : 0))
+                    )
+                    .contentShape(Rectangle())
+            }
+        )
         .buttonStyle(.plain)
         .disabled(san == nil)
         .accessibilityLabel(san.map { "Move \(ply + 1), \($0)" } ?? "")

@@ -10,7 +10,8 @@ struct LichessBotOutgoingChallenge: Sendable, Equatable, Codable {
     /// The created challenge from `POST /api/challenge/{username}`. Lichess
     /// has answered both with the challenge object itself and wrapped as
     /// `{"challenge": …}`; either is accepted, and anything else is an error.
-    /// Which one the live API sends is a Phase 5 live-verification item.
+    /// Which shape the live API sends is not pinned down; accepting both keeps
+    /// sending challenges working either way.
     static func decodeCreated(_ body: Data) throws -> LichessBotChallenge {
         let decoder = JSONDecoder()
         let wrappedError: Error
@@ -74,8 +75,8 @@ struct LichessBotUserSummary: Sendable, Hashable, Codable, Identifiable {
         perfs?[perf]
     }
 
-    /// Display text for a perf's rating: four digits then "?" when
-    /// provisional or a space (so a column of them aligns), or "–" when the
+    /// Display text for a perf's rating: the rating right-aligned to a fixed
+    /// width, then "?" when provisional or a space (so a column of them aligns), or "–" when the
     /// player has none.
     func ratingText(_ perf: String) -> String {
         guard let rating = rating(perf), let value = rating.rating else { return "–" }
@@ -84,6 +85,7 @@ struct LichessBotUserSummary: Sendable, Hashable, Codable, Identifiable {
 
     /// Sort keys for tables. A player with no rating in a perf sorts below
     /// every rated one.
+    var bulletSortKey: Int { rating("bullet")?.rating ?? Int.min }
     var blitzSortKey: Int { rating("blitz")?.rating ?? Int.min }
     var rapidSortKey: Int { rating("rapid")?.rating ?? Int.min }
     var usernameSortKey: String { username.lowercased() }
@@ -117,8 +119,8 @@ struct LichessBotPlayTime: Sendable, Hashable, Codable {
     let human: Int?
 }
 
-/// `GET /api/crosstable/{user1}/{user2}`: each user's total score (a win
-/// counts 1, a draw ½) across all their games against each other.
+/// `GET /api/crosstable/{user1}/{user2}`: each user's total score, under
+/// standard chess scoring, across all their games against each other.
 struct LichessBotCrosstable: Sendable, Hashable, Codable {
     let users: [String: Double]
     let nbGames: Int
@@ -129,8 +131,11 @@ struct LichessBotLightUser: Sendable, Hashable, Codable, Identifiable {
     let id: String
     let name: String
     let title: String?
-    /// Present when Lichess knows the player is connected.
+    /// Online: nil when unknown (autocomplete doesn't report it; a status
+    /// fetch fills it in).
     let online: Bool?
+    /// Playing a game right now; nil when unknown.
+    var playing: Bool? = nil
 }
 
 /// One entry of `GET /api/player/top/{nb}/{perfType}`.

@@ -3,6 +3,7 @@ import Foundation
 enum LichessBotSessionModelError: LocalizedError, Equatable {
     case sessionGone
     case missingModelID(source: String)
+    case trainerChangedDuringExport
 
     var errorDescription: String? {
         switch self {
@@ -10,6 +11,8 @@ enum LichessBotSessionModelError: LocalizedError, Equatable {
             return "The training session is not available"
         case .missingModelID(let source):
             return "The \(source) network has no ModelID, so games played with it could not be attributed"
+        case .trainerChangedDuringExport:
+            return "The trainer's weights were being replaced (a promotion, reset or load) during the export, so they can't be attributed; the next snapshot will be"
         }
     }
 }
@@ -57,8 +60,17 @@ final class LichessBotSessionModelProvider: LichessBotModelProvider {
         guard let identifier = trainer.identifier else {
             throw LichessBotSessionModelError.missingModelID(source: "trainer")
         }
-        let step = trainer.completedTrainSteps
-        let weights = try await trainer.network.exportWeights()
-        return LichessBotWeightsSnapshot(weights: weights, architecture: trainer.arch, modelID: "\(identifier)", trainingStep: step)
+        // A promotion, reset or load replaces the weights before it stamps
+        // the new identity. One in progress, or one that overlapped the
+        // export, leaves the weights unattributable.
+        let before = trainer.weightIdentityState
+        guard !before.awaitingIdentity else {
+            throw LichessBotSessionModelError.trainerChangedDuringExport
+        }
+        let export = try await trainer.exportWeightsWithCompletedSteps()
+        guard trainer.weightIdentityState == before, trainer.identifier == identifier else {
+            throw LichessBotSessionModelError.trainerChangedDuringExport
+        }
+        return LichessBotWeightsSnapshot(weights: export.weights, architecture: trainer.arch, modelID: "\(identifier)", trainingStep: export.completedSteps)
     }
 }

@@ -11,38 +11,34 @@ struct GameBrowseControlsView: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Button {
-                cursor.goToStart(totalPlies: totalPlies)
-            } label: {
-                Image(systemName: "backward.end.fill")
-            }
+            Button(
+                action: { cursor.goToStart(totalPlies: totalPlies) },
+                label: { Image(systemName: "backward.end.fill") }
+            )
             .help("First position")
             .disabled(cursor.displayedPlyCount(totalPlies: totalPlies) == 0)
             .keyboardShortcut(claimsKeyboardShortcuts ? KeyboardShortcut(.home, modifiers: []) : nil)
 
-            Button {
-                cursor.stepBack(totalPlies: totalPlies)
-            } label: {
-                Image(systemName: "chevron.left")
-            }
+            Button(
+                action: { cursor.stepBack(totalPlies: totalPlies) },
+                label: { Image(systemName: "chevron.left") }
+            )
             .help("Previous position")
             .disabled(cursor.displayedPlyCount(totalPlies: totalPlies) == 0)
             .keyboardShortcut(claimsKeyboardShortcuts ? KeyboardShortcut(.leftArrow, modifiers: []) : nil)
 
-            Button {
-                cursor.stepForward(totalPlies: totalPlies)
-            } label: {
-                Image(systemName: "chevron.right")
-            }
+            Button(
+                action: { cursor.stepForward(totalPlies: totalPlies) },
+                label: { Image(systemName: "chevron.right") }
+            )
             .help("Next position")
             .disabled(cursor.isLive)
             .keyboardShortcut(claimsKeyboardShortcuts ? KeyboardShortcut(.rightArrow, modifiers: []) : nil)
 
-            Button {
-                cursor.goLive()
-            } label: {
-                Image(systemName: "forward.end.fill")
-            }
+            Button(
+                action: { cursor.goLive() },
+                label: { Image(systemName: "forward.end.fill") }
+            )
             .help("Back to the live position")
             .disabled(cursor.isLive)
             .keyboardShortcut(claimsKeyboardShortcuts ? KeyboardShortcut(.end, modifiers: []) : nil)

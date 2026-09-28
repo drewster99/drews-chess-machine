@@ -350,6 +350,9 @@ extension SessionController {
                         [candidateInference, champion, trainer, trainerSnapshotVelocity, steps] in
                         let weights = try await candidateInference.exportWeights()
                         try await champion.loadWeights(weights)
+                        // Open the replacement window; the trainer's new
+                        // identity, stamped after this task, closes it.
+                        trainer.noteWeightsReplaced()
                         try await trainer.network.loadWeights(weights)
                         // The trainer's working weights were just replaced by
                         // the promoted candidate's. Re-seed the fp32 masters

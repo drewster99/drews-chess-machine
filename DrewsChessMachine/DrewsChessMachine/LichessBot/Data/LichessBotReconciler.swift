@@ -18,6 +18,12 @@ enum LichessBotReconcilerEvent: Sendable {
     case unreconciled(gameID: String, reason: String)
     /// Writing the record failed.
     case finalizeFailed(gameID: String, error: String)
+    /// The game can't be filed as things stand: its journal or export can't
+    /// make a record, or Lichess has no export for a game the journal doesn't
+    /// show as aborted. Attempts stop. A journal still in `InProgress/` stays
+    /// there, so the recovery when the bot next goes online tries once more
+    /// (an update may have fixed the cause).
+    case quarantined(gameID: String, reason: String)
     case stopped(reason: String)
 }
 
@@ -29,20 +35,38 @@ enum LichessBotReconcilerEvent: Sendable {
 /// every other call. Right after a game ends the export can still say
 /// `started` (E23), so a live export is retried with backoff for a bounded
 /// window before the game is marked unreconciled and retried slowly from
-/// then on. A game that is still being played by a session is dropped from
-/// the queue; its session's end enqueues it again.
+/// then on. A failure no retry can fix (a journal or export that can't make
+/// a record) quarantines the game instead: one alarm, and no more attempts
+/// until the bot next goes online. A game that is still being played by a session is dropped
+/// from the queue; its session's end enqueues it again.
 ///
 /// Launch recovery enqueues every leftover `InProgress/` journal: a game
 /// still live comes back as a live export (and its `gameStart` restarts
 /// its session), while a game that ended while the app was down is
 /// finalized from its journal plus the export.
 actor LichessBotReconciler {
+    private enum ItemState {
+        /// Inside its retry window.
+        case retrying
+        /// Past its retry window; retried on a slow cadence.
+        case unreconciled
+        /// Can't succeed as things stand; not retried until the bot next goes
+        /// online.
+        case quarantined
+    }
+
     private struct Item {
         let gameID: String
         let firstAttemptAt: Duration
         var attempts: Int
         var dueAt: Duration
-        var unreconciled: Bool
+        var state: ItemState
+    }
+
+    /// What a retry does once the live-export window is over.
+    private enum WindowExpiry {
+        case markUnreconciled
+        case quarantine
     }
 
     private let api: any LichessBotExportAPI
@@ -81,11 +105,16 @@ actor LichessBotReconciler {
     /// Queue a game for reconciliation, `delay` from now. Enqueueing a game
     /// already queued (say, one left unreconciled at launch whose session
     /// has now ended) starts it over with a fresh retry window, due no
-    /// later than it already was.
+    /// later than it already was; a quarantined game is tried once more.
     func enqueue(gameID: String, after delay: Duration = .zero) {
         let due = time.now() + delay
-        let dueAt = items[gameID].map { min($0.dueAt, due) } ?? due
-        items[gameID] = Item(gameID: gameID, firstAttemptAt: dueAt, attempts: 0, dueAt: dueAt, unreconciled: false)
+        let dueAt: Duration
+        if let existing = items[gameID], existing.state != .quarantined {
+            dueAt = min(existing.dueAt, due)
+        } else {
+            dueAt = due
+        }
+        items[gameID] = Item(gameID: gameID, firstAttemptAt: dueAt, attempts: 0, dueAt: dueAt, state: .retrying)
     }
 
     /// Bring forward games still waiting for their first attempt (going
@@ -93,7 +122,7 @@ actor LichessBotReconciler {
     /// or unreconciled keep their schedule and retry window.
     func expediteUnattempted() {
         let now = time.now()
-        for (gameID, item) in items where item.attempts == 0 && !item.unreconciled {
+        for (gameID, item) in items where item.attempts == 0 && item.state == .retrying {
             items[gameID]?.dueAt = min(item.dueAt, now)
         }
     }
@@ -105,17 +134,23 @@ actor LichessBotReconciler {
     /// Queued games still inside their retry window: what a drain waits for
     /// (unreconciled games retry on a slow cadence and aren't waited on).
     var dueGameIDs: [String] {
-        items.values.filter { !$0.unreconciled }.map(\.gameID).sorted()
+        items.values.filter { $0.state == .retrying }.map(\.gameID).sorted()
     }
 
     var unreconciledGameIDs: [String] {
-        items.values.filter(\.unreconciled).map(\.gameID).sorted()
+        items.values.filter { $0.state == .unreconciled }.map(\.gameID).sorted()
+    }
+
+    /// Games that can't be filed as things stand and aren't retried this
+    /// launch.
+    var quarantinedGameIDs: [String] {
+        items.values.filter { $0.state == .quarantined }.map(\.gameID).sorted()
     }
 
     /// Work the queue until cancelled or the gate closes.
     func run() async {
         while !Task.isCancelled {
-            guard let next = items.values.min(by: { $0.dueAt < $1.dueAt }) else {
+            guard let next = items.values.filter({ $0.state != .quarantined }).min(by: { $0.dueAt < $1.dueAt }) else {
                 if !(await sleep(Self.pollInterval)) { break }
                 continue
             }
@@ -158,7 +193,7 @@ actor LichessBotReconciler {
         do {
             let export = try LichessBotGameExport.decode(try await api.exportGame(gameID: gameID))
             if export.status.isLive == true {
-                retry(gameID, reason: "export still says \(export.status.raw)")
+                retry(gameID, reason: "export still says \(export.status.raw)", whenWindowEnds: .markUnreconciled)
                 return nil
             }
             await finalize(gameID, export: export, exportUnavailableReason: nil)
@@ -175,33 +210,54 @@ actor LichessBotReconciler {
             if case .http(404, _) = error {
                 await handleMissingExport(gameID)
             } else {
-                retry(gameID, reason: error.localizedDescription)
+                retry(gameID, reason: error.localizedDescription, whenWindowEnds: .markUnreconciled)
             }
         } catch is CancellationError {
             return "cancelled"
         } catch {
-            retry(gameID, reason: "export unusable: \(error)")
+            retry(gameID, reason: "export unusable: \(error)", whenWindowEnds: .markUnreconciled)
         }
         return nil
     }
 
+    /// Failures no retry can fix: the journal, the records and the export
+    /// are what they are. Disk-full, permission and other write errors are
+    /// not here: they stay on the slow retry.
+    private static func isPermanentFilingFailure(_ error: Error) -> Bool {
+        switch error {
+        case is LichessBotRecordError, is LichessBotJSONLinesError, is DecodingError, is EncodingError:
+            return true
+        case let error as CocoaError:
+            return error.code == .fileReadNoSuchFile
+        default:
+            return false
+        }
+    }
+
     /// Lichess keeps no export for some aborted games. If the journal says
     /// the game was aborted, the journal alone is the record; otherwise a
-    /// missing export is unexpected and retried.
+    /// missing export is retried through the live-export window (it may be
+    /// transient) and then quarantined rather than retried forever.
     private func handleMissingExport(_ gameID: String) async {
         let journalStatus: String?
         do {
             journalStatus = try await store.journalFinishedStatus(gameID: gameID)
         } catch {
-            onEvent(.finalizeFailed(gameID: gameID, error: "reading the journal: \(error.localizedDescription)"))
-            markUnreconciled(gameID, reason: "export not found and the journal is unreadable")
+            if Self.isPermanentFilingFailure(error) {
+                quarantine(gameID, reason: "export not found and the journal is unreadable: \(error.localizedDescription)")
+            } else {
+                onEvent(.finalizeFailed(gameID: gameID, error: "reading the journal: \(error.localizedDescription)"))
+                markUnreconciled(gameID, reason: "export not found and the journal is unreadable")
+            }
             return
         }
         switch journalStatus.flatMap(LichessBotGameStatusName.init(rawValue:)) {
         case .aborted, .noStart:
             await finalize(gameID, export: nil, exportUnavailableReason: "Lichess has no export for this aborted game")
         default:
-            retry(gameID, reason: "export not found")
+            // Most likely an aborted game whose finish the journal missed
+            // (Lichess deletes those).
+            retry(gameID, reason: "export not found", whenWindowEnds: .quarantine)
         }
     }
 
@@ -211,21 +267,30 @@ actor LichessBotReconciler {
             items[gameID] = nil
             onEvent(.finalized(finalized))
         } catch {
-            onEvent(.finalizeFailed(gameID: gameID, error: error.localizedDescription))
-            markUnreconciled(gameID, reason: "finalize failed: \(error.localizedDescription)")
+            if Self.isPermanentFilingFailure(error) {
+                quarantine(gameID, reason: "filing failed: \(error.localizedDescription)")
+            } else {
+                onEvent(.finalizeFailed(gameID: gameID, error: error.localizedDescription))
+                markUnreconciled(gameID, reason: "finalize failed: \(error.localizedDescription)")
+            }
         }
     }
 
-    private func retry(_ gameID: String, reason: String) {
+    private func retry(_ gameID: String, reason: String, whenWindowEnds expiry: WindowExpiry) {
         guard var item = items[gameID] else { return }
         let now = time.now()
-        if item.unreconciled {
+        let windowOver = item.state == .unreconciled || now - item.firstAttemptAt >= Self.liveExportRetryWindow
+        if windowOver && expiry == .quarantine {
+            quarantine(gameID, reason: reason)
+            return
+        }
+        if item.state == .unreconciled {
             item.dueAt = now + Self.unreconciledRetryInterval
             items[gameID] = item
             onEvent(.waiting(gameID: gameID, reason: reason, retryIn: Self.unreconciledRetryInterval))
             return
         }
-        if now - item.firstAttemptAt >= Self.liveExportRetryWindow {
+        if windowOver {
             markUnreconciled(gameID, reason: reason)
             return
         }
@@ -237,9 +302,16 @@ actor LichessBotReconciler {
 
     private func markUnreconciled(_ gameID: String, reason: String) {
         guard var item = items[gameID] else { return }
-        item.unreconciled = true
+        item.state = .unreconciled
         item.dueAt = time.now() + Self.unreconciledRetryInterval
         items[gameID] = item
         onEvent(.unreconciled(gameID: gameID, reason: reason))
+    }
+
+    private func quarantine(_ gameID: String, reason: String) {
+        guard var item = items[gameID], item.state != .quarantined else { return }
+        item.state = .quarantined
+        items[gameID] = item
+        onEvent(.quarantined(gameID: gameID, reason: reason))
     }
 }

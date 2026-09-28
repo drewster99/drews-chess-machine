@@ -11,6 +11,8 @@ enum LichessBotAPIError: LocalizedError, Equatable {
     /// A 2xx response whose body could not be decoded as expected.
     case undecodableResponse(endpoint: String, detail: String)
     case invalidURL(String)
+    /// More ids than one request to `endpoint` accepts; the caller must batch.
+    case tooManyIDs(endpoint: String, count: Int, maximum: Int)
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +24,8 @@ enum LichessBotAPIError: LocalizedError, Equatable {
             return "Unexpected response from \(endpoint): \(detail)"
         case .invalidURL(let text):
             return "Could not build a Lichess URL from \(text)"
+        case .tooManyIDs(let endpoint, let count, let maximum):
+            return "\(endpoint) takes at most \(maximum) ids; \(count) were given"
         }
     }
 }
@@ -149,6 +153,15 @@ final class LichessBotAPIClient: Sendable {
     /// `POST /api/challenge/{username}`: challenge a player (plan §7.1).
     /// Needs the `challenge:write` scope. The game starts through the
     /// ordinary `gameStart` event if they accept.
+    ///
+    /// `keepAliveStream` is not sent. Through `send`, a streamed answer would
+    /// hold the single-flight gate until the challenge is answered, and
+    /// streaming it separately would cost a connection per pending challenge.
+    /// Without it, Lichess marks the challenge offline once nobody keeps it
+    /// alive, yet it stays acceptable (lila's challenge sweep; the API docs
+    /// describe it as expiring instead). So the controller withdraws an
+    /// unanswered challenge itself after `outgoingChallengeTimeoutSeconds`
+    /// when that is non-zero.
     func challenge(username: String, request outgoing: LichessBotOutgoingChallenge) async throws -> LichessBotChallenge {
         var request = try makeRequest(path: "/api/challenge/\(try Self.pathComponent(username))", method: "POST")
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -182,8 +195,15 @@ final class LichessBotAPIClient: Sendable {
         }
         var users: [LichessBotUserSummary] = []
         for item in items {
-            guard case .line(let line) = item else { continue }
-            users.append(try decode(LichessBotUserSummary.self, from: line, endpoint: "/api/bot/online"))
+            switch item {
+            case .line(let line):
+                users.append(try decode(LichessBotUserSummary.self, from: line, endpoint: "/api/bot/online"))
+            case .keepAlive:
+                // A blank line carries no user.
+                continue
+            case .oversizeLineDiscarded(let byteCount):
+                throw LichessBotAPIError.undecodableResponse(endpoint: "/api/bot/online", detail: "a \(byteCount)-byte line exceeded the NDJSON line cap")
+            }
         }
         return users
     }
@@ -243,7 +263,7 @@ final class LichessBotAPIClient: Sendable {
     func usersStatus(ids: [String]) async throws -> [LichessBotUserStatus] {
         guard !ids.isEmpty else { return [] }
         guard ids.count <= LichessBotLimits.userStatusMaximumIDs else {
-            throw LichessBotAPIError.invalidURL("users/status with \(ids.count) ids; Lichess takes at most \(LichessBotLimits.userStatusMaximumIDs)")
+            throw LichessBotAPIError.tooManyIDs(endpoint: "/api/users/status", count: ids.count, maximum: LichessBotLimits.userStatusMaximumIDs)
         }
         let joined = try ids.map { try Self.pathComponent($0) }.joined(separator: ",")
         let request = try makeRequest(path: "/api/users/status?ids=\(joined)", method: "GET", authorized: false)
@@ -401,10 +421,14 @@ final class LichessBotAPIClient: Sendable {
 
     /// Send through the gate; return the body of a 2xx response, or throw.
     /// Every attempt is recorded, successful or not.
-    private func send(_ request: URLRequest, priority: LichessBotRequestPriority, label: String, gameID: String?, recordBody: Bool = true) async throws -> Data {
+    private func send(_ untimedRequest: URLRequest, priority: LichessBotRequestPriority, label: String, gameID: String?, recordBody: Bool = true) async throws -> Data {
+        let request = Self.timed(untimedRequest, priority: priority)
         let target = try Self.target(of: request)
         let transport = self.transport
         let timing = RequestTiming()
+        // Set when a response arrives, so a response the gate then turns into
+        // an error (a 429) is recorded with what Lichess sent.
+        let received = SyncBox<LichessBotTransportResponse?>(nil)
         let response: LichessBotTransportResponse
         let http: HTTPURLResponse
         do {
@@ -412,10 +436,19 @@ final class LichessBotAPIClient: Sendable {
                 timing.markSent()
                 let result = try await transport.data(for: request)
                 timing.markResponded()
+                received.value = result
                 return (value: result, response: result.response)
             }
         } catch {
-            record(request, target: target, label: label, gameID: gameID, recordBody: recordBody, timing: timing, status: nil, networkProtocol: nil, errorMessage: nil, failure: String(describing: error))
+            if let answered = received.value {
+                let status = answered.response.statusCode
+                record(request, target: target, label: label, gameID: gameID, recordBody: recordBody, timing: timing,
+                       status: status, networkProtocol: answered.networkProtocolName,
+                       errorMessage: (200..<300).contains(status) ? nil : Self.errorMessage(from: answered.body), failure: nil)
+            } else {
+                record(request, target: target, label: label, gameID: gameID, recordBody: recordBody, timing: timing,
+                       status: nil, networkProtocol: nil, errorMessage: nil, failure: String(describing: error))
+            }
             throw error
         }
         let ok = (200..<300).contains(http.statusCode)
@@ -429,15 +462,31 @@ final class LichessBotAPIClient: Sendable {
         let timing = RequestTiming()
         let chunks: LichessBotChunkStream
         let http: HTTPURLResponse
+        // Set when the response arrives, so a response the gate then turns
+        // into an error (a 429) is recorded with what Lichess sent.
+        let opened = SyncBox<(chunks: LichessBotChunkStream, response: HTTPURLResponse)?>(nil)
         do {
             (chunks, http) = try await gate.perform(priority: .streamOpen, label: label) {
                 timing.markSent()
-                let opened = try await transport.stream(for: request)
+                let result = try await transport.stream(for: request)
                 timing.markResponded()
-                return (value: opened.chunks, response: opened.response)
+                opened.value = result
+                return (value: result.chunks, response: result.response)
             }
         } catch {
-            record(request, target: target, label: label, gameID: gameID, recordBody: true, timing: timing, status: nil, networkProtocol: nil, errorMessage: nil, failure: String(describing: error))
+            guard let refused = opened.value else {
+                record(request, target: target, label: label, gameID: gameID, recordBody: true, timing: timing, status: nil, networkProtocol: nil, errorMessage: nil, failure: String(describing: error))
+                throw error
+            }
+            // Record what Lichess answered, then rethrow the gate's error:
+            // never a body-read error in its place, since callers act on it.
+            let status = refused.response.statusCode
+            do {
+                let body = try await Self.boundedBody(of: refused.chunks)
+                record(request, target: target, label: label, gameID: gameID, recordBody: true, timing: timing, status: status, networkProtocol: nil, errorMessage: Self.errorMessage(from: body), failure: nil)
+            } catch let bodyError {
+                record(request, target: target, label: label, gameID: gameID, recordBody: true, timing: timing, status: status, networkProtocol: nil, errorMessage: nil, failure: "reading the refused stream's body failed: \(bodyError)")
+            }
             throw error
         }
         if (200..<300).contains(http.statusCode) {
@@ -447,13 +496,7 @@ final class LichessBotAPIClient: Sendable {
             // A refused stream carries a short error body; read a bounded
             // amount of it for Lichess's message. Leaving this function drops
             // the stream, and dropping it cancels the connection.
-            var body = Data()
-            for try await chunk in chunks {
-                body.append(chunk)
-                if body.count >= Self.refusedStreamBodyLimit {
-                    break
-                }
-            }
+            let body = try await Self.boundedBody(of: chunks)
             let error = Self.statusError(http.statusCode, body: body)
             record(request, target: target, label: label, gameID: gameID, recordBody: true, timing: timing, status: http.statusCode, networkProtocol: nil, errorMessage: Self.errorMessage(from: body), failure: nil)
             throw error
@@ -545,14 +588,45 @@ final class LichessBotAPIClient: Sendable {
         }
         var components = URLComponents()
         components.percentEncodedQuery = text
+        // `queryItems` is nil only for a nil query, and the query was just set.
+        guard let items = components.queryItems else {
+            preconditionFailure("URLComponents lost the query it was just given")
+        }
         var fields: [String: String] = [:]
-        for item in components.queryItems ?? [] {
-            fields[item.name] = item.value ?? ""
+        for item in items {
+            switch item.value {
+            case .some(let value):
+                fields[item.name] = value
+            case .none:
+                // A bare name with no "=" has an empty value under the
+                // form-urlencoded rules, which is how Lichess reads it.
+                fields[item.name] = ""
+            }
         }
         return fields
     }
 
     private static let refusedStreamBodyLimit = 4096
+
+    /// A bounded prefix of a refused stream's body, for Lichess's message.
+    /// There is no deadline beyond the stream session's idle timeout, which
+    /// is fine only because Lichess's error bodies are short and end.
+    private static func boundedBody(of chunks: LichessBotChunkStream) async throws -> Data {
+        var body = Data()
+        for try await chunk in chunks {
+            body.append(chunk)
+            if body.count >= refusedStreamBodyLimit { break }
+        }
+        return body
+    }
+
+    /// `request` with the idle timeout its priority calls for, set on every
+    /// request so none silently uses URLRequest's own default.
+    private static func timed(_ untimedRequest: URLRequest, priority: LichessBotRequestPriority) -> URLRequest {
+        var request = untimedRequest
+        request.timeoutInterval = LichessBotRequestTimeouts.idle(for: priority)
+        return request
+    }
 
     private static func checkStatus(_ status: Int, body: Data) throws -> Data {
         guard (200..<300).contains(status) else {

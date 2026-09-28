@@ -2,16 +2,15 @@ import Foundation
 
 /// Lichess rate-limit rules, as pure functions (plan §5).
 ///
-/// Lichess's API guidance: "Only make one request at a time. If you receive
-/// an HTTP response with a 429 status, you have exceeded one of the rate
-/// limits. In most cases, waiting one minute before retrying will be
-/// sufficient, but some limits may require longer." No numeric limits are
+/// Lichess asks clients to make one request at a time and, after a 429, to
+/// wait before retrying, longer for some limits. No numeric limits are
 /// published, and they change, so the design treats not triggering a 429 as
 /// a hard constraint and a 429, when it happens, as a full stop.
 enum LichessBotRateLimit {
     /// The shortest cooldown after any 429, whatever `Retry-After` says.
-    /// Deliberately a constant and not a setting: Lichess's own guidance is
-    /// "wait one minute", and a shorter pause risks a longer lockout.
+    /// Deliberately a constant and not a setting: the floor follows Lichess's
+    /// own guidance on how long to wait, and a shorter pause risks a longer
+    /// lockout.
     static let minimumCooldown: Duration = .seconds(60)
 
     /// Cooldown to apply after a 429: the server's `Retry-After` when it asks

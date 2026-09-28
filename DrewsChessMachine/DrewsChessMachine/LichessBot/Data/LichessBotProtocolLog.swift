@@ -34,17 +34,33 @@ struct LichessBotProtocolEntry: Sendable, Codable, Equatable {
 }
 
 /// The account-level protocol event log: `Protocol/events-YYYYMMDD.jsonl`,
-/// one file per local day, kept indefinitely (plan §10.3).
+/// one file per UTC day (plan E50: file names use UTC, so a day's file never
+/// changes with the Mac's time zone), kept indefinitely (plan §10.3).
 ///
 /// `record` is synchronous so it can be called from any callback (the
 /// request gate's event hook, stream loops); the write happens on the file
 /// queue. Every message is passed through `LichessBotRedaction`. A failed
 /// write is reported through `onWriteFailure` — the controller raises it as
 /// an alarm — and never silently dropped.
+///
+/// Never synchronized to disk (plan E38 says otherwise; this is the actual
+/// behavior): entries still queued when the app crashes are lost, and written
+/// ones survive an app crash but not a power loss.
 final class LichessBotProtocolLog: Sendable {
     private let directory: LichessBotDataDirectory
     private let fileQueue: LichessBotFileQueue
     private let onWriteFailure: @Sendable (Error) -> Void
+    /// Day files whose end this launch has vouched for (its own last append to
+    /// them succeeded). Read and changed only inside file-queue closures.
+    private let tailVerifiedPaths = SyncBox<Set<String>>([])
+
+    /// The day-file name part, in UTC: a value-type style, so nothing is
+    /// allocated per entry.
+    private static let dayFileNameStyle = Date.VerbatimFormatStyle(
+        format: "\(year: .padded(4))\(month: .twoDigits)\(day: .twoDigits)",
+        timeZone: .gmt,
+        calendar: Calendar(identifier: .gregorian)
+    )
 
     init(directory: LichessBotDataDirectory, fileQueue: LichessBotFileQueue, onWriteFailure: @escaping @Sendable (Error) -> Void) {
         self.directory = directory
@@ -62,9 +78,34 @@ final class LichessBotProtocolLog: Sendable {
         )
         let url = fileURL(for: at)
         let onWriteFailure = self.onWriteFailure
+        let tailVerifiedPaths = self.tailVerifiedPaths
         fileQueue.enqueue {
             do {
-                try LichessBotJSONLines.append(try LichessBotJSONLines.encodeLine(entry), to: url, synchronize: false)
+                var data = Data()
+                if !tailVerifiedPaths.value.contains(url.path), FileManager.default.fileExists(atPath: url.path) {
+                    let cut = try LichessBotJSONLines.cutUnterminatedFinalLine(of: url)
+                    if !cut.isEmpty {
+                        SessionLogger.shared.log("[ALARM] LICHESS-BOT \(url.lastPathComponent): cut an unterminated final line of \(cut.count) bytes left by an interrupted write; base64 \(cut.base64EncodedString())")
+                        let note = LichessBotProtocolEntry(
+                            at: Date(),
+                            kind: .anomaly,
+                            gameID: nil,
+                            message: "cut an unterminated final line left by an interrupted write",
+                            fields: ["bytes": "\(cut.count)", "base64": cut.base64EncodedString()]
+                        )
+                        data.append(try LichessBotJSONLines.encodeLine(note))
+                    }
+                }
+                data.append(try LichessBotJSONLines.encodeLine(entry))
+                do {
+                    try LichessBotJSONLines.append(data, to: url, synchronize: false)
+                } catch {
+                    // A failed append may have left part of a line: check the
+                    // end again before the next one.
+                    tailVerifiedPaths.modify { $0.remove(url.path) }
+                    throw error
+                }
+                tailVerifiedPaths.modify { $0.insert(url.path) }
             } catch {
                 onWriteFailure(error)
             }
@@ -76,16 +117,14 @@ final class LichessBotProtocolLog: Sendable {
         try await fileQueue.run {}
     }
 
+    /// The file for the UTC day containing `date`. A local day spans two
+    /// files wherever the local zone isn't UTC; a reader that wants a local
+    /// day reads both.
     func fileURL(for date: Date) -> URL {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = TimeZone.current
-        formatter.dateFormat = "yyyyMMdd"
-        return directory.protocolDirectory.appendingPathComponent("events-\(formatter.string(from: date)).jsonl", isDirectory: false)
+        directory.protocolDirectory.appendingPathComponent("events-\(date.formatted(Self.dayFileNameStyle)).jsonl", isDirectory: false)
     }
 
-    /// Entries for the local day containing `date`, oldest first.
+    /// Entries for the UTC day containing `date`, oldest first.
     func entries(on date: Date) async throws -> LichessBotJSONLines.Decoded<LichessBotProtocolEntry> {
         let url = fileURL(for: date)
         return try await fileQueue.run {

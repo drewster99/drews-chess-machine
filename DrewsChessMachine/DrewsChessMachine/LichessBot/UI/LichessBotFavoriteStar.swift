@@ -11,14 +11,17 @@ struct LichessBotFavoriteStar: View {
 
     var body: some View {
         let isFavorite = userID.map { controller.playerNotes?.isFavorite($0) == true } ?? false
-        Button {
-            if let userID {
-                controller.toggleFavorite(userID)
+        Button(
+            action: {
+                if let userID {
+                    controller.toggleFavorite(userID)
+                }
+            },
+            label: {
+                Image(systemName: isFavorite ? "star.fill" : "star")
+                    .foregroundStyle(isFavorite ? Color.yellow : Color.secondary)
             }
-        } label: {
-            Image(systemName: isFavorite ? "star.fill" : "star")
-                .foregroundStyle(isFavorite ? Color.yellow : Color.secondary)
-        }
+        )
         .buttonStyle(.plain)
         .disabled(controller.playerNotes == nil)
         .shown(userID != nil)

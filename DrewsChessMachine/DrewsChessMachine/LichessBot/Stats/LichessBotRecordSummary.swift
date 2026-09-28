@@ -26,6 +26,20 @@ struct LichessBotResultTally: Sendable, Equatable {
     }
 }
 
+/// Someone DCM has played, from its own records.
+struct LichessBotPastOpponent: Sendable, Equatable, Identifiable {
+    /// Lowercased Lichess user id.
+    let id: String
+    let name: String
+    let title: String?
+    let kind: LichessBotOpponentKind
+    let lastPlayedAt: Date
+    let record: LichessBotResultTally
+
+    var gamesSortKey: Int { record.games }
+    var nameSortKey: String { name.lowercased() }
+}
+
 /// DCM's record over one period, broken down by opponent kind and color
 /// (the Overview's Record card).
 struct LichessBotPeriodRecord: Sendable, Equatable {
@@ -71,6 +85,27 @@ enum LichessBotRecordSummary {
             case .allTime: return allTime
             }
         }
+    }
+
+    /// Everyone DCM has played, most recent game first.
+    static func pastOpponents(rows: [LichessBotGameSummary]) -> [LichessBotPastOpponent] {
+        var byID: [String: (name: String, title: String?, kind: LichessBotOpponentKind, last: Date, record: LichessBotResultTally)] = [:]
+        for row in rows {
+            guard let opponentID = row.opponentID else { continue }
+            let id = opponentID.lowercased()
+            var entry = byID[id] ?? (row.opponentName ?? opponentID, row.opponentTitle, row.opponentKind, row.createdAt, LichessBotResultTally())
+            entry.record.add(ourScore: row.ourScore)
+            if row.createdAt >= entry.last {
+                entry.last = row.createdAt
+                entry.name = row.opponentName ?? entry.name
+                entry.title = row.opponentTitle ?? entry.title
+            }
+            byID[id] = entry
+        }
+        return byID.map { id, entry in
+            LichessBotPastOpponent(id: id, name: entry.name, title: entry.title, kind: entry.kind, lastPlayedAt: entry.last, record: entry.record)
+        }
+        .sorted { $0.lastPlayedAt > $1.lastPlayedAt }
     }
 
     /// DCM's results against each opponent, by lowercased user id.

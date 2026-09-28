@@ -1,7 +1,8 @@
 import Foundation
 
-/// A game from `GET /game/export/{id}` as JSON, requested with `clocks`,
-/// `opening` and `pgnInJson` (plan §10.2). Lichess's authoritative account
+/// A game from `GET /game/export/{id}` as JSON, requested with `clocks` and
+/// `opening` (plan §10.2; the request's `pgnInJson` text is not decoded:
+/// records carry their own PGN). Lichess's authoritative account
 /// of the game, used to reconcile the journal. Decoding is tolerant: every
 /// field that some game shapes omit is optional, and unknown enum values
 /// are kept raw.
@@ -46,7 +47,10 @@ struct LichessBotGameExport: Sendable, Codable, Equatable {
     let perf: String?
     /// Milliseconds since the epoch.
     let createdAt: Int64?
-    let lastMoveAt: Int64?
+    /// The starting FEN. Lichess includes it only for a game that didn't
+    /// start from the standard position; absent means the standard start —
+    /// the same contract as `gameFull.initialFen` (see `initialPosition`).
+    let initialFen: String?
     let status: LichessBotOpenValue<LichessBotGameStatusName>
     let winner: LichessBotOpenValue<LichessBotColorName>?
     let players: Players
@@ -56,7 +60,13 @@ struct LichessBotGameExport: Sendable, Codable, Equatable {
     /// Remaining clock after each move, in centiseconds.
     let clocks: [Int]?
     let clock: Clock?
-    let pgn: String?
+
+    /// The starting position in `gameFull` form: the export's FEN, or the
+    /// standard start the API means by its absence.
+    var initialPosition: String {
+        guard let initialFen else { return "startpos" }
+        return initialFen
+    }
 
     var sanMoves: [String] {
         (moves ?? "").split(separator: " ", omittingEmptySubsequences: true).map(String.init)

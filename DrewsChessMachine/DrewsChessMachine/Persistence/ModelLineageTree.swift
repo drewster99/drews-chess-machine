@@ -49,7 +49,7 @@ struct ModelLineageNode: Identifiable, Sendable, Equatable {
     var newestActivity: Date {
         var own: Date
         switch kind {
-        case .segment(let line, _, _, _): own = line.files.reduce(Date.distantPast) { max($0, $1.fileModifiedAt) }
+        case .segment(let line, _, _, _): own = line.newestFileModifiedAt
         case .file(let entry): own = entry.fileModifiedAt
         case .sessionChampion(let champion): own = champion.entry.fileModifiedAt
         case .conflict: own = .distantPast
@@ -137,12 +137,12 @@ enum ModelLineageTree {
         return conflictNodes + trainedFirst + orphanChampions.map(championNode)
     }
 
-    /// A self-play champion's ModelID without its `-N` promotion suffix
-    /// ("20260727-1-Ejp0-66" → "20260727-1-Ejp0"). Session champions record
-    /// an empty `parent_model_id`, so this is the only link to their line.
+    /// A self-play champion's lineage-root ModelID: the id with any
+    /// trainer-generation suffix removed, as `ModelID.lineageRoot` defines
+    /// it. Session champions record an empty `parent_model_id`, so this is
+    /// the only link to their line.
     static func baseModelID(ofChampion modelID: String) -> String {
-        guard let match = modelID.wholeMatch(of: #/(\d{8}-\d+-[A-Za-z0-9]+)-\d+/#) else { return modelID }
-        return String(match.1)
+        ModelID(value: modelID).lineageRoot
     }
 
     private static func championNode(_ champion: SessionChampion) -> ModelLineageNode {

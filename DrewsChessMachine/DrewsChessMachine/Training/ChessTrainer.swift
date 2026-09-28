@@ -1475,7 +1475,42 @@ final class ChessTrainer: @unchecked Sendable {
     /// Play-and-Train session — it represents the "current training
     /// lineage" rather than a specific byte-exact weight snapshot.
     /// See `sampling-parameters.md` for the full rule set.
-    var identifier: ModelID?
+    ///
+    /// Stamping it ends the window a weight replacement opened (see
+    /// `weightIdentityState`).
+    var identifier: ModelID? {
+        didSet {
+            weightIdentity.modify { $0.awaitingIdentity = false }
+        }
+    }
+
+    /// How the trainer's weights relate to `identifier`, for readers that
+    /// must attribute a weight export (the Lichess bot's trainer snapshots).
+    struct WeightIdentityState: Sendable, Equatable {
+        /// Weight replacements (reset, load, promotion) so far.
+        var replacements: Int
+        /// The weights were replaced and the identity that goes with them is
+        /// not stamped yet: `identifier` still names the weights they
+        /// replaced.
+        var awaitingIdentity: Bool
+    }
+
+    private let weightIdentity = SyncBox(WeightIdentityState(replacements: 0, awaitingIdentity: false))
+
+    /// Read before and after an export: unchanged and not awaiting identity
+    /// means no replacement overlapped it, so `identifier` names the weights.
+    var weightIdentityState: WeightIdentityState {
+        weightIdentity.value
+    }
+
+    /// Mark the weights as replaced from outside SGD. Called before the
+    /// replacement starts; stamping `identifier` afterwards closes it.
+    func noteWeightsReplaced() {
+        weightIdentity.modify {
+            $0.replacements += 1
+            $0.awaitingIdentity = true
+        }
+    }
 
     // MARK: Graph Tensors
 
@@ -2187,6 +2222,7 @@ final class ChessTrainer: @unchecked Sendable {
     /// underlying ChessNetwork init fails (Metal/device problems) or if
     /// gradient lookup fails for any trainable variable.
     func resetNetwork() async throws {
+        noteWeightsReplaced()
         try await enqueue {
             try self.internalResetNetwork()
         }
@@ -4294,6 +4330,19 @@ final class ChessTrainer: @unchecked Sendable {
         set { _completedTrainSteps.value = max(0, newValue) }
     }
 
+    /// The training network's weights with the number of SGD steps they
+    /// include. Runs on the trainer's queue, where each step's weight writes
+    /// and its count increment are one block, so the pair can't straddle a
+    /// step. The export itself runs on the network's queue; the trainer's
+    /// queue holds no weight lock while it waits. This pairs weights with
+    /// SGD steps only: a replacement from outside SGD (promotion, reset,
+    /// load) is detected through `weightIdentityState`.
+    func exportWeightsWithCompletedSteps() async throws -> (weights: [[Float]], completedSteps: Int) {
+        try await enqueue { [self] in
+            (try network.exportWeightsBlocking(), _completedTrainSteps.value)
+        }
+    }
+
     /// Off-main async getter for `completedTrainSteps`. The lock read
     /// runs on a global executor so the awaiter (typically the main
     /// actor) is never synchronously blocked.
@@ -5365,6 +5414,7 @@ final class ChessTrainer: @unchecked Sendable {
     /// `exportTrainerWeights()`.
     /// Caller MUST have paused training before calling.
     func loadTrainerWeights(_ weights: [[Float]]) async throws {
+        noteWeightsReplaced()
         let v1Count = trainerWeightCountV1
         let v2Count = trainerWeightCountV2
         guard weights.count == v2Count else {
@@ -5394,6 +5444,7 @@ final class ChessTrainer: @unchecked Sendable {
     /// resume must use `loadTrainerWeights(_:)` so missing velocity
     /// fails loudly instead of being invented as zero.
     func loadBaseWeightsResetVelocity(_ weights: [[Float]]) async throws {
+        noteWeightsReplaced()
         let expected = trainerWeightCountV1
         guard weights.count == expected else {
             throw ChessTrainerError.trainerWeightCountMismatch(

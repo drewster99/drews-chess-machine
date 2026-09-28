@@ -8,7 +8,7 @@ import Foundation
 ///   Games/YYYY/MM/<YYYYMMDD-HHMMSS>-<gameId>.pgn            PGN
 ///   Games/YYYY/MM/<YYYYMMDD-HHMMSS>-<gameId>.journal.jsonl  raw journal, kept
 ///   InProgress/<gameId>.journal.jsonl                       journal while live
-///   Protocol/events-YYYYMMDD.jsonl                          protocol event log
+///   Protocol/events-YYYYMMDD.jsonl                          protocol event log, one file per UTC day
 ///   index.json                                              derived stats cache
 ///   player-notes.json                                       favorites, bot limit times
 ///   bot.lock                                                instance lock
@@ -67,13 +67,25 @@ struct LichessBotDataDirectory: Sendable, Equatable {
     }
 }
 
-/// The serial work executor for every Lichess bot file operation (plan
-/// §10.2, §15). File I/O never runs on a cooperative-pool thread: callers
-/// hop onto this queue through a continuation and come back with the result
-/// or the error. One queue for the whole data layer also orders writes
-/// across the journal, records, index and protocol log.
+/// A serial work executor for Lichess bot file operations (plan §10.2,
+/// §15). File I/O never runs on a cooperative-pool thread: callers hop on
+/// through a continuation and come back with the result or the error. The
+/// controller runs two: one for game journals and filing — the play path,
+/// which every game-stream line waits on — and one for everything else
+/// (index, protocol log, player notes, Keychain, lock), so nothing slow sits
+/// in front of a journal append. Each queue orders its own work; work that
+/// must stay ordered shares a queue.
 final class LichessBotFileQueue: Sendable {
-    private let queue = DispatchQueue(label: "drewschess.lichessbot.files", qos: .utility)
+    private let queue: DispatchQueue
+
+    init(label: String, qos: DispatchQoS) {
+        queue = DispatchQueue(label: label, qos: qos)
+    }
+
+    /// The general-purpose queue: everything except journals and filing.
+    convenience init() {
+        self.init(label: "drewschess.lichessbot.files", qos: .utility)
+    }
 
     func run<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in

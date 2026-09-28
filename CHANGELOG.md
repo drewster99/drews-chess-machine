@@ -9,6 +9,92 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-28 CDT — Lichess bot: audit fixes, challenge-sheet features (pending commit)
+
+A full audit of the day's Lichess bot work, with every fix reviewed twice before landing and the whole diff rechecked after. **Not yet run: the test suite.** Every new test file below was written but has not been compiled or run. `ChessTrainer` and `ChessNetwork` changed, so the full suite is due. The one existing test changed, with approval, is `LichessBotViewRenderTests`, updated to the current view initializers; it had not compiled since the live-testing commit.
+
+- **Challenge sheet:**
+  - The sheet is resizable.
+  - The three player-list tabs share one table.
+  - Every tab shows the same player cell: star, online dot, title, name, and "playing" or "offline". Statuses come from one shared, time-limited store (`playerStatuses`), refreshed only for the visible tab.
+  - Bullet and UltraBullet clocks are added (¼+0, 1+0, 1+1, 2+1), along with a Bullet column.
+  - The leaderboard is sortable, and its rating column names the speed.
+  - The profile line wraps.
+  - A per-opponent daily warning is shown.
+  - A slow username lookup can no longer replace a newer choice.
+- **Overview and live view:**
+  - The Record card's height can be dragged and is remembered.
+  - "Today" rolls over at midnight.
+  - Tile clocks sit on their own line and never wrap.
+- **Play (game session):**
+  - A failed victory claim falls back to a draw claim only when Lichess refuses it, never on a network error.
+  - An unplayable game is marked handled only after its abort or resignation succeeds.
+  - A released held move is checked against the position (FEN) before every POST.
+  - No takeback is accepted while a released move is waiting in the request gate.
+  - A failed optional action (takeback, draw, resign) no longer tears down the stream.
+  - Chat-command replies are sent from their own queue, so they never delay a move.
+  - The resign and draw streaks count one reading per ply.
+  - A held move doesn't count as "awaiting our move" for request priority.
+  - A mid-game refresh uses only an already-built live-trainer generation, never a build while our clock runs.
+  - A client-side fault is no longer counted as Lichess rejecting a move.
+- **Challenges and the manager:**
+  - The per-opponent limit counts games, games starting, accepted challenges, and our pending and in-flight challenges, whichever side challenged, through manager-side reservations. A challenge to someone already at the limit is refused.
+  - Acceptance is re-checked after the model build, and so is the concurrent-game limit if the held slot lapsed.
+  - Go Offline drains first, then withdraws our pending challenges.
+  - A game resumed after going offline no longer shows as finished, and its pacing is kept.
+  - Late events can't recreate dismissed games.
+  - Repeated alarms collapse into one row with a count, capped. A failing model refresh backs off.
+  - The account id applies only on Return or Apply.
+- **API:**
+  - Reopening the request gate resumes a 429 cooldown that is still running.
+  - A late 429 can't reopen a closed gate.
+  - A failed cooldown timer closes the gate and stops the bot visibly.
+  - Deferrable requests have a shorter idle timeout.
+  - The transport's line buffer is bounded.
+  - A 429 is recorded with its status and body.
+  - A stream-reader watchdog race is fixed.
+  - The breaker window must be longer than the cooldown (a saved value of one minute now fails validation).
+- **Data:**
+  - A crash-torn last line is cut before the next append. Appends use `O_APPEND`, which also stops two DCM instances overwriting each other's protocol-log lines.
+  - Filing survives an index failure, and undecodable records are reported, not fatal.
+  - A held move echoed before its POST keeps its decision in the record.
+  - The export extends a journal that stopped early.
+  - Journals have their own queue, so an index rebuild can't stall play, and the instance lock is taken and released on that queue.
+  - Header bookkeeping is decided inside the queue.
+  - Fragment names can't collide.
+  - Unfixable filings are quarantined with one alarm.
+  - PGN dates and protocol-log days are UTC; `SetUp`/`FEN` tags are written for non-standard starts.
+  - The index staleness check uses a signature over its files.
+  - Quit waits for queued writes before terminating.
+  - The index schema changed, so the first load logs one "rebuilding" line.
+- **Trainer attribution:**
+  - A trainer snapshot for the bot pairs its weights with its SGD step count on the trainer's queue (`exportWeightsWithCompletedSteps`).
+  - It is refused while a promotion, reset or load has replaced the weights but not yet stamped the new ModelID (`ChessTrainer.weightIdentityState`).
+- **Engine and persistence:**
+  - `drawCondition` is nil when the side to move has no legal move, so a mate on the fifty-move boundary no longer also reports a draw.
+  - `ModelLineageTree` uses `ModelID.lineageRoot`.
+  - Model lineages sort by their newest file.
+  - Stale comments are fixed, along with numbers in comments and multiple trailing closures.
+- **New tests (not yet compiled or run):**
+  - `LichessBotAPIHardeningTests`
+  - `LichessBotGameSessionFaultTests`
+  - `LichessBotGroupBFixTests`
+  - `LichessBotDataLayerHardeningTests`
+  - `ChessGameEngineDrawConditionPrecedenceTests`
+  - `ModelFileCatalogActivityOrderTests`
+  - `SANFormatterExactNotationTests`
+  - `LichessBotHistoryTests`
+
+### Online status in the Username tab
+
+- **Username tab shows online status.** Lichess's autocomplete returns only names and ids (checked live), and our past-opponent list has none either. The tab now fetches `GET /api/users/status` (up to 100 at once, housekeeping priority) for the listed players.
+- Rows show a green dot when online, "playing" in orange when mid-game, and "offline" with a dimmed name. Players are fetched once per sheet.
+- **Challenges only go to online players.**
+  - Lichess marks an unwatched challenge "offline" after 20 s but keeps it acceptable for 3 hours (lila `ChallengeApi.sweep` / `ChallengeRepo.offline`). A challenge to someone offline could therefore be accepted after a crash left DCM offline.
+  - `sendChallenge` checks `GET /api/users/status` first and refuses offline players with a clear message.
+- **History tab** in the Challenge sheet: everyone DCM has played (humans and bots, from its own records), with star, online status (fetched for the most recent players), kind, games, DCM's W–D–L and last played; sortable. Test: `LichessBotHistoryTests`.
+- **Autocomplete returns at most 12 names** (lila's cap, prefix match, shortest first; verified live).
+
 ## 2026-09-28 16:40 CDT — Lichess bot: challenge-sheet filtering and player columns (`16baa91`)
 
 - **Bug: a minimum rating alone could empty the list.** The min/max fields used value-formatted text fields, which update only on commit and can keep a stale value when cleared. They are now plain text parsed on every keystroke: empty means no bound, and non-numbers are outlined in red. Regression test: `LichessBotRatingBoundTests`.

@@ -190,8 +190,8 @@ struct LichessBotLineageSegmentRow: View {
         return "\(line.files.count) file\(line.files.count == 1 ? "" : "s") · \(range)\(kind)\(isBranchTip ? " · latest on branch" : "")"
     }
 
-    /// "Qeu8 → GLu5 → Lnji → PVZp → Ejp0": each ModelID's final
-    /// component, the part that names the line.
+    /// Each ModelID's final component (the part that names the line), seed
+    /// first, joined by arrows.
     private var chainText: String {
         path.map { id in
             guard let last = id.split(separator: "-").last else { return id }
@@ -212,24 +212,28 @@ struct LichessBotUnreadableModelFilesSection: View {
         // present only when there is something to report.
         Section {
             ForEach(files.isEmpty ? [] : [files.count], id: \.self) { count in
-                DisclosureGroup(isExpanded: $isExpanded) {
-                    ForEach(files) { file in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(file.url.lastPathComponent)
-                                .font(.system(.callout, design: .monospaced))
-                                .textSelection(.enabled)
-                            Text(file.reason)
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
+                DisclosureGroup(
+                    isExpanded: $isExpanded,
+                    content: {
+                        ForEach(files) { file in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(file.url.lastPathComponent)
+                                    .font(.system(.callout, design: .monospaced))
+                                    .textSelection(.enabled)
+                                Text(file.reason)
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                            .selectionDisabled()
                         }
-                        .selectionDisabled()
+                    },
+                    label: {
+                        Label("\(count) model file\(count == 1 ? "" : "s") could not be read", systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.orange)
                     }
-                } label: {
-                    Label("\(count) model file\(count == 1 ? "" : "s") could not be read", systemImage: "exclamationmark.triangle.fill")
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(.orange)
-                }
+                )
                 .selectionDisabled()
             }
         }

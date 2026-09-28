@@ -120,13 +120,18 @@ struct LichessBotTranscriptRow: View {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(bubbleColor)
             )
-            // At most 75% of the panel, so long lines wrap less (plan §14.3c).
+            // Narrower than the panel, leaving room to tell the two sides
+            // apart (plan §14.3c).
             .containerRelativeFrame(.horizontal, alignment: entry.direction == .outgoing ? .trailing : .leading) { length, _ in
                 length * 0.75
             }
             .contentShape(Rectangle())
             .onTapGesture(perform: onToggle)
             .help(isExpanded ? "Click to collapse" : (entry.detail.isEmpty ? "Click to show the full text" : "Click to show the raw text"))
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction(.default, onToggle)
+            .accessibilityHint(isExpanded ? "Collapses the entry" : (entry.detail.isEmpty ? "Shows the full text" : "Shows the raw text"))
             Spacer(minLength: 0)
                 .frame(maxWidth: entry.direction == .incoming ? .infinity : 0)
         }

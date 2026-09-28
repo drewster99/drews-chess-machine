@@ -394,11 +394,12 @@ final class PlayController {
         let chosenURL = loadedFileURL
         let isRevert = !seededHistory.isEmpty
 
-        // Snapshot the user's two simple sources (champion / loaded file
-        // weights) up front, while the trainer path needs an async
-        // export. Build the opponent network on a detached task so the
-        // popover can dismiss and the UI can render "loading" instead
-        // of spinning the main actor.
+        // The setup choices (opponent, color, loaded file) are captured
+        // above; the opponent itself is materialized in the task below,
+        // which awaits the weight export and the network build (the build
+        // runs on a GCD queue inside `InferenceNetworkFactory`), so the
+        // popover can dismiss and the UI can render "loading" instead of
+        // blocking the main actor.
         isSetupVisible = false
         if isRevert {
             SessionLogger.shared.log(
@@ -906,9 +907,9 @@ final class PlayController {
     /// per-move-overlaying source.
     ///
     /// Runs on the main actor since `PlayController` is `@MainActor`;
-    /// the long-running MPSGraph build is delegated to
-    /// `Task.detached` inside `buildInferenceNetwork(...)` so the main
-    /// actor is yielded for the duration of the build.
+    /// the long-running MPSGraph build runs on a GCD queue inside
+    /// `InferenceNetworkFactory` and is awaited through a continuation,
+    /// so the main actor is free for the duration of the build.
     private func materializeOpponentSource(
         choice: HumanPlayOpponentChoice,
         session: SessionController,

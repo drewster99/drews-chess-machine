@@ -64,31 +64,101 @@ extension LichessBotJSONLines {
     }
 
     /// Append `data` to the file at `url`, creating it if needed, and
-    /// optionally force it to disk. Call only on `LichessBotFileQueue`.
+    /// optionally force it to disk. Call only on a `LichessBotFileQueue`.
+    ///
+    /// The file is opened with `O_APPEND`, so every write lands at the file's
+    /// end as of that write: an append by another process (every DCM instance
+    /// keeps a protocol log) is never overwritten, and a cut by
+    /// `cutUnterminatedFinalLine` never leaves a hole of zeros.
     static func append(_ data: Data, to url: URL, synchronize: Bool) throws {
         let fm = FileManager.default
         if !fm.fileExists(atPath: url.path) {
             try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            guard fm.createFile(atPath: url.path, contents: nil) else {
-                throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: url.path])
-            }
         }
-        let handle = try FileHandle(forWritingTo: url)
+        let descriptor = open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0o644)
+        guard descriptor >= 0 else {
+            let code = errno
+            throw CocoaError(.fileWriteUnknown, userInfo: [
+                NSFilePathErrorKey: url.path,
+                NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(code)),
+            ])
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
         do {
-            try handle.seekToEnd()
             try handle.write(contentsOf: data)
             if synchronize {
                 try handle.synchronize()
             }
         } catch {
-            do {
-                try handle.close()
-            } catch let closeError {
-                SessionLogger.shared.log("[ALARM] LICHESS-BOT closing \(url.lastPathComponent) after a failed write also failed: \(closeError.localizedDescription)")
-            }
+            closeAfterFailure(handle, url: url)
             throw error
         }
         try handle.close()
+    }
+
+    /// How many bytes each backward step of `cutUnterminatedFinalLine` reads
+    /// while looking for the file's last newline.
+    private static let tailScanChunkByteCount = 64 * 1024
+
+    /// Cut an unterminated final line off the file at `url`, and return the
+    /// bytes cut (empty when the file is empty or already ends in a newline).
+    ///
+    /// `decode` tolerates such a line, because an interrupted append leaves
+    /// exactly that shape. An append written straight after it, though, joins
+    /// the fragment and the new line into one complete line that doesn't
+    /// decode — corruption, which `decode` refuses — so the file could never
+    /// be read again. Appenders therefore cut the fragment before appending to
+    /// a file whose end they haven't vouched for, and record what they cut:
+    /// the bytes can't become an entry, but they stay on record. Truncating is
+    /// the only safe repair; ending the fragment with a newline instead would
+    /// make it exactly the complete bad line this prevents. Call only on a
+    /// `LichessBotFileQueue`.
+    static func cutUnterminatedFinalLine(of url: URL) throws -> Data {
+        let handle = try FileHandle(forUpdating: url)
+        let cut: Data
+        do {
+            let size = try handle.seekToEnd()
+            var scanEnd = size
+            var keptLength: UInt64 = 0
+            var tail = Data()
+            while scanEnd > 0 {
+                let scanStart = scanEnd - min(scanEnd, UInt64(tailScanChunkByteCount))
+                let wanted = Int(scanEnd - scanStart)
+                try handle.seek(toOffset: scanStart)
+                guard let chunk = try handle.read(upToCount: wanted), chunk.count == wanted else {
+                    throw CocoaError(.fileReadUnknown, userInfo: [
+                        NSFilePathErrorKey: url.path,
+                        NSLocalizedDescriptionKey: "short read while checking the end of \(url.lastPathComponent)",
+                    ])
+                }
+                if let newline = chunk.lastIndex(of: UInt8(ascii: "\n")) {
+                    keptLength = scanStart + UInt64(chunk.distance(from: chunk.startIndex, to: newline)) + 1
+                    tail = chunk[chunk.index(after: newline)...] + tail
+                    break
+                }
+                tail = chunk + tail
+                scanEnd = scanStart
+            }
+            if keptLength < size {
+                try handle.truncate(atOffset: keptLength)
+            }
+            cut = tail
+        } catch {
+            closeAfterFailure(handle, url: url)
+            throw error
+        }
+        try handle.close()
+        return cut
+    }
+
+    /// Close a handle whose operation already failed. A close failure is
+    /// logged, not thrown: the operation's own error is the one to report.
+    private static func closeAfterFailure(_ handle: FileHandle, url: URL) {
+        do {
+            try handle.close()
+        } catch {
+            SessionLogger.shared.log("[ALARM] LICHESS-BOT closing \(url.lastPathComponent) after a failed operation also failed: \(error.localizedDescription)")
+        }
     }
 }
 

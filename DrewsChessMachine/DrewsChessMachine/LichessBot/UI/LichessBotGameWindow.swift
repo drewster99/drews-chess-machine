@@ -41,7 +41,7 @@ struct LichessBotGameWindowView: View {
         LichessBotGameDetailView(
             controller: controller,
             game: game,
-            headToHead: controller.headToHead(against: game.opponent?.id),
+            headToHead: game.opponent?.id.map { controller.headToHead(against: $0) },
             onPopOut: nil,
             claimsKeyboardShortcuts: true
         )

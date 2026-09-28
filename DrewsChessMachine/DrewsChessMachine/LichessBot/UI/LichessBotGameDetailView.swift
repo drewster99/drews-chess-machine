@@ -43,9 +43,6 @@ struct LichessBotGameDetailView: View {
                 )
             }
         }
-        .onChange(of: game.id) {
-            cursor.goLive()
-        }
     }
 }
 
@@ -181,17 +178,15 @@ struct LichessBotGameHeaderView: View {
                 .shown(!game.anomalies.isEmpty)
                 .help(game.anomalies.joined(separator: "\n"))
             Spacer()
-            Button {
-                LichessBotLinks.openGame(game.id)
-            } label: {
-                Label("lichess.org", systemImage: "safari")
-            }
+            Button(
+                action: { LichessBotLinks.openGame(game.id) },
+                label: { Label("lichess.org", systemImage: "safari") }
+            )
             .font(.callout)
-            Button {
-                onPopOut?()
-            } label: {
-                Label("Pop Out", systemImage: "macwindow.on.rectangle")
-            }
+            Button(
+                action: { onPopOut?() },
+                label: { Label("Pop Out", systemImage: "macwindow.on.rectangle") }
+            )
             .font(.callout)
             .shown(onPopOut != nil)
         }
@@ -213,7 +208,7 @@ struct LichessBotGameHeaderView: View {
         guard let winner = game.winner, winner == "white" || winner == "black" else {
             switch game.status {
             case "aborted", "noStart": return "Aborted"
-            case "left unfinished": return "Left unfinished"
+            case LichessBotLiveGame.leftUnfinishedStatus: return "Left unfinished"
             default:
                 guard game.ourScore == 0.5 else { return "No result \(how)" }
                 return "Draw \(game.status == "draw" ? Self.describe(drawRule: game.localDrawCondition) : how)"

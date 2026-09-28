@@ -7,6 +7,9 @@ struct LichessBotSettingsView: View {
     let controller: LichessBotController
     @State private var draft: LichessBotSettings
     @State private var problems: String?
+    /// Bumped on Reset to Defaults: sections that keep their own editing
+    /// text (blocked players, the account id) are rebuilt and re-read it.
+    @State private var resetGeneration = 0
 
     init(controller: LichessBotController) {
         self.controller = controller
@@ -40,6 +43,7 @@ struct LichessBotSettingsView: View {
                 LichessBotConnectionSettingsSection(settings: $draft.connection, display: $draft.display)
             }
             .formStyle(.grouped)
+            .id(resetGeneration)
         }
         .onChange(of: draft) {
             Task { @MainActor in
@@ -65,6 +69,7 @@ struct LichessBotSettingsView: View {
         do {
             try controller.resetSettings()
             draft = controller.settings
+            resetGeneration += 1
             problems = nil
         } catch {
             problems = error.localizedDescription
@@ -130,15 +135,18 @@ struct LichessBotChallengeSettingsSection: View {
             LabeledContent("Speeds") {
                 HStack {
                     ForEach([LichessBotSpeed.ultraBullet, .bullet, .blitz, .rapid, .classical], id: \.self) { speed in
-                        Button {
-                            if settings.allowedSpeeds.contains(speed) {
-                                settings.allowedSpeeds.remove(speed)
-                            } else {
-                                settings.allowedSpeeds.insert(speed)
+                        Button(
+                            action: {
+                                if settings.allowedSpeeds.contains(speed) {
+                                    settings.allowedSpeeds.remove(speed)
+                                } else {
+                                    settings.allowedSpeeds.insert(speed)
+                                }
+                            },
+                            label: {
+                                Label(speed.rawValue, systemImage: settings.allowedSpeeds.contains(speed) ? "checkmark.square.fill" : "square")
                             }
-                        } label: {
-                            Label(speed.rawValue, systemImage: settings.allowedSpeeds.contains(speed) ? "checkmark.square.fill" : "square")
-                        }
+                        )
                         .buttonStyle(.borderless)
                     }
                 }
@@ -293,8 +301,8 @@ struct LichessBotConnectionSettingsSection: View {
     @Binding var display: LichessBotDisplaySettings
 
     var body: some View {
-        Section("Connection — applies when the bot next goes online") {
-            Toggle("Prevent system sleep while online", isOn: $settings.preventSleepWhileOnline)
+        Section("Connection") {
+            Toggle("Prevent system sleep while online (applies when the bot next goes online)", isOn: $settings.preventSleepWhileOnline)
             LichessBotIntegerField(label: "Reconnect after", value: $settings.reconnectInitialSeconds, unit: "s")
             LichessBotIntegerField(label: "Reconnect delay at most", value: $settings.reconnectCapSeconds, unit: "s")
             LichessBotIntegerField(label: "Event stream silent for", value: $settings.eventStreamStallTimeoutSeconds, unit: "s")
@@ -302,6 +310,8 @@ struct LichessBotConnectionSettingsSection: View {
             LichessBotIntegerField(label: "Rate-limit breaker window", value: $settings.rateLimitBreakerWindowMinutes, unit: "min")
             LichessBotIntegerField(label: "Export spacing", value: $settings.exportMinimumSpacingSeconds, unit: "s")
             LichessBotIntegerField(label: "Low-clock threshold", value: $settings.lowClockThresholdMilliseconds, unit: "ms")
+        }
+        Section("Live games") {
             LichessBotIntegerField(label: "Keep finished games in the grid for", value: $display.finishedGameRetentionMinutes, unit: "min")
         }
     }

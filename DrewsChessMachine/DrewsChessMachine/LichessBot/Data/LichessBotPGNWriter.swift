@@ -14,7 +14,9 @@ enum LichessBotPGNWriter {
         var tags: [(String, String)] = [
             ("Event", "\(record.setup.rated ? "Rated" : "Casual") \(record.setup.perf ?? record.setup.speed) game"),
             ("Site", record.url),
-            ("Date", dateString(record.createdAt, format: "yyyy.MM.dd", timeZone: .current)),
+            // UTC, as Lichess's own PGN has it (its Date equals UTCDate), and
+            // plan E50.
+            ("Date", dateString(record.createdAt, format: "yyyy.MM.dd", timeZone: .gmt)),
             ("Round", "-"),
             ("White", displayName(record.ourColor == .white ? record.us : record.opponent)),
             ("Black", displayName(record.ourColor == .black ? record.us : record.opponent)),
@@ -31,6 +33,10 @@ enum LichessBotPGNWriter {
         if let title = white.title { tags.append(("WhiteTitle", title)) }
         if let title = black.title { tags.append(("BlackTitle", title)) }
         tags.append(("Variant", record.setup.variant == "standard" ? "Standard" : record.setup.variant))
+        if !LichessBotPositionTracker.isStandardStart(record.setup.initialFen) {
+            tags.append(("SetUp", "1"))
+            tags.append(("FEN", record.setup.initialFen))
+        }
         tags.append(("TimeControl", timeControl(record.setup)))
         if let eco = record.openingECO { tags.append(("ECO", eco)) }
         if let opening = record.openingName { tags.append(("Opening", opening)) }
@@ -92,15 +98,18 @@ enum LichessBotPGNWriter {
         return parts.isEmpty ? nil : "{ \(parts.joined(separator: " ")) }"
     }
 
-    /// Join tokens into lines of at most 80 characters where possible
-    /// (a single long comment may exceed it).
+    /// The conventional PGN movetext width.
+    static let maximumMovetextLineLength = 80
+
+    /// Join tokens into lines no longer than `maximumMovetextLineLength`
+    /// where possible (a single long comment may exceed it).
     private static func wrap(_ tokens: [String]) -> String {
         var lines: [String] = []
         var line = ""
         for token in tokens {
             if line.isEmpty {
                 line = token
-            } else if line.count + 1 + token.count <= 80 {
+            } else if line.count + 1 + token.count <= maximumMovetextLineLength {
                 line += " " + token
             } else {
                 lines.append(line)

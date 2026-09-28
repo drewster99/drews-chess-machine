@@ -9,12 +9,18 @@ struct LichessBotClockView: View {
     let isRunning: Bool
     let isOurs: Bool
 
+    /// Inset of the time within its running highlight.
+    static let horizontalPadding: CGFloat = 8
+
     var body: some View {
         TimelineView(.periodic(from: .now, by: isRunning ? 0.1 : 3600)) { context in
+            // A clock never wraps: its layout gives up space elsewhere.
             Text(Self.format(remaining(at: context.date)))
                 .font(.system(.title3, design: .monospaced).weight(isRunning ? .semibold : .regular))
                 .foregroundStyle(color(at: context.date))
-                .padding(.horizontal, 8)
+                .lineLimit(1)
+                .fixedSize()
+                .padding(.horizontal, Self.horizontalPadding)
                 .padding(.vertical, 2)
                 .background(
                     RoundedRectangle(cornerRadius: 4)
@@ -22,6 +28,7 @@ struct LichessBotClockView: View {
                 )
         }
         .accessibilityLabel(isOurs ? "DCM clock" : "Opponent clock")
+        .accessibilityValue(Self.format(milliseconds))
     }
 
     private func remaining(at date: Date) -> Int? {

@@ -27,15 +27,27 @@ struct LichessBotChallengeSheet: View {
     @AppStorage("lichessBot.challenge.hidesProvisional") private var hidesProvisional = false
     @State private var sortOrder = [KeyPathComparator(\LichessBotBotRow.usernameSortKey)]
     @State private var selectedLeaderboardID: String?
+    @State private var selectedHistoryID: String?
     @State private var onlinePlayersError: String?
+    @State private var tableStatusError: String?
 
     enum Source: String, CaseIterable, Identifiable {
         case onlineBots = "Online Bots"
         case favorites = "Favorites"
         case onlinePlayers = "Online Players"
         case leaderboard = "Leaderboard"
+        case history = "History"
         case username = "Username"
         var id: String { rawValue }
+
+        /// Shown in the shared player table (the other tabs have their own
+        /// lists).
+        var usesPlayerTable: Bool {
+            switch self {
+            case .onlineBots, .favorites, .onlinePlayers: return true
+            case .leaderboard, .history, .username: return false
+            }
+        }
     }
 
     /// How old the online list may get while the sheet is open.
@@ -43,6 +55,10 @@ struct LichessBotChallengeSheet: View {
 
     /// Common time controls, as Lichess offers them.
     enum ClockChoice: String, CaseIterable, Identifiable {
+        case ultraBulletQuarterPlus0 = "¼+0"
+        case bullet1plus0 = "1+0"
+        case bullet1plus1 = "1+1"
+        case bullet2plus1 = "2+1"
         case blitz3plus0 = "3+0"
         case blitz3plus2 = "3+2"
         case blitz5plus0 = "5+0"
@@ -57,6 +73,10 @@ struct LichessBotChallengeSheet: View {
 
         var seconds: (limit: Int, increment: Int) {
             switch self {
+            case .ultraBulletQuarterPlus0: return (15, 0)
+            case .bullet1plus0: return (60, 0)
+            case .bullet1plus1: return (60, 1)
+            case .bullet2plus1: return (120, 1)
             case .blitz3plus0: return (180, 0)
             case .blitz3plus2: return (180, 2)
             case .blitz5plus0: return (300, 0)
@@ -84,10 +104,14 @@ struct LichessBotChallengeSheet: View {
     }
 
     var body: some View {
+        // Built once per render: the rows can be the whole online list.
+        let rows = listRows
+        let chosen = chosenOpponent(in: rows)
+        let dailyWarning = dailyOpponentWarning(chosen)
         VStack(alignment: .leading, spacing: 12) {
             Text("Challenge a Player")
                 .font(.title2.weight(.semibold))
-            Picker("", selection: $source) {
+            Picker("Players", selection: $source) {
                 ForEach(Source.allCases) { source in
                     Text(source.rawValue).tag(source)
                 }
@@ -107,58 +131,61 @@ struct LichessBotChallengeSheet: View {
             }
             .shown(source == .onlineBots || source == .favorites || source == .onlinePlayers)
             ZStack(alignment: .topLeading) {
+                // One table for the three player-list tabs: only the visible
+                // tab's rows are built, and sort order and selection carry
+                // across them.
                 LichessBotBotTable(
-                    rows: LichessBotBotList.ordered(onlineRows, filter: filter, sortOrder: sortOrder),
+                    controller: controller,
+                    nameTitle: source == .onlineBots ? "Bot" : "Player",
+                    rows: LichessBotBotList.ordered(rows, filter: filter, sortOrder: sortOrder),
                     selection: $selectedBotID,
-                    sortOrder: $sortOrder,
-                    onToggleFavorite: { controller.toggleFavorite($0) }
+                    sortOrder: $sortOrder
                 )
-                .shown(source == .onlineBots)
-                LichessBotBotTable(
-                    rows: LichessBotBotList.ordered(favoriteRows, filter: filter, sortOrder: sortOrder),
-                    selection: $selectedBotID,
-                    sortOrder: $sortOrder,
-                    onToggleFavorite: { controller.toggleFavorite($0) }
-                )
-                .shown(source == .favorites)
-                LichessBotBotTable(
-                    nameTitle: "Player",
-                    rows: LichessBotBotList.ordered(onlinePlayerRows, filter: filter, sortOrder: sortOrder),
-                    selection: $selectedBotID,
-                    sortOrder: $sortOrder,
-                    onToggleFavorite: { controller.toggleFavorite($0) }
-                )
-                .shown(source == .onlinePlayers)
-                .task(id: source) {
-                    guard source == .onlinePlayers else { return }
-                    do {
-                        try await controller.refreshOnlinePlayers()
-                        onlinePlayersError = nil
-                    } catch {
-                        onlinePlayersError = "Couldn't load online players (an undocumented Lichess route that may have changed): \(error.localizedDescription)"
-                    }
-                }
-                LichessBotLeaderboardList(controller: controller, speed: clock.speed, selection: $selectedLeaderboardID)
+                .modifier(LichessBotPlayerStatusRefresh(
+                    controller: controller,
+                    ids: rows.map(\.id),
+                    isActive: source.usesPlayerTable,
+                    errorText: $tableStatusError
+                ))
+                .shown(source.usesPlayerTable)
+                LichessBotLeaderboardList(controller: controller, speed: clock.speed, selection: $selectedLeaderboardID, isVisible: source == .leaderboard)
                     .shown(source == .leaderboard)
+                LichessBotHistoryList(controller: controller, selection: $selectedHistoryID, isVisible: source == .history)
+                    .shown(source == .history)
                 LichessBotUsernameLookup(
                     controller: controller,
                     typedUsername: $typedUsername,
                     lookedUp: $lookedUp,
-                    lookupError: $lookupError
+                    lookupError: $lookupError,
+                    isVisible: source == .username
                 )
                 .shown(source == .username)
             }
-            .frame(height: 300)
+            // The lists take whatever height the resizable sheet gives.
+            .frame(minHeight: 300, maxHeight: .infinity)
+            .task(id: source) {
+                guard source == .onlinePlayers else { return }
+                do {
+                    try await controller.refreshOnlinePlayers()
+                    onlinePlayersError = nil
+                } catch {
+                    // Cancelled by leaving the tab: not a failure to show.
+                    guard !Task.isCancelled else { return }
+                    onlinePlayersError = "Couldn't load online players (an undocumented Lichess route that may have changed): \(error.localizedDescription)"
+                }
+            }
             ZStack(alignment: .topLeading) {
-                Text("Select a bot to see its profile")
+                Text("Select a player to see their profile")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .shown(target == nil)
-                ForEach(target.map { [$0] } ?? [], id: \.self) { username in
+                    .shown(chosen == nil)
+                ForEach(chosen.map { [$0.username] } ?? [], id: \.self) { username in
                     LichessBotOpponentCard(controller: controller, username: username, compact: true)
                 }
             }
-            .frame(height: 58, alignment: .topLeading)
+            // Room for the card's two wrapped lines each, so the layout
+            // doesn't jump as the selection changes.
+            .frame(height: 84, alignment: .topLeading)
             .shown(source != .username)
             Form {
                 Picker("Time control", selection: $clock) {
@@ -177,17 +204,25 @@ struct LichessBotChallengeSheet: View {
                 .font(.callout)
                 .foregroundStyle(.orange)
                 .shown(!policyWarning.isEmpty)
+            Text(dailyWarning)
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .shown(!dailyWarning.isEmpty)
             Text(onlinePlayersError ?? "")
                 .font(.callout)
                 .foregroundStyle(.red)
                 .shown(source == .onlinePlayers && onlinePlayersError != nil)
+            Text(tableStatusError ?? "")
+                .font(.callout)
+                .foregroundStyle(.red)
+                .shown(source.usesPlayerTable && tableStatusError != nil)
             Text(sendError ?? "")
                 .font(.callout)
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
                 .shown(sendError != nil)
             HStack {
-                Text(targetSummary)
+                Text(targetSummary(chosen))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -196,14 +231,15 @@ struct LichessBotChallengeSheet: View {
                 }
                 .keyboardShortcut(.cancelAction)
                 Button("Send Challenge") {
-                    Task { await send() }
+                    Task { await send(to: chosen) }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(target == nil || sending)
+                .disabled(chosen == nil || sending)
             }
         }
         .padding(20)
-        .frame(width: 720)
+        // A flexible frame makes the sheet resizable; the lists grow with it.
+        .frame(minWidth: 820, idealWidth: 980, maxWidth: .infinity, minHeight: 720, idealHeight: 800, maxHeight: .infinity)
         .task {
             await controller.refreshOnlineBots()
             await controller.refreshFavoriteStatuses()
@@ -215,7 +251,15 @@ struct LichessBotChallengeSheet: View {
                 } catch {
                     return
                 }
-                if let fetchedAt = controller.onlineBotsFetchedAt, Date().timeIntervalSince(fetchedAt) >= Self.listMaximumAge {
+                let isStale: Bool
+                if let fetchedAt = controller.onlineBotsFetchedAt {
+                    isStale = Date().timeIntervalSince(fetchedAt) >= Self.listMaximumAge
+                } else {
+                    // Never loaded (the first fetch failed): try again rather
+                    // than leaving the list empty while the sheet is open.
+                    isStale = true
+                }
+                if isStale {
                     await controller.refreshOnlineBots()
                     await controller.refreshFavoriteStatuses()
                 }
@@ -233,41 +277,47 @@ struct LichessBotChallengeSheet: View {
         )
     }
 
-    private var onlineRows: [LichessBotBotRow] {
-        LichessBotBotList.onlineRows(bots: controller.onlineBots, notes: controller.playerNotes, now: Date(), records: controller.recordsByOpponent)
-    }
-
-    private var onlinePlayerRows: [LichessBotBotRow] {
-        LichessBotBotList.onlineRows(bots: controller.onlinePlayers?.users ?? [], notes: controller.playerNotes, now: Date(), records: controller.recordsByOpponent)
-    }
-
-    private var favoriteRows: [LichessBotBotRow] {
-        LichessBotBotList.favoriteRows(notes: controller.playerNotes, bots: controller.onlineBots, statuses: controller.favoriteStatuses, now: Date(), records: controller.recordsByOpponent)
-    }
-
-    /// The selected row on the current tab.
-    private var selectedRow: LichessBotBotRow? {
-        guard let selectedBotID else { return nil }
+    /// The player table's rows for the current tab, unfiltered; empty on
+    /// the tabs with their own lists.
+    private var listRows: [LichessBotBotRow] {
         switch source {
-        case .onlineBots: return onlineRows.first { $0.id == selectedBotID }
-        case .favorites: return favoriteRows.first { $0.id == selectedBotID }
-        case .onlinePlayers: return onlinePlayerRows.first { $0.id == selectedBotID }
-        case .leaderboard, .username: return nil
+        case .onlineBots:
+            return LichessBotBotList.onlineRows(bots: controller.onlineBots, notes: controller.playerNotes, now: Date(), records: controller.recordsByOpponent, statuses: controller.playerStatuses)
+        case .favorites:
+            return LichessBotBotList.favoriteRows(notes: controller.playerNotes, bots: controller.onlineBots, statuses: controller.playerStatuses, now: Date(), records: controller.recordsByOpponent)
+        case .onlinePlayers:
+            // Not loaded yet (or failed, with the error shown): no rows.
+            return LichessBotBotList.onlineRows(bots: controller.onlinePlayers?.users ?? [], notes: controller.playerNotes, now: Date(), records: controller.recordsByOpponent, statuses: controller.playerStatuses)
+        case .leaderboard, .history, .username:
+            return []
         }
     }
 
-    /// The chosen opponent's username.
-    private var target: String? {
+    /// The chosen opponent: the name to challenge and the id for records.
+    struct ChosenOpponent: Equatable {
+        let username: String
+        let id: String
+    }
+
+    /// The opponent chosen on the current tab, from its rows.
+    private func chosenOpponent(in rows: [LichessBotBotRow]) -> ChosenOpponent? {
         switch source {
         case .onlineBots, .favorites, .onlinePlayers:
             // An offline bot can't accept; a favorite of unknown status may.
-            guard let row = selectedRow, row.isOnline != false else { return nil }
-            return row.username
+            guard let selectedBotID, let row = rows.first(where: { $0.id == selectedBotID }), row.isOnline != false else { return nil }
+            return ChosenOpponent(username: row.username, id: row.id)
         case .leaderboard:
-            return leaderboardSelection?.username
+            return leaderboardSelection.map { ChosenOpponent(username: $0.username, id: $0.id) }
+        case .history:
+            return historySelection.map { ChosenOpponent(username: $0.name, id: $0.id) }
         case .username:
-            return lookedUp?.username
+            return lookedUp.map { ChosenOpponent(username: $0.username, id: $0.id) }
         }
+    }
+
+    private var historySelection: LichessBotPastOpponent? {
+        guard let selectedHistoryID else { return nil }
+        return controller.pastOpponents.first { $0.id == selectedHistoryID }
     }
 
     private var leaderboardSelection: LichessBotLeaderboardUser? {
@@ -275,18 +325,20 @@ struct LichessBotChallengeSheet: View {
         return controller.leaderboards[clock.speed]?.users.first { $0.id == selectedLeaderboardID }
     }
 
-    private var targetID: String? {
-        switch source {
-        case .leaderboard: return leaderboardSelection?.id
-        case .onlineBots, .favorites, .onlinePlayers: return selectedRow?.id
-        case .username: return lookedUp?.id
-        }
+    private func targetSummary(_ chosen: ChosenOpponent?) -> String {
+        guard let chosen else { return "Choose an opponent" }
+        let record = controller.headToHead(against: chosen.id)
+        return "\(chosen.username) · DCM's record vs them: \(record.wins)–\(record.draws)–\(record.losses)"
     }
 
-    private var targetSummary: String {
-        guard let target else { return "Choose an opponent" }
-        let record = controller.headToHead(against: targetID)
-        return "\(target) · DCM's record vs them: \(record.wins)–\(record.draws)–\(record.losses)"
+    /// DCM's games against the chosen opponent today, past the daily
+    /// per-opponent acceptance limit: a warning only (plan §7.1).
+    private func dailyOpponentWarning(_ chosen: ChosenOpponent?) -> String {
+        guard let chosen else { return "" }
+        let played = controller.gamesTodayByOpponent[chosen.id.lowercased(), default: 0]
+        let limit = controller.settings.challenge.maxGamesPerOpponentPerDay
+        guard played >= limit else { return "" }
+        return "DCM has played \(chosen.username) \(played) times today; the acceptance settings allow \(limit) per opponent per day"
     }
 
     /// Choices outside the acceptance policy are allowed, with a warning
@@ -306,14 +358,14 @@ struct LichessBotChallengeSheet: View {
         }
     }
 
-    private func send() async {
-        guard let target else { return }
+    private func send(to chosen: ChosenOpponent?) async {
+        guard let chosen else { return }
         sending = true
         defer { sending = false }
         let seconds = clock.seconds
         do {
             try await controller.sendChallenge(
-                to: target,
+                to: chosen.username,
                 request: LichessBotOutgoingChallenge(rated: rated, clockLimitSeconds: seconds.limit, clockIncrementSeconds: seconds.increment, color: color)
             )
             isPresented = false
@@ -358,7 +410,7 @@ struct LichessBotBotListHeader: View {
         case .onlinePlayers:
             guard let players = controller.onlinePlayers else { return "Online players: loading" }
             return "Top \(players.users.count) online players by rating · many refuse bots"
-        case .onlineBots, .leaderboard, .username:
+        case .onlineBots, .leaderboard, .history, .username:
             let count = controller.onlineBots.count
             let capped = count >= LichessBotLimits.onlineBotsMaximum ? " (Lichess lists at most \(LichessBotLimits.onlineBotsMaximum))" : ""
             return "\(count) bots online\(capped) · ? = provisional"
@@ -406,83 +458,76 @@ struct LichessBotBotFilterBar: View {
     }
 }
 
-/// Bots in a sortable table: a favorite star on the left, then blitz and
-/// rapid ratings and games. Favorites always sort first.
+/// Players in a sortable table: the shared player cell (star, online dot,
+/// title, name, playing or offline), then ratings, DCM's record and games.
+/// Favorites always sort first.
 struct LichessBotBotTable: View {
+    let controller: LichessBotController
     /// "Bot" or "Player", for the name column.
-    var nameTitle = "Bot"
+    let nameTitle: String
     let rows: [LichessBotBotRow]
     @Binding var selection: String?
     @Binding var sortOrder: [KeyPathComparator<LichessBotBotRow>]
-    let onToggleFavorite: (String) -> Void
 
     var body: some View {
         Table(rows, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("") { row in
-                Button {
-                    onToggleFavorite(row.id)
-                } label: {
-                    Image(systemName: row.isFavorite ? "star.fill" : "star")
-                        .foregroundStyle(row.isFavorite ? Color.yellow : Color.secondary)
-                }
-                .buttonStyle(.plain)
-                .help(row.isFavorite ? "Remove from favorites" : "Add to favorites")
-            }
-            .width(24)
             TableColumn(nameTitle, value: \.usernameSortKey) { row in
-                LichessBotBotNameCell(row: row)
+                LichessBotPlayerNameCell(
+                    controller: controller,
+                    userID: row.id,
+                    name: row.username,
+                    title: row.title,
+                    online: row.isOnline,
+                    playing: row.isPlaying,
+                    limitUntil: row.limitUntil
+                )
             }
+            .width(min: 200, ideal: 260)
+            TableColumn("Bullet", value: \.bulletSortKey) { row in
+                Text(row.summary?.ratingText("bullet") ?? "")
+                    .font(.system(.body, design: .monospaced))
+            }
+            .width(min: 60, ideal: 70)
+            .alignment(.trailing)
             TableColumn("Blitz", value: \.blitzSortKey) { row in
                 Text(row.summary?.ratingText("blitz") ?? "")
                     .font(.system(.body, design: .monospaced))
             }
-            .width(min: 70, ideal: 80)
+            .width(min: 60, ideal: 70)
+            .alignment(.trailing)
             TableColumn("Rapid", value: \.rapidSortKey) { row in
                 Text(row.summary?.ratingText("rapid") ?? "")
                     .font(.system(.body, design: .monospaced))
             }
-            .width(min: 70, ideal: 80)
+            .width(min: 60, ideal: 70)
+            .alignment(.trailing)
             TableColumn("Best", value: \.bestSortKey) { row in
-                Text(row.summary?.bestSpeed.map { "\($0.speed) \($0.rating)\($0.provisional ? "?" : "")" } ?? "")
+                Text(row.summary?.bestSpeed.map { Self.bestText($0) } ?? "")
                     .font(.system(.body, design: .monospaced))
                     .help("The player's highest-rated speed among those they have played")
             }
-            .width(min: 110, ideal: 130)
+            .width(min: 150, ideal: 180)
             TableColumn("vs DCM", value: \.recordSortKey) { row in
                 Text(row.record.map { "\($0.wins)–\($0.draws)–\($0.losses)" } ?? "")
                     .font(.system(.body, design: .monospaced))
                     .help("DCM's wins–draws–losses against them, from its own records")
             }
             .width(min: 70, ideal: 80)
+            .alignment(.trailing)
             TableColumn("Games", value: \.gamesSortKey) { row in
-                Text(row.summary.map { String(format: "%6d", $0.ratedSpeedGames) } ?? "")
+                Text(row.summary.map { "\($0.ratedSpeedGames)" } ?? "")
                     .font(.system(.body, design: .monospaced))
                     .help("Rated games at every speed")
             }
-            .width(min: 70, ideal: 80)
+            .width(min: 60, ideal: 70)
+            .alignment(.trailing)
         }
     }
-}
 
-/// A bot's name, dimmed when offline, with its daily-limit time when
-/// Lichess has refused it.
-struct LichessBotBotNameCell: View {
-    let row: LichessBotBotRow
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(row.username)
-                .foregroundStyle(row.isOnline == false ? Color.secondary : Color.primary)
-            Text(row.isOnline == false ? "offline" : (row.isOnline == nil ? "status unknown" : ""))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .shown(row.isOnline != true)
-            Text(row.limitUntil.map { "limit until \($0.formatted(date: .omitted, time: .shortened))" } ?? "")
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .help("Lichess refused a challenge: this bot played its daily bot games")
-                .shown(row.limitUntil != nil)
-        }
+    /// The speed and rating (with "?" when provisional): a plain string, so
+    /// the rating isn't digit-grouped like a localized number.
+    private static func bestText(_ best: (speed: String, rating: Int, provisional: Bool)) -> String {
+        "\(best.speed) \(best.rating)\(best.provisional ? "?" : "")"
     }
 }
 
@@ -492,10 +537,16 @@ struct LichessBotUsernameLookup: View {
     @Binding var typedUsername: String
     @Binding var lookedUp: LichessBotUserSummary?
     @Binding var lookupError: String?
+    let isVisible: Bool
 
     @State private var matches: [LichessBotLightUser] = []
     @State private var matchesError: String?
+    @State private var statusError: String?
     @State private var selectedID: String?
+    /// The name of the lookup whose result may still be shown. A slower,
+    /// older lookup finishing last must not replace the newer choice, or
+    /// Send would challenge the wrong player.
+    @State private var currentLookup: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -512,14 +563,28 @@ struct LichessBotUsernameLookup: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             List(rows, selection: $selectedID) { user in
-                LichessBotLightUserRow(controller: controller, user: user)
-                    .tag(user.id)
+                LichessBotPlayerNameCell(
+                    controller: controller,
+                    userID: user.id,
+                    name: user.name,
+                    title: user.title,
+                    online: user.online,
+                    playing: user.playing
+                )
+                .tag(user.id)
             }
-            .frame(minHeight: 120)
+            .frame(minHeight: 120, maxHeight: .infinity)
+            // Autocomplete and DCM's records carry no online status; it is
+            // fetched for whatever is listed.
+            .modifier(LichessBotPlayerStatusRefresh(controller: controller, ids: listed.map { $0.id.lowercased() }, isActive: isVisible, errorText: $statusError))
             Text(matchesError ?? "")
                 .font(.caption)
                 .foregroundStyle(.red)
                 .shown(matchesError != nil)
+            Text(statusError ?? "")
+                .font(.caption)
+                .foregroundStyle(.red)
+                .shown(statusError != nil)
             Text(lookedUpText)
                 .font(.callout.weight(.semibold))
                 .shown(lookedUp != nil)
@@ -531,6 +596,15 @@ struct LichessBotUsernameLookup: View {
         // Type-ahead: wait until typing pauses, then ask Lichess. A new
         // keystroke cancels the pending search.
         .task(id: query) {
+            // A new name is a new choice: drop the old result and any
+            // lookup still in flight.
+            if lookedUp?.username.lowercased() != query.lowercased() {
+                lookedUp = nil
+                lookupError = nil
+                currentLookup = nil
+                // So the same row can be chosen again after typing.
+                selectedID = nil
+            }
             guard query.count >= LichessBotLimits.autocompleteMinimumCharacters else {
                 matches = []
                 matchesError = nil
@@ -545,6 +619,7 @@ struct LichessBotUsernameLookup: View {
                 matches = try await controller.autocompleteUsers(query)
                 matchesError = nil
             } catch {
+                guard !Task.isCancelled else { return }
                 matchesError = error.localizedDescription
             }
         }
@@ -560,9 +635,17 @@ struct LichessBotUsernameLookup: View {
         typedUsername.trimmingCharacters(in: .whitespaces)
     }
 
-    /// Recent opponents until a search is typed; then Lichess's matches.
-    private var rows: [LichessBotLightUser] {
+    /// Recent opponents until a search is typed, then Lichess's matches.
+    private var listed: [LichessBotLightUser] {
         query.count >= LichessBotLimits.autocompleteMinimumCharacters ? matches : (controller.recentOpponents ?? [])
+    }
+
+    /// `listed`, each with its fetched status when known.
+    private var rows: [LichessBotLightUser] {
+        listed.map { user in
+            guard let status = controller.playerStatuses[user.id.lowercased()] else { return user }
+            return LichessBotLightUser(id: user.id, name: user.name, title: user.title ?? status.title, online: status.online == true, playing: status.playing == true)
+        }
     }
 
     private var listTitle: String {
@@ -575,40 +658,112 @@ struct LichessBotUsernameLookup: View {
     private var lookedUpText: String {
         guard let user = lookedUp else { return "" }
         let kind = user.isBot ? "BOT" : (user.title ?? "player")
-        return "Selected: \(user.username) · \(kind) · blitz \(user.ratingText("blitz")) · rapid \(user.ratingText("rapid"))"
+        return "Selected: \(user.username) · \(kind) · bullet \(user.ratingText("bullet")) · blitz \(user.ratingText("blitz")) · rapid \(user.ratingText("rapid"))"
             + (user.disabled == true ? " · account closed" : "")
     }
 
     private func lookUp(_ username: String) async {
         let name = username.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
+        currentLookup = name
         lookupError = nil
         lookedUp = nil
         do {
-            lookedUp = try await controller.lookUpUser(name)
+            let user = try await controller.lookUpUser(name)
+            guard currentLookup == name else { return }
+            lookedUp = user
         } catch {
+            guard currentLookup == name else { return }
             lookupError = error.localizedDescription
         }
     }
 }
 
-/// A player in the Username and Leaderboard lists, with a favorite star.
-struct LichessBotLightUserRow: View {
+/// A player's name as every Challenge-sheet list shows it: favorite star,
+/// a green dot when online, title, name (dimmed when offline), "playing" or
+/// "offline", and the bot-limit time when Lichess has refused them.
+struct LichessBotPlayerNameCell: View {
     let controller: LichessBotController
-    let user: LichessBotLightUser
+    let userID: String
+    let name: String
+    let title: String?
+    /// Nil when unknown.
+    let online: Bool?
+    /// Nil when unknown.
+    let playing: Bool?
+    var limitUntil: Date? = nil
+
+    /// "playing", "offline", or nothing when online and idle or unknown.
+    private var statusText: String {
+        if playing == true { return "playing" }
+        if online == false { return "offline" }
+        return ""
+    }
 
     var body: some View {
         HStack(spacing: 8) {
-            LichessBotFavoriteStar(controller: controller, userID: user.id)
+            LichessBotFavoriteStar(controller: controller, userID: userID)
             Circle()
-                .fill(user.online == true ? Color.green : Color.clear)
+                .fill(online == true ? Color.green : Color.clear)
                 .frame(width: 7, height: 7)
-                .help(user.online == true ? "Online now" : "")
-            Text(user.title ?? "")
+                .help(online == true ? "Online now" : (online == false ? "Offline" : "Online status not known"))
+                // Only "online" needs the dot spoken: "offline" is in the text.
+                .accessibilityLabel("Online")
+                .accessibilityHidden(online != true)
+            Text(title ?? "")
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.orange)
-                .shown(user.title != nil)
-            Text(user.name)
+                .shown(title != nil)
+            Text(name)
+                .foregroundStyle(online == false ? Color.secondary : Color.primary)
+                .lineLimit(1)
+            Text(statusText)
+                .font(.caption)
+                .foregroundStyle(playing == true ? Color.orange : Color.secondary)
+                .shown(!statusText.isEmpty)
+            Text(limitUntil.map { "limit until \($0.formatted(date: .omitted, time: .shortened))" } ?? "")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .help("Lichess refused a challenge: this bot played its daily bot games")
+                .shown(limitUntil != nil)
+        }
+    }
+}
+
+/// Keeps `controller.playerStatuses` fresh for the ids a list shows while
+/// it is visible: asks when the ids change, then again each time the
+/// statuses age out. Ids fetched recently are skipped, so re-sorting or a
+/// refreshed list costs no request for players already known.
+struct LichessBotPlayerStatusRefresh: ViewModifier {
+    let controller: LichessBotController
+    let ids: [String]
+    let isActive: Bool
+    @Binding var errorText: String?
+
+    private struct TaskKey: Equatable {
+        let ids: [String]
+        let isActive: Bool
+    }
+
+    func body(content: Content) -> some View {
+        content.task(id: TaskKey(ids: ids, isActive: isActive)) {
+            guard isActive, !ids.isEmpty else { return }
+            while !Task.isCancelled {
+                do {
+                    try await controller.refreshPlayerStatuses(ids)
+                    errorText = nil
+                } catch {
+                    // Cancelled because the list changed or was hidden: the
+                    // next task reports its own outcome.
+                    guard !Task.isCancelled else { return }
+                    errorText = "Couldn't check who is online or playing: \(error.localizedDescription)"
+                }
+                do {
+                    try await Task.sleep(for: .seconds(LichessBotController.playerStatusMaximumAge))
+                } catch {
+                    return
+                }
+            }
         }
     }
 }
@@ -620,9 +775,12 @@ struct LichessBotLeaderboardList: View {
     let controller: LichessBotController
     let speed: LichessBotSpeed
     @Binding var selection: String?
+    let isVisible: Bool
 
     @State private var onlineOnly = true
     @State private var loadError: String?
+    @State private var statusError: String?
+    @State private var sortOrder = [KeyPathComparator(\LichessBotLeaderboardRow.rank)]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -640,51 +798,77 @@ struct LichessBotLeaderboardList: View {
                 .font(.callout)
                 .foregroundStyle(.red)
                 .shown(loadError != nil)
-            Table(rows, selection: $selection) {
-                TableColumn("#") { row in
+            Text(statusError ?? "")
+                .font(.callout)
+                .foregroundStyle(.red)
+                .shown(statusError != nil)
+            Table(rows.sorted(using: sortOrder), selection: $selection, sortOrder: $sortOrder) {
+                TableColumn("#", value: \.rank) { row in
                     Text("\(row.rank)")
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
                 .width(36)
-                TableColumn("Player") { row in
-                    LichessBotLightUserRow(controller: controller, user: LichessBotLightUser(id: row.user.id, name: row.user.username, title: row.user.title, online: row.user.online))
+                .alignment(.trailing)
+                TableColumn("Player", value: \.nameSortKey) { row in
+                    LichessBotPlayerNameCell(
+                        controller: controller,
+                        userID: row.user.id,
+                        name: row.user.username,
+                        title: row.user.title,
+                        online: row.online,
+                        playing: row.playing
+                    )
                 }
-                TableColumn("Rating") { row in
-                    Text(row.user.perf(speed.rawValue).map { "\($0.rating)" } ?? "")
+                .width(min: 200, ideal: 260)
+                TableColumn("\(speed.displayName) rating", value: \.rating) { row in
+                    Text(row.rating == Int.min ? "" : "\(row.rating)")
                         .font(.system(.body, design: .monospaced))
                 }
-                .width(min: 60, ideal: 70)
-                TableColumn("Recent") { row in
-                    Text(row.user.perf(speed.rawValue).map { $0.progress > 0 ? "+\($0.progress)" : "\($0.progress)" } ?? "")
+                .width(min: 90, ideal: 110)
+                .alignment(.trailing)
+                TableColumn("Recent", value: \.progress) { row in
+                    Text(row.progress == Int.min ? "" : (row.progress > 0 ? "+\(row.progress)" : "\(row.progress)"))
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(.secondary)
-                        .help("Rating change over roughly the last 12 rated games")
+                        .help("Rating change over roughly the last dozen rated games")
                 }
                 .width(min: 60, ideal: 70)
+                .alignment(.trailing)
             }
+            .modifier(LichessBotPlayerStatusRefresh(
+                controller: controller,
+                ids: controller.leaderboards[speed]?.users.map { $0.id.lowercased() } ?? [],
+                isActive: isVisible,
+                errorText: $statusError
+            ))
         }
-        .task(id: speed) {
+        .task(id: LoadKey(speed: speed, isVisible: isVisible)) {
+            guard isVisible else { return }
             await load(force: false)
         }
     }
 
-    private struct Row: Identifiable {
-        var id: String { user.id }
-        let rank: Int
-        let user: LichessBotLeaderboardUser
+    private struct LoadKey: Equatable {
+        let speed: LichessBotSpeed
+        let isVisible: Bool
     }
 
-    private var rows: [Row] {
+    private var rows: [LichessBotLeaderboardRow] {
+        rows(onlineOnly: onlineOnly)
+    }
+
+    /// Not loaded yet (or failed, with the error shown): no rows.
+    private func rows(onlineOnly: Bool) -> [LichessBotLeaderboardRow] {
         let users = controller.leaderboards[speed]?.users ?? []
         return users.enumerated()
-            .map { Row(rank: $0.offset + 1, user: $0.element) }
-            .filter { !onlineOnly || $0.user.online == true }
+            .map { LichessBotLeaderboardRow(rank: $0.offset + 1, user: $0.element, speed: speed, status: controller.playerStatuses[$0.element.id.lowercased()]) }
+            .filter { !onlineOnly || $0.online == true }
     }
 
     private var headerText: String {
         guard let board = controller.leaderboards[speed] else { return "Top \(speed.rawValue) players: loading…" }
-        let online = board.users.filter { $0.online == true }.count
+        let online = rows(onlineOnly: false).filter { $0.online == true }.count
         return "Top \(board.users.count) \(speed.rawValue) players · \(online) online now"
     }
 
@@ -693,6 +877,8 @@ struct LichessBotLeaderboardList: View {
             try await controller.refreshLeaderboard(speed, force: force)
             loadError = nil
         } catch {
+            // Cancelled by a change of tab or time control: not a failure.
+            guard !Task.isCancelled else { return }
             loadError = "Couldn't load the \(speed.rawValue) leaderboard: \(error.localizedDescription)"
         }
     }
@@ -715,5 +901,117 @@ struct LichessBotRatingBoundField: View {
                     .stroke(Color.red, lineWidth: invalid ? 1.5 : 0)
             )
             .help(invalid ? "Whole numbers only" : "Leave empty for no bound")
+    }
+}
+
+/// Everyone DCM has played, from its own records (plan §7.2): favorite
+/// star, online status (fetched for the most recent players), kind, games,
+/// DCM's W–D–L, and when they last played.
+struct LichessBotHistoryList: View {
+    let controller: LichessBotController
+    @Binding var selection: String?
+    let isVisible: Bool
+
+    @State private var statusError: String?
+    @State private var sortOrder = [KeyPathComparator(\LichessBotPastOpponent.lastPlayedAt, order: .reverse)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(headerText)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Text(statusError ?? "")
+                .font(.caption)
+                .foregroundStyle(.red)
+                .shown(statusError != nil)
+            Table(controller.pastOpponents.sorted(using: sortOrder), selection: $selection, sortOrder: $sortOrder) {
+                TableColumn("Player", value: \.nameSortKey) { opponent in
+                    let status = controller.playerStatuses[opponent.id]
+                    LichessBotPlayerNameCell(
+                        controller: controller,
+                        userID: opponent.id,
+                        name: opponent.name,
+                        title: opponent.title,
+                        online: status.map { $0.online == true },
+                        playing: status.map { $0.playing == true }
+                    )
+                }
+                .width(min: 200, ideal: 260)
+                TableColumn("Kind") { opponent in
+                    Text(Self.kindText(opponent.kind))
+                        .foregroundStyle(.secondary)
+                }
+                .width(min: 60, ideal: 80)
+                TableColumn("Games", value: \.gamesSortKey) { opponent in
+                    Text("\(opponent.record.games)")
+                        .font(.system(.body, design: .monospaced))
+                }
+                .width(min: 50, ideal: 60)
+                .alignment(.trailing)
+                TableColumn("DCM W–D–L") { opponent in
+                    Text("\(opponent.record.wins)–\(opponent.record.draws)–\(opponent.record.losses)")
+                        .font(.system(.body, design: .monospaced))
+                }
+                .width(min: 80, ideal: 100)
+                .alignment(.trailing)
+                TableColumn("Last played", value: \.lastPlayedAt) { opponent in
+                    Text(opponent.lastPlayedAt.formatted(.relative(presentation: .named)))
+                        .foregroundStyle(.secondary)
+                }
+                .width(min: 100, ideal: 120)
+            }
+        }
+        // Statuses for the most recent opponents only: one request's worth,
+        // however long the history grows.
+        .modifier(LichessBotPlayerStatusRefresh(controller: controller, ids: statusIDs, isActive: isVisible, errorText: $statusError))
+    }
+
+    private var statusIDs: [String] {
+        controller.pastOpponents.prefix(LichessBotLimits.userStatusMaximumIDs).map(\.id)
+    }
+
+    private var headerText: String {
+        guard controller.index != nil else { return "Loading DCM's games…" }
+        let online = statusIDs.filter { controller.playerStatuses[$0]?.online == true }.count
+        return "\(controller.pastOpponents.count) players DCM has played · \(online) online now"
+    }
+
+    private static func kindText(_ kind: LichessBotOpponentKind) -> String {
+        switch kind {
+        case .bot: return "bot"
+        case .human: return "human"
+        case .lichessAI: return "Lichess AI"
+        }
+    }
+}
+
+/// One leaderboard entry with sort keys for its speed. A missing value
+/// sorts below every real one.
+struct LichessBotLeaderboardRow: Identifiable {
+    var id: String { user.id }
+    let rank: Int
+    let user: LichessBotLeaderboardUser
+    let rating: Int
+    let progress: Int
+    /// A fetched status is newer than the leaderboard's own online flag,
+    /// which Lichess computes when it builds the list.
+    let online: Bool?
+    /// Nil until a status is fetched (the leaderboard doesn't say).
+    let playing: Bool?
+    var nameSortKey: String { user.username.lowercased() }
+
+    init(rank: Int, user: LichessBotLeaderboardUser, speed: LichessBotSpeed, status: LichessBotUserStatus?) {
+        self.rank = rank
+        self.user = user
+        let perf = user.perf(speed.rawValue)
+        rating = perf?.rating ?? Int.min
+        progress = perf?.progress ?? Int.min
+        if let status {
+            online = status.online == true
+            playing = status.playing == true
+        } else {
+            online = user.online
+            playing = nil
+        }
     }
 }

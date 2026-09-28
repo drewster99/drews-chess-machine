@@ -60,27 +60,31 @@ struct LichessBotGameTileContent: View {
             // header's result stays at full strength.
             VStack(alignment: .leading, spacing: 4) {
                 LichessBotBoardView(game: game, plyCount: game.plies.count)
-                HStack(alignment: .firstTextBaseline) {
-                    PieceColorDisc(color: ourColor, diameter: 10)
-                    Text("DCM")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    LichessBotClockView(
+                // Each side's label above its clock, and the ply count in
+                // two lines between them: a tile is too narrow to keep a
+                // clock beside its label without the time wrapping.
+                HStack(alignment: .lastTextBaseline) {
+                    LichessBotTileClockColumn(
+                        label: "DCM",
+                        pieceColor: ourColor,
+                        alignment: .leading,
                         milliseconds: ourColor == .white ? game.whiteClockMilliseconds : game.blackClockMilliseconds,
                         receivedAt: game.clocksReceivedAt,
                         isRunning: clocksRun && game.sideToMove == ourColor,
                         isOurs: true
                     )
-                    Spacer()
-                    Text("\(game.plies.count) plies")
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    PieceColorDisc(color: ourColor == .white ? .black : .white, diameter: 10)
-                    Text("Opp.")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    LichessBotClockView(
+                    Spacer(minLength: 4)
+                    VStack(spacing: 0) {
+                        Text("\(game.plies.count)")
+                        Text("plies")
+                    }
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    Spacer(minLength: 4)
+                    LichessBotTileClockColumn(
+                        label: "Opp.",
+                        pieceColor: ourColor == .white ? .black : .white,
+                        alignment: .trailing,
                         milliseconds: ourColor == .white ? game.blackClockMilliseconds : game.whiteClockMilliseconds,
                         receivedAt: game.clocksReceivedAt,
                         isRunning: clocksRun && game.sideToMove != ourColor,
@@ -107,6 +111,7 @@ struct LichessBotGameTileContent: View {
         .help("Open this game in its own window")
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
+        .accessibilityAction(.default, onOpen)
     }
 
     private enum Result {
@@ -137,6 +142,35 @@ struct LichessBotGameTileContent: View {
         case .won: return .green
         case .lost: return .red
         case .drew, .noResult: return .secondary
+        }
+    }
+}
+
+/// One side's clock in a tile's footer: its color disc and label on the
+/// first line, the clock on the second.
+struct LichessBotTileClockColumn: View {
+    let label: String
+    let pieceColor: PieceColor
+    /// Leading for DCM's column, trailing for the opponent's, so the two
+    /// clocks sit at the tile's edges.
+    let alignment: HorizontalAlignment
+    let milliseconds: Int?
+    let receivedAt: Date?
+    let isRunning: Bool
+    let isOurs: Bool
+
+    var body: some View {
+        VStack(alignment: alignment, spacing: 0) {
+            // Inset like the time within its running highlight, so label and
+            // time line up and the highlight stays inside the column.
+            HStack(spacing: 4) {
+                PieceColorDisc(color: pieceColor, diameter: 10)
+                Text(label)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, LichessBotClockView.horizontalPadding)
+            LichessBotClockView(milliseconds: milliseconds, receivedAt: receivedAt, isRunning: isRunning, isOurs: isOurs)
         }
     }
 }

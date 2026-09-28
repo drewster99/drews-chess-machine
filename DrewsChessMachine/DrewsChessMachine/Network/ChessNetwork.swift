@@ -1134,14 +1134,13 @@ final class ChessNetwork: @unchecked Sendable {
     /// itself throws (shape mismatch, output missing) before reaching
     /// the closure, `consume` is never invoked.
     ///
-    /// In self-play both `MPSChessPlayer` instances share one
-    /// `ChessNetwork` but are driven sequentially inside a single
-    /// `ChessMachine.runGameLoop`, so only one side evaluates at a
-    /// time. Any future refactor that runs two games concurrently on
-    /// one network must give each game its own `ChessNetwork` or add
-    /// explicit serialization here.
+    /// Concurrent callers are safe: the forward pass and the `consume` call
+    /// that reads the shared scratch run inside one work block on the serial
+    /// `executionQueue`, so another caller's pass cannot overwrite the
+    /// scratch until this caller's `consume` has returned.
     ///
-    /// - Parameter board: `inputPlanes`×8×8 = 1,920 floats in NCHW order (planes, rows, cols).
+    /// - Parameter board: `arch.inputPlanes` × `ChessNetwork.boardSize` ×
+    ///   `ChessNetwork.boardSize` floats in NCHW order (planes, rows, cols).
     func evaluate(
         board: [Float],
         consume: @Sendable @escaping (UnsafeBufferPointer<Float>, Float) -> Void
@@ -1829,6 +1828,18 @@ final class ChessNetwork: @unchecked Sendable {
     func exportWeights() async throws -> [[Float]] {
         try await enqueue {
             try self.internalExportWeights()
+        }
+    }
+
+    /// `exportWeights()` for a caller on another serial work queue that must
+    /// read the weights and its own state with nothing in between (the
+    /// trainer pairing weights with its step count). Blocks the calling
+    /// thread until this network's queue has run the export, so it must
+    /// never be called from the cooperative pool or from this network's own
+    /// queue.
+    func exportWeightsBlocking() throws -> [[Float]] {
+        try executionQueue.sync {
+            try internalExportWeights()
         }
     }
 

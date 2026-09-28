@@ -4,29 +4,53 @@ import SwiftUI
 /// games, W–D–L, score, and splits by opponent kind and by color.
 struct LichessBotRecordCard: View {
     let controller: LichessBotController
+    /// The card's content height, set by dragging its bottom edge and
+    /// remembered across launches (a viewing preference, not a bot setting).
+    @AppStorage("lichessBot.overview.recordCardHeight") private var contentHeight: Double = 240
+
+    /// Short enough to keep the card compact, never so short the record
+    /// table's rows are cut off.
+    private static let contentHeightRange: ClosedRange<Double> = 160...1600
 
     var body: some View {
         GroupBox("Record") {
-            ZStack(alignment: .leading) {
-                Text("Loading the game records…")
-                    .foregroundStyle(.secondary)
-                    .shown(controller.index == nil)
-                ForEach(controller.index.map { [$0] } ?? [], id: \.recordCount) { index in
+            VStack(spacing: 4) {
+                // Applied here rather than passed in, so dragging the handle
+                // doesn't recompute the record on every frame.
+                LichessBotRecordCardContent(controller: controller)
+                    .frame(height: min(max(contentHeight, Self.contentHeightRange.lowerBound), Self.contentHeightRange.upperBound), alignment: .top)
+                LichessBotHeightResizeHandle(height: $contentHeight, range: Self.contentHeightRange)
+            }
+        }
+    }
+}
+
+/// The record table beside the recent games; the recent games list scrolls
+/// within whatever height the card gives it.
+struct LichessBotRecordCardContent: View {
+    let controller: LichessBotController
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            Text("Loading the game records…")
+                .foregroundStyle(.secondary)
+                .shown(controller.index == nil)
+            ForEach(controller.index.map { [$0] } ?? [], id: \.recordCount) { index in
+                // Re-evaluated each minute, so "Today" and "This week" roll
+                // over at midnight and the relative times stay current.
+                TimelineView(.everyMinute) { context in
                     HStack(alignment: .top, spacing: 28) {
                         LichessBotRecordGrid(result: Result {
-                            try LichessBotRecordSummary.compute(rows: index.rows, now: Date(), calendar: .current)
+                            try LichessBotRecordSummary.compute(rows: index.rows, now: context.date, calendar: .current)
                         })
                         .fixedSize()
                         Divider()
                         LichessBotRecentGamesList(controller: controller, rows: Array(index.rows.sorted { $0.createdAt > $1.createdAt }.prefix(LichessBotRecentGamesList.maximumRows)))
                     }
-                    // A fixed height keeps the card compact; the recent
-                    // games list scrolls for the rest.
-                    .frame(height: 240, alignment: .top)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

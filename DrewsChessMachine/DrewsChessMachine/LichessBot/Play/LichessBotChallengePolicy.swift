@@ -18,7 +18,7 @@ struct LichessBotChallengeContext: Sendable, Equatable {
     /// A model generation is ready to play (plan E15).
     var modelReady: Bool
     var activeGames: Int
-    /// Active games per opponent id.
+    /// Games and challenges committed per lowercased opponent id.
     var activeGamesByOpponent: [String: Int]
     /// Games started today (local day), in total and per opponent id.
     var gamesToday: Int
@@ -127,13 +127,13 @@ enum LichessBotChallengePolicy {
         if isBot && settings.maxConcurrentGames - context.activeGames <= settings.gamesReservedForHumans {
             return .decline(.later, rule: "remaining slots are reserved for humans")
         }
-        if (context.activeGamesByOpponent[challenger.id] ?? 0) >= settings.maxSimultaneousGamesPerOpponent {
+        if context.activeGamesByOpponent[challenger.id.lowercased(), default: 0] >= settings.maxSimultaneousGamesPerOpponent {
             return .decline(.later, rule: "already playing this opponent")
         }
         if context.gamesToday >= settings.maxGamesPerDay {
             return .decline(.later, rule: "daily game limit reached")
         }
-        let todayAgainst = context.gamesTodayByOpponent[challenger.id] ?? 0
+        let todayAgainst = context.gamesTodayByOpponent[challenger.id.lowercased()] ?? 0
         if todayAgainst >= settings.maxGamesPerOpponentPerDay {
             return .decline(.later, rule: "daily limit against this opponent reached")
         }

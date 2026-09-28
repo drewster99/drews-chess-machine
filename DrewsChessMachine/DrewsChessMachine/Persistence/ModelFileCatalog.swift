@@ -31,6 +31,13 @@ struct ModelLine: Sendable, Identifiable, Equatable {
     var latest: ModelFileEntry {
         files[0]
     }
+
+    /// The newest modification time among the line's files. Not necessarily
+    /// `latest`'s: `latest` is chosen by training step, and an earlier step
+    /// can be written after a later one.
+    var newestFileModifiedAt: Date {
+        files.reduce(latest.fileModifiedAt) { max($0, $1.fileModifiedAt) }
+    }
 }
 
 /// A self-play session's champion file.
@@ -102,7 +109,7 @@ enum ModelFileCatalog {
         let lines = byModel.map { modelID, files in
             ModelLine(modelID: modelID, files: files.sorted(by: isMoreAdvanced))
         }
-        .sorted { $0.latest.fileModifiedAt > $1.latest.fileModifiedAt }
+        .sorted { $0.newestFileModifiedAt > $1.newestFileModifiedAt }
         return Scan(lines: lines, unreadable: unreadable.sorted { $0.url.lastPathComponent < $1.url.lastPathComponent })
     }
 

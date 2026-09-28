@@ -64,15 +64,40 @@ final class LichessBotViewRenderTests: XCTestCase {
         return url
     }
 
+    /// A controller isolated from the app's real settings and bot data: its
+    /// own defaults suite and a temporary data folder, both removed after
+    /// the test.
+    private func makeController() throws -> LichessBotController {
+        let suite = "LichessBotViewRenderTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotViewRenderTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suite)
+            if FileManager.default.fileExists(atPath: root.path) {
+                do {
+                    try FileManager.default.removeItem(at: root)
+                } catch {
+                    XCTFail("cleanup failed: \(error)")
+                }
+            }
+        }
+        return LichessBotController(
+            modelProvider: LichessBotFakeModelProvider(snapshot: nil),
+            defaults: defaults,
+            dataDirectory: LichessBotDataDirectory(root: root)
+        )
+    }
+
     func testGameViewsRender() throws {
         let game = try makeGame()
+        let controller = try makeController()
         for scheme in [ColorScheme.light, .dark] {
             _ = try render(
-                LichessBotGameDetailView(game: game, headToHead: (2, 1, 3), onPopOut: {}, claimsKeyboardShortcuts: false),
+                LichessBotGameDetailView(controller: controller, game: game, headToHead: (2, 1, 3), onPopOut: {}, claimsKeyboardShortcuts: false),
                 size: CGSize(width: 1000, height: 720), name: "detail", scheme: scheme
             )
             _ = try render(
-                LichessBotGameTileView(game: game, isFocused: true, onFocus: {}, onDismiss: {}),
+                LichessBotGameTileView(controller: controller, game: game, onOpen: {}, onDismiss: {}),
                 size: CGSize(width: 300, height: 420), name: "tile", scheme: scheme
             )
         }

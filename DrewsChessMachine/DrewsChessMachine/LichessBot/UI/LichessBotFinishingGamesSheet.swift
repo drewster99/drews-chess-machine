@@ -33,13 +33,18 @@ struct LichessBotFinishingGamesSheet: View {
                 Button(purpose == .quit ? "Quit Now…" : "Go Offline Now…", role: .destructive) {
                     confirmingAbandon = true
                 }
-                .confirmationDialog("Abandon \(controller.gamesInProgress.count) game(s)?", isPresented: $confirmingAbandon) {
-                    Button("Abandon Games", role: .destructive) {
-                        controller.abandonAndStop()
+                .confirmationDialog(
+                    "Abandon \(controller.gamesInProgress.count) game(s)?",
+                    isPresented: $confirmingAbandon,
+                    actions: {
+                        Button("Abandon Games", role: .destructive) {
+                            controller.abandonAndStop()
+                        }
+                    },
+                    message: {
+                        Text("The opponents can claim the games once the abandonment timer runs out. The games are reconciled at the next launch.")
                     }
-                } message: {
-                    Text("The opponents can claim the games once the abandonment timer runs out. The games are reconciled at the next launch.")
-                }
+                )
                 Button("Abort (Resign All)") {
                     Task { await controller.resignAll() }
                 }

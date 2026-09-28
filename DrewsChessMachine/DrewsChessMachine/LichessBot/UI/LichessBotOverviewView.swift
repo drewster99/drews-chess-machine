@@ -150,7 +150,7 @@ struct LichessBotControlsCard: View {
 struct LichessBotAccountRatingsGrid: View {
     let controller: LichessBotController
 
-    private static let speeds = ["bullet", "blitz", "rapid", "classical"]
+    private static let speeds = ["ultraBullet", "bullet", "blitz", "rapid", "classical"]
 
     var body: some View {
         let unrated = unratedGamesBySpeed
@@ -327,6 +327,11 @@ struct LichessBotAlarmsCard: View {
                         .font(.callout)
                         .foregroundStyle(.orange)
                         .shown(!controller.unreconciledGameIDs.isEmpty)
+                    Text("\(controller.droppedAlarmCount) older dropped")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .help("Only the most recent alarms are kept here; the session log has every one")
+                        .shown(controller.droppedAlarmCount > 0)
                     Spacer()
                     Button("Clear") {
                         controller.dismissAlarms()
@@ -338,12 +343,17 @@ struct LichessBotAlarmsCard: View {
                     .shown(controller.alarms.isEmpty)
                 ForEach(controller.alarms.reversed()) { alarm in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(alarm.at.formatted(date: .omitted, time: .standard))
+                        Text(alarm.lastAt.formatted(date: .omitted, time: .standard))
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
                         Text(alarm.text)
                             .font(.callout)
                             .textSelection(.enabled)
+                        Text("×\(alarm.repeatCount)")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .help("Raised \(alarm.repeatCount) times since \(alarm.firstAt.formatted(date: .omitted, time: .standard))")
+                            .shown(alarm.repeatCount > 1)
                     }
                 }
             }
