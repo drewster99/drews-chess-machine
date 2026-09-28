@@ -1258,6 +1258,37 @@ before final sign-off.
   - the finished-while-offline path finalizes from the export
   - an index rebuild matches the incremental index
   - atomic writes leave no partial files
+- *As implemented (2026-09-28):*
+  - The journal (`LichessBotJournalWriter`, a game observer) stores the raw
+    stream lines as text, plus DCM's own decisions, POSTs, rejections,
+    actions, anomalies and the finish. It does not duplicate what the raw
+    lines already hold (`gameFull`, chat). Each launch that writes to a
+    game's journal first appends a header naming the build and whether it
+    resumed an existing file. The file is synchronized after every posted
+    move and at the finish.
+  - `LichessBotRecordBuilder` is pure: it replays the journal's raw lines to
+    rebuild the move list, SAN, retractions (E30) and offer events, and
+    attaches our decisions by ply. A move on our side with no POST from
+    this client becomes an anomaly, which is the §6.1 B signal. The export
+    wins for status, winner, rating changes and opening.
+  - Some aborted games have no export (a `404`). If the journal says
+    `aborted` or `noStart`, the record is finalized from the journal alone,
+    with reconciliation outcome `exportUnavailable`.
+  - `LichessBotReconciler` (actor) fetches exports one at a time, at least
+    `exportMinimumSpacingSeconds` apart.
+    - A still-live export (E23) is retried with backoff for up to 10 min.
+    - After that the game is marked unreconciled and retried every 30 min.
+    - A game that still has a session is dropped from the queue; its end
+      enqueues it again.
+    - Launch recovery enqueues every leftover `InProgress/` journal. The
+      controller wiring is Phase 5.
+  - `LichessBotRecordStore` is a stateless `Sendable` class whose work all
+    runs on the one file queue, not an actor: the files are the state.
+    `finalize` returns the record decoded from the bytes it wrote, so it is
+    identical to the one on disk.
+  - The `[LICHESS-BOT]` per-game summary line comes from
+    `LichessBotRecordStore.summaryLine`; the Phase 5 controller writes it
+    when a game is finalized.
 
 **Phase 5: controller + core UI (usable bot)**
 - Controller state machine.

@@ -9,7 +9,30 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-28 03:21 CDT — Lichess bot Phase 3: play layer (pending commit)
+## 2026-09-28 04:07 CDT — Lichess bot Phase 4: data layer (pending commit)
+
+Lichess bot plan §6.1 A, §10 and §12.1; the code is in `LichessBot/Data/`. Nothing in the app calls it yet. All tests use temporary directories.
+
+- **Game journal.** `LichessBotJournalWriter` is a game observer. It appends each game's raw stream lines plus DCM's decisions, POSTs, rejections, actions, anomalies and finish to `InProgress/<gameId>.journal.jsonl`.
+  - Appends happen on a serial file-queue executor, never on the cooperative pool.
+  - The file is synchronized after every posted move and at the finish.
+  - Each launch that writes to a game's journal first appends a header with the build and whether it resumed an existing file.
+  - When reading, only an unterminated final line (a crash mid-append) is dropped, and its byte count is recorded. A corrupt complete line is an error, not a skip.
+- **Records.** `LichessBotRecordBuilder` is pure: it replays the journal's raw lines to rebuild the move list, SAN, clocks, takeback retractions (E30) and offer events. It attaches DCM's decisions to our moves by ply and marks any our-side move this client never posted, which is the other-client signal (§6.1 B).
+  - The export wins for status, winner, rating changes and opening, and every disagreement is listed in the record. One example: a resignation that never reached the game stream (E22).
+  - An aborted game with no export is finalized from the journal alone.
+- **Finalize.** `LichessBotRecordStore` writes the `.json` record and the `.pgn` atomically into `Games/YYYY/MM/`, moves the journal beside them, and updates the index. The files are the state, and a crash at any point is recovered by finalizing again.
+- **Reconciler** (actor). Fetches exports one at a time, spaced apart.
+  - A lagging still-live export (E23) is retried for a bounded window; after that the game is marked unreconciled and retried slowly.
+  - Games still being played are left to their session.
+  - Every leftover `InProgress/` journal is recovered at launch.
+- **`index.json`.** A derived cache of per-game summaries. It is rebuilt when missing, unreadable, or stale by record count or newest modification time, and incremental updates are tested equal to a full rebuild.
+- **PGN.** Lichess-style tags plus `DCM*` tags naming builds, models and sources. Movetext carries `[%clk]` comments and, on our moves, the value head's W/D/L and sampling details. It is wrapped to 80 columns and round-trips through `PGNImporter`'s tokenizer.
+- **Protocol log.** `Protocol/events-YYYYMMDD.jsonl`, one file per day, with kinds for filtering. Every message and field is redacted of tokens, and write failures are reported rather than dropped.
+- **Instance lock.** An exclusive `flock` on `bot.lock`, held while online. The kernel releases it if the process dies, and a second holder is refused with the first holder's pid, build and host.
+- **Settings store.** One validated JSON blob in `UserDefaults`. Saved settings that are unreadable or invalid are an error state, never silently replaced by defaults.
+
+## 2026-09-28 03:21 CDT — Lichess bot Phase 3: play layer (`f61da5d`)
 
 Lichess bot plan §7, §9, §12.4 and §20; the code is in `LichessBot/Play/` and `LichessBotSettings.swift`. Nothing in the app calls it yet. The tests play complete games against an in-process fake Lichess, and the manager tests run a real random-weight network.
 
