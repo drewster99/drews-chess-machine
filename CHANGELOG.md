@@ -9,7 +9,21 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-28 04:07 CDT — Lichess bot Phase 4: data layer (pending commit)
+## 2026-09-28 08:31 CDT — Lichess bot: Keychain entitlement, Phase 5 scope decisions (pending commit)
+
+- **Keychain Sharing entitlement.** The app target now signs with `DrewsChessMachine.entitlements`, whose only entry is `keychain-access-groups = $(AppIdentifierPrefix)com.drewben.DrewsChessMachine`. The data-protection keychain the token store uses requires it. Automatic signing now embeds a provisioning profile. Verified on the signed product, which carries the group `P8MA38JTXY.com.drewben.DrewsChessMachine`.
+- **`LichessBotTokenStoreTests`.** These run against the real Keychain, so they also check that the entitlement is in place: save, read, replace, delete, and that the item's accessibility is after-first-unlock (E36). Each test uses its own account name and deletes its item afterwards.
+- **Plan decisions, recorded in `LICHESS_BOT_PLAN.md`:**
+  - Quit drains by default, with a "Finishing games" sheet: live per-game status, automatic quit when the last game ends, and Abort (resign all), Quit now and Cancel.
+  - "Play one game" and a manual **Challenge…** sheet move into Phase 5: online bots or a typed username, ratings and head-to-head record, and Cancel. The token therefore needs `challenge:write` as well as `bot:play`. Automatic matchmaking stays in Phase 8.
+  - The live single-game view defaults to the first-started game.
+  - A grid view keeps finished games for a configurable time, and any game can pop out into its own window.
+  - **Browse-only stepping** in every game view, including the human game view: the board shows an earlier position without changing the game.
+  - Full per-game protocol transcripts in both directions, logged to the journal and the protocol log.
+  - Head-to-head records per opponent.
+  - The UI uses the system font, like the rest of the app.
+
+## 2026-09-28 04:07 CDT — Lichess bot Phase 4: data layer (`268ffd0`)
 
 Lichess bot plan §6.1 A, §10 and §12.1; the code is in `LichessBot/Data/`. Nothing in the app calls it yet. All tests use temporary directories.
 

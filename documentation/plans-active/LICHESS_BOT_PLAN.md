@@ -523,6 +523,43 @@ The defaults are conservative on purpose:
   time (lichess-bot #36). DCM's fast inference doesn't help, because the
   bottleneck is the network.
 
+### 7.1 Picking opponents: one game at a time, and outgoing challenges (decided 2026-09-28)
+
+Lichess never assigns a bot an opponent. BOT accounts can't use the lobby,
+seeks or pools, so every game begins as a challenge, either incoming (the
+policy above) or outgoing. Outgoing challenges were deferred to Phase 8;
+they now move into **Phase 5**.
+
+- **Play one game.** Sets concurrency to 1 for this run and goes Online.
+  It takes the next game that starts, from an accepted incoming challenge
+  or an outgoing challenge accepted by its recipient. Once that game has
+  started, the bot moves to Draining, and it goes Offline when the game
+  ends. The normal concurrency setting is untouched.
+- **Challenge… sheet.**
+  - Pick an opponent from **online bots** (`GET /api/bot/online`,
+    unauthenticated, streamed as NDJSON, refreshed on demand), or type any
+    username (for example the operator's own human account).
+  - Shows each candidate's ratings and our head-to-head record (§14.3a).
+  - Choose time control, color and rated/casual. The defaults come from the
+    §7 policy (blitz/rapid, casual), and choices outside that policy are
+    allowed only with a visible warning.
+  - Sends `POST /api/challenge/{username}` through the gate at
+    challenge-response priority.
+  - Shows the pending challenge with a **Cancel** button
+    (`POST /api/challenge/{id}/cancel`).
+  - The game starts through the normal `gameStart` path when they accept.
+    A decline is shown with Lichess's reason.
+- **Limits:**
+  - outgoing challenges to one bot count toward the same
+    `botPairDailyStop`, short of Lichess's 100-per-pair daily cap
+  - at most one outgoing challenge pending at a time
+  - no automatic matchmaking loop (that remains Phase 8)
+  - an outgoing challenge echoed back on the event stream
+    (`direction == "out"`) is never answered (§7 table)
+- **Token scopes:** `bot:play` **and** `challenge:write`. The token check
+  requires `bot:play` and reports whether `challenge:write` is present. The
+  Challenge… sheet is disabled, with the reason shown, when it isn't.
+
 ## 8. Engine-side prerequisites (changes to shared code, tests first)
 
 Each item keeps one source of truth. Existing behavior is unchanged for
@@ -828,7 +865,8 @@ forensics.
     guard needs it)
 - It is **accepted** only if:
   - the token is valid
-  - its scopes include `bot:play`
+  - its scopes include `bot:play` (and `challenge:write`, which is optional:
+    without it the Challenge… sheet is disabled; §7.1)
   - it is not expired
   - its user id is **`drewschessmachine`** (the configured account, so a
     token for a different account is refused)
@@ -837,8 +875,9 @@ forensics.
 - On acceptance:
   - it is written to the Keychain
   - the field is cleared
-  - the panel shows "Token saved for DrewsChessMachine · bot:play ·
-    expires <date | never>", with **Replace** and **Remove** buttons
+  - the panel shows "Token saved for DrewsChessMachine · bot:play,
+    challenge:write · expires <date | never>", with **Replace** and
+    **Remove** buttons
 - The token is **never shown again**, never logged (a redaction helper
   covers every logged request), never placed in `UserDefaults`, settings
   JSON, records or crash text, and never written to disk outside the
@@ -989,11 +1028,23 @@ Controls live in the window, a Chess menu section, and the status chip menu:
   through the gate at game-critical priority
 
 **Quit** (`AppDelegate.applicationShouldTerminate`, currently never
-confirms). With games in progress, return `.terminateLater` and ask:
-- **Drain, then quit** (quits when the last game ends)
-- **Resign all and quit**
+confirms). *Decided 2026-09-28: the default is to drain.* With games in
+progress, return `.terminateLater`, move the bot to **Draining** at once
+(new challenges are declined with `later`), and show a **"Finishing games"
+sheet**:
+- It lists each game in progress with live status: opponent, move number,
+  both clocks, and whose turn.
+- The app quits by itself when the last game ends. That is the default
+  path, with no click needed.
+- **Abort**: resign every game (through the gate at game-critical
+  priority), then quit.
 - **Quit now**: games are abandoned. The opponent can claim after the
-  timeout, and launch recovery reconciles them.
+  timeout, and launch recovery reconciles them. Behind a confirmation.
+- **Cancel**: don't quit; the bot stays Draining. Go Online again from the
+  window if wanted.
+
+The same sheet serves **Go Offline** with games in progress, minus the
+quit.
 
 **Sleep and App Nap.**
 - Setting: **"Prevent system sleep while the bot is online"**, default
@@ -1076,6 +1127,74 @@ status area, which is always visible:
    caption (§12.3), inline validation, and a **Reset group** button.
    Changes apply immediately, with no Save button. Invalid input is
    rejected inline and never partially applied.
+
+**14.3a Live game viewing and statistics (decided 2026-09-28)**
+- **Fonts:** the system font the rest of the app uses, with monospaced
+  variants for digits. No custom font.
+- **Live view:** one game shown large, **defaulting to the first-started
+  game still in progress**, with a picker for the others. When that game
+  ends, the view moves to the next-oldest game in progress.
+- **Grid view:** a toggle that shows every game in progress at once, one
+  tile each with a small board, clocks, W/D/L bar and opponent. Clicking a
+  tile focuses that game in the large view.
+  - **Finished games stay in the grid for a while.** A tile gets a result
+    badge and remains for a configurable time (default 10 min) or until
+    dismissed; a **Clear finished** button removes them all. A popped-out
+    window keeps its game until the window is closed.
+- **Pop-out:** any live game opens in its own standalone single-game window,
+  and several can be open at once. Closing one affects nothing but that
+  window.
+- **Single-game view contents:**
+  - a read-only board oriented to our color, with last-move and check
+    highlights
+  - both clocks, ticking locally between server updates
+  - a W/D/L bar
+  - a **PGN move list** like the human game view's
+  - DCM's per-move data for the selected move
+  - the game chat
+  - the **protocol transcript** (below)
+- **Browse-only stepping, everywhere (decided 2026-09-28).** Every game
+  view, live or finished, can step through earlier positions *for viewing
+  only*. It never changes the game.
+  - A view cursor sits apart from the game position. Use ◀ ▶ and Home/End,
+    or click a move in the list.
+  - While browsing, a banner reads "Viewing ply N · live at ply M" with a
+    **Back to live** button (End does the same).
+  - New moves don't pull the view away from the ply being browsed. The
+    live ply, both clocks and the W/D/L bar keep updating.
+  - Live views have no way to change the game's position.
+  - This is a shared component: a browse cursor plus board plus move list.
+    The **human game view adopts it too**. Today, clicking a move there only
+    selects it for **Revert**, and the board never shows that position.
+    Revert stays a separate, explicit action.
+- **Protocol transcript (chat style), per game, both directions.** Lichess
+  bots don't speak UCI: traffic is NDJSON lines streamed from Lichess and
+  HTTP requests from DCM.
+  - Incoming stream lines are shown on one side with receive times.
+  - DCM's outgoing requests are shown on the other: method, path, form
+    fields, status, latency and the negotiated protocol.
+  - Keep-alives are shown collapsed into a counter, but **the full
+    transcript is logged** for debugging:
+    - every game-stream line, including each keep-alive with its receive
+      time, goes into the game's journal
+    - every event-stream line (challenges, `gameStart`/`gameFinish`, …)
+      goes into the protocol log
+    - event-stream keep-alives are logged as per-minute gap statistics,
+      plus an individual entry for any gap longer than the stall threshold
+      (at one every 7 s, logging each one individually would add about 12k
+      lines a day)
+  - The token and the `Authorization` header are never recorded.
+  - This needs one addition to the Phase 2 and 3 code: the API client
+    reports each request (with its game id) to an observer. Requests go
+    into the game's journal (a new `request` journal event) and the
+    protocol log, so the transcript also exists for finished games.
+- **Statistics:** full §11 stats, plus **head-to-head records**. An
+  **Opponents** table lists every opponent with games, W/D/L, score %,
+  their current and first-seen rating, last played, and our performance
+  rating against them. Opponent detail lists every game against them. The
+  record against an opponent is also shown on that opponent's live game
+  card and in the challenge log.
+- **One game at a time:** see §7.1.
 
 **14.4 Circuit breakers** are configurable and shown in Overview. Each trip
 logs, alarms, and moves the bot to Draining or Offline:
@@ -1177,7 +1296,8 @@ before final sign-off.
   it.**
 - When Phase 5's Account panel exists:
   1. mint a token on lichess.org with only "Play games with the bot API"
-     (`bot:play`)
+     (`bot:play`) and "Create, accept, decline challenges"
+     (`challenge:write`); §7.1
   2. paste it into the app
   3. run the guarded upgrade (§12.2)
 - Protocol verification (formerly a separate curl step before any code) now
@@ -1294,7 +1414,16 @@ before final sign-off.
 - Controller state machine.
 - Window, menu, status chip.
 - Overview (live games), Settings (including the token panel and the
-  guarded BOT upgrade, §12.2), the §13 controls and quit handling.
+  guarded BOT upgrade, §12.2), the §13 controls and quit handling
+  (drain by default, with the "Finishing games" sheet).
+- Added 2026-09-28:
+  - **Play one game** and the **Challenge…** sheet (§7.1)
+  - the live single-game view (first-started game by default), grid view
+    with finished-game retention, and pop-out windows (§14.3a)
+  - the shared browse-only stepping component, adopted by the human game
+    view as well (§14.3a)
+  - the per-game protocol transcript: the API client reports every request
+    to the journal and protocol log (§14.3a)
 - *First live sessions:*
   - run the §20.11 **live verification checklist**
   - copy representative captured lines into the test target as fixtures
@@ -1315,8 +1444,10 @@ before final sign-off.
 - *Validation:* a **soak test of ≥ 24 h unattended** (§17.4).
 
 **Phase 8: optional; needs separate approval**
-- Outgoing matchmaking. It needs `challenge:write` and respects the
-  100/day-per-pairing cap and the §5 budget.
+- Automatic outgoing matchmaking (a loop that picks opponents and sends
+  challenges on its own). It respects the 100/day-per-pairing cap and the
+  §5 budget. Manual outgoing challenges and "Play one game" moved to
+  Phase 5 (§7.1).
 - Rotation/A-B model source.
 - Headless `--lichess-bot` CLI mode + a launchd `KeepAlive` recipe for
   process-level supervision.
@@ -1418,7 +1549,8 @@ game id)
 **Settled (2026-09-28)**
 - **Account:** `DrewsChessMachine`. It exists, has 0 games and is not yet a
   BOT.
-- **Token:** scope `bot:play` only. It is entered **only through the app's
+- **Token:** scopes `bot:play` and `challenge:write` (§7.1; decided
+  2026-09-28, which replaces `bot:play` only). It is entered **only through the app's
   Settings ▸ Account panel** and stored in the Keychain (§12.2). It is never
   pasted into chat, a shell, a file, or the repo. The BOT upgrade is a
   guarded button in the same panel.
@@ -1625,5 +1757,6 @@ Phase 6.
    layer logs `networkProtocolName` from the first request (Phase 2). The
    two-session design is safe either way.
 6. The chat length limit (E52).
-7. The event stream with a `bot:play`-only token (§4).
+7. The event stream and challenges with a `bot:play` + `challenge:write`
+   token (§4, §7.1).
 8. Bot inference latency with training running (E16).
