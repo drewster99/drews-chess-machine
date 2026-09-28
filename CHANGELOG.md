@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-28 16:10 CDT — Lichess bot: live-testing fixes and features (pending commit)
+## 2026-09-28 16:10 CDT — Lichess bot: live-testing fixes and features (`f01a6d2`)
 
 Changes from the first live games on Lichess. **The challenge settings changed shape: after updating, click Reset to Defaults in the bot's Settings once** (no migration, by decision).
 
