@@ -9,7 +9,33 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-28 02:49 CDT — Lichess bot Phase 1: engine prerequisites (pending commit)
+## 2026-09-28 02:52 CDT — Lichess bot Phase 2: API client and request gate (pending commit)
+
+Lichess bot plan §5, §6 and §12.2. This is the networking layer, `LichessBot/API/`. Nothing calls it yet; it is covered by unit tests against scripted transports and a virtual clock.
+
+- **`LichessBotRequestGate` (actor).** Every Lichess request passes through this one gate, account-wide. Only one request is in flight at a time, and waiting requests are served in priority order: move, game-critical, challenge response, stream open, chat, housekeeping.
+  - While any game awaits our move, housekeeping is deferred.
+  - When a clock is low, only urgent traffic is admitted.
+  - After a 429, every request waits out the cooldown: `max(60 s, Retry-After)`. Retry-After is parsed in both its delta-seconds and HTTP-date forms. Nothing is retried automatically.
+  - A second 429 within the breaker window closes the gate.
+  - The gate's snapshot exposes its phase, queue and eligibility inputs for the status UI.
+- **`LichessBotAPIClient`.** Covers every Bot API call the plan uses:
+  - token test, account, and the (guarded) BOT upgrade
+  - challenge accept and decline, with a reason
+  - move, with `offeringDraw`
+  - draw and takeback responses
+  - resign, abort, claim-victory, claim-draw, chat
+  - game export
+  - the event and game streams
+
+  401/403 map to `unauthorized`. Other failures carry Lichess's `error` field or a truncated body excerpt.
+- **Transport.** Streams and ordinary requests use two separate ephemeral `URLSession`s, so long-lived streams can never starve move POSTs of connections. The negotiated protocol is recorded per request.
+- **NDJSON and stall watchdog.** `LichessBotNDJSONSplitter` handles lines split across chunks, CRLF, keep-alives, and oversize lines (discarded with a count). `LichessBotStreamReader` adds a silence watchdog that ends a dead stream so the caller reconnects, and it reports a line truncated at end-of-stream.
+- **Models.** Decoding is tolerant: an unknown enum value is kept as its raw string, and an unknown line type becomes `.unknown` rather than an error. Spec example payloads are pinned as test fixtures.
+- **`LichessBotBackoff`** uses equal jitter; the plan now records why.
+- **`LichessBotTokenStore`.** The token lives only in the data-protection Keychain, accessible after first unlock. It needs a Keychain Sharing entitlement, which is deferred to Phase 5.
+
+## 2026-09-28 02:49 CDT — Lichess bot Phase 1: engine prerequisites (`4ebcbfb`)
 
 Lichess bot plan §8 (`documentation/plans-active/LICHESS_BOT_PLAN.md`). These are changes to shared engine code that the bot needs. Self-play, the arena, human play and `--uci` behave exactly as before.
 
