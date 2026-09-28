@@ -26,6 +26,32 @@ enum LichessBotAPIError: LocalizedError, Equatable {
     }
 }
 
+/// One Lichess request as DCM made it, for the protocol transcript and log
+/// (plan §14.3a). Never contains the token: the `Authorization` header is not
+/// recorded, and the token-test body (which *is* the token) is omitted.
+struct LichessBotRequestRecord: Sendable, Codable, Equatable {
+    let startedAt: Date
+    /// The game the request belongs to, if any.
+    let gameID: String?
+    let label: String
+    let method: String
+    /// Path and query, without the host.
+    let path: String
+    /// Decoded form fields of a form-encoded body.
+    let formFields: [String: String]
+    /// Nil when no HTTP response arrived (a gate refusal or transport error).
+    let status: Int?
+    /// Time spent waiting in the request gate before the request went out.
+    let queuedMilliseconds: Double
+    /// Time from sending the request to receiving the response headers.
+    let roundTripMilliseconds: Double?
+    let networkProtocol: String?
+    /// Lichess's error message (or a body excerpt) for a non-2xx response.
+    let errorMessage: String?
+    /// Why no response arrived.
+    let failure: String?
+}
+
 /// Every Lichess Bot API call DCM makes. Each non-stream call, and the
 /// opening of each stream, goes through the account-wide
 /// `LichessBotRequestGate` at the call's priority (plan §5).
@@ -37,12 +63,26 @@ final class LichessBotAPIClient: Sendable {
     private let token: String
     private let transport: any LichessBotTransport
     private let gate: LichessBotRequestGate
+    /// Receives a record of every request, when something is recording them.
+    private let onRequest: (@Sendable (LichessBotRequestRecord) -> Void)?
 
-    init(baseURL: URL, token: String, transport: any LichessBotTransport, gate: LichessBotRequestGate) {
+    init(
+        baseURL: URL,
+        token: String,
+        transport: any LichessBotTransport,
+        gate: LichessBotRequestGate,
+        onRequest: (@Sendable (LichessBotRequestRecord) -> Void)?
+    ) {
         self.baseURL = baseURL
         self.token = token
         self.transport = transport
         self.gate = gate
+        self.onRequest = onRequest
+    }
+
+    /// A client whose requests nobody records.
+    convenience init(baseURL: URL, token: String, transport: any LichessBotTransport, gate: LichessBotRequestGate) {
+        self.init(baseURL: baseURL, token: token, transport: transport, gate: gate, onRequest: nil)
     }
 
     /// `https://lichess.org`.
@@ -63,12 +103,14 @@ final class LichessBotAPIClient: Sendable {
         var request = try makeRequest(path: "/api/token/test", method: "POST", authorized: false)
         request.setValue("text/plain", forHTTPHeaderField: "Content-Type")
         request.httpBody = Data(token.utf8)
-        let body = try await send(request, priority: .housekeeping, label: "token test")
+        let body = try await send(request, priority: .housekeeping, label: "token test", gameID: nil, recordBody: false)
         let entries: [String: LichessBotTokenInfo?]
         do {
             entries = try JSONDecoder().decode([String: LichessBotTokenInfo?].self, from: body)
         } catch {
-            throw LichessBotAPIError.undecodableResponse(endpoint: "/api/token/test", detail: String(describing: error))
+            // The response is keyed by the token itself, so the decoding
+            // error's coding path would contain it: report the shape only.
+            throw LichessBotAPIError.undecodableResponse(endpoint: "/api/token/test", detail: "the response is not the expected token-test shape")
         }
         guard let entry = entries[token] else {
             throw LichessBotAPIError.undecodableResponse(endpoint: "/api/token/test", detail: "response has no entry for the submitted token")
@@ -79,28 +121,81 @@ final class LichessBotAPIClient: Sendable {
     /// `GET /api/account`.
     func account() async throws -> LichessBotAccount {
         let request = try makeRequest(path: "/api/account", method: "GET")
-        return try decode(LichessBotAccount.self, from: try await send(request, priority: .housekeeping, label: "account"), endpoint: "/api/account")
+        return try decode(LichessBotAccount.self, from: try await send(request, priority: .housekeeping, label: "account", gameID: nil), endpoint: "/api/account")
     }
 
     /// `POST /api/bot/account/upgrade`. **Irreversible.** Only the guarded
     /// Settings flow calls this (plan §12.2).
     func upgradeToBot() async throws {
         let request = try makeRequest(path: "/api/bot/account/upgrade", method: "POST")
-        _ = try await send(request, priority: .housekeeping, label: "upgrade to BOT")
+        _ = try await send(request, priority: .housekeeping, label: "upgrade to BOT", gameID: nil)
     }
 
     // MARK: - Challenges
 
     func acceptChallenge(id: String) async throws {
         let request = try makeRequest(path: "/api/challenge/\(try Self.pathComponent(id))/accept", method: "POST")
-        _ = try await send(request, priority: .challengeResponse, label: "accept challenge")
+        _ = try await send(request, priority: .challengeResponse, label: "accept challenge", gameID: nil)
     }
 
     func declineChallenge(id: String, reason: LichessBotDeclineReason) async throws {
         var request = try makeRequest(path: "/api/challenge/\(try Self.pathComponent(id))/decline", method: "POST")
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = Data("reason=\(reason.rawValue)".utf8)
-        _ = try await send(request, priority: .challengeResponse, label: "decline challenge")
+        _ = try await send(request, priority: .challengeResponse, label: "decline challenge", gameID: nil)
+    }
+
+    /// `POST /api/challenge/{username}`: challenge a player (plan §7.1).
+    /// Needs the `challenge:write` scope. The game starts through the
+    /// ordinary `gameStart` event if they accept.
+    func challenge(username: String, request outgoing: LichessBotOutgoingChallenge) async throws -> LichessBotChallenge {
+        var request = try makeRequest(path: "/api/challenge/\(try Self.pathComponent(username))", method: "POST")
+        var form = URLComponents()
+        form.queryItems = [
+            URLQueryItem(name: "rated", value: outgoing.rated ? "true" : "false"),
+            URLQueryItem(name: "clock.limit", value: String(outgoing.clockLimitSeconds)),
+            URLQueryItem(name: "clock.increment", value: String(outgoing.clockIncrementSeconds)),
+            URLQueryItem(name: "color", value: outgoing.color.rawValue),
+            URLQueryItem(name: "variant", value: "standard"),
+        ]
+        guard let encoded = form.percentEncodedQuery else {
+            throw LichessBotAPIError.invalidURL("challenge form body")
+        }
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data(encoded.utf8)
+        let body = try await send(request, priority: .challengeResponse, label: "challenge \(username)", gameID: nil)
+        return try LichessBotOutgoingChallenge.decodeCreated(body)
+    }
+
+    /// `POST /api/challenge/{id}/cancel`: withdraw a challenge we sent.
+    func cancelChallenge(id: String) async throws {
+        let request = try makeRequest(path: "/api/challenge/\(try Self.pathComponent(id))/cancel", method: "POST")
+        _ = try await send(request, priority: .challengeResponse, label: "cancel challenge", gameID: nil)
+    }
+
+    /// `GET /api/bot/online?nb=`: bots online now, as NDJSON. Needs no
+    /// authorization.
+    func onlineBots(count: Int) async throws -> [LichessBotUserSummary] {
+        var request = try makeRequest(path: "/api/bot/online?nb=\(count)", method: "GET", authorized: false)
+        request.setValue("application/x-ndjson", forHTTPHeaderField: "Accept")
+        let body = try await send(request, priority: .housekeeping, label: "online bots", gameID: nil)
+        var splitter = LichessBotNDJSONSplitter()
+        var items = splitter.append(body)
+        if splitter.pendingByteCount > 0 {
+            items += splitter.append(Data("\n".utf8))
+        }
+        var users: [LichessBotUserSummary] = []
+        for item in items {
+            guard case .line(let line) = item else { continue }
+            users.append(try decode(LichessBotUserSummary.self, from: line, endpoint: "/api/bot/online"))
+        }
+        return users
+    }
+
+    /// `GET /api/user/{username}`: a player's public profile and ratings.
+    func user(username: String) async throws -> LichessBotUserSummary {
+        let request = try makeRequest(path: "/api/user/\(try Self.pathComponent(username))", method: "GET")
+        return try decode(LichessBotUserSummary.self, from: try await send(request, priority: .housekeeping, label: "user \(username)", gameID: nil), endpoint: "/api/user")
     }
 
     // MARK: - Game actions
@@ -113,42 +208,42 @@ final class LichessBotAPIClient: Sendable {
             path += "?offeringDraw=true"
         }
         let request = try makeRequest(path: path, method: "POST")
-        _ = try await send(request, priority: .move, label: "move")
+        _ = try await send(request, priority: .move, label: "move", gameID: gameID)
     }
 
     /// `POST /api/bot/game/{id}/draw/{yes|no}`.
     func respondToDraw(gameID: String, accept: Bool) async throws {
         let request = try makeRequest(path: "/api/bot/game/\(try Self.pathComponent(gameID))/draw/\(accept ? "yes" : "no")", method: "POST")
-        _ = try await send(request, priority: .gameCritical, label: "draw \(accept ? "yes" : "no")")
+        _ = try await send(request, priority: .gameCritical, label: "draw \(accept ? "yes" : "no")", gameID: gameID)
     }
 
     /// `POST /api/bot/game/{id}/takeback/{yes|no}`.
     func respondToTakeback(gameID: String, accept: Bool) async throws {
         let request = try makeRequest(path: "/api/bot/game/\(try Self.pathComponent(gameID))/takeback/\(accept ? "yes" : "no")", method: "POST")
-        _ = try await send(request, priority: .gameCritical, label: "takeback \(accept ? "yes" : "no")")
+        _ = try await send(request, priority: .gameCritical, label: "takeback \(accept ? "yes" : "no")", gameID: gameID)
     }
 
     func resign(gameID: String) async throws {
         let request = try makeRequest(path: "/api/bot/game/\(try Self.pathComponent(gameID))/resign", method: "POST")
-        _ = try await send(request, priority: .gameCritical, label: "resign")
+        _ = try await send(request, priority: .gameCritical, label: "resign", gameID: gameID)
     }
 
     func abort(gameID: String) async throws {
         let request = try makeRequest(path: "/api/bot/game/\(try Self.pathComponent(gameID))/abort", method: "POST")
-        _ = try await send(request, priority: .gameCritical, label: "abort")
+        _ = try await send(request, priority: .gameCritical, label: "abort", gameID: gameID)
     }
 
     /// Claim victory after the opponent has left (plan §12.4).
     func claimVictory(gameID: String) async throws {
         let request = try makeRequest(path: "/api/bot/game/\(try Self.pathComponent(gameID))/claim-victory", method: "POST")
-        _ = try await send(request, priority: .gameCritical, label: "claim victory")
+        _ = try await send(request, priority: .gameCritical, label: "claim victory", gameID: gameID)
     }
 
     /// Claim a draw after the opponent has left. Not a threefold or
     /// fifty-move claim — Lichess ends those automatically for bots (plan §4).
     func claimDraw(gameID: String) async throws {
         let request = try makeRequest(path: "/api/bot/game/\(try Self.pathComponent(gameID))/claim-draw", method: "POST")
-        _ = try await send(request, priority: .gameCritical, label: "claim draw")
+        _ = try await send(request, priority: .gameCritical, label: "claim draw", gameID: gameID)
     }
 
     func chat(gameID: String, room: LichessBotChatRoom, text: String) async throws {
@@ -160,7 +255,7 @@ final class LichessBotAPIClient: Sendable {
         }
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = Data(encoded.utf8)
-        _ = try await send(request, priority: .chat, label: "chat")
+        _ = try await send(request, priority: .chat, label: "chat", gameID: gameID)
     }
 
     // MARK: - Records
@@ -174,7 +269,10 @@ final class LichessBotAPIClient: Sendable {
             method: "GET"
         )
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        return try await send(request, priority: .housekeeping, label: "export game")
+        // Logged at account level, not into the game's journal: an export is
+        // bookkeeping about a finished game, and the journal may already
+        // have been filed.
+        return try await send(request, priority: .housekeeping, label: "export game \(gameID)", gameID: nil)
     }
 
     // MARK: - Streams
@@ -183,13 +281,13 @@ final class LichessBotAPIClient: Sendable {
     /// holding it does not.
     func openEventStream() async throws -> LichessBotChunkStream {
         let request = try makeRequest(path: "/api/stream/event", method: "GET")
-        return try await openStream(request, label: "open event stream")
+        return try await openStream(request, label: "open event stream", gameID: nil)
     }
 
     /// Open one game's stream. Its first line is always `gameFull`.
     func openGameStream(gameID: String) async throws -> LichessBotChunkStream {
         let request = try makeRequest(path: "/api/bot/game/stream/\(try Self.pathComponent(gameID))", method: "GET")
-        return try await openStream(request, label: "open game stream")
+        return try await openStream(request, label: "open game stream", gameID: gameID)
     }
 
     // MARK: - Plumbing
@@ -224,20 +322,48 @@ final class LichessBotAPIClient: Sendable {
     )
 
     /// Send through the gate; return the body of a 2xx response, or throw.
-    private func send(_ request: URLRequest, priority: LichessBotRequestPriority, label: String) async throws -> Data {
+    /// Every attempt is recorded, successful or not.
+    private func send(_ request: URLRequest, priority: LichessBotRequestPriority, label: String, gameID: String?, recordBody: Bool = true) async throws -> Data {
+        let target = try Self.target(of: request)
         let transport = self.transport
-        let (response, http) = try await gate.perform(priority: priority, label: label) {
-            let result = try await transport.data(for: request)
-            return (value: result, response: result.response)
+        let timing = RequestTiming()
+        let response: LichessBotTransportResponse
+        let http: HTTPURLResponse
+        do {
+            (response, http) = try await gate.perform(priority: priority, label: label) {
+                timing.markSent()
+                let result = try await transport.data(for: request)
+                timing.markResponded()
+                return (value: result, response: result.response)
+            }
+        } catch {
+            record(request, target: target, label: label, gameID: gameID, recordBody: recordBody, timing: timing, status: nil, networkProtocol: nil, errorMessage: nil, failure: String(describing: error))
+            throw error
         }
+        let ok = (200..<300).contains(http.statusCode)
+        record(request, target: target, label: label, gameID: gameID, recordBody: recordBody, timing: timing, status: http.statusCode, networkProtocol: response.networkProtocolName, errorMessage: ok ? nil : Self.errorMessage(from: response.body), failure: nil)
         return try Self.checkStatus(http.statusCode, body: response.body)
     }
 
-    private func openStream(_ request: URLRequest, label: String) async throws -> LichessBotChunkStream {
+    private func openStream(_ request: URLRequest, label: String, gameID: String?) async throws -> LichessBotChunkStream {
+        let target = try Self.target(of: request)
         let transport = self.transport
-        let (chunks, http) = try await gate.perform(priority: .streamOpen, label: label) {
-            let opened = try await transport.stream(for: request)
-            return (value: opened.chunks, response: opened.response)
+        let timing = RequestTiming()
+        let chunks: LichessBotChunkStream
+        let http: HTTPURLResponse
+        do {
+            (chunks, http) = try await gate.perform(priority: .streamOpen, label: label) {
+                timing.markSent()
+                let opened = try await transport.stream(for: request)
+                timing.markResponded()
+                return (value: opened.chunks, response: opened.response)
+            }
+        } catch {
+            record(request, target: target, label: label, gameID: gameID, recordBody: true, timing: timing, status: nil, networkProtocol: nil, errorMessage: nil, failure: String(describing: error))
+            throw error
+        }
+        if (200..<300).contains(http.statusCode) {
+            record(request, target: target, label: label, gameID: gameID, recordBody: true, timing: timing, status: http.statusCode, networkProtocol: nil, errorMessage: nil, failure: nil)
         }
         guard (200..<300).contains(http.statusCode) else {
             // A refused stream carries a short error body; read a bounded
@@ -250,9 +376,94 @@ final class LichessBotAPIClient: Sendable {
                     break
                 }
             }
-            throw Self.statusError(http.statusCode, body: body)
+            let error = Self.statusError(http.statusCode, body: body)
+            record(request, target: target, label: label, gameID: gameID, recordBody: true, timing: timing, status: http.statusCode, networkProtocol: nil, errorMessage: Self.errorMessage(from: body), failure: nil)
+            throw error
         }
         return chunks
+    }
+
+    /// When a request was queued, sent and answered. Written from the gate's
+    /// body closure, read after it returns.
+    private final class RequestTiming: Sendable {
+        let queuedAt = ContinuousClock.now
+        let startedAt = Date()
+        private let sentAt = SyncBox<ContinuousClock.Instant?>(nil)
+        private let respondedAt = SyncBox<ContinuousClock.Instant?>(nil)
+
+        func markSent() {
+            sentAt.value = ContinuousClock.now
+        }
+
+        func markResponded() {
+            respondedAt.value = ContinuousClock.now
+        }
+
+        var queuedMilliseconds: Double {
+            LichessBotBackoff.seconds((sentAt.value ?? ContinuousClock.now) - queuedAt) * 1000
+        }
+
+        var roundTripMilliseconds: Double? {
+            guard let sent = sentAt.value, let responded = respondedAt.value else { return nil }
+            return LichessBotBackoff.seconds(responded - sent) * 1000
+        }
+    }
+
+    /// Method and path-with-query of a request built by `makeRequest`.
+    private static func target(of request: URLRequest) throws -> (method: String, path: String) {
+        guard let url = request.url, let method = request.httpMethod else {
+            throw LichessBotAPIError.invalidURL("a request without a URL or method")
+        }
+        var path = url.path(percentEncoded: true)
+        if let query = url.query(percentEncoded: true) {
+            path += "?" + query
+        }
+        return (method, path)
+    }
+
+    private func record(
+        _ request: URLRequest,
+        target: (method: String, path: String),
+        label: String,
+        gameID: String?,
+        recordBody: Bool,
+        timing: RequestTiming,
+        status: Int?,
+        networkProtocol: String?,
+        errorMessage: String?,
+        failure: String?
+    ) {
+        guard let onRequest else { return }
+        onRequest(LichessBotRequestRecord(
+            startedAt: timing.startedAt,
+            gameID: gameID,
+            label: label,
+            method: target.method,
+            path: target.path,
+            formFields: recordBody ? Self.formFields(of: request) : [:],
+            status: status,
+            queuedMilliseconds: timing.queuedMilliseconds,
+            roundTripMilliseconds: timing.roundTripMilliseconds,
+            networkProtocol: networkProtocol,
+            errorMessage: errorMessage,
+            failure: failure
+        ))
+    }
+
+    /// The fields of a form-encoded body; empty for any other body.
+    private static func formFields(of request: URLRequest) -> [String: String] {
+        guard request.value(forHTTPHeaderField: "Content-Type") == "application/x-www-form-urlencoded",
+              let body = request.httpBody,
+              let text = String(data: body, encoding: .utf8) else {
+            return [:]
+        }
+        var components = URLComponents()
+        components.percentEncodedQuery = text
+        var fields: [String: String] = [:]
+        for item in components.queryItems ?? [] {
+            fields[item.name] = item.value ?? ""
+        }
+        return fields
     }
 
     private static let refusedStreamBodyLimit = 4096

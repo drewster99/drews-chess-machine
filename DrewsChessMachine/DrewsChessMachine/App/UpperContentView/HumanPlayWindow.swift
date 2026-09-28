@@ -167,10 +167,21 @@ fileprivate struct HumanPlayWindowView: View {
     let session: SessionController
     let gameWatcher: GameWatcher
 
-    /// Currently-selected ply in the move-history sidebar. Set by
-    /// tapping a half-move cell; cleared after a successful Revert
-    /// to here. Plies are 1-based and match `HumanPlayPacer.HistoryEntry.plyNumber`.
-    @State private var selectedHistoryPly: Int?
+    /// Which position the board shows: live, or an earlier position the
+    /// user is browsing (plan §14.3a — viewing only; the game is untouched).
+    /// It is also the selection "Revert to here" acts on, so browsing to a
+    /// position and reverting to it are the same gesture.
+    @State private var browseCursor = GameBrowseCursor()
+
+    /// The browsed ply — 1-based, matching `HumanPlayPacer.HistoryEntry.plyNumber`
+    /// — or nil while following the live game.
+    private var selectedHistoryPly: Int? {
+        browseCursor.viewedPlyCount
+    }
+
+    private var historyCount: Int {
+        playController.pacer?.history.count ?? 0
+    }
 
     /// Empty snapshot used when no game is active and
     /// `playController.pacer` is `nil` (e.g., the window briefly
@@ -196,10 +207,27 @@ fileprivate struct HumanPlayWindowView: View {
         VStack(spacing: 12) {
             bannerRow
             HStack(alignment: .top, spacing: 12) {
-                boardView
+                ZStack {
+                    // The live board stays mounted and animating while the
+                    // user browses: its animation-completion callback paces
+                    // the game, so it must keep running underneath.
+                    boardView
+                        .opacity(browseCursor.isLive ? 1 : 0)
+                        .allowsHitTesting(browseCursor.isLive)
+                    HumanPlayBrowsedBoardView(
+                        history: playController.pacer?.history ?? [],
+                        plyCount: browseCursor.displayedPlyCount(totalPlies: historyCount),
+                        flipped: playController.humanColor == .black
+                    )
+                    .opacity(browseCursor.isLive ? 0 : 1)
+                    .allowsHitTesting(false)
+                }
                 moveHistoryPanel
                     .frame(width: Self.historyPanelWidth)
             }
+            // No arrow-key shortcuts here: the τ slider below uses the
+            // arrow keys when focused.
+            GameBrowseControlsView(cursor: $browseCursor, totalPlies: historyCount, claimsKeyboardShortcuts: false)
             statusRow
             tauControlRow
             toolbarRow
@@ -499,8 +527,8 @@ fileprivate struct HumanPlayWindowView: View {
                 // Revert button would either dim silently or operate
                 // on a ply that no longer exists.
                 .onChange(of: totalPlies) {
-                    if let sel = selectedHistoryPly, sel > totalPlies {
-                        selectedHistoryPly = nil
+                    if totalPlies == 0 || (selectedHistoryPly.map { $0 > totalPlies } ?? false) {
+                        browseCursor.goLive()
                     }
                 }
             }
@@ -512,7 +540,7 @@ fileprivate struct HumanPlayWindowView: View {
                         session: session,
                         gameWatcher: gameWatcher
                     )
-                    selectedHistoryPly = nil
+                    browseCursor.goLive()
                 },
                 label: {
                     Text("Revert to here")
@@ -523,7 +551,7 @@ fileprivate struct HumanPlayWindowView: View {
             .disabled(!canRevertSelected)
             .help(canRevertSelected
                 ? "Remove every move played after ply \(selectedHistoryPly ?? 0) and resume from there."
-                : "Tap any move except the last to enable Revert to here."
+                : "Tap any move except the last to view it and enable Revert to here."
             )
         }
     }
@@ -540,9 +568,9 @@ fileprivate struct HumanPlayWindowView: View {
     }
 
     /// A single half-move cell. Tappable when it carries a ply (an
-    /// actual played move): tap sets `selectedHistoryPly` to that
-    /// ply, which (a) highlights the cell and (b) enables the Revert
-    /// to here button below the list. Empty cells (the unanswered
+    /// actual played move): tap browses to the position after that ply,
+    /// which (a) shows it on the board, (b) highlights the cell and
+    /// (c) enables the Revert to here button below the list. Empty cells (the unanswered
     /// white half before black has replied) stay rendered for
     /// alignment but are disabled.
     @ViewBuilder
@@ -554,9 +582,9 @@ fileprivate struct HumanPlayWindowView: View {
                 // Toggle: tapping the already-selected cell deselects
                 // it. Avoids needing a separate Cancel control.
                 if selectedHistoryPly == ply {
-                    selectedHistoryPly = nil
+                    browseCursor.goLive()
                 } else {
-                    selectedHistoryPly = ply
+                    browseCursor.select(plyCount: ply, totalPlies: historyCount)
                 }
             },
             label: {

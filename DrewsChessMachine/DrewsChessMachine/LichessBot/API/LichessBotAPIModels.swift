@@ -416,6 +416,10 @@ struct LichessBotChallenge: Sendable, Hashable, Codable {
 /// The minimal part of a canceled/declined challenge payload DCM uses.
 struct LichessBotChallengeReference: Sendable, Hashable, Codable {
     let id: String
+    /// On `challengeDeclined`: the decliner's reason, as display text and as
+    /// Lichess's key.
+    let declineReason: String?
+    let declineReasonKey: String?
 }
 
 /// One decoded line of the event stream.

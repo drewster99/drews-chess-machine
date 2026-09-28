@@ -15,6 +15,12 @@ struct DrewsChessMachineApp: App {
     /// `ContentView` in `WindowGroup` see the same instance.
     @State private var commandHub = AppCommandHub()
 
+    /// The Lichess bot (plan §13, §15): app-level so it outlives its window
+    /// and can hold quitting while games finish. Its model provider is
+    /// attached to the training session by `UpperContentView`.
+    @State private var lichessBotProvider: LichessBotSessionModelProvider
+    @State private var lichessBot: LichessBotController
+
     /// View > Show Training Graphs preference. Persisted across launches
     /// via UserDefaults. Independent of `chartCoordinator.isActive`
     /// (which only reflects whether chart data is being collected) so
@@ -76,6 +82,10 @@ struct DrewsChessMachineApp: App {
     private let trainStartModelPath: String?
 
     init() {
+        let lichessBotProvider = LichessBotSessionModelProvider()
+        _lichessBotProvider = State(initialValue: lichessBotProvider)
+        _lichessBot = State(initialValue: LichessBotController(modelProvider: lichessBotProvider))
+
         // Parse launch-time CLI flags before any logging so the
         // [APP] banner can record whether auto-train mode is on
         // for this launch. `CommandLine.arguments[0]` is the
@@ -547,6 +557,8 @@ struct DrewsChessMachineApp: App {
         WindowGroup {
             ContentView(
                 commandHub: commandHub,
+                lichessBot: lichessBot,
+                lichessBotProvider: lichessBotProvider,
                 autoTrainOnLaunch: autoTrainOnLaunch,
                 autoPlayChessOnLaunch: autoPlayChessOnLaunch,
                 playChessModelPath: playChessModelPath,
@@ -557,6 +569,9 @@ struct DrewsChessMachineApp: App {
                 chartCollectionEnabled: chartCollectionEnabled,
                 showPolicyChannelsPanel: showPolicyChannelsPanel
             )
+            .onAppear {
+                appDelegate.lichessBotController = lichessBot
+            }
         }
         .commands {
             // File menu additions — Save / Load / reveal-in-Finder.
@@ -704,6 +719,9 @@ struct DrewsChessMachineApp: App {
                     .disabled(!commandHub.humanGameCanReset)
                 Button("Stop Game") { commandHub.stopHumanGame() }
                     .disabled(!commandHub.humanGameInFlight)
+                Divider()
+                Button("Lichess Bot…") { commandHub.openLichessBot() }
+                    .keyboardShortcut("l", modifiers: [.command, .shift])
             }
 
             // Performance metrics for the training network: the two

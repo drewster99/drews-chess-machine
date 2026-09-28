@@ -161,6 +161,8 @@ final class AppCommandHub {
     /// argmax-fraction over time. Independent of the periodic watcher
     /// — opening/closing doesn't start/stop ticking.
     var openLichessProbeMonitor: () -> Void = {}
+    /// Open the Lichess Bot window (plan §14.1).
+    var openLichessBot: () -> Void = {}
     /// Open the standalone Training-vs-Eval-Loss window — training total
     /// loss (left axis) overlaid on the wide-set eval NLL (right axis),
     /// both against the shared trainer-step X axis. Purely observational.

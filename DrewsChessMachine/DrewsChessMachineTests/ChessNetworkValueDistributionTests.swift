@@ -76,7 +76,10 @@ final class ChessNetworkValueDistributionTests: XCTestCase {
             // half-spacings.
             XCTAssertEqual(singlePass.win + singlePass.draw + singlePass.loss, 1, accuracy: 3 * 0x1p-9,
                            "W/D/L should sum to 1, position \(index)")
-            XCTAssertEqual(singlePass.win - singlePass.loss, scalarPath.value, accuracy: 1e-3,
+            // The graph's scalar and the two probabilities are each rounded
+            // to bfloat16 on their own (spacing up to 2^-8 below one), so
+            // the difference can miss the scalar by three half-spacings.
+            XCTAssertEqual(singlePass.win - singlePass.loss, scalarPath.value, accuracy: 3 * 0x1p-9,
                            "scalar value is p_win − p_loss, position \(index)")
         }
     }

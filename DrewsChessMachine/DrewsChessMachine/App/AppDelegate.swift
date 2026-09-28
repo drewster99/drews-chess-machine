@@ -15,7 +15,12 @@ import Foundation
 ///   already have a clean snapshot on disk).
 /// - `applicationWillTerminate` is a belt-and-suspenders flush in
 ///   case `applicationShouldTerminate` was bypassed (e.g. SIGTERM).
+/// - With Lichess games in progress, quitting drains the bot first and
+///   quits when the last game ends (plan §13), via `.terminateLater`.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// The app-level Lichess bot, set when the main window appears.
+    weak var lichessBotController: LichessBotController?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Two layers of opt-out: the Info.plist key (set via build
         // settings) tells the OS at app-launch time that we don't
@@ -40,6 +45,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // unreached. If for some reason the handler returned (it
             // shouldn't), .terminateNow lets AppKit finish teardown.
             return .terminateNow
+        }
+        if let lichessBotController {
+            return lichessBotController.applicationShouldTerminate()
         }
         return .terminateNow
     }

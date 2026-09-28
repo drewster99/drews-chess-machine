@@ -23,6 +23,9 @@ struct TitleBarView: View {
     let networkStatus: String
     let hasSavedCheckpoint: Bool
     let lastSavedDisplayString: String
+    /// The Lichess bot, for its status chip. The chip observes it
+    /// directly, so bot changes never re-render the rest of the bar.
+    let lichessBot: LichessBotController
     @Binding var showingInfoPopover: Bool
 
     var body: some View {
@@ -45,6 +48,7 @@ struct TitleBarView: View {
                     .lineLimit(1)
             }
             Spacer()
+            LichessBotStatusChip(controller: lichessBot)
             if network != nil {
                 Text("Self play ID: \(networkIdentifier?.description ?? "–")")
                     .font(.callout)
@@ -76,5 +80,6 @@ extension TitleBarView: Equatable {
             && lhs.hasSavedCheckpoint == rhs.hasSavedCheckpoint
             && lhs.lastSavedDisplayString == rhs.lastSavedDisplayString
             && lhs.network === rhs.network
+            && lhs.lichessBot === rhs.lichessBot
     }
 }

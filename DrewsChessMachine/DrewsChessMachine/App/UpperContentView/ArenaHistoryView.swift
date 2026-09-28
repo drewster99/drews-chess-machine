@@ -505,38 +505,6 @@ private struct ArenaHistoryStatusBadge: View {
     }
 }
 
-// MARK: - W/D/L proportional bar
-
-/// Three-color proportional bar showing wins / draws / losses for
-/// the candidate. Width-flex; height fixed by the caller. Empty
-/// (no games) renders as a neutral gray track so the layout slot
-/// doesn't collapse mid-list.
-private struct WLDBar: View {
-    let wins: Int
-    let draws: Int
-    let losses: Int
-
-    var body: some View {
-        GeometryReader { geo in
-            let total = wins + draws + losses
-            if total == 0 {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.gray.opacity(0.15))
-            } else {
-                let w = geo.size.width * CGFloat(wins) / CGFloat(total)
-                let d = geo.size.width * CGFloat(draws) / CGFloat(total)
-                let l = geo.size.width * CGFloat(losses) / CGFloat(total)
-                HStack(spacing: 0) {
-                    Color.green.opacity(0.85).frame(width: w)
-                    Color.gray.opacity(0.55).frame(width: d)
-                    Color.red.opacity(0.85).frame(width: l)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 2))
-            }
-        }
-    }
-}
-
 // MARK: - Detail popover
 
 // MARK: - Detail window

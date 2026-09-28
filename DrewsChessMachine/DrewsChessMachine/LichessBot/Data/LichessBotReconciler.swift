@@ -92,6 +92,12 @@ actor LichessBotReconciler {
         items.keys.sorted()
     }
 
+    /// Queued games still inside their retry window: what a drain waits for
+    /// (unreconciled games retry on a slow cadence and aren't waited on).
+    var dueGameIDs: [String] {
+        items.values.filter { !$0.unreconciled }.map(\.gameID).sorted()
+    }
+
     var unreconciledGameIDs: [String] {
         items.values.filter(\.unreconciled).map(\.gameID).sorted()
     }

@@ -22,8 +22,92 @@ enum LichessBotManagerEvent: Sendable {
     case gameSessionStarted(gameID: String, generation: LichessBotGenerationInfo)
     case gameSessionEnded(gameID: String)
     case anomaly(String)
+    /// An event-stream line exactly as received (plan §14.3a transcript).
+    case eventStreamLine(Data, receivedAt: Date)
+    /// Keep-alive gap statistics for the last minute of the event stream.
+    case eventStreamGaps(LichessBotStreamGapSummary)
+    /// One silence on the event stream longer than twice Lichess's
+    /// keep-alive interval (still short of the stall limit).
+    case eventStreamLongGap(seconds: Double)
+    /// An outgoing challenge (plan §7.1) was accepted, declined or canceled.
+    case outgoingChallengeResolved(challengeID: String, outcome: LichessBotOutgoingChallengeOutcome)
+    /// "Play one game": its game started, and the manager has stopped
+    /// accepting new games.
+    case oneGameStarted(gameID: String)
     /// The manager's `run()` returned; `reason` says why.
+    /// Lichess rejected the token (401/403) on an account request.
+    case tokenRejected(String)
     case stopped(reason: String)
+}
+
+enum LichessBotOutgoingChallengeOutcome: Sendable, Equatable {
+    case accepted(gameID: String)
+    case declined(reason: String?)
+    case canceled
+}
+
+/// Gaps between bytes on a stream over one window.
+struct LichessBotStreamGapSummary: Sendable, Equatable, Codable {
+    let windowSeconds: Double
+    let gapCount: Int
+    let meanSeconds: Double
+    let maximumSeconds: Double
+}
+
+/// Accumulates the silences between arrivals on a stream and emits a summary
+/// once per window (plan §14.3a: event-stream keep-alives are logged as
+/// statistics, not one line each).
+struct LichessBotStreamGapTracker: Sendable {
+    let window: Duration
+    let longGap: Duration
+    private var lastArrival: Duration?
+    private var windowStart: Duration?
+    private var gaps: [Double] = []
+
+    init(window: Duration, longGap: Duration) {
+        self.window = window
+        self.longGap = longGap
+    }
+
+    enum Report: Sendable, Equatable {
+        case longGap(seconds: Double)
+        case summary(LichessBotStreamGapSummary)
+    }
+
+    /// Note an arrival at `now`; returns anything worth logging.
+    mutating func arrival(at now: Duration) -> [Report] {
+        var reports: [Report] = []
+        if let lastArrival {
+            let gap = now - lastArrival
+            gaps.append(LichessBotBackoff.seconds(gap))
+            if gap > longGap {
+                reports.append(.longGap(seconds: LichessBotBackoff.seconds(gap)))
+            }
+        }
+        lastArrival = now
+        let start = windowStart ?? now
+        windowStart = start
+        if now - start >= window {
+            if let maximum = gaps.max() {
+                reports.append(.summary(LichessBotStreamGapSummary(
+                    windowSeconds: LichessBotBackoff.seconds(now - start),
+                    gapCount: gaps.count,
+                    meanSeconds: gaps.reduce(0, +) / Double(gaps.count),
+                    maximumSeconds: maximum
+                )))
+            }
+            gaps.removeAll()
+            windowStart = now
+        }
+        return reports
+    }
+
+    /// A new connection: the silence across a reconnect is not a gap.
+    mutating func reset() {
+        lastArrival = nil
+        windowStart = nil
+        gaps.removeAll()
+    }
 }
 
 /// Runs the account's event stream: answers challenges through
@@ -56,6 +140,21 @@ actor LichessBotSessionManager {
     private var gamesToday = 0
     private var gamesTodayByOpponent: [String: Int] = [:]
     private var countedGames: Set<String> = []
+    private var pendingOutgoingChallengeID: String?
+    /// Challenges accepted whose `gameStart` hasn't arrived yet. They count
+    /// against capacity, so two quick challenges can't both be accepted into
+    /// one free slot. An accepted challenge's game has the challenge's id.
+    private var acceptedAwaitingStart: [String: (opponentID: String, acceptedAt: Duration)] = [:]
+    /// Declines and cancels seen for challenges that weren't (yet) known as
+    /// ours: the answer to a challenge can arrive before its POST returns.
+    private var recentChallengeOutcomes: [(id: String, outcome: LichessBotOutgoingChallengeOutcome)] = []
+    private static let acceptedStartTimeout: Duration = .seconds(60)
+    private static let recentOutcomeLimit = 64
+    private var oneGameMode = false
+    private var gapTracker = LichessBotStreamGapTracker(
+        window: .seconds(60),
+        longGap: .seconds(2 * LichessBotLimits.eventStreamKeepAliveSeconds)
+    )
 
     init(
         accountAPI: any LichessBotAccountAPI,
@@ -93,6 +192,55 @@ actor LichessBotSessionManager {
 
     var activeGameIDs: [String] {
         Array(sessions.keys)
+    }
+
+    /// "Play one game" (plan §7.1): accept at most one game at a time, and
+    /// stop accepting once a game starts.
+    func setOneGameMode(_ on: Bool) {
+        oneGameMode = on
+    }
+
+    var isOneGameMode: Bool {
+        oneGameMode
+    }
+
+    /// Note a challenge DCM just sent, so its acceptance, decline or cancel
+    /// on the event stream is reported.
+    func noteOutgoingChallenge(id: String) {
+        if sessions[id] != nil {
+            onEvent(.outgoingChallengeResolved(challengeID: id, outcome: .accepted(gameID: id)))
+            return
+        }
+        if let known = recentChallengeOutcomes.last(where: { $0.id == id }) {
+            onEvent(.outgoingChallengeResolved(challengeID: id, outcome: known.outcome))
+            return
+        }
+        pendingOutgoingChallengeID = id
+    }
+
+    /// Ask every game session to reopen its stream (after the Mac wakes:
+    /// connections held across sleep are usually dead; plan E34).
+    func resyncAllSessions(reason: String) {
+        for session in sessions.values {
+            session.requestResync(reason: reason)
+        }
+    }
+
+    var outgoingChallengeID: String? {
+        pendingOutgoingChallengeID
+    }
+
+    /// Forget the pending outgoing challenge (it expired, or Lichess no
+    /// longer knows it).
+    func clearOutgoingChallenge() {
+        pendingOutgoingChallengeID = nil
+    }
+
+    /// Games started today against `opponentID` (for the Challenge sheet's
+    /// bot-pair check).
+    func gamesToday(against opponentID: String) -> Int {
+        rollDayIfNeeded()
+        return gamesTodayByOpponent[opponentID] ?? 0
     }
 
     /// Seed today's counts from the record store after a relaunch, so the
@@ -145,9 +293,26 @@ actor LichessBotSessionManager {
                     stallTimeout: { .seconds(settings.connection.eventStreamStallTimeoutSeconds) },
                     checkInterval: .seconds(1)
                 )
+                gapTracker.reset()
                 for try await item in items {
-                    if case .line(let data) = item {
+                    for report in gapTracker.arrival(at: time.now()) {
+                        switch report {
+                        case .longGap(let seconds):
+                            onEvent(.eventStreamLongGap(seconds: seconds))
+                        case .summary(let summary):
+                            onEvent(.eventStreamGaps(summary))
+                        }
+                    }
+                    switch item {
+                    case .line(let data):
+                        onEvent(.eventStreamLine(data, receivedAt: Date()))
                         await handleEventLine(data)
+                    case .keepAlive:
+                        break
+                    case .oversizeLineDiscarded(let byteCount):
+                        onEvent(.anomaly("event stream: discarded an oversize line of \(byteCount) bytes"))
+                    case .truncatedAtEnd(let byteCount):
+                        onEvent(.anomaly("event stream ended mid-line with \(byteCount) bytes pending"))
                     }
                 }
                 closedByServer = true
@@ -235,15 +400,37 @@ actor LichessBotSessionManager {
         case .challenge(let challenge, let compat):
             await handleChallenge(challenge, compat: compat)
         case .gameStart(let info):
+            if info.gameId == pendingOutgoingChallengeID {
+                // An accepted challenge's game has the challenge's id.
+                pendingOutgoingChallengeID = nil
+                onEvent(.outgoingChallengeResolved(challengeID: info.gameId, outcome: .accepted(gameID: info.gameId)))
+            }
             await startSessionIfNeeded(info)
         case .gameFinish(let info):
             countGame(info)
             // The game stream may never deliver the final state (plan E22).
             sessions[info.gameId]?.requestResync(reason: "gameFinish on the event stream")
-        case .challengeCanceled, .challengeDeclined:
-            break
+        case .challengeDeclined(let reference):
+            resolveChallenge(reference.id, outcome: .declined(reason: reference.declineReason ?? reference.declineReasonKey))
+        case .challengeCanceled(let reference):
+            acceptedAwaitingStart[reference.id] = nil
+            resolveChallenge(reference.id, outcome: .canceled)
         case .unknown(let type):
             onEvent(.anomaly("unknown event type \(type)"))
+        }
+    }
+
+    /// Report the answer to our outgoing challenge, or remember it in case
+    /// the challenge is noted as ours a moment later.
+    private func resolveChallenge(_ id: String, outcome: LichessBotOutgoingChallengeOutcome) {
+        if id == pendingOutgoingChallengeID {
+            pendingOutgoingChallengeID = nil
+            onEvent(.outgoingChallengeResolved(challengeID: id, outcome: outcome))
+            return
+        }
+        recentChallengeOutcomes.append((id, outcome))
+        if recentChallengeOutcomes.count > Self.recentOutcomeLimit {
+            recentChallengeOutcomes.removeFirst(recentChallengeOutcomes.count - Self.recentOutcomeLimit)
         }
     }
 
@@ -252,21 +439,30 @@ actor LichessBotSessionManager {
         rollDayIfNeeded()
         let now = time.now()
         challengeResponseTimes.removeAll { now - $0 > .seconds(60) }
+        acceptedAwaitingStart = acceptedAwaitingStart.filter { now - $0.value.acceptedAt < Self.acceptedStartTimeout }
         let modelReady = await slots.sourceAvailable(for: settings.model)
         var byOpponent: [String: Int] = [:]
         for opponent in opponentByGame.values {
             byOpponent[opponent, default: 0] += 1
         }
+        for pending in acceptedAwaitingStart.values {
+            byOpponent[pending.opponentID, default: 0] += 1
+        }
         let context = LichessBotChallengeContext(
             acceptingNewGames: acceptingNewGames,
             modelReady: modelReady,
-            activeGames: sessions.count,
+            activeGames: sessions.count + acceptedAwaitingStart.count,
             activeGamesByOpponent: byOpponent,
             gamesToday: gamesToday,
             gamesTodayByOpponent: gamesTodayByOpponent,
             challengeResponsesInLastMinute: challengeResponseTimes.count
         )
-        let decision = LichessBotChallengePolicy.decide(challenge, compat: compat, settings: settings.challenge, context: context)
+        var challengeSettings = settings.challenge
+        if oneGameMode {
+            challengeSettings.maxConcurrentGames = 1
+            challengeSettings.gamesReservedForHumans = 0
+        }
+        let decision = LichessBotChallengePolicy.decide(challenge, compat: compat, settings: challengeSettings, context: context)
         onEvent(.challengeDecision(challengeID: challenge.id, challengerID: challenge.challenger.id, decision: decision))
 
         switch decision {
@@ -275,34 +471,55 @@ actor LichessBotSessionManager {
         case .accept:
             // Make sure a generation is built before accepting, so the first
             // move never waits on a network build (E15).
+            // Hold the slot across the model build: another challenge
+            // handled meanwhile must see it as taken.
+            acceptedAwaitingStart[challenge.id] = (challenge.challenger.id, time.now())
             do {
                 _ = try await slots.ready(for: settings.model)
             } catch {
+                acceptedAwaitingStart[challenge.id] = nil
                 onEvent(.anomaly("model not ready, declining \(challenge.id): \(error.localizedDescription)"))
-                await respond(to: challenge, accept: false, reason: .later)
+                await decline(challenge, reason: .later)
                 return
             }
-            await respond(to: challenge, accept: true, reason: nil)
+            await accept(challenge)
         case .decline(let reason, _):
-            await respond(to: challenge, accept: false, reason: reason)
+            await decline(challenge, reason: reason)
         }
     }
 
-    private func respond(to challenge: LichessBotChallenge, accept: Bool, reason: LichessBotDeclineReason?) async {
+    private func accept(_ challenge: LichessBotChallenge) async {
         challengeResponseTimes.append(time.now())
         do {
-            if accept {
-                try await accountAPI.acceptChallenge(id: challenge.id)
-            } else {
-                try await accountAPI.declineChallenge(id: challenge.id, reason: reason ?? .generic)
+            try await accountAPI.acceptChallenge(id: challenge.id)
+            if acceptedAwaitingStart[challenge.id] != nil {
+                acceptedAwaitingStart[challenge.id] = (challenge.challenger.id, time.now())
             }
         } catch {
-            onEvent(.challengeResponseFailed(challengeID: challenge.id, error: error.localizedDescription))
+            acceptedAwaitingStart[challenge.id] = nil
+            reportResponseFailure(challenge, error)
+        }
+    }
+
+    private func decline(_ challenge: LichessBotChallenge, reason: LichessBotDeclineReason) async {
+        challengeResponseTimes.append(time.now())
+        do {
+            try await accountAPI.declineChallenge(id: challenge.id, reason: reason)
+        } catch {
+            reportResponseFailure(challenge, error)
+        }
+    }
+
+    private func reportResponseFailure(_ challenge: LichessBotChallenge, _ error: Error) {
+        onEvent(.challengeResponseFailed(challengeID: challenge.id, error: error.localizedDescription))
+        if let apiError = error as? LichessBotAPIError, case .unauthorized = apiError {
+            onEvent(.tokenRejected(apiError.localizedDescription))
         }
     }
 
     private func startSessionIfNeeded(_ info: LichessBotGameEventInfo) async {
         let gameID = info.gameId
+        acceptedAwaitingStart[gameID] = nil
         guard sessions[gameID] == nil else { return }
         let settings = await settingsProvider()
         let generation: LichessBotModelGeneration
@@ -346,6 +563,11 @@ actor LichessBotSessionManager {
         )
         sessions[gameID] = session
         onEvent(.gameSessionStarted(gameID: gameID, generation: generation.info))
+        if oneGameMode {
+            oneGameMode = false
+            acceptingNewGames = false
+            onEvent(.oneGameStarted(gameID: gameID))
+        }
         sessionTasks[gameID] = Task { [weak self] in
             await session.run()
             await self?.sessionEnded(gameID: gameID)

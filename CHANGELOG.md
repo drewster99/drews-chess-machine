@@ -9,7 +9,48 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-28 08:31 CDT — Lichess bot: Keychain entitlement, Phase 5 scope decisions (pending commit)
+## 2026-09-28 10:15 CDT — Lichess bot Phase 5: controller, window, live views, browse-only stepping (pending commit)
+
+The Lichess bot is now usable from the app. The plan is `documentation/plans-active/LICHESS_BOT_PLAN.md` §7.1, §13 and §14.
+
+- **Controller** (`LichessBotController`, app-level).
+  - Lifecycle: Offline → Connecting → Online, then Draining or Error.
+  - Go Online checks the token (Keychain), the account's BOT status, and the instance lock.
+  - **Play one game** takes one game, then goes offline once it is filed.
+  - **Challenge…** sends to an online bot or any username, and shows the pending challenge with Cancel. Answers are matched even when they arrive before the POST returns.
+  - Resign all.
+  - **Quit drains by default:** with games in progress, the app shows the "Finishing games" sheet with live status and quits by itself when they end. The sheet also has Abort (resign all), Quit now (behind a confirmation) and Cancel.
+  - The sleep assertion is held while online. Game streams resync on wake. Daily limits are seeded from today's records.
+- **Window** (Chess ▸ Lichess Bot…, ⇧⌘L).
+  - **Overview:** state and controls, account, model generation, request gate, alarms.
+  - **Live Games:**
+    - A large view of the first-started game in progress: board, clocks, W/D/L, and DCM's reasoning per move.
+    - The move list, plus the game's **protocol transcript** in both directions (Lichess's NDJSON lines on one side, DCM's requests on the other), with a Follow toggle.
+    - A **grid** of all games, keeping finished ones for a configurable time.
+    - **Pop-out** windows per game.
+  - **Settings:** every option, applied as edited and rejected whole when invalid. It includes the token panel (checked with Lichess, stored only in the Keychain) and the twice-confirmed, irreversible BOT upgrade.
+- **Status chip** in the main title bar, with an on/off context menu.
+- **Browse-only stepping** (`GameBrowseCursor`, `BrowsableMoveListView`, `GameBrowseControlsView`): view any earlier position without changing the game, with a "Viewing ply N · live at M" banner.
+  - The **human game window** uses it too: clicking a move now shows that position on the board, and Revert to here acts on the browsed position. The live board keeps running underneath, so move pacing is untouched.
+- **Request records:** `LichessBotAPIClient` records every request (method, path, form fields, status, latency, protocol). They go to the protocol log, and into the game's journal for game requests. The token is never recorded. Each game-stream keep-alive is journaled; event-stream keep-alives are logged as per-minute gap statistics.
+- **`WLDBar`** moved out of the arena history view into `Views/Common` and is now shared by both.
+- **Pre-ship review fixes:**
+  - Resyncs back off, and give up after repeated attempts.
+  - A move rejected repeatedly at one ply stops moving in that game.
+  - A move on our side that this client didn't send stops moving and takes the bot to Error (§6.1 B).
+  - A failed position sync resets the tracker.
+  - Stream opens wait at most 15 s for headers; other requests time out at 10 s idle and 30 s total.
+  - One long-lived request gate keeps 429 cooldowns and breaker history across going offline. A 429 holds new games for `postRateLimitDrainMinutes`, then resumes; a breaker trip or token rejection goes to Error.
+  - Accepted-but-not-started games count against capacity.
+  - A late journal write can't recreate a filed journal, and a fragment can't overwrite a record.
+  - `fullId` is redacted (E26), and so is token-bearing error text.
+  - Record file stems use UTC (E50).
+  - Each fix has a regression test (`LichessBotReviewFixTests`).
+- **Test fixes:**
+  - The W/D/L-vs-scalar tolerance in `ChessNetworkValueDistributionTests` now allows for bfloat16 rounding. It was flaky: it failed on one run at 0.0017 against a bound of 0.001.
+  - A request-record journal test now uses a whole-second timestamp.
+
+## 2026-09-28 08:31 CDT — Lichess bot: Keychain entitlement, Phase 5 scope decisions (`d013409`)
 
 - **Keychain Sharing entitlement.** The app target now signs with `DrewsChessMachine.entitlements`, whose only entry is `keychain-access-groups = $(AppIdentifierPrefix)com.drewben.DrewsChessMachine`. The data-protection keychain the token store uses requires it. Automatic signing now embeds a provisioning profile. Verified on the signed product, which carries the group `P8MA38JTXY.com.drewben.DrewsChessMachine`.
 - **`LichessBotTokenStoreTests`.** These run against the real Keychain, so they also check that the entitlement is in place: save, read, replace, delete, and that the item's accessibility is after-first-unlock (E36). Each test uses its own account name and deletes its item afterwards.

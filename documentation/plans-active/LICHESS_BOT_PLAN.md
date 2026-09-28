@@ -1180,9 +1180,10 @@ status area, which is always visible:
     - every event-stream line (challenges, `gameStart`/`gameFinish`, …)
       goes into the protocol log
     - event-stream keep-alives are logged as per-minute gap statistics,
-      plus an individual entry for any gap longer than the stall threshold
-      (at one every 7 s, logging each one individually would add about 12k
-      lines a day)
+      plus an individual entry for any gap longer than twice the keep-alive
+      interval (at one every 7 s, logging each one individually would add
+      about 12k lines a day; a gap past the stall limit ends the stream and
+      is logged as a stall)
   - The token and the `Authorization` header are never recorded.
   - This needs one addition to the Phase 2 and 3 code: the API client
     reports each request (with its game id) to an observer. Requests go
@@ -1431,6 +1432,52 @@ before final sign-off.
   - any finding that contradicts §4 or §20 is fixed before Phase 6
 - *Validation:* the §17.3 **live acceptance checklist**, run on real
   Lichess.
+
+- *As implemented (2026-09-28):*
+  - **Controller and window.** `LichessBotController` (`@MainActor
+    @Observable`, app-level) owns the lifecycle. The window has Overview,
+    Live Games and Settings; Games, Stats and Events are Phase 6.
+  - **Status chip:** in the title bar.
+  - **Menu:** Chess ▸ Lichess Bot… (⇧⌘L).
+  - **Quit:** `AppDelegate` routes quit through the controller. With games
+    in progress it returns `.terminateLater`, drains, and brings up the
+    bot window with the "Finishing games" sheet.
+  - **Protocol transcript:** the API client reports every request, and
+    each game's journal records every request, stream line and keep-alive.
+    Event-stream lines and keep-alive gap statistics go to the protocol
+    log.
+  - **Browse-only stepping (`GameBrowseCursor`):** shared by the bot's
+    game views and the human game window.
+    - In the human window the live board stays mounted and animating under
+      a read-only browsed board, because its animation callbacks pace the
+      game.
+    - Arrow keys are not claimed there (the τ slider uses them). In the bot
+      window they are claimed only while the Live section's single view is
+      showing.
+  - **Pre-ship review fixes:**
+    - Resyncs back off, and stop after repeated tries without progress.
+    - Repeated move rejections at one ply stop moving in that game.
+    - A move on our side that this client didn't send is detected live,
+      stops moving, and takes the bot to Error (§6.1 B).
+    - A failed sync resets the position tracker.
+    - Stream opens wait at most 15 s for headers, and ordinary requests
+      time out after 10 s idle and 30 s total.
+    - One request gate lives for the controller's lifetime, so cooldowns
+      and the breaker's history survive going offline. A 429 now holds new
+      games for `postRateLimitDrainMinutes`, then resumes; a breaker trip,
+      a rejected token or a takeover goes to Error.
+    - Accepted-but-not-started games count against capacity.
+    - A challenge answer that arrives before its POST returns is still
+      matched.
+    - Daily counts are seeded from today's records.
+    - A late journal write can never recreate a filed journal, and a
+      fragment never overwrites a record.
+    - `fullId` and any token-bearing text are redacted.
+    - Game streams resync on wake (E34).
+    - File stems use UTC (E50).
+  - **Still open:** scaling the game-stream stall limit to the time control
+    (§6). It depends on whether game streams carry keep-alives, a §20.11
+    live check.
 
 **Phase 6: games, stats, events UI**
 - *Validation:*

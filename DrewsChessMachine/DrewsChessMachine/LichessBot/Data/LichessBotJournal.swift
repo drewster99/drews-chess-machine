@@ -16,6 +16,10 @@ enum LichessBotJournalEvent: Sendable, Codable, Equatable {
     case streamLine(raw: String)
     /// A stream line that was not valid UTF-8, base64-encoded.
     case streamLineBytes(base64: String)
+    /// A keep-alive on the game stream (the entry's time is its receive time).
+    case keepAlive
+    /// A request DCM made for this game (plan §14.3a transcript).
+    case request(LichessBotRequestRecord)
     case streamEnded(reason: String)
     case positionSynced(kind: LichessBotJournalSyncKind, fromPly: Int, toPly: Int)
     case moveDecided(ply: Int, decision: LichessBotMoveDecision, generation: LichessBotGenerationInfo)
@@ -54,6 +58,8 @@ enum LichessBotJournal {
             return .streamLineBytes(base64: data.base64EncodedString())
         case .streamEnded(let reason):
             return .streamEnded(reason: reason)
+        case .keepAlive:
+            return .keepAlive
         case .gameInfo, .chat:
             return nil
         case .positionSynced(let sync, _):
@@ -75,6 +81,10 @@ enum LichessBotJournal {
             return .action(text)
         case .anomaly(let text):
             return .anomaly(text)
+        case .stoppedMoving(let reason):
+            return .anomaly("stopped moving: \(reason)")
+        case .tokenRejected(let detail):
+            return .anomaly("token rejected: \(detail)")
         case .finished(let status, let winner, let localDrawCondition):
             return .finished(status: status.raw, winner: winner?.raw, localDrawCondition: localDrawCondition)
         }
@@ -83,10 +93,12 @@ enum LichessBotJournal {
     /// The receive time for stream lines (captured when the bytes arrived),
     /// otherwise now.
     static func timestamp(for gameEvent: LichessBotGameEvent) -> Date {
-        if case .streamLine(_, let receivedAt) = gameEvent {
+        switch gameEvent {
+        case .streamLine(_, let receivedAt), .keepAlive(let receivedAt):
             return receivedAt
+        default:
+            return Date()
         }
-        return Date()
     }
 
     /// Read a journal file. An unterminated final line — a crash mid-append
@@ -115,6 +127,8 @@ final class LichessBotJournalWriter: LichessBotGameObserver {
     private let onWriteFailure: @Sendable (String, Error) -> Void
     private let onGameFinished: @Sendable (String) async -> Void
     private let headerWritten = SyncBox<Set<String>>([])
+    /// Games whose journal has been filed; nothing more is written for them.
+    private let finalized = SyncBox<Set<String>>([])
 
     init(
         directory: LichessBotDataDirectory,
@@ -129,7 +143,8 @@ final class LichessBotJournalWriter: LichessBotGameObserver {
     }
 
     func gameEvent(gameID: String, _ event: LichessBotGameEvent) async {
-        guard let journalEvent = LichessBotJournal.event(for: event) else { return }
+        guard !finalized.value.contains(gameID),
+              let journalEvent = LichessBotJournal.event(for: event) else { return }
         let entry = LichessBotJournalEntry(at: LichessBotJournal.timestamp(for: event), event: journalEvent)
         let isFinish: Bool
         let synchronize: Bool
@@ -164,6 +179,12 @@ final class LichessBotJournalWriter: LichessBotGameObserver {
         let headerBox = headerWritten
         do {
             try await fileQueue.run {
+                if !needsHeader && !FileManager.default.fileExists(atPath: url.path) {
+                    // This launch wrote the journal, and it is gone: the game
+                    // was filed. A late write must not recreate a headerless
+                    // fragment that would later be filed over the record.
+                    return
+                }
                 var data = Data()
                 if needsHeader {
                     let resumed = FileManager.default.fileExists(atPath: url.path)
@@ -193,9 +214,22 @@ final class LichessBotJournalWriter: LichessBotGameObserver {
         }
     }
 
-    /// Forget which games have headers, so the next event for `gameID`
-    /// writes one. Called when a journal is moved out of `InProgress/`.
-    func forget(gameID: String) {
+    /// Record a request DCM made for a game, into that game's journal. A
+    /// request for a game already filed is not written (the protocol log
+    /// still has it).
+    func recordRequest(_ record: LichessBotRequestRecord) async {
+        guard let gameID = record.gameID, !finalized.value.contains(gameID) else { return }
+        do {
+            try await append([LichessBotJournalEntry(at: record.startedAt, event: .request(record))], gameID: gameID, synchronize: false)
+        } catch {
+            onWriteFailure(gameID, error)
+        }
+    }
+
+    /// The game's journal has been moved out of `InProgress/`: write nothing
+    /// more for it.
+    func markFinalized(gameID: String) {
+        finalized.modify { $0.insert(gameID) }
         headerWritten.modify { $0.remove(gameID) }
     }
 }

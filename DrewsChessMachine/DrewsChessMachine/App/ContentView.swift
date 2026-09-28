@@ -22,6 +22,8 @@ import SwiftUI
 /// though the parent (`ContentView`) re-ran.
 struct ContentView: View {
     let commandHub: AppCommandHub
+    let lichessBot: LichessBotController
+    let lichessBotProvider: LichessBotSessionModelProvider
     let autoTrainOnLaunch: Bool
     /// Forwarded from `DrewsChessMachineApp`'s `--playchess` flag. When
     /// set, `UpperContentView` starts a human-vs-network game on launch.
@@ -100,6 +102,8 @@ struct ContentView: View {
     private var upperPane: some View {
         UpperContentView(
             commandHub: commandHub,
+            lichessBot: lichessBot,
+            lichessBotProvider: lichessBotProvider,
             autoTrainOnLaunch: autoTrainOnLaunch,
             autoPlayChessOnLaunch: autoPlayChessOnLaunch,
             playChessModelPath: playChessModelPath,
@@ -147,8 +151,11 @@ struct ContentView: View {
 }
 
 #Preview {
+    let provider = LichessBotSessionModelProvider()
     ContentView(
         commandHub: AppCommandHub(),
+        lichessBot: LichessBotController(modelProvider: provider),
+        lichessBotProvider: provider,
         autoTrainOnLaunch: false,
         autoPlayChessOnLaunch: false,
         playChessModelPath: nil,

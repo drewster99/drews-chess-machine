@@ -79,20 +79,31 @@ final class LichessBotPositionTracker {
         if newTokens == tokens {
             return .unchanged
         }
-        if newTokens.count > tokens.count && Array(newTokens.prefix(tokens.count)) == tokens {
-            for token in newTokens[tokens.count...] {
+        do {
+            if newTokens.count > tokens.count && Array(newTokens.prefix(tokens.count)) == tokens {
+                for token in newTokens[tokens.count...] {
+                    try apply(token)
+                }
+                return .extended(fromPly: oldPly, toPly: tokens.count)
+            }
+            reset()
+            for token in newTokens {
                 try apply(token)
             }
-            return .extended(fromPly: oldPly, toPly: tokens.count)
+            return .rebuilt(fromPly: oldPly, toPly: tokens.count)
+        } catch {
+            // Never keep a partly applied list: the next sync starts from
+            // the beginning rather than extending a position the server
+            // disagrees with.
+            reset()
+            throw error
         }
-        let rebuiltEngine = ChessGameEngine(adjudication: .serverAuthoritative)
-        engine = rebuiltEngine
+    }
+
+    private func reset() {
+        engine = ChessGameEngine(adjudication: .serverAuthoritative)
         tokens = []
         moves = []
-        for token in newTokens {
-            try apply(token)
-        }
-        return .rebuilt(fromPly: oldPly, toPly: tokens.count)
     }
 
     private func apply(_ token: String) throws {

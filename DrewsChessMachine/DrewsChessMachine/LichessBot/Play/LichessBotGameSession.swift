@@ -49,6 +49,21 @@ actor LichessBotGameSession {
     private var pendingClaim: Task<Void, Never>?
     private var keepAlivesSeen = false
     private var loggedDrawDisagreementPly: Int?
+    /// Resyncs in a row without the game advancing; each waits longer.
+    private var consecutiveResyncs = 0
+    private var highestPlySeen = 0
+    /// Rejected move POSTs per ply (plan §6.1 B, §5.5).
+    private var rejectionsByPly: [Int: Int] = [:]
+    /// The move this client tried to post at each ply, normalized UCI.
+    private var attemptedPosts: [Int: String] = [:]
+    /// Moves arriving after the first `gameFull` of this session are
+    /// checked against `attemptedPosts`; the first one may carry moves this
+    /// client made before a relaunch.
+    private var checksForeignMoves = false
+    private var movingStopped = false
+    private static let maximumRejectionsPerPly = 3
+    private static let maximumConsecutiveResyncs = 8
+    private static let resyncBackoff = LichessBotBackoff(initial: .seconds(1), multiplier: 2, cap: .seconds(30))
     private let stallTimeout = SyncBox<Duration?>(nil)
     /// Set from outside the actor to make the stream loop drop its
     /// connection and reopen it for a fresh `gameFull`.
@@ -127,6 +142,21 @@ actor LichessBotGameSession {
             } catch let resync as ResyncNeeded {
                 await observer.gameEvent(gameID: gameID, .streamEnded(reason: "resync: \(resync.reason)"))
                 attempt = 0
+                consecutiveResyncs += 1
+                if consecutiveResyncs >= Self.maximumConsecutiveResyncs {
+                    await stopMoving("\(consecutiveResyncs) resyncs in a row without the game advancing (last: \(resync.reason))")
+                    break
+                }
+                // The first resync is immediate; repeats back off, so a
+                // disagreement that persists can never turn into a request
+                // storm.
+                if consecutiveResyncs > 1 {
+                    do {
+                        try await time.sleep(for: Self.resyncBackoff.delay(attempt: consecutiveResyncs - 2, unitRandom: Double.random(in: 0...1)))
+                    } catch {
+                        break
+                    }
+                }
                 continue
             } catch LichessBotStreamError.stalled(let silence) {
                 if let reason = resyncRequest.mutate({ request -> String? in
@@ -145,7 +175,10 @@ actor LichessBotGameSession {
                 break
             } catch let error as LichessBotAPIError {
                 await observer.gameEvent(gameID: gameID, .streamEnded(reason: error.localizedDescription))
-                if case .unauthorized = error { break }
+                if case .unauthorized = error {
+                    await observer.gameEvent(gameID: gameID, .tokenRejected(error.localizedDescription))
+                    break
+                }
                 if case .http(404, _) = error {
                     // The game no longer exists as a playable game; the
                     // export API settles how it ended (plan §10.2).
@@ -186,6 +219,7 @@ actor LichessBotGameSession {
             await observer.gameEvent(gameID: gameID, .streamLine(data, receivedAt: Date()))
             try await handleLine(data, settings: settings)
         case .keepAlive:
+            await observer.gameEvent(gameID: gameID, .keepAlive(receivedAt: Date()))
             if !keepAlivesSeen {
                 keepAlivesSeen = true
                 updateStallTimeout(settings: settings.connection)
@@ -257,6 +291,7 @@ actor LichessBotGameSession {
         // Always process the embedded state: it may already carry a finished
         // status, including for a game handled as unplayable above.
         try await handleState(full.state, settings: settings)
+        checksForeignMoves = true
     }
 
     /// Why DCM can't play this game at all, or nil (plan E20).
@@ -283,8 +318,17 @@ actor LichessBotGameSession {
         let plies = full.state.moveTokens.count
         await observer.gameEvent(gameID: gameID, .anomaly("unplayable game (\(reason))"))
         if plies < 2 {
-            try await api.abort(gameID: gameID)
-            await observer.gameEvent(gameID: gameID, .action("aborted unplayable game"))
+            do {
+                try await api.abort(gameID: gameID)
+                await observer.gameEvent(gameID: gameID, .action("aborted unplayable game"))
+                return
+            } catch let error as LichessBotAPIError {
+                if case .unauthorized = error { throw error }
+                // Too late to abort (the opponent moved meanwhile): resign.
+                await observer.gameEvent(gameID: gameID, .anomaly("abort refused (\(error.localizedDescription)); resigning instead"))
+            }
+            try await api.resign(gameID: gameID)
+            await observer.gameEvent(gameID: gameID, .action("resigned unplayable game"))
         } else {
             try await api.resign(gameID: gameID)
             await observer.gameEvent(gameID: gameID, .action("resigned unplayable game"))
@@ -302,6 +346,20 @@ actor LichessBotGameSession {
             }
             if sync != .unchanged {
                 await observer.gameEvent(gameID: gameID, .positionSynced(sync, ply: tracker.ply))
+            }
+            if tracker.ply > highestPlySeen {
+                highestPlySeen = tracker.ply
+                consecutiveResyncs = 0
+            }
+            if checksForeignMoves, case .extended(let fromPly, let toPly) = sync, let ourColor {
+                let ourPieceColor: PieceColor = ourColor == .white ? .white : .black
+                for ply in fromPly..<toPly where Self.mover(atPly: ply) == ourPieceColor {
+                    let played = tracker.moves[ply].uci
+                    if attemptedPosts[ply] != played {
+                        await stopMoving("move \(played) at ply \(ply) is on our side but this client did not send it; another client may be playing this account")
+                        return
+                    }
+                }
             }
             if case .rebuilt = sync, let posted = lastPostedPly, posted >= tracker.ply {
                 // A takeback removed a ply we had moved at (E30).
@@ -328,6 +386,7 @@ actor LichessBotGameSession {
             await observer.gameEvent(gameID: gameID, .anomaly("gameState before gameFull"))
             return
         }
+        guard !movingStopped else { return }
 
         if let condition = tracker.engine.drawCondition, loggedDrawDisagreementPly != tracker.ply {
             // Lichess ends bot games on these rules itself, so a live game
@@ -399,7 +458,13 @@ actor LichessBotGameSession {
 
         if LichessBotPlayPolicy.shouldResign(readings: readings, settings: settings.play) {
             lastPostedPly = ply
-            try await api.resign(gameID: gameID)
+            do {
+                try await api.resign(gameID: gameID)
+            } catch {
+                // Not resigned: this ply is still ours to play.
+                lastPostedPly = nil
+                throw error
+            }
             await observer.gameEvent(gameID: gameID, .action("resigned (value head: p_loss \(decision.loss))"))
             return
         }
@@ -428,6 +493,7 @@ actor LichessBotGameSession {
         var transientFailures = 0
         while true {
             lastPostedPly = ply
+            attemptedPosts[ply] = decision.uci
             let started = time.now()
             do {
                 try await api.makeMove(gameID: gameID, uci: decision.uci, offeringDraw: offeringDraw)
@@ -445,6 +511,14 @@ actor LichessBotGameSession {
                 lastPostedPly = nil
                 await observer.gameEvent(gameID: gameID, .moveRejected(ply: ply, uci: decision.uci, error: error.localizedDescription))
                 if case .unauthorized = error { throw error }
+                let rejections = rejectionsByPly[ply, default: 0] + 1
+                rejectionsByPly[ply] = rejections
+                if rejections >= Self.maximumRejectionsPerPly {
+                    // Moves that keep being refused mean the game is not in
+                    // the state this client believes; never keep racing.
+                    await stopMoving("\(rejections) moves rejected at ply \(ply) (last: \(error.localizedDescription))")
+                    return
+                }
                 // A 4xx means Lichess disagrees about the position (or the
                 // game just ended). Reopen for a fresh gameFull (§5.5, E21).
                 throw ResyncNeeded(reason: "move rejected: \(error.localizedDescription)")
@@ -466,6 +540,20 @@ actor LichessBotGameSession {
     }
 
     private static let maximumTransientPostRetries = 3
+
+    /// Who moves at `ply` in a game from the standard start.
+    private static func mover(atPly ply: Int) -> PieceColor {
+        ply % 2 == 0 ? .white : .black
+    }
+
+    /// Stop moving in this game for good and report why. The game is left
+    /// to the operator (and the controller takes the bot offline).
+    private func stopMoving(_ reason: String) async {
+        guard !movingStopped else { return }
+        movingStopped = true
+        await onTurnStatus(gameID, LichessBotTurnStatus(awaitingOurMove: false, ourClock: nil))
+        await observer.gameEvent(gameID: gameID, .stoppedMoving(reason: reason))
+    }
 
     // MARK: - Opponent gone
 

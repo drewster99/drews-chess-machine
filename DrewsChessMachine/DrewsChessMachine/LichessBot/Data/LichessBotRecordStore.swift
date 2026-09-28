@@ -99,10 +99,31 @@ final class LichessBotRecordStore: Sendable {
             let pgnURL = folder.appendingPathComponent("\(stem).pgn", isDirectory: false)
             let keptJournalURL = folder.appendingPathComponent("\(stem).\(LichessBotDataDirectory.journalExtension)", isDirectory: false)
 
+            let fm = FileManager.default
+            let journalHasGame = journal.elements.contains { entry in
+                guard case .streamLine(let raw) = entry.event else { return false }
+                do {
+                    if case .gameFull = try LichessBotGameStreamLine.decode(Data(raw.utf8)) {
+                        return true
+                    }
+                } catch {
+                    // An undecodable line is not a gameFull; the record
+                    // builder reports it as an anomaly.
+                }
+                return false
+            }
+            if !journalHasGame && fm.fileExists(atPath: recordURL.path) {
+                // A fragment written after the game was filed: keep it beside
+                // the record, but never let it replace the complete record.
+                let fragmentURL = folder.appendingPathComponent("\(stem)-fragment-\(Int(Date().timeIntervalSince1970)).\(LichessBotDataDirectory.journalExtension)", isDirectory: false)
+                try fm.moveItem(at: journalURL, to: fragmentURL)
+                let existing = try LichessBotIndex.readRecord(at: recordURL)
+                return LichessBotFinalizedGame(record: existing, recordURL: recordURL, pgnURL: pgnURL, journalURL: fragmentURL)
+            }
+
             try LichessBotAtomicWrite.write(recordData, to: recordURL)
             try LichessBotAtomicWrite.write(Data(LichessBotPGNWriter.pgn(for: record).utf8), to: pgnURL)
 
-            let fm = FileManager.default
             let filedJournalURL: URL
             if fm.fileExists(atPath: keptJournalURL.path) {
                 // A journal for this game was already filed (the game was

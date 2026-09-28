@@ -284,6 +284,21 @@ actor LichessBotFakeGameServer: LichessBotGameAPI {
         continuation = nil
     }
 
+    /// Play `moves` on the server as if other clients made them, and stream
+    /// one new state carrying them all (plan §6.1 B).
+    func injectMoves(_ moves: [String]) throws {
+        for uci in moves {
+            try Self.apply(uci, to: engine)
+            tokens.append(uci)
+        }
+        sendState()
+    }
+
+    /// Reject every move POST from now on.
+    func rejectAllMoves() {
+        moveOutcomes = Array(repeating: .rejected(status: 400), count: 100)
+    }
+
     /// End the game without sending a final state on the game stream, as
     /// Lichess may do on a resignation (plan E22).
     func endSilently(status newStatus: String, winner newWinner: String?) {

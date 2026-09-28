@@ -53,6 +53,8 @@ enum LichessBotGameEvent: Sendable {
     case streamOpened(attempt: Int)
     /// A raw NDJSON line exactly as received, and when.
     case streamLine(Data, receivedAt: Date)
+    /// A keep-alive (empty line) on the game stream, and when.
+    case keepAlive(receivedAt: Date)
     case streamEnded(reason: String)
     case gameInfo(LichessBotGameFull, ourColor: LichessBotColorName)
     case positionSynced(LichessBotPositionSync, ply: Int)
@@ -62,6 +64,12 @@ enum LichessBotGameEvent: Sendable {
     case action(String)
     case chat(LichessBotChatLine)
     case anomaly(String)
+    /// The session stopped moving in this game: its moves keep being
+    /// rejected, or a move on our side appeared that this client did not
+    /// send — another client may be playing the account (plan §6.1 B).
+    case stoppedMoving(reason: String)
+    /// Lichess rejected the token (401/403) on this game's requests.
+    case tokenRejected(String)
     /// The game ended. `localDrawCondition` is the draw rule DCM's own
     /// engine sees in the final position, if any, recorded beside the
     /// server's status so the two rule sets can be compared (plan E10).

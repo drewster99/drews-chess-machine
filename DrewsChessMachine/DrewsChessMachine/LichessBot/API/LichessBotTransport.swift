@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// A byte stream from a long-lived HTTP response, delivered in chunks.
 typealias LichessBotChunkStream = AsyncThrowingStream<Data, Error>
@@ -26,11 +27,17 @@ struct LichessBotTransportResponse: Sendable {
 
 enum LichessBotTransportError: LocalizedError {
     case notHTTPResponse
+    /// A stream's response headers did not arrive in time. Opening a stream
+    /// holds the single-flight request gate, so the wait is bounded: a
+    /// black-holed connection must never keep move POSTs waiting.
+    case streamHeadersTimedOut(Duration)
 
     var errorDescription: String? {
         switch self {
         case .notHTTPResponse:
             return "Lichess returned a non-HTTP response"
+        case .streamHeadersTimedOut(let limit):
+            return "Lichess did not answer the stream request within \(limit)"
         }
     }
 }
@@ -58,8 +65,10 @@ final class LichessBotURLSessionTransport: LichessBotTransport {
 
     init() {
         let requestConfiguration = URLSessionConfiguration.ephemeral
-        requestConfiguration.timeoutIntervalForRequest = 30
-        requestConfiguration.timeoutIntervalForResource = 120
+        // Short on purpose: every request holds the single-flight gate, so a
+        // stalled one delays every other (plan §5.2).
+        requestConfiguration.timeoutIntervalForRequest = 10
+        requestConfiguration.timeoutIntervalForResource = 30
         requestConfiguration.requestCachePolicy = .reloadIgnoringLocalCacheData
         requestConfiguration.waitsForConnectivity = false
         requestSession = URLSession(configuration: requestConfiguration)
@@ -87,8 +96,11 @@ final class LichessBotURLSessionTransport: LichessBotTransport {
         return LichessBotTransportResponse(body: body, response: http, networkProtocolName: metrics.protocolName)
     }
 
+    /// How long a stream request may wait for its response headers.
+    static let streamHeaderDeadline: Duration = .seconds(15)
+
     func stream(for request: URLRequest) async throws -> (chunks: LichessBotChunkStream, response: HTTPURLResponse) {
-        let (bytes, response) = try await streamSession.bytes(for: request)
+        let (bytes, response) = try await openBytes(for: request)
         let dataTask = bytes.task
         guard let http = response as? HTTPURLResponse else {
             dataTask.cancel()
@@ -122,6 +134,56 @@ final class LichessBotURLSessionTransport: LichessBotTransport {
             }
         }
         return (chunks, http)
+    }
+}
+
+extension LichessBotURLSessionTransport {
+    /// `URLSession.bytes(for:)` raced against `streamHeaderDeadline`. The
+    /// losing side is cancelled; a connection that opened just as the
+    /// deadline fired is cancelled too, so it can never leak.
+    private func openBytes(for request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
+        let opened = OpenedStreamBox()
+        let session = streamSession
+        let deadline = Self.streamHeaderDeadline
+        let openedInTime = try await withThrowingTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                let (bytes, response) = try await session.bytes(for: request)
+                opened.store(bytes: bytes, response: response)
+                return true
+            }
+            group.addTask {
+                try await Task.sleep(for: deadline)
+                return false
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else {
+                throw CancellationError()
+            }
+            return first
+        }
+        guard openedInTime, let result = opened.take() else {
+            opened.take()?.bytes.task.cancel()
+            throw LichessBotTransportError.streamHeadersTimedOut(deadline)
+        }
+        return result
+    }
+}
+
+/// Carries an opened byte stream out of the task group that raced it
+/// against the header deadline. `URLSession.AsyncBytes` is not `Sendable`;
+/// the lock makes the single handoff safe.
+private final class OpenedStreamBox: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock<(bytes: URLSession.AsyncBytes, response: URLResponse)?>(uncheckedState: nil)
+
+    func store(bytes: URLSession.AsyncBytes, response: URLResponse) {
+        lock.withLockUnchecked { $0 = (bytes, response) }
+    }
+
+    func take() -> (bytes: URLSession.AsyncBytes, response: URLResponse)? {
+        lock.withLockUnchecked { value in
+            defer { value = nil }
+            return value
+        }
     }
 }
 

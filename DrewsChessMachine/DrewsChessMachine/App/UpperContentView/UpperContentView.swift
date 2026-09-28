@@ -15,6 +15,11 @@ struct UpperContentView: View {
     /// `.commands` DSL can enable/disable menu items correctly.
     let commandHub: AppCommandHub
 
+    /// The app-level Lichess bot, and the model provider to attach to this
+    /// view's session.
+    let lichessBot: LichessBotController
+    let lichessBotProvider: LichessBotSessionModelProvider
+
     /// True iff the process was launched with `--train` on the
     /// command line. When set, the first `.onAppear` suppresses
     /// the Resume-from-Autosave sheet entirely and chains Build
@@ -67,6 +72,8 @@ struct UpperContentView: View {
     /// function; the `@State`-style properties keep their own declared defaults.
     init(
         commandHub: AppCommandHub,
+        lichessBot: LichessBotController,
+        lichessBotProvider: LichessBotSessionModelProvider,
         autoTrainOnLaunch: Bool,
         autoPlayChessOnLaunch: Bool,
         playChessModelPath: String?,
@@ -76,6 +83,8 @@ struct UpperContentView: View {
         chartCoordinator: ChartCoordinator
     ) {
         self.commandHub = commandHub
+        self.lichessBot = lichessBot
+        self.lichessBotProvider = lichessBotProvider
         self.autoTrainOnLaunch = autoTrainOnLaunch
         self.autoPlayChessOnLaunch = autoPlayChessOnLaunch
         self.playChessModelPath = playChessModelPath
@@ -1108,6 +1117,7 @@ struct UpperContentView: View {
                 networkStatus: networkStatus,
                 hasSavedCheckpoint: checkpoint.lastSavedAt != nil,
                 lastSavedDisplayString: lastSavedDisplayString,
+                lichessBot: lichessBot,
                 showingInfoPopover: $showingInfoPopover
             )
             .equatable()
@@ -1708,6 +1718,8 @@ struct UpperContentView: View {
         // — fires once on view mount and then every 30 min for the
         // life of the session.
         session.startLichessProbeWatcher()
+        // The Lichess bot's champion/trainer sources read this session.
+        lichessBotProvider.attach(session: session)
         // Wire the popover models' side-effect hooks. The Arena popover pushes
         // the new τ schedule into the live `samplingScheduleBox` after a Save;
         // the Training popover does the same for its self-play schedule and
@@ -2293,6 +2305,9 @@ struct UpperContentView: View {
         commandHub.runLichessProbe = { session.runLichessProbe() }
         commandHub.openLichessProbeMonitor = {
             LichessProbeMonitorLauncher.openWindow(sessionController: session)
+        }
+        commandHub.openLichessBot = { [lichessBot] in
+            LichessBotWindowLauncher.openWindow(controller: lichessBot)
         }
         commandHub.openCombinedLossWindow = {
             CombinedLossWindowLauncher.openWindow(sessionController: session)

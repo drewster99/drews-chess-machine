@@ -34,21 +34,25 @@ struct LichessBotDataDirectory: Sendable, Equatable {
         inProgressDirectory.appendingPathComponent("\(gameID).\(Self.journalExtension)", isDirectory: false)
     }
 
-    /// `Games/YYYY/MM/` for a game created at `createdAt` (local calendar).
+    /// `Games/YYYY/MM/` for a game created at `createdAt`, in UTC so a game's
+    /// files never move when the Mac's time zone changes (plan E50).
     func gamesMonthDirectory(createdAt: Date) -> URL {
-        let year = String(format: "%04d", Calendar.current.component(.year, from: createdAt))
-        let month = String(format: "%02d", Calendar.current.component(.month, from: createdAt))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .gmt
+        let year = String(format: "%04d", calendar.component(.year, from: createdAt))
+        let month = String(format: "%02d", calendar.component(.month, from: createdAt))
         return gamesDirectory
             .appendingPathComponent(year, isDirectory: true)
             .appendingPathComponent(month, isDirectory: true)
     }
 
-    /// `<YYYYMMDD-HHMMSS>-<gameId>`, from the game's creation time (local).
+    /// `<YYYYMMDD-HHMMSS>-<gameId>`, from the game's creation time in UTC
+    /// (plan E50).
     static func fileStem(gameID: String, createdAt: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = TimeZone.current
+        formatter.timeZone = .gmt
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         return "\(formatter.string(from: createdAt))-\(gameID)"
     }
@@ -100,11 +104,7 @@ enum LichessBotAtomicWrite {
 /// that might embed one (an error description echoing a header, a URL).
 enum LichessBotRedaction {
     private static let patterns: [NSRegularExpression] = {
-        let sources = [
-            #"lip_[A-Za-z0-9_-]+"#,
-            #"(?i)bearer\s+[A-Za-z0-9._~+/=-]+"#,
-        ]
-        return sources.map { source in
+        sources.map(\.pattern).map { source in
             do {
                 return try NSRegularExpression(pattern: source)
             } catch {
@@ -113,11 +113,19 @@ enum LichessBotRedaction {
         }
     }()
 
+    /// Each secret's pattern and what replaces it.
+    private static let sources: [(pattern: String, template: String)] = [
+        (#"lip_[A-Za-z0-9_-]+"#, "[REDACTED]"),
+        (#"(?i)bearer\s+[A-Za-z0-9._~+/=-]+"#, "[REDACTED]"),
+        // `gameStart.game.fullId` embeds the player's secret suffix (E26).
+        (#""fullId"\s*:\s*"[^"]*""#, "\"fullId\":\"[REDACTED]\""),
+    ]
+
     static func redact(_ text: String) -> String {
         var result = text
-        for pattern in patterns {
+        for (pattern, source) in zip(patterns, sources) {
             let range = NSRange(result.startIndex..<result.endIndex, in: result)
-            result = pattern.stringByReplacingMatches(in: result, range: range, withTemplate: "[REDACTED]")
+            result = pattern.stringByReplacingMatches(in: result, range: range, withTemplate: source.template)
         }
         return result
     }

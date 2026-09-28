@@ -124,6 +124,13 @@ struct LichessBotConnectionSettings: Sendable, Equatable, Codable {
     var breakerWindowMinutes = 10
 }
 
+/// How the bot's window presents games (plan §14.3a).
+struct LichessBotDisplaySettings: Sendable, Equatable, Codable {
+    /// How long a finished game stays in the live grid before it is removed
+    /// (it can also be dismissed by hand). Zero removes it at once.
+    var finishedGameRetentionMinutes = 10
+}
+
 /// All Lichess bot settings, persisted as one JSON blob (plan §12.1). Not
 /// `TrainingParameters`: none of this is a training knob, and none of it
 /// belongs in a `.dcmsession`. The API token is not here — it lives only in
@@ -134,6 +141,7 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
     var chat = LichessBotChatSettings()
     var model = LichessBotModelSettings()
     var connection = LichessBotConnectionSettings()
+    var display = LichessBotDisplaySettings()
 
     /// Every problem with these settings. Empty means valid. Invalid
     /// settings are rejected as a whole, never partly applied.
@@ -190,6 +198,7 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         require(n.lowClockThresholdMilliseconds >= 0, "Low-clock threshold cannot be negative")
         require(n.lostOnTimeBreakerCount >= 1 && n.lostOnTimeBreakerWindowGames >= n.lostOnTimeBreakerCount, "Lost-on-time breaker must trip within its window")
         require(n.movePostFailureBreakerCount >= 1 && n.reconnectStormBreakerCount >= 1 && n.breakerWindowMinutes >= 1, "Breaker thresholds must be at least one")
+        require(display.finishedGameRetentionMinutes >= 0, "Finished-game retention cannot be negative")
         return problems
     }
 }

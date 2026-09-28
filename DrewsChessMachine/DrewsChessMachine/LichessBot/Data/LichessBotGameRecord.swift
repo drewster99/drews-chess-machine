@@ -434,7 +434,7 @@ enum LichessBotRecordBuilder {
                 applyLine(Data(raw.utf8), at: entry.at)
             case .streamLineBytes:
                 anomalies.append(.init(at: entry.at, text: "stream line was not UTF-8"))
-            case .streamEnded, .positionSynced:
+            case .streamEnded, .positionSynced, .keepAlive, .request:
                 break
             case .moveDecided(let ply, let decision, let generation):
                 decisions[ply] = (decision, generation.generationID)
