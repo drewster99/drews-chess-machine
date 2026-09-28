@@ -11,6 +11,18 @@ original rationale is not lost.
 
 ## Future improvements (validated open)
 
+- **Lichess bot — DCM plays on lichess.org as a BOT account (planned 2026-09-28; not started).** A native Swift client built into the app: no Python bridge, no UCI subprocess. It includes:
+  - a dedicated window with live games and settings that apply immediately
+  - a model-source picker modeled on human play: champion / trainer snapshot / live trainer / file
+  - a local game record for every game, checked against Lichess's export, plus a protocol event log
+  - statistics that can be filtered and grouped, including value-head calibration on real games
+  - automatic reconnect, with protection against a second instance
+  - strict handling of Lichess's 429 rate limit
+
+  Full plan, including the 55-item "where DCM's handling and Lichess disagree" review, phases and validation: `documentation/plans-active/LICHESS_BOT_PLAN.md`. Research: `documentation/research/lichess-bot/`. Bot account: `DrewsChessMachine`.
+
+- **Prevent system sleep during training (noted 2026-09-28; not started).** The app holds no sleep or App-Nap assertion anywhere today; verified, there is no `ProcessInfo.beginActivity` / IOPM use. Idle system sleep can therefore pause a long unattended Play-and-Train or corpus-replay run. Add an option, default on, to hold `ProcessInfo.beginActivity([.userInitiated, .idleSystemSleepDisabled])` while training is active, and log when it is taken and released. The Lichess bot plan (§13) adds the same option for bot play.
+
 - **Train-vs-UCI — continuous live training by playing external UCI engines (drafted 2026-07-09; IMPLEMENTED 2026-07-10 — all four components landed on main; end-to-end smoke vs real Stockfish still pending).**
 
   **Implementation status (2026-07-10).** All four components below are implemented, unit-tested, and committed: `UCIArbiter` (App/UCI/), `TrainVsUciDriver` + `ActiveGame.flushTrainerSide` (Training/), `TrainVsUciRunner` + `handleTrainVsUciIfPresent` (CLI/ + App/), and `TrainVsUciStatsFormatter` with the `[VS-UCI-STATS]` emit. Deviations from the original plan, with reasons:
@@ -476,7 +488,11 @@ original rationale is not lost.
   the order of 20); pruning should run lazily after successful saves so there is
   no dedicated sweep racing save/load; optional UI can show total disk footprint,
   counts per trigger, and a "Trim to last N" action. Deferred until disk
-  footprint is a demonstrated problem; the "never overwrite" invariant remains
+  footprint is a demonstrated problem — **it now is** (2026-09-27): a full plan
+  covering weights-only saves, combined periodic+promotion retention, and
+  time-based pruning is written up in
+  `documentation/plans-active/AUTOSAVE_RETENTION_PLAN.md`. Not yet
+  implemented. The "never overwrite" invariant remains
   in force until retention is explicitly implemented.
 
 - **Human-vs-model play.** ✅ **SHIPPED 2026-05-14** (`15613c9`, "Add Chess menu

@@ -9,6 +9,23 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-28 01:14 CDT — Lichess bot plan, autosave-retention plan, research (DESIGN)
+
+- **`documentation/plans-active/LICHESS_BOT_PLAN.md`:** plan for DCM to play on lichess.org as the BOT account `DrewsChessMachine`. It is a native Swift client inside the app: no Python bridge, no UCI subprocess. The plan covers:
+  - a rate-limit design that treats Lichess's 429 as a hard constraint
+  - streams with heartbeat watchdogs and reconnect
+  - protection against a second instance, both a local lock and detection of another machine
+  - a model-source picker modeled on human play, with generation-pinned snapshots
+  - per-game journals reconciled against Lichess's export, plus a protocol event log
+  - statistics, including value-head calibration on real games
+  - Keychain token storage (data-protection keychain, after first unlock) with a guarded in-app BOT upgrade
+  - a 55-item review of where DCM's self-play assumptions and Lichess's behavior disagree
+
+  Draw behavior was read directly from Lichess's server source rather than assumed. For BOT players, lila auto-claims threefold (`Drawer.autoThreefold`), and scalachess auto-ends games at 50 moves, fivefold and insufficient material. The bot `claim-draw` endpoint is only for an opponent who has left.
+- **`documentation/research/lichess-bot/`:** the research behind the plan: API mechanics, account constraints, primary-source spec checks, operator pain points, alternatives, and other platforms.
+- **`documentation/plans-active/AUTOSAVE_RETENTION_PLAN.md`:** weights-only saves, plus retention that also covers promotion saves and adds time-based pruning. It is not scheduled.
+- **ROADMAP:** entries for the Lichess bot plan and for preventing system sleep during training. The autosave-retention entry points to its plan.
+
 ## 2026-08-12 CDT — v5's checkpoints merged into normal storage; per-segment checkpoint discovery (pending commit)
 
 `v5-continue-bundle/` was a shipping container built to move training to another machine, never a storage location. Its checkpoints now live where every other run's do, and the tracker can find them.
