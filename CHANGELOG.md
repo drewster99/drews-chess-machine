@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-28 16:40 CDT — Lichess bot: challenge-sheet filtering and player columns (pending commit)
+## 2026-09-28 16:40 CDT — Lichess bot: challenge-sheet filtering and player columns (`16baa91`)
 
 - **Bug: a minimum rating alone could empty the list.** The min/max fields used value-formatted text fields, which update only on commit and can keep a stale value when cleared. They are now plain text parsed on every keystroke: empty means no bound, and non-numbers are outlined in red. Regression test: `LichessBotRatingBoundTests`.
 - **Rating filter toggle.** The range applies only when the "<speed> rating" toggle is on. The toggle, min, max and "Hide provisional" are remembered across sheets and launches (`@AppStorage`, a viewing preference).
