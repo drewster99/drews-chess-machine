@@ -6270,65 +6270,32 @@ final class ChessTrainer: @unchecked Sendable {
     /// read-then-write pattern does not actually provide.
     private var klProbeStepCounter: Int = 0
 
-    /// Forward-only executables, keyed by batch size.
+    /// Walk backward from `targets` through producing operations' input
+    /// tensors, returning every leaf tensor with no producing operation
+    /// (placeholders, variables, constants) reached along the way.
     ///
-    /// Compiled against the *same* graph and the same weight variables as the
-    /// training executable, but with **no `targetOperations`** — so the SGD
-    /// assigns, and with them the whole backward pass, are off the path to the
-    /// requested targets and MPSGraph never encodes them — so the probe does
-    /// not itself advance the dropout RNG. Combined with the probe-step
-    /// training variant omitting the advance too, both forwards read the same
-    /// RNG state and draw the same mask; the advance is issued once,
-    /// explicitly, after the probe.
-    ///
-    /// Because the executable shares the graph's variables, running it *after*
-    /// the training step observes the post-update weights — which is exactly
-    /// the `policy_after` the KL needs.
-    private var forwardOnlyExecutables: [Int: MPSGraphExecutable] = [:]
-
-    /// Compile-and-cache the forward-only executable for this batch size.
-    /// Must run on `executionQueue`, same discipline as `trainingExecutables`.
-    ///
-    /// Targets the two KL scalars, which depend on the full forward (through
-    /// `policySoftmaxLegalTensor`) and on the stash variable. Two floats come
-    /// back per probe rather than the `[batch, policySize]` distributions
-    /// themselves — reading those back would be ~80 MB twice per probe and
-    /// would dwarf the forward pass this is meant to measure.
-    private func forwardOnlyExecutable(
-        batchSize: Int,
-        feeds: [MPSGraphTensor: MPSGraphTensorData]
-    ) throws -> MPSGraphExecutable {
-        if let existing = forwardOnlyExecutables[batchSize] {
-            return existing
+    /// Used to restrict the KL probe's `graph.run` feed dict to placeholders
+    /// the two KL scalars actually depend on — `feeds` at the call site is
+    /// the full training-step feed dict (labels, advantage, LR, ...), most of
+    /// which a forward-only KL readout never touches.
+    private func reachableLeaves(from targets: [MPSGraphTensor]) -> Set<MPSGraphTensor> {
+        // Every MPSGraphTensor has a non-optional `.operation`, including
+        // placeholders/variables/constants — those are "source" operations
+        // with an empty `inputTensors`. A leaf is a tensor whose producing
+        // operation has no inputs, not a tensor with no operation.
+        var visitedTensors = Set<MPSGraphTensor>()
+        var leaves = Set<MPSGraphTensor>()
+        var stack = targets
+        while let tensor = stack.popLast() {
+            guard visitedTensors.insert(tensor).inserted else { continue }
+            let producingOperation = tensor.operation
+            if producingOperation.inputTensors.isEmpty {
+                leaves.insert(tensor)
+            } else {
+                stack.append(contentsOf: producingOperation.inputTensors)
+            }
         }
-        let probe = klProbeGraph(batchSize: batchSize)
-        var feedShapes: [MPSGraphTensor: MPSGraphShapedType] = [:]
-        feedShapes.reserveCapacity(feeds.count)
-        for (placeholder, tensorData) in feeds {
-            feedShapes[placeholder] = MPSGraphShapedType(
-                shape: tensorData.shape,
-                dataType: placeholder.dataType
-            )
-        }
-        let des = MPSGraphCompilationDescriptor()
-        des.optimizationLevel = self.executableOptimizationLevel
-        if self.disableAutoLayoutConversion, #available(macOS 27.0, *) {
-            des.disableAutoLayoutConversion()
-        }
-        let executable = try withLargeBuildStack {
-            self.network.graph.compile(
-                with: MPSGraphDevice(mtlDevice: self.network.metalDevice),
-                feeds: feedShapes,
-                targetTensors: [probe.klMean, probe.klMeanSquare],
-                targetOperations: nil,
-                compilationDescriptor: des
-            )
-        }
-        forwardOnlyExecutables[batchSize] = executable
-        SessionLogger.shared.log(
-            "[KL-PROBE] compiled forward-only executable batch=\(batchSize)"
-        )
-        return executable
+        return leaves
     }
 
     /// Return the compiled training-step executable for `(batchSize,
@@ -6865,59 +6832,51 @@ final class ChessTrainer: @unchecked Sendable {
             // this step's metric and nothing else.
             do {
                 let klStart = CFAbsoluteTimeGetCurrent()
-                let fwdExecutable = try forwardOnlyExecutable(batchSize: batchSize, feeds: feeds)
-                guard let fwdFeedTensors = fwdExecutable.feedTensors else {
-                    throw ChessTrainerError.lossOutputMissing
-                }
-                // Bind in the forward-only executable's OWN feed order. Its
-                // feed set is a subset of the training step's (no label or
-                // advantage inputs reach the forward path), so this cannot be
-                // positional.
-                var fwdInputs: [MPSGraphTensorData] = []
-                fwdInputs.reserveCapacity(fwdFeedTensors.count)
-                for tensor in fwdFeedTensors {
-                    if let vBaselineOverride, tensor === vBaselinePlaceholder {
-                        fwdInputs.append(vBaselineOverride)
-                        continue
+                // Uncompiled, uncached `graph.run` — the same pattern
+                // `readVelocityValues` and the dropout-RNG advance below use —
+                // rather than a separately-compiled `MPSGraphExecutable`.
+                // Compiling this heavily-pruned forward-only subgraph (two
+                // scalars, most of the training feed dict unreachable) left a
+                // dangling placeholder the MPS runtime couldn't schedule:
+                // `failed assertion 'Unsupported MPS operation
+                // mps.placeholder'`, a fatal `abort()` no `catch` here could
+                // stop. `graph.run` re-derives the needed subgraph fresh each
+                // call with no persistent compiled-executable state to go
+                // stale, at the cost of the recompile itself — acceptable
+                // here since two scalars is a tiny target relative to the
+                // training step it rides alongside.
+                let probe = klProbeGraph(batchSize: batchSize)
+                let targets = [probe.klMean, probe.klMeanSquare]
+                let reachable = reachableLeaves(from: targets)
+                var runFeeds: [MPSGraphTensor: MPSGraphTensorData] = [:]
+                runFeeds.reserveCapacity(reachable.count)
+                for (placeholder, tensorData) in feeds where reachable.contains(placeholder) {
+                    if let vBaselineOverride, placeholder === vBaselinePlaceholder {
+                        runFeeds[placeholder] = vBaselineOverride
+                    } else {
+                        runFeeds[placeholder] = tensorData
                     }
-                    guard let data = feeds[tensor] else {
-                        throw ChessTrainerError.lossOutputMissing
-                    }
-                    fwdInputs.append(data)
                 }
-                guard let klCommandBuffer = network.commandQueue.makeCommandBuffer() else {
-                    throw ChessTrainerError.lossOutputMissing
-                }
-                let klMpsBuffer = MPSCommandBuffer(commandBuffer: klCommandBuffer)
-                let klResults = fwdExecutable.encode(
-                    to: klMpsBuffer,
-                    inputs: fwdInputs,
-                    results: nil,
-                    executionDescriptor: nil
-                )
                 // Take the same weight lock as the training step: this reads
                 // the variables an `exportWeights` probe could be writing.
                 network.weightAccessLock.wait()
-                klMpsBuffer.commit()
-                klMpsBuffer.waitUntilCompleted()
-                let klStatus = klCommandBuffer.status
+                let klResults = network.graph.run(
+                    with: network.commandQueue,
+                    feeds: runFeeds,
+                    targetTensors: targets,
+                    targetOperations: nil
+                )
                 network.weightAccessLock.signal()
 
-                guard klStatus != .error else {
-                    throw ChessTrainerError.gpuCommandFailed(
-                        stage: "KL probe forward",
-                        status: klStatus,
-                        error: klCommandBuffer.error?.localizedDescription
-                    )
-                }
-                guard klResults.count >= 2 else {
+                guard let meanData = klResults[probe.klMean],
+                      let meanSquareData = klResults[probe.klMeanSquare] else {
                     throw ChessTrainerError.lossOutputMissing
                 }
-                // Two fp32 scalars, in the order they were requested. The KL
-                // reductions are built in fp32 regardless of the compute
-                // dtype, so this is a raw read with no conversion.
-                let meanScalar = ChessNetwork.readFloatsFP32(from: klResults[0], count: 1)[0]
-                let meanSquareScalar = ChessNetwork.readFloatsFP32(from: klResults[1], count: 1)[0]
+                // Two fp32 scalars. The KL reductions are built in fp32
+                // regardless of the compute dtype, so this is a raw read with
+                // no conversion.
+                let meanScalar = ChessNetwork.readFloatsFP32(from: meanData, count: 1)[0]
+                let meanSquareScalar = ChessNetwork.readFloatsFP32(from: meanSquareData, count: 1)[0]
                 guard meanScalar.isFinite, meanSquareScalar.isFinite else {
                     throw ChessTrainerError.lossOutputMissing
                 }
@@ -6951,14 +6910,38 @@ final class ChessTrainer: @unchecked Sendable {
             // here is logged and swallowed for the same reason.
             if let advance = network.dropoutRngAdvanceOp,
                let stateVariable = network.dropoutRngStateVariable {
-                network.weightAccessLock.wait()
-                _ = network.graph.run(
-                    with: network.commandQueue,
-                    feeds: [:],
-                    targetTensors: [stateVariable],
-                    targetOperations: [advance]
-                )
-                network.weightAccessLock.signal()
+                // `advance`'s value (`finalState` in ChessNetwork's builder)
+                // is chained through `g.shapeOf(input, ...)` to size each
+                // block's dropout mask, which makes it depend on
+                // `network.inputPlaceholder` even though only its *shape*
+                // matters, not its contents. `feeds: [:]` left that
+                // placeholder unfed — the runtime then tried to execute the
+                // bare placeholder node itself and aborted (`failed assertion
+                // 'Unsupported MPS operation mps.placeholder'`). Feeding this
+                // step's own board input (rather than some dummy) also keeps
+                // the batch size the mask shapes are computed against equal
+                // to the batch size that actually consumed randomness this
+                // step, so the RNG stream advances by the right amount.
+                //
+                // Unlike `advance`/`stateVariable` being nil (a legitimate
+                // "this architecture has no dropout" case), a missing
+                // `inputPlaceholder` feed here would mean the training step
+                // that just ran had no board input — impossible if it got
+                // this far — so this is an ALARM, not a silent skip.
+                if let inputData = feeds[network.inputPlaceholder] {
+                    network.weightAccessLock.wait()
+                    _ = network.graph.run(
+                        with: network.commandQueue,
+                        feeds: [network.inputPlaceholder: inputData],
+                        targetTensors: [stateVariable],
+                        targetOperations: [advance]
+                    )
+                    network.weightAccessLock.signal()
+                } else {
+                    SessionLogger.shared.log(
+                        "[ALARM] KL-PROBE: inputPlaceholder missing from this step's feeds — dropout RNG not advanced, next step will reuse this step's mask"
+                    )
+                }
             }
         }
 
