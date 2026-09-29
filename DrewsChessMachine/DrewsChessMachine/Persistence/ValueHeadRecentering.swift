@@ -27,6 +27,18 @@ enum ValueHeadCentering: Sendable, Equatable {
     case notApplicable
     /// No marker, and the offset was removed at decode (see the report).
     case recentered(ValueHeadRecenteringReport)
+    /// Decoded exactly as stored, without recentering, for analysis of
+    /// the file's own bytes (the numerics audit). Never used to play or
+    /// train.
+    case keptAsStored
+}
+
+/// Whether decode removes an unmarked W/D/L head's shared offset.
+enum ValueHeadDecoding: Sendable {
+    /// What every loader that plays or trains uses.
+    case recenterUnlessMarked
+    /// The file's bytes as they are, for analysis only.
+    case asStored
 }
 
 /// What decode removed from an unmarked W/D/L head. Logged once per load

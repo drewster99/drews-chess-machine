@@ -270,7 +270,6 @@ final class ValueHeadRecenteringTests: XCTestCase {
             XCTAssertEqual(metadata[ValueHeadRecentering.metadataKey], ValueHeadRecentering.metadataValue)
 
             let decoded = try SafetensorsModelIO.decode(data)
-            XCTAssertEqual(decoded.valueHeadCentering, .alreadyCentered)
             XCTAssertEqual(decoded.file.valueHeadCentering, .alreadyCentered)
             assertBitEqual(decoded.file.weights, weights, "safetensors round trip (velocity=\(includesVelocity))")
         }
@@ -283,9 +282,8 @@ final class ValueHeadRecenteringTests: XCTestCase {
 
         // Decode recenters, the same way `apply` does on the raw values.
         let decoded = try SafetensorsModelIO.decode(unmarked)
-        let rep = try report(decoded.valueHeadCentering)
+        let rep = try report(try XCTUnwrap(decoded.file.valueHeadCentering))
         XCTAssertTrue(rep.velocityRecentered)
-        XCTAssertEqual(decoded.file.valueHeadCentering, decoded.valueHeadCentering)
         var expected = weights
         _ = try ValueHeadRecentering.apply(
             to: &expected, architecture: arch, includesVelocity: true, markedCentered: false)
@@ -295,7 +293,7 @@ final class ValueHeadRecenteringTests: XCTestCase {
         // changes nothing more.
         let resaved = try encodeSafetensors(decoded.file.weights, architecture: arch, includesVelocity: true)
         let reloaded = try SafetensorsModelIO.decode(resaved)
-        XCTAssertEqual(reloaded.valueHeadCentering, .alreadyCentered)
+        XCTAssertEqual(reloaded.file.valueHeadCentering, .alreadyCentered)
         assertBitEqual(reloaded.file.weights, decoded.file.weights, "recentered file saved again")
     }
 
@@ -325,7 +323,9 @@ final class ValueHeadRecenteringTests: XCTestCase {
     // MARK: - Legacy .dcmmodel
 
     func testLegacyEncodeWritesMarkerAndRoundTripsBitExactly() throws {
-        let arch = Self.architecture
+        // The legacy writer only encodes architectures its positional reader
+        // can resolve by hash; the current default is one of them.
+        let arch = NetworkArchitecture.current
         let weights = try makeWeights(architecture: arch, includesVelocity: false, seed: 8)
         let file = ModelCheckpointFile(
             modelID: "20260928-2-TEST",
@@ -339,5 +339,16 @@ final class ValueHeadRecenteringTests: XCTestCase {
         XCTAssertEqual(decoded.valueHeadCentering, .alreadyCentered)
         XCTAssertEqual(decoded.metadata, file.metadata, "the marker must not disturb the metadata")
         assertBitEqual(decoded.weights, weights, "legacy round trip")
+    }
+
+    /// The audit's as-stored decode leaves an unmarked head exactly as the
+    /// file holds it.
+    func testAsStoredDecodeKeepsTheFilesBytes() throws {
+        let arch = Self.architecture
+        let weights = try makeWeights(architecture: arch, includesVelocity: false, seed: 9)
+        let unmarked = try strippingMarker(try encodeSafetensors(weights, architecture: arch, includesVelocity: false))
+        let decoded = try SafetensorsModelIO.decode(unmarked, valueHead: .asStored)
+        XCTAssertEqual(decoded.file.valueHeadCentering, .keptAsStored)
+        assertBitEqual(decoded.file.weights, weights, "as-stored decode")
     }
 }

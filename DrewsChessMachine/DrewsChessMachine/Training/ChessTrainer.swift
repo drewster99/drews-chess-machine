@@ -2644,8 +2644,8 @@ final class ChessTrainer: @unchecked Sendable {
 
         // Build masked logits: illegal positions get a huge negative bias,
         // added to the centered logits. The loss path is fp32, whose exponent
-        // range holds −1e9 exactly, so `exp(−1e9 − rowMax)` underflows to 0
-        // and the masked cells carry no softmax mass.
+        // range holds that bias exactly, so its exponential underflows to
+        // zero and the masked cells carry no softmax mass.
         let oneConst = graph.constant(1.0, dataType: lossDType)
         let illegalMask = graph.subtraction(oneConst, legalMask, name: "illegal_mask")
         let largeNeg = graph.constant(-1e9, dataType: lossDType)
@@ -4161,7 +4161,9 @@ final class ChessTrainer: @unchecked Sendable {
                     let runIdx = layer * 2 + half
                     let workingStat = network.bnRunningStatsVariables[runIdx]
                     let statMaster = masterVariables[nTrainable + runIdx]
-                    let batchF = graph.cast(batchStat[half], to: .float32, name: nil)
+                    // The policy pre-block's batch stats are already fp32 (its
+                    // normalize runs in the fp32 head tail).
+                    let batchF = batchStat[half].dataType == .float32 ? batchStat[half] : graph.cast(batchStat[half], to: .float32, name: nil)
                     let scaledOld = graph.multiplication(statMaster, emaMomentum, name: nil)
                     let scaledNew = graph.multiplication(batchF, emaComplement, name: nil)
                     let updatedStat = graph.addition(scaledOld, scaledNew, name: nil)

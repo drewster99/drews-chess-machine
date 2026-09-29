@@ -152,11 +152,11 @@ struct ModelCheckpointFile {
     /// Smallest legal encoded size — just the fixed header plus a
     /// zero-length modelID, zero-length metadata, and the 32-byte
     /// trailing SHA. Decoding data shorter than this can't produce
-    /// a valid file. The tensor count itself is not sanity-checked
-    /// here: `ChessNetwork.loadWeights` validates the count
-    /// against the live variable list when the decoded weights
-    /// are handed to it, so a wrong count is caught there with a
-    /// precise error message.
+    /// a valid file. The tensor count is checked in two places: decode
+    /// rejects an unmarked W/D/L file whose count is neither a model nor
+    /// a trainer file (value-head recentering needs to know which), and
+    /// `ChessNetwork.loadWeights` validates the count against the live
+    /// variable list when the decoded weights are handed to it.
     static let minimumEncodedSize: Int = 8 + 4 + 4 + 4 + 8 + 4 + 4 + 32
 
     /// Sanity cap on the per-tensor element count read from disk.
@@ -343,6 +343,12 @@ struct ModelCheckpointFile {
     // MARK: Decoding
 
     static func decode(_ data: Data) throws -> ModelCheckpointFile {
+        try decode(data, valueHead: .recenterUnlessMarked)
+    }
+
+    /// `decode(_:)`, choosing whether the value head is recentered; only
+    /// analysis asks for `.asStored`.
+    static func decode(_ data: Data, valueHead: ValueHeadDecoding) throws -> ModelCheckpointFile {
         guard data.count >= minimumEncodedSize else {
             throw ModelCheckpointError.fileTooShort
         }
@@ -463,12 +469,18 @@ struct ModelCheckpointFile {
         // is a trainer file; its tensor count does, and `apply` rejects a
         // count that is neither a model nor a trainer file.
         let baseCount = resolvedArchitecture.weightTensorPlan().count
-        let valueHeadCentering = try ValueHeadRecentering.apply(
-            to: &weights,
-            architecture: resolvedArchitecture,
-            includesVelocity: weights.count != baseCount,
-            markedCentered: try ValueHeadRecentering.isMarkedCentered(centeringMarker.valueHeadCentered)
-        )
+        let valueHeadCentering: ValueHeadCentering
+        switch valueHead {
+        case .recenterUnlessMarked:
+            valueHeadCentering = try ValueHeadRecentering.apply(
+                to: &weights,
+                architecture: resolvedArchitecture,
+                includesVelocity: weights.count != baseCount,
+                markedCentered: try ValueHeadRecentering.isMarkedCentered(centeringMarker.valueHeadCentered)
+            )
+        case .asStored:
+            valueHeadCentering = .keptAsStored
+        }
 
         return ModelCheckpointFile(
             modelID: modelID,

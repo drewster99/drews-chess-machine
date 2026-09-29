@@ -2410,7 +2410,10 @@ final class ChessNetwork: @unchecked Sendable {
         let ch = NSNumber(value: channels)
         // Config-D: gamma/beta/running-stat variables live in
         // `weightStorageDataType` (fp32), but `normalize()` runs in the
-        // compute dtype (bf16), so each is cast at point of use.
+        // input's dtype — the compute dtype, except the policy pre-block,
+        // whose input is already fp32 (the head tail) — so each is cast at
+        // point of use by the caller's `castInForward`, which targets that
+        // dtype.
 
         // gamma and beta are trainable in both modes. All BN layers init
         // γ=1, β=0 (standard). The old zero-γ "identity block" init is
@@ -2455,7 +2458,8 @@ final class ChessNetwork: @unchecked Sendable {
         runningStats.append(runningVar)
 
         // Compute-dtype views of gamma/beta/running-stats for `normalize()`.
-        // Identity unless config D (then a bf16 cast of the fp32 variable).
+        // In the tower: identity unless config D (then a bf16 cast of the
+        // fp32 variable). In the policy head tail: a widen to fp32.
         let gammaC = castInForward(gamma)
         let betaC = castInForward(beta)
 
@@ -2493,8 +2497,8 @@ final class ChessNetwork: @unchecked Sendable {
             // and the running-stat estimate.
             //
             // Config D: the running-stat variables are fp32, but the batch
-            // stats (`bMean`/`bVar`) are bf16 (derived from the bf16
-            // activation `input`). The EMA math therefore runs in the
+            // stats (`bMean`/`bVar`) take the input's dtype — bf16 for the
+            // tower, fp32 for the policy pre-block in the head tail. The EMA math therefore runs in the
             // storage dtype (fp32) — cast the bf16 batch stats up and use
             // fp32 constants — so the assign target dtype matches. With D
             // off, `emaDType == dataType` and every cast below is the
@@ -2526,9 +2530,10 @@ final class ChessNetwork: @unchecked Sendable {
             runningStatsAssignOps.append(assignVar)
         }
 
-        // `normalize` runs in the compute dtype: `meanTensor`/`varianceTensor`
-        // are already compute-dtype (running stats cast in `.inference`; the
-        // bf16 batch stats in `.training`), and gamma/beta are cast above.
+        // `normalize` runs in the input's dtype (the compute dtype, or fp32
+        // for the policy pre-block): `meanTensor`/`varianceTensor` are
+        // already in it (running stats cast in `.inference`; the batch stats
+        // in `.training`), and gamma/beta are cast above.
         return graph.normalize(
             input,
             mean: meanTensor,

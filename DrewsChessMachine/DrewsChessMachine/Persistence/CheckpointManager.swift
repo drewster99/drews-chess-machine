@@ -995,10 +995,27 @@ enum CheckpointManager {
     /// the legacy custom `.dcmmodel` binary, detected by its `DCMMODEL` magic.
     /// Existing models stay loadable; new saves are safetensors.
     static func decodeAnyModelFile(_ data: Data) throws -> ModelCheckpointFile {
+        try decodeAnyModelFile(data, valueHead: .recenterUnlessMarked)
+    }
+
+    static func decodeAnyModelFile(_ data: Data, valueHead: ValueHeadDecoding) throws -> ModelCheckpointFile {
         if data.count >= 8, Array(data.prefix(8)) == ModelCheckpointFile.magic {
-            return try ModelCheckpointFile.decode(data)
+            return try ModelCheckpointFile.decode(data, valueHead: valueHead)
         }
-        return try SafetensorsModelIO.decode(data).file
+        return try SafetensorsModelIO.decode(data, valueHead: valueHead).file
+    }
+
+    /// A model file exactly as stored, for the numerics audit: the value
+    /// head is not recentered, so the audit sees the offset the file holds.
+    /// Never used to play or train.
+    static func loadModelFileAsStored(at url: URL) throws -> ModelCheckpointFile {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            throw CheckpointManagerError.readFailed(url, error)
+        }
+        return try decodeAnyModelFile(data, valueHead: .asStored)
     }
 
     static func loadModelFile(at url: URL) throws -> ModelCheckpointFile {
@@ -1018,8 +1035,12 @@ enum CheckpointManager {
     /// the loaders that know the file's name, once per load — not by
     /// `decodeAnyModelFile`, which the post-save verification also runs.
     static func logValueHeadCentering(_ file: ModelCheckpointFile, source: String) {
-        guard let centering = file.valueHeadCentering,
-              let line = ValueHeadRecentering.logLine(for: centering, source: source) else { return }
+        // Every decoded file carries a centering result; only files built in
+        // memory for a save have none, and those are never loaded here.
+        guard let centering = file.valueHeadCentering else {
+            preconditionFailure("a decoded model file (\(source)) has no value-head centering result")
+        }
+        guard let line = ValueHeadRecentering.logLine(for: centering, source: source) else { return }
         SessionLogger.shared.log(line)
     }
 

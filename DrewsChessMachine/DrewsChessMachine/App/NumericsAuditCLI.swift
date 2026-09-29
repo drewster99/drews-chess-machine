@@ -41,7 +41,9 @@ enum NumericsAuditCLI {
         var positionSets: [InputEncoding: NumericsAudit.PositionSet] = [:]
         for target in targets {
             do {
-                let file = try CheckpointManager.loadModelFile(at: target)
+                // As stored: the audit measures the offset the file holds,
+                // which loading for play would remove.
+                let file = try CheckpointManager.loadModelFileAsStored(at: target)
                 let arch = file.architecture
                 var positions: NumericsAudit.PositionSet?
                 if !staticOnly {
