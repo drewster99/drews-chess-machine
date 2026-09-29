@@ -625,6 +625,61 @@ The Favorites tab lists every favorite, online or not:
   - the Favorites tab shows an offline favorite dimmed
   - the auto-refresh fires after 5 minutes at housekeeping priority
 
+### 7.3 Challenging several players, and matchmaking (added 2026-09-28; approved)
+
+This supersedes §7.1's "no automatic matchmaking loop". All sends still go one at a time through the gate, and every check of a single send still applies: online status, the concurrent-game and per-opponent limits, and the bot daily limit.
+
+**A. Challenge queue (multi-select).**
+- **Multi-select.** The Challenge sheet's player tables (Online Bots, Favorites, Online Players, Leaderboard, History) allow multiple selection (⌘/⇧-click). Send becomes "Send N Challenges", with the one clock, color and rated setting applied to all of them.
+- **The queue.** Selected players go into an ordered **challenge queue** owned by the controller (its single source).
+  - It sends the next entry whenever a slot is free: games in progress + accepted + pending + in flight < `maxConcurrentGames`.
+  - A player already at the per-opponent limit, offline, or at their bot limit is skipped with a reason shown, and the queue moves on.
+  - A send that fails for another reason (a Lichess refusal) is dropped with the reason. A 429 stops the queue until the gate reopens, and the entry stays.
+  - Duplicates of a queued or pending opponent are not added.
+- **UI.** The Overview lists the queue: opponent, clock, and why it's waiting ("waiting for a free slot") or was skipped. It has per-entry Cancel and Clear Queue.
+- **Lifetime.** The queue is in memory, cleared by Go Offline (along with the pending-challenge withdrawal) and by quitting. Draining stops sending but keeps the queue until offline.
+
+**B. Matchmaking (auto-challenge). Off by default.**
+- **Settings** (Settings ▸ Matchmaking, live):
+  - enabled (default off);
+  - fill mode: **every free slot** (default) or **only when idle** (no game in progress);
+  - time controls to use (a subset of the sheet's clock choices; default 3+2, 5+3);
+  - rated (default off);
+  - opponent rating window relative to DCM's own rating for that speed (default −300…+300). DCM's rating comes from `/api/account`. When DCM has no rating at that speed, separate absolute bounds apply (default 1000…2200); the log says which bounds were used;
+  - "prefer favorites";
+  - a cap on challenges sent per hour (default 20);
+  - a decline cool-down per bot (default 6 h).
+- **Slots.** Matchmaking never takes the `gamesReservedForHumans` slots, so a human can always challenge DCM.
+- **When it runs.** Only while Online (not Draining, not in a 429 hold, not after a breaker trip), and only when the challenge queue (A) is empty, because the operator's own picks go first.
+- **Bot list.** While matchmaking is on, the online-bots list is refreshed on its own cadence at housekeeping priority (a named constant, a few minutes), since the Challenge sheet's refresh only runs while the sheet is open. A pass with a list older than that refreshes it first.
+- **Picking.** From that list, a uniformly random bot that:
+  - fits the rating window at the chosen speed and is not provisional there;
+  - is not blocked;
+  - has no game, pending or queued challenge with us;
+  - is not at its bot daily limit (known limit time);
+  - did not decline us within the cool-down;
+  - is under the per-opponent daily limit.
+
+  "Prefer favorites" picks among fitting favorites first. The time control is chosen uniformly from the configured ones.
+- **Rate.** At most one send in flight, a minimum spacing between sends (named constant), and the per-hour cap. This stays far below Lichess's challenge limits (25 credits a minute and 200 a day; a challenge to a bot costs 1). It also leaves DCM's own bot-games budget (100 a rolling day) as the binding limit, and matchmaking stops at it.
+- **Declines.** A decline records the bot's cool-down. A `casual`-reason decline for a rated request records it too; matchmaking does not resend.
+- **"Fill Open Slots" button** on the Overview: runs one fill pass on demand with the matchmaking criteria, even when matchmaking is off.
+- **Logging.** Every pick and skip reason, and every send, goes to the protocol log (`challenge`), and a `[LICHESS-BOT]` session-log line records each send.
+
+**Validation.**
+- **Unit tests** (pure logic, a new `LichessBotMatchmaking` type):
+  - candidate filtering, one test per exclusion rule;
+  - reserved-human slots respected;
+  - the per-hour cap and spacing;
+  - queue ordering, duplicate rejection, and skip reasons;
+  - the queue stops on a 429 and resumes after;
+  - fill mode "idle" vs "every free slot".
+- **Controller-level tests** with the existing fakes:
+  - N selected with k free slots sends k and queues N−k;
+  - a game ending sends the next queued entry;
+  - Go Offline clears the queue and withdraws pending challenges.
+- **Live:** select several online bots and confirm the sends are staggered and the queue drains as games end. Then enable matchmaking for a session and confirm slots stay filled, favorites and cool-downs are honored, and the per-hour cap holds.
+
 ## 8. Engine-side prerequisites (changes to shared code, tests first)
 
 Each item keeps one source of truth. Existing behavior is unchanged for
