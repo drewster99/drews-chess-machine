@@ -149,7 +149,9 @@ Known hot spots, checked by name:
 - Save the trainer's fp32 masters, optionally with the velocity, instead of the bf16 working copy. See ROADMAP "Full-precision weights in every model checkpoint".
 - Per-variable fp32 storage for the head tails (inventory D and trap 5) belongs with that item, not here. With the offset removed and held at zero, bf16-stored head weights are adequate.
 
-### Later, with the next architecture revision (optional)
+### Not pursued: 2-logit value head (decided 2026-09-28)
+
+The owner decided against this. Recentering at load plus centering in the loss handle the offset, so the value head stays 3 logits. The idea as proposed:
 
 - Give the value head 2 logits with draw fixed at 0. The offset then can't exist by construction.
 - Old checkpoints convert exactly: subtract the draw row and bias from the other two, then drop them.
