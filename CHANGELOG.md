@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-29 CDT — Status chip: spinner spins in place; label no longer truncates (pending commit)
+## 2026-09-29 CDT — Status chip: spinner spins in place; label no longer truncates (`9abba29`)
 
 - `ChipActivitySpinner` started a `repeatForever` implicit animation from `onAppear`, which also captured the chip's settling layout position, so the arc endlessly slid up into the chip instead of rotating. The angle is now computed from the clock inside a `TimelineView(.animation)`, with no animation transaction.
 - `SessionStatusChipView` is `.fixedSize()` with a one-line label, so the status bar can no longer compress "Training" to "Traini…".
