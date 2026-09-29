@@ -10,10 +10,19 @@ import Foundation
 ///
 /// Design properties, all load-bearing:
 ///
-/// - **Phase is a pure function of the global step.** `phase = (step mod
-///   period) / period ∈ [0,1)`, so the schedule carries *no state of its own*.
-///   Stop/resume is automatic: the trainer's `completedTrainSteps` is already
-///   persisted, so on resume the phase continues with no discontinuity.
+/// - **Phase is a pure function of the global step, offset by warmup.** The
+///   cycle begins only once LR warmup finishes: `cycleStep(completedTrainSteps:
+///   lrWarmupSteps:)` maps the trainer's global step onto the cycle's own step
+///   axis, and `phase = (cycleStep mod period) / period`. During warmup the
+///   cycle is held at its step-0 value, so the warmup ramp climbs to exactly
+///   the cycle's starting value and hands off without a discontinuity. Had
+///   the cycle started with warmup instead, an inverted cycle (which starts at
+///   its maximum) would already be descending while warmup was still ramping
+///   up, and warmup would never reach the cycle's peak. Both channels use the
+///   same offset so an inverse-coupled LR/momentum pair stays in phase. The
+///   schedule still carries *no state of its own*: the trainer's
+///   `completedTrainSteps` is persisted, so on resume the phase continues
+///   with no discontinuity.
 ///
 /// - **Repeating cycles, not 1cycle.** 1cycle needs a known total length to
 ///   place its single cycle + annihilation tail; self-play has neither. These
@@ -40,7 +49,9 @@ import Foundation
 ///   the cycle repeats forever (the open-ended default). With `count != 0`,
 ///   once `step / period ≥ count` the phase is clamped to 0 (the boundary),
 ///   which — respecting `invert` — leaves LR at `lrMin` and momentum at
-///   `momentumMax`, i.e. the low-LR / high-momentum converged regime.
+///   `momentumMax`, i.e. the low-LR / high-momentum converged regime. The
+///   count is measured on the cycle's own step axis, i.e. from the end of
+///   warmup, so warmup never consumes any of the requested cycles.
 ///
 /// The struct is `Sendable` + `Equatable` and the math is pure, so it is
 /// carried lock-free across the trainer's main/off-main boundary (in a
@@ -88,7 +99,7 @@ struct LRMomentumCycle: Sendable, Equatable, Codable {
         momentumInvert: true
     )
 
-    /// Cosine up-then-down position in `[0, 1]` for `step`, honoring the
+    /// Cosine up-then-down position in `[0, 1]` for cycle step `step`, honoring the
     /// `count` completion freeze (phase clamped to 0 after `count` cycles)
     /// and the `invert` waveform flip. This is the shared shape both the LR
     /// and momentum channels map onto their own endpoints.
@@ -109,7 +120,35 @@ struct LRMomentumCycle: Sendable, Equatable, Codable {
         return invert ? (1.0 - frac) : frac
     }
 
-    /// Effective learning rate for `step`, or `nil` when LR cycling is
+    /// The cycle's own step for a given trainer global step. The cycle starts
+    /// when LR warmup ends, so every step inside warmup maps to cycle step 0
+    /// (the warmup ramp then targets the cycle's starting value) and every
+    /// later step is shifted back by the warmup length. This is the single
+    /// place that relates the global step to the cycle's phase; every LR and
+    /// momentum reader (the SGD feed, the status readouts, the log lines) goes
+    /// through it so they can never disagree about where in the cycle a step
+    /// sits.
+    static func cycleStep(completedTrainSteps: Int, lrWarmupSteps: Int) -> Int {
+        max(0, completedTrainSteps - max(0, lrWarmupSteps))
+    }
+
+    /// Cycled learning rate at trainer global step `completedTrainSteps`,
+    /// with the cycle offset to begin after `lrWarmupSteps`. `nil` under the
+    /// same conditions as `learningRate(forStep:)`. The warmup multiplier is
+    /// NOT applied here — callers compose it (and √batch) on top.
+    func learningRate(completedTrainSteps: Int, lrWarmupSteps: Int) -> Double? {
+        learningRate(forStep: Self.cycleStep(completedTrainSteps: completedTrainSteps, lrWarmupSteps: lrWarmupSteps))
+    }
+
+    /// Cycled momentum at trainer global step `completedTrainSteps`, offset
+    /// by the same warmup length as the LR channel so the two stay in phase.
+    /// During warmup this is the cycle's step-0 momentum.
+    func momentum(completedTrainSteps: Int, lrWarmupSteps: Int) -> Double? {
+        momentum(forStep: Self.cycleStep(completedTrainSteps: completedTrainSteps, lrWarmupSteps: lrWarmupSteps))
+    }
+
+    /// Effective learning rate at cycle step `step` (already offset past
+    /// warmup — see `cycleStep`), or `nil` when LR cycling is
     /// inactive or misconfigured — the caller then falls back to the static
     /// base learning rate. Geometric (log-space) interpolation requires
     /// `lrMin > 0` and `lrMax >= lrMin`; otherwise `nil` is returned.
@@ -119,7 +158,8 @@ struct LRMomentumCycle: Sendable, Equatable, Codable {
         return lrMin * pow(lrMax / lrMin, frac)
     }
 
-    /// Effective Polyak momentum for `step`, or `nil` when momentum cycling
+    /// Effective Polyak momentum at cycle step `step` (already offset past
+    /// warmup — see `cycleStep`), or `nil` when momentum cycling
     /// is inactive or misconfigured — the caller then falls back to the static
     /// momentum coefficient. Linear interpolation between the endpoints.
     ///

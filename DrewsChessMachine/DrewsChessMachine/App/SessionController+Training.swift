@@ -1949,8 +1949,15 @@ extension SessionController {
                         // fall back to the static trainer values below). The LR
                         // here is the pre-warmup/√batch base; the ·warmup / ·√b
                         // markers on `lrStr` convey the remaining multipliers.
-                        let cycledLRBase: Double? = cycle.learningRate(forStep: completedSteps)
-                        let cycledMu: Double? = cycle.momentum(forStep: completedSteps)
+                        // The cycle is offset past warmup, same as the SGD feed.
+                        let cycledLRBase: Double? = cycle.learningRate(
+                            completedTrainSteps: completedSteps,
+                            lrWarmupSteps: warmupSteps
+                        )
+                        let cycledMu: Double? = cycle.momentum(
+                            completedTrainSteps: completedSteps,
+                            lrWarmupSteps: warmupSteps
+                        )
                         let policyStr: String
                         if let p = trainingSnap.rollingPolicyLoss {
                             policyStr = String(format: "%+.4f", p)
@@ -2884,7 +2891,7 @@ extension SessionController {
                             }
                         } else {
                             SessionLogger.shared.log(
-                                String(format: "[ALARM] legal-mass probe ok: legalMass=%.5f illegalMass=%.4f window=%d/%d",
+                                String(format: "[LEGAL-MASS] probe ok: legalMass=%.5f illegalMass=%.4f window=%d/%d",
                                     snap.legalMass, illegalMass,
                                     legalMassWindow.count, noImprovementProbeCount)
                             )

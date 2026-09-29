@@ -4340,7 +4340,10 @@ final class ChessTrainer: @unchecked Sendable {
         // otherwise the static `learningRate`. Identical resolution to
         // `buildFeeds` so this readout matches the LR the SGD step actually
         // applies — sqrt-batch scaling and warmup compose on top.
-        let baseLR: Float = _lrMomentumCycle.value.learningRate(forStep: steps).map { Float($0) } ?? learningRate
+        let baseLR: Float = _lrMomentumCycle.value.learningRate(
+            completedTrainSteps: steps,
+            lrWarmupSteps: lrWarmupSteps
+        ).map { Float($0) } ?? learningRate
         var lr: Float
         if sqrtBatchScalingForLR {
             let sqrtBatchScale: Float = Float(
@@ -4363,7 +4366,10 @@ final class ChessTrainer: @unchecked Sendable {
     /// observation as a co-published LR.
     func effectiveMomentum(completedSteps: Int? = nil) -> Float {
         let steps = completedSteps ?? _completedTrainSteps.value
-        return _lrMomentumCycle.value.momentum(forStep: steps).map { Float($0) } ?? momentumCoeff
+        return _lrMomentumCycle.value.momentum(
+            completedTrainSteps: steps,
+            lrWarmupSteps: lrWarmupSteps
+        ).map { Float($0) } ?? momentumCoeff
     }
 
     private func internalTrainStep(batchSize: Int, queueWaitMs: Double = 0) throws -> TrainStepTiming {
@@ -5858,7 +5864,13 @@ final class ChessTrainer: @unchecked Sendable {
         // otherwise the static configured learning rate. sqrt-batch scaling
         // and warmup then compose multiplicatively on top, exactly as before —
         // enabling LR cycling overrides the static base, not the multipliers.
-        let baseLR: Float = cycle.learningRate(forStep: currentStep).map { Float($0) } ?? learningRate
+        // The cycle starts after warmup (see `LRMomentumCycle.cycleStep`), so
+        // during warmup this is the cycle's starting value and the ramp below
+        // lands exactly on it.
+        let baseLR: Float = cycle.learningRate(
+            completedTrainSteps: currentStep,
+            lrWarmupSteps: lrWarmupSteps
+        ).map { Float($0) } ?? learningRate
         var lr: Float
         if sqrtBatchScalingForLR {
             let sqrtBatchScale: Float = Float(
@@ -5884,7 +5896,11 @@ final class ChessTrainer: @unchecked Sendable {
         writeScalarFeed(valueLabelSmoothingEpsilonNDArray, value: valueLabelSmoothingEpsilon)
         // Momentum: the cycle's linear value when momentum cycling is active,
         // otherwise the static configured coefficient.
-        let momentumToFeed: Float = cycle.momentum(forStep: currentStep).map { Float($0) } ?? momentumCoeff
+        // Offset by warmup exactly like the LR channel so the two stay in phase.
+        let momentumToFeed: Float = cycle.momentum(
+            completedTrainSteps: currentStep,
+            lrWarmupSteps: lrWarmupSteps
+        ).map { Float($0) } ?? momentumCoeff
         writeScalarFeed(momentumNDArray, value: momentumToFeed)
         writeScalarFeed(complementCEEnableNDArray, value: useSignedAdvantageComplementCE ? 1.0 : 0.0)
 

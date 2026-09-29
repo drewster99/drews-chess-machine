@@ -737,14 +737,14 @@ public enum KLProbeInterval: TrainingParameterKey {}
 //
 // Two independent repeating cycles — one for the learning rate (geometric
 // interpolation between absolute endpoints), one for Polyak momentum (linear).
-// The phase is a pure function of the trainer's global step, so resume is
-// seamless. See `LRMomentumCycle.swift` for the math. Inverse coupling (high
+// The phase is a pure function of the trainer's global step, offset so the
+// cycle begins when LR warmup ends, so resume is seamless. See `LRMomentumCycle.swift` for the math. Inverse coupling (high
 // LR ↔ low momentum) is recovered by enabling the momentum cycle with
 // `momentum_cycle_invert = true` at an equal period.
 
 @TrainingParameter(
     name: "LR Cycle Enabled",
-    description: "Enable the repeating learning-rate cycle. When on, the base LR each step is set by the cycle (geometric interpolation between LR Cycle Min and Max over LR Cycle Period Steps) instead of the static Learning Rate, then composed with the existing warmup × √batch multipliers. Overrides the static base-LR schedule while enabled.",
+    description: "Enable the repeating learning-rate cycle. When on, the base LR each step is set by the cycle (geometric interpolation between LR Cycle Min and Max over LR Cycle Period Steps) instead of the static Learning Rate, then composed with the √batch multiplier. The cycle begins when LR warmup ends; during warmup the LR ramps linearly up to the cycle's starting value. Overrides the static base-LR schedule while enabled.",
     default: false,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_enabled",
@@ -765,7 +765,7 @@ public enum LRCyclePeriodSteps: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "LR Cycle Count",
-    description: "Number of LR cycles to run before freezing at the cycle boundary (LR Cycle Min, or Max when inverted). 0 = unbounded (repeat forever), the default for open-ended self-play.",
+    description: "Number of LR cycles (counted from the end of warmup) to run before freezing at the cycle boundary (LR Cycle Min, or Max when inverted). 0 = unbounded (repeat forever), the default for open-ended self-play.",
     default: 0,
     range: 0...1000000,
     category: "LR/Momentum Cycling",
@@ -808,7 +808,7 @@ public enum LRCycleInvert: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Momentum Cycle Enabled",
-    description: "Enable the repeating Polyak-momentum cycle. When on, the momentum coefficient each step is set by the cycle (linear interpolation between Momentum Cycle Min and Max) instead of the static Momentum Coefficient.",
+    description: "Enable the repeating Polyak-momentum cycle. When on, the momentum coefficient each step is set by the cycle (linear interpolation between Momentum Cycle Min and Max) instead of the static Momentum Coefficient. Like the LR cycle, it begins when LR warmup ends and holds its starting value during warmup.",
     default: false,
     category: "LR/Momentum Cycling",
     id: "momentum_cycle_enabled",
@@ -829,7 +829,7 @@ public enum MomentumCyclePeriodSteps: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Momentum Cycle Count",
-    description: "Number of momentum cycles before freezing at the cycle boundary. 0 = unbounded (the default).",
+    description: "Number of momentum cycles (counted from the end of warmup) before freezing at the cycle boundary. 0 = unbounded (the default).",
     default: 0,
     range: 0...1000000,
     category: "LR/Momentum Cycling",

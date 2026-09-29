@@ -56,31 +56,34 @@ final class TrainerEffectiveScheduleTests: XCTestCase {
         cycle.momentumInvert = false
         trainer.lrMomentumCycle = cycle
 
-        // Period boundary (step 1000, post-warmup): LR at min, momentum at min.
+        // The cycle starts when the 100-step warmup ends, so global step 1100
+        // is cycle step 1000 — a period boundary: LR at min, momentum at min.
         XCTAssertEqual(
-            trainer.effectiveLearningRate(forBatchSize: 256, completedSteps: 1000), Float(0.001), accuracy: 1e-6,
+            trainer.effectiveLearningRate(forBatchSize: 256, completedSteps: 1100), Float(0.001), accuracy: 1e-6,
             "at the cycle boundary the effective LR is lrMin")
         XCTAssertEqual(
-            trainer.effectiveMomentum(completedSteps: 1000), Float(0.8), accuracy: 1e-6,
+            trainer.effectiveMomentum(completedSteps: 1100), Float(0.8), accuracy: 1e-6,
             "at the cycle boundary the effective momentum is momentumMin")
 
-        // Midpoint (step 1500 → phase 0.5): LR at max, momentum at max.
+        // Midpoint (global step 1600 → cycle step 1500 → phase 0.5): LR at max, momentum at max.
         XCTAssertEqual(
-            trainer.effectiveLearningRate(forBatchSize: 256, completedSteps: 1500), Float(0.1), accuracy: 1e-4,
+            trainer.effectiveLearningRate(forBatchSize: 256, completedSteps: 1600), Float(0.1), accuracy: 1e-4,
             "at the cycle midpoint the effective LR is lrMax")
         XCTAssertEqual(
-            trainer.effectiveMomentum(completedSteps: 1500), Float(0.95), accuracy: 1e-4,
+            trainer.effectiveMomentum(completedSteps: 1600), Float(0.95), accuracy: 1e-4,
             "at the cycle midpoint the effective momentum is momentumMax")
 
-        // Must equal the cycle's own math at an arbitrary post-warmup step.
+        // Must equal the cycle's own math at an arbitrary post-warmup step,
+        // evaluated at the warmup-offset cycle step.
         let s = 1321
+        let cycleStepForS = s - 100
         XCTAssertEqual(
             trainer.effectiveLearningRate(forBatchSize: 256, completedSteps: s),
-            Float(cycle.learningRate(forStep: s) ?? -1), accuracy: 1e-5,
+            Float(cycle.learningRate(forStep: cycleStepForS) ?? -1), accuracy: 1e-5,
             "effective LR must track LRMomentumCycle.learningRate(forStep:)")
         XCTAssertEqual(
             trainer.effectiveMomentum(completedSteps: s),
-            Float(cycle.momentum(forStep: s) ?? -1), accuracy: 1e-5,
+            Float(cycle.momentum(forStep: cycleStepForS) ?? -1), accuracy: 1e-5,
             "effective momentum must track LRMomentumCycle.momentum(forStep:)")
 
         // --- Warmup ramp composes on top of the cycled base LR. ---
