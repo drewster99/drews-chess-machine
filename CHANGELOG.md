@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-28 21:55 CDT — Head numerics fix: fp32 head tails, value-head recentering, centered head losses (head numerics plan Phases 1–2) (pending commit)
+## 2026-09-28 21:55 CDT — Head numerics fix: fp32 head tails, value-head recentering, centered head losses (head numerics plan Phases 1–2) (`da15920`)
 
 Implements Phases 1 and 2 of `documentation/plans-active/HEAD_NUMERICS_PLAN.md`: stops the bf16 shared-logit offset from rounding away the heads' real differences, removes the offset existing checkpoints carry, and stops it growing.
 
