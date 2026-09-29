@@ -739,8 +739,12 @@ public enum KLProbeInterval: TrainingParameterKey {}
 // interpolation between absolute endpoints), one for Polyak momentum (linear).
 // The phase is a pure function of the trainer's global step, offset so the
 // cycle begins when LR warmup ends, so resume is seamless. See `LRMomentumCycle.swift` for the math. Inverse coupling (high
-// LR ↔ low momentum) is recovered by enabling the momentum cycle with
-// `momentum_cycle_invert = true` at an equal period.
+// LR ↔ low momentum) is recovered either by enabling the momentum cycle with
+// `momentum_cycle_invert = true` at an equal period, or — without having to
+// keep the two in agreement by hand — by `momentum_follows_lr_cycle`, which
+// drives momentum from the LR cycle's own phase. The LR cycle's peak and
+// trough (and the follow-mode momentum bounds) additionally decay over
+// `lr_cycle_decay_horizon_steps`, so a long open-ended run anneals.
 
 @TrainingParameter(
     name: "LR Cycle Enabled",
@@ -755,7 +759,7 @@ public enum LRCycleEnabled: TrainingParameterKey {}
 @TrainingParameter(
     name: "LR Cycle Period (steps)",
     description: "Full up-then-down period of the LR cycle, in optimizer steps. A sensible default is 2–8× the replay-buffer turnover (bufferCapacity / batchSize), the self-play analog of an epoch.",
-    default: 2000,
+    default: 20000,
     range: 1...10000000,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_period_steps",
@@ -776,7 +780,7 @@ public enum LRCycleCount: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "LR Cycle Min",
-    description: "Absolute learning rate at the LR cycle's low point (the period boundaries when not inverted). Must be > 0 — geometric interpolation is undefined at zero, and LR Cycle Max must be ≥ this value or the cycle is ignored.",
+    description: "Absolute learning rate at the LR cycle's trough (the period boundaries when not inverted) at the start of the decay horizon — the trough's start value. The trough decays geometrically from here to LR Cycle Trough End over LR Cycle Decay Horizon. Must be > 0 — geometric interpolation is undefined at zero, and LR Cycle Max must be ≥ this value or the cycle is ignored.",
     default: 0.001,
     range: 1.0e-7...1.0,
     category: "LR/Momentum Cycling",
@@ -787,8 +791,8 @@ public enum LRCycleMin: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "LR Cycle Max",
-    description: "Absolute learning rate at the LR cycle's high point (the period midpoint when not inverted). Must be ≥ LR Cycle Min.",
-    default: 0.03,
+    description: "Absolute learning rate at the LR cycle's peak (the period midpoint when not inverted) at the start of the decay horizon — the peak's start value. The peak decays geometrically from here to LR Cycle Peak End over LR Cycle Decay Horizon. Must be ≥ LR Cycle Min.",
+    default: 0.1,
     range: 1.0e-7...1.0,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_max",
@@ -798,8 +802,8 @@ public enum LRCycleMax: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "LR Cycle Invert",
-    description: "Flip the LR waveform so the cycle starts at LR Cycle Max and dips to Min at the midpoint. Normally left off (LR rises to its peak at the midpoint); momentum is the channel usually inverted.",
-    default: false,
+    description: "Flip the LR waveform so the cycle starts at its peak and dips to its trough at the midpoint. Default ON, so each cycle opens with a high-LR burst and anneals down into the trough before the next one.",
+    default: true,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_invert",
     liveTunable: true
@@ -869,6 +873,93 @@ public enum MomentumCycleMax: TrainingParameterKey {}
     liveTunable: true
 )
 public enum MomentumCycleInvert: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "LR Cycle Peak End",
+    description: "LR cycle peak at the end of the decay horizon, and held there afterwards. The peak decays geometrically from LR Cycle Max to this value across LR Cycle Decay Horizon. Must be > 0 and ≥ LR Cycle Trough End. Ignored when the horizon is 0.",
+    default: 1.0e-4,
+    range: 1.0e-7...1.0,
+    category: "LR/Momentum Cycling",
+    id: "lr_cycle_peak_end",
+    liveTunable: true
+)
+public enum LRCyclePeakEnd: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "LR Cycle Trough End",
+    description: "LR cycle trough at the end of the decay horizon, and held there afterwards. The trough decays geometrically from LR Cycle Min to this value across LR Cycle Decay Horizon. Must be > 0 and ≤ LR Cycle Peak End. Ignored when the horizon is 0.",
+    default: 1.0e-6,
+    range: 1.0e-7...1.0,
+    category: "LR/Momentum Cycling",
+    id: "lr_cycle_trough_end",
+    liveTunable: true
+)
+public enum LRCycleTroughEnd: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "LR Cycle Decay Horizon (steps)",
+    description: "Number of cycle steps (counted from the end of LR warmup) over which the LR cycle's peak and trough decay from their start values (LR Cycle Max / Min) to their end values, and over which follow-mode momentum bounds drift from start to end. After the horizon the envelope holds at the end values and cycling continues. 0 = no decay (the envelope stays at its start values).",
+    default: 1000000,
+    range: 0...1000000000,
+    category: "LR/Momentum Cycling",
+    id: "lr_cycle_decay_horizon_steps",
+    liveTunable: true
+)
+public enum LRCycleDecayHorizonSteps: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Follows LR Cycle",
+    description: "When on (and momentum cycling is enabled), momentum uses the LR cycle's period and phase, inverted: lowest at the LR peak, highest at the LR trough. Its low and high bounds move linearly from the Follow Start values to the Follow End values over LR Cycle Decay Horizon. The separate momentum cycle's period, count, min, max and invert settings are then ignored. Requires the LR cycle to be enabled; otherwise the static momentum coefficient applies.",
+    default: true,
+    category: "LR/Momentum Cycling",
+    id: "momentum_follows_lr_cycle",
+    liveTunable: true
+)
+public enum MomentumFollowsLRCycle: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Follow Start Low",
+    description: "Follow-mode momentum at the LR peak, at the start of the decay horizon. Must be ≤ Momentum Follow Start High.",
+    default: 0.85,
+    range: 0.0...0.99,
+    category: "LR/Momentum Cycling",
+    id: "momentum_follow_start_low",
+    liveTunable: true
+)
+public enum MomentumFollowStartLow: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Follow Start High",
+    description: "Follow-mode momentum at the LR trough, at the start of the decay horizon.",
+    default: 0.95,
+    range: 0.0...0.99,
+    category: "LR/Momentum Cycling",
+    id: "momentum_follow_start_high",
+    liveTunable: true
+)
+public enum MomentumFollowStartHigh: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Follow End Low",
+    description: "Follow-mode momentum at the LR peak, at and after the end of the decay horizon. Must be ≤ Momentum Follow End High.",
+    default: 0.90,
+    range: 0.0...0.99,
+    category: "LR/Momentum Cycling",
+    id: "momentum_follow_end_low",
+    liveTunable: true
+)
+public enum MomentumFollowEndLow: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Follow End High",
+    description: "Follow-mode momentum at the LR trough, at and after the end of the decay horizon.",
+    default: 0.95,
+    range: 0.0...0.99,
+    category: "LR/Momentum Cycling",
+    id: "momentum_follow_end_high",
+    liveTunable: true
+)
+public enum MomentumFollowEndHigh: TrainingParameterKey {}
 
 // MARK: - Sessions / autosave policy
 
@@ -995,6 +1086,14 @@ public extension TrainingParametersSnapshot {
     var momentumCycleMin: Double { value(for: MomentumCycleMin.self) }
     var momentumCycleMax: Double { value(for: MomentumCycleMax.self) }
     var momentumCycleInvert: Bool { value(for: MomentumCycleInvert.self) }
+    var lrCyclePeakEnd: Double { value(for: LRCyclePeakEnd.self) }
+    var lrCycleTroughEnd: Double { value(for: LRCycleTroughEnd.self) }
+    var lrCycleDecayHorizonSteps: Int { value(for: LRCycleDecayHorizonSteps.self) }
+    var momentumFollowsLRCycle: Bool { value(for: MomentumFollowsLRCycle.self) }
+    var momentumFollowStartLow: Double { value(for: MomentumFollowStartLow.self) }
+    var momentumFollowStartHigh: Double { value(for: MomentumFollowStartHigh.self) }
+    var momentumFollowEndLow: Double { value(for: MomentumFollowEndLow.self) }
+    var momentumFollowEndHigh: Double { value(for: MomentumFollowEndHigh.self) }
     var periodicAutosaveIntervalSec: Double { value(for: PeriodicAutosaveIntervalSec.self) }
     var maxPeriodicAutosavesKept: Int { value(for: MaxPeriodicAutosavesKept.self) }
 
@@ -1109,6 +1208,14 @@ public final class TrainingParameters {
     public var momentumCycleMin: Double { didSet { Self.persist(MomentumCycleMin.self, value: momentumCycleMin) } }
     public var momentumCycleMax: Double { didSet { Self.persist(MomentumCycleMax.self, value: momentumCycleMax) } }
     public var momentumCycleInvert: Bool { didSet { Self.persist(MomentumCycleInvert.self, value: momentumCycleInvert) } }
+    public var lrCyclePeakEnd: Double { didSet { Self.persist(LRCyclePeakEnd.self, value: lrCyclePeakEnd) } }
+    public var lrCycleTroughEnd: Double { didSet { Self.persist(LRCycleTroughEnd.self, value: lrCycleTroughEnd) } }
+    public var lrCycleDecayHorizonSteps: Int { didSet { Self.persist(LRCycleDecayHorizonSteps.self, value: lrCycleDecayHorizonSteps) } }
+    public var momentumFollowsLRCycle: Bool { didSet { Self.persist(MomentumFollowsLRCycle.self, value: momentumFollowsLRCycle) } }
+    public var momentumFollowStartLow: Double { didSet { Self.persist(MomentumFollowStartLow.self, value: momentumFollowStartLow) } }
+    public var momentumFollowStartHigh: Double { didSet { Self.persist(MomentumFollowStartHigh.self, value: momentumFollowStartHigh) } }
+    public var momentumFollowEndLow: Double { didSet { Self.persist(MomentumFollowEndLow.self, value: momentumFollowEndLow) } }
+    public var momentumFollowEndHigh: Double { didSet { Self.persist(MomentumFollowEndHigh.self, value: momentumFollowEndHigh) } }
     public var periodicAutosaveIntervalSec: Double { didSet { Self.persist(PeriodicAutosaveIntervalSec.self, value: periodicAutosaveIntervalSec) } }
     public var maxPeriodicAutosavesKept: Int { didSet { Self.persist(MaxPeriodicAutosavesKept.self, value: maxPeriodicAutosavesKept) } }
 
@@ -1185,6 +1292,14 @@ public final class TrainingParameters {
         self.momentumCycleMin = Self.read(MomentumCycleMin.self)
         self.momentumCycleMax = Self.read(MomentumCycleMax.self)
         self.momentumCycleInvert = Self.read(MomentumCycleInvert.self)
+        self.lrCyclePeakEnd = Self.read(LRCyclePeakEnd.self)
+        self.lrCycleTroughEnd = Self.read(LRCycleTroughEnd.self)
+        self.lrCycleDecayHorizonSteps = Self.read(LRCycleDecayHorizonSteps.self)
+        self.momentumFollowsLRCycle = Self.read(MomentumFollowsLRCycle.self)
+        self.momentumFollowStartLow = Self.read(MomentumFollowStartLow.self)
+        self.momentumFollowStartHigh = Self.read(MomentumFollowStartHigh.self)
+        self.momentumFollowEndLow = Self.read(MomentumFollowEndLow.self)
+        self.momentumFollowEndHigh = Self.read(MomentumFollowEndHigh.self)
         self.periodicAutosaveIntervalSec = Self.read(PeriodicAutosaveIntervalSec.self)
         self.maxPeriodicAutosavesKept = Self.read(MaxPeriodicAutosavesKept.self)
     }
@@ -1265,6 +1380,14 @@ public final class TrainingParameters {
         v[MomentumCycleMin.id] = MomentumCycleMin.encode(momentumCycleMin)
         v[MomentumCycleMax.id] = MomentumCycleMax.encode(momentumCycleMax)
         v[MomentumCycleInvert.id] = MomentumCycleInvert.encode(momentumCycleInvert)
+        v[LRCyclePeakEnd.id] = LRCyclePeakEnd.encode(lrCyclePeakEnd)
+        v[LRCycleTroughEnd.id] = LRCycleTroughEnd.encode(lrCycleTroughEnd)
+        v[LRCycleDecayHorizonSteps.id] = LRCycleDecayHorizonSteps.encode(lrCycleDecayHorizonSteps)
+        v[MomentumFollowsLRCycle.id] = MomentumFollowsLRCycle.encode(momentumFollowsLRCycle)
+        v[MomentumFollowStartLow.id] = MomentumFollowStartLow.encode(momentumFollowStartLow)
+        v[MomentumFollowStartHigh.id] = MomentumFollowStartHigh.encode(momentumFollowStartHigh)
+        v[MomentumFollowEndLow.id] = MomentumFollowEndLow.encode(momentumFollowEndLow)
+        v[MomentumFollowEndHigh.id] = MomentumFollowEndHigh.encode(momentumFollowEndHigh)
         v[PeriodicAutosaveIntervalSec.id] = PeriodicAutosaveIntervalSec.encode(periodicAutosaveIntervalSec)
         v[MaxPeriodicAutosavesKept.id] = MaxPeriodicAutosavesKept.encode(maxPeriodicAutosavesKept)
         return v
@@ -1422,6 +1545,22 @@ public final class TrainingParameters {
             try MomentumCycleMax.definition.validate(raw); momentumCycleMax = try MomentumCycleMax.decode(raw)
         case MomentumCycleInvert.id:
             try MomentumCycleInvert.definition.validate(raw); momentumCycleInvert = try MomentumCycleInvert.decode(raw)
+        case LRCyclePeakEnd.id:
+            try LRCyclePeakEnd.definition.validate(raw); lrCyclePeakEnd = try LRCyclePeakEnd.decode(raw)
+        case LRCycleTroughEnd.id:
+            try LRCycleTroughEnd.definition.validate(raw); lrCycleTroughEnd = try LRCycleTroughEnd.decode(raw)
+        case LRCycleDecayHorizonSteps.id:
+            try LRCycleDecayHorizonSteps.definition.validate(raw); lrCycleDecayHorizonSteps = try LRCycleDecayHorizonSteps.decode(raw)
+        case MomentumFollowsLRCycle.id:
+            try MomentumFollowsLRCycle.definition.validate(raw); momentumFollowsLRCycle = try MomentumFollowsLRCycle.decode(raw)
+        case MomentumFollowStartLow.id:
+            try MomentumFollowStartLow.definition.validate(raw); momentumFollowStartLow = try MomentumFollowStartLow.decode(raw)
+        case MomentumFollowStartHigh.id:
+            try MomentumFollowStartHigh.definition.validate(raw); momentumFollowStartHigh = try MomentumFollowStartHigh.decode(raw)
+        case MomentumFollowEndLow.id:
+            try MomentumFollowEndLow.definition.validate(raw); momentumFollowEndLow = try MomentumFollowEndLow.decode(raw)
+        case MomentumFollowEndHigh.id:
+            try MomentumFollowEndHigh.definition.validate(raw); momentumFollowEndHigh = try MomentumFollowEndHigh.decode(raw)
         case PeriodicAutosaveIntervalSec.id:
             try PeriodicAutosaveIntervalSec.definition.validate(raw); periodicAutosaveIntervalSec = try PeriodicAutosaveIntervalSec.decode(raw)
         case MaxPeriodicAutosavesKept.id:
@@ -1595,6 +1734,14 @@ public final class TrainingParameters {
         MomentumCycleMin.self,
         MomentumCycleMax.self,
         MomentumCycleInvert.self,
+        LRCyclePeakEnd.self,
+        LRCycleTroughEnd.self,
+        LRCycleDecayHorizonSteps.self,
+        MomentumFollowsLRCycle.self,
+        MomentumFollowStartLow.self,
+        MomentumFollowStartHigh.self,
+        MomentumFollowEndLow.self,
+        MomentumFollowEndHigh.self,
         PeriodicAutosaveIntervalSec.self,
         MaxPeriodicAutosavesKept.self
     ]

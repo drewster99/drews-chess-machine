@@ -855,6 +855,7 @@ extension SessionController {
             recordingCorpusID: activeRecordingCorpusID,
             recordSelfPlayGames: params.recordSelfPlayGames,
             lrMomentumCycle: params.lrMomentumCycle,
+            lrMomentumCycleEnvelope: params.lrMomentumCycleEnvelope,
             maxPliesFromAnyOneGame: params.maxPliesFromAnyOneGame,
             targetSampledGameLengthPlies: params.targetSampledGameLengthPlies,
             maxDrawPercentPerBatch: params.maxDrawPercentPerBatch,

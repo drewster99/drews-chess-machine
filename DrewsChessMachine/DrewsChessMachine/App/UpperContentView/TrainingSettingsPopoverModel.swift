@@ -91,6 +91,14 @@ final class TrainingSettingsPopoverModel {
     var momentumCyclePeriodText = "" { didSet { momentumCyclePeriodError = false } }
     var momentumCycleCountText = "" { didSet { momentumCycleCountError = false } }
     var momentumCycleInvertValue = true
+    var lrCyclePeakEndText = "" { didSet { lrCyclePeakEndError = false } }
+    var lrCycleTroughEndText = "" { didSet { lrCycleTroughEndError = false } }
+    var lrCycleDecayHorizonText = "" { didSet { lrCycleDecayHorizonError = false } }
+    var momentumFollowsLRCycleValue = true
+    var momentumFollowStartLowText = "" { didSet { momentumFollowStartLowError = false } }
+    var momentumFollowStartHighText = "" { didSet { momentumFollowStartHighError = false } }
+    var momentumFollowEndLowText = "" { didSet { momentumFollowEndLowError = false } }
+    var momentumFollowEndHighText = "" { didSet { momentumFollowEndHighError = false } }
 
     private(set) var lrCycleMinError = false
     private(set) var lrCycleMaxError = false
@@ -100,6 +108,13 @@ final class TrainingSettingsPopoverModel {
     private(set) var momentumCycleMaxError = false
     private(set) var momentumCyclePeriodError = false
     private(set) var momentumCycleCountError = false
+    private(set) var lrCyclePeakEndError = false
+    private(set) var lrCycleTroughEndError = false
+    private(set) var lrCycleDecayHorizonError = false
+    private(set) var momentumFollowStartLowError = false
+    private(set) var momentumFollowStartHighError = false
+    private(set) var momentumFollowEndLowError = false
+    private(set) var momentumFollowEndHighError = false
 
     // MARK: - Self Play tab
 
@@ -262,6 +277,14 @@ final class TrainingSettingsPopoverModel {
         momentumCyclePeriodText = String(p.momentumCyclePeriodSteps)
         momentumCycleCountText = String(p.momentumCycleCount)
         momentumCycleInvertValue = p.momentumCycleInvert
+        lrCyclePeakEndText = String(format: "%.2e", p.lrCyclePeakEnd)
+        lrCycleTroughEndText = String(format: "%.2e", p.lrCycleTroughEnd)
+        lrCycleDecayHorizonText = String(p.lrCycleDecayHorizonSteps)
+        momentumFollowsLRCycleValue = p.momentumFollowsLRCycle
+        momentumFollowStartLowText = String(format: "%.3f", p.momentumFollowStartLow)
+        momentumFollowStartHighText = String(format: "%.3f", p.momentumFollowStartHigh)
+        momentumFollowEndLowText = String(format: "%.3f", p.momentumFollowEndLow)
+        momentumFollowEndHighText = String(format: "%.3f", p.momentumFollowEndHigh)
         // --- Self Play tab ---
         selfPlayConcurrencyText = String(p.selfPlayConcurrency)
         selfPlayStartTauText = String(format: "%.2f", p.selfPlayStartTau)
@@ -333,6 +356,13 @@ final class TrainingSettingsPopoverModel {
         momentumCycleMaxError = false
         momentumCyclePeriodError = false
         momentumCycleCountError = false
+        lrCyclePeakEndError = false
+        lrCycleTroughEndError = false
+        lrCycleDecayHorizonError = false
+        momentumFollowStartLowError = false
+        momentumFollowStartHighError = false
+        momentumFollowEndLowError = false
+        momentumFollowEndHighError = false
         selfPlayConcurrencyError = false
         selfPlayStartTauError = false
         selfPlayDecayPerPlyError = false
@@ -747,6 +777,85 @@ final class TrainingSettingsPopoverModel {
             if n != p.momentumCycleCount { p.momentumCycleCount = n }
         } else {
             momentumCycleCountError = true
+            anyError = true
+        }
+        // Decay envelope. Ranges mirror the `@TrainingParameter` declarations.
+        if let v = Double(lrCyclePeakEndText.trimmingCharacters(in: .whitespaces)),
+           v >= 1e-7, v <= 1.0, v.isFinite {
+            lrCyclePeakEndError = false
+            if abs(v - p.lrCyclePeakEnd) > Double.ulpOfOne { p.lrCyclePeakEnd = v }
+        } else {
+            lrCyclePeakEndError = true
+            anyError = true
+        }
+        if let v = Double(lrCycleTroughEndText.trimmingCharacters(in: .whitespaces)),
+           v >= 1e-7, v <= 1.0, v.isFinite {
+            lrCycleTroughEndError = false
+            if abs(v - p.lrCycleTroughEnd) > Double.ulpOfOne { p.lrCycleTroughEnd = v }
+        } else {
+            lrCycleTroughEndError = true
+            anyError = true
+        }
+        // Cross-field: the end peak must not sit below the end trough. The
+        // schedule refuses such an envelope (falls back to the static LR), so
+        // without this flag the cycle would go inert while reading "enabled".
+        if !lrCyclePeakEndError, !lrCycleTroughEndError, p.lrCyclePeakEnd < p.lrCycleTroughEnd {
+            lrCyclePeakEndError = true
+            anyError = true
+        }
+        if let n = Int(lrCycleDecayHorizonText.trimmingCharacters(in: .whitespaces)),
+           n >= 0, n <= 1_000_000_000 {
+            lrCycleDecayHorizonError = false
+            if n != p.lrCycleDecayHorizonSteps { p.lrCycleDecayHorizonSteps = n }
+        } else {
+            lrCycleDecayHorizonError = true
+            anyError = true
+        }
+        // Momentum-follow bounds.
+        if momentumFollowsLRCycleValue != p.momentumFollowsLRCycle { p.momentumFollowsLRCycle = momentumFollowsLRCycleValue }
+        if let v = Double(momentumFollowStartLowText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 0.99, v.isFinite {
+            momentumFollowStartLowError = false
+            if abs(v - p.momentumFollowStartLow) > Double.ulpOfOne { p.momentumFollowStartLow = v }
+        } else {
+            momentumFollowStartLowError = true
+            anyError = true
+        }
+        if let v = Double(momentumFollowStartHighText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 0.99, v.isFinite {
+            momentumFollowStartHighError = false
+            if abs(v - p.momentumFollowStartHigh) > Double.ulpOfOne { p.momentumFollowStartHigh = v }
+        } else {
+            momentumFollowStartHighError = true
+            anyError = true
+        }
+        if let v = Double(momentumFollowEndLowText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 0.99, v.isFinite {
+            momentumFollowEndLowError = false
+            if abs(v - p.momentumFollowEndLow) > Double.ulpOfOne { p.momentumFollowEndLow = v }
+        } else {
+            momentumFollowEndLowError = true
+            anyError = true
+        }
+        if let v = Double(momentumFollowEndHighText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 0.99, v.isFinite {
+            momentumFollowEndHighError = false
+            if abs(v - p.momentumFollowEndHigh) > Double.ulpOfOne { p.momentumFollowEndHigh = v }
+        } else {
+            momentumFollowEndHighError = true
+            anyError = true
+        }
+        // Cross-field: each follow pair's high must be >= its low. The
+        // schedule reports no momentum (static fallback) for an inverted
+        // pair, so flag it rather than let following silently switch off.
+        if !momentumFollowStartLowError, !momentumFollowStartHighError,
+           p.momentumFollowStartHigh < p.momentumFollowStartLow {
+            momentumFollowStartHighError = true
+            anyError = true
+        }
+        if !momentumFollowEndLowError, !momentumFollowEndHighError,
+           p.momentumFollowEndHigh < p.momentumFollowEndLow {
+            momentumFollowEndHighError = true
             anyError = true
         }
         // Push the committed cycle config straight onto the live trainer

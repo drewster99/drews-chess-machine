@@ -9,6 +9,18 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-29 CDT — Training: decaying LR cycle envelope; momentum can follow the LR cycle (pending commit)
+
+**Defaults changed; no parameters renamed.** Existing saved values in UserDefaults are kept, so the new defaults only apply where nothing was saved.
+
+- **Decaying envelope.** The LR cycle's peak (`lr_cycle_max`, now the peak's start value) and trough (`lr_cycle_min`, the trough's start value) each decay geometrically to `lr_cycle_peak_end` / `lr_cycle_trough_end` over `lr_cycle_decay_horizon_steps` cycle steps (counted after warmup), then hold there while cycling continues. The LR within a cycle interpolates geometrically between that step's peak and trough. A horizon of 0 is the previous behavior exactly.
+- **Momentum follows the LR cycle** (`momentum_follows_lr_cycle`, with momentum cycling on): momentum uses the LR cycle's period and phase, inverted (lowest at the LR peak), with its low/high bounds moving linearly from `momentum_follow_start_low/high` to `momentum_follow_end_low/high` over the same horizon. Off = the separate momentum cycle, unchanged. Needs an active LR cycle; otherwise the static coefficient applies.
+- **Defaults:** peak 1e-1 → 1e-4, trough 1e-3 → 1e-6, horizon 1,000,000, period 20,000, LR invert on (start at the peak), follow on, momentum low 0.85 → 0.90, high 0.95 → 0.95.
+- One pure function (`LRMomentumCycle.values(forCycleStep:)`) computes LR, momentum and the current peak/trough; the SGD feed, readouts and logs all read it.
+- Persistence: the envelope is a separate Optional `lrMomentumCycleEnvelope` in the session file, so older sessions still decode; resuming one logs `(defaulted)` and runs with no decay and no following.
+- Visible in `[STATS]` (`lr=…·cyc[pk=…,tr=…]`), `[PARAM]`/`[RESUME-PARAM] lr_momentum_cycle` (plus `lr_momentum_cycle_envelope`), `results.json` (`lr_cycle_peak`, `lr_cycle_trough`, `lr_cycle_decay_horizon_steps`, `momentum_follows_lr_cycle`), and the Cycling tab of the training settings popover (validated).
+- Tests: new `LRCycleDecayEnvelopeTests`. `TrainingParametersTests.test_registry_size` updated 70 → 78 for the eight new parameters.
+
 ## 2026-09-29 CDT — Lichess bot: challenge alert tones; defaults are now the owner's settings (`c5542b8`)
 
 **The bot's settings format changed (a new Alerts section): after updating, click Reset to Defaults in the bot's Settings once** (no migration, by decision, as before).

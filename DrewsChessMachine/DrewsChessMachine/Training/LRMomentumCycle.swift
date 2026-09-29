@@ -53,6 +53,19 @@ import Foundation
 ///   count is measured on the cycle's own step axis, i.e. from the end of
 ///   warmup, so warmup never consumes any of the requested cycles.
 ///
+/// - **Decaying envelope.** The peak and trough the LR swings between each
+///   decay geometrically from a start value (`lrMax` / `lrMin`) to an end
+///   value over a horizon measured on the cycle's own step axis, then hold at
+///   the end values while cycling continues. Open-ended self-play still has
+///   no known end, but a long run wants its LR to come down over time the way
+///   a finite schedule would; the envelope provides that without giving up
+///   the plateau-breaking swings. A zero horizon disables the decay.
+///
+/// - **Momentum can follow the LR cycle.** Rather than keeping a separate
+///   momentum period and invert flag in agreement with the LR cycle by hand,
+///   the follow mode reads the LR cycle's own phase and inverts it, so the
+///   inverse coupling holds by construction — including after a period edit.
+///
 /// The struct is `Sendable` + `Equatable` and the math is pure, so it is
 /// carried lock-free across the trainer's main/off-main boundary (in a
 /// `SyncBox`) and is exercised directly by `LRMomentumCycleTests`.
@@ -65,10 +78,13 @@ struct LRMomentumCycle: Sendable, Equatable, Codable {
     var lrPeriodSteps: Int
     /// Number of cycles before freezing at the boundary. 0 = unbounded.
     var lrCount: Int
-    /// Absolute LR at the period boundaries (the cycle's low point when
-    /// `lrInvert == false`). Must be > 0 for geometric interpolation.
+    /// Absolute LR at the cycle's trough (the period boundaries when
+    /// `lrInvert == false`) at the start of the decay horizon — the trough's
+    /// start value. Must be > 0 for geometric interpolation.
     var lrMin: Double
-    /// Absolute LR at the period midpoint (when `lrInvert == false`).
+    /// Absolute LR at the cycle's peak (the period midpoint when
+    /// `lrInvert == false`) at the start of the decay horizon — the peak's
+    /// start value.
     var lrMax: Double
     /// Flip the waveform so the cycle starts at `lrMax` instead of `lrMin`.
     var lrInvert: Bool
@@ -81,6 +97,23 @@ struct LRMomentumCycle: Sendable, Equatable, Codable {
     var momentumMin: Double
     var momentumMax: Double
     var momentumInvert: Bool
+
+    // MARK: Decay envelope + momentum-follows-LR
+
+    /// The decay envelope and the momentum-follow mode. Deliberately left
+    /// out of this struct's `Codable` form (see `CodingKeys`): session files
+    /// written before the envelope existed carry an `lrMomentumCycle` object
+    /// without it, and adding a required key would make those sessions fail
+    /// to decode outright. The envelope is persisted as its own Optional
+    /// field on `SessionCheckpointState` instead, and resume re-attaches it.
+    /// Its default is the no-decay, no-follow configuration, under which this
+    /// struct behaves exactly as it did before the envelope existed.
+    var envelope: LRMomentumCycleEnvelope = .noDecay
+
+    enum CodingKeys: String, CodingKey {
+        case lrEnabled, lrPeriodSteps, lrCount, lrMin, lrMax, lrInvert
+        case momentumEnabled, momentumPeriodSteps, momentumCount, momentumMin, momentumMax, momentumInvert
+    }
 
     /// The all-off configuration. Endpoint defaults mirror the parameter
     /// defaults so a freshly-enabled-but-unedited cycle is sane.
@@ -153,9 +186,7 @@ struct LRMomentumCycle: Sendable, Equatable, Codable {
     /// base learning rate. Geometric (log-space) interpolation requires
     /// `lrMin > 0` and `lrMax >= lrMin`; otherwise `nil` is returned.
     func learningRate(forStep step: Int) -> Double? {
-        guard lrEnabled, lrPeriodSteps > 0, lrMin > 0, lrMax >= lrMin else { return nil }
-        let frac = Self.cycleFraction(step: step, period: lrPeriodSteps, count: lrCount, invert: lrInvert)
-        return lrMin * pow(lrMax / lrMin, frac)
+        values(forCycleStep: step).learningRate
     }
 
     /// Effective Polyak momentum at cycle step `step` (already offset past
@@ -168,10 +199,102 @@ struct LRMomentumCycle: Sendable, Equatable, Codable {
     /// `momentumInvert` flag exists to express. Rather than honor an accidental
     /// reversal, fall back to the static coefficient (mirroring the LR channel's
     /// `lrMax >= lrMin` guard).
+    ///
+    /// When `envelope.momentumFollowsLRCycle` is on, the separate momentum
+    /// cycle's period, count, endpoints and invert flag are ignored and the
+    /// channel is driven by the LR cycle instead — see `values(forCycleStep:)`.
     func momentum(forStep step: Int) -> Double? {
-        guard momentumEnabled, momentumPeriodSteps > 0, momentumMax >= momentumMin else { return nil }
-        let frac = Self.cycleFraction(step: step, period: momentumPeriodSteps, count: momentumCount, invert: momentumInvert)
-        return momentumMin + (momentumMax - momentumMin) * frac
+        values(forCycleStep: step).momentum
+    }
+
+    /// Everything the schedule says about one cycle step. `lrPeak` /
+    /// `lrTrough` are the (possibly decayed) envelope bounds the LR is
+    /// swinging between at that step; they exist for the log lines, so a
+    /// reader can see where in the decay the run sits, and are `nil`
+    /// exactly when `learningRate` is.
+    struct Values: Sendable, Equatable {
+        let learningRate: Double?
+        let momentum: Double?
+        let lrPeak: Double?
+        let lrTrough: Double?
+    }
+
+    /// Position along the decay horizon in `[0, 1]`: the fraction of the
+    /// horizon elapsed at cycle step `step`, held at 1 once the horizon is
+    /// passed so the envelope stays at its end values and cycling continues
+    /// between them. A non-positive horizon means "no decay", which pins the
+    /// envelope at its start values forever — the pre-envelope behavior.
+    static func decayFraction(step: Int, horizonSteps: Int) -> Double {
+        guard horizonSteps > 0 else { return 0.0 }
+        return Double(min(max(0, step), horizonSteps)) / Double(horizonSteps)
+    }
+
+    /// The single source of truth for the schedule: learning rate and
+    /// momentum (plus the LR envelope bounds) at cycle step `step`, which is
+    /// already offset past warmup (see `cycleStep`). Every other accessor
+    /// reads through here so the SGD feed, the status readouts and the logs
+    /// can never disagree.
+    ///
+    /// LR: the cycle's cosine fraction interpolates geometrically between
+    /// this step's trough and peak. Each bound decays geometrically from its
+    /// start value (`lrMin` for the trough, `lrMax` for the peak) to its end
+    /// value in the envelope across the decay horizon — log-space, for the
+    /// same scale-invariance reason the in-cycle interpolation is log-space.
+    /// `nil` when LR cycling is off or any bound pair is unusable (a bound
+    /// not > 0, or a peak below its trough), so the caller falls back to the
+    /// static base LR rather than running a nonsensical schedule.
+    ///
+    /// Momentum, following the LR cycle: the same cosine fraction, inverted,
+    /// so momentum is at its low bound exactly where LR is at its peak and at
+    /// its high bound where LR bottoms out — Smith's inverse coupling without
+    /// having to keep two periods and two invert flags in agreement by hand.
+    /// Its bounds move linearly (momentum's useful band is narrow) across the
+    /// same horizon. Following requires an active LR cycle: without one there
+    /// is no phase to follow, so the channel reports `nil` (static momentum).
+    ///
+    /// Momentum, not following: the independent momentum cycle, unchanged.
+    func values(forCycleStep step: Int) -> Values {
+        let decay = Self.decayFraction(step: step, horizonSteps: envelope.decayHorizonSteps)
+
+        var learningRate: Double? = nil
+        var lrPeak: Double? = nil
+        var lrTrough: Double? = nil
+        var lrFraction: Double? = nil
+        let decayEndsUsable = envelope.decayHorizonSteps <= 0
+            || (envelope.lrPeakEnd > 0 && envelope.lrTroughEnd > 0 && envelope.lrPeakEnd >= envelope.lrTroughEnd)
+        if lrEnabled, lrPeriodSteps > 0, lrMin > 0, lrMax >= lrMin, decayEndsUsable {
+            let peak = lrMax * pow(envelope.lrPeakEnd / lrMax, decay)
+            let trough = lrMin * pow(envelope.lrTroughEnd / lrMin, decay)
+            let frac = Self.cycleFraction(step: step, period: lrPeriodSteps, count: lrCount, invert: lrInvert)
+            learningRate = trough * pow(peak / trough, frac)
+            lrPeak = peak
+            lrTrough = trough
+            lrFraction = frac
+        }
+
+        var momentum: Double? = nil
+        if momentumEnabled {
+            if envelope.momentumFollowsLRCycle {
+                let low = envelope.momentumFollowStartLow
+                    + (envelope.momentumFollowEndLow - envelope.momentumFollowStartLow) * decay
+                let high = envelope.momentumFollowStartHigh
+                    + (envelope.momentumFollowEndHigh - envelope.momentumFollowStartHigh) * decay
+                if let lrFraction, high >= low {
+                    momentum = high - (high - low) * lrFraction
+                }
+            } else if momentumPeriodSteps > 0, momentumMax >= momentumMin {
+                let frac = Self.cycleFraction(step: step, period: momentumPeriodSteps, count: momentumCount, invert: momentumInvert)
+                momentum = momentumMin + (momentumMax - momentumMin) * frac
+            }
+        }
+
+        return Values(learningRate: learningRate, momentum: momentum, lrPeak: lrPeak, lrTrough: lrTrough)
+    }
+
+    /// `values(forCycleStep:)` at trainer global step `completedTrainSteps`,
+    /// with the warmup offset applied.
+    func values(completedTrainSteps: Int, lrWarmupSteps: Int) -> Values {
+        values(forCycleStep: Self.cycleStep(completedTrainSteps: completedTrainSteps, lrWarmupSteps: lrWarmupSteps))
     }
 
     /// True when either channel is actively cycling — used to decide whether
@@ -198,7 +321,98 @@ extension TrainingParameters {
             momentumCount: momentumCycleCount,
             momentumMin: momentumCycleMin,
             momentumMax: momentumCycleMax,
-            momentumInvert: momentumCycleInvert
+            momentumInvert: momentumCycleInvert,
+            envelope: lrMomentumCycleEnvelope
         )
+    }
+
+    /// The decay envelope + momentum-follow configuration, read live from
+    /// the singleton. Also persisted on its own in session files (see
+    /// `LRMomentumCycle.envelope` for why it is not part of the cycle's
+    /// encoded form).
+    var lrMomentumCycleEnvelope: LRMomentumCycleEnvelope {
+        LRMomentumCycleEnvelope(
+            lrPeakEnd: lrCyclePeakEnd,
+            lrTroughEnd: lrCycleTroughEnd,
+            decayHorizonSteps: lrCycleDecayHorizonSteps,
+            momentumFollowsLRCycle: momentumFollowsLRCycle,
+            momentumFollowStartLow: momentumFollowStartLow,
+            momentumFollowStartHigh: momentumFollowStartHigh,
+            momentumFollowEndLow: momentumFollowEndLow,
+            momentumFollowEndHigh: momentumFollowEndHigh
+        )
+    }
+}
+
+/// The part of the LR/momentum schedule that changes over the long run: where
+/// the LR cycle's peak and trough decay to, over how many cycle steps, and
+/// whether (and between which bounds) momentum follows the LR cycle. See
+/// `LRMomentumCycle.values(forCycleStep:)` for the math.
+struct LRMomentumCycleEnvelope: Sendable, Equatable, Codable {
+    /// LR peak at and after the end of the decay horizon.
+    var lrPeakEnd: Double
+    /// LR trough at and after the end of the decay horizon.
+    var lrTroughEnd: Double
+    /// Length of the decay, in cycle steps (i.e. counted from the end of
+    /// warmup). Zero disables the decay: the envelope stays at its start
+    /// values forever.
+    var decayHorizonSteps: Int
+    /// When on, momentum is driven by the LR cycle's phase (inverted) instead
+    /// of the independent momentum cycle.
+    var momentumFollowsLRCycle: Bool
+    /// Follow-mode momentum at the LR peak, at the start of the horizon.
+    var momentumFollowStartLow: Double
+    /// Follow-mode momentum at the LR trough, at the start of the horizon.
+    var momentumFollowStartHigh: Double
+    /// Follow-mode momentum at the LR peak, at and after the horizon's end.
+    var momentumFollowEndLow: Double
+    /// Follow-mode momentum at the LR trough, at and after the horizon's end.
+    var momentumFollowEndHigh: Double
+
+    /// No decay and no momentum following: the configuration under which
+    /// `LRMomentumCycle` computes exactly what it did before the envelope
+    /// existed. The end values are inert while the horizon is zero and
+    /// following is off; they mirror the parameter defaults so a
+    /// freshly-enabled-but-unedited envelope is sane.
+    static let noDecay = LRMomentumCycleEnvelope(
+        lrPeakEnd: 1.0e-4,
+        lrTroughEnd: 1.0e-6,
+        decayHorizonSteps: 0,
+        momentumFollowsLRCycle: false,
+        momentumFollowStartLow: 0.85,
+        momentumFollowStartHigh: 0.95,
+        momentumFollowEndLow: 0.90,
+        momentumFollowEndHigh: 0.95
+    )
+}
+
+/// Log-line renderings of the schedule, shared by every tag that reports it
+/// (`[PARAM]`, `[RESUME-PARAM]`, `[STATS]`) so the same configuration always
+/// reads the same way wherever it is grepped.
+enum LRMomentumCycleLogFormat {
+    /// The decay envelope and momentum-follow configuration, e.g. for the
+    /// `lr_momentum_cycle` audit lines.
+    static func envelopeDescription(_ envelope: LRMomentumCycleEnvelope) -> String {
+        let decayPart = envelope.decayHorizonSteps > 0
+            ? String(
+                format: "decay=[peak->%.2e trough->%.2e over %dst]",
+                envelope.lrPeakEnd, envelope.lrTroughEnd, envelope.decayHorizonSteps
+            )
+            : "decay=off"
+        let followPart = envelope.momentumFollowsLRCycle
+            ? String(
+                format: "momFollow=[low %.3f->%.3f high %.3f->%.3f]",
+                envelope.momentumFollowStartLow, envelope.momentumFollowEndLow,
+                envelope.momentumFollowStartHigh, envelope.momentumFollowEndHigh
+            )
+            : "momFollow=off"
+        return "\(decayPart) \(followPart)"
+    }
+
+    /// The current LR envelope bounds for the `[STATS]` `lr=` field, e.g.
+    /// `[pk=…,tr=…]`. Empty when the LR cycle is not driving the LR.
+    static func envelopeBounds(_ values: LRMomentumCycle.Values) -> String {
+        guard let peak = values.lrPeak, let trough = values.lrTrough else { return "" }
+        return String(format: "[pk=%.1e,tr=%.1e]", peak, trough)
     }
 }

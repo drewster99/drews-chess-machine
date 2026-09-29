@@ -361,9 +361,14 @@ extension SessionController {
                 // trainer (the off-main consumer in `buildFeeds`). The cycle's
                 // phase is a pure function of `trainingSteps`, already restored
                 // above, so the schedule continues exactly where it left off.
+                let resolvedEnvelope = SessionCheckpointState.resolvedLRMomentumCycleEnvelope(
+                    saved: rs.lrMomentumCycleEnvelope,
+                    current: TrainingParameters.shared.lrMomentumCycleEnvelope
+                )
+                let envelopeText = LRMomentumCycleLogFormat.envelopeDescription(resolvedEnvelope)
                 if let cyc = rs.lrMomentumCycle {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] lr_momentum_cycle: lrEnabled=\(cyc.lrEnabled) lr=[\(cyc.lrMin),\(cyc.lrMax)]^\(cyc.lrPeriodSteps)st inv=\(cyc.lrInvert) momEnabled=\(cyc.momentumEnabled) mom=[\(cyc.momentumMin),\(cyc.momentumMax)]^\(cyc.momentumPeriodSteps)st inv=\(cyc.momentumInvert) (from session)"
+                        "[RESUME-PARAM] lr_momentum_cycle: lrEnabled=\(cyc.lrEnabled) lr=[trough \(cyc.lrMin),peak \(cyc.lrMax)]^\(cyc.lrPeriodSteps)st inv=\(cyc.lrInvert) momEnabled=\(cyc.momentumEnabled) mom=[\(cyc.momentumMin),\(cyc.momentumMax)]^\(cyc.momentumPeriodSteps)st inv=\(cyc.momentumInvert) \(envelopeText) (from session)"
                     )
                     let p = TrainingParameters.shared
                     p.lrCycleEnabled = cyc.lrEnabled
@@ -392,8 +397,37 @@ extension SessionController {
                     TrainingParameters.shared.momentumCycleEnabled = false
                     trainer.lrMomentumCycle = resolvedCycle
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] lr_momentum_cycle: saved=nil applied=disabled (session predates the feature; cycling off)"
+                        "[RESUME-PARAM] lr_momentum_cycle: saved=nil applied=disabled \(envelopeText) (session predates the feature; cycling off)"
                     )
+                }
+                // Decay envelope + momentum-follow. Persisted separately from
+                // the cycle (see `LRMomentumCycle.envelope`), so it is
+                // re-attached here onto whatever cycle the block above put on
+                // the trainer. Both branches write the values back onto the
+                // singleton so UserDefaults and the popover reflect what the
+                // resumed run is actually using.
+                do {
+                    let p = TrainingParameters.shared
+                    p.lrCyclePeakEnd = resolvedEnvelope.lrPeakEnd
+                    p.lrCycleTroughEnd = resolvedEnvelope.lrTroughEnd
+                    p.lrCycleDecayHorizonSteps = resolvedEnvelope.decayHorizonSteps
+                    p.momentumFollowsLRCycle = resolvedEnvelope.momentumFollowsLRCycle
+                    p.momentumFollowStartLow = resolvedEnvelope.momentumFollowStartLow
+                    p.momentumFollowStartHigh = resolvedEnvelope.momentumFollowStartHigh
+                    p.momentumFollowEndLow = resolvedEnvelope.momentumFollowEndLow
+                    p.momentumFollowEndHigh = resolvedEnvelope.momentumFollowEndHigh
+                    var cycleWithEnvelope = trainer.lrMomentumCycle
+                    cycleWithEnvelope.envelope = resolvedEnvelope
+                    trainer.lrMomentumCycle = cycleWithEnvelope
+                    if rs.lrMomentumCycleEnvelope != nil {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] lr_momentum_cycle_envelope: \(envelopeText) (from session)"
+                        )
+                    } else {
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] lr_momentum_cycle_envelope: saved=nil applied=\(envelopeText) (defaulted; session predates the envelope, so no decay and no following)"
+                        )
+                    }
                 }
                 // Composition-aware replay-buffer sampler constraints. Unlike
                 // most params on this resume path these don't shadow on the
@@ -1950,14 +1984,12 @@ extension SessionController {
                         // here is the pre-warmup/√batch base; the ·warmup / ·√b
                         // markers on `lrStr` convey the remaining multipliers.
                         // The cycle is offset past warmup, same as the SGD feed.
-                        let cycledLRBase: Double? = cycle.learningRate(
+                        let cycleValues = cycle.values(
                             completedTrainSteps: completedSteps,
                             lrWarmupSteps: warmupSteps
                         )
-                        let cycledMu: Double? = cycle.momentum(
-                            completedTrainSteps: completedSteps,
-                            lrWarmupSteps: warmupSteps
-                        )
+                        let cycledLRBase: Double? = cycleValues.learningRate
+                        let cycledMu: Double? = cycleValues.momentum
                         let policyStr: String
                         if let p = trainingSnap.rollingPolicyLoss {
                             policyStr = String(format: "%+.4f", p)
@@ -2037,14 +2069,16 @@ extension SessionController {
                         : "n/a"
                         // Append a `·cyc` marker when the LR cycle is driving the
                         // base LR (the displayed value is then the cycle's
-                        // current geometric value, not the static base), a `·√b`
+                        // current geometric value, not the static base) — with
+                        // the peak/trough it is currently swinging between, so a
+                        // decaying envelope's progress is visible — a `·√b`
                         // marker when sqrt-batch scaling is on, and a
                         // `·warmup(i/N)` marker while warmup is still active, so
                         // the reader can tell at a glance what per-step value and
                         // multipliers the optimizer is actually seeing.
                         let lrBaseForStats = cycledLRBase ?? Double(lr)
                         var lrStr = String(format: "%.1e", lrBaseForStats)
-                            + (cycledLRBase != nil ? "·cyc" : "")
+                            + (cycledLRBase != nil ? "·cyc" + LRMomentumCycleLogFormat.envelopeBounds(cycleValues) : "")
                             + (sqrtLR ? "·√b" : "")
                         if warmupSteps > 0 && completedSteps < warmupSteps {
                             lrStr += "·warmup(\(completedSteps)/\(warmupSteps))"
@@ -2472,7 +2506,11 @@ extension SessionController {
                                 trainerID: trainerID,
                                 championID: championID,
                                 policyLogitMean: trainingSnap.rollingPolicyLogitMean,
-                                valueLogitMean: trainingSnap.rollingValueLogitMean
+                                valueLogitMean: trainingSnap.rollingValueLogitMean,
+                                lrCyclePeak: cycleValues.lrPeak,
+                                lrCycleTrough: cycleValues.lrTrough,
+                                lrCycleDecayHorizonSteps: cycle.envelope.decayHorizonSteps,
+                                momentumFollowsLRCycle: cycle.envelope.momentumFollowsLRCycle
                             )
                             recorder.appendStats(entry)
                         }

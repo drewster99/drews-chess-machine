@@ -428,6 +428,22 @@ struct SessionCheckpointState: Codable, Equatable {
     /// so the settings popover keeps the user's values, but both
     /// enabled flags are forced off — a live cycle must never be
     /// applied to a session that predates the cycling feature.
+    /// Pre-feature behavior: no decay envelope and no momentum following.
+    /// On nil the caller's current envelope values are preserved (so the
+    /// settings popover keeps them) but the horizon is zeroed and following
+    /// is turned off — the saved run cycled without either, and resume must
+    /// not change its schedule.
+    static func resolvedLRMomentumCycleEnvelope(
+        saved: LRMomentumCycleEnvelope?,
+        current: LRMomentumCycleEnvelope
+    ) -> LRMomentumCycleEnvelope {
+        if let saved { return saved }
+        var resolved = current
+        resolved.decayHorizonSteps = 0
+        resolved.momentumFollowsLRCycle = false
+        return resolved
+    }
+
     static func resolvedLRMomentumCycle(
         saved: LRMomentumCycle?,
         current: LRMomentumCycle
@@ -509,6 +525,14 @@ struct SessionCheckpointState: Codable, Equatable {
     /// persisted as `trainingSteps`), restoring this is all resume needs to
     /// continue the cycle seamlessly.
     var lrMomentumCycle: LRMomentumCycle?
+    /// LR-cycle decay envelope + momentum-follow configuration in effect at
+    /// save time (the `lr_cycle_peak_end` / `lr_cycle_trough_end` /
+    /// `lr_cycle_decay_horizon_steps` / `momentum_follow*` parameters). Kept
+    /// separate from `lrMomentumCycle` so sessions written before the
+    /// envelope existed still decode that field. Optional for back-compat;
+    /// absent → the resumed run gets no decay and no following (the saved
+    /// run had neither), with the user's other envelope values preserved.
+    var lrMomentumCycleEnvelope: LRMomentumCycleEnvelope?
     /// Composition-aware replay-buffer sampler constraints in effect at
     /// save time. All Optional for back-compat with session files written
     /// before these knobs existed; absent → loader falls through to the

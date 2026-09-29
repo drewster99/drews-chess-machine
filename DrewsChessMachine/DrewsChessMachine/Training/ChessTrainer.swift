@@ -5867,10 +5867,13 @@ final class ChessTrainer: @unchecked Sendable {
         // The cycle starts after warmup (see `LRMomentumCycle.cycleStep`), so
         // during warmup this is the cycle's starting value and the ramp below
         // lands exactly on it.
-        let baseLR: Float = cycle.learningRate(
+        // One schedule evaluation feeds both channels, so LR and momentum
+        // can never be computed from different envelope positions.
+        let cycleValues = cycle.values(
             completedTrainSteps: currentStep,
             lrWarmupSteps: lrWarmupSteps
-        ).map { Float($0) } ?? learningRate
+        )
+        let baseLR: Float = cycleValues.learningRate.map { Float($0) } ?? learningRate
         var lr: Float
         if sqrtBatchScalingForLR {
             let sqrtBatchScale: Float = Float(
@@ -5897,10 +5900,7 @@ final class ChessTrainer: @unchecked Sendable {
         // Momentum: the cycle's linear value when momentum cycling is active,
         // otherwise the static configured coefficient.
         // Offset by warmup exactly like the LR channel so the two stay in phase.
-        let momentumToFeed: Float = cycle.momentum(
-            completedTrainSteps: currentStep,
-            lrWarmupSteps: lrWarmupSteps
-        ).map { Float($0) } ?? momentumCoeff
+        let momentumToFeed: Float = cycleValues.momentum.map { Float($0) } ?? momentumCoeff
         writeScalarFeed(momentumNDArray, value: momentumToFeed)
         writeScalarFeed(complementCEEnableNDArray, value: useSignedAdvantageComplementCE ? 1.0 : 0.0)
 
