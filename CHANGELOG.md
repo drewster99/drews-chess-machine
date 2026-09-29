@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-29 00:05 CDT — Lichess bot: challenge queue, matchmaking, finished-game hold (plan §7.3) (pending commit)
+## 2026-09-29 00:05 CDT — Lichess bot: challenge queue, matchmaking, finished-game hold (plan §7.3) (`baa32bd`)
 
 Implements `documentation/plans-active/LICHESS_BOT_PLAN.md` §7.3. **The bot's settings gained a Matchmaking section: after updating, click Reset to Defaults in the bot's Settings once** (no migration, by decision, as before).
 
