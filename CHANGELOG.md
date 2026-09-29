@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-29 CDT — Training: decaying LR cycle envelope; momentum can follow the LR cycle (pending commit)
+## 2026-09-29 CDT — Training: decaying LR cycle envelope; momentum can follow the LR cycle (`0a4792d`)
 
 **Defaults changed; no parameters renamed.** Existing saved values in UserDefaults are kept, so the new defaults only apply where nothing was saved.
 
