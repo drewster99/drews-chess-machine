@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-28 CDT — Lichess bot: resend as casual, ruled-out speed warning, deterministic tests (pending commit)
+## 2026-09-28 21:57 CDT — Lichess bot: resend as casual, ruled-out speed warning, deterministic tests (`563fb21`)
 
 - **Resend as Casual.** When a rated challenge is declined with Lichess's `casual` reason ("please send me a casual challenge instead"), the Overview's outcome line offers a button that sends the same challenge again, unrated.
   - Outgoing-challenge outcomes now carry Lichess's decline key (`reasonKey`) alongside its text, and each pending challenge keeps its request.
