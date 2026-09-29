@@ -64,6 +64,19 @@ original rationale is not lost.
   - A live replay resume shows the expected values in `[CHECKPOINT]` log lines.
   - The dashboard tracker reads them and matches `cumstep_base`-derived values on a run where both exist.
 
+- **Full-precision weights in every model checkpoint (added 2026-09-28; not started).**
+  - **Problem:** a bf16 line's `Models/*.safetensors` checkpoints (corpus-replay enumerated checkpoints, trainer exports) store F32 tensors whose values are bf16-rounded. They are written from the graph's bf16 working weights, so the trainer's fp32 master weights are thrown away.
+    - The bf16-head survey found every such checkpoint 100% bf16-exact.
+    - Only a session's `trainer.safetensors` keeps the masters.
+    - So every resume from a `Models/` checkpoint re-seeds the masters from bf16 values, and any later analysis or conversion (fp32 heads, recentering, re-quantization, fp32 fine-tuning) starts from rounded weights.
+  - **Change:**
+    - When a checkpoint is written from the trainer, write the fp32 master values (`ChessTrainer` masters) instead of the bf16 working copy. Optionally include the optimizer velocity so a resume from any checkpoint is exact.
+    - Mark it in the file's metadata, e.g. `weights_precision = fp32_master` versus `bf16_working`, so readers know which they have.
+    - Loading stays as is: `loadWeights` narrows to the model's compute type, and the trainer seeds its masters from the full values (`loadBaseWeightsResetVelocity` already writes masters losslessly).
+  - **Champion checkpoints:** the champion is an inference network whose weights came from a bf16 export of the trainer. Keeping full precision there means carrying the trainer's master snapshot, taken with the arena candidate, through promotion. Decide whether that's worth it, or whether trainer-side checkpoints are enough.
+  - **Cost:** none in file size (already F32), a master readback per save, and the forward-pass verification on save must compare against a network built from the saved values.
+  - **Related:** `documentation/research/bf16-head-offset/`.
+
 - **Prevent system sleep during training (noted 2026-09-28; not started).** The app holds no sleep or App-Nap assertion anywhere today; verified, there is no `ProcessInfo.beginActivity` / IOPM use. Idle system sleep can therefore pause a long unattended Play-and-Train or corpus-replay run. Add an option, default on, to hold `ProcessInfo.beginActivity([.userInitiated, .idleSystemSleepDisabled])` while training is active, and log when it is taken and released. The Lichess bot plan (§13) adds the same option for bot play.
 
 - **Train-vs-UCI — continuous live training by playing external UCI engines (drafted 2026-07-09; IMPLEMENTED 2026-07-10 — all four components landed on main; end-to-end smoke vs real Stockfish still pending).**
