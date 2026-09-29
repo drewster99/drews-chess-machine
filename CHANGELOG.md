@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-29 CDT — CLI results.json: record unmeasured diagnostics as nil (pending commit)
+## 2026-09-29 00:07 CDT — CLI results.json: record unmeasured diagnostics as nil (`b8a3b38`)
 
 - **Bug (since `91ca615`):** corpus replay and train-vs-UCI runs with `--output` failed to write `results.json` ("the data isn't in the correct format").
   - The cause: the trainer computes its diagnostic values (entropy, played-move probability, value mean and |mean|, W/D/L) only on stats steps and leaves them NaN otherwise, and the runners passed those NaNs into the file. JSON can't encode NaN.
