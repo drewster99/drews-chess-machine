@@ -35,6 +35,9 @@ extension SessionController {
         let bufferRef = replayBuffer
         let championRef = network
         let trainerRef = trainer
+        // Masters are read for the numerics audit only while training is
+        // stopped; snapshot that on the main actor.
+        let trainingIsRunning = realTraining
         // Snapshot training-progress context once, on the main actor,
         // before the detached work begins. Every file written in this
         // pass shares this snapshot, so step/elapsed values line up
@@ -126,6 +129,38 @@ extension SessionController {
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
             } else {
                 summaryLines.append("• Network weights (trainer):  SKIPPED — no trainer initialized")
+            }
+
+            // 5. Numerics audit (champion, then trainer).
+            if let net = championRef {
+                let outcome = await Self.runNumericsAuditStep(
+                    network: net.network,
+                    modelLabel: "champion:\(net.identifier?.description ?? "<no-id>")",
+                    modelID: net.identifier?.description,
+                    trainingStep: nil,
+                    mastersSource: .unavailable(NumericsAudit.championMastersNote),
+                    metadata: exportMetadata,
+                    tag: "RunAll Champion"
+                )
+                summaryLines.append(Self.numericsSummaryLine(outcome, tag: "champion"))
+                if firstSuccessURL == nil, case .saved(let url) = outcome { firstSuccessURL = url }
+            } else {
+                summaryLines.append("• Numerics audit (champion): SKIPPED — no champion loaded")
+            }
+            if let trainer = trainerRef {
+                let outcome = await Self.runNumericsAuditStep(
+                    network: trainer.network,
+                    modelLabel: "trainer:\(trainer.identifier?.description ?? "<no-id>")",
+                    modelID: trainer.identifier?.description,
+                    trainingStep: trainer.completedTrainSteps,
+                    mastersSource: .trainer(trainer, trainingIsRunning: trainingIsRunning),
+                    metadata: exportMetadata,
+                    tag: "RunAll Trainer"
+                )
+                summaryLines.append(Self.numericsSummaryLine(outcome, tag: "trainer"))
+                if firstSuccessURL == nil, case .saved(let url) = outcome { firstSuccessURL = url }
+            } else {
+                summaryLines.append("• Numerics audit (trainer):  SKIPPED — no trainer initialized")
             }
 
             await MainActor.run {
@@ -387,6 +422,14 @@ extension SessionController {
                 summaryLine: "• Value head (champion):    OK (text) / WRITE FAILED — \(err.localizedDescription)",
                 firstSuccessURL: nil
             )
+        }
+    }
+
+    nonisolated private static func numericsSummaryLine(_ outcome: NumericsAuditStepOutcome, tag: String) -> String {
+        switch outcome {
+        case .saved(let url): return "• Numerics audit (\(tag)): OK — \(url.lastPathComponent)"
+        case .writeFailed(let error): return "• Numerics audit (\(tag)): OK (text) / WRITE FAILED — \(error)"
+        case .failed(let error): return "• Numerics audit (\(tag)): FAILED — \(error)"
         }
     }
 

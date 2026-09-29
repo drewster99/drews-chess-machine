@@ -157,6 +157,12 @@ struct DrewsChessMachineApp: App {
         // predate the live probes. Exits before SwiftUI / Metal GUI init.
         Self.handleProbeModelIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: headless numerics audit (--analyze-numerics). Checks a
+        // checkpoint's (or a folder of checkpoints') weights and activations
+        // against fp32 / bf16 / fp16, writing JSON per checkpoint. Exits
+        // before SwiftUI / Metal GUI init.
+        Self.handleAnalyzeNumericsIfPresent(rawArgs: rawArgs)
+
         // Pre-flight: headless fresh-net mint (--new-model). Builds an untrained
         // network from --architecture (a built-in preset, a user-saved
         // Presets/*.json by name, or a path to an arch JSON) and writes it to a
@@ -427,6 +433,11 @@ struct DrewsChessMachineApp: App {
                                               Run the Lichess probe batteries against saved checkpoints
                                               (a weight file, one .dcmsession, or a directory of sessions);
                                               one JSON line per checkpoint x set, then exit.
+              --analyze-numerics <path> [--numerics-corpus <shard>] [--numerics-out <dir>] [--numerics-static-only]
+                                              Numerics audit of a weight file or every weight file under a folder:
+                                              fp32/bf16/fp16 fitness of weights and activations, head offsets,
+                                              ties and cross-entropy. JSON per checkpoint (default: the analyses
+                                              folder), one summary line each to stdout, then exit.
               --show-default-parameters       Print every default training parameter as JSON and exit.
               --create-parameters-file [<path>] [--force]
                                               Write parameters.json + parameters.md (default: ./) and exit.
@@ -1743,6 +1754,47 @@ struct DrewsChessMachineApp: App {
             set = parsed
         }
         ProbeModelCLI.runAndExit(modelPath: modelPath, set: set, outPath: value(after: outFlag))
+    }
+
+    // MARK: - Numerics audit pre-flight (--analyze-numerics)
+
+    /// Inspects `rawArgs` for `--analyze-numerics`. If present, parses the
+    /// optional companions (`--numerics-corpus <shard>`, `--numerics-out
+    /// <dir>`, `--numerics-static-only`) and hands control to
+    /// `NumericsAuditCLI.runAndExit`, which never returns.
+    private static func handleAnalyzeNumericsIfPresent(rawArgs: [String]) {
+        let flag = "--analyze-numerics"
+        guard rawArgs.contains(flag) else { return }
+        let corpusFlag = "--numerics-corpus"
+        let outFlag = "--numerics-out"
+        let staticOnlyFlag = "--numerics-static-only"
+
+        let allowedFlags: Set<String> = [flag, corpusFlag, outFlag, staticOnlyFlag]
+        if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
+            FileHandle.standardError.write(Data("error: \(flag) does not accept '\(bad)'\n".utf8))
+            Darwin.exit(80)
+        }
+
+        func value(after f: String) -> String? {
+            guard let idx = rawArgs.firstIndex(of: f) else { return nil }
+            let vi = idx + 1
+            guard vi < rawArgs.count, !rawArgs[vi].hasPrefix("--") else {
+                FileHandle.standardError.write(Data("error: \(f) requires a value\n".utf8))
+                Darwin.exit(81)
+            }
+            return rawArgs[vi]
+        }
+
+        guard let path = value(after: flag) else {
+            FileHandle.standardError.write(Data("error: \(flag) requires a path (a weight file or a folder)\n".utf8))
+            Darwin.exit(82)
+        }
+        NumericsAuditCLI.runAndExit(
+            path: path,
+            corpusShardPath: value(after: corpusFlag),
+            outDirectory: value(after: outFlag),
+            staticOnly: rawArgs.contains(staticOnlyFlag)
+        )
     }
 
     // MARK: - Fresh-net mint pre-flight (--new-model)

@@ -303,6 +303,12 @@ final class ChessNetwork: @unchecked Sendable {
     /// (p_win, p_draw, p_loss). Exposed for the W/D/L diagnostics in
     /// the trainer; `valueOutput == Σ_c valueProbs_c · [+1, 0, −1]_c`.
     let valueProbs: MPSGraphTensor
+
+    /// Numerics-audit readbacks (fp32), in graph build order: normalization
+    /// inputs, block and tower outputs, the heads' last hidden activations,
+    /// and the head outputs. Empty on every network built without
+    /// `analysisTaps`, which is every production network.
+    let analysisTapReadbacks: [(name: String, tensor: MPSGraphTensor)]
     /// The policy head's final 1×1 conv weight tensor (128 → 76 channels).
     /// Exposed so the trainer can compute diagnostic ||W||₂ per step — the
     /// sharpness of this tensor drives logit magnitudes, which directly
@@ -594,7 +600,8 @@ final class ChessNetwork: @unchecked Sendable {
     /// property doc); default `false` keeps the graph byte-identical.
     init(arch: NetworkArchitecture = .current, bnMode: BNMode = .inference, bf16CastInForward: Bool = false,
          disableAutoLayoutConversion: Bool = false,
-         reducedPrecisionFastMathRaw: UInt? = nil) throws {
+         reducedPrecisionFastMathRaw: UInt? = nil,
+         analysisTaps: Bool = false) throws {
         try arch.validate()
         guard let mtlDevice = MTLCreateSystemDefaultDevice() else {
             throw ChessNetworkError.metalNotSupported
@@ -644,6 +651,10 @@ final class ChessNetwork: @unchecked Sendable {
 
         let conv1x1 = try Self.makeConv1x1Descriptor()
         let stemConvDescriptor = try Self.makeConvDescriptor(kernelSize: arch.stemConvKernelSize)
+
+        // Numerics-audit taps: nil (the production default) records nothing and
+        // adds no graph nodes, so every production graph is unchanged.
+        let taps: AnalysisTapRecorder? = analysisTaps ? AnalysisTapRecorder() : nil
 
 
         // Input: [batch, inputPlanes, 8, 8]. The placeholder is fp32 — the
@@ -707,7 +718,7 @@ final class ChessNetwork: @unchecked Sendable {
             name: "stem_conv"
         )
         x = Self.batchNorm(
-            graph: g, input: x, channels: stemOutC, name: "stem_bn", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
+            graph: g, input: x, channels: stemOutC, name: "stem_bn", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
             weightStorageDataType: weightStorageDType, castInForward: castInForward,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
@@ -728,6 +739,7 @@ final class ChessNetwork: @unchecked Sendable {
         // loop is about to overwrite `x`, so the reference is captured now. Nil-cost
         // when the feature is off (just a retained graph-node reference).
         let stemOutputTensor = x
+        taps?.record("stem_output", x)
 
         // --- Dropout scaffolding (training-mode graphs only) ---
         //
@@ -828,6 +840,7 @@ final class ChessNetwork: @unchecked Sendable {
                 inChannels: towerInC + blockSkipExtra,
                 blockIndex: i,
                 bnMode: bnMode,
+                taps: taps,
                 weightStorageDataType: weightStorageDType,
                 castInForward: castInForward,
                 dropoutRate: dropoutRatePh,
@@ -841,6 +854,7 @@ final class ChessNetwork: @unchecked Sendable {
                 batchVars: &batchVars
             )
             towerInC = spec.channels
+            taps?.record("block\(i)_output", x)
         }
 
         // Advance the RNG state variable to the post-tower stream position
@@ -867,7 +881,7 @@ final class ChessNetwork: @unchecked Sendable {
         // is already conditioned and no tower-end BN exists (matches v3).
         if arch.hasTowerEndBN {
             x = Self.batchNorm(
-                graph: g, input: x, channels: arch.towerOutputChannels, name: "tower_final_bn", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
+                graph: g, input: x, channels: arch.towerOutputChannels, name: "tower_final_bn", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
                 weightStorageDataType: weightStorageDType, castInForward: castInForward,
                 trainables: &trainables,
                 shouldDecay: &shouldDecay,
@@ -878,6 +892,7 @@ final class ChessNetwork: @unchecked Sendable {
             )
             x = Self.activation(g, x, arch, name: "tower_final_act")
         }
+        taps?.record("tower_output", x)
 
         // --- Feature skip into the heads ---
         //
@@ -906,7 +921,7 @@ final class ChessNetwork: @unchecked Sendable {
             var f = g.convolution2D(
                 concat, weights: castInForward(fusionConvW), descriptor: conv1x1, name: "feature_skip_conv")
             f = Self.batchNorm(
-                graph: g, input: f, channels: towerC, name: "feature_skip_bn", bnMode: bnMode,
+                graph: g, input: f, channels: towerC, name: "feature_skip_bn", taps: taps, bnMode: bnMode,
                 dataType: Self.mpsDataType(for: arch), weightStorageDataType: weightStorageDType,
                 castInForward: castInForward, trainables: &trainables, shouldDecay: &shouldDecay,
                 runningStats: &runningStats, runningStatsAssignOps: &runningStatsAssigns,
@@ -928,7 +943,7 @@ final class ChessNetwork: @unchecked Sendable {
 
         let policy = Self.policyHead(
             graph: g, arch: arch, input: policyHeadInput, inputChannels: arch.policyHeadInputChannels,
-            descriptor: conv1x1, bnMode: bnMode,
+            descriptor: conv1x1, bnMode: bnMode, taps: taps,
             weightStorageDataType: weightStorageDType, castInForward: castInForward,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
@@ -947,7 +962,7 @@ final class ChessNetwork: @unchecked Sendable {
 
         let valueHeadOut = Self.valueHead(
             graph: g, arch: arch, input: valueHeadInput, inputChannels: arch.valueHeadInputChannels,
-            descriptor: conv1x1, bnMode: bnMode,
+            descriptor: conv1x1, bnMode: bnMode, taps: taps,
             weightStorageDataType: weightStorageDType, castInForward: castInForward,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
@@ -962,6 +977,22 @@ final class ChessNetwork: @unchecked Sendable {
             : g.cast(valueHeadOut.scalar, to: .float32, name: "value_scalar_f32")
         valueLogits = valueHeadOut.logits
         valueProbs = valueHeadOut.probs
+
+        // Audit readbacks: every tap plus the head outputs, each widened to fp32
+        // so one reader serves every compute dtype. Empty unless taps are on.
+        if let taps {
+            taps.record("policy_logits", policy.output)
+            taps.record("value_logits", valueHeadOut.logits)
+            taps.record("value_probs", valueHeadOut.probs)
+            analysisTapReadbacks = taps.taps.map { tap in
+                let readback = tap.tensor.dataType == .float32
+                    ? tap.tensor
+                    : g.cast(tap.tensor, to: .float32, name: "analysis_tap_\(tap.name)_f32")
+                return (name: tap.name, tensor: readback)
+            }
+        } else {
+            analysisTapReadbacks = []
+        }
 
         trainableVariables = trainables
         trainableShouldDecay = shouldDecay
@@ -2034,6 +2065,63 @@ final class ChessNetwork: @unchecked Sendable {
         }
     }
 
+    /// One analysis tap's values for a batch: fp32, flattened in the tensor's
+    /// own layout (`shape`, batch first).
+    struct AnalysisTapValues: Sendable {
+        let name: String
+        let shape: [Int]
+        let values: [Float]
+    }
+
+    /// Run `count` boards through an audit network and read back every
+    /// analysis tap (numerics audit). Throws on a network built without
+    /// `analysisTaps`.
+    func evaluateAnalysisTaps(boards: [Float], count: Int) async throws -> [AnalysisTapValues] {
+        try await enqueue {
+            try self.internalEvaluateAnalysisTaps(boards: boards, count: count)
+        }
+    }
+
+    private func internalEvaluateAnalysisTaps(boards: [Float], count: Int) throws -> [AnalysisTapValues] {
+        guard !analysisTapReadbacks.isEmpty else {
+            throw ChessNetworkError.outputMissing("evaluateAnalysisTaps: this network was built without analysis taps")
+        }
+        guard count >= 1 else {
+            throw ChessNetworkError.boardSizeMismatch(
+                expected: arch.inputPlanes * Self.boardSize * Self.boardSize, got: 0
+            )
+        }
+        let expected = count * arch.inputPlanes * Self.boardSize * Self.boardSize
+        guard boards.count == expected else {
+            throw ChessNetworkError.boardSizeMismatch(expected: expected, got: boards.count)
+        }
+        let entry = batchInputEntry(for: count)
+        return try autoreleasepool {
+            Self.writeInferenceInput(boards, into: entry.ndArray)
+            let results = graph.run(
+                with: commandQueue,
+                feeds: entry.feeds,
+                targetTensors: analysisTapReadbacks.map(\.tensor),
+                targetOperations: nil
+            )
+            var out: [AnalysisTapValues] = []
+            out.reserveCapacity(analysisTapReadbacks.count)
+            for tap in analysisTapReadbacks {
+                guard let data = results[tap.tensor] else {
+                    throw ChessNetworkError.outputMissing("analysis tap \(tap.name)")
+                }
+                let shape = data.shape.map { $0.intValue }
+                let elementCount = shape.reduce(1, *)
+                out.append(AnalysisTapValues(
+                    name: tap.name,
+                    shape: shape,
+                    values: Self.readFloatsFP32(from: data, count: elementCount)
+                ))
+            }
+            return out
+        }
+    }
+
     /// Overwrite this network's BN running_mean and running_var
     /// variables from caller-supplied per-layer batch stats. Used by
     /// the construction-time warmup path: a fresh `.inference` network
@@ -2318,6 +2406,7 @@ final class ChessNetwork: @unchecked Sendable {
         input: MPSGraphTensor,
         channels: Int,
         name: String,
+        taps: AnalysisTapRecorder?,
         bnMode: BNMode,
         dataType: MPSDataType,
         weightStorageDataType: MPSDataType,
@@ -2329,6 +2418,7 @@ final class ChessNetwork: @unchecked Sendable {
         batchMeans: inout [MPSGraphTensor],
         batchVars: inout [MPSGraphTensor]
     ) -> MPSGraphTensor {
+        taps?.record("\(name)_input", input)
         let ch = NSNumber(value: channels)
         // Config-D: gamma/beta/running-stat variables live in
         // `weightStorageDataType` (fp32), but `normalize()` runs in the
@@ -2477,11 +2567,13 @@ final class ChessNetwork: @unchecked Sendable {
         input: MPSGraphTensor,
         channels: Int,
         name: String,
+        taps: AnalysisTapRecorder?,
         weightStorageDataType: MPSDataType,
         castInForward: (MPSGraphTensor) -> MPSGraphTensor,
         trainables: inout [MPSGraphTensor],
         shouldDecay: inout [Bool]
     ) -> MPSGraphTensor {
+        taps?.record("\(name)_input", input)
         let ch = NSNumber(value: channels)
         let gamma = graph.variable(
             with: onesData(count: channels, dataType: weightStorageDataType),
@@ -2534,6 +2626,7 @@ final class ChessNetwork: @unchecked Sendable {
         inChannels: Int,
         blockIndex: Int,
         bnMode: BNMode,
+        taps: AnalysisTapRecorder?,
         weightStorageDataType: MPSDataType,
         castInForward: (MPSGraphTensor) -> MPSGraphTensor,
         dropoutRate: MPSGraphTensor?,
@@ -2671,7 +2764,7 @@ final class ChessNetwork: @unchecked Sendable {
         var skipProjInput = input
         switch spec.activationStyle {
         case .pre:
-            var h = batchNorm(graph: graph, input: input, channels: inC, name: "\(prefix)_bn1", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
+            var h = batchNorm(graph: graph, input: input, channels: inC, name: "\(prefix)_bn1", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
                 weightStorageDataType: weightStorageDataType, castInForward: castInForward,
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
@@ -2680,7 +2773,7 @@ final class ChessNetwork: @unchecked Sendable {
             let conv1W = makeConvWeight("\(prefix)_conv1", spec.conv1KernelSize, inC, outC)
             trainables.append(conv1W); shouldDecay.append(true)
             h = graph.convolution2D(h, weights: castInForward(conv1W), descriptor: conv1Desc, name: "\(prefix)_conv1")
-            h = batchNorm(graph: graph, input: h, channels: outC, name: "\(prefix)_bn2", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
+            h = batchNorm(graph: graph, input: h, channels: outC, name: "\(prefix)_bn2", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
                 weightStorageDataType: weightStorageDataType, castInForward: castInForward,
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
@@ -2693,7 +2786,7 @@ final class ChessNetwork: @unchecked Sendable {
             let conv1W = makeConvWeight("\(prefix)_conv1", spec.conv1KernelSize, inC, outC)
             trainables.append(conv1W); shouldDecay.append(true)
             var h = graph.convolution2D(input, weights: castInForward(conv1W), descriptor: conv1Desc, name: "\(prefix)_conv1")
-            h = batchNorm(graph: graph, input: h, channels: outC, name: "\(prefix)_bn1", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
+            h = batchNorm(graph: graph, input: h, channels: outC, name: "\(prefix)_bn1", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
                 weightStorageDataType: weightStorageDataType, castInForward: castInForward,
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
@@ -2702,7 +2795,7 @@ final class ChessNetwork: @unchecked Sendable {
             let conv2W = makeConvWeight("\(prefix)_conv2", spec.conv2KernelSize, outC, outC)
             trainables.append(conv2W); shouldDecay.append(true)
             h = graph.convolution2D(h, weights: castInForward(conv2W), descriptor: conv2Desc, name: "\(prefix)_conv2")
-            z = batchNorm(graph: graph, input: h, channels: outC, name: "\(prefix)_bn2", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
+            z = batchNorm(graph: graph, input: h, channels: outC, name: "\(prefix)_bn2", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
                 weightStorageDataType: weightStorageDataType, castInForward: castInForward,
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
@@ -2797,7 +2890,7 @@ final class ChessNetwork: @unchecked Sendable {
         // skipMerge mode. (v5 = v4 clean-add highway + this LayerNorm.)
         guard spec.resolvedOutputNorm == .layerNorm else { return merged }
         return layerNorm(
-            graph: graph, input: merged, channels: outC, name: "\(prefix)_res_ln",
+            graph: graph, input: merged, channels: outC, name: "\(prefix)_res_ln", taps: taps,
             weightStorageDataType: weightStorageDataType, castInForward: castInForward,
             trainables: &trainables, shouldDecay: &shouldDecay
         )
@@ -2897,6 +2990,7 @@ final class ChessNetwork: @unchecked Sendable {
         inputChannels: Int,
         descriptor: MPSGraphConvolution2DOpDescriptor,
         bnMode: BNMode,
+        taps: AnalysisTapRecorder?,
         weightStorageDataType: MPSDataType,
         castInForward: (MPSGraphTensor) -> MPSGraphTensor,
         trainables: inout [MPSGraphTensor],
@@ -2944,11 +3038,12 @@ final class ChessNetwork: @unchecked Sendable {
                 dataType: weightStorageDataType, name: "policy_pre_conv_weights")
             trainables.append(preConvW); shouldDecay.append(true)
             var x = graph.convolution2D(input, weights: castInForward(preConvW), descriptor: descriptor, name: "policy_pre_conv")
-            x = batchNorm(graph: graph, input: x, channels: pK, name: "policy_pre_bn", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
+            x = batchNorm(graph: graph, input: x, channels: pK, name: "policy_pre_bn", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
                 weightStorageDataType: weightStorageDataType, castInForward: castInForward,
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
             x = activation(graph, x, arch, name: "policy_pre_act")
+            taps?.record("policy_pre_act", x)
             let convW = graph.variable(
                 with: heInitDataConvOIHW(shape: [pc, pK, 1, 1], dataType: weightStorageDataType),
                 shape: [NSNumber(value: pc), NSNumber(value: pK), 1, 1],
@@ -2972,11 +3067,12 @@ final class ChessNetwork: @unchecked Sendable {
                 dataType: weightStorageDataType, name: "policy_pre_conv_weights")
             trainables.append(preConvW); shouldDecay.append(true)
             var x = graph.convolution2D(input, weights: castInForward(preConvW), descriptor: descriptor, name: "policy_pre_conv")
-            x = batchNorm(graph: graph, input: x, channels: pK, name: "policy_pre_bn", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
+            x = batchNorm(graph: graph, input: x, channels: pK, name: "policy_pre_bn", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
                 weightStorageDataType: weightStorageDataType, castInForward: castInForward,
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
             x = activation(graph, x, arch, name: "policy_pre_act")
+            taps?.record("policy_pre_act", x)
             let flatSize = pK * Self.boardSize * Self.boardSize
             x = graph.reshape(x, shape: [-1, NSNumber(value: flatSize)], name: "policy_flatten_pre")
             let fcW = graph.variable(
@@ -3013,6 +3109,7 @@ final class ChessNetwork: @unchecked Sendable {
         inputChannels: Int,
         descriptor: MPSGraphConvolution2DOpDescriptor,
         bnMode: BNMode,
+        taps: AnalysisTapRecorder?,
         weightStorageDataType: MPSDataType,
         castInForward: (MPSGraphTensor) -> MPSGraphTensor,
         trainables: inout [MPSGraphTensor],
@@ -3040,7 +3137,7 @@ final class ChessNetwork: @unchecked Sendable {
             input, weights: castInForward(convW), descriptor: descriptor, name: "value_conv"
         )
         x = batchNorm(
-            graph: graph, input: x, channels: convChannels, name: "value_bn", bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
+            graph: graph, input: x, channels: convChannels, name: "value_bn", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
             weightStorageDataType: weightStorageDataType, castInForward: castInForward,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
@@ -3076,6 +3173,7 @@ final class ChessNetwork: @unchecked Sendable {
         x = graph.matrixMultiplication(primary: x, secondary: castInForward(fc1W), name: "value_fc1")
         x = graph.addition(x, castInForward(fc1Bias), name: "value_fc1_bias_add")
         x = activation(graph, x, arch, name: "value_fc1_act")
+        taps?.record("value_fc1_act", x)
 
         // FC2: hidden -> valueHeadClasses (3 = W/D/L logits, or 1 = scalar pre-tanh).
         let classes = arch.valueHeadClasses

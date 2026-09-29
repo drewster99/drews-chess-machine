@@ -9,6 +9,44 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-28 CDT — Numerics audit: head numerics plan Phase 0 (pending commit)
+
+The before/after gauge for `documentation/plans-active/HEAD_NUMERICS_PLAN.md`. It measures how well a network's numbers fit fp32, bf16 and fp16, before any fix lands.
+
+- **Static checks** (`Network/NumericsAudit.swift`), weights only:
+  - **Per tensor, for each format:**
+    - overflow headroom
+    - the fraction of values below the normal range, and the fraction that round to zero
+    - rounding error against the tensor's spread. For normalization scales, variances and the ReZero scalar this is reported but doesn't set a verdict.
+  - **Head shared offset:** each head's final layer (value `fc2`; policy `policy_conv` / `policy_fc`) is measured as its mean-row norm over the per-output residual, relative to what random init gives, plus the drift of its bias mean from init.
+  - **BatchNorm running stats:** the largest |mean| / std per layer, and variances below each format's normal range.
+  - **ReZero:** whether tanh(α/C) rounds to exactly 1 in each format. It's reported, not flagged.
+  - **fp32 masters against the working weights:** trainer only, and only while training is stopped.
+- **Dynamic checks** (`NumericsAudit+Dynamic.swift`). The same weights are built as fp32, bf16 and fp16 audit networks and run over a fixed position set, with fp32 as the reference.
+  - **Positions:**
+    - the start position
+    - a seeded corpus-shard sample, when one is given
+    - every ply of the Lichess bot's filed games, capped; unreadable games are skipped and listed
+  - **Value head:** ties, cross-entropy against game results, mean |Δ(p_win − p_loss)|, argmax changes, the shared-logit distribution, and the start-position W/D/L.
+  - **Policy head:** KL over legal moves, top-1 changes, top-2 ties, and the legal-logit level and spread.
+  - **Every analysis tap:** range, headroom to each format's maximum, per-channel |mean| / std for normalization inputs, and error against fp32.
+- **Analysis taps:** `ChessNetwork(analysisTaps:)` exposes each normalization input, block output, the tower output, the heads' last hidden activations and the head outputs, each read back as fp32. Off by default, and with taps off no graph nodes are added, so production graphs are unchanged.
+- **Verdicts:** fine, degraded or BAD per check, from named thresholds (`NumericsAudit.Threshold`) that start from the bf16 head-offset survey. Findings are listed worst first.
+- **Where it runs:**
+  - **Debug ▸ Analyze Network Weights (Champion / Trainer):** runs the audit after the weight analysis, writes `numerics_audit_*.json` under the analyses folder, and logs a `[NUMERICS]` block.
+  - **Run All Analyses:** runs it for the champion and the trainer.
+  - **CLI:** `--analyze-numerics <file | folder> [--numerics-corpus <shard>] [--numerics-out <dir>] [--numerics-static-only]` covers every weight file under a folder. It identifies each by metadata, writes a JSON per checkpoint, and prints one summary line each to stdout.
+- **Fix:** `ValueHeadAnalyzer` looked for `value_fc2_*`, but the variables are `value_wdl_fc2_*`, so its W/D/L fc2 details were always empty.
+- **Tests (new, not yet run):** `NumericsAuditStaticTests` covers:
+  - format limits and rounding
+  - tensor fitness on synthetic tensors
+  - exact shared-offset measurements in both layouts
+  - BatchNorm mean-to-spread
+  - ReZero saturation
+  - master divergence
+  - the start-only position set
+  - that taps exist only when asked for and leave the weight layout unchanged
+
 ## 2026-09-28 17:48 CDT — Lichess bot: audit fixes, challenge-sheet features (`99b341b`)
 
 A full audit of the day's Lichess bot work, with every fix reviewed twice before landing and the whole diff rechecked after. **Not yet run: the test suite.** Every new test file below was written but has not been compiled or run. `ChessTrainer` and `ChessNetwork` changed, so the full suite is due. The one existing test changed, with approval, is `LichessBotViewRenderTests`, updated to the current view initializers; it had not compiled since the live-testing commit.

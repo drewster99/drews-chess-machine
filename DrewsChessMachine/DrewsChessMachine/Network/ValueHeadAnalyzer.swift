@@ -12,15 +12,15 @@ import Foundation
 //   BatchNorm γ, β            — `value_bn_gamma|beta`  (valueHeadConvChannels each)
 //   FC flatten → hidden       — `value_fc1_weights`
 //   FC flatten → hidden bias  — `value_fc1_bias`
-//   FC hidden → 3 (W/D/L)     — `value_fc2_weights`
-//   FC hidden → 3 bias        — `value_fc2_bias`              3 floats
+//   FC hidden → 3 (W/D/L)     — `value_wdl_fc2_weights`
+//   FC hidden → 3 bias        — `value_wdl_fc2_bias`              3 floats
 //
 // (flatten = boardSize² × valueHeadConvChannels; hidden =
 // valueHeadHiddenUnits — see `ChessNetwork.valueHead`.)
 //
-// The two highest-signal reads are `value_fc2_weights` (output-layer
+// The two highest-signal reads are `value_wdl_fc2_weights` (output-layer
 // magnitudes — if these are near zero the head is bias-only) and
-// `value_fc2_bias` (initialized to `[0, ln 6, 0]` for a draw-heavy
+// `value_wdl_fc2_bias` (initialized to `[0, ln 6, 0]` for a draw-heavy
 // 0.125 / 0.75 / 0.125 prior; current value plus its softmax shows
 // how much the bias-only prediction has shifted toward the empirical
 // W/D/L distribution).
@@ -61,12 +61,13 @@ enum ValueHeadAnalyzer {
         switch name {
         case "value_conv_weights":   return arch.towerOutputChannels  // 1×1 conv: inC = tower output
         case "value_fc1_weights":    return ChessNetwork.boardSize * ChessNetwork.boardSize * arch.valueHeadConvChannels  // FC [flatten, hidden], fan_in = flatten
-        case "value_fc2_weights":    return arch.valueHeadHiddenUnits  // FC [hidden, classes], fan_in = hidden
+        case "value_wdl_fc2_weights", "value_scalar_fc2_weights":
+            return arch.valueHeadHiddenUnits  // FC [hidden, classes], fan_in = hidden
         default:                     return nil         // bn/bias: no He-init reference
         }
     }
 
-    /// Initial value of `value_fc2_bias` as set in
+    /// Initial value of `value_wdl_fc2_bias` as set in
     /// `ChessNetwork.valueHead`: `[0, ln 6, 0]`, which softmaxes to
     /// `[0.125, 0.75, 0.125]` — the empirically draw-heavy prior of
     /// a fresh self-play buffer. Reported so the JSON consumer can
@@ -119,8 +120,8 @@ enum ValueHeadAnalyzer {
         }
 
         struct FC2WeightsDetail: Codable, Sendable {
-            /// Per-output-column L2 norm of `value_fc2_weights`.
-            /// Indexed `[win, draw, loss]`. The `value_fc2_weights`
+            /// Per-output-column L2 norm of `value_wdl_fc2_weights`.
+            /// Indexed `[win, draw, loss]`. The `value_wdl_fc2_weights`
             /// tensor has shape `[64, 3]` (in × out); for column `c`
             /// we sum the squares of `weights[i, c]` for i in 0..<64.
             /// A near-zero norm for, say, the `draw` column would
@@ -188,9 +189,12 @@ enum ValueHeadAnalyzer {
 
             stats.append(makeStats(name: name, values: values, arch: arch))
 
-            if name == "value_fc2_bias" {
+            // The W/D/L details describe the three-class head's fc2 (its
+            // variables are named for the head style; see
+            // `ChessNetwork.valueHead`).
+            if name == "value_wdl_fc2_bias" {
                 fc2BiasDetail = makeFC2BiasDetail(values: values)
-            } else if name == "value_fc2_weights" {
+            } else if name == "value_wdl_fc2_weights" {
                 fc2WeightsDetail = makeFC2WeightsDetail(values: values, arch: arch)
             }
         }
@@ -298,7 +302,7 @@ enum ValueHeadAnalyzer {
     }
 
     private static func makeFC2WeightsDetail(values: [Float], arch: NetworkArchitecture) -> Result.FC2WeightsDetail? {
-        // The `value_fc2_weights` tensor has shape [hidden, 3] (in × out)
+        // The `value_wdl_fc2_weights` tensor has shape [hidden, 3] (in × out)
         // and is stored row-major (every 3 consecutive floats are the
         // weights from one input neuron to W/D/L). To get the L2 norm
         // of the `[c]` output column, sum squares of `values[i*outDim + c]`

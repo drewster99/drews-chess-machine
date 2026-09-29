@@ -32,6 +32,9 @@ extension SessionController {
         runNetworkWeightsAnalysis(
             networkInner: net.network,
             modelLabel: modelLabel,
+            modelID: net.identifier?.description,
+            trainingStep: nil,
+            mastersSource: .unavailable(NumericsAudit.championMastersNote),
             buttonContext: "Champion"
         )
     }
@@ -54,6 +57,9 @@ extension SessionController {
         runNetworkWeightsAnalysis(
             networkInner: trainer.network,
             modelLabel: modelLabel,
+            modelID: trainer.identifier?.description,
+            trainingStep: trainer.completedTrainSteps,
+            mastersSource: .trainer(trainer, trainingIsRunning: realTraining),
             buttonContext: "Trainer"
         )
     }
@@ -65,9 +71,16 @@ extension SessionController {
     /// `buttonContext` is a short tag (e.g. "Champion" / "Trainer")
     /// that appears in the alert titles so the user knows which path
     /// produced the result.
+    ///
+    /// The numerics audit (`NumericsAudit`) runs right after the weight
+    /// analysis, on the same network, and writes its own JSON and
+    /// `[NUMERICS]` block.
     private func runNetworkWeightsAnalysis(
         networkInner: ChessNetwork,
         modelLabel: String,
+        modelID: String?,
+        trainingStep: Int?,
+        mastersSource: NumericsMastersSource,
         buttonContext: String
     ) {
         guard beginAnalysis("Network Weights (\(buttonContext))") else { return }
@@ -100,6 +113,16 @@ extension SessionController {
                 result: result,
                 modelLabel: modelLabel
             )
+            let numerics = await Self.runNumericsAuditStep(
+                network: networkInner,
+                modelLabel: modelLabel,
+                modelID: modelID,
+                trainingStep: trainingStep,
+                mastersSource: mastersSource,
+                metadata: exportMetadata,
+                tag: buttonContext
+            )
+            let numericsLine = numerics.description
 
             await MainActor.run {
                 SessionLogger.shared.log("[NETW] === Network weight analysis begin ===")
@@ -117,8 +140,10 @@ extension SessionController {
                             Saved JSON to:
                             \(url.path)
 
-                            A text summary was written to the session log under [NETW]; \
-                            click Reveal in Finder to open the JSON in the output folder.
+                            \(numericsLine)
+
+                            Text summaries were written to the session log under [NETW] and \
+                            [NUMERICS]; click Reveal in Finder to open the JSON in the output folder.
                             """,
                         revealURL: url
                     )
