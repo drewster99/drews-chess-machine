@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-28 CDT — Numerics audit: head numerics plan Phase 0 (pending commit)
+## 2026-09-28 20:13 CDT — Numerics audit: head numerics plan Phase 0 (`2194f1d`)
 
 The before/after gauge for `documentation/plans-active/HEAD_NUMERICS_PLAN.md`. It measures how well a network's numbers fit fp32, bf16 and fp16, before any fix lands.
 
