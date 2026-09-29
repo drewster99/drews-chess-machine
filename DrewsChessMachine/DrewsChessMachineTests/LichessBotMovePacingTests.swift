@@ -74,7 +74,9 @@ final class LichessBotMovePacingTests: XCTestCase {
         XCTAssertEqual(record.acceptedPlies, [0], "a held move waits for the operator")
 
         pacing.value = LichessBotMovePacingSnapshot(delaySeconds: 0, holds: false, releaseRequested: true)
-        try await waitUntil("the held move is posted", time: time) { await server.record().acceptedPlies == [0, 2] }
+        // With the hold off, the script's reply to the released move is
+        // answered at once, so the list can already have moved past ply 2.
+        try await waitUntil("the held move is posted", time: time) { await server.record().acceptedPlies.starts(with: [0, 2]) }
         XCTAssertEqual(releaseReasons(observer), ["the operator played it"])
 
         pacing.value = LichessBotMovePacingSnapshot()

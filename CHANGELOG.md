@@ -9,6 +9,17 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-28 CDT — Lichess bot: resend as casual, ruled-out speed warning, deterministic tests (pending commit)
+
+- **Resend as Casual.** When a rated challenge is declined with Lichess's `casual` reason ("please send me a casual challenge instead"), the Overview's outcome line offers a button that sends the same challenge again, unrated.
+  - Outgoing-challenge outcomes now carry Lichess's decline key (`reasonKey`) alongside its text, and each pending challenge keeps its request.
+- **Settings warning for speeds the clock bounds rule out.** A checked speed that no clock inside the clock and increment bounds can have gets an orange warning. For example, with "Clock at least 180 s", every ultraBullet and bullet clock is excluded. Correspondence is always listed when checked, since it has no clock.
+  - Lichess's speed-from-clock rule now lives in one place, `LichessBotSpeed.forClock`, and the Challenge sheet uses it.
+  - Test: `LichessBotSpeedBoundsTests`.
+- **Deterministic tests (approved).** Fixed real-time sleeps in the session, manager, stream-reader and Phase 5 tests are replaced with sentinel lines, manual time, or waiting on ordering. `ChessNetworkValueDistributionTests` builds its networks through the async GCD-bridged factory.
+- **Two held-move tests were racing, not the bot.** After the release, they waited for the posted plies to equal exactly `[0, 2]`. The fake server's script answers at once, so the list can already have moved on to ply 4. They now wait for it to start with `[0, 2]`.
+- The two decline-outcome assertions now include the reason key.
+
 ## 2026-09-28 21:55 CDT — Head numerics fix: fp32 head tails, value-head recentering, centered head losses (head numerics plan Phases 1–2) (`da15920`)
 
 Implements Phases 1 and 2 of `documentation/plans-active/HEAD_NUMERICS_PLAN.md`: stops the bf16 shared-logit offset from rounding away the heads' real differences, removes the offset existing checkpoints carry, and stops it growing.

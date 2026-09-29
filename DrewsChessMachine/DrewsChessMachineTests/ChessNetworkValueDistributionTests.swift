@@ -60,7 +60,7 @@ final class ChessNetworkValueDistributionTests: XCTestCase {
     }
 
     func testSinglePassMatchesPolicyAndSecondPassDistribution() async throws {
-        let net = try ChessMPSNetwork(.randomWeights)
+        let net = try await InferenceNetworkFactory.build(arch: .current)
         for (index, board) in try boards(for: net).enumerated() {
             let scalarPath = try await Self.evaluate(net, board)
             let singlePass = try await Self.evaluateWithDistribution(net, board)
@@ -85,7 +85,7 @@ final class ChessNetworkValueDistributionTests: XCTestCase {
     }
 
     func testConcurrentEvaluateOnOneNetworkMatchesSequential() async throws {
-        let net = try ChessMPSNetwork(.randomWeights)
+        let net = try await InferenceNetworkFactory.build(arch: .current)
         let positions = try boards(for: net)
         // Several rounds over every position, so many calls are in flight
         // at once.

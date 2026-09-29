@@ -3,6 +3,20 @@ import Foundation
 /// Which challenges the bot accepts (plan §7). The defaults are deliberately
 /// conservative; plan §7 explains each one.
 struct LichessBotChallengeSettings: Sendable, Equatable, Codable {
+    /// Checked speeds no clock inside the clock and increment bounds can
+    /// have, fastest first: every challenge at such a speed is declined, so
+    /// the checkbox does nothing. Correspondence is always listed when
+    /// checked, since it has no clock. Speed rises with the clock and the
+    /// increment, so the fastest and slowest speeds the bounds allow are
+    /// those of the bounds' corners.
+    var speedsRuledOutByClockBounds: [LichessBotSpeed] {
+        let fastest = LichessBotSpeed.forClock(limitSeconds: minimumInitialSeconds, incrementSeconds: minimumIncrementSeconds)
+        let slowest = LichessBotSpeed.forClock(limitSeconds: maximumInitialSeconds, incrementSeconds: maximumIncrementSeconds)
+        return allowedSpeeds.sorted().filter { speed in
+            speed == .correspondence || speed < fastest || slowest < speed
+        }
+    }
+
     var acceptRated = false
     var acceptCasual = true
     var allowedSpeeds: Set<LichessBotSpeed> = [.blitz, .rapid]

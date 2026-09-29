@@ -181,6 +181,13 @@ final class LichessBotPhase5CoreTests: XCTestCase {
         }
     }
 
+    private func resolvedChallengeIDs(_ events: SyncBox<[LichessBotManagerEvent]>) -> [String] {
+        events.value.compactMap { event in
+            if case .outgoingChallengeResolved(let challengeID, _) = event { return challengeID }
+            return nil
+        }
+    }
+
     func testOutgoingChallengeDeclineAndCancelAreReported() async throws {
         let events = SyncBox<[LichessBotManagerEvent]>([])
         let time = LichessBotManualTime()
@@ -197,7 +204,7 @@ final class LichessBotPhase5CoreTests: XCTestCase {
         await manager.noteOutgoingChallenge(id: "ch1")
         await account.send(#"{"type":"challengeDeclined","challenge":{"id":"ch1","declineReason":"I'm not accepting challenges right now.","declineReasonKey":"later"}}"#)
         try await waitUntil("the decline is reported") { outcomes(events).count == 1 }
-        XCTAssertEqual(outcomes(events), [.declined(reason: "I'm not accepting challenges right now.")])
+        XCTAssertEqual(outcomes(events), [.declined(reason: "I'm not accepting challenges right now.", reasonKey: "later")])
         let pendingAfterDecline = await manager.outgoingChallengeID
         XCTAssertNil(pendingAfterDecline)
 
@@ -207,8 +214,14 @@ final class LichessBotPhase5CoreTests: XCTestCase {
         XCTAssertEqual(outcomes(events).last, .canceled)
 
         await account.send(#"{"type":"challengeDeclined","challenge":{"id":"someone-elses"}}"#)
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(outcomes(events).count, 2, "only our pending challenge is tracked")
+        // The stream is handled in order, so once the answer to a challenge
+        // of ours sent after it is reported, the foreign one has been
+        // handled too.
+        await manager.noteOutgoingChallenge(id: "ch3")
+        await account.send(#"{"type":"challengeDeclined","challenge":{"id":"ch3","declineReasonKey":"generic"}}"#)
+        try await waitUntil("the later decline of our own challenge is reported") { resolvedChallengeIDs(events).contains("ch3") }
+        XCTAssertEqual(outcomes(events).count, 3, "only our pending challenge is tracked")
+        XCTAssertEqual(resolvedChallengeIDs(events), ["ch1", "ch2", "ch3"])
         run.cancel()
         await run.value
     }

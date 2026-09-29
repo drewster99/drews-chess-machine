@@ -121,6 +121,19 @@ enum LichessBotSpeed: String, Sendable, Hashable, CaseIterable, Codable, Compara
         lhs.fastestFirstRank < rhs.fastestFirstRank
     }
 
+    /// Lichess's speed for a real-time clock, from its estimated game length
+    /// in seconds: the initial time plus forty moves' increments.
+    static func forClock(limitSeconds: Int, incrementSeconds: Int) -> LichessBotSpeed {
+        let estimate = limitSeconds + 40 * incrementSeconds
+        switch estimate {
+        case ..<30: return .ultraBullet
+        case ..<180: return .bullet
+        case ..<480: return .blitz
+        case ..<1500: return .rapid
+        default: return .classical
+        }
+    }
+
     /// As Lichess shows it ("UltraBullet", "Blitz", …).
     var displayName: String {
         switch self {

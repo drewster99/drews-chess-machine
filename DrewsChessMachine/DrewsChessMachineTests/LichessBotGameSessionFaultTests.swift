@@ -431,7 +431,9 @@ final class LichessBotGameSessionFaultTests: XCTestCase {
         }
         let heldIndex = h.observer.turnStatuses.value.count
         pacing.value = LichessBotMovePacingSnapshot(delaySeconds: 0, holds: false, releaseRequested: true)
-        try await waitUntil("the held move is posted", advancing: h.time, by: .milliseconds(250)) { await server.record().acceptedPlies == [0, 2] }
+        // With the hold off, the script's reply to the released move is answered at
+        // once, so the list can already have moved past ply 2.
+        try await waitUntil("the held move is posted", advancing: h.time, by: .milliseconds(250)) { await server.record().acceptedPlies.starts(with: [0, 2]) }
         let afterHold = h.observer.turnStatuses.value.dropFirst(heldIndex)
         XCTAssertTrue(afterHold.contains { $0.awaitingOurMove }, "a released move awaits its post")
         pacing.value = LichessBotMovePacingSnapshot()

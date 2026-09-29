@@ -78,6 +78,17 @@ final class LichessBotController {
         let id: String
         let username: String
         let sentAt: Date
+        /// What was asked for, so a decline can offer the same challenge
+        /// adjusted.
+        let request: LichessBotOutgoingChallenge
+    }
+
+    /// A rated challenge the player declined with Lichess's `casual` reason
+    /// ("please send me a casual challenge instead"): the same challenge,
+    /// unrated, ready to send.
+    struct CasualResendOffer: Equatable {
+        let username: String
+        let request: LichessBotOutgoingChallenge
     }
 
     /// An opponent's public profile, fetched once per app session (plan
@@ -122,6 +133,9 @@ final class LichessBotController {
     /// poll loop (the Challenge sheet warns past the daily per-opponent limit).
     private(set) var gamesTodayByOpponent: [String: Int] = [:]
     private(set) var lastChallengeOutcome: String?
+    /// Set when the latest outgoing challenge was declined as "send me a
+    /// casual challenge instead"; cleared by the next challenge sent.
+    private(set) var casualResendOffer: CasualResendOffer?
     private(set) var oneGameRequested = false
     private(set) var alarms: [Alarm] = []
     /// Alarms dropped from the front of the list to keep it bounded; the
@@ -992,13 +1006,25 @@ final class LichessBotController {
             await manager.releaseOutgoingChallengeReservation(against: opponentID)
             throw error
         }
-        pendingChallenges.append(PendingChallenge(id: created.id, username: username, sentAt: Date()))
+        pendingChallenges.append(PendingChallenge(id: created.id, username: username, sentAt: Date(), request: request))
+        casualResendOffer = nil
         loadOpponentProfile(username)
         lastChallengeOutcome = nil
         // Turns the reservation into a pending challenge; may resolve at
         // once, if the answer already arrived.
         await manager.noteSentChallenge(id: created.id, opponentID: opponentID)
         protocolLog.record(.challenge, "challenge sent to \(username)", fields: ["id": created.id, "rated": "\(request.rated)", "clock": "\(request.clockLimitSeconds)+\(request.clockIncrementSeconds)", "color": request.color.rawValue])
+    }
+
+    /// Send the declined rated challenge again as casual, as the player
+    /// asked. A failure is reported in the outcome line and the offer stays.
+    func resendAsCasual() async {
+        guard let offer = casualResendOffer else { return }
+        do {
+            try await sendChallenge(to: offer.username, request: offer.request)
+        } catch {
+            lastChallengeOutcome = "\(offer.username): resending as casual failed: \(Self.safeDescription(error))"
+        }
     }
 
     func cancelChallenge(id: String) async {
@@ -1539,8 +1565,15 @@ final class LichessBotController {
             switch outcome {
             case .accepted(let gameID):
                 text = "accepted; game \(gameID)"
-            case .declined(let reason):
+            case .declined(let reason, let reasonKey):
                 text = "declined" + (reason.map { ": \($0)" } ?? "")
+                if reasonKey == LichessBotDeclineReason.casual.rawValue,
+                   let pending = pendingChallenges.first(where: { $0.id == challengeID }),
+                   pending.request.rated {
+                    var casual = pending.request
+                    casual.rated = false
+                    casualResendOffer = CasualResendOffer(username: pending.username, request: casual)
+                }
             case .canceled:
                 text = "canceled"
             }

@@ -42,7 +42,9 @@ enum LichessBotManagerEvent: Sendable {
 
 enum LichessBotOutgoingChallengeOutcome: Sendable, Equatable {
     case accepted(gameID: String)
-    case declined(reason: String?)
+    /// `reason` is the decliner's text; `reasonKey` Lichess's key for it
+    /// (`casual`, `tooFast`, …), which is what code acts on.
+    case declined(reason: String?, reasonKey: String? = nil)
     case canceled
 }
 
@@ -520,7 +522,7 @@ actor LichessBotSessionManager {
             // The game stream may never deliver the final state (plan E22).
             sessions[info.gameId]?.requestResync(reason: "gameFinish on the event stream")
         case .challengeDeclined(let reference):
-            resolveChallenge(reference.id, outcome: .declined(reason: reference.declineReason ?? reference.declineReasonKey))
+            resolveChallenge(reference.id, outcome: .declined(reason: reference.declineReason ?? reference.declineReasonKey, reasonKey: reference.declineReasonKey))
         case .challengeCanceled(let reference):
             acceptedAwaitingStart[reference.id] = nil
             resolveChallenge(reference.id, outcome: .canceled)

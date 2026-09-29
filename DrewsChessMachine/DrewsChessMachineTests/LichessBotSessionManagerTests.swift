@@ -53,6 +53,17 @@ actor LichessBotFakeAccountAPI: LichessBotAccountAPI {
         continuation?.yield(Data((line + "\n").utf8))
     }
 
+    /// Send a line of an event type the manager doesn't know, named
+    /// `marker`, after every line sent so far. The manager reads its event
+    /// stream one line at a time, reports each line read, and finishes
+    /// handling it before reading the next, so once this line is reported
+    /// (`LichessBotManagerEvent.isEventStreamLine(containing:)`) every
+    /// earlier line has been fully handled. The manager journals the unknown
+    /// type as an anomaly and otherwise ignores it.
+    func sendSentinel(_ marker: String) {
+        send(#"{"type":"\#(marker)"}"#)
+    }
+
     func closeCurrentStream() {
         continuation?.finish()
         continuation = nil
@@ -68,6 +79,15 @@ actor LichessBotFakeAccountAPI: LichessBotAccountAPI {
 
     var declineReasons: [LichessBotDeclineReason] {
         declined.map(\.reason)
+    }
+}
+
+extension LichessBotManagerEvent {
+    /// This is the manager reporting that it read an event-stream line
+    /// containing `marker`.
+    func isEventStreamLine(containing marker: String) -> Bool {
+        guard case .eventStreamLine(let data, _) = self else { return false }
+        return String(decoding: data, as: UTF8.self).contains(marker)
     }
 }
 
@@ -291,7 +311,12 @@ final class LichessBotSessionManagerTests: XCTestCase {
         let h = try makeHarness(script: [.open(lines: [gameStartLine(), gameStartLine()])], provider: provider, gameServer: server)
         let run = Task { await h.manager.run() }
         try await waitUntil("the first move is posted") { await server.record().acceptedPlies == [0] }
-        try await Task.sleep(for: .milliseconds(100))
+        // Both gameStart lines were sent before the sentinel, so the
+        // duplicate has been handled once the sentinel is read.
+        await h.account.sendSentinel("sentinel-after-duplicate-game-start")
+        try await waitUntil("the duplicate gameStart has been handled") {
+            h.events.value.contains { $0.isEventStreamLine(containing: "sentinel-after-duplicate-game-start") }
+        }
         let started = h.events.value.filter { event in
             if case .gameSessionStarted = event { return true }
             return false

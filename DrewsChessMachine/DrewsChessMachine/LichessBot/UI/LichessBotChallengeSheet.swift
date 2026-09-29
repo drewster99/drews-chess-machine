@@ -89,17 +89,9 @@ struct LichessBotChallengeSheet: View {
             }
         }
 
-        /// Lichess's speed for this clock: estimated duration
-        /// `limit + 40 × increment`.
+        /// Lichess's speed for this clock.
         var speed: LichessBotSpeed {
-            let estimate = seconds.limit + 40 * seconds.increment
-            switch estimate {
-            case ..<30: return .ultraBullet
-            case ..<180: return .bullet
-            case ..<480: return .blitz
-            case ..<1500: return .rapid
-            default: return .classical
-            }
+            LichessBotSpeed.forClock(limitSeconds: seconds.limit, incrementSeconds: seconds.increment)
         }
     }
 

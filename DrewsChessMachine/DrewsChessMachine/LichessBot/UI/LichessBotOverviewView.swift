@@ -108,10 +108,18 @@ struct LichessBotControlsCard: View {
                         }
                     }
                 }
-                Text(controller.lastChallengeOutcome ?? "")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .shown(controller.lastChallengeOutcome != nil)
+                HStack(spacing: 8) {
+                    Text(controller.lastChallengeOutcome ?? "")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("Resend as Casual") {
+                        Task { await controller.resendAsCasual() }
+                    }
+                    .help("Send the same challenge again, unrated, as the player asked")
+                    .disabled(connection != .online)
+                    .shown(controller.casualResendOffer != nil)
+                }
+                .shown(controller.lastChallengeOutcome != nil)
             }
             .padding(6)
         }

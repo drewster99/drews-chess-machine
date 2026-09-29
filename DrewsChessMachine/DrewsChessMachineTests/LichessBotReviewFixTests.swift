@@ -138,7 +138,10 @@ final class LichessBotReviewFixTests: XCTestCase {
         try await waitUntil("the first move is posted") { await server.record().acceptedPlies == [2] }
         await server.sendBogusState(["e2e4", "e7e5", "a1a8"])
         try await waitUntil("the stream reopens after the divergence") { await server.record().streamOpens == 2 }
-        try await Task.sleep(for: .milliseconds(100))
+        // The reopened stream's `gameFull`, whose moves are the ones checked
+        // for foreign play, is streamed before the sentinel.
+        await server.sendSentinel("sentinel-after-resync")
+        try await waitUntil("the reopened stream's gameFull has been handled") { observer.receivedLines.contains { $0.contains("sentinel-after-resync") } }
         XCTAssertEqual(stoppedReasons(observer), [])
         run.cancel()
         await run.value
@@ -199,6 +202,7 @@ final class LichessBotReviewFixTests: XCTestCase {
         let echo = #"{"type":"challenge","challenge":{"id":"ZQRPySw4","status":"created","challenger":{"id":"drewschessmachine","name":"DrewsChessMachine","title":"BOT","rating":3000,"provisional":true},"destUser":{"id":"dala-700","name":"dala-700","title":"BOT","rating":837},"variant":{"key":"standard"},"rated":false,"speed":"blitz","timeControl":{"type":"clock","limit":300,"increment":3},"color":"random","finalColor":"black"},"compat":{"bot":true,"board":true}}"#
         let account = LichessBotFakeAccountAPI(script: [.openThenClose(lines: [echo])])
         let time = LichessBotManualTime()
+        let events = SyncBox<[LichessBotManagerEvent]>([])
         let manager = LichessBotSessionManager(
             accountAPI: account,
             gameAPI: try LichessBotFakeGameServer(),
@@ -208,11 +212,17 @@ final class LichessBotReviewFixTests: XCTestCase {
             time: time,
             settingsProvider: { LichessBotSettings() },
             gameObserver: LichessBotRecordingGameObserver(),
-            onEvent: { _ in }
+            onEvent: { event in events.modify { $0.append(event) } }
         )
         let run = Task { await manager.run() }
-        try await waitUntil("the stream is read", advancing: time) { await account.opens >= 1 }
-        try await Task.sleep(for: .milliseconds(100))
+        // The manager reports the stream's end only after it has finished
+        // handling every line the stream carried, the echo included.
+        try await waitUntil("the stream's only line has been handled") {
+            events.value.contains { event in
+                if case .eventStreamEnded = event { return true }
+                return false
+            }
+        }
         run.cancel()
         await run.value
         let accepted = await account.accepted
@@ -241,13 +251,18 @@ final class LichessBotReviewFixTests: XCTestCase {
         let run = Task { await manager.run() }
         try await waitUntil("the stream opens") { await account.opens == 1 }
         await account.send(#"{"type":"challengeDeclined","challenge":{"id":"ch9","declineReasonKey":"later"}}"#)
-        try await Task.sleep(for: .milliseconds(100))
+        // The answer must be handled before the challenge is noted; the
+        // sentinel is read only after it has been.
+        await account.sendSentinel("sentinel-after-decline")
+        try await waitUntil("the decline has been handled") {
+            events.value.contains { $0.isEventStreamLine(containing: "sentinel-after-decline") }
+        }
         await manager.noteOutgoingChallenge(id: "ch9")
         let outcomes = events.value.compactMap { event -> LichessBotOutgoingChallengeOutcome? in
             if case .outgoingChallengeResolved(_, let outcome) = event { return outcome }
             return nil
         }
-        XCTAssertEqual(outcomes, [.declined(reason: "later")])
+        XCTAssertEqual(outcomes, [.declined(reason: "later", reasonKey: "later")])
         let pending = await manager.outgoingChallengeID
         XCTAssertNil(pending)
         run.cancel()

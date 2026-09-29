@@ -23,6 +23,15 @@ final class LichessBotManualTime: LichessBotTimeSource, @unchecked Sendable {
         state.value.now
     }
 
+    /// How many sleepers are suspended waiting for the clock to reach their
+    /// deadline. A test that must be sure an advance wakes a particular
+    /// sleeper waits for it to be registered here first; an advance made
+    /// before a sleeper registers only moves the clock, and the sleeper's
+    /// deadline is then counted from the advanced time.
+    var waitingSleeperCount: Int {
+        state.value.sleepers.count
+    }
+
     func sleep(for duration: Duration) async throws {
         let id = state.mutate { s -> UInt64 in
             s.nextID += 1
@@ -300,6 +309,16 @@ actor LichessBotFakeGameServer: LichessBotGameAPI {
         send(#"{"type":"gameState","moves":"\#(tokens.joined(separator: " "))","wtime":180000,"btime":180000,"winc":2000,"binc":2000,"status":"started"}"#)
     }
 
+    /// Stream a spectator chat line carrying `marker`, after every line
+    /// streamed so far. The session reads its stream one line at a time and
+    /// finishes handling each line before reading the next, so once this
+    /// line is observed every earlier line has been fully handled. Work a
+    /// line hands to a separate task (a scheduled claim, a held move) is not
+    /// covered by that guarantee.
+    func sendSentinel(_ marker: String) {
+        send(#"{"type":"chatLine","room":"spectator","username":"Watcher","text":"\#(marker)"}"#)
+    }
+
     /// Reject every move POST from now on.
     func rejectAllMoves() {
         moveOutcomes = Array(repeating: .rejected(status: 400), count: 100)
@@ -539,6 +558,14 @@ final class LichessBotGameSessionTests: XCTestCase {
         throw CancellationError()
     }
 
+    /// Stream a sentinel line after everything streamed so far and wait
+    /// until the session reads it; every earlier line has then been fully
+    /// handled (see `LichessBotFakeGameServer.sendSentinel`).
+    private func waitUntilEarlierLinesAreHandled(_ harness: Harness, marker: String) async throws {
+        await harness.server.sendSentinel(marker)
+        try await waitUntil("the sentinel \(marker) is read") { harness.observer.receivedLines.contains { $0.contains(marker) } }
+    }
+
     // MARK: - Playing
 
     func testPlaysAGameToTheServersFinish() async throws {
@@ -581,7 +608,10 @@ final class LichessBotGameSessionTests: XCTestCase {
         try await waitUntil("the first move is posted") { await server.record().acceptedPlies == [0] }
         await server.dropStream()
         try await waitUntil("the stream reopens", advancing: h.time) { await server.record().streamOpens == 2 }
-        try await Task.sleep(for: .milliseconds(100))
+        // The reopened stream's `gameFull` is streamed before the sentinel,
+        // so any move it would trigger has been posted once the sentinel is
+        // read.
+        try await waitUntilEarlierLinesAreHandled(h, marker: "sentinel-after-reopen")
         let record = await server.record()
         XCTAssertEqual(record.moveAttempts, 1, "no move is re-sent on a reconnect")
         XCTAssertEqual(h.observer.streamEndCount, 1)
@@ -707,7 +737,7 @@ final class LichessBotGameSessionTests: XCTestCase {
         let h = makeHarness(server: server)
         let run = Task { await h.session.run() }
         try await waitUntil("the proposal arrives") { h.observer.receivedLines.contains { $0.contains("btakeback") } }
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntilEarlierLinesAreHandled(h, marker: "sentinel-after-takeback-proposal")
         let record = await server.record()
         XCTAssertEqual(record.calls, [])
         XCTAssertEqual(record.acceptedPlies, [0, 2])
@@ -797,10 +827,14 @@ final class LichessBotGameSessionTests: XCTestCase {
         let h = makeHarness(server: server) { $0.play.claimWhenOpponentGone = false }
         let run = Task { await h.session.run() }
         try await waitUntil("the opponent-gone line arrives") { h.observer.receivedLines.contains { $0.contains("opponentGone") } }
-        for _ in 0..<10 {
-            h.time.advance(by: .seconds(2))
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        try await waitUntilEarlierLinesAreHandled(h, marker: "sentinel-after-opponent-gone")
+        // The session reports every claim it schedules while handling the
+        // opponent-gone line, before the claim's own task exists, so this is
+        // settled now that the line has been handled.
+        XCTAssertFalse(h.observer.actions.contains { $0.hasPrefix("opponent gone") }, "no claim is scheduled")
+        // Well past the claim countdown and its grace, in one step.
+        h.time.advance(by: .seconds(20))
+        try await waitUntilEarlierLinesAreHandled(h, marker: "sentinel-after-the-countdown")
         let record = await server.record()
         XCTAssertEqual(record.calls, [])
         run.cancel()

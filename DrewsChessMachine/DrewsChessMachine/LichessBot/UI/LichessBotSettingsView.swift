@@ -155,6 +155,7 @@ struct LichessBotChallengeSettingsSection: View {
             LichessBotIntegerField(label: "Clock at most", value: $settings.maximumInitialSeconds, unit: "s")
             LichessBotIntegerField(label: "Increment at least", value: $settings.minimumIncrementSeconds, unit: "s")
             LichessBotIntegerField(label: "Increment at most", value: $settings.maximumIncrementSeconds, unit: "s")
+            LichessBotRuledOutSpeedsWarning(speeds: settings.speedsRuledOutByClockBounds)
             Toggle("Accept humans", isOn: $settings.acceptHumans)
             Toggle("Accept bots", isOn: $settings.acceptBots)
             Toggle("Accept provisional opponents", isOn: $settings.acceptProvisionalOpponents)
@@ -314,5 +315,23 @@ struct LichessBotConnectionSettingsSection: View {
         Section("Live games") {
             LichessBotIntegerField(label: "Keep finished games in the grid for", value: $display.finishedGameRetentionMinutes, unit: "min")
         }
+    }
+}
+
+/// Warns when a checked speed can never be accepted because the clock and
+/// increment bounds exclude every clock at that speed.
+struct LichessBotRuledOutSpeedsWarning: View {
+    let speeds: [LichessBotSpeed]
+
+    var body: some View {
+        Label(text, systemImage: "exclamationmark.triangle.fill")
+            .font(.callout)
+            .foregroundStyle(.orange)
+            .shown(!speeds.isEmpty)
+    }
+
+    private var text: String {
+        let names = speeds.map(\.rawValue).joined(separator: ", ")
+        return "No clock within these bounds is \(names), so \(speeds.count == 1 ? "that speed is" : "those speeds are") never accepted"
     }
 }
