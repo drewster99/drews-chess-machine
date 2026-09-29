@@ -673,8 +673,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// Effective Polyak momentum applied this tick (the momentum cycle's
         /// value when active, else the static coefficient).
         let momentumEffective: Double
-        let lrCycleActive: Bool
-        let momentumCycleActive: Bool
+        var lrCycleActive: Bool
+        var momentumCycleActive: Bool
         let buildNumber: Int
         let trainerID: String
         let championID: String?
@@ -1061,5 +1061,89 @@ extension CliTrainingRecorder.StatsLine {
             lrCycleDecayHorizonSteps: nil,
             momentumFollowsLRCycle: nil
         )
+    }
+
+    /// The offline-runner stats line, with every trainer-level hyperparameter
+    /// and the LR/momentum cycle telemetry taken from the same
+    /// `TrainerHyperparameters` the runner's trainer was configured from —
+    /// the fields the self-play path fills from its own trainer. `cycleValues`
+    /// is the cycle evaluated at this line's completed-step count (as the
+    /// trainer's SGD feed evaluates it), so `lr_effective_base`,
+    /// `momentum_effective`, the `*_cycle_active` flags and the envelope
+    /// bounds describe what the step actually used.
+    init(
+        elapsedSec: Double,
+        steps: Int,
+        positionsFed: Int,
+        bufferCount: Int,
+        bufferCapacity: Int,
+        policyLoss: Double?,
+        valueLoss: Double?,
+        policyEntropy: Double?,
+        policyIllegalMassPenalty: Double?,
+        gradGlobalNorm: Double?,
+        playedMoveProb: Double?,
+        valueMean: Double?,
+        valueAbsMean: Double?,
+        valueProbWin: Double?,
+        valueProbDraw: Double?,
+        valueProbLoss: Double?,
+        policyLogitMean: Double?,
+        valueLogitMean: Double?,
+        batchSize: Int,
+        trainerHyperparameters hyperparameters: TrainerHyperparameters,
+        cycleValues: LRMomentumCycle.Values,
+        buildNumber: Int,
+        trainerID: String,
+        positionsProduced: Int?,
+        gamesPlayed: Int?,
+        pliesCapDropped: Int?,
+        maxPliesPerGame: Int?,
+        replayRatioTarget: Double?
+    ) {
+        self.init(
+            elapsedSec: elapsedSec,
+            steps: steps,
+            positionsFed: positionsFed,
+            bufferCount: bufferCount,
+            bufferCapacity: bufferCapacity,
+            policyLoss: policyLoss,
+            valueLoss: valueLoss,
+            policyEntropy: policyEntropy,
+            policyIllegalMassPenalty: policyIllegalMassPenalty,
+            gradGlobalNorm: gradGlobalNorm,
+            playedMoveProb: playedMoveProb,
+            valueMean: valueMean,
+            valueAbsMean: valueAbsMean,
+            valueProbWin: valueProbWin,
+            valueProbDraw: valueProbDraw,
+            valueProbLoss: valueProbLoss,
+            policyLogitMean: policyLogitMean,
+            valueLogitMean: valueLogitMean,
+            batchSize: batchSize,
+            learningRate: Double(hyperparameters.learningRate),
+            gradClipMaxNorm: Double(hyperparameters.gradClipMaxNorm),
+            weightDecayC: Double(hyperparameters.weightDecayC),
+            dropoutRate: Double(hyperparameters.dropoutRate),
+            entropyRegularizationCoeff: Double(hyperparameters.entropyRegularizationCoeff),
+            drawPenalty: Double(hyperparameters.drawPenalty),
+            policyLossWeight: Double(hyperparameters.policyLossWeight),
+            valueLossWeight: Double(hyperparameters.valueLossWeight),
+            lrEffectiveBase: cycleValues.learningRate ?? Double(hyperparameters.learningRate),
+            momentumEffective: cycleValues.momentum ?? Double(hyperparameters.momentumCoeff),
+            buildNumber: buildNumber,
+            trainerID: trainerID,
+            positionsProduced: positionsProduced,
+            gamesPlayed: gamesPlayed,
+            pliesCapDropped: pliesCapDropped,
+            maxPliesPerGame: maxPliesPerGame,
+            replayRatioTarget: replayRatioTarget
+        )
+        lrCycleActive = cycleValues.learningRate != nil
+        momentumCycleActive = cycleValues.momentum != nil
+        lrCyclePeak = cycleValues.lrPeak
+        lrCycleTrough = cycleValues.lrTrough
+        lrCycleDecayHorizonSteps = hyperparameters.lrMomentumCycle.envelope.decayHorizonSteps
+        momentumFollowsLRCycle = hyperparameters.lrMomentumCycle.envelope.momentumFollowsLRCycle
     }
 }

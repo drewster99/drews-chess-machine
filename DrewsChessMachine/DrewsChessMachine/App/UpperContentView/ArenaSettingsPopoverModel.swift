@@ -138,8 +138,7 @@ final class ArenaSettingsPopoverModel {
         let p = TrainingParameters.shared
         var anyError = false
 
-        let parsedGames = Int(gamesText.trimmingCharacters(in: .whitespaces))
-        if let g = parsedGames, g >= 4, g <= 10000 {
+        if let g = ArenaGamesPerTournament.parsedInDeclaredRange(gamesText) {
             gamesError = false
             if g != p.arenaGamesPerTournament {
                 p.arenaGamesPerTournament = g
@@ -149,8 +148,7 @@ final class ArenaSettingsPopoverModel {
             anyError = true
         }
 
-        let parsedConcurrency = Int(concurrencyText.trimmingCharacters(in: .whitespaces))
-        if let c = parsedConcurrency, c >= 1, c <= maxConcurrency {
+        if let c = ArenaConcurrency.parsedInDeclaredRange(concurrencyText), c <= maxConcurrency {
             concurrencyError = false
             if c != p.arenaConcurrency {
                 p.arenaConcurrency = c
@@ -160,7 +158,8 @@ final class ArenaSettingsPopoverModel {
             anyError = true
         }
 
-        if let secs = parseDurationSpec(intervalText), secs >= 60, secs <= 86400 {
+        if let secs = parseDurationSpec(intervalText), secs.isFinite,
+           ArenaAutoIntervalSec.isWithinDeclaration(secs) {
             intervalError = false
             if secs != p.arenaAutoIntervalSec {
                 p.arenaAutoIntervalSec = secs
@@ -170,13 +169,10 @@ final class ArenaSettingsPopoverModel {
             anyError = true
         }
 
-        // Promote threshold — `[0.5, 1.0]` matches the parameter's
-        // declared range. Lower bound 0.5 means "at-least-even" —
-        // anything below would let the candidate displace the
-        // champion on a coin-flip arena, so the parameter type
-        // refuses to go there.
-        if let v = Double(promoteThresholdText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.5, v.isFinite, v <= 1.0 {
+        // Promote threshold — the declared range starts at "at-least-even":
+        // anything below would let the candidate displace the champion on a
+        // coin-flip arena, so the parameter type refuses to go there.
+        if let v = ArenaPromoteThreshold.parsedInDeclaredRange(promoteThresholdText) {
             promoteThresholdError = false
             if abs(v - p.arenaPromoteThreshold) > Double.ulpOfOne {
                 SessionLogger.shared.log(
@@ -189,10 +185,12 @@ final class ArenaSettingsPopoverModel {
             anyError = true
         }
 
-        // τ Start — same range as the inline stats-panel editor it
-        // replaced: (0, 10].
-        if let v = Double(tauStartText.trimmingCharacters(in: .whitespaces)),
-           v > 0, v.isFinite, v <= 10 {
+        // τ Start, Decay and Floor — each validated against its declared
+        // range. These used to restate a looser range as literals, which let
+        // a floor below the declared minimum through: the singleton then
+        // refused to persist it, so the running session used a value the
+        // next launch silently dropped.
+        if let v = ArenaStartTau.parsedInDeclaredRange(tauStartText) {
             tauStartError = false
             if abs(v - p.arenaStartTau) > Double.ulpOfOne {
                 SessionLogger.shared.log(
@@ -205,9 +203,7 @@ final class ArenaSettingsPopoverModel {
             anyError = true
         }
 
-        // τ Decay — [0, 1].
-        if let v = Double(tauDecayText.trimmingCharacters(in: .whitespaces)),
-           v >= 0, v.isFinite, v <= 1 {
+        if let v = ArenaTauDecayPerPly.parsedInDeclaredRange(tauDecayText) {
             tauDecayError = false
             if abs(v - p.arenaTauDecayPerPly) > Double.ulpOfOne {
                 SessionLogger.shared.log(
@@ -220,9 +216,7 @@ final class ArenaSettingsPopoverModel {
             anyError = true
         }
 
-        // τ Floor — same range as Start: (0, 10].
-        if let v = Double(tauFloorText.trimmingCharacters(in: .whitespaces)),
-           v > 0, v.isFinite, v <= 10 {
+        if let v = ArenaTargetTau.parsedInDeclaredRange(tauFloorText) {
             tauFloorError = false
             if abs(v - p.arenaTargetTau) > Double.ulpOfOne {
                 SessionLogger.shared.log(
@@ -272,7 +266,7 @@ final class ArenaSettingsPopoverModel {
     /// Parse, range-check and cross-check the six SPRT fields, writing them
     /// back on success. Returns false if anything failed.
     ///
-    /// Per-field ranges mirror the parameter declarations. The cross-field
+    /// Per-field ranges are the parameter declarations themselves. The cross-field
     /// constraints are checked afterwards by asking `ArenaSPRT.SPRTConfig` to
     /// construct itself — the same validator the arena uses — rather than
     /// restating the rules here, so the popover cannot drift out of agreement
@@ -283,13 +277,12 @@ final class ArenaSettingsPopoverModel {
         sprtRelationError = nil
         var ok = true
 
-        func parseDouble(
+        func parseDouble<K: TrainingParameterKey>(
+            _ key: K.Type,
             _ text: String,
-            range: ClosedRange<Double>,
             error: (Bool) -> Void
-        ) -> Double? {
-            guard let v = Double(text.trimmingCharacters(in: .whitespaces)),
-                  v.isFinite, range.contains(v) else {
+        ) -> Double? where K.Value == Double {
+            guard let v = K.parsedInDeclaredRange(text) else {
                 error(true)
                 ok = false
                 return nil
@@ -298,13 +291,12 @@ final class ArenaSettingsPopoverModel {
             return v
         }
 
-        func parseInt(
+        func parseInt<K: TrainingParameterKey>(
+            _ key: K.Type,
             _ text: String,
-            range: ClosedRange<Int>,
             error: (Bool) -> Void
-        ) -> Int? {
-            guard let v = Int(text.trimmingCharacters(in: .whitespaces)),
-                  range.contains(v) else {
+        ) -> Int? where K.Value == Int {
+            guard let v = K.parsedInDeclaredRange(text) else {
                 error(true)
                 ok = false
                 return nil
@@ -313,12 +305,12 @@ final class ArenaSettingsPopoverModel {
             return v
         }
 
-        let elo0 = parseDouble(sprtElo0Text, range: -50...50) { self.sprtElo0Error = $0 }
-        let elo1 = parseDouble(sprtElo1Text, range: -50...50) { self.sprtElo1Error = $0 }
-        let alpha = parseDouble(sprtAlphaText, range: 0.001...0.5) { self.sprtAlphaError = $0 }
-        let beta = parseDouble(sprtBetaText, range: 0.001...0.5) { self.sprtBetaError = $0 }
-        let minGames = parseInt(sprtMinGamesText, range: 2...10000) { self.sprtMinGamesError = $0 }
-        let maxGames = parseInt(sprtMaxGamesText, range: 0...1_000_000) { self.sprtMaxGamesError = $0 }
+        let elo0 = parseDouble(ArenaSPRTElo0.self, sprtElo0Text) { self.sprtElo0Error = $0 }
+        let elo1 = parseDouble(ArenaSPRTElo1.self, sprtElo1Text) { self.sprtElo1Error = $0 }
+        let alpha = parseDouble(ArenaSPRTAlpha.self, sprtAlphaText) { self.sprtAlphaError = $0 }
+        let beta = parseDouble(ArenaSPRTBeta.self, sprtBetaText) { self.sprtBetaError = $0 }
+        let minGames = parseInt(ArenaSPRTMinGames.self, sprtMinGamesText) { self.sprtMinGamesError = $0 }
+        let maxGames = parseInt(ArenaSPRTMaxGames.self, sprtMaxGamesText) { self.sprtMaxGamesError = $0 }
 
         guard ok,
               let elo0, let elo1, let alpha, let beta, let minGames, let maxGames else {
@@ -376,9 +368,9 @@ final class ArenaSettingsPopoverModel {
     /// updates it immediately). Returns a placeholder when any field is invalid
     /// or the math is degenerate.
     var tauReachedAtHint: String {
-        guard let start = Double(tauStartText), start > 0,
-              let decay = Double(tauDecayText), decay >= 0,
-              let floor = Double(tauFloorText), floor > 0 else {
+        guard let start = ArenaStartTau.parsedInDeclaredRange(tauStartText),
+              let decay = ArenaTauDecayPerPly.parsedInDeclaredRange(tauDecayText),
+              let floor = ArenaTargetTau.parsedInDeclaredRange(tauFloorText) else {
             return "(reached at —)"
         }
         guard decay > 0 else { return "(no decay; floor unreached)" }

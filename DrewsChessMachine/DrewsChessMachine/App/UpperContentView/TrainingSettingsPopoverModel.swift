@@ -452,10 +452,10 @@ final class TrainingSettingsPopoverModel {
     /// `trainingParams.replayRatioTarget`. The `ControlSideEffectsProbe`
     /// watches that property and forwards the new value into the live
     /// `ReplayRatioController.targetRatio`, so this single write suffices.
-    /// Snapped to the parameter's `[0.1, 5.0]` range.
+    /// Snapped to the parameter's declared range.
     func applyLiveReplayRatioTarget(_ newValue: Double) {
         guard newValue.isFinite else { return }
-        let snapped = max(0.1, min(5.0, newValue))
+        let snapped = ReplayRatioTarget.snappedToDeclaredRange(newValue)
         let p = TrainingParameters.shared
         if abs(p.replayRatioTarget - snapped) > Double.ulpOfOne {
             p.replayRatioTarget = snapped
@@ -465,7 +465,7 @@ final class TrainingSettingsPopoverModel {
     /// Live-propagate the self-play-delay edit to `trainingParams.selfPlayDelayMs`
     /// and the live `ReplayRatioController`.
     func applyLiveSelfPlayDelay(_ newValue: Int) {
-        let snapped = max(0, min(selfPlayDelayMaxMs, newValue))
+        let snapped = min(selfPlayDelayMaxMs, SelfPlayDelayMs.snappedToDeclaredRange(newValue))
         let p = TrainingParameters.shared
         if p.selfPlayDelayMs != snapped {
             p.selfPlayDelayMs = snapped
@@ -477,7 +477,7 @@ final class TrainingSettingsPopoverModel {
     /// `replayRatioController.manualDelayMs` because that's what
     /// `recordTrainingBatchAndGetDelay` reads each training step.
     func applyLiveTrainingStepDelay(_ newValue: Int) {
-        let snapped = max(0, min(stepDelayMaxMs, newValue))
+        let snapped = min(stepDelayMaxMs, TrainingStepDelayMs.snappedToDeclaredRange(newValue))
         let p = TrainingParameters.shared
         if p.trainingStepDelayMs != snapped {
             p.trainingStepDelayMs = snapped
@@ -514,9 +514,9 @@ final class TrainingSettingsPopoverModel {
     /// reactively, so this single write is sufficient — the next
     /// training batch picks up the new K cap and the popover's
     /// Composition readout reflects the change on the next heartbeat.
-    /// Snapped to the parameter's `[1, 400]` range.
+    /// Snapped to the parameter's declared range.
     func applyLiveMaxPliesFromAnyOneGame(_ newValue: Int) {
-        let snapped = max(1, min(400, newValue))
+        let snapped = MaxPliesFromAnyOneGame.snappedToDeclaredRange(newValue)
         let p = TrainingParameters.shared
         if p.maxPliesFromAnyOneGame != snapped {
             p.maxPliesFromAnyOneGame = snapped
@@ -524,9 +524,9 @@ final class TrainingSettingsPopoverModel {
     }
 
     /// Live-propagate the target-sampled-game-length edit. Snapped to
-    /// the parameter's `[0, 10_000]` range; 0 disables the length tilt.
+    /// the parameter's declared range; zero disables the length tilt.
     func applyLiveTargetSampledGameLengthPlies(_ newValue: Int) {
-        let snapped = max(0, min(10_000, newValue))
+        let snapped = TargetSampledGameLengthPlies.snappedToDeclaredRange(newValue)
         let p = TrainingParameters.shared
         if p.targetSampledGameLengthPlies != snapped {
             p.targetSampledGameLengthPlies = snapped
@@ -534,9 +534,9 @@ final class TrainingSettingsPopoverModel {
     }
 
     /// Live-propagate the max-draw-percent-per-batch edit. Snapped to
-    /// the parameter's `[0, 100]` range; 100 disables the draw cap.
+    /// the parameter's declared range; its maximum disables the draw cap.
     func applyLiveMaxDrawPercentPerBatch(_ newValue: Int) {
-        let snapped = max(0, min(100, newValue))
+        let snapped = MaxDrawPercentPerBatch.snappedToDeclaredRange(newValue)
         let p = TrainingParameters.shared
         if p.maxDrawPercentPerBatch != snapped {
             p.maxDrawPercentPerBatch = snapped
@@ -564,10 +564,10 @@ final class TrainingSettingsPopoverModel {
     /// at the end of every self-play game, so a mid-session edit
     /// takes effect on the next completed game on every worker slot
     /// without further plumbing. Snapped to the parameter's
-    /// `[0.0, 1.0]` range; non-finite inputs are ignored.
+    /// declared range; non-finite inputs are ignored.
     func applyLiveSelfPlayDrawKeepFraction(_ newValue: Double) {
         guard newValue.isFinite else { return }
-        let snapped = max(0.0, min(1.0, newValue))
+        let snapped = SelfPlayDrawKeepFraction.snappedToDeclaredRange(newValue)
         let p = TrainingParameters.shared
         if abs(p.selfPlayDrawKeepFraction - snapped) > Double.ulpOfOne {
             p.selfPlayDrawKeepFraction = snapped
@@ -578,9 +578,9 @@ final class TrainingSettingsPopoverModel {
     /// driver reads `TrainingParameters.shared.selfPlayMaxPliesPerGame` at the
     /// start of every game, so a mid-session edit takes effect on the
     /// next game spawned by each worker slot. Snapped to the
-    /// parameter's `[25, 500]` range; non-positive inputs are ignored.
+    /// parameter's declared range.
     func applyLiveMaxPliesPerGame(_ newValue: Int) {
-        let snapped = max(25, min(500, newValue))
+        let snapped = SelfPlayMaxPliesPerGame.snappedToDeclaredRange(newValue)
         let p = TrainingParameters.shared
         if p.selfPlayMaxPliesPerGame != snapped {
             p.selfPlayMaxPliesPerGame = snapped
@@ -591,11 +591,11 @@ final class TrainingSettingsPopoverModel {
     /// self-play driver reads `TrainingParameters.shared.drawWatchPDrawThreshold`
     /// at the start of every tick (one MainActor hop per tick),
     /// so a mid-session edit takes effect on the next ply. Snapped
-    /// to the parameter's `[0.5, 1.0]` range; non-finite inputs are
+    /// to the parameter's declared range; non-finite inputs are
     /// ignored.
     func applyLiveDrawWatchPDrawThreshold(_ newValue: Double) {
         guard newValue.isFinite else { return }
-        let snapped = max(0.5, min(1.0, newValue))
+        let snapped = DrawWatchPDrawThreshold.snappedToDeclaredRange(newValue)
         let p = TrainingParameters.shared
         if abs(p.drawWatchPDrawThreshold - snapped) > Double.ulpOfOne {
             p.drawWatchPDrawThreshold = snapped
@@ -617,9 +617,9 @@ final class TrainingSettingsPopoverModel {
 
     /// Live-propagate the draw-watch streak-length edit. The
     /// self-play driver reads `TrainingParameters.shared.drawWatchStreakLength`
-    /// every tick. Snapped to the parameter's `[2, 32]` range.
+    /// every tick. Snapped to the parameter's declared range.
     func applyLiveDrawWatchStreakLength(_ newValue: Int) {
-        let snapped = max(2, min(32, newValue))
+        let snapped = DrawWatchStreakLength.snappedToDeclaredRange(newValue)
         let p = TrainingParameters.shared
         if p.drawWatchStreakLength != snapped {
             p.drawWatchStreakLength = snapped
@@ -639,46 +639,40 @@ final class TrainingSettingsPopoverModel {
         let trainer = trainerProvider()
         var anyError = false
 
-        // LR — Double in [1e-7, 1.0].
-        if let v = Double(lrText.trimmingCharacters(in: .whitespaces)),
-           v >= 1e-7, v <= 1.0, v.isFinite {
+        // LR — Double in the declared range.
+        if let v = LearningRate.parsedInDeclaredRange(lrText) {
             lrError = false
             if abs(v - p.learningRate) > Double.ulpOfOne {
                 SessionLogger.shared.log(
                     String(format: "[PARAM] learningRate: %.3e -> %.3e", p.learningRate, v)
                 )
                 p.learningRate = v
-                trainer?.learningRate = Float(v)
             }
         } else {
             lrError = true
             anyError = true
         }
 
-        // LR Warmup steps — Int in [0, 100_000].
-        if let n = Int(warmupText.trimmingCharacters(in: .whitespaces)),
-           n >= 0, n <= 100_000 {
+        // LR Warmup steps — Int in the declared range.
+        if let n = LRWarmupSteps.parsedInDeclaredRange(warmupText) {
             warmupError = false
             if n != p.lrWarmupSteps {
                 SessionLogger.shared.log("[PARAM] lrWarmupSteps: \(p.lrWarmupSteps) -> \(n)")
                 p.lrWarmupSteps = n
-                trainer?.lrWarmupSteps = n
             }
         } else {
             warmupError = true
             anyError = true
         }
 
-        // Momentum — Double in [0, 0.99].
-        if let v = Double(momentumText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 0.99, v.isFinite {
+        // Momentum — Double in the declared range.
+        if let v = MomentumCoeff.parsedInDeclaredRange(momentumText) {
             momentumError = false
             if abs(v - p.momentumCoeff) > Double.ulpOfOne {
                 SessionLogger.shared.log(
                     String(format: "[PARAM] momentumCoeff: %.3f -> %.3f", p.momentumCoeff, v)
                 )
                 p.momentumCoeff = v
-                trainer?.momentumCoeff = Float(v)
             }
         } else {
             momentumError = true
@@ -696,16 +690,14 @@ final class TrainingSettingsPopoverModel {
         // 12-line-per-Save log spew.
         if lrCycleEnabledValue != p.lrCycleEnabled { p.lrCycleEnabled = lrCycleEnabledValue }
         if lrCycleInvertValue != p.lrCycleInvert { p.lrCycleInvert = lrCycleInvertValue }
-        if let v = Double(lrCycleMinText.trimmingCharacters(in: .whitespaces)),
-           v >= 1e-7, v <= 1.0, v.isFinite {
+        if let v = LRCycleMin.parsedInDeclaredRange(lrCycleMinText) {
             lrCycleMinError = false
             if abs(v - p.lrCycleMin) > Double.ulpOfOne { p.lrCycleMin = v }
         } else {
             lrCycleMinError = true
             anyError = true
         }
-        if let v = Double(lrCycleMaxText.trimmingCharacters(in: .whitespaces)),
-           v >= 1e-7, v <= 1.0, v.isFinite {
+        if let v = LRCycleMax.parsedInDeclaredRange(lrCycleMaxText) {
             lrCycleMaxError = false
             if abs(v - p.lrCycleMax) > Double.ulpOfOne { p.lrCycleMax = v }
         } else {
@@ -721,16 +713,14 @@ final class TrainingSettingsPopoverModel {
             lrCycleMaxError = true
             anyError = true
         }
-        if let n = Int(lrCyclePeriodText.trimmingCharacters(in: .whitespaces)),
-           n >= 1, n <= 10_000_000 {
+        if let n = LRCyclePeriodSteps.parsedInDeclaredRange(lrCyclePeriodText) {
             lrCyclePeriodError = false
             if n != p.lrCyclePeriodSteps { p.lrCyclePeriodSteps = n }
         } else {
             lrCyclePeriodError = true
             anyError = true
         }
-        if let n = Int(lrCycleCountText.trimmingCharacters(in: .whitespaces)),
-           n >= 0, n <= 1_000_000 {
+        if let n = LRCycleCount.parsedInDeclaredRange(lrCycleCountText) {
             lrCycleCountError = false
             if n != p.lrCycleCount { p.lrCycleCount = n }
         } else {
@@ -739,16 +729,14 @@ final class TrainingSettingsPopoverModel {
         }
         if momentumCycleEnabledValue != p.momentumCycleEnabled { p.momentumCycleEnabled = momentumCycleEnabledValue }
         if momentumCycleInvertValue != p.momentumCycleInvert { p.momentumCycleInvert = momentumCycleInvertValue }
-        if let v = Double(momentumCycleMinText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 0.99, v.isFinite {
+        if let v = MomentumCycleMin.parsedInDeclaredRange(momentumCycleMinText) {
             momentumCycleMinError = false
             if abs(v - p.momentumCycleMin) > Double.ulpOfOne { p.momentumCycleMin = v }
         } else {
             momentumCycleMinError = true
             anyError = true
         }
-        if let v = Double(momentumCycleMaxText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 0.99, v.isFinite {
+        if let v = MomentumCycleMax.parsedInDeclaredRange(momentumCycleMaxText) {
             momentumCycleMaxError = false
             if abs(v - p.momentumCycleMax) > Double.ulpOfOne { p.momentumCycleMax = v }
         } else {
@@ -763,16 +751,14 @@ final class TrainingSettingsPopoverModel {
             momentumCycleMaxError = true
             anyError = true
         }
-        if let n = Int(momentumCyclePeriodText.trimmingCharacters(in: .whitespaces)),
-           n >= 1, n <= 10_000_000 {
+        if let n = MomentumCyclePeriodSteps.parsedInDeclaredRange(momentumCyclePeriodText) {
             momentumCyclePeriodError = false
             if n != p.momentumCyclePeriodSteps { p.momentumCyclePeriodSteps = n }
         } else {
             momentumCyclePeriodError = true
             anyError = true
         }
-        if let n = Int(momentumCycleCountText.trimmingCharacters(in: .whitespaces)),
-           n >= 0, n <= 1_000_000 {
+        if let n = MomentumCycleCount.parsedInDeclaredRange(momentumCycleCountText) {
             momentumCycleCountError = false
             if n != p.momentumCycleCount { p.momentumCycleCount = n }
         } else {
@@ -780,16 +766,14 @@ final class TrainingSettingsPopoverModel {
             anyError = true
         }
         // Decay envelope. Ranges mirror the `@TrainingParameter` declarations.
-        if let v = Double(lrCyclePeakEndText.trimmingCharacters(in: .whitespaces)),
-           v >= 1e-7, v <= 1.0, v.isFinite {
+        if let v = LRCyclePeakEnd.parsedInDeclaredRange(lrCyclePeakEndText) {
             lrCyclePeakEndError = false
             if abs(v - p.lrCyclePeakEnd) > Double.ulpOfOne { p.lrCyclePeakEnd = v }
         } else {
             lrCyclePeakEndError = true
             anyError = true
         }
-        if let v = Double(lrCycleTroughEndText.trimmingCharacters(in: .whitespaces)),
-           v >= 1e-7, v <= 1.0, v.isFinite {
+        if let v = LRCycleTroughEnd.parsedInDeclaredRange(lrCycleTroughEndText) {
             lrCycleTroughEndError = false
             if abs(v - p.lrCycleTroughEnd) > Double.ulpOfOne { p.lrCycleTroughEnd = v }
         } else {
@@ -803,8 +787,7 @@ final class TrainingSettingsPopoverModel {
             lrCyclePeakEndError = true
             anyError = true
         }
-        if let n = Int(lrCycleDecayHorizonText.trimmingCharacters(in: .whitespaces)),
-           n >= 0, n <= 1_000_000_000 {
+        if let n = LRCycleDecayHorizonSteps.parsedInDeclaredRange(lrCycleDecayHorizonText) {
             lrCycleDecayHorizonError = false
             if n != p.lrCycleDecayHorizonSteps { p.lrCycleDecayHorizonSteps = n }
         } else {
@@ -813,32 +796,28 @@ final class TrainingSettingsPopoverModel {
         }
         // Momentum-follow bounds.
         if momentumFollowsLRCycleValue != p.momentumFollowsLRCycle { p.momentumFollowsLRCycle = momentumFollowsLRCycleValue }
-        if let v = Double(momentumFollowStartLowText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 0.99, v.isFinite {
+        if let v = MomentumFollowStartLow.parsedInDeclaredRange(momentumFollowStartLowText) {
             momentumFollowStartLowError = false
             if abs(v - p.momentumFollowStartLow) > Double.ulpOfOne { p.momentumFollowStartLow = v }
         } else {
             momentumFollowStartLowError = true
             anyError = true
         }
-        if let v = Double(momentumFollowStartHighText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 0.99, v.isFinite {
+        if let v = MomentumFollowStartHigh.parsedInDeclaredRange(momentumFollowStartHighText) {
             momentumFollowStartHighError = false
             if abs(v - p.momentumFollowStartHigh) > Double.ulpOfOne { p.momentumFollowStartHigh = v }
         } else {
             momentumFollowStartHighError = true
             anyError = true
         }
-        if let v = Double(momentumFollowEndLowText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 0.99, v.isFinite {
+        if let v = MomentumFollowEndLow.parsedInDeclaredRange(momentumFollowEndLowText) {
             momentumFollowEndLowError = false
             if abs(v - p.momentumFollowEndLow) > Double.ulpOfOne { p.momentumFollowEndLow = v }
         } else {
             momentumFollowEndLowError = true
             anyError = true
         }
-        if let v = Double(momentumFollowEndHighText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 0.99, v.isFinite {
+        if let v = MomentumFollowEndHigh.parsedInDeclaredRange(momentumFollowEndHighText) {
             momentumFollowEndHighError = false
             if abs(v - p.momentumFollowEndHigh) > Double.ulpOfOne { p.momentumFollowEndHigh = v }
         } else {
@@ -858,19 +837,6 @@ final class TrainingSettingsPopoverModel {
             momentumFollowEndHighError = true
             anyError = true
         }
-        // Push the committed cycle config straight onto the live trainer
-        // (mirroring how the LR / momentum fields above push `trainer?.…`),
-        // so the popover path does not depend solely on
-        // `ControlSideEffectsProbe` being mounted. Unlike the sampling
-        // constraints — which the buffer re-reads from `TrainingParameters`
-        // every `sample(count:)` — the trainer reads the cycle from its own
-        // `SyncBox`, so it must be written across. `p.lrMomentumCycle` reflects
-        // exactly the just-committed state (valid fields updated, any invalid
-        // field left unchanged). The probe's `.onChange` still fires too (it
-        // owns the single bundled `[PARAM]` audit line and covers CLI / other
-        // write paths); a second identical write is harmless.
-        trainer?.lrMomentumCycle = p.lrMomentumCycle
-
         // √batch scaling toggle — Bool, cannot fail to parse.
         if sqrtBatchScalingValue != p.sqrtBatchScalingLR {
             SessionLogger.shared.log(
@@ -887,156 +853,137 @@ final class TrainingSettingsPopoverModel {
             p.signedAdvantageComplementCE = signedAdvantageComplementCEValue
         }
 
-        // Entropy regularization — Double in [0, 0.1].
-        if let v = Double(entropyText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 0.1, v.isFinite {
+        // Entropy regularization — Double in the declared range.
+        if let v = EntropyBonus.parsedInDeclaredRange(entropyText) {
             entropyError = false
             if abs(v - p.entropyBonus) > Double.ulpOfOne {
                 SessionLogger.shared.log(
                     String(format: "[PARAM] entropyBonus: %.3e -> %.3e", p.entropyBonus, v)
                 )
                 p.entropyBonus = v
-                trainer?.entropyRegularizationCoeff = Float(v)
             }
         } else {
             entropyError = true
             anyError = true
         }
 
-        // Illegal mass penalty — Double in [0, 100].
-        if let v = Double(illegalMassWeightText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 100.0, v.isFinite {
+        // Illegal mass penalty — Double in the declared range.
+        if let v = IllegalMassWeight.parsedInDeclaredRange(illegalMassWeightText) {
             illegalMassWeightError = false
             if abs(v - p.illegalMassWeight) > Double.ulpOfOne {
                 SessionLogger.shared.log(
                     String(format: "[PARAM] illegalMassWeight: %.2f -> %.2f", p.illegalMassWeight, v)
                 )
                 p.illegalMassWeight = v
-                trainer?.illegalMassPenaltyWeight = Float(v)
             }
         } else {
             illegalMassWeightError = true
             anyError = true
         }
 
-        // Grad clip — Double in [0.1, 1000].
-        if let v = Double(gradClipText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.1, v <= 1000.0, v.isFinite {
+        // Grad clip — Double in the declared range.
+        if let v = GradClipMaxNorm.parsedInDeclaredRange(gradClipText) {
             gradClipError = false
             if abs(v - p.gradClipMaxNorm) > Double.ulpOfOne {
                 SessionLogger.shared.log(
                     String(format: "[PARAM] gradClipMaxNorm: %.2f -> %.2f", p.gradClipMaxNorm, v)
                 )
                 p.gradClipMaxNorm = v
-                trainer?.gradClipMaxNorm = Float(v)
             }
         } else {
             gradClipError = true
             anyError = true
         }
 
-        // Weight decay — Double in [0, 0.1].
-        if let v = Double(weightDecayText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 0.1, v.isFinite {
+        // Weight decay — Double in the declared range.
+        if let v = WeightDecay.parsedInDeclaredRange(weightDecayText) {
             weightDecayError = false
             if abs(v - p.weightDecay) > Double.ulpOfOne {
                 SessionLogger.shared.log(
                     String(format: "[PARAM] weightDecay: %.3e -> %.3e", p.weightDecay, v)
                 )
                 p.weightDecay = v
-                trainer?.weightDecayC = Float(v)
             }
         } else {
             weightDecayError = true
             anyError = true
         }
 
-        // Dropout rate — Double in [0, 0.95]. Drop probability
+        // Dropout rate — Double in the declared range. Drop probability
         // (PyTorch/Keras convention); 0 disables. Pushed onto the live
         // trainer via the graph-variable assign (`ChessTrainer.dropoutRate`).
-        if let v = Double(dropoutRateText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 0.95, v.isFinite {
+        if let v = DropoutRate.parsedInDeclaredRange(dropoutRateText) {
             dropoutRateError = false
             if abs(v - p.dropoutRate) > Double.ulpOfOne {
                 SessionLogger.shared.log(
                     String(format: "[PARAM] dropoutRate: %.3f -> %.3f", p.dropoutRate, v)
                 )
                 p.dropoutRate = v
-                trainer?.dropoutRate = Float(v)
             }
         } else {
             dropoutRateError = true
             anyError = true
         }
 
-        // Policy loss weight — Double in [0, 20].
-        if let v = Double(policyLossWeightText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 20.0, v.isFinite {
+        // Policy loss weight — Double in the declared range.
+        if let v = PolicyLossWeight.parsedInDeclaredRange(policyLossWeightText) {
             policyLossWeightError = false
             if abs(v - p.policyLossWeight) > Double.ulpOfOne {
                 SessionLogger.shared.log(
                     String(format: "[PARAM] policyLossWeight: %.2f -> %.2f", p.policyLossWeight, v)
                 )
                 p.policyLossWeight = v
-                trainer?.policyLossWeight = Float(v)
             }
         } else {
             policyLossWeightError = true
             anyError = true
         }
 
-        // Value loss weight — Double in [0, 20].
-        if let v = Double(valueLossWeightText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 20.0, v.isFinite {
+        // Value loss weight — Double in the declared range.
+        if let v = ValueLossWeight.parsedInDeclaredRange(valueLossWeightText) {
             valueLossWeightError = false
             if abs(v - p.valueLossWeight) > Double.ulpOfOne {
                 SessionLogger.shared.log(
                     String(format: "[PARAM] valueLossWeight: %.2f -> %.2f", p.valueLossWeight, v)
                 )
                 p.valueLossWeight = v
-                trainer?.valueLossWeight = Float(v)
             }
         } else {
             valueLossWeightError = true
             anyError = true
         }
 
-        // Value-head label smoothing ε — Double in [0, 0.5].
-        if let v = Double(valueLabelSmoothingText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 0.5, v.isFinite {
+        // Value-head label smoothing ε — Double in the declared range.
+        if let v = ValueLabelSmoothingEpsilon.parsedInDeclaredRange(valueLabelSmoothingText) {
             valueLabelSmoothingError = false
             if abs(v - p.valueLabelSmoothingEpsilon) > Double.ulpOfOne {
                 SessionLogger.shared.log(
                     String(format: "[PARAM] valueLabelSmoothingEpsilon: %.3f -> %.3f", p.valueLabelSmoothingEpsilon, v)
                 )
                 p.valueLabelSmoothingEpsilon = v
-                trainer?.valueLabelSmoothingEpsilon = Float(v)
             }
         } else {
             valueLabelSmoothingError = true
             anyError = true
         }
 
-        // Draw penalty — Double in [0, 1].
-        if let v = Double(drawPenaltyText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 1.0, v.isFinite {
+        // Draw penalty — Double in the declared range.
+        if let v = DrawPenalty.parsedInDeclaredRange(drawPenaltyText) {
             drawPenaltyError = false
             if abs(v - p.drawPenalty) > Double.ulpOfOne {
                 SessionLogger.shared.log(
                     String(format: "[PARAM] drawPenalty: %.3f -> %.3f", p.drawPenalty, v)
                 )
                 p.drawPenalty = v
-                trainer?.drawPenalty = Float(v)
             }
         } else {
             drawPenaltyError = true
             anyError = true
         }
 
-        // Training batch size — Int in [32, 32_768]. Snapshot-only; the live
+        // Training batch size — Int in the declared range. Snapshot-only; the live
         // trainer rebuilds its feed cache lazily on the next batch shape.
-        if let n = Int(trainingBatchSizeText.trimmingCharacters(in: .whitespaces)),
-           n >= 32, n <= 32_768 {
+        if let n = TrainingBatchSize.parsedInDeclaredRange(trainingBatchSizeText) {
             trainingBatchSizeError = false
             if n != p.trainingBatchSize {
                 SessionLogger.shared.log("[PARAM] trainingBatchSize: \(p.trainingBatchSize) -> \(n)")
@@ -1047,10 +994,10 @@ final class TrainingSettingsPopoverModel {
             anyError = true
         }
 
-        // Self-play workers — Int in [1, maxSelfPlayWorkers]. Live-tunable: the
+        // Self-play workers — Int in the declared range. Live-tunable: the
         // BatchedSelfPlayDriver reconcile loop picks up the new count.
-        if let n = Int(selfPlayConcurrencyText.trimmingCharacters(in: .whitespaces)),
-           n >= 1, n <= maxSelfPlayWorkers {
+        if let n = SelfPlayConcurrency.parsedInDeclaredRange(selfPlayConcurrencyText),
+           n <= maxSelfPlayWorkers {
             selfPlayConcurrencyError = false
             if n != p.selfPlayConcurrency {
                 SessionLogger.shared.log("[PARAM] selfPlayConcurrency: \(p.selfPlayConcurrency) -> \(n)")
@@ -1061,12 +1008,11 @@ final class TrainingSettingsPopoverModel {
             anyError = true
         }
 
-        // Self-play τ schedule — Doubles in [0.01, 5.0] (start / floor) and
-        // [0.0, 1.0] (decay). Rebuilt by `buildSelfPlaySchedule()` next time
+        // Self-play τ schedule — start, decay and floor, each in its
+        // declared range. Rebuilt by `buildSelfPlaySchedule()` next time
         // the schedule box is constructed; mid-session changes don't
         // retroactively alter games already in progress.
-        if let v = Double(selfPlayStartTauText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.01, v <= 5.0, v.isFinite {
+        if let v = SelfPlayStartTau.parsedInDeclaredRange(selfPlayStartTauText) {
             selfPlayStartTauError = false
             if abs(v - p.selfPlayStartTau) > Double.ulpOfOne {
                 SessionLogger.shared.log(
@@ -1078,8 +1024,7 @@ final class TrainingSettingsPopoverModel {
             selfPlayStartTauError = true
             anyError = true
         }
-        if let v = Double(selfPlayDecayPerPlyText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 1.0, v.isFinite {
+        if let v = SelfPlayTauDecayPerPly.parsedInDeclaredRange(selfPlayDecayPerPlyText) {
             selfPlayDecayPerPlyError = false
             if abs(v - p.selfPlayTauDecayPerPly) > Double.ulpOfOne {
                 SessionLogger.shared.log(
@@ -1091,8 +1036,7 @@ final class TrainingSettingsPopoverModel {
             selfPlayDecayPerPlyError = true
             anyError = true
         }
-        if let v = Double(selfPlayFloorTauText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.01, v <= 5.0, v.isFinite {
+        if let v = SelfPlayTargetTau.parsedInDeclaredRange(selfPlayFloorTauText) {
             selfPlayFloorTauError = false
             if abs(v - p.selfPlayTargetTau) > Double.ulpOfOne {
                 SessionLogger.shared.log(
@@ -1104,7 +1048,7 @@ final class TrainingSettingsPopoverModel {
             selfPlayFloorTauError = true
             anyError = true
         }
-        // Self-Play Draw Keep Fraction — Double in [0.0, 1.0].
+        // Self-Play Draw Keep Fraction — Double in the declared range.
         // Live-propagated to `TrainingParameters.shared` during the
         // edit via `applyLiveSelfPlayDrawKeepFraction`, so save() only
         // needs to validate the current edit text for the red-overlay
@@ -1120,14 +1064,13 @@ final class TrainingSettingsPopoverModel {
         let drawKeepTrimmed = selfPlayDrawKeepFractionText.trimmingCharacters(in: .whitespaces)
         if drawKeepTrimmed.isEmpty {
             selfPlayDrawKeepFractionError = false
-        } else if let v = Double(drawKeepTrimmed),
-                  v >= 0.0, v <= 1.0, v.isFinite {
+        } else if SelfPlayDrawKeepFraction.parsedInDeclaredRange(drawKeepTrimmed) != nil {
             selfPlayDrawKeepFractionError = false
         } else {
             selfPlayDrawKeepFractionError = true
             anyError = true
         }
-        // Max plies per game — Int in [25, 1000]. Same live-propagated
+        // Max plies per game — Int in the declared range. Same live-propagated
         // pattern as draw-keep fraction: the slot driver reads
         // `TrainingParameters.shared.selfPlayMaxPliesPerGame` at the start of
         // each game, so save() just validates the current text and
@@ -1135,13 +1078,13 @@ final class TrainingSettingsPopoverModel {
         let selfPlayMaxPliesPerGameTrimmed = selfPlayMaxPliesPerGameText.trimmingCharacters(in: .whitespaces)
         if selfPlayMaxPliesPerGameTrimmed.isEmpty {
             selfPlayMaxPliesPerGameError = false
-        } else if let n = Int(selfPlayMaxPliesPerGameTrimmed), n >= 25, n <= 500 {
+        } else if SelfPlayMaxPliesPerGame.parsedInDeclaredRange(selfPlayMaxPliesPerGameTrimmed) != nil {
             selfPlayMaxPliesPerGameError = false
         } else {
             selfPlayMaxPliesPerGameError = true
             anyError = true
         }
-        // Draw-watch pDraw threshold — Double in [0.5, 1.0]. Same
+        // Draw-watch pDraw threshold — Double in the declared range. Same
         // live-propagated pattern: the driver re-reads
         // `TrainingParameters.shared.drawWatchPDrawThreshold` at the
         // start of every tick, so save() just validates the current
@@ -1150,18 +1093,18 @@ final class TrainingSettingsPopoverModel {
         let drawWatchPDrawThresholdTrimmed = drawWatchPDrawThresholdText.trimmingCharacters(in: .whitespaces)
         if drawWatchPDrawThresholdTrimmed.isEmpty {
             drawWatchPDrawThresholdError = false
-        } else if let d = Double(drawWatchPDrawThresholdTrimmed), d >= 0.5, d <= 1.0 {
+        } else if DrawWatchPDrawThreshold.parsedInDeclaredRange(drawWatchPDrawThresholdTrimmed) != nil {
             drawWatchPDrawThresholdError = false
         } else {
             drawWatchPDrawThresholdError = true
             anyError = true
         }
-        // Draw-watch streak length — Int in [2, 32]. Same live-
+        // Draw-watch streak length — Int in the declared range. Same live-
         // propagated pattern; driver re-reads each tick.
         let drawWatchStreakLengthTrimmed = drawWatchStreakLengthText.trimmingCharacters(in: .whitespaces)
         if drawWatchStreakLengthTrimmed.isEmpty {
             drawWatchStreakLengthError = false
-        } else if let n = Int(drawWatchStreakLengthTrimmed), n >= 2, n <= 32 {
+        } else if DrawWatchStreakLength.parsedInDeclaredRange(drawWatchStreakLengthTrimmed) != nil {
             drawWatchStreakLengthError = false
         } else {
             drawWatchStreakLengthError = true
@@ -1173,10 +1116,9 @@ final class TrainingSettingsPopoverModel {
         // `setSelfPlay` is a no-op before the first session.
         pushSelfPlaySchedule()
 
-        // Replay buffer capacity — Int in [1024, 100_000_000]. Snapshot-only:
+        // Replay buffer capacity — Int in the declared range. Snapshot-only:
         // the live ring cannot resize mid-session.
-        if let n = Int(replayBufferCapacityText.trimmingCharacters(in: .whitespaces)),
-           n >= 1024, n <= 100_000_000 {
+        if let n = ReplayBufferCapacity.parsedInDeclaredRange(replayBufferCapacityText) {
             replayBufferCapacityError = false
             if n != p.replayBufferCapacity {
                 SessionLogger.shared.log("[PARAM] replayBufferCapacity: \(p.replayBufferCapacity) -> \(n)")
@@ -1187,9 +1129,8 @@ final class TrainingSettingsPopoverModel {
             anyError = true
         }
 
-        // Pre-train fill threshold — Int in [0, 100_000_000]. Live-tunable.
-        if let n = Int(replayBufferMinPositionsText.trimmingCharacters(in: .whitespaces)),
-           n >= 0, n <= 100_000_000 {
+        // Pre-train fill threshold — Int in the declared range. Live-tunable.
+        if let n = ReplayBufferMinPositionsBeforeTraining.parsedInDeclaredRange(replayBufferMinPositionsText) {
             replayBufferMinPositionsError = false
             if n != p.replayBufferMinPositionsBeforeTraining {
                 SessionLogger.shared.log(
@@ -1219,7 +1160,7 @@ final class TrainingSettingsPopoverModel {
         let maxPliesTrimmed = maxPliesFromAnyOneGameText.trimmingCharacters(in: .whitespaces)
         if maxPliesTrimmed.isEmpty {
             maxPliesFromAnyOneGameError = false
-        } else if let n = Int(maxPliesTrimmed), n >= 1, n <= 400 {
+        } else if MaxPliesFromAnyOneGame.parsedInDeclaredRange(maxPliesTrimmed) != nil {
             maxPliesFromAnyOneGameError = false
         } else {
             maxPliesFromAnyOneGameError = true
@@ -1228,7 +1169,7 @@ final class TrainingSettingsPopoverModel {
         let targetLenTrimmed = targetSampledGameLengthPliesText.trimmingCharacters(in: .whitespaces)
         if targetLenTrimmed.isEmpty {
             targetSampledGameLengthPliesError = false
-        } else if let n = Int(targetLenTrimmed), n >= 0, n <= 10_000 {
+        } else if TargetSampledGameLengthPlies.parsedInDeclaredRange(targetLenTrimmed) != nil {
             targetSampledGameLengthPliesError = false
         } else {
             targetSampledGameLengthPliesError = true
@@ -1237,7 +1178,7 @@ final class TrainingSettingsPopoverModel {
         let maxDrawTrimmed = maxDrawPercentPerBatchText.trimmingCharacters(in: .whitespaces)
         if maxDrawTrimmed.isEmpty {
             maxDrawPercentPerBatchError = false
-        } else if let n = Int(maxDrawTrimmed), n >= 0, n <= 100 {
+        } else if MaxDrawPercentPerBatch.parsedInDeclaredRange(maxDrawTrimmed) != nil {
             maxDrawPercentPerBatchError = false
         } else {
             maxDrawPercentPerBatchError = true
@@ -1248,22 +1189,20 @@ final class TrainingSettingsPopoverModel {
         // `applyLive…` — the writes already reached `trainingParams`. Save
         // validates the current text values for red-overlay display only; no
         // parameter writes here.
-        if let v = Double(replayRatioTargetText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.1, v <= 5.0, v.isFinite {
+        if ReplayRatioTarget.parsedInDeclaredRange(replayRatioTargetText) != nil {
             replayRatioTargetError = false
         } else {
             replayRatioTargetError = true
             anyError = true
         }
-        if let n = Int(replaySelfPlayDelayText.trimmingCharacters(in: .whitespaces)),
-           n >= 0, n <= selfPlayDelayMaxMs {
+        if let n = SelfPlayDelayMs.parsedInDeclaredRange(replaySelfPlayDelayText),
+           n <= selfPlayDelayMaxMs {
             replaySelfPlayDelayError = false
         } else {
             replaySelfPlayDelayError = true
             anyError = true
         }
-        if let n = Int(replayTrainingStepDelayText.trimmingCharacters(in: .whitespaces)),
-           n >= 0, n <= 10_000 {
+        if TrainingStepDelayMs.parsedInDeclaredRange(replayTrainingStepDelayText) != nil {
             replayTrainingStepDelayError = false
         } else {
             replayTrainingStepDelayError = true
@@ -1271,14 +1210,14 @@ final class TrainingSettingsPopoverModel {
         }
 
         // --- Sessions tab ---
-        // Autosave interval — edited in minutes, stored as seconds. Range
-        // [1, 10080] min = [60, 604800] sec, matching the parameter's range.
+        // Autosave interval — edited in minutes, stored as seconds, and
+        // validated in seconds against the parameter's declared range.
         // Commit-on-Save: the heartbeat re-anchors the running controller from
         // the new value, so no live trainer write is needed here.
         if let mins = Int(periodicAutosaveIntervalMinutesText.trimmingCharacters(in: .whitespaces)),
-           mins >= 1, mins <= 10_080 {
+           PeriodicAutosaveIntervalSec.isWithinDeclaration(Double(mins) * 60) {
             periodicAutosaveIntervalError = false
-            let secs = Double(mins * 60)
+            let secs = Double(mins) * 60
             if abs(secs - p.periodicAutosaveIntervalSec) > 0.5 {
                 SessionLogger.shared.log(
                     "[PARAM] periodicAutosaveIntervalSec: \(Int(p.periodicAutosaveIntervalSec)) -> \(Int(secs))"
@@ -1289,11 +1228,10 @@ final class TrainingSettingsPopoverModel {
             periodicAutosaveIntervalError = true
             anyError = true
         }
-        // Max periodic autosaves kept — Int in [0, 10000]; 0 = unlimited.
+        // Max periodic autosaves kept — Int in the declared range; 0 = unlimited.
         // Read live at prune time (after each periodic save), so a plain
         // singleton write is all that's required.
-        if let n = Int(maxPeriodicAutosavesKeptText.trimmingCharacters(in: .whitespaces)),
-           n >= 0, n <= 10_000 {
+        if let n = MaxPeriodicAutosavesKept.parsedInDeclaredRange(maxPeriodicAutosavesKeptText) {
             maxPeriodicAutosavesKeptError = false
             if n != p.maxPeriodicAutosavesKept {
                 SessionLogger.shared.log("[PARAM] maxPeriodicAutosavesKept: \(p.maxPeriodicAutosavesKept) -> \(n)")
@@ -1303,11 +1241,10 @@ final class TrainingSettingsPopoverModel {
             maxPeriodicAutosavesKeptError = true
             anyError = true
         }
-        // KL probe interval — Int in [0, 10000]; 0 = off. `liveTunable`, and
+        // KL probe interval — Int in the declared range; 0 = off. `liveTunable`, and
         // the training loop reconciles it against the running trainer on its
         // poll, so a plain singleton write is all that is required here.
-        if let n = Int(klProbeIntervalText.trimmingCharacters(in: .whitespaces)),
-           n >= 0, n <= 10_000 {
+        if let n = KLProbeInterval.parsedInDeclaredRange(klProbeIntervalText) {
             klProbeIntervalError = false
             if n != p.klProbeInterval {
                 SessionLogger.shared.log("[PARAM] klProbeInterval: \(p.klProbeInterval) -> \(n)")
@@ -1316,6 +1253,20 @@ final class TrainingSettingsPopoverModel {
         } else {
             klProbeIntervalError = true
             anyError = true
+        }
+
+        // Push the committed configuration onto the live trainer in one call,
+        // through the same `TrainerHyperparameters` path that configures a
+        // trainer at session start and in the CLI runners, so the popover can
+        // never update a subset the other paths disagree with. Runs whether or
+        // not some field failed: every field that did validate has already been
+        // written to the singleton above, and an invalid one left its previous
+        // value in place. The trainer reads the cycle from its own `SyncBox`,
+        // so this push (not only `ControlSideEffectsProbe`'s `.onChange`, which
+        // still owns the bundled `[PARAM] lr_momentum_cycle` line) is what makes
+        // a cycling edit take effect even if the probe is not mounted.
+        if let trainer {
+            TrainerHyperparameters(p.snapshot()).apply(to: trainer)
         }
 
         if !anyError {

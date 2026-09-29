@@ -118,3 +118,26 @@ struct CliTrainingConfig: Sendable {
         return parts.isEmpty ? "(empty)" : parts.joined(separator: " ")
     }
 }
+
+extension CliTrainingConfig {
+    /// Load the `--parameters` file at `path` (tilde-expanded) and apply it to
+    /// `TrainingParameters.shared` as a transient, this-process-only override
+    /// — the one load-and-apply path shared by the headless runners.
+    ///
+    /// Persistence is suppressed for the apply: a `--parameters` override must
+    /// not become the GUI's next-launch default, and a headless process shares
+    /// the GUI's bundle id (same `UserDefaults` domain). `apply(_:)` validates
+    /// the whole file against the declared ranges before assigning anything,
+    /// so a rejected file changes nothing. Errors are `TrainingConfigError`
+    /// (whose `localizedDescription` names the parameter and value) or the
+    /// underlying I/O / JSON error.
+    @MainActor
+    static func loadAndApplyTransiently(path: String) throws -> CliTrainingConfig {
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        let config = try load(from: url)
+        TrainingParameters.suppressPersistence = true
+        defer { TrainingParameters.suppressPersistence = false }
+        try TrainingParameters.shared.apply(config.trainingParameters)
+        return config
+    }
+}

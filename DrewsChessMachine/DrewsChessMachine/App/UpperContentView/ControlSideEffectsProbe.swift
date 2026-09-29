@@ -82,14 +82,7 @@ struct ControlSideEffectsProbe: View {
     private func cyclingChanges(_ content: some View) -> some View {
         content
             .onChange(of: trainingParams.lrMomentumCycle) { _, c in
-                let lrPart = c.lrEnabled
-                    ? "lr=[trough \(String(format: "%.2e", c.lrMin)),peak \(String(format: "%.2e", c.lrMax))]^\(c.lrPeriodSteps)st cnt=\(c.lrCount) inv=\(c.lrInvert)"
-                    : "lr=off"
-                let momPart = c.momentumEnabled
-                    ? "mom=[\(String(format: "%.2f", c.momentumMin)),\(String(format: "%.2f", c.momentumMax))]^\(c.momentumPeriodSteps)st cnt=\(c.momentumCount) inv=\(c.momentumInvert)"
-                    : "mom=off"
-                let envelopePart = LRMomentumCycleLogFormat.envelopeDescription(c.envelope)
-                SessionLogger.shared.log("[PARAM] lr_momentum_cycle: \(lrPart) \(momPart) \(envelopePart)")
+                SessionLogger.shared.log("[PARAM] lr_momentum_cycle: \(LRMomentumCycleLogFormat.cycleDescription(c))")
                 trainer?.lrMomentumCycle = c
             }
     }

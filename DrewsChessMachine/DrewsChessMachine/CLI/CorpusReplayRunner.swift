@@ -14,37 +14,33 @@ private final class ReplayAbortFlag: @unchecked Sendable {
     var isRequested: Bool { state.withLock { $0 } }
 }
 
-/// Plain, `Sendable` snapshot of the training parameters an offline replay run
-/// needs. Captured on the main actor (from `TrainingParameters.shared`) before
-/// the run starts, then passed into the off-actor GPU work — so the detached
-/// replay task never touches the `@MainActor` singleton (which would deadlock
-/// against the `syncWait` semaphore held on the main thread).
+/// Plain, `Sendable` snapshot of the training parameters an offline run
+/// (corpus replay or train-vs-UCI) needs. Captured on the main actor (from
+/// `TrainingParameters.shared`) before the run starts, then passed into the
+/// off-actor GPU work — so the detached task never touches the `@MainActor`
+/// singleton (which would deadlock against the `syncWait` semaphore held on
+/// the main thread).
+///
+/// Every trainer-level parameter travels as one `TrainerHyperparameters`,
+/// resolved and applied exactly as the GUI session does it. This struct used
+/// to carry its own hand-picked copy of those fields, which is how the CLI
+/// runners came to train without the LR/momentum cycle, the stats interval
+/// and the KL-probe interval. Only the run-level knobs that are not trainer
+/// state are listed separately.
 struct ReplayParams: Sendable {
-    var learningRate: Double
-    var entropyBonus: Double
-    var drawPenalty: Double
-    var weightDecay: Double
-    var gradClipMaxNorm: Double
-    var policyLossWeight: Double
-    var valueLossWeight: Double
-    var illegalMassWeight: Double
-    var policyLabelSmoothingEpsilon: Double
-    var valueLabelSmoothingEpsilon: Double
-    /// Channel-dropout rate. Unlike its neighbours here this one is NOT a
-    /// `ChessTrainer.init` argument — it is a property setter that pushes into
-    /// the training graph — so each runner must apply it explicitly after
-    /// constructing the trainer. It was absent from this struct entirely, which
-    /// is why the corpus and vs-UCI paths silently trained at rate 0 no matter
-    /// what `--parameters` specified.
-    var dropoutRate: Double
-    var momentumCoeff: Double
-    var signedAdvantageComplementCE: Bool
-    var sqrtBatchScalingLR: Bool
-    var lrWarmupSteps: Int
+    var trainer: TrainerHyperparameters
     var trainingBatchSize: Int
     var replayBufferCapacity: Int
     var replayRatioTarget: Double
     var replayBufferMinPositionsBeforeTraining: Int
+
+    init(_ parameters: TrainingParametersSnapshot) {
+        trainer = TrainerHyperparameters(parameters)
+        trainingBatchSize = parameters.trainingBatchSize
+        replayBufferCapacity = parameters.replayBufferCapacity
+        replayRatioTarget = parameters.replayRatioTarget
+        replayBufferMinPositionsBeforeTraining = parameters.replayBufferMinPositionsBeforeTraining
+    }
 }
 
 /// Configuration for one offline corpus-replay run.
@@ -291,17 +287,26 @@ enum CorpusReplayRunner {
         // Numeric knobs via String(format:) (%ld for Int, %g for Double); the
         // two on/off flags are interpolated rather than passed through %@ (Swift
         // String + %@ relies on NSString bridging — avoid it).
+        let hp = p.trainer
         let hparamsLine = String(
             format: "[REPLAY-HPARAMS] lr=%.6g batch=%ld wd=%.4g momentum=%.3g gradClip=%.3g entropyBonus=%.4g drawPenalty=%.4g policyW=%.3g valueW=%.3g illegalW=%.4g pLabelSmooth=%.4g vLabelSmooth=%.4g dropout=%.4g lrWarmup=%ld bufCap=%ld replayRatio=%.3g minPrefill=%ld",
-            p.learningRate, p.trainingBatchSize, p.weightDecay, p.momentumCoeff, p.gradClipMaxNorm,
-            p.entropyBonus, p.drawPenalty, p.policyLossWeight, p.valueLossWeight, p.illegalMassWeight,
-            p.policyLabelSmoothingEpsilon, p.valueLabelSmoothingEpsilon, p.dropoutRate,
-            p.lrWarmupSteps, p.replayBufferCapacity, p.replayRatioTarget,
+            Double(hp.learningRate), p.trainingBatchSize, Double(hp.weightDecayC), Double(hp.momentumCoeff), Double(hp.gradClipMaxNorm),
+            Double(hp.entropyRegularizationCoeff), Double(hp.drawPenalty), Double(hp.policyLossWeight), Double(hp.valueLossWeight), Double(hp.illegalMassPenaltyWeight),
+            Double(hp.policyLabelSmoothingEpsilon), Double(hp.valueLabelSmoothingEpsilon), Double(hp.dropoutRate),
+            hp.lrWarmupSteps, p.replayBufferCapacity, p.replayRatioTarget,
             p.replayBufferMinPositionsBeforeTraining
         )
-            + " complementCE=\(p.signedAdvantageComplementCE ? "on" : "off")"
-            + " sqrtBatchLR=\(p.sqrtBatchScalingLR ? "on" : "off")"
+            + " complementCE=\(hp.useSignedAdvantageComplementCE ? "on" : "off")"
+            + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
+            + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)"
         emit(hparamsLine)
+        // The resolved LR/momentum schedule, once. `lr=off` / `mom=off` means
+        // that channel trains at the static `lr=` / `momentum=` above; anything
+        // else overrides them, so a misconfigured schedule is visible here
+        // rather than only in the loss curve.
+        // The cycle's phase is a function of this trainer's completed-step
+        // count, which starts at zero for every replay segment.
+        emit("[REPLAY-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(hp.lrMomentumCycle)) phaseOrigin=segment-step-0")
         // Resolve the corpus + resume start BEFORE building the (expensive)
         // network/trainer, so a bad --start-shard / --start-game-index (or an
         // empty corpus) fails in milliseconds instead of after a multi-second
@@ -431,37 +436,21 @@ enum CorpusReplayRunner {
         // are both warm — only SGD momentum is cold — so use a short
         // momentum-refill ramp (~50 steps at momentum 0.9, ~5 time constants)
         // rather than the cold-start warm-up. Never exceed the configured value.
-        let effectiveWarmupSteps = config.resumeExact ? min(50, p.lrWarmupSteps) : p.lrWarmupSteps
+        var trainerHyperparameters = p.trainer
         if config.resumeExact {
-            SessionLogger.shared.log("[REPLAY] --resume-exact: lrWarmupSteps \(p.lrWarmupSteps) -> \(effectiveWarmupSteps) (momentum-refill)")
+            let momentumRefillWarmupSteps = min(50, p.trainer.lrWarmupSteps)
+            SessionLogger.shared.log("[REPLAY] --resume-exact: lrWarmupSteps \(p.trainer.lrWarmupSteps) -> \(momentumRefillWarmupSteps) (momentum-refill)")
+            trainerHyperparameters.lrWarmupSteps = momentumRefillWarmupSteps
         }
 
         emit("[REPLAY] building network + trainer (encoding=\(arch.inputEncoding.rawValue))")
         let net = try ChessMPSNetwork(.randomWeights, arch: arch)
-        let trainer = try ChessTrainer(
-            learningRate: Float(p.learningRate),
-            entropyRegularizationCoeff: Float(p.entropyBonus),
-            drawPenalty: Float(p.drawPenalty),
-            weightDecayC: Float(p.weightDecay),
-            gradClipMaxNorm: Float(p.gradClipMaxNorm),
-            policyLossWeight: Float(p.policyLossWeight),
-            valueLossWeight: Float(p.valueLossWeight),
-            illegalMassPenaltyWeight: Float(p.illegalMassWeight),
-            policyLabelSmoothingEpsilon: Float(p.policyLabelSmoothingEpsilon),
-            valueLabelSmoothingEpsilon: Float(p.valueLabelSmoothingEpsilon),
-            momentumCoeff: Float(p.momentumCoeff),
-            useSignedAdvantageComplementCE: p.signedAdvantageComplementCE,
-            sqrtBatchScalingForLR: p.sqrtBatchScalingLR,
-            lrWarmupSteps: effectiveWarmupSteps,
-            arch: arch
-        )
-        // `dropout_rate` is the one training parameter with no `init` argument —
-        // it is a property setter that pushes into the graph — so unlike the
-        // constructor-supplied parameters above it has to be applied explicitly.
-        // Without this a corpus run silently trained at rate 0 no matter what
-        // `--parameters` asked for, which made a dropout A/B sweep impossible to
-        // run on this path.
-        trainer.dropoutRate = Float(p.dropoutRate)
+        // Configured through `TrainerHyperparameters` — the same path the GUI
+        // session uses — so this trainer gets every trainer-level parameter,
+        // including the LR/momentum cycle and its decay envelope, dropout, and
+        // the stats / KL-probe intervals. With both cycle flags off the cycle
+        // is inert and the static LR and momentum apply, exactly as in the GUI.
+        let trainer = try ChessTrainer(hyperparameters: trainerHyperparameters, arch: arch)
         let buffer = ReplayBuffer(capacity: p.replayBufferCapacity, inputEncoding: net.inputEncoding)
         let feeder = CorpusReplayFeeder(network: net, buffer: buffer)
 
@@ -769,7 +758,12 @@ enum CorpusReplayRunner {
             if step == 1 || step % logEvery == 0 {
                 // Live, warmup-adjusted LR read from the trainer (single source
                 // of truth — don't re-derive the warmup formula here).
-                let liveLR = trainer.effectiveLearningRate(forBatchSize: batchSize, completedSteps: nil)
+                // Pin LR, momentum and the cycle values to one step-count
+                // observation so the three agree with each other.
+                let observedSteps = trainer.completedTrainSteps
+                let liveLR = trainer.effectiveLearningRate(forBatchSize: batchSize, completedSteps: observedSteps)
+                let liveMomentum = trainer.effectiveMomentum(completedSteps: observedSteps)
+                let cycleValues = trainer.lrMomentumCycleValues(completedSteps: observedSteps)
                 let line = "[REPLAY] step=\(step)"
                     + String(format: " loss=%.4f pLoss=%.4f vLoss=%.4f", timing.loss, timing.policyLoss, timing.valueLoss)
                     + " pEnt=\(dg(timing.policyEntropy, 3)) pIllM=\(dg(timing.illegalMassPenalty, 4))"
@@ -778,6 +772,8 @@ enum CorpusReplayRunner {
                     + " pLogitMean=\(dg(timing.policyLogitMean, 4)) vLogitMean=\(dg(timing.valueLogitMean, 4))"
                     + String(format: " gNorm=%.3f lr=%.3g ms=%.1f", timing.gradGlobalNorm, liveLR, timing.totalMs)
                     + " buf=\(buffer.count) plies=\(positionsFed) games=\(gamesFed) epoch=\(epochsCompleted)"
+                    + String(format: " mom=%.4f", liveMomentum)
+                    + (cycleValues.learningRate != nil ? " lrCyc" + LRMomentumCycleLogFormat.envelopeBounds(cycleValues) : "")
                 emit(line)
                 // Same cadence as the log line, so results.json and the log
                 // describe the same ticks.
@@ -804,27 +800,20 @@ enum CorpusReplayRunner {
                     policyLogitMean: timing.hasDiagnostics ? Double(timing.policyLogitMean) : nil,
                     valueLogitMean: timing.hasDiagnostics ? Double(timing.valueLogitMean) : nil,
                     batchSize: batchSize,
-                    // The STATIC configured base, matching this field's doc
-                    // ("always the static configured base") and the self-play
-                    // path. `liveLR` is warmup- and sqrt-batch-scaled, so
-                    // recording it here made the key time-varying on this path
-                    // and constant on self-play — the first line, at step 1
-                    // inside warmup, read base/lrWarmupSteps. It stays in the
+                    // `learning_rate` is the STATIC configured base (matching
+                    // the self-play path); `lr_effective_base` / momentum /
+                    // cycle fields come from the cycle evaluated at this step.
+                    // `liveLR` (warmup- and sqrt-batch-scaled) stays in the
                     // [REPLAY] log line, where `lr=` is the honest label for it.
-                    learningRate: p.learningRate,
-                    gradClipMaxNorm: p.gradClipMaxNorm,
-                    weightDecayC: p.weightDecay,
-                    dropoutRate: p.dropoutRate,
-                    entropyRegularizationCoeff: p.entropyBonus,
-                    drawPenalty: p.drawPenalty,
-                    policyLossWeight: p.policyLossWeight,
-                    valueLossWeight: p.valueLossWeight,
-                    lrEffectiveBase: p.learningRate,
-                    momentumEffective: p.momentumCoeff,
+                    trainerHyperparameters: trainerHyperparameters,
+                    cycleValues: cycleValues,
                     buildNumber: BuildInfo.buildNumber,
                     trainerID: config.runModelID,
                     // Corpus replay feeds every ply it reads, so produced == fed.
                     positionsProduced: positionsFed,
+                    gamesPlayed: nil,
+                    pliesCapDropped: nil,
+                    maxPliesPerGame: nil,
                     // A real knob here: `perStepFeed = batchSize / target`.
                     replayRatioTarget: p.replayRatioTarget
                 ))

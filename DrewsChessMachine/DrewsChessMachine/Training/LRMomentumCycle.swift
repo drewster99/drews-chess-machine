@@ -308,9 +308,28 @@ struct LRMomentumCycle: Sendable, Equatable, Codable {
 @MainActor
 extension TrainingParameters {
     /// The current LR/momentum cycle configuration, read live from the
-    /// singleton's stored parameter values. Pushed onto the running trainer
-    /// at session start (`SessionController.makeTrainer`), on each cycling
-    /// edit (`ControlSideEffectsProbe`), and on resume.
+    /// singleton. Delegates to the snapshot so there is exactly one mapping
+    /// from parameters to `LRMomentumCycle`; reading it touches every stored
+    /// parameter, which is what lets `ControlSideEffectsProbe` observe it with
+    /// a single `.onChange`.
+    var lrMomentumCycle: LRMomentumCycle {
+        snapshot().lrMomentumCycle
+    }
+
+    /// The decay envelope + momentum-follow configuration, read live from the
+    /// singleton. Also persisted on its own in session files (see
+    /// `LRMomentumCycle.envelope` for why it is not part of the cycle's
+    /// encoded form).
+    var lrMomentumCycleEnvelope: LRMomentumCycleEnvelope {
+        snapshot().lrMomentumCycleEnvelope
+    }
+}
+
+extension TrainingParametersSnapshot {
+    /// The LR/momentum cycle these parameters describe, envelope included —
+    /// the single mapping from the `lr_cycle_*` / `momentum_cycle_*` /
+    /// `momentum_follow*` parameters to the struct the trainer consumes.
+    /// Pushed onto a trainer via `TrainerHyperparameters.apply(to:)`.
     var lrMomentumCycle: LRMomentumCycle {
         LRMomentumCycle(
             lrEnabled: lrCycleEnabled,
@@ -329,10 +348,8 @@ extension TrainingParameters {
         )
     }
 
-    /// The decay envelope + momentum-follow configuration, read live from
-    /// the singleton. Also persisted on its own in session files (see
-    /// `LRMomentumCycle.envelope` for why it is not part of the cycle's
-    /// encoded form).
+    /// The decay envelope + momentum-follow configuration these parameters
+    /// describe.
     var lrMomentumCycleEnvelope: LRMomentumCycleEnvelope {
         LRMomentumCycleEnvelope(
             lrPeakEnd: lrCyclePeakEnd,
@@ -410,6 +427,22 @@ enum LRMomentumCycleLogFormat {
             )
             : "momFollow=off"
         return "\(decayPart) \(followPart)"
+    }
+
+    /// The whole schedule configuration — both channels plus the envelope —
+    /// e.g. `lr=[trough 1.00e-03,peak 1.00e-01]^20000st cnt=0 inv=true
+    /// mom=off decay=… momFollow=…`. A disabled channel renders as `lr=off` /
+    /// `mom=off`, meaning the trainer uses the static value. Shared by the
+    /// `[PARAM] lr_momentum_cycle` audit line and the CLI runners' startup
+    /// cycle lines.
+    static func cycleDescription(_ cycle: LRMomentumCycle) -> String {
+        let lrPart = cycle.lrEnabled
+            ? "lr=[trough \(String(format: "%.2e", cycle.lrMin)),peak \(String(format: "%.2e", cycle.lrMax))]^\(cycle.lrPeriodSteps)st cnt=\(cycle.lrCount) inv=\(cycle.lrInvert)"
+            : "lr=off"
+        let momPart = cycle.momentumEnabled
+            ? "mom=[\(String(format: "%.2f", cycle.momentumMin)),\(String(format: "%.2f", cycle.momentumMax))]^\(cycle.momentumPeriodSteps)st cnt=\(cycle.momentumCount) inv=\(cycle.momentumInvert)"
+            : "mom=off"
+        return "\(lrPart) \(momPart) \(envelopeDescription(cycle.envelope))"
     }
 
     /// The current LR envelope bounds for the `[STATS]` `lr=` field, e.g.

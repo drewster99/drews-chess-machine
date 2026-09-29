@@ -9,6 +9,15 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-29 CDT — One trainer-configuration path and one parameter validator for GUI, corpus replay and train-vs-UCI (pending commit)
+
+- New `TrainerHyperparameters` (resolved from a `TrainingParametersSnapshot`, applied with `apply(to:)`, plus `ChessTrainer(hyperparameters:arch:)`) is the only way parameters reach a trainer. The GUI session (`ensureTrainer`, fresh start, settings popover save), `CorpusReplayRunner` and `TrainVsUciRunner` all use it. `ReplayParams` now carries it instead of a hand-copied subset.
+- Bug fixed: corpus replay and train-vs-UCI never set `lrMomentumCycle`, so they trained at the static LR/momentum and ignored `lr_cycle_*`, `momentum_cycle_*`, `momentum_follow*` and the decay envelope. They also never set `batch_stats_interval` or `kl_probe_interval` (KL probes now run in the CLI runners when the parameter asks). The GUI fresh-start path skipped illegal-mass weight, both label-smoothing epsilons and the cycle (they were already set by `ensureTrainer`, so no runtime change there).
+- Logging: `[REPLAY-CYCLE]` / `[VS-UCI-CYCLE]` print the resolved schedule once (`lr=off` / `mom=off` = static); `[REPLAY-HPARAMS]` / `[VS-UCI-HPARAMS]` add `batchStats=` / `klProbe=`; the periodic `[REPLAY]` / `[VS-UCI]` lines append `mom=` and, when cycling, `lrCyc[pk=…,tr=…]` (`lr=` already includes the cycle). CLI `results.json` now records the cycle-evaluated `lr_effective_base` / `momentum_effective` and the cycle flags/bounds instead of static values.
+- Validation: every writer checks the declared `@TrainingParameter` range through `validateAgainstDeclaration` / `parsedInDeclaredRange`. The training and arena popovers restated ranges as literals that had drifted (self-play τ start/floor accepted ≥0.01, arena τ start/floor accepted (0, 10], against a declared 0.05…5.0; batch size, buffer capacity, prefill and replay-ratio limits also differed); they now use the declarations. The singleton setters reject and revert an out-of-range assignment with a `[PARAM-REJECTED]` log line instead of an `assertionFailure` (Release previously kept the bad value in memory while `UserDefaults` kept the old one). Session resume checks saved τ values and the other range-checked run knobs against the declarations. `TrainingParameters.apply` validates the whole map before assigning anything.
+- `TrainingConfigError` is `LocalizedError`, so CLI `--parameters` failures print e.g. "Value 0.02 is out of range for parameter 'self_play_target_tau'" instead of "(DrewsChessMachine.TrainingConfigError error 2.)". Both headless runners share `CliTrainingConfig.loadAndApplyTransiently(path:)`.
+- Tests: `TrainerHyperparametersTests`.
+
 ## 2026-09-29 CDT — Build New Model: saved presets keep their name as the picker label (`545dbc4`)
 
 - "Save as Preset" wrote the effective display label, which is "Custom" whenever the label field is empty and the fields match no preset, so every such saved preset appeared as "Custom" in the picker. With no explicit label, the preset name is now saved as the label.

@@ -1092,47 +1092,14 @@ struct DrewsChessMachineApp: App {
         let params: ReplayParams = MainActor.assumeIsolated {
             if let pp = parametersPath {
                 do {
-                    let url = URL(fileURLWithPath: (pp as NSString).expandingTildeInPath)
-                    let cfg = try CliTrainingConfig.load(from: url)
-                    // A --parameters apply is transient to this process. Without
-                    // this guard each setter's didSet persists to UserDefaults,
-                    // and because this headless process shares the GUI's bundle id
-                    // (same UserDefaults domain) the overrides would silently
-                    // become the GUI's next-launch defaults — the same
-                    // cross-process contamination already guarded on the --train
-                    // path. Safe to toggle here: this block runs synchronously on
-                    // the main actor.
-                    TrainingParameters.suppressPersistence = true
-                    defer { TrainingParameters.suppressPersistence = false }
-                    try TrainingParameters.shared.apply(cfg.trainingParameters)
+                    let cfg = try CliTrainingConfig.loadAndApplyTransiently(path: pp)
                     if stepLimit == nil { stepLimit = cfg.trainingStepLimit }
                 } catch {
                     FileHandle.standardError.write(Data("error: --parameters load/apply failed: \(error.localizedDescription)\n".utf8))
                     Darwin.exit(2)
                 }
             }
-            let tp = TrainingParameters.shared
-            return ReplayParams(
-                learningRate: tp.learningRate,
-                entropyBonus: tp.entropyBonus,
-                drawPenalty: tp.drawPenalty,
-                weightDecay: tp.weightDecay,
-                gradClipMaxNorm: tp.gradClipMaxNorm,
-                policyLossWeight: tp.policyLossWeight,
-                valueLossWeight: tp.valueLossWeight,
-                illegalMassWeight: tp.illegalMassWeight,
-                policyLabelSmoothingEpsilon: tp.policyLabelSmoothingEpsilon,
-                valueLabelSmoothingEpsilon: tp.valueLabelSmoothingEpsilon,
-                dropoutRate: tp.dropoutRate,
-                momentumCoeff: tp.momentumCoeff,
-                signedAdvantageComplementCE: tp.signedAdvantageComplementCE,
-                sqrtBatchScalingLR: tp.sqrtBatchScalingLR,
-                lrWarmupSteps: tp.lrWarmupSteps,
-                trainingBatchSize: tp.trainingBatchSize,
-                replayBufferCapacity: tp.replayBufferCapacity,
-                replayRatioTarget: tp.replayRatioTarget,
-                replayBufferMinPositionsBeforeTraining: tp.replayBufferMinPositionsBeforeTraining
-            )
+            return ReplayParams(TrainingParameters.shared.snapshot())
         }
 
         // Mint the run's saved-model ModelID here on the main thread — the
@@ -1313,11 +1280,7 @@ struct DrewsChessMachineApp: App {
         let params: ReplayParams = MainActor.assumeIsolated {
             if let pp = parametersPath {
                 do {
-                    let url = URL(fileURLWithPath: (pp as NSString).expandingTildeInPath)
-                    let cfg = try CliTrainingConfig.load(from: url)
-                    TrainingParameters.suppressPersistence = true
-                    defer { TrainingParameters.suppressPersistence = false }
-                    try TrainingParameters.shared.apply(cfg.trainingParameters)
+                    let cfg = try CliTrainingConfig.loadAndApplyTransiently(path: pp)
                     if stepLimit == nil { stepLimit = cfg.trainingStepLimit }
                     if timeLimitSec == nil { timeLimitSec = cfg.trainingTimeLimitSec }
                 } catch {
@@ -1325,28 +1288,7 @@ struct DrewsChessMachineApp: App {
                     Darwin.exit(2)
                 }
             }
-            let tp = TrainingParameters.shared
-            return ReplayParams(
-                learningRate: tp.learningRate,
-                entropyBonus: tp.entropyBonus,
-                drawPenalty: tp.drawPenalty,
-                weightDecay: tp.weightDecay,
-                gradClipMaxNorm: tp.gradClipMaxNorm,
-                policyLossWeight: tp.policyLossWeight,
-                valueLossWeight: tp.valueLossWeight,
-                illegalMassWeight: tp.illegalMassWeight,
-                policyLabelSmoothingEpsilon: tp.policyLabelSmoothingEpsilon,
-                valueLabelSmoothingEpsilon: tp.valueLabelSmoothingEpsilon,
-                dropoutRate: tp.dropoutRate,
-                momentumCoeff: tp.momentumCoeff,
-                signedAdvantageComplementCE: tp.signedAdvantageComplementCE,
-                sqrtBatchScalingLR: tp.sqrtBatchScalingLR,
-                lrWarmupSteps: tp.lrWarmupSteps,
-                trainingBatchSize: tp.trainingBatchSize,
-                replayBufferCapacity: tp.replayBufferCapacity,
-                replayRatioTarget: tp.replayRatioTarget,
-                replayBufferMinPositionsBeforeTraining: tp.replayBufferMinPositionsBeforeTraining
-            )
+            return ReplayParams(TrainingParameters.shared.snapshot())
         }
 
         let runModelID = MainActor.assumeIsolated { ModelIDMinter.mint().value }

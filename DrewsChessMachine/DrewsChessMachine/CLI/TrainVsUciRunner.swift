@@ -170,39 +170,26 @@ enum TrainVsUciRunner {
         // ChessNetwork/ChessMPSNetwork type mismatch (trainer.network is a
         // ChessNetwork; the driver + ActiveGame need a ChessMPSNetwork).
         let evalNet = try ChessMPSNetwork(.randomWeights, arch: arch)
-        let trainer = try ChessTrainer(
-            learningRate: Float(p.learningRate),
-            entropyRegularizationCoeff: Float(p.entropyBonus),
-            drawPenalty: Float(p.drawPenalty),
-            weightDecayC: Float(p.weightDecay),
-            gradClipMaxNorm: Float(p.gradClipMaxNorm),
-            policyLossWeight: Float(p.policyLossWeight),
-            valueLossWeight: Float(p.valueLossWeight),
-            illegalMassPenaltyWeight: Float(p.illegalMassWeight),
-            policyLabelSmoothingEpsilon: Float(p.policyLabelSmoothingEpsilon),
-            valueLabelSmoothingEpsilon: Float(p.valueLabelSmoothingEpsilon),
-            momentumCoeff: Float(p.momentumCoeff),
-            useSignedAdvantageComplementCE: p.signedAdvantageComplementCE,
-            sqrtBatchScalingForLR: p.sqrtBatchScalingLR,
-            lrWarmupSteps: p.lrWarmupSteps,
-            arch: arch
-        )
-        // See CorpusReplayRunner: `dropout_rate` has no `init` argument, so it
-        // must be applied explicitly or the run silently trains at rate 0
-        // regardless of `--parameters`.
-        trainer.dropoutRate = Float(p.dropoutRate)
-        // This path logged no hyperparameters at all, so a finished run left no
-        // record of what it trained under. Mirrors `[REPLAY-HPARAMS]` field for
-        // field so the two CLI paths can be diffed directly.
+        // Configured through `TrainerHyperparameters` — the same path the GUI
+        // session and corpus replay use — so every trainer-level parameter
+        // lands, including the LR/momentum cycle, dropout and the stats /
+        // KL-probe intervals.
+        let hp = p.trainer
+        let trainer = try ChessTrainer(hyperparameters: hp, arch: arch)
+        // Field for field with `[REPLAY-HPARAMS]` so the two CLI paths can be
+        // diffed directly.
         emit(String(
             format: "[VS-UCI-HPARAMS] lr=%.6g batch=%ld wd=%.4g momentum=%.3g gradClip=%.3g entropyBonus=%.4g drawPenalty=%.4g policyW=%.3g valueW=%.3g illegalW=%.4g pLabelSmooth=%.4g vLabelSmooth=%.4g dropout=%.4g lrWarmup=%ld bufCap=%ld",
-            p.learningRate, p.trainingBatchSize, p.weightDecay, p.momentumCoeff, p.gradClipMaxNorm,
-            p.entropyBonus, p.drawPenalty, p.policyLossWeight, p.valueLossWeight, p.illegalMassWeight,
-            p.policyLabelSmoothingEpsilon, p.valueLabelSmoothingEpsilon, p.dropoutRate,
-            p.lrWarmupSteps, p.replayBufferCapacity
+            Double(hp.learningRate), p.trainingBatchSize, Double(hp.weightDecayC), Double(hp.momentumCoeff), Double(hp.gradClipMaxNorm),
+            Double(hp.entropyRegularizationCoeff), Double(hp.drawPenalty), Double(hp.policyLossWeight), Double(hp.valueLossWeight), Double(hp.illegalMassPenaltyWeight),
+            Double(hp.policyLabelSmoothingEpsilon), Double(hp.valueLabelSmoothingEpsilon), Double(hp.dropoutRate),
+            hp.lrWarmupSteps, p.replayBufferCapacity
         )
-            + " complementCE=\(p.signedAdvantageComplementCE ? "on" : "off")"
-            + " sqrtBatchLR=\(p.sqrtBatchScalingLR ? "on" : "off")")
+            + " complementCE=\(hp.useSignedAdvantageComplementCE ? "on" : "off")"
+            + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
+            + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)")
+        // The resolved LR/momentum schedule, once — see `[REPLAY-CYCLE]`.
+        emit("[VS-UCI-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(hp.lrMomentumCycle)) phaseOrigin=segment-step-0")
         let buffer = ReplayBuffer(capacity: p.replayBufferCapacity, inputEncoding: evalNet.inputEncoding)
 
         // Number of base tensors (trainables + BN running stats) — the prefix
@@ -413,13 +400,20 @@ enum TrainVsUciRunner {
                 if step % syncEvery == 0 { try await syncEvalNet() }
 
                 if step == 1 || step % logEvery == 0 {
-                    let liveLR = trainer.effectiveLearningRate(forBatchSize: batchSize, completedSteps: nil)
+                    // Pin LR, momentum and the cycle values to one step-count
+                    // observation so the three agree with each other.
+                    let observedSteps = trainer.completedTrainSteps
+                    let liveLR = trainer.effectiveLearningRate(forBatchSize: batchSize, completedSteps: observedSteps)
+                    let liveMomentum = trainer.effectiveMomentum(completedSteps: observedSteps)
+                    let cycleValues = trainer.lrMomentumCycleValues(completedSteps: observedSteps)
                     let line = "[VS-UCI] step=\(step)"
                         + String(format: " loss=%.4f pLoss=%.4f vLoss=%.4f", timing.loss, timing.policyLoss, timing.valueLoss)
                         + " pEnt=\(dg(timing.policyEntropy, 3)) playedP=\(dg(timing.playedMoveProb, 3))"
                         + " pLogitMean=\(dg(timing.policyLogitMean, 4)) vLogitMean=\(dg(timing.valueLogitMean, 4))"
                         + String(format: " gNorm=%.3f lr=%.3g ms=%.1f", timing.gradGlobalNorm, liveLR, timing.totalMs)
                         + " buf=\(buffer.count)"
+                        + String(format: " mom=%.4f", liveMomentum)
+                        + (cycleValues.learningRate != nil ? " lrCyc" + LRMomentumCycleLogFormat.envelopeBounds(cycleValues) : "")
                     emit(line)
                     // Same cadence as the log line, so results.json and the log
                     // describe the same ticks.
@@ -454,34 +448,29 @@ enum TrainVsUciRunner {
                         policyLogitMean: timing.hasDiagnostics ? Double(timing.policyLogitMean) : nil,
                         valueLogitMean: timing.hasDiagnostics ? Double(timing.valueLogitMean) : nil,
                         batchSize: batchSize,
-                        // Static configured base — see CorpusReplayRunner.
-                        learningRate: p.learningRate,
-                        gradClipMaxNorm: p.gradClipMaxNorm,
-                        weightDecayC: p.weightDecay,
-                        dropoutRate: p.dropoutRate,
-                        entropyRegularizationCoeff: p.entropyBonus,
-                        drawPenalty: p.drawPenalty,
-                        policyLossWeight: p.policyLossWeight,
-                        valueLossWeight: p.valueLossWeight,
-                        lrEffectiveBase: p.learningRate,
-                        momentumEffective: p.momentumCoeff,
+                        // Static base plus the cycle evaluated at this step —
+                        // see CorpusReplayRunner.
+                        trainerHyperparameters: hp,
+                        cycleValues: cycleValues,
                         buildNumber: BuildInfo.buildNumber,
                         trainerID: config.runModelID,
-                        // `positionsProduced` deliberately omitted: the driver
-                        // counts dropped GAMES (`capDropped`), never their
-                        // plies, so the produced total is genuinely unmeasured
-                        // here. `positions_trained` therefore falls back to the
-                        // fed count — a lower bound, not the self-play
+                        // `positionsProduced` nil: the driver counts dropped
+                        // GAMES (`capDropped`), never their plies, so the
+                        // produced total is genuinely unmeasured here.
+                        // `positions_trained` therefore falls back to the fed
+                        // count — a lower bound, not the self-play
                         // raw-produced convention. `run_kind` disambiguates.
+                        positionsProduced: nil,
                         // Games this run completed. Recorded under the
                         // self-play-shaped `self_play_games` key; `run_kind`
                         // at top level says what that means here.
                         gamesPlayed: slots.reduce(0) { $0 + $1.gamesCompleted },
                         pliesCapDropped: slots.reduce(0) { $0 + $1.capDropped },
-                        maxPliesPerGame: config.maxPliesPerGame
-                        // `replayRatioTarget` deliberately omitted: this path
-                        // never reads it, so emitting it would be a fresh false
-                        // claim rather than a recovered one.
+                        maxPliesPerGame: config.maxPliesPerGame,
+                        // nil: this path never reads the replay-ratio target,
+                        // so emitting it would be a fresh false claim rather
+                        // than a recovered one.
+                        replayRatioTarget: nil
                     ))
                 }
                 if step % autosaveEvery == 0 {

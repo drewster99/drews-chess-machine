@@ -930,26 +930,11 @@ final class SessionController {
     /// hyperparameters to it. Returns `nil` (and sets `trainingError`) if the
     /// trainer's MPSGraph build fails on first construction.
     func ensureTrainer() -> ChessTrainer? {
-        let params = TrainingParameters.shared
+        // One resolution of every trainer-level parameter, shared with the
+        // CLI runners (see `TrainerHyperparameters`).
+        let hyperparameters = TrainerHyperparameters(TrainingParameters.shared.snapshot())
         if let trainer {
-            trainer.learningRate = Float(params.learningRate)
-            trainer.entropyRegularizationCoeff = Float(params.entropyBonus)
-            trainer.drawPenalty = Float(params.drawPenalty)
-            trainer.weightDecayC = Float(params.weightDecay)
-            trainer.dropoutRate = Float(params.dropoutRate)
-            trainer.gradClipMaxNorm = Float(params.gradClipMaxNorm)
-            trainer.policyLossWeight = Float(params.policyLossWeight)
-            trainer.valueLossWeight = Float(params.valueLossWeight)
-            trainer.illegalMassPenaltyWeight = Float(params.illegalMassWeight)
-            trainer.policyLabelSmoothingEpsilon = Float(params.policyLabelSmoothingEpsilon)
-            trainer.valueLabelSmoothingEpsilon = Float(params.valueLabelSmoothingEpsilon)
-            trainer.momentumCoeff = Float(params.momentumCoeff)
-            trainer.useSignedAdvantageComplementCE = params.signedAdvantageComplementCE
-            trainer.sqrtBatchScalingForLR = params.sqrtBatchScalingLR
-            trainer.lrWarmupSteps = params.lrWarmupSteps
-            trainer.batchStatsInterval = params.batchStatsInterval
-            trainer.klProbeInterval = params.klProbeInterval
-            trainer.lrMomentumCycle = params.lrMomentumCycle
+            hyperparameters.apply(to: trainer)
             return trainer
         }
         do {
@@ -966,24 +951,10 @@ final class SessionController {
                 SessionLogger.shared.log("[APP] --bf16-cast-in-forward: trainer using config D (fp32 weight storage, bf16 cast-in-forward)")
             }
             let t = try ChessTrainer(
-                learningRate: Float(params.learningRate),
-                entropyRegularizationCoeff: Float(params.entropyBonus),
-                drawPenalty: Float(params.drawPenalty),
-                weightDecayC: Float(params.weightDecay),
-                gradClipMaxNorm: Float(params.gradClipMaxNorm),
-                policyLossWeight: Float(params.policyLossWeight),
-                valueLossWeight: Float(params.valueLossWeight),
-                illegalMassPenaltyWeight: Float(params.illegalMassWeight),
-                policyLabelSmoothingEpsilon: Float(params.policyLabelSmoothingEpsilon),
-                valueLabelSmoothingEpsilon: Float(params.valueLabelSmoothingEpsilon),
-                momentumCoeff: Float(params.momentumCoeff),
-                useSignedAdvantageComplementCE: params.signedAdvantageComplementCE,
-                sqrtBatchScalingForLR: params.sqrtBatchScalingLR,
-                lrWarmupSteps: params.lrWarmupSteps,
+                hyperparameters: hyperparameters,
                 arch: trainerArch,
                 bf16CastInForward: bf16CastInForward
             )
-            t.lrMomentumCycle = params.lrMomentumCycle
             trainer = t
             SessionLogger.shared.logArchitecture(
                 event: "built trainer \(t.identifier?.description ?? "?")",
