@@ -256,6 +256,13 @@ final class LichessBotController {
     /// How long the single view stays on a followed game after it ends.
     static let finishedGameHold: Duration = .seconds(8)
     private let finishedGameHoldDuration: Duration
+    /// The clock the live grid's order and tile phases are computed at.
+    /// It advances only when a finished game's position hold or result
+    /// highlight ends, so each change is one observable step the grid
+    /// animates, rather than a continuously ticking value.
+    private(set) var gridClock = Date()
+    /// The pending wake-up that next advances `gridClock`.
+    private var gridClockTask: Task<Void, Never>?
     /// The Live tab's Single / Grid choice, remembered across launches.
     var showsGrid = false {
         didSet { defaults.set(showsGrid, forKey: Self.showsGridKey) }
@@ -413,6 +420,7 @@ final class LichessBotController {
     /// start one hold; when it ends, the view moves on to the next live
     /// game. Called after every change to the games list or a game's state.
     private func updateAutoFollow() {
+        refreshGridClock()
         guard let followedID = autoFollowedGameID, let followed = listedGame(followedID) else {
             cancelAutoFollowHold()
             let next = firstLiveGame?.id
@@ -455,6 +463,39 @@ final class LichessBotController {
     private func cancelAutoFollowHold() {
         autoFollowHold?.task.cancel()
         autoFollowHold = nil
+    }
+
+    /// The live grid's order, from `LichessBotGridOrdering` at `gridClock`.
+    /// Used by the grid only; the single view's follow logic is separate.
+    var gridOrderedGames: [LichessBotLiveGame] {
+        let entries = games.map { LichessBotGridOrdering.Entry(id: $0.id, startedAt: $0.startedAt, finishedAt: $0.finishedAt) }
+        return LichessBotGridOrdering.orderedIndices(entries, now: gridClock).map { games[$0] }
+    }
+
+    /// Advance `gridClock` if a position hold or result highlight has ended
+    /// since it was last set, and schedule the next advance for the moment
+    /// the next one ends. Rescheduling on every games change keeps exactly
+    /// one wake-up pending, and none when no finished game is within its
+    /// windows, so nothing polls.
+    private func refreshGridClock() {
+        gridClockTask?.cancel()
+        gridClockTask = nil
+        let now = Date()
+        let finishTimes = games.compactMap(\.finishedAt)
+        if LichessBotGridOrdering.hasTransition(finishTimes: finishTimes, since: gridClock, through: now) {
+            gridClock = now
+        }
+        guard let next = LichessBotGridOrdering.nextTransition(finishTimes: finishTimes, after: now) else { return }
+        let delay = Duration.milliseconds(Int64((next.timeIntervalSince(now) * 1000).rounded(.up)))
+        gridClockTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                // Canceled: a newer schedule replaced this one.
+                return
+            }
+            self?.refreshGridClock()
+        }
     }
 
     var hasChallengeScope: Bool {

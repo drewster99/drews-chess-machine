@@ -11,13 +11,14 @@ struct LichessBotGameTileView: View {
     let onDismiss: () -> Void
 
     var body: some View {
+        let phase = LichessBotGridOrdering.phase(finishedAt: game.finishedAt, now: controller.gridClock)
         ZStack {
             Text("Waiting for \(game.id)…")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, minHeight: 120)
                 .shown(game.ourColor == nil)
             ForEach(game.ourColor.map { [$0] } ?? [], id: \.self) { ourColor in
-                LichessBotGameTileContent(controller: controller, game: game, ourColor: ourColor, onOpen: onOpen, onDismiss: onDismiss)
+                LichessBotGameTileContent(controller: controller, game: game, ourColor: ourColor, phase: phase, onOpen: onOpen, onDismiss: onDismiss)
             }
         }
     }
@@ -28,6 +29,7 @@ struct LichessBotGameTileContent: View {
     let controller: LichessBotController
     let game: LichessBotLiveGame
     let ourColor: PieceColor
+    let phase: LichessBotGridOrdering.Phase
     let onOpen: () -> Void
     let onDismiss: () -> Void
 
@@ -100,12 +102,15 @@ struct LichessBotGameTileContent: View {
         .padding(8)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(game.isFinished ? Color.gray.opacity(0.18) : Color.clear)
+                .fill(backgroundColor)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(game.isFinished ? Color.gray.opacity(0.3) : Color.green.opacity(0.6), lineWidth: game.isFinished ? 1 : 2)
+                .strokeBorder(borderColor, lineWidth: phase == .finished ? 1 : 2)
         )
+        // The phase changes when the game ends and again when its result
+        // highlight ends; both fade rather than snap.
+        .animation(.default, value: phase)
         .contentShape(Rectangle())
         .onTapGesture(perform: onOpen)
         .help("Open this game in its own window")
@@ -134,6 +139,32 @@ struct LichessBotGameTileContent: View {
         case .lost: return "DCM lost"
         case .drew: return "Draw"
         case .noResult: return game.status
+        }
+    }
+
+    /// The result's tint while a just-finished game is highlighted: green
+    /// for a win, red for a loss, gray for a draw or no result.
+    private var resultHighlightColor: Color {
+        switch result {
+        case .won: return .green
+        case .lost: return .red
+        case .drew, .noResult: return .gray
+        }
+    }
+
+    private var backgroundColor: Color {
+        switch phase {
+        case .live: return .clear
+        case .justFinished: return resultHighlightColor.opacity(0.22)
+        case .finished: return Color.gray.opacity(0.18)
+        }
+    }
+
+    private var borderColor: Color {
+        switch phase {
+        case .live: return Color.green.opacity(0.6)
+        case .justFinished: return resultHighlightColor.opacity(0.8)
+        case .finished: return Color.gray.opacity(0.3)
         }
     }
 

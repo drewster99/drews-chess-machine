@@ -83,21 +83,10 @@ struct LichessBotLiveSingleView: View {
 struct LichessBotGameGridView: View {
     let controller: LichessBotController
 
-    /// Games in progress first, oldest start first (the order they began);
-    /// then finished games, most recently finished first.
-    static func ordered(_ games: [LichessBotLiveGame]) -> [LichessBotLiveGame] {
-        let live = games.filter { !$0.isFinished }.sorted { $0.startedAt < $1.startedAt }
-        let finished = games
-            .compactMap { game in game.finishedAt.map { (game: game, finishedAt: $0) } }
-            .sorted { $0.finishedAt > $1.finishedAt }
-            .map(\.game)
-        return live + finished
-    }
-
     var body: some View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 240, maximum: 340), spacing: 12)], spacing: 12) {
-                ForEach(Self.ordered(controller.games)) { game in
+                ForEach(controller.gridOrderedGames) { game in
                     LichessBotGameTileView(
                         controller: controller,
                         game: game,
@@ -106,6 +95,10 @@ struct LichessBotGameGridView: View {
                     )
                 }
             }
+            // Tiles keep their identity by game id, so a reorder (a finished
+            // game's position hold ending, a game starting or being
+            // dismissed) slides them to their new places.
+            .animation(.default, value: controller.gridOrderedGames.map(\.id))
             .padding(12)
         }
     }
