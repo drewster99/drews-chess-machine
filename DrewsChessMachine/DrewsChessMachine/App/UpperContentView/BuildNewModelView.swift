@@ -316,9 +316,15 @@ struct BuildNewModelView: View {
                 .frame(width: 160)
             Button("Save as Preset") {
                 let name = model.saveAsName.isEmpty ? model.defaultSaveName : model.saveAsName
+                // The saved label is what the preset picker shows. With no
+                // explicit label, the effective `model.label` is "Custom" (or
+                // a matched preset's label), which would make every saved
+                // preset indistinguishable in the picker — so fall back to
+                // the preset name the user just chose.
+                let savedLabel = model.labelOverride.isEmpty ? name : model.labelOverride
                 do {
                     let url = try ArchitecturePresetStore.save(
-                        name: name, label: model.label, architecture: model.architecture)
+                        name: name, label: savedLabel, architecture: model.architecture)
                     model.refreshPresets()
                     saveStatus = "Saved \(url.lastPathComponent)"
                 } catch {

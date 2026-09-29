@@ -9,6 +9,10 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-29 CDT — Build New Model: saved presets keep their name as the picker label (pending commit)
+
+- "Save as Preset" wrote the effective display label, which is "Custom" whenever the label field is empty and the fields match no preset, so every such saved preset appeared as "Custom" in the picker. With no explicit label, the preset name is now saved as the label.
+
 ## 2026-09-29 CDT — Status chip: spinner spins in place; label no longer truncates (`9abba29`)
 
 - `ChipActivitySpinner` started a `repeatForever` implicit animation from `onAppear`, which also captured the chip's settling layout position, so the arc endlessly slid up into the chip instead of rotating. The angle is now computed from the clock inside a `TimelineView(.animation)`, with no animation transaction.
