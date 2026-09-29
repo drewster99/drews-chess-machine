@@ -1,3 +1,5 @@
+import MetalPerformanceShaders
+import MetalPerformanceShadersGraph
 import XCTest
 @testable import DrewsChessMachine
 
