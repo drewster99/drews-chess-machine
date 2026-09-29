@@ -55,7 +55,12 @@ struct SessionStatusChipView: View {
             Text(label)
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(kind.foreground)
+                .lineLimit(1)
         }
+        // The status bar compresses its children when space is tight;
+        // the chip must keep its ideal width so the label never
+        // truncates ("Traini…").
+        .fixedSize()
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
         .background(

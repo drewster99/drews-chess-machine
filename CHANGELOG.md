@@ -9,6 +9,11 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-29 CDT — Status chip: spinner spins in place; label no longer truncates (pending commit)
+
+- `ChipActivitySpinner` started a `repeatForever` implicit animation from `onAppear`, which also captured the chip's settling layout position, so the arc endlessly slid up into the chip instead of rotating. The angle is now computed from the clock inside a `TimelineView(.animation)`, with no animation transaction.
+- `SessionStatusChipView` is `.fixedSize()` with a one-line label, so the status bar can no longer compress "Training" to "Traini…".
+
 ## 2026-09-29 CDT — Lichess bot: challenge credit costing corrected (`93265a0`)
 
 - Lichess charges nothing when the challenged player follows DCM (lila `fetchFollows(dest, me)`), not when DCM follows them, so the profile's `following` flag measured the wrong direction. No API reports whether another player follows the token's account, so the extra `GET /api/user/{name}` before a human challenge is gone (one less housekeeping-priority request that could hold a challenge back) and the costs are the worst case, logged as such: bot 1, human 5. `LichessBotChallengeOpponentKind.human` no longer carries a follow flag; existing `challenge-outcomes.json` records still decode.
