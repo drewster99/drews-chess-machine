@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-29 CDT — Lichess bot: challenge credit costing corrected (pending commit)
+## 2026-09-29 CDT — Lichess bot: challenge credit costing corrected (`93265a0`)
 
 - Lichess charges nothing when the challenged player follows DCM (lila `fetchFollows(dest, me)`), not when DCM follows them, so the profile's `following` flag measured the wrong direction. No API reports whether another player follows the token's account, so the extra `GET /api/user/{name}` before a human challenge is gone (one less housekeeping-priority request that could hold a challenge back) and the costs are the worst case, logged as such: bot 1, human 5. `LichessBotChallengeOpponentKind.human` no longer carries a follow flag; existing `challenge-outcomes.json` records still decode.
 - Lichess charges credits when a POST passes its per-user challenge limit, before the bot-vs-bot daily limit and the player's challenge preferences are checked, so a bot-daily-limit refusal or another 400 now costs the opponent's credits (worst case; a few 400s are raised before the charge). A 429 and non-400 statuses cost nothing.
