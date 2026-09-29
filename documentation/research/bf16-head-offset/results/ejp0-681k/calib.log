@@ -1,0 +1,6 @@
+f64 internals, heads fused-rounded                                          WDL exact 724/1127 (err med 0.0e+00 p90 4.0e-01) | top5 exact 405/1127 (err med 6.7e-04 p90 1.6e-02) | top1 1119 | recorded top-2 ties reproduced 149/159
+f64 internals, heads mm+bias rounded                                        WDL exact 474/1127 (err med 1.7e-02 p90 4.8e-01) | top5 exact 78/1127 (err med 1.1e-02 p90 4.0e-02) | top1 1092 | recorded top-2 ties reproduced 106/159
+input only + heads                                                          WDL exact 474/1127 (err med 1.7e-02 p90 4.8e-01) | top5 exact 78/1127 (err med 1.1e-02 p90 4.0e-02) | top1 1092 | recorded top-2 ties reproduced 106/159
+per-op ALL (incl. norm .sub)                                                WDL exact 417/1127 (err med 1.7e-02 p90 4.8e-01) | top5 exact 73/1127 (err med 1.2e-02 p90 4.2e-02) | top1 1084 | recorded top-2 ties reproduced 100/159
+per-op, no norm .sub                                                        WDL exact 433/1127 (err med 1.7e-02 p90 4.8e-01) | top5 exact 72/1127 (err med 1.3e-02 p90 4.1e-02) | top1 1089 | recorded top-2 ties reproduced 100/159
+kernel outputs only (conv/mm/norm/add, no SE-internal/alpha/.sub/ln stats)  WDL exact 474/1127 (err med 1.7e-02 p90 4.8e-01) | top5 exact 78/1127 (err med 1.1e-02 p90 4.1e-02) | top1 1092 | recorded top-2 ties reproduced 101/159

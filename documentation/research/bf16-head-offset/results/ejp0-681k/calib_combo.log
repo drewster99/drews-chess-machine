@@ -1,0 +1,4 @@
+fused heads + p.pre_bn                             (724, 464)
+fused heads + all conv/norm/add outputs            (706, 303)
+per-op everything except head mm (fused heads)     (626, 281)
+per-op except head mm and norm .sub                (631, 330)
