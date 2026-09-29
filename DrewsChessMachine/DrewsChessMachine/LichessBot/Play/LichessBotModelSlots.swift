@@ -24,6 +24,10 @@ enum LichessBotModelError: LocalizedError, Equatable {
     case noChampion
     case noTrainer
     case noFileSelected
+    /// A loaded model file carried no decode-time value-head centering
+    /// result, so the generation could not record whether its weights match
+    /// the file's bytes. Every decoder sets it; seeing this is a bug.
+    case valueHeadCenteringUnknown(String)
 
     var errorDescription: String? {
         switch self {
@@ -33,6 +37,8 @@ enum LichessBotModelError: LocalizedError, Equatable {
             return "No trainer exists. Start Play-and-Train at least once."
         case .noFileSelected:
             return "No model file is selected."
+        case .valueHeadCenteringUnknown(let path):
+            return "Model file \(path) was decoded without a value-head centering result."
         }
     }
 }
@@ -160,6 +166,7 @@ actor LichessBotModelSlots {
         let snapshot: LichessBotWeightsSnapshot
         var filePath: String?
         var fileSHA256: String?
+        var valueHeadRecenteredOnLoad: Bool?
         switch settings.source {
         case .champion:
             snapshot = try await provider.championSnapshot()
@@ -173,6 +180,7 @@ actor LichessBotModelSlots {
             snapshot = loaded.snapshot
             filePath = path
             fileSHA256 = loaded.sha256
+            valueHeadRecenteredOnLoad = loaded.valueHeadRecentered
         }
 
         let network = try await InferenceNetworkFactory.build(loading: snapshot.weights, arch: snapshot.architecture)
@@ -186,7 +194,8 @@ actor LichessBotModelSlots {
             snapshotAt: Date(),
             architectureSummary: snapshot.architecture.architectureSummary,
             filePath: filePath,
-            fileSHA256: fileSHA256
+            fileSHA256: fileSHA256,
+            valueHeadRecenteredOnLoad: valueHeadRecenteredOnLoad
         )
         let generation = LichessBotModelGeneration(info: info, network: network)
         current = generation
@@ -198,7 +207,12 @@ actor LichessBotModelSlots {
     }
 
     /// Load and hash a model file off the cooperative thread pool.
-    private static func loadFile(at url: URL) async throws -> (snapshot: LichessBotWeightsSnapshot, sha256: String) {
+    /// `valueHeadRecentered` reports whether decode changed the value head
+    /// (see `ValueHeadRecentering`), so the generation records that its
+    /// weights no longer match the hashed bytes.
+    private static func loadFile(
+        at url: URL
+    ) async throws -> (snapshot: LichessBotWeightsSnapshot, sha256: String, valueHeadRecentered: Bool) {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
@@ -211,7 +225,12 @@ actor LichessBotModelSlots {
                         modelID: file.modelID,
                         trainingStep: file.metadata.trainingStep
                     )
-                    continuation.resume(returning: (snapshot, digest))
+                    guard let centering = file.valueHeadCentering else {
+                        throw LichessBotModelError.valueHeadCenteringUnknown(url.path)
+                    }
+                    let recentered: Bool
+                    if case .recentered = centering { recentered = true } else { recentered = false }
+                    continuation.resume(returning: (snapshot, digest, recentered))
                 } catch {
                     continuation.resume(throwing: error)
                 }

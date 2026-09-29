@@ -901,10 +901,12 @@ extension SessionController {
         let gStr = snap.rollingGradGlobalNorm.map { String(format: "%.3f", $0) } ?? "--"
         let vmStr = snap.rollingValueMean.map { String(format: "%+.4f", $0) } ?? "--"
         let vaStr = snap.rollingValueAbsMean.map { String(format: "%.4f", $0) } ?? "--"
+        let plmStr = snap.rollingPolicyLogitMean.map { String(format: "%+.4f", $0) } ?? "--"
+        let vlmStr = snap.rollingValueLogitMean.map { String(format: "%+.4f", $0) } ?? "--"
         let bufCount = replayBuffer?.count ?? 0
         let bufCap = replayBuffer?.capacity ?? TrainingParameters.shared.replayBufferCapacity
         SessionLogger.shared.log(
-            "[STATS] arena-start  steps=\(steps) buffer=\(bufCount)/\(bufCap) pLoss=\(pStr) vLoss=\(vStr) pEnt=\(eStr) gNorm=\(gStr) vMean=\(vmStr) vAbs=\(vaStr) trainer=\(trainerIDStart) champion=\(championIDStart)"
+            "[STATS] arena-start  steps=\(steps) buffer=\(bufCount)/\(bufCap) pLoss=\(pStr) vLoss=\(vStr) pEnt=\(eStr) gNorm=\(gStr) vMean=\(vmStr) vAbs=\(vaStr) pLogitMean=\(plmStr) vLogitMean=\(vlmStr) trainer=\(trainerIDStart) champion=\(championIDStart)"
         )
     }
 

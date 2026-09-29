@@ -220,7 +220,7 @@ final class ChessNetwork: @unchecked Sendable {
     /// measures.
     ///
     /// This was a graph VARIABLE until the value baseline was found to be
-    /// reading it. `valueBaselineExecutable` targets `valueOutputFP32`, which
+    /// reading it. `valueBaselineExecutable` targets `valueOutput`, which
     /// sits downstream of every block's dropout node, so one shared mutable
     /// rate meant v(s) was computed through the *training step's* mask and the
     /// advantage `(z − vBaseline)` became a function of that step's random
@@ -272,26 +272,20 @@ final class ChessNetwork: @unchecked Sendable {
     let dropoutRateLiveNDArray: MPSNDArray?
     let dropoutRateLiveTensorData: MPSGraphTensorData?
 
+    /// Raw policy logits, shape `[batch, policySize]`, always fp32
+    /// (`headTailDataType`) whatever the compute dtype: the head's tail runs
+    /// in fp32 (see `widenToHeadTail`). The inference readback target and
+    /// the trainer's loss input alike.
     let policyOutput: MPSGraphTensor
-    /// fp32 cast of `policyOutput`, used only as the inference readback
-    /// target so the CPU reads raw fp32 bytes (the bf16→fp32 widen of the
-    /// wide policy output happens on the GPU, not in a host loop). Identical
-    /// to `policyOutput` on a `.float32` build. The training graph never
-    /// targets this tensor — the trainer reads `policyOutput` (compute
-    /// dtype) for its loss — so it costs nothing during training.
-    private let policyOutputReadback: MPSGraphTensor
     /// Derived scalar value, shape `[batch, 1]` = `p_win − p_loss`
     /// (= E[outcome] ∈ [−1, +1], no tanh). This is what every inference
     /// consumer reads and what the policy-gradient baseline is fed; the
     /// full W/D/L distribution stays available via `valueLogits` /
-    /// `valueProbs` for the value loss and diagnostics.
+    /// `valueProbs` for the value loss and diagnostics. Always fp32, so it
+    /// is also the direct target of the trainer's GPU→GPU value-baseline
+    /// forward, which lands `v(s)` in the fp32 buffer the training step's
+    /// fp32 `vBaseline` placeholder reads. See `computeValueBaselineGPU`.
     let valueOutput: MPSGraphTensor
-    /// fp32 cast of `valueOutput` (or `valueOutput` itself on a `.float32`
-    /// build), used only as the target of the trainer's GPU→GPU value-baseline
-    /// forward so the per-position `v(s)` lands in an fp32 buffer that feeds the
-    /// training step's fp32 `vBaseline` placeholder with no CPU round-trip.
-    /// Mirrors `policyOutputReadback`. See `computeValueBaselineGPU`.
-    let valueOutputFP32: MPSGraphTensor
     /// Raw W/D/L value-head logits, shape `[batch, 3]` in `[win, draw,
     /// loss]` slot order — matched to the training target `idx = 1 − z`
     /// with z ∈ {+1, 0, −1} (win→0, draw→1, loss→2). Consumed by
@@ -460,7 +454,7 @@ final class ChessNetwork: @unchecked Sendable {
     private var inferenceExecutables: [Int: MPSGraphExecutable] = [:]
 
     /// Compiled value-only executables for the trainer's GPU→GPU baseline
-    /// forward, keyed by batch size. Targets just `valueOutputFP32` (no policy /
+    /// forward, keyed by batch size. Targets just `valueOutput` (no policy /
     /// valueProbs, no assign target-ops, so it neither computes the discarded
     /// policy nor pollutes BN running stats — same read-only semantics as the
     /// inference executable). Shares the graph's weight variables like every
@@ -953,9 +947,6 @@ final class ChessNetwork: @unchecked Sendable {
             batchVars: &batchVars
         )
         policyOutput = policy.output
-        policyOutputReadback = (Self.mpsDataType(for: arch) == .float32)
-            ? policy.output
-            : g.cast(policy.output, to: .float32, name: "policy_output_f32")
         policyHeadFinalWeights = policy.finalWeights
 
         // --- Value head ---
@@ -972,9 +963,6 @@ final class ChessNetwork: @unchecked Sendable {
             batchVars: &batchVars
         )
         valueOutput = valueHeadOut.scalar
-        valueOutputFP32 = (Self.mpsDataType(for: arch) == .float32)
-            ? valueHeadOut.scalar
-            : g.cast(valueHeadOut.scalar, to: .float32, name: "value_scalar_f32")
         valueLogits = valueHeadOut.logits
         valueProbs = valueHeadOut.probs
 
@@ -1105,10 +1093,9 @@ final class ChessNetwork: @unchecked Sendable {
             builtInferenceFeeds[ratePlaceholder] = zeroRate
         }
         inferenceFeeds = builtInferenceFeeds
-        // Policy is read back as fp32 (GPU-cast); the value scalar and WDL
-        // probs stay compute-dtype and are widened on the host — far too
-        // small to be worth a GPU cast + its readback dispatch.
-        inferenceTargets = [policyOutputReadback, valueOutput, valueProbs]
+        // Every head output is fp32 (the heads' fp32 tails), so all three are
+        // read back as raw fp32 with no conversion.
+        inferenceTargets = [policyOutput, valueOutput, valueProbs]
 
         // Raw-pointer readback scratches for the policy logits and
         // value scalar. UnsafeMutablePointer avoids Swift array CoW so
@@ -1229,7 +1216,7 @@ final class ChessNetwork: @unchecked Sendable {
                 targetOperations: nil
             )
 
-            guard let policyData = results[policyOutputReadback] else {
+            guard let policyData = results[policyOutput] else {
                 throw ChessNetworkError.outputMissing("policy")
             }
             guard let valueData = results[valueOutput] else {
@@ -1237,7 +1224,7 @@ final class ChessNetwork: @unchecked Sendable {
             }
 
             Self.readFloatsFP32(from: policyData, into: inferencePolicyScratchPtr, count: Self.policySize)
-            Self.readFloats(from: valueData, into: inferenceValueScratchPtr, count: 1, dataType: Self.mpsDataType(for: arch))
+            Self.readFloatsFP32(from: valueData, into: inferenceValueScratchPtr, count: 1)
 
             try consume(
                 UnsafeBufferPointer(start: inferencePolicyScratchPtr, count: Self.policySize),
@@ -1246,11 +1233,10 @@ final class ChessNetwork: @unchecked Sendable {
                     guard let probsData = results[self.valueProbs] else {
                         throw ChessNetworkError.outputMissing("valueProbs")
                     }
-                    Self.readFloats(
+                    Self.readFloatsFP32(
                         from: probsData,
                         into: self.inferenceValueProbsScratchPtr,
-                        count: self.arch.valueHeadClasses,
-                        dataType: Self.mpsDataType(for: self.arch)
+                        count: self.arch.valueHeadClasses
                     )
                     return Self.valueDistribution(
                         fromProbs: UnsafePointer(self.inferenceValueProbsScratchPtr),
@@ -1343,7 +1329,7 @@ final class ChessNetwork: @unchecked Sendable {
                 guard let probsData = results[valueProbs] else {
                     throw ChessNetworkError.outputMissing("valueProbs")
                 }
-                Self.readFloats(from: probsData, into: inferenceValueProbsScratchPtr, count: arch.valueHeadClasses, dataType: Self.mpsDataType(for: arch))
+                Self.readFloatsFP32(from: probsData, into: inferenceValueProbsScratchPtr, count: arch.valueHeadClasses)
                 return Self.valueDistribution(
                     fromProbs: UnsafePointer(inferenceValueProbsScratchPtr),
                     style: arch.valueHeadStyle
@@ -1509,7 +1495,7 @@ final class ChessNetwork: @unchecked Sendable {
             )
             let results = Dictionary(uniqueKeysWithValues: zip(inferenceTargets, resultArray))
 
-            guard let policyData = results[policyOutputReadback] else {
+            guard let policyData = results[policyOutput] else {
                 throw ChessNetworkError.outputMissing("policy")
             }
             guard let valueData = results[valueOutput] else {
@@ -1520,8 +1506,8 @@ final class ChessNetwork: @unchecked Sendable {
             }
 
             Self.readFloatsFP32(from: policyData, into: policyPtr, count: count * Self.policySize)
-            Self.readFloats(from: valueData, into: valuePtr, count: count, dataType: Self.mpsDataType(for: arch))
-            Self.readFloats(from: valueProbsData, into: valueProbsPtr, count: count * arch.valueHeadClasses, dataType: Self.mpsDataType(for: arch))
+            Self.readFloatsFP32(from: valueData, into: valuePtr, count: count)
+            Self.readFloatsFP32(from: valueProbsData, into: valueProbsPtr, count: count * arch.valueHeadClasses)
 
             consume(
                 UnsafeBufferPointer(start: policyPtr, count: count * Self.policySize),
@@ -1636,8 +1622,7 @@ final class ChessNetwork: @unchecked Sendable {
     /// CPU readback. The trainer feeds that buffer straight into the training
     /// step's `vBaseline` placeholder, eliminating the `Array(valuesBuf)` copy +
     /// staging re-write the old `evaluateBatched` baseline path did. Numerically
-    /// identical to that path — same `v(s)` (the old path read `valueOutput`
-    /// back as bf16→fp32; this casts bf16→fp32 on the GPU) — just no CPU round
+    /// identical to that path — the same fp32 `valueOutput` — just no CPU round
     /// trip. The result buffer is reused per call; safe because the trainer
     /// drives this serially (phase 2 fully completes before phase 3 reads it).
     /// The most recent value-baseline command buffer. It is committed WITHOUT a
@@ -1737,7 +1722,7 @@ final class ChessNetwork: @unchecked Sendable {
 
     /// Compile + cache the value-only baseline executable for batch size `count`.
     /// Feed shapes are taken from the live board feed (the placeholder carries a
-    /// `-1` batch dim). Target is just `valueOutputFP32`; no target operations
+    /// `-1` batch dim). Target is just `valueOutput`; no target operations
     /// (read-only). Must run on `executionQueue`.
     private func valueBaselineExecutable(
         for count: Int,
@@ -1770,7 +1755,7 @@ final class ChessNetwork: @unchecked Sendable {
                 self.graph.compile(
                     with: MPSGraphDevice(mtlDevice: self.metalDevice),
                     feeds: feedShapes,
-                    targetTensors: [self.valueOutputFP32],
+                    targetTensors: [self.valueOutput],
                     targetOperations: nil,
                     compilationDescriptor: desc
                 )
@@ -1783,7 +1768,7 @@ final class ChessNetwork: @unchecked Sendable {
     }
 
     /// Network-owned fp32 `[count, 1]` result buffer for the value baseline,
-    /// matching `valueOutputFP32`'s shape/dtype. Cached per batch size.
+    /// matching `valueOutput`'s shape/dtype (fp32). Cached per batch size.
     private func valueBaselineResultTD(for count: Int) -> MPSGraphTensorData {
         if let cached = valueBaselineResultCache[count] {
             return cached
@@ -2052,14 +2037,17 @@ final class ChessNetwork: @unchecked Sendable {
                     throw ChessNetworkError.outputMissing(t.operation.name)
                 }
                 let n = try Self.elementCount(of: t)
-                means.append(Self.readFloats(from: data, count: n, dataType: Self.mpsDataType(for: arch)))
+                // Read by the tensor's own dtype: a head-tail BN (the policy
+                // pre-BN) normalizes fp32 activations, so its batch stats are
+                // fp32 while the tower's are the compute dtype.
+                means.append(Self.readFloats(from: data, count: n, dataType: t.dataType))
             }
             for t in bnBatchVarTensors {
                 guard let data = results[t] else {
                     throw ChessNetworkError.outputMissing(t.operation.name)
                 }
                 let n = try Self.elementCount(of: t)
-                vars_.append(Self.readFloats(from: data, count: n, dataType: Self.mpsDataType(for: arch)))
+                vars_.append(Self.readFloats(from: data, count: n, dataType: t.dataType))
             }
             return (means: means, vars: vars_)
         }
@@ -3014,7 +3002,9 @@ final class ChessNetwork: @unchecked Sendable {
         // PolicyEncoding.policyIndex = channel*64 + row*8 + col.
         switch arch.policyHeadStyle {
         case .simpleConv:
-            // Single 1x1 conv channels -> 76 (+bias) -> reshape.
+            // Single 1x1 conv channels -> 76 (+bias) -> reshape. No pre-block, so
+            // the fp32 tail is the final conv alone: its input, weights and bias
+            // are widened and everything from the conv on runs in fp32.
             let convW = graph.variable(
                 with: heInitDataConvOIHW(shape: [pc, channels, 1, 1], dataType: weightStorageDataType),
                 shape: [NSNumber(value: pc), NSNumber(value: channels), 1, 1],
@@ -3025,21 +3015,31 @@ final class ChessNetwork: @unchecked Sendable {
                 dataType: weightStorageDataType, name: "policy_conv_bias")
             trainables.append(convW);    shouldDecay.append(true)
             trainables.append(convBias); shouldDecay.append(false)
-            var x = graph.convolution2D(input, weights: castInForward(convW), descriptor: descriptor, name: "policy_conv")
-            x = graph.addition(x, castInForward(convBias), name: "policy_conv_bias_add")
+            let tailInput = widenToHeadTail(input, graph: graph, name: "policy_tail_input_f32")
+            var x = graph.convolution2D(
+                tailInput, weights: widenToHeadTail(convW, graph: graph, name: nil),
+                descriptor: descriptor, name: "policy_conv")
+            x = graph.addition(x, widenToHeadTail(convBias, graph: graph, name: nil), name: "policy_conv_bias_add")
             let flat = graph.reshape(x, shape: [-1, NSNumber(value: Self.policySize)], name: "policy_flatten")
             return (output: flat, finalWeights: convW)
 
         case .intermediateConv:
             // 1x1 conv channels -> K -> BN -> act -> 1x1 conv K -> 76 (+bias) -> reshape.
+            // The pre-conv runs in the compute dtype; the fp32 tail starts at the
+            // pre-BN normalize. Starting it only at the final conv leaves the
+            // compute-dtype rounding of the K policy features multiplied by the
+            // final conv's large shared row, a per-square error softmax does not
+            // cancel; normalizing in fp32 removes most of it.
             let preConvW = graph.variable(
                 with: heInitDataConvOIHW(shape: [pK, channels, 1, 1], dataType: weightStorageDataType),
                 shape: [NSNumber(value: pK), NSNumber(value: channels), 1, 1],
                 dataType: weightStorageDataType, name: "policy_pre_conv_weights")
             trainables.append(preConvW); shouldDecay.append(true)
             var x = graph.convolution2D(input, weights: castInForward(preConvW), descriptor: descriptor, name: "policy_pre_conv")
-            x = batchNorm(graph: graph, input: x, channels: pK, name: "policy_pre_bn", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
-                weightStorageDataType: weightStorageDataType, castInForward: castInForward,
+            x = widenToHeadTail(x, graph: graph, name: "policy_tail_input_f32")
+            x = batchNorm(graph: graph, input: x, channels: pK, name: "policy_pre_bn", taps: taps, bnMode: bnMode, dataType: headTailDataType,
+                weightStorageDataType: weightStorageDataType,
+                castInForward: { w in widenToHeadTail(w, graph: graph, name: nil) },
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
             x = activation(graph, x, arch, name: "policy_pre_act")
@@ -3054,21 +3054,26 @@ final class ChessNetwork: @unchecked Sendable {
                 dataType: weightStorageDataType, name: "policy_conv_bias")
             trainables.append(convW);    shouldDecay.append(true)
             trainables.append(convBias); shouldDecay.append(false)
-            x = graph.convolution2D(x, weights: castInForward(convW), descriptor: descriptor, name: "policy_conv")
-            x = graph.addition(x, castInForward(convBias), name: "policy_conv_bias_add")
+            x = graph.convolution2D(
+                x, weights: widenToHeadTail(convW, graph: graph, name: nil),
+                descriptor: descriptor, name: "policy_conv")
+            x = graph.addition(x, widenToHeadTail(convBias, graph: graph, name: nil), name: "policy_conv_bias_add")
             let flat = graph.reshape(x, shape: [-1, NSNumber(value: Self.policySize)], name: "policy_flatten")
             return (output: flat, finalWeights: convW)
 
         case .fcBottleneck:
             // 1x1 conv channels -> K -> BN -> act -> flatten(K*64) -> FC(K*64 -> 4864) (+bias).
+            // Same fp32 tail boundary as `intermediateConv`: the pre-BN normalize.
             let preConvW = graph.variable(
                 with: heInitDataConvOIHW(shape: [pK, channels, 1, 1], dataType: weightStorageDataType),
                 shape: [NSNumber(value: pK), NSNumber(value: channels), 1, 1],
                 dataType: weightStorageDataType, name: "policy_pre_conv_weights")
             trainables.append(preConvW); shouldDecay.append(true)
             var x = graph.convolution2D(input, weights: castInForward(preConvW), descriptor: descriptor, name: "policy_pre_conv")
-            x = batchNorm(graph: graph, input: x, channels: pK, name: "policy_pre_bn", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
-                weightStorageDataType: weightStorageDataType, castInForward: castInForward,
+            x = widenToHeadTail(x, graph: graph, name: "policy_tail_input_f32")
+            x = batchNorm(graph: graph, input: x, channels: pK, name: "policy_pre_bn", taps: taps, bnMode: bnMode, dataType: headTailDataType,
+                weightStorageDataType: weightStorageDataType,
+                castInForward: { w in widenToHeadTail(w, graph: graph, name: nil) },
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
             x = activation(graph, x, arch, name: "policy_pre_act")
@@ -3085,10 +3090,34 @@ final class ChessNetwork: @unchecked Sendable {
                 dataType: weightStorageDataType, name: "policy_fc_bias")
             trainables.append(fcW);    shouldDecay.append(true)
             trainables.append(fcBias); shouldDecay.append(false)
-            x = graph.matrixMultiplication(primary: x, secondary: castInForward(fcW), name: "policy_fc")
-            let logits = graph.addition(x, castInForward(fcBias), name: "policy_fc_bias_add")
+            x = graph.matrixMultiplication(
+                primary: x, secondary: widenToHeadTail(fcW, graph: graph, name: nil), name: "policy_fc")
+            let logits = graph.addition(x, widenToHeadTail(fcBias, graph: graph, name: nil), name: "policy_fc_bias_add")
             return (output: logits, finalWeights: fcW)
         }
+    }
+
+    /// Compute dtype of both heads' tails (see `widenToHeadTail`). Every
+    /// head output — `policyOutput`, `valueLogits`, `valueProbs`,
+    /// `valueOutput` — is this dtype on every build, whatever the tower's
+    /// compute dtype, so every reader of a head output reads fp32.
+    static let headTailDataType: MPSDataType = .float32
+
+    /// Widen a tensor entering a head's fp32 tail. A head's outputs sit on a
+    /// shared per-position offset that softmax ignores; in a narrow dtype the
+    /// rounding step at that offset's magnitude swallows the real differences
+    /// between logits (tied moves, tied W/D/L classes). Computing the tail in
+    /// fp32 keeps those differences.
+    ///
+    /// Identity when the tensor is already fp32. That covers a `.float32`
+    /// build and config D, whose fp32-stored variables therefore feed the tail
+    /// directly instead of taking their usual forward cast to the compute
+    /// dtype. Weights keep their stored dtype; widening a stored value is
+    /// exact, so nothing is lost.
+    private static func widenToHeadTail(
+        _ tensor: MPSGraphTensor, graph: MPSGraph, name: String?
+    ) -> MPSGraphTensor {
+        tensor.dataType == headTailDataType ? tensor : graph.cast(tensor, to: headTailDataType, name: name)
     }
 
     /// Value head: 1x1 conv (128 -> 1) -> BN -> ReLU -> flatten -> FC(64 -> 64) -> ReLU -> FC(64 -> 3) -> W/D/L logits.
@@ -3200,15 +3229,20 @@ final class ChessNetwork: @unchecked Sendable {
         shouldDecay.append(true)
         trainables.append(fc2Bias)
         shouldDecay.append(false)
-        x = graph.matrixMultiplication(primary: x, secondary: castInForward(fc2W), name: "value_fc2")
-        let logits = graph.addition(x, castInForward(fc2Bias), name: "value_fc2_bias_add")
+        // fp32 tail: fc2 + bias -> logits -> softmax -> scalar. The logits carry
+        // a shared offset softmax ignores, and in the compute dtype its rounding
+        // step ties the W/D/L classes; see `widenToHeadTail`.
+        let tailInput = widenToHeadTail(x, graph: graph, name: "value_tail_input_f32")
+        x = graph.matrixMultiplication(
+            primary: tailInput, secondary: widenToHeadTail(fc2W, graph: graph, name: nil), name: "value_fc2")
+        let logits = graph.addition(x, widenToHeadTail(fc2Bias, graph: graph, name: nil), name: "value_fc2_bias_add")
 
         switch arch.valueHeadStyle {
         case .wdlSoftmax:
             // Derived scalar v = p_win - p_loss (no tanh): softmax . [+1, 0, -1].
             let probs = graph.softMax(with: logits, axis: 1, name: "value_probs")
             let scalarWeights = graph.constant(
-                makeWeightData([1.0, 0.0, -1.0], dataType: Self.mpsDataType(for: arch)), shape: [1, 3], dataType: Self.mpsDataType(for: arch))
+                makeWeightData([1.0, 0.0, -1.0], dataType: headTailDataType), shape: [1, 3], dataType: headTailDataType)
             let scalarWeighted = graph.multiplication(probs, scalarWeights, name: "value_scalar_weighted")
             // reductionSum(axis:1) keeps the reduced dim -> [batch, 1].
             let scalar = graph.reductionSum(with: scalarWeighted, axis: 1, name: "value_scalar")
@@ -3228,7 +3262,7 @@ final class ChessNetwork: @unchecked Sendable {
             // so aliasing them traps on a duplicate key. A multiply-by-1 op yields
             // a separate tensor object carrying the same values (a same-shape
             // reshape could in principle be elided; an op output cannot).
-            let probsOne = graph.constant(1.0, dataType: Self.mpsDataType(for: arch))
+            let probsOne = graph.constant(1.0, dataType: headTailDataType)
             let probs = graph.multiplication(scalar, probsOne, name: "value_scalar_probs")
             return (scalar: scalar, logits: logits, probs: probs)
         }
@@ -3457,15 +3491,27 @@ final class ChessNetwork: @unchecked Sendable {
 
     /// Read an **already-fp32** graph output straight into the caller's Float
     /// buffer — raw `readBytes`, no conversion. Inference-hot-path policy
-    /// readback: `policyOutputReadback` is cast to fp32 on the GPU, so the
-    /// host side is a plain memcpy (the bf16→fp32 widen of the wide policy
-    /// output no longer runs in a host loop). The caller is responsible for
+    /// readback: every head output is fp32 (the heads' fp32 tails), so the
+    /// host side is a plain memcpy. The caller is responsible for
     /// `pointer` having capacity `count`.
     static func readFloatsFP32(
         from data: MPSGraphTensorData,
         into pointer: UnsafeMutablePointer<Float>,
         count: Int
     ) {
+        // A raw byte copy cannot tell fp32 from a narrower dtype, and a
+        // mismatch reads garbage without any error. Every caller reads a
+        // graph output whose dtype and size are fixed by construction, so a
+        // violation is a graph-wiring bug: trap on it.
+        precondition(
+            data.dataType == .float32,
+            "readFloatsFP32: tensor data is \(data.dataType), not fp32"
+        )
+        let elementCount = data.shape.reduce(1) { $0 * $1.intValue }
+        precondition(
+            elementCount == count,
+            "readFloatsFP32: tensor data holds \(elementCount) elements, caller expects \(count)"
+        )
         data.mpsndarray().readBytes(UnsafeMutableRawPointer(pointer), strideBytes: nil)
     }
 

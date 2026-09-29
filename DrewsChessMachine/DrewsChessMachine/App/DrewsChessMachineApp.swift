@@ -516,6 +516,14 @@ struct DrewsChessMachineApp: App {
         SessionLogger.shared.log(
             "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp)\(autoTrainMarker)\(playChessMarker)"
         )
+        // The head-numerics fix changes outputs for identical weights (tie
+        // breaking, W/D/L thresholds), so probe trends step once at the first
+        // build carrying it. This line marks every launch of such a build, so
+        // the first log that has it is where charts get annotated.
+        SessionLogger.shared.log(
+            "[NUMERICS] head numerics: fp32 head tails, centered head losses, "
+            + "value head recentered on decode of unmarked checkpoints"
+        )
         // The launch banner deliberately no longer prints arch fields: at
         // launch nothing is loaded, so the only arch knowable here is the
         // compile-time default — printing it as bare `inputPlanes=`/`arch_hash=`

@@ -110,6 +110,10 @@ enum SafetensorsModelIO {
             Key.notes: metadata.notes,
         ]
         if let step = metadata.trainingStep { md[Key.trainingStep] = String(step) }
+        // Every save marks the value head centered, so a file is recentered
+        // at most once in its life and every new file round-trips bit-exactly
+        // (see `ValueHeadRecentering`).
+        md[ValueHeadRecentering.metadataKey] = ValueHeadRecentering.metadataValue
         let archData = try JSONEncoder().encode(architecture)
         md[Key.architecture] = String(decoding: archData, as: UTF8.self)
 
@@ -121,6 +125,7 @@ enum SafetensorsModelIO {
             let reserved: Set<String> = [
                 Key.formatVersion, Key.modelID, Key.createdAt, Key.creator,
                 Key.trainingStep, Key.parentModelID, Key.notes, Key.architecture,
+                ValueHeadRecentering.metadataKey,
             ]
             for (k, v) in rm where !reserved.contains(k) { md[k] = v }
         }
@@ -133,6 +138,9 @@ enum SafetensorsModelIO {
         let architecture: NetworkArchitecture
         /// Velocity tensors present (trainer file) beyond the base plan.
         let hasVelocity: Bool
+        /// What decode did about the value head's shared offset; the same
+        /// value as `file.valueHeadCentering`.
+        let valueHeadCentering: ValueHeadCentering
     }
 
     /// Decode safetensors bytes into a `ModelCheckpointFile`, ordering weights
@@ -216,6 +224,17 @@ enum SafetensorsModelIO {
             }
         }
 
+        // Remove the value head's shared offset unless the file is marked as
+        // already centered (see `ValueHeadRecentering`). Runs here, on the
+        // decoded native-layout values, so every loader — model files,
+        // sessions' champion and trainer files, CLIs — sees the same weights.
+        let valueHeadCentering = try ValueHeadRecentering.apply(
+            to: &weights,
+            architecture: architecture,
+            includesVelocity: hasVelocity,
+            markedCentered: try ValueHeadRecentering.isMarkedCentered(md[ValueHeadRecentering.metadataKey])
+        )
+
         let metadata = ModelCheckpointMetadata(
             creator: md[Key.creator] ?? "",
             trainingStep: md[Key.trainingStep].flatMap { Int($0) },
@@ -227,9 +246,13 @@ enum SafetensorsModelIO {
             createdAtUnix: md[Key.createdAt].flatMap { Int64($0) } ?? 0,
             metadata: metadata,
             weights: weights,
-            architecture: architecture
+            architecture: architecture,
+            valueHeadCentering: valueHeadCentering
         )
-        return Decoded(file: file, architecture: architecture, hasVelocity: hasVelocity)
+        return Decoded(
+            file: file, architecture: architecture, hasVelocity: hasVelocity,
+            valueHeadCentering: valueHeadCentering
+        )
     }
 
     // MARK: - Resume provenance

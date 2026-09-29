@@ -1,6 +1,6 @@
 # Head numerics plan: stop the bf16 head-offset damage
 
-Status: PLAN ONLY (2026-09-28). Nothing implemented. Do not start without the owner's go-ahead.
+Status (2026-09-28): Phase 0 implemented (`2194f1d`). Phases 1 and 2 implemented together in one commit (see CHANGELOG); their validation runs are still to be done. Phase 3 and later are not started.
 
 Research behind this plan: `documentation/research/bf16-head-offset/` (the lineage survey, and `results/ejp0-681k/` for the model the Lichess bot plays). The inventory of every forward pass and logit consumer that this plan must touch is in the last section.
 
@@ -67,7 +67,7 @@ Known hot spots, checked by name:
 - On an fp32 line (KbHZ or mUF5), everything is fine.
 - A unit test pins each static check on synthetic tensors with known answers.
 
-### Phase 1: inference fix
+### Phase 1: inference fix — IMPLEMENTED (with Phase 2, one commit; validation pending)
 
 **1a. fp32 head tails.**
 - In `ChessNetwork.policyHead` and `valueHead`, cast the head's last hidden activation and its final weights and bias to fp32 before the final matmul or conv. Keep everything after that in fp32:
@@ -103,7 +103,7 @@ Known hot spots, checked by name:
 - Existing tests pass. Tests whose exact-value expectations change are listed below, and any change to them needs the owner's approval.
 - Throughput: plies per hour in self-play and steps per second in training, before and after, with a regression under 2% expected.
 
-### Phase 2: training fix (stop the offset growing)
+### Phase 2: training fix (stop the offset growing) — IMPLEMENTED (with Phase 1, one commit; validation pending)
 
 1. **fp32 targets that sum to exactly 1.** Build the policy and value targets in fp32 and renormalize them after smoothing (`y /= Σy`, in fp32).
    - Today's errors: bf16 `1/3` makes the value target sum to 1 + ε·0.00195, and bf16 `1/|legal|` is rounded.
@@ -131,6 +131,18 @@ Known hot spots, checked by name:
 - Resuming Ejp0: the value offset is gone at load (logged), and no drift over 20k steps.
 - The Phase 0 audit on the resulting checkpoints is fine.
 - The full test suite passes, per CLAUDE.md: `ChessTrainer` and `ChessNetwork` change.
+
+### As implemented (Phases 1 and 2): deviations from the text above
+
+- **The whole loss path is fp32, not only the cross-entropies.** Once the head outputs are fp32, `buildTrainingOps` builds everything downstream of them in fp32: the z / vBaseline / legalMask feeds (no in-graph narrowing cast), the advantage, every per-position loss, every reported scalar, and every loss-side scalar feed (loss weights, entropy coefficient, both ε, complement enable), not only the two ε. The fp16-only −3e4 mask magnitude is gone: the mask is added in fp32.
+- **Targets and centering live in `Training/HeadLossGraph.swift`** (`policyTargets`, `valueTarget`, `renormalizedTarget`, `centerLogits`), so their invariants are tested on a standalone graph (`HeadLossGraphTests`).
+- **Complement target at |legal| = 1:** zero weight via a per-position `complementValid` mask; the renormalization's denominator is floored so the zero-weighted row is an all-zero target rather than NaN.
+- **The legacy `.dcmmodel` writer also writes the marker** (in its metadata JSON), so every writer marks its files; production only writes safetensors. Legacy decode infers a trainer file from its tensor count and throws on a count that is neither.
+- **Loaders log `[NUMERICS]`** from `CheckpointManager.loadModelFile` and `loadSession` (champion and trainer), not from `decodeAnyModelFile`, which the post-save verification also runs.
+- **The launch marker** is a `[NUMERICS]` line after the `[APP] launched` banner on every launch of a build with the fix; the first log carrying it is the annotation point.
+- **Lichess bot:** `LichessBotGenerationInfo.valueHeadRecenteredOnLoad` is `Bool?` — nil for in-memory sources and for records written before the field existed.
+- **Also changed:** `ChessNetwork.readFloatsFP32(from:into:count:)` now traps on a non-fp32 or wrongly sized tensor instead of copying raw bytes blindly; `computeBatchStats` reads each BN's batch stats by the tensor's own dtype (the policy pre-BN's are fp32 now); `policyOutputReadback` and `valueOutputFP32` are gone (the outputs themselves are fp32).
+- **Monitoring:** `pLogitMean` / `vLogitMean` on `[STATS]`, `[STATS] arena-start`, `[REPLAY]` and `[VS-UCI]`, and `policy_logit_mean` / `value_logit_mean` in `results.json`. On the scalar-tanh head `vLogitMean` is the raw pre-tanh logit's mean (not centered).
 
 ### Phase 3 (separate ROADMAP item): full-precision checkpoints
 

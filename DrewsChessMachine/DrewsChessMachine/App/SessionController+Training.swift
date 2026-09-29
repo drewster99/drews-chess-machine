@@ -2173,6 +2173,20 @@ extension SessionController {
                         } else {
                             pLogitMaxStr = "--"
                         }
+                        // Each head's shared logit offset, read before the
+                        // loss centers it. Should hold steady.
+                        let pLogitMeanStr: String
+                        if let mean = trainingSnap.rollingPolicyLogitMean {
+                            pLogitMeanStr = String(format: "%+.4f", mean)
+                        } else {
+                            pLogitMeanStr = "--"
+                        }
+                        let vLogitMeanStr: String
+                        if let mean = trainingSnap.rollingValueLogitMean {
+                            vLogitMeanStr = String(format: "%+.4f", mean)
+                        } else {
+                            vLogitMeanStr = "--"
+                        }
                         // Advantage distribution summary. Lots of
                         // fields but they go in one parenthesized
                         // block in the line so grep for
@@ -2303,7 +2317,7 @@ extension SessionController {
                             let ratio = klMean > 0 ? sd / klMean : 0
                             return String(format: " kl=%.3e klSd=%.3e klSd/kl=%.2f", klMean, sd, ratio)
                         }()
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) spGamesEm=\(parallelSnap.emittedGames) spMovesEm=\(parallelSnap.emittedPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr)\(klStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) sampBatch=(\(sampBatchStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) spGamesEm=\(parallelSnap.emittedGames) spMovesEm=\(parallelSnap.emittedPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr)\(klStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) pLogitMean=\(pLogitMeanStr) vLogitMean=\(vLogitMeanStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) sampBatch=(\(sampBatchStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // [DRAW-WATCH] summary — piggyback on the same
@@ -2449,7 +2463,9 @@ extension SessionController {
                                 momentumCycleActive: cycledMu != nil,
                                 buildNumber: BuildInfo.buildNumber,
                                 trainerID: trainerID,
-                                championID: championID
+                                championID: championID,
+                                policyLogitMean: trainingSnap.rollingPolicyLogitMean,
+                                valueLogitMean: trainingSnap.rollingValueLogitMean
                             )
                             recorder.appendStats(entry)
                         }

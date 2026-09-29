@@ -1008,7 +1008,19 @@ enum CheckpointManager {
         } catch {
             throw CheckpointManagerError.readFailed(url, error)
         }
-        return try decodeAnyModelFile(data)
+        let file = try decodeAnyModelFile(data)
+        logValueHeadCentering(file, source: url.lastPathComponent)
+        return file
+    }
+
+    /// Write the one `[NUMERICS]` line for a file whose value head decode
+    /// recentered (see `ValueHeadRecentering`); silent otherwise. Called by
+    /// the loaders that know the file's name, once per load — not by
+    /// `decodeAnyModelFile`, which the post-save verification also runs.
+    static func logValueHeadCentering(_ file: ModelCheckpointFile, source: String) {
+        guard let centering = file.valueHeadCentering,
+              let line = ValueHeadRecentering.logLine(for: centering, source: source) else { return }
+        SessionLogger.shared.log(line)
     }
 
     /// Read just `session.json` from a `.dcmsession` directory and
@@ -1045,6 +1057,8 @@ enum CheckpointManager {
         let state = try SessionCheckpointState.decode(stateData)
         let championFile = try decodeAnyModelFile(championData)
         let trainerFile = try decodeAnyModelFile(trainerData)
+        logValueHeadCentering(championFile, source: "\(directoryURL.lastPathComponent) champion")
+        logValueHeadCentering(trainerFile, source: "\(directoryURL.lastPathComponent) trainer")
         let bufferURL = SessionCheckpointLayout.replayBufferURL(in: directoryURL)
         let bufferPresent = (state.hasReplayBuffer == true)
             && FileManager.default.fileExists(atPath: bufferURL.path)

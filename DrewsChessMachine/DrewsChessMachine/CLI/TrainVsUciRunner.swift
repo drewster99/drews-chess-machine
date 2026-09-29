@@ -417,6 +417,7 @@ enum TrainVsUciRunner {
                     let line = "[VS-UCI] step=\(step)"
                         + String(format: " loss=%.4f pLoss=%.4f vLoss=%.4f", timing.loss, timing.policyLoss, timing.valueLoss)
                         + " pEnt=\(dg(timing.policyEntropy, 3)) playedP=\(dg(timing.playedMoveProb, 3))"
+                        + " pLogitMean=\(dg(timing.policyLogitMean, 4)) vLogitMean=\(dg(timing.valueLogitMean, 4))"
                         + String(format: " gNorm=%.3f lr=%.3g ms=%.1f", timing.gradGlobalNorm, liveLR, timing.totalMs)
                         + " buf=\(buffer.count)"
                     emit(line)
@@ -447,6 +448,10 @@ enum TrainVsUciRunner {
                         valueProbWin: Double(timing.valueProbWin),
                         valueProbDraw: Double(timing.valueProbDraw),
                         valueProbLoss: Double(timing.valueProbLoss),
+                        // Diagnostic-step fields: nil (not measured) on a step
+                        // that skipped the diagnostic reductions.
+                        policyLogitMean: timing.hasDiagnostics ? Double(timing.policyLogitMean) : nil,
+                        valueLogitMean: timing.hasDiagnostics ? Double(timing.valueLogitMean) : nil,
                         batchSize: batchSize,
                         // Static configured base — see CorpusReplayRunner.
                         learningRate: p.learningRate,

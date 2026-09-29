@@ -678,6 +678,13 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let buildNumber: Int
         let trainerID: String
         let championID: String?
+        /// Rolling mean of each head's shared logit offset, read before the
+        /// loss centers it (`TrainStepTiming.policyLogitMean` /
+        /// `valueLogitMean`). Nil when no stats step has landed yet. The
+        /// defaults keep memberwise construction that predates these fields
+        /// compiling; every production call site passes them explicitly.
+        var policyLogitMean: Double? = nil
+        var valueLogitMean: Double? = nil
 
         enum CodingKeys: String, CodingKey {
             case elapsedSec = "elapsed_sec"
@@ -772,6 +779,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case buildNumber = "build_number"
             case trainerID = "trainer_id"
             case championID = "champion_id"
+            case policyLogitMean = "policy_logit_mean"
+            case valueLogitMean = "value_logit_mean"
         }
     }
 
@@ -904,6 +913,8 @@ extension CliTrainingRecorder.StatsLine {
         valueProbWin: Double?,
         valueProbDraw: Double?,
         valueProbLoss: Double?,
+        policyLogitMean: Double?,
+        valueLogitMean: Double?,
         batchSize: Int,
         learningRate: Double,
         gradClipMaxNorm: Double,
@@ -1028,7 +1039,9 @@ extension CliTrainingRecorder.StatsLine {
             momentumCycleActive: false,
             buildNumber: buildNumber,
             trainerID: trainerID,
-            championID: nil
+            championID: nil,
+            policyLogitMean: policyLogitMean,
+            valueLogitMean: valueLogitMean
         )
     }
 }

@@ -775,6 +775,7 @@ enum CorpusReplayRunner {
                     + " pEnt=\(dg(timing.policyEntropy, 3)) pIllM=\(dg(timing.illegalMassPenalty, 4))"
                     + " playedP=\(dg(timing.playedMoveProb, 3))"
                     + " pW=\(dg(timing.valueProbWin, 2)) pD=\(dg(timing.valueProbDraw, 2)) pL=\(dg(timing.valueProbLoss, 2)) vAbs=\(dg(timing.valueAbsMean, 3))"
+                    + " pLogitMean=\(dg(timing.policyLogitMean, 4)) vLogitMean=\(dg(timing.valueLogitMean, 4))"
                     + String(format: " gNorm=%.3f lr=%.3g ms=%.1f", timing.gradGlobalNorm, liveLR, timing.totalMs)
                     + " buf=\(buffer.count) plies=\(positionsFed) games=\(gamesFed) epoch=\(epochsCompleted)"
                 emit(line)
@@ -797,6 +798,10 @@ enum CorpusReplayRunner {
                     valueProbWin: Double(timing.valueProbWin),
                     valueProbDraw: Double(timing.valueProbDraw),
                     valueProbLoss: Double(timing.valueProbLoss),
+                    // Diagnostic-step fields: nil (not measured) on a step that
+                    // skipped the diagnostic reductions.
+                    policyLogitMean: timing.hasDiagnostics ? Double(timing.policyLogitMean) : nil,
+                    valueLogitMean: timing.hasDiagnostics ? Double(timing.valueLogitMean) : nil,
                     batchSize: batchSize,
                     // The STATIC configured base, matching this field's doc
                     // ("always the static configured base") and the self-play

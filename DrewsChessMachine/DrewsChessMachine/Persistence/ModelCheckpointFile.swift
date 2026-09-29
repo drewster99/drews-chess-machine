@@ -227,18 +227,23 @@ struct ModelCheckpointFile {
     /// by the call site that knows whether it is loading a base model
     /// or full trainer state.
     let formatVersion: UInt32
+    /// What decode did about the value head's shared logit offset (see
+    /// `ValueHeadCentering`). Set by both decoders; nil only on a file built
+    /// in memory to be encoded, which was never decoded.
+    let valueHeadCentering: ValueHeadCentering?
 
     /// Memberwise init with `formatVersion` defaulted to the current
     /// write version, so call sites that build a file for ENCODING
-    /// don't need to specify it. The decode path passes the actual
-    /// decoded version explicitly.
+    /// don't need to specify it. The decode paths pass the actual
+    /// decoded version and the decode-time centering explicitly.
     init(
         modelID: String,
         createdAtUnix: Int64,
         metadata: ModelCheckpointMetadata,
         weights: [[Float]],
         architecture: NetworkArchitecture = .current,
-        formatVersion: UInt32 = ModelCheckpointFile.formatVersion
+        formatVersion: UInt32 = ModelCheckpointFile.formatVersion,
+        valueHeadCentering: ValueHeadCentering? = nil
     ) {
         self.modelID = modelID
         self.createdAtUnix = createdAtUnix
@@ -246,6 +251,7 @@ struct ModelCheckpointFile {
         self.weights = weights
         self.architecture = architecture
         self.formatVersion = formatVersion
+        self.valueHeadCentering = valueHeadCentering
     }
 
     // MARK: Encoding
@@ -286,11 +292,19 @@ struct ModelCheckpointFile {
         // Metadata JSON (length-prefixed utf-8). Sorted keys so the
         // same metadata struct always encodes to byte-identical bytes,
         // which matters for reproducible file hashes.
+        //
+        // The JSON also carries the value-head-centered marker (see
+        // `ValueHeadRecentering`), like every safetensors save, so a file
+        // written now round-trips bit-exactly. `ModelCheckpointMetadata`
+        // decoding ignores the extra key.
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let metadataBytes: Data
         do {
-            metadataBytes = try encoder.encode(metadata)
+            metadataBytes = try encoder.encode(LegacyMetadataEnvelope(
+                metadata: metadata,
+                valueHeadCentered: ValueHeadRecentering.metadataValue
+            ))
         } catch {
             throw ModelCheckpointError.invalidJSON(error)
         }
@@ -384,9 +398,14 @@ struct ModelCheckpointFile {
         let metadataLen = Int(try reader.readUInt32LE())
         let metadataBytes = try reader.readBytes(metadataLen)
         let metadata: ModelCheckpointMetadata
+        let centeringMarker: LegacyCenteringMarker
         do {
             metadata = try JSONDecoder().decode(
                 ModelCheckpointMetadata.self,
+                from: Data(metadataBytes)
+            )
+            centeringMarker = try JSONDecoder().decode(
+                LegacyCenteringMarker.self,
                 from: Data(metadataBytes)
             )
         } catch {
@@ -439,14 +458,55 @@ struct ModelCheckpointFile {
             throw ModelCheckpointError.trailingBytesAfterPayload(remaining: remaining)
         }
 
+        // Recenter the value head unless the file is marked (see
+        // `ValueHeadRecentering`). A positional file does not say whether it
+        // is a trainer file; its tensor count does, and `apply` rejects a
+        // count that is neither a model nor a trainer file.
+        let baseCount = resolvedArchitecture.weightTensorPlan().count
+        let valueHeadCentering = try ValueHeadRecentering.apply(
+            to: &weights,
+            architecture: resolvedArchitecture,
+            includesVelocity: weights.count != baseCount,
+            markedCentered: try ValueHeadRecentering.isMarkedCentered(centeringMarker.valueHeadCentered)
+        )
+
         return ModelCheckpointFile(
             modelID: modelID,
             createdAtUnix: createdAtUnix,
             metadata: metadata,
             weights: weights,
             architecture: resolvedArchitecture,
-            formatVersion: version
+            formatVersion: version,
+            valueHeadCentering: valueHeadCentering
         )
+    }
+}
+
+/// The legacy metadata JSON as written: `ModelCheckpointMetadata`'s own keys
+/// plus the value-head-centered marker. Encoded through the metadata's own
+/// `Encodable` conformance so its keys and spelling stay single-sourced.
+private struct LegacyMetadataEnvelope: Encodable {
+    let metadata: ModelCheckpointMetadata
+    let valueHeadCentered: String
+
+    private enum MarkerKey: String, CodingKey {
+        case valueHeadCentered = "value_head_centered"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        try metadata.encode(to: encoder)
+        var container = encoder.container(keyedBy: MarkerKey.self)
+        try container.encode(valueHeadCentered, forKey: .valueHeadCentered)
+    }
+}
+
+/// The marker half of a legacy metadata JSON. Absent in every file written
+/// before the marker existed.
+private struct LegacyCenteringMarker: Decodable {
+    let valueHeadCentered: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case valueHeadCentered = "value_head_centered"
     }
 }
 

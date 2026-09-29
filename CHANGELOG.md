@@ -9,6 +9,28 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-28 21:55 CDT — Head numerics fix: fp32 head tails, value-head recentering, centered head losses (head numerics plan Phases 1–2) (pending commit)
+
+Implements Phases 1 and 2 of `documentation/plans-active/HEAD_NUMERICS_PLAN.md`: stops the bf16 shared-logit offset from rounding away the heads' real differences, removes the offset existing checkpoints carry, and stops it growing.
+
+- **fp32 head tails** (`ChessNetwork.policyHead` / `valueHead`, `widenToHeadTail`):
+  - Policy: from the `policy_pre_bn` normalize onward for `intermediate_conv` and `fc_bottleneck`; the final conv alone for `simple_conv`.
+  - Value: `fc2` + bias → logits → softmax → scalar, with the `[1, 0, −1]` constant in fp32.
+  - Weights keep their stored dtype and are widened in-graph; config D's fp32 variables feed the tail directly (no forward cast).
+  - Every head output (`policyOutput`, `valueLogits`, `valueProbs`, `valueOutput`) is fp32 on every build; `policyOutputReadback` / `valueOutputFP32` are gone. All readbacks are raw fp32, and `readFloatsFP32(into:)` now traps on a non-fp32 or wrongly sized tensor. `computeBatchStats` reads each BN's stats by its own dtype.
+- **Value-head recentering at decode** (`Persistence/ValueHeadRecentering.swift`):
+  - `SafetensorsModelIO.decode` and the legacy `ModelCheckpointFile.decode`, only when `__metadata__` lacks `value_head_centered`, only for `.wdlSoftmax`: each hidden row of `value_wdl_fc2` weights loses its class mean, the bias loses its mean, and a trainer file's matching velocities are recentered too. Softmax is unchanged.
+  - Every save writes the marker (safetensors, and the test-only legacy writer), so new files round-trip bit-exactly and post-save verification is unaffected.
+  - Loaders log what was removed under `[NUMERICS]`; the Lichess bot's generation info records `valueHeadRecenteredOnLoad` for file sources. A `[NUMERICS]` line after the launch banner marks builds carrying the fix, for chart annotation.
+- **Training** (`ChessTrainer.buildTrainingOps`, `Training/HeadLossGraph.swift`):
+  - The whole loss path runs in fp32: targets, masks, z / vBaseline / legalMask feeds, advantage (the value baseline stays fp32 through to it), every loss and diagnostic reduction, and every scalar feed (both ε included). All trainer scalars are read back as fp32.
+  - Policy and value targets are renormalized to sum to exactly 1. A single-legal-move position gets zero complement weight instead of a target summing to ε.
+  - The policy logits are mean-centered over all 4864 cells once, before masking; the W/D/L logits are centered over 3 (the scalar-tanh head is not). The shared direction now gets exactly zero gradient.
+  - `pLogitAbsMax` still reads the raw logits. New per-head pre-centering mean logit: `pLogitMean` / `vLogitMean` on `[STATS]`, `[STATS] arena-start`, `[REPLAY]`, `[VS-UCI]`, and `policy_logit_mean` / `value_logit_mean` in `results.json`.
+- **Tests (new, not yet run):** `ValueHeadRecenteringTests` (recentering math, softmax unchanged, velocity, marker written and honored, bit-exact round trips, loader path), `HeadLossGraphTests` (targets sum to 1, the |legal| = 1 complement, zero shared-direction gradient under centering), `HeadNumericsTailTests` (fp32 head outputs for every dtype / policy style / config D, fp32 value readback, zero shared-direction bias gradients in the real training graph, scalar-tanh not centered).
+- **Expected to move** (identical weights, changed numerics; owner approval needed to update): `ChessNetworkValueDistributionTests`, `PolicyHeadCorrectnessTests`, `FP16ComputePathTests`, `DropoutGraphWiringTests.testValueBaselineIsDropoutFree`, `RepPlaneProbeTests`, `MomentumOptimizerTests`, `CheckpointManagerSafetensorsTests`, `BlockGroupArchitectureTests`, `LegacyDcmmodelLoadTests` (historical files are now recentered on load), and the Σpolicy checksum in `MacOS27NaNIsolationTests`.
+- **Behavior changes, not bugs:** top-move tie breaking (tactical-probe pElo, `top1Legal`, τ≈0 play, the bot's move order), and W/D/L threshold decisions (self-play draw-watch, the bot's resign/draw rules). Probe trends will show a one-time step.
+
 ## 2026-09-28 20:13 CDT — Numerics audit: head numerics plan Phase 0 (`2194f1d`)
 
 The before/after gauge for `documentation/plans-active/HEAD_NUMERICS_PLAN.md`. It measures how well a network's numbers fit fp32, bf16 and fp16, before any fix lands.

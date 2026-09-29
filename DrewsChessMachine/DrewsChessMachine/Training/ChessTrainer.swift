@@ -297,6 +297,21 @@ struct TrainStepTiming: Sendable {
     /// the rolling means. The loss components, grad-norm, and all timing fields
     /// are valid on every step. See GPU_UTILIZATION_PLAN.md (Phase 1).
     let hasDiagnostics: Bool
+
+    /// Batch mean of the policy head's per-position mean logit (the mean
+    /// over all `policySize` logits), read BEFORE the loss centers them.
+    /// This is the head's shared offset: softmax cannot see it, the loss's
+    /// centering gives it zero gradient, so it should hold near where it
+    /// started. Steady drift means something on the loss path is not
+    /// centered. Diagnostic-step only (`.nan` otherwise, like the block
+    /// above); the default keeps memberwise construction that predates it
+    /// compiling, and reads as "not measured".
+    var policyLogitMean: Float = .nan
+    /// Batch mean of the value head's per-position mean logit, before
+    /// centering — the value head's shared offset, same reading as
+    /// `policyLogitMean`. On a scalar-tanh head it is the raw pre-tanh
+    /// logit's mean, which is not an offset and is not centered.
+    var valueLogitMean: Float = .nan
 }
 
 // MARK: - Sweep Result
@@ -560,6 +575,12 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         /// Batch-averaged magnitude of the largest raw logit — rises
         /// before entropy collapses, so a sharper pre-saturation signal.
         let rollingPolicyLogitAbsMax: Double?
+        /// Rolling-window means of `TrainStepTiming.policyLogitMean` /
+        /// `valueLogitMean` — each head's shared logit offset, read before
+        /// the loss centers it. Should hold steady; drift is the signature of
+        /// an uncentered loss term.
+        let rollingPolicyLogitMean: Double?
+        let rollingValueLogitMean: Double?
         /// Rolling-window mean of `TrainStepTiming.playedMoveProb`.
         /// Coarse action-index probe — see the field's docstring for why
         /// the unconditional mean is directionally ambiguous under the
@@ -673,6 +694,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _valueProbLossWindow: RollingDoubleWindow
     private var _policyHeadWeightNormWindow: RollingDoubleWindow
     private var _policyLogitAbsMaxWindow: RollingDoubleWindow
+    private var _policyLogitMeanWindow: RollingDoubleWindow
+    private var _valueLogitMeanWindow: RollingDoubleWindow
     private var _playedMoveProbWindow: RollingDoubleWindow
     private var _playedMoveProbPosAdvWindow: RollingDoubleWindow
     private var _playedMoveProbNegAdvWindow: RollingDoubleWindow
@@ -768,6 +791,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         self._valueProbLossWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyHeadWeightNormWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyLogitAbsMaxWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._policyLogitMeanWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._valueLogitMeanWindow = RollingDoubleWindow(limit: rollingWindow)
         self._playedMoveProbWindow = RollingDoubleWindow(limit: rollingWindow)
         self._playedMoveProbPosAdvWindow = RollingDoubleWindow(limit: rollingWindow)
         self._playedMoveProbNegAdvWindow = RollingDoubleWindow(limit: rollingWindow)
@@ -861,6 +886,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._valueProbLossWindow.append(Double(timing.valueProbLoss))
             self._policyHeadWeightNormWindow.append(Double(timing.policyHeadWeightNorm))
             self._policyLogitAbsMaxWindow.append(Double(timing.policyLogitAbsMax))
+            self._policyLogitMeanWindow.append(Double(timing.policyLogitMean))
+            self._valueLogitMeanWindow.append(Double(timing.valueLogitMean))
             self._playedMoveProbWindow.append(Double(timing.playedMoveProb))
             // NaN protection: the conditional means are NaN when the
             // batch has zero positions on one side of the sign — skip
@@ -979,6 +1006,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._valueProbLossWindow.removeAll()
             self._policyHeadWeightNormWindow.removeAll()
             self._policyLogitAbsMaxWindow.removeAll()
+            self._policyLogitMeanWindow.removeAll()
+            self._valueLogitMeanWindow.removeAll()
             self._playedMoveProbWindow.removeAll()
             self._playedMoveProbPosAdvWindow.removeAll()
             self._playedMoveProbNegAdvWindow.removeAll()
@@ -1034,6 +1063,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             let rollingVProbLoss = _valueProbLossWindow.mean
             let rollingPolicyHeadWNorm = _policyHeadWeightNormWindow.mean
             let rollingPLogitAbsMax = _policyLogitAbsMaxWindow.mean
+            let rollingPLogitMean = _policyLogitMeanWindow.mean
+            let rollingVLogitMean = _valueLogitMeanWindow.mean
             let rollingPlayedMoveP = _playedMoveProbWindow.mean
             let rollingPlayedMovePosAdv = _playedMoveProbPosAdvWindow.mean
             let rollingPlayedMoveNegAdv = _playedMoveProbNegAdvWindow.mean
@@ -1077,6 +1108,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
                 rollingValueProbLoss: rollingVProbLoss,
                 rollingPolicyHeadWeightNorm: rollingPolicyHeadWNorm,
                 rollingPolicyLogitAbsMax: rollingPLogitAbsMax,
+                rollingPolicyLogitMean: rollingPLogitMean,
+                rollingValueLogitMean: rollingVLogitMean,
                 rollingPlayedMoveProb: rollingPlayedMoveP,
                 rollingPlayedMoveProbPosAdv: rollingPlayedMovePosAdv,
                 rollingPlayedMoveProbNegAdv: rollingPlayedMoveNegAdv,
@@ -1696,6 +1729,13 @@ final class ChessTrainer: @unchecked Sendable {
     /// Reported on the [STATS] line so velocity magnitude growth is
     /// observable when raising μ.
     private var velocityGlobalNormTensor: MPSGraphTensor
+    /// Scalar batch mean of the policy head's per-position mean logit,
+    /// before the loss centers it. The shared offset centering holds at a
+    /// constant; `[STATS]` reports it so drift stays visible.
+    private var policyLogitMeanTensor: MPSGraphTensor
+    /// Scalar batch mean of the value head's per-position mean logit,
+    /// before centering. Same role as `policyLogitMeanTensor`.
+    private var valueLogitMeanTensor: MPSGraphTensor
     private var assignOps: [MPSGraphOperation]
     /// `assignOps` WITHOUT the dropout-RNG advance.
     ///
@@ -1874,7 +1914,9 @@ final class ChessTrainer: @unchecked Sendable {
     private static let lossReadbackSlotValueProbWin: Int = 24
     private static let lossReadbackSlotValueProbDraw: Int = 25
     private static let lossReadbackSlotValueProbLoss: Int = 26
-    private static let lossReadbackSlotCount: Int = 27
+    private static let lossReadbackSlotPolicyLogitMean: Int = 27
+    private static let lossReadbackSlotValueLogitMean: Int = 28
+    private static let lossReadbackSlotCount: Int = 29
 
     /// Reusable host-side staging buffers for replay-buffer samples.
     /// The trainer owns these buffers so real-data training can hop
@@ -2065,6 +2107,8 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossWinTensor = built.policyLossWin
         self.policyLossLossTensor = built.policyLossLoss
         self.velocityGlobalNormTensor = built.velocityGlobalNorm
+        self.policyLogitMeanTensor = built.policyLogitMean
+        self.valueLogitMeanTensor = built.valueLogitMean
         self.assignOps = built.assignOps
         self.assignOpsWithoutDropoutAdvance = built.assignOps
         // Advance the dropout RNG stream exactly once per training step,
@@ -2081,70 +2125,59 @@ final class ChessTrainer: @unchecked Sendable {
                 net: net, masterVariables: built.masterVariables, arch: arch)
         }
 
-        // Scalar ND array for the learning rate feed, reused every step.
+        // Scalar ND arrays for the hyperparameter feeds, reused every step.
         // Every scalar hyperparameter placeholder (lr, entropyCoeff,
         // weightDecay, gradClipMaxNorm, the policy/value/illegal loss
         // weights, the label-smoothing epsilons, momentum,
-        // complementCEEnable) is declared `dataType: dtype` in the graph
-        // build — i.e. the network dtype (bf16 here) — so the ND array
-        // storage they feed must be the same width. The host narrows
-        // the Swift `Float` value into bf16 bits before each
-        // `writeBytes` in `buildFeeds`; on `.float32` it writes the raw
-        // `Float`. A `.float32` descriptor here would byte-mismatch the
-        // bf16 placeholder under bf16.
-        let lrDesc = MPSNDArrayDescriptor(
-            dataType: ChessNetwork.mpsDataType(for: arch),
-            shape: [1]
-        )
-        // The four optimizer-update scalars feed fp32 placeholders (see
-        // buildTrainingOps) regardless of `dataType`, so their ND arrays are
-        // fp32. `writeScalarFeed` branches on the ND array's own dtype, so it
-        // writes the raw `Float` into these and narrows the rest.
-        let optScalarDesc = MPSNDArrayDescriptor(
+        // complementCEEnable) is fp32 in the graph build — the optimizer
+        // scalars because the update runs in fp32, the loss-side ones because
+        // the loss path runs in the heads' fp32 tail dtype — so every ND array
+        // is fp32 and `buildFeeds` writes the raw `Float`, unrounded.
+        let scalarFeedDesc = MPSNDArrayDescriptor(
             dataType: .float32,
             shape: [1]
         )
-        let lrND = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
+        let lrND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         lrND.label = "lrND"
         self.lrNDArray = lrND
         self.lrTensorData = MPSGraphTensorData(lrND)
-        let entropyND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        let entropyND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         entropyND.label = "entropyND"
         self.entropyCoeffNDArray = entropyND
         self.entropyCoeffTensorData = MPSGraphTensorData(entropyND)
-        let weightDecayND = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
+        let weightDecayND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         weightDecayND.label = "weightDecayND"
         self.weightDecayNDArray = weightDecayND
         self.weightDecayTensorData = MPSGraphTensorData(weightDecayND)
-        let gradClipND = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
+        let gradClipND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         gradClipND.label = "gradClipND"
         self.gradClipMaxNormNDArray = gradClipND
         self.gradClipMaxNormTensorData = MPSGraphTensorData(gradClipND)
-        let policyLossWeightND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        let policyLossWeightND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         policyLossWeightND.label = "policyLossWeightND"
         self.policyLossWeightNDArray = policyLossWeightND
         self.policyLossWeightTensorData = MPSGraphTensorData(policyLossWeightND)
-        let valueLossWeightND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        let valueLossWeightND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         valueLossWeightND.label = "valueLossWeightND"
         self.valueLossWeightNDArray = valueLossWeightND
         self.valueLossWeightTensorData = MPSGraphTensorData(valueLossWeightND)
-        let illegalMassWeightND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        let illegalMassWeightND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         illegalMassWeightND.label = "illegalMassWeightND"
         self.illegalMassWeightNDArray = illegalMassWeightND
         self.illegalMassWeightTensorData = MPSGraphTensorData(illegalMassWeightND)
-        let labelSmoothingND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        let labelSmoothingND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         labelSmoothingND.label = "labelSmoothingEpsilonND"
         self.labelSmoothingEpsilonNDArray = labelSmoothingND
         self.labelSmoothingEpsilonTensorData = MPSGraphTensorData(labelSmoothingND)
-        let valueLabelSmoothingND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        let valueLabelSmoothingND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         valueLabelSmoothingND.label = "valueLabelSmoothingEpsilonND"
         self.valueLabelSmoothingEpsilonNDArray = valueLabelSmoothingND
         self.valueLabelSmoothingEpsilonTensorData = MPSGraphTensorData(valueLabelSmoothingND)
-        let momentumND = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
+        let momentumND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         momentumND.label = "momentumND"
         self.momentumNDArray = momentumND
         self.momentumTensorData = MPSGraphTensorData(momentumND)
-        let complementCEEnableND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        let complementCEEnableND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         complementCEEnableND.label = "complementCEEnableND"
         self.complementCEEnableNDArray = complementCEEnableND
         self.complementCEEnableTensorData = MPSGraphTensorData(complementCEEnableND)
@@ -2292,6 +2325,8 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossWinTensor = built.policyLossWin
         self.policyLossLossTensor = built.policyLossLoss
         self.velocityGlobalNormTensor = built.velocityGlobalNorm
+        self.policyLogitMeanTensor = built.policyLogitMean
+        self.valueLogitMeanTensor = built.valueLogitMean
         self.assignOps = built.assignOps
         self.assignOpsWithoutDropoutAdvance = built.assignOps
         // Advance the dropout RNG stream exactly once per training step
@@ -2305,53 +2340,44 @@ final class ChessTrainer: @unchecked Sendable {
         self.workingSyncOps = (splitWorkingWeightSync && !bf16CastInForward)
             ? Self.buildWorkingSyncOps(net: net, masterVariables: built.masterVariables, arch: arch)
             : []
-        // Rebuild the LR scalar feed against the new network's device
-        // so the new graph's placeholder maps to a fresh wrapper. As in
-        // the designated init, these scalar feeds match the network
-        // dtype (`dtype` placeholders in the graph build); the host
-        // narrows each scalar to bf16 before `writeBytes` in
-        // `buildFeeds` (raw `Float` on `.float32`).
-        let lrDesc = MPSNDArrayDescriptor(
-            dataType: ChessNetwork.mpsDataType(for: arch),
-            shape: [1]
-        )
-        // fp32 ND arrays for the four optimizer-update scalars (see the
-        // designated init for the rationale).
-        let optScalarDesc = MPSNDArrayDescriptor(
+        // Rebuild the scalar feeds against the new network's device so the
+        // new graph's placeholders map to fresh wrappers. All fp32, as in the
+        // designated init.
+        let scalarFeedDesc = MPSNDArrayDescriptor(
             dataType: .float32,
             shape: [1]
         )
-        self.lrNDArray = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
+        self.lrNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         self.lrNDArray.label = "trainer.scalar.lr (reset)"
         self.lrTensorData = MPSGraphTensorData(lrNDArray)
-        self.entropyCoeffNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.entropyCoeffNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         self.entropyCoeffNDArray.label = "trainer.scalar.entropyCoeff (reset)"
         self.entropyCoeffTensorData = MPSGraphTensorData(entropyCoeffNDArray)
-        self.weightDecayNDArray = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
+        self.weightDecayNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         self.weightDecayNDArray.label = "trainer.scalar.weightDecay (reset)"
         self.weightDecayTensorData = MPSGraphTensorData(weightDecayNDArray)
-        self.gradClipMaxNormNDArray = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
+        self.gradClipMaxNormNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         self.gradClipMaxNormNDArray.label = "trainer.scalar.gradClipMaxNorm (reset)"
         self.gradClipMaxNormTensorData = MPSGraphTensorData(gradClipMaxNormNDArray)
-        self.policyLossWeightNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.policyLossWeightNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         self.policyLossWeightNDArray.label = "trainer.scalar.policyLossWeight (reset)"
         self.policyLossWeightTensorData = MPSGraphTensorData(policyLossWeightNDArray)
-        self.valueLossWeightNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.valueLossWeightNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         self.valueLossWeightNDArray.label = "trainer.scalar.valueLossWeight (reset)"
         self.valueLossWeightTensorData = MPSGraphTensorData(valueLossWeightNDArray)
-        self.illegalMassWeightNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.illegalMassWeightNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         self.illegalMassWeightNDArray.label = "trainer.scalar.illegalMassWeight (reset)"
         self.illegalMassWeightTensorData = MPSGraphTensorData(illegalMassWeightNDArray)
-        self.labelSmoothingEpsilonNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.labelSmoothingEpsilonNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         self.labelSmoothingEpsilonNDArray.label = "trainer.scalar.labelSmoothingEpsilon (reset)"
         self.labelSmoothingEpsilonTensorData = MPSGraphTensorData(labelSmoothingEpsilonNDArray)
-        self.valueLabelSmoothingEpsilonNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.valueLabelSmoothingEpsilonNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         self.valueLabelSmoothingEpsilonNDArray.label = "trainer.scalar.valueLabelSmoothingEpsilon (reset)"
         self.valueLabelSmoothingEpsilonTensorData = MPSGraphTensorData(valueLabelSmoothingEpsilonNDArray)
-        self.momentumNDArray = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
+        self.momentumNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         self.momentumNDArray.label = "trainer.scalar.momentum (reset)"
         self.momentumTensorData = MPSGraphTensorData(momentumNDArray)
-        self.complementCEEnableNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.complementCEEnableNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         self.complementCEEnableNDArray.label = "trainer.scalar.complementCEEnable (reset)"
         self.complementCEEnableTensorData = MPSGraphTensorData(complementCEEnableNDArray)
         // The cached ND arrays were allocated against the old network's
@@ -2493,6 +2519,12 @@ final class ChessTrainer: @unchecked Sendable {
         policyLossWin: MPSGraphTensor,
         policyLossLoss: MPSGraphTensor,
         velocityGlobalNorm: MPSGraphTensor,
+        /// Batch mean of the per-position mean policy logit, BEFORE the
+        /// loss's centering — the policy head's shared offset. Scalar.
+        policyLogitMean: MPSGraphTensor,
+        /// Batch mean of the per-position mean value logit, before
+        /// centering — the value head's shared offset. Scalar.
+        valueLogitMean: MPSGraphTensor,
         assignOps: [MPSGraphOperation]
     ) {
         // Stack-overflow backstop for pathologically deep towers — see
@@ -2518,33 +2550,30 @@ final class ChessTrainer: @unchecked Sendable {
 
         let graph = network.graph
         let dtype = ChessNetwork.mpsDataType(for: network.arch)
+        // The loss path's dtype: the heads' fp32 tails (`ChessNetwork.headTailDataType`).
+        // Every head output this function reads is fp32, so the targets, masks,
+        // advantage, per-position losses and every reported scalar are built in
+        // fp32 too. The compute dtype survives only where the graph meets the
+        // tower's variables — the gradients, the working-weight sync, and the
+        // policy weight-norm read.
+        let lossDType = HeadLossGraph.dataType
 
-        // --- fp32-accumulation guards for batch reductions ---
+        // --- fp32 accumulation for reductions over compute-dtype tensors ---
         //
-        // Under a narrow `dtype` (bf16) every tensor in this graph,
-        // including gradients and per-position losses, carries an 8-bit
-        // mantissa. A `reductionSum` / `mean` over thousands of such
-        // elements accumulates in that same narrow type, and once the
-        // running total dwarfs an individual addend by more than half a
-        // bf16 ULP the addend is silently dropped — so a sum over the
-        // batch (or over a 147K-element weight gradient) loses its tail
-        // and comes out biased low. That directly corrupts the global
-        // gradient norm that gates clipping, and skews every reported
-        // batch-mean loss / health scalar.
+        // Under a narrow `dtype` (bf16) a gradient, or a variable read,
+        // carries an 8-bit mantissa. A `reductionSum` over thousands of such
+        // elements accumulates in that same narrow type, and once the running
+        // total dwarfs an individual addend by more than half a bf16 ULP the
+        // addend is silently dropped — so a sum over a large weight gradient
+        // loses its tail and comes out biased low. That directly corrupts the
+        // global gradient norm that gates clipping.
         //
-        // `widenForReduction` lifts a tensor to fp32 *before* the reduce
-        // so the accumulator is fp32; `narrowReductionResult` brings the
-        // resulting scalar back to `dtype` so it rejoins the bf16 graph
-        // and matches the dtype the host readback path assumes. The
-        // matmuls/convs themselves stay bf16 — their hardware
-        // accumulators are already fp32, so only these CPU-visible
-        // reductions need the guard. Both are identity on `.float32`, so
-        // flipping `dtype` back stays byte-identical to the fp32 graph.
+        // `widenForReduction` lifts such a tensor to fp32 *before* the reduce
+        // so the accumulator is fp32. It keys off the tensor's own dtype, so
+        // it is the identity on anything already fp32 (the whole loss path, a
+        // `.float32` build, config D's fp32 variables).
         let widenForReduction: (MPSGraphTensor) -> MPSGraphTensor = { t in
-            dtype == .float32 ? t : graph.cast(t, to: .float32, name: nil)
-        }
-        let narrowReductionResult: (MPSGraphTensor, String) -> MPSGraphTensor = { t, name in
-            dtype == .float32 ? t : graph.cast(t, to: dtype, name: name)
+            t.dataType == .float32 ? t : graph.cast(t, to: .float32, name: nil)
         }
 
         // --- Placeholders for training targets ---
@@ -2554,61 +2583,74 @@ final class ChessTrainer: @unchecked Sendable {
             dataType: .int32,
             name: "move_played"
         )
-        // z / vBaseline / legalMask are fed as fp32 and narrowed to the
-        // compute dtype by an in-graph `cast` — the input boundary for
-        // these feeds, mirroring the fp32 board input (`board_input_cast`).
-        // The host write is then a raw memcpy: no per-element
-        // `float32ToBFloat16Bits` loop and no staging buffer (see
-        // `feedsForBatch`). The cast is bit-exact against that CPU loop
-        // (round-to-nearest-even, ties included — `BF16CastEquivalenceTests`),
-        // so every downstream op sees the same bf16 bits it saw before; on a
-        // `.float32` build the cast is the identity and is elided. The
-        // returned tuple field (the trainer's feed key) is the fp32
-        // placeholder `*Feed`; the bare `z` / `vBaseline` / `legalMask`
-        // bound below are the cast outputs that the loss graph consumes.
-        let zFeed = graph.placeholder(
+        // z / vBaseline / legalMask are fed as fp32 and consumed as fp32: the
+        // loss path runs in `lossDType`, so there is no narrowing cast. The
+        // host write is a raw memcpy (see `feedsForBatch`).
+        let z = graph.placeholder(
             shape: [-1, 1],
-            dataType: .float32,
+            dataType: lossDType,
             name: "z_outcome"
         )
-        let z = (dtype == .float32) ? zFeed : graph.cast(zFeed, to: dtype, name: "z_cast")
-        // vBaseline: the value-head's own prediction of this position
-        // captured at play time, fed as a placeholder so autodiff can't
-        // walk back into the value head from the policy loss. MPSGraph
-        // has no stopGradient op, so feeding the baseline in externally
-        // is how we get detach semantics. The fp32→cast indirection adds no
-        // gradient path into any trainable (the placeholder is a leaf), so
-        // the detach property is preserved.
-        let vBaselineFeed = graph.placeholder(
+        // vBaseline: the value-head's own prediction of this position,
+        // fed as a placeholder so autodiff can't walk back into the value
+        // head from the policy loss. MPSGraph has no stopGradient op, so
+        // feeding the baseline in externally is how we get detach
+        // semantics (the placeholder is a leaf). The baseline forward
+        // writes the fp32 `valueOutput` straight into this feed, and it
+        // stays fp32 through to the advantage: narrowing it would round
+        // `z − v(s)` for every position.
+        let vBaseline = graph.placeholder(
             shape: [-1, 1],
-            dataType: .float32,
+            dataType: lossDType,
             name: "v_baseline"
         )
-        let vBaseline = (dtype == .float32) ? vBaselineFeed : graph.cast(vBaselineFeed, to: dtype, name: "v_baseline_cast")
 
-        let legalMaskFeed = graph.placeholder(
+        let legalMask = graph.placeholder(
             shape: [-1, NSNumber(value: ChessNetwork.policySize)],
-            dataType: .float32,
+            dataType: lossDType,
             name: "legal_move_mask"
         )
-        let legalMask = (dtype == .float32) ? legalMaskFeed : graph.cast(legalMaskFeed, to: dtype, name: "legal_move_mask_cast")
 
-        // Build masked logits: illegal positions get a huge negative bias.
-        // The bias magnitude must be representable in the compute dtype.
-        // −1e9 overflows fp16 (max finite 65504) to −∞, and then the
-        // illegal-mask multiply computes `0 · (−∞) = NaN` at every *legal*
-        // cell (where `illegalMask = 0`), poisoning the whole masked softmax
-        // (and thus the policy entropy). A magnitude of −3e4 is well inside
-        // fp16's range yet still drives the illegal-cell softmax to zero —
-        // `exp(−3e4 − rowMax)` underflows to 0 in every dtype — so masking is
-        // unchanged. bf16/fp32 (exponent range ≥ fp32) keep −1e9 exactly, so
-        // their masked logits are byte-identical to before.
-        let oneConst = graph.constant(1.0, dataType: dtype)
+        // --- Policy logit centering ---
+        //
+        // The policy logits carry a per-position shared offset — a constant
+        // added to all of a position's logits. Softmax ignores it, so the
+        // loss exerts no force on it and it drifts; left alone it grows to
+        // magnitudes where the compute dtype's rounding step swallows the real
+        // differences between moves. Subtracting each position's mean over
+        // all `policySize` logits before any softmax or cross-entropy makes
+        // the gradient along that shared direction exactly zero,
+        // `1ᵀ(I − 11ᵀ/N)g = 0`, whatever the targets, so the offset can no
+        // longer be driven. The mean, not the max: `reductionMaximum` has no
+        // gradient rule in this graph, and this tensor is on the loss path.
+        //
+        // Centered ONCE, over all logits, BEFORE masking: the CE and the
+        // illegal-mass term read all logits, and masking afterwards keeps the
+        // masked cells' huge negative bias out of the mean. The legal-only
+        // softmaxes (entropy, played-move probability, the KL probe) are
+        // shift-invariant, so they read the same distribution either way.
+        //
+        // The pre-centering mean itself is the monitoring signal
+        // (`policyLogitMean`), and `pLogitAbsMax` keeps reading the raw
+        // tensor, so both still report the head's true output magnitudes.
+        let (policyLogitsCentered, policyLogitMeanPerPos) = HeadLossGraph.centerLogits(
+            network.policyOutput, graph: graph, name: "policy_logits"
+        )
+        let policyLogitMeanTensor = graph.mean(
+            of: policyLogitMeanPerPos,
+            axes: [0, 1],
+            name: "policy_logit_mean"
+        )
+
+        // Build masked logits: illegal positions get a huge negative bias,
+        // added to the centered logits. The loss path is fp32, whose exponent
+        // range holds −1e9 exactly, so `exp(−1e9 − rowMax)` underflows to 0
+        // and the masked cells carry no softmax mass.
+        let oneConst = graph.constant(1.0, dataType: lossDType)
         let illegalMask = graph.subtraction(oneConst, legalMask, name: "illegal_mask")
-        let maskNegMagnitude: Double = (dtype == .float16) ? -3e4 : -1e9
-        let largeNeg = graph.constant(maskNegMagnitude, dataType: dtype)
+        let largeNeg = graph.constant(-1e9, dataType: lossDType)
         let additiveMask = graph.multiplication(illegalMask, largeNeg, name: "additive_mask")
-        let maskedLogits = graph.addition(network.policyOutput, additiveMask, name: "masked_logits")
+        let maskedLogits = graph.addition(policyLogitsCentered, additiveMask, name: "masked_logits")
 
         // --- Policy loss: signed-advantage CE with positive + complement targets ---
         //
@@ -2658,8 +2700,8 @@ final class ChessTrainer: @unchecked Sendable {
         //    positive-only clamp regime can be re-engaged at runtime
         //    if needed.
         //
-        // 3. The CE softmax is over the **raw** policy logits
-        //    (`network.policyOutput`), NOT the legal-masked logits.
+        // 3. The CE softmax is over the **unmasked** policy logits
+        //    (`network.policyOutput`, centered), NOT the legal-masked logits.
         //    Commit `acc5340` had fed `maskedLogits` here, reasoning
         //    that masking would stop mass accumulating on illegal cells.
         //    It did the opposite: with `maskedLogits`, the softmax over
@@ -2700,133 +2742,49 @@ final class ChessTrainer: @unchecked Sendable {
         // Declared next to its only consumer (the smoothed-target build
         // below) rather than in the bottom-of-function placeholder
         // block, because we need the value to construct the target
-        // before the CE op runs.
+        // before the CE op runs. fp32, fed the raw `Float`: a compute-dtype
+        // ε would be rounded on the host before it ever reached the target.
         let labelSmoothingEpsilonTensor = graph.placeholder(
             shape: [1],
-            dataType: dtype,
+            dataType: lossDType,
             name: "policy_label_smoothing_epsilon"
         )
 
-        let oneHot = graph.oneHot(
-            withIndicesTensor: movePlayed,
-            depth: ChessNetwork.policySize,
-            axis: 1,
-            dataType: dtype,
-            onValue: 1.0,
-            offValue: 0.0,
-            name: "move_onehot"
+        // Positive and complement targets, fp32 and renormalized to sum to
+        // exactly 1; see `HeadLossGraph.policyTargets` for their shape and
+        // equilibria, and for why a single-legal-move position gets zero
+        // complement weight (`complementTargetValid`) instead of a target.
+        let policyTargets = HeadLossGraph.policyTargets(
+            graph: graph,
+            movePlayed: movePlayed,
+            legalMask: legalMask,
+            epsilon: labelSmoothingEpsilonTensor,
+            policySize: ChessNetwork.policySize
         )
+        let oneHot = policyTargets.oneHot
+        let smoothedTarget = policyTargets.smoothed
+        let complementTarget = policyTargets.complement
+        let complementTargetValid = policyTargets.complementValid
 
-        // uniform(legal) = legalMask / |legal|, per position.
-        //   legalMask has shape [batch, policySize] with 1.0 at legal,
-        //   0.0 at illegal cells.
-        //   |legal| (per row) is reductionSum over the class axis with
-        //   keepdims; clamp at 1.0 to defend against the theoretically-
-        //   impossible zero-legal-moves case (terminal positions never
-        //   make it into the training buffer, but a divide-by-zero
-        //   here would NaN the entire batch).
-        let legalCountKeepDims = graph.reductionSum(
-            with: legalMask,
-            axis: 1,
-            name: "legal_count_per_pos"
-        )
-        let oneFloatForLegal = graph.constant(1.0, dataType: dtype)
-        let legalCountSafe = graph.maximum(
-            legalCountKeepDims,
-            oneFloatForLegal,
-            name: "legal_count_safe"
-        )
-        let uniformOverLegal = graph.division(
-            legalMask,
-            legalCountSafe,
-            name: "uniform_over_legal"
-        )
-        // smoothed = (1 − ε) · oneHot + ε · uniformOverLegal
-        let oneMinusEpsilon = graph.subtraction(
-            oneFloatForLegal,
-            labelSmoothingEpsilonTensor,
-            name: "label_smoothing_one_minus_eps"
-        )
-        let smoothedTargetOneHotComponent = graph.multiplication(
-            oneHot,
-            oneMinusEpsilon,
-            name: "smoothed_target_onehot_part"
-        )
-        let smoothedTargetUniformComponent = graph.multiplication(
-            uniformOverLegal,
-            labelSmoothingEpsilonTensor,
-            name: "smoothed_target_uniform_part"
-        )
-        let smoothedTarget = graph.addition(
-            smoothedTargetOneHotComponent,
-            smoothedTargetUniformComponent,
-            name: "policy_smoothed_target"
-        )
-
-        // Complement smoothed target — mirror of `smoothedTarget` with
-        // the (1 − ε) "main" mass spread over the OTHER legal moves
-        // and the ε "smoothing" mass shared across all legals.
-        //   complement = (1 − ε) · uniform(otherLegals) + ε · uniform(legal)
-        // where uniform(otherLegals) = (legalMask − oneHot) / max(1, |legal| − 1).
-        // Used by the negative-advantage branch (see the signed-split
-        // construction further down). Teaches "the played move was bad
-        // here; mass should sit on any other legal move." The (1 − ε)
-        // numerator is all-zeros when |legal| = 1 (played is the only
-        // option), so the main component vanishes and the target reduces
-        // to ε · oneHot(played) — a small loss; one-legal positions are
-        // a structural edge case (mostly forced replies in check) and
-        // not worth a separate masking branch.
-        let otherLegalMaskRaw = graph.subtraction(
-            legalMask,
-            oneHot,
-            name: "other_legal_mask"
-        )
-        let legalCountMinusOne = graph.subtraction(
-            legalCountSafe,
-            oneFloatForLegal,
-            name: "legal_count_minus_one"
-        )
-        let otherLegalCountSafe = graph.maximum(
-            legalCountMinusOne,
-            oneFloatForLegal,
-            name: "other_legal_count_safe"
-        )
-        let uniformOverOtherLegal = graph.division(
-            otherLegalMaskRaw,
-            otherLegalCountSafe,
-            name: "uniform_over_other_legal"
-        )
-        let complementMainComponent = graph.multiplication(
-            uniformOverOtherLegal,
-            oneMinusEpsilon,
-            name: "complement_target_main_part"
-        )
-        // `smoothedTargetUniformComponent` (= ε · uniformOverLegal) is
-        // already built above — the complement target shares it.
-        let complementTarget = graph.addition(
-            complementMainComponent,
-            smoothedTargetUniformComponent,
-            name: "policy_complement_target"
-        )
-
-        // Raw policy logits, NOT `maskedLogits` — the CE must see the
+        // Centered policy logits, NOT `maskedLogits` — the CE must see the
         // illegal cells in order to drive their softmax mass to zero.
         // See structural piece 3 in the comment block above (and the
-        // `acc5340` backfire it describes).
+        // `acc5340` backfire it describes). Centered so the shared offset
+        // gets zero gradient (see "Policy logit centering").
         let ceLossRaw = graph.softMaxCrossEntropy(
-            network.policyOutput,
+            policyLogitsCentered,
             labels: smoothedTarget,
             axis: 1,
             reuctionType: .none,
             name: "policy_ce_raw"
         )
 
-        // Parallel CE against the complement target — same raw-logits
+        // Parallel CE against the complement target — same centered-logit
         // softmax base as the positive-target CE so the illegal-mass
         // pressure stays in effect on both branches. Combined with the
         // positive branch via the signed-advantage split below.
         let ceLossComplementRaw = graph.softMaxCrossEntropy(
-            network.policyOutput,
+            policyLogitsCentered,
             labels: complementTarget,
             axis: 1,
             reuctionType: .none,
@@ -2841,9 +2799,14 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [-1, 1],
             name: "policy_ce_per_pos"
         )
-        let negLogProbComplement = graph.reshape(
-            ceLossComplementRaw,
-            shape: [-1, 1],
+        // Zero on single-legal-move positions (see `complementTargetValid`).
+        let negLogProbComplement = graph.multiplication(
+            graph.reshape(
+                ceLossComplementRaw,
+                shape: [-1, 1],
+                name: "policy_ce_complement_per_pos_unweighted"
+            ),
+            complementTargetValid,
             name: "policy_ce_complement_per_pos"
         )
         // No per-position CE clamp here. Two prior approaches and why
@@ -2950,13 +2913,13 @@ final class ChessTrainer: @unchecked Sendable {
             axes: [0, 1],
             name: "advantage_mean_square"
         )
-        let advantagePowerFloor = graph.constant(0.04, dataType: dtype)
+        let advantagePowerFloor = graph.constant(0.04, dataType: lossDType)
         let advantagePowerForNorm = graph.maximum(
             advantageMS,
             advantagePowerFloor,
             name: "advantage_power_for_norm"
         )
-        let advantageNormEps = graph.constant(1e-6, dataType: dtype)
+        let advantageNormEps = graph.constant(1e-6, dataType: lossDType)
         let advantageRMSForNorm = graph.squareRoot(
             with: graph.addition(
                 advantagePowerForNorm,
@@ -3007,7 +2970,7 @@ final class ChessTrainer: @unchecked Sendable {
         // would be identically zero since loss positions clamp out;
         // with complement-CE active it's the headline "is the network
         // learning from losses and draws as well as wins" diagnostic.
-        let zeroForAdvantage = graph.constant(0.0, dataType: dtype)
+        let zeroForAdvantage = graph.constant(0.0, dataType: lossDType)
         let advantageNegated = graph.negative(
             with: advantageNormalized,
             name: "advantage_negated"
@@ -3024,7 +2987,7 @@ final class ChessTrainer: @unchecked Sendable {
         )
         let complementCEEnableTensor = graph.placeholder(
             shape: [1],
-            dataType: dtype,
+            dataType: lossDType,
             name: "complement_ce_enable"
         )
         let policyTermPositive = graph.multiplication(
@@ -3047,13 +3010,10 @@ final class ChessTrainer: @unchecked Sendable {
             policyTermNegative,
             name: "adv_weighted_ce"
         )
-        let policyLoss = narrowReductionResult(
-            graph.mean(
-                of: widenForReduction(weightedCE),
-                axes: [0, 1],
-                name: "policy_loss_f32"
-            ),
-            "policy_loss"
+        let policyLoss = graph.mean(
+            of: weightedCE,
+            axes: [0, 1],
+            name: "policy_loss"
         )
 
         // --- Outcome-partitioned policy loss (diagnostic only) ---
@@ -3068,17 +3028,18 @@ final class ChessTrainer: @unchecked Sendable {
         // case is rare but does happen near the start of a session.
         // These tensors are diagnostic-only — they're fetched via
         // `targetTensors`, never feed back into `totalLoss`, so
-        // autodiff doesn't walk into them.
-        let zPosThreshold = graph.constant(0.5, dataType: dtype)
-        let zNegThreshold = graph.constant(-0.5, dataType: dtype)
+        // autodiff doesn't walk into them. fp32 like the rest of the loss
+        // path, so the batch sums keep their tails.
+        let zPosThreshold = graph.constant(0.5, dataType: lossDType)
+        let zNegThreshold = graph.constant(-0.5, dataType: lossDType)
         let maskWin = graph.cast(
             graph.greaterThan(z, zPosThreshold, name: "z_gt_pos_thresh"),
-            to: dtype,
+            to: lossDType,
             name: "mask_win"
         )
         let maskLoss = graph.cast(
             graph.lessThan(z, zNegThreshold, name: "z_lt_neg_thresh"),
-            to: dtype,
+            to: lossDType,
             name: "mask_loss"
         )
         let weightedCEWin = graph.multiplication(weightedCE, maskWin, name: "weighted_ce_win")
@@ -3087,7 +3048,7 @@ final class ChessTrainer: @unchecked Sendable {
         let lossSum = graph.reductionSum(with: weightedCELoss, axes: [0, 1], name: "weighted_ce_loss_sum")
         let winMaskSum = graph.reductionSum(with: maskWin, axes: [0, 1], name: "mask_win_sum")
         let lossMaskSum = graph.reductionSum(with: maskLoss, axes: [0, 1], name: "mask_loss_sum")
-        let denomEps = graph.constant(1e-6, dataType: dtype)
+        let denomEps = graph.constant(1e-6, dataType: lossDType)
         let policyLossWin = graph.division(
             winSum,
             graph.addition(winMaskSum, denomEps, name: "mask_win_sum_eps"),
@@ -3137,11 +3098,25 @@ final class ChessTrainer: @unchecked Sendable {
 
         // value_label_smoothing_epsilon — scalar placeholder, live-tunable;
         // declared here next to its only consumer (the smoothed target).
+        // fp32 and fed the raw `Float`, like the policy ε.
         let valueLabelSmoothingEpsilonTensor = graph.placeholder(
             shape: [1],
-            dataType: dtype,
+            dataType: lossDType,
             name: "value_label_smoothing_epsilon"
         )
+        // Per-position mean of the value logits over the classes, BEFORE
+        // centering — the value head's shared offset, reported as
+        // `valueLogitMean` for both head styles. Only the W/D/L loss reads
+        // the centered logits; on the scalar head they are left unconsumed.
+        let (valueLogitsCentered, valueLogitMeanPerPos) = HeadLossGraph.centerLogits(
+            network.valueLogits, graph: graph, name: "value_logits"
+        )
+        let valueLogitMeanTensor = graph.mean(
+            of: valueLogitMeanPerPos,
+            axes: [0, 1],
+            name: "value_logit_mean"
+        )
+
         // The value loss depends on the head style. The W/D/L softmax head
         // trains with categorical cross-entropy against a smoothed one-hot
         // on the outcome slot; the scalar tanh head trains with MSE between
@@ -3150,55 +3125,26 @@ final class ChessTrainer: @unchecked Sendable {
         let valueLoss: MPSGraphTensor
         switch network.arch.valueHeadStyle {
         case .wdlSoftmax:
-            // idx = 1 − z. z is [batch, 1] float in {−1, 0, +1} (exact in
-            // FP32), so `1 − z ∈ {2, 1, 0}` is exact; casting to int32
-            // truncates toward zero, which is identity on those values and
-            // maps a `-drawPenalty` rewrite as described above. With the
-            // current drawPenalty range ([0, 1]) the rewritten z stays in
-            // [-1, 0], so `1 − z ∈ [1, 2]` and the truncated index is
-            // always in {1, 2} ⊂ {0, 1, 2} — but clamp to [0, 2] anyway
-            // (same defensive stance as the policy path's `max(|legal|, 1)`
-            // guard): an out-of-range oneHot index would silently produce
-            // an all-zero, gradient-free target row, not an error. oneHot
-            // adds the class axis, so reshape the indices to rank-1 first.
-            let valueSlotOneFloat = graph.constant(1.0, dataType: dtype)
-            let valueSlotIndexFloat = graph.subtraction(valueSlotOneFloat, z, name: "value_slot_index_float")
-            let valueSlotIndexLow = graph.constant(0.0, dataType: dtype)
-            let valueSlotIndexHigh = graph.constant(Double(network.arch.valueHeadClasses - 1), dataType: dtype)
-            let valueSlotIndexClamped = graph.minimum(
-                graph.maximum(valueSlotIndexFloat, valueSlotIndexLow, name: "value_slot_index_lo"),
-                valueSlotIndexHigh,
-                name: "value_slot_index_clamped"
+            // Smoothed one-hot on slot `1 − z`, fp32 and renormalized to sum
+            // to exactly 1: a rounded `1/3` leaves a residue that pushes all
+            // three logits together — the shared offset — every step. See
+            // `HeadLossGraph.valueTarget` for the slot mapping, including a
+            // `drawPenalty`-rewritten z.
+            let valueSmoothedTarget = HeadLossGraph.valueTarget(
+                graph: graph,
+                z: z,
+                epsilon: valueLabelSmoothingEpsilonTensor,
+                classes: network.arch.valueHeadClasses
             )
-            let valueSlotIndexInt = graph.cast(valueSlotIndexClamped, to: .int32, name: "value_slot_index")
-            let valueSlotIndexFlat = graph.reshape(valueSlotIndexInt, shape: [-1], name: "value_slot_index_flat")
-            let valueOneHot = graph.oneHot(
-                withIndicesTensor: valueSlotIndexFlat,
-                depth: 3,
-                axis: 1,
-                dataType: dtype,
-                onValue: 1.0,
-                offValue: 0.0,
-                name: "value_onehot"
-            )
-            // smoothed = (1 − ε)·oneHot + ε·(1/3). At ε = 0 this is
-            // bit-exact the hard one-hot.
-            let valueOneMinusEps = graph.subtraction(
-                valueSlotOneFloat,
-                valueLabelSmoothingEpsilonTensor,
-                name: "value_label_smoothing_one_minus_eps"
-            )
-            let valueUniformConst = graph.constant(1.0 / 3.0, shape: [1, 3], dataType: dtype)
-            let valueSmoothedTarget = graph.addition(
-                graph.multiplication(valueOneHot, valueOneMinusEps, name: "value_smoothed_target_onehot_part"),
-                graph.multiplication(valueUniformConst, valueLabelSmoothingEpsilonTensor, name: "value_smoothed_target_uniform_part"),
-                name: "value_smoothed_target"
-            )
+            // The CE reads the centered logits, for the same reason as the
+            // policy: the shared direction's gradient becomes exactly zero,
+            // so the offset cannot drift. Only this head style: centering
+            // the scalar head's single logit would pin it at 0.
             // softMaxCrossEntropy has an autodiff rule and accepts an
             // arbitrary (here: smoothed) label tensor — same reasoning as
             // the policy CE above.
             let valueCEPerPos = graph.softMaxCrossEntropy(
-                network.valueLogits,
+                valueLogitsCentered,
                 labels: valueSmoothedTarget,
                 axis: 1,
                 reuctionType: .none,
@@ -3208,10 +3154,7 @@ final class ChessTrainer: @unchecked Sendable {
             // ([batch]); reshape to [batch, 1] so the mean lines up with
             // the rest of the scalar reductions.
             let valueCEPerPosReshaped = graph.reshape(valueCEPerPos, shape: [-1, 1], name: "value_ce_per_pos")
-            valueLoss = narrowReductionResult(
-                graph.mean(of: widenForReduction(valueCEPerPosReshaped), axes: [0, 1], name: "value_loss_f32"),
-                "value_loss"
-            )
+            valueLoss = graph.mean(of: valueCEPerPosReshaped, axes: [0, 1], name: "value_loss")
 
         case .scalarTanh:
             // MSE between the tanh value scalar (`network.valueOutput`, which
@@ -3222,10 +3165,7 @@ final class ChessTrainer: @unchecked Sendable {
             // stable across head styles).
             let valueDiff = graph.subtraction(network.valueOutput, z, name: "value_tanh_diff")
             let valueSq = graph.multiplication(valueDiff, valueDiff, name: "value_tanh_sq")
-            valueLoss = narrowReductionResult(
-                graph.mean(of: widenForReduction(valueSq), axes: [0, 1], name: "value_loss_f32"),
-                "value_loss"
-            )
+            valueLoss = graph.mean(of: valueSq, axes: [0, 1], name: "value_loss")
         }
 
         // --- Value-head output diagnostics ---
@@ -3277,7 +3217,7 @@ final class ChessTrainer: @unchecked Sendable {
             // would duplicate-key the dictionary and trap on every stats step.
             // Three separate multiplication ops (real tensor × 0) are guaranteed
             // distinct tensor objects that all evaluate to 0.
-            let zeroScale = graph.constant(0.0, dataType: dtype)
+            let zeroScale = graph.constant(0.0, dataType: lossDType)
             valueProbWin = graph.multiplication(valueMean, zeroScale, name: "value_prob_win_inactive")
             valueProbDraw = graph.multiplication(valueAbsMean, zeroScale, name: "value_prob_draw_inactive")
             valueProbLoss = graph.multiplication(valueMean, zeroScale, name: "value_prob_loss_inactive")
@@ -3333,7 +3273,8 @@ final class ChessTrainer: @unchecked Sendable {
             name: "policy_softmax_legal"
         )
         // The whole log-path of the entropy (the `+ε` clamp, the `log`, and
-        // the `p·log p` product) runs in fp32, not the compute dtype. The
+        // the `p·log p` product) runs in fp32 — the loss path's dtype, since
+        // the policy logits come out of the head's fp32 tail. The
         // clamp is ε = 1e-7, but fp16's smallest *normal* is 2⁻¹⁴ ≈ 6.1e-5,
         // so in fp16 the constant 1e-7 is a denormal — and MPS flushes fp16
         // denormals to zero, which silently voids the clamp. A masked
@@ -3345,10 +3286,8 @@ final class ChessTrainer: @unchecked Sendable {
         // min normal ≈ 1.2e-38) so the clamp does its job. bf16 was never
         // broken here — its exponent range matches fp32, so 1e-7 was always
         // representable — but it computes the per-element log-path more
-        // accurately in fp32 too, at negligible cost. `cast` carries an
-        // autograd rule, so the entropy regularizer's gradient path is
-        // unaffected. (`widenForReduction` is identity under fp32.)
-        let softmaxLegalForLog = widenForReduction(softmaxLegal)
+        // accurately in fp32 too.
+        let softmaxLegalForLog = softmaxLegal
         let logEpsConst = graph.constant(1e-7, dataType: .float32)
         let softmaxClampedLegal = graph.addition(
             softmaxLegalForLog,
@@ -3364,11 +3303,9 @@ final class ChessTrainer: @unchecked Sendable {
             logSoftmaxLegal,
             name: "p_log_p_legal"
         )
-        // `pLogPLegal` is already fp32; reduce the per-position entropy (a
-        // sum over 4864 p·log p terms) and batch mean in fp32, then narrow
-        // the final scalar back to `dtype` so it rejoins the graph (it feeds
-        // `total_loss` via the entropy regularizer and is read back as
-        // `pEnt`).
+        // `pLogPLegal` is fp32; reduce the per-position entropy (a sum over
+        // every p·log p term) and batch mean in fp32. The scalar feeds
+        // `total_loss` via the entropy regularizer and is read back as `pEnt`.
         let negEntropyPerPos = graph.reductionSum(
             with: pLogPLegal,
             axis: 1,
@@ -3378,13 +3315,10 @@ final class ChessTrainer: @unchecked Sendable {
             with: negEntropyPerPos,
             name: "entropy_per_pos_f32"
         )
-        let policyEntropy = narrowReductionResult(
-            graph.mean(
-                of: entropyPerPos,
-                axes: [0, 1],
-                name: "policy_entropy_f32"
-            ),
-            "policy_entropy"
+        let policyEntropy = graph.mean(
+            of: entropyPerPos,
+            axes: [0, 1],
+            name: "policy_entropy"
         )
 
         // --- Illegal mass penalty ---
@@ -3392,31 +3326,29 @@ final class ChessTrainer: @unchecked Sendable {
         // Directly penalizes probability mass that leaks past the mask.
         // Unlike the entropy bonus, this has a stable attractor at
         // 100% legal mass. Minimizing total loss minimizes this term.
+        // Over the centered logits: the same distribution as the raw ones,
+        // with the shared direction's gradient removed.
         let unmaskedSoftmax = graph.softMax(
-            with: network.policyOutput,
+            with: policyLogitsCentered,
             axis: 1,
             name: "policy_softmax_unmasked"
         )
-        // fp32-accumulate the per-position illegal-mass sum (over 4864
-        // classes) and the batch mean; this term joins `total_loss` and
-        // is the `[STATS]` illegal-mass signal, so its tail must survive
-        // the bf16 narrowing. Narrow the final scalar back to `dtype`.
+        // The per-position illegal-mass sum and the batch mean accumulate in
+        // fp32 (the loss path's dtype); this term joins `total_loss` and is
+        // the `[STATS]` illegal-mass signal, so its tail must survive.
         let illegalMassPerPos = graph.reductionSum(
-            with: widenForReduction(graph.multiplication(
+            with: graph.multiplication(
                 unmaskedSoftmax,
                 illegalMask,
                 name: "policy_illegal_mass_per_pos_masked"
-            )),
-            axis: 1,
-            name: "policy_illegal_mass_per_pos_f32"
-        )
-        let illegalMassPenalty = narrowReductionResult(
-            graph.mean(
-                of: illegalMassPerPos,
-                axes: [0, 1],
-                name: "illegal_mass_penalty_f32"
             ),
-            "illegal_mass_penalty"
+            axis: 1,
+            name: "policy_illegal_mass_per_pos"
+        )
+        let illegalMassPenalty = graph.mean(
+            of: illegalMassPerPos,
+            axes: [0, 1],
+            name: "illegal_mass_penalty"
         )
 
         // --- Policy non-negligible count (diagnostic) ---
@@ -3428,7 +3360,7 @@ final class ChessTrainer: @unchecked Sendable {
         // diagnostic-only and not in totalLoss.
         let nonNegThreshold = graph.constant(
             1.0 / Double(ChessNetwork.policySize),
-            dataType: dtype
+            dataType: lossDType
         )
         // Legal-cell count: cells whose MASKED softmax is above
         // 1/policySize. The masked softmax is renormalized over legal
@@ -3442,7 +3374,7 @@ final class ChessTrainer: @unchecked Sendable {
         )
         let aboveFloat = graph.cast(
             aboveThreshold,
-            to: dtype,
+            to: lossDType,
             name: "policy_above_float"
         )
         let countPerPos = graph.reductionSum(
@@ -3469,7 +3401,7 @@ final class ChessTrainer: @unchecked Sendable {
         )
         let unmaskedAboveFloat = graph.cast(
             unmaskedAboveThreshold,
-            to: dtype,
+            to: lossDType,
             name: "policy_above_float_unmasked"
         )
         // Multiply by the illegal mask (per-position vector with 1.0
@@ -3499,7 +3431,9 @@ final class ChessTrainer: @unchecked Sendable {
         // one-hot, so a direct measurement of the largest logit
         // magnitude complements `policyEntropy`. Diagnostic only —
         // not on the totalLoss autograd path, so the lack of a
-        // gradient for `reductionMaximum` is fine.
+        // gradient for `reductionMaximum` is fine. Reads the head's raw
+        // output, not the loss's centered copy, so it keeps reporting the
+        // magnitudes the network actually emits.
         let policyLogitAbs = graph.absolute(
             with: network.policyOutput,
             name: "policy_logit_abs"
@@ -3562,7 +3496,7 @@ final class ChessTrainer: @unchecked Sendable {
         // of the REINFORCE weight for the diagnostic, not a post-
         // centering reclassification). Shape [batch, 1], same as
         // `advantage` and `playedProbPerPos`.
-        let zeroConstPlayedProb = graph.constant(0.0, dataType: dtype)
+        let zeroConstPlayedProb = graph.constant(0.0, dataType: lossDType)
         let playedPosMaskBool = graph.greaterThan(
             advantage,
             zeroConstPlayedProb,
@@ -3570,7 +3504,7 @@ final class ChessTrainer: @unchecked Sendable {
         )
         let playedPosMask = graph.cast(
             playedPosMaskBool,
-            to: dtype,
+            to: lossDType,
             name: "played_prob_pos_mask"
         )
         let playedNegMaskBool = graph.lessThan(
@@ -3580,7 +3514,7 @@ final class ChessTrainer: @unchecked Sendable {
         )
         let playedNegMask = graph.cast(
             playedNegMaskBool,
-            to: dtype,
+            to: lossDType,
             name: "played_prob_neg_mask"
         )
         // Conditional mean = E[p(a*) · 1[A>0]] / E[1[A>0]]. Using batch
@@ -3673,7 +3607,7 @@ final class ChessTrainer: @unchecked Sendable {
         // Clamp to zero before sqrt — E[A²] − E[A]² is nonnegative
         // in exact arithmetic but can go slightly negative under
         // float rounding when the batch is extremely homogeneous.
-        let zeroConst = graph.constant(0.0, dataType: dtype)
+        let zeroConst = graph.constant(0.0, dataType: lossDType)
         let advantageVarClamped = graph.maximum(
             advantageVar,
             zeroConst,
@@ -3701,7 +3635,7 @@ final class ChessTrainer: @unchecked Sendable {
         )
         let advantageGreaterZeroFloat = graph.cast(
             advantageGreaterZero,
-            to: dtype,
+            to: lossDType,
             name: "advantage_pos_mask_float"
         )
         let advantageFracPosTensor = graph.mean(
@@ -3715,7 +3649,7 @@ final class ChessTrainer: @unchecked Sendable {
         // where the fresh baseline already predicts z closely are
         // "well-learned" and shouldn't update much.
         let advantageAbs = graph.absolute(with: advantage, name: "advantage_abs")
-        let smallThreshold = graph.constant(0.05, dataType: dtype)
+        let smallThreshold = graph.constant(0.05, dataType: lossDType)
         let advantageSmallMask = graph.lessThan(
             advantageAbs,
             smallThreshold,
@@ -3723,7 +3657,7 @@ final class ChessTrainer: @unchecked Sendable {
         )
         let advantageSmallMaskFloat = graph.cast(
             advantageSmallMask,
-            to: dtype,
+            to: lossDType,
             name: "advantage_small_mask_float"
         )
         let advantageFracSmallTensor = graph.mean(
@@ -3755,10 +3689,10 @@ final class ChessTrainer: @unchecked Sendable {
         // the SGD/EMA construction below). Feeding them as bf16 and casting
         // up would only recover the bf16-narrowed value (e.g. lr=1e-3 →
         // 0.0009766); an fp32 placeholder fed the raw `Float` keeps them
-        // exact. Their feed NDArrays are sized fp32 in `init` and
-        // `buildFeeds` writes the raw `Float`. Under `dataType == .float32`
-        // this matches the rest of the graph; the loss-side scalars stay
-        // `dtype` (they shape the bf16 loss, whose gradient is bf16 anyway).
+        // exact. The loss-side scalars (the loss weights, entropy
+        // coefficient, both ε, complement enable) are fp32 too, as the loss
+        // path's dtype. Every scalar feed NDArray is therefore sized fp32 in
+        // `init` and `buildFeeds` writes the raw `Float`.
         let lrTensor = graph.placeholder(
             shape: [1],
             dataType: .float32,
@@ -3766,7 +3700,7 @@ final class ChessTrainer: @unchecked Sendable {
         )
         let entropyCoeffTensor = graph.placeholder(
             shape: [1],
-            dataType: dtype,
+            dataType: lossDType,
             name: "entropy_regularization_coeff"
         )
         let weightDecayTensor = graph.placeholder(
@@ -3781,17 +3715,17 @@ final class ChessTrainer: @unchecked Sendable {
         )
         let policyLossWeightTensor = graph.placeholder(
             shape: [1],
-            dataType: dtype,
+            dataType: lossDType,
             name: "policy_loss_weight"
         )
         let valueLossWeightTensor = graph.placeholder(
             shape: [1],
-            dataType: dtype,
+            dataType: lossDType,
             name: "value_loss_weight"
         )
         let illegalMassWeightTensor = graph.placeholder(
             shape: [1],
-            dataType: dtype,
+            dataType: lossDType,
             name: "illegal_mass_weight"
         )
         // Polyak momentum coefficient μ. μ=0 reduces the velocity term
@@ -3900,19 +3834,12 @@ final class ChessTrainer: @unchecked Sendable {
         // least shape `[1]` after flatten-then-square, and
         // reductionSum over axis 0 gives shape `[1]`. The global
         // accumulator has the same shape.
-        // Narrow back to `dtype` so the norm rejoins the bf16 clip math
-        // (`maximum`/`division` with the bf16 `gradClipMaxNorm`) and the
-        // host readback, which both assume `the net's compute dtype`. The
-        // fp32 accumulation above is what mattered; the final scalar's
-        // bf16 rounding is negligible against a clip threshold.
-        // Keep the fp32 norm for the clip math (the clip scalars are fp32),
-        // and narrow a separate copy to `dtype` only for the host readback
-        // (`readFloats` assumes `the net's compute dtype`).
-        let gradGlobalNormF32 = graph.squareRoot(
+        // fp32, like every reported scalar: it feeds the fp32 clip math
+        // (the clip scalars are fp32) and the fp32 host readback.
+        let gradGlobalNorm = graph.squareRoot(
             with: gradSumOfSquaresTensor,
-            name: "grad_global_norm_f32"
+            name: "grad_global_norm"
         )
-        let gradGlobalNorm = narrowReductionResult(gradGlobalNormF32, "grad_global_norm")
 
         // --- Policy head final-conv weight L2 norm (diagnostic) ---
         //
@@ -3940,8 +3867,7 @@ final class ChessTrainer: @unchecked Sendable {
             name: "policy_weight_flat"
         )
         // fp32-accumulate the sum-of-squares (same bf16-tail rationale as
-        // the gradient norm) and narrow the scalar back to `dtype` for the
-        // host readback.
+        // the gradient norm); the scalar stays fp32 for the host readback.
         let policyWeightSq = graph.square(
             with: widenForReduction(policyWeightFlat),
             name: "policy_weight_sq"
@@ -3951,12 +3877,9 @@ final class ChessTrainer: @unchecked Sendable {
             axis: 0,
             name: "policy_weight_sq_sum"
         )
-        let policyHeadWeightNormTensor = narrowReductionResult(
-            graph.squareRoot(
-                with: policyWeightSqSum,
-                name: "policy_weight_norm_f32"
-            ),
-            "policy_weight_norm"
+        let policyHeadWeightNormTensor = graph.squareRoot(
+            with: policyWeightSqSum,
+            name: "policy_weight_norm"
         )
 
         // --- Gradient clip scale: maxNorm / max(norm, maxNorm) ---
@@ -3970,7 +3893,7 @@ final class ChessTrainer: @unchecked Sendable {
         // fp32 `gradClipMaxNorm` scalar. `clipScale` is therefore fp32 and is
         // applied to the fp32 gradient in the update loop below.
         let clipDenom = graph.maximum(
-            gradGlobalNormF32,
+            gradGlobalNorm,
             gradClipMaxNormTensor,
             name: "grad_clip_denom"
         )
@@ -4265,16 +4188,13 @@ final class ChessTrainer: @unchecked Sendable {
                 "(no trainable variables for velocity-norm)"
             )
         }
-        let velocityGlobalNormTensor = narrowReductionResult(
-            graph.squareRoot(
-                with: velSumOfSquaresTensor,
-                name: "velocity_global_norm_f32"
-            ),
-            "velocity_global_norm"
+        let velocityGlobalNormTensor = graph.squareRoot(
+            with: velSumOfSquaresTensor,
+            name: "velocity_global_norm"
         )
 
         return (
-            movePlayed, zFeed, vBaselineFeed, legalMaskFeed,
+            movePlayed, z, vBaseline, legalMask,
             lrTensor, entropyCoeffTensor, weightDecayTensor, gradClipMaxNormTensor, policyLossWeightTensor,
             valueLossWeightTensor,
             illegalMassWeightTensor,
@@ -4296,6 +4216,7 @@ final class ChessTrainer: @unchecked Sendable {
             advantage,
             policyLossWin, policyLossLoss,
             velocityGlobalNormTensor,
+            policyLogitMeanTensor, valueLogitMeanTensor,
             ops
         )
     }
@@ -5024,7 +4945,9 @@ final class ChessTrainer: @unchecked Sendable {
                 // inner step runner never sees the sample).
                 sampledBatchMeanGameLength: sampledBatchMeanGameLength,
                 sampledBatchDrawFraction: sampledBatchDrawFraction,
-                hasDiagnostics: baseTiming.hasDiagnostics
+                hasDiagnostics: baseTiming.hasDiagnostics,
+                policyLogitMean: baseTiming.policyLogitMean,
+                valueLogitMean: baseTiming.valueLogitMean
             )
         }
     }
@@ -5944,12 +5867,10 @@ final class ChessTrainer: @unchecked Sendable {
             lr = baseLR
         }
         lr *= warmupMul
-        // Each scalar hyperparameter ND array is declared at
-        // `the net's compute dtype` (its graph placeholder is `dtype`), so
-        // `writeScalarFeed` narrows the Swift `Float` to bf16 before
-        // `writeBytes` on a narrow dtype, or writes the raw `Float` on
-        // `.float32`. A raw `writeBytes(&lr, …)` of a 4-byte Float into
-        // a 2-byte bf16 ND array would otherwise byte-mismatch.
+        // Every scalar hyperparameter ND array is fp32 (its graph
+        // placeholder is fp32), so `writeScalarFeed` writes the raw `Float`.
+        // It still branches on the array's own dtype, so a narrow array could
+        // never be handed 4-byte Float bytes.
         writeScalarFeed(lrNDArray, value: lr)
         writeScalarFeed(entropyCoeffNDArray, value: entropyRegularizationCoeff)
         writeScalarFeed(weightDecayNDArray, value: weightDecayC)
@@ -5978,10 +5899,11 @@ final class ChessTrainer: @unchecked Sendable {
     /// dtype (allocated once per batch size in `feedsForBatch`); it is
     /// `nil` on `.float32`.
     /// Branches on the **ND array's own** dtype, not `the net's compute dtype`.
-    /// All four real-valued feeds (board, z, vBaseline, legalMask) are now
-    /// fp32 — each feeds an fp32 placeholder narrowed to the compute dtype by
-    /// an in-graph `cast` — so on the bf16 build every call takes the fp32
-    /// raw-passthrough branch and `staging` is `nil`. The bf16 staging branch
+    /// All four real-valued feeds (board, z, vBaseline, legalMask) are fp32 —
+    /// the board narrows to the compute dtype by an in-graph `cast`, and the
+    /// other three are consumed in fp32 by the loss path — so on the bf16
+    /// build every call takes the fp32 raw-passthrough branch and `staging`
+    /// is `nil`. The bf16 staging branch
     /// is retained (general against a future narrow-dtype feed) but is
     /// currently unexercised. Same dtype-of-the-array discipline as
     /// `writeScalarFeed`.
@@ -6025,17 +5947,14 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
-    /// Write a single Float32 scalar into a 1-element ND array whose
-    /// storage is `the net's compute dtype`. On `.float32` the raw `Float`
-    /// bytes are written directly; on bf16 the value is narrowed to a
-    /// single `UInt16` on the stack and that is written. No reusable
-    /// staging is needed — one element fits in a local.
+    /// Write a single Float32 scalar into a 1-element ND array. On an fp32
+    /// array the raw `Float` bytes are written directly; on a narrow array
+    /// the value is narrowed to a single `UInt16` on the stack and that is
+    /// written. No reusable staging is needed — one element fits in a local.
     private func writeScalarFeed(_ ndArray: MPSNDArray, value: Float) {
         // Branch on the ND array's *own* dtype, not the static network
-        // dtype: the four optimizer-update scalars (lr / weight decay /
-        // grad-clip / momentum) are fp32 arrays even under bf16 (they feed
-        // the fp32 master update — see buildTrainingOps), so they must get
-        // the raw 4-byte `Float`; the loss-side scalars are `dataType`.
+        // dtype. Every scalar feed is fp32 today (see buildTrainingOps), so
+        // every call takes the raw 4-byte `Float` branch.
         switch ndArray.dataType {
         case .float32:
             var v = value
@@ -6066,8 +5985,7 @@ final class ChessTrainer: @unchecked Sendable {
         // `inputPlaceholder`, which narrows to the compute dtype on the GPU
         // (`board_input_cast`). So the board ND is Float32 regardless of the
         // network dtype, and its host write is a raw passthrough — no bf16
-        // staging (unlike z / vBaseline / legalMask below, whose placeholders
-        // are the compute dtype).
+        // staging, like z / vBaseline / legalMask below.
         let boardDesc = MPSNDArrayDescriptor(
             dataType: .float32,
             shape: [
@@ -6095,9 +6013,8 @@ final class ChessTrainer: @unchecked Sendable {
         let moveTD = MPSGraphTensorData(moveND)
 
         // z / vBaseline / legalMask ND arrays are fp32, like the board:
-        // their graph placeholders are now declared `dataType: .float32`
-        // and narrowed to the compute dtype on the GPU by an in-graph
-        // `cast` (see `buildTrainingOps`). So the ND storage is Float32
+        // their graph placeholders are fp32 and the loss path consumes them
+        // in fp32 (see `buildTrainingOps`). So the ND storage is Float32
         // regardless of the network dtype, and the host write is a raw
         // Float32 passthrough — no per-batch-size bf16 staging.
         let zDesc = MPSNDArrayDescriptor(
@@ -6267,8 +6184,14 @@ final class ChessTrainer: @unchecked Sendable {
         )
 
         // fp32 throughout: this is a difference of logs of small numbers, and
-        // the whole point of the metric is resolving small moves.
-        let current32 = graph.cast(policySoftmaxLegalTensor, to: .float32, name: nil)
+        // the whole point of the metric is resolving small moves. The legal
+        // softmax is already fp32 (the loss path's dtype); the precondition
+        // pins that, since the stash variable is fp32.
+        precondition(
+            policySoftmaxLegalTensor.dataType == .float32,
+            "klProbeGraph: legal softmax is \(policySoftmaxLegalTensor.dataType), expected fp32"
+        )
+        let current32 = policySoftmaxLegalTensor
         let stashAssign = graph.assign(previousPolicy, tensor: current32, name: "kl_stash_\(batchSize)")
 
         let eps = graph.constant(1e-7, dataType: .float32)
@@ -6517,7 +6440,8 @@ final class ChessTrainer: @unchecked Sendable {
             advantageFracPosTensor, advantageFracSmallTensor,
             advantageRawTensor,
             policyLossWinTensor, policyLossLossTensor,
-            velocityGlobalNormTensor
+            velocityGlobalNormTensor,
+            policyLogitMeanTensor, valueLogitMeanTensor
         ]
         let targets = includeDiagnostics ? leanTargets + diagnosticTargets : leanTargets
         // Decided once, here, because the executable variant and the probe
@@ -6704,36 +6628,32 @@ final class ChessTrainer: @unchecked Sendable {
         else {
             throw ChessTrainerError.lossOutputMissing
         }
-        let dtype = ChessNetwork.mpsDataType(for: arch)
-        ChessNetwork.readFloats(
+        // Every scalar the training graph reports is fp32 (the loss path runs
+        // in the heads' fp32 tail dtype), so each is a raw fp32 read.
+        ChessNetwork.readFloatsFP32(
             from: totalData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotTotal),
-            count: 1,
-            dataType: dtype
+            count: 1
         )
-        ChessNetwork.readFloats(
+        ChessNetwork.readFloatsFP32(
             from: policyData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicy),
-            count: 1,
-            dataType: dtype
+            count: 1
         )
-        ChessNetwork.readFloats(
+        ChessNetwork.readFloatsFP32(
             from: valueData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValue),
-            count: 1,
-            dataType: dtype
+            count: 1
         )
-        ChessNetwork.readFloats(
+        ChessNetwork.readFloatsFP32(
             from: illegalPenaltyData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotIllegalMassPenalty),
-            count: 1,
-            dataType: dtype
+            count: 1
         )
-        ChessNetwork.readFloats(
+        ChessNetwork.readFloatsFP32(
             from: gradNormData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotGradNorm),
-            count: 1,
-            dataType: dtype
+            count: 1
         )
 
         // Diagnostic outputs are requested only on stats steps, so their
@@ -6764,32 +6684,36 @@ final class ChessTrainer: @unchecked Sendable {
                 let advRawData = results[advantageRawTensor],
                 let policyLossWinData = results[policyLossWinTensor],
                 let policyLossLossData = results[policyLossLossTensor],
-                let velocityNormData = results[velocityGlobalNormTensor]
+                let velocityNormData = results[velocityGlobalNormTensor],
+                let policyLogitMeanData = results[policyLogitMeanTensor],
+                let valueLogitMeanData = results[valueLogitMeanTensor]
             else {
                 throw ChessTrainerError.lossOutputMissing
             }
-            ChessNetwork.readFloats(from: entropyData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotEntropy), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: nonNegData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNeg), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: nonNegIllegalData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNegIllegal), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: valueMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueMean), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: valueAbsMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueAbsMean), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: valueProbWinData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbWin), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: valueProbDrawData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbDraw), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: valueProbLossData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbLoss), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: policyHeadWNormData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyHeadWNorm), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: pLogitAbsMaxData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPLogitAbsMax), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: playedMoveProbData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProb), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: playedMoveProbPosAdvData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProbPosAdv), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: playedMoveProbNegAdvData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProbNegAdv), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: advMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMean), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: advStdData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvStd), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: advMinData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMin), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: advMaxData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMax), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: advFracPosData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvFracPos), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: advFracSmallData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvFracSmall), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: policyLossWinData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLossWin), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: policyLossLossData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLossLoss), count: 1, dataType: dtype)
-            ChessNetwork.readFloats(from: velocityNormData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotVelocityNorm), count: 1, dataType: dtype)
+            ChessNetwork.readFloatsFP32(from: entropyData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotEntropy), count: 1)
+            ChessNetwork.readFloatsFP32(from: nonNegData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNeg), count: 1)
+            ChessNetwork.readFloatsFP32(from: nonNegIllegalData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNegIllegal), count: 1)
+            ChessNetwork.readFloatsFP32(from: valueMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueMean), count: 1)
+            ChessNetwork.readFloatsFP32(from: valueAbsMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueAbsMean), count: 1)
+            ChessNetwork.readFloatsFP32(from: valueProbWinData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbWin), count: 1)
+            ChessNetwork.readFloatsFP32(from: valueProbDrawData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbDraw), count: 1)
+            ChessNetwork.readFloatsFP32(from: valueProbLossData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbLoss), count: 1)
+            ChessNetwork.readFloatsFP32(from: policyHeadWNormData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyHeadWNorm), count: 1)
+            ChessNetwork.readFloatsFP32(from: pLogitAbsMaxData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPLogitAbsMax), count: 1)
+            ChessNetwork.readFloatsFP32(from: playedMoveProbData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProb), count: 1)
+            ChessNetwork.readFloatsFP32(from: playedMoveProbPosAdvData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProbPosAdv), count: 1)
+            ChessNetwork.readFloatsFP32(from: playedMoveProbNegAdvData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProbNegAdv), count: 1)
+            ChessNetwork.readFloatsFP32(from: advMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMean), count: 1)
+            ChessNetwork.readFloatsFP32(from: advStdData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvStd), count: 1)
+            ChessNetwork.readFloatsFP32(from: advMinData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMin), count: 1)
+            ChessNetwork.readFloatsFP32(from: advMaxData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMax), count: 1)
+            ChessNetwork.readFloatsFP32(from: advFracPosData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvFracPos), count: 1)
+            ChessNetwork.readFloatsFP32(from: advFracSmallData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvFracSmall), count: 1)
+            ChessNetwork.readFloatsFP32(from: policyLossWinData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLossWin), count: 1)
+            ChessNetwork.readFloatsFP32(from: policyLossLossData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLossLoss), count: 1)
+            ChessNetwork.readFloatsFP32(from: velocityNormData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotVelocityNorm), count: 1)
+            ChessNetwork.readFloatsFP32(from: policyLogitMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLogitMean), count: 1)
+            ChessNetwork.readFloatsFP32(from: valueLogitMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueLogitMean), count: 1)
             // Raw per-position advantage — batch-sized vector. Read into a
             // fresh [Float] since the size depends on the runtime batch.
             let advRawBatchSize: Int = advRawData.shape.reduce(1) { acc, dim in
@@ -6799,7 +6723,7 @@ final class ChessTrainer: @unchecked Sendable {
             if advRawBatchSize > 0 {
                 advRawValues.withUnsafeMutableBufferPointer { buf in
                     if let base = buf.baseAddress {
-                        ChessNetwork.readFloats(from: advRawData, into: base, count: advRawBatchSize, dataType: dtype)
+                        ChessNetwork.readFloatsFP32(from: advRawData, into: base, count: advRawBatchSize)
                     }
                 }
             }
@@ -6833,6 +6757,8 @@ final class ChessTrainer: @unchecked Sendable {
         let policyLossWinBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotPolicyLossWin] : Float.nan
         let policyLossLossBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotPolicyLossLoss] : Float.nan
         let velocityNormBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotVelocityNorm] : Float.nan
+        let policyLogitMeanBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotPolicyLogitMean] : Float.nan
+        let valueLogitMeanBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotValueLogitMean] : Float.nan
         let readbackMs = (CFAbsoluteTimeGetCurrent() - readbackStart) * 1000
 
         // Health check: any NaN/Inf in the headline loss or grad scalars means
@@ -7066,7 +6992,9 @@ final class ChessTrainer: @unchecked Sendable {
             // skips non-finite values).
             sampledBatchMeanGameLength: .nan,
             sampledBatchDrawFraction: .nan,
-            hasDiagnostics: includeDiagnostics
+            hasDiagnostics: includeDiagnostics,
+            policyLogitMean: policyLogitMeanBufValue,
+            valueLogitMean: valueLogitMeanBufValue
         )
         }  // autoreleasepool
     }

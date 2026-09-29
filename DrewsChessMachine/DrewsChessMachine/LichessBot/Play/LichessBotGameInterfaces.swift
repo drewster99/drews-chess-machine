@@ -30,6 +30,13 @@ struct LichessBotGenerationInfo: Sendable, Equatable, Codable {
     let architectureSummary: String
     let filePath: String?
     let fileSHA256: String?
+    /// For a file source: whether loading recentered the file's value head
+    /// (see `ValueHeadRecentering`), in which case the weights played differ
+    /// from the bytes `fileSHA256` names, with the same softmax output. Nil
+    /// for in-memory sources, which load no file, and in records written
+    /// before this field existed. The default keeps memberwise construction
+    /// that predates it compiling; the production builder always passes it.
+    var valueHeadRecenteredOnLoad: Bool? = nil
 }
 
 /// Something that chooses moves: a model generation in production, a
