@@ -167,7 +167,7 @@ final class LichessBotGameSessionFaultTests: XCTestCase {
         pacing: SyncBox<LichessBotMovePacingSnapshot> = SyncBox(LichessBotMovePacingSnapshot()),
         configure: (inout LichessBotSettings) -> Void = { _ in }
     ) -> Harness {
-        var settings = LichessBotSettings()
+        var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
         settings.chat.goodbyeEnabled = false
         configure(&settings)

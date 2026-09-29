@@ -160,7 +160,7 @@ final class LichessBotSessionManagerTests: XCTestCase {
         gameServer: LichessBotFakeGameServer? = nil,
         configure: (inout LichessBotSettings) -> Void = { _ in }
     ) throws -> Harness {
-        var settings = LichessBotSettings()
+        var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
         configure(&settings)
         let frozen = settings
@@ -254,7 +254,7 @@ final class LichessBotSessionManagerTests: XCTestCase {
     /// Past the per-minute budget, challenges are left unanswered rather
     /// than spending requests (plan §5.3).
     func testChallengeResponseBudget() async throws {
-        let budget = LichessBotChallengeSettings().challengeResponseBudgetPerMinute
+        let budget = LichessBotChallengeSettings.testBaseline().challengeResponseBudgetPerMinute
         let lines = (0...budget).map { challengeLine(id: "c\($0)", variant: "chess960") }
         let h = try makeHarness(script: [.open(lines: lines)])
         let run = Task { await h.manager.run() }

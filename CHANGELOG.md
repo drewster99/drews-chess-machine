@@ -9,6 +9,12 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-29 CDT — Recheck cleanup; Lichess bot tests use explicit settings (pending commit)
+
+- Tests: a new `LichessBotTestSettings.swift` gives each Lichess bot settings section a `testBaseline()` with explicit values (blitz/rapid only, three to thirty minute clocks, two concurrent games with none reserved, champion model source with no file, matchmaking off and casual). Every test that relied on the shipped defaults now builds from these, since `c5542b8` made the defaults the owner's own configuration (all speeds, a file model source, matchmaking on). Tests that pin the shipped defaults themselves still use `LichessBotSettings()`.
+- Challenge-queue controller tests set the reserved-human slots, decline cool-down, matchmaking `rated` and `enabled` explicitly where they depend on them; the rating-window test again asserts the explicit absolute lower bound.
+- Fixed the session-file doc comments for `resolvedLRMomentumCycle` / `resolvedLRMomentumCycleEnvelope` (the envelope one had been inserted inside the other's comment), dropped a hard-coded count from a resume comment, and corrected `LRMomentumCycle.disabled`'s doc, which claimed to mirror parameter defaults it no longer matches.
+
 ## 2026-09-29 CDT — Training: decaying LR cycle envelope; momentum can follow the LR cycle (`0a4792d`)
 
 **Defaults changed; no parameters renamed.** Existing saved values in UserDefaults are kept, so the new defaults only apply where nothing was saved.

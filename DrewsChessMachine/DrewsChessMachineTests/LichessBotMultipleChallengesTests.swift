@@ -17,7 +17,7 @@ final class LichessBotMultipleChallengesTests: XCTestCase {
     func testEachPendingChallengeResolvesIndependently() async throws {
         let events = SyncBox<[LichessBotManagerEvent]>([])
         let time = LichessBotManualTime()
-        var settings = LichessBotSettings()
+        var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
         let frozen = settings
         let account = LichessBotFakeAccountAPI(script: [.open(lines: [])])
@@ -63,7 +63,7 @@ final class LichessBotMultipleChallengesTests: XCTestCase {
     func testPendingOutgoingChallengesCountTowardTheLimit() async throws {
         let time = LichessBotManualTime()
         let events = SyncBox<[LichessBotManagerEvent]>([])
-        var settings = LichessBotSettings()
+        var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
         settings.challenge.maxConcurrentGames = 1
         let frozen = settings

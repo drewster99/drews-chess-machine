@@ -500,7 +500,7 @@ final class LichessBotGameSessionTests: XCTestCase {
         source: LichessBotScriptedMoveSource = LichessBotScriptedMoveSource(),
         configure: (inout LichessBotSettings) -> Void = { _ in }
     ) -> Harness {
-        var settings = LichessBotSettings()
+        var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = true
         settings.chat.goodbyeEnabled = false
         configure(&settings)

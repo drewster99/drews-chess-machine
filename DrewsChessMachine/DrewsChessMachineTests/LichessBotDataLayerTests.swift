@@ -343,7 +343,7 @@ final class LichessBotDataLayerTests: XCTestCase {
             onGameFinished: { gameID in finishedGames.modify { $0.append(gameID) } }
         )
         let recorder = LichessBotRecordingGameObserver()
-        var settings = LichessBotSettings()
+        var settings = LichessBotSettings.testBaseline()
         settings.play.maxTakebacksAcceptedPerGame = 1
         let frozen = settings
         let source = LichessBotScriptedMoveSource()
@@ -412,7 +412,7 @@ final class LichessBotDataLayerTests: XCTestCase {
             api: api,
             store: makeStore(),
             time: time,
-            settingsProvider: { LichessBotSettings() },
+            settingsProvider: { LichessBotSettings.testBaseline() },
             isGameActive: { active.contains($0) },
             onEvent: { event in events.modify { $0.append(event) } }
         )

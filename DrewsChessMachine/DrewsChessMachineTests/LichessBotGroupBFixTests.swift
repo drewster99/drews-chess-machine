@@ -59,7 +59,7 @@ final class LichessBotGroupBFixTests: XCTestCase {
     }
 
     private func makeHarness(provider: any LichessBotModelProvider, configure: (inout LichessBotSettings) -> Void) throws -> Harness {
-        var settings = LichessBotSettings()
+        var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
         configure(&settings)
         let frozen = settings

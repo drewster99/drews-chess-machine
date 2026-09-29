@@ -201,7 +201,7 @@ final class LichessBotAPIHardeningTests: XCTestCase {
     // MARK: - Settings and errors
 
     func testBreakerWindowMustOutlastTheMinimumCooldown() {
-        var settings = LichessBotSettings()
+        var settings = LichessBotSettings.testBaseline()
         settings.connection.rateLimitBreakerWindowMinutes = Int(LichessBotRateLimit.minimumCooldown.components.seconds / 60)
         XCTAssertEqual(settings.validationProblems().count, 1)
         settings.connection.rateLimitBreakerWindowMinutes += 1

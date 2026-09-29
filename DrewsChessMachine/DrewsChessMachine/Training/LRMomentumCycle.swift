@@ -115,8 +115,11 @@ struct LRMomentumCycle: Sendable, Equatable, Codable {
         case momentumEnabled, momentumPeriodSteps, momentumCount, momentumMin, momentumMax, momentumInvert
     }
 
-    /// The all-off configuration. Endpoint defaults mirror the parameter
-    /// defaults so a freshly-enabled-but-unedited cycle is sane.
+    /// The all-off configuration: the trainer's value before a session pushes
+    /// the configured cycle onto it. Both channels are off, so the endpoint
+    /// values are inert. They are a fixed, sane set (the unit tests build on
+    /// them) and deliberately do not track the parameter defaults, which live
+    /// only on the `@TrainingParameter` declarations.
     static let disabled = LRMomentumCycle(
         lrEnabled: false,
         lrPeriodSteps: 2000,

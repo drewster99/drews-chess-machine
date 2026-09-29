@@ -152,7 +152,7 @@ final class LichessBotChallengeQueueControllerTests: XCTestCase {
         let suite = "LichessBotChallengeQueueControllerTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotChallengeQueueControllerTests-\(UUID().uuidString)", isDirectory: true)
-        var settings = LichessBotSettings()
+        var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
         settings.connection.preventSleepWhileOnline = false
         // No automatic withdrawal: the tests decide when challenges end.
@@ -232,6 +232,7 @@ final class LichessBotChallengeQueueControllerTests: XCTestCase {
         let lichess = LichessBotFakeLichess()
         let controller = try await makeOnlineController(lichess: lichess, modelProvider: try await LichessBotFakeModelProvider.randomChampion()) { settings in
             settings.challenge.maxConcurrentGames = 1
+            settings.challenge.gamesReservedForHumans = 0
         }
         try controller.enqueueChallenges(to: players("bob", "carol"), request: request)
         try await waitUntil("bob's challenge is pending") { controller.pendingChallenges.map(\.username) == ["bob"] }
@@ -256,6 +257,8 @@ final class LichessBotChallengeQueueControllerTests: XCTestCase {
         let lichess = LichessBotFakeLichess()
         let controller = try await makeOnlineController(lichess: lichess) { settings in
             settings.challenge.maxConcurrentGames = 1
+            settings.challenge.gamesReservedForHumans = 0
+            settings.matchmaking.declineCooldownHours = 6
         }
         try controller.enqueueChallenges(to: players("bob", "carol"), request: request)
         try await waitUntil("bob's challenge is pending") { controller.pendingChallenges.map(\.username) == ["bob"] }
@@ -263,7 +266,7 @@ final class LichessBotChallengeQueueControllerTests: XCTestCase {
         lichess.sendEvent(#"{"type":"challengeDeclined","challenge":{"id":"\#(LichessBotFakeLichess.challengeID(for: "bob"))","declineReason":"I'm not accepting challenges at the moment.","declineReasonKey":"later"}}"#)
         try await waitUntil("carol is challenged") { lichess.challengedNames.value == ["bob", "carol"] }
         let cooldownEnds = try XCTUnwrap(controller.playerNotes?.declineCooldownEnds("bob", now: Date()))
-        XCTAssertGreaterThan(cooldownEnds.timeIntervalSinceNow, 5 * 3600, "the default cool-down is hours long")
+        XCTAssertGreaterThan(cooldownEnds.timeIntervalSinceNow, 5 * 3600, "the configured cool-down is hours long")
         XCTAssertNil(controller.playerNotes?.declineCooldownEnds("carol", now: Date()))
     }
 
@@ -273,6 +276,7 @@ final class LichessBotChallengeQueueControllerTests: XCTestCase {
         let lichess = LichessBotFakeLichess()
         let controller = try await makeOnlineController(lichess: lichess) { settings in
             settings.challenge.maxConcurrentGames = 2
+            settings.challenge.gamesReservedForHumans = 0
         }
         try controller.enqueueChallenges(to: players("bob", "carol", "dave"), request: request)
         try await waitUntil("two challenges are pending") { controller.pendingChallenges.count == 2 }
@@ -301,6 +305,9 @@ final class LichessBotChallengeQueueControllerTests: XCTestCase {
             settings.challenge.maxConcurrentGames = 2
             settings.challenge.gamesReservedForHumans = 1
             settings.matchmaking.timeControls = [.blitz5plus3]
+            settings.matchmaking.rated = false
+            // Off, so no automatic pass races the explicit Fill Open Slots.
+            settings.matchmaking.enabled = false
         }
         await controller.fillOpenSlots()
 

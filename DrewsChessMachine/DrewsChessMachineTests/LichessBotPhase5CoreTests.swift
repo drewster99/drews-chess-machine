@@ -147,7 +147,7 @@ final class LichessBotPhase5CoreTests: XCTestCase {
     // MARK: - Manager: outgoing challenges and one game
 
     private func makeManager(script: [LichessBotFakeAccountAPI.Connection], provider: LichessBotFakeModelProvider, server: LichessBotFakeGameServer, events: SyncBox<[LichessBotManagerEvent]>, time: LichessBotManualTime) -> (LichessBotSessionManager, LichessBotFakeAccountAPI) {
-        var settings = LichessBotSettings()
+        var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
         let frozen = settings
         let account = LichessBotFakeAccountAPI(script: script)

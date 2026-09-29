@@ -355,7 +355,7 @@ extension SessionController {
                         "[RESUME-PARAM] record_self_play_games: saved=nil applied=\(TrainingParameters.shared.recordSelfPlayGames) (defaulted)"
                     )
                 }
-                // LR/momentum cycling. The 12 cycling params are written back
+                // LR/momentum cycling. The cycling params are written back
                 // onto the singleton (so UserDefaults + the popover reflect the
                 // resumed config) and the bundled struct is pushed onto the
                 // trainer (the off-main consumer in `buildFeeds`). The cycle's

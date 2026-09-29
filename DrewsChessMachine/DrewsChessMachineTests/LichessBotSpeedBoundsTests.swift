@@ -28,7 +28,7 @@ final class LichessBotSpeedBoundsTests: XCTestCase {
     }
 
     func testClockBoundsRuleOutFasterAndSlowerSpeeds() {
-        var settings = LichessBotChallengeSettings()
+        var settings = LichessBotChallengeSettings.testBaseline()
         settings.allowedSpeeds = [.ultraBullet, .bullet, .blitz, .rapid, .classical]
         settings.minimumInitialSeconds = 180
         settings.maximumInitialSeconds = 1800
@@ -43,7 +43,7 @@ final class LichessBotSpeedBoundsTests: XCTestCase {
     }
 
     func testUncheckedSpeedsAreNeverReported() {
-        var settings = LichessBotChallengeSettings()
+        var settings = LichessBotChallengeSettings.testBaseline()
         settings.allowedSpeeds = [.blitz]
         settings.minimumInitialSeconds = 180
         settings.maximumInitialSeconds = 1800
@@ -51,7 +51,7 @@ final class LichessBotSpeedBoundsTests: XCTestCase {
     }
 
     func testCorrespondenceIsAlwaysRuledOut() {
-        var settings = LichessBotChallengeSettings()
+        var settings = LichessBotChallengeSettings.testBaseline()
         settings.allowedSpeeds = [.blitz, .correspondence]
         XCTAssertEqual(settings.speedsRuledOutByClockBounds, [.correspondence])
     }

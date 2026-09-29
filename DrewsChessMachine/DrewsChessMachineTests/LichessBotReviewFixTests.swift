@@ -9,7 +9,7 @@ final class LichessBotReviewFixTests: XCTestCase {
     // MARK: - Game session
 
     private func makeSession(server: LichessBotFakeGameServer, observer: LichessBotRecordingGameObserver, time: LichessBotManualTime) -> LichessBotGameSession {
-        var settings = LichessBotSettings()
+        var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
         let frozen = settings
         let source = LichessBotScriptedMoveSource()
@@ -110,7 +110,7 @@ final class LichessBotReviewFixTests: XCTestCase {
             slots: LichessBotModelSlots(provider: LichessBotFakeModelProvider.unbuildableChampion(), time: time) { _ in },
             ourAccountID: LichessBotFakeGameServer.botID,
             time: time,
-            settingsProvider: { LichessBotSettings() },
+            settingsProvider: { LichessBotSettings.testBaseline() },
             gameObserver: LichessBotRecordingGameObserver(),
             onEvent: { _ in }
         )
@@ -177,7 +177,7 @@ final class LichessBotReviewFixTests: XCTestCase {
             slots: LichessBotModelSlots(provider: provider, time: time) { _ in },
             ourAccountID: LichessBotFakeGameServer.botID,
             time: time,
-            settingsProvider: { LichessBotSettings() },
+            settingsProvider: { LichessBotSettings.testBaseline() },
             gameObserver: LichessBotRecordingGameObserver(),
             onEvent: { event in events.modify { $0.append(event) } }
         )
@@ -210,7 +210,7 @@ final class LichessBotReviewFixTests: XCTestCase {
             slots: LichessBotModelSlots(provider: LichessBotFakeModelProvider.unbuildableChampion(), time: time) { _ in },
             ourAccountID: LichessBotFakeGameServer.botID,
             time: time,
-            settingsProvider: { LichessBotSettings() },
+            settingsProvider: { LichessBotSettings.testBaseline() },
             gameObserver: LichessBotRecordingGameObserver(),
             onEvent: { event in events.modify { $0.append(event) } }
         )
@@ -244,7 +244,7 @@ final class LichessBotReviewFixTests: XCTestCase {
             slots: LichessBotModelSlots(provider: LichessBotFakeModelProvider.unbuildableChampion(), time: time) { _ in },
             ourAccountID: LichessBotFakeGameServer.botID,
             time: time,
-            settingsProvider: { LichessBotSettings() },
+            settingsProvider: { LichessBotSettings.testBaseline() },
             gameObserver: LichessBotRecordingGameObserver(),
             onEvent: { event in events.modify { $0.append(event) } }
         )

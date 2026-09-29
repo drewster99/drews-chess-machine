@@ -113,15 +113,15 @@ final class LichessBotMatchmakingTests: XCTestCase {
     // MARK: - Rating window
 
     func testTheWindowFollowsDCMsEstablishedRating() {
-        let settings = LichessBotMatchmakingSettings()
+        let settings = LichessBotMatchmakingSettings.testBaseline()
         let perfs = ["blitz": LichessBotPerfRating(games: 80, rating: 1650, rd: 50, prog: 0, prov: nil)]
         let bounds = LichessBotMatchmaking.ratingBounds(settings: settings, ourPerfs: perfs, speed: .blitz)
         XCTAssertEqual(bounds, LichessBotMatchmaking.RatingBounds(minimum: 1350, maximum: 1950, basis: .relative(ourRating: 1650)))
     }
 
     func testTheAbsoluteBoundsApplyWithoutAnEstablishedRating() {
-        let settings = LichessBotMatchmakingSettings()
-        let absolute = LichessBotMatchmaking.RatingBounds(minimum: 0, maximum: 2200, basis: .absolute)
+        let settings = LichessBotMatchmakingSettings.testBaseline()
+        let absolute = LichessBotMatchmaking.RatingBounds(minimum: 1000, maximum: 2200, basis: .absolute)
         XCTAssertEqual(LichessBotMatchmaking.ratingBounds(settings: settings, ourPerfs: nil, speed: .blitz), absolute)
         XCTAssertEqual(LichessBotMatchmaking.ratingBounds(settings: settings, ourPerfs: [:], speed: .rapid), absolute, "no rating at the speed")
         let provisional = ["blitz": LichessBotPerfRating(games: 3, rating: 1500, rd: 300, prog: 0, prov: true)]
@@ -131,7 +131,7 @@ final class LichessBotMatchmakingTests: XCTestCase {
     // MARK: - Picking
 
     private func pickSettings(preferFavorites: Bool = false) -> LichessBotMatchmakingSettings {
-        var settings = LichessBotMatchmakingSettings()
+        var settings = LichessBotMatchmakingSettings.testBaseline()
         settings.timeControls = [.blitz5plus3]
         settings.preferFavorites = preferFavorites
         return settings
@@ -325,20 +325,20 @@ final class LichessBotMatchmakingTests: XCTestCase {
     }
 
     func testInvalidMatchmakingSettingsAreRejected() {
-        var noClock = LichessBotSettings()
+        var noClock = LichessBotSettings.testBaseline()
         noClock.matchmaking.timeControls = []
         XCTAssertFalse(noClock.validationProblems().isEmpty)
-        var reversed = LichessBotSettings()
+        var reversed = LichessBotSettings.testBaseline()
         reversed.matchmaking.minimumRatingOffset = 100
         reversed.matchmaking.maximumRatingOffset = -100
         XCTAssertFalse(reversed.validationProblems().isEmpty)
-        var absolute = LichessBotSettings()
+        var absolute = LichessBotSettings.testBaseline()
         absolute.matchmaking.minimumRatingWithoutOwnRating = 2300
         XCTAssertFalse(absolute.validationProblems().isEmpty)
-        var noCap = LichessBotSettings()
+        var noCap = LichessBotSettings.testBaseline()
         noCap.matchmaking.maxChallengesPerHour = 0
         XCTAssertFalse(noCap.validationProblems().isEmpty)
-        var negativeCooldown = LichessBotSettings()
+        var negativeCooldown = LichessBotSettings.testBaseline()
         negativeCooldown.matchmaking.declineCooldownHours = -1
         XCTAssertFalse(negativeCooldown.validationProblems().isEmpty)
     }

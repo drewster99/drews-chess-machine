@@ -81,6 +81,7 @@ final class LichessBotViewRenderTests: XCTestCase {
                 }
             }
         }
+        try LichessBotSettingsStore.save(LichessBotSettings.testBaseline(), to: defaults)
         return LichessBotController(
             modelProvider: LichessBotFakeModelProvider(snapshot: nil),
             defaults: defaults,

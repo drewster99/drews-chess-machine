@@ -423,11 +423,6 @@ struct SessionCheckpointState: Codable, Equatable {
         saved ?? MaxPliesFromAnyOneGame.definition.intRange?.max ?? 400
     }
 
-    /// Pre-feature behavior: no LR/momentum cycling. On nil the
-    /// caller's current cycle numbers (periods, bounds) are preserved
-    /// so the settings popover keeps the user's values, but both
-    /// enabled flags are forced off — a live cycle must never be
-    /// applied to a session that predates the cycling feature.
     /// Pre-feature behavior: no decay envelope and no momentum following.
     /// On nil the caller's current envelope values are preserved (so the
     /// settings popover keeps them) but the horizon is zeroed and following
@@ -444,6 +439,11 @@ struct SessionCheckpointState: Codable, Equatable {
         return resolved
     }
 
+    /// Pre-feature behavior: no LR/momentum cycling. On nil the
+    /// caller's current cycle numbers (periods, bounds) are preserved
+    /// so the settings popover keeps the user's values, but both
+    /// enabled flags are forced off — a live cycle must never be
+    /// applied to a session that predates the cycling feature.
     static func resolvedLRMomentumCycle(
         saved: LRMomentumCycle?,
         current: LRMomentumCycle

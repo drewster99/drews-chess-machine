@@ -6,7 +6,7 @@ import XCTest
 final class LichessBotMovePacingTests: XCTestCase {
 
     private func makeSession(server: LichessBotFakeGameServer, observer: LichessBotRecordingGameObserver, time: LichessBotManualTime, pacing: SyncBox<LichessBotMovePacingSnapshot>) -> LichessBotGameSession {
-        var settings = LichessBotSettings()
+        var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
         settings.chat.goodbyeEnabled = false
         let frozen = settings

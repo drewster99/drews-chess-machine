@@ -68,10 +68,10 @@ final class LichessBotPolicyTests: XCTestCase {
         )
     }
 
-    private let defaults = LichessBotChallengeSettings()
+    private let baseline = LichessBotChallengeSettings.testBaseline()
 
     private func decide(_ c: LichessBotChallenge, compat: LichessBotCompat? = nil, settings: LichessBotChallengeSettings? = nil, context ctx: LichessBotChallengeContext? = nil) -> LichessBotChallengeDecision {
-        LichessBotChallengePolicy.decide(c, compat: compat, settings: settings ?? defaults, context: ctx ?? context())
+        LichessBotChallengePolicy.decide(c, compat: compat, settings: settings ?? baseline, context: ctx ?? context())
     }
 
     private func reason(_ decision: LichessBotChallengeDecision) -> LichessBotDeclineReason? {
@@ -92,7 +92,7 @@ final class LichessBotPolicyTests: XCTestCase {
     }
 
     func testOverBudgetIsIgnoredNotDeclined() {
-        guard case .ignore = decide(challenge(), context: context(responsesLastMinute: defaults.challengeResponseBudgetPerMinute)) else {
+        guard case .ignore = decide(challenge(), context: context(responsesLastMinute: baseline.challengeResponseBudgetPerMinute)) else {
             return XCTFail("over budget must spend no request")
         }
     }
@@ -127,7 +127,7 @@ final class LichessBotPolicyTests: XCTestCase {
 
     func testRatedAndCasual() {
         XCTAssertEqual(reason(decide(challenge(rated: true))), .casual, "rated is declined by default with the 'casual only' reason")
-        var ratedOnly = defaults
+        var ratedOnly = baseline
         ratedOnly.acceptRated = true
         ratedOnly.acceptCasual = false
         XCTAssertEqual(reason(decide(challenge(rated: false), settings: ratedOnly)), .rated)
@@ -135,38 +135,38 @@ final class LichessBotPolicyTests: XCTestCase {
     }
 
     func testBotsAndHumans() {
-        var noBots = defaults
+        var noBots = baseline
         noBots.acceptBots = false
         XCTAssertEqual(reason(decide(challenge(title: "BOT"), settings: noBots)), .noBot)
-        var onlyBots = defaults
+        var onlyBots = baseline
         onlyBots.acceptHumans = false
         XCTAssertEqual(reason(decide(challenge(), settings: onlyBots)), .onlyBot)
     }
 
     func testOpponentFilters() {
-        var settings = defaults
+        var settings = baseline
         settings.blockedUserIDs = ["alice"]
         XCTAssertEqual(reason(decide(challenge(), settings: settings)), .generic)
-        settings = defaults
+        settings = baseline
         settings.minimumOpponentRating = 1600
         XCTAssertEqual(reason(decide(challenge(rating: 1500), settings: settings)), .generic)
-        settings = defaults
+        settings = baseline
         settings.acceptProvisionalOpponents = false
         XCTAssertEqual(reason(decide(challenge(provisional: true), settings: settings)), .generic)
-        settings = defaults
+        settings = baseline
         settings.acceptRematches = false
         XCTAssertEqual(reason(decide(challenge(rematchOf: "g0"), settings: settings)), .generic)
     }
 
     func testCapacityLimits() {
-        XCTAssertEqual(reason(decide(challenge(), context: context(activeGames: defaults.maxConcurrentGames))), .later)
+        XCTAssertEqual(reason(decide(challenge(), context: context(activeGames: baseline.maxConcurrentGames))), .later)
         XCTAssertEqual(reason(decide(challenge(), context: context(activeGames: 1, activeByOpponent: ["alice": 1]))), .later)
-        XCTAssertEqual(reason(decide(challenge(), context: context(gamesToday: defaults.maxGamesPerDay))), .later)
-        XCTAssertEqual(reason(decide(challenge(), context: context(todayByOpponent: ["alice": defaults.maxGamesPerOpponentPerDay]))), .later)
+        XCTAssertEqual(reason(decide(challenge(), context: context(gamesToday: baseline.maxGamesPerDay))), .later)
+        XCTAssertEqual(reason(decide(challenge(), context: context(todayByOpponent: ["alice": baseline.maxGamesPerOpponentPerDay]))), .later)
     }
 
     func testReservedHumanSlotsTurnAwayBots() {
-        var settings = defaults
+        var settings = baseline
         settings.maxConcurrentGames = 3
         settings.gamesReservedForHumans = 1
         XCTAssertEqual(reason(decide(challenge(title: "BOT"), settings: settings, context: context(activeGames: 2))), .later)
