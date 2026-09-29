@@ -1,3 +1,4 @@
 cum_step,meta_step,segment,elapsed_train_sec,wallclock_iso,ms_per_step,pElo,nll,loss,pLoss,vLoss,legalMass,pIllM,bn1Mean,gNorm,sae2,eff_alpha,pLogit_mean,pLogit_peak,frozen_file,note,wall_sec,games_fed
 1000,1000,0,2179.5,2026-09-29T15:43:52,2439.0,879.16,3.1516,3.9842,3.1014,0.8187,0.9359,0.0641,0.0608,1.776,0.5194,0.4090;0.4127;0.4264,14.873,20.796314239501953,20260929-test_SE_scale+bias-replay-step1000.safetensors,,,
 2000,2000,0,4324.6,2026-09-29T16:19:37,3057.7,1073.88,2.74,3.7844,2.9234,0.8306,0.9696,0.0304,0.0889,0.89,0.5282,0.4115;0.4180;0.4291,15.63,21.38972282409668,20260929-test_SE_scale+bias-replay-step2000.safetensors,,,
+3000,3000,0,6460.0,2026-09-29T16:55:12,2385.2,1160.8,2.5973,3.6957,2.8821,0.7934,0.9798,0.0202,0.105,1.091,0.5399,0.4185;0.4213;0.4327,16.26,23.003694534301758,20260929-test_SE_scale+bias-replay-step3000.safetensors,,,
