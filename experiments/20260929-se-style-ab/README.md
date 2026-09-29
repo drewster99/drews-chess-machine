@@ -22,7 +22,7 @@ comparisons mixed SE style with depth, width, kernel and stem changes.
   Replay-relevant values: weight decay 3e-4; decaying LR cycle — peak 1e-1→1e-4,
   trough 1e-3→1e-6, period 20k steps, decay horizon 1M, starting at the peak;
   momentum follows the LR cycle (0.85→0.90 low, 0.95 high); warmup 1000; grad clip
-  15; batch 4096; replay ratio 0.48.
+  15; batch 4096; replay ratio 0.48; replay buffer 500k positions, training starts at 250k.
 - **Initialization:** each arm is a separately minted fresh net, so the random
   init differs. Past replay seed-to-seed spread (nt8y seed study) was roughly
   7–25 pElo — treat smaller gaps as noise.
@@ -51,19 +51,24 @@ Launch time, build, git hash, ModelIDs and log files: see **Launch record** belo
 
 ## Launch record
 
-Launched 2026-09-29 14:37:46–14:38:02 CDT, all three at once, Release binary built
+Launched 2026-09-29 15:07:27–15:07:43 CDT, all three at once, Release binary built
 14:36:02 from git `7a434ea` (includes the shared trainer-config fix `cbc1894`).
-Startup log confirms the cycle is live in replay (`[REPLAY-CYCLE]`, identical in all
-three), and KL probes run every 100 steps (now honored by replay).
+`[REPLAY-CYCLE]` in each startup log confirms the cycle is live; KL probes every 100 steps.
 
 | arm | ModelID | pid | log |
 |---|---|---|---|
-| scale+bias | `20260929-12-JZOe` | 73435 | `dcm_log_20260929-143746.txt` |
-| attenuate-only | `20260929-13-06yp` | 73456 | `dcm_log_20260929-143754.txt` |
-| none | `20260929-18-D9is` | 73472 | `dcm_log_20260929-143802.txt` |
+| scale+bias | `20260929-12-JZOe` | 77368 | `dcm_log_20260929-150727.txt` |
+| attenuate-only | `20260929-13-06yp` | 77398 | `dcm_log_20260929-150735.txt` |
+| none | `20260929-18-D9is` | 77413 | `dcm_log_20260929-150743.txt` |
 
-Note: replay's cycle phase starts from each segment's step 0 (`phaseOrigin=segment-step-0`),
-so a resumed segment would restart the cycle and decay envelope.
+Known limitation of this binary: replay's cycle phase starts from each segment's step 0,
+so a resume of these runs would restart the cycle and decay envelope (exact resume is
+being fixed separately).
+
+**Aborted second launch (14:37, 3 arms, 1M buffer):** stopped at ~800 steps. Each
+process's physical footprint was ~24 GB (7.18 GB of it the 1M-position buffer) — ~72 GB
+total on a 64 GB Mac with swap nearly full. Relaunched with a 500k buffer (250k prefill).
+Checkpoints and all of the day's logs discarded.
 
 **Aborted first launch (2026-09-29 14:15, 2 arms):** stopped after ~250 steps when
 it was found that the corpus-replay runner never applied the LR/momentum cycle
