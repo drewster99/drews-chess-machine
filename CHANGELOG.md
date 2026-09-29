@@ -9,6 +9,14 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-29 CDT — Lichess bot: outgoing-challenge outcome tracking and challenge credits (pending commit)
+
+- Every outgoing challenge attempt is recorded with one outcome: `accepted`, `declined(reason)` (Lichess's keys: generic, later, tooFast, tooSlow, timeControl, rated, casual, standard, variant, noBot, onlyBot; an unknown or missing key is kept as reported), `canceled` (withdrawn, timed out, expired or withdrawn on going offline), `offline` (nothing posted), or `refused` (the POST was refused, so no challenge exists and no credits were spent: 429, 400 bot-vs-bot daily limit, other 400, other HTTP status; Lichess's text is kept). Only the first answer counts for a challenge.
+- Challenge credits: bot 1, human DCM doesn't follow 5, followed human 0 (from an authorized profile fetch's `following`; if that is missing or the fetch fails, the non-followed cost is counted and an anomaly is logged). Counted over a rolling 24 h against 200 and a rolling minute against 25.
+- The records persist to `LichessBot/challenge-outcomes.json` (same way as `player-notes.json`), loaded at window open and pruned to the last 24 h. Each change writes a `challenge outcome:` line to the protocol log with the credit counts.
+- Overview: a line under matchmaking's status (`credits N/200 today  N/25 min  accepted  declined  refused  acceptance %`), and an "Outgoing challenges, last 24 h" card below Record with an aligned monospaced table by outcome, decline reason and refusal kind, and the latest refusal's text.
+- Tests: new `LichessBotChallengeOutcomeTests` (classifying POST failures, decline keys, credit costs, first-answer resolution, rolling day/minute windows and their edges with a fixed clock, pruning, file round trip).
+
 ## 2026-09-29 CDT — Recheck cleanup; Lichess bot tests use explicit settings (`11241ce`)
 
 - Tests: a new `LichessBotTestSettings.swift` gives each Lichess bot settings section a `testBaseline()` with explicit values (blitz/rapid only, three to thirty minute clocks, two concurrent games with none reserved, champion model source with no file, matchmaking off and casual). Every test that relied on the shipped defaults now builds from these, since `c5542b8` made the defaults the owner's own configuration (all speeds, a file model source, matchmaking on). Tests that pin the shipped defaults themselves still use `LichessBotSettings()`.

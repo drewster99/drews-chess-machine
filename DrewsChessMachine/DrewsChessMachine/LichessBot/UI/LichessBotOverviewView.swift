@@ -12,6 +12,7 @@ struct LichessBotOverviewView: View {
             VStack(alignment: .leading, spacing: 16) {
                 LichessBotControlsCard(controller: controller, onChallenge: { showingChallengeSheet = true })
                 LichessBotRecordCard(controller: controller)
+                LichessBotChallengeOutcomesCard(controller: controller)
                 HStack(alignment: .top, spacing: 16) {
                     LichessBotAccountCard(controller: controller)
                         .frame(maxHeight: .infinity, alignment: .top)
@@ -104,6 +105,7 @@ struct LichessBotControlsCard: View {
                         .help(controller.hasChallengeScope ? "Challenge an online bot or any player" : "The token lacks challenge:write")
                 }
                 LichessBotMatchmakingStatusLine(controller: controller)
+                LichessBotChallengeCreditsLine(controller: controller)
                 ForEach(controller.pendingChallenges, id: \.id) { pending in
                     HStack(spacing: 8) {
                         LichessBotFavoriteStar(controller: controller, userID: pending.username)

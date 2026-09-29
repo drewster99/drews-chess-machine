@@ -118,6 +118,9 @@ struct LichessBotUserSummary: Sendable, Hashable, Codable, Identifiable {
     var patronColor: Int? = nil
     var flair: String? = nil
     var playTime: LichessBotPlayTime? = nil
+    /// Whether the authenticated account follows this player; only an
+    /// authorized `GET /api/user/{username}` reports it.
+    var following: Bool? = nil
 
     var isBot: Bool {
         title == "BOT"

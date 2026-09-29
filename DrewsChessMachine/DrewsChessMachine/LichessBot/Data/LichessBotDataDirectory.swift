@@ -11,6 +11,7 @@ import Foundation
 ///   Protocol/events-YYYYMMDD.jsonl                          protocol event log, one file per UTC day
 ///   index.json                                              derived stats cache
 ///   player-notes.json                                       favorites, bot limit times
+///   challenge-outcomes.json                                 outgoing challenges' outcomes, last 24 h
 ///   bot.lock                                                instance lock
 /// ```
 ///
@@ -29,6 +30,7 @@ struct LichessBotDataDirectory: Sendable, Equatable {
     var indexURL: URL { root.appendingPathComponent("index.json", isDirectory: false) }
     var lockURL: URL { root.appendingPathComponent("bot.lock", isDirectory: false) }
     var playerNotesURL: URL { root.appendingPathComponent("player-notes.json", isDirectory: false) }
+    var challengeOutcomesURL: URL { root.appendingPathComponent("challenge-outcomes.json", isDirectory: false) }
 
     static let journalExtension = "journal.jsonl"
 

@@ -181,6 +181,11 @@ final class LichessBotController {
     private(set) var onlineBotsFetchedAt: Date?
     /// Favorites and bot limit times (plan §7.2); nil until loaded.
     private(set) var playerNotes: LichessBotPlayerNotes?
+    /// Every outgoing challenge attempt of the rolling day and how it
+    /// ended: the single source of the challenge-credit and outcome counts
+    /// on the Overview. Nil until loaded; persisted to
+    /// `challenge-outcomes.json`.
+    private(set) var challengeOutcomeLog: LichessBotChallengeOutcomeLog?
     /// Online and playing flags by lowercased user id, from
     /// `/api/users/status`: the single store every Challenge-sheet tab reads.
     /// An id Lichess didn't answer for (unknown or closed) has no entry.
@@ -935,6 +940,99 @@ final class LichessBotController {
         }
     }
 
+    // MARK: - Challenge outcomes
+
+    /// Load the outgoing-challenge outcome log. A missing file is an empty
+    /// log; an unreadable one raises an alarm and leaves the log unloaded,
+    /// so nothing overwrites the file.
+    func loadChallengeOutcomes() async {
+        let url = dataDirectory.challengeOutcomesURL
+        do {
+            var log = try await fileQueue.run {
+                try LichessBotChallengeOutcomeLog.load(from: url)
+            }
+            log.prune(now: Date())
+            challengeOutcomeLog = log
+        } catch {
+            raiseAlarm("Loading challenge outcomes failed (\(url.lastPathComponent)): \(error.localizedDescription)")
+        }
+    }
+
+    /// Apply `change` to the outcome log, prune it, and save it. Saves are
+    /// enqueued on the serial file queue from the main actor, so they land
+    /// in the order the changes were made.
+    private func updateChallengeOutcomeLog(_ what: String, _ change: (inout LichessBotChallengeOutcomeLog) -> Void) {
+        guard var log = challengeOutcomeLog else {
+            protocolLog.record(.anomaly, "challenge outcome log isn't loaded; not recorded: \(what)")
+            return
+        }
+        let now = Date()
+        change(&log)
+        log.prune(now: now)
+        challengeOutcomeLog = log
+        let summary = log.summary(now: now)
+        protocolLog.record(.challenge, "challenge outcome: \(what)", fields: [
+            "credits_day": "\(summary.creditsLastDay)/\(LichessBotChallengeCredits.perDay)",
+            "credits_minute": "\(summary.creditsLastMinute)/\(LichessBotChallengeCredits.perMinute)",
+        ])
+        let url = dataDirectory.challengeOutcomesURL
+        let snapshot = log
+        fileQueue.enqueue {
+            do {
+                try snapshot.save(to: url)
+            } catch {
+                let text = "Saving challenge outcomes failed (\(url.lastPathComponent)): \(error.localizedDescription)"
+                Task { @MainActor [weak self] in
+                    self?.raiseAlarm(text)
+                }
+            }
+        }
+    }
+
+    /// Resolve a created challenge's record, if it is still pending.
+    private func resolveChallengeOutcome(challengeID: String, _ outcome: LichessBotChallengeOutcome) {
+        guard let log = challengeOutcomeLog,
+              log.records.contains(where: { $0.challengeID == challengeID && $0.outcome == nil }) else { return }
+        updateChallengeOutcomeLog("\(challengeID) \(Self.describe(outcome))") { log in
+            log.resolve(challengeID: challengeID, outcome: outcome, at: Date())
+        }
+    }
+
+    nonisolated static func describe(_ outcome: LichessBotChallengeOutcome) -> String {
+        switch outcome {
+        case .accepted:
+            return "accepted"
+        case .declined(let reason):
+            return "declined (\(reason.keyText))"
+        case .canceled:
+            return "canceled"
+        case .offline:
+            return "offline"
+        case .refused(let refusal):
+            return "refused: \(refusal.kind.label), HTTP \(refusal.httpStatus)\(refusal.text.map { ": \($0)" } ?? "")"
+        }
+    }
+
+    /// Who `username` is for credit costs: a bot by its title; for a
+    /// human, whether DCM follows them, from their profile. A failed
+    /// profile fetch leaves the follow state unknown (logged); it doesn't
+    /// stop the challenge.
+    private func challengeOpponentKind(username: String, title: String?, client: LichessBotAPIClient) async -> LichessBotChallengeOpponentKind {
+        if title == "BOT" {
+            return .bot
+        }
+        do {
+            let user = try await client.user(username: username)
+            if user.following == nil {
+                protocolLog.record(.anomaly, "\(username)'s profile doesn't say whether DCM follows them; counting the non-followed challenge cost")
+            }
+            return .human(following: user.following)
+        } catch {
+            protocolLog.record(.anomaly, "fetching \(username)'s profile for the challenge cost failed: \(Self.safeDescription(error)); counting the non-followed cost")
+            return .human(following: nil)
+        }
+    }
+
     func toggleFavorite(_ userID: String) {
         guard var notes = playerNotes else {
             raiseAlarm("Favorites aren't loaded; not changing them")
@@ -1163,23 +1261,45 @@ final class LichessBotController {
                 throw LichessBotControllerError.noSuchPlayer(username)
             }
             guard status.online == true else {
+                // Nothing is posted, so the cost doesn't matter and no
+                // profile is fetched for a human's follow state.
+                let offlineKind: LichessBotChallengeOpponentKind = status.title == "BOT" ? .bot : .human(following: nil)
+                updateChallengeOutcomeLog("\(opponentID) offline") { log in
+                    log.recordNotCreated(opponentID: opponentID, kind: offlineKind, outcome: .offline, at: Date())
+                }
                 throw LichessBotControllerError.opponentOffline(status.name)
+            }
+            let opponentKind = await challengeOpponentKind(username: username, title: status.title, client: client)
+            guard self.runtime?.manager === manager else {
+                throw LichessBotControllerError.notOnline
             }
             do {
                 created = try await client.challenge(username: username, request: request)
-            } catch let error as LichessBotAPIError {
+            } catch {
                 // A bot at its bot-vs-bot daily limit is refused with the
                 // exact time it frees up (plan §7.2); remember it for the list.
-                if case .http(_, let message?) = error, let refusal = LichessBotBotLimitRefusal.parse(message) {
+                if case LichessBotAPIError.http(_, let message?) = error, let refusal = LichessBotBotLimitRefusal.parse(message) {
                     recordBotLimit(refusal)
                 }
+                if let refusal = LichessBotChallengeRefusal.classify(postError: error) {
+                    let outcome = LichessBotChallengeOutcome.refused(refusal)
+                    updateChallengeOutcomeLog("\(opponentID) \(Self.describe(outcome))") { log in
+                        log.recordNotCreated(opponentID: opponentID, kind: opponentKind, outcome: outcome, at: Date())
+                    }
+                } else {
+                    protocolLog.record(.anomaly, "challenge to \(opponentID) failed without an answer from Lichess; outcome not recorded: \(Self.safeDescription(error))")
+                }
                 throw error
+            }
+            updateChallengeOutcomeLog("\(opponentID) challenge \(created.id) created") { log in
+                log.recordCreated(challengeID: created.id, opponentID: opponentID, kind: opponentKind, at: Date())
             }
             guard self.runtime?.manager === manager, connection == .online else {
                 // The bot went offline, or began going offline, while the
                 // challenge was being sent: withdraw it, or an acceptance
                 // would start an abandoned game.
                 withdraw(challengeID: created.id, client: client)
+                resolveChallengeOutcome(challengeID: created.id, .canceled)
                 throw LichessBotControllerError.notOnline
             }
         } catch {
@@ -1216,6 +1336,7 @@ final class LichessBotController {
                 pendingChallenges.removeAll { $0.id == id }
                 lastChallengeOutcome = "\(pending.username): canceled"
             }
+            resolveChallengeOutcome(challengeID: id, .canceled)
             scheduleChallengeQueuePump()
         } catch LichessBotAPIError.http(let status, let message) where status == 400 || status == 404 {
             // Lichess no longer knows the challenge: it expired or was
@@ -1223,6 +1344,7 @@ final class LichessBotController {
             await runtime.manager.clearOutgoingChallenge(id: id)
             pendingChallenges.removeAll { $0.id == id }
             lastChallengeOutcome = "\(pending.username): no longer pending (\(message ?? "HTTP \(status)"))"
+            resolveChallengeOutcome(challengeID: id, .canceled)
             scheduleChallengeQueuePump()
         } catch {
             raiseAlarm("Cancelling the challenge to \(pending.username) failed: \(Self.safeDescription(error))")
@@ -2013,6 +2135,7 @@ final class LichessBotController {
         gateEventSink.value = nil
         for pending in pendingChallenges {
             withdraw(challengeID: pending.id, client: runtime.client)
+            resolveChallengeOutcome(challengeID: pending.id, .canceled)
         }
         pendingChallenges = []
         clearChallengeQueue(reason: "offline: \(reason)")
@@ -2283,6 +2406,7 @@ final class LichessBotController {
                 // manager was told about the challenge.
                 lastChallengeOutcome = "\(pending.username): accepted"
                 pendingChallenges.removeAll { $0.id == gameID }
+                resolveChallengeOutcome(challengeID: gameID, .accepted)
                 if let manager = runtime?.manager {
                     Task { await manager.clearOutgoingChallenge(id: gameID) }
                 }
@@ -2322,6 +2446,7 @@ final class LichessBotController {
             switch outcome {
             case .accepted(let gameID):
                 text = "accepted; game \(gameID)"
+                resolveChallengeOutcome(challengeID: challengeID, .accepted)
                 // The game holds its slot from here, though its session is
                 // still being set up; without this, the slot would look free
                 // until the next poll mirrors the manager's starting games.
@@ -2330,6 +2455,7 @@ final class LichessBotController {
                 }
             case .declined(let reason, let reasonKey):
                 text = "declined" + (reason.map { ": \($0)" } ?? "")
+                resolveChallengeOutcome(challengeID: challengeID, .declined(LichessBotDeclineReasonRecord(reasonKey: reasonKey)))
                 if let pending = pendingChallenges.first(where: { $0.id == challengeID }) {
                     recordDeclineCooldown(pending.username)
                 }
@@ -2342,6 +2468,7 @@ final class LichessBotController {
                 }
             case .canceled:
                 text = "canceled"
+                resolveChallengeOutcome(challengeID: challengeID, .canceled)
             }
             if let pending = pendingChallenges.first(where: { $0.id == challengeID }) {
                 lastChallengeOutcome = "\(pending.username): \(text)"
