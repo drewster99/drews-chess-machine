@@ -3,6 +3,75 @@
   "models_dir": "~/Library/Application Support/DrewsChessMachine/Models",
   "logs_dir": "~/Library/Logs/DrewsChessMachine",
   "runs": {
+    "se_sb": {
+      "label": "SE A/B/C — scale+bias — 5.21M (3-blk 7×7 @128, bf16)",
+      "color": "#1f77b4",
+      "rezero_cap": 0.4472136,
+      "n_blocks": 3,
+      "arch_summary": "Preset test_SE_scale+bias (fresh 20260929-12-JZOe). SE style A/B/C experiment (experiments/20260929-se-style-ab). v5 · basic30(30) → stem 7×7→128 · 3× @128, 7×7+7×7, SE scale+bias/4, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out · policy intermediate_conv (128) · value WDL(16→FC128) · bf16.",
+      "arch_stem": "basic30 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, SE scale+bias/4, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20260929-test_SE_scale+bias-replay-latest.safetensors",
+      "frozen_glob": "20260929-test_SE_scale+bias-replay-step*.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20260929-150727.txt",
+          "date": "20260929",
+          "cumstep_base": 0,
+          "label": "run (12 epochs, 500k buffer, 3 arms concurrent)",
+          "enum_stem": "20260929-test_SE_scale+bias"
+        }
+      ],
+      "trainset": "std-2026-05",
+      "params": 5208050
+    },
+    "se_att": {
+      "label": "SE A/B/C — attenuate-only — 5.20M (3-blk 7×7 @128, bf16)",
+      "color": "#ff7f0e",
+      "rezero_cap": 0.4472136,
+      "n_blocks": 3,
+      "arch_summary": "Preset test_SE_attenuate-only (fresh 20260929-13-06yp). SE style A/B/C experiment (experiments/20260929-se-style-ab). v5 · basic30(30) → stem 7×7→128 · 3× @128, 7×7+7×7, SE attenuate/4, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out · policy intermediate_conv (128) · value WDL(16→FC128) · bf16.",
+      "arch_stem": "basic30 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, SE attenuate/4, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20260929-test_SE_attenuate-only-replay-latest.safetensors",
+      "frozen_glob": "20260929-test_SE_attenuate-only-replay-step*.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20260929-150735.txt",
+          "date": "20260929",
+          "cumstep_base": 0,
+          "label": "run (12 epochs, 500k buffer, 3 arms concurrent)",
+          "enum_stem": "20260929-test_SE_attenuate-only"
+        }
+      ],
+      "trainset": "std-2026-05",
+      "params": 5195378
+    },
+    "se_none": {
+      "label": "SE A/B/C — none — 5.17M (3-blk 7×7 @128, bf16)",
+      "color": "#2ca02c",
+      "rezero_cap": 0.4472136,
+      "n_blocks": 3,
+      "arch_summary": "Preset test_SE_none (fresh 20260929-18-D9is). SE style A/B/C experiment (experiments/20260929-se-style-ab). v5 · basic30(30) → stem 7×7→128 · 3× @128, 7×7+7×7, no SE, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out · policy intermediate_conv (128) · value WDL(16→FC128) · bf16.",
+      "arch_stem": "basic30 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, no SE, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20260929-test_SE_none-replay-latest.safetensors",
+      "frozen_glob": "20260929-test_SE_none-replay-step*.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20260929-150743.txt",
+          "date": "20260929",
+          "cumstep_base": 0,
+          "label": "run (12 epochs, 500k buffer, 3 arms concurrent)",
+          "enum_stem": "20260929-test_SE_none"
+        }
+      ],
+      "trainset": "std-2026-05",
+      "params": 5170322
+    },
     "nt8y15x15": {
       "label": "nt8y-15x15stem — 1.73M, nt8y with 15×15 stem (std)",
       "color": "#ff9896",
