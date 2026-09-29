@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-29 CDT — Recheck cleanup; Lichess bot tests use explicit settings (pending commit)
+## 2026-09-29 CDT — Recheck cleanup; Lichess bot tests use explicit settings (`11241ce`)
 
 - Tests: a new `LichessBotTestSettings.swift` gives each Lichess bot settings section a `testBaseline()` with explicit values (blitz/rapid only, three to thirty minute clocks, two concurrent games with none reserved, champion model source with no file, matchmaking off and casual). Every test that relied on the shipped defaults now builds from these, since `c5542b8` made the defaults the owner's own configuration (all speeds, a file model source, matchmaking on). Tests that pin the shipped defaults themselves still use `LichessBotSettings()`.
 - Challenge-queue controller tests set the reserved-human slots, decline cool-down, matchmaking `rated` and `enabled` explicitly where they depend on them; the rating-window test again asserts the explicit absolute lower bound.
@@ -525,7 +525,7 @@ Lichess bot plan §8 (`documentation/plans-active/LICHESS_BOT_PLAN.md`). These a
 - **`documentation/plans-active/AUTOSAVE_RETENTION_PLAN.md`:** weights-only saves, plus retention that also covers promotion saves and adds time-based pruning. It is not scheduled.
 - **ROADMAP:** entries for the Lichess bot plan and for preventing system sleep during training. The autosave-retention entry points to its plan.
 
-## 2026-08-12 CDT — v5's checkpoints merged into normal storage; per-segment checkpoint discovery (pending commit)
+## 2026-08-12 CDT — v5's checkpoints merged into normal storage; per-segment checkpoint discovery (`11241ce`)
 
 `v5-continue-bundle/` was a shipping container built to move training to another machine, never a storage location. Its checkpoints now live where every other run's do, and the tracker can find them.
 
@@ -538,7 +538,7 @@ Lichess bot plan §8 (`documentation/plans-active/LICHESS_BOT_PLAN.md`). These a
 
 **No data was recovered by any of this.** All 147 rows still lacking weight-derived internals correspond to checkpoints overwritten before archiving, none of which survive anywhere. The merge was about location and retirement. `v5.csv` is unchanged: 856 rows, cum 1,000–859,769, 792.7 h, 5.291 epochs.
 
-## 2026-08-11 CDT — v5 lineage consolidated into one series; run tracking gains a compute axis (pending commit)
+## 2026-08-11 CDT — v5 lineage consolidated into one series; run tracking gains a compute axis (`11241ce`)
 
 The v5 training record was split across two systems that shared no step axis: `data/v5.csv` held only the first three segments (a Pacific-TZ VM on the M5 host, cum 1,000–99,901), while five continuation segments existed solely as probe JSONL in `~/Downloads/v5-continue-bundle/monitor/`. Both are now **one 856-row series** spanning **8 segments / 2 machines, cum step 1,000 → 859,769, 110.95M corpus games (≈5.30 epochs)**. No training was started or stopped; nothing was deleted.
 
@@ -556,7 +556,7 @@ The v5 training record was split across two systems that shared no step axis: `d
 - **Known limitation, not introduced here:** `replay.py` cannot run under `python3 -I` — it does `from _schema import FIELDS`, and `-I` (implying `-P` and `-E`) strips the script's own directory from `sys.path` and ignores `PYTHONPATH`. Use plain `python3 replay.py`; `master.py` is unaffected.
 - **Data safety** — run 4 and run 5 session logs gzipped into the bundle's `archive/logs/` (integrity + line counts verified, originals kept); `~/Library/Logs/DrewsChessMachine/` is excluded from Time Machine, so those gz copies were the missing coverage. 335 root checkpoints hardlinked into `run2/`…`run5/` by verified `model_id` (collision-free names, zero extra bytes). Full verified backup at `~/v5-consolidation-backup-20260811/` (checksum pass: zero differing files).
 
-## 2026-06-28 CDT — Corpus-replay resume (Phase 1): `--start-shard` / `--start-game-index` + self-describing checkpoints (pending commit)
+## 2026-06-28 CDT — Corpus-replay resume (Phase 1): `--start-shard` / `--start-game-index` + self-describing checkpoints (`11241ce`)
 
 `--replay-corpus` can now RESUME the corpus stream near where a prior run stopped, and its checkpoints record where they were so a future run can continue. (Phase 2 — exact buffer reconstruction + momentum-refill warm-up — is deferred. Corpus-replay only; self-play resume is unchanged, still via `.dcmsession`.)
 
@@ -568,7 +568,7 @@ The v5 training record was split across two systems that shared no step axis: `d
 
 Correctness (independently reviewed + runtime-validated): the epoch-completion wrap resets the cursor *before* the limit-return (no out-of-range `nextGame=totalGames`/`shard=count` metadata on a finished pass); the cursor re-anchors from the cumulative counts on every shard load, so an unreadable-shard skip can't desync the saved resume index. Files: `CLI/CorpusReplayRunner.swift`, `Persistence/GameCorpusShard.swift`, `App/DrewsChessMachineApp.swift`, `Persistence/SafetensorsModelIO.swift`.
 
-## 2026-06-28 CDT — Architecture v5: per-block output LayerNorm (`v5_5block_7x7_lnout`) (pending commit)
+## 2026-06-28 CDT — Architecture v5: per-block output LayerNorm (`v5_5block_7x7_lnout`) (`11241ce`)
 
 New optional per-block **output normalization** (`BlockGroup.outputNorm: BlockOutputNorm?`, cases `none` | `layer_norm`), orthogonal to the skip-merge mode: when set, the block returns `LayerNorm(merge)` — a channel-wise LayerNorm over C at each board square (ConvNeXt convention, per-channel learnable γ/β, **no running stats**), applied after the skip merge/projection. `ChessNetwork.layerNorm` recomputes mean/variance per-forward over axis [1], so it is byte-identical at train and inference — that is the point: it re-centers the clean-add residual stream every block, killing the v4 highway mean-drift **without** reintroducing BatchNorm's train/eval running-stat gap (`v5` = `v4` + this LayerNorm).
 
@@ -576,13 +576,13 @@ New preset `v5_5block_7x7_lnout` = the `v4_5block_7x7` recipe (authored by *muta
 
 Files: `Network/NetworkArchitecture.swift`, `Network/ChessNetwork.swift`, `Persistence/ArchitecturePresetStore.swift`, `App/UpperContentView/{BuildNewModelView,BuildNewModelModel,ArchitectureDiagramView}.swift`, `DrewsChessMachineTests/BlockGroupArchitectureTests.swift`.
 
-## 2026-06-28 CDT — ReZero α soft-bound: `C·tanh(α/C)`, `C = α₀ = 1/√N` (pending commit)
+## 2026-06-28 CDT — ReZero α soft-bound: `C·tanh(α/C)`, `C = α₀ = 1/√N` (`11241ce`)
 
 The per-block ReZero scalar `α` (`*_res_scale`) is now **soft-bounded in the forward** through `C·tanh(α/C)` before it scales the residual branch, with asymptotic ceiling `C = rezeroTanhCeilingMultiple · α₀` (multiplier **1.0** → `C = α₀ = 1/√N`). `ChessNetwork.residualBlock` builds `C·tanh(α/C)` (`*_res_scale_tanh`).
 
 Motivation (FINDING): `α` is trainable, **un-decayed**, and was used raw with no transform — the one parameter with a one-way ratchet and no restoring force. On a from-scratch `--replay-corpus` run it ran away from its `1/√N` init to **~30+** over ~4–8k steps, drowning the identity skip, compounding the residual stream to ~10⁶ (bn1 running-mean) and collapsing inference (probe pElo 895→~450, nll past `ln 4864`). bf16 was tested and **ruled out** — full-fp32 compute on the broken weights stayed broken, so the damage is in the function; the train-vs-inference split is a running-stat-vs-batch-stat mismatch. Two earlier fixes failed and shaped the final form: a **hard clamp** `[0, C]` at `C = 4.5·α₀ ≈ 2.0` had a dead zone past C (stored α drifted 2.0→2.27 while pinned) and C≈2.0 was already in the degraded regime (tower broke, then a slow noisy recovery to a mediocre ~650); a **`C = 1.0` tanh** trained beautifully (pElo 1015 @4k, best of any run) then broke ~5800 — the raw α ratchets regardless of the bound, so the *effective* α saturates AT C on every block, and `C = 1.0` gives `Σα² ≈ 4.5` (4.5× the variance-preserving target). Hence `C = 1/√N`: with all N blocks saturated at C, `Σα² = N·C² = 1`. tanh (vs hard clamp) keeps the gradient alive everywhere so α settles in the interior rather than pinning. Current v5 run (step 36k): raw α 0.53–0.99 (ratcheting as expected), effective α 0.37–0.44 — all below the 0.4472 ceiling, none pinned — Σαeff² 0.84 (bounded, variance-safe). Does **not** recover an already-runaway checkpoint (its convs adapted to the large α — retrain required). Full write-up + the failed-run tables in `documentation/rezero-alpha-clamp.md`.
 
-## 2026-06-28 CDT — Tooling: `--new-model` fresh-net mint + probe `policy_logit_abs_max` (pending commit)
+## 2026-06-28 CDT — Tooling: `--new-model` fresh-net mint + probe `policy_logit_abs_max` (`11241ce`)
 
 `--new-model --preset <name> [--out-model <path>]` (`NewModelCLI`): headless pre-flight that builds an untrained net from a preset and writes it to `.safetensors`, then exits — a fixed, reusable `--start-model` for byte-identical A/B run starts. Mints the ModelID on the main actor, runs the GPU build off-actor (forward-only — coexists with a running trainer), refuses to overwrite, and verifies exported-tensor count == plan. Dispatched **before** the `--replay-corpus` handler (both read `--preset`).
 
