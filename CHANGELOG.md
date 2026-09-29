@@ -9,6 +9,14 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-29 CDT — Lichess bot: challenge credit costing corrected (pending commit)
+
+- Lichess charges nothing when the challenged player follows DCM (lila `fetchFollows(dest, me)`), not when DCM follows them, so the profile's `following` flag measured the wrong direction. No API reports whether another player follows the token's account, so the extra `GET /api/user/{name}` before a human challenge is gone (one less housekeeping-priority request that could hold a challenge back) and the costs are the worst case, logged as such: bot 1, human 5. `LichessBotChallengeOpponentKind.human` no longer carries a follow flag; existing `challenge-outcomes.json` records still decode.
+- Lichess charges credits when a POST passes its per-user challenge limit, before the bot-vs-bot daily limit and the player's challenge preferences are checked, so a bot-daily-limit refusal or another 400 now costs the opponent's credits (worst case; a few 400s are raised before the charge). A 429 and non-400 statuses cost nothing.
+- A game starting now resolves a challenge already recorded as `canceled` to `accepted`: DCM infers some cancellations (a cancel answered 400/404, a withdrawal on going offline) and a started game is proof otherwise. Every other outcome is still first-answer-wins.
+- The credits line reads `N/200 24 h` (the window is rolling, not the calendar day), and its help text states the worst-case costing.
+- Tests: charged refusals, accepted superseding an inferred cancel, decoding an old record with a follow flag; the credit-cost and rolling-window tests follow the corrected costs.
+
 ## 2026-09-29 CDT — Lichess bot: outgoing-challenge outcome tracking and challenge credits (`1c26491`)
 
 - Every outgoing challenge attempt is recorded with one outcome: `accepted`, `declined(reason)` (Lichess's keys: generic, later, tooFast, tooSlow, timeControl, rated, casual, standard, variant, noBot, onlyBot; an unknown or missing key is kept as reported), `canceled` (withdrawn, timed out, expired or withdrawn on going offline), `offline` (nothing posted), or `refused` (the POST was refused, so no challenge exists and no credits were spent: 429, 400 bot-vs-bot daily limit, other 400, other HTTP status; Lichess's text is kept). Only the first answer counts for a challenge.

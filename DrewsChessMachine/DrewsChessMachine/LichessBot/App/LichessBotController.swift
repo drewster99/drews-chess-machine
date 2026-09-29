@@ -989,10 +989,10 @@ final class LichessBotController {
         }
     }
 
-    /// Resolve a created challenge's record, if it is still pending.
+    /// Resolve a created challenge's record, if `resolve` would change it.
     private func resolveChallengeOutcome(challengeID: String, _ outcome: LichessBotChallengeOutcome) {
         guard let log = challengeOutcomeLog,
-              log.records.contains(where: { $0.challengeID == challengeID && $0.outcome == nil }) else { return }
+              log.canResolve(challengeID: challengeID, outcome: outcome) else { return }
         updateChallengeOutcomeLog("\(challengeID) \(Self.describe(outcome))") { log in
             log.resolve(challengeID: challengeID, outcome: outcome, at: Date())
         }
@@ -1013,24 +1013,9 @@ final class LichessBotController {
         }
     }
 
-    /// Who `username` is for credit costs: a bot by its title; for a
-    /// human, whether DCM follows them, from their profile. A failed
-    /// profile fetch leaves the follow state unknown (logged); it doesn't
-    /// stop the challenge.
-    private func challengeOpponentKind(username: String, title: String?, client: LichessBotAPIClient) async -> LichessBotChallengeOpponentKind {
-        if title == "BOT" {
-            return .bot
-        }
-        do {
-            let user = try await client.user(username: username)
-            if user.following == nil {
-                protocolLog.record(.anomaly, "\(username)'s profile doesn't say whether DCM follows them; counting the non-followed challenge cost")
-            }
-            return .human(following: user.following)
-        } catch {
-            protocolLog.record(.anomaly, "fetching \(username)'s profile for the challenge cost failed: \(Self.safeDescription(error)); counting the non-followed cost")
-            return .human(following: nil)
-        }
+    /// Who `username` is for credit costs, from their title.
+    nonisolated static func challengeOpponentKind(title: String?) -> LichessBotChallengeOpponentKind {
+        title == "BOT" ? .bot : .human
     }
 
     func toggleFavorite(_ userID: String) {
@@ -1261,18 +1246,18 @@ final class LichessBotController {
                 throw LichessBotControllerError.noSuchPlayer(username)
             }
             guard status.online == true else {
-                // Nothing is posted, so the cost doesn't matter and no
-                // profile is fetched for a human's follow state.
-                let offlineKind: LichessBotChallengeOpponentKind = status.title == "BOT" ? .bot : .human(following: nil)
+                let offlineKind = Self.challengeOpponentKind(title: status.title)
                 updateChallengeOutcomeLog("\(opponentID) offline") { log in
                     log.recordNotCreated(opponentID: opponentID, kind: offlineKind, outcome: .offline, at: Date())
                 }
                 throw LichessBotControllerError.opponentOffline(status.name)
             }
-            let opponentKind = await challengeOpponentKind(username: username, title: status.title, client: client)
+            // The status check was awaited, so the bot may have gone
+            // offline meanwhile.
             guard self.runtime?.manager === manager else {
                 throw LichessBotControllerError.notOnline
             }
+            let opponentKind = Self.challengeOpponentKind(title: status.title)
             do {
                 created = try await client.challenge(username: username, request: request)
             } catch {
@@ -1283,7 +1268,8 @@ final class LichessBotController {
                 }
                 if let refusal = LichessBotChallengeRefusal.classify(postError: error) {
                     let outcome = LichessBotChallengeOutcome.refused(refusal)
-                    updateChallengeOutcomeLog("\(opponentID) \(Self.describe(outcome))") { log in
+                    let charged = LichessBotChallengeOutcomeLog.creditCost(notCreated: outcome, kind: opponentKind)
+                    updateChallengeOutcomeLog("\(opponentID) \(Self.describe(outcome)); counted \(charged) credits (worst case)") { log in
                         log.recordNotCreated(opponentID: opponentID, kind: opponentKind, outcome: outcome, at: Date())
                     }
                 } else {
@@ -1291,7 +1277,7 @@ final class LichessBotController {
                 }
                 throw error
             }
-            updateChallengeOutcomeLog("\(opponentID) challenge \(created.id) created") { log in
+            updateChallengeOutcomeLog("\(opponentID) challenge \(created.id) created; counted \(LichessBotChallengeCredits.cost(for: opponentKind)) credits (worst case: Lichess charges nothing if they follow DCM)") { log in
                 log.recordCreated(challengeID: created.id, opponentID: opponentID, kind: opponentKind, at: Date())
             }
             guard self.runtime?.manager === manager, connection == .online else {

@@ -12,11 +12,12 @@ enum LichessBotChallengeOutcome: Sendable, Hashable, Codable {
     case canceled
     /// The player was offline when DCM checked, so nothing was posted.
     case offline
-    /// Lichess refused the challenge POST: no challenge was created, and no
-    /// challenge credits were spent.
+    /// Lichess refused the challenge POST: no challenge was created. Some
+    /// refusals still spend credits; see
+    /// `LichessBotChallengeRefusal.spendsCredits`.
     case refused(LichessBotChallengeRefusal)
 
-    /// A challenge was created on Lichess (and so spent credits).
+    /// A challenge was created on Lichess.
     var challengeWasCreated: Bool {
         switch self {
         case .accepted, .declined, .canceled:
@@ -87,6 +88,25 @@ struct LichessBotChallengeRefusal: Sendable, Hashable, Codable {
     /// response carried none.
     let text: String?
 
+    /// Whether Lichess charged the challenge's credits before refusing it.
+    /// Lichess charges when the request passes its per-user challenge rate
+    /// limit, before it checks the bot-vs-bot daily game limit and the
+    /// challenged player's preferences, so those refusals cost the same as
+    /// a created challenge. A 429 is that rate limit refusing, and an
+    /// authorization failure never reaches it, so neither costs anything.
+    /// A few other 400s (no such user, challenging oneself) are raised
+    /// before the charge; they are indistinguishable here from the charged
+    /// ones except by wording, so every other 400 is charged: the worst
+    /// case, so the budget shown is never understated.
+    var spendsCredits: Bool {
+        switch kind {
+        case .botDailyGameLimit, .badRequest:
+            return true
+        case .rateLimited, .otherHTTPStatus:
+            return false
+        }
+    }
+
     /// Lichess's wording for a bot-vs-bot daily limit refusal, which names
     /// whichever side reached it.
     static let botDailyGameLimitMarker = "games against other bots today"
@@ -129,30 +149,29 @@ struct LichessBotChallengeRefusal: Sendable, Hashable, Codable {
 /// Who a challenge went to, as far as Lichess's credit costs care.
 enum LichessBotChallengeOpponentKind: Sendable, Hashable, Codable {
     case bot
-    /// `following` is whether DCM's account follows them; nil when Lichess
-    /// didn't say.
-    case human(following: Bool?)
+    case human
 }
 
-/// Lichess's challenge credits: every created challenge spends some, within
-/// a per-minute and a per-rolling-day budget.
+/// Lichess's challenge credits: every charged challenge spends some, within
+/// a per-minute and a per-day budget. DCM counts them over rolling windows
+/// of those lengths, which never undercount a window Lichess resets.
 enum LichessBotChallengeCredits {
     static let perDay = 200
     static let perMinute = 25
     static let dayWindow: TimeInterval = 24 * 3600
     static let minuteWindow: TimeInterval = 60
 
-    /// What creating a challenge to `kind` costs. A human whose follow state
-    /// Lichess didn't report is charged the non-followed cost, the most it
-    /// can be, so the budget shown is never understated; the caller logs
-    /// that the follow state was unknown.
+    /// What a charged challenge to `kind` costs, at most. Lichess charges
+    /// nothing when the challenged player (bot or human) follows DCM's
+    /// account, but no API reports whether another player follows the
+    /// token's account (`following` in a profile is the other direction),
+    /// so this is always the non-follower cost: the worst case, so the
+    /// budget shown is never understated.
     static func cost(for kind: LichessBotChallengeOpponentKind) -> Int {
         switch kind {
         case .bot:
             return 1
-        case .human(following: true):
-            return 0
-        case .human(following: false), .human(following: nil):
+        case .human:
             return 5
         }
     }
@@ -168,8 +187,8 @@ struct LichessBotChallengeOutcomeRecord: Sendable, Hashable, Codable, Identifiab
     let opponentKind: LichessBotChallengeOpponentKind
     /// The created challenge's id; nil when none was created.
     let challengeID: String?
-    /// Credits spent: the opponent's cost for a created challenge, zero
-    /// otherwise.
+    /// Credits spent, at most: the opponent's cost for a created challenge
+    /// or a refusal Lichess charged for, zero otherwise.
     let creditCost: Int
     /// Nil while a created challenge waits for an answer.
     var outcome: LichessBotChallengeOutcome?
@@ -217,27 +236,53 @@ struct LichessBotChallengeOutcomeLog: Sendable, Codable, Equatable {
         ))
     }
 
-    /// An attempt that created no challenge (`offline` or `refused`).
-    /// Returns false, recording nothing, for an outcome that implies a
-    /// created challenge.
+    /// An attempt that created no challenge (`offline` or `refused`); a
+    /// refusal Lichess charged for costs the opponent's credits. Returns
+    /// false, recording nothing, for an outcome that implies a created
+    /// challenge.
     @discardableResult
     mutating func recordNotCreated(opponentID: String, kind: LichessBotChallengeOpponentKind, outcome: LichessBotChallengeOutcome, at now: Date, makeID: () -> UUID = { UUID() }) -> Bool {
         guard !outcome.challengeWasCreated else { return false }
         records.append(LichessBotChallengeOutcomeRecord(
             id: makeID(), sentAt: now, opponentID: opponentID.lowercased(), opponentKind: kind,
-            challengeID: nil, creditCost: 0, outcome: outcome, resolvedAt: now
+            challengeID: nil, creditCost: Self.creditCost(notCreated: outcome, kind: kind), outcome: outcome, resolvedAt: now
         ))
         return true
     }
 
+    /// Whether `resolve` would change a record.
+    func canResolve(challengeID: String, outcome: LichessBotChallengeOutcome) -> Bool {
+        resolvableIndex(challengeID: challengeID, outcome: outcome) != nil
+    }
+
+    private func resolvableIndex(challengeID: String, outcome: LichessBotChallengeOutcome) -> Int? {
+        guard outcome.challengeWasCreated,
+              let index = records.lastIndex(where: { $0.challengeID == challengeID }) else { return nil }
+        switch (records[index].outcome, outcome) {
+        case (.none, _), (.canceled?, .accepted):
+            return index
+        default:
+            return nil
+        }
+    }
+
+    /// Credits counted for an attempt that created no challenge.
+    static func creditCost(notCreated outcome: LichessBotChallengeOutcome, kind: LichessBotChallengeOpponentKind) -> Int {
+        guard case .refused(let refusal) = outcome, refusal.spendsCredits else { return 0 }
+        return LichessBotChallengeCredits.cost(for: kind)
+    }
+
     /// Set a pending challenge's outcome. Only the first answer counts: a
     /// challenge already resolved (say, accepted, then reported canceled by
-    /// a late cleanup) keeps its outcome. Returns whether a record changed.
+    /// a late cleanup) keeps its outcome. The one exception is a game
+    /// starting for a challenge recorded as canceled: DCM infers some
+    /// cancellations (Lichess no longer knowing a challenge DCM tried to
+    /// withdraw, or a withdrawal on going offline that lost the race with
+    /// an acceptance), and a started game is proof it was accepted.
+    /// Returns whether a record changed.
     @discardableResult
     mutating func resolve(challengeID: String, outcome: LichessBotChallengeOutcome, at now: Date) -> Bool {
-        guard outcome.challengeWasCreated,
-              let index = records.lastIndex(where: { $0.challengeID == challengeID }),
-              records[index].outcome == nil else { return false }
+        guard let index = resolvableIndex(challengeID: challengeID, outcome: outcome) else { return false }
         records[index].outcome = outcome
         records[index].resolvedAt = now
         return true

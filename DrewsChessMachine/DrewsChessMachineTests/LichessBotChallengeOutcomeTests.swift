@@ -68,16 +68,14 @@ final class LichessBotChallengeOutcomeTests: XCTestCase {
 
     func test_creditCostByOpponentKind() {
         XCTAssertEqual(LichessBotChallengeCredits.cost(for: .bot), 1)
-        XCTAssertEqual(LichessBotChallengeCredits.cost(for: .human(following: true)), 0)
-        XCTAssertEqual(LichessBotChallengeCredits.cost(for: .human(following: false)), 5)
-        XCTAssertEqual(LichessBotChallengeCredits.cost(for: .human(following: nil)), 5)
+        XCTAssertEqual(LichessBotChallengeCredits.cost(for: .human), 5)
         XCTAssertEqual(LichessBotChallengeCredits.perDay, 200)
         XCTAssertEqual(LichessBotChallengeCredits.perMinute, 25)
     }
 
     func test_notCreatedAttempts_costNothing() {
         var log = LichessBotChallengeOutcomeLog()
-        XCTAssertTrue(log.recordNotCreated(opponentID: "a", kind: .human(following: false), outcome: .offline, at: now))
+        XCTAssertTrue(log.recordNotCreated(opponentID: "a", kind: .human, outcome: .offline, at: now))
         XCTAssertTrue(log.recordNotCreated(opponentID: "b", kind: .bot, outcome: .refused(LichessBotChallengeRefusal(kind: .rateLimited, httpStatus: 429, text: nil)), at: now))
         XCTAssertFalse(log.recordNotCreated(opponentID: "c", kind: .bot, outcome: .accepted, at: now))
         let summary = log.summary(now: now)
@@ -88,7 +86,45 @@ final class LichessBotChallengeOutcomeTests: XCTestCase {
         XCTAssertEqual(log.records.count, 2)
     }
 
+    func test_chargedRefusals_costTheOpponentsCredits() {
+        var log = LichessBotChallengeOutcomeLog()
+        let botLimit = LichessBotChallengeRefusal(kind: .botDailyGameLimit, httpStatus: 400, text: "x")
+        let badRequest = LichessBotChallengeRefusal(kind: .badRequest, httpStatus: 400, text: "y")
+        let unauthorized = LichessBotChallengeRefusal(kind: .otherHTTPStatus, httpStatus: 403, text: nil)
+        XCTAssertTrue(botLimit.spendsCredits)
+        XCTAssertTrue(badRequest.spendsCredits)
+        XCTAssertFalse(unauthorized.spendsCredits)
+        XCTAssertFalse(LichessBotChallengeRefusal(kind: .rateLimited, httpStatus: 429, text: nil).spendsCredits)
+        log.recordNotCreated(opponentID: "b", kind: .bot, outcome: .refused(botLimit), at: now)
+        log.recordNotCreated(opponentID: "h", kind: .human, outcome: .refused(badRequest), at: now)
+        log.recordNotCreated(opponentID: "u", kind: .human, outcome: .refused(unauthorized), at: now)
+        XCTAssertEqual(log.records.map(\.creditCost), [1, 5, 0])
+        XCTAssertEqual(log.summary(now: now).creditsLastDay, 6)
+    }
+
     // MARK: - Resolving
+
+    func test_resolve_acceptedSupersedesAnInferredCancel() {
+        var log = LichessBotChallengeOutcomeLog()
+        log.recordCreated(challengeID: "c1", opponentID: "b", kind: .bot, at: now)
+        XCTAssertTrue(log.resolve(challengeID: "c1", outcome: .canceled, at: now))
+        XCTAssertTrue(log.canResolve(challengeID: "c1", outcome: .accepted))
+        XCTAssertFalse(log.canResolve(challengeID: "c1", outcome: .declined(.unstated)))
+        XCTAssertTrue(log.resolve(challengeID: "c1", outcome: .accepted, at: now))
+        XCTAssertFalse(log.resolve(challengeID: "c1", outcome: .canceled, at: now))
+        let summary = log.summary(now: now)
+        XCTAssertEqual(summary.accepted, 1)
+        XCTAssertEqual(summary.canceled, 0)
+    }
+
+    func test_decodesARecordWrittenWithAFollowFlag() throws {
+        let json = #"{"records":[{"id":"6F9619FF-8B86-D011-B42D-00CF4FC964FF","sentAt":"2026-09-29T12:00:00Z","opponentID":"h","opponentKind":{"human":{"following":true}},"challengeID":"c","creditCost":0}]}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let log = try decoder.decode(LichessBotChallengeOutcomeLog.self, from: Data(json.utf8))
+        XCTAssertEqual(log.records.first?.opponentKind, .human)
+    }
+
 
     func test_resolve_firstAnswerWins() {
         var log = LichessBotChallengeOutcomeLog()
@@ -111,8 +147,8 @@ final class LichessBotChallengeOutcomeTests: XCTestCase {
         var log = LichessBotChallengeOutcomeLog()
         // A day and a second ago: outside the day.
         log.recordCreated(challengeID: "old", opponentID: "a", kind: .bot, at: now.addingTimeInterval(-86_401))
-        // Twenty hours ago, a human DCM doesn't follow: 5.
-        log.recordCreated(challengeID: "h", opponentID: "h", kind: .human(following: false), at: now.addingTimeInterval(-72_000))
+        // Twenty hours ago, a human: 5.
+        log.recordCreated(challengeID: "h", opponentID: "h", kind: .human, at: now.addingTimeInterval(-72_000))
         log.resolve(challengeID: "h", outcome: .declined(.known(.noBot)), at: now.addingTimeInterval(-71_990))
         // Two minutes ago: in the day, not the minute.
         log.recordCreated(challengeID: "b1", opponentID: "b1", kind: .bot, at: now.addingTimeInterval(-120))
@@ -120,11 +156,11 @@ final class LichessBotChallengeOutcomeTests: XCTestCase {
         // Thirty seconds ago: in both.
         log.recordCreated(challengeID: "b2", opponentID: "b2", kind: .bot, at: now.addingTimeInterval(-30))
         log.resolve(challengeID: "b2", outcome: .accepted, at: now.addingTimeInterval(-10))
-        log.recordCreated(challengeID: "f", opponentID: "f", kind: .human(following: true), at: now.addingTimeInterval(-20))
+        log.recordCreated(challengeID: "f", opponentID: "f", kind: .human, at: now.addingTimeInterval(-20))
 
         let summary = log.summary(now: now)
-        XCTAssertEqual(summary.creditsLastDay, 5 + 1 + 1 + 0)
-        XCTAssertEqual(summary.creditsLastMinute, 1)
+        XCTAssertEqual(summary.creditsLastDay, 5 + 1 + 1 + 5)
+        XCTAssertEqual(summary.creditsLastMinute, 1 + 5)
         XCTAssertEqual(summary.accepted, 1)
         XCTAssertEqual(summary.declined, 2)
         XCTAssertEqual(summary.pending, 1)
@@ -133,7 +169,7 @@ final class LichessBotChallengeOutcomeTests: XCTestCase {
 
         // Once the human challenge is a day old it leaves the day; once the
         // latest bot challenge is a minute old it leaves the minute.
-        XCTAssertEqual(log.summary(now: now.addingTimeInterval(4 * 3600 + 1)).creditsLastDay, 2)
+        XCTAssertEqual(log.summary(now: now.addingTimeInterval(4 * 3600 + 1)).creditsLastDay, 1 + 1 + 5)
         XCTAssertEqual(log.summary(now: now.addingTimeInterval(61)).creditsLastMinute, 0)
     }
 
@@ -178,7 +214,7 @@ final class LichessBotChallengeOutcomeTests: XCTestCase {
 
         var log = LichessBotChallengeOutcomeLog()
         // Whole seconds: the file stores ISO-8601 times.
-        log.recordCreated(challengeID: "c1", opponentID: "b", kind: .human(following: nil), at: now)
+        log.recordCreated(challengeID: "c1", opponentID: "b", kind: .human, at: now)
         log.resolve(challengeID: "c1", outcome: .declined(.unrecognized("newKey")), at: now)
         log.recordNotCreated(opponentID: "x", kind: .bot, outcome: .refused(LichessBotChallengeRefusal(kind: .botDailyGameLimit, httpStatus: 400, text: "t")), at: now)
         try log.save(to: url)
