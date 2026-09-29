@@ -61,9 +61,12 @@ Launched 2026-09-29 15:07:27–15:07:43 CDT, all three at once, Release binary b
 | attenuate-only | `20260929-13-06yp` | 77398 | `dcm_log_20260929-150735.txt` |
 | none | `20260929-18-D9is` | 77413 | `dcm_log_20260929-150743.txt` |
 
-Known limitation of this binary: replay's cycle phase starts from each segment's step 0,
-so a resume of these runs would restart the cycle and decay envelope (exact resume is
-being fixed separately).
+**Not exactly resumable.** This binary predates exact resume (`d15f706`): its checkpoints
+lack the optimizer momentum tensors, the fp32 master weights (the bf16 working copy is
+saved) and the `trainer_*` schedule keys, so `--resume-exact` refuses them. Decision
+(2026-09-29): keep these runs going rather than restart; if one is interrupted it can
+only continue as a new branch (fresh momentum, restarted cycle), which must be recorded
+as a new segment.
 
 **Aborted second launch (14:37, 3 arms, 1M buffer):** stopped at ~800 steps. Each
 process's physical footprint was ~24 GB (7.18 GB of it the 1M-position buffer) — ~72 GB
