@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-29 CDT — Lichess bot: outgoing-challenge outcome tracking and challenge credits (pending commit)
+## 2026-09-29 CDT — Lichess bot: outgoing-challenge outcome tracking and challenge credits (`1c26491`)
 
 - Every outgoing challenge attempt is recorded with one outcome: `accepted`, `declined(reason)` (Lichess's keys: generic, later, tooFast, tooSlow, timeControl, rated, casual, standard, variant, noBot, onlyBot; an unknown or missing key is kept as reported), `canceled` (withdrawn, timed out, expired or withdrawn on going offline), `offline` (nothing posted), or `refused` (the POST was refused, so no challenge exists and no credits were spent: 429, 400 bot-vs-bot daily limit, other 400, other HTTP status; Lichess's text is kept). Only the first answer counts for a challenge.
 - Challenge credits: bot 1, human DCM doesn't follow 5, followed human 0 (from an authorized profile fetch's `following`; if that is missing or the fetch fails, the non-followed cost is counted and an anomaly is logged). Counted over a rolling 24 h against 200 and a rolling minute against 25.
