@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-29 CDT — CLI results.json: record unmeasured diagnostics as nil (pending commit)
+
+- **Bug (since `91ca615`):** corpus replay and train-vs-UCI runs with `--output` failed to write `results.json` ("the data isn't in the correct format").
+  - The cause: the trainer computes its diagnostic values (entropy, played-move probability, value mean and |mean|, W/D/L) only on stats steps and leaves them NaN otherwise, and the runners passed those NaNs into the file. JSON can't encode NaN.
+  - The fix: both runners now pass nil ("not measured") on non-stats steps, as they already did for the head mean logits. The illegal-mass term and gradient norm are measured every step and are unchanged.
+  - Test: `CliTrainingRecorderUnmeasuredStatsTests`.
+
 ## 2026-09-29 00:05 CDT — Lichess bot: challenge queue, matchmaking, finished-game hold (plan §7.3) (`baa32bd`)
 
 Implements `documentation/plans-active/LICHESS_BOT_PLAN.md` §7.3. **The bot's settings gained a Matchmaking section: after updating, click Reset to Defaults in the bot's Settings once** (no migration, by decision, as before).
