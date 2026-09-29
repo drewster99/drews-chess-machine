@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-29 CDT — Build New Model: saved presets keep their name as the picker label (pending commit)
+## 2026-09-29 CDT — Build New Model: saved presets keep their name as the picker label (`545dbc4`)
 
 - "Save as Preset" wrote the effective display label, which is "Custom" whenever the label field is empty and the fields match no preset, so every such saved preset appeared as "Custom" in the picker. With no explicit label, the preset name is now saved as the label.
 
