@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-29 CDT — One trainer-configuration path and one parameter validator for GUI, corpus replay and train-vs-UCI (pending commit)
+## 2026-09-29 CDT — One trainer-configuration path and one parameter validator for GUI, corpus replay and train-vs-UCI (`cbc1894`)
 
 - New `TrainerHyperparameters` (resolved from a `TrainingParametersSnapshot`, applied with `apply(to:)`, plus `ChessTrainer(hyperparameters:arch:)`) is the only way parameters reach a trainer. The GUI session (`ensureTrainer`, fresh start, settings popover save), `CorpusReplayRunner` and `TrainVsUciRunner` all use it. `ReplayParams` now carries it instead of a hand-copied subset.
 - Bug fixed: corpus replay and train-vs-UCI never set `lrMomentumCycle`, so they trained at the static LR/momentum and ignored `lr_cycle_*`, `momentum_cycle_*`, `momentum_follow*` and the decay envelope. They also never set `batch_stats_interval` or `kl_probe_interval` (KL probes now run in the CLI runners when the parameter asks). The GUI fresh-start path skipped illegal-mass weight, both label-smoothing epsilons and the cycle (they were already set by `ensureTrainer`, so no runtime change there).
