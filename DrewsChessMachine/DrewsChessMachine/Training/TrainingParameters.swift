@@ -172,12 +172,14 @@ public protocol TrainingParameterKey: Sendable {
 // Every writer of a training parameter checks the value against the range
 // declared in its `@TrainingParameter` — the single source of truth — through
 // these helpers: the `--parameters` loader (`applyOne`), the UserDefaults load
-// (`read`), the singleton's setters (`commitAssignment`), the settings
-// popovers (`parsedInDeclaredRange` / `snappedToDeclaredRange`) and session
-// resume. Before they existed the popovers restated each range as literals,
-// and several had drifted from the declarations (the τ fields accepted 0.01
-// and (0, 10] against a declared 0.05…5.0), so the UI accepted values the
-// loader rejects.
+// (`read`), the singleton's setters (`commitAssignment`) and the settings
+// popovers (`parsedInDeclaredRange` / `snappedToDeclaredRange`). Before they
+// existed the popovers restated each range as literals, and several had
+// drifted from the declarations (the τ fields accepted values below the
+// declared minimum), so the UI accepted values the loader rejects. The one
+// intentional exception is session resume, which restores a session's own
+// saved values even outside today's range — see
+// `TrainingParameters.restoreFromSession`.
 
 public extension TrainingParameterKey {
     /// Throw `TrainingConfigError` unless `value` has the declared type and
@@ -205,6 +207,16 @@ public extension TrainingParameterKey where Value == Double {
               value.isFinite,
               isWithinDeclaration(value) else { return nil }
         return value
+    }
+
+    /// The declared range as a `ClosedRange`, for controls (a `Stepper`'s
+    /// bounds) that must agree with the validator rather than restate the
+    /// range as literals. Only for keys declared with a range.
+    static var declaredClosedRange: ClosedRange<Double> {
+        guard let range = definition.doubleRange else {
+            preconditionFailure("\(id) is declared without a range")
+        }
+        return range.min...range.max
     }
 
     /// `value` pulled inside the declared range. Only for stepper-style
@@ -389,7 +401,7 @@ public enum DrawPenalty: TrainingParameterKey {}
     name: "Self-Play Start Tau",
     description: "Initial sampling temperature for self-play games at game-total ply 0 (the starting position). Decays toward target by self_play_tau_decay_per_ply each game-total ply (i.e. each half-move from either side advances the schedule).",
     default: 1.0,
-    range: 0.05...5.0,
+    range: 0.01...5.0,
     category: "Self-Play Sampling",
     liveTunable: true
 )
@@ -399,7 +411,7 @@ public enum SelfPlayStartTau: TrainingParameterKey {}
     name: "Self-Play Target Tau",
     description: "Floor sampling temperature for self-play games — start_tau decays toward this value.",
     default: 0.5,
-    range: 0.05...5.0,
+    range: 0.01...5.0,
     category: "Self-Play Sampling",
     liveTunable: true
 )
@@ -468,7 +480,7 @@ public enum DrawWatchStreakLength: TrainingParameterKey {}
     name: "Arena Start Tau",
     description: "Initial sampling temperature for arena games. Tighter than self-play to improve W/L/D signal.",
     default: 0.6,
-    range: 0.05...5.0,
+    range: 0.01...5.0,
     category: "Arena",
     liveTunable: true
 )
@@ -478,7 +490,7 @@ public enum ArenaStartTau: TrainingParameterKey {}
     name: "Arena Target Tau",
     description: "Floor sampling temperature for arena games.",
     default: 0.2,
-    range: 0.05...5.0,
+    range: 0.01...5.0,
     category: "Arena",
     liveTunable: true
 )
@@ -1740,14 +1752,61 @@ public final class TrainingParameters {
     /// race-free in practice.
     nonisolated(unsafe) static var suppressPersistence = false
 
+    /// True only for the duration of one `restoreFromSession` assignment of a
+    /// value outside the declared range. Set and read synchronously on the
+    /// main actor inside that call (assign → didSet → commit is one
+    /// synchronous sequence), like `suppressPersistence`.
+    nonisolated(unsafe) private static var admittingSessionValueOutsideDeclaredRange = false
+
+    /// Session resume's write: restore a resumed `.dcmsession`'s own saved
+    /// value, even when it lies outside the range declared today.
+    ///
+    /// **The one intentional exception to single-path validation.** Every
+    /// other writer is held to the declared range. A resume is different:
+    /// resuming means continuing the saved run exactly, and that run trained
+    /// under its saved values. A range that was narrower when the session was
+    /// saved (or a value the drifted popovers accepted before they enforced
+    /// the declarations) must not turn a resume into a run under different
+    /// hyperparameters. Substituting the current value — what resume used to
+    /// do — was exactly that.
+    ///
+    /// An in-range value is assigned normally (validated and persisted, as
+    /// every resume write always has been). An out-of-range value is logged
+    /// as a `[RESUME-PARAM] WARNING`, held in memory for this run, and never
+    /// persisted to `UserDefaults`: it is the session's value, not an app
+    /// setting, and the next launch's validated load would reject it. A later
+    /// in-range edit replaces and persists normally; a later session save
+    /// carries the restored value forward.
+    func restoreFromSession<K: TrainingParameterKey>(
+        _ key: K.Type,
+        _ value: K.Value,
+        into keyPath: ReferenceWritableKeyPath<TrainingParameters, K.Value>
+    ) {
+        if K.isWithinDeclaration(value) {
+            self[keyPath: keyPath] = value
+            return
+        }
+        let definition = K.definition
+        let rangeText = definition.doubleRange.map { "\($0.min)...\($0.max)" }
+            ?? definition.intRange.map { "\($0.min)...\($0.max)" }
+            ?? "(\(definition.type))"
+        SessionLogger.shared.log(
+            "[RESUME-PARAM] WARNING \(K.id): saved value \(value) is outside the current declared range \(rangeText); "
+                + "restored anyway (a resume runs on the session's own values), held for this run only and not saved to app settings"
+        )
+        Self.admittingSessionValueOutsideDeclaredRange = true
+        defer { Self.admittingSessionValueOutsideDeclaredRange = false }
+        self[keyPath: keyPath] = value
+    }
+
     /// The singleton's setter hook: validate the newly assigned value against
     /// the declared range and, if it passes, persist it to `UserDefaults`
     /// (unless `suppressPersistence`). Returns false for an out-of-range
     /// value, in which case the calling `didSet` restores the previous value.
     ///
     /// This is the backstop behind every other validation site. Writers that
-    /// can show an error — the popovers, the `--parameters` loader, session
-    /// resume — check first with the same `validateAgainstDeclaration`, so a
+    /// can show an error — the popovers, the `--parameters` loader — check
+    /// first with the same `validateAgainstDeclaration`, so a
     /// rejection here means a code path skipped that check; it is logged
     /// loudly rather than trapped, so a stray write can neither crash the app
     /// nor leave the singleton holding a value that disagrees with what is
@@ -1762,6 +1821,13 @@ public final class TrainingParameters {
         do {
             try K.definition.validate(raw)
         } catch {
+            if admittingSessionValueOutsideDeclaredRange {
+                // `restoreFromSession` is holding a resumed session's own
+                // out-of-range value in memory for this run. Never persisted:
+                // it is the session's value, not an app setting, and the
+                // UserDefaults load would reject it on the next launch anyway.
+                return true
+            }
             let message = "[PARAM-REJECTED] \(error.localizedDescription); assignment reverted to the previous value"
             SessionLogger.shared.log(message)
             FileHandle.standardError.write(Data((message + "\n").utf8))

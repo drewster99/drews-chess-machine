@@ -1075,7 +1075,7 @@ struct DrewsChessMachineApp: App {
         // cold-refill resume flags.
         if resumeExact {
             if startModelPath == nil {
-                FileHandle.standardError.write(Data("error: --resume-exact requires --start-model (a checkpoint carrying replay_* metadata)\n".utf8))
+                FileHandle.standardError.write(Data("error: --resume-exact requires --start-model (a checkpoint carrying exact trainer state and replay_* metadata)\n".utf8))
                 Darwin.exit(2)
             }
             if startShard != nil || startGameIndex != nil {
@@ -1139,8 +1139,8 @@ struct DrewsChessMachineApp: App {
     /// "cmd=/path/to/stockfish;n=3;go=nodes 1;UCI_Elo=1400"` declares one
     /// opponent kind (cmd = path, n = instance count, go = per-move limit,
     /// everything else = setoption pairs). Mirrors the --replay-corpus model
-    /// I/O (--start-model, --out-model, --enumerate-checkpoints, --preset,
-    /// --parameters, --training-step-limit, --training-time-limit).
+    /// I/O (--start-model, --resume-exact, --out-model, --enumerate-checkpoints,
+    /// --preset, --parameters, --training-step-limit, --training-time-limit).
     private static func handleTrainVsUciIfPresent(rawArgs: [String]) {
         guard rawArgs.contains("--train-vs-uci") else { return }
 
@@ -1155,6 +1155,7 @@ struct DrewsChessMachineApp: App {
         var stepLimit: Int? = nil
         var timeLimitSec: Double? = nil
         var enumerateCheckpoints = false
+        var resumeExact = false
         var maxPliesPerGame = 400
         var evalSyncEverySteps = 10
 
@@ -1210,10 +1211,17 @@ struct DrewsChessMachineApp: App {
                 evalSyncEverySteps = requireInt(arg, nextValue); i += 2
             case "--enumerate-checkpoints":
                 enumerateCheckpoints = true; i += 1
+            case "--resume-exact":
+                resumeExact = true; i += 1   // boolean flag, no value
             default:
                 FileHandle.standardError.write(Data("error: unexpected argument '\(arg)' (with --train-vs-uci)\n".utf8))
                 Darwin.exit(2)
             }
+        }
+
+        if resumeExact && startModelPath == nil {
+            FileHandle.standardError.write(Data("error: --resume-exact requires --start-model (a checkpoint carrying exact trainer state)\n".utf8))
+            Darwin.exit(2)
         }
 
         // Parse each opponent spec: "cmd=/path;n=3;go=nodes 1;UCI_Elo=1400".
@@ -1298,6 +1306,7 @@ struct DrewsChessMachineApp: App {
             stepLimit: stepLimit,
             timeLimitSec: timeLimitSec,
             startModelPath: startModelPath,
+            resumeExact: resumeExact,
             presetName: presetName,
             outModelPath: outModelPath,
             enumerateCheckpoints: enumerateCheckpoints,

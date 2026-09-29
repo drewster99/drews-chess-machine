@@ -359,26 +359,32 @@ extension SessionController {
                 SessionLogger.shared.log("[CHECKPOINT] Save session aborted at training pause timeout")
                 return
             }
-            var trainerWeights: [[Float]] = []
-            var trainerError: Error?
+            // The complete resumable trainer state: trainables + BN (fp32
+            // masters under mixed precision), momentum velocity, and the
+            // completed-step clock + schedule read under the same pause.
+            // Caller is responsible for pausing both gates, which we did
+            // above.
+            let trainerExport: Result<TrainerResumeSnapshot, Error>
             do {
-                // exportTrainerWeights bundles trainables + bn +
-                // momentum velocity. Caller is responsible for
-                // pausing both gates, which we did above.
-                trainerWeights = try await Task.detached(priority: .userInitiated) {
-                    try await trainer.exportTrainerWeights()
-                }.value
+                trainerExport = .success(try await Task.detached(priority: .userInitiated) {
+                    try await trainer.exportResumeSnapshot()
+                }.value)
             } catch {
-                trainerError = error
+                trainerExport = .failure(error)
             }
             trainingGate.resume()
 
-            if let trainerError {
+            let trainerSnapshot: TrainerResumeSnapshot
+            switch trainerExport {
+            case .success(let snapshot):
+                trainerSnapshot = snapshot
+            case .failure(let trainerError):
                 clearInFlight()
                 checkpoint?.setCheckpointStatus("Save failed (trainer export): \(trainerError.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session failed at trainer export: \(trainerError.localizedDescription)")
                 return
             }
+            let trainerWeights = trainerSnapshot.trainerWeights
 
             // Final write + verify on a detached task so UI stays
             // responsive during the scratch-network build (sub-second).
@@ -392,7 +398,8 @@ extension SessionController {
                 creator: diskTag,
                 trainingStep: trainingStep,
                 parentModelID: championID,
-                notes: "Trainer lineage at session checkpoint (\(diskTag))"
+                notes: "Trainer lineage at session checkpoint (\(diskTag))",
+                trainerSchedule: trainerSnapshot.schedule
             )
             let now = Int64(Date().timeIntervalSince1970)
             // Champion and trainer share a topology; the trainer was built to
@@ -549,7 +556,7 @@ extension SessionController {
             // 3. Apply weights.
             let applyResult: Result<Void, Error> = await Task.detached(priority: .userInitiated) {
                 do {
-                    try await champion.loadWeights(file.weights)
+                    try await champion.loadWeights(file.networkWeights)
                     return .success(())
                 } catch {
                     return .failure(error)

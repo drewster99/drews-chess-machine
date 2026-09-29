@@ -799,7 +799,7 @@ fileprivate struct HumanPlayWindowView: View {
             Slider(
                 value: $playController.humanPlayTau,
                 in: PlayController.humanPlayTauMin...PlayController.humanPlayTauMax,
-                step: 0.05
+                step: 0.01
             )
             .frame(maxWidth: 260)
             Text(String(format: "%.2f", playController.humanPlayTau))

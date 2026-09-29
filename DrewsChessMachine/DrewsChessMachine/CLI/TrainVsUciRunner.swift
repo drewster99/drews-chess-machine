@@ -31,6 +31,15 @@ struct TrainVsUciConfig: Sendable {
     var stepLimit: Int?
     var timeLimitSec: Double?
     var startModelPath: String?
+    /// Continue the `--start-model`'s training exactly: restore its complete
+    /// trainer state (fp32 masters, optimizer velocity, the completed-step
+    /// clock, warmup length and LR/momentum cycle — see
+    /// `TrainerScheduleState`), so warmup does not re-run and the cycle phase
+    /// and decay continue where they stopped. The replay buffer cannot be
+    /// restored — its games were played live and are not persisted — so it
+    /// refills from new games before training resumes. Without this flag,
+    /// `--start-model` starts a new branch (fresh clock, zero velocity).
+    var resumeExact: Bool
     var presetName: String?
     var outModelPath: String?
     var enumerateCheckpoints: Bool
@@ -137,6 +146,8 @@ enum TrainVsUciRunner {
         let arch: NetworkArchitecture
         let startModelFile: ModelCheckpointFile?
         let parentModelID: String
+        // Set only for `--resume-exact` (see `TrainVsUciConfig.resumeExact`).
+        var resumeSnapshot: TrainerResumeSnapshot? = nil
         if let sm = config.startModelPath {
             let url = URL(fileURLWithPath: (sm as NSString).expandingTildeInPath)
             let file = try CheckpointManager.loadModelFile(at: url)
@@ -144,6 +155,9 @@ enum TrainVsUciRunner {
             parentModelID = file.modelID
             arch = file.architecture
             emit("[VS-UCI] start-model: \(url.lastPathComponent) modelID=\(file.modelID) encoding=\(arch.inputEncoding.rawValue)")
+            if config.resumeExact {
+                resumeSnapshot = try TrainerResumeSnapshot(checkpoint: file, fileName: url.lastPathComponent)
+            }
         } else {
             startModelFile = nil
             parentModelID = ""
@@ -174,7 +188,16 @@ enum TrainVsUciRunner {
         // session and corpus replay use — so every trainer-level parameter
         // lands, including the LR/momentum cycle, dropout and the stats /
         // KL-probe intervals.
-        let hp = p.trainer
+        // An exact resume trains under the checkpoint's own schedule — see
+        // `[REPLAY-RESUME]` in CorpusReplayRunner.
+        var resumedHyperparameters = p.trainer
+        if let resumeSnapshot {
+            for line in p.trainer.scheduleDifferences(from: resumeSnapshot.schedule) {
+                emit("[VS-UCI-RESUME] WARNING \(line)")
+            }
+            resumedHyperparameters = p.trainer.adoptingSchedule(resumeSnapshot.schedule)
+        }
+        let hp = resumedHyperparameters
         let trainer = try ChessTrainer(hyperparameters: hp, arch: arch)
         // Field for field with `[REPLAY-HPARAMS]` so the two CLI paths can be
         // diffed directly.
@@ -188,8 +211,6 @@ enum TrainVsUciRunner {
             + " complementCE=\(hp.useSignedAdvantageComplementCE ? "on" : "off")"
             + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
             + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)")
-        // The resolved LR/momentum schedule, once — see `[REPLAY-CYCLE]`.
-        emit("[VS-UCI-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(hp.lrMomentumCycle)) phaseOrigin=segment-step-0")
         let buffer = ReplayBuffer(capacity: p.replayBufferCapacity, inputEncoding: evalNet.inputEncoding)
 
         // Number of base tensors (trainables + BN running stats) — the prefix
@@ -201,15 +222,27 @@ enum TrainVsUciRunner {
             guard file.weights.count >= baseCount else {
                 throw TrainVsUciError.startModelTooSmall(have: file.weights.count, need: baseCount)
             }
-            let base = Array(file.weights.prefix(baseCount))
-            try await evalNet.network.loadWeights(base)
-            try await trainer.loadBaseWeightsResetVelocity(base)
-            emit("[VS-UCI] start-model weights loaded into trainer + play net (base tensors=\(baseCount))")
+            try await evalNet.network.loadWeights(file.networkWeights)
+            if let resumeSnapshot {
+                try await trainer.restoreExactly(from: resumeSnapshot)
+                emit("[VS-UCI] start-model trainer state restored exactly (fp32 masters, velocity, trainerStep=\(trainer.completedTrainSteps)) + play net (base tensors=\(baseCount))")
+            } else {
+                try await trainer.loadBaseWeightsResetVelocity(file.networkWeights)
+                emit("[VS-UCI] start-model weights loaded into trainer + play net (velocity zeroed; new branch) (base tensors=\(baseCount))")
+            }
         } else {
             // Fresh run: seed evalNet from the trainer so both start identical.
             let base = Array((try await trainer.network.exportWeights()).prefix(baseCount))
             try await evalNet.network.loadWeights(base)
         }
+
+        // The resolved LR/momentum schedule, once, with the trainer step it
+        // continues from — see `[REPLAY-CYCLE]`.
+        let launch: TrainerLaunchKind = resumeSnapshot != nil
+            ? .exactResume(ofModelID: parentModelID)
+            : (startModelFile != nil ? .newBranch(fromModelID: parentModelID) : .fresh)
+        emit("[VS-UCI-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(trainer.lrMomentumCycle)) "
+            + LRMomentumCycleLogFormat.scheduleOrigin(of: trainer, launch: launch))
 
         // Build the opponent pool: one UCIArbiter per instance.
         var opponents: [TrainVsUciDriver.Opponent] = []
@@ -258,24 +291,29 @@ enum TrainVsUciRunner {
         func saveTrainerModel(step: Int, reason: String) async throws {
             let encoded: Data
             do {
-                let weights = try await trainer.network.exportWeights()
+                // Complete trainer state, resumable with `--resume-exact`;
+                // `training_step` stays segment-local as in CorpusReplayRunner.
+                // The SGD loop awaits each step, so none is in flight here.
+                let snapshot = try await trainer.exportResumeSnapshot()
+                let weights = snapshot.trainerWeights
                 let metadata = ModelCheckpointMetadata(
                     creator: "train-vs-uci",
                     trainingStep: step,
                     parentModelID: parentModelID,
-                    notes: "train-vs-uci \(reason) @ step \(step)")
+                    notes: "train-vs-uci \(reason) @ step \(step)",
+                    trainerSchedule: snapshot.schedule)
                 encoded = try SafetensorsModelIO.encode(
                     modelID: config.runModelID,
                     createdAtUnix: Int64(Date().timeIntervalSince1970),
                     metadata: metadata,
                     weights: weights,
                     architecture: arch,
-                    includesVelocity: false,
+                    includesVelocity: true,
                     resumeMetadata: [:])
                 try FileManager.default.createDirectory(
                     at: outModelURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try encoded.write(to: outModelURL, options: [.atomic])
-                emit("[VS-UCI] saved trainer model (\(reason)) step=\(step) -> \(outModelURL.lastPathComponent)")
+                emit("[VS-UCI] saved trainer model (\(reason)) step=\(step) trainerStep=\(snapshot.schedule.completedTrainSteps) -> \(outModelURL.lastPathComponent)")
             } catch {
                 try CorpusReplayRunner.reportSaveFailure(error, step: step, what: "trainer-model save (\(reason))")
                 return
@@ -414,6 +452,7 @@ enum TrainVsUciRunner {
                         + " buf=\(buffer.count)"
                         + String(format: " mom=%.4f", liveMomentum)
                         + (cycleValues.learningRate != nil ? " lrCyc" + LRMomentumCycleLogFormat.envelopeBounds(cycleValues) : "")
+                        + " trainerStep=\(observedSteps)"
                     emit(line)
                     // Same cadence as the log line, so results.json and the log
                     // describe the same ticks.

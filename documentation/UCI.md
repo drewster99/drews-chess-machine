@@ -121,7 +121,7 @@ decisive games).
 DrewsChessMachine \
   --train-vs-uci "cmd=<path>;n=<count>;go=<limit>;<Option>=<value>;..." \
   [--train-vs-uci "<second opponent pool>"] \
-  [--start-model <path> | --preset <name>] \
+  [--start-model <path> [--resume-exact] | --preset <name>] \
   --out-model <path> \
   [--enumerate-checkpoints] [--parameters <path>] \
   [--training-step-limit N] [--training-time-limit <seconds>] \
@@ -133,8 +133,18 @@ DrewsChessMachine \
 | scope | where | fields |
 |---|---|---|
 | **per opponent pool** | inside each `--train-vs-uci "…"` (`;`-delimited) | `cmd=` engine path · `n=` instance count · `go=` per-move limit · any other `KEY=VALUE` → `setoption name KEY value VALUE` (`UCI_Elo`, `Skill Level`, `Threads`, `Hash`, …) |
-| **global (whole run)** | top-level flags | `--start-model` / `--preset`, `--out-model`, `--parameters`, `--training-step-limit`, `--training-time-limit`, `--max-plies` (400), `--eval-sync-steps` (10), `--enumerate-checkpoints` |
+| **global (whole run)** | top-level flags | `--start-model` (+ `--resume-exact`) / `--preset`, `--out-model`, `--parameters`, `--training-step-limit`, `--training-time-limit`, `--max-plies` (400), `--eval-sync-steps` (10), `--enumerate-checkpoints` |
 | **hardcoded global** | `UCIArbiter.Configuration` (no flag) | `handshakeTimeout` 10 s, `moveTimeout` 30 s |
+
+`--start-model` alone starts a **new branch**: the file's weights, with a fresh
+trainer clock (warmup and the LR/momentum cycle start from their beginnings) and
+zero optimizer velocity. Add `--resume-exact` to continue that checkpoint's
+training exactly — fp32 master weights, optimizer velocity, the completed-step
+clock, and the warmup length and cycle it trained under are all restored, so
+warmup does not re-run. It needs a checkpoint written with exact trainer state
+(`trainer_*` keys in `__metadata__` plus `opt.*.velocity` tensors); older
+checkpoints are refused. The replay buffer is not persisted, so it refills from
+new games before training resumes.
 
 `--train-vs-uci` is **repeatable** — each is an independent pool with its own
 engine, count, `go`, and options. Two pools may point at the *same* binary with

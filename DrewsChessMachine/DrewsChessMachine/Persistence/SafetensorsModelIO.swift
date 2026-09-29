@@ -27,6 +27,9 @@ enum SafetensorsModelIO {
         /// `[out, in]`, which `fromTorchLayout` would transpose with swapped
         /// dims and silently scramble.
         case tensorDimsMismatch(name: String, expected: [Int], got: [Int])
+        /// Trainer schedule metadata (`trainer_*`) without optimizer velocity
+        /// tensors, on write or read.
+        case trainerScheduleWithoutVelocity
 
         var description: String {
             switch self {
@@ -40,6 +43,9 @@ enum SafetensorsModelIO {
                 return "safetensors model: tensor '\(name)' is stored with shape \(got) but the embedded "
                     + "architecture's plan expects \(expected) — same element count is not enough, the "
                     + "dimensions decide how the tensor is un-transposed on load"
+            case .trainerScheduleWithoutVelocity:
+                return "safetensors model: trainer schedule metadata (trainer_*) without optimizer velocity "
+                    + "tensors — exact-resume state must travel with the velocity it was captured alongside"
             }
         }
     }
@@ -110,6 +116,12 @@ enum SafetensorsModelIO {
             Key.notes: metadata.notes,
         ]
         if let step = metadata.trainingStep { md[Key.trainingStep] = String(step) }
+        // Exact-resume state travels only with the optimizer velocity it was
+        // captured alongside; one without the other is not resumable.
+        if let schedule = metadata.trainerSchedule {
+            guard includesVelocity else { throw IOError.trainerScheduleWithoutVelocity }
+            for (key, value) in try schedule.metadataEntries() { md[key] = value }
+        }
         // Every save marks the value head centered, so a file is recentered
         // at most once in its life and every new file round-trips bit-exactly
         // (see `ValueHeadRecentering`).
@@ -122,11 +134,11 @@ enum SafetensorsModelIO {
         // current decode ignores unknown keys, so this is purely additive. Never
         // overwrite a reserved key (the caller prefixes avoid collision anyway).
         if let rm = resumeMetadata {
-            let reserved: Set<String> = [
+            let reserved = Set([
                 Key.formatVersion, Key.modelID, Key.createdAt, Key.creator,
                 Key.trainingStep, Key.parentModelID, Key.notes, Key.architecture,
                 ValueHeadRecentering.metadataKey,
-            ]
+            ] + TrainerScheduleState.MetadataKey.all)
             for (k, v) in rm where !reserved.contains(k) { md[k] = v }
         }
 
@@ -244,11 +256,16 @@ enum SafetensorsModelIO {
             valueHeadCentering = .keptAsStored
         }
 
+        let trainerSchedule = try TrainerScheduleState.decode(fromMetadata: md)
+        if trainerSchedule != nil && !hasVelocity {
+            throw IOError.trainerScheduleWithoutVelocity
+        }
         let metadata = ModelCheckpointMetadata(
             creator: md[Key.creator] ?? "",
             trainingStep: md[Key.trainingStep].flatMap { Int($0) },
             parentModelID: md[Key.parentModelID] ?? "",
-            notes: md[Key.notes] ?? ""
+            notes: md[Key.notes] ?? "",
+            trainerSchedule: trainerSchedule
         )
         let file = ModelCheckpointFile(
             modelID: md[Key.modelID] ?? "",

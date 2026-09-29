@@ -230,7 +230,7 @@ final class TrainerHyperparametersTests: XCTestCase {
         // A valid change alongside the invalid one: all-or-nothing means the
         // valid one must not land either.
         let differentLearningRate = learningRateBefore == 0.0042 ? 0.0043 : 0.0042
-        let json = "{\"learning_rate\": \(differentLearningRate), \"self_play_target_tau\": 0.02}"
+        let json = "{\"learning_rate\": \(differentLearningRate), \"self_play_target_tau\": 0.005}"
         try Data(json.utf8).write(to: url)
         defer {
             do {
@@ -243,7 +243,7 @@ final class TrainerHyperparametersTests: XCTestCase {
             _ = try CliTrainingConfig.loadAndApplyTransiently(path: url.path)
             XCTFail("an out-of-range value must be rejected")
         } catch {
-            XCTAssertEqual(error.localizedDescription, "Value 0.02 is out of range for parameter 'self_play_target_tau'")
+            XCTAssertEqual(error.localizedDescription, "Value 0.005 is out of range for parameter 'self_play_target_tau'")
         }
         XCTAssertEqual(p.learningRate, learningRateBefore)
         XCTAssertEqual(p.selfPlayTargetTau, targetTauBefore)
@@ -254,10 +254,10 @@ final class TrainerHyperparametersTests: XCTestCase {
     func test_singletonSetter_revertsAnOutOfRangeAssignment() {
         let p = TrainingParameters.shared
         p.selfPlayTargetTau = 0.5
-        p.selfPlayTargetTau = 0.02
+        p.selfPlayTargetTau = 0.005
         XCTAssertEqual(p.selfPlayTargetTau, 0.5)
         p.arenaTargetTau = 0.2
-        p.arenaTargetTau = 0.02
+        p.arenaTargetTau = 0.005
         XCTAssertEqual(p.arenaTargetTau, 0.2)
     }
 
@@ -266,15 +266,15 @@ final class TrainerHyperparametersTests: XCTestCase {
         p.selfPlayTargetTau = 0.5
         let model = TrainingSettingsPopoverModel(selfPlayDelayMaxMs: 10_000, stepDelayMaxMs: 10_000, maxSelfPlayWorkers: 8192)
         model.seedFromParams()
-        model.selfPlayFloorTauText = "0.02"
+        model.selfPlayFloorTauText = "0.005"
         model.save()
         XCTAssertTrue(model.selfPlayFloorTauError)
         XCTAssertEqual(p.selfPlayTargetTau, 0.5)
 
-        model.selfPlayFloorTauText = "0.05"
+        model.selfPlayFloorTauText = "0.01"
         model.save()
         XCTAssertFalse(model.selfPlayFloorTauError)
-        XCTAssertEqual(p.selfPlayTargetTau, 0.05)
+        XCTAssertEqual(p.selfPlayTargetTau, 0.01)
     }
 
     func test_arenaPopover_rejectsATauFloorBelowTheDeclaredRange() {
@@ -286,15 +286,15 @@ final class TrainerHyperparametersTests: XCTestCase {
             parseDurationSpec: { Double($0.replacingOccurrences(of: "s", with: "")) }
         )
         model.seedFromParams()
-        model.tauFloorText = "0.02"
+        model.tauFloorText = "0.005"
         model.save()
         XCTAssertTrue(model.tauFloorError)
         XCTAssertEqual(p.arenaTargetTau, 0.2)
     }
 
     func test_parsedInDeclaredRange_matchesTheDeclaration() {
-        XCTAssertNil(SelfPlayTargetTau.parsedInDeclaredRange("0.02"))
-        XCTAssertEqual(SelfPlayTargetTau.parsedInDeclaredRange(" 0.05 "), 0.05)
+        XCTAssertNil(SelfPlayTargetTau.parsedInDeclaredRange("0.005"))
+        XCTAssertEqual(SelfPlayTargetTau.parsedInDeclaredRange(" 0.01 "), 0.01)
         XCTAssertNil(SelfPlayTargetTau.parsedInDeclaredRange("nan"))
         XCTAssertNil(SelfPlayTargetTau.parsedInDeclaredRange("abc"))
         XCTAssertNil(LRWarmupSteps.parsedInDeclaredRange("-1"))

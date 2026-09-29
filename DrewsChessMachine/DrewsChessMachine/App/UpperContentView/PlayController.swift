@@ -201,7 +201,7 @@ final class PlayController {
     /// observable property.
     let humanPlayTauBox: SyncBox<Float>
 
-    static let humanPlayTauMin: Float = 0.05
+    static let humanPlayTauMin: Float = 0.01
     static let humanPlayTauMax: Float = 3.0
     private static let humanPlayTauKey = "humanPlayTau"
 
@@ -971,7 +971,7 @@ final class PlayController {
             }
             do {
                 let file = try CheckpointManager.loadModelFile(at: url)
-                let net = try await Self.buildInferenceNetwork(loading: file.weights, arch: file.architecture)
+                let net = try await Self.buildInferenceNetwork(loading: file.networkWeights, arch: file.architecture)
                 let label = loadedFileLabel ?? url.lastPathComponent
                 currentOpponentDescription = "File · \(label) · \(file.modelID)"
                 return .success(DirectMoveEvaluationSource(network: net))

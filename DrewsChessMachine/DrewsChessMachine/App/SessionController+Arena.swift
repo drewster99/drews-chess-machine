@@ -117,17 +117,29 @@ extension SessionController {
         // the candidate weights back into the trainer — the velocity
         // that built the validated candidate is the right velocity
         // for the candidate's weight surface.
+        //
+        // And the trainer's completed-step clock at this same paused instant:
+        // on promotion the trainer is rewound to these weights, so its clock
+        // (which drives warmup, the LR/momentum cycle phase and the decay
+        // envelope) is rewound to the step count that produced them. Read
+        // here, under the pause, rather than taken from the stats box's step
+        // count at arena begin — that count is read before the pause (a few
+        // steps can land in between) and, after "New Session, keep trainer",
+        // restarts at zero while the trainer's clock carries on.
         var trainerSnapshotWeights: [[Float]] = []
         var trainerSnapshotVelocity: [[Float]] = []
+        var trainerSnapshotCompletedSteps = 0
         do {
-            let snapshot: ([[Float]], [[Float]]) = try await Task.detached(priority: .userInitiated) {
+            let snapshot: ([[Float]], [[Float]], Int) = try await Task.detached(priority: .userInitiated) {
                 let weights = try await trainer.network.exportWeights()
                 let velocity = try await trainer.exportVelocitySnapshot()
+                let completedSteps = trainer.completedTrainSteps
                 try await candidateInference.loadWeights(weights)
-                return (weights, velocity)
+                return (weights, velocity, completedSteps)
             }.value
             trainerSnapshotWeights = snapshot.0
             trainerSnapshotVelocity = snapshot.1
+            trainerSnapshotCompletedSteps = snapshot.2
         } catch {
             trainingBox?.recordError("Arena candidate sync failed: \(error.localizedDescription)")
             trainingGate.resume()
@@ -347,7 +359,7 @@ extension SessionController {
             if !Task.isCancelled {
                 do {
                     promotedChampionWeights = try await Task.detached(priority: .userInitiated) {
-                        [candidateInference, champion, trainer, trainerSnapshotVelocity, steps] in
+                        [candidateInference, champion, trainer, trainerSnapshotVelocity, trainerSnapshotCompletedSteps] in
                         let weights = try await candidateInference.exportWeights()
                         try await champion.loadWeights(weights)
                         // Open the replacement window; the trainer's new
@@ -380,7 +392,7 @@ extension SessionController {
                         // the LR warmup multiplier to jump ahead of
                         // the weights and drive the immature network
                         // into collapse with an oversized LR.
-                        trainer.completedTrainSteps = steps
+                        trainer.completedTrainSteps = trainerSnapshotCompletedSteps
                         return weights
                     }.value
                     // Promoted: champion now holds the arena candidate's
@@ -543,11 +555,19 @@ extension SessionController {
                 parentModelID: "",
                 notes: "Post-arena autosave after promotion"
             )
+            // The trainer was rewound to exactly this state on promotion:
+            // arena-start weights and velocity, the clock captured with them,
+            // and the schedule it is running.
             let trainerMetadata = ModelCheckpointMetadata(
                 creator: "promote",
                 trainingStep: trainingStats?.steps ?? 0,
                 parentModelID: championID,
-                notes: "Trainer lineage at arena-start pause with optimizer velocity"
+                notes: "Trainer lineage at arena-start pause with optimizer velocity",
+                trainerSchedule: TrainerScheduleState(
+                    completedTrainSteps: trainerSnapshotCompletedSteps,
+                    lrWarmupSteps: trainer.lrWarmupSteps,
+                    lrMomentumCycle: trainer.lrMomentumCycle
+                )
             )
             let createdAtUnix = Int64(Date().timeIntervalSince1970)
             // Copy captured arrays for clean Sendable semantics

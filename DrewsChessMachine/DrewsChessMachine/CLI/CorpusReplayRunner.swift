@@ -64,13 +64,17 @@ struct CorpusReplayConfig: Sendable {
     /// the per-shard game counts into a `(shard, within-shard offset)` start.
     /// Mutually exclusive with `startShard`.
     var startGameIndex: Int?
-    /// Exact resume (Phase 2): reconstruct the replay buffer to its contents at
-    /// the `--start-model`'s saved `next_game_index` (feed the preceding
-    /// capacity-worth of games so the ring self-trims to the exact last-C plies),
-    /// continue from there, and use a minimal momentum-refill warm-up instead of
-    /// the cold-start one. Requires a `--start-model` carrying `replay_*`
+    /// Exact resume: continue training exactly as if the `--start-model`'s run
+    /// had never stopped. Restores the checkpoint's complete trainer state —
+    /// fp32 masters, optimizer velocity, the completed-step clock that drives
+    /// warmup, the cycle phase and the decay envelope, and the warmup length
+    /// and cycle themselves (see `TrainerScheduleState`) — so warmup does not
+    /// re-run; and reconstructs the replay buffer to its contents at the saved
+    /// `next_game_index` (feed the preceding capacity-worth of games so the
+    /// ring self-trims to the exact last-C plies) before continuing from there.
+    /// Requires a `--start-model` carrying that trainer state and `replay_*`
     /// metadata for this same corpus; mutually exclusive with `startShard` /
-    /// `startGameIndex`.
+    /// `startGameIndex`. Without it, `--start-model` starts a new branch.
     var resumeExact: Bool = false
     /// Explicit destination for the rolling trainer-model file. When nil the
     /// runner derives a path next to `--start-model` (or inside the first
@@ -254,6 +258,10 @@ enum CorpusReplayRunner {
         let arch: NetworkArchitecture
         let startModelFile: ModelCheckpointFile?
         let parentModelID: String
+        // Set only for `--resume-exact`: the start model's full trainer state.
+        // Without the flag a `--start-model` launch is a new branch — its
+        // weights seed a trainer whose clock, warmup and velocity start fresh.
+        var resumeSnapshot: TrainerResumeSnapshot? = nil
         if let sm = config.startModelPath {
             let url = URL(fileURLWithPath: (sm as NSString).expandingTildeInPath)
             let file = try CheckpointManager.loadModelFile(at: url)
@@ -261,6 +269,14 @@ enum CorpusReplayRunner {
             parentModelID = file.modelID
             arch = file.architecture
             emit("[REPLAY] start-model: \(url.lastPathComponent) modelID=\(file.modelID) encoding=\(arch.inputEncoding.rawValue)")
+            if config.resumeExact {
+                do {
+                    resumeSnapshot = try TrainerResumeSnapshot(checkpoint: file, fileName: url.lastPathComponent)
+                } catch {
+                    FileHandle.standardError.write(Data("error: --resume-exact: \(error.localizedDescription)\n".utf8))
+                    Darwin.exit(2)
+                }
+            }
         } else {
             startModelFile = nil
             parentModelID = ""
@@ -287,7 +303,19 @@ enum CorpusReplayRunner {
         // Numeric knobs via String(format:) (%ld for Int, %g for Double); the
         // two on/off flags are interpolated rather than passed through %@ (Swift
         // String + %@ relies on NSString bridging — avoid it).
-        let hp = p.trainer
+        //
+        // An exact resume trains under the checkpoint's own schedule (warmup
+        // length and LR/momentum cycle), whatever `--parameters` says; each
+        // field that differs is logged, and the banner below shows the
+        // schedule actually in force.
+        var trainerHyperparameters = p.trainer
+        if let resumeSnapshot {
+            for line in p.trainer.scheduleDifferences(from: resumeSnapshot.schedule) {
+                emit("[REPLAY-RESUME] WARNING \(line)")
+            }
+            trainerHyperparameters = p.trainer.adoptingSchedule(resumeSnapshot.schedule)
+        }
+        let hp = trainerHyperparameters
         let hparamsLine = String(
             format: "[REPLAY-HPARAMS] lr=%.6g batch=%ld wd=%.4g momentum=%.3g gradClip=%.3g entropyBonus=%.4g drawPenalty=%.4g policyW=%.3g valueW=%.3g illegalW=%.4g pLabelSmooth=%.4g vLabelSmooth=%.4g dropout=%.4g lrWarmup=%ld bufCap=%ld replayRatio=%.3g minPrefill=%ld",
             Double(hp.learningRate), p.trainingBatchSize, Double(hp.weightDecayC), Double(hp.momentumCoeff), Double(hp.gradClipMaxNorm),
@@ -300,13 +328,6 @@ enum CorpusReplayRunner {
             + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
             + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)"
         emit(hparamsLine)
-        // The resolved LR/momentum schedule, once. `lr=off` / `mom=off` means
-        // that channel trains at the static `lr=` / `momentum=` above; anything
-        // else overrides them, so a misconfigured schedule is visible here
-        // rather than only in the loss curve.
-        // The cycle's phase is a function of this trainer's completed-step
-        // count, which starts at zero for every replay segment.
-        emit("[REPLAY-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(hp.lrMomentumCycle)) phaseOrigin=segment-step-0")
         // Resolve the corpus + resume start BEFORE building the (expensive)
         // network/trainer, so a bad --start-shard / --start-game-index (or an
         // empty corpus) fails in milliseconds instead of after a multi-second
@@ -432,17 +453,6 @@ enum CorpusReplayRunner {
         // `reconstructUntil` once the buffer is rebuilt.
         let startGlobalIndex = cumGames[startShardCursor] + startWithinShardSkip
 
-        // Warm-up: on an exact resume the weights AND the (reconstructed) buffer
-        // are both warm — only SGD momentum is cold — so use a short
-        // momentum-refill ramp (~50 steps at momentum 0.9, ~5 time constants)
-        // rather than the cold-start warm-up. Never exceed the configured value.
-        var trainerHyperparameters = p.trainer
-        if config.resumeExact {
-            let momentumRefillWarmupSteps = min(50, p.trainer.lrWarmupSteps)
-            SessionLogger.shared.log("[REPLAY] --resume-exact: lrWarmupSteps \(p.trainer.lrWarmupSteps) -> \(momentumRefillWarmupSteps) (momentum-refill)")
-            trainerHyperparameters.lrWarmupSteps = momentumRefillWarmupSteps
-        }
-
         emit("[REPLAY] building network + trainer (encoding=\(arch.inputEncoding.rawValue))")
         let net = try ChessMPSNetwork(.randomWeights, arch: arch)
         // Configured through `TrainerHyperparameters` — the same path the GUI
@@ -454,33 +464,47 @@ enum CorpusReplayRunner {
         let buffer = ReplayBuffer(capacity: p.replayBufferCapacity, inputEncoding: net.inputEncoding)
         let feeder = CorpusReplayFeeder(network: net, buffer: buffer)
 
-        // Seed both the trainer (the network that actually learns) and the
-        // feeder net (computes the value baseline while feeding) from the start
-        // model's base weights — exactly trainables + BN running stats. A
-        // trainer source file carries optimizer velocity after that block, so
-        // take the leading base prefix (same rule as ProbeModelCLI /
-        // UCIModelLoader).
+        // Seed the feeder net (computes the value baseline while feeding) from
+        // the start model's own tensors — trainables + BN running stats, the
+        // prefix of a trainer-state file that also carries optimizer velocity.
+        // The feeder is a plain inference network (no masters/velocity), so a
+        // direct `loadWeights` is correct there.
         //
-        // The trainer must be seeded via `loadBaseWeightsResetVelocity`, NOT a
-        // bare `network.loadWeights`: under the canonical bf16 mixed-precision
-        // path the optimizer steps the fp32 *master* weights and re-derives the
-        // bf16 working copy from them each step. Writing only the working copy
-        // would leave the masters at random init, and the first SGD step would
-        // overwrite our loaded weights with that random surface. This call
-        // writes the working copy, seeds the fp32 masters from the same values,
-        // and zeros optimizer velocity (a fresh fork — momentum re-accumulates).
-        // The feeder net is a plain inference network (no masters/velocity), so
-        // a direct `loadWeights` is correct there.
+        // The trainer, by launch kind:
+        // - `--resume-exact`: `restoreExactly` — fp32 masters, working copy,
+        //   optimizer velocity, the completed-step clock, warmup length and
+        //   cycle, all from the checkpoint. Training continues exactly as if
+        //   the previous segment had never stopped; warmup does not re-run.
+        // - `--start-model` alone: a new branch. `loadBaseWeightsResetVelocity`
+        //   seeds the working copy and the fp32 masters from the file (a bare
+        //   `network.loadWeights` would leave the masters at random init and the
+        //   first SGD step would overwrite the loaded weights with them) and
+        //   zeros velocity; the clock stays at zero, so warmup and the cycle
+        //   start from their beginnings.
         if let file = startModelFile {
             let baseCount = net.network.trainableVariables.count + net.network.bnRunningStatsVariables.count
             guard file.weights.count >= baseCount else {
                 throw CorpusReplayError.startModelTooSmall(have: file.weights.count, need: baseCount)
             }
-            let base = Array(file.weights.prefix(baseCount))
-            try await net.network.loadWeights(base)
-            try await trainer.loadBaseWeightsResetVelocity(base)
-            emit("[REPLAY] start-model weights loaded into trainer (working+masters, velocity zeroed) + feeder net (base tensors=\(baseCount))")
+            try await net.network.loadWeights(file.networkWeights)
+            if let resumeSnapshot {
+                try await trainer.restoreExactly(from: resumeSnapshot)
+                emit("[REPLAY] start-model trainer state restored exactly (fp32 masters, velocity, trainerStep=\(trainer.completedTrainSteps)) + feeder net (base tensors=\(baseCount))")
+            } else {
+                try await trainer.loadBaseWeightsResetVelocity(file.networkWeights)
+                emit("[REPLAY] start-model weights loaded into trainer (working+masters, velocity zeroed; new branch) + feeder net (base tensors=\(baseCount))")
+            }
         }
+        // The resolved LR/momentum schedule, once, with the trainer step its
+        // phase and decay continue from. `lr=off` / `mom=off` means that
+        // channel trains at the static `lr=` / `momentum=` in the banner;
+        // anything else overrides them, so a misconfigured schedule is visible
+        // here rather than only in the loss curve.
+        let launch: TrainerLaunchKind = resumeSnapshot != nil
+            ? .exactResume(ofModelID: parentModelID)
+            : (startModelFile != nil ? .newBranch(fromModelID: parentModelID) : .fresh)
+        emit("[REPLAY-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(trainer.lrMomentumCycle)) "
+            + LRMomentumCycleLogFormat.scheduleOrigin(of: trainer, launch: launch))
 
         // Rolling trainer-model output file. The same file is overwritten by
         // the periodic autosave and by the final save on exit/abort, so it
@@ -517,7 +541,7 @@ enum CorpusReplayRunner {
         }()
         emit("[REPLAY] trainer-model output: \(outModelURL.path)")
 
-        // Export the trainer's current base weights and overwrite the rolling
+        // Export the trainer's complete state and overwrite the rolling
         // output file. Failure handling splits on cause (see reportSaveFailure):
         // a disk-full (ENOSPC) failure is FATAL — it alarms and throws so the run
         // halts rather than training on into a window where nothing persists; any
@@ -541,12 +565,21 @@ enum CorpusReplayRunner {
             // non-fatal WARNING and we skip the enumerated copy (it would fail too).
             let encoded: Data
             do {
-                let weights = try await trainer.network.exportWeights()
+                // The complete trainer state — fp32 masters, optimizer velocity
+                // and the schedule clock — so any of these files can be
+                // continued exactly with `--resume-exact`. `training_step`
+                // stays segment-local (the replay tracker adds each segment's
+                // `cumstep_base` to it); the cumulative clock is
+                // `trainer_completed_steps`. The loop is sequential, so no SGD
+                // step is in flight during the export.
+                let snapshot = try await trainer.exportResumeSnapshot()
+                let weights = snapshot.trainerWeights
                 let metadata = ModelCheckpointMetadata(
                     creator: "replay",
                     trainingStep: step,
                     parentModelID: parentModelID,
-                    notes: "corpus replay \(reason) @ step \(step)"
+                    notes: "corpus replay \(reason) @ step \(step)",
+                    trainerSchedule: snapshot.schedule
                 )
                 let resumeMeta: [String: String] = [
                     "replay_corpus_id": corpusID,
@@ -564,7 +597,7 @@ enum CorpusReplayRunner {
                     metadata: metadata,
                     weights: weights,
                     architecture: arch,
-                    includesVelocity: false,
+                    includesVelocity: true,
                     resumeMetadata: resumeMeta
                 )
                 try FileManager.default.createDirectory(
@@ -572,7 +605,7 @@ enum CorpusReplayRunner {
                     withIntermediateDirectories: true
                 )
                 try encoded.write(to: outModelURL, options: [.atomic])
-                emit("[REPLAY] saved trainer model (\(reason)) step=\(step) nextGame=\(nextGameIndex) shard=\(shard) epoch=\(epoch) -> \(outModelURL.lastPathComponent)")
+                emit("[REPLAY] saved trainer model (\(reason)) step=\(step) trainerStep=\(snapshot.schedule.completedTrainSteps) nextGame=\(nextGameIndex) shard=\(shard) epoch=\(epoch) -> \(outModelURL.lastPathComponent)")
             } catch {
                 // Throws on disk-full (halt); returns on any other failure (non-fatal).
                 try Self.reportSaveFailure(error, step: step, what: "trainer-model save (\(reason))")
@@ -602,7 +635,7 @@ enum CorpusReplayRunner {
         }
 
         let batchSize = max(1, p.trainingBatchSize)
-        let reuse = max(0.01, p.replayRatioTarget)
+        let reuse = p.replayRatioTarget
         // Positions to feed per step so each is sampled ~`reuse` times before
         // eviction: K = batchSize / R.
         let perStepFeed = max(1, Int((Double(batchSize) / reuse).rounded()))
@@ -774,6 +807,7 @@ enum CorpusReplayRunner {
                     + " buf=\(buffer.count) plies=\(positionsFed) games=\(gamesFed) epoch=\(epochsCompleted)"
                     + String(format: " mom=%.4f", liveMomentum)
                     + (cycleValues.learningRate != nil ? " lrCyc" + LRMomentumCycleLogFormat.envelopeBounds(cycleValues) : "")
+                    + " trainerStep=\(observedSteps)"
                 emit(line)
                 // Same cadence as the log line, so results.json and the log
                 // describe the same ticks.

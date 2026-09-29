@@ -220,7 +220,7 @@ actor LichessBotModelSlots {
                     let bytes = try Data(contentsOf: url)
                     let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
                     let snapshot = LichessBotWeightsSnapshot(
-                        weights: file.weights,
+                        weights: file.networkWeights,
                         architecture: file.architecture,
                         modelID: file.modelID,
                         trainingStep: file.metadata.trainingStep

@@ -970,24 +970,31 @@ final class SessionController {
     /// Build a `SamplingSchedule` for self-play from the live tau parameters.
     /// Dirichlet noise matches the `.selfPlay` preset (AlphaZero noise) — not
     /// exposed in the UI; only the temperature schedule is editable.
+    ///
+    /// The parameters are passed through as they are: their declared ranges
+    /// are the single source of truth for what τ may be, and every writer is
+    /// held to them (session resume's out-of-range restore is logged). A
+    /// hidden floor here would silently run a different τ than the one
+    /// displayed, logged and saved.
     func buildSelfPlaySchedule() -> SamplingSchedule {
         let params = TrainingParameters.shared
         return SamplingSchedule(
-            startTau: Float(max(0.01, params.selfPlayStartTau)),
-            decayPerPly: Float(max(0.0, params.selfPlayTauDecayPerPly)),
-            floorTau: Float(max(0.01, params.selfPlayTargetTau)),
+            startTau: Float(params.selfPlayStartTau),
+            decayPerPly: Float(params.selfPlayTauDecayPerPly),
+            floorTau: Float(params.selfPlayTargetTau),
             dirichletNoise: SamplingSchedule.selfPlay.dirichletNoise
         )
     }
 
-    /// Build a `SamplingSchedule` for arena play from the live tau parameters.
-    /// Arena never applies Dirichlet noise (pure strength measurement).
+    /// Build a `SamplingSchedule` for arena play from the live tau parameters,
+    /// passed through as they are (see `buildSelfPlaySchedule`). Arena never
+    /// applies Dirichlet noise (pure strength measurement).
     func buildArenaSchedule() -> SamplingSchedule {
         let params = TrainingParameters.shared
         return SamplingSchedule(
-            startTau: Float(max(0.01, params.arenaStartTau)),
-            decayPerPly: Float(max(0.0, params.arenaTauDecayPerPly)),
-            floorTau: Float(max(0.01, params.arenaTargetTau))
+            startTau: Float(params.arenaStartTau),
+            decayPerPly: Float(params.arenaTauDecayPerPly),
+            floorTau: Float(params.arenaTargetTau)
         )
     }
 

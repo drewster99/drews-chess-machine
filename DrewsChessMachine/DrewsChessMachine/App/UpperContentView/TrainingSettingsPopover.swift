@@ -1306,7 +1306,7 @@ private struct SelfPlayTab: View {
                             fallback: 1.0,
                             format: "%.2f"
                         ),
-                        in: 0.05...5.0,
+                        in: SelfPlayStartTau.declaredClosedRange,
                         step: 0.05
                     )
                 }
@@ -1348,12 +1348,12 @@ private struct SelfPlayTab: View {
                             fallback: 0.40,
                             format: "%.2f"
                         ),
-                        in: 0.05...5.0,
+                        in: SelfPlayTargetTau.declaredClosedRange,
                         step: 0.05
                     )
                 }
-                // Soft advisory: the popover validates start/floor in
-                // [0.01, 5.0] but values that pass validation can
+                // Soft advisory: the popover validates start/floor against
+                // their declared ranges, but values that pass validation can
                 // still produce near-uniform sampling at every ply
                 // (e.g. floor=5.0 keeps softmax flat regardless of
                 // decay). Warn when either the steady-state floor or

@@ -73,6 +73,42 @@ struct ModelCheckpointMetadata: Codable, Equatable {
     let parentModelID: String
     /// Short free-form note for the human reading the folder.
     let notes: String
+    /// The trainer's step clock, warmup length and LR/momentum cycle at the
+    /// moment the file was written — present exactly on trainer-state files
+    /// written for exact resume (see `TrainerScheduleState`), nil on plain
+    /// model files and on trainer files written before exact resume existed.
+    /// Safetensors only: it rides in `__metadata__` under the `trainer_*`
+    /// keys and is deliberately not part of this struct's `Codable` form, so
+    /// the legacy `.dcmmodel` writer refuses a file that carries one rather
+    /// than dropping it.
+    let trainerSchedule: TrainerScheduleState?
+
+    private enum CodingKeys: String, CodingKey {
+        case creator, trainingStep, parentModelID, notes
+    }
+
+    init(
+        creator: String,
+        trainingStep: Int?,
+        parentModelID: String,
+        notes: String,
+        trainerSchedule: TrainerScheduleState? = nil
+    ) {
+        self.creator = creator
+        self.trainingStep = trainingStep
+        self.parentModelID = parentModelID
+        self.notes = notes
+        self.trainerSchedule = trainerSchedule
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        creator = try container.decode(String.self, forKey: .creator)
+        trainingStep = try container.decodeIfPresent(Int.self, forKey: .trainingStep)
+        parentModelID = try container.decode(String.self, forKey: .parentModelID)
+        notes = try container.decode(String.self, forKey: .notes)
+        trainerSchedule = nil
+    }
 }
 
 // MARK: - Binary format
@@ -254,12 +290,30 @@ struct ModelCheckpointFile {
         self.valueHeadCentering = valueHeadCentering
     }
 
+    /// Count of the model's own tensors (trainables + BN running stats) —
+    /// the prefix of `weights` every network-loading consumer wants.
+    var networkTensorCount: Int { architecture.weightTensorPlan().count }
+
+    /// The model's own tensors, without any optimizer state a trainer-state
+    /// file appends after them. What an inference network, a feeder net or a
+    /// fresh-fork trainer loads.
+    var networkWeights: [[Float]] { Array(weights.prefix(networkTensorCount)) }
+
+    /// True when `weights` carries optimizer velocity after the model's own
+    /// tensors (a trainer-state file).
+    var includesOptimizerVelocity: Bool { weights.count > networkTensorCount }
+
     // MARK: Encoding
 
     /// Serialize the checkpoint to a `Data` blob including the
     /// trailing SHA-256. Caller writes the result atomically to
     /// disk.
     func encode() throws -> Data {
+        if metadata.trainerSchedule != nil {
+            throw ModelCheckpointError.encodingFailed(
+                "the legacy .dcmmodel format cannot carry trainer schedule state; save as .safetensors"
+            )
+        }
         // The .dcmmodel reader is positional and embeds no config — it can only
         // resolve a fixed set of historical preset hashes back to an
         // architecture (`decode`'s `legacyDcmmodelArchHashes` lookup). Stamping a

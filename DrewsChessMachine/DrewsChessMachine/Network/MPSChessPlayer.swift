@@ -442,14 +442,14 @@ final class MPSChessPlayer: ChessPlayer {
 
     /// Resolve the schedule to use for this ply. When `tauOverride` is
     /// set, build a flat-tau schedule from the box's current value;
-    /// otherwise return the player's static `schedule`. The flat
-    /// override clamps the box's value to the legal range
-    /// (`SamplingSchedule` preconditions require positive tau and
-    /// non-negative decay) so a stray 0 from a UI race doesn't crash
-    /// `MoveSampler`.
+    /// otherwise return the player's static `schedule`. The box is only
+    /// ever written from `PlayController.humanPlayTau`, which holds it to
+    /// `humanPlayTauMin...humanPlayTauMax` — the single source of truth for
+    /// that range — so it is used as is. (A floor here used to raise every
+    /// τ below its own value silently, overriding the slider.)
     private func effectiveSchedule() -> SamplingSchedule {
         guard let box = tauOverride else { return schedule }
-        let tau = max(0.05, box.value)
+        let tau = box.value
         return SamplingSchedule(startTau: tau, decayPerPly: 0, floorTau: tau)
     }
 }
