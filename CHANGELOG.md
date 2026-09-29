@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-29 CDT — Lichess bot: challenge alert tones; defaults are now the owner's settings (pending commit)
+## 2026-09-29 CDT — Lichess bot: challenge alert tones; defaults are now the owner's settings (`c5542b8`)
 
 **The bot's settings format changed (a new Alerts section): after updating, click Reset to Defaults in the bot's Settings once** (no migration, by decision, as before).
 
