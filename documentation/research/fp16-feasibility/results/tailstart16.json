@@ -1,0 +1,98 @@
+{
+ "20260727-1-Ejp0@681000": {
+  "bf16 per-op body, tail from final conv (plan)": {
+   "p_kl": 0.00016475121537163425,
+   "p_kl_max": 0.00494236486214172,
+   "p_top1_lost": 0.010169491525423728
+  },
+  "bf16 per-op body, tail from pre-BN normalize": {
+   "p_kl": 0.0001243026351339834,
+   "p_kl_max": 0.0043207839745399886,
+   "p_top1_lost": 0.010169491525423728
+  },
+  "bf16 per-op body, tail from pre-conv": {
+   "p_kl": 0.00011292607172387237,
+   "p_kl_max": 0.002991341335510475,
+   "p_top1_lost": 0.00847457627118644
+  },
+  "fp16 per-op body, tail from final conv (plan)": {
+   "p_kl": 2.8691328887852293e-06,
+   "p_kl_max": 0.000122926674349533,
+   "p_top1_lost": 0.000847457627118644
+  },
+  "fp16 per-op body, tail from pre-BN normalize": {
+   "p_kl": 2.1214925883393834e-06,
+   "p_kl_max": 0.00012733106016068812,
+   "p_top1_lost": 0.000847457627118644
+  },
+  "fp16 per-op body, tail from pre-conv": {
+   "p_kl": 1.9653066185922727e-06,
+   "p_kl_max": 0.0001324372147183104,
+   "p_top1_lost": 0.000847457627118644
+  }
+ },
+ "20260714-1-h7vI@336610": {
+  "bf16 per-op body, tail from final conv (plan)": {
+   "p_kl": 0.0019925847985202646,
+   "p_kl_max": 0.014178070255096898,
+   "p_top1_lost": 0.043220338983050846
+  },
+  "bf16 per-op body, tail from pre-BN normalize": {
+   "p_kl": 0.0002927033166471371,
+   "p_kl_max": 0.008827533911352502,
+   "p_top1_lost": 0.017796610169491526
+  },
+  "bf16 per-op body, tail from pre-conv": {
+   "p_kl": 0.000261043686126929,
+   "p_kl_max": 0.007989010670186713,
+   "p_top1_lost": 0.016101694915254237
+  },
+  "fp16 per-op body, tail from final conv (plan)": {
+   "p_kl": 3.0722381718053184e-05,
+   "p_kl_max": 0.00018699513016734437,
+   "p_top1_lost": 0.005084745762711864
+  },
+  "fp16 per-op body, tail from pre-BN normalize": {
+   "p_kl": 4.517838478116403e-06,
+   "p_kl_max": 0.00011632869400631716,
+   "p_top1_lost": 0.002542372881355932
+  },
+  "fp16 per-op body, tail from pre-conv": {
+   "p_kl": 4.018522359207331e-06,
+   "p_kl_max": 0.00010772777950396128,
+   "p_top1_lost": 0.002542372881355932
+  }
+ },
+ "20260802-2-Xuub@49374": {
+  "bf16 per-op body, tail from final conv (plan)": {
+   "p_kl": 0.0032674481546331484,
+   "p_kl_max": 0.013021364494352481,
+   "p_top1_lost": 0.05254237288135593
+  },
+  "bf16 per-op body, tail from pre-BN normalize": {
+   "p_kl": 0.00023534240695890948,
+   "p_kl_max": 0.002585037409239091,
+   "p_top1_lost": 0.01864406779661017
+  },
+  "bf16 per-op body, tail from pre-conv": {
+   "p_kl": 0.00020981525836116013,
+   "p_kl_max": 0.0026889674935970066,
+   "p_top1_lost": 0.020338983050847456
+  },
+  "fp16 per-op body, tail from final conv (plan)": {
+   "p_kl": 5.104807195955321e-05,
+   "p_kl_max": 0.0003158121499882802,
+   "p_top1_lost": 0.003389830508474576
+  },
+  "fp16 per-op body, tail from pre-BN normalize": {
+   "p_kl": 3.6537160986748977e-06,
+   "p_kl_max": 9.977816353789677e-05,
+   "p_top1_lost": 0.000847457627118644
+  },
+  "fp16 per-op body, tail from pre-conv": {
+   "p_kl": 3.215215875059821e-06,
+   "p_kl_max": 9.349827673673634e-05,
+   "p_top1_lost": 0.000847457627118644
+  }
+ }
+}

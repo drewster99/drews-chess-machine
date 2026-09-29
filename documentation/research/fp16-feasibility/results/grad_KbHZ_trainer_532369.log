@@ -1,0 +1,24 @@
+target sums {'fp64': {'policy_mean': -1.5433593615865406e-17, 'policy_absmean': 5.5262222301969675e-17, 'complement_mean': -0.004035874439461876, 'value_mean': -6.018380705880478e-17, 'value_by_class': [-1.1102230246251565e-16, -1.1102230246251565e-16, 0.0]}, 'bf16': {'policy_mean': -0.0007956466332679372, 'policy_absmean': 0.0008601030426709642, 'complement_mean': -0.004943916081313061, 'value_mean': 0.0008544921875, 'value_by_class': [0.0008544921875, 0.0008544921875, 0.0008544921875]}, 'fp16': {'policy_mean': -0.00011160983098462023, 'policy_absmean': 0.00014248664069068805, 'complement_mean': -0.004280569307472674, 'value_mean': -0.0001220703125, 'value_by_class': [-0.0001220703125, -0.0001220703125, -0.0001220703125]}}
+policy dlogit CE           max 0.000331  p50 7.26e-13  p1 1.78e-16  subnormal 1.000  ->0 0.993  S(p1 normal) 3.42e+11  S max 1.98e+08
+policy dlogit illegal      max 6.05e-05  p50 7.37e-13  p1 9.34e-17  subnormal 1.000  ->0 0.997  S(p1 normal) 6.53e+11  S max 1.08e+09
+policy dlogit total        max 0.000331  p50 1.5e-12  p1 4.85e-16  subnormal 1.000  ->0 0.992  S(p1 normal) 1.26e+11  S max 1.98e+08
+policy dlogit legal        max 0.000331  p50 3.76e-06  p1 2.41e-08  subnormal 0.965  ->0 0.012  S(p1 normal) 2.53e+03  S max 1.98e+08
+policy dlogit illegal cells max 0.000291  p50 1.47e-12  p1 4.8e-16  subnormal 1.000  ->0 0.998  S(p1 normal) 1.27e+11  S max 2.25e+08
+value dlogit               max 0.000243  p50 0.000139  p1 8.15e-07  subnormal 0.299  ->0 0.000  S(p1 normal) 74.9  S max 2.7e+08
+dW policy.conv             max 1.6  p50 0.00276  p1 2.87e-07  subnormal 0.263  ->0 0.000  S(p1 normal) 213  S max 4.1e+04
+db policy.conv             max 0.152  p50 0.00192  p1 3e-07  subnormal 0.289  ->0 0.000  S(p1 normal) 203  S max 4.3e+05
+dW value.fc2               max 0.991  p50 0.118  p1 2.12e-06  subnormal 0.089  ->0 0.000  S(p1 normal) 28.8  S max 6.61e+04
+db value.fc2               max 0.572  p50 0.324  p1 0.25  subnormal 0.000  ->0 0.000  S(p1 normal) 0.000244  S max 1.14e+05
+dW value.fc1               max 0.431  p50 0.00462  p1 5.77e-07  subnormal 0.142  ->0 0.003  S(p1 normal) 106  S max 1.52e+05
+dW value.conv              max 0.699  p50 0.171  p1 0.00424  subnormal 0.000  ->0 0.000  S(p1 normal) 0.0144  S max 9.37e+04
+dAct tower output          max 0.000163  p50 1.86e-07  p1 1.38e-13  subnormal 0.999  ->0 0.364  S(p1 normal) 4.43e+08  S max 4.01e+08
+velocity {'n': 2479313, 'frac_zero': 0.0033122078575799022, 'pct': {'0.1': 3.517492586979642e-07, '1': 5.8891455410048366e-06, '10': 6.847514305263758e-05, '50': 0.0004141884855926037, '90': 0.0012430385686457157, '99': 0.0026474581100046635, '99.9': 0.006882151775062913}, 'max': 0.06471540033817291, 'frac_implied_g_below_min_normal_persistent': 0.24172784960995244, 'frac_implied_g_below_min_normal_noise': 0.1192499696488503}
+   blocks.7.se_attenuate.fc2.weight {'n': 4096, 'median': 4.5524804590968415e-05, 'p1': 8.067745511652902e-07, 'max': 0.0005769593990407884, 'frac_implied_g_below_min_normal_persistent': 0.939208984375, 'frac_implied_g_below_min_normal_noise': 0.722412109375}
+   blocks.6.se_attenuate.fc2.weight {'n': 4096, 'median': 5.470658288686536e-05, 'p1': 8.899393378669629e-07, 'max': 0.0007034141453914344, 'frac_implied_g_below_min_normal_persistent': 0.90966796875, 'frac_implied_g_below_min_normal_noise': 0.647216796875}
+   blocks.5.se_attenuate.fc2.weight {'n': 4096, 'median': 6.15052122157067e-05, 'p1': 9.376457740017942e-07, 'max': 0.000750989536754787, 'frac_implied_g_below_min_normal_persistent': 0.886962890625, 'frac_implied_g_below_min_normal_noise': 0.605224609375}
+   blocks.2.se_attenuate.fc2.weight {'n': 4096, 'median': 7.337962961173616e-05, 'p1': 1.0304153420293009e-06, 'max': 0.0012273018946871161, 'frac_implied_g_below_min_normal_persistent': 0.815673828125, 'frac_implied_g_below_min_normal_noise': 0.53955078125}
+   blocks.3.se_attenuate.fc2.weight {'n': 4096, 'median': 7.336989074246958e-05, 'p1': 1.5225436072796584e-06, 'max': 0.0017498384695500135, 'frac_implied_g_below_min_normal_persistent': 0.81005859375, 'frac_implied_g_below_min_normal_noise': 0.53466796875}
+   blocks.4.se_attenuate.fc2.weight {'n': 4096, 'median': 7.431696576531976e-05, 'p1': 1.6754649550421165e-06, 'max': 0.0010207517771050334, 'frac_implied_g_below_min_normal_persistent': 0.8076171875, 'frac_implied_g_below_min_normal_noise': 0.5302734375}
+   blocks.7.se_attenuate.fc1.weight {'n': 4096, 'median': 9.238883649231866e-05, 'p1': 1.656258291404811e-06, 'max': 0.0008327673422172666, 'frac_implied_g_below_min_normal_persistent': 0.763427734375, 'frac_implied_g_below_min_normal_noise': 0.443603515625}
+   blocks.1.se_attenuate.fc2.weight {'n': 4096, 'median': 0.00010213105997536331, 'p1': 1.4129062151368998e-06, 'max': 0.0020683591719716787, 'frac_implied_g_below_min_normal_persistent': 0.711669921875, 'frac_implied_g_below_min_normal_noise': 0.408447265625}
+done

@@ -1,0 +1,16 @@
+target sums {'fp64': {'policy_mean': -1.5433593615865406e-17, 'policy_absmean': 5.5262222301969675e-17, 'complement_mean': -0.004035874439461876, 'value_mean': -6.018380705880478e-17, 'value_by_class': [-1.1102230246251565e-16, -1.1102230246251565e-16, 0.0]}, 'bf16': {'policy_mean': -0.0007956466332679372, 'policy_absmean': 0.0008601030426709642, 'complement_mean': -0.004943916081313061, 'value_mean': 0.0008544921875, 'value_by_class': [0.0008544921875, 0.0008544921875, 0.0008544921875]}, 'fp16': {'policy_mean': -0.00011160983098462023, 'policy_absmean': 0.00014248664069068805, 'complement_mean': -0.004280569307472674, 'value_mean': -0.0001220703125, 'value_by_class': [-0.0001220703125, -0.0001220703125, -0.0001220703125]}}
+policy dlogit CE           max 0.000386  p50 7.79e-13  p1 1.63e-17  subnormal 1.000  ->0 0.994  S(p1 normal) 3.74e+12  S max 1.7e+08
+policy dlogit illegal      max 9.7e-06  p50 1.21e-12  p1 7.89e-17  subnormal 1.000  ->0 1.000  S(p1 normal) 7.74e+11  S max 6.75e+09
+policy dlogit total        max 0.000386  p50 2.15e-12  p1 1.29e-16  subnormal 1.000  ->0 0.994  S(p1 normal) 4.75e+11  S max 1.7e+08
+policy dlogit legal        max 0.000386  p50 2.77e-06  p1 4.78e-08  subnormal 0.978  ->0 0.005  S(p1 normal) 1.28e+03  S max 1.7e+08
+policy dlogit illegal cells max 1.48e-05  p50 2.11e-12  p1 1.26e-16  subnormal 1.000  ->0 1.000  S(p1 normal) 4.83e+11  S max 4.44e+09
+value dlogit               max 0.000241  p50 5.45e-05  p1 2.14e-07  subnormal 0.526  ->0 0.001  S(p1 normal) 285  S max 2.71e+08
+dW policy.conv             max 0.125  p50 8.21e-05  p1 7e-07  subnormal 0.483  ->0 0.000  S(p1 normal) 87.1  S max 5.24e+05
+db policy.conv             max 0.0211  p50 0.000553  p1 3.88e-06  subnormal 0.276  ->0 0.000  S(p1 normal) 15.7  S max 3.11e+06
+dW value.fc2               max 2.79  p50 0.00651  p1 1.86e-05  subnormal 0.022  ->0 0.000  S(p1 normal) 3.29  S max 2.35e+04
+db value.fc2               max 0.245  p50 0.235  p1 0.0151  subnormal 0.000  ->0 0.000  S(p1 normal) 0.00404  S max 2.67e+05
+dW value.fc1               max 0.0776  p50 0.000105  p1 5.25e-18  subnormal 0.416  ->0 0.062  S(p1 normal) 1.16e+13  S max 8.44e+05
+dW value.conv              max 0.548  p50 0.0128  p1 2.86e-06  subnormal 0.038  ->0 0.000  S(p1 normal) 21.4  S max 1.2e+05
+dW policy.pre_conv         max 0.115  p50 0.00262  p1 4.79e-06  subnormal 0.045  ->0 0.000  S(p1 normal) 12.7  S max 5.69e+05
+dAct tower output          max 0.00383  p50 1.22e-07  p1 2.57e-11  subnormal 0.997  ->0 0.299  S(p1 normal) 2.38e+06  S max 1.71e+07
+done

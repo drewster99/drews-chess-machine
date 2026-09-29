@@ -1,0 +1,177 @@
+{
+ "20260727-1-Ejp0@681000": {
+  "model_id": "20260727-1-Ejp0",
+  "training_step": "681000",
+  "rezero": {
+   "b0": {
+    "alpha_raw": 1.734375,
+    "tanh": 0.9980604960644348,
+    "deriv_fp64": 0.0038752461956143014,
+    "tanh_bf16": 1.0,
+    "deriv_from_bf16": 0.0,
+    "tanh_fp16": 0.998046875,
+    "deriv_from_fp16": 0.003902435302734375
+   },
+   "b1": {
+    "alpha_raw": 1.734375,
+    "tanh": 0.9980604960644348,
+    "deriv_fp64": 0.0038752461956143014,
+    "tanh_bf16": 1.0,
+    "deriv_from_bf16": 0.0,
+    "tanh_fp16": 0.998046875,
+    "deriv_from_fp16": 0.003902435302734375
+   }
+  },
+  "se_gate": {
+   "b0.se.sig": {
+    "frac_bf16_eq1": 0.0,
+    "frac_fp16_eq1": 0.0,
+    "frac_bf16_eq0": 0.0,
+    "frac_fp16ftz_eq0": 0.0
+   },
+   "b1.se.sig": {
+    "frac_bf16_eq1": 0.0,
+    "frac_fp16_eq1": 0.0,
+    "frac_bf16_eq0": 0.0,
+    "frac_fp16ftz_eq0": 6.620762711864407e-05
+   }
+  }
+ },
+ "20260714-1-h7vI@336610": {
+  "model_id": "20260714-1-h7vI",
+  "training_step": "336610",
+  "rezero": {
+   "b0": {
+    "alpha_raw": 1.4609375,
+    "tanh": 0.9970964371054594,
+    "deriv_fp64": 0.005798695111598695,
+    "tanh_bf16": 0.99609375,
+    "deriv_from_bf16": 0.0077972412109375,
+    "tanh_fp16": 0.9970703125,
+    "deriv_from_fp16": 0.005850791931152344
+   },
+   "b1": {
+    "alpha_raw": 1.5078125,
+    "tanh": 0.9976449032944834,
+    "deriv_fp64": 0.004704646930540846,
+    "tanh_bf16": 0.99609375,
+    "deriv_from_bf16": 0.0077972412109375,
+    "tanh_fp16": 0.99755859375,
+    "deriv_from_fp16": 0.004876852035522461
+   },
+   "b2": {
+    "alpha_raw": 1.5546875,
+    "tanh": 0.9980898664924727,
+    "deriv_fp64": 0.003816618405038108,
+    "tanh_bf16": 1.0,
+    "deriv_from_bf16": 0.0,
+    "tanh_fp16": 0.998046875,
+    "deriv_from_fp16": 0.003902435302734375
+   },
+   "b3": {
+    "alpha_raw": 1.5546875,
+    "tanh": 0.9980898664924727,
+    "deriv_fp64": 0.003816618405038108,
+    "tanh_bf16": 1.0,
+    "deriv_from_bf16": 0.0,
+    "tanh_fp16": 0.998046875,
+    "deriv_from_fp16": 0.003902435302734375
+   },
+   "b4": {
+    "alpha_raw": 1.4609375,
+    "tanh": 0.9970964371054594,
+    "deriv_fp64": 0.005798695111598695,
+    "tanh_bf16": 0.99609375,
+    "deriv_from_bf16": 0.0077972412109375,
+    "tanh_fp16": 0.9970703125,
+    "deriv_from_fp16": 0.005850791931152344
+   }
+  },
+  "se_gate": {
+   "b0.se.sig": {
+    "frac_bf16_eq1": 0.22386122881355933,
+    "frac_fp16_eq1": 0.04552436440677966,
+    "frac_bf16_eq0": 0.0,
+    "frac_fp16ftz_eq0": 0.0
+   },
+   "b1.se.sig": {
+    "frac_bf16_eq1": 0.0,
+    "frac_fp16_eq1": 0.0,
+    "frac_bf16_eq0": 0.0,
+    "frac_fp16ftz_eq0": 0.0
+   },
+   "b2.se.sig": {
+    "frac_bf16_eq1": 0.0,
+    "frac_fp16_eq1": 0.0,
+    "frac_bf16_eq0": 0.0,
+    "frac_fp16ftz_eq0": 0.0
+   },
+   "b3.se.sig": {
+    "frac_bf16_eq1": 0.007090836864406779,
+    "frac_fp16_eq1": 1.986228813559322e-05,
+    "frac_bf16_eq0": 0.0,
+    "frac_fp16ftz_eq0": 0.0
+   },
+   "b4.se.sig": {
+    "frac_bf16_eq1": 0.07789989406779661,
+    "frac_fp16_eq1": 0.007958156779661017,
+    "frac_bf16_eq0": 0.0,
+    "frac_fp16ftz_eq0": 0.0078125
+   }
+  }
+ },
+ "20260514-1-KbHZ-22@532369": {
+  "model_id": "20260514-1-KbHZ-22",
+  "training_step": "532369",
+  "se_gate": {
+   "b0.se.sig": {
+    "frac_bf16_eq1": 0.0,
+    "frac_fp16_eq1": 0.0,
+    "frac_bf16_eq0": 0.0,
+    "frac_fp16ftz_eq0": 0.0
+   },
+   "b1.se.sig": {
+    "frac_bf16_eq1": 0.0,
+    "frac_fp16_eq1": 0.0,
+    "frac_bf16_eq0": 0.0,
+    "frac_fp16ftz_eq0": 0.0
+   },
+   "b2.se.sig": {
+    "frac_bf16_eq1": 0.0,
+    "frac_fp16_eq1": 0.0,
+    "frac_bf16_eq0": 0.0,
+    "frac_fp16ftz_eq0": 0.0
+   },
+   "b3.se.sig": {
+    "frac_bf16_eq1": 0.0,
+    "frac_fp16_eq1": 0.0,
+    "frac_bf16_eq0": 0.0,
+    "frac_fp16ftz_eq0": 0.0
+   },
+   "b4.se.sig": {
+    "frac_bf16_eq1": 0.0,
+    "frac_fp16_eq1": 0.0,
+    "frac_bf16_eq0": 0.0,
+    "frac_fp16ftz_eq0": 0.0
+   },
+   "b5.se.sig": {
+    "frac_bf16_eq1": 0.0,
+    "frac_fp16_eq1": 0.0,
+    "frac_bf16_eq0": 0.0,
+    "frac_fp16ftz_eq0": 0.0
+   },
+   "b6.se.sig": {
+    "frac_bf16_eq1": 0.0,
+    "frac_fp16_eq1": 0.0,
+    "frac_bf16_eq0": 0.0,
+    "frac_fp16ftz_eq0": 0.0
+   },
+   "b7.se.sig": {
+    "frac_bf16_eq1": 0.0,
+    "frac_fp16_eq1": 0.0,
+    "frac_bf16_eq0": 0.0,
+    "frac_fp16ftz_eq0": 0.0
+   }
+  }
+ }
+}

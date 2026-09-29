@@ -1,0 +1,107 @@
+{'model_id': '20260727-1-Ejp0', 'training_step': '681000', 'native': 'bfloat16', 'path': '/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20260702-Qeu8-resume3-replay-step681000.safetensors', 'n_positions': 1180, 'n_corpus': 900}
+weights {'n': 3927569, 'absmax': 14.5625, 'frac_zero': 0.0, 'frac_subnormal': 0.006840108983444976, 'frac_to_zero': 4.073766749864866e-06, 'frac_below_1e_minus_3': 0.10675000235514641, 'pct': {'0.001': 9.212039411067963e-08, '0.01': 8.642673492431641e-07, '0.1': 8.821487426757812e-06, '1': 8.869171142578125e-05, '50': 0.00592041015625, '99': 0.06884765625, '99.99': 1.5565874999956577}}
+worst subnormal tensors [(0.0211944580078125, 'value.fc1.weight'), (0.019355867346938775, 'stem.conv.weight'), (0.007230902777777778, 'blocks.0.conv1.weight'), (0.0069401041666666665, 'blocks.1.conv2.weight'), (0.005974392361111111, 'blocks.1.conv1.weight'), (0.005343967013888889, 'blocks.0.conv2.weight')]
+capture 26 s
+act summary {'global_absmax': 987.1413814337658, 'argmax_point': 'v.fc2mm', 'global_accum_bound_max': 1001.7043046453604, 'argmax_accum': 'v.fc2', 'norm_input_sq_max': 151.5056021295688, 'argmax_norm_sq': 'tower.bn'}
+  input          {'absmax': '1', 'absmin_nz': '0.0101', 'frac_nz_subnormal': '0', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0.921'}
+  stem.conv      {'absmax': '3.62', 'absmin_nz': '1.93e-08', 'frac_nz_subnormal': '0.000248', 'frac_nz_to_zero': '2.07e-07', 'frac_over': '0', 'frac_zero': '0.000425', 'accum_L1_bound_max': '5.99'}
+  stem.bn.sub    {'absmax': '3.44', 'absmin_nz': '5.8e-08', 'frac_nz_subnormal': '0.000186', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '9.52e-06'}
+  stem.bn        {'absmax': '4.51', 'absmin_nz': '7.03e-08', 'frac_nz_subnormal': '0.000169', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b0.bn1.sub     {'absmax': '4.73', 'absmin_nz': '1.96e-10', 'frac_nz_subnormal': '0.000697', 'frac_nz_to_zero': '6.21e-07', 'frac_over': '0', 'frac_zero': '1.66e-06'}
+  b0.bn1         {'absmax': '9.22', 'absmin_nz': '2.02e-07', 'frac_nz_subnormal': '3.81e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b0.conv1       {'absmax': '6.06', 'absmin_nz': '1.54e-07', 'frac_nz_subnormal': '7.94e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0', 'accum_L1_bound_max': '13.7'}
+  b0.bn2.sub     {'absmax': '6.37', 'absmin_nz': '5.61e-09', 'frac_nz_subnormal': '8.46e-05', 'frac_nz_to_zero': '2.07e-07', 'frac_over': '0', 'frac_zero': '0'}
+  b0.bn2         {'absmax': '14.8', 'absmin_nz': '6.49e-07', 'frac_nz_subnormal': '3.48e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b0.conv2       {'absmax': '21.9', 'absmin_nz': '2.41e-07', 'frac_nz_subnormal': '5.75e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0', 'accum_L1_bound_max': '29.1'}
+  b0.se.pool     {'absmax': '17.3', 'absmin_nz': '4.47e-07', 'frac_nz_subnormal': '6.62e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b0.se.fc1mm    {'absmax': '15.6', 'absmin_nz': '1.27e-05', 'frac_nz_subnormal': '0.000106', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0', 'accum_L1_bound_max': '16.2'}
+  b0.se.fc1      {'absmax': '15.5', 'absmin_nz': '1.56e-05', 'frac_nz_subnormal': '0.000106', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b0.se.fc2mm    {'absmax': '4.9', 'absmin_nz': '2.46e-06', 'frac_nz_subnormal': '0.000172', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0', 'accum_L1_bound_max': '5.31'}
+  b0.se.fc2      {'absmax': '5.31', 'absmin_nz': '1.94e-06', 'frac_nz_subnormal': '0.000132', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b0.se.sig      {'absmax': '0.995', 'absmin_nz': '0.0316', 'frac_nz_subnormal': '0', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b0.se.scaled   {'absmax': '9.57', 'absmin_nz': '1.57e-07', 'frac_nz_subnormal': '0.000142', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b0.se.out      {'absmax': '10.5', 'absmin_nz': '4.26e-08', 'frac_nz_subnormal': '8.4e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b0.alpha       {'absmax': '0.998', 'absmin_nz': '0.998', 'frac_nz_subnormal': '0', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b0.rezero      {'absmax': '5.23', 'absmin_nz': '2.13e-08', 'frac_nz_subnormal': '0.000171', 'frac_nz_to_zero': '2.07e-07', 'frac_over': '0', 'frac_zero': '0'}
+  b0.add         {'absmax': '6.21', 'absmin_nz': '1.88e-07', 'frac_nz_subnormal': '0.000113', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b0.ln.mean     {'absmax': '0.222', 'absmin_nz': '3.19e-05', 'frac_nz_subnormal': '5.3e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b0.ln.var      {'absmax': '1.46', 'absmin_nz': '0.0798', 'frac_nz_subnormal': '0', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b0.ln.sub      {'absmax': '6.2', 'absmin_nz': '1.82e-07', 'frac_nz_subnormal': '0.000137', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b0.ln          {'absmax': '5.03', 'absmin_nz': '5.57e-08', 'frac_nz_subnormal': '0.000104', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b1.bn1.sub     {'absmax': '3.69', 'absmin_nz': '8.59e-09', 'frac_nz_subnormal': '0.00148', 'frac_nz_to_zero': '6.21e-07', 'frac_over': '0', 'frac_zero': '0'}
+  b1.bn1         {'absmax': '14.2', 'absmin_nz': '1.21e-08', 'frac_nz_subnormal': '7.51e-05', 'frac_nz_to_zero': '2.07e-07', 'frac_over': '0', 'frac_zero': '0'}
+  b1.conv1       {'absmax': '2.9', 'absmin_nz': '2.88e-08', 'frac_nz_subnormal': '0.000204', 'frac_nz_to_zero': '2.07e-07', 'frac_over': '0', 'frac_zero': '0', 'accum_L1_bound_max': '6.51'}
+  b1.bn2.sub     {'absmax': '2.88', 'absmin_nz': '6.3e-08', 'frac_nz_subnormal': '0.00026', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b1.bn2         {'absmax': '28.9', 'absmin_nz': '2.85e-07', 'frac_nz_subnormal': '3.91e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b1.conv2       {'absmax': '17.4', 'absmin_nz': '2.56e-07', 'frac_nz_subnormal': '4.57e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0', 'accum_L1_bound_max': '37'}
+  b1.se.pool     {'absmax': '9.17', 'absmin_nz': '2.41e-06', 'frac_nz_subnormal': '7.94e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b1.se.fc1mm    {'absmax': '12.1', 'absmin_nz': '0.000402', 'frac_nz_subnormal': '0', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0', 'accum_L1_bound_max': '13.5'}
+  b1.se.fc1      {'absmax': '12.7', 'absmin_nz': '0.00119', 'frac_nz_subnormal': '0', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b1.se.fc2mm    {'absmax': '11.3', 'absmin_nz': '5.01e-07', 'frac_nz_subnormal': '7.94e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0', 'accum_L1_bound_max': '11.6'}
+  b1.se.fc2      {'absmax': '11.4', 'absmin_nz': '1.18e-06', 'frac_nz_subnormal': '8.61e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b1.se.sig      {'absmax': '0.993', 'absmin_nz': '1.17e-05', 'frac_nz_subnormal': '6.62e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b1.se.scaled   {'absmax': '12.9', 'absmin_nz': '1.31e-08', 'frac_nz_subnormal': '0.000197', 'frac_nz_to_zero': '2.07e-07', 'frac_over': '0', 'frac_zero': '0'}
+  b1.se.out      {'absmax': '15.1', 'absmin_nz': '1.77e-07', 'frac_nz_subnormal': '4.39e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b1.alpha       {'absmax': '0.998', 'absmin_nz': '0.998', 'frac_nz_subnormal': '0', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b1.rezero      {'absmax': '7.53', 'absmin_nz': '8.86e-08', 'frac_nz_subnormal': '9.29e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b1.add         {'absmax': '9.1', 'absmin_nz': '1.07e-07', 'frac_nz_subnormal': '6.21e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b1.ln.mean     {'absmax': '0.439', 'absmin_nz': '7.79e-06', 'frac_nz_subnormal': '5.3e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b1.ln.var      {'absmax': '3.69', 'absmin_nz': '0.214', 'frac_nz_subnormal': '0', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b1.ln.sub      {'absmax': '8.74', 'absmin_nz': '1.22e-07', 'frac_nz_subnormal': '8.07e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  b1.ln          {'absmax': '12.3', 'absmin_nz': '6.73e-08', 'frac_nz_subnormal': '6.52e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  tower.bn.sub   {'absmax': '14.3', 'absmin_nz': '2.47e-09', 'frac_nz_subnormal': '0.00013', 'frac_nz_to_zero': '2.07e-07', 'frac_over': '0', 'frac_zero': '0'}
+  tower.bn       {'absmax': '14.8', 'absmin_nz': '6.65e-07', 'frac_nz_subnormal': '1.32e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  p.pre_conv     {'absmax': '3.81', 'absmin_nz': '1.15e-08', 'frac_nz_subnormal': '9.28e-05', 'frac_nz_to_zero': '7.76e-08', 'frac_over': '0', 'frac_zero': '0', 'accum_L1_bound_max': '7.11'}
+  p.pre_bn.sub   {'absmax': '2.46', 'absmin_nz': '3.25e-10', 'frac_nz_subnormal': '0.000409', 'frac_nz_to_zero': '1.81e-07', 'frac_over': '0', 'frac_zero': '0'}
+  p.pre_bn       {'absmax': '29.2', 'absmin_nz': '3.56e-08', 'frac_nz_subnormal': '2.16e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  p.convmm       {'absmax': '94', 'absmin_nz': '35.8', 'frac_nz_subnormal': '0', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  v.conv         {'absmax': '8.25', 'absmin_nz': '6.08e-07', 'frac_nz_subnormal': '3.81e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0', 'accum_L1_bound_max': '11.2'}
+  v.bn.sub       {'absmax': '6', 'absmin_nz': '8.84e-08', 'frac_nz_subnormal': '0.000132', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  v.bn           {'absmax': '68.1', 'absmin_nz': '5.02e-07', 'frac_nz_subnormal': '3.23e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  v.fc1mm        {'absmax': '163', 'absmin_nz': '6.12e-07', 'frac_nz_subnormal': '5.3e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0', 'accum_L1_bound_max': '178'}
+  v.fc1          {'absmax': '155', 'absmin_nz': '4.69e-06', 'frac_nz_subnormal': '3.97e-05', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  v.fc2mm        {'absmax': '987', 'absmin_nz': '0.161', 'frac_nz_subnormal': '0', 'frac_nz_to_zero': '0', 'frac_over': '0', 'frac_zero': '0'}
+  p.conv         {'accum_L1_bound_max': '99.1'}
+  v.fc2          {'accum_L1_bound_max': '1e+03'}
+  norm stem.bn    {'input_absmax': '3.62', 'input_sq_max': '13.1', 'batch_var_min': '0.0227', 'batch_var_max': '0.309', 'batch_absmean_max': '0.556', 'batch_E_x2_max': '0.502'}
+  norm b0.bn1     {'input_absmax': '4.51', 'input_sq_max': '20.3', 'batch_var_min': '0.00042', 'batch_var_max': '1.03', 'batch_absmean_max': '1.01', 'batch_E_x2_max': '1.23'}
+  norm b0.bn2     {'input_absmax': '6.06', 'input_sq_max': '36.7', 'batch_var_min': '0.191', 'batch_var_max': '1.37', 'batch_absmean_max': '2.1', 'batch_E_x2_max': '5.01'}
+  norm b0.ln      {'input_absmax': '6.21', 'input_sq_max': '38.5', 'ln_var_min': '0.0798', 'ln_var_max': '1.46'}
+  norm b1.bn1     {'input_absmax': '5.03', 'input_sq_max': '25.3', 'batch_var_min': '0.000199', 'batch_var_max': '0.926', 'batch_absmean_max': '2.5', 'batch_E_x2_max': '6.26'}
+  norm b1.bn2     {'input_absmax': '2.9', 'input_sq_max': '8.42', 'batch_var_min': '0.023', 'batch_var_max': '0.171', 'batch_absmean_max': '0.789', 'batch_E_x2_max': '0.774'}
+  norm b1.ln      {'input_absmax': '9.1', 'input_sq_max': '82.9', 'ln_var_min': '0.214', 'ln_var_max': '3.69'}
+  norm tower.bn   {'input_absmax': '12.3', 'input_sq_max': '152', 'batch_var_min': '0.0425', 'batch_var_max': '5.36', 'batch_absmean_max': '5.89', 'batch_E_x2_max': '40'}
+  norm p.pre_bn   {'input_absmax': '3.81', 'input_sq_max': '14.5', 'batch_var_min': '0.00173', 'batch_var_max': '1.39', 'batch_absmean_max': '2.35', 'batch_E_x2_max': '5.8'}
+  norm v.bn       {'input_absmax': '8.25', 'input_sq_max': '68', 'batch_var_min': '0.00282', 'batch_var_max': '1.38', 'batch_absmean_max': '4.68', 'batch_E_x2_max': '22.2'}
+emu bf16 heads only 15 s
+emu fp16 heads only 15 s
+emu bf16 real (calibrated: p.pre_bn + fused heads) 28 s
+emu fp16 analog of calibrated 46 s
+emu bf16 per-op 59 s
+emu fp16 per-op 71 s
+emu fp16 per-op, FTZ subnormals 82 s
+emu bf16 per-op + fp32 head tails 95 s
+emu fp16 per-op + fp32 head tails 117 s
+emu fp32 per-op 129 s
+levels {'value_shared_median': 510.5428389272228, 'value_shared_p5': 509.02963883671924, 'value_shared_p95': 969.0893848519779, 'value_absmax': 1001.7038814337658, 'value_spread_median': 3.7188985828017564, 'policy_legal_mean_median': -42.23757575092809, 'policy_legal_std_median': 0.580285807257247, 'policy_legal_max_median': -40.09612454456426, 'policy_absmax': 95.29977663492045, 'policy_allmove_mean_median': -57.620230441518586, 'bf16_step_at_value_median': 2.0, 'f16_step_at_value_median': 0.25, 'bf16_step_at_policy_legal_max': 0.25, 'f16_step_at_policy_legal_max': 0.03125}
+bf16 heads only                                  V {'nonfinite_rows': '0', 'logit_ties': '0.546', 'kl_mean': '0.108', 'kl_max': '1.02', 'argmax_change': '0.274', 'dce_corpus': '0.145', 'dv_abs_mean': '0.284', 'dv_abs_max': '0.96'}
+                                                 P {'kl_mean': '0.00231', 'kl_p90': '0.00323', 'kl_max': '0.00511', 'top1_lost': '0', 'top2_ties': '0.115', 'top5_ties': '0.768', 'dce_corpus': '0.00443'}
+fp16 heads only                                  V {'nonfinite_rows': '0', 'logit_ties': '0.0483', 'kl_mean': '0.00196', 'kl_max': '0.0277', 'argmax_change': '0.0161', 'dce_corpus': '0.00124', 'dv_abs_mean': '0.037', 'dv_abs_max': '0.222'}
+                                                 P {'kl_mean': '3.59e-05', 'kl_p90': '4.97e-05', 'kl_max': '8.02e-05', 'top1_lost': '0', 'top2_ties': '0.0127', 'top5_ties': '0.188', 'dce_corpus': '5.78e-05'}
+bf16 real (calibrated: p.pre_bn + fused heads)   V {'nonfinite_rows': '0', 'logit_ties': '0.546', 'kl_mean': '0.108', 'kl_max': '1.02', 'argmax_change': '0.274', 'dce_corpus': '0.145', 'dv_abs_mean': '0.284', 'dv_abs_max': '0.96'}
+                                                 P {'kl_mean': '0.00236', 'kl_p90': '0.00323', 'kl_max': '0.00701', 'top1_lost': '0.000847', 'top2_ties': '0.113', 'top5_ties': '0.751', 'dce_corpus': '0.00517'}
+fp16 analog of calibrated                        V {'nonfinite_rows': '0', 'logit_ties': '0.0483', 'kl_mean': '0.00196', 'kl_max': '0.0277', 'argmax_change': '0.0161', 'dce_corpus': '0.00124', 'dv_abs_mean': '0.037', 'dv_abs_max': '0.222'}
+                                                 P {'kl_mean': '3.64e-05', 'kl_p90': '5.04e-05', 'kl_max': '8.02e-05', 'top1_lost': '0', 'top2_ties': '0.011', 'top5_ties': '0.179', 'dce_corpus': '-0.000256'}
+bf16 per-op                                      V {'nonfinite_rows': '0', 'logit_ties': '0.583', 'kl_mean': '0.11', 'kl_max': '1.26', 'argmax_change': '0.314', 'dce_corpus': '0.143', 'dv_abs_mean': '0.289', 'dv_abs_max': '0.95'}
+                                                 P {'kl_mean': '0.00248', 'kl_p90': '0.00358', 'kl_max': '0.00754', 'top1_lost': '0.000847', 'top2_ties': '0.119', 'top5_ties': '0.771', 'dce_corpus': '0.0053'}
+fp16 per-op                                      V {'nonfinite_rows': '0', 'logit_ties': '0.0449', 'kl_mean': '0.00197', 'kl_max': '0.024', 'argmax_change': '0.0169', 'dce_corpus': '0.00243', 'dv_abs_mean': '0.0374', 'dv_abs_max': '0.216'}
+                                                 P {'kl_mean': '3.89e-05', 'kl_p90': '5.51e-05', 'kl_max': '0.000129', 'top1_lost': '0', 'top2_ties': '0.0136', 'top5_ties': '0.187', 'dce_corpus': '-7.06e-05'}
+fp16 per-op, FTZ subnormals                      V {'nonfinite_rows': '0', 'logit_ties': '0.0449', 'kl_mean': '0.00203', 'kl_max': '0.0269', 'argmax_change': '0.0169', 'dce_corpus': '0.00318', 'dv_abs_mean': '0.038', 'dv_abs_max': '0.229'}
+                                                 P {'kl_mean': '3.89e-05', 'kl_p90': '5.49e-05', 'kl_max': '0.000129', 'top1_lost': '0', 'top2_ties': '0.0136', 'top5_ties': '0.187', 'dce_corpus': '-9.61e-05'}
+bf16 per-op + fp32 head tails                    V {'nonfinite_rows': '0', 'logit_ties': '0', 'kl_mean': '1.91e-05', 'kl_max': '0.000686', 'argmax_change': '0.000847', 'dce_corpus': '0.000776', 'dv_abs_mean': '0.00327', 'dv_abs_max': '0.0341'}
+                                                 P {'kl_mean': '0.000165', 'kl_p90': '0.000291', 'kl_max': '0.00494', 'top1_lost': '0.0102', 'top2_ties': '0', 'top5_ties': '0', 'dce_corpus': '-0.000448'}
+fp16 per-op + fp32 head tails                    V {'nonfinite_rows': '0', 'logit_ties': '0', 'kl_mean': '3.5e-07', 'kl_max': '1.14e-05', 'argmax_change': '0', 'dce_corpus': '2.55e-05', 'dv_abs_mean': '0.00044', 'dv_abs_max': '0.00456'}
+                                                 P {'kl_mean': '2.87e-06', 'kl_p90': '5.05e-06', 'kl_max': '0.000123', 'top1_lost': '0.000847', 'top2_ties': '0', 'top5_ties': '0', 'dce_corpus': '-0.000147'}
+fp32 per-op                                      V {'nonfinite_rows': '0', 'logit_ties': '0', 'kl_mean': '2.91e-11', 'kl_max': '4.07e-10', 'argmax_change': '0', 'dce_corpus': '-1.05e-07', 'dv_abs_mean': '4.61e-06', 'dv_abs_max': '2.8e-05'}
+                                                 P {'kl_mean': '5.68e-13', 'kl_p90': '8.04e-13', 'kl_max': '1.51e-12', 'top1_lost': '0', 'top2_ties': '0', 'top5_ties': '0', 'dce_corpus': '-9.13e-09'}
+done

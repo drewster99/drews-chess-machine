@@ -73,6 +73,11 @@ Known hot spots, checked by name:
 - In `ChessNetwork.policyHead` and `valueHead`, cast the head's last hidden activation and its final weights and bias to fp32 before the final matmul or conv. Keep everything after that in fp32:
   - policy `policy_conv` (or `policy_fc`) + bias → `policyOutput` (fp32);
   - value `fc2` + bias → logits → `value_probs` softmax → scalar, including the scalar constant `[1, 0, −1]` (fp32).
+- **For the policy, start the fp32 tail earlier: at the `policy_pre_bn` normalize** (`intermediate_conv` and `fc_bottleneck`; `simple_conv` has no pre-block, so its tail is the final conv alone). Measured on the lines with large policy offsets, h7vI and Xuub:
+  - Starting at the final conv still leaves policy KL of 1.5–3.3e-3, with 3.5–5.3% of positions losing their fp64 top move.
+  - The cause: the bf16-rounded policy features get multiplied by `policy.conv`'s large mean row, giving an error per square that softmax doesn't cancel.
+  - Starting at the pre-BN normalize cuts this 7–14×, to KL 2.4–2.9e-4.
+  - Source: `documentation/research/fp16-feasibility/`.
 - The weights stay stored in their current dtype. `Models/` checkpoints are bf16-exact, so casting them up loses nothing.
 - **Config D** (`bf16CastInForward`: fp32-stored variables cast to bf16 in the forward pass): the tail skips that cast, so it reads the fp32 variables directly.
 - One builder serves every path: inference, batched self-play, arena, UCI, the bot, probes and the trainer. So this covers them all. See the inventory for the consumers to update.

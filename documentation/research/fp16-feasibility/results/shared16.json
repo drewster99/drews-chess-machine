@@ -1,0 +1,30 @@
+{
+ "fp64": {
+  "policy_shared_grad_batch_mean": 0.0006706219557667528,
+  "policy_from_positive_branch": 2.7312916334622606e-17,
+  "policy_from_complement_branch": 0.0006706219557667255,
+  "complement_from_single_legal_positions": 0.0006706219557667269,
+  "value_shared_grad_per_position": 0.0
+ },
+ "bf16": {
+  "policy_shared_grad_batch_mean": 0.0014007160209350373,
+  "policy_from_positive_branch": 0.0004795102574844269,
+  "policy_from_complement_branch": 0.0009212057634506105,
+  "complement_from_single_legal_positions": 0.0006705491886274293,
+  "value_shared_grad_per_position": -0.0008544921875
+ },
+ "fp16": {
+  "policy_shared_grad_batch_mean": 0.0007998469021878495,
+  "policy_from_positive_branch": 7.721994011092285e-05,
+  "policy_from_complement_branch": 0.0007226269620769266,
+  "complement_from_single_legal_positions": 0.0006706401475515513,
+  "value_shared_grad_per_position": 0.0001220703125
+ },
+ "frac_single_legal": 0.01513671875,
+ "mean_a_minus": 0.19160297901478118,
+ "mean_a_plus": 0.6553133498123986,
+ "model": {
+  "model_id": "20260727-1-Ejp0",
+  "training_step": "681000"
+ }
+}
