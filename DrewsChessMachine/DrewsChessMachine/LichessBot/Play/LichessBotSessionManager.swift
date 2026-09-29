@@ -214,11 +214,14 @@ actor LichessBotSessionManager {
     }
 
     /// Accepted challenges whose game hasn't started yet (expired ones
-    /// dropped). The controller counts them as games in progress, so a
-    /// drain or quit waits for them.
+    /// dropped), and games whose session is still being set up — an
+    /// accepted outgoing challenge's game among them, from its `gameStart`
+    /// until its session exists. The controller counts them as games in
+    /// progress, so they hold their slots and a drain or quit waits for
+    /// them.
     func acceptedAwaitingStartIDs() -> Set<String> {
         dropExpiredAcceptances()
-        return Set(acceptedAwaitingStart.keys)
+        return Set(acceptedAwaitingStart.keys).union(startingSessionIDs)
     }
 
     private func dropExpiredAcceptances() {

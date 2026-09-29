@@ -37,6 +37,66 @@ struct LichessBotOutgoingChallenge: Sendable, Equatable, Codable {
 
 extension LichessBotChallengeColorName: Codable {}
 
+/// The time controls DCM offers when it challenges someone, as Lichess
+/// offers them: the Challenge sheet's choices and matchmaking's (plan §7.1,
+/// §7.3). The raw value is what settings store.
+enum LichessBotClockChoice: String, Sendable, Hashable, CaseIterable, Identifiable, Codable {
+    case ultraBulletQuarterPlus0 = "¼+0"
+    case bullet1plus0 = "1+0"
+    case bullet1plus1 = "1+1"
+    case bullet2plus1 = "2+1"
+    case blitz3plus0 = "3+0"
+    case blitz3plus2 = "3+2"
+    case blitz5plus0 = "5+0"
+    case blitz5plus3 = "5+3"
+    case rapid10plus0 = "10+0"
+    case rapid10plus5 = "10+5"
+    case rapid15plus10 = "15+10"
+    case classical30plus0 = "30+0"
+    case classical30plus20 = "30+20"
+
+    var id: String { rawValue }
+
+    var seconds: (limit: Int, increment: Int) {
+        switch self {
+        case .ultraBulletQuarterPlus0: return (15, 0)
+        case .bullet1plus0: return (60, 0)
+        case .bullet1plus1: return (60, 1)
+        case .bullet2plus1: return (120, 1)
+        case .blitz3plus0: return (180, 0)
+        case .blitz3plus2: return (180, 2)
+        case .blitz5plus0: return (300, 0)
+        case .blitz5plus3: return (300, 3)
+        case .rapid10plus0: return (600, 0)
+        case .rapid10plus5: return (600, 5)
+        case .rapid15plus10: return (900, 10)
+        case .classical30plus0: return (1800, 0)
+        case .classical30plus20: return (1800, 20)
+        }
+    }
+
+    /// Lichess's speed for this clock.
+    var speed: LichessBotSpeed {
+        LichessBotSpeed.forClock(limitSeconds: seconds.limit, incrementSeconds: seconds.increment)
+    }
+
+    /// A challenge at this clock.
+    func challenge(rated: Bool, color: LichessBotChallengeColorName) -> LichessBotOutgoingChallenge {
+        LichessBotOutgoingChallenge(rated: rated, clockLimitSeconds: seconds.limit, clockIncrementSeconds: seconds.increment, color: color)
+    }
+}
+
+extension LichessBotOutgoingChallenge {
+    /// The clock as the Challenge sheet names it ("5+3"); a limit that is
+    /// not one of its choices is written in seconds.
+    var clockText: String {
+        if let choice = LichessBotClockChoice.allCases.first(where: { $0.seconds.limit == clockLimitSeconds && $0.seconds.increment == clockIncrementSeconds }) {
+            return choice.rawValue
+        }
+        return "\(clockLimitSeconds)s+\(clockIncrementSeconds)"
+    }
+}
+
 /// A player's public summary: `GET /api/user/{username}` and each line of
 /// `GET /api/bot/online`.
 struct LichessBotUserSummary: Sendable, Hashable, Codable, Identifiable {

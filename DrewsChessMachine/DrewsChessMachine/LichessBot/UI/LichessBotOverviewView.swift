@@ -94,10 +94,16 @@ struct LichessBotControlsCard: View {
                         }
                     }
                     Spacer()
+                    Button("Fill Open Slots") {
+                        Task { await controller.fillOpenSlots() }
+                    }
+                    .disabled(connection != .online || !controller.hasChallengeScope || controller.isFillingOpenSlots)
+                    .help(controller.hasChallengeScope ? "Challenge online bots now, with the matchmaking settings, until every slot outside those reserved for humans is taken (even with matchmaking off)" : "The token lacks challenge:write")
                     Button("Challenge…", action: onChallenge)
                         .disabled(connection != .online || !controller.hasChallengeScope)
                         .help(controller.hasChallengeScope ? "Challenge an online bot or any player" : "The token lacks challenge:write")
                 }
+                LichessBotMatchmakingStatusLine(controller: controller)
                 ForEach(controller.pendingChallenges, id: \.id) { pending in
                     HStack(spacing: 8) {
                         LichessBotFavoriteStar(controller: controller, userID: pending.username)
@@ -108,6 +114,7 @@ struct LichessBotControlsCard: View {
                         }
                     }
                 }
+                LichessBotChallengeQueueList(controller: controller)
                 HStack(spacing: 8) {
                     Text(controller.lastChallengeOutcome ?? "")
                         .font(.callout)

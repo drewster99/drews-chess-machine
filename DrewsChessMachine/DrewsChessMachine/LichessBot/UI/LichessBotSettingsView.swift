@@ -37,6 +37,7 @@ struct LichessBotSettingsView: View {
             Form {
                 LichessBotAccountSettingsSection(controller: controller, expectedAccountID: $draft.connection.expectedAccountID)
                 LichessBotChallengeSettingsSection(settings: $draft.challenge)
+                LichessBotMatchmakingSettingsSection(settings: $draft.matchmaking)
                 LichessBotPlaySettingsSection(settings: $draft.play)
                 LichessBotChatSettingsSection(settings: $draft.chat)
                 LichessBotModelSettingsSection(settings: $draft.model)
@@ -184,6 +185,53 @@ struct LichessBotChallengeSettingsSection: View {
                     .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
                     .filter { !$0.isEmpty }
             }
+        }
+    }
+}
+
+/// Automatic challenges to online bots (plan §7.3 B).
+struct LichessBotMatchmakingSettingsSection: View {
+    @Binding var settings: LichessBotMatchmakingSettings
+
+    var body: some View {
+        Section("Matchmaking — applies from the next pass") {
+            Toggle("Challenge online bots automatically", isOn: $settings.enabled)
+            Picker("Fill", selection: $settings.fillMode) {
+                Text("Every free slot").tag(LichessBotMatchmakingSettings.FillMode.everyFreeSlot)
+                Text("Only when idle").tag(LichessBotMatchmakingSettings.FillMode.onlyWhenIdle)
+            }
+            .help("Slots reserved for humans are never used. \"Only when idle\" sends one challenge at a time, only when nothing is in play.")
+            LabeledContent("Time controls") {
+                // Wraps: the full list is wider than the form.
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(72), alignment: .leading), count: 5), alignment: .leading, spacing: 4) {
+                    ForEach(LichessBotClockChoice.allCases) { choice in
+                        Button(
+                            action: {
+                                if settings.timeControls.contains(choice) {
+                                    settings.timeControls.remove(choice)
+                                } else {
+                                    settings.timeControls.insert(choice)
+                                }
+                            },
+                            label: {
+                                Label(choice.rawValue, systemImage: settings.timeControls.contains(choice) ? "checkmark.square.fill" : "square")
+                                    .font(.system(.body, design: .monospaced))
+                            }
+                        )
+                        .buttonStyle(.borderless)
+                        .help("\(choice.rawValue) is \(choice.speed.rawValue)")
+                    }
+                }
+                .frame(width: 380, alignment: .leading)
+            }
+            Toggle("Rated", isOn: $settings.rated)
+            LichessBotIntegerField(label: "Opponent rating from DCM's rating plus", value: $settings.minimumRatingOffset)
+            LichessBotIntegerField(label: "  … up to DCM's rating plus", value: $settings.maximumRatingOffset)
+            LichessBotIntegerField(label: "Without an established DCM rating, from", value: $settings.minimumRatingWithoutOwnRating)
+            LichessBotIntegerField(label: "  … up to", value: $settings.maximumRatingWithoutOwnRating)
+            Toggle("Prefer favorites", isOn: $settings.preferFavorites)
+            LichessBotIntegerField(label: "Challenges at most", value: $settings.maxChallengesPerHour, unit: "/h")
+            LichessBotIntegerField(label: "Leave a bot that declined alone for", value: $settings.declineCooldownHours, unit: "h")
         }
     }
 }

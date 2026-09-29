@@ -1,13 +1,15 @@
 import SwiftUI
 
 /// Challenge an online bot or any player (plan §7.1). The game starts
-/// through the bot's event stream if they accept.
+/// through the bot's event stream if they accept. Several players may be
+/// selected (⌘/⇧-click); they go into the controller's challenge queue with
+/// one clock, color and rated setting (plan §7.3 A).
 struct LichessBotChallengeSheet: View {
     let controller: LichessBotController
     @Binding var isPresented: Bool
 
     @State private var source: Source = .onlineBots
-    @State private var selectedBotID: String?
+    @State private var selectedBotIDs: Set<String> = []
     @State private var typedUsername = ""
     @State private var lookedUp: LichessBotUserSummary?
     @State private var lookupError: String?
@@ -26,8 +28,8 @@ struct LichessBotChallengeSheet: View {
     @AppStorage("lichessBot.challenge.maximumRatingText") private var maximumRatingText = ""
     @AppStorage("lichessBot.challenge.hidesProvisional") private var hidesProvisional = false
     @State private var sortOrder = [KeyPathComparator(\LichessBotBotRow.usernameSortKey)]
-    @State private var selectedLeaderboardID: String?
-    @State private var selectedHistoryID: String?
+    @State private var selectedLeaderboardIDs: Set<String> = []
+    @State private var selectedHistoryIDs: Set<String> = []
     @State private var onlinePlayersError: String?
     @State private var tableStatusError: String?
 
@@ -53,52 +55,15 @@ struct LichessBotChallengeSheet: View {
     /// How old the online list may get while the sheet is open.
     private static let listMaximumAge: TimeInterval = 300
 
-    /// Common time controls, as Lichess offers them.
-    enum ClockChoice: String, CaseIterable, Identifiable {
-        case ultraBulletQuarterPlus0 = "¼+0"
-        case bullet1plus0 = "1+0"
-        case bullet1plus1 = "1+1"
-        case bullet2plus1 = "2+1"
-        case blitz3plus0 = "3+0"
-        case blitz3plus2 = "3+2"
-        case blitz5plus0 = "5+0"
-        case blitz5plus3 = "5+3"
-        case rapid10plus0 = "10+0"
-        case rapid10plus5 = "10+5"
-        case rapid15plus10 = "15+10"
-        case classical30plus0 = "30+0"
-        case classical30plus20 = "30+20"
-
-        var id: String { rawValue }
-
-        var seconds: (limit: Int, increment: Int) {
-            switch self {
-            case .ultraBulletQuarterPlus0: return (15, 0)
-            case .bullet1plus0: return (60, 0)
-            case .bullet1plus1: return (60, 1)
-            case .bullet2plus1: return (120, 1)
-            case .blitz3plus0: return (180, 0)
-            case .blitz3plus2: return (180, 2)
-            case .blitz5plus0: return (300, 0)
-            case .blitz5plus3: return (300, 3)
-            case .rapid10plus0: return (600, 0)
-            case .rapid10plus5: return (600, 5)
-            case .rapid15plus10: return (900, 10)
-            case .classical30plus0: return (1800, 0)
-            case .classical30plus20: return (1800, 20)
-            }
-        }
-
-        /// Lichess's speed for this clock.
-        var speed: LichessBotSpeed {
-            LichessBotSpeed.forClock(limitSeconds: seconds.limit, incrementSeconds: seconds.increment)
-        }
-    }
+    /// Common time controls, as Lichess offers them; matchmaking picks from
+    /// the same list.
+    typealias ClockChoice = LichessBotClockChoice
 
     var body: some View {
         // Built once per render: the rows can be the whole online list.
         let rows = listRows
-        let chosen = chosenOpponent(in: rows)
+        let orderedRows = LichessBotBotList.ordered(rows, filter: filter, sortOrder: sortOrder)
+        let chosen = chosenOpponents(in: orderedRows)
         let dailyWarning = dailyOpponentWarning(chosen)
         VStack(alignment: .leading, spacing: 12) {
             Text("Challenge a Player")
@@ -129,8 +94,8 @@ struct LichessBotChallengeSheet: View {
                 LichessBotBotTable(
                     controller: controller,
                     nameTitle: source == .onlineBots ? "Bot" : "Player",
-                    rows: LichessBotBotList.ordered(rows, filter: filter, sortOrder: sortOrder),
-                    selection: $selectedBotID,
+                    rows: orderedRows,
+                    selection: $selectedBotIDs,
                     sortOrder: $sortOrder
                 )
                 .modifier(LichessBotPlayerStatusRefresh(
@@ -140,9 +105,9 @@ struct LichessBotChallengeSheet: View {
                     errorText: $tableStatusError
                 ))
                 .shown(source.usesPlayerTable)
-                LichessBotLeaderboardList(controller: controller, speed: clock.speed, selection: $selectedLeaderboardID, isVisible: source == .leaderboard)
+                LichessBotLeaderboardList(controller: controller, speed: clock.speed, selection: $selectedLeaderboardIDs, isVisible: source == .leaderboard)
                     .shown(source == .leaderboard)
-                LichessBotHistoryList(controller: controller, selection: $selectedHistoryID, isVisible: source == .history)
+                LichessBotHistoryList(controller: controller, selection: $selectedHistoryIDs, isVisible: source == .history)
                     .shown(source == .history)
                 LichessBotUsernameLookup(
                     controller: controller,
@@ -167,11 +132,13 @@ struct LichessBotChallengeSheet: View {
                 }
             }
             ZStack(alignment: .topLeading) {
-                Text("Select a player to see their profile")
+                Text(selectionText(chosen))
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .shown(chosen == nil)
-                ForEach(chosen.map { [$0.username] } ?? [], id: \.self) { username in
+                    .lineLimit(3)
+                    .shown(chosen.count != 1)
+                // The profile card for a single choice only.
+                ForEach(chosen.count == 1 ? chosen.map(\.username) : [], id: \.self) { username in
                     LichessBotOpponentCard(controller: controller, username: username, compact: true)
                 }
             }
@@ -222,11 +189,12 @@ struct LichessBotChallengeSheet: View {
                     isPresented = false
                 }
                 .keyboardShortcut(.cancelAction)
-                Button("Send Challenge") {
+                Button(chosen.count > 1 ? "Send \(chosen.count) Challenges" : "Send Challenge") {
                     Task { await send(to: chosen) }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(chosen == nil || sending)
+                .disabled(chosen.isEmpty || sending)
+                .help(chosen.count > 1 ? "Queue them: each is sent when a slot is free, one at a time" : "Send the challenge now")
             }
         }
         .padding(20)
@@ -291,46 +259,53 @@ struct LichessBotChallengeSheet: View {
         let id: String
     }
 
-    /// The opponent chosen on the current tab, from its rows.
-    private func chosenOpponent(in rows: [LichessBotBotRow]) -> ChosenOpponent? {
+    /// The opponents chosen on the current tab, in the order they are sent:
+    /// the player table's visible order, leaderboard rank, or most recently
+    /// played first.
+    private func chosenOpponents(in orderedRows: [LichessBotBotRow]) -> [ChosenOpponent] {
         switch source {
         case .onlineBots, .favorites, .onlinePlayers:
             // An offline bot can't accept; a favorite of unknown status may.
-            guard let selectedBotID, let row = rows.first(where: { $0.id == selectedBotID }), row.isOnline != false else { return nil }
-            return ChosenOpponent(username: row.username, id: row.id)
+            return orderedRows
+                .filter { selectedBotIDs.contains($0.id) && $0.isOnline != false }
+                .map { ChosenOpponent(username: $0.username, id: $0.id) }
         case .leaderboard:
-            return leaderboardSelection.map { ChosenOpponent(username: $0.username, id: $0.id) }
+            return (controller.leaderboards[clock.speed]?.users ?? [])
+                .filter { selectedLeaderboardIDs.contains($0.id) }
+                .map { ChosenOpponent(username: $0.username, id: $0.id) }
         case .history:
-            return historySelection.map { ChosenOpponent(username: $0.name, id: $0.id) }
+            return controller.pastOpponents
+                .filter { selectedHistoryIDs.contains($0.id) }
+                .map { ChosenOpponent(username: $0.name, id: $0.id) }
         case .username:
-            return lookedUp.map { ChosenOpponent(username: $0.username, id: $0.id) }
+            return lookedUp.map { [ChosenOpponent(username: $0.username, id: $0.id)] } ?? []
         }
     }
 
-    private var historySelection: LichessBotPastOpponent? {
-        guard let selectedHistoryID else { return nil }
-        return controller.pastOpponents.first { $0.id == selectedHistoryID }
+    /// Shown instead of the profile card unless exactly one player is chosen.
+    private func selectionText(_ chosen: [ChosenOpponent]) -> String {
+        guard !chosen.isEmpty else { return "Select a player to see their profile; ⌘- or ⇧-click to select several" }
+        return "\(chosen.count) players selected: \(chosen.map(\.username).joined(separator: ", "))"
     }
 
-    private var leaderboardSelection: LichessBotLeaderboardUser? {
-        guard let selectedLeaderboardID else { return nil }
-        return controller.leaderboards[clock.speed]?.users.first { $0.id == selectedLeaderboardID }
+    private func targetSummary(_ chosen: [ChosenOpponent]) -> String {
+        guard let first = chosen.first else { return "Choose an opponent" }
+        guard chosen.count == 1 else { return "\(chosen.count) players · queued and sent one at a time as slots free" }
+        let record = controller.headToHead(against: first.id)
+        return "\(first.username) · DCM's record vs them: \(record.wins)–\(record.draws)–\(record.losses)"
     }
 
-    private func targetSummary(_ chosen: ChosenOpponent?) -> String {
-        guard let chosen else { return "Choose an opponent" }
-        let record = controller.headToHead(against: chosen.id)
-        return "\(chosen.username) · DCM's record vs them: \(record.wins)–\(record.draws)–\(record.losses)"
-    }
-
-    /// DCM's games against the chosen opponent today, past the daily
+    /// Chosen opponents DCM has already played today up to the daily
     /// per-opponent acceptance limit: a warning only (plan §7.1).
-    private func dailyOpponentWarning(_ chosen: ChosenOpponent?) -> String {
-        guard let chosen else { return "" }
-        let played = controller.gamesTodayByOpponent[chosen.id.lowercased(), default: 0]
+    private func dailyOpponentWarning(_ chosen: [ChosenOpponent]) -> String {
         let limit = controller.settings.challenge.maxGamesPerOpponentPerDay
-        guard played >= limit else { return "" }
-        return "DCM has played \(chosen.username) \(played) times today; the acceptance settings allow \(limit) per opponent per day"
+        let over = chosen.filter { controller.gamesTodayByOpponent[$0.id.lowercased(), default: 0] >= limit }
+        guard !over.isEmpty else { return "" }
+        if over.count == 1, let only = over.first {
+            let played = controller.gamesTodayByOpponent[only.id.lowercased(), default: 0]
+            return "DCM has played \(only.username) \(played) times today; the acceptance settings allow \(limit) per opponent per day"
+        }
+        return "DCM has played \(over.map(\.username).joined(separator: ", ")) at least \(limit) times each today, the acceptance settings' per-opponent daily limit"
     }
 
     /// Choices outside the acceptance policy are allowed, with a warning
@@ -350,16 +325,22 @@ struct LichessBotChallengeSheet: View {
         }
     }
 
-    private func send(to chosen: ChosenOpponent?) async {
-        guard let chosen else { return }
+    /// One player is challenged at once, with any refusal shown here; several
+    /// go into the challenge queue, whose progress the Overview shows.
+    private func send(to chosen: [ChosenOpponent]) async {
+        guard let first = chosen.first else { return }
         sending = true
         defer { sending = false }
-        let seconds = clock.seconds
+        let request = clock.challenge(rated: rated, color: color)
         do {
-            try await controller.sendChallenge(
-                to: chosen.username,
-                request: LichessBotOutgoingChallenge(rated: rated, clockLimitSeconds: seconds.limit, clockIncrementSeconds: seconds.increment, color: color)
-            )
+            if chosen.count == 1 {
+                try await controller.sendChallenge(to: first.username, request: request)
+            } else {
+                try controller.enqueueChallenges(
+                    to: chosen.map { LichessBotChallengeQueue.Player(username: $0.username, userID: $0.id) },
+                    request: request
+                )
+            }
             isPresented = false
         } catch {
             sendError = error.localizedDescription
@@ -458,7 +439,7 @@ struct LichessBotBotTable: View {
     /// "Bot" or "Player", for the name column.
     let nameTitle: String
     let rows: [LichessBotBotRow]
-    @Binding var selection: String?
+    @Binding var selection: Set<String>
     @Binding var sortOrder: [KeyPathComparator<LichessBotBotRow>]
 
     var body: some View {
@@ -766,7 +747,7 @@ struct LichessBotPlayerStatusRefresh: ViewModifier {
 struct LichessBotLeaderboardList: View {
     let controller: LichessBotController
     let speed: LichessBotSpeed
-    @Binding var selection: String?
+    @Binding var selection: Set<String>
     let isVisible: Bool
 
     @State private var onlineOnly = true
@@ -901,7 +882,7 @@ struct LichessBotRatingBoundField: View {
 /// DCM's W–D–L, and when they last played.
 struct LichessBotHistoryList: View {
     let controller: LichessBotController
-    @Binding var selection: String?
+    @Binding var selection: Set<String>
     let isVisible: Bool
 
     @State private var statusError: String?

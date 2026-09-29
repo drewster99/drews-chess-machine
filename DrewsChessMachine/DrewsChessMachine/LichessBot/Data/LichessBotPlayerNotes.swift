@@ -1,14 +1,20 @@
 import Foundation
 
 /// What the operator and Lichess have told us about other players (plan
-/// §7.2): favorite bots, and when a bot is available again after its
-/// bot-vs-bot daily limit. Persisted to `player-notes.json`, apart from
+/// §7.2, §7.3): favorite bots, when a bot is available again after its
+/// bot-vs-bot daily limit, and matchmaking's decline cool-downs. Persisted to `player-notes.json`, apart from
 /// Settings. Ids are lowercased Lichess user ids.
 struct LichessBotPlayerNotes: Sendable, Codable, Equatable {
     /// In the order they were starred.
     var favoriteIDs: [String] = []
     /// When each bot can be challenged again, from Lichess's own refusal.
     var botLimitUntil: [String: Date] = [:]
+    /// When each player's decline cool-down ends: matchmaking leaves a
+    /// player who declined DCM alone until then (plan §7.3). Optional
+    /// because notes files written before cool-downs existed have no such
+    /// key, and a favorites file must never become unreadable; absent means
+    /// no cool-down has been recorded.
+    var declineCooldownUntil: [String: Date]?
 
     func isFavorite(_ userID: String) -> Bool {
         favoriteIDs.contains(userID.lowercased())
@@ -29,9 +35,26 @@ struct LichessBotPlayerNotes: Sendable, Codable, Equatable {
         return until
     }
 
-    /// Drop limit times that have passed.
+    /// The player's decline cool-down end if it is still in the future at
+    /// `now`.
+    func declineCooldownEnds(_ userID: String, now: Date) -> Date? {
+        guard let until = declineCooldownUntil?[userID.lowercased()], until > now else { return nil }
+        return until
+    }
+
+    /// Start (or restart) a player's decline cool-down.
+    mutating func recordDeclineCooldown(_ userID: String, until: Date) {
+        var cooldowns = declineCooldownUntil ?? [:]
+        cooldowns[userID.lowercased()] = until
+        declineCooldownUntil = cooldowns
+    }
+
+    /// Drop limit times and decline cool-downs that have passed.
     mutating func pruneExpiredLimits(now: Date) {
         botLimitUntil = botLimitUntil.filter { $0.value > now }
+        if let cooldowns = declineCooldownUntil {
+            declineCooldownUntil = cooldowns.filter { $0.value > now }
+        }
     }
 
     static func load(from url: URL) throws -> LichessBotPlayerNotes {

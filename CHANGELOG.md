@@ -9,6 +9,29 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-29 00:05 CDT — Lichess bot: challenge queue, matchmaking, finished-game hold (plan §7.3) (pending commit)
+
+Implements `documentation/plans-active/LICHESS_BOT_PLAN.md` §7.3. **The bot's settings gained a Matchmaking section: after updating, click Reset to Defaults in the bot's Settings once** (no migration, by decision, as before).
+
+- **Challenge queue** (`LichessBotChallengeQueue`, owned by `LichessBotController`):
+  - The Challenge sheet's Online Bots, Favorites, Online Players, Leaderboard and History tables allow several players to be selected (⌘/⇧-click); "Send N Challenges" queues them with one clock, color and rated setting. One selected player is still sent at once.
+  - The queue sends one entry at a time, through `sendChallenge`, whenever a slot is free. A player at the per-opponent limit, offline, or at their bot limit is skipped and stays listed with the reason. Another Lichess refusal drops the entry. A 429, a closed gate or leaving Online stops the queue with the entry kept in its place; it resumes when sending is allowed again.
+  - A player already queued, or with a challenge pending, isn't added again.
+  - Go Offline and quitting clear the queue; draining only stops it.
+  - The Overview lists the queue (opponent, clock, rated or casual, and why it waits or was skipped), with per-entry Cancel and Clear Queue.
+- **Matchmaking** (`LichessBotMatchmaking`, `LichessBotMatchmakingRateLimiter`; Settings ▸ Matchmaking, off by default):
+  - Fill mode (every free slot, or only when idle), time controls (default 3+2, 5+3), rated, a rating window relative to DCM's established rating at the speed (default −300…+300) with absolute bounds otherwise (default 1000…2200), prefer favorites, a per-hour cap (default 20) and a decline cool-down (default 6 h).
+  - Runs only while Online, with no 429 hold, the gate open, and the queue empty. Never uses the slots reserved for humans. Stops at DCM's own bot-games budget.
+  - Picks uniformly among online bots that fit every rule: rating window at the chosen speed, not provisional, not blocked, not already playing, challenged or queued, not at its bot limit, not in its decline cool-down, and under the per-opponent daily limit. With "prefer favorites", fitting favorites go first.
+  - One send at a time, with a minimum spacing and the per-hour cap. While on, the online-bots list is refreshed on its own cadence at housekeeping priority.
+  - Every decline records the bot's cool-down in `player-notes.json` (a new optional key, so existing notes files still load), pruned when expired.
+  - **Fill Open Slots** on the Overview runs one pass on demand, even with matchmaking off. The Overview shows matchmaking's state and its challenges this hour.
+  - Every pick, skip summary and send goes to the protocol log (`challenge`); each send also writes a `[LICHESS-BOT]` session-log line.
+- **Slot accounting:** one count, `committedGameSlots`, for every send decision. An accepted challenge's game now holds its slot while its session is being set up (`LichessBotSessionManager.acceptedAwaitingStartIDs` includes starting sessions), so an automatic send can't take it in that gap.
+- **Finished-game hold in the Live tab:** with "First in progress" chosen, the single-game view stays on a game that has just ended for a few seconds (`LichessBotController.finishedGameHold`) before moving to the next live game, instead of jumping the instant it ends. The operator's own pick cancels the hold; the finished game isn't pruned while it is held. The grid is unchanged.
+- **Test seam:** `LichessBotControllerServices` supplies the controller's transport and stored token (`live` in the app), so tests run a whole runtime against a scripted Lichess.
+- **Tests (new, not yet run):** `LichessBotChallengeQueueTests` (order, duplicates, skip reasons, one at a time, stop on 429 and resume, failure classification), `LichessBotMatchmakingTests` (one test per candidate rule, rating window, uniform and favorites-first picks, reserved human slots, fill modes, per-hour cap and spacing, pass conditions, settings defaults and validation, cool-down persistence), `LichessBotChallengeQueueControllerTests` (N selected with k free slots sends k and queues the rest; a game ending sends the next entry; a decline sends the next and records the cool-down; Go Offline clears the queue and withdraws pending challenges; Fill Open Slots leaves the human slot free; the single view holds a finished game, then moves on).
+
 ## 2026-09-28 21:57 CDT — Lichess bot: resend as casual, ruled-out speed warning, deterministic tests (`563fb21`)
 
 - **Resend as Casual.** When a rated challenge is declined with Lichess's `casual` reason ("please send me a casual challenge instead"), the Overview's outcome line offers a button that sends the same challenge again, unrated.

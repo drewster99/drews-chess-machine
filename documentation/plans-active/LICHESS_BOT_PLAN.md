@@ -627,6 +627,16 @@ The Favorites tab lists every favorite, online or not:
 
 ### 7.3 Challenging several players, and matchmaking (added 2026-09-28; approved)
 
+**Status: implemented 2026-09-29** (`LichessBotChallengeQueue`, `LichessBotMatchmaking`, `LichessBotController` queue pump and matchmaking passes, `LichessBotChallengeQueueList`, Settings ▸ Matchmaking; tests in `LichessBotChallengeQueueTests`, `LichessBotMatchmakingTests`, `LichessBotChallengeQueueControllerTests`). Where the build chose among readings of this section:
+- One selected player is still sent at once, with any refusal shown in the sheet; two or more go into the queue.
+- A skipped entry stays listed with its reason and is not retried; choosing that player again re-queues them at the end.
+- "Fill Open Slots" fills every open slot outside those reserved for humans, whatever the fill mode, one send at a time with the same spacing and per-hour cap.
+- DCM's own rating counts for the relative window only when it is established (not provisional).
+- "Prefer favorites" defaults to on.
+- The per-hour cap counts challenges that reached Lichess; the spacing applies to every attempt.
+- Matchmaking also pauses during "Play one game".
+- An accepted challenge's game now holds its slot while its session is being set up (the manager reports starting sessions with accepted challenges), so an automatic send can't take that slot in the gap.
+
 This supersedes §7.1's "no automatic matchmaking loop". All sends still go one at a time through the gate, and every check of a single send still applies: online status, the concurrent-game and per-opponent limits, and the bot daily limit.
 
 **A. Challenge queue (multi-select).**

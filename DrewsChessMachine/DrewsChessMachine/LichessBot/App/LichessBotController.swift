@@ -26,6 +26,21 @@ struct LichessBotControllerFeed: LichessBotGameObserver {
     }
 }
 
+/// Where the controller gets its connection to Lichess and the stored
+/// token. The app uses `live`; tests substitute a scripted transport and a
+/// fixed token so a whole runtime runs without the network or the Keychain.
+struct LichessBotControllerServices: Sendable {
+    let makeTransport: @Sendable () -> any LichessBotTransport
+    /// The stored token for a Lichess account id, or nil if none is stored.
+    /// Called on the file queue (Keychain calls block).
+    let readToken: @Sendable (_ accountID: String) throws -> String?
+
+    static let live = LichessBotControllerServices(
+        makeTransport: { LichessBotURLSessionTransport() },
+        readToken: { accountID in try LichessBotTokenStore().read(account: accountID) }
+    )
+}
+
 /// Owns the Lichess bot's lifecycle and publishes its state to the UI (plan
 /// §13, §14, §15). One per app, created at app level and kept for the app's
 /// lifetime: closing the window never stops the bot.
@@ -185,12 +200,62 @@ final class LichessBotController {
     /// Cancel button to the operator, rather than retrying (and alarming)
     /// on every poll.
     private var autoWithdrawAttemptedChallengeIDs: Set<String> = []
+    /// The operator's challenges still to send (plan §7.3 A): the single
+    /// source the Overview lists and the queue pump sends from. In memory
+    /// only; going offline or quitting clears it.
+    private(set) var challengeQueue = LichessBotChallengeQueue()
+    /// A queue pump is running; at most one does, so entries go out one at
+    /// a time.
+    private var challengeQueuePumpRunning = false
+    /// Matchmaking's send rate (plan §7.3 B). Kept across runtimes: Lichess
+    /// counts challenges per account, not per connection.
+    private(set) var matchmakingRateLimiter = LichessBotMatchmakingRateLimiter()
+    /// A matchmaking pass is deciding or sending.
+    private var matchmakingPassRunning = false
+    /// The Overview's Fill Open Slots is filling slots.
+    private(set) var isFillingOpenSlots = false
+    /// What the latest matchmaking pass did, for the Overview.
+    private(set) var matchmakingStatus: String?
+    /// When the next automatic pass may run: after a send, the spacing;
+    /// after a pass that found nobody, a longer wait.
+    private var nextAutomaticMatchmakingPassAt = Date.distantPast
+    /// The last pass outcome written to the protocol log by an automatic
+    /// pass, so an unchanged "nobody fits" isn't logged every retry.
+    private var lastLoggedAutomaticMatchmakingOutcome: String?
+    /// When the online-bots list was last asked for, answered or not, so a
+    /// failing fetch isn't retried every poll.
+    private var onlineBotsRequestedAt: Date?
+    /// An online-bots fetch is under way.
+    private var onlineBotsRefreshInFlight = false
     /// The Live tab's single-game choice; nil means "First in progress".
     /// Remembered across launches (a specific game shows again only while it
     /// is listed).
     var focusedGameID: String? {
-        didSet { defaults.set(focusedGameID, forKey: Self.focusedGameIDKey) }
+        didSet {
+            defaults.set(focusedGameID, forKey: Self.focusedGameIDKey)
+            if focusedGameID != nil {
+                // The operator's pick outranks following; a hold would only
+                // move a view nobody is following.
+                cancelAutoFollowHold()
+            } else if oldValue != nil {
+                // Back to "First in progress": follow the first live game
+                // now, not whatever was followed before the pick.
+                cancelAutoFollowHold()
+                autoFollowedGameID = firstLiveGame?.id
+            }
+        }
     }
+    /// The game the single view follows while the operator hasn't picked
+    /// one: the first-started game in progress, kept on screen for
+    /// `finishedGameHoldDuration` after it ends before moving to the next
+    /// live game, so the view doesn't jump the instant a game finishes.
+    private(set) var autoFollowedGameID: String?
+    /// The hold on a finished followed game: which game, and a token that
+    /// identifies this hold, so a stale hold's timer never moves the view.
+    private var autoFollowHold: (gameID: String, token: UUID, task: Task<Void, Never>)?
+    /// How long the single view stays on a followed game after it ends.
+    static let finishedGameHold: Duration = .seconds(8)
+    private let finishedGameHoldDuration: Duration
     /// The Live tab's Single / Grid choice, remembered across launches.
     var showsGrid = false {
         didSet { defaults.set(showsGrid, forKey: Self.showsGridKey) }
@@ -212,6 +277,7 @@ final class LichessBotController {
     /// new one may both still be appending to the same live game's journal.
     private let journalQueue = LichessBotFileQueue(label: "drewschess.lichessbot.journals", qos: .userInitiated)
     private let modelProvider: any LichessBotModelProvider
+    private let services: LichessBotControllerServices
     let protocolLog: LichessBotProtocolLog
     private var nextAlarmID = 0
 
@@ -236,8 +302,9 @@ final class LichessBotController {
     /// (its event consumer, its poll loop) stops acting as soon as this
     /// moves on, so nothing queued by a torn-down runtime can change state.
     private var runtimeGeneration = 0
-    /// Accepted challenges whose games haven't started (from the manager).
-    /// A drain or quit waits for them like games in progress.
+    /// Accepted challenges whose games haven't started, or whose game
+    /// session is still being set up (from the manager). They hold slots,
+    /// and a drain or quit waits for them like games in progress.
     private(set) var acceptedAwaitingStartIDs: Set<String> = []
     private var quitReplyPending = false
     /// The account-wide request gate (plan §5). One for the controller's
@@ -254,10 +321,18 @@ final class LichessBotController {
     /// goes offline once they finish. A rate-limit hold alone does not.
     private var drainRequested = false
 
-    init(modelProvider: any LichessBotModelProvider, defaults: UserDefaults = .standard, dataDirectory: LichessBotDataDirectory = .standard) {
+    init(
+        modelProvider: any LichessBotModelProvider,
+        defaults: UserDefaults = .standard,
+        dataDirectory: LichessBotDataDirectory = .standard,
+        services: LichessBotControllerServices = .live,
+        finishedGameHold: Duration = LichessBotController.finishedGameHold
+    ) {
         self.modelProvider = modelProvider
         self.defaults = defaults
         self.dataDirectory = dataDirectory
+        self.services = services
+        self.finishedGameHoldDuration = finishedGameHold
         let fileQueue = self.fileQueue
         self.protocolLog = LichessBotProtocolLog(directory: dataDirectory, fileQueue: fileQueue) { error in
             SessionLogger.shared.log("[ALARM] LICHESS-BOT protocol log write failed: \(error.localizedDescription)")
@@ -294,7 +369,7 @@ final class LichessBotController {
     }
 
     /// An error's text, safe to show and log (plan §10.3).
-    private static func safeDescription(_ error: Error) -> String {
+    private nonisolated static func safeDescription(_ error: Error) -> String {
         LichessBotRedaction.redact(error.localizedDescription)
     }
 
@@ -314,13 +389,72 @@ final class LichessBotController {
     }
 
     /// The game the single-game view shows: the operator's pick if it still
-    /// exists, otherwise the first-started game in progress, otherwise the
-    /// most recent game (plan §14.3a).
+    /// exists, otherwise the followed game (the first-started game in
+    /// progress, held on screen for a while after it ends), otherwise the
+    /// first game in progress, otherwise the most recent game (plan §14.3a).
     var displayedGame: LichessBotLiveGame? {
-        if let focusedGameID, let game = games.first(where: { $0.id == focusedGameID }) {
+        if let focusedGameID, let game = listedGame(focusedGameID) {
+            return game
+        }
+        if let autoFollowedGameID, let game = listedGame(autoFollowedGameID) {
             return game
         }
         return gamesInProgress.first ?? games.last
+    }
+
+    /// The first-started game still being played. A game whose final state
+    /// has arrived is finished even while its session winds down.
+    private var firstLiveGame: LichessBotLiveGame? {
+        gamesInProgress.first { !$0.isFinished }
+    }
+
+    /// Keep the followed game current. With none (or one no longer listed),
+    /// follow the first live game. When the followed game has finished,
+    /// start one hold; when it ends, the view moves on to the next live
+    /// game. Called after every change to the games list or a game's state.
+    private func updateAutoFollow() {
+        guard let followedID = autoFollowedGameID, let followed = listedGame(followedID) else {
+            cancelAutoFollowHold()
+            let next = firstLiveGame?.id
+            if autoFollowedGameID != next {
+                autoFollowedGameID = next
+            }
+            return
+        }
+        guard followed.isFinished, autoFollowHold?.gameID != followedID else { return }
+        cancelAutoFollowHold()
+        if let focusedGameID, listedGame(focusedGameID) != nil {
+            // The operator's pick is on screen: nothing to hold.
+            autoFollowedGameID = firstLiveGame?.id
+            return
+        }
+        let token = UUID()
+        let hold = finishedGameHoldDuration
+        let task = Task { [weak self] in
+            do {
+                try await Task.sleep(for: hold)
+            } catch {
+                return
+            }
+            self?.endAutoFollowHold(token: token)
+        }
+        autoFollowHold = (followedID, token, task)
+    }
+
+    /// The hold with this token is over: follow the next live game, unless
+    /// the hold was replaced or canceled meanwhile.
+    private func endAutoFollowHold(token: UUID) {
+        guard let hold = autoFollowHold, hold.token == token else { return }
+        autoFollowHold = nil
+        guard autoFollowedGameID == hold.gameID else { return }
+        autoFollowedGameID = firstLiveGame?.id
+        // The finished game may have been kept only for the hold.
+        pruneFinishedGames()
+    }
+
+    private func cancelAutoFollowHold() {
+        autoFollowHold?.task.cancel()
+        autoFollowHold = nil
     }
 
     var hasChallengeScope: Bool {
@@ -417,10 +551,10 @@ final class LichessBotController {
 
     /// The stored token, read off the main actor (Keychain calls block).
     private func readToken() async throws -> String? {
-        let store = tokenStore
+        let read = services.readToken
         let accountID = self.accountID
         return try await fileQueue.run {
-            try store.read(account: accountID)
+            try read(accountID)
         }
     }
 
@@ -501,7 +635,7 @@ final class LichessBotController {
         return LichessBotAPIClient(
             baseURL: try LichessBotAPIClient.lichessBaseURL(),
             token: token,
-            transport: LichessBotURLSessionTransport(),
+            transport: services.makeTransport(),
             gate: gate,
             onRequest: { record in log.record(.request, Self.describe(record)) }
         )
@@ -631,6 +765,9 @@ final class LichessBotController {
     func goOffline() async {
         guard let runtime else { return }
         let manager = runtime.manager
+        // The operator's queued picks go with the pending challenges (plan
+        // §7.3 A); a drain alone would keep them.
+        clearChallengeQueue(reason: "going offline")
         if hasGamesInPlay || !gamesAwaitingPostGameChat.isEmpty {
             if hasGamesInPlay {
                 finishing = .goOffline
@@ -684,6 +821,7 @@ final class LichessBotController {
     /// games; otherwise drain, show the sheet, and quit when the games end.
     func applicationShouldTerminate() -> NSApplication.TerminateReply {
         guard runtime != nil else { return .terminateNow }
+        clearChallengeQueue(reason: "app quit")
         if !hasGamesInPlay {
             // Reply once the queued journal and protocol-log writes (the
             // "app quit" line among them) have reached their files.
@@ -728,6 +866,7 @@ final class LichessBotController {
     // MARK: - Challenges (plan §7.1)
 
     func refreshOnlineBots() async {
+        onlineBotsRequestedAt = Date()
         do {
             let client = try await accountClient()
             onlineBots = try await client.onlineBots(count: LichessBotLimits.onlineBotsMaximum)
@@ -949,7 +1088,7 @@ final class LichessBotController {
             throw LichessBotControllerError.notOnline
         }
         let limit = settings.challenge.maxConcurrentGames
-        let committed = activeGameIDs.count + acceptedAwaitingStartIDs.count + pendingChallenges.count + challengeSendsInFlight
+        let committed = committedGameSlots
         guard committed < limit else {
             throw LichessBotControllerError.concurrentGameLimit(limit: limit, committed: committed)
         }
@@ -1036,12 +1175,14 @@ final class LichessBotController {
                 pendingChallenges.removeAll { $0.id == id }
                 lastChallengeOutcome = "\(pending.username): canceled"
             }
+            scheduleChallengeQueuePump()
         } catch LichessBotAPIError.http(let status, let message) where status == 400 || status == 404 {
             // Lichess no longer knows the challenge: it expired or was
             // answered. It is no longer pending.
             await runtime.manager.clearOutgoingChallenge(id: id)
             pendingChallenges.removeAll { $0.id == id }
             lastChallengeOutcome = "\(pending.username): no longer pending (\(message ?? "HTTP \(status)"))"
+            scheduleChallengeQueuePump()
         } catch {
             raiseAlarm("Cancelling the challenge to \(pending.username) failed: \(Self.safeDescription(error))")
         }
@@ -1060,6 +1201,535 @@ final class LichessBotController {
         }
     }
 
+    // MARK: - Slots
+
+    /// Everything holding one of the concurrent-game slots: games in
+    /// progress, accepted challenges whose game is still starting, our
+    /// challenges waiting for an answer, and sends under way. The one count
+    /// every send decision uses — a single send, the queue and matchmaking.
+    var committedGameSlots: Int {
+        activeGameIDs.union(acceptedAwaitingStartIDs).count + pendingChallenges.count + challengeSendsInFlight
+    }
+
+    /// Slots a send may still take under the concurrent-game limit.
+    var freeChallengeSlots: Int {
+        settings.challenge.maxConcurrentGames - committedGameSlots
+    }
+
+    /// Why no challenge may be sent now, from the controller's own state and
+    /// the latest gate snapshot, or nil when one may.
+    private var outgoingSendBlockedReason: String? {
+        guard runtime != nil else { return "the bot is offline" }
+        if rateLimitHoldUntil != nil {
+            return "rate-limit hold after a 429"
+        }
+        switch connection {
+        case .online:
+            break
+        case .draining:
+            return "draining"
+        case .offline, .connecting, .error:
+            return "the bot is not Online"
+        }
+        if !hasChallengeScope {
+            return "the token lacks challenge:write"
+        }
+        return Self.gateBlockedReason(gateSnapshot?.phase)
+    }
+
+    /// Why the request gate keeps a challenge from going out, or nil when it
+    /// is open. No snapshot yet means the runtime hasn't polled it; the
+    /// gate's own queueing still applies.
+    private static func gateBlockedReason(_ phase: LichessBotRequestGate.Snapshot.Phase?) -> String? {
+        switch phase {
+        case .none, .open:
+            return nil
+        case .coolingDown:
+            return "Lichess rate limit: requests paused"
+        case .closed(let reason):
+            return "the request gate is closed (\(reason))"
+        }
+    }
+
+    // MARK: - Challenge queue (plan §7.3 A)
+
+    /// Why the queue's waiting entries wait, for the Overview; nil when
+    /// nothing waits.
+    var challengeQueueWaitReason: String? {
+        switch challengeQueue.nextStep(sendingBlockedReason: outgoingSendBlockedReason, freeSlots: freeChallengeSlots) {
+        case .idle:
+            return nil
+        case .wait(let reason):
+            return reason
+        case .send:
+            return "sending next"
+        }
+    }
+
+    /// Add players to the challenge queue, all with one clock, color and
+    /// rated setting, and start sending. A player already queued, or with a
+    /// challenge waiting for an answer, isn't added again. The bot must be
+    /// Online.
+    @discardableResult
+    func enqueueChallenges(to players: [LichessBotChallengeQueue.Player], request: LichessBotOutgoingChallenge) throws -> LichessBotChallengeQueue.AddResult {
+        guard runtime != nil, connection == .online else {
+            throw LichessBotControllerError.notOnline
+        }
+        guard hasChallengeScope else {
+            throw LichessBotControllerError.missingChallengeScope
+        }
+        let pendingIDs = Set(pendingChallenges.map { $0.username.lowercased() })
+        let result = challengeQueue.add(players, request: request, pendingUserIDs: pendingIDs)
+        let fields = ["rated": "\(request.rated)", "clock": request.clockText, "color": request.color.rawValue]
+        for username in result.added {
+            protocolLog.record(.challenge, "challenge queue: added \(username)", fields: fields)
+        }
+        for username in result.alreadyQueued {
+            protocolLog.record(.challenge, "challenge queue: \(username) not added: already queued")
+        }
+        for username in result.alreadyPending {
+            protocolLog.record(.challenge, "challenge queue: \(username) not added: a challenge to them is waiting for an answer")
+        }
+        var summary = "Queued \(result.added.count) challenge(s)"
+        let duplicates = result.alreadyQueued + result.alreadyPending
+        if !duplicates.isEmpty {
+            summary += "; not added (already queued or challenged): \(duplicates.joined(separator: ", "))"
+        }
+        lastChallengeOutcome = summary
+        scheduleChallengeQueuePump()
+        return result
+    }
+
+    /// The Overview's per-entry Cancel. An entry already being sent still
+    /// goes out; its challenge then shows as pending, with its own Cancel.
+    func cancelQueuedChallenge(_ id: UUID) {
+        guard let entry = challengeQueue.entries.first(where: { $0.id == id }) else { return }
+        challengeQueue.remove(id)
+        let whileSending = entry.status == .sending ? " while its challenge was being sent" : ""
+        protocolLog.record(.challenge, "challenge queue: removed \(entry.username)\(whileSending)")
+    }
+
+    /// The Overview's Clear Queue, and going offline or quitting.
+    func clearChallengeQueue(reason: String = "cleared by the operator") {
+        guard !challengeQueue.isEmpty else { return }
+        protocolLog.record(.challenge, "challenge queue: \(challengeQueue.entries.count) entr(ies) removed: \(reason)", fields: ["players": challengeQueue.entries.map(\.username).joined(separator: ",")])
+        challengeQueue.removeAll()
+    }
+
+    /// Start the queue pump if an entry could be sent now. Deciding that
+    /// needs no request, so the poll loop calls this every second, and every
+    /// event that frees a slot calls it at once.
+    private func scheduleChallengeQueuePump() {
+        guard !challengeQueuePumpRunning,
+              case .send = challengeQueue.nextStep(sendingBlockedReason: outgoingSendBlockedReason, freeSlots: freeChallengeSlots) else { return }
+        challengeQueuePumpRunning = true
+        let generation = runtimeGeneration
+        Task {
+            await pumpChallengeQueue(generation: generation)
+        }
+    }
+
+    /// Send queued entries one at a time while slots are free. Each send is
+    /// `sendChallenge`, so every check of a single send applies unchanged:
+    /// online status, the concurrent-game and per-opponent limits, the bot
+    /// limit refusal. Stops when nothing can be sent, when a 429 or a state
+    /// change stops a send (that entry waits again in its place), or when
+    /// the runtime it started under is gone (teardown cleared the queue).
+    private func pumpChallengeQueue(generation generationAtStart: Int) async {
+        // Every await can outlive this runtime; nothing is written after it.
+        func current() -> Bool { runtimeGeneration == generationAtStart }
+        defer {
+            // Teardown clears the flag itself; a stale pump must not clear
+            // the flag a newer runtime's pump set.
+            if current() { challengeQueuePumpRunning = false }
+        }
+        while current() {
+            // The gate's live phase, not the poll loop's copy: a 429 a
+            // moment ago must stop the queue before the hold is in place.
+            let phase = await gate.snapshot().phase
+            guard current() else { return }
+            let blocked = outgoingSendBlockedReason ?? Self.gateBlockedReason(phase)
+            guard case .send(let entry) = challengeQueue.nextStep(sendingBlockedReason: blocked, freeSlots: freeChallengeSlots) else { return }
+            if let until = playerNotes?.limitUntil(entry.userID, now: Date()) {
+                let reason = "at its bot-game limit until \(until.formatted(date: .omitted, time: .shortened))"
+                challengeQueue.skip(entry.id, reason: reason)
+                protocolLog.record(.challenge, "challenge queue: skipped \(entry.username): \(reason)")
+                continue
+            }
+            challengeQueue.markSending(entry.id)
+            let outcome: LichessBotChallengeQueue.SendOutcome
+            do {
+                try await sendChallenge(to: entry.username, request: entry.request)
+                outcome = .sent
+            } catch {
+                outcome = Self.queueOutcome(for: error)
+            }
+            guard current() else { return }
+            challengeQueue.record(outcome, for: entry.id)
+            switch outcome {
+            case .sent:
+                protocolLog.record(.challenge, "challenge queue: sent \(entry.username)")
+            case .skipped(let reason):
+                protocolLog.record(.challenge, "challenge queue: skipped \(entry.username): \(reason)")
+            case .dropped(let reason):
+                lastChallengeOutcome = "\(entry.username): not sent: \(reason)"
+                protocolLog.record(.challenge, "challenge queue: dropped \(entry.username): \(reason)")
+            case .stopped(let reason):
+                protocolLog.record(.challenge, "challenge queue: stopped at \(entry.username), which waits again: \(reason)")
+                return
+            }
+        }
+    }
+
+    /// How a failed queued send affects its entry (plan §7.3 A): reasons
+    /// tied to the player skip it; a 429, a closed gate or a change of
+    /// state stops the queue with the entry kept; anything else Lichess
+    /// refused drops it.
+    nonisolated static func queueOutcome(for error: Error) -> LichessBotChallengeQueue.SendOutcome {
+        let text = safeDescription(error)
+        if let controllerError = error as? LichessBotControllerError {
+            switch controllerError {
+            case .perOpponentGameLimit:
+                return .skipped(reason: "already playing or challenging them (the per-opponent limit)")
+            case .opponentOffline:
+                return .skipped(reason: "offline")
+            case .notOnline, .concurrentGameLimit, .missingChallengeScope, .noToken, .tokenInvalid, .tokenForWrongAccount, .notABot:
+                return .stopped(reason: text)
+            case .noSuchPlayer, .chatNotSendable:
+                return .dropped(reason: text)
+            }
+        }
+        if error is LichessBotGateError || error is CancellationError {
+            return .stopped(reason: text)
+        }
+        if case LichessBotAPIError.http(_, let message?) = error, let refusal = LichessBotBotLimitRefusal.parse(message) {
+            return .skipped(reason: "at its bot-game limit until \(refusal.until.formatted(date: .omitted, time: .shortened))")
+        }
+        return .dropped(reason: text)
+    }
+
+    // MARK: - Matchmaking (plan §7.3 B)
+
+    enum MatchmakingPassOutcome: Equatable {
+        case sent(username: String)
+        /// Matchmaking may not send at all now.
+        case blocked(reason: String)
+        /// Every slot matchmaking may use is taken.
+        case noOpenSlot
+        case rateLimited(LichessBotMatchmakingRateLimiter.Decision)
+        case noCandidate(String)
+        case failed(String)
+        /// A 429, the gate closing, or the runtime going away stopped the
+        /// send.
+        case stopped(String)
+
+        var text: String {
+            switch self {
+            case .sent(let username):
+                return "sent a challenge to \(username)"
+            case .blocked(let reason):
+                return "paused: \(reason)"
+            case .noOpenSlot:
+                return "every matchmaking slot is taken"
+            case .rateLimited(.spacing(let until)):
+                return "next send not before \(until.formatted(date: .omitted, time: .standard)) (spacing)"
+            case .rateLimited(.hourlyCap(let until, let count)):
+                return "\(count) challenges in the last hour, the cap; next at \(until.formatted(date: .omitted, time: .shortened))"
+            case .rateLimited(.allowed):
+                return "allowed"
+            case .noCandidate(let detail):
+                return detail
+            case .failed(let detail):
+                return "failed: \(detail)"
+            case .stopped(let detail):
+                return "stopped: \(detail)"
+            }
+        }
+    }
+
+    private static let secondsPerHour: TimeInterval = 3600
+
+    /// The Overview's Fill Open Slots: one pass that fills every open slot
+    /// (outside those reserved for humans) with matchmaking's criteria, even
+    /// when matchmaking is off. Sends go one at a time with matchmaking's
+    /// spacing, and the per-hour cap still holds.
+    func fillOpenSlots() async {
+        guard !isFillingOpenSlots, runtime != nil else { return }
+        let generationAtStart = runtimeGeneration
+        func current() -> Bool { runtimeGeneration == generationAtStart }
+        isFillingOpenSlots = true
+        defer {
+            if current() { isFillingOpenSlots = false }
+        }
+        protocolLog.record(.challenge, "matchmaking: Fill Open Slots")
+        var sentCount = 0
+        while current() {
+            // An automatic pass may be deciding or sending; let it finish.
+            while matchmakingPassRunning {
+                do {
+                    try await Task.sleep(for: .milliseconds(250))
+                } catch {
+                    return
+                }
+                guard current() else { return }
+            }
+            let outcome = await runMatchmakingPass(fillMode: .everyFreeSlot)
+            guard current() else { return }
+            switch outcome {
+            case .sent:
+                sentCount += 1
+                continue
+            case .rateLimited(.spacing(let until)):
+                let delay = until.timeIntervalSinceNow
+                if delay > 0 {
+                    do {
+                        try await Task.sleep(for: .seconds(delay))
+                    } catch {
+                        return
+                    }
+                }
+                continue
+            default:
+                let summary = "Fill Open Slots sent \(sentCount); \(outcome.text)"
+                matchmakingStatus = "\(Date().formatted(date: .omitted, time: .standard)) \(summary)"
+                protocolLog.record(.challenge, "matchmaking: \(summary)")
+                return
+            }
+        }
+    }
+
+    /// Start an automatic pass when matchmaking is on and one is due. The
+    /// common "every slot is taken" case is decided here without a request
+    /// or a log line.
+    private func startAutomaticMatchmakingPassIfDue() {
+        let matchmaking = settings.matchmaking
+        guard matchmaking.enabled, !matchmakingPassRunning, !isFillingOpenSlots,
+              runtime != nil, connection == .online, rateLimitHoldUntil == nil, !oneGameRequested,
+              !challengeQueue.hasEntriesToSend, Date() >= nextAutomaticMatchmakingPassAt else { return }
+        let slots = LichessBotMatchmaking.openSlots(
+            maxConcurrentGames: settings.challenge.maxConcurrentGames,
+            gamesReservedForHumans: settings.challenge.gamesReservedForHumans,
+            fillMode: matchmaking.fillMode,
+            committed: committedGameSlots
+        )
+        guard slots > 0 else {
+            // Assigned only on a change: every assignment redraws the
+            // Overview, and this runs every poll.
+            let text = MatchmakingPassOutcome.noOpenSlot.text
+            if matchmakingStatus != text {
+                matchmakingStatus = text
+            }
+            return
+        }
+        // Held until the pass reports, so the next poll can't start another.
+        nextAutomaticMatchmakingPassAt = .distantFuture
+        let generation = runtimeGeneration
+        Task {
+            let outcome = await runMatchmakingPass(fillMode: matchmaking.fillMode)
+            // Teardown reset the schedule for the next runtime.
+            guard runtimeGeneration == generation else { return }
+            nextAutomaticMatchmakingPassAt = Self.nextAutomaticPass(after: outcome, now: Date())
+            let text = outcome.text
+            matchmakingStatus = "\(Date().formatted(date: .omitted, time: .standard)) \(text)"
+            if case .sent = outcome {
+                lastLoggedAutomaticMatchmakingOutcome = nil
+            } else if text != lastLoggedAutomaticMatchmakingOutcome {
+                lastLoggedAutomaticMatchmakingOutcome = text
+                protocolLog.record(.challenge, "matchmaking: \(text)")
+            }
+        }
+    }
+
+    /// When the next automatic pass may run after `outcome`.
+    nonisolated static func nextAutomaticPass(after outcome: MatchmakingPassOutcome, now: Date) -> Date {
+        switch outcome {
+        case .sent, .noOpenSlot:
+            // The rate limiter decides the spacing on the next pass.
+            return now
+        case .rateLimited(.spacing(let until)), .rateLimited(.hourlyCap(let until, _)):
+            return until
+        case .rateLimited(.allowed):
+            return now
+        case .blocked, .noCandidate, .failed, .stopped:
+            return now.addingTimeInterval(LichessBotMatchmaking.retryAfterUnproductivePass)
+        }
+    }
+
+    /// One matchmaking pass: at most one challenge, sent only if every
+    /// condition holds before the send (plan §7.3 B). The conditions are
+    /// checked again after the online-bots refresh, since that awaits.
+    private func runMatchmakingPass(fillMode: LichessBotMatchmakingSettings.FillMode) async -> MatchmakingPassOutcome {
+        guard !matchmakingPassRunning else { return .blocked(reason: "another matchmaking pass is running") }
+        matchmakingPassRunning = true
+        let generationAtStart = runtimeGeneration
+        func current() -> Bool { runtimeGeneration == generationAtStart }
+        defer {
+            if current() { matchmakingPassRunning = false }
+        }
+        if let outcome = await matchmakingPrecheck(fillMode: fillMode) {
+            return outcome
+        }
+        guard current() else { return .stopped("the bot went offline") }
+        if onlineBotsNeedMatchmakingRefresh(now: Date()) {
+            await refreshOnlineBotsForMatchmaking()
+            guard current() else { return .stopped("the bot went offline") }
+            if let outcome = await matchmakingPrecheck(fillMode: fillMode) {
+                return outcome
+            }
+            guard current() else { return .stopped("the bot went offline") }
+        }
+        guard onlineBotsFetchedAt != nil else {
+            return .failed("the online-bots list has not loaded")
+        }
+        let matchmaking = settings.matchmaking
+        let now = Date()
+        var generator = SystemRandomNumberGenerator()
+        let result = LichessBotMatchmaking.pick(from: onlineBots, settings: matchmaking, ourPerfs: account?.perfs, context: matchmakingContext(now: now), using: &generator)
+        let pick: LichessBotMatchmaking.Pick
+        switch result {
+        case .noTimeControl:
+            return .failed("no time control is chosen in Settings ▸ Matchmaking")
+        case .noCandidate(let clock, let bounds, let listed, let exclusions):
+            return .noCandidate("no bot fits for \(clock.rawValue): \(listed) listed, rating window \(bounds.description(speed: clock.speed)); \(LichessBotMatchmaking.describe(exclusions))")
+        case .picked(let picked):
+            pick = picked
+        }
+        let speed = pick.clock.speed
+        let rating = pick.rating
+        protocolLog.record(.challenge, "matchmaking pick: \(pick.bot.username) (\(speed.rawValue) \(rating)) at \(pick.clock.rawValue), uniformly from \(pick.candidateCount) candidate(s)\(pick.fromFavorites ? ", favorites first" : ""); rating window \(pick.bounds.description(speed: speed)); excluded: \(LichessBotMatchmaking.describe(pick.exclusions))")
+        let request = pick.clock.challenge(rated: matchmaking.rated, color: .random)
+        let attemptAt = Date()
+        let outcome: MatchmakingPassOutcome
+        let reachedLichess: Bool
+        do {
+            try await sendChallenge(to: pick.bot.username, request: request)
+            outcome = .sent(username: pick.bot.username)
+            reachedLichess = true
+        } catch {
+            let text = Self.safeDescription(error)
+            // Errors raised before the challenge is posted (offline, a limit,
+            // the gate) cost no challenge; everything else reached Lichess.
+            reachedLichess = !(error is LichessBotControllerError) && !(error is LichessBotGateError) && !(error is CancellationError)
+            if error is LichessBotGateError || error is CancellationError {
+                outcome = .stopped(text)
+            } else {
+                outcome = .failed("\(pick.bot.username): \(text)")
+            }
+        }
+        matchmakingRateLimiter.recordAttempt(at: attemptAt, reachedLichess: reachedLichess)
+        switch outcome {
+        case .sent:
+            protocolLog.record(.challenge, "matchmaking sent a challenge to \(pick.bot.username)", fields: ["clock": request.clockText, "rated": "\(request.rated)", "window": pick.bounds.description(speed: speed)])
+            SessionLogger.shared.log("[LICHESS-BOT] matchmaking challenge sent to \(pick.bot.username) (\(speed.rawValue) \(rating)) at \(request.clockText) \(request.rated ? "rated" : "casual"); rating window \(pick.bounds.description(speed: speed))")
+        default:
+            protocolLog.record(.challenge, "matchmaking send to \(pick.bot.username) \(outcome.text)")
+        }
+        return outcome
+    }
+
+    /// Whether a matchmaking send may happen now, and why not; nil when it
+    /// may. Reads the gate's live phase.
+    private func matchmakingPrecheck(fillMode: LichessBotMatchmakingSettings.FillMode) async -> MatchmakingPassOutcome? {
+        let phase = await gate.snapshot().phase
+        let conditions = LichessBotMatchmaking.PassConditions(
+            isOnline: runtime != nil && connection == .online,
+            rateLimitHoldActive: rateLimitHoldUntil != nil,
+            gateOpen: phase == .open,
+            hasChallengeScope: hasChallengeScope,
+            playOneGameActive: oneGameRequested,
+            queueHasEntriesToSend: challengeQueue.hasEntriesToSend,
+            botGamesInLastDay: botGamesInLastDay(now: Date())
+        )
+        if let reason = LichessBotMatchmaking.passBlockedReason(conditions) {
+            return .blocked(reason: reason)
+        }
+        let slots = LichessBotMatchmaking.openSlots(
+            maxConcurrentGames: settings.challenge.maxConcurrentGames,
+            gamesReservedForHumans: settings.challenge.gamesReservedForHumans,
+            fillMode: fillMode,
+            committed: committedGameSlots
+        )
+        guard slots > 0 else { return .noOpenSlot }
+        let decision = matchmakingRateLimiter.decision(now: Date(), perHourCap: settings.matchmaking.maxChallengesPerHour, minimumSpacing: LichessBotMatchmaking.minimumSendSpacing)
+        guard decision == .allowed else { return .rateLimited(decision) }
+        return nil
+    }
+
+    /// What the candidate rules consult, from the controller's state now.
+    private func matchmakingContext(now: Date) -> LichessBotMatchmaking.CandidateContext {
+        var engaged = challengeQueue.activeUserIDs
+        for pending in pendingChallenges {
+            engaged.insert(pending.username.lowercased())
+        }
+        for game in gamesInProgress {
+            if let opponentID = game.opponent?.id {
+                engaged.insert(opponentID.lowercased())
+            }
+        }
+        return LichessBotMatchmaking.CandidateContext(
+            ourAccountID: accountID,
+            blockedUserIDs: Set(settings.challenge.blockedUserIDs.map { $0.lowercased() }),
+            engagedUserIDs: engaged,
+            notes: playerNotes,
+            gamesTodayByOpponent: gamesTodayByOpponent,
+            maxGamesPerOpponentPerDay: settings.challenge.maxGamesPerOpponentPerDay,
+            now: now
+        )
+    }
+
+    /// The online-bots list is older than matchmaking's refresh interval
+    /// (or missing), and no fetch was tried within the retry interval.
+    private func onlineBotsNeedMatchmakingRefresh(now: Date) -> Bool {
+        guard !onlineBotsRefreshInFlight else { return false }
+        if let fetchedAt = onlineBotsFetchedAt, now.timeIntervalSince(fetchedAt) < LichessBotMatchmaking.onlineBotsRefreshInterval {
+            return false
+        }
+        if let requestedAt = onlineBotsRequestedAt, now.timeIntervalSince(requestedAt) < LichessBotMatchmaking.onlineBotsRetryInterval {
+            return false
+        }
+        return true
+    }
+
+    /// Refetch the online-bots list for matchmaking (housekeeping priority,
+    /// through the gate like every request).
+    private func refreshOnlineBotsForMatchmaking() async {
+        onlineBotsRefreshInFlight = true
+        defer { onlineBotsRefreshInFlight = false }
+        await refreshOnlineBots()
+    }
+
+    /// While matchmaking is on and the bot is Online, keep the online-bots
+    /// list on matchmaking's own cadence (plan §7.3 B).
+    private func refreshOnlineBotsForMatchmakingIfDue() {
+        guard settings.matchmaking.enabled, runtime != nil, connection == .online,
+              onlineBotsNeedMatchmakingRefresh(now: Date()) else { return }
+        // Claimed now, so the next poll doesn't start a second fetch.
+        onlineBotsRefreshInFlight = true
+        Task {
+            await refreshOnlineBots()
+            onlineBotsRefreshInFlight = false
+        }
+    }
+
+    /// A player declined one of DCM's challenges: matchmaking leaves them
+    /// alone for the configured cool-down (plan §7.3 B). Recorded for every
+    /// decline, including a `casual` decline of a rated challenge, which
+    /// matchmaking never resends on its own.
+    private func recordDeclineCooldown(_ username: String) {
+        let hours = settings.matchmaking.declineCooldownHours
+        guard hours > 0 else { return }
+        let userID = username.lowercased()
+        guard var notes = playerNotes else {
+            protocolLog.record(.anomaly, "\(userID) declined, but player notes aren't loaded; no decline cool-down recorded")
+            return
+        }
+        let until = Date().addingTimeInterval(TimeInterval(hours) * Self.secondsPerHour)
+        notes.recordDeclineCooldown(userID, until: until)
+        playerNotes = notes
+        savePlayerNotes(notes)
+        protocolLog.record(.challenge, "\(userID) declined; matchmaking leaves them alone until \(until.formatted(date: .abbreviated, time: .standard))")
+    }
+
     // MARK: - Grid housekeeping
 
     func dismissFinishedGames() {
@@ -1067,11 +1737,13 @@ final class LichessBotController {
         if let focusedGameID, !games.contains(where: { $0.id == focusedGameID }) {
             self.focusedGameID = nil
         }
+        updateAutoFollow()
     }
 
     func dismissGame(_ gameID: String) {
         guard !activeGameIDs.contains(gameID) else { return }
         games.removeAll { $0.id == gameID }
+        updateAutoFollow()
     }
 
     func dismissAlarms() {
@@ -1119,7 +1791,7 @@ final class LichessBotController {
         let client = LichessBotAPIClient(
             baseURL: try LichessBotAPIClient.lichessBaseURL(),
             token: token,
-            transport: LichessBotURLSessionTransport(),
+            transport: services.makeTransport(),
             gate: gate,
             onRequest: { record in continuation.yield(.request(record)) }
         )
@@ -1302,6 +1974,15 @@ final class LichessBotController {
             withdraw(challengeID: pending.id, client: runtime.client)
         }
         pendingChallenges = []
+        clearChallengeQueue(reason: "offline: \(reason)")
+        // Work tied to the old runtime checks its generation and leaves
+        // these alone; they are reset here for the next runtime.
+        challengeQueuePumpRunning = false
+        matchmakingPassRunning = false
+        isFillingOpenSlots = false
+        nextAutomaticMatchmakingPassAt = .distantPast
+        lastLoggedAutomaticMatchmakingOutcome = nil
+        matchmakingStatus = nil
         oneGameRequested = false
         drainRequested = false
         acceptedAwaitingStartIDs = []
@@ -1331,6 +2012,7 @@ final class LichessBotController {
             game.markSessionEnded(reason)
         }
         activeGameIDs.removeAll()
+        updateAutoFollow()
         gateSnapshot = nil
         generation = nil
     }
@@ -1402,6 +2084,11 @@ final class LichessBotController {
                 }
             }
             pruneFinishedGames()
+            // Each starts its own task when due, so a send or a fetch never
+            // holds up this loop.
+            scheduleChallengeQueuePump()
+            startAutomaticMatchmakingPassIfDue()
+            refreshOnlineBotsForMatchmakingIfDue()
             do {
                 try await Task.sleep(for: .seconds(1))
             } catch {
@@ -1444,9 +2131,15 @@ final class LichessBotController {
     private func pruneFinishedGames() {
         let retention = TimeInterval(settings.display.finishedGameRetentionMinutes * 60)
         let now = Date()
+        // The followed game stays while its hold keeps it on screen.
+        let heldGameID = autoFollowHold?.gameID
+        let countBefore = games.count
         games.removeAll { game in
             guard let finishedAt = game.finishedAt, !activeGameIDs.contains(game.id) else { return false }
-            return now.timeIntervalSince(finishedAt) >= retention && game.id != focusedGameID
+            return now.timeIntervalSince(finishedAt) >= retention && game.id != focusedGameID && game.id != heldGameID
+        }
+        if games.count != countBefore {
+            updateAutoFollow()
         }
     }
 
@@ -1459,6 +2152,8 @@ final class LichessBotController {
             // was dismissed or pruned must not bring it back (the journal
             // records every event regardless).
             listedGame(gameID)?.apply(gameEvent)
+            // A final state may have just finished the followed game.
+            updateAutoFollow()
             switch gameEvent {
             case .stoppedMoving(let reason):
                 // Plan §6.1 B: never race another client; go offline.
@@ -1536,7 +2231,10 @@ final class LichessBotController {
                 }
             }
             activeGameIDs.insert(gameID)
+            // Counted from here as a game in progress, not as starting.
+            acceptedAwaitingStartIDs.remove(gameID)
             listStartedGame(gameID)
+            updateAutoFollow()
             self.generation = generation
             protocolLog.record(.game, "game started", gameID: gameID, fields: ["model": generation.modelID, "generation": "\(generation.generationID)"])
             SessionLogger.shared.log("[LICHESS-BOT] game \(gameID) started with \(generation.sourceKind.rawValue) \(generation.modelID)")
@@ -1546,7 +2244,9 @@ final class LichessBotController {
                 game.markSessionEnded("the game session ended")
             }
             protocolLog.record(.game, "game session ended", gameID: gameID)
+            updateAutoFollow()
             finishIfDrained()
+            scheduleChallengeQueuePump()
         case .anomaly(let text):
             protocolLog.record(.anomaly, text)
         case .eventStreamLine(let data, let receivedAt):
@@ -1565,8 +2265,17 @@ final class LichessBotController {
             switch outcome {
             case .accepted(let gameID):
                 text = "accepted; game \(gameID)"
+                // The game holds its slot from here, though its session is
+                // still being set up; without this, the slot would look free
+                // until the next poll mirrors the manager's starting games.
+                if !activeGameIDs.contains(gameID) {
+                    acceptedAwaitingStartIDs.insert(gameID)
+                }
             case .declined(let reason, let reasonKey):
                 text = "declined" + (reason.map { ": \($0)" } ?? "")
+                if let pending = pendingChallenges.first(where: { $0.id == challengeID }) {
+                    recordDeclineCooldown(pending.username)
+                }
                 if reasonKey == LichessBotDeclineReason.casual.rawValue,
                    let pending = pendingChallenges.first(where: { $0.id == challengeID }),
                    pending.request.rated {
@@ -1584,6 +2293,7 @@ final class LichessBotController {
             }
             pendingChallenges.removeAll { $0.id == challengeID }
             protocolLog.record(.challenge, "outgoing challenge \(text)", fields: ["challenge": challengeID])
+            scheduleChallengeQueuePump()
         case .oneGameStarted(let gameID):
             drainRequested = true
             connection = .draining

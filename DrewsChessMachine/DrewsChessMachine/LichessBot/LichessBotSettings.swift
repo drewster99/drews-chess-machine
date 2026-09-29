@@ -138,6 +138,40 @@ struct LichessBotConnectionSettings: Sendable, Equatable, Codable {
     var breakerWindowMinutes = 10
 }
 
+/// Automatic challenges to online bots (plan §7.3). Off by default. Read
+/// live: every matchmaking pass uses the settings in force at that moment.
+struct LichessBotMatchmakingSettings: Sendable, Equatable, Codable {
+    /// Which free slots matchmaking fills.
+    enum FillMode: String, Sendable, Equatable, Codable, CaseIterable {
+        /// Every slot outside those reserved for humans.
+        case everyFreeSlot
+        /// Only when DCM has nothing in play (no game, accepted challenge,
+        /// or challenge waiting), one challenge at a time.
+        case onlyWhenIdle
+    }
+
+    var enabled = false
+    var fillMode: FillMode = .everyFreeSlot
+    /// Each send uses one of these, chosen uniformly.
+    var timeControls: Set<LichessBotClockChoice> = [.blitz3plus2, .blitz5plus3]
+    var rated = false
+    /// The opponent's rating at the chosen speed must lie within DCM's own
+    /// rating at that speed plus these offsets.
+    var minimumRatingOffset = -300
+    var maximumRatingOffset = 300
+    /// The window used instead when DCM has no established rating at the
+    /// chosen speed.
+    var minimumRatingWithoutOwnRating = 1000
+    var maximumRatingWithoutOwnRating = 2200
+    /// Pick among fitting favorites before any other bot.
+    var preferFavorites = true
+    /// Challenges matchmaking sends in any rolling hour.
+    var maxChallengesPerHour = 20
+    /// After a bot declines one of DCM's challenges, matchmaking leaves it
+    /// alone this long. Zero records no cool-down.
+    var declineCooldownHours = 6
+}
+
 /// How the bot's window presents games (plan §14.3a).
 struct LichessBotDisplaySettings: Sendable, Equatable, Codable {
     /// How long a finished game stays in the live grid before it is removed
@@ -156,6 +190,7 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
     var model = LichessBotModelSettings()
     var connection = LichessBotConnectionSettings()
     var display = LichessBotDisplaySettings()
+    var matchmaking = LichessBotMatchmakingSettings()
 
     /// Every problem with these settings. Empty means valid. Invalid
     /// settings are rejected as a whole, never partly applied.
@@ -217,6 +252,13 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         require(n.lostOnTimeBreakerCount >= 1 && n.lostOnTimeBreakerWindowGames >= n.lostOnTimeBreakerCount, "Lost-on-time breaker must trip within its window")
         require(n.movePostFailureBreakerCount >= 1 && n.reconnectStormBreakerCount >= 1 && n.breakerWindowMinutes >= 1, "Breaker thresholds must be at least one")
         require(display.finishedGameRetentionMinutes >= 0, "Finished-game retention cannot be negative")
+
+        let m = matchmaking
+        require(!m.timeControls.isEmpty, "Matchmaking: choose at least one time control")
+        require(m.minimumRatingOffset <= m.maximumRatingOffset, "Matchmaking: the rating window's lower offset must not exceed its upper offset")
+        require(m.minimumRatingWithoutOwnRating >= 0 && m.minimumRatingWithoutOwnRating <= m.maximumRatingWithoutOwnRating, "Matchmaking: the rating bounds used without DCM's own rating must run from zero or more up to the maximum")
+        require(m.maxChallengesPerHour >= 1, "Matchmaking: allow at least one challenge per hour")
+        require(m.declineCooldownHours >= 0, "Matchmaking: the decline cool-down cannot be negative")
         return problems
     }
 }
