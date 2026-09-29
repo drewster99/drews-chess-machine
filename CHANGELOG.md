@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-29 CDT — Exact resume in all three runners, τ minimum 0.01, resumed sessions keep their own values (pending commit)
+## 2026-09-29 CDT — Exact resume in all three runners, τ minimum 0.01, resumed sessions keep their own values (`d15f706`)
 
 - Resume now continues training exactly as if it had never stopped, through one shared path: `ChessTrainer.exportResumeSnapshot()` / `restoreExactly(from:)` (`Training/TrainerResumeState.swift`). It restores the fp32 master weights, the optimizer velocity, the completed-step clock, the warmup length and the LR/momentum cycle with its decay envelope. Warmup does not re-run.
 - Bug fixed, corpus replay: `--resume-exact` restarted the trainer clock at 0, so the cycle phase and decay restarted (`phaseOrigin=segment-step-0`). It zeroed velocity and ran a 50-step "momentum-refill" warmup. Checkpoints saved the bf16 working copy, with no velocity. Checkpoints now carry the full trainer state, and `--resume-exact` restores it. The checkpoint's warmup and cycle win over `--parameters`; each difference is logged as `[REPLAY-RESUME] WARNING`. A checkpoint without that state is refused with a message naming what it lacks. `--start-model` without `--resume-exact` is a new branch: fresh clock and zero velocity, stated in the log.
