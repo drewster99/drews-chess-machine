@@ -2252,6 +2252,22 @@ final class LichessBotController {
             raiseAlarm("Another client appears to be using this token (\(count) immediate closes)")
         case .tokenRejected(let detail):
             failRuntime("Lichess rejected the token: \(detail)")
+        case .challengeArrived(let challengeID, let challengerID, let challengerTitle):
+            // Settings are read here, on arrival, so a changed tone applies
+            // to the very next challenge.
+            let soundName = LichessBotChallengeAlert.soundName(
+                challengerID: challengerID,
+                challengerTitle: challengerTitle,
+                ourAccountID: accountID,
+                alerts: settings.alerts
+            )
+            if let soundName {
+                do {
+                    try LichessBotSystemSounds.play(named: soundName)
+                } catch {
+                    protocolLog.record(.anomaly, "challenge alert failed: \(error.localizedDescription)", fields: ["challenge": challengeID])
+                }
+            }
         case .challengeDecision(let challengeID, let challengerID, let decision):
             protocolLog.record(.challenge, "\(challengerID): \(Self.describe(decision))", fields: ["challenge": challengeID])
             if decision == .accept {

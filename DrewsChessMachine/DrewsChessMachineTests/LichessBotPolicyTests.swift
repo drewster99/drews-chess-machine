@@ -253,7 +253,7 @@ final class LichessBotPolicyTests: XCTestCase {
     func testDefaultPostureMatchesThePlan() {
         let settings = LichessBotSettings()
         XCTAssertFalse(settings.challenge.acceptRated)
-        XCTAssertEqual(settings.challenge.allowedSpeeds, [.blitz, .rapid])
+        XCTAssertEqual(settings.challenge.allowedSpeeds, [.ultraBullet, .bullet, .blitz, .rapid, .classical])
         XCTAssertFalse(settings.play.resignEnabled)
         XCTAssertFalse(settings.play.offerDrawEnabled)
         XCTAssertFalse(settings.play.acceptDrawEnabled)

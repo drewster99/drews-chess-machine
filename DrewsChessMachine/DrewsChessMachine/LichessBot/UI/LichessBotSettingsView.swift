@@ -40,6 +40,7 @@ struct LichessBotSettingsView: View {
                 LichessBotMatchmakingSettingsSection(settings: $draft.matchmaking)
                 LichessBotPlaySettingsSection(settings: $draft.play)
                 LichessBotChatSettingsSection(settings: $draft.chat)
+                LichessBotAlertSettingsSection(settings: $draft.alerts)
                 LichessBotModelSettingsSection(settings: $draft.model)
                 LichessBotConnectionSettingsSection(settings: $draft.connection, display: $draft.display)
             }

@@ -17,6 +17,9 @@ enum LichessBotManagerEvent: Sendable {
     /// The event stream keeps being closed right after opening: another
     /// client is using the same token. The manager stops (plan §6.1).
     case takeoverSuspected(consecutiveShortStreams: Int)
+    /// A challenge event arrived, before any decision. Includes our own
+    /// outgoing echo; the listener decides what that means for it.
+    case challengeArrived(challengeID: String, challengerID: String, challengerTitle: String?)
     case challengeDecision(challengeID: String, challengerID: String, decision: LichessBotChallengeDecision)
     case challengeResponseFailed(challengeID: String, error: String)
     case gameSessionStarted(gameID: String, generation: LichessBotGenerationInfo)
@@ -552,7 +555,8 @@ actor LichessBotSessionManager {
         // Our own outgoing challenges are echoed on the event stream. Lichess
         // omits `direction` there (observed live, contrary to the spec's
         // example), so they are recognized by the challenger being us.
-        if challenge.challenger.id.lowercased() == ourAccountID.lowercased() {
+        onEvent(.challengeArrived(challengeID: challenge.id, challengerID: challenge.challenger.id, challengerTitle: challenge.challenger.title))
+        if LichessBotChallengeAlert.isOwnOutgoingEcho(challengerID: challenge.challenger.id, ourAccountID: ourAccountID) {
             onEvent(.challengeDecision(challengeID: challenge.id, challengerID: challenge.challenger.id, decision: .ignore(rule: "our own outgoing challenge")))
             return
         }

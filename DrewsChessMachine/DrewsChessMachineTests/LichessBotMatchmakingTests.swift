@@ -121,7 +121,7 @@ final class LichessBotMatchmakingTests: XCTestCase {
 
     func testTheAbsoluteBoundsApplyWithoutAnEstablishedRating() {
         let settings = LichessBotMatchmakingSettings()
-        let absolute = LichessBotMatchmaking.RatingBounds(minimum: 1000, maximum: 2200, basis: .absolute)
+        let absolute = LichessBotMatchmaking.RatingBounds(minimum: 0, maximum: 2200, basis: .absolute)
         XCTAssertEqual(LichessBotMatchmaking.ratingBounds(settings: settings, ourPerfs: nil, speed: .blitz), absolute)
         XCTAssertEqual(LichessBotMatchmaking.ratingBounds(settings: settings, ourPerfs: [:], speed: .rapid), absolute, "no rating at the speed")
         let provisional = ["blitz": LichessBotPerfRating(games: 3, rating: 1500, rd: 300, prog: 0, prov: true)]
@@ -312,16 +312,16 @@ final class LichessBotMatchmakingTests: XCTestCase {
         let settings = LichessBotSettings()
         XCTAssertTrue(settings.validationProblems().isEmpty)
         let m = settings.matchmaking
-        XCTAssertFalse(m.enabled)
+        XCTAssertTrue(m.enabled)
         XCTAssertEqual(m.fillMode, .everyFreeSlot)
-        XCTAssertEqual(m.timeControls, [.blitz3plus2, .blitz5plus3])
-        XCTAssertFalse(m.rated)
+        XCTAssertEqual(m.timeControls, [.bullet1plus0, .bullet2plus1, .ultraBulletQuarterPlus0, .blitz3plus0, .blitz3plus2, .bullet1plus1, .blitz5plus3, .rapid10plus0, .blitz5plus0])
+        XCTAssertTrue(m.rated)
         XCTAssertEqual(m.minimumRatingOffset, -300)
         XCTAssertEqual(m.maximumRatingOffset, 300)
-        XCTAssertEqual(m.minimumRatingWithoutOwnRating, 1000)
+        XCTAssertEqual(m.minimumRatingWithoutOwnRating, 0)
         XCTAssertEqual(m.maximumRatingWithoutOwnRating, 2200)
-        XCTAssertEqual(m.maxChallengesPerHour, 20)
-        XCTAssertEqual(m.declineCooldownHours, 6)
+        XCTAssertEqual(m.maxChallengesPerHour, 10)
+        XCTAssertEqual(m.declineCooldownHours, 2)
     }
 
     func testInvalidMatchmakingSettingsAreRejected() {

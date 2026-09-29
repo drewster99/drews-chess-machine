@@ -1,7 +1,7 @@
 import Foundation
 
-/// Which challenges the bot accepts (plan §7). The defaults are deliberately
-/// conservative; plan §7 explains each one.
+/// Which challenges the bot accepts (plan §7). The defaults are the
+/// owner's own running configuration; plan §7 explains each field.
 struct LichessBotChallengeSettings: Sendable, Equatable, Codable {
     /// Checked speeds no clock inside the clock and increment bounds can
     /// have, fastest first: every challenge at such a speed is declined, so
@@ -19,29 +19,29 @@ struct LichessBotChallengeSettings: Sendable, Equatable, Codable {
 
     var acceptRated = false
     var acceptCasual = true
-    var allowedSpeeds: Set<LichessBotSpeed> = [.blitz, .rapid]
-    var minimumInitialSeconds = 180
+    var allowedSpeeds: Set<LichessBotSpeed> = [.ultraBullet, .bullet, .blitz, .rapid, .classical]
+    var minimumInitialSeconds = 15
     var maximumInitialSeconds = 1800
     var minimumIncrementSeconds = 0
     var maximumIncrementSeconds = 30
     var acceptBots = true
     var acceptHumans = true
     var minimumOpponentRating = 0
-    var maximumOpponentRating = 4000
+    var maximumOpponentRating = 2500
     var acceptProvisionalOpponents = true
     /// Lichess user ids (lowercase).
     var blockedUserIDs: [String] = []
     var acceptRematches = true
-    var maxConcurrentGames = 2
+    var maxConcurrentGames = 12
     /// Slots at the top of `maxConcurrentGames` that only humans may take.
-    var gamesReservedForHumans = 0
+    var gamesReservedForHumans = 2
     var maxSimultaneousGamesPerOpponent = 1
-    var maxGamesPerDay = 200
-    var maxGamesPerOpponentPerDay = 20
+    var maxGamesPerDay = 2000
+    var maxGamesPerOpponentPerDay = 5
     /// Withdraw an outgoing challenge nobody has answered after this long.
     /// Zero waits indefinitely. Busy bots often leave challenges unanswered
     /// rather than declining them.
-    var outgoingChallengeTimeoutSeconds = 180
+    var outgoingChallengeTimeoutSeconds = 999
     /// Past this many challenge responses in a minute, further challenges
     /// are left unanswered (they expire on Lichess's side) rather than
     /// spending requests (plan §5.3).
@@ -50,8 +50,8 @@ struct LichessBotChallengeSettings: Sendable, Equatable, Codable {
 
 /// How the bot plays (plan §12.4).
 struct LichessBotPlaySettings: Sendable, Equatable, Codable {
-    var temperatureStart: Float = 0.5
-    var temperatureDecayPerPly: Float = 0.05
+    var temperatureStart: Float = 0.11
+    var temperatureDecayPerPly: Float = 0.02
     var temperatureFloor: Float = 0.01
     var minimumThinkMilliseconds = 0
 
@@ -83,7 +83,7 @@ struct LichessBotPlaySettings: Sendable, Equatable, Codable {
 /// Greeting and goodbye messages (plan §12.5).
 struct LichessBotChatSettings: Sendable, Equatable, Codable {
     var greetingEnabled = true
-    var greetingTemplate = "DrewsChessMachine: a from-scratch neural net, no search. Model {modelID}. Type !help for commands."
+    var greetingTemplate = "Hi, I'm DrewsChessMachine ({modelID}), a from-scratch neural net, no search. Type !help for commands."
     var goodbyeEnabled = false
     var goodbyeTemplate = "Thanks for the game, {opponent}!"
     var room: LichessBotChatRoom = .player
@@ -105,9 +105,9 @@ enum LichessBotModelSourceKind: String, Sendable, Equatable, Codable, CaseIterab
 }
 
 struct LichessBotModelSettings: Sendable, Equatable, Codable {
-    var source: LichessBotModelSourceKind = .champion
+    var source: LichessBotModelSourceKind = .file
     /// The model file, when `source == .file`.
-    var filePath: String?
+    var filePath: String? = "/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20260713-v5cont-resume-replay-step270000.safetensors"
     var liveTrainerRefreshIntervalSeconds = 120
     /// Live trainer only: whether games already in progress switch to each
     /// new snapshot, or keep the one they started with.
@@ -138,7 +138,7 @@ struct LichessBotConnectionSettings: Sendable, Equatable, Codable {
     var breakerWindowMinutes = 10
 }
 
-/// Automatic challenges to online bots (plan §7.3). Off by default. Read
+/// Automatic challenges to online bots (plan §7.3). Read
 /// live: every matchmaking pass uses the settings in force at that moment.
 struct LichessBotMatchmakingSettings: Sendable, Equatable, Codable {
     /// Which free slots matchmaking fills.
@@ -150,26 +150,26 @@ struct LichessBotMatchmakingSettings: Sendable, Equatable, Codable {
         case onlyWhenIdle
     }
 
-    var enabled = false
+    var enabled = true
     var fillMode: FillMode = .everyFreeSlot
     /// Each send uses one of these, chosen uniformly.
-    var timeControls: Set<LichessBotClockChoice> = [.blitz3plus2, .blitz5plus3]
-    var rated = false
+    var timeControls: Set<LichessBotClockChoice> = [.bullet1plus0, .bullet2plus1, .ultraBulletQuarterPlus0, .blitz3plus0, .blitz3plus2, .bullet1plus1, .blitz5plus3, .rapid10plus0, .blitz5plus0]
+    var rated = true
     /// The opponent's rating at the chosen speed must lie within DCM's own
     /// rating at that speed plus these offsets.
     var minimumRatingOffset = -300
     var maximumRatingOffset = 300
     /// The window used instead when DCM has no established rating at the
     /// chosen speed.
-    var minimumRatingWithoutOwnRating = 1000
+    var minimumRatingWithoutOwnRating = 0
     var maximumRatingWithoutOwnRating = 2200
     /// Pick among fitting favorites before any other bot.
-    var preferFavorites = true
+    var preferFavorites = false
     /// Challenges matchmaking sends in any rolling hour.
-    var maxChallengesPerHour = 20
+    var maxChallengesPerHour = 10
     /// After a bot declines one of DCM's challenges, matchmaking leaves it
     /// alone this long. Zero records no cool-down.
-    var declineCooldownHours = 6
+    var declineCooldownHours = 2
 }
 
 /// How the bot's window presents games (plan §14.3a).
@@ -177,6 +177,15 @@ struct LichessBotDisplaySettings: Sendable, Equatable, Codable {
     /// How long a finished game stays in the live grid before it is removed
     /// (it can also be dismissed by hand). Zero removes it at once.
     var finishedGameRetentionMinutes = 10
+}
+
+/// Tones played when a challenge arrives, so the owner notices activity
+/// without watching the window. Read live on each arrival.
+struct LichessBotAlertSettings: Sendable, Equatable, Codable {
+    /// System sound name for challenges from BOT accounts; nil plays nothing.
+    var botChallengeSoundName: String?
+    /// System sound name for challenges from humans; nil plays nothing.
+    var humanChallengeSoundName: String?
 }
 
 /// All Lichess bot settings, persisted as one JSON blob (plan §12.1). Not
@@ -191,6 +200,7 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
     var connection = LichessBotConnectionSettings()
     var display = LichessBotDisplaySettings()
     var matchmaking = LichessBotMatchmakingSettings()
+    var alerts = LichessBotAlertSettings()
 
     /// Every problem with these settings. Empty means valid. Invalid
     /// settings are rejected as a whole, never partly applied.

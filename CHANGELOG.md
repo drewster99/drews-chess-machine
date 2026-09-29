@@ -9,6 +9,17 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-29 CDT — Lichess bot: challenge alert tones; defaults are now the owner's settings (pending commit)
+
+**The bot's settings format changed (a new Alerts section): after updating, click Reset to Defaults in the bot's Settings once** (no migration, by decision, as before).
+
+- **Alert tones** (Settings ▸ Alerts): one system sound for challenges from bots and one for challenges from humans, each None or any sound in `/System/Library/Sounds` (listed from the folder), with a ▶ preview. Default None for both.
+  - Plays for every incoming challenge event as it arrives, whether it is then accepted or declined. Never for our own outgoing challenge echoed back on the event stream.
+  - The manager reports each arrival (`challengeArrived`); the controller asks the pure `LichessBotChallengeAlert.soundName` and plays on the main actor. Settings are read live.
+  - Test: `LichessBotChallengeAlertTests`.
+- **Defaults = the owner's current settings.** Every default in the challenge, play, chat, model, connection, display and matchmaking settings now equals the owner's saved configuration, so Reset to Defaults reproduces it (matchmaking on and rated, model from a file, all speeds except correspondence, and so on).
+  - Tests updated where they compare directly against defaults: `LichessBotPolicyTests.testDefaultPostureMatchesThePlan` (allowed speeds), `LichessBotMatchmakingTests.testMatchmakingIsOffByDefaultWithThePlansDefaults` (enabled, time controls, rated, absolute minimum, hourly cap, cool-down) and `testTheAbsoluteBoundsApplyWithoutAnEstablishedRating` (absolute minimum).
+
 ## 2026-09-29 00:07 CDT — CLI results.json: record unmeasured diagnostics as nil (`b8a3b38`)
 
 - **Bug (since `91ca615`):** corpus replay and train-vs-UCI runs with `--output` failed to write `results.json` ("the data isn't in the correct format").
