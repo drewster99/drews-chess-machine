@@ -326,3 +326,77 @@ Fresh nets: `models/20260929-test_SE_<arm>-seed2-fresh.safetensors`. Dashboard r
 | `badae6c` | Doc comment in `NetworkArchitecture.swift` | No. |
 
 Seed-2 startup lines match seed 1: `wd=0.0003 bufCap=500000 minPrefill=250000`, cycle starts at LR 1e-1 / momentum 0.85.
+
+## Seed 2: end of run
+
+Stopped early by decision on 2026-09-30 at 15:05 CDT, right after every arm's 7000-step checkpoint (SIGINT, so each also wrote a stop save). Two seeds were judged enough to establish the direction; the zero-β arm below was the more informative next test.
+
+| arm | 7000 pElo / nll | stop save | pElo / nll |
+|---|---|---|---|
+| scale+bias | 1261.4 / 2.4751 | 7282 | 1262.9 / 2.4772 |
+| attenuate-only | 1264.0 / 2.4732 | 7289 | 1267.6 / 2.4684 |
+| none | 1299.6 / 2.4501 | 7019 | 1284.6 / 2.4671 |
+
+Artifacts: gzipped logs in [`logs/`](logs/), the 7000 checkpoints and stop saves in [`models/`](models/) (Git LFS; see [MODELS.md](MODELS.md)). Per-mark data: `documentation/dashboards/data/se_{sb,att,none}2.csv`.
+
+### Seed 1 vs seed 2, marks 1k–7k
+
+Paired pElo gaps within each seed (row arm minus column arm; mean with sd in parentheses, n = 7 marks per seed):
+
+| comparison | seed 1 | seed 2 | pooled | range, both seeds | seed 1, full 1k–31k | nll, seed 1 / seed 2 |
+|---|---|---|---|---|---|---|
+| none − s+b | +18.7 (16.0) | +45.2 (36.3) | +31.9 (30.2) | −2.6 … +104.9 | +30.8 (21.2) | −0.0174 / −0.0628 |
+| none − att | +9.2 (16.3) | +14.7 (50.7) | +11.9 (36.3) | −90.4 … +68.9 | +16.3 (22.6) | −0.0095 / +0.0090 |
+| att − s+b | +9.5 (17.7) | +30.5 (32.2) | +20.0 (27.3) | −11.5 … +95.0 | +14.5 (28.4) | −0.0079 / −0.0718 |
+
+Seed-to-seed spread (seed 2 − seed 1, same arm, same step, 21 pairs):
+- Mean |gap| 21.6 pElo, median 19.6, RMS 27.9, max 66.1, so **one run's seed noise has an sd of about 20 pElo** (RMS ÷ √2). This matches the 6.4–43.7 band from the nt8y seed study.
+- Per arm, seed 2 − seed 1: scale+bias −26.1 (sd 13.3), attenuate-only −5.1 (19.6), none +0.3 (36.5). Seed 2's scale+bias init sits consistently lower, which inflates seed 2's gaps against scale+bias.
+- A difference between two single runs therefore carries about ±28 pElo (1 sd) of seed noise, about the size of the effects measured. Resolving an arm difference to about ±10 would take roughly 8–9 seeds per arm.
+
+### Conclusions
+
+- **Scale+bias SE is worse than both attenuate-only and no SE.** Both seeds agree on pElo and on nll, and seed 1's full run agrees.
+- **No SE is probably at least as good as attenuate-only, and at worst similar.** The mean gap is positive in both seeds, but seed 2's sd is large and nll disagrees between seeds.
+- **Limits:** the independent sample is two seeds. Marks within one run are strongly correlated, so they are not independent evidence. With two seeds, the defensible claim is the direction both agree on.
+- **The early window understates the effect:** seed 1's 1k–7k none − s+b gap (+18.7) is about 60% of its full-run value (+30.8).
+
+## Zero-β scale+bias (4th arm)
+
+Question: is scale+bias worse because of the β path itself, or because β starts from random weights? In seed 1, β barely trained (see above), so its random init persisted as a fixed, input-dependent offset of about the size of the signal. Prediction: zero-β behaves like attenuate-only.
+
+**Design:** each zero-β net is derived from that seed's scale+bias fresh net and is bit-identical to it except the β half of each SE fc2 weight (rows 128–255 of the [256, 32] weight, set to 0). The β biases were already 0 at init and stay 0; the γ half is unchanged (verified byte-for-byte on all three blocks of both nets). Each zero-β run is compared **paired** with its Glorot-β parent run at every mark 1k–7k, which removes most of the seed noise measured above. Target: 7000 steps, matching seed 2.
+
+**Derivation** (from the repo root, with `BIN` and `M` as in Reproduce §1):
+
+```sh
+for s in "" "-seed2"; do
+  "$BIN" --derive-model \
+    --from "experiments/20260929-se-style-ab/models/20260929-test_SE_scale+bias${s}-fresh.safetensors" \
+    --set-se-beta-init zero \
+    --out "$M/20260929-test_SE_zerobeta${s:-"-seed1"}-fresh.safetensors"
+done
+```
+
+The outputs record the parent ModelID and source SHA-256 in `derivation_history`. Stored copies are in `models/` (see [MODELS.md](MODELS.md)).
+
+**Launch record:** 2026-09-30 15:05:44 and 15:05:52 CDT, both at once, same corpus, same `parameters.json`, same flags as the other arms:
+
+```sh
+"$BIN" --replay-corpus 20260624-192615-w3aA5b \
+  --start-model "$M/20260929-test_SE_zerobeta-<seed>-fresh.safetensors" \
+  --out-model "$M/20260929-test_SE_zerobeta-<seed>-replay-latest.safetensors" \
+  --parameters experiments/20260929-se-style-ab/parameters.json \
+  --epochs 12 --enumerate-checkpoints
+```
+
+| arm | fresh ModelID | parent | pid | log |
+|---|---|---|---|---|
+| zero-β seed 1 | `20260930-7-crxN` | `20260929-12-JZOe` | 39607 | `dcm_log_20260930-150544.txt` |
+| zero-β seed 2 | `20260930-8-8qyR` | `20260930-1-H1Oq` | 39629 | `dcm_log_20260930-150552.txt` |
+
+Dashboard registry keys `se_zb1` / `se_zb2`. Startup lines match the other arms: `wd=0.0003 bufCap=500000 minPrefill=250000`, `origin=trainerStep 0 cycleStep 0`, and the architecture line shows `SE+/4 β0`.
+
+**Engine differences from seed 2.** The zero-β runs use the Release binary built 2026-09-30 11:18, build 2261 (git `31253d5` with uncommitted changes = the code of `8926221`, per `derivation_history`). Engine change since seed 2's `badae6c`: `8926221` (#7) adds the `se_beta_init` option, architecture format v4 and `--derive-model`. For a `glorot` β the graph and training math are unchanged. The only effect here is the intended one: β starts at 0.
+
+**Throughput:** two arms share the GPU instead of three, so steps per hour are higher than seed 2's. Compare on step, never on time.

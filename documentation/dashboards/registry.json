@@ -772,6 +772,52 @@
         }
       ],
       "trainset": "std-2026-05"
+    },
+    "se_zb1": {
+      "label": "SE zero-β seed1 — scale+bias β0 — 5.21M (3-blk 7×7 @128, bf16)",
+      "color": "#fd8d3c",
+      "rezero_cap": 0.4472136,
+      "n_blocks": 3,
+      "arch_summary": "Derived via --derive-model --set-se-beta-init zero from the seed1 scale+bias fresh net 20260929-12-JZOe (fresh 20260930-7-crxN); bit-identical except the β half of each SE fc2 weight. SE style experiment 4th arm (experiments/20260929-se-style-ab). Build 2261 (31253d5*, code of 8926221).",
+      "arch_stem": "basic30 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, SE scale+bias/4 β0, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20260929-test_SE_zerobeta-seed1-replay-latest.safetensors",
+      "frozen_glob": "20260929-test_SE_zerobeta-seed1-replay-step*.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20260930-150544.txt",
+          "date": "20260930",
+          "cumstep_base": 0,
+          "label": "zero-β run (500k buffer, 2 arms concurrent)",
+          "enum_stem": "20260929-test_SE_zerobeta-seed1"
+        }
+      ],
+      "trainset": "std-2026-05",
+      "params": 5208050
+    },
+    "se_zb2": {
+      "label": "SE zero-β seed2 — scale+bias β0 — 5.21M (3-blk 7×7 @128, bf16)",
+      "color": "#d94801",
+      "rezero_cap": 0.4472136,
+      "n_blocks": 3,
+      "arch_summary": "Derived via --derive-model --set-se-beta-init zero from the seed2 scale+bias fresh net 20260930-1-H1Oq (fresh 20260930-8-8qyR); bit-identical except the β half of each SE fc2 weight. SE style experiment 4th arm (experiments/20260929-se-style-ab). Build 2261 (31253d5*, code of 8926221).",
+      "arch_stem": "basic30 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, SE scale+bias/4 β0, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20260929-test_SE_zerobeta-seed2-replay-latest.safetensors",
+      "frozen_glob": "20260929-test_SE_zerobeta-seed2-replay-step*.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20260930-150552.txt",
+          "date": "20260930",
+          "cumstep_base": 0,
+          "label": "zero-β run (500k buffer, 2 arms concurrent)",
+          "enum_stem": "20260929-test_SE_zerobeta-seed2"
+        }
+      ],
+      "trainset": "std-2026-05",
+      "params": 5208050
     }
   }
 }
