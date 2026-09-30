@@ -196,11 +196,14 @@ struct PlaneGroup: Sendable, Hashable {
     }
 }
 
-/// The single network-wide hidden-activation function (block main path, SE FC1,
-/// tower-end, both heads). Verified across all of git history: every architecture
-/// used ReLU at every hidden site, so `.relu` reproduces all historical nets. The
-/// SE gate (`sigmoid`) and the value output (`tanh`/`softmax`) are structural and
-/// NOT governed by this.
+/// Hidden-activation function. Chosen per block group (`BlockGroup.activationFunction`:
+/// block main path, `activation_gated` merge, SE FC1) and once at the tower level
+/// (`NetworkArchitecture.activationFunction`: stem activation, tower-end activation,
+/// policy head, value head conv and FC1). Verified across all of git history: every
+/// architecture before SiLU/GELU were added used ReLU at every hidden site, so `.relu`
+/// reproduces all historical nets. The SE gate (`sigmoid`) and the value output
+/// (`tanh` for `scalar_tanh`, `softmax` for `wdl_softmax`) are structural and NOT
+/// governed by this.
 enum ActivationFunction: String, Codable, CaseIterable, Sendable, Hashable {
     case relu
     case silu
