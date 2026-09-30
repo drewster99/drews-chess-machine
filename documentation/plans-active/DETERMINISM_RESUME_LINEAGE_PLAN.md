@@ -3,9 +3,9 @@
 Status: **PLAN ONLY — nothing here is implemented.** Audited against `main` at
 `47984b0` (on top of d15f706 "exact resume", 8926221 "#7 zero-β / format v4 /
 `--derive-model`", 248e122). Owner decisions and review findings of 2026-09-30
-folded in (D-3 and D-8 decided; buffer refill by age order; probe-isolation
-rule; hash, sort-tie and float-sum audits; shard/build checks on resume;
-measurements), with every `file:line` re-verified against `main` at `bd32c15`.
+folded in: **all owner decisions D-1…D-10 are decided** (end of file) and the
+plan text below is written to match them. Every `file:line` was verified against
+`main` at `bd32c15`; no app code has changed since (re-checked at `2cfe5a3`).
 
 This plan is the single design for four things that have to be designed together
 because they share storage, format versioning and code paths:
@@ -28,7 +28,8 @@ self-play, corpus-replay and train-vs-UCI paths share code (`TrainerHyperparamet
 exist; no `try?`; the full parameter checklist for every new parameter; the
 **format-version rule** from #7 (legacy files take old behavior; files at the new
 version must carry the new fields, and a missing field there is a load error);
-every older model must still load, train and infer.
+every older model must still load, train and infer. No migration code except the
+owner-approved D-9 in-memory hash recompute for legacy buffers.
 
 ---
 
@@ -42,10 +43,20 @@ What "deterministic" can and cannot mean in this app:
 | GUI Play-and-Train | **No — only the random *streams* are exact, not the trajectory.** | Self-play and training run concurrently; which positions are in the buffer when the trainer samples depends on wall-clock interleaving, the `ReplayRatioController` delay loop (wall-clock driven), worker count changes, arena pauses. Seeding makes each *game* reproducible given its inputs and makes minibatch draws reproducible given the buffer, but the buffer contents at step N are a race. |
 | Train-vs-UCI | **No.** | External engines (multi-threaded Stockfish, time-based `go`) are nondeterministic, plus the same concurrency as GUI. Seeding still makes our side's sampling and the trainer's minibatches reproducible *given* the games. |
 
+**Decided (D-1, owner, 2026-09-30):** GUI self-play and train-vs-UCI resumes are
+**state-exact at most** — they never reproduce the rest of the run — and corpus
+replay is the only trajectory-exact path. Under D-8 the replay buffer is not
+saved by default on those two paths, so a default GUI or train-vs-UCI resume is
+not even buffer-exact: it refills the buffer from new games and is labeled
+`NOT EXACT: buffer` (C1 #9, C3). Everything else it carries (weights, optimizer
+state, schedule clock, RNG streams, serials, counters, lineage) is restored
+exactly.
+
 So the harness in §C6 asserts **bit-exact equivalence for corpus replay** and
 **state-exact save/restore round-trips** (every piece of state restored equals what
-was saved) for the GUI and train-vs-UCI. That is the correct, provable target;
-promising trajectory-exact GUI resume would be false.
+was saved) for the GUI and train-vs-UCI, including the buffer only when the save
+included it. That is the correct, provable target; promising trajectory-exact GUI
+resume would be false.
 
 ---
 
@@ -267,10 +278,10 @@ Checklist walk:
 1. **Declare** both with `@TrainingParameter`, add to `allKeys` (`Training/TrainingParameters.swift`). Range for `random_seed`: full UInt64 — the macro's numeric definition needs a UInt64 (or string-encoded) kind; if the macro only supports Int/Double today, add a `UInt64` value kind to `Packages/TrainingParametersMacro` (Phase 1 task) rather than squeezing into Int64.
 2. **Singleton**: stored properties + `collectValues` / `applyOne` + snapshot accessors.
 3. **`parameters.json`**: verify in `--show-default-parameters` and `--create-parameters-file` round trip.
-4. **Session** — *not* a `[RESUME-PARAM]` block like other parameters: on resume the seed is **lineage state**, restored from the checkpoint's `rng_master_seed` (Part D), never from current settings. The `[RESUME-PARAM]` block logs `random_seed: <saved> (lineage; current setting <x> ignored)`; a new-format session missing it is a load error (format rule); a legacy session gets `NOT EXACT: no RNG state` (C3) and a freshly drawn seed, logged.
+4. **Session** — *not* a `[RESUME-PARAM]` block like other parameters: on resume the seed is **lineage state**, restored from the checkpoint's `dcm_lineage.rng.master_seed` (D2), never from current settings. The `[RESUME-PARAM]` block logs `random_seed: <saved> (lineage; current setting <x> ignored)`; a new-format session missing it is a load error (format rule); a legacy session gets `NOT EXACT: rng_sampler, dropout_state, …` (C3) and a freshly drawn seed, logged.
 5. **`results.json`**: add `random_seed`, `random_seed_mode`, `rng_stream_derivation: "v1"`.
 6. **Runtime log**: `[RUN] seed=<u64> mode=seeded|unseeded(drawn) derivation=v1` at run start (D4), and on resume `[RESUME] rng: sampler=restored dropout=restored`.
-7. **UI**: Settings popover ▸ Training tab ▸ new "Reproducibility" row: mode segmented control + seed text field (monospaced, validated) + "Copy seed" of the *current run's* seed; disabled while a session is running (not live-tunable). `TrainingSettingsPopoverModel` binding + validation.
+7. **UI** (D-2): Settings popover ▸ Training tab ▸ new "Reproducibility" row: mode segmented control (default `unseeded`) + seed text field (monospaced, validated) + "Copy seed" of the *current run's* seed; disabled while a session is running (not live-tunable). `TrainingSettingsPopoverModel` binding + validation. **Build New Model** gets its own optional **Init seed** field (monospaced, validated UInt64; empty ⇒ a seed is drawn and shown after the mint): it is the model's `init_seed` (B1.1), recorded in the file, and is separate from the run's master seed. The drawn or entered init seed is logged with the `[BUTTON]` build line.
 8. **Live tunability**: `liveTunable: false` for both; the seed is fixed per lineage.
 9. **Renames**: n/a (new).
 
@@ -290,7 +301,7 @@ How it works today (`Network/ChessNetwork.swift:747-867, 2684-2729`):
 
 - The generator is **already stateful**: a graph **variable** `dropout_rng_state` of shape `[7]` Int32 (Philox state: key + counter words, as MPSGraph lays it out; `ChessNetwork.swift:775-784`). Each step continues the sequence where the previous one ended. The **only** nondeterministic input is the initial seed `Int.random(in: 0..<Int.max)` at `:781`; making the whole dropout sequence reproducible means replacing that one seed and saving/restoring the 7 words.
 - `randomPhiloxStateTensor(withSeed: Int.random(in: 0..<Int.max))` creates a **constant** in the graph; `dropout_rng_seed_assign` copies it into the variable. The trainer runs that assign once per built graph (`ChessTrainer.swift:2198`, `:2410` on rebuild, `runDropoutSeedOnQueue` `:5712`).
-- Each block's `randomTensor(withShape:descriptor:stateTensor:)` returns `[values, nextState]`; the state is threaded block to block, and `dropout_rng_advance` assigns the final state back to the variable after each step. The KL probe also advances it (`ChessTrainer.swift:6906`) — so **the KL-probe schedule changes the dropout stream**.
+- Each block's `randomTensor(withShape:descriptor:stateTensor:)` returns `[values, nextState]`; the state is threaded block to block, and `dropout_rng_advance` assigns the final state back to the variable after each step. The KL-probe path also runs the advance op (`ChessTrainer.swift:6900-6910`); whether that is the step's own single advance or an extra one is settled in P4 under the probe-isolation rule (C2), and the probe schedule is made step-derived either way (C1 #3).
 
 Can it be seeded? **Yes.** Replace the constant with an input: add placeholder
 `dropout_rng_seed_state` `[7]` Int32 and an assign from it; the seed op is fed a
@@ -304,7 +315,7 @@ Can the state be captured and restored? **Yes.** Capture: run the graph with
 `targetTensors: [dropout_rng_state]` (the same pattern the seed op already uses,
 feeding `inputPlaceholder` the dummy batch) and read 7 Int32s. Restore: feed the
 saved 7 words through the new placeholder assign. Persisted as
-`rng_dropout_philox_state` = JSON array of 7 Int32 (Part D). Test: capture →
+`dcm_lineage.rng.dropout_philox_state` = JSON array of 7 Int32 (D2). Test: capture →
 run 3 steps (record masks via a tap) → restore → 3 steps → identical masks.
 
 Caveat stated honestly: the **meaning** of the 7 words is MPSGraph's; we treat
@@ -327,7 +338,7 @@ Inference graphs have no dropout scaffolding, so nothing changes for them.
   - **Domain guaranteed by construction:** `u1 = (k+1)/2²⁴ ∈ (0,1]` (never 0, never denormal, NaN or infinite) and angle `2π·k/2²⁴ ∈ [0,2π)`, with `k` from `next() >> 40`. No other caller can pass other inputs, so no general-purpose range reduction or special-case handling is needed. (This replaces today's clamp of `u1` to `leastNormalMagnitude`.)
   - **FMA:** Swift does not contract `a * b + c` into a fused multiply-add on its own, so the explicit operation order is stable across builds; the golden bits catch any change.
   - **Validation:** (1) exhaustive test over all 2²⁴ inputs of each function against a `Double` reference, asserting a stated max-ULP bound (A2.4); (2) golden output bits for fixed seeds (A2.4, B1.1); (3) **re-benchmark on completion** against vForce and Swift libm and report the numbers. Prototype (2026-09-30, 8.45M values, `swiftc -O`, M4 Pro): vForce 10.4–13.9 ms, Swift libm 31.5 ms, draft polynomial 10.6 ms. Init runs once per mint, so speed is not a deciding factor.
-  - **Not a concern — bf16 narrowing:** both bf16 training paths keep fp32 master weights (default: fp32 master + bf16 working copy; config D, issue #9: fp32 variables cast in the forward pass), so init produces fp32 values in either mode, and the one CPU narrowing (`float32ToBFloat16Bits`, `ChessNetwork.swift:3563`) is a fixed round-to-nearest-even rule pinned by B1.1's goldens.
+  - **Not a concern — bf16 narrowing:** bf16 training keeps fp32 master weights (fp32 master + bf16 working copy; config D, issue #9, also stored fp32 and is removed anyway under D-10), so init always produces fp32 values, and the one CPU narrowing (`float32ToBFloat16Bits`, `ChessNetwork.swift:3572`) is a fixed round-to-nearest-even rule pinned by B1.1's goldens.
 - **Self-play/GUI concurrency** (§0) — not numeric, but the dominant source of trajectory divergence.
 
 Conclusion: the harness asserts **exact equality of every CPU-side state and of
@@ -348,7 +359,7 @@ draw order, consumer identity or iteration order could vary:
 | O4 | Game-serial assignment — new games are appended in `BatchedSelfPlayDriver` grow path and after the serial game-end pass (`:658` loop `for i in 0..<K`); shrink drops the tail (`:289 games.removeLast`) | Serial numbers must be assigned in a fixed order: the serial pass iterates slots in index order, so assign serials there (never inside the task group). Live worker-count changes (GUI) make the *set* of games time-dependent — accepted, §0. | Assign `serial = nextSerial; nextSerial += 1` only in the serial pass, in slot-index order; persist `nextSerial`. |
 | O5 | `Training/BatchedSelfPlayDriver.swift:700` draw-keep | Runs in the serial game-end pass | Draw from the finishing game's own stream (not a driver-level stream), so it's independent of how many other games finished in the same tick. |
 | O6 | `Training/ReplayBuffer.swift` `sample()` paths `:1783, 1904, 1924, 1973, 2154, 2189, 2198, 2235` | Multiple consumers could sample the buffer (trainer; `ReplayBufferAnalyzer` probes; batch-stats) | The `sampler` stream is used **only** by the trainer's minibatch draw, under the buffer `lock`, in batch-slot order (`i = 0..<sampleCount`). Every other consumer (analyzer/probes) gets its own named stream (`probe.<name>.<step>`), never `sampler`. |
-| O7 | Stratified path `:1900-1915` iterates buckets `for b in 0..<bucketCount` then `randomSlot()` | Deterministic order, **but** `MaterialBucketSlots.slots` order is itself history-dependent (swap-remove `:280-286`, insertion order `:1223-1231`) — same RNG, different slot order ⇒ different picks after a rebuild. | C1 #5 / D-5: rebuild the arrays in the buffer's **age order** on refill (C1 #4), persist them, or make the pick order-independent. |
+| O7 | Stratified path `:1900-1915` iterates buckets `for b in 0..<bucketCount` then `randomSlot()` | Deterministic order, **but** `MaterialBucketSlots.slots` order is itself history-dependent (swap-remove `:280-286`, insertion order `:1223-1231`) — same RNG, different slot order ⇒ different picks after a rebuild. | **Decided (D-5):** the pick becomes "the k-th oldest slot in the bucket" (age rank, not stored array position), and the arrays are rebuilt in the buffer's **age order** on refill (C1 #4, #5). Nothing extra is persisted. |
 | O7b | All `sample()` paths draw a **physical** slot index (`Int.random(in: 0..<held)` then `outcomeStorage[srcIndex]`, e.g. `:1783-1790`) | Physical slot numbering depends on where the ring's write pointer happened to be, so the same RNG state picks different positions after a refill that starts at another slot. | Draw a **logical** (age-ordered) index `i` (0 = oldest) and map it once: `physical = (oldest + i) % capacity`, with `oldest = writeIndex` when full and `0` otherwise. Batches then depend only on the buffer's contents in age order, never on the ring's physical offset (C1 #4). |
 | O8 | Length-tilt rejection loop `:2150-2235` | Number of draws per emitted sample varies with acceptance; fine as long as the loop order is fixed (it is: sequential) | Keep sequential; document that the draw count is data-dependent (so the saved state is the only valid restore point, never "N draws since step X"). |
 | O9 | Dictionary iteration in `sample()` — `for (_, c) in degPerGame/stratPerGame/fastPerGameScratch/perGameCount` `:1794, 1937, 1984, 2243` | `Dictionary` iteration order is randomized per process in Swift | **Checked: max-reductions only, no draws inside** ⇒ order-independent. Rule added to `DCMRandom` docs and a code-review checklist item: *no random draw inside iteration over `Dictionary`/`Set`*; if ever needed, iterate `keys.sorted()`. Other dictionaries in the buffer (`residentGames :199`, `hashStats :176`, `residentLengthHistogram :210`, `slotPosition :260`) are lookup/stat only. |
@@ -358,7 +369,7 @@ draw order, consumer identity or iteration order could vary:
 | O13 | `MoveSampler` inverse-CDF over `legalMoves` order | Same dependence on move-generation order for a given index | Same verification as O12; add a test that `legalMoves(for:)` order is stable for 20 fixed FENs (pinned). |
 | O14 | Dropout Philox state threaded block→block in graph build order (`ChessNetwork.swift:2684-2716, 858-859`) | Order is the graph's data dependency chain — fixed for a given architecture; KL probe adds extra advances (`ChessTrainer.swift:6906`) | Deterministic given step-derived probe schedule (C1 #3). Changing block order changes masks — inherent, arch-specific. |
 | O15 | Run-level sub-streams | Adding a stream must not shift others | Name-hash derivation (A3.1) for all of them. |
-| O16 | **Swift `Hasher` values used as data** — `ReplayBuffer.hashBoard` (`Training/ReplayBuffer.swift:649-657`) hashes each board with `Hasher()`, which is randomly keyed **per process**; the per-slot hashes are **persisted and restored** (`stateHashStorage`, written `:2937`, read `:3377`, re-counted into `hashStats` `:3405-3415`) | After a resume, restored slots carry the old process's hashes while new inserts of the same position get the new process's hash ⇒ duplicate counting splits one position into two keys. Its doc comment (`:643-647`, "the hash dict is rebuilt fresh … cross-process stability isn't required") is wrong: the dict is rebuilt, but from persisted hashes. **Checked 2026-09-30: observability only** — the hashes feed `uniquePositionCount`, `bufferedPositionStats(forHash:)` and `computeBatchStats` (`ChessTrainer.swift:4555-4584`), never a `sample()` path or a loss, so no training-math impact. | Replace with a fixed-key hash (SplitMix-style mix over the board bytes, or SipHash with a constant key), one function, documented as persistence-stable. Bug-fix rule: the regression test (hash of a fixed board equals a pinned constant, and a save → restore → re-insert of the same position yields count 2 under one key) is written first and must fail before the fix. Legacy sessions' persisted hashes come from random keys: owner decision **D-9** — recompute them from the stored boards on load (derived data, the boards stay the source of truth), or accept inflated duplicate stats for legacy buffers (observability only) and log it. |
+| O16 | **Swift `Hasher` values used as data** — `ReplayBuffer.hashBoard` (`Training/ReplayBuffer.swift:649-657`) hashes each board with `Hasher()`, which is randomly keyed **per process**; the per-slot hashes are **persisted and restored** (`stateHashStorage`, written `:2937`, read `:3377`, re-counted into `hashStats` `:3405-3415`) | After a resume, restored slots carry the old process's hashes while new inserts of the same position get the new process's hash ⇒ duplicate counting splits one position into two keys. Its doc comment (`:643-647`, "the hash dict is rebuilt fresh … cross-process stability isn't required") is wrong: the dict is rebuilt, but from persisted hashes. **Checked 2026-09-30: observability only** — the hashes feed `uniquePositionCount`, `bufferedPositionStats(forHash:)` and `computeBatchStats` (`ChessTrainer.swift:4555-4584`), never a `sample()` path or a loss, so no training-math impact. | Replace with a fixed-key hash (SplitMix-style mix over the board bytes, or SipHash with a constant key), one function, documented as persistence-stable. Bug-fix rule: the regression test (hash of a fixed board equals a pinned constant, and a save → restore → re-insert of the same position yields count 2 under one key) is written first and must fail before the fix. Legacy sessions' persisted hashes come from random keys: **decided (D-9)** — when loading a buffer written before the fixed-key hash — `ReplayBuffer.fileVersion` goes 7 → 8 (`Training/ReplayBuffer.swift:2697`; v8 = fixed-key hashes + the slot-source column, C1 #4) and the strict `version == fileVersion` checks (`:586`, `:625`, `:3112`) widen to accept 7 as legacy — recompute every slot's hash from its stored board and rebuild `hashStats`, logging `[RESUME] recomputed N position hashes (legacy buffer)`. Owner-approved migration; the boards stay the source of truth. Test: a legacy fixture buffer loads with hashes equal to the fixed-key hash of each board. |
 | O17 | **Whole-codebase sweep of `Set`/`Dictionary` iteration and hash-values-as-data** (O9 checked `sample()` only) | Any draw, emitted order, or persisted value that depends on per-process hashing is irreproducible. | P3 task: grep every `for … in <Dictionary/Set>`, `.keys`/`.values` iteration, `Set` → `Array` conversion and `hashValue`/`Hasher` use on the training, replay, self-play, arena, vs-UCI and persistence paths; each is classified (order-independent reduction / sorted / fixed) in a table appended here. Known safe: `TrainingParameters.swift:1508` and `CliTrainingConfig.swift:103` iterate `keys.sorted()`. |
 | O18 | **Sort ties** — Swift's `sort` is stable in practice but not documented as stable | A sort with equal keys that decides data order (shard lists, bucket rebuilds, emitted records) could reorder between toolchains. | Rule: every sort that decides data order uses a total order (explicit tie-break on a unique key). Audited 2026-09-30 on data paths: corpus shard lists sort by unique `lastPathComponent` (`GameCorpus.swift:274, 360`) — no ties; `highestShardSeq` (`:374-384`) is a max, order-free; `SafetensorsFile.swift:192` sorts by unique byte offset. The rest found (`ReplayBufferAnalyzer`, `NumericsAudit`, `ModelFileCatalog`, `ModelLineageTree`, `CheckpointManager.swift:208`) are statistics or UI listings. P3 re-runs the sweep and records it. |
 | O19 | **Float sums accumulated in thread-completion order** that feed training | Float addition isn't associative, so a thread-order sum varies by ULPs between runs; if it feeds training math, bit-exact replay breaks with no visible cause. Matters only for corpus replay (the only trajectory-exact path). | Preliminary check 2026-09-30: no `concurrentPerform`/`TaskGroup` in `CLI/CorpusReplayRunner.swift`, `Training/ReplayBuffer.swift`, `Training/ChessTrainer.swift` or `Persistence/GameCorpus.swift`; parallel regions exist only in self-play, arena, vs-UCI, UCI, the recorder and the Lichess bot. P3 confirms by reading the replay feed path (`CorpusReplayFeeder`) end to end and records the result; any such sum found on the replay path gets a fixed-order reduction. |
@@ -454,6 +465,47 @@ byte-identical (the #7 rule: a field at its legacy value is omitted from summary
 text and hash inputs... **verify** how #7 kept hashes identical and use the same
 mechanism).
 
+**Decided (D-4, 2026-09-30): ship the recommended set** — `se_gamma_bias_init`,
+`branch_output_init` (`standard | zero_last_bn_gamma`), `skip_projection_init`
+(`he | identity_like`), `policy_head_final_init` (`he | zero`),
+`value_head_final_init` (`he | zero`), `value_head_draw_prior`. The "must not be
+offered" rows stay forbidden (validation rejects them with a named error), and
+ReZero α gets the `> 0` check under the tanh ceiling.
+
+### B2.1 Build New Model UI and `--derive-model` support (D-4)
+
+- **One field per option** on `BlockGroup` (per-block options) or the head
+  sections of `NetworkArchitecture` (head options), required from format v5,
+  shown in presets, `architectureSummary` and `ArchitectureDiagramView` — the
+  same treatment `se_beta_init` got in #7.
+- **"Neutral init" button** in Build New Model: sets every option in every group
+  and head to its neutral value (`se_gamma_bias_init` = the near-identity level,
+  `zero_last_bn_gamma` where a BN follows the branch's last conv,
+  `identity_like` at width transitions, both head finals `zero`; the draw prior
+  keeps its current value because it is a prior, not a neutral/standard switch).
+  **"Standard init" button**: resets every option to its standard (legacy) value.
+  One function each on `BuildNewModelModel`, so the two buttons are the single
+  source of what "neutral" and "standard" mean; `[BUTTON]` logs which was pressed.
+- **Highlight vs standard:** every field whose value differs from the standard
+  init is highlighted in the per-group editor and in the diagram — an accent
+  tint plus a marker glyph (not color alone, for accessibility), in the theme's
+  semantic accent in light and dark mode. The comparison is always against the
+  standard value, never the last edit, so reopening a model or preset still shows
+  what is non-standard.
+- **Tooltips:** each highlighted field states what changes at step 0 (e.g.
+  "final policy layer starts at zero → uniform policy at step 0"; "last BN γ = 0 →
+  the branch adds nothing at step 0; γ still learns").
+- **Views:** new UI pieces are their own `View` structs in their own files under
+  `App/UpperContentView/` (project rule: one View per file, no helper
+  `some View` properties).
+- **`--derive-model`:** each option gets a shape-preserving derive operation
+  (`--set-<option> <value> [--group <index>]`), re-initializing **only** the
+  tensors that option owns under the `init/<name>` stream and a recorded seed,
+  copying every other tensor bit-exact, and appending a `derivation_history`
+  record — exactly as `--set-se-beta-init` does (#7). A convenience
+  `--set-neutral-init` applies the same neutral set as the button, through the
+  same function.
+
 ## B3. `--derive-model` graft operation
 
 Extend `Persistence/ModelDerivation.swift`'s catalog with a new
@@ -537,21 +589,21 @@ observability/cosmetics only; **S** = safety/operational.
 
 | # | State | Where (today) | Paths | Impact | Fix |
 |---|---|---|---|---|---|
-| 1 | **Replay sampler RNG** | global RNG, `ReplayBuffer.swift:290,1783,1924,1973,2154,2189,2198,2235` | all | **M** — different minibatches from step +1 | A3 `sampler` stream; persist state (D2 `rng_sampler_state`). |
-| 2 | **Dropout Philox state** | graph constant from `Int.random`, `ChessNetwork.swift:781`; reseeded per built graph | all with dropout>0 | **M** — different masks | A4 capture/restore; persist `rng_dropout_philox_state`. |
+| 1 | **Replay sampler RNG** | global RNG, `ReplayBuffer.swift:290,1783,1924,1973,2154,2189,2198,2235` | all | **M** — different minibatches from step +1 | A3 `sampler` stream; persist state (D2 `rng.sampler_state`). |
+| 2 | **Dropout Philox state** | graph constant from `Int.random`, `ChessNetwork.swift:781`; reseeded per built graph | all with dropout>0 | **M** — different masks | A4 capture/restore; persist `rng.dropout_philox_state` (D2). |
 | 3 | **KL-probe step counter** | `klProbeStepCounter` `ChessTrainer.swift:6263`, starts at 0 each process, never saved | all | **M when dropout>0** (probe advances the dropout state `:6906`, so probe phase shifts the dropout stream); **O** otherwise (probe fires at resume step 0 and phase shifts) | Derive probe steps from `completedTrainSteps` (like `batchStatsInterval` already does `:4539`) — deletes the counter: single source of truth. |
 | 4 | **Replay buffer ring order / write index (corpus replay)** | reconstructed by refeeding `[until−1.5·cap/avgPly, until)` (`CorpusReplayRunner.swift:406-432`); `writeIndex` starts at 0 in a fresh buffer | replay | **M** — same *set* of positions but different slot indices ⇒ with a seeded sampler, slot `i` holds a different position ⇒ different batches | **Decided approach (owner, 2026-09-30): refill from slot 0 and reset the write pointer; only the *read* order must match.** (1) The sampler draws logical, age-ordered indices (A6 O7b), so the ring's physical offset is irrelevant. (2) On resume, refill slot 0…n−1 **oldest to newest**, starting at the oldest resident ply's recorded source (the slot-source record below), then set `writeIndex = n mod cap`. (3) Rebuild the stratified bucket arrays in that same age order (C1 #5). (4) Restore the sampler state. **Slot-source record:** a new per-slot column inside `ReplayBuffer`, a separate parallel array like the existing SoA columns (`plyIndexStorage`, `gameLengthStorage`, `stateHashStorage`, …) — ~16 B/slot (corpus shard, game offset within shard, ply; ~8 MB at 500k) — written under the same lock in the same insert. It keeps the board storage the trainer memcpys to the GPU untouched. For corpus replay **no buffer file is written**: the oldest slot's source + the corpus + the sampler state reproduce the buffer exactly. Test: slot-by-slot equality in age order vs the uninterrupted run, plus identical sampled positions. |
-| 5 | **Material-bucket slot arrays order** | `MaterialBucketSlots` swap-remove (`ReplayBuffer.swift:280-291`), rebuilt in ring order on insert/`restore` (`:1223-1231`, `restore(from:)` `:3079`) | all (stratified on) | **M** — `randomSlot()` picks `slots[k]`; after evictions the live array order ≠ rebuilt order | Persist the per-bucket slot arrays in the buffer file (GUI) / reconstruct deterministically (replay: they're a function of the insert/evict sequence, so an exact ring reconstruction from total-added reproduces them only if eviction history is replayed — so **persist them**). Alternative (cleaner): make `randomSlot` order-independent — pick the k-th slot of the bucket in ring order via a per-bucket Fenwick/order-statistic structure. Owner decision D-5. |
+| 5 | **Material-bucket slot arrays order** | `MaterialBucketSlots` swap-remove (`ReplayBuffer.swift:280-291`), rebuilt in ring order on insert/`restore` (`:1223-1231`, `restore(from:)` `:3079`) | all (stratified on) | **M** — `randomSlot()` picks `slots[k]`; after evictions the live array order ≠ rebuilt order | **Decided (D-5): rebuild in age order and pick by age rank.** `randomSlot` draws `k = nextBounded(bucketCount)` and returns the bucket's **k-th oldest** resident slot, so the stored array order (which swap-remove scrambles) never affects the pick. The arrays are rebuilt in age order on every refill/restore (C1 #4). Implementation: the ring only ever evicts the globally oldest slot, which is necessarily the oldest member of its bucket, so each bucket can be a FIFO in age order — inserts append at the back, evictions pop the front — held as a per-bucket circular array; the k-th oldest is then an O(1) index, and swap-remove (with its `slotPosition` map, `:260`) goes away. **Verify in P9** that no other path removes slots mid-bucket (e.g. a restore or a dedup path); if one does, fall back to an order-statistic structure. P9 measures `sample()` µs against today's (A2.2) and must not regress. Nothing extra is persisted. Test: after a mixed insert/evict history, a rebuild-from-age-order buffer and the live buffer return the same slot for every k. |
 | 6 | **Corpus replay: cross-epoch reconstruction** | refused (`CorpusReplayRunner.swift:423-426`) | replay | **S** — epoch-boundary checkpoints can't be exact-resumed | With #4's exact reconstruction, wrap backward across the epoch boundary (games `[N−k, N)` of the previous epoch then `[0, until)`), which is well-defined because corpus order is sequential. |
 | 7 | **Corpus replay build drift** | warns only (`:399-401`) | replay | **M** if encoder/feeder changed | Keep warning; make it a refusal in `--resume-exact` when `encoder_version`/`feeder_version` (new header keys) differ; git hash alone stays a warning. |
 | 8 | **Counters `gamesFed`/`positionsFed`** | restart at 0 (`CorpusReplayRunner.swift:728-729`) | replay | **O** + **M**: verified 2026-09-30 — the feed cadence `targetFed = prefillPositions + step * perStepFeed` (`:778`) uses the segment-local `step` and `positionsFed`. Whole games overshoot the target, so the feed **phase** (how far ahead of the target the last game left the counter) is state that a restart resets ⇒ which games are in the buffer before a given step shifts. | Persist the cumulative counters (D2) **and** the feed carry (`positionsFed − targetFed` at the save step); resume computes the target from the cumulative step so the feed phase is identical. Test: the games fed before each of the M post-resume steps equal the uninterrupted run's. |
-| 9 | **Train-vs-UCI game buffer** | fresh `ReplayBuffer` (`TrainVsUciRunner.swift:214`), not saved | vs-UCI | **M** — first post-resume steps train on a tiny correlated buffer | **Decided (D-8): mirror the self-play session.** Train-vs-UCI checkpoints use the same folder format as a GUI `.dcmsession` — `trainer.safetensors` + `replay_buffer.bin` (existing `ReplayBuffer` file format, now with the slot-source column) + `session.json` + `manifest.json` — through the same writer, staging directory and rename (C1 #29). `--resume-exact` is gated on it; without it the resume is labeled `NOT EXACT: buffer`. |
+| 9 | **Replay buffer on GUI and train-vs-UCI saves** | GUI: every session save writes `replay_buffer.bin` (7.2–11 GB observed), gated by `hasReplayBuffer`/`wantsReplayBuffer` (`Persistence/CheckpointManager.swift:666`, write `:716`; load honors absence `:1100`); vs-UCI: fresh `ReplayBuffer` (`TrainVsUciRunner.swift:214`), not saved | GUI, vs-UCI | **M** — a resume without the buffer trains its first steps on a small buffer drawn from the current champion only | **Decided (D-8).** (a) Train-vs-UCI checkpoints use the same folder format and writer as a GUI `.dcmsession` — `trainer.safetensors` + `session.json` + `manifest.json`, plus `replay_buffer.bin` **only when included** — through the same staging directory and rename (C1 #29). (b) **The buffer is not saved by default** on either path. It is included only when: the persisted parameter `session_save_include_replay_buffer` is on (autosave: periodic + post-promotion; D8 below), or the manual Save Session asks for it, or train-vs-UCI is launched with `--save-replay-buffer`. The existing `hasReplayBuffer` flag records which. (c) A resume from a save without a buffer refills from new games; training waits for `replay_buffer_min_positions_before_training` as on a fresh start; the resume is labeled `NOT EXACT: buffer` (C3). A resume from a save with a buffer restores it exactly (v8 format with the slot-source column; legacy v7 per D-9). |
 | 10 | **Train-vs-UCI pool/opponent counters, next game serial** | not saved | vs-UCI | **M** (which opponent/color next) | Persist `vsuci_next_game_serial`, per-opponent game counts. |
 | 11 | **Self-play in-flight games** | dropped on save | GUI, vs-UCI | **M** (small) | Accept + log the count (`[CHECKPOINT] dropped N in-flight games`). Persist `selfplay_next_game_serial` so per-game streams continue, not repeat. |
 | 12 | **ReplayRatioController windows** | only `lastAutoComputedDelayMs` restored (`SessionController+Training.swift:899-903, 1007-1015`) | GUI | **M** (step delay ⇒ cons/prod ratio ⇒ which positions exist when sampled) — inherently wall-clock, so not trajectory-exact anyway | Persist prod/cons EMAs / window samples; seed controller. Best-effort by nature (§0). |
 | 13 | **Arena trigger clock** | `ArenaTriggerBox()` fresh (`SessionController+Training.swift:1026`) | GUI | **M** (when arenas/promotions happen) | Persist `seconds_since_last_arena` measured in **training time** (C1 #19), seed the box. |
 | 14 | **Periodic-save timer** | `PeriodicSaveController(interval:)` fresh (`:1045`) | GUI | **S** | Persist `seconds_since_last_save`; seed. |
-| 15 | **Save during arena** | refused/deferred (`SessionController+Checkpoint.swift:31,144,178,226`) | GUI | **S** — kill during arena loses it | On resume, if `arena_pending` was set, trigger immediately; persist partial `TournamentRecord` optionally (owner decision D-6). |
+| 15 | **Save during arena** | refused/deferred (`SessionController+Checkpoint.swift:31,144,178,226`) | GUI | **S** — kill during arena loses it | **Decided (D-6): discard and re-run.** No partial `TournamentRecord` is persisted. The last save predates the arena, so on resume the arena trigger clock (#13) is restored from that save and the arena runs again when it comes due. The save cannot know an arena later started, so nothing about it is logged beyond the restored clock value (`[RESUME] arena clock=<sec>`). Test: a session saved mid-arena-deferral resumes with the pre-arena clock and runs the arena. |
 | 16 | **Promotion resume** | post-promotion save reuses arena-pause snapshots (`SessionController+Arena.swift:115-138, 376-381`) | GUI | **M** if the trainer file's clock/velocity don't match the rewound trainer | Test: after promotion save, trainer file `trainer_completed_steps` and velocity equal the live trainer's post-promotion values. |
 | 17 | **Arena index** | not persisted | GUI | **M** via arena streams | Persist `arena_count` (already derivable from `arenaHistory.count` in `session.json` — use that as the single source). |
 | 18 | **GameDiversityTracker window** | fresh `GameDiversityTracker(windowSize: 200)` (`SessionController+Training.swift:942`) | GUI | **O** | Persist the 200 hashes/sequences (small) or accept + log. Recommend persist (cheap). |
@@ -565,17 +617,17 @@ observability/cosmetics only; **S** = safety/operational.
 | 26 | **Enumerated-name overwrite across segments** | same segment-local step name (`CorpusReplayRunner.swift:614-620`) | replay | **S** (data loss) | Include `lineage_segment_index` in the enumerated name (`…-seg3-step41000`), and refuse to overwrite an existing enumerated file whose `lineage_segment_id` differs. |
 | 27 | **`--start-model` (branch) vs `--resume-exact`** | branch: fresh clock, zero velocity (by design, `TrainerLaunchKind.newBranch`) | CLI | by design | Branch mints a **new `lineage_run_id`** and new master seed (unless `--seed`), recording parent (D2). Exact resume inherits both. |
 | 28 | **Epoch boundaries (replay)** | epoch-completion checkpoint normalized to `(nextGame=0, epoch=N)` | replay | **S** (can't resume there, #6) | Fixed by #4/#6. |
-| 29 | **Crash mid-save** | GUI: whole session folder staged as `Sessions/<name>.tmp`, then renamed; orphan `.tmp` debris swept at launch (`Persistence/CheckpointManager.swift:120-164`) ✓; CLI: single `.safetensors` written to a temp file and renamed ✓ | all | OK | **Keep the existing temp-then-rename pattern; add no new file.** Rule: every new piece of resume state (RNG states, feed carry, serials, lineage) lives **in the same file or folder as the weights it belongs to** — corpus replay: the one `.safetensors`'s `__metadata__`; GUI and train-vs-UCI (D-8): the session folder (`session.json` + `replay_buffer.bin`), covered by its `manifest.json` and the single rename. There is therefore no separate file that could be torn from its weights. |
+| 29 | **Crash mid-save** | GUI: whole session folder staged as `Sessions/<name>.tmp`, then renamed; orphan `.tmp` debris swept at launch (`Persistence/CheckpointManager.swift:120-164`) ✓; CLI: single `.safetensors` written to a temp file and renamed ✓ | all | OK | **Keep the existing temp-then-rename pattern; add no new file.** Rule: every new piece of resume state (RNG states, feed carry, serials, lineage) lives **in the same file or folder as the weights it belongs to** — corpus replay: the one `.safetensors`'s `__metadata__`; GUI and train-vs-UCI (D-8): the session folder (`session.json`, plus `replay_buffer.bin` when included), covered by its `manifest.json` and the single rename. There is therefore no separate file that could be torn from its weights. |
 | 30 | **Momentum/velocity dtype** | fp32 | all | presumed OK | Test: saved dtype fp32; bit-exact round trip under a bf16 network (from #6). |
-| 31 | **Replay-buffer position hashes are per-process** | A6 O16 (`ReplayBuffer.swift:649-657`, persisted `:2937`/`:3377`) | GUI (buffer saved), vs-UCI after D-8 | **O** — duplicate/unique-position stats wrong after every resume; no training-math impact (checked) | Fixed-key hash; regression test first (O16); D-9 for legacy buffers. |
+| 31 | **Replay-buffer position hashes are per-process** | A6 O16 (`ReplayBuffer.swift:649-657`, persisted `:2937`/`:3377`) | GUI and vs-UCI, when a buffer is included (D-8) | **O** — duplicate/unique-position stats wrong after every resume; no training-math impact (checked) | Fixed-key hash; regression test first (O16); legacy v7 buffers recompute hashes on load (D-9, decided). |
 | 32 | **Corpus changed under a resume** | `--resume-exact` compares `corpus_id` only (`CorpusReplayRunner.swift:397`) | replay | **M** — a re-imported or edited shard with the same ID feeds different games | Record each shard's SHA-256 in the lineage (`fed.corpus.shard_sha256`, D2; same values as `experiments/corpora/*.md` manifests); on resume re-hash the shards the refill and the run will read and **refuse on any mismatch**, naming the shard. Cost: one sequential read of those shards at startup. |
 | 33 | **Build or OS changed under a resume** | CLI warns on git-hash change only (`:401`); GUI records build in `session.json` but doesn't compare | all | **M** — different code or MPSGraph/Philox can change the trajectory (A4, A5) | Compare `build.git_hash`, `build.git_dirty`, `build_number` and `device.os_version` with the running process: any difference ⇒ `[RESUME] WARNING …` on every path, and `--resume-exact` **refuses** unless `--accept-inexact build` / `os` names it (C3). Recorded in the segment record. |
-| 34 | **Config D (`--bf16-cast-in-forward`, issue #9)** | GUI-only flag; not recorded in any checkpoint | GUI | **M** — a second optimizer/storage path (fp32 variables, no master/working pair) | Either remove it (issue #9) before P9, or record `bf16_cast_in_forward` in the lineage and refuse an exact resume across a mismatch, and add it to the harness variants. Removal is the simpler path; owner decides via #9. |
+| 34 | **Config D (`--bf16-cast-in-forward`, issue #9)** | GUI-only flag; not recorded in any checkpoint | GUI | **M** — a second optimizer/storage path (fp32 variables, no master/working pair) | **Decided (D-10): removed before P9** (phase P13), so no lineage field, resume check or harness variant is needed for it. |
 
 **Top gaps by training-math impact:** #1 sampler RNG, #2 dropout state, #4/#5
 buffer slot order (makes #1 useless even once seeded), #21/#22 parameter
-defaulting/diffing, #8 feed phase, #32 corpus content, #33 build/OS, #9 vs-UCI
-buffer, #3 KL-probe counter coupling into dropout, #13 arena clock.
+defaulting/diffing, #8 feed phase, #32 corpus content, #33 build/OS, #9 buffer
+save policy, #3 KL-probe counter coupling into dropout, #13 arena clock.
 
 ## C2. Save-point consistency rules
 
@@ -588,8 +640,9 @@ buffer, #3 KL-probe counter coupling into dropout, #13 arena clock.
   dropout state are read inside that pause, after the last completed step, so
   "state after step N" is one consistent cut.
 - GUI: self-play keeps running during a save today (only training is paused for
-  the trainer snapshot; the buffer snapshot is taken under the buffer lock). The
-  buffer file and the sampler state are consistent with each other (same lock);
+  the trainer snapshot; the buffer snapshot is taken under the buffer lock). When
+  the buffer is included (D-8), the buffer file and the sampler state are
+  consistent with each other (same lock);
   they are *not* consistent with an exact self-play cut, which §0 already rules
   out of scope.
 - **Probe-isolation rule (memorialized):** *no probe, diagnostic or observer may
@@ -612,10 +665,30 @@ buffer, #3 KL-probe counter coupling into dropout, #13 arena clock.
 New `ResumeExactness` (in `TrainerResumeState.swift`, shared by all three paths):
 `exact` or `notExact(missing: [ResumeGap])`, computed from what the checkpoint
 carries. Every path logs exactly one line
-`[RESUME] EXACT` or `[RESUME] NOT EXACT: rng_sampler, dropout_state, buffer_order, …`
-and records it in the new segment record (D2). CLI `--resume-exact` refuses on
-`notExact` unless `--accept-inexact <comma list>` names every missing item (including `build` and `os`, C1 #33; a corpus-content mismatch, C1 #32, is never acceptable)
-(explicit, logged — no silent downgrade).
+`[RESUME] EXACT` or `[RESUME] NOT EXACT: rng_sampler, dropout_state, buffer, …`
+and records it in the new segment record (D2).
+
+`ResumeGap` is a closed enum, one case per item, each with its log token:
+`rng_sampler`, `dropout_state`, `feed_carry` (replay), `buffer` (GUI/vs-UCI save
+without a buffer, D-8), `serials`, `clocks` (arena/save/ratio controller),
+`params` (no full snapshot — legacy), `lineage` (no `dcm_lineage` — legacy),
+`build`, `os` (C1 #33).
+
+**Per path:**
+- **Corpus replay:** `--resume-exact` refuses on `notExact`. **Decided (D-7):**
+  `--accept-inexact <comma list>` allows it when the list names every missing
+  item: each missing RNG stream is seeded freshly from the run's master seed via
+  its named stream (logged `[RESUME] <stream>: fresh (not in checkpoint)`), other
+  missing items take their fresh-start value (logged), and the segment is recorded
+  `exact_resume=false, not_exact_items=[…]`. A corpus-content mismatch (C1 #32) is
+  never acceptable. This is what lets any pre-v5 checkpoint be resumed at all.
+- **Train-vs-UCI:** same flags. `buffer` is expected there under D-8 unless the
+  save was made with `--save-replay-buffer`; `--accept-inexact buffer` names it.
+- **GUI:** there is no refusal (a GUI resume is state-exact at most, D-1); the
+  one `[RESUME] … NOT EXACT: …` line is logged and recorded, and the status bar's
+  resume message says "resumed (not exact: buffer, …)".
+
+No silent downgrade on any path.
 
 ## C4. `--resume-exact` vs `--start-model` (unchanged semantics, made explicit)
 
@@ -664,11 +737,17 @@ seed `0xD5C0FFEE`.
 5. Variants (all with **every probe enabled** — C2 probe-isolation rule): resume at an epoch boundary; probes on vs off must give identical sampled indices and dropout masks; resume from a checkpoint written at a
    KL-probe step; resume after a parameter change (expect `[RESUME-DIFF]` +
    refusal without `--allow-param-change`); resume a legacy (v4) fixture file
-   (expect `NOT EXACT` list, successful branch-style continuation).
-6. **GUI/vs-UCI state round-trip tests** (no trajectory claim): for each state
-   in C1 (sampler, Philox, buffer incl. slot arrays, ratio controller, arena
-   clock, periodic-save clock, diversity tracker, alarm state, serials): save →
-   restore → `==`.
+   (expect the `NOT EXACT` list; refusal without `--accept-inexact`, and with it a
+   continuation whose segment records `exact_resume=false` and the list — D-7).
+6. **GUI/vs-UCI state round-trip tests** (no trajectory claim, D-1): for each state
+   in C1 (sampler, Philox, ratio controller, arena clock, periodic-save clock,
+   diversity tracker, alarm state, serials): save → restore → `==`. Buffer
+   (D-8): a save **with** the buffer round-trips it slot-for-slot in age order
+   with identical bucket k-th-oldest picks (D-5); a save **without** it resumes
+   with an empty buffer, waits for the minimum fill, and logs
+   `NOT EXACT: buffer`. Arena (D-6): a save taken while an arena is deferred
+   resumes with the pre-arena clock and re-runs the arena. Legacy v7 buffer
+   (D-9): hashes recomputed and equal to the fixed-key hash of each board.
 7. **CLI end-to-end** (script, run by the owner when the GPU is free): real
    `--train-from-corpus` for 2N vs N + `--resume-exact` + N; compare final
    `content_sha256` (or tolerance per the probe).
@@ -836,13 +915,67 @@ run end (minus `segments`/`derivation_history` to keep it small; plus
 - **`dcm_format_version` 5** (one bump for B + D + A persisted state).
   - v ≤ 4 (legacy): no `dcm_lineage` ⇒ loads, trains, infers exactly as today;
     new B2 arch fields resolve to legacy values (logged once); exact resume only
-    per d15f706 rules and flagged `NOT EXACT: rng, lineage`.
+    per d15f706 rules and flagged `NOT EXACT: rng_sampler, dropout_state, params, lineage, …` (C3).
   - v 5: `dcm_lineage` required on every file; new B2 arch fields required in
     every group/head; missing ⇒ load error naming field + file.
   - v > 5: `unsupportedFutureVersion` (existing).
 - `session.json` formatVersion 2 as above.
 - Presets / `architecture.json`: `format_version` 5 required for the new fields.
-- Nothing rewrites old files; no migration code.
+- `replay_buffer.bin`: `ReplayBuffer.fileVersion` 7 → 8 (fixed-key hashes +
+  slot-source column); v7 files load as legacy with hashes recomputed (D-9) and
+  no slot sources (so a v7 buffer resume is `NOT EXACT` for replay refill, which
+  never reads a buffer file anyway).
+- Nothing rewrites old files. The only migration code is the owner-approved D-9
+  hash recompute on load (derived data, in memory; the file is not rewritten).
+
+## D8. Replay-buffer save option (D-8)
+
+The buffer is **not** saved by default on GUI or train-vs-UCI saves. Three
+controls, one source of truth for the automatic case:
+
+- **New `@TrainingParameter` `session_save_include_replay_buffer`** (Bool, default
+  `false`, live-tunable). Governs every *automatic* save: periodic and
+  post-promotion in the GUI, and every checkpoint train-vs-UCI writes. Full
+  CLAUDE.md checklist:
+  1. Declare with `@TrainingParameter`, add to `allKeys`.
+  2. Singleton stored property + `collectValues` / `applyOne` + snapshot accessor.
+  3. `parameters.json`: appears in `--show-default-parameters`; round trip via
+     `--create-parameters-file`.
+  4. Session: Optional field in `SessionCheckpointState`, passed through
+     `buildCurrentSessionState`, and a `[RESUME-PARAM]` block (both "from
+     session" and "saved=nil (defaulted)" branches log). Under C5 it declares
+     `absentValue: false`: a pre-feature session always saved the buffer, but
+     reproducing that on resume would re-enable multi-GB saves against D-8, so
+     the owner's default applies and the `[RESUME-DIFF]` line shows it.
+  5. `results.json`: recorded in the recorder's parameter snapshot.
+  6. Runtime log: every save line reports it —
+     `[CHECKPOINT] Saved session (<trigger>): … buffer=included|omitted`.
+  7. UI: Settings popover ▸ **Sessions** tab, next to the existing Autosave
+     controls (`App/UpperContentView/TrainingSettingsPopover.swift:1110-1169`):
+     a toggle "Include replay buffer" with its size estimate
+     (capacity × bytes per position, base-2) shown beside it.
+     `TrainingSettingsPopoverModel` binding.
+  8. Live tunability: read from `TrainingParameters.shared` at each save, never
+     cached at session start (it is a save-time switch, not a loop knob).
+  9. Rename: n/a.
+- **Manual save:** File ▸ Save Session (`App/DrewsChessMachineApp.swift:618`)
+  today saves immediately. It gains a small confirmation sheet with an
+  "Include replay buffer" checkbox (initial state = the parameter's current
+  value, per save only, not persisted) and the size estimate. `[BUTTON]` logs the
+  choice.
+- **Train-vs-UCI CLI flag `--save-replay-buffer`:** sets the parameter for that
+  process (logged `[PARAM] session_save_include_replay_buffer from
+  --save-replay-buffer`), like other CLI overrides; a repeated flag is rejected
+  with a named error.
+- **Writer:** the existing `wantsReplayBuffer` gate
+  (`Persistence/CheckpointManager.swift:666`) and `hasReplayBuffer` flag
+  (`Persistence/SessionCheckpointFile.swift:637`) already support omitting the
+  file; the change is only who sets the flag. Loading already honors absence
+  (`CheckpointManager.swift:1100`).
+- **Resume without a buffer:** the session starts with an empty buffer; training
+  waits for `replay_buffer_min_positions_before_training` exactly as a fresh
+  start does; `[RESUME] … NOT EXACT: buffer` (C3).
+- **Corpus replay:** never writes a buffer; unaffected.
 
 ---
 
@@ -861,10 +994,11 @@ P6 Format v5 + LineageRecord + writers (needs P1 for rng fields; P2 for params s
       ├─> P10 [RUN] line, results.json, derivation_history carry-forward (B4)
       └─> P11 Dashboard derive-registry
 P12 Resume-equivalence harness (needs P3,P4,P6,P9)  — its unit parts grow with each phase
+P13 Config D removal (D-10)   (independent; must land before P9)
 ```
 
 Foundational: **P1** (generator) and **P6** (format v5). Independent: **P2**,
-**P11** (tracker, once P6 defines the schema), **P7/P8** after P5.
+**P13**, **P11** (tracker, once P6 defines the schema), **P7/P8** after P5.
 
 Per memory rule "multi-phase plans: build + commit per phase", each phase ends
 with one build and one commit; targeted tests only while trainings are live; full
@@ -901,7 +1035,10 @@ returning fixed logits, which is a *test double*, not a production stub);
 Dirichlet/Gamma distribution sanity (mean/var) with the new draws.
 Also in P3 (A6): logical age-ordered index mapping in every `sample()` path (O7b);
 the fixed-key board hash (O16 — **bug fix: its regression test is written and
-committed first and must fail on the current code**, then pass unmodified); the
+committed first and must fail on the current code**, then pass unmodified), with
+`ReplayBuffer.fileVersion` 7 → 8 and the D-9 legacy recompute on load (its test:
+a checked-in v7 fixture buffer loads with every hash equal to the fixed-key hash
+of its board, and logs the recompute count); the
 recorded `Set`/`Dictionary`, sort-tie and float-sum sweeps (O17–O19), each
 appended to A6 as a classified table.
 Validation: `[RUN] seed=` logged on all paths; unseeded mode logs a drawn seed;
@@ -924,7 +1061,9 @@ off (C2 probe-isolation rule). Also: add the probe-isolation rule to the project
 `Network/InferenceNetworkFactory.swift`, every `ChessNetwork(` construction site
 (pass `.overwrittenByLoad` for load paths), `Persistence/ModelDerivation.swift:521`,
 `Utils/DCMNormalMath.swift` (D-3 restricted-domain `log`/`cos`, private to
-`DCMRandom`), `scripts/init_reproducibility.sh` (B1.1 cross-machine test).
+`DCMRandom`), `scripts/init_reproducibility.sh` (B1.1 cross-machine test),
+`App/UpperContentView/BuildNewModel*.swift` (D-2 optional **Init seed** field,
+A3.2 item 7).
 Tests: `DCMNormalMath` exhaustive 2²⁴-input accuracy tests (A2.4); same seed ⇒
 bit-identical weights across two builds; two archs sharing
 `block0_*` ⇒ identical `block0_*`; fp32 vs bf16 builds: bf16 == round(fp32);
@@ -933,7 +1072,10 @@ per-role std within tolerance (existing `NetworkWeightAnalyzer` expectations);
 the default preset logged; ≤ 2× today's; **re-benchmark of the finished
 transform** against vForce and Swift libm on 8.45M values (same harness as the
 A5 prototype), numbers reported to the owner and recorded in A5; cross-machine
-script run by the owner on both machines, all tensor-data hashes equal.
+script run by the owner on both machines, all tensor-data hashes equal;
+Build New Model with an entered init seed mints tensor data identical to
+`--derive-model`/CLI mints with the same seed, and an empty field logs the drawn
+seed.
 
 **P6 — Format v5 + `LineageRecord`.** Files: `Persistence/LineageRecord.swift`,
 `Persistence/LineageTracker.swift`, `Network/ArchitectureFormat.swift` (v5),
@@ -944,44 +1086,79 @@ Tests: v5 round trip; v4/v3/`.dcmmodel` fixtures load/train/infer unchanged
 (E4); v5 file missing `dcm_lineage` rejected; exact-resume chain of 3 synthetic
 segments: run id stable, index increments, `parent.content_sha256` equals parent
 file's, cum counters monotone; branch mints new run id.
+Validation: a real 200-step replay run and a GUI session each write v5 files
+whose `dcm_lineage` decodes and whose flat mirrors equal the struct; E4 legacy
+fixtures all pass.
 
-**P7 — Init-neutral options** (B2): `se_gamma_bias_init`, `branch_output_init`,
-`skip_projection_init`, `policy_head_final_init`, `value_head_final_init`,
-`value_head_draw_prior`; ReZero `> 0` validation. Files: `Network/NetworkArchitecture.swift`,
-`Network/ChessNetwork.swift`, `App/UpperContentView/BuildNewModel*.swift`,
-`ArchitectureDiagramView.swift`, `Presets/*.json`, `ModelDerivation.swift`
-(non-graft derive ops for each, shape-preserving).
+**P7 — Init-neutral options** (B2, B2.1; D-4): `se_gamma_bias_init`,
+`branch_output_init`, `skip_projection_init`, `policy_head_final_init`,
+`value_head_final_init`, `value_head_draw_prior`; ReZero `> 0` validation.
+Files: `Network/NetworkArchitecture.swift`, `Network/ChessNetwork.swift`,
+`App/UpperContentView/BuildNewModel*.swift` (fields, Neutral/Standard init
+buttons, highlight-vs-standard, tooltips; new View structs in their own files),
+`ArchitectureDiagramView.swift` (highlight), `Presets/*.json`,
+`Persistence/ModelDerivation.swift` + `App/DeriveModelCLI.swift` (one
+shape-preserving `--set-<option>` derive op per option, plus
+`--set-neutral-init`).
 Tests per option: exact step-0 behavior (e.g. uniform policy logits; value
-softmax equals prior; SE gate = σ(bias)); one step makes the zeroed tensor
-nonzero; legacy hashes/summaries unchanged.
+softmax equals prior; SE gate = σ(bias); zero last-BN γ ⇒ branch output 0);
+one step makes the zeroed tensor nonzero; legacy hashes/summaries unchanged;
+forbidden options rejected by validation. Model tests: Neutral then Standard
+restores the standard architecture exactly; the "differs from standard" set is
+exactly the fields changed. Derive tests: each `--set-<option>` rewrites only
+its tensors (all others bit-identical) and records history.
+Validation: build a neutral-init model in the GUI and screenshot the editor and
+diagram in light and dark mode showing every changed field highlighted; its
+summary line and preset JSON list the options; a `--set-neutral-init` derive of a
+standard fresh net matches the GUI neutral mint's option values.
 
 **P8 — Graft** (B3). Files: `Persistence/ModelDerivation.swift`, `App/DeriveModelCLI.swift`.
 Tests: graft 5-block→6-block copies blocks 0–4 bit-exact, initializes block 5 from
 `init/block5_*` under the recorded seed (reproducible), records copied/dropped/initialized;
 graft with `--graft-map` for an inserted block; refuses velocity-carrying sources.
+Validation: a graft of a real v5 5-block model to a 6-block preset loads,
+infers and trains one step; its `derivation_history` lists copied/initialized/
+dropped tensors matching the target plan.
 
-**P9 — Exact-resume completion** (C1 #3–#20, #23–#34). Files:
+**P9 — Exact-resume completion** (C1 #3–#20, #23–#33; D-5…D-8). Files:
 `Training/ReplayBuffer.swift` (slot-source SoA column; age-order refill API that
-starts at slot 0 and sets `writeIndex`; bucket arrays rebuilt in age order or
-order-independent `randomSlot`, per D-5), `CLI/CorpusReplayRunner.swift`
+starts at slot 0 and sets `writeIndex`; D-5 per-bucket age-ordered FIFO with
+k-th-oldest pick replacing swap-remove), `CLI/CorpusReplayRunner.swift`
 (age-order + cross-epoch refill from the oldest resident source; feed carry;
-shard SHA-256 check; build/OS check; segment-indexed enum names),
+shard SHA-256 check; build/OS check; segment-indexed enum names; D-7
+`--accept-inexact` semantics via the shared `ResumeExactness`),
 `CLI/TrainVsUciRunner.swift` (D-8: session-folder checkpoints via the shared
-session writer; serials), `App/SessionController+Training.swift`
-(arena clock, save clock, ratio controller, diversity, alarms, serials, build/OS
-check), `Arena/ArenaTriggerBox.swift`, `Training/ReplayRatioController.swift`,
+session writer, buffer only with `--save-replay-buffer`; serials),
+`App/SessionController+Training.swift` / `+Checkpoint.swift` (arena clock with
+D-6 discard-and-rerun, save clock, ratio controller, diversity, alarms, serials,
+build/OS check, D-8 buffer gate from `session_save_include_replay_buffer`, resume
+without buffer), `App/DrewsChessMachineApp.swift` + a new manual-save sheet View
+(D-8 checkbox), `Training/TrainingParameters.swift` +
+`App/UpperContentView/TrainingSettingsPopover*.swift` (D8 parameter, full
+checklist), `Arena/ArenaTriggerBox.swift`, `Training/ReplayRatioController.swift`,
 `Training/GameDiversityTracker.swift`, `App/UpperContentView/TrainingAlarmController.swift`.
-Config D (C1 #34) is resolved by issue #9 before this phase starts.
-Tests: C6 step 6 round trips; refill slot-by-slot equality in age order vs the
-uninterrupted run, incl. epoch wrap; games fed before each post-resume step equal
+Requires P13 (config D removed).
+Tests: C6 step 6 round trips (incl. with/without buffer, D-6 arena, D-9 legacy
+buffer); refill slot-by-slot equality in age order vs the uninterrupted run,
+incl. epoch wrap; k-th-oldest bucket picks identical after a mixed insert/evict
+history vs an age-order rebuild; games fed before each post-resume step equal
 the uninterrupted run's (feed carry); a changed shard byte ⇒ refusal naming the
-shard; a changed git hash / OS string ⇒ warning, and `--resume-exact` refusal
-without `--accept-inexact`.
-Validation: C6 step 7 end to end on the real runner.
+shard, even with `--accept-inexact`; a changed git hash / OS string ⇒ warning,
+and `--resume-exact` refusal without `--accept-inexact build`/`os`; a v4
+checkpoint resumes only with `--accept-inexact` naming every gap, and the segment
+records them.
+Validation: C6 step 7 end to end on the real runner; a GUI session saved with
+the default settings has no `replay_buffer.bin` and its save log line says
+`buffer=omitted`, resumes, refills and trains; the same with the toggle on
+writes and restores the buffer; `sample()` µs per batch not slower than the A2.2
+baseline.
 
 **P10 — Provenance + carry-forward.** `[RUN]` formatter (`Logging/`), recorder
 fields, B4 fix. Tests: derive → train → save keeps `derivation_history`; `[RUN]`
 contains all fields (string test on the formatter).
+Validation: each run path (GUI, `--train`, `--train-from-corpus`,
+`--train-vs-uci`, `--derive-model`, `--uci`) prints one `[RUN]` line at start in
+a real launch; a `results.json` from a short replay run carries `lineage`.
 
 **P11 — Tracker.** `documentation/dashboards/replay.py`, `ckpt_inventory.py`,
 `selfplay.py`, `vsuci.py`; pytest fixtures. Validation: on existing v4 data,
@@ -992,6 +1169,25 @@ output identical to today (no regressions); on synthetic v5 headers, expected re
 Validation criterion for the whole plan: corpus replay N+M vs N|resume|M gives
 identical sampled indices and dropout masks for all M steps, and identical final
 weights when the determinism probe reports `bitExact`.
+
+**P13 — Config D removal** (D-10, issue #9; before P9). Delete the
+`--bf16-cast-in-forward` flag parsing (`App/DrewsChessMachineApp.swift:264-273`),
+the `SessionController` wiring (`App/SessionController.swift:944-956`), the
+`TrainerHyperparameters` field (`:137, :155`), the `ChessTrainer` property and
+branches (`:1560-1565, :2023, :2044, :2047, :2123, :2265, :2340, :3951-3957`),
+and in `ChessNetwork`: `bf16CastInForward`, `bf16CastActive`,
+`weightStorageDataType`, `castWeightForForward` and their use sites. **Approved
+test deletions (owner, D-10):** the config-D case in `HeadNumericsTailTests`
+(`:66-67`) and the config-D sweep in `MacOS27NaNIsolationTests` (`:657-713`); no
+other test is modified. Docs: mark it removed (with history kept) in
+`documentation/macos27-beta1-mpsgraph-findings.md`, `HEAD_NUMERICS_PLAN.md`,
+CHANGELOG; ROADMAP note only with owner permission.
+Tests: the default bf16 path's graph is byte-identical before/after (architecture
+hash and a pinned forward-pass output hash on a bf16 fixture); head-numerics,
+fp16 and `CheckpointManagerSafetensorsTests` pass.
+Validation: build succeeds; `grep` finds no remaining `bf16CastInForward` /
+`castWeightForForward` / `--bf16-cast-in-forward`; passing the old flag is now an
+unknown-argument error; issue #9 closed with the commit.
 
 ## E3. Risks
 
@@ -1008,18 +1204,23 @@ weights when the determinism probe reports `bitExact`.
   remaining risk is a coefficient mistake, which the exhaustive 2²⁴-input tests
   catch. Distribution checks (`NetworkWeightAnalyzer` per-role std) confirm the
   normals are still He/Glorot-normal.
-- **Config D** (issue #9): a second optimizer/storage path every resume and
-  harness rule would have to cover; resolved (removed, or recorded + gated)
-  before P9 (C1 #34).
+- **Config D removal** (P13, D-10): deleting a mixed-precision path could disturb
+  the default bf16 graph; guarded by the byte-identical graph/output pins.
+- **Buffer not saved by default** (D-8): a default resume trains its first steps
+  on a small buffer from the current champion only (less varied) and waits for
+  the minimum fill. Accepted by the owner; the toggle/checkbox/flag restore the
+  old behavior per save.
+- **Bucket FIFO assumption** (P9, D-5): relies on the ring only evicting the
+  globally oldest slot; verified in P9 before swap-remove is replaced.
 - **Shard re-hash cost** (P9): exact resume reads the needed shards once at
   startup to verify SHA-256 (C1 #32); sequential I/O, measured and logged.
 - **Macro changes** (P2/P3): `TrainingParametersMacro` edits affect every
   parameter; covered by existing parameter tests + new `allKeys` coverage test.
-- **Format v5 on live runs**: the three running corpus-replay trainings are v4
-  writers on an old binary; they are unaffected (they don't reload the binary).
-  Resuming them later with a v5 build: `--resume-exact` from a v4 file ⇒
-  `NOT EXACT: rng_sampler, dropout_state, buffer_order, lineage` ⇒ refused
-  unless `--accept-inexact` lists them. That is honest; flag to owner (D-7).
+- **Format v5 on live runs**: the three running SE seed-2 corpus-replay trainings
+  are v4 writers on an old binary and will not be resumed (D-7). Any v4
+  checkpoint resumed later on a v5 build is `NOT EXACT: rng_sampler,
+  dropout_state, feed_carry, params, lineage` and needs `--accept-inexact`
+  naming them (C3).
 - **Scope creep in GUI**: C1 #12/#18/#20 are best-effort by nature (§0).
 
 ## E4. Backward-compatibility guarantees and tests
@@ -1045,10 +1246,12 @@ Plus `CheckpointManagerSafetensorsTests` must keep passing bit-exact.
 
 ---
 
-# Owner decisions needed
+# Owner decisions (all decided)
 
-- **D-1** Accept §0: GUI and train-vs-UCI get state-exact resume, not
-  trajectory-exact; corpus replay is the only trajectory-exact path.
+- **D-1 — DECIDED (2026-09-30):** GUI self-play and train-vs-UCI resumes are
+  state-exact at most — and, under D-8, not buffer-exact unless the save included
+  the buffer; they never reproduce the rest of the run. Corpus replay is the only
+  trajectory-exact path (§0, C3, C6).
 - **D-2 — DECIDED (2026-09-30):** GUI default is `unseeded` — a seed is drawn,
   logged and recorded in lineage. Build New Model also gets an optional seed
   field, so a GUI user can mint a model from a chosen seed.
@@ -1089,6 +1292,8 @@ Plus `CheckpointManagerSafetensorsTests` must keep passing bit-exact.
   - the manual Save Session dialog gets an "Include replay buffer" checkbox
     (default off);
   - train-vs-UCI gets a CLI flag to include it;
+  - specified in D8: parameter `session_save_include_replay_buffer` (autosaves
+    and train-vs-UCI), the manual-save sheet checkbox, CLI `--save-replay-buffer`;
   - a save without a buffer resumes by refilling from new games (training waits
     for the minimum fill) and is labeled `NOT EXACT: buffer`;
   - corpus replay never writes a buffer (rebuilt exactly from the corpus).
