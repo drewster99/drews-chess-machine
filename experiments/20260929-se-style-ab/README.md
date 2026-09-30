@@ -76,6 +76,9 @@ see Audit notes.]
 
 ## Results
 
+Full report at step 30,000: [REPORT-30k.md](REPORT-30k.md).
+
+
 Probed by the dashboard tracker (`documentation/dashboards/data/se_{sb,att,none}.csv`, registry keys
 `se_sb` / `se_att` / `se_none`) on each enumerated 1k-step checkpoint. Full per-metric history lives in
 those CSVs; this table is pElo / nll.
