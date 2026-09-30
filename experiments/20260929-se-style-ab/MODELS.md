@@ -1,6 +1,6 @@
 # Model files for the SE A/B/C experiment
 
-Checkpoints live in `~/Library/Application Support/DrewsChessMachine/Models/`; identify them by `__metadata__` (`model_id` + `training_step`), not filename. Sizes in MB (base 2).
+Copies of these checkpoints are stored in [`models/`](models/) via Git LFS (run `git lfs pull` after cloning). Originals live in `~/Library/Application Support/DrewsChessMachine/Models/`; identify them by `__metadata__` (`model_id` + `training_step`), not filename. Sizes in MB (base 2).
 
 | file | model_id | training_step | size | sha256 |
 |---|---|---|---|---|
@@ -10,3 +10,5 @@ Checkpoints live in `~/Library/Application Support/DrewsChessMachine/Models/`; i
 | `20260929-test_SE_attenuate-only-replay-step30000.safetensors` | 20260929-23-L6Qm | 30000 | 19.83 | `d19b04dba2d4628e…` |
 | `20260929-test_SE_none-fresh.safetensors` | 20260929-18-D9is | 0 | 19.73 | `f4424eb972b9dda7…` |
 | `20260929-test_SE_none-replay-step30000.safetensors` | 20260929-24-834D | 30000 | 19.73 | `a74a8002b3bc21cd…` |
+
+Run logs (`dcm_log_20260929-150727/150735/150743.txt`, ~232 MB each uncompressed) will be added gzipped under `logs/` when the runs stop; they are still being written.
