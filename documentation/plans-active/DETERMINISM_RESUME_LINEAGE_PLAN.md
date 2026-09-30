@@ -2,7 +2,10 @@
 
 Status: **PLAN ONLY — nothing here is implemented.** Audited against `main` at
 `47984b0` (on top of d15f706 "exact resume", 8926221 "#7 zero-β / format v4 /
-`--derive-model`", 248e122).
+`--derive-model`", 248e122). Owner decisions and review findings of 2026-09-30
+folded in (D-3 and D-8 decided; buffer refill by age order; probe-isolation
+rule; hash, sort-tie and float-sum audits; shard/build checks on resume;
+measurements), with every `file:line` re-verified against `main` at `bd32c15`.
 
 This plan is the single design for four things that have to be designed together
 because they share storage, format versioning and code paths:
@@ -35,7 +38,7 @@ What "deterministic" can and cannot mean in this app:
 
 | Path | Trajectory-exact after this plan? | Why |
 |---|---|---|
-| Corpus replay (`--train-from-corpus`, sequential loop) | **Yes, within GPU-numeric limits** (§A5). Same seed + same build + same device class + same OS → the sampled minibatch indices, dropout masks and schedule are identical; weights match bit-exact *if* MPSGraph is run-to-run deterministic on that device (measured, not assumed — §C6). | The loop is single-threaded: feed K positions, sample, step. Every random draw can come from a named stream. |
+| Corpus replay (`--train-from-corpus`, sequential loop) | **Yes, within GPU-numeric limits** (§A5). Same seed + same build + same device class + same OS → the sampled minibatch indices, dropout masks and schedule are identical; weights match bit-exact *if* MPSGraph is run-to-run deterministic on that device (measured, not assumed — §C6). | The loop is single-threaded and **step-locked** (`CLI/CorpusReplayRunner.swift:769-790`, target `:778`, `trainStep` `:786`): each iteration feeds whole games until `positionsFed ≥ prefillPositions + step·perStepFeed`, then awaits one `trainStep`; feeding and training never overlap. The step boundary is therefore a clean, lock-free snapshot point — no pause/drain protocol is needed for replay. Every random draw can come from a named stream. |
 | GUI Play-and-Train | **No — only the random *streams* are exact, not the trajectory.** | Self-play and training run concurrently; which positions are in the buffer when the trainer samples depends on wall-clock interleaving, the `ReplayRatioController` delay loop (wall-clock driven), worker count changes, arena pauses. Seeding makes each *game* reproducible given its inputs and makes minibatch draws reproducible given the buffer, but the buffer contents at step N are a race. |
 | Train-vs-UCI | **No.** | External engines (multi-threaded Stockfish, time-based `go`) are nondeterministic, plus the same concurrency as GUI. Seeding still makes our side's sampling and the trainer's minibatches reproducible *given* the games. |
 
@@ -121,7 +124,7 @@ struct DCMRandom: RandomNumberGenerator, Codable, Sendable, Equatable {
     mutating func nextBounded(_ upperBound: Int) -> Int          // precondition(upperBound > 0)
     mutating func nextUnitDouble() -> Double  // (next() >> 11) * 0x1p-53  ∈ [0, 1)
     mutating func nextUnitFloat() -> Float    // (next() >> 40) * 0x1p-24  ∈ [0, 1)
-    mutating func nextStandardNormalPair() -> (Float, Float)   // Box–Muller on the two unit draws above
+    mutating func nextStandardNormalPair() -> (Float, Float)   // Box–Muller with our own restricted-domain log/cos (A5, D-3)
     mutating func jump()                      // xoshiro256** 2^128 jump, for completeness/tests
 }
 ```
@@ -157,6 +160,15 @@ match a **saved RNG state** on resume, we call our own `nextBounded`,
 Rule written into `DCMRandom`'s doc comment: *stdlib `using:` APIs are acceptable
 only where no saved state or golden result depends on the draw sequence.*
 
+**Measured cost** (2026-09-30, `swiftc -O`, M4 Pro, 8.2M bounded draws into a
+500k range): today's `Int.random(in:)` (system generator) **27.0 ns/draw**
+(110.6 µs per 4096-sample batch); `DCMRandom`-style xoshiro256** + Lemire
+**0.77 ns/draw** (3.2 µs per batch); xoshiro through stdlib `using:` 0.78 ns.
+The seeded path is ~35× cheaper than today's; either is negligible next to a
+training step (~2.2 s), where copying the sampled positions dominates. The
+training and self-play loops must stay at least this fast: the P3 validation
+re-measures `sample()` before/after.
+
 ### A2.4 Golden-sequence tests (`DrewsChessMachineTests/DCMRandomTests.swift`)
 
 - SplitMix64 from seed 0 and from `0x0123456789ABCDEF`: first 8 outputs pinned to
@@ -168,8 +180,11 @@ only where no saved state or golden result depends on the draw sequence.*
   pinned; plus a chi-square sanity on bound 3 over 3·10^6 draws (loose bound, not
   flaky).
 - `nextUnitDouble`/`nextUnitFloat`: pinned values; assert range `[0,1)`.
-- `nextStandardNormalPair`: pinned bit patterns (`Float.bitPattern`) for 8 pairs
-  — this is also the canary for libm drift (A5).
+- `nextStandardNormalPair`: pinned bit patterns (`Float.bitPattern`) for 8 pairs.
+- `DCMNormalMath` (A5): **exhaustive** test of the private `log` over all 2²⁴
+  values of `u1 = (k+1)/2²⁴` and of `cos` over all 2²⁴ angles `2π·k/2²⁴`, each
+  against a `Double` reference, asserting the stated max-ULP bound (runs in
+  seconds; not gated).
 - `Codable` round trip, including a word > 2^53, and rejection of all-zero and of
   a numeric (non-string) word.
 - Stream derivation (A3.1): pinned child seeds for names `"sampler"`, `"init"`,
@@ -273,7 +288,7 @@ Plus from #5 (C5): each declares `absentValue` — `random_seed_mode` absent ⇒
 
 How it works today (`Network/ChessNetwork.swift:747-867, 2684-2729`):
 
-- A graph **variable** `dropout_rng_state` of shape `[7]` Int32 (Philox state: key + counter words, as MPSGraph lays it out).
+- The generator is **already stateful**: a graph **variable** `dropout_rng_state` of shape `[7]` Int32 (Philox state: key + counter words, as MPSGraph lays it out; `ChessNetwork.swift:775-784`). Each step continues the sequence where the previous one ended. The **only** nondeterministic input is the initial seed `Int.random(in: 0..<Int.max)` at `:781`; making the whole dropout sequence reproducible means replacing that one seed and saving/restoring the 7 words.
 - `randomPhiloxStateTensor(withSeed: Int.random(in: 0..<Int.max))` creates a **constant** in the graph; `dropout_rng_seed_assign` copies it into the variable. The trainer runs that assign once per built graph (`ChessTrainer.swift:2198`, `:2410` on rebuild, `runDropoutSeedOnQueue` `:5712`).
 - Each block's `randomTensor(withShape:descriptor:stateTensor:)` returns `[values, nextState]`; the state is threaded block to block, and `dropout_rng_advance` assigns the final state back to the variable after each step. The KL probe also advances it (`ChessTrainer.swift:6906`) — so **the KL-probe schedule changes the dropout stream**.
 
@@ -295,8 +310,10 @@ run 3 steps (record masks via a tap) → restore → 3 steps → identical masks
 Caveat stated honestly: the **meaning** of the 7 words is MPSGraph's; we treat
 them as an opaque blob. An OS update could in principle change the Philox layout
 or the mapping from state to uniforms. The golden test "same Philox state →
-same first mask" (§E Phase 3) is the canary; a failure after an OS update means
+same first mask" (§E P4) is the canary; a failure after an OS update means
 "dropout streams are not comparable across that OS boundary", logged, not hidden.
+The OS build is recorded in every lineage record (`device.os_version`, D2) for
+exactly this reason, and an OS change on resume is flagged (C1 #33).
 
 Inference graphs have no dropout scaffolding, so nothing changes for them.
 
@@ -306,7 +323,11 @@ Inference graphs have no dropout scaffolding, so nothing changes for them.
 - **Kernel selection varies by shape, device and OS.** Different batch sizes pick different conv algorithms (the Winograd investigation in `ConvKernelExecutionPathNumericsTests` shows paths differ numerically). A resumed run must use the same batch size and precision to have any hope of bit-equality.
 - **bf16 rounding** amplifies any upstream difference: a 1-ulp fp32 difference can flip a bf16 rounding, then propagate.
 - **Across OS versions / chips** (M4 Pro vs M5 VM, macOS 26 vs 27 beta): not bit-exact, full stop. The lineage metadata records device + OS (Part D) so comparisons can be scoped.
-- **CPU side**: Box–Muller uses `logf`/`cosf`/`sqrtf` (and current init uses vForce `vvlogf`/`vvcosf`). These are libm/Accelerate results that can change across OS versions. Init values are therefore bit-identical for the same seed **on the same OS build**; the golden normal-pair test catches drift. **Owner decision D-3 (decided): keep He-normal / Glorot-normal, computed by our own restricted-domain Box–Muller** — polynomial `log`/`cos` built only from IEEE-exact `+ − × ÷` and `sqrt`, so init is bit-identical across OS builds and chips. The domain is guaranteed by construction: `u1 = (k+1)/2²⁴ ∈ (0,1]`, angle `2π·k/2²⁴ ∈ [0,2π)`; the functions are private to init. Validation: (1) an exhaustive test over all 2²⁴ inputs of each function against a Double reference, asserting a stated max-ULP bound; (2) golden output bits for a fixed seed; (3) **re-benchmark on completion** against vForce and Swift libm (prototype, 8.45M values, `swiftc -O`: vForce 10.4–13.9 ms, libm 31.5 ms, draft polynomial 10.6 ms) and report the numbers.
+- **CPU side — solved by design (D-3, decided).** Today's init uses vForce `vvlogf`/`vvsqrtf`/`vvcosf` and `MoveSampler` uses libm `log`/`cos`; both are system libraries whose results are only ~1-ULP accurate and can change with an OS update or per chip. Decision: **keep He-normal / Glorot-normal** (continuity with every existing run; no distribution change across eras) and compute them with **our own restricted-domain Box–Muller** (`Utils/DCMNormalMath.swift`, private to `DCMRandom`): polynomial `log`/`cos` built only from IEEE-exact `+ − × ÷` and `sqrt`, so a seed gives bit-identical values on every OS build and chip.
+  - **Domain guaranteed by construction:** `u1 = (k+1)/2²⁴ ∈ (0,1]` (never 0, never denormal, NaN or infinite) and angle `2π·k/2²⁴ ∈ [0,2π)`, with `k` from `next() >> 40`. No other caller can pass other inputs, so no general-purpose range reduction or special-case handling is needed. (This replaces today's clamp of `u1` to `leastNormalMagnitude`.)
+  - **FMA:** Swift does not contract `a * b + c` into a fused multiply-add on its own, so the explicit operation order is stable across builds; the golden bits catch any change.
+  - **Validation:** (1) exhaustive test over all 2²⁴ inputs of each function against a `Double` reference, asserting a stated max-ULP bound (A2.4); (2) golden output bits for fixed seeds (A2.4, B1.1); (3) **re-benchmark on completion** against vForce and Swift libm and report the numbers. Prototype (2026-09-30, 8.45M values, `swiftc -O`, M4 Pro): vForce 10.4–13.9 ms, Swift libm 31.5 ms, draft polynomial 10.6 ms. Init runs once per mint, so speed is not a deciding factor.
+  - **Not a concern — bf16 narrowing:** both bf16 training paths keep fp32 master weights (default: fp32 master + bf16 working copy; config D, issue #9: fp32 variables cast in the forward pass), so init produces fp32 values in either mode, and the one CPU narrowing (`float32ToBFloat16Bits`, `ChessNetwork.swift:3563`) is a fixed round-to-nearest-even rule pinned by B1.1's goldens.
 - **Self-play/GUI concurrency** (§0) — not numeric, but the dominant source of trajectory divergence.
 
 Conclusion: the harness asserts **exact equality of every CPU-side state and of
@@ -327,7 +348,8 @@ draw order, consumer identity or iteration order could vary:
 | O4 | Game-serial assignment — new games are appended in `BatchedSelfPlayDriver` grow path and after the serial game-end pass (`:658` loop `for i in 0..<K`); shrink drops the tail (`:289 games.removeLast`) | Serial numbers must be assigned in a fixed order: the serial pass iterates slots in index order, so assign serials there (never inside the task group). Live worker-count changes (GUI) make the *set* of games time-dependent — accepted, §0. | Assign `serial = nextSerial; nextSerial += 1` only in the serial pass, in slot-index order; persist `nextSerial`. |
 | O5 | `Training/BatchedSelfPlayDriver.swift:700` draw-keep | Runs in the serial game-end pass | Draw from the finishing game's own stream (not a driver-level stream), so it's independent of how many other games finished in the same tick. |
 | O6 | `Training/ReplayBuffer.swift` `sample()` paths `:1783, 1904, 1924, 1973, 2154, 2189, 2198, 2235` | Multiple consumers could sample the buffer (trainer; `ReplayBufferAnalyzer` probes; batch-stats) | The `sampler` stream is used **only** by the trainer's minibatch draw, under the buffer `lock`, in batch-slot order (`i = 0..<sampleCount`). Every other consumer (analyzer/probes) gets its own named stream (`probe.<name>.<step>`), never `sampler`. |
-| O7 | Stratified path `:1900-1915` iterates buckets `for b in 0..<bucketCount` then `randomSlot()` | Deterministic order, **but** `MaterialBucketSlots.slots` order is itself history-dependent (swap-remove `:280-286`, insertion order `:1223-1231`) — same RNG, different slot order ⇒ different picks after a rebuild. | C1 #5 / D-5: persist the arrays or make the pick order-independent. |
+| O7 | Stratified path `:1900-1915` iterates buckets `for b in 0..<bucketCount` then `randomSlot()` | Deterministic order, **but** `MaterialBucketSlots.slots` order is itself history-dependent (swap-remove `:280-286`, insertion order `:1223-1231`) — same RNG, different slot order ⇒ different picks after a rebuild. | C1 #5 / D-5: rebuild the arrays in the buffer's **age order** on refill (C1 #4), persist them, or make the pick order-independent. |
+| O7b | All `sample()` paths draw a **physical** slot index (`Int.random(in: 0..<held)` then `outcomeStorage[srcIndex]`, e.g. `:1783-1790`) | Physical slot numbering depends on where the ring's write pointer happened to be, so the same RNG state picks different positions after a refill that starts at another slot. | Draw a **logical** (age-ordered) index `i` (0 = oldest) and map it once: `physical = (oldest + i) % capacity`, with `oldest = writeIndex` when full and `0` otherwise. Batches then depend only on the buffer's contents in age order, never on the ring's physical offset (C1 #4). |
 | O8 | Length-tilt rejection loop `:2150-2235` | Number of draws per emitted sample varies with acceptance; fine as long as the loop order is fixed (it is: sequential) | Keep sequential; document that the draw count is data-dependent (so the saved state is the only valid restore point, never "N draws since step X"). |
 | O9 | Dictionary iteration in `sample()` — `for (_, c) in degPerGame/stratPerGame/fastPerGameScratch/perGameCount` `:1794, 1937, 1984, 2243` | `Dictionary` iteration order is randomized per process in Swift | **Checked: max-reductions only, no draws inside** ⇒ order-independent. Rule added to `DCMRandom` docs and a code-review checklist item: *no random draw inside iteration over `Dictionary`/`Set`*; if ever needed, iterate `keys.sorted()`. Other dictionaries in the buffer (`residentGames :199`, `hashStats :176`, `residentLengthHistogram :210`, `slotPosition :260`) are lookup/stat only. |
 | O10 | `ReplayBuffer` insert order (GUI) — games flushed in the serial pass `for i in 0..<K` | Deterministic per tick given which games finished — concurrency with the trainer makes buffer *timing* nondeterministic (§0) | Accepted; noted. |
@@ -336,6 +358,10 @@ draw order, consumer identity or iteration order could vary:
 | O13 | `MoveSampler` inverse-CDF over `legalMoves` order | Same dependence on move-generation order for a given index | Same verification as O12; add a test that `legalMoves(for:)` order is stable for 20 fixed FENs (pinned). |
 | O14 | Dropout Philox state threaded block→block in graph build order (`ChessNetwork.swift:2684-2716, 858-859`) | Order is the graph's data dependency chain — fixed for a given architecture; KL probe adds extra advances (`ChessTrainer.swift:6906`) | Deterministic given step-derived probe schedule (C1 #3). Changing block order changes masks — inherent, arch-specific. |
 | O15 | Run-level sub-streams | Adding a stream must not shift others | Name-hash derivation (A3.1) for all of them. |
+| O16 | **Swift `Hasher` values used as data** — `ReplayBuffer.hashBoard` (`Training/ReplayBuffer.swift:649-657`) hashes each board with `Hasher()`, which is randomly keyed **per process**; the per-slot hashes are **persisted and restored** (`stateHashStorage`, written `:2937`, read `:3377`, re-counted into `hashStats` `:3405-3415`) | After a resume, restored slots carry the old process's hashes while new inserts of the same position get the new process's hash ⇒ duplicate counting splits one position into two keys. Its doc comment (`:643-647`, "the hash dict is rebuilt fresh … cross-process stability isn't required") is wrong: the dict is rebuilt, but from persisted hashes. **Checked 2026-09-30: observability only** — the hashes feed `uniquePositionCount`, `bufferedPositionStats(forHash:)` and `computeBatchStats` (`ChessTrainer.swift:4555-4584`), never a `sample()` path or a loss, so no training-math impact. | Replace with a fixed-key hash (SplitMix-style mix over the board bytes, or SipHash with a constant key), one function, documented as persistence-stable. Bug-fix rule: the regression test (hash of a fixed board equals a pinned constant, and a save → restore → re-insert of the same position yields count 2 under one key) is written first and must fail before the fix. Legacy sessions' persisted hashes come from random keys: owner decision **D-9** — recompute them from the stored boards on load (derived data, the boards stay the source of truth), or accept inflated duplicate stats for legacy buffers (observability only) and log it. |
+| O17 | **Whole-codebase sweep of `Set`/`Dictionary` iteration and hash-values-as-data** (O9 checked `sample()` only) | Any draw, emitted order, or persisted value that depends on per-process hashing is irreproducible. | P3 task: grep every `for … in <Dictionary/Set>`, `.keys`/`.values` iteration, `Set` → `Array` conversion and `hashValue`/`Hasher` use on the training, replay, self-play, arena, vs-UCI and persistence paths; each is classified (order-independent reduction / sorted / fixed) in a table appended here. Known safe: `TrainingParameters.swift:1508` and `CliTrainingConfig.swift:103` iterate `keys.sorted()`. |
+| O18 | **Sort ties** — Swift's `sort` is stable in practice but not documented as stable | A sort with equal keys that decides data order (shard lists, bucket rebuilds, emitted records) could reorder between toolchains. | Rule: every sort that decides data order uses a total order (explicit tie-break on a unique key). Audited 2026-09-30 on data paths: corpus shard lists sort by unique `lastPathComponent` (`GameCorpus.swift:274, 360`) — no ties; `highestShardSeq` (`:374-384`) is a max, order-free; `SafetensorsFile.swift:192` sorts by unique byte offset. The rest found (`ReplayBufferAnalyzer`, `NumericsAudit`, `ModelFileCatalog`, `ModelLineageTree`, `CheckpointManager.swift:208`) are statistics or UI listings. P3 re-runs the sweep and records it. |
+| O19 | **Float sums accumulated in thread-completion order** that feed training | Float addition isn't associative, so a thread-order sum varies by ULPs between runs; if it feeds training math, bit-exact replay breaks with no visible cause. Matters only for corpus replay (the only trajectory-exact path). | Preliminary check 2026-09-30: no `concurrentPerform`/`TaskGroup` in `CLI/CorpusReplayRunner.swift`, `Training/ReplayBuffer.swift`, `Training/ChessTrainer.swift` or `Persistence/GameCorpus.swift`; parallel regions exist only in self-play, arena, vs-UCI, UCI, the recorder and the Lichess bot. P3 confirms by reading the replay feed path (`CorpusReplayFeeder`) end to end and records the result; any such sum found on the replay path gets a fixed-order reduction. |
 
 ---
 
@@ -358,7 +384,7 @@ Design:
 - **Sharing**: two architectures with the same `(initSeed, tensor name, shape)` get bit-identical values. With the same name but a different shape (e.g. wider conv), the tensors share the leading run of normals but a different std/fan-in; documented as "not shared", and `graft` (B3) never treats them as matching.
 - **Name stability is load-bearing.** `weightTensorPlan()` names are already the safetensors tensor names and the contract for file loading, so they are stable. But block names are **indexed** (`block<i>`): inserting a block before others renames every later block. That is correct for "architectures sharing tensors" (block 3 is block 3), and the graft op (B3) supports an explicit name map for the insert case.
 - **Existing models**: loading never initializes randomly (it uses `.overwrittenByLoad` after this change; before it, the random init was overwritten anyway), so **every existing file loads bit-identically**. Init affects only new mints. The init seed of a new mint is recorded (`init_seed`, Part D); legacy files simply have none.
-- **Performance** (~8.45M params for `v4_5block_7x7`; larger presets ~30M): scalar xoshiro + Box–Muller ≈ 5–10 ns/element ⇒ 40–85 ms at 8.45M, ~0.3 s at 30M, single thread. Acceptable for a build-once operation; if not, tensors are independent streams, so `DispatchQueue.concurrentPerform` over tensors parallelizes trivially **without changing values** (each tensor's stream is independent). Parallelism *within* one tensor is allowed only with per-chunk seeds `splitmix64(tensorSeed ^ stableHash64("chunk/<index>"))` over a **fixed** chunk size that is itself part of the `init_scheme` — never "split among however many threads are available". `dcm-init-1` fills each tensor sequentially (simplest; parallel across tensors only). The vForce batch path can be kept for the transcendental step (fill uniforms scalar from the stream, then vectorized log/sqrt/cos), which keeps today's speed; values then depend on vForce, pinned by golden test.
+- **Performance** (~8.45M params for `v4_5block_7x7`; larger presets ~30M): measured prototype of the transform alone (A5): our restricted-domain polynomial 10.6 ms for 8.45M values vs vForce 10.4–13.9 ms and Swift libm 31.5 ms; xoshiro draws add ~0.8 ns/value (A2.2). Expected total well under 100 ms at 8.45M, single thread — re-measured on completion (A5). Build-once, so acceptable either way; if ever needed, tensors are independent streams, so `DispatchQueue.concurrentPerform` over tensors parallelizes **without changing values**. Parallelism *within* one tensor is allowed only with per-chunk seeds `splitmix64(tensorSeed ^ stableHash64("chunk/<index>"))` over a **fixed** chunk size that is itself part of the `init_scheme` — never "split among however many threads are available". `dcm-init-1` fills each tensor sequentially (simplest; parallel across tensors only). vForce is **not** used: its values could change with the OS (A5, D-3).
 
 `NetworkWeightAnalyzer` / `NumericsAudit` expectations (analytic std per role) are unchanged because the distribution is unchanged.
 
@@ -374,7 +400,7 @@ Design:
   1. the name hash (`stableHash64` = SHA-256 first 8 bytes BE) and the derivation (`splitmix64(seed ^ hash)`);
   2. the generator (xoshiro256** seeded by SplitMix64, A2);
   3. the per-role distributions (He-normal std `sqrt(2/fanIn)` with each role's fan-in definition; Glorot std; the exact constants for γ/β/biases/α/WDL prior; the zero-β column ranges);
-  4. the normal transform (Box–Muller from `nextUnitFloat` pairs, clamp of `u1` to `leastNormalMagnitude`, which function computes log/cos — scalar libm vs vForce);
+  4. the normal transform: Box–Muller with `u1 = (k+1)/2²⁴`, angle `2π·k/2²⁴`, and our own `DCMNormalMath` polynomial `log`/`cos` (exact coefficients and operation order — A5, D-3);
   5. the **in-tensor fill order: row-major in the stored (on-disk safetensors / PyTorch) layout** — for FC weights that is `[out, in]`, for convs OIHW — so a value's position is defined by the file, not by the in-memory native layout; the builder fills in stored order and converts with the existing `toTorchLayout` inverse;
   6. the fp32→bf16 rounding (round-to-nearest-even, as `makeWeightData` does today — pinned by test) and the rule that draws are always fp32.
 - **A published scheme never changes.** Any change to any item above gets a new
@@ -384,8 +410,15 @@ Design:
 - **Golden tests per scheme** (`DrewsChessMachineTests/InitSchemeGoldenTests.swift`):
   for `dcm-init-1`, seed `42`, pinned `tensorSeed` for 6 names; pinned first 8
   fp32 bit patterns and the SHA-256 of the full tensor for a conv, an FC, an SE
-  fc2 with zero-β, and the WDL fc2 bias; the same tensors in bf16. The libm/vForce
-  dependency (A5, D-3) is exactly what these pins detect.
+  fc2 with zero-β, and the WDL fc2 bias; the same tensors in bf16. Any change to
+  the transform (A5) or the fill order breaks these pins, which is the point.
+- **Cross-machine init test** (owner-run script, `scripts/init_reproducibility.sh`):
+  for a set of seeds (e.g. 8) × the default preset and one heterogeneous preset,
+  mint fresh models on **each** machine (M4 Pro native, M5 VM) and compare the
+  SHA-256 of the **tensor data only** (every mint gets a fresh ModelID and
+  timestamp, so whole-file hashes always differ); all must match. This is the direct proof of the
+  "bit-identical on every OS and chip" claim; the result (machines, OS builds,
+  seeds, hashes) is recorded in the experiment/plan notes.
 - Fresh checkpoints committed via Git LFS (the experiments convention) remain the
   ultimate record of what a seed produced; the scheme makes them reproducible,
   the file makes them authoritative.
@@ -507,12 +540,12 @@ observability/cosmetics only; **S** = safety/operational.
 | 1 | **Replay sampler RNG** | global RNG, `ReplayBuffer.swift:290,1783,1924,1973,2154,2189,2198,2235` | all | **M** — different minibatches from step +1 | A3 `sampler` stream; persist state (D2 `rng_sampler_state`). |
 | 2 | **Dropout Philox state** | graph constant from `Int.random`, `ChessNetwork.swift:781`; reseeded per built graph | all with dropout>0 | **M** — different masks | A4 capture/restore; persist `rng_dropout_philox_state`. |
 | 3 | **KL-probe step counter** | `klProbeStepCounter` `ChessTrainer.swift:6263`, starts at 0 each process, never saved | all | **M when dropout>0** (probe advances the dropout state `:6906`, so probe phase shifts the dropout stream); **O** otherwise (probe fires at resume step 0 and phase shifts) | Derive probe steps from `completedTrainSteps` (like `batchStatsInterval` already does `:4539`) — deletes the counter: single source of truth. |
-| 4 | **Replay buffer ring order / write index (corpus replay)** | reconstructed by refeeding `[until−1.5·cap/avgPly, until)` (`CorpusReplayRunner.swift:405-432`); `writeIndex` starts at 0 in a fresh buffer | replay | **M** — same *set* of positions but different slot indices ⇒ with a seeded sampler, slot `i` holds a different position ⇒ different batches | Persist `replay_total_positions_added` and reconstruct so the ring lands at `writeIndex = total mod cap` with identical slot contents (refeed exactly the last `cap` plies into their original slots). Or save the buffer (option below). Test: slot-by-slot equality vs original. |
+| 4 | **Replay buffer ring order / write index (corpus replay)** | reconstructed by refeeding `[until−1.5·cap/avgPly, until)` (`CorpusReplayRunner.swift:406-432`); `writeIndex` starts at 0 in a fresh buffer | replay | **M** — same *set* of positions but different slot indices ⇒ with a seeded sampler, slot `i` holds a different position ⇒ different batches | **Decided approach (owner, 2026-09-30): refill from slot 0 and reset the write pointer; only the *read* order must match.** (1) The sampler draws logical, age-ordered indices (A6 O7b), so the ring's physical offset is irrelevant. (2) On resume, refill slot 0…n−1 **oldest to newest**, starting at the oldest resident ply's recorded source (the slot-source record below), then set `writeIndex = n mod cap`. (3) Rebuild the stratified bucket arrays in that same age order (C1 #5). (4) Restore the sampler state. **Slot-source record:** a new per-slot column inside `ReplayBuffer`, a separate parallel array like the existing SoA columns (`plyIndexStorage`, `gameLengthStorage`, `stateHashStorage`, …) — ~16 B/slot (corpus shard, game offset within shard, ply; ~8 MB at 500k) — written under the same lock in the same insert. It keeps the board storage the trainer memcpys to the GPU untouched. For corpus replay **no buffer file is written**: the oldest slot's source + the corpus + the sampler state reproduce the buffer exactly. Test: slot-by-slot equality in age order vs the uninterrupted run, plus identical sampled positions. |
 | 5 | **Material-bucket slot arrays order** | `MaterialBucketSlots` swap-remove (`ReplayBuffer.swift:280-291`), rebuilt in ring order on insert/`restore` (`:1223-1231`, `restore(from:)` `:3079`) | all (stratified on) | **M** — `randomSlot()` picks `slots[k]`; after evictions the live array order ≠ rebuilt order | Persist the per-bucket slot arrays in the buffer file (GUI) / reconstruct deterministically (replay: they're a function of the insert/evict sequence, so an exact ring reconstruction from total-added reproduces them only if eviction history is replayed — so **persist them**). Alternative (cleaner): make `randomSlot` order-independent — pick the k-th slot of the bucket in ring order via a per-bucket Fenwick/order-statistic structure. Owner decision D-5. |
 | 6 | **Corpus replay: cross-epoch reconstruction** | refused (`CorpusReplayRunner.swift:423-426`) | replay | **S** — epoch-boundary checkpoints can't be exact-resumed | With #4's exact reconstruction, wrap backward across the epoch boundary (games `[N−k, N)` of the previous epoch then `[0, until)`), which is well-defined because corpus order is sequential. |
 | 7 | **Corpus replay build drift** | warns only (`:399-401`) | replay | **M** if encoder/feeder changed | Keep warning; make it a refusal in `--resume-exact` when `encoder_version`/`feeder_version` (new header keys) differ; git hash alone stays a warning. |
-| 8 | **Counters `gamesFed`/`positionsFed`** | restart at 0 (`CorpusReplayRunner.swift:728-729`) | replay | **O** (+ K-per-step feed cadence uses local counters: `targetFed` loop `:779` — **M** only if the cadence formula depends on the absolute counter; verify; restore the absolute value so the feed phase is identical) | Persist cumulative (D2); restore. |
-| 9 | **Train-vs-UCI game buffer** | fresh `ReplayBuffer` (`TrainVsUciRunner.swift:214`), not saved | vs-UCI | **M** — first post-resume steps train on a tiny correlated buffer | Save buffer with the checkpoint using the existing `.dcmsession` `ReplayBuffer` file format (sidecar `…-buffer.dcmbuf` next to the trainer file) and gate `--resume-exact` on it; without it the resume is labeled `NOT EXACT: buffer`. |
+| 8 | **Counters `gamesFed`/`positionsFed`** | restart at 0 (`CorpusReplayRunner.swift:728-729`) | replay | **O** + **M**: verified 2026-09-30 — the feed cadence `targetFed = prefillPositions + step * perStepFeed` (`:778`) uses the segment-local `step` and `positionsFed`. Whole games overshoot the target, so the feed **phase** (how far ahead of the target the last game left the counter) is state that a restart resets ⇒ which games are in the buffer before a given step shifts. | Persist the cumulative counters (D2) **and** the feed carry (`positionsFed − targetFed` at the save step); resume computes the target from the cumulative step so the feed phase is identical. Test: the games fed before each of the M post-resume steps equal the uninterrupted run's. |
+| 9 | **Train-vs-UCI game buffer** | fresh `ReplayBuffer` (`TrainVsUciRunner.swift:214`), not saved | vs-UCI | **M** — first post-resume steps train on a tiny correlated buffer | **Decided (D-8): mirror the self-play session.** Train-vs-UCI checkpoints use the same folder format as a GUI `.dcmsession` — `trainer.safetensors` + `replay_buffer.bin` (existing `ReplayBuffer` file format, now with the slot-source column) + `session.json` + `manifest.json` — through the same writer, staging directory and rename (C1 #29). `--resume-exact` is gated on it; without it the resume is labeled `NOT EXACT: buffer`. |
 | 10 | **Train-vs-UCI pool/opponent counters, next game serial** | not saved | vs-UCI | **M** (which opponent/color next) | Persist `vsuci_next_game_serial`, per-opponent game counts. |
 | 11 | **Self-play in-flight games** | dropped on save | GUI, vs-UCI | **M** (small) | Accept + log the count (`[CHECKPOINT] dropped N in-flight games`). Persist `selfplay_next_game_serial` so per-game streams continue, not repeat. |
 | 12 | **ReplayRatioController windows** | only `lastAutoComputedDelayMs` restored (`SessionController+Training.swift:899-903, 1007-1015`) | GUI | **M** (step delay ⇒ cons/prod ratio ⇒ which positions exist when sampled) — inherently wall-clock, so not trajectory-exact anyway | Persist prod/cons EMAs / window samples; seed controller. Best-effort by nature (§0). |
@@ -528,21 +561,29 @@ observability/cosmetics only; **S** = safety/operational.
 | 22 | **CLI `--resume-exact` parameters other than schedule** | from `--parameters`/UserDefaults, not diffed | replay, vs-UCI | **M** | Checkpoint carries full `training_parameters` snapshot; `--resume-exact` restores it and diffs against `--parameters` (`[RESUME-DIFF]`), refusing live-untunable differences unless `--allow-param-change` (logged per key). |
 | 23 | **Old-format checkpoints** | CLI refuses (correct, `TrainerResumeState.swift:~223`); GUI session without trainer file forks from champion with zero velocity (`SessionController+Training.swift:~1389-1396`) | all | **M** | Single line `[RESUME] NOT EXACT: <list>`; record `exact_resume=false` + the list in the segment record (D2). |
 | 24 | **Step counters used by schedules** | tau schedule: per-game ply (no global counter — fine); LR/momentum/warmup/cycle: `completedTrainSteps` (restored ✓); `batchStatsInterval`: `completedTrainSteps` (✓ `:4539`); diagnostics cadence: same (✓); KL probe: separate counter (✗ #3); `ReplayRatioController`: time-based (#12); candidate-probe interval: seconds (`candidateProbeIntervalSec`) — wall clock, resets (**O**) | all | as listed | Only #3 needs a code change; probe interval ⇒ measure against `cum_train_step_sec`. |
-| 25 | **`LastSessionPointer` ordering vs rename** | `Persistence/CheckpointManager.swift:120-164` | GUI | **S** | Test: kill between rename and pointer write leaves pointer at the prior complete save. |
+| 25 | **`LastSessionPointer` ordering vs rename** | pointer written by `CheckpointController.recordLastSessionPointer` (`App/UpperContentView/CheckpointController.swift:444`, called from `SessionController+Checkpoint.swift:446` and `SessionController+Arena.swift:639`) → `LastSessionPointer.write` (`Persistence/LastSessionPointer.swift:90`); orphan `.tmp` sweep `Persistence/CheckpointManager.swift:120-164` | GUI | **S** | Test: kill between rename and pointer write leaves pointer at the prior complete save. |
 | 26 | **Enumerated-name overwrite across segments** | same segment-local step name (`CorpusReplayRunner.swift:614-620`) | replay | **S** (data loss) | Include `lineage_segment_index` in the enumerated name (`…-seg3-step41000`), and refuse to overwrite an existing enumerated file whose `lineage_segment_id` differs. |
 | 27 | **`--start-model` (branch) vs `--resume-exact`** | branch: fresh clock, zero velocity (by design, `TrainerLaunchKind.newBranch`) | CLI | by design | Branch mints a **new `lineage_run_id`** and new master seed (unless `--seed`), recording parent (D2). Exact resume inherits both. |
 | 28 | **Epoch boundaries (replay)** | epoch-completion checkpoint normalized to `(nextGame=0, epoch=N)` | replay | **S** (can't resume there, #6) | Fixed by #4/#6. |
-| 29 | **Crash mid-save** | GUI: `.tmp` + atomic rename ✓; CLI: `.atomic` writes ✓ | all | OK | Add: buffer sidecar (#9) written before the trainer file; the trainer file's header records the sidecar's SHA-256 so a torn pair is detected at load. |
+| 29 | **Crash mid-save** | GUI: whole session folder staged as `Sessions/<name>.tmp`, then renamed; orphan `.tmp` debris swept at launch (`Persistence/CheckpointManager.swift:120-164`) ✓; CLI: single `.safetensors` written to a temp file and renamed ✓ | all | OK | **Keep the existing temp-then-rename pattern; add no new file.** Rule: every new piece of resume state (RNG states, feed carry, serials, lineage) lives **in the same file or folder as the weights it belongs to** — corpus replay: the one `.safetensors`'s `__metadata__`; GUI and train-vs-UCI (D-8): the session folder (`session.json` + `replay_buffer.bin`), covered by its `manifest.json` and the single rename. There is therefore no separate file that could be torn from its weights. |
 | 30 | **Momentum/velocity dtype** | fp32 | all | presumed OK | Test: saved dtype fp32; bit-exact round trip under a bf16 network (from #6). |
+| 31 | **Replay-buffer position hashes are per-process** | A6 O16 (`ReplayBuffer.swift:649-657`, persisted `:2937`/`:3377`) | GUI (buffer saved), vs-UCI after D-8 | **O** — duplicate/unique-position stats wrong after every resume; no training-math impact (checked) | Fixed-key hash; regression test first (O16); D-9 for legacy buffers. |
+| 32 | **Corpus changed under a resume** | `--resume-exact` compares `corpus_id` only (`CorpusReplayRunner.swift:397`) | replay | **M** — a re-imported or edited shard with the same ID feeds different games | Record each shard's SHA-256 in the lineage (`fed.corpus.shard_sha256`, D2; same values as `experiments/corpora/*.md` manifests); on resume re-hash the shards the refill and the run will read and **refuse on any mismatch**, naming the shard. Cost: one sequential read of those shards at startup. |
+| 33 | **Build or OS changed under a resume** | CLI warns on git-hash change only (`:401`); GUI records build in `session.json` but doesn't compare | all | **M** — different code or MPSGraph/Philox can change the trajectory (A4, A5) | Compare `build.git_hash`, `build.git_dirty`, `build_number` and `device.os_version` with the running process: any difference ⇒ `[RESUME] WARNING …` on every path, and `--resume-exact` **refuses** unless `--accept-inexact build` / `os` names it (C3). Recorded in the segment record. |
+| 34 | **Config D (`--bf16-cast-in-forward`, issue #9)** | GUI-only flag; not recorded in any checkpoint | GUI | **M** — a second optimizer/storage path (fp32 variables, no master/working pair) | Either remove it (issue #9) before P9, or record `bf16_cast_in_forward` in the lineage and refuse an exact resume across a mismatch, and add it to the harness variants. Removal is the simpler path; owner decides via #9. |
 
 **Top gaps by training-math impact:** #1 sampler RNG, #2 dropout state, #4/#5
 buffer slot order (makes #1 useless even once seeded), #21/#22 parameter
-defaulting/diffing, #9 vs-UCI buffer, #3 KL-probe counter coupling into dropout,
-#13 arena clock.
+defaulting/diffing, #8 feed phase, #32 corpus content, #33 build/OS, #9 vs-UCI
+buffer, #3 KL-probe counter coupling into dropout, #13 arena clock.
 
 ## C2. Save-point consistency rules
 
-- All resume state is captured **under the same training pause** that already
+- **Corpus replay needs no pause at all:** its loop is step-locked (§0), so the
+  code between two `trainStep` awaits is the save point, with no concurrent
+  feeder or trainer to stop. The save runs there, reading the trainer snapshot,
+  sampler state, Philox state and feed carry in one consistent cut.
+- GUI and train-vs-UCI: all resume state is captured **under the same training pause** that already
   guards `exportResumeSnapshot()`; the replay-buffer sampler state and the
   dropout state are read inside that pause, after the last completed step, so
   "state after step N" is one consistent cut.
@@ -551,6 +592,20 @@ defaulting/diffing, #9 vs-UCI buffer, #3 KL-probe counter coupling into dropout,
   buffer file and the sampler state are consistent with each other (same lock);
   they are *not* consistent with an exact self-play cut, which §0 already rules
   out of scope.
+- **Probe-isolation rule (memorialized):** *no probe, diagnostic or observer may
+  change trainer, optimizer, replay-buffer or RNG state.* A probe reads a snapshot
+  or runs on its own copy and its own named stream (`probe.<name>.<step>`). Case
+  to settle in P4: the KL-probe path runs the dropout advance op
+  (`ChessTrainer.swift:6900-6910`; its comment says the advance is there so the
+  *next training step* doesn't reuse this step's mask). If that is the step's own
+  single advance, it's correct and the only fix is C1 #3's step-derived schedule;
+  if the probe adds an advance beyond the step's, it violates this rule and gets
+  its own state or a save-and-restore around its run. Either way the P4 test
+  asserts: dropout masks for steps N+1… are identical with the KL probe on and off. This project has had probe side-effect bugs
+  before (the probe staging-buffer clobber). The rule goes into the project
+  `CLAUDE.md` ("Concurrency invariants"), into `DCMRandom`'s doc comment, and is
+  enforced by the harness: C6 runs with **every probe enabled**, so any probe that
+  mutates state shows up as a trajectory mismatch.
 
 ## C3. Resume classification (single function)
 
@@ -559,7 +614,7 @@ New `ResumeExactness` (in `TrainerResumeState.swift`, shared by all three paths)
 carries. Every path logs exactly one line
 `[RESUME] EXACT` or `[RESUME] NOT EXACT: rng_sampler, dropout_state, buffer_order, …`
 and records it in the new segment record (D2). CLI `--resume-exact` refuses on
-`notExact` unless `--accept-inexact <comma list>` names every missing item
+`notExact` unless `--accept-inexact <comma list>` names every missing item (including `build` and `os`, C1 #33; a corpus-content mismatch, C1 #32, is never acceptable)
 (explicit, logged — no silent downgrade).
 
 ## C4. `--resume-exact` vs `--start-model` (unchanged semantics, made explicit)
@@ -606,7 +661,7 @@ seed `0xD5C0FFEE`.
 4. Assert: (a) sampled indices identical for all M steps (**exact, always**);
    (b) dropout mask hashes identical (**exact**); (c) LR/momentum/probe schedule
    identical (**exact**); (d) weights/loss per step equal under the probe's mode.
-5. Variants: resume at an epoch boundary; resume from a checkpoint written at a
+5. Variants (all with **every probe enabled** — C2 probe-isolation rule): resume at an epoch boundary; probes on vs off must give identical sampled indices and dropout masks; resume from a checkpoint written at a
    KL-probe step; resume after a parameter change (expect `[RESUME-DIFF]` +
    refusal without `--allow-param-change`); resume a legacy (v4) fixture file
    (expect `NOT EXACT` list, successful branch-style continuation).
@@ -674,7 +729,10 @@ The same struct is embedded in `session.json` (GUI) so both carriers share code.
     "cum_games": 123456, "cum_positions": 8123456, "cum_plies_generated": 8200000,
     "segment_games": 1000, "segment_positions": 64000,
     "corpus": {"corpus_id":"…","epoch":0,"next_game_index":2345,"shard":3,"offset":17,
-               "total_positions_added": 8123456}   // replay only; generalizes replay_*
+               "total_positions_added": 8123456,
+               "oldest_resident": {"epoch":0,"shard":2,"offset":9120,"ply":14},   // refill start (C1 #4)
+               "feed_carry_positions": 37,                                        // C1 #8
+               "shard_sha256": {"shard-000001": "…", "…": "…"}}                   // C1 #32; replay only; generalizes replay_*
   },
   "time": {
     "cum_train_step_sec": 51234.5,        // Σ measured step durations (GPU step wall incl. sampling), carried across segments
@@ -841,7 +899,13 @@ per-game stream independence from worker count (K=1 vs K=8 produce the same game
 for serial s given identical network outputs — use a stub `evaluateBatched`
 returning fixed logits, which is a *test double*, not a production stub);
 Dirichlet/Gamma distribution sanity (mean/var) with the new draws.
-Validation: `[RUN] seed=` logged on all paths; unseeded mode logs a drawn seed.
+Also in P3 (A6): logical age-ordered index mapping in every `sample()` path (O7b);
+the fixed-key board hash (O16 — **bug fix: its regression test is written and
+committed first and must fail on the current code**, then pass unmodified); the
+recorded `Set`/`Dictionary`, sort-tie and float-sum sweeps (O17–O19), each
+appended to A6 as a classified table.
+Validation: `[RUN] seed=` logged on all paths; unseeded mode logs a drawn seed;
+`sample()` µs per batch re-measured and not slower than today's (A2.2 baseline).
 Risk: sampler lock — RNG work moves inside the existing lock; xoshiro is faster
 than `SystemRandomNumberGenerator` (which calls `arc4random_buf`), so hold time
 drops. Measure `sample()` µs before/after with the existing timing taps.
@@ -851,17 +915,25 @@ no baked constant), `Training/ChessTrainer.swift` (`captureDropoutState()`,
 `restoreDropoutState(_:)`, seed from stream; KL counter removed → step-derived),
 `Training/TrainerResumeState.swift` (snapshot includes Philox state + sampler state).
 Tests: capture/restore mask equality (A4); KL-probe-derived schedule equals old
-cadence on a fresh run. Validation: `[RESUME] rng: dropout=restored`.
+cadence on a fresh run; masks for steps N+1… identical with the KL probe on and
+off (C2 probe-isolation rule). Also: add the probe-isolation rule to the project
+`CLAUDE.md` "Concurrency invariants". Validation: `[RESUME] rng: dropout=restored`.
 
 **P5 — Per-tensor init.** Files: `Network/ChessNetwork.swift` (all init sites;
 `WeightInitialization`), `Network/ChessMPSNetwork.swift`,
 `Network/InferenceNetworkFactory.swift`, every `ChessNetwork(` construction site
-(pass `.overwrittenByLoad` for load paths), `Persistence/ModelDerivation.swift:521`.
-Tests: same seed ⇒ bit-identical weights across two builds; two archs sharing
+(pass `.overwrittenByLoad` for load paths), `Persistence/ModelDerivation.swift:521`,
+`Utils/DCMNormalMath.swift` (D-3 restricted-domain `log`/`cos`, private to
+`DCMRandom`), `scripts/init_reproducibility.sh` (B1.1 cross-machine test).
+Tests: `DCMNormalMath` exhaustive 2²⁴-input accuracy tests (A2.4); same seed ⇒
+bit-identical weights across two builds; two archs sharing
 `block0_*` ⇒ identical `block0_*`; fp32 vs bf16 builds: bf16 == round(fp32);
 per-role std within tolerance (existing `NetworkWeightAnalyzer` expectations);
 `.overwrittenByLoad` network refuses use before load. Validation: build time for
-the default preset logged; ≤ 2× today's.
+the default preset logged; ≤ 2× today's; **re-benchmark of the finished
+transform** against vForce and Swift libm on 8.45M values (same harness as the
+A5 prototype), numbers reported to the owner and recorded in A5; cross-machine
+script run by the owner on both machines, all tensor-data hashes equal.
 
 **P6 — Format v5 + `LineageRecord`.** Files: `Persistence/LineageRecord.swift`,
 `Persistence/LineageTracker.swift`, `Network/ArchitectureFormat.swift` (v5),
@@ -888,16 +960,24 @@ Tests: graft 5-block→6-block copies blocks 0–4 bit-exact, initializes block 
 `init/block5_*` under the recorded seed (reproducible), records copied/dropped/initialized;
 graft with `--graft-map` for an inserted block; refuses velocity-carrying sources.
 
-**P9 — Exact-resume completion** (C1 #3–#20, #23–#29). Files:
-`Training/ReplayBuffer.swift` (slot arrays persisted or order-independent
-`randomSlot`; ring-aligned reconstruction API), `CLI/CorpusReplayRunner.swift`
-(ring-exact + cross-epoch reconstruction; segment-indexed enum names),
-`CLI/TrainVsUciRunner.swift` (buffer sidecar, serials), `App/SessionController+Training.swift`
-(arena clock, save clock, ratio controller, diversity, alarms, serials),
-`Arena/ArenaTriggerBox.swift`, `Training/ReplayRatioController.swift`,
+**P9 — Exact-resume completion** (C1 #3–#20, #23–#34). Files:
+`Training/ReplayBuffer.swift` (slot-source SoA column; age-order refill API that
+starts at slot 0 and sets `writeIndex`; bucket arrays rebuilt in age order or
+order-independent `randomSlot`, per D-5), `CLI/CorpusReplayRunner.swift`
+(age-order + cross-epoch refill from the oldest resident source; feed carry;
+shard SHA-256 check; build/OS check; segment-indexed enum names),
+`CLI/TrainVsUciRunner.swift` (D-8: session-folder checkpoints via the shared
+session writer; serials), `App/SessionController+Training.swift`
+(arena clock, save clock, ratio controller, diversity, alarms, serials, build/OS
+check), `Arena/ArenaTriggerBox.swift`, `Training/ReplayRatioController.swift`,
 `Training/GameDiversityTracker.swift`, `App/UpperContentView/TrainingAlarmController.swift`.
-Tests: C6 step 6 round trips; reconstruction slot-by-slot equality, incl. epoch
-wrap.
+Config D (C1 #34) is resolved by issue #9 before this phase starts.
+Tests: C6 step 6 round trips; refill slot-by-slot equality in age order vs the
+uninterrupted run, incl. epoch wrap; games fed before each post-resume step equal
+the uninterrupted run's (feed carry); a changed shard byte ⇒ refusal naming the
+shard; a changed git hash / OS string ⇒ warning, and `--resume-exact` refusal
+without `--accept-inexact`.
+Validation: C6 step 7 end to end on the real runner.
 
 **P10 — Provenance + carry-forward.** `[RUN]` formatter (`Logging/`), recorder
 fields, B4 fix. Tests: derive → train → save keeps `derivation_history`; `[RUN]`
@@ -924,7 +1004,15 @@ weights when the determinism probe reports `bitExact`.
   current `Float.random` goes through `SystemRandomNumberGenerator`
   (`arc4random_buf` per call) — expected speedup.
 - **Philox blob semantics across OS updates** (P4): opaque; canary test.
-- **libm drift** (P5): golden normals canary; owner decision D-3.
+- **Own `log`/`cos` accuracy** (P5, D-3): removed as a drift risk by design; the
+  remaining risk is a coefficient mistake, which the exhaustive 2²⁴-input tests
+  catch. Distribution checks (`NetworkWeightAnalyzer` per-role std) confirm the
+  normals are still He/Glorot-normal.
+- **Config D** (issue #9): a second optimizer/storage path every resume and
+  harness rule would have to cover; resolved (removed, or recorded + gated)
+  before P9 (C1 #34).
+- **Shard re-hash cost** (P9): exact resume reads the needed shards once at
+  startup to verify SHA-256 (C1 #32); sequential I/O, measured and logged.
 - **Macro changes** (P2/P3): `TrainingParametersMacro` edits affect every
   parameter; covered by existing parameter tests + new `allKeys` coverage test.
 - **Format v5 on live runs**: the three running corpus-replay trainings are v4
@@ -963,16 +1051,30 @@ Plus `CheckpointManagerSafetensorsTests` must keep passing bit-exact.
   trajectory-exact; corpus replay is the only trajectory-exact path.
 - **D-2** Default of `random_seed_mode` for the GUI: `unseeded` (drawn + logged,
   today's feel) vs `seeded` with a fixed default seed. Recommendation: `unseeded`.
-- **D-3** Init normals: accept libm/vForce-dependent values (golden canary), or
-  build a transcendental-free sampler for cross-OS bit-identical init.
+- **D-3 — DECIDED (2026-09-30):** keep He-normal / Glorot-normal, computed by
+  our own restricted-domain Box–Muller (polynomial `log`/`cos` from IEEE-exact
+  operations), with exhaustive accuracy tests, golden bits, a cross-machine
+  test and a re-benchmark on completion (A5, B1.1, P5). No He-uniform option
+  exists or ever existed; none is added.
 - **D-4** Which B2 options to ship (recommended set: SE γ bias level, branch
   last-BN-γ zero, skip-projection identity-like, policy/value final zero, draw
   prior). Forbidden: `res_ln` zero, feature-skip fusion zero, skip-projection
   zero, ReZero α = 0 under the tanh ceiling.
-- **D-5** Stratified sampling: persist bucket slot arrays, or rewrite
-  `randomSlot` as order-independent (cleaner, small perf cost).
+- **D-5** Stratified sampling: rebuild the bucket slot arrays in age order on
+  refill (fits the decided slot-0 refill, C1 #4 — nothing extra persisted),
+  persist them, or rewrite `randomSlot` as order-independent. Recommendation:
+  rebuild in age order, which makes them a pure function of the age-ordered
+  buffer — **verify** that holds after evictions (swap-remove reorders a bucket's
+  array relative to age order; if so, `randomSlot` must pick by age rank instead).
 - **D-6** Persist partial arena records across kill, or just re-trigger the arena.
 - **D-7** Resuming the three current v4 corpus-replay runs on a v5 build: allow
   with `--accept-inexact` (recommended), or keep an old binary for them.
-- **D-8** Train-vs-UCI buffer sidecar size (capacity × position bytes) is
-  acceptable on disk per checkpoint, or only on rolling (not enumerated) saves.
+- **D-8 — DECIDED (2026-09-30):** train-vs-UCI mirrors the self-play session
+  (folder with `replay_buffer.bin`, same writer), not a companion file (C1 #9).
+  Still open within it: write the buffer on every checkpoint, or only on rolling
+  (not enumerated) saves, given its size (capacity × position bytes).
+- **D-9** Legacy buffers' per-process position hashes (C1 #31, A6 O16):
+  recompute from the stored boards on load, or accept inflated duplicate stats
+  for legacy buffers and log it.
+- **D-10** Config D (issue #9): remove before P9 (deletes its two test cases — needs owner approval under the test rule), or keep and record/gate it
+  (C1 #34).
