@@ -1,0 +1,978 @@
+# Determinism, Exact Resume, Ablation Init and Lineage — Design Plan
+
+Status: **PLAN ONLY — nothing here is implemented.** Audited against `main` at
+`47984b0` (on top of d15f706 "exact resume", 8926221 "#7 zero-β / format v4 /
+`--derive-model`", 248e122).
+
+This plan is the single design for four things that have to be designed together
+because they share storage, format versioning and code paths:
+
+- **A** Seeded randomness (one generator type, one master seed, named sub-streams).
+- **B** Ablation-friendly, per-tensor-derived initialization and a `--derive-model` graft.
+- **C** Exact resume for every training path, with a resume-equivalence harness.
+- **D** Lineage, step and run-time tracking across segments, carried in the files.
+
+It **supersedes** GitHub issues **#4** (lineage metadata — now Part D), **#5**
+(resume defaults — now Phase 2 of Part C) and **#6** (exact-resume checklist —
+now Part C). It **builds on** **#7** (zero-β, format v4, `--derive-model`),
+which is implemented; Part B extends it. When this plan's umbrella issue is
+opened, #4/#5/#6 are closed as "superseded by" it, each linking the section that
+replaces it, so there is one open tracker, not four.
+
+Rules this plan is held to (from CLAUDE.md files): single source of truth; the GUI
+self-play, corpus-replay and train-vs-UCI paths share code (`TrainerHyperparameters`,
+`TrainerResumeState.swift`); no silent defaults; no fallback for things that must
+exist; no `try?`; the full parameter checklist for every new parameter; the
+**format-version rule** from #7 (legacy files take old behavior; files at the new
+version must carry the new fields, and a missing field there is a load error);
+every older model must still load, train and infer.
+
+---
+
+## 0. Honest scope statement (read first)
+
+What "deterministic" can and cannot mean in this app:
+
+| Path | Trajectory-exact after this plan? | Why |
+|---|---|---|
+| Corpus replay (`--train-from-corpus`, sequential loop) | **Yes, within GPU-numeric limits** (§A5). Same seed + same build + same device class + same OS → the sampled minibatch indices, dropout masks and schedule are identical; weights match bit-exact *if* MPSGraph is run-to-run deterministic on that device (measured, not assumed — §C6). | The loop is single-threaded: feed K positions, sample, step. Every random draw can come from a named stream. |
+| GUI Play-and-Train | **No — only the random *streams* are exact, not the trajectory.** | Self-play and training run concurrently; which positions are in the buffer when the trainer samples depends on wall-clock interleaving, the `ReplayRatioController` delay loop (wall-clock driven), worker count changes, arena pauses. Seeding makes each *game* reproducible given its inputs and makes minibatch draws reproducible given the buffer, but the buffer contents at step N are a race. |
+| Train-vs-UCI | **No.** | External engines (multi-threaded Stockfish, time-based `go`) are nondeterministic, plus the same concurrency as GUI. Seeding still makes our side's sampling and the trainer's minibatches reproducible *given* the games. |
+
+So the harness in §C6 asserts **bit-exact equivalence for corpus replay** and
+**state-exact save/restore round-trips** (every piece of state restored equals what
+was saved) for the GUI and train-vs-UCI. That is the correct, provable target;
+promising trajectory-exact GUI resume would be false.
+
+---
+
+# PART A — Seeded randomness
+
+## A1. Inventory of every randomness source
+
+Method: `grep -rnE '\.random\(|shuffled|shuffle\(|randomElement|SystemRandomNumberGenerator|arc4random|drand48|GKRandom|randomUniform|randomPhilox|RandomNumberGenerator|UUID\(\)'`
+over `DrewsChessMachine/DrewsChessMachine/**/*.swift` (tests excluded), plus a
+manual read of the init helpers, the sampler, the replay-buffer sample paths and
+the BN calibration path. `drand48`, `GKRandom`, MPSGraph `randomUniformTensor`
+and MPSGraph `dropout(...)`: **no hits** (dropout is hand-built from
+`randomTensor(withShape:descriptor:stateTensor:)`, see A4).
+
+**57 call sites** total: **19 training-relevant**, **2 evaluation/probe**, **36
+irrelevant** (identity, UI, bot, benchmarks).
+
+Classification key: **T** = needed for reproducible training; **E** = needed for
+reproducible evaluation/probing; **I** = irrelevant (identity, UI, bot, benchmark).
+
+### A1.1 Training-relevant (T) — 19 sites
+
+| # | Site (`file:line`, under `DrewsChessMachine/DrewsChessMachine/`) | What | Treatment |
+|---|---|---|---|
+| 1 | `Network/ChessNetwork.swift:3424` (`fillUniform01`, called by `heInitFloats` `:3363`) | `arc4random_buf` → uniforms → Box–Muller for **every** He/Glorot weight. Consumers: stem `:693`, feature-skip fusion `:910`, block convs `:2738` (incl. `_skip_proj` via `makeConvWeight` `:2855`), SE fc1 `:2913`, SE fc2 `:2934`/`:2939`, policy head `:3032`/`:3057`/`:3071`/`:3091`/`:3107`, value head `:3181`/`:3210`/`:3234` | Replace with per-tensor streams (Part B1). The graph builder takes a `WeightInitialization` argument; no global RNG. |
+| 2 | `Network/ChessNetwork.swift:781` | Dropout Philox seed `Int.random(in: 0..<Int.max)` **baked into the graph as a constant** at build time | Seed becomes a graph *input* (placeholder assign), value from the `dropout` stream; state capturable/restorable (A4). |
+| 3 | `Network/ChessMPSNetwork.swift:153` | `legalMoves.randomElement()` — random game walked to build the BN-calibration warmup batch; the resulting running stats are written into a fresh network and **are saved** with the champion | `init.bn_calibration` stream (part of the init family). |
+| 4 | `Training/ReplayBuffer.swift:290` | `MaterialBucketSlots.randomSlot()` (stratified sampling) | Buffer-owned `sampler` stream; stable `nextBounded`. |
+| 5–11 | `Training/ReplayBuffer.swift:1783, 1924, 1973, 2189, 2198, 2235` | Uniform `Int.random(in: 0..<held)` in the degenerate, stratified, fast, tilted and budget-fallback paths | Same `sampler` stream, stable `nextBounded`. |
+| 12 | `Training/ReplayBuffer.swift:2154` | `Double.random` length-weighted acceptance `tiltAccepts` | Same stream, stable `nextUnitDouble`. |
+| 13 | `Training/BatchedSelfPlayDriver.swift:700` | `Double.random` draw-keep fraction | Per-game stream (A3.3), stable `nextUnitDouble`. |
+| 14 | `Network/MoveSampler.swift:169` | Inverse-CDF move draw (self-play, arena, train-vs-UCI, UCI, human play) | `sampleMove(... rng: inout DCMRandom)` — caller owns the stream. |
+| 15 | `Network/MoveSampler.swift:243` | Gamma boost `U^(1/α)` (Dirichlet, α<1) | Same `rng` parameter. |
+| 16 | `Network/MoveSampler.swift:265` | Marsaglia–Tsang acceptance `u` | Same. |
+| 17–18 | `Network/MoveSampler.swift:287, 288` | Box–Muller normals for Gamma | Same. |
+| 19 | `Persistence/ModelDerivation.swift:521` | `--derive-model` re-init of the SE β half via `glorotInitFloatsFCInOut` (unseeded) | Per-tensor init stream keyed by the recorded derivation seed (B3). |
+
+### A1.2 Evaluation / probe (E) — 2 sites (+ the shared sampler)
+
+| Site | What | Treatment |
+|---|---|---|
+| `Training/ReplayBufferAnalyzer.swift:610` | `indices.shuffled()` subsample for per-material-bucket policy-entropy probe | `probe` stream seeded per probe invocation from `(masterSeed, "probe.entropy_by_bucket", trainerStep)`; `shuffled(using:)` is acceptable here (A2.4) but the stable Fisher–Yates is used anyway for cross-version comparability of probe series. |
+| Arena move sampling (`Arena/TickTournamentDriver.swift:658` → `MoveSampler`) | Candidate-vs-champion tournament sampling | Per-game stream `arena.<arenaIndex>.game.<gameIndex>`. Pairing/colors are **deterministic already** (`candIsWhite = i % 2 == 0`, `:230`, `:359`) — no RNG. |
+
+Train-vs-UCI colors are deterministic too (`Training/TrainVsUciDriver.swift:589`, `gameIndex % 2`); opponent pool order has no RNG. Its move sampling uses site 14–18 via `TrainVsUciDriver.swift:333`.
+
+### A1.3 Irrelevant (I) — 36 sites, keep system randomness
+
+| Group | Sites | Why keep |
+|---|---|---|
+| **ModelID / corpus IDs** | `Persistence/ModelID.swift:118`, `Persistence/GameCorpus.swift:48` | Identity must be **unique across reruns**. A seeded ID would collide on every rerun with the same seed — precisely the collision problem #4 documents (`bzw3-31` re-minted). Keep `SystemRandomNumberGenerator`. |
+| **UUID identity** | `App/LichessProbeExporter.swift:68`; `App/UpperContentView/BuildNewModelModel.swift:73,103,148`; `App/UpperContentView/TrainingAlarmController.swift:324`; `App/UpperContentView/HumanPlayBoardView.swift:408,487`; `App/UpperContentView/ArenaBreakdownsView.swift:307,407,465,524,582,641,695,744,795,849`; `Network/MPSChessPlayer.swift:308`; `Chess/ChessPlayer.swift:59,88`; `Chess/HumanChessPlayer.swift:22`; `Arena/TournamentRecord.swift:8`; `LichessBot/App/LichessBotController.swift:444`; `LichessBot/Data/LichessBotRecordStore.swift:245` | SwiftUI identity / record keys. Not randomness in the math. |
+| **Lichess bot** | `LichessBot/App/LichessBotController.swift:1735` (matchmaking generator; `LichessBotMatchmaking.swift:254,274` already take `using:`), backoff jitter `LichessBot/Play/LichessBotSessionManager.swift:480`, `LichessBot/Data/LichessBotReconciler.swift:297`, `LichessBot/Play/LichessBotGameSession.swift:270,299,872` | Network behavior. Jitter must stay random. |
+| **Demo player** | `Chess/ChessPlayer.swift:77` | Random-mover demo opponent. |
+| **Benchmarks** | `Training/ChessTrainer.swift:4415, 4420` (synthetic moves/outcomes), `:7430` (LCG seed for `fillRandomFloats`) | Throughput sweeps; values don't matter. Optionally take a fixed constant so sweeps are repeatable; not required. |
+
+Not randomness (false positives checked): `Network/NetworkWeightAnalyzer.swift:162-167` (`randomElementCount` is an analytic expected-norm count), `LichessBot/Play/LichessBotChallengeQueue.swift:111` (`makeID` injection).
+
+## A2. The generator
+
+### A2.1 Type
+
+New file `Utils/DCMRandom.swift`:
+
+```swift
+/// xoshiro256** (Blackman & Vigna 2018), seeded by SplitMix64.
+struct DCMRandom: RandomNumberGenerator, Codable, Sendable, Equatable {
+    /// The four 64-bit state words. Named, not a tuple, so `Codable` and
+    /// `Equatable` are synthesized and the JSON form is self-describing.
+    private(set) var s0: UInt64, s1: UInt64, s2: UInt64, s3: UInt64
+    init(seed: UInt64)                      // SplitMix64 expands 1 word → 4; rejects the all-zero state (cannot occur from SplitMix64, asserted)
+    init(state: DCMRandomState) throws      // restore; throws on all-zero
+    mutating func next() -> UInt64          // RandomNumberGenerator requirement
+    // Stable draws — OUR algorithms, pinned by golden tests:
+    mutating func nextBounded(_ upperBound: UInt64) -> UInt64   // Lemire 2019 nearly-divisionless, unbiased
+    mutating func nextBounded(_ upperBound: Int) -> Int          // precondition(upperBound > 0)
+    mutating func nextUnitDouble() -> Double  // (next() >> 11) * 0x1p-53  ∈ [0, 1)
+    mutating func nextUnitFloat() -> Float    // (next() >> 40) * 0x1p-24  ∈ [0, 1)
+    mutating func nextStandardNormalPair() -> (Float, Float)   // Box–Muller on the two unit draws above
+    mutating func jump()                      // xoshiro256** 2^128 jump, for completeness/tests
+}
+```
+
+- `Codable` form: `{"s0":"…","s1":"…","s2":"…","s3":"…"}` with the words written as
+  **decimal strings** (JSON numbers are doubles in many readers; a UInt64 above
+  2^53 would silently lose bits in Python tooling). Decoding validates: four
+  parseable UInt64s, not all zero; otherwise a named error.
+- Conformance to `RandomNumberGenerator` means every stdlib `using:` API works
+  (`shuffled(using:)`, `randomElement(using:)`, `Int.random(in:using:)`).
+
+### A2.2 Why our own bounded/unit draws
+
+The stdlib's `using:` algorithms (`Int.random(in:using:)`, `Float.random(in:using:)`,
+`shuffled(using:)`) are **not documented as stable across Swift versions** — the
+implementation is free to change how many `next()` calls it makes and how it maps
+them. A toolchain upgrade (this project builds with a beta Xcode) could therefore
+change a "seeded" trajectory. For any draw that decides **training math** or must
+match a **saved RNG state** on resume, we call our own `nextBounded`,
+`nextUnitDouble`, `nextUnitFloat`, and our own Fisher–Yates.
+
+### A2.3 Where each is used
+
+| Use | Draw |
+|---|---|
+| Replay-buffer index picks, stratified slot picks | `nextBounded(held)` / `nextBounded(slots.count)` |
+| Length-tilt acceptance, draw-keep | `nextUnitDouble()` |
+| Move sampling (inverse CDF), Gamma/Dirichlet | `nextUnitFloat()`, `nextStandardNormalPair()` (Box–Muller — the Gamma sampler currently discards one normal per call; the pair form keeps the stream count explicit and the cached second value is part of the per-game state only within one call, so no extra state to persist) |
+| Weight init | `nextStandardNormalPair()` per tensor stream (B1) |
+| Corpus shuffle (if ever added), probe subsampling | our `stableShuffle(_:using:)` (Fisher–Yates with `nextBounded`) |
+| Lichess matchmaking (already generic over `RandomNumberGenerator`) | stdlib `using:` acceptable — it stays on `SystemRandomNumberGenerator` anyway |
+
+Rule written into `DCMRandom`'s doc comment: *stdlib `using:` APIs are acceptable
+only where no saved state or golden result depends on the draw sequence.*
+
+### A2.4 Golden-sequence tests (`DrewsChessMachineTests/DCMRandomTests.swift`)
+
+- SplitMix64 from seed 0 and from `0x0123456789ABCDEF`: first 8 outputs pinned to
+  the reference C implementation's values (computed once from the reference
+  `splitmix64.c`, checked in as literals).
+- xoshiro256** from a fixed 4-word state: first 16 `next()` pinned to reference
+  `xoshiro256starstar.c` output; after `jump()`, next 4 pinned.
+- `nextBounded` for bounds {1, 2, 3, 7, 4864, 2^32+1, UInt64.max}: first 16 values
+  pinned; plus a chi-square sanity on bound 3 over 3·10^6 draws (loose bound, not
+  flaky).
+- `nextUnitDouble`/`nextUnitFloat`: pinned values; assert range `[0,1)`.
+- `nextStandardNormalPair`: pinned bit patterns (`Float.bitPattern`) for 8 pairs
+  — this is also the canary for libm drift (A5).
+- `Codable` round trip, including a word > 2^53, and rejection of all-zero and of
+  a numeric (non-string) word.
+- Stream derivation (A3.1): pinned child seeds for names `"sampler"`, `"init"`,
+  `"init/block3_conv1_weights"`, `"selfplay.game.17"`; and a test that **adding** a
+  new name does not change any existing child seed (by construction, but pinned).
+
+## A3. Seed plumbing
+
+### A3.1 Master seed and named derivation
+
+- One **master seed** (`UInt64`) per *lineage run* (Part D: `lineage_run_id`).
+- `stableHash64(s) = UInt64(bigEndian: first 8 bytes of SHA-256(UTF-8(s)))`
+  (CryptoKit, already used by `ModelDerivation`; trivially reproducible in Python
+  with `hashlib`). **Never** Swift `Hasher` / `hashValue` / `String.hashValue`:
+  they are randomly seeded per process, so they would silently make every
+  "seeded" run different.
+- Child seed for a stream named `name`:
+  `childSeed = splitmix64(parentSeed ^ stableHash64(name))`, implemented once in
+  `DCMRandomStreams.childSeed(parent:name:)` and used for **every** derivation in
+  the app — run-level streams, per-game streams, per-tensor init seeds (B1) and
+  per-chunk fill seeds (B1). One function, one golden-test file.
+- Hashing the *name* (not an ordinal or a position in a list) is what makes streams
+  **independent of declaration order and of membership**: adding `"arena"` later
+  never shifts `"sampler"`; removing a stream shifts nothing.
+- Rejected alternative: draw child seeds sequentially from one master generator
+  over a sorted list of stream (or tensor) names. It is deterministic for a fixed
+  list, but inserting or removing any entry shifts every later seed. For tensors
+  this destroys cross-architecture sharing (adding `block5_*` would re-seed every
+  tensor sorting after it, e.g. `policy_*`, `value_*`), and for run streams it
+  makes adding a stream a silent trajectory change for existing ones.
+- The derivation is part of the versioned `rng_derivation` / `init_scheme`
+  identifiers (A3.2 / B1.1); changing it means a new identifier, never an edit.
+- Hierarchical names with `/` or `.`: `init/<tensorName>`, `selfplay.game.<serial>`,
+  `arena.<arenaIndex>.game.<gameIndex>`, `probe.<name>.<trainerStep>`.
+
+Stream catalog (single source: `enum DCMStream` with a static `name` per case and a
+`func name(...)` for parameterized ones):
+
+| Stream | Owner | Persisted in checkpoints? |
+|---|---|---|
+| `init/<tensorName>` | graph builder, `--derive-model` | No — pure function of seed + name; the init seed is recorded. |
+| `init.bn_calibration` | `ChessMPSNetwork.calibrateBNRunningStats` | No — same. |
+| `sampler` | `ReplayBuffer` (one stream, under its existing `OSAllocatedUnfairLock`) | **Yes** — state after the last sampled batch. |
+| `dropout` | trainer; seeds the Philox state variable | **Yes** — the 7×Int32 Philox state read back from the GPU (A4). |
+| `selfplay.game.<serial>` | `ActiveGame` (one generator per game, created at game start) | No per-game state (in-flight games are dropped on save, C2); the **next game serial** is persisted. |
+| `arena.<arenaIndex>.game.<gameIndex>` | `TickTournamentDriver` per game | No; `arenaIndex` (count of arenas so far) is persisted. |
+| `vsuci.game.<serial>` | `TrainVsUciDriver` per game | No; next serial persisted. |
+| `probe.<name>.<trainerStep>` | probes | No — a function of step. |
+| `corpus.order.<epoch>` | reserved for a future corpus shuffle (today order is sequential — `CorpusReplayRunner`) | Would be a function of epoch; no state. |
+
+Per-game streams (rather than one shared self-play stream) are essential: the tick
+driver samples all K games in parallel inside a `withTaskGroup`
+(`BatchedSelfPlayDriver.swift:501-550`, `TickTournamentDriver.swift:622-658`); a
+shared stream would make draws depend on task scheduling order. Per-game streams
+make each game's draws a function of `(seed, serial, its own history)` and need no
+lock. Game serials are assigned in the serial game-start pass, so they are
+deterministic given the tick order.
+
+### A3.2 Parameters and flags (full CLAUDE.md checklist)
+
+Two new `@TrainingParameter`s — **not** live-tunable:
+
+| id | Type | Meaning |
+|---|---|---|
+| `random_seed_mode` | enum `seeded` \| `unseeded` | **Required choice, no default that hides it.** Default value `unseeded` to keep today's behavior for existing users, but see "no silent defaults" below. |
+| `random_seed` | UInt64 (as decimal string in JSON) | Used when mode = `seeded`. Ignored (and logged as ignored) when `unseeded`. |
+
+Plus CLI override `--seed <UInt64>` (sets mode = seeded for that process; logged as
+`[PARAM] random_seed from --seed`) on `--train-from-corpus`, `--train-vs-uci`,
+`--train`, and `--derive-model` (for graft init, B3).
+
+**No silent default:** in `unseeded` mode the app still *draws* a master seed from
+`SystemRandomNumberGenerator` at run start and uses the seeded machinery with it —
+there is exactly **one code path**. The drawn seed is logged, stored in every
+checkpoint, and reusable with `--seed` to replay the run. "Unseeded" means "the
+seed was chosen for you", never "no seed".
+
+Checklist walk:
+
+1. **Declare** both with `@TrainingParameter`, add to `allKeys` (`Training/TrainingParameters.swift`). Range for `random_seed`: full UInt64 — the macro's numeric definition needs a UInt64 (or string-encoded) kind; if the macro only supports Int/Double today, add a `UInt64` value kind to `Packages/TrainingParametersMacro` (Phase 1 task) rather than squeezing into Int64.
+2. **Singleton**: stored properties + `collectValues` / `applyOne` + snapshot accessors.
+3. **`parameters.json`**: verify in `--show-default-parameters` and `--create-parameters-file` round trip.
+4. **Session** — *not* a `[RESUME-PARAM]` block like other parameters: on resume the seed is **lineage state**, restored from the checkpoint's `rng_master_seed` (Part D), never from current settings. The `[RESUME-PARAM]` block logs `random_seed: <saved> (lineage; current setting <x> ignored)`; a new-format session missing it is a load error (format rule); a legacy session gets `NOT EXACT: no RNG state` (C3) and a freshly drawn seed, logged.
+5. **`results.json`**: add `random_seed`, `random_seed_mode`, `rng_stream_derivation: "v1"`.
+6. **Runtime log**: `[RUN] seed=<u64> mode=seeded|unseeded(drawn) derivation=v1` at run start (D4), and on resume `[RESUME] rng: sampler=restored dropout=restored`.
+7. **UI**: Settings popover ▸ Training tab ▸ new "Reproducibility" row: mode segmented control + seed text field (monospaced, validated) + "Copy seed" of the *current run's* seed; disabled while a session is running (not live-tunable). `TrainingSettingsPopoverModel` binding + validation.
+8. **Live tunability**: `liveTunable: false` for both; the seed is fixed per lineage.
+9. **Renames**: n/a (new).
+
+Plus from #5 (C5): each declares `absentValue` — `random_seed_mode` absent ⇒ `unseeded` (the pre-feature behavior); `random_seed` absent ⇒ `refuseExact` (there is no pre-feature seed; exact resume is impossible and says so).
+
+### A3.3 Threading the streams (code shape)
+
+- `DCMRandomStreams` (value type, `Sendable`): holds `masterSeed`; `func generator(_ stream: DCMStream) -> DCMRandom`.
+- `ReplayBuffer`: gains `private var samplerRNG: DCMRandom` guarded by the existing `lock`; `func samplerState() -> DCMRandom` / `func restoreSamplerState(_:)` under the lock. `MaterialBucketSlots.randomSlot(using:)` takes `inout DCMRandom`.
+- `MoveSampler.sampleMove(..., rng: inout DCMRandom)` — all static helpers take `inout DCMRandom`; no hidden global.
+- `ActiveGame` owns `var rng: DCMRandom`; the tick's parallel sample uses the game's own generator (games are already disjoint per task, so no lock).
+- `ChessNetwork.init(arch:bnMode:initialization:)` where `initialization` is `WeightInitialization` (B1).
+
+## A4. MPSGraph dropout determinism
+
+How it works today (`Network/ChessNetwork.swift:747-867, 2684-2729`):
+
+- A graph **variable** `dropout_rng_state` of shape `[7]` Int32 (Philox state: key + counter words, as MPSGraph lays it out).
+- `randomPhiloxStateTensor(withSeed: Int.random(in: 0..<Int.max))` creates a **constant** in the graph; `dropout_rng_seed_assign` copies it into the variable. The trainer runs that assign once per built graph (`ChessTrainer.swift:2198`, `:2410` on rebuild, `runDropoutSeedOnQueue` `:5712`).
+- Each block's `randomTensor(withShape:descriptor:stateTensor:)` returns `[values, nextState]`; the state is threaded block to block, and `dropout_rng_advance` assigns the final state back to the variable after each step. The KL probe also advances it (`ChessTrainer.swift:6906`) — so **the KL-probe schedule changes the dropout stream**.
+
+Can it be seeded? **Yes.** Replace the constant with an input: add placeholder
+`dropout_rng_seed_state` `[7]` Int32 and an assign from it; the seed op is fed a
+`MPSGraphTensorData` built from our state words. To derive the initial state:
+build it with `randomPhiloxStateTensor(withSeed:)` in a tiny one-off graph at
+trainer setup (seed = `dropout` stream's first `next()` as `Int`), read the 7
+words back, and feed them — or equivalently keep the seed-constant graph but
+build it per seed (rejected: rebuilding/recompiling the executable per seed).
+
+Can the state be captured and restored? **Yes.** Capture: run the graph with
+`targetTensors: [dropout_rng_state]` (the same pattern the seed op already uses,
+feeding `inputPlaceholder` the dummy batch) and read 7 Int32s. Restore: feed the
+saved 7 words through the new placeholder assign. Persisted as
+`rng_dropout_philox_state` = JSON array of 7 Int32 (Part D). Test: capture →
+run 3 steps (record masks via a tap) → restore → 3 steps → identical masks.
+
+Caveat stated honestly: the **meaning** of the 7 words is MPSGraph's; we treat
+them as an opaque blob. An OS update could in principle change the Philox layout
+or the mapping from state to uniforms. The golden test "same Philox state →
+same first mask" (§E Phase 3) is the canary; a failure after an OS update means
+"dropout streams are not comparable across that OS boundary", logged, not hidden.
+
+Inference graphs have no dropout scaffolding, so nothing changes for them.
+
+## A5. GPU numeric nondeterminism — what cannot be bit-exact
+
+- **MPSGraph does not document run-to-run determinism.** Reductions (`reductionSum`, `mean`, BN batch stats, gradient accumulation for shared conv weights) may use parallel trees or atomics whose order depends on dispatch; float addition is not associative. On the same device/OS/batch it is *often* deterministic, but that is an observation to measure (§C6 "determinism probe"), not a guarantee.
+- **Kernel selection varies by shape, device and OS.** Different batch sizes pick different conv algorithms (the Winograd investigation in `ConvKernelExecutionPathNumericsTests` shows paths differ numerically). A resumed run must use the same batch size and precision to have any hope of bit-equality.
+- **bf16 rounding** amplifies any upstream difference: a 1-ulp fp32 difference can flip a bf16 rounding, then propagate.
+- **Across OS versions / chips** (M4 Pro vs M5 VM, macOS 26 vs 27 beta): not bit-exact, full stop. The lineage metadata records device + OS (Part D) so comparisons can be scoped.
+- **CPU side**: Box–Muller uses `logf`/`cosf`/`sqrtf` (and current init uses vForce `vvlogf`/`vvcosf`). These are libm/Accelerate results that can change across OS versions. Init values are therefore bit-identical for the same seed **on the same OS build**; the golden normal-pair test catches drift. (Owner decision D-3: accept this, or implement a transcendental-free normal sampler.)
+- **Self-play/GUI concurrency** (§0) — not numeric, but the dominant source of trajectory divergence.
+
+Conclusion: the harness asserts **exact equality of every CPU-side state and of
+all RNG draws**, and **bit-exact weights only where a same-process determinism
+probe first proves MPSGraph is deterministic for that config**; otherwise it
+asserts a stated tolerance (§C6).
+
+## A6. Order dependence
+
+A seeded stream only helps if the **order of draws** is fixed. Every site where
+draw order, consumer identity or iteration order could vary:
+
+| # | Site | Order hazard | Treatment |
+|---|---|---|---|
+| O1 | `Training/BatchedSelfPlayDriver.swift:501-550` (parallel per-game `MoveSampler.sampleMove` in `withTaskGroup`) | Task completion order is scheduler-dependent; a shared stream would interleave draws arbitrarily. | Per-game stream `selfplay.game.<serial>` owned by `ActiveGame` (A3.1). Each game's draws happen only inside its own task, in ply order. No shared generator. |
+| O2 | `Arena/TickTournamentDriver.swift:622-658` (same pattern) | Same | Per-game `arena.<arenaIndex>.game.<gameIndex>`. |
+| O3 | `Training/TrainVsUciDriver.swift:333` | Games run concurrently against external engines | Per-game `vsuci.game.<serial>`. |
+| O4 | Game-serial assignment — new games are appended in `BatchedSelfPlayDriver` grow path and after the serial game-end pass (`:658` loop `for i in 0..<K`); shrink drops the tail (`:289 games.removeLast`) | Serial numbers must be assigned in a fixed order: the serial pass iterates slots in index order, so assign serials there (never inside the task group). Live worker-count changes (GUI) make the *set* of games time-dependent — accepted, §0. | Assign `serial = nextSerial; nextSerial += 1` only in the serial pass, in slot-index order; persist `nextSerial`. |
+| O5 | `Training/BatchedSelfPlayDriver.swift:700` draw-keep | Runs in the serial game-end pass | Draw from the finishing game's own stream (not a driver-level stream), so it's independent of how many other games finished in the same tick. |
+| O6 | `Training/ReplayBuffer.swift` `sample()` paths `:1783, 1904, 1924, 1973, 2154, 2189, 2198, 2235` | Multiple consumers could sample the buffer (trainer; `ReplayBufferAnalyzer` probes; batch-stats) | The `sampler` stream is used **only** by the trainer's minibatch draw, under the buffer `lock`, in batch-slot order (`i = 0..<sampleCount`). Every other consumer (analyzer/probes) gets its own named stream (`probe.<name>.<step>`), never `sampler`. |
+| O7 | Stratified path `:1900-1915` iterates buckets `for b in 0..<bucketCount` then `randomSlot()` | Deterministic order, **but** `MaterialBucketSlots.slots` order is itself history-dependent (swap-remove `:280-286`, insertion order `:1223-1231`) — same RNG, different slot order ⇒ different picks after a rebuild. | C1 #5 / D-5: persist the arrays or make the pick order-independent. |
+| O8 | Length-tilt rejection loop `:2150-2235` | Number of draws per emitted sample varies with acceptance; fine as long as the loop order is fixed (it is: sequential) | Keep sequential; document that the draw count is data-dependent (so the saved state is the only valid restore point, never "N draws since step X"). |
+| O9 | Dictionary iteration in `sample()` — `for (_, c) in degPerGame/stratPerGame/fastPerGameScratch/perGameCount` `:1794, 1937, 1984, 2243` | `Dictionary` iteration order is randomized per process in Swift | **Checked: max-reductions only, no draws inside** ⇒ order-independent. Rule added to `DCMRandom` docs and a code-review checklist item: *no random draw inside iteration over `Dictionary`/`Set`*; if ever needed, iterate `keys.sorted()`. Other dictionaries in the buffer (`residentGames :199`, `hashStats :176`, `residentLengthHistogram :210`, `slotPosition :260`) are lookup/stat only. |
+| O10 | `ReplayBuffer` insert order (GUI) — games flushed in the serial pass `for i in 0..<K` | Deterministic per tick given which games finished — concurrency with the trainer makes buffer *timing* nondeterministic (§0) | Accepted; noted. |
+| O11 | Per-tensor init (B1) | Parallel fills | Per tensor sequential in `dcm-init-1`; any intra-tensor parallelism must use fixed-size chunk seeds (B1). Tensor iteration order is irrelevant by construction (name-derived seeds). |
+| O12 | BN calibration random game (`Network/ChessMPSNetwork.swift:146-160`) | Single sequential walk | `init.bn_calibration` stream; `legalMoves` order from `MoveGenerator` must be deterministic — **verify** it's array-ordered by board scan (it is generated into an array; confirm no `Set` in its path), since `randomElement` maps an index to a move. |
+| O13 | `MoveSampler` inverse-CDF over `legalMoves` order | Same dependence on move-generation order for a given index | Same verification as O12; add a test that `legalMoves(for:)` order is stable for 20 fixed FENs (pinned). |
+| O14 | Dropout Philox state threaded block→block in graph build order (`ChessNetwork.swift:2684-2716, 858-859`) | Order is the graph's data dependency chain — fixed for a given architecture; KL probe adds extra advances (`ChessTrainer.swift:6906`) | Deterministic given step-derived probe schedule (C1 #3). Changing block order changes masks — inherent, arch-specific. |
+| O15 | Run-level sub-streams | Adding a stream must not shift others | Name-hash derivation (A3.1) for all of them. |
+
+---
+
+# PART B — Ablation- and derivation-friendly initialization
+
+## B1. Per-tensor-derived initialization
+
+Today every He/Glorot tensor draws from one unseeded `arc4random_buf` stream
+(`ChessNetwork.swift:3363-3431`) in graph-build order, so (a) nothing is
+reproducible and (b) two architectures that share a tensor get different values
+for it even if seeded, because build order shifts the stream.
+
+Design:
+
+- `enum WeightInitialization: Sendable { case seeded(initSeed: UInt64); case overwrittenByLoad }`.
+  - `.seeded` — every random tensor `name` (the **stable name from `weightTensorPlan()`**, e.g. `block3_conv1_weights`, `block3_se_fc2_weights`, `value_wdl_fc2_weights`) draws from its own `DCMRandom(seed: tensorSeed)` (B1.1). Values = `std(role, fanIn, fanOut) × N(0,1)` filled **row-major in the stored (on-disk) layout** (B1.1 item 5), then converted to the native layout `makeWeightData` receives.
+  - `.overwrittenByLoad` — for networks whose variables are immediately replaced by `loadWeights` (session resume, `--start-model`, inference mirrors, arena networks, BN-calibration sibling `ChessMPSNetwork.swift:185`). Variables are built zero-filled; **no RNG work**. This removes today's wasted init of every loaded network. It is not a stub: it is a real mode whose contract ("every variable is overwritten before first use") is enforced by the existing tensor-count/shape checks in `loadWeights` plus a new debug assertion that a `.overwrittenByLoad` network refuses `evaluate`/`trainStep` until a load has happened.
+- Deterministic constants stay constants: BN γ=1/β=0, running mean 0/var 1, biases 0, ReZero α = `rezeroAlphaInit`, WDL bias prior `[0, ln 6, 0]`, zero-β halves.
+- **bf16/fp32 storage**: draws are always generated in **fp32**, then `makeWeightData(_, dataType:)` narrows exactly as today. The same seed therefore yields the same fp32 values in both precisions; bf16 files hold the round-to-nearest of them. The fp32 masters under mixed precision are seeded from the bf16 working weights (`runSyncMastersOnQueue`), unchanged.
+- **Sharing**: two architectures with the same `(initSeed, tensor name, shape)` get bit-identical values. With the same name but a different shape (e.g. wider conv), the tensors share the leading run of normals but a different std/fan-in; documented as "not shared", and `graft` (B3) never treats them as matching.
+- **Name stability is load-bearing.** `weightTensorPlan()` names are already the safetensors tensor names and the contract for file loading, so they are stable. But block names are **indexed** (`block<i>`): inserting a block before others renames every later block. That is correct for "architectures sharing tensors" (block 3 is block 3), and the graft op (B3) supports an explicit name map for the insert case.
+- **Existing models**: loading never initializes randomly (it uses `.overwrittenByLoad` after this change; before it, the random init was overwritten anyway), so **every existing file loads bit-identically**. Init affects only new mints. The init seed of a new mint is recorded (`init_seed`, Part D); legacy files simply have none.
+- **Performance** (~8.45M params for `v4_5block_7x7`; larger presets ~30M): scalar xoshiro + Box–Muller ≈ 5–10 ns/element ⇒ 40–85 ms at 8.45M, ~0.3 s at 30M, single thread. Acceptable for a build-once operation; if not, tensors are independent streams, so `DispatchQueue.concurrentPerform` over tensors parallelizes trivially **without changing values** (each tensor's stream is independent). Parallelism *within* one tensor is allowed only with per-chunk seeds `splitmix64(tensorSeed ^ stableHash64("chunk/<index>"))` over a **fixed** chunk size that is itself part of the `init_scheme` — never "split among however many threads are available". `dcm-init-1` fills each tensor sequentially (simplest; parallel across tensors only). The vForce batch path can be kept for the transcendental step (fill uniforms scalar from the stream, then vectorized log/sqrt/cos), which keeps today's speed; values then depend on vForce, pinned by golden test.
+
+`NetworkWeightAnalyzer` / `NumericsAudit` expectations (analytic std per role) are unchanged because the distribution is unchanged.
+
+### B1.1 Per-tensor seed and the versioned `init_scheme`
+
+- `tensorSeed = splitmix64(initSeed ^ stableHash64(tensorName))` (A3.1's single
+  derivation function), where `tensorName` is the UTF-8 safetensors tensor name
+  from `weightTensorPlan()`. Independent of tensor list order and of which other
+  tensors exist, so shared tensors match across architectures.
+- **`init_scheme` identifier** — e.g. `"dcm-init-1"` — recorded in every fresh
+  mint's and graft's metadata (`dcm_lineage.rng.init_scheme`, and per graft in
+  `derivation_history`). A scheme ID pins **all** of:
+  1. the name hash (`stableHash64` = SHA-256 first 8 bytes BE) and the derivation (`splitmix64(seed ^ hash)`);
+  2. the generator (xoshiro256** seeded by SplitMix64, A2);
+  3. the per-role distributions (He-normal std `sqrt(2/fanIn)` with each role's fan-in definition; Glorot std; the exact constants for γ/β/biases/α/WDL prior; the zero-β column ranges);
+  4. the normal transform (Box–Muller from `nextUnitFloat` pairs, clamp of `u1` to `leastNormalMagnitude`, which function computes log/cos — scalar libm vs vForce);
+  5. the **in-tensor fill order: row-major in the stored (on-disk safetensors / PyTorch) layout** — for FC weights that is `[out, in]`, for convs OIHW — so a value's position is defined by the file, not by the in-memory native layout; the builder fills in stored order and converts with the existing `toTorchLayout` inverse;
+  6. the fp32→bf16 rounding (round-to-nearest-even, as `makeWeightData` does today — pinned by test) and the rule that draws are always fp32.
+- **A published scheme never changes.** Any change to any item above gets a new
+  scheme ID (`dcm-init-2`), and the builder keeps the old scheme available so a
+  graft/derive can reproduce a recorded scheme. Unknown scheme ID on a request to
+  reproduce ⇒ error, not fallback.
+- **Golden tests per scheme** (`DrewsChessMachineTests/InitSchemeGoldenTests.swift`):
+  for `dcm-init-1`, seed `42`, pinned `tensorSeed` for 6 names; pinned first 8
+  fp32 bit patterns and the SHA-256 of the full tensor for a conv, an FC, an SE
+  fc2 with zero-β, and the WDL fc2 bias; the same tensors in bf16. The libm/vForce
+  dependency (A5, D-3) is exactly what these pins detect.
+- Fresh checkpoints committed via Git LFS (the experiments convention) remain the
+  ultimate record of what a seed produced; the scheme makes them reproducible,
+  the file makes them authoritative.
+
+## B2. Init-neutral / ablation options audit
+
+"Init-neutral" = the last layer of a path that is **added** into a residual stream
+or an output, initialized so the path contributes nothing (or a known prior) at
+step 0 while still receiving gradient.
+
+| Path (`ChessNetwork.swift`) | Today | Zero kills learning? | Recommendation |
+|---|---|---|---|
+| **SE β half** (fc2 cols `C..<2C` + bias) `:2927-2951` | `se_beta_init: glorot\|zero` per group (#7) | No — input (fc1 act) is nonzero, so β gets gradient | **Done.** Keep. |
+| **SE γ bias** (fc2 bias `0..<C`) `:2949` | 0 ⇒ `σ(0)=0.5` gate at init: every SE block halves its branch | Zero is today's value. The ablation is the *level*, not zero: e.g. bias `+2.2` ⇒ gate ≈ 0.9 ("near-identity SE") | Offer `se_gamma_bias_init: <float>` per group, default `0` (legacy value). Both scale_and_bias and attenuate_only. Not zero-vs-random; a constant. |
+| **SE γ weights** (fc2 cols `0..<C`) | Glorot | Zeroing makes gate input constant ⇒ gate still gets gradient through the bias only; γ weights get gradient ∝ fc1 act, so learning survives, but SE degenerates to a learned per-channel constant at init | **Don't offer** as a separate option; `se_gamma_bias_init` covers the useful ablation. |
+| **ReZero α** `:2807-2840` | `rezeroAlphaInit` per group (already an option) | **Zero is a known dead-start trap here**: with the tanh-ceiling reparam (`tanh(α/c)·c`, `c = α₀·multiple`) an α₀ of 0 makes `c = 0` ⇒ division by zero; and plain ReZero at α=0 gives the branch weights zero gradient at step 0 (gradient flows only to α). | Keep existing float option; **validate `> 0`** when the tanh ceiling is on (verify `validate()` does this; add if not). Do not add a "zero" choice. |
+| **Block conv2 / last conv of branch** `:2738` | He | Zero on the last conv with BN after it: BN of a zero tensor ⇒ 0 ⇒ fine, gradient to conv2 is nonzero (input nonzero). Standard "zero-init last BN γ" (Goyal et al.) is the cleaner version. | Offer `branch_output_init: standard \| zero_last_bn_gamma` per group — zeroes the γ of the branch's **last** BN (post-act style) or equivalent. Gradient reaches γ; all conv weights still random. Not offered on pre-act blocks where no BN follows the last conv (there, zeroing the conv would zero the gradient of every earlier conv at step 0 — they'd only start after conv2 moves; allowed but slower; recommend not offering). |
+| **Skip projection** `_skip_proj` (1×1, width transitions) `:2850-2876` | He | **Must not be zero**: it *is* the identity path at a width change; zero ⇒ block output = branch only ⇒ no identity signal. | Offer `skip_projection_init: he \| identity_like` (identity on the first `min(inC,outC)` channels, zeros elsewhere — "partial identity", the WRN/ResNet-D analog). Per group transition. |
+| **`res_ln`** (post-merge LayerNorm) `:2881-2890` | γ=1, β=0 | Zero γ ⇒ block output 0 ⇒ **the residual stream is destroyed** (res_ln is on the main path, not a branch). | **Must not be offered.** |
+| **Policy head final** (`policy` conv/fc) `:3032-3111` | He weights, zero bias | Zero weights ⇒ uniform logits (entropy = log 4864 exactly, legal-masked uniform); gradient to the final layer is nonzero (input nonzero), earlier head layers get zero gradient for step 0 only. Safe. | Offer `policy_head_final_init: he \| zero` (arch-level head option). Uniform-start policy is a legit ablation (lc0 does small-std). |
+| **Value WDL fc2** `:3233-3249` | He weights + bias `[0, ln 6, 0]` | Zero weights ⇒ output = bias prior exactly; fc2 gets gradient. Safe. | Offer `value_head_final_init: he \| zero`. |
+| **Value draw prior** (fc2 bias) `:3242` | hardcoded `ln 6` ⇒ p(draw)=0.75 | Prior of 0 ⇒ uniform 1/3. Not a kill. | Offer `value_head_draw_prior: <prob in (0,1)>` with legacy value `0.75`; bias = `[0, ln(2p/(1-p)), 0]`. Single source: a function `wdlBiasPrior(drawProbability:)`, replacing the literal. |
+| **Feature-skip fusion conv** `:909-923` | He, then BN + act | The fused path *replaces* the head input (not an additive branch) ⇒ zero conv ⇒ BN of zeros ⇒ constant head input ⇒ **kills the heads' input signal**. | **Must not be offered.** |
+| **Stem** `:693` | He | Main path. | Not offered. |
+
+Expression: every per-block option lives on **`BlockGroup`** (the per-group recipe
+already carries `seBetaInit`, `rezeroAlphaInit`, `dropoutMultiplier`), so groups
+can differ. Head options live on `NetworkArchitecture`'s head sections. Every new
+field is **format-gated** exactly like `se_beta_init` (#7): required from the new
+format version (B/D share one bump, §D6), legacy ⇒ the old value, logged once per
+load via `ArchitectureFormat.LegacyResolutionLog`. Legacy arch hashes/summaries stay
+byte-identical (the #7 rule: a field at its legacy value is omitted from summary
+text and hash inputs... **verify** how #7 kept hashes identical and use the same
+mechanism).
+
+## B3. `--derive-model` graft operation
+
+Extend `Persistence/ModelDerivation.swift`'s catalog with a new
+`DeriveOperationKind` `graft`:
+
+```
+DrewsChessMachine --derive-model --from <ref.safetensors> --graft-to <arch preset name | arch.json>
+    [--graft-map <old=new,...>] [--seed <u64>] [--init-overrides <field=value,...>] --out <file>
+```
+
+Semantics:
+
+1. Target architecture = the named preset/JSON (validated; format version current).
+2. For each tensor in the **target** plan: if the reference has a tensor with the
+   same name (after `--graft-map` renames) **and identical shape**, copy bit-exact
+   (in on-disk layout, as `derive` already does). Otherwise initialize it by its
+   **role** (B1/B2 rules, including any per-group init options in the target
+   arch) from `init/<targetName>` under `--seed` (drawn and logged if absent —
+   no silent default; it is recorded either way).
+3. BN running stats of copied BN layers: copied. Of new BN layers: identity
+   (mean 0, var 1) — *not* re-calibrated, recorded as such (optional
+   `--recalibrate-bn` runs the existing BN calibration with `init.bn_calibration`,
+   GPU — only when not training, per CLAUDE.md run rules).
+4. Reference tensors with no target counterpart are listed as **dropped**.
+5. Guardrails (existing, extended): source must be a plain model file (no
+   velocity/`trainer_*`); target validates; the output re-decodes; copied
+   tensors verified bit-identical post-encode.
+6. The graft is the **only** shape-changing derive; the existing
+   "`shapeChangingRequest` refused" guard stays for all other ops.
+
+Recorded in `derivation_history` (existing `DerivationRecord`) — the
+`OperationRecord` gains optional fields (absent on #7 records, so old histories
+decode):
+
+```json
+{"operation":"graft","arguments":{"target":"v5_…","graft_map":"…","seed":"1234"},
+ "changed_architecture_fields":["*"],
+ "rewritten_tensors":[…initialized…],
+ "copied_tensors":[…], "dropped_tensors":[…],
+ "init_seed":"1234", "init_rule_version":"v1",
+ "per_tensor_init":{"block5_conv1_weights":"he_normal","value_wdl_fc2_bias":"wdl_prior(0.75)", …}}
+```
+
+Also retrofit: the existing `se_beta_init` op's re-init of the β half
+(`ModelDerivation.swift:521`) uses the `init/<name>` stream under a recorded
+seed, so a `zero→glorot` derive is reproducible.
+
+## B4. Gap: `derivation_history` not carried forward by later saves
+
+Today only `--derive-model` writes `derivation_history`
+(`ModelDerivation.swift:~335`, key `derivationHistoryKey`). Every later save —
+corpus replay rolling/enumerated (`CLI/CorpusReplayRunner.swift:579-605`),
+train-vs-UCI (`CLI/TrainVsUciRunner.swift:~300`), GUI session trainer/champion
+files and `Models/` saves (`Persistence/CheckpointManager.swift`) — builds
+`__metadata__` from scratch in `SafetensorsModelIO.encode`
+(`Persistence/SafetensorsModelIO.swift:114-145`), so the history is **lost at the
+first training save** of a derived model.
+
+Fix: `derivation_history` becomes a field of the new `LineageRecord` (Part D),
+which every writer receives from the one place that loaded the parent and passes
+to `SafetensorsModelIO.encode` as a typed argument (not via the stringly
+`resumeMetadata` bag). `encode` refuses to write a file at the new format version
+without a `LineageRecord`. The history is copied verbatim; training saves do not
+append to it (they append a *segment*, D2). Test: derive → train 1 step in replay
+→ save → header's `derivation_history` equals the derived file's.
+
+---
+
+# PART C — Exact resume, full audit
+
+Baseline (d15f706): `TrainerResumeSnapshot` restores fp32 masters, velocity,
+`completedTrainSteps`, warmup length, LR/momentum cycle + envelope, through one
+function `ChessTrainer.restoreExactly(from:)` used by GUI resume
+(`App/SessionController+Training.swift:1366-1387`), corpus replay and
+train-vs-UCI `--resume-exact`. Velocity is fp32 (`ChessTrainer.swift:~4102`).
+
+## C1. Everything NOT restored exactly
+
+Impact: **M** = changes training math (weights/trajectory); **O** = changes
+observability/cosmetics only; **S** = safety/operational.
+
+| # | State | Where (today) | Paths | Impact | Fix |
+|---|---|---|---|---|---|
+| 1 | **Replay sampler RNG** | global RNG, `ReplayBuffer.swift:290,1783,1924,1973,2154,2189,2198,2235` | all | **M** — different minibatches from step +1 | A3 `sampler` stream; persist state (D2 `rng_sampler_state`). |
+| 2 | **Dropout Philox state** | graph constant from `Int.random`, `ChessNetwork.swift:781`; reseeded per built graph | all with dropout>0 | **M** — different masks | A4 capture/restore; persist `rng_dropout_philox_state`. |
+| 3 | **KL-probe step counter** | `klProbeStepCounter` `ChessTrainer.swift:6263`, starts at 0 each process, never saved | all | **M when dropout>0** (probe advances the dropout state `:6906`, so probe phase shifts the dropout stream); **O** otherwise (probe fires at resume step 0 and phase shifts) | Derive probe steps from `completedTrainSteps` (like `batchStatsInterval` already does `:4539`) — deletes the counter: single source of truth. |
+| 4 | **Replay buffer ring order / write index (corpus replay)** | reconstructed by refeeding `[until−1.5·cap/avgPly, until)` (`CorpusReplayRunner.swift:405-432`); `writeIndex` starts at 0 in a fresh buffer | replay | **M** — same *set* of positions but different slot indices ⇒ with a seeded sampler, slot `i` holds a different position ⇒ different batches | Persist `replay_total_positions_added` and reconstruct so the ring lands at `writeIndex = total mod cap` with identical slot contents (refeed exactly the last `cap` plies into their original slots). Or save the buffer (option below). Test: slot-by-slot equality vs original. |
+| 5 | **Material-bucket slot arrays order** | `MaterialBucketSlots` swap-remove (`ReplayBuffer.swift:280-291`), rebuilt in ring order on insert/`restore` (`:1223-1231`, `restore(from:)` `:3079`) | all (stratified on) | **M** — `randomSlot()` picks `slots[k]`; after evictions the live array order ≠ rebuilt order | Persist the per-bucket slot arrays in the buffer file (GUI) / reconstruct deterministically (replay: they're a function of the insert/evict sequence, so an exact ring reconstruction from total-added reproduces them only if eviction history is replayed — so **persist them**). Alternative (cleaner): make `randomSlot` order-independent — pick the k-th slot of the bucket in ring order via a per-bucket Fenwick/order-statistic structure. Owner decision D-5. |
+| 6 | **Corpus replay: cross-epoch reconstruction** | refused (`CorpusReplayRunner.swift:423-426`) | replay | **S** — epoch-boundary checkpoints can't be exact-resumed | With #4's exact reconstruction, wrap backward across the epoch boundary (games `[N−k, N)` of the previous epoch then `[0, until)`), which is well-defined because corpus order is sequential. |
+| 7 | **Corpus replay build drift** | warns only (`:399-401`) | replay | **M** if encoder/feeder changed | Keep warning; make it a refusal in `--resume-exact` when `encoder_version`/`feeder_version` (new header keys) differ; git hash alone stays a warning. |
+| 8 | **Counters `gamesFed`/`positionsFed`** | restart at 0 (`CorpusReplayRunner.swift:728-729`) | replay | **O** (+ K-per-step feed cadence uses local counters: `targetFed` loop `:779` — **M** only if the cadence formula depends on the absolute counter; verify; restore the absolute value so the feed phase is identical) | Persist cumulative (D2); restore. |
+| 9 | **Train-vs-UCI game buffer** | fresh `ReplayBuffer` (`TrainVsUciRunner.swift:214`), not saved | vs-UCI | **M** — first post-resume steps train on a tiny correlated buffer | Save buffer with the checkpoint using the existing `.dcmsession` `ReplayBuffer` file format (sidecar `…-buffer.dcmbuf` next to the trainer file) and gate `--resume-exact` on it; without it the resume is labeled `NOT EXACT: buffer`. |
+| 10 | **Train-vs-UCI pool/opponent counters, next game serial** | not saved | vs-UCI | **M** (which opponent/color next) | Persist `vsuci_next_game_serial`, per-opponent game counts. |
+| 11 | **Self-play in-flight games** | dropped on save | GUI, vs-UCI | **M** (small) | Accept + log the count (`[CHECKPOINT] dropped N in-flight games`). Persist `selfplay_next_game_serial` so per-game streams continue, not repeat. |
+| 12 | **ReplayRatioController windows** | only `lastAutoComputedDelayMs` restored (`SessionController+Training.swift:899-903, 1007-1015`) | GUI | **M** (step delay ⇒ cons/prod ratio ⇒ which positions exist when sampled) — inherently wall-clock, so not trajectory-exact anyway | Persist prod/cons EMAs / window samples; seed controller. Best-effort by nature (§0). |
+| 13 | **Arena trigger clock** | `ArenaTriggerBox()` fresh (`SessionController+Training.swift:1026`) | GUI | **M** (when arenas/promotions happen) | Persist `seconds_since_last_arena` measured in **training time** (C1 #19), seed the box. |
+| 14 | **Periodic-save timer** | `PeriodicSaveController(interval:)` fresh (`:1045`) | GUI | **S** | Persist `seconds_since_last_save`; seed. |
+| 15 | **Save during arena** | refused/deferred (`SessionController+Checkpoint.swift:31,144,178,226`) | GUI | **S** — kill during arena loses it | On resume, if `arena_pending` was set, trigger immediately; persist partial `TournamentRecord` optionally (owner decision D-6). |
+| 16 | **Promotion resume** | post-promotion save reuses arena-pause snapshots (`SessionController+Arena.swift:115-138, 376-381`) | GUI | **M** if the trainer file's clock/velocity don't match the rewound trainer | Test: after promotion save, trainer file `trainer_completed_steps` and velocity equal the live trainer's post-promotion values. |
+| 17 | **Arena index** | not persisted | GUI | **M** via arena streams | Persist `arena_count` (already derivable from `arenaHistory.count` in `session.json` — use that as the single source). |
+| 18 | **GameDiversityTracker window** | fresh `GameDiversityTracker(windowSize: 200)` (`SessionController+Training.swift:942`) | GUI | **O** | Persist the 200 hashes/sequences (small) or accept + log. Recommend persist (cheap). |
+| 19 | **Elapsed-time accounting** | GUI: `elapsedTrainingSec` = wall since `currentSessionStart` (`SessionController+Checkpoint.swift:761-762`, resume sets `currentSessionStart = now − elapsed` `SessionController+Training.swift:1071`) — includes paused/arena/idle time; CLI: `runStart` wall per process (`CorpusReplayRunner.swift:815`, `TrainVsUciRunner.swift:390-391, 464`), resets per segment | all | **O** (and the dashboard time axis) | Two cumulative clocks carried across segments (D2): `cum_train_step_sec` = Σ measured step durations (the trainer already times steps), and `cum_wall_sec` = Σ segment wall. Replaces the dashboard's sleep-clamp inference for new files. |
+| 20 | **Stats/EMA windows, alarms** | `TrainingAlarmController`, `DrawWatchTracker()` (`:950`), chart rolling windows, legal-mass-collapse grace timers — fresh each process | GUI (alarms), CLI (EMA in `[STATS]`) | **O**; **S** for legal-mass-collapse (its grace/no-improvement counters decide an auto-action) | Persist alarm controller state (armed flags, streaks, grace start in training time); EMAs: accept + log (they converge in seconds). |
+| 21 | **Parameter defaults on resume (#5)** | 45 `saved=nil applied=<current>` branches (`SessionController+Training.swift`, e.g. `:129,141,158,641-661`) | GUI; CLI analog | **M** — Exp 6 dropout 0.7 incident | `absentValue:` on the macro; `[RESUME-DIFF]`; full parameter snapshot in every checkpoint (D2) — C5. |
+| 22 | **CLI `--resume-exact` parameters other than schedule** | from `--parameters`/UserDefaults, not diffed | replay, vs-UCI | **M** | Checkpoint carries full `training_parameters` snapshot; `--resume-exact` restores it and diffs against `--parameters` (`[RESUME-DIFF]`), refusing live-untunable differences unless `--allow-param-change` (logged per key). |
+| 23 | **Old-format checkpoints** | CLI refuses (correct, `TrainerResumeState.swift:~223`); GUI session without trainer file forks from champion with zero velocity (`SessionController+Training.swift:~1389-1396`) | all | **M** | Single line `[RESUME] NOT EXACT: <list>`; record `exact_resume=false` + the list in the segment record (D2). |
+| 24 | **Step counters used by schedules** | tau schedule: per-game ply (no global counter — fine); LR/momentum/warmup/cycle: `completedTrainSteps` (restored ✓); `batchStatsInterval`: `completedTrainSteps` (✓ `:4539`); diagnostics cadence: same (✓); KL probe: separate counter (✗ #3); `ReplayRatioController`: time-based (#12); candidate-probe interval: seconds (`candidateProbeIntervalSec`) — wall clock, resets (**O**) | all | as listed | Only #3 needs a code change; probe interval ⇒ measure against `cum_train_step_sec`. |
+| 25 | **`LastSessionPointer` ordering vs rename** | `Persistence/CheckpointManager.swift:120-164` | GUI | **S** | Test: kill between rename and pointer write leaves pointer at the prior complete save. |
+| 26 | **Enumerated-name overwrite across segments** | same segment-local step name (`CorpusReplayRunner.swift:614-620`) | replay | **S** (data loss) | Include `lineage_segment_index` in the enumerated name (`…-seg3-step41000`), and refuse to overwrite an existing enumerated file whose `lineage_segment_id` differs. |
+| 27 | **`--start-model` (branch) vs `--resume-exact`** | branch: fresh clock, zero velocity (by design, `TrainerLaunchKind.newBranch`) | CLI | by design | Branch mints a **new `lineage_run_id`** and new master seed (unless `--seed`), recording parent (D2). Exact resume inherits both. |
+| 28 | **Epoch boundaries (replay)** | epoch-completion checkpoint normalized to `(nextGame=0, epoch=N)` | replay | **S** (can't resume there, #6) | Fixed by #4/#6. |
+| 29 | **Crash mid-save** | GUI: `.tmp` + atomic rename ✓; CLI: `.atomic` writes ✓ | all | OK | Add: buffer sidecar (#9) written before the trainer file; the trainer file's header records the sidecar's SHA-256 so a torn pair is detected at load. |
+| 30 | **Momentum/velocity dtype** | fp32 | all | presumed OK | Test: saved dtype fp32; bit-exact round trip under a bf16 network (from #6). |
+
+**Top gaps by training-math impact:** #1 sampler RNG, #2 dropout state, #4/#5
+buffer slot order (makes #1 useless even once seeded), #21/#22 parameter
+defaulting/diffing, #9 vs-UCI buffer, #3 KL-probe counter coupling into dropout,
+#13 arena clock.
+
+## C2. Save-point consistency rules
+
+- All resume state is captured **under the same training pause** that already
+  guards `exportResumeSnapshot()`; the replay-buffer sampler state and the
+  dropout state are read inside that pause, after the last completed step, so
+  "state after step N" is one consistent cut.
+- GUI: self-play keeps running during a save today (only training is paused for
+  the trainer snapshot; the buffer snapshot is taken under the buffer lock). The
+  buffer file and the sampler state are consistent with each other (same lock);
+  they are *not* consistent with an exact self-play cut, which §0 already rules
+  out of scope.
+
+## C3. Resume classification (single function)
+
+New `ResumeExactness` (in `TrainerResumeState.swift`, shared by all three paths):
+`exact` or `notExact(missing: [ResumeGap])`, computed from what the checkpoint
+carries. Every path logs exactly one line
+`[RESUME] EXACT` or `[RESUME] NOT EXACT: rng_sampler, dropout_state, buffer_order, …`
+and records it in the new segment record (D2). CLI `--resume-exact` refuses on
+`notExact` unless `--accept-inexact <comma list>` names every missing item
+(explicit, logged — no silent downgrade).
+
+## C4. `--resume-exact` vs `--start-model` (unchanged semantics, made explicit)
+
+| | lineage_run_id | master seed | segment index | clock/velocity | RNG streams | parent recorded |
+|---|---|---|---|---|---|---|
+| `--resume-exact` | inherited | inherited | +1 | restored | restored | yes (parent sha) |
+| `--start-model` (branch) | **new** | new (or `--seed`) | 0 | fresh/zero | fresh | yes (parent sha, `branch=true`) |
+| fresh | new | new (or `--seed`) | 0 | fresh | fresh | no |
+
+## C5. Parameter defaults on resume (supersedes #5)
+
+Adopt #5's requirements verbatim, integrated:
+
+1. `@TrainingParameter(..., absentValue: <pre-feature value> | .refuseExact)` in the macro; `allKeys` test enforces every key declares it.
+2. Resume resolution is one function `TrainingParameterResolution.resolve(saved:current:)` used by GUI and CLI, replacing the 45 hand branches (`SessionController+Training.swift`), writing nothing to `UserDefaults` for defaulted keys.
+3. `[RESUME-DIFF]` block (saved vs applied vs current setting) on every resume.
+4. New-format checkpoints carry the full snapshot (`training_parameters`, D2), so `saved=nil` can only occur on legacy files.
+5. CLAUDE.md checklist gains step "declare `absentValue`".
+6. Regression test: Exp 6 case (legacy session, no dropout key, live 0.7) ⇒ 0.0 + `[RESUME-DIFF]`.
+
+## C6. Verification design — resume-equivalence harness
+
+`DrewsChessMachineTests/ResumeEquivalenceTests.swift` (GPU; gated behind
+`DCM_RUN_SLOW_TESTS` only if it's slow — it asserts correctness, so preferably
+kept small and ungated, per CLAUDE.md) plus a CLI script
+`scripts/resume_equivalence.sh` for the real runners.
+
+**Setup:** tiny architecture preset `test_tiny` (1 block, 16 ch — or smallest
+valid), tiny synthetic corpus fixture (checked in, ~200 games), capacity 2,000,
+batch 32, dropout 0.1, stratification on, length tilt on, KL probe every 3 steps,
+seed `0xD5C0FFEE`.
+
+1. **Determinism probe** (prerequisite, same process): run step 1 twice from the
+   same state (weights + velocity + Philox + batch) and compare output tensors
+   bit-for-bit. Result decides assertion mode: `bitExact` or
+   `tolerance(rel: 1e-6 fp32 / 1e-2 bf16 on weights, abs on loss)`.
+2. **Uninterrupted:** fresh → N+M steps (N=20, M=20); record per step: sampled
+   indices (tap in `ReplayBuffer.sample`), dropout mask hash (graph tap), loss,
+   gNorm, weights SHA-256 at the end.
+3. **Interrupted:** fresh → N steps → save (real `SafetensorsModelIO`/session
+   writer) → **new process-equivalent**: new trainer, new buffer, load, restore →
+   M steps.
+4. Assert: (a) sampled indices identical for all M steps (**exact, always**);
+   (b) dropout mask hashes identical (**exact**); (c) LR/momentum/probe schedule
+   identical (**exact**); (d) weights/loss per step equal under the probe's mode.
+5. Variants: resume at an epoch boundary; resume from a checkpoint written at a
+   KL-probe step; resume after a parameter change (expect `[RESUME-DIFF]` +
+   refusal without `--allow-param-change`); resume a legacy (v4) fixture file
+   (expect `NOT EXACT` list, successful branch-style continuation).
+6. **GUI/vs-UCI state round-trip tests** (no trajectory claim): for each state
+   in C1 (sampler, Philox, buffer incl. slot arrays, ratio controller, arena
+   clock, periodic-save clock, diversity tracker, alarm state, serials): save →
+   restore → `==`.
+7. **CLI end-to-end** (script, run by the owner when the GPU is free): real
+   `--train-from-corpus` for 2N vs N + `--resume-exact` + N; compare final
+   `content_sha256` (or tolerance per the probe).
+
+---
+
+# PART D — Lineage, step numbers and run time
+
+## D1. What files hold today
+
+- **Base `__metadata__`** (`Persistence/SafetensorsModelIO.swift:56-65, 113-145`): `dcm_format_version` (**4**, `Network/ArchitectureFormat.swift:41`), `model_id`, `created_at_unix`, `creator`, `training_step` (segment-local for CLI), `parent_model_id`, `notes`, `architecture`, value-head-centered marker, plus `content_sha256` (file-level).
+- **`trainer_*`** (d15f706): `trainer_completed_steps` (cumulative across exact resumes), `trainer_lr_warmup_steps`, `trainer_lr_momentum_cycle`, `trainer_lr_momentum_cycle_envelope`.
+- **Replay only** (`CLI/CorpusReplayRunner.swift:584-593`): `replay_corpus_id`, `replay_corpus_path`, `replay_next_game_index`, `replay_epoch`, `replay_populated_plies`, `replay_capacity`, `built_by_build`, `built_by_git`.
+- **Derived only**: `derivation_history` (lost on next save, B4).
+- **GUI `session.json`** (`Persistence/SessionCheckpointFile.swift`, `formatVersion` **1**, checked with `==` at `:753` — a bump must widen that check): hand-listed parameter subset (~60 optionals), counters (`trainingSteps`, `selfPlayGames`, `selfPlayMoves`, `trainingPositionsSeen`), wall `elapsedTrainingSec`, build info incl. `buildGitDirty`, `completedTrainingSegments` (`TrainingSegment` `:723-745`: start/end unix, duration, start/end steps/positions/games, build) — the GUI **already has a segment concept**; D2 generalizes it to all paths and files.
+- **Missing everywhere**: run ID, segment index/ID, parent content hash, cumulative games/positions carried across CLI segments, full parameter snapshot in safetensors, training-time clock, device/OS, command line, seeds/RNG state, dirty flag on CLI files.
+
+Pain points (from #4, `experiments/*/README.md`, `documentation/v5-lineage.md`,
+`documentation/dashboards/registry.json`, `replay.py discover-stems`,
+`selfplay.py`): hand-entered `cumstep_base` wrong by 1,779 (nt8y) and 550 (coxw);
+enumerated names repeat/overwrite; `enum_stem` inferred by heuristic; ModelID
+collisions (`bzw3-31`); hyperparameters unrecoverable when logs are lost;
+`games_fed` blank when logs are lost; time axis restarts without pinned
+`elapsed_base_sec`; device only in registry.
+
+## D2. Schema (format version 5)
+
+One typed struct `LineageRecord` (`Persistence/LineageRecord.swift`), `Codable`,
+written into `__metadata__` as **one JSON value under `dcm_lineage`** plus a few
+flat mirror keys for grep/tooling convenience (mirrors are *derived* from the
+struct at write time and ignored on read — single source of truth is the JSON).
+The same struct is embedded in `session.json` (GUI) so both carriers share code.
+
+```jsonc
+"dcm_lineage": {
+  "schema": 1,
+  "run": {
+    "lineage_run_id": "UUID",            // minted on fresh/branch, inherited on exact resume
+    "segment_index": 3,                   // 0 on fresh/branch, +1 per exact-resume process
+    "segment_id": "UUID",                 // this process
+    "segment_started_unix": 1790000000,
+    "exact_resume": true,
+    "not_exact_items": [],                // C3 list when false
+    "branch": false
+  },
+  "parent": {                             // absent on fresh
+    "model_id": "20260929-12-JZOe",
+    "content_sha256": "…",                // parent FILE's content_sha256 — collision-proof
+    "trainer_completed_steps": 41000,
+    "lineage_run_id": "…", "segment_id": "…"
+  },
+  "steps": {
+    "cum_trainer_step": 42000,            // == trainer_completed_steps (asserted equal at write)
+    "segment_start_trainer_step": 41000,  // replaces hand-entered cumstep_base
+    "segment_local_step": 1000            // == training_step for CLI files
+  },
+  "fed": {
+    "cum_games": 123456, "cum_positions": 8123456, "cum_plies_generated": 8200000,
+    "segment_games": 1000, "segment_positions": 64000,
+    "corpus": {"corpus_id":"…","epoch":0,"next_game_index":2345,"shard":3,"offset":17,
+               "total_positions_added": 8123456}   // replay only; generalizes replay_*
+  },
+  "time": {
+    "cum_train_step_sec": 51234.5,        // Σ measured step durations (GPU step wall incl. sampling), carried across segments
+    "cum_wall_sec": 60210.0,              // Σ segment wall from process start to save
+    "segment_train_step_sec": 812.3, "segment_wall_sec": 950.0
+  },
+  "parameters": {
+    "snapshot": { … flat snake_case exactly as --show-default-parameters … },
+    "sha256": "…",                        // of canonical sorted-keys JSON of snapshot
+    "trainer_hyperparameters": { … resolved TrainerHyperparameters … }
+  },
+  "build": {"build_number": 2141, "git_hash": "47984b0", "git_branch":"main", "git_dirty": false},
+  "invocation": {"argv": ["…"], "path_kind": "gui|replay|vsuci|derive"},
+  "device": {"hw_model":"Mac16,8","chip":"Apple M4 Pro","is_vm":false,"os_version":"26.1 (25B…)","gpu_name":"…"},
+  "rng": {
+    "derivation": "v1", "master_seed": "1234567890", "seed_mode": "seeded|unseeded",
+    "init_seed": "…", "init_scheme": "dcm-init-1",   // fresh mints/grafts (B1.1)
+    "sampler_state": {"s0":"…","s1":"…","s2":"…","s3":"…"},
+    "dropout_philox_state": [0,0,0,0,0,0,0],
+    "selfplay_next_game_serial": 9876, "arena_count": 12, "vsuci_next_game_serial": 0
+  },
+  "segments": [ /* compact history of prior segments of this run: index, id, start/end steps, games, time, build, device, exact */ ],
+  "derivation_history": [ … ]            // B4, carried verbatim
+}
+```
+
+Flat mirrors (derived, read-ignored): `lineage_run_id`, `lineage_segment_index`,
+`cum_trainer_step`, `cum_games_fed`, `cum_train_step_sec`, `git_dirty`.
+
+Notes:
+- `segments[]` makes a single newest file sufficient to rebuild the registry even
+  when earlier files and logs are gone (the v5-lineage failure mode).
+- `argv` is recorded verbatim; tokens that look like secrets (Lichess token
+  flags) are redacted by an explicit deny-list.
+- `device.is_vm` from `kern.hv_vmm_present`; `hw_model` from `hw.model`; chip
+  from `machdep.cpu.brand_string`.
+- Size: parameters snapshot ~6 KB, segments ~200 B each; negligible next to weights.
+
+`session.json`: `formatVersion` → 2, embeds `lineage` (same struct) and
+`parametersSnapshot` (full), keeps the existing explicit fields for legacy
+decode only (v1 files). The `==` check at `SessionCheckpointFile.swift:753`
+becomes `1...current` with per-version requirements.
+
+## D3. Writers and readers
+
+- **Single writer path:** `SafetensorsModelIO.encode(..., lineage: LineageRecord?)`.
+  At format ≥ 5 a trainer-state file **must** have `lineage` (throws otherwise).
+  Plain model exports (e.g. `Models/` champion) carry it too.
+- **Single builder:** `LineageTracker` (one per run, `@unchecked Sendable` + `SyncBox`)
+  owned by the trainer host in each path; accumulates fed/time counters; produces
+  the record at save. GUI, replay and vs-UCI all construct it through
+  `LineageTracker.start(kind: .fresh | .branch(parent) | .exactResume(parent))`.
+- `replay_*` keys: still **written** for one version? No — per the "no backward
+  compat unless requested" rule, v5 writers stop writing `replay_*`; v5 readers
+  read `dcm_lineage.fed.corpus`; v4 files keep being read via the existing
+  `readResumeMetadata` path (legacy branch).
+
+## D4. Startup provenance line (all paths)
+
+Every run path (GUI session start/resume, `--train`, `--train-from-corpus`,
+`--train-vs-uci`, `--derive-model`, `--uci`) logs at start:
+
+```
+[RUN] path=replay run=<uuid> seg=3 (exact resume of <model_id> sha=<12>) build=2141 git=47984b0 dirty=false
+      device="Apple M4 Pro" vm=false os="26.1" seed=1234567890 mode=seeded derivation=v1
+      params_sha=<12> cum_step=41000 cum_games=123456 cum_train_sec=51234.5 argv="…"
+```
+
+The GUI's `[APP]` banner stays; `[RUN]` is added at each session start. The CLI
+runners today log `[REPLAY-HPARAMS]`/`[VS-UCI-HPARAMS]` but no build/device/seed
+banner — `[RUN]` fixes that via one shared formatter.
+
+## D5. `results.json`
+
+`CliTrainingRecorder` gains a top-level `lineage` object = the `LineageRecord` at
+run end (minus `segments`/`derivation_history` to keep it small; plus
+`checkpoint_sha256` of the final file). Per-sample rows gain `cum_trainer_step`,
+`cum_train_step_sec`, `cum_games`.
+
+## D6. Dashboard tracker derives the registry
+
+- New `replay.py derive-registry [--models-dir ~/…/Models] [--write]`: scans
+  safetensors headers (header-only read, like `ckpt_inventory.py`), groups by
+  `lineage_run_id`, orders by `segment_index`, and emits registry segments with
+  `cumstep_base = segment_start_trainer_step − run_origin`, `games_base`,
+  `elapsed_base_sec` (= prior `cum_train_step_sec`), `wall_base_sec`, `device`,
+  `model_id`, `enum_stem` (unneeded: enumeration keys on `segment_id`). It
+  **diffs** against `registry.json` and writes only with `--write`.
+- v5 files: `discover-stems` is bypassed; `games_fed` comes from
+  `cum_games` (measured by the writer — never modeled). v4 files: unchanged
+  heuristics + hand registry (the three-axis rules in CLAUDE.md stay intact).
+- Time axis: new files provide `cum_train_step_sec`, which is *measured* step
+  time; the sleep-clamp stays for v4 rows and stays auditable. Plot both where
+  both exist.
+- `selfplay.py`/`vsuci.py`: same header-derived segment table.
+- Test: 3 synthetic v5 headers → expected registry JSON (pytest in
+  `documentation/dashboards/tests/`).
+
+## D7. Versioning and back-compat (the #7 rule, applied)
+
+- **`dcm_format_version` 5** (one bump for B + D + A persisted state).
+  - v ≤ 4 (legacy): no `dcm_lineage` ⇒ loads, trains, infers exactly as today;
+    new B2 arch fields resolve to legacy values (logged once); exact resume only
+    per d15f706 rules and flagged `NOT EXACT: rng, lineage`.
+  - v 5: `dcm_lineage` required on every file; new B2 arch fields required in
+    every group/head; missing ⇒ load error naming field + file.
+  - v > 5: `unsupportedFutureVersion` (existing).
+- `session.json` formatVersion 2 as above.
+- Presets / `architecture.json`: `format_version` 5 required for the new fields.
+- Nothing rewrites old files; no migration code.
+
+---
+
+# PART E — Implementation plan
+
+## E1. Phases and dependencies
+
+```
+P1 RNG core ──┬─> P3 Wire streams (sampler, sampler-order, MoveSampler, draw-keep, BN-cal, probes)
+              ├─> P4 Dropout state seed/capture/restore
+              └─> P5 Per-tensor init + WeightInitialization ──> P7 Init-neutral options (format v5 arch fields)
+                                                            └─> P8 Graft derive op
+P2 Resume parameter resolution (#5)   (independent; can land first)
+P6 Format v5 + LineageRecord + writers (needs P1 for rng fields; P2 for params snapshot)
+      ├─> P9  Exact-resume completion (buffer order, vs-UCI buffer, clocks, KL counter, C1 list)
+      ├─> P10 [RUN] line, results.json, derivation_history carry-forward (B4)
+      └─> P11 Dashboard derive-registry
+P12 Resume-equivalence harness (needs P3,P4,P6,P9)  — its unit parts grow with each phase
+```
+
+Foundational: **P1** (generator) and **P6** (format v5). Independent: **P2**,
+**P11** (tracker, once P6 defines the schema), **P7/P8** after P5.
+
+Per memory rule "multi-phase plans: build + commit per phase", each phase ends
+with one build and one commit; targeted tests only while trainings are live; full
+suite before merge.
+
+## E2. Phase details
+
+**P1 — `DCMRandom` + streams.** Files: `Utils/DCMRandom.swift`,
+`Utils/DCMRandomStreams.swift`, `DrewsChessMachineTests/DCMRandomTests.swift`.
+Tests: A2.4 goldens. Validation: goldens match reference C output; no call sites
+changed yet (zero behavior change).
+
+**P2 — Resume parameter resolution (#5).** Files: `Packages/TrainingParametersMacro/*`
+(`absentValue`, UInt64 kind for P3's seed), `Training/TrainingParameters.swift`,
+`App/SessionController+Training.swift` (45 branches → one resolver),
+`CLI/CorpusReplayRunner.swift`, `CLI/TrainVsUciRunner.swift`, CLAUDE.md checklist.
+Tests: C5 list (Exp 6 regression first — must fail before the fix, pass after,
+unmodified). Validation: `[RESUME-DIFF]` on a legacy fixture session; no
+`UserDefaults` writes for defaulted keys.
+
+**P3 — Wire streams.** Files: `Training/ReplayBuffer.swift` (sampler RNG under
+existing lock; all 9 sites), `Network/MoveSampler.swift` (inout rng),
+`Training/ActiveGame.swift`, `Training/BatchedSelfPlayDriver.swift`,
+`Arena/TickTournamentDriver.swift`, `Training/TrainVsUciDriver.swift`,
+`App/UCI/UCIEngine.swift`, `Network/MPSChessPlayer.swift`,
+`Network/ChessMPSNetwork.swift` (BN-cal), `Training/ReplayBufferAnalyzer.swift`,
+`Training/TrainingParameters.swift` (+ seed params, full checklist A3.2),
+`App/UpperContentView/TrainingSettingsPopover*.swift`, `CLI/CliTrainingConfig.swift`
+(`--seed`), `CLI/CliTrainingRecorder.swift`.
+Tests: same seed ⇒ identical `sample()` index sequence on a fixture buffer;
+per-game stream independence from worker count (K=1 vs K=8 produce the same game
+for serial s given identical network outputs — use a stub `evaluateBatched`
+returning fixed logits, which is a *test double*, not a production stub);
+Dirichlet/Gamma distribution sanity (mean/var) with the new draws.
+Validation: `[RUN] seed=` logged on all paths; unseeded mode logs a drawn seed.
+Risk: sampler lock — RNG work moves inside the existing lock; xoshiro is faster
+than `SystemRandomNumberGenerator` (which calls `arc4random_buf`), so hold time
+drops. Measure `sample()` µs before/after with the existing timing taps.
+
+**P4 — Dropout state.** Files: `Network/ChessNetwork.swift` (placeholder assign,
+no baked constant), `Training/ChessTrainer.swift` (`captureDropoutState()`,
+`restoreDropoutState(_:)`, seed from stream; KL counter removed → step-derived),
+`Training/TrainerResumeState.swift` (snapshot includes Philox state + sampler state).
+Tests: capture/restore mask equality (A4); KL-probe-derived schedule equals old
+cadence on a fresh run. Validation: `[RESUME] rng: dropout=restored`.
+
+**P5 — Per-tensor init.** Files: `Network/ChessNetwork.swift` (all init sites;
+`WeightInitialization`), `Network/ChessMPSNetwork.swift`,
+`Network/InferenceNetworkFactory.swift`, every `ChessNetwork(` construction site
+(pass `.overwrittenByLoad` for load paths), `Persistence/ModelDerivation.swift:521`.
+Tests: same seed ⇒ bit-identical weights across two builds; two archs sharing
+`block0_*` ⇒ identical `block0_*`; fp32 vs bf16 builds: bf16 == round(fp32);
+per-role std within tolerance (existing `NetworkWeightAnalyzer` expectations);
+`.overwrittenByLoad` network refuses use before load. Validation: build time for
+the default preset logged; ≤ 2× today's.
+
+**P6 — Format v5 + `LineageRecord`.** Files: `Persistence/LineageRecord.swift`,
+`Persistence/LineageTracker.swift`, `Network/ArchitectureFormat.swift` (v5),
+`Persistence/SafetensorsModelIO.swift`, `Persistence/SessionCheckpointFile.swift`
+(v2), `Persistence/CheckpointManager.swift`, `App/SessionController+Checkpoint.swift`,
+both CLI runners, `Persistence/ModelDerivation.swift`.
+Tests: v5 round trip; v4/v3/`.dcmmodel` fixtures load/train/infer unchanged
+(E4); v5 file missing `dcm_lineage` rejected; exact-resume chain of 3 synthetic
+segments: run id stable, index increments, `parent.content_sha256` equals parent
+file's, cum counters monotone; branch mints new run id.
+
+**P7 — Init-neutral options** (B2): `se_gamma_bias_init`, `branch_output_init`,
+`skip_projection_init`, `policy_head_final_init`, `value_head_final_init`,
+`value_head_draw_prior`; ReZero `> 0` validation. Files: `Network/NetworkArchitecture.swift`,
+`Network/ChessNetwork.swift`, `App/UpperContentView/BuildNewModel*.swift`,
+`ArchitectureDiagramView.swift`, `Presets/*.json`, `ModelDerivation.swift`
+(non-graft derive ops for each, shape-preserving).
+Tests per option: exact step-0 behavior (e.g. uniform policy logits; value
+softmax equals prior; SE gate = σ(bias)); one step makes the zeroed tensor
+nonzero; legacy hashes/summaries unchanged.
+
+**P8 — Graft** (B3). Files: `Persistence/ModelDerivation.swift`, `App/DeriveModelCLI.swift`.
+Tests: graft 5-block→6-block copies blocks 0–4 bit-exact, initializes block 5 from
+`init/block5_*` under the recorded seed (reproducible), records copied/dropped/initialized;
+graft with `--graft-map` for an inserted block; refuses velocity-carrying sources.
+
+**P9 — Exact-resume completion** (C1 #3–#20, #23–#29). Files:
+`Training/ReplayBuffer.swift` (slot arrays persisted or order-independent
+`randomSlot`; ring-aligned reconstruction API), `CLI/CorpusReplayRunner.swift`
+(ring-exact + cross-epoch reconstruction; segment-indexed enum names),
+`CLI/TrainVsUciRunner.swift` (buffer sidecar, serials), `App/SessionController+Training.swift`
+(arena clock, save clock, ratio controller, diversity, alarms, serials),
+`Arena/ArenaTriggerBox.swift`, `Training/ReplayRatioController.swift`,
+`Training/GameDiversityTracker.swift`, `App/UpperContentView/TrainingAlarmController.swift`.
+Tests: C6 step 6 round trips; reconstruction slot-by-slot equality, incl. epoch
+wrap.
+
+**P10 — Provenance + carry-forward.** `[RUN]` formatter (`Logging/`), recorder
+fields, B4 fix. Tests: derive → train → save keeps `derivation_history`; `[RUN]`
+contains all fields (string test on the formatter).
+
+**P11 — Tracker.** `documentation/dashboards/replay.py`, `ckpt_inventory.py`,
+`selfplay.py`, `vsuci.py`; pytest fixtures. Validation: on existing v4 data,
+output identical to today (no regressions); on synthetic v5 headers, expected registry.
+
+**P12 — Harness** (C6). `DrewsChessMachineTests/ResumeEquivalenceTests.swift`,
+`scripts/resume_equivalence.sh`, `test_tiny` preset + corpus fixture.
+Validation criterion for the whole plan: corpus replay N+M vs N|resume|M gives
+identical sampled indices and dropout masks for all M steps, and identical final
+weights when the determinism probe reports `bitExact`.
+
+## E3. Risks
+
+- **CPU init time** (P5): scalar per-tensor streams; mitigated by per-tensor
+  parallelism (values unchanged) and by `.overwrittenByLoad` removing init from
+  every load path (net speedup for resume/arena setup).
+- **Sampler lock** (P3): RNG draws already happen under the buffer lock; xoshiro
+  is cheaper than the system RNG. Measure; no expected regression.
+- **Self-play hot path** (P3): per-game `DCMRandom` is 32 bytes and lock-free; the
+  current `Float.random` goes through `SystemRandomNumberGenerator`
+  (`arc4random_buf` per call) — expected speedup.
+- **Philox blob semantics across OS updates** (P4): opaque; canary test.
+- **libm drift** (P5): golden normals canary; owner decision D-3.
+- **Macro changes** (P2/P3): `TrainingParametersMacro` edits affect every
+  parameter; covered by existing parameter tests + new `allKeys` coverage test.
+- **Format v5 on live runs**: the three running corpus-replay trainings are v4
+  writers on an old binary; they are unaffected (they don't reload the binary).
+  Resuming them later with a v5 build: `--resume-exact` from a v4 file ⇒
+  `NOT EXACT: rng_sampler, dropout_state, buffer_order, lineage` ⇒ refused
+  unless `--accept-inexact` lists them. That is honest; flag to owner (D-7).
+- **Scope creep in GUI**: C1 #12/#18/#20 are best-effort by nature (§0).
+
+## E4. Backward-compatibility guarantees and tests
+
+Guarantees:
+1. Every existing `.safetensors` (v ≤ 4, with/without velocity, with/without
+   `trainer_*`, derived or not), `.dcmmodel`, and `.dcmsession` (v1) **loads**,
+   **infers** (bit-identical outputs to the pre-change build on a fixed input
+   batch), and **trains** (continues as branch, or exact per d15f706 rules).
+2. Existing arch hashes, summaries and preset files decode identically.
+3. Random-init changes affect only **new mints**.
+4. `--uci` behaves identically for a given file, Temperature 0 (deterministic
+   already); Temperature > 0 now uses a per-game stream (drawn seed logged).
+
+Tests (fixtures checked in under `DrewsChessMachineTests/Fixtures/legacy/`, tiny
+arch so they're small): a v3 unversioned file, a v4 file with `se_beta_init`, a
+v4 trainer file with velocity + `trainer_*`, a derived v4 file with
+`derivation_history`, a `.dcmmodel`, a v1 `session.json` fixture. For each:
+decode; forward pass equals a pinned output hash computed **before** the change
+(generate the pins in P1 from the current build, commit them, then never modify
+them); one training step succeeds; resume classification lists the expected gaps.
+Plus `CheckpointManagerSafetensorsTests` must keep passing bit-exact.
+
+---
+
+# Owner decisions needed
+
+- **D-1** Accept §0: GUI and train-vs-UCI get state-exact resume, not
+  trajectory-exact; corpus replay is the only trajectory-exact path.
+- **D-2** Default of `random_seed_mode` for the GUI: `unseeded` (drawn + logged,
+  today's feel) vs `seeded` with a fixed default seed. Recommendation: `unseeded`.
+- **D-3** Init normals: accept libm/vForce-dependent values (golden canary), or
+  build a transcendental-free sampler for cross-OS bit-identical init.
+- **D-4** Which B2 options to ship (recommended set: SE γ bias level, branch
+  last-BN-γ zero, skip-projection identity-like, policy/value final zero, draw
+  prior). Forbidden: `res_ln` zero, feature-skip fusion zero, skip-projection
+  zero, ReZero α = 0 under the tanh ceiling.
+- **D-5** Stratified sampling: persist bucket slot arrays, or rewrite
+  `randomSlot` as order-independent (cleaner, small perf cost).
+- **D-6** Persist partial arena records across kill, or just re-trigger the arena.
+- **D-7** Resuming the three current v4 corpus-replay runs on a v5 build: allow
+  with `--accept-inexact` (recommended), or keep an old binary for them.
+- **D-8** Train-vs-UCI buffer sidecar size (capacity × position bytes) is
+  acceptable on disk per checkpoint, or only on rolling (not enumerated) saves.
