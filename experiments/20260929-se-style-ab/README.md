@@ -84,4 +84,22 @@ experiment's copy uses 0.05 for both (neither affects replay).
 
 ## Results
 
-_(pending)_
+Probed by the dashboard tracker (`documentation/dashboards/data/se_{sb,att,none}.csv`, registry keys
+`se_sb` / `se_att` / `se_none`) on each enumerated 1k-step checkpoint. Full per-metric history lives in
+those CSVs; this table is pElo / nll.
+
+| step | scale+bias | attenuate-only | none |
+|---|---|---|---|
+| 1000 | 879.2 / 3.1516 | 916.7 / 3.0519 | 916.1 / 3.1137 |
+| 2000 | 1073.9 / 2.7400 | 1092.8 / 2.7291 | 1085.5 / 2.6770 |
+| 3000 | 1160.8 / 2.5973 | 1149.3 / 2.6292 | 1172.2 / 2.5701 |
+| 4000 | 1184.7 / 2.5454 | 1201.9 / 2.5424 | 1222.6 / 2.5411 |
+| 5000 | 1240.7 / 2.4899 | 1256.2 / 2.4921 | 1246.9 / 2.5029 |
+| 6000 | 1267.6 / 2.4710 | 1259.3 / 2.4888 | 1265.0 / 2.4813 |
+| 7000 | 1268.1 / 2.4642 | 1265.0 / 2.4707 | 1297.5 / 2.4513 |
+| 8000 | 1263.5 / 2.4757 | 1276.9 / 2.4701 | 1305.2 / 2.4458 |
+| 9000 | 1269.1 / 2.4621 | 1294.4 / 2.4401 | 1313.5 / 2.4233 |
+
+Running read (updated as marks land): the arms were within seed noise through 6k; from 7k the no-SE arm
+leads on both pElo and nll, and scale+bias has been flat since 6k while the LR descends toward the first
+cycle trough (~11k).
