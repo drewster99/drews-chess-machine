@@ -1076,5 +1076,7 @@ Plus `CheckpointManagerSafetensorsTests` must keep passing bit-exact.
 - **D-9** Legacy buffers' per-process position hashes (C1 #31, A6 O16):
   recompute from the stored boards on load, or accept inflated duplicate stats
   for legacy buffers and log it.
-- **D-10** Config D (issue #9): remove before P9 (deletes its two test cases — needs owner approval under the test rule), or keep and record/gate it
-  (C1 #34).
+- **D-10 — DECIDED (2026-09-30):** remove config D (issue #9) before P9. Owner
+  approved deleting its two test cases (the config-D case in
+  `HeadNumericsTailTests` and the config-D sweep in `MacOS27NaNIsolationTests`).
+  C1 #34 then closes with the removal.
