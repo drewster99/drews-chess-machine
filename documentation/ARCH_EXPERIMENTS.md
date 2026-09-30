@@ -1,5 +1,7 @@
 # Architecture Experiments
 
+> **Superseded as the index — see [`experiments/README.md`](../experiments/README.md).** Each experiment below has been migrated, with an audit against primary data, to its own folder under `experiments/`; the entry heading links to its new home. This file is kept unchanged below for history; where the audit found an error, the correction lives in the experiment's write-up ("Audit notes"), not here.
+
 A running log of DCM architecture experiments. Each entry is self-contained; reuse the
 section structure verbatim and change only the content within each section.
 
@@ -32,6 +34,8 @@ New experiments record the explicit grouped summary verbatim.
 ---
 
 ## Experiment 1 — 5-Block 7×7-Wide (ReZero / SE)
+
+> **Moved:** audited write-up at [`experiments/20260601-5block-7x7-rezero-se/README.md`](../experiments/20260601-5block-7x7-rezero-se/README.md).
 
 **arch** `v4 pre . in basic30(30) -> stem 128 (7x7) . 5x[7x7 conv, SE+/4, clean_add, ReZero] . act relu . policy intermediate_conv(4864) . value WDL(16->FC128) . bfloat16` · **lineage** `5K7Z` (saved) / `bzw3` (live) · **dates** 2026-06-01 → 2026-06-06 · *(legacy `.dcmmodel` tag `0xdf23a86c` — non-authoritative; identity is the embedded config per PLAN §6)*
 
@@ -144,6 +148,8 @@ inflate, saturating the softmax and shrinking effective gradients)?
 
 ## Experiment 2 — 5-Block 7×7-Wide, `full10ply200` Input (ReZero / SE)
 
+> **Moved:** audited write-up at [`experiments/20260606-full10ply200-input/README.md`](../experiments/20260606-full10ply200-input/README.md).
+
 **arch** `v4 pre . in full10ply200(200) -> stem 128 (7x7) . 5x[7x7 conv, SE+/4, clean_add, ReZero] . act relu . policy intermediate_conv(4864) . value WDL(16->FC128) . bfloat16` · **lineage** `oItC` (saved) / `2Gd1` (live) · **build** 1760 · **log** `dcm_log_20260606-213834.txt` · **dates** 2026-06-06 → 2026-06-07 (**completed at step 58,933**; stopped to start Experiment 3) · *(legacy `arch_hash` `0xdf23a86c` non-authoritative — collides with Exp 1, banner also misreports `inputPlanes=30`; identity is the embedded config per PLAN §6)*
 
 > Identification caveat: this branch makes architecture runtime-configurable, so `arch_hash`/`inputPlanes` in the `[APP]` banner are stale and **identical to Experiment 1's** despite a different encoding. Isolate this run by **log file** (`dcm_log_20260606-213834.txt`) + **live lineage `2Gd1`**, never by `arch_hash`. (A later build adds an `[ARCH]` line carrying the true `architectureSummary`; this run predates it.)
@@ -231,6 +237,8 @@ One of these is probably correct (or maybe even both):
 
 ## Experiment 3 — 5-Block 7×7-Wide, `full10Ply10Reps210` Input (ReZero / SE)
 
+> **Moved:** audited write-up at [`experiments/20260607-full10ply10reps210-input/README.md`](../experiments/20260607-full10ply10reps210-input/README.md).
+
 **arch** `v4 pre . in full10Ply10Reps210(210) -> stem 128 (7x7) . 5x[7x7 conv, SE+/4, clean_add, ReZero] . act relu . policy intermediate_conv(4864) . value WDL(16->FC128) . bfloat16` · **lineage** `eaRt`→`KnCx` (live champion; promotions fork the ID) · **build** 1770 · **log** `dcm_log_20260607-174928.txt` · **dates** 2026-06-07 → in progress (~53k steps @ 2026-06-08 10:36) · *(safetensors-native, embedded-config identity per PLAN §6 — no `arch_hash`; isolate by the `[ARCH]` summary line + log file)*
 
 > Direct successor to Experiment 2 — its single suggested variant (add the 10 repetition planes back). `full10Ply10Reps210` = `full10ply200` (10 stacked `basic20` frames) **+** the 10 `basic30` temporal-repetition planes (20–29) restored as a tail. So across the three experiments only the **input encoding** changes on an identical 5-block-7×7 tower: Exp 1 `basic30` (reps, no history), Exp 2 `full10ply200` (history, no reps), Exp 3 `full10Ply10Reps210` (history **and** reps). A controlled encoding ladder.
@@ -290,6 +298,8 @@ Comparing primarily against Experiment 1 (basic30).
 ---
 
 ## Experiment 4 — 5-Block 256-Wide Dual-Kernel (7×7+3×3), `full10Ply10Reps210` Input (ReZero / SE)
+
+> **Moved:** audited write-up at [`experiments/20260608-256wide-dual-kernel/README.md`](../experiments/20260608-256wide-dual-kernel/README.md).
 
 **arch** `v4 pre . in full10Ply10Reps210(210) -> stem 256 (3x3) . 5x[7x7,3x3 conv, SE+/2, clean_add, ReZero] . act relu . policy intermediate_conv(4864) . value WDL(16->FC256) . bfloat16` · **lineage** `cwkO` (saved) / `jaq1`→`jaq1-4` (live champion; promotions fork the ID) · **build** 1781 (fresh) → 1782 (resumed) · **logs** `dcm_log_20260608-133428.txt` (steps 1–520) + `dcm_log_20260608-140857.txt` (steps 509–13,868, the main run) · **dates** 2026-06-08 (~13:34 → 21:58 CDT, ~8.5h; stopped by manual save) · *(safetensors-native, embedded-config identity per PLAN §6 — no `arch_hash`; isolate by the `[ARCH]` summary line + log file)*
 
@@ -365,6 +375,8 @@ One of these is probably the driver (possibly both):
 
 ## Experiment 5 — Re-check: Exp 1 Architecture Re-run on Bug-Fixed Code
 
+> **Moved:** audited write-up at [`experiments/20260610-exp1-recheck-bugfixed/README.md`](../experiments/20260610-exp1-recheck-bugfixed/README.md).
+
 **arch** identical to Exp 1: `v4 pre . in basic30(30) -> stem 128 (7x7) . 5x[7x7 conv, SE+/4, clean_add, ReZero] . act relu . policy intermediate_conv(4864) . value WDL(16->FC128) . bfloat16 . 8,445,748 params` · **lineage** `3p0G` (saved) / `JhJQ` (live champion) · **builds** 1795 → 1806 · **logs** `dcm_log_20260610-090909.txt` (fresh build) through `dcm_log_20260611-081931.txt` · **dates** 2026-06-10 09:09 CDT → 2026-06-11 (stopped to start Experiment 6)
 
 **Why:** two proven training-loop concurrency bugs — the probe staging-buffer
@@ -385,6 +397,8 @@ post-promotion autosaves.
 ---
 
 ## Experiment 6 — Exp 1 Resume Probe: Capacity Ceiling vs Over-Sharpening Stall
+
+> **Moved:** audited write-up at [`experiments/20260611-exp1-resume-ceiling-probe/README.md`](../experiments/20260611-exp1-resume-ceiling-probe/README.md). **It ran** (2026-06-11 → 06-12, to step 503,570). Result: inconclusive, leaning capacity ceiling.
 
 **arch** identical to Exp 1 (resumed weights, not a fresh build) · **resume point** `20260606-002543-20260601-12-5K7Z-periodic.dcmsession`, step 382,625 — the only post-cliff, pre-LR-cycling checkpoint of the Exp 1 run · **lineage / log / dates** TBD at launch (2026-06-11 →)
 
@@ -408,6 +422,8 @@ pinned through both phases → capacity ceiling confirmed, depth is the answer.
 *(results pending)*
 
 ## Experiment 7 — First Heterogeneous Block-Groups Tower (eBNC) — IN PROGRESS
+
+> **Moved:** audited write-up at [`experiments/20260612-block-groups-ebnc/README.md`](../experiments/20260612-block-groups-ebnc/README.md). **Status resolved from data: abandoned.** It trained cleanly to step 49,924, then every resume from the 49,836 save diverged.
 
 **arch** `v4 . in basic30(30) -> stem 128 (3x3) . 3x[3x3+3x3 @128, SE+/2, relu/pre, clean_add, ReZero(0.408), drop*1] -> 5x5 group ...` — concretely a two-group WRN-style staircase: stem 128 (3×3) → **3× [3×3 @128, SE scale+bias /2]** → **3× [5×5 @256, SE scale+bias /2]**, ReZero, channel dropout rate 0.30, ~**10.66M params**. The 128→256 transition carries a 1×1 skip projection. · **lineage** `eBNC` (saved/live) · **build** 1835→1841 · **dates** 2026-06-12 →
 

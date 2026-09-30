@@ -127,3 +127,30 @@ confidence this engine beats **that specific** opponent.
 ```
 Needs `ordo` (1.2.6), `gzip`, `python3`. See the script for the exact flags
 (`ordo -a 1320 -A Stockfish -V -s 100 -J ...`).
+
+## Audit notes
+
+Re-checked 2026-09-29 against `ratings.txt`, `h2h.txt`, `engines_models.tsv`, `engines.json`, `cutechess.ini`, a streamed parse of `games_full.pgn.gz`, and the safetensors `__metadata__` of every model file that still exists. The original text above is left as written; corrections are listed here.
+
+**Confirmed**
+- `games_full.pgn.gz` holds 70,638 games; the leading contiguous block of `DCM - Qeu8e5` vs `Stockfish` games is exactly 100; the remainder is 70,538 games, 38 distinct engines, 37 rounds, 703 pairings (= C(38,2)). Results: 26,145 `1-0`, 26,214 `0-1`, 18,179 draws. Every game is tagged `TimeControl "40/5"`; `cutechess.ini` has `moves_per_tc=40`, `time_per_tc=5000`, `increment=0`, `ply_limit=0`, `node_limit=0`. PGN dates span 2026.07.08–2026.07.09.
+- Stockfish options in `engines.json`: `UCI_LimitStrength=true`, `UCI_Elo=1320`, `Skill Level=20`, `EvalFile=nn-71d6d32cb962.nnue`, `Threads=1`, `Hash=16`. Sloppy runs over `xboard` with no strength options.
+- Sloppy won all 3,800 of its games (1,900 as White, 1,900 as Black) and is "Removed from calculation" in `h2h.txt`.
+- Best-rated DCM `v5_5block_7x7_lnout-wd2.5e4-m93 (latest)` went 1-0-99 vs Stockfish; `Qeu8e5 (latest)` 0-1-99; `DCM - Qeu8e5` 1-0-99 (`h2h.txt`, Stockfish block).
+- Frozen `DCM - Qeu8e5` is #11 (528.1), `DCM Qeu8e5 (latest)` #18 (499.0).
+- `engines_models.tsv`: all 31 Models/ files named there still exist and their `__metadata__` model_id matches the tsv; parameter counts (sum of non-optimizer tensors) match the tsv for all of them. `Exp2` (`…oItC-manual.dcmsession/trainer.safetensors`, model_id `20260607-4-2Gd1-12`, 9,511,988) and `Exp1` (`…5K7Z-manual.dcmsession/trainer.safetensors`, model_id `20260601-11-bzw3-32`, 8,445,748) also match.
+
+**Corrections**
+- "~700–800 Elo above **every** DCM" -> Stockfish's h2h Diff ranges **+714.1 to +1253.7**; only the top 20 DCMs are within 700–875 of it (`h2h.txt`, Stockfish block; `ratings.txt` 1320.0 vs 605.9 … 66.3).
+- "best DCM scored 1/100 vs it" -> true for the best-*rated* DCM only. DCMs won 19 games and drew 14 against Stockfish in total; the best *score* vs Stockfish was `nT8Y-resume2 (latest)` 3.5/100 (3-1-96), then `DCM v5` 3.0/100 (3-0-97) and `nT8Y-resume3 (latest)` 2.5/100 (1-3-96).
+- "~100 games/pair" -> 700 pairs have exactly 100 games; three do not: `20260626-2-q2Bb-manual (latest)` vs `Sloppy` 200, `9blk16se-9x9stem (latest)` vs `v5_5block_7x7_lnout-wd5e4 (latest)` 200, `Early 2` vs `v5_5block_7x7_lnout-wd2.5e4-m93 (latest)` 138. This is why `ratings.txt` shows PLAYED 3,738 / 3,800 for those engines.
+- "Strongest DCM lines: the **v5** family" -> ranks #2 and #3 are **the same weights**: `DCM v5` loaded `~/Downloads/20260628-v5_5block_7x7_lnout-wd2.5e4-m93-replay-latest.safetensors` and `…wd2.5e4-m93 (latest)` loaded the Models/ copy; both are model_id `20260629-1-Uf4p`, training_step 39419, identical content_sha256 `d9b06e11…` (the tsv lists the Models/ path for both). Their 605.9 vs 603.8 split and 58.0% head-to-head (48-20-32) are sampling noise between identical nets — a useful yardstick for how much noise a 100-game pairing carries at this temperature. Other v5-architecture lines are #12 (wd5e4, 525.6) and #19 (lnout, 472.9), so "v5 family" really means one net (Uf4p). #4 `Qeu8-resume2 (latest)` (588.4) is next, with #5 `nT8Y-resume3 (latest)` at 576.9 (CFS 94% between them).
+- "Runs still training (Qeu8e5 among them) had their `-replay-latest` file overwritten during the tournament" -> by file mtime, `20260704-Qeu8e5-replay-latest.safetensors` (last written 2026-07-09 00:04, now step 88107) is the **only** listed file modified after 2026-07-08 08:16 (`Qeu8e4`); every other `-latest` file's last write predates the tournament's start date, so their current contents are the weights that played, unless they were rewritten and later restored (not indicated). Tournament start time itself is not recorded in the archive, so this is bounded by date, not hour.
+
+**Unverified**
+- `sf_debug.log` (cited for "settings verified as applied") is not in the archive.
+- Host (Apple M5 Max, macOS 26A5378j), cutechess version / `-style fusion`, Ordo 1.2.6, concurrency ≈ 2, and the end-of-run hang: not recorded in the archived files.
+- DCM build 2033 / git `b5adf14` dirty: commit `b5adf14` exists ("UCI: select model via setoption, deferred load, engine/model info"), but the build number and dirty state are not in the archive.
+- The Temperature-0 schedule note (`startTau 2.0 → 0.2` at the time): not checked against the build-2033 source.
+- `Early 2` (`…IWkd-manual.dcmsession/trainer.dcmmodel`, legacy format): model_id `20260525-1-sMe9-33` and 2,483,667 params not re-read.
+- The pool-relative Elo scale here (Stockfish anchored at 1320) is unrelated to the puzzle pElo scale used in training dashboards; do not compare them.
