@@ -481,8 +481,17 @@ ReZero α gets the `> 0` check under the tanh ceiling.
 - **"Neutral init" button** in Build New Model: sets every option in every group
   and head to its neutral value (`se_gamma_bias_init` = the near-identity level,
   `zero_last_bn_gamma` where a BN follows the branch's last conv,
-  `identity_like` at width transitions, both head finals `zero`; the draw prior
-  keeps its current value because it is a prior, not a neutral/standard switch).
+  `identity_like` at width transitions, both head finals `zero`). **The draw
+  prior is deliberately excluded (owner-confirmed 2026-09-30)** and keeps its
+  current value. Rationale: every neutral option makes a branch start as a no-op
+  ("adds nothing") so gradient shapes it from zero; the draw prior is instead a
+  claim about the data (the initial W/D/L prediction), and even uniform 1/3 is a
+  claim — there is no neutral value. With `value_head_final_init = zero` the
+  value head's initial output *is* the prior exactly, so it must stay an explicit,
+  visible per-experiment choice rather than something a button changes silently.
+  The right value is usually the training data's own draw rate (the elite corpus
+  and the lichess corpus differ widely from each other and from the legacy
+  `ln 6` ⇒ 0.75 default).
   **"Standard init" button**: resets every option to its standard (legacy) value.
   One function each on `BuildNewModelModel`, so the two buttons are the single
   source of what "neutral" and "standard" mean; `[BUTTON]` logs which was pressed.
@@ -959,7 +968,7 @@ controls, one source of truth for the automatic case:
      cached at session start (it is a save-time switch, not a loop knob).
   9. Rename: n/a.
 - **Manual save:** File ▸ Save Session (`App/DrewsChessMachineApp.swift:618`)
-  today saves immediately. It gains a small confirmation sheet with an
+  today saves immediately. It gains (owner-confirmed 2026-09-30) a small confirmation sheet with an
   "Include replay buffer" checkbox (initial state = the parameter's current
   value, per save only, not persisted) and the size estimate. `[BUTTON]` logs the
   choice.
