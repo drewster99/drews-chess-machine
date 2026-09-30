@@ -1,5 +1,5 @@
 {
- "_comment": "Self-play (non-replay) run registry. One entry per kept lineage (combined continuations by champion base ModelID). selfplay.py parses [STATS] lines from `logs` (chronological) into data/<key>.csv using the SAME schema as the replay tracker. cum_step = the [STATS] steps= value (already cumulative across a lineage's launches; backward rewinds on resume are deduped last-writer-wins). elapsed_train_sec sums each launch's own elapsed= (approximate; by-step charts are authoritative). pElo/nll come from the in-training WIDE (4,435-pos) lichess probe curve in selfplay_probe/<key>.csv when one exists, merged onto the [STATS] row of each 1000-step bucket; runs that predate the probe carry the manual endpoint_pElo/endpoint_nll on the final row only. Self-play has no per-1000-step frozen checkpoints, so there is nothing else to probe after the fact. type=selfplay distinguishes these from corpus-replay runs.",
+ "_comment": "Self-play (non-replay) run registry. One entry per kept lineage (combined continuations by champion base ModelID). selfplay.py parses [STATS] lines from `logs` (chronological) into data/<key>.csv using the SAME schema as the replay tracker. cum_step = the [STATS] steps= value (already cumulative across a lineage's launches; backward rewinds on resume are deduped last-writer-wins). `log_kept_to` {log: last raw step on the kept chain} drops the tail of a launch that a later launch of the chain resumed from an earlier save of (that tail was trained on weights the resume threw away; its rows would otherwise stay interleaved with the kept chain, since the two branches' [STATS] ticks rarely land on the same step). `excluded_logs` {log: reason} records launches deliberately NOT parsed: whole abandoned branches, diverged resumes, and other experiments' forks that load this lineage's weights. Neither field is inferred: each value was read off the logs' `[CHECKPOINT] Loaded session` / `Saved session` lines and first [STATS] step. elapsed_train_sec sums each launch's own elapsed= (approximate; by-step charts are authoritative). pElo/nll come from the in-training WIDE (4,435-pos) lichess probe curve in selfplay_probe/<key>.csv when one exists, merged onto the [STATS] row of each 1000-step bucket; runs that predate the probe carry the manual endpoint_pElo/endpoint_nll on the final row only. Self-play has no per-1000-step frozen checkpoints, so there is nothing else to probe after the fact. type=selfplay distinguishes these from corpus-replay runs.",
  "logs_dir": "~/Library/Logs/DrewsChessMachine",
  "runs": {
   "sMe9": {
@@ -135,7 +135,7 @@
    "arch_heads": ""
   },
   "eBNC": {
-   "label": "eBNC — 10.66M (10 promo, 9h)",
+   "label": "eBNC — 10.66M (10 promo, 13h)",
    "color": "#911eb4",
    "type": "selfplay",
    "trainset": "self-play",
@@ -149,18 +149,25 @@
    "logs": [
     "dcm_log_20260612-185142.txt",
     "dcm_log_20260613-114410.txt",
-    "dcm_log_20260613-160117.txt",
-    "dcm_log_20260613-195604.txt",
-    "dcm_log_20260614-010858.txt",
-    "dcm_log_20260614-012630.txt",
-    "dcm_log_20260614-103503.txt",
-    "dcm_log_20260614-104947.txt",
-    "dcm_log_20260614-173901.txt",
-    "dcm_log_20260614-195324.txt"
+    "dcm_log_20260613-160117.txt"
    ],
+   "log_kept_to": {
+    "dcm_log_20260612-185142.txt": 29363,
+    "dcm_log_20260613-114410.txt": 33360
+   },
+   "excluded_logs": {
+    "dcm_log_20260613-195604.txt": "diverged resume of the 49,836 manual save (20260614-002022-…-gFlw-manual): non-finite loss or pre-clip gNorm up to 1.7e10 within 1-16 steps; not the healthy run (experiments/20260612-block-groups-ebnc)",
+    "dcm_log_20260614-010858.txt": "diverged resume of the 49,836 manual save (20260614-002022-…-gFlw-manual): non-finite loss or pre-clip gNorm up to 1.7e10 within 1-16 steps; not the healthy run (experiments/20260612-block-groups-ebnc)",
+    "dcm_log_20260614-012630.txt": "diverged resume of the 49,836 manual save (20260614-002022-…-gFlw-manual): non-finite loss or pre-clip gNorm up to 1.7e10 within 1-16 steps; not the healthy run (experiments/20260612-block-groups-ebnc)",
+    "dcm_log_20260614-103503.txt": "diverged resume of the 49,836 manual save (20260614-002022-…-gFlw-manual): non-finite loss or pre-clip gNorm up to 1.7e10 within 1-16 steps; not the healthy run (experiments/20260612-block-groups-ebnc)",
+    "dcm_log_20260614-104947.txt": "diverged resume of the 49,836 manual save (20260614-002022-…-gFlw-manual): non-finite loss or pre-clip gNorm up to 1.7e10 within 1-16 steps; not the healthy run (experiments/20260612-block-groups-ebnc)",
+    "dcm_log_20260614-173901.txt": "diverged resume of the 49,836 manual save (20260614-002022-…-gFlw-manual): non-finite loss or pre-clip gNorm up to 1.7e10 within 1-16 steps; not the healthy run (experiments/20260612-block-groups-ebnc)",
+    "dcm_log_20260614-195324.txt": "diverged resume of the 49,836 manual save (20260614-002022-…-gFlw-manual): non-finite loss or pre-clip gNorm up to 1.7e10 within 1-16 steps; not the healthy run (experiments/20260612-block-groups-ebnc)"
+   },
    "arch_stem": "basic30 → stem 3×3→128",
    "arch_blocks": "v4 · 3×[3×3+3×3 @128, SE+/2, relu/pre, clean_add, ReZero(0.408), drop*1] → 3×[5×5+5×5 @256, SE+/2, relu/pre, clean_add, ReZero(0.408), drop*1]",
-   "arch_heads": "policy intermediate_conv · value WDL(32→FC128)"
+   "arch_heads": "policy intermediate_conv · value WDL(32→FC128)",
+   "note": "ARCH Exp 7 (experiments/20260612-block-groups-ebnc): healthy run 1 -> 49,924 on builds 1835/1839/1841. Log 20260613-114410's 33,360-34,443 tail was discarded when log 20260613-160117 resumed the 33,360 promote save. The seven resumes of the 49,836 manual save (builds 1845-1890, one forced-fp32) all diverged at once and are excluded. The session's own elapsedTrainingSec at 49,836 is 47,653.5 s (13.2 h)."
   },
   "wTp3": {
    "label": "wTp3 — 1.43M (3 promo, 7h)",
@@ -208,7 +215,7 @@
    "arch_heads": "policy intermediate_conv · value WDL(16→FC128)"
   },
   "KbHZ": {
-   "label": "KbHZ — 2.48M (24 promo, 257h)",
+   "label": "KbHZ — 2.48M (22 promo, 257h)",
    "color": "#bfef45",
    "type": "selfplay",
    "trainset": "self-play",
@@ -217,7 +224,7 @@
    "final_modelID": "20260514-1-KbHZ-23",
    "endpoint_pElo": 572.3,
    "endpoint_nll": 6.3048,
-   "promotions": 24,
+   "promotions": 22,
    "arch_summary": "self-play trainer 20260514-1-KbHZ-23 · 2,483,667 params",
    "logs": [
     "dcm_log_20260514-020048.txt",
@@ -355,7 +362,7 @@
    "arch_heads": ""
   },
   "bzw3": {
-   "label": "bzw3 — 8.45M (33 promo, 115h)",
+   "label": "bzw3 — 8.45M (31 promo, 101h)",
    "color": "#808000",
    "type": "selfplay",
    "trainset": "self-play",
@@ -364,42 +371,86 @@
    "final_modelID": "20260601-11-bzw3-32",
    "endpoint_pElo": 471.2,
    "endpoint_nll": 5.1859,
-   "promotions": 33,
+   "promotions": 31,
    "arch_summary": "self-play trainer 20260601-11-bzw3-32 · 8,445,748 params",
    "logs": [
     "dcm_log_20260601-162715.txt",
     "dcm_log_20260601-205349.txt",
-    "dcm_log_20260602-102407.txt",
     "dcm_log_20260602-132758.txt",
     "dcm_log_20260602-145046.txt",
     "dcm_log_20260602-193914.txt",
-    "dcm_log_20260602-204349.txt",
-    "dcm_log_20260602-211401.txt",
     "dcm_log_20260602-211938.txt",
-    "dcm_log_20260603-104854.txt",
     "dcm_log_20260603-142226.txt",
     "dcm_log_20260603-161620.txt",
     "dcm_log_20260604-020243.txt",
     "dcm_log_20260604-145335.txt",
-    "dcm_log_20260605-193530.txt",
     "dcm_log_20260606-002811.txt",
-    "dcm_log_20260606-202202.txt",
+    "dcm_log_20260606-202202.txt"
+   ],
+   "log_kept_to": {
+    "dcm_log_20260601-162715.txt": 14014,
+    "dcm_log_20260601-205349.txt": 60131,
+    "dcm_log_20260602-132758.txt": 66605,
+    "dcm_log_20260602-145046.txt": 84721,
+    "dcm_log_20260602-193914.txt": 90043,
+    "dcm_log_20260602-211938.txt": 152390,
+    "dcm_log_20260603-142226.txt": 156390,
+    "dcm_log_20260603-161620.txt": 189639,
+    "dcm_log_20260604-020243.txt": 251597,
+    "dcm_log_20260604-145335.txt": 382635,
+    "dcm_log_20260606-002811.txt": 465670
+   },
+   "excluded_logs": {
+    "dcm_log_20260602-102407.txt": "abandoned branch: resumed the 60,131 save (20260602-150205 manual) and ran to 70,903; the kept chain re-resumed the same save in dcm_log_20260602-132758",
+    "dcm_log_20260602-204349.txt": "abandoned branch: resumed the 90,043 save (20260603-014040 manual), ran to 92,569; re-resumed in dcm_log_20260602-211938",
+    "dcm_log_20260602-211401.txt": "abandoned branch: resumed the 90,043 save, ran to 90,131; re-resumed in dcm_log_20260602-211938",
+    "dcm_log_20260603-104854.txt": "abandoned branch: resumed the 152,390 save (20260603-144225 manual), ran to 153,785; re-resumed in dcm_log_20260603-142226",
+    "dcm_log_20260605-193530.txt": "abandoned branch: resumed the 382,635 save (20260606-002543 periodic), constant LR 1e-2 / wd 1e-4 control to 399,919; re-resumed in dcm_log_20260606-002811",
+    "dcm_log_20260611-173757.txt": "not Exp 1: Exp 6 branch (resume of the 382,635 save on 2026-06-11); tracked as run bzw3e6",
+    "dcm_log_20260611-180921.txt": "not Exp 1: Exp 6 branch; tracked as run bzw3e6",
+    "dcm_log_20260612-110030.txt": "not Exp 1: Exp 6 branch; tracked as run bzw3e6",
+    "dcm_log_20260612-140430.txt": "not Exp 1: Exp 6 branch; tracked as run bzw3e6",
+    "dcm_log_20260612-141454.txt": "not this lineage: dropout A/B (trained) fork, arm 0.00A. Headless --train from the Exp 6 champion bzw3-32 (20260612-191329 sigusr2 save), step counter restarted at 1, 600-step limit (experiments/dropout-ab-trained-20260612)",
+    "dcm_log_20260612-143424.txt": "not this lineage: dropout A/B (trained) fork, arm 0.00B (same setup as 0.00A)",
+    "dcm_log_20260612-145341.txt": "not this lineage: dropout A/B (trained) fork, arm 0.30",
+    "dcm_log_20260612-151312.txt": "not this lineage: dropout A/B (trained) fork, arm 0.70",
+    "dcm_log_20260612-153226.txt": "not Exp 1: Exp 6 branch; tracked as run bzw3e6"
+   },
+   "arch_stem": "basic30 → stem 7×7→128",
+   "arch_blocks": "v4 pre · 5×[7×7 conv, SE+/4, clean_add, ReZero]",
+   "arch_heads": "policy intermediate_conv · value WDL(16→FC128)",
+   "note": "ARCH Exp 1 (experiments/20260601-5block-7x7-rezero-se): the kept chain only, step 1 -> 467,099 (final manual save 20260607-015807, champion bzw3-31, trainer bzw3-32). Five abandoned re-resume branches are excluded (excluded_logs) and each kept launch is cut at the step the next kept launch resumed from (log_kept_to), including log 20260606-002811's abandoned 465,670-470,822 tail. The Exp 6 resume of the 382,635 save (2026-06-11/12) is a separate branch on the same step axis and is tracked as run bzw3e6; the four dropout A/B forks that load the Exp 6 champion are not part of this lineage. pElo/nll are the in-app WIDE probe on the June 2026 recording builds' scale; endpoint_pElo is a later-binary re-probe of the 467,099 trainer and is on a different scale."
+  },
+  "bzw3e6": {
+   "label": "bzw3 Exp 6 — 8.45M (2 promo, 22h, branch from 382,635)",
+   "color": "#c9c65b",
+   "type": "selfplay",
+   "trainset": "self-play",
+   "params": 8445748,
+   "base_modelID": "20260601-11-bzw3",
+   "final_modelID": "20260601-11-bzw3-33",
+   "promotions": 2,
+   "arch_summary": "self-play trainer 20260601-11-bzw3-33 · 8,445,748 params",
+   "logs": [
     "dcm_log_20260611-173757.txt",
     "dcm_log_20260611-180921.txt",
     "dcm_log_20260612-110030.txt",
     "dcm_log_20260612-140430.txt",
-    "dcm_log_20260612-141454.txt",
-    "dcm_log_20260612-143424.txt",
-    "dcm_log_20260612-145341.txt",
-    "dcm_log_20260612-151312.txt",
     "dcm_log_20260612-153226.txt"
    ],
+   "log_kept_to": {
+    "dcm_log_20260611-173757.txt": 383242,
+    "dcm_log_20260611-180921.txt": 486383,
+    "dcm_log_20260612-110030.txt": 498397,
+    "dcm_log_20260612-140430.txt": 498650
+   },
    "arch_stem": "basic30 → stem 7×7→128",
    "arch_blocks": "v4 pre · 5×[7×7 conv, SE+/4, clean_add, ReZero]",
-   "arch_heads": "policy intermediate_conv · value WDL(16→FC128)"
+   "arch_heads": "policy intermediate_conv · value WDL(16→FC128)",
+   "note": "ARCH Exp 6 (experiments/20260611-exp1-resume-ceiling-probe): a branch of bzw3 resumed from Exp 1's 382,635 periodic save (20260606-002543), 382,635 -> 503,589 (last manual save 503,570, 20260612-234833). It shares Exp 1's step axis from 382,635 on, so it is tracked separately rather than overwriting Exp 1's own 382,635-467,099. IDs collide with Exp 1's: its promotions #359 (442,911) and #380 (475,864) re-minted champions bzw3-31 and bzw3-32; the trainer finished as bzw3-33. No Exp 6 checkpoint survives, so there is no endpoint re-probe; pElo/nll are the in-app WIDE probe (June 2026 recording-build scale) from the Exp 6 logs. Dropout 0.7 was defaulted in from 498,397 (build 1824 resume)."
   },
   "Ejp0r1": {
-   "label": "Ejp0 run1 — 3.93M (9 promo, 43h, ended)",
+   "label": "Ejp0 run1 — 3.93M (9 promo, 40h, ended)",
    "color": "#e4a6ff",
    "type": "selfplay",
    "trainset": "self-play",
@@ -416,32 +467,44 @@
     "dcm_log_20260807-021701.txt",
     "dcm_log_20260807-131013.txt"
    ],
+   "log_kept_to": {
+    "dcm_log_20260807-021701.txt": 44113
+   },
    "arch_stem": "basic30 → stem 7×7→64",
    "arch_blocks": "v5 pre · 2×[15×15+15×15 @64, SE+/4, clean_add, ReZero(0.5), out:layer_norm]",
    "arch_heads": "policy intermediate_conv · value WDL(16→FC64)",
-   "note": "Run 1 of the Ejp0 self-play fork (session orSA), 2026-08-06 21:53 → 2026-08-08 17:40, ENDED by user after a 28-arena parity stall. Seeded from the qeu8 corpus-replay checkpoint meta 1300000 (pElo 1731). lr-cycling and momentum-cycling OFF. Segments 0-2 each restarted the step counter from 1 (concatenated); segment 3 resumed mid-segment-2 and its rewound steps overwrite in place, so segment 2's tail elapsed is double-counted in the ~43h figure — the by-STEP axis is the authoritative one. pElo/nll here are the in-app WIDE (4,435-pos) lichess probe on the recording build's scale; the narrow 200-pos probe in the same logs reads ~60-120 HIGHER and is not what is tracked. The probe scores argmax top-1 and is blind to policy diffuseness, so it can disagree with the sampled arena by construction (established 2026-08-07: soft self-play sampling diffuses the trainer's policy, the arena samples that policy, and the argmax probe cannot see the difference)."
+   "note": "Run 1 of the Ejp0 self-play fork (session orSA), 2026-08-06 21:53 → 2026-08-08 17:40, ENDED by user after a 27-arena parity stall (arenas #117-#143 after the last promotion, #116). Seeded from the qeu8 corpus-replay checkpoint meta 1300000 (pElo 1731). lr-cycling and momentum-cycling OFF in segments 0-2, ON from 13:15:36 on 08-07 in segment 3 (first `·cyc` [STATS] at step 44,658, before the first promotion; 1,669 of segment 3's 1,796 [STATS] lines). Segments 0-2 each restarted the step counter from 1 (concatenated); segment 3 resumed segment 2's 44,113 periodic save (20260807-151717), so segment 2's 44,113-59,717 tail is an abandoned branch and is cut (log_kept_to). The by-STEP axis is the authoritative one. pElo/nll here are the in-app WIDE (4,435-pos) lichess probe on the recording build's scale; the narrow 200-pos probe in the same logs reads ~60-120 HIGHER and is not what is tracked. The probe scores argmax top-1 and is blind to policy diffuseness, so it can disagree with the sampled arena by construction (established 2026-08-07: soft self-play sampling diffuses the trainer's policy, the arena samples that policy, and the argmax probe cannot see the difference)."
   },
   "Ejp0": {
-   "label": "Ejp0 run2 — 3.93M (66 promo, 236h, stopped 08-30)",
+   "label": "Ejp0 run2 — 3.93M (67 promo, 237h, ended 09-17)",
    "color": "#000075",
    "type": "selfplay",
    "trainset": "self-play",
    "params": 3929393,
    "base_modelID": "20260727-1-Ejp0",
-   "final_modelID": "20260727-1-Ejp0-66",
-   "endpoint_pElo": 1613,
-   "endpoint_nll": 2.21,
-   "promotions": 66,
-   "arch_summary": "self-play trainer 20260727-1-Ejp0-66 · 3,929,393 params",
+   "final_modelID": "20260727-1-Ejp0-68",
+   "endpoint_pElo": 1609,
+   "endpoint_nll": 2.216,
+   "promotions": 67,
+   "arch_summary": "self-play trainer 20260727-1-Ejp0-68 · 3,929,393 params",
    "logs": [
     "dcm_log_20260808-174024.txt",
     "dcm_log_20260809-101517.txt",
-    "dcm_log_20260825-110210.txt"
+    "dcm_log_20260825-110210.txt",
+    "dcm_log_20260917-170217.txt"
    ],
+   "log_kept_to": {
+    "dcm_log_20260808-174024.txt": 82033,
+    "dcm_log_20260809-101517.txt": 569192,
+    "dcm_log_20260825-110210.txt": 1183795
+   },
+   "excluded_logs": {
+    "dcm_log_20260921-000813.txt": "one [STATS] line: loaded the 1,186,322 promote save (20260917-223317) on build 2114 and trained nothing before the machine moved to a new run; if counted it would cut the 09-17 launch's 1,186,322-1,192,765 tail"
+   },
    "arch_stem": "basic30 → stem 7×7→64",
    "arch_blocks": "v5 pre · 2×[15×15+15×15 @64, SE+/4, clean_add, ReZero(0.5), out:layer_norm]",
    "arch_heads": "policy intermediate_conv · value WDL(16→FC64)",
-   "note": "Run 2 of the Ejp0 self-play fork (session sjIy), 2026-08-08 17:40 → 2026-08-30 14:11, STOPPED by user (Stop button, paused for a macOS update; the resume pointer is on the 13:59 post-promotion save of Ejp0-66, so a resume would append a fourth log here). 66 promotions, but only the first 41 (through step ~959,500) were measured under the arena schedule τ 0.6→0.2 with 399-400/400-unique arenas: at 2026-08-28 19:12 both self-play and arena τ were set to 0.2→0.01, arena game diversity fell to as low as 64/400 unique, and the remaining 25 promotions (Ejp0-42..-66, in ~43h) were scored by that degraded instrument. Started as a FRESH fork from the same qeu8 meta-1300000 seed as run1 — NOT a continuation of run1, which is why the two are separate runs here. Differs from run1 by lr-cycling + momentum-cycling ON. Segments 1 and 2 are resumes (step counter continues), so the cumulative step axis is exact. pElo/nll here are the in-app WIDE (4,435-pos) lichess probe on the recording build's scale; the narrow 200-pos probe in the same logs reads ~60-120 HIGHER and is not what is tracked. The probe scores argmax top-1 and is blind to policy diffuseness, so it can disagree with the sampled arena by construction (established 2026-08-07: soft self-play sampling diffuses the trainer's policy, the arena samples that policy, and the argmax probe cannot see the difference)."
+   "note": "Run 2 of the Ejp0 self-play fork (session sjIy), 2026-08-08 17:40 → 2026-08-30 14:11, STOPPED by user (Stop button, paused for a macOS update), then RESUMED once on 2026-09-17 17:02 → 19:02 (build 2105, still the near-greedy τ 0.2→0.01) from the 08-30 13:59 post-promotion save of Ejp0-66 at step 1,183,795 (the 08-30 log's 1,183,795-1,184,817 tail is cut). That resume ran arenas #929-#935 and promoted once (#930, +21, step 1,186,322 → champion Ejp0-67, saved as 20260917-223317-…-sjIy-promote); it ended at step 1,192,765 with trainer Ejp0-68. 67 promotions, but only the first 41 (through step ~959,500) were measured under the arena schedule τ 0.6→0.2 with 399-400/400-unique arenas: at 2026-08-28 19:12 both self-play and arena τ were set to 0.2→0.01, arena game diversity fell to as low as 64/400 unique, and the remaining 26 promotions (Ejp0-42..-66 in ~43h to 08-30, plus Ejp0-67 on 09-17) were scored by that degraded instrument. Started as a FRESH fork from the same qeu8 meta-1300000 seed as run1 — NOT a continuation of run1, which is why the two are separate runs here. Both runs used lr + momentum cycling (run 1 from its segment 3 on), so cycling is not what separates them. Segments 1-3 are resumes (step counter continues), so the cumulative step axis is exact; each earlier launch is cut at the step the next one resumed from (log_kept_to). pElo/nll here are the in-app WIDE (4,435-pos) lichess probe on the recording build's scale; the narrow 200-pos probe in the same logs reads ~60-120 HIGHER and is not what is tracked. The probe scores argmax top-1 and is blind to policy diffuseness, so it can disagree with the sampled arena by construction (established 2026-08-07: soft self-play sampling diffuses the trainer's policy, the arena samples that policy, and the argmax probe cannot see the difference)."
   }
  }
 }

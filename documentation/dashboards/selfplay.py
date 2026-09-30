@@ -13,7 +13,13 @@ selfplay_registry.json `logs`):
     lineage's launches (a resume loads the session and continues counting), so no
     per-launch offset is applied. Resumes occasionally REWIND to a slightly-behind
     session save; collisions are resolved last-writer-wins (the resumed launch's
-    weights supersede), then rows are sorted by step.
+    weights supersede), then rows are sorted by step. Exact-step collisions are
+    rare, though, so a lineage whose resumes left abandoned tails declares them
+    in the registry: `log_kept_to` cuts a launch at the step the next launch of
+    the kept chain resumed from, and `excluded_logs` names launches that are not
+    parsed at all (whole abandoned branches, diverged resumes, other experiments'
+    forks). Both are read off the logs' `Loaded session` / `Saved session` lines;
+    the tracker does not infer them.
   * elapsed_train_sec = each launch's own `elapsed=` plus the summed final elapsed
     of all prior launches. Approximate (excludes inter-launch gaps, not intra-
     launch pauses) — the by-STEP charts are the authoritative axis.
@@ -138,10 +144,15 @@ def build_run(key, cfg):
     expected_base = cfg.get("base_modelID")  # this lineage's champion base
     base_by_raw = {}        # raw meta_step -> step_base applied (for probe merge)
     seg_base = {}           # launch index -> step_base applied to that launch
+    kept_to_by_log = cfg.get("log_kept_to", {})
+    unknown = set(kept_to_by_log) - set(cfg["logs"])
+    if unknown:
+        raise ValueError(f"{key}: log_kept_to names logs not in `logs`: {sorted(unknown)}")
     for seg_i, log in enumerate(cfg["logs"]):
         path = os.path.join(LOGDIR, log)
         if not os.path.exists(path):
             continue
+        kept_to = kept_to_by_log.get(log)  # last raw step of this launch on the kept chain
         seg_max_elapsed = 0.0
         prev_hms = None
         day_offset = [0]
@@ -171,6 +182,13 @@ def build_run(key, cfg):
                     step_base = running_max
                     resets += 1
                 decided = True
+            # The tail past the step a later launch of the kept chain resumed from
+            # was trained on weights that launch threw away (see `log_kept_to` in
+            # the registry comment). Its rows rarely share an exact step with the
+            # resumed launch's rows, so letting the resumed launch overwrite in
+            # place would leave the abandoned branch interleaved in the CSV.
+            if kept_to is not None and st["step"] > kept_to:
+                continue
             cum = st["step"] + step_base
             running_max = max(running_max, cum)
             base_by_raw[st["step"]] = step_base
@@ -263,6 +281,9 @@ def build_run(key, cfg):
             raw = int(pr["step"])
             seg = pr.get("segment", "")
             if seg != "" and int(seg) in seg_base:
+                seg_kept_to = kept_to_by_log.get(cfg["logs"][int(seg)])
+                if seg_kept_to is not None and raw > seg_kept_to:
+                    continue  # mark from the abandoned tail of that launch
                 base = seg_base[int(seg)]
             elif raw in base_by_raw:
                 base = base_by_raw[raw]
@@ -282,9 +303,12 @@ def build_run(key, cfg):
     # LATE (endpoint-only runs, and late-probe runs like KbHZ/bzw3) get a nominal
     # (step 1000, pElo 450) floor anchor so the curve reads as "started at random and
     # climbed". Skipped when the run already has pElo at/below step 1000 (adding it
-    # there would create a backward dip).
+    # there would create a backward dip), and for a run whose logs begin mid-lineage
+    # (a branch resumed from another run's save): that run never was a random
+    # init, and an anchor at step 1000 would invent a point long before it existed.
     pelo_cums = [c for c, r in rows.items() if r["pElo"] not in ("", None)]
-    if pelo_cums and min(pelo_cums) > BASELINE_STEP:
+    starts_at_init = bool(el_cums) and el_cums[0] <= RESET_FRESH_STEP
+    if starts_at_init and pelo_cums and min(pelo_cums) > BASELINE_STEP:
         put_pelo(BASELINE_STEP, BASELINE_STEP, BASELINE_PELO, "", "baseline (random-init anchor)")
 
     # Sample every ~1000 cum-steps to match the replay tracker's cadence. The raw

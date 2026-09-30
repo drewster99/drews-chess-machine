@@ -96,12 +96,12 @@
       "trainset": "std-2026-05"
     },
     "nt8y3x3s2": {
-      "label": "nt8y-3x3stem seed2 — variance control (std, →31.3h)",
+      "label": "nt8y-3x3stem seed2 — variance control (std, stopped at 5.8k steps)",
       "color": "#9edae5",
       "rezero_cap": 0.33333334,
       "n_blocks": 3,
       "params": 1518570,
-      "arch_summary": "Preset nt8y_3x3stem, SECOND fresh seed (20260711-9-dOjG). Byte-identical arch to nt8y3x3 (seed1) — different random init only. v5 · basic30(30) → stem 3×3→32 · 3×[15×15+15×15 @32, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64). Seed-variance control vs nt8y3x3; runs to full 31.3h.",
+      "arch_summary": "Preset nt8y_3x3stem, SECOND fresh seed (20260711-9-dOjG). Byte-identical arch to nt8y3x3 (seed1) — different random init only. v5 · basic30(30) → stem 3×3→32 · 3×[15×15+15×15 @32, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64). Seed-variance control vs nt8y3x3; was set to run to 31.3h but was stopped at step 5,800 (~0.77 h) to launch nt8y15x15.",
       "arch_stem": "basic30 → stem 3×3→32",
       "arch_blocks": "3× @32, 15×15+15×15, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out",
       "arch_heads": "policy intermediate_conv (pre-conv 512) · value WDL(16→FC64)",
@@ -112,7 +112,7 @@
           "log": "dcm_log_20260711-031104.txt",
           "date": "20260711",
           "cumstep_base": 0,
-          "label": "run (12 epochs, to 31.3h)",
+          "label": "run (12 epochs; stopped at step 5,800)",
           "enum_stem": "20260711-nt8y3x3stem-seed2-std"
         }
       ],
@@ -156,7 +156,7 @@
       "segments": [
         {
           "log": "dcm_log_20260710-210320.txt",
-          "date": "20260711",
+          "date": "20260710",
           "cumstep_base": 0,
           "label": "run (12 epochs)",
           "enum_stem": "20260711-wXIL-std2026_05"
@@ -167,12 +167,12 @@
     "v5": {
       "label": "v5 — 8.45M, 5-block · full lineage: 3 warm-start segments (M5 VM) + 5 corpus-replay continuations (M4 Pro)",
       "color": "#1f77b4",
-      "rezero_cap": 1.0,
+      "rezero_cap": 0.4472136,
       "n_blocks": 5,
-      "params": 8450000,
+      "params": 8447028,
       "arch_summary": "5-block 128ch lc0-style, LayerNorm output; lineage wd1e-4 → wd5e-4 → m0.93 (3 warm-start segments, M5 VM) then 5 corpus-replay continuation segments on M4 Pro to cum step ~859.8k",
       "arch_stem": "basic30 → stem 7×7→128",
-      "arch_blocks": "5× @128, 7×7+7×7, SE scale+bias/4, ReLU/pre, ReZero cap 1.0, LN-out",
+      "arch_blocks": "5× @128, 7×7+7×7, SE scale+bias/4, ReLU/pre, ReZero cap 0.447, LN-out",
       "arch_heads": "policy intermediate_conv (pre-conv 128) · value WDL(16→FC128)",
       "source": "v5doc",
       "v5doc_offsets": {
@@ -468,7 +468,7 @@
       "color": "#2ca02c",
       "rezero_cap": 1.0,
       "n_blocks": 1,
-      "params": 1860000,
+      "params": 1864336,
       "arch_summary": "stem 5×5→128 · 1×[7×7+7×7 @128, no-SE, relu/pre, ReZero(cap 1.0), LayerNorm out] · policy intermediate_conv (pre-conv 128) · value WDL(16→FC128)",
       "arch_stem": "basic30 → stem 5×5→128",
       "arch_blocks": "1× @128, 7×7+7×7, no-SE, ReLU/pre, ReZero cap 1.0, LN-out",
@@ -485,10 +485,11 @@
         {
           "log": "dcm_log_20260709-000611.txt",
           "date": "20260709",
-          "cumstep_base": 55000,
+          "cumstep_base": 55550,
           "label": "resume (enumerated)",
           "elapsed_base_sec": 20093.5,
-          "enum_stem": "20260629-mini1b-Coxw-resume"
+          "enum_stem": "20260629-mini1b-Coxw-resume",
+          "_elapsed_base_note": "cumstep_base is 55,550: the resume's start model 20260629-mini1b-Coxw-replay-latest (model_id 20260629-6-yqMI) has training_step 55,550. elapsed_base_sec is seg 0's elapsed at its last mark (cum 55,000); the 550 steps after it are not in it because seg 0's log is gone, so the time they took is unmeasured and is not modeled."
         }
       ],
       "trainset": "std-2026-05"
@@ -536,7 +537,7 @@
       "color": "#9467bd",
       "rezero_cap": 1.0,
       "n_blocks": 2,
-      "params": 1700000,
+      "params": 1696959,
       "arch_summary": "stem 7×7→64 · 2×[9×9+9×9 @64, SE scale+bias/4, GELU/pre, no-ReZero, LayerNorm out] · policy intermediate_conv (pre-conv 5) · value WDL(64→FC64)",
       "arch_stem": "basic30 → stem 7×7→64",
       "arch_blocks": "2× @64, 9×9+9×9, SE-4 scale+bias, GELU/pre, no-ReZero, LN-out",
@@ -584,27 +585,30 @@
         },
         {
           "label": "resume2 (enumerated)",
-          "cumstep_base": 135883,
+          "cumstep_base": 136662,
           "log": "dcm_log_20260706-125010.txt",
           "date": "20260706",
-          "elapsed_base_sec": 46279.8,
-          "enum_stem": "20260701-nT8Y-resume2"
+          "elapsed_base_sec": 46534.1,
+          "enum_stem": "20260701-nT8Y-resume2",
+          "_base_note": "start model 20260701-nT8Y-fatconv-resume-replay-latest (model_id 20260701-5-bOYQ) has training_step 70,779 (seg 1's abort save), so base = 65,883 + 70,779; elapsed base = seg 1's clamped training time to its last logged step 70,750 (24,330.4 s) + 22,203.7."
         },
         {
           "label": "resume3 (enumerated)",
-          "cumstep_base": 150883,
-          "elapsed_base_sec": 51951.4,
+          "cumstep_base": 151662,
+          "elapsed_base_sec": 52205.7,
           "log": "dcm_log_20260706-193601.txt",
           "date": "20260706",
-          "enum_stem": "20260701-nT8Y-resume3"
+          "enum_stem": "20260701-nT8Y-resume3",
+          "_base_note": "start model 20260701-nT8Y-resume2-replay-latest (model_id 20260706-2-3CZF) has training_step 15,000, so base = 136,662 + 15,000; elapsed base = resume2's clamped training time to 15,000 (5,671.6 s) on top of resume2's base."
         },
         {
           "label": "resume4 (enumerated)",
-          "cumstep_base": 289883,
-          "elapsed_base_sec": 101447.6,
+          "cumstep_base": 291662,
+          "elapsed_base_sec": 102090.9,
           "log": "dcm_log_20260707-233038.txt",
           "date": "20260707",
-          "enum_stem": "20260701-nT8Y-resume4"
+          "enum_stem": "20260701-nT8Y-resume4",
+          "_base_note": "start model 20260701-nT8Y-resume3-replay-latest (model_id 20260707-1-cslu) has training_step 140,000 (its last save), so base = 151,662 + 140,000; elapsed base = resume3's clamped training time to 140,000 (49,885.2 s) on top of resume3's base."
         }
       ],
       "trainset": "std-2026-05"

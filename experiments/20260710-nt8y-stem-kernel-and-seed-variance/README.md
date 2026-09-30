@@ -49,7 +49,7 @@ Checkpoints were identified from safetensors `__metadata__` (`model_id`, `traini
 
 | registry key | fresh model (id) | trainer lineage id | log | enumerated checkpoints | last logged step | last checkpoint |
 |---|---|---|---|---|---|---|
-| nt8y (5×5) | `20260701-161012-20260701-3-nT8Y-manual` (20260701-3-nT8Y) | 20260701-4-CIvL (parent nT8Y) | seg0 `dcm_log_20260701-091259.txt` **missing**; later segs `dcm_log_20260701-152447.txt`, `…20260706-125010`, `…20260706-193601`, 4th in registry | `20260701-nT8Y-fatconv-step*-frozen` (seg0) + per-resume stems | parity run (310,969 cum) | — |
+| nt8y (5×5) | `20260701-161012-20260701-3-nT8Y-manual` (20260701-3-nT8Y) | 20260701-4-CIvL (parent nT8Y) | seg0 `dcm_log_20260701-091259.txt` **missing**; later segs `dcm_log_20260701-152447.txt`, `…20260706-125010`, `…20260706-193601`, 4th in registry | `20260701-nT8Y-fatconv-step*-frozen` (seg0) + per-resume stems | parity run (312,748 cum) | — |
 | nt8y3x3 | `20260711-nt8y3x3stem-fresh` (20260711-3-pm4J) | 20260711-4-1mjX | `dcm_log_20260711-002649.txt` (00:26:49–03:08:59) | `20260711-nt8y3x3stem-std-replay-step{1000..20000}` | 20,440 | step 20000 |
 | nt8y3x3s2 | `20260711-nt8y3x3stem-seed2-fresh` (20260711-9-dOjG) | 20260711-10-FxUc | `dcm_log_20260711-031104.txt` (03:11:04–03:57:05) | `20260711-nt8y3x3stem-seed2-std-replay-step{1000..5000}` | 5,800 | step 5000 |
 | nt8y15x15 | `20260711-nt8y15x15stem-fresh` (20260711-11-xE1v) | 20260711-13-9mEU | `dcm_log_20260711-040005.txt` (04:00:05–10:13:15) | `20260711-nt8y15x15stem-std-replay-step{1000..49000}` | 49,750 | step 49000 (= `-latest`) |
@@ -180,7 +180,7 @@ Puzzle pElo and nll come from `documentation/dashboards/data/<key>.csv`, on the 
 - **nt8y is confounded** (host, build, hyperparameters). Its segment-0 log `dcm_log_20260701-091259.txt` is missing (deleted mid-run ~2026-07-06). Its segment-0 hyperparameters are unverified. The 0.00025 / 0.93 values come from segments 1–3.
   - The repo's `parameters.json` at e96e0b4 (wd 0.0001, lr 0.0005) matches no logged run, so the runs used saved app settings, not that file.
 - **nt8y time axis:** seg0 steps 51,000–65,000 have elapsed reconstructed from frozen-file mtimes (registry note), and cum 49,000 has a blank elapsed. Neither affects the 1k–49k step comparison.
-- **The 111-row nt8y notch** (cum 73,883–106,883 and 163,883–240,883) is outside this window. There is no data there, and the table does not reach it.
+- **The 111-row nt8y notch** (cum 73,883–106,883 and 164,662–241,662) is outside this window. (The second range read 163,883–240,883 before nt8y's resume `cumstep_base` values were corrected by +779 on 2026-09-29; see the parity write-up's Audit notes.) There is no data there, and the table does not reach it.
 - **Probe noise:** single puzzle probe per checkpoint, quantized pElo, SD ~10–22 about a local mean. Replay-era probe scale only.
 - **games_fed:** the registry/CSV `games_fed` column is empty for these runs. The matched-games claim is measured from each run's own log `games=` and from checkpoint `replay_next_game_index`, not modeled.
 - **GPU:** the arms never overlapped each other. Zero-byte logs appear during every run (likely brief probe/CLI launches, unverified). Flat ms/step says their load was negligible.
@@ -207,7 +207,7 @@ Puzzle pElo and nll come from `documentation/dashboards/data/<key>.csv`, on the 
   - "3x3/5x5/15x15 stems indistinguishable within probe noise" (memory dcm-parity-goal.md) → 3×3 vs 15×15 indistinguishable (mean −2.9 pElo over 20 matched steps). 5×5 nt8y is ahead of both at every horizon (+38 vs 3×3 over 1k–20k, 19/20; +94 vs 15×15 over 21k–49k, 29/29), but it is confounded by host, build and wd/momentum, so it is not a stem effect either way. Evidence: dashboards `data/nt8y*.csv`; `[REPLAY-HPARAMS]` in `dcm_log_20260701-152447.txt` vs `dcm_log_20260711-*.txt`.
   - "seed1 vs seed2 tracked ~7-25" → \|Δ\| 6.4–43.7 pElo, mean 18.6, over only 5 matched points (steps 1k–5k). The ~7–25 range leaves out step 1k (43.7). Evidence: nt8y3x3.csv, nt8y3x3s2.csv.
   - nt8y15x15 "terminated ~cum 46000 / 5.7h" (commit 672999b, memory) → the last logged step is 49,750 at 10:13:15, and the last checkpoint/probe is step 49,000 at elapsed 22,040 s = 6.12 h. The 5.62 h / cum 45k figure was the tick before termination (commit 22d0bdc). Evidence: `dcm_log_20260711-040005.txt` tail; nt8y15x15.csv.
-  - nt8y3x3s2 "runs to full 31.3h" (registry label/arch_summary, commit 0183064) → stopped at step 5,800 (~0.77 h) to launch nt8y15x15. Evidence: commit 7e7c14e; `dcm_log_20260711-031104.txt` last step 5800 at 03:56:56.
+  - nt8y3x3s2 "runs to full 31.3h" (registry label/arch_summary, commit 0183064) → stopped at step 5,800 (~0.77 h) to launch nt8y15x15. Evidence: commit 7e7c14e; `dcm_log_20260711-031104.txt` last step 5800 at 03:56:56. The registry label, arch_summary and segment label were corrected on 2026-09-29.
 - **Unverified:**
   - nt8y segment-0 hyperparameters and exact host: the log is deleted, and checkpoint metadata carries no hyperparameters. What is known is build 2009 / git e96e0b4 and a `/Volumes` corpus path.
   - What the zero-byte logs during each run were.

@@ -105,11 +105,11 @@ The pElo below is the in-app WIDE (4,435-position) probe on the recording build'
 | Run 1 (cycled lr ≤ 1e-3) | 44,113 → 197,342 | 112 | **9** | −234 … +49 | 1769 @ 82 (≈ seed), 1704 @ 89,052, **1671** end @ 197,353 | 27-arena stall at the end |
 | Run 2 before the τ change | 1 → 959,497 | #1–#758 | **41** (last #757 @ 957,823) | −70 … +48 | peak **1761 @ 6,403** (1760 in the 1000-step bucket @ 6,967); 1743 @ 88,878; 1723 @ 219,953; 1696 @ 499,978; **1638** @ 929,953 and @ 959,376 | draws 48–92 / 400; unique 399–400 / 400; avgDiverge 1.7–2.8 |
 | Run 2 near-greedy τ | 959,497 → 1,184,817 | #759–#928 (170) | **25** (#759 … #928) | **−182 … +126** | 1652 max just after the change; min **1576 @ 1,079,751**; median 1607 at ≥ 1.15M; end **1613** @ 1,184,801 | draws **8 – 307** / 400; unique down to **64 / 400** (#851); avgDiverge up to **124.2** |
-| Run 2, 09-17 resume | 1,183,795 → 1,192,765 | 7 | 1 | −45 … +21 | not tracked | still near-greedy τ |
+| Run 2, 09-17 resume | 1,183,795 → 1,192,765 | 7 | 1 | −45 … +21 | 1595–1616 (35 marks); end **1609** @ 1,192,678 | still near-greedy τ |
 
 Other run 2 facts:
 
-- **Totals:** 1,184,817 steps at the stop, **235.6 h** of summed elapsed time (`data/Ejp0.csv`), 66 promotions (3 + 17 + 46) through 08-30. Adding 09-17 gives 67.
+- **Totals:** 1,184,817 steps at the stop, 66 promotions (3 + 17 + 46) through 08-30. Adding 09-17 gives 67 promotions and 1,192,765 steps. `data/Ejp0.csv` now includes the 09-17 resume: **237.1 h** of summed elapsed time (was 235.6 h to 08-30, which also counted the 08-30 log's 1,183,795–1,184,817 tail that the resume discarded).
 - **Promotion rate:** 41 in 20.1 days before the τ change vs 25 in 43 h after it, ~6.8× faster.
 - **Arena swings under near-greedy τ:**
   - #813 −182 → #814 +80 (262 points)
@@ -139,7 +139,7 @@ Other run 2 facts:
 
 - One seed, one run per config. Runs 1 and 2 differ in more than one knob: run 1 used wd 5e-3 and cycle [5e-6, 1e-3] at its promotions; run 2 used wd 1e-3 and [1e-6, 5e-4].
 - In-app pElo reads ±~40 between consecutive probes (for example 1679 @ step 82 vs 1761 @ 6,403 in run 2, and 1769 @ 82 in run 1). Only multi-hundred-k-step trends are meaningful.
-- Run 1's summed elapsed of 43.3 h double-counts the rewound segment 2 tail. Use steps.
+- Run 1's summed elapsed was 43.3 h while it double-counted the rewound segment 2 tail; with that tail cut (registry `log_kept_to`, 2026-09-29) `data/Ejp0r1.csv` reads 40.5 h. Segments 0 and 1 are separate fresh starts from the seed, concatenated on the step axis. Use steps.
 - The 25 near-greedy promotions (Ejp0-42…-66, plus -67 on 09-17) are **suspect** as strength evidence.
 - Elo in this file is arena Elo relative to the immediate predecessor, never absolute.
 
@@ -160,7 +160,7 @@ Other run 2 facts:
 - **Verified against dashboards:**
   - `selfplay_probe/Ejp0.csv` and `Ejp0r1.csv` (4,398 and 911 probes)
   - `data/Ejp0.csv`: 1,184,817 max step; 235.6 h; peak 1760 @ 6,967
-  - `data/Ejp0r1.csv`: 43.3 h
+  - `data/Ejp0r1.csv`: 43.3 h (40.5 h after the 2026-09-29 fix that cuts segment 2's abandoned tail; `data/Ejp0.csv` is 1,192,765 max step / 237.1 h after adding the 09-17 resume)
 - **Verified against headers:** the seed and the session champion/trainer `__metadata__` above. `du -h` shows sjIy/orSA/OSWK sessions of 7.2–7.5 GB each (base-2), matching "~7–8 GiB per promote save".
 - **Corrections:**
   - Old claim (registry `Ejp0r1` note; memory): "run 1 … lr-cycling and momentum-cycling OFF"; "run 2 differs from run 1 by cycling ON". New: run 1 had cycling ON from 13:15:36 on 08-07, before its first promotion (20:13). 1,669 of its 1,796 `[STATS]` lines carry `lr=…·cyc` / `μ=…·cyc`. Evidence: `dcm_log_20260807-131013.txt` `[PARAM] lr_momentum_cycle` lines at 13:15:36, 19:06:18, 17:13:39.
@@ -169,7 +169,7 @@ Other run 2 facts:
   - Old claim (memory): "unique fell … as low as 74/400 (18%)." New: the minimum is **64/400 (16%)** at arena #851 (avgDiverge 108.1). 74/400 also occurred. The registry already says 64.
   - Old claim (memory): "consecutive arenas swung +126 then −151." New: the pairs are #825 −151 → #826 +124 (275 points) and #849 +126 → #850 −35. Evidence: `[ARENA] #825/#826/#849/#850 kv` lines.
   - Old claim (memory): "wide pElo fell 1626 → ~1605" during the τ experiment. New: 1638 at the change (probe @ 959,376) → min 1576 @ 1,079,751 → median 1607 at ≥ 1.15M → 1613 at the end. 1625–1626 is the reading near 1.00M. Evidence: `selfplay_probe/Ejp0.csv`.
-  - Old claim (registry `Ejp0`): "final champion Ejp0-66; 66 promotions; a resume would append a fourth log." New: the run *was* resumed on 2026-09-17 (build 2105, still near-greedy τ). It added arenas #929–#935 and one promotion (#930, +21, step 1,186,322 → champion **Ejp0-67**), saved as `20260917-223317-…-sjIy-promote.dcmsession`. A 09-21 launch (build 2114) logged one `[STATS]` line. Neither log is in the registry. 66 stands for the 08-08 → 08-30 span.
+  - Old claim (registry `Ejp0`): "final champion Ejp0-66; 66 promotions; a resume would append a fourth log." New: the run *was* resumed on 2026-09-17 (build 2105, still near-greedy τ). It added arenas #929–#935 and one promotion (#930, +21, step 1,186,322 → champion **Ejp0-67**), saved as `20260917-223317-…-sjIy-promote.dcmsession`. A 09-21 launch (build 2114) logged one `[STATS]` line. Neither log is in the registry. 66 stands for the 08-08 → 08-30 span. **Fixed 2026-09-29:** `selfplay_registry.json` `Ejp0` now lists the 09-17 log (with the 08-30 log cut at 1,183,795, where it resumed), records the 09-21 one-line launch under `excluded_logs`, and reads 67 promotions, final trainer `Ejp0-68`, endpoint 1609 / 2.216 (last wide probe, @ 1,192,678), label "67 promo, 237h, ended 09-17". The `Ejp0r1` note's cycling and stall-length claims were corrected as above.
 - **Unverifiable:**
   - Disk figures "148 GiB → 13 GiB free", "Sessions/ 656 GB / 89 saves, 74 promote", and "15 GiB free at stop": `Sessions/` has since been pruned to 21 entries, and no log line records free space. Run 2's logs show 96 `Saved session` events across all triggers (6 + 30 + 60), which is consistent with that magnitude but does not match the save count.
   - The seed pElo of 1731.3 and the OSWK champion 1731.3 / trainer 1641.2 probes (memory): re-probing is barred while training is live.

@@ -63,7 +63,10 @@ def _resolve_bin():
 BIN = _resolve_bin()
 
 # ---------- safetensors ----------
-def _st_load(path):
+def _st_load(path, want=None):
+    """Tensors of a .safetensors file as float32 arrays. `want` (a predicate on the
+    tensor name) limits the read to those tensors; a whole checkpoint is tens of MB
+    and `internals` needs a handful of scalars from it."""
     with open(path, "rb") as f:
         n = struct.unpack("<Q", f.read(8))[0]
         hdr = json.loads(f.read(n)); base = 8 + n
@@ -71,6 +74,8 @@ def _st_load(path):
         for k, m in hdr.items():
             if k == "__metadata__":
                 out["__metadata__"] = m; continue
+            if want is not None and not want(k):
+                continue
             s, e = m["data_offsets"]; f.seek(base + s); raw = f.read(e - s)
             if m["dtype"] == "BF16":
                 a = (np.frombuffer(raw, "<u2").astype(np.uint32) << 16).view("<f4")
@@ -85,7 +90,7 @@ def meta_step_of(path):
         return int(json.loads(f.read(n))["__metadata__"]["training_step"])
 
 def internals(path, cap):
-    W = _st_load(path)
+    W = _st_load(path, want=lambda k: k == "blocks.0.bn1.running_mean" or k.endswith(".rezero_alpha"))
     bn1 = float(abs(W["blocks.0.bn1.running_mean"]).max())
     nblk = len({k.split(".")[1] for k in W if k.startswith("blocks.")})
     effs, tot = [], 0.0
@@ -775,6 +780,84 @@ def probe_backfill(run, verbose=True):
         print(f"probe-backfilled {filled}")
     return filled
 
+def recompute_cum_steps(run, verbose=True):
+    """Re-derive cum_step = segments[segment].cumstep_base + meta_step for every row.
+
+    `cumstep_base` in registry.json is the single source of truth for where a
+    segment sits on the cumulative axis, but a row stores the cum_step it was given
+    when it was written. Correcting a base (a resume that started from step 70,779
+    rather than the assumed 70,000, say) therefore changes nothing on its own; this
+    is what carries the correction into the rows. Every row records its segment and
+    its segment-local meta_step, so the mapping is exact.
+
+    Refuses rather than writes if the new mapping would put two rows on one
+    cum_step: that would mean two segments now claim the same point on the axis,
+    which is a registry error to resolve, not something to resolve by dropping a
+    row. `frozen_file` is left alone: it is the name of a file on disk, and a
+    legacy cum-named snapshot keeps the name it was saved under."""
+    cfg = REG["runs"][run]
+    rows = read_csv(run)
+    moved = 0
+    for r in rows:
+        seg, meta = str(r.get("segment", "")), str(r.get("meta_step", ""))
+        if not (seg.isdigit() and meta.isdigit()):
+            raise ValueError(f"{run}: row at cum_step {r['cum_step']} lacks a segment/meta_step "
+                             f"({seg!r}/{meta!r}); cannot re-derive its cum_step")
+        cum = cfg["segments"][int(seg)]["cumstep_base"] + int(meta)
+        if int(r["cum_step"]) != cum:
+            r["cum_step"] = cum
+            moved += 1
+    seen = collections.Counter(int(r["cum_step"]) for r in rows)
+    dup = sorted(c for c, n in seen.items() if n > 1)
+    if dup:
+        raise ValueError(f"{run}: re-derived cum_steps collide at {dup[:10]} "
+                         f"({len(dup)} total); fix the segments' cumstep_base")
+    if moved:
+        write_csv(run, rows)
+    if verbose:
+        print(f"{run}: re-derived cum_step on {moved} row(s)")
+    return moved
+
+
+def recompute_internals(run, verbose=True):
+    """Re-derive bn1Mean / sae2 / eff_alpha from the checkpoints themselves.
+
+    eff_alpha and sae2 depend on the registry's `rezero_cap` (eff = cap·tanh(α/cap)),
+    so a row written while the cap was recorded wrongly carries wrong values. This
+    rereads the weights with the current cap. Only segments that declare a
+    `model_id` take part: a checkpoint is found by (model_id, training_step) in its
+    header, never by filename, because segment-local step numbering makes names
+    repeat across segments. A row in such a segment whose checkpoint no longer
+    exists has its three internals BLANKED rather than left as computed with the
+    wrong cap. Reads CPU-side only; nothing is probed."""
+    cfg = REG["runs"][run]
+    segs_with_id = {i: sg["model_id"] for i, sg in enumerate(cfg["segments"]) if sg.get("model_id")}
+    if not segs_with_id:
+        print(f"{run}: no segment declares a model_id; nothing to recompute")
+        return 0
+    ck = _ckpt_index([MODELS])
+    rows = read_csv(run)
+    redone = blanked = 0
+    for r in rows:
+        seg = str(r.get("segment", ""))
+        if not seg.isdigit() or int(seg) not in segs_with_id:
+            continue
+        p = ck.get((segs_with_id[int(seg)], int(r["meta_step"])))
+        if p:
+            bn1, sae2, effs = internals(p, cfg["rezero_cap"])
+            r.update(bn1Mean=round(bn1, 4), sae2=round(sae2, 4),
+                     eff_alpha=";".join(f"{e:.4f}" for e in effs))
+            redone += 1
+        elif any(r.get(k) not in ("", None) for k in ("bn1Mean", "sae2", "eff_alpha")):
+            r.update(bn1Mean="", sae2="", eff_alpha="")
+            blanked += 1
+    write_csv(run, rows)
+    if verbose:
+        print(f"{run}: internals re-derived on {redone} row(s), blanked on {blanked} "
+              f"(checkpoint gone), cap {cfg['rezero_cap']}")
+    return redone
+
+
 def recompute_elapsed(run, verbose=True):
     """Rewrite elapsed_train_sec for every existing row using the current SegTime
     (sleep-clamped). One-time migration so historical marks match newly-tracked ones
@@ -793,9 +876,14 @@ def recompute_elapsed(run, verbose=True):
         # Trust the row's recorded segment over re-deriving it from cum, which
         # `seg_for` cannot do correctly across a forked segment.
         seg = int(r["segment"]) if str(r.get("segment", "")).isdigit() else None
-        el, _clk, _meta, _si = st.elapsed_and_clock(cum, seg)
+        el, clk, _meta, _si = st.elapsed_and_clock(cum, seg)
         if el != "" and str(r.get("elapsed_train_sec", "")) != str(el):
             r["elapsed_train_sec"] = el
+            changed += 1
+        # The wall-clock stamp is the segment's registry `date` plus the log line's
+        # time of day, so a corrected `date` has to reach the rows the same way.
+        if clk != "" and r.get("wallclock_iso", "") != clk:
+            r["wallclock_iso"] = clk
             changed += 1
         # wall_sec must move WITH elapsed_train_sec. They are the clamped and unclamped
         # readings of one walk, and `wall_sec - elapsed_train_sec` is only meaningful
@@ -1274,6 +1362,7 @@ if __name__ == "__main__":
     p = sub.add_parser("track"); p.add_argument("run")
     p = sub.add_parser("migrate"); p.add_argument("run"); p.add_argument("--loop-state")
     p = sub.add_parser("recompute"); p.add_argument("run", nargs="?", default="__all__")
+    p = sub.add_parser("recompute-internals"); p.add_argument("run")
     p = sub.add_parser("discover-stems")
     p.add_argument("run", nargs="?", default="__all__")
     p.add_argument("--write", action="store_true",
@@ -1294,7 +1383,10 @@ if __name__ == "__main__":
     elif a.cmd == "recompute":
         targets = list(REG["runs"]) if a.run == "__all__" else [a.run]
         for r in targets:
+            recompute_cum_steps(r)
             recompute_elapsed(r)
+    elif a.cmd == "recompute-internals":
+        recompute_internals(a.run)
     elif a.cmd == "discover-stems":
         targets = list(REG["runs"]) if a.run == "__all__" else [a.run]
         proposed = {}

@@ -78,5 +78,5 @@ pElo and nll are from `documentation/dashboards/data/wxil.csv` (replay-era probe
 - **Correction (data record):** the `wallclock_iso` column in `wxil.csv` and the registry segment `date: "20260711"` → the run actually started **2026-07-10 21:03**.
   - Evidence: log filename `dcm_log_20260710-210320.txt`; log mtime 2026-07-11 00:19; registry commit 16947f6 at 2026-07-10 21:08.
   - The CSV's step-1000 row reads `2026-07-11T21:11:57`, one day late. Its time-of-day values are consistent with the log.
-  - The CSV and registry were not edited.
+  - **Fixed 2026-09-29:** registry segment `date` → `20260710`, and the CSV's `wallclock_iso` re-derived from it with `replay.py recompute wxil` (step 1000 now reads `2026-07-10T21:11:57`). That recompute also filled the `wall_sec` column, which this CSV's older schema lacked; `games_fed` stays blank.
 - **Unverified:** nothing further.

@@ -43,7 +43,7 @@
           "log": "dcm_log_20260722-102524.txt",
           "date": "20260722",
           "cumstep_base": 978000,
-          "label": "resume 2 (warm restart after macOS update reboot)"
+          "label": "resume 2 (warm restart ~40 h after seg 1 halted on a GPU command-buffer failure, 2026-07-20 18:13)"
         }
       ]
     }

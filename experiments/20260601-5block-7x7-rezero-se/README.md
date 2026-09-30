@@ -281,7 +281,7 @@ Corrections:
 - "Wide plateau from ~270k" → wide still rose ~+20 to 400–410k.
 - "value-head draw-collapse" wording → "value-head collapse" (pD ~0.44 is nowhere near pD → 1).
 - "The shallow-but-wide net underperformed" → not measured against an equal-budget deeper run; it beat the 12-block A at every step A reached.
-- `data/bzw3.csv` / `selfplay_registry.json` (not edited, reported): the registry's bzw3 entry ("33 promo, 115h") merges this run, the abandoned tails, Exp 6, and four 600-step dropout-A/B fork runs; see the Exp 6 write-up's Audit notes for the full finding.
+- `data/bzw3.csv` / `selfplay_registry.json`: the registry's bzw3 entry ("33 promo, 115h") merged this run, the abandoned tails, Exp 6, and four 600-step dropout-A/B fork runs; see the Exp 6 write-up's Audit notes for the full finding. **Fixed 2026-09-29:** `bzw3` now holds only this kept chain (the five abandoned logs and everything after 20260606-202202 moved to `excluded_logs`; each kept log cut at the step the next one resumed from via `log_kept_to`, which drops the 465,670–470,822 tail). `data/bzw3.csv` regenerated with `selfplay.py`: 1 → 467,006 (last 1000-step bucket; last `[STATS]` step 467,094), 100.9 h, label "31 promo, 101h". Exp 6 is a separate entry, `bzw3e6`.
 
 Unverifiable:
 - Step-0 "701 / 4.27" and step-3,104 "713 / 4.12": no single canonical tick; the ±1k tick means (637/4.88, 725/3.99) differ. The original values were probably read off a smoothed chart.

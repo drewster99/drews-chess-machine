@@ -124,7 +124,7 @@ The July replay-era stem-kernel series (nt8y 3×3/5×5/15×15) is corpus replay,
   - Old claim: KbHZ-cont. "→536k+". New: `[STATS]` max is 532,371 and the last save is step 532,369. Evidence: `dcm_log_20260610-123913.txt`; `Ko63-manual` safetensors `training_step`.
   - Old claim: sMe9 "≥372,748 / ≥115,628." New: max step seen was 377,302. Evidence: `dcm_log_20260529-113855.txt`.
   - Old claim: "wd 1e-3 for the sMe9/ysdg/KXvb era." New: ysdg 1e-3. sMe9 alternated 1e-3 / 1e-4 / 1e-3. KXvb was 1e-4. Evidence: `[STATS] reg=(… decay=…)`.
-  - Old claim (registry): KbHZ "24 promo." New: 24 `promoted=1` lines are logged, but 2 (steps 181,012 and 181,016) are in branches abandoned by the rewind to 175,543. The surviving line has 22, consistent with final champion `KbHZ-22` / trainer `-23`.
+  - Old claim (registry): KbHZ "24 promo." New: 24 `promoted=1` lines are logged, but 2 (steps 181,012 and 181,016) are in branches abandoned by the rewind to 175,543. The surviving line has 22, consistent with final champion `KbHZ-22` / trainer `-23`. **Fixed 2026-09-29:** registry label and `promotions` now read 22 (re-checked: `Verdict: PROMOTED` lines name KbHZ-1 … KbHZ-22, with KbHZ-4 minted twice on the abandoned 180,042 branches and a third time at 198,650 on the kept line).
   - Old claim (registry label): sMe9 "93h." New: `data/sMe9.csv` elapsed is 108.9h. Neither is exact, because summed launch elapsed double-counts rewinds; the by-step axis is authoritative.
   - Old claim (iteration 6): LWKa is an "old fixed · graph.run" era run. New: it is still pre-06-02, but it is bf16 v4 at lr 1e-2 like WjRY. Only its first log (build 1528, git 0626cec) was fp32 at the commit level.
 - **Unverifiable:**

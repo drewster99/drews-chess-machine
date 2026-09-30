@@ -50,6 +50,9 @@ def main():
     if not os.path.exists(log):
         sys.exit(f"log not found: {log}")
     base = cfg.get("base_modelID")
+    # Last step of this launch on the kept chain (registry `log_kept_to`); marks
+    # past it come from a tail a later resume abandoned.
+    kept_to = cfg.get("log_kept_to", {}).get(logs[seg])
 
     path = os.path.join(HERE, "selfplay_probe", f"{a.run}.csv")
     rows = list(csv.DictReader(open(path))) if os.path.exists(path) else []
@@ -70,6 +73,8 @@ def main():
             if step <= last or (last >= 0 and step - last < a.spacing):
                 continue
             if base and not m.group(4).startswith(base):
+                continue
+            if kept_to is not None and step > kept_to:
                 continue
             w.writerow({"step": step, "pElo": m.group(3), "nll": m.group(2), "segment": seg})
             last = step
