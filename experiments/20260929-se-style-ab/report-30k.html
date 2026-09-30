@@ -1,0 +1,167 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SE Style A/B/C</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Fraunces:opsz,wght@9..144,600&display=swap">
+<style>
+:root{--bg:#F5F6F4;--panel:#FFFFFF;--ink:#1C2126;--muted:#5E6770;--rule:#D9DDD8;--grid:#E6E9E5;
+--sb:#B5532E;--att:#2F6F98;--none:#2F7D55;--band:rgba(47,111,152,.07);--bandp:rgba(181,83,46,.08);--hi:#EEF4EC;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14171A;--panel:#1B1F23;--ink:#E6E9EC;--muted:#9AA3AB;--rule:#2C3238;--grid:#262B30;
+--sb:#E0845E;--att:#6FAEDB;--none:#6CC495;--band:rgba(111,174,219,.10);--bandp:rgba(224,132,94,.10);--hi:#1F2A22;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#14171A;--panel:#1B1F23;--ink:#E6E9EC;--muted:#9AA3AB;--rule:#2C3238;--grid:#262B30;
+--sb:#E0845E;--att:#6FAEDB;--none:#6CC495;--band:rgba(111,174,219,.10);--bandp:rgba(224,132,94,.10);--hi:#1F2A22;color-scheme:dark}
+body{background:var(--bg);color:var(--ink);font:15px/1.6 "IBM Plex Sans",system-ui,sans-serif;padding-inline:16px;padding-block:32px 64px}
+main{max-width:900px;margin:0 auto;display:grid;gap:36px}
+h1{font-family:Fraunces,Georgia,serif;font-weight:600;font-size:clamp(28px,5vw,40px);line-height:1.15;margin:0;text-wrap:balance}
+h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 12px;font-weight:600}
+p{margin:0;max-width:68ch} .lede{color:var(--muted);font-size:16px}
+.eyebrow{font:500 12px "IBM Plex Mono",monospace;letter-spacing:.06em;color:var(--muted)}
+.key{display:flex;gap:18px;flex-wrap:wrap;font:500 13px "IBM Plex Mono",monospace}
+.key span::before{content:"";display:inline-block;width:14px;height:3px;margin-right:6px;vertical-align:middle;background:currentColor}
+.k-sb{color:var(--sb)} .k-att{color:var(--att)} .k-none{color:var(--none)}
+ul.find{margin:0;padding-left:20px;display:grid;gap:8px;max-width:72ch}
+.panel{background:var(--panel);border:1px solid var(--rule);border-radius:6px;padding:16px}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;font-size:13.5px}
+th,td{padding:6px 10px;border-bottom:1px solid var(--rule);text-align:right;white-space:nowrap}
+th:first-child{text-align:left} thead th{font-weight:600;color:var(--muted);font-size:12px}
+td{font-family:"IBM Plex Mono",monospace} .sub{color:var(--muted)}
+td.best{font-weight:600;color:var(--none)} tr.tr{background:var(--hi)}
+svg{width:100%;height:auto;display:block} .grid{stroke:var(--grid)} .yl,.xl,.bl{fill:var(--muted);font:11px "IBM Plex Mono",monospace}
+.yl{text-anchor:end} .xl,.bl{text-anchor:middle} .band{fill:var(--band)} .band-p{fill:var(--bandp)}
+.ln{fill:none;stroke-width:2;stroke-linejoin:round} .ln.sb{stroke:var(--sb)} .ln.att{stroke:var(--att)} .ln.none{stroke:var(--none)}
+.dot.sb{fill:var(--sb)} .dot.att{fill:var(--att)} .dot.none{fill:var(--none)}
+text.lt{fill:var(--ink);font:12px "IBM Plex Mono",monospace} .lg{fill:var(--panel);stroke:var(--rule)}
+.charts{display:grid;gap:20px} .note{font-size:13px;color:var(--muted)}
+</style>
+<main>
+<header style="display:grid;gap:10px">
+<div class="eyebrow">DCM · corpus replay · 2026-09-30 · step 30,000 of 3 arms</div>
+<h1>No SE beats both SE styles on this net</h1>
+<p class="lede">Three copies of the same 3-block 7×7 @128 network, identical except for the squeeze-and-excitation block, trained on the same Lichess corpus with the same decaying LR cycle. All three have now passed the second LR trough.</p>
+<div class="key"><span class="k-none">none</span><span class="k-att">attenuate-only</span><span class="k-sb">scale+bias</span></div>
+</header>
+<section><h2>Findings</h2><ul class="find">
+<li><b>No SE is best at both LR troughs</b> on pElo and nll: 1483.6 / 2.2227 at 30k, against attenuate-only 1478.0 / 2.2342 and scale+bias 1446.7 / 2.2533.</li>
+<li><b>nll is the steadier signal.</b> No SE had the lowest nll at 22 of the 24 marks from 7k to 30k.</li>
+<li><b>Scale+bias is consistently last:</b> 49 pElo behind no SE at the 11k trough and 37 behind at 30k.</li>
+<li><b>Attenuate-only is close at the troughs but noisier.</b> Its pElo moved 29.0 per mark on average from 10k to 30k, against 16.4 for no SE, and it fell 101 at 20k near the LR peak.</li>
+<li><b>At the LR peak (21k) the arms were level</b> (scale+bias 1308.8, attenuate-only 1316.1, none 1313.0), but around it the SE arms were unstable: scale+bias fell to 1222 at 19k and attenuate-only to 1227 at 20k, while no SE never dropped below 1299.</li>
+<li><b>Provisional:</b> SE adds parameters here without improving play or fit, and scale+bias SE is measurably worse. One seed per arm, so gaps under ~44 pElo sit inside the measured seed spread.</li>
+</ul></section>
+<section><h2>At the LR peak and troughs</h2><p style="margin-bottom:12px">The troughs (LR ≈ 9e-4) are the fair comparison: weights have settled, so a single probe reflects the arm's level. Near the peak (LR ≈ 0.087, step 21k) each checkpoint lands wherever the last large steps pushed it. At the peak itself all three were level (7-point spread), but in the marks around it the SE arms swung 60–130 pElo while no SE stayed within about 35. That instability is the peak's result.</p><div class="panel scroll"><table>
+<thead><tr><th>point</th><th>LR</th><th>scale+bias pElo / nll</th><th>attenuate-only</th><th>none</th></tr></thead><tbody><tr><th>11k trough</th><td>0.000933</td><td>1278.4 <span class="sub">/ 2.4571</span></td><td>1303.7 <span class="sub">/ 2.4445</span></td><td>1327.4 <span class="sub">/ 2.4201</span></td></tr>
+<tr><th>21k peak</th><td>0.0871</td><td>1308.8 <span class="sub">/ 2.4205</span></td><td>1316.1 <span class="sub">/ 2.3952</span></td><td>1313.0 <span class="sub">/ 2.3733</span></td></tr>
+<tr><th>30k trough</th><td>0.000916</td><td>1446.7 <span class="sub">/ 2.2533</span></td><td>1478.0 <span class="sub">/ 2.2342</span></td><td>1483.6 <span class="sub">/ 2.2227</span></td></tr></tbody></table></div></section>
+<section class="charts"><h2>Curves</h2>
+<div class="panel"><div class="eyebrow" style="margin-bottom:6px">pElo (wide probe set), higher is better</div><svg viewBox="0 0 760 300" role="img" aria-label="pElo by step">
+<rect x="257.7" y="16" width="71.2" height="248" class="band"/>
+<text x="293.2" y="28" class="bl">LR trough</text>
+<rect x="494.9" y="16" width="71.2" height="248" class="band-p"/>
+<text x="530.5" y="28" class="bl">LR peak</text>
+<rect x="708.4" y="16" width="35.6" height="248" class="band"/>
+<text x="726.2" y="28" class="bl">LR trough</text>
+<line x1="56" x2="744" y1="264.0" y2="264.0" class="grid"/><text x="48" y="268.0" class="yl">850</text>
+<line x1="56" x2="744" y1="225.8" y2="225.8" class="grid"/><text x="48" y="229.8" class="yl">950</text>
+<line x1="56" x2="744" y1="187.7" y2="187.7" class="grid"/><text x="48" y="191.7" class="yl">1050</text>
+<line x1="56" x2="744" y1="149.5" y2="149.5" class="grid"/><text x="48" y="153.5" class="yl">1150</text>
+<line x1="56" x2="744" y1="111.4" y2="111.4" class="grid"/><text x="48" y="115.4" class="yl">1250</text>
+<line x1="56" x2="744" y1="73.2" y2="73.2" class="grid"/><text x="48" y="77.2" class="yl">1350</text>
+<line x1="56" x2="744" y1="35.1" y2="35.1" class="grid"/><text x="48" y="39.1" class="yl">1450</text>
+<text x="150.9" y="288" class="xl">5k</text>
+<text x="269.5" y="288" class="xl">10k</text>
+<text x="388.1" y="288" class="xl">15k</text>
+<text x="506.8" y="288" class="xl">20k</text>
+<text x="625.4" y="288" class="xl">25k</text>
+<text x="744.0" y="288" class="xl">30k</text>
+<polyline points="56.0,252.9 79.7,178.6 103.4,145.4 127.2,136.3 150.9,114.9 174.6,104.7 198.3,104.5 222.1,106.3 245.8,104.1 269.5,101.7 293.2,100.5 317.0,94.2 340.7,98.0 364.4,101.1 388.1,98.6 411.9,97.6 435.6,110.4 459.3,104.5 483.0,122.0 506.8,97.2 530.5,88.9 554.2,86.8 577.9,87.0 601.7,74.2 625.4,39.1 649.1,38.9 672.8,38.3 696.6,36.4 720.3,34.6 744.0,36.4" class="ln sb"/>
+<circle cx="744.0" cy="36.4" r="3.5" class="dot sb"/>
+<polyline points="56.0,238.6 79.7,171.4 103.4,149.8 127.2,129.8 150.9,109.0 174.6,107.8 198.3,105.7 222.1,101.1 245.8,94.4 269.5,98.4 293.2,90.9 317.0,96.4 340.7,95.4 364.4,98.0 388.1,94.8 411.9,89.1 435.6,97.0 459.3,88.1 483.0,81.7 506.8,120.3 530.5,86.2 554.2,81.1 577.9,96.6 601.7,48.5 625.4,45.8 649.1,37.7 672.8,31.3 696.6,29.5 720.3,33.0 744.0,24.4" class="ln att"/>
+<circle cx="744.0" cy="24.4" r="3.5" class="dot att"/>
+<polyline points="56.0,238.8 79.7,174.2 103.4,141.0 127.2,121.8 150.9,112.6 174.6,105.7 198.3,93.3 222.1,90.3 245.8,87.2 269.5,92.3 293.2,81.9 317.0,86.0 340.7,87.8 364.4,89.3 388.1,86.4 411.9,81.9 435.6,92.5 459.3,89.3 483.0,86.2 506.8,92.9 530.5,87.4 554.2,71.8 577.9,59.3 601.7,53.2 625.4,39.7 649.1,38.9 672.8,29.9 696.6,22.8 720.3,25.6 744.0,22.3" class="ln none"/>
+<circle cx="744.0" cy="22.3" r="3.5" class="dot none"/>
+<rect x="586" y="194" width="150" height="62" rx="4" class="lg"/>
+<line x1="594" x2="616" y1="210" y2="210" class="ln none"/><text x="624" y="214" class="lt">none</text>
+<line x1="594" x2="616" y1="228" y2="228" class="ln att"/><text x="624" y="232" class="lt">attenuate-only</text>
+<line x1="594" x2="616" y1="246" y2="246" class="ln sb"/><text x="624" y="250" class="lt">scale+bias</text>
+</svg></div>
+<div class="panel"><div class="eyebrow" style="margin-bottom:6px">nll, lower is better</div><svg viewBox="0 0 760 300" role="img" aria-label="nll by step">
+<rect x="257.7" y="16" width="71.2" height="248" class="band"/>
+<text x="293.2" y="28" class="bl">LR trough</text>
+<rect x="494.9" y="16" width="71.2" height="248" class="band-p"/>
+<text x="530.5" y="28" class="bl">LR peak</text>
+<rect x="708.4" y="16" width="35.6" height="248" class="band"/>
+<text x="726.2" y="28" class="bl">LR trough</text>
+<line x1="56" x2="744" y1="264.0" y2="264.0" class="grid"/><text x="48" y="268.0" class="yl">2.2</text>
+<line x1="56" x2="744" y1="214.4" y2="214.4" class="grid"/><text x="48" y="218.4" class="yl">2.4</text>
+<line x1="56" x2="744" y1="164.8" y2="164.8" class="grid"/><text x="48" y="168.8" class="yl">2.6</text>
+<line x1="56" x2="744" y1="115.2" y2="115.2" class="grid"/><text x="48" y="119.2" class="yl">2.8</text>
+<line x1="56" x2="744" y1="65.6" y2="65.6" class="grid"/><text x="48" y="69.6" class="yl">3.0</text>
+<line x1="56" x2="744" y1="16.0" y2="16.0" class="grid"/><text x="48" y="20.0" class="yl">3.2</text>
+<text x="150.9" y="288" class="xl">5k</text>
+<text x="269.5" y="288" class="xl">10k</text>
+<text x="388.1" y="288" class="xl">15k</text>
+<text x="506.8" y="288" class="xl">20k</text>
+<text x="625.4" y="288" class="xl">25k</text>
+<text x="744.0" y="288" class="xl">30k</text>
+<polyline points="56.0,28.0 79.7,130.1 103.4,165.5 127.2,178.3 150.9,192.1 174.6,196.8 198.3,198.5 222.1,195.6 245.8,199.0 269.5,199.0 293.2,200.2 317.0,207.1 340.7,205.8 364.4,199.6 388.1,201.1 411.9,205.4 435.6,198.6 459.3,195.8 483.0,190.3 506.8,204.2 530.5,209.3 554.2,211.7 577.9,207.6 601.7,217.1 625.4,243.8 649.1,249.9 672.8,248.7 696.6,248.7 720.3,250.8 744.0,250.8" class="ln sb"/>
+<circle cx="744.0" cy="250.8" r="3.5" class="dot sb"/>
+<polyline points="56.0,52.7 79.7,132.8 103.4,157.6 127.2,179.1 150.9,191.6 174.6,192.4 198.3,196.9 222.1,197.0 245.8,204.5 269.5,200.6 293.2,203.4 317.0,200.7 340.7,204.5 364.4,200.7 388.1,201.6 411.9,209.8 435.6,199.9 459.3,212.9 483.0,214.0 506.8,180.4 530.5,215.6 554.2,221.2 577.9,202.2 601.7,232.8 625.4,244.6 649.1,251.9 672.8,244.9 696.6,246.0 720.3,250.3 744.0,255.5" class="ln att"/>
+<circle cx="744.0" cy="255.5" r="3.5" class="dot att"/>
+<polyline points="56.0,37.4 79.7,145.7 103.4,172.2 127.2,179.4 150.9,188.9 174.6,194.2 198.3,201.7 222.1,203.0 245.8,208.6 269.5,203.1 293.2,209.4 317.0,208.5 340.7,207.5 364.4,209.3 388.1,205.5 411.9,215.1 435.6,201.4 459.3,219.7 483.0,217.5 506.8,213.0 530.5,221.0 554.2,224.9 577.9,230.7 601.7,232.2 625.4,245.3 649.1,245.9 672.8,250.5 696.6,258.2 720.3,257.8 744.0,258.4" class="ln none"/>
+<circle cx="744.0" cy="258.4" r="3.5" class="dot none"/>
+<rect x="586" y="38" width="150" height="62" rx="4" class="lg"/>
+<line x1="594" x2="616" y1="54" y2="54" class="ln none"/><text x="624" y="58" class="lt">none</text>
+<line x1="594" x2="616" y1="72" y2="72" class="ln att"/><text x="624" y="76" class="lt">attenuate-only</text>
+<line x1="594" x2="616" y1="90" y2="90" class="ln sb"/><text x="624" y="94" class="lt">scale+bias</text>
+</svg></div>
+<p class="note">Shaded bands mark the LR troughs (≈1e-3 → 9e-4) and the cycle peak (≈0.087). The SE arms swing hardest around the peak.</p></section>
+<section><h2>Summary by arm</h2><div class="panel scroll"><table>
+<thead><tr><th></th><th>scale+bias</th><th>attenuate-only</th><th>none</th></tr></thead><tbody><tr><th>params</th><td>5,208,050</td><td>5,195,378</td><td>5,170,322</td></tr>
+<tr><th>ModelID</th><td>20260929-12-JZOe</td><td>20260929-13-06yp</td><td>20260929-18-D9is</td></tr>
+<tr><th>pElo @30k</th><td>1446.7</td><td>1478.0</td><td>1483.6</td></tr>
+<tr><th>nll @30k</th><td>2.2533</td><td>2.2342</td><td>2.2227</td></tr>
+<tr><th>peak pElo (step)</th><td>1451.3 (29k)</td><td>1478.0 (30k)</td><td>1483.6 (30k)</td></tr>
+<tr><th>mean pElo 20k–30k</th><td>1385.2</td><td>1390.8</td><td>1412.4</td></tr>
+<tr><th>mean nll 20k–30k</th><td>2.3325</td><td>2.3315</td><td>2.2975</td></tr>
+<tr><th>marks with best pElo</th><td>2 of 30</td><td>8 of 30</td><td>20 of 30</td></tr>
+<tr><th>marks with best nll</th><td>2 of 30</td><td>3 of 30</td><td>25 of 30</td></tr>
+<tr><th>mean |ΔpElo| per mark, 10k–30k</th><td>18.8</td><td>29.0</td><td>16.4</td></tr>
+<tr><th>bn1Mean @30k</th><td>0.2656</td><td>0.4727</td><td>0.2354</td></tr>
+<tr><th>legalMass @30k</th><td>0.9957</td><td>0.9960</td><td>0.9965</td></tr></tbody></table></div></section>
+<section><h2>Every 1k mark</h2><div class="panel scroll"><table>
+<thead><tr><th>step</th><th>LR</th><th>pElo s+b</th><th>pElo att</th><th>pElo none</th><th>nll s+b</th><th>nll att</th><th>nll none</th></tr></thead><tbody><tr><th>1k</th><td>0.1</td><td class="">879.2</td><td class="best">916.7</td><td class="">916.1</td><td class="">3.1516</td><td class="best">3.0519</td><td class="">3.1137</td></tr>
+<tr><th>2k</th><td>0.0887</td><td class="">1073.9</td><td class="best">1092.8</td><td class="">1085.5</td><td class="">2.7400</td><td class="">2.7291</td><td class="best">2.6770</td></tr>
+<tr><th>3k</th><td>0.0635</td><td class="">1160.8</td><td class="">1149.3</td><td class="best">1172.2</td><td class="">2.5973</td><td class="">2.6292</td><td class="best">2.5701</td></tr>
+<tr><th>4k</th><td>0.0379</td><td class="">1184.7</td><td class="">1201.9</td><td class="best">1222.6</td><td class="">2.5454</td><td class="">2.5424</td><td class="best">2.5411</td></tr>
+<tr><th>5k</th><td>0.0198</td><td class="">1240.7</td><td class="best">1256.2</td><td class="">1246.9</td><td class="best">2.4899</td><td class="">2.4921</td><td class="">2.5029</td></tr>
+<tr><th>6k</th><td>0.00966</td><td class="best">1267.6</td><td class="">1259.3</td><td class="">1265.0</td><td class="best">2.4710</td><td class="">2.4888</td><td class="">2.4813</td></tr>
+<tr><th>7k</th><td>0.00471</td><td class="">1268.1</td><td class="">1265.0</td><td class="best">1297.5</td><td class="">2.4642</td><td class="">2.4707</td><td class="best">2.4513</td></tr>
+<tr><th>8k</th><td>0.00246</td><td class="">1263.5</td><td class="">1276.9</td><td class="best">1305.2</td><td class="">2.4757</td><td class="">2.4701</td><td class="best">2.4458</td></tr>
+<tr><th>9k</th><td>0.00147</td><td class="">1269.1</td><td class="">1294.4</td><td class="best">1313.5</td><td class="">2.4621</td><td class="">2.4401</td><td class="best">2.4233</td></tr>
+<tr><th>10k</th><td>0.00105</td><td class="">1275.3</td><td class="">1284.1</td><td class="best">1300.1</td><td class="">2.4619</td><td class="">2.4556</td><td class="best">2.4457</td></tr>
+<tr class="tr"><th>11k</th><td>0.000933</td><td class="">1278.4</td><td class="">1303.7</td><td class="best">1327.4</td><td class="">2.4571</td><td class="">2.4445</td><td class="best">2.4201</td></tr>
+<tr><th>12k</th><td>0.00104</td><td class="">1294.9</td><td class="">1289.2</td><td class="best">1316.6</td><td class="">2.4294</td><td class="">2.4551</td><td class="best">2.4237</td></tr>
+<tr><th>13k</th><td>0.00143</td><td class="">1285.1</td><td class="">1291.8</td><td class="best">1311.9</td><td class="">2.4348</td><td class="">2.4401</td><td class="best">2.4280</td></tr>
+<tr><th>14k</th><td>0.00236</td><td class="">1276.9</td><td class="">1285.1</td><td class="best">1307.8</td><td class="">2.4595</td><td class="">2.4554</td><td class="best">2.4207</td></tr>
+<tr><th>15k</th><td>0.00446</td><td class="">1283.6</td><td class="">1293.4</td><td class="best">1315.5</td><td class="">2.4535</td><td class="">2.4516</td><td class="best">2.4359</td></tr>
+<tr><th>16k</th><td>0.00902</td><td class="">1286.2</td><td class="">1308.3</td><td class="best">1327.4</td><td class="">2.4363</td><td class="">2.4185</td><td class="best">2.3972</td></tr>
+<tr><th>17k</th><td>0.0182</td><td class="">1252.6</td><td class="">1287.7</td><td class="best">1299.6</td><td class="">2.4638</td><td class="">2.4586</td><td class="best">2.4524</td></tr>
+<tr><th>18k</th><td>0.0344</td><td class="">1268.1</td><td class="best">1310.9</td><td class="">1307.8</td><td class="">2.4748</td><td class="">2.4062</td><td class="best">2.3787</td></tr>
+<tr><th>19k</th><td>0.0569</td><td class="">1222.1</td><td class="best">1327.9</td><td class="">1316.1</td><td class="">2.4972</td><td class="">2.4017</td><td class="best">2.3876</td></tr>
+<tr><th>20k</th><td>0.0784</td><td class="">1287.2</td><td class="">1226.7</td><td class="best">1298.5</td><td class="">2.4410</td><td class="">2.5372</td><td class="best">2.4057</td></tr>
+<tr><th>21k</th><td>0.0871</td><td class="">1308.8</td><td class="best">1316.1</td><td class="">1313.0</td><td class="">2.4205</td><td class="">2.3952</td><td class="best">2.3733</td></tr>
+<tr><th>22k</th><td>0.0773</td><td class="">1314.5</td><td class="">1329.5</td><td class="best">1353.7</td><td class="">2.4109</td><td class="">2.3725</td><td class="best">2.3575</td></tr>
+<tr><th>23k</th><td>0.0553</td><td class="">1314.0</td><td class="">1288.7</td><td class="best">1386.6</td><td class="">2.4274</td><td class="">2.4490</td><td class="best">2.3341</td></tr>
+<tr><th>24k</th><td>0.033</td><td class="">1347.5</td><td class="best">1414.8</td><td class="">1402.5</td><td class="">2.3891</td><td class="best">2.3260</td><td class="">2.3281</td></tr>
+<tr><th>25k</th><td>0.0173</td><td class="best">1439.5</td><td class="">1422.0</td><td class="">1437.9</td><td class="">2.2813</td><td class="">2.2782</td><td class="best">2.2754</td></tr>
+<tr><th>26k</th><td>0.00841</td><td class="">1440.0</td><td class="best">1443.1</td><td class="">1440.0</td><td class="">2.2569</td><td class="best">2.2489</td><td class="">2.2730</td></tr>
+<tr><th>27k</th><td>0.0041</td><td class="">1441.5</td><td class="">1460.0</td><td class="best">1463.6</td><td class="">2.2618</td><td class="">2.2769</td><td class="best">2.2543</td></tr>
+<tr><th>28k</th><td>0.00214</td><td class="">1446.7</td><td class="">1464.6</td><td class="best">1482.1</td><td class="">2.2618</td><td class="">2.2726</td><td class="best">2.2232</td></tr>
+<tr><th>29k</th><td>0.00128</td><td class="">1451.3</td><td class="">1455.4</td><td class="best">1474.9</td><td class="">2.2532</td><td class="">2.2553</td><td class="best">2.2249</td></tr>
+<tr class="tr"><th>30k</th><td>0.000916</td><td class="">1446.7</td><td class="">1478.0</td><td class="best">1483.6</td><td class="">2.2533</td><td class="">2.2342</td><td class="best">2.2227</td></tr></tbody></table></div>
+<p class="note" style="margin-top:8px">Bold marks the best arm at each step; shaded rows are the LR troughs.</p></section>
+<section><h2>Setup</h2><ul class="find">
+<li><b>Net:</b> basic30 input, 7×7 stem → 3×[7×7+7×7 @128, SE /4, ReLU pre-act, ReZero α 0.447, clean add, LayerNorm out], policy intermediate_conv, value W/D/L, bf16. Only <code>se_style</code> differs.</li>
+<li><b>Data:</b> corpus replay of Lichess 2026-05 (<code>w3aA5b</code>, 20.9M games), batch 4096, replay ratio 0.48, 500k buffer.</li>
+<li><b>Schedule:</b> LR cycle peak 1e-1→1e-4, trough 1e-3→1e-6 over 1M steps, 20k-step period; momentum follows (0.85–0.95). Weight decay 3e-4, warmup 1000, clip 15.</li>
+<li><b>Caveats:</b> one seed per arm; arms shared one GPU, so compare by step; runs continue past 30k.</li>
+</ul></section>
+</main>

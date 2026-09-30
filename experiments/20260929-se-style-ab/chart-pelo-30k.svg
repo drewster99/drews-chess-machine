@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" role="img" aria-label="pElo by step"><style>.grid{stroke:#E6E9E5}.yl,.xl,.bl{fill:#5E6770;font:11px monospace}.yl{text-anchor:end}.xl,.bl{text-anchor:middle}.band{fill:rgba(47,111,152,.07)}.band-p{fill:rgba(181,83,46,.08)}.ln{fill:none;stroke-width:2}.ln.sb{stroke:#B5532E}.ln.att{stroke:#2F6F98}.ln.none{stroke:#2F7D55}.dot.sb{fill:#B5532E}.dot.att{fill:#2F6F98}.dot.none{fill:#2F7D55}.lt{fill:#1C2126;font:12px monospace}.lg{fill:#fff;stroke:#D9DDD8}</style><rect width="100%" height="100%" fill="#fff"/>
+<rect x="257.7" y="16" width="71.2" height="248" class="band"/>
+<text x="293.2" y="28" class="bl">LR trough</text>
+<rect x="494.9" y="16" width="71.2" height="248" class="band-p"/>
+<text x="530.5" y="28" class="bl">LR peak</text>
+<rect x="708.4" y="16" width="35.6" height="248" class="band"/>
+<text x="726.2" y="28" class="bl">LR trough</text>
+<line x1="56" x2="744" y1="264.0" y2="264.0" class="grid"/><text x="48" y="268.0" class="yl">850</text>
+<line x1="56" x2="744" y1="225.8" y2="225.8" class="grid"/><text x="48" y="229.8" class="yl">950</text>
+<line x1="56" x2="744" y1="187.7" y2="187.7" class="grid"/><text x="48" y="191.7" class="yl">1050</text>
+<line x1="56" x2="744" y1="149.5" y2="149.5" class="grid"/><text x="48" y="153.5" class="yl">1150</text>
+<line x1="56" x2="744" y1="111.4" y2="111.4" class="grid"/><text x="48" y="115.4" class="yl">1250</text>
+<line x1="56" x2="744" y1="73.2" y2="73.2" class="grid"/><text x="48" y="77.2" class="yl">1350</text>
+<line x1="56" x2="744" y1="35.1" y2="35.1" class="grid"/><text x="48" y="39.1" class="yl">1450</text>
+<text x="150.9" y="288" class="xl">5k</text>
+<text x="269.5" y="288" class="xl">10k</text>
+<text x="388.1" y="288" class="xl">15k</text>
+<text x="506.8" y="288" class="xl">20k</text>
+<text x="625.4" y="288" class="xl">25k</text>
+<text x="744.0" y="288" class="xl">30k</text>
+<polyline points="56.0,252.9 79.7,178.6 103.4,145.4 127.2,136.3 150.9,114.9 174.6,104.7 198.3,104.5 222.1,106.3 245.8,104.1 269.5,101.7 293.2,100.5 317.0,94.2 340.7,98.0 364.4,101.1 388.1,98.6 411.9,97.6 435.6,110.4 459.3,104.5 483.0,122.0 506.8,97.2 530.5,88.9 554.2,86.8 577.9,87.0 601.7,74.2 625.4,39.1 649.1,38.9 672.8,38.3 696.6,36.4 720.3,34.6 744.0,36.4" class="ln sb"/>
+<circle cx="744.0" cy="36.4" r="3.5" class="dot sb"/>
+<polyline points="56.0,238.6 79.7,171.4 103.4,149.8 127.2,129.8 150.9,109.0 174.6,107.8 198.3,105.7 222.1,101.1 245.8,94.4 269.5,98.4 293.2,90.9 317.0,96.4 340.7,95.4 364.4,98.0 388.1,94.8 411.9,89.1 435.6,97.0 459.3,88.1 483.0,81.7 506.8,120.3 530.5,86.2 554.2,81.1 577.9,96.6 601.7,48.5 625.4,45.8 649.1,37.7 672.8,31.3 696.6,29.5 720.3,33.0 744.0,24.4" class="ln att"/>
+<circle cx="744.0" cy="24.4" r="3.5" class="dot att"/>
+<polyline points="56.0,238.8 79.7,174.2 103.4,141.0 127.2,121.8 150.9,112.6 174.6,105.7 198.3,93.3 222.1,90.3 245.8,87.2 269.5,92.3 293.2,81.9 317.0,86.0 340.7,87.8 364.4,89.3 388.1,86.4 411.9,81.9 435.6,92.5 459.3,89.3 483.0,86.2 506.8,92.9 530.5,87.4 554.2,71.8 577.9,59.3 601.7,53.2 625.4,39.7 649.1,38.9 672.8,29.9 696.6,22.8 720.3,25.6 744.0,22.3" class="ln none"/>
+<circle cx="744.0" cy="22.3" r="3.5" class="dot none"/>
+<rect x="586" y="194" width="150" height="62" rx="4" class="lg"/>
+<line x1="594" x2="616" y1="210" y2="210" class="ln none"/><text x="624" y="214" class="lt">none</text>
+<line x1="594" x2="616" y1="228" y2="228" class="ln att"/><text x="624" y="232" class="lt">attenuate-only</text>
+<line x1="594" x2="616" y1="246" y2="246" class="ln sb"/><text x="624" y="250" class="lt">scale+bias</text>
+</svg>

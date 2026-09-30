@@ -8,14 +8,26 @@ Corpus-replay comparison of squeeze-and-excitation variants on an otherwise iden
 - **nll is the steadier signal:** no SE had the lowest nll at 22 of the 24 marks from 7k to 30k (25 of all 30).
 - **scale+bias is consistently last:** 49 behind no SE at the 11k trough and 37 behind at the 30k trough.
 - **attenuate-only is close to no SE at the troughs but noisier:** mean absolute pElo change per mark from 10k to 30k is 29.0 (attenuate-only) vs 16.4 (none) and 18.8 (scale+bias). It dropped 101 at 20k near the LR peak.
+- **At the LR peak (21k) the arms were level** (scale+bias 1308.8, attenuate-only 1316.1, none 1313.0), but around it the SE arms were unstable: scale+bias fell to 1222 at 19k and attenuate-only to 1227 at 20k, while no SE stayed at or above 1299 from 17k to 23k.
 - **Provisional conclusion:** on this net, SE adds parameters without improving play or fit; scale+bias SE is measurably worse. One seed per arm, so gaps under ~44 pElo are within the measured seed spread (6.4–43.7).
 
-## At the LR troughs
+## At the LR peak and troughs
 
-| trough | LR | scale+bias pElo / nll | attenuate-only pElo / nll | none pElo / nll |
+The troughs (LR ≈ 9e-4) are the fair comparison points: the weights have settled, so one probe reflects the arm's real level. At the peak (LR ≈ 0.087) each checkpoint lands wherever the last large steps pushed it, so single-mark readings there are mostly noise; the peak is still reported because how an arm behaves under high LR is a result in itself.
+
+| point | LR | scale+bias pElo / nll | attenuate-only pElo / nll | none pElo / nll |
 |---|---|---|---|---|
-| 11k | 0.000933 | 1278.4 / 2.4571 | 1303.7 / 2.4445 | 1327.4 / 2.4201 |
-| 30k | 0.000916 | 1446.7 / 2.2533 | 1478.0 / 2.2342 | 1483.6 / 2.2227 |
+| 11k trough | 0.000933 | 1278.4 / 2.4571 | 1303.7 / 2.4445 | 1327.4 / 2.4201 |
+| 21k peak | 0.0871 | 1308.8 / 2.4205 | 1316.1 / 2.3952 | 1313.0 / 2.3733 |
+| 30k trough | 0.000916 | 1446.7 / 2.2533 | 1478.0 / 2.2342 | 1483.6 / 2.2227 |
+
+## Curves
+
+![pElo by step](chart-pelo-30k.svg)
+
+![nll by step](chart-nll-30k.svg)
+
+Shaded bands: LR troughs (~11k, ~30k) and the cycle peak (~21k). Styled page: [report-30k.html](report-30k.html).
 
 ## Summary by arm (steps 1k–30k)
 
