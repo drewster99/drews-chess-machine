@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-09-30 CDT — SE zero-β init option, architecture format v4, `--derive-model` (#7) (pending commit)
+## 2026-09-30 CDT — SE zero-β init option, architecture format v4, `--derive-model` (#7) (`8926221`)
 
 - New per-block-group `se_beta_init` (`glorot` | `zero`, `BlockGroup.seBetaInit`). With `zero`, the β half of a `scale_and_bias` SE FC2 (weight columns C..2C−1 and bias C..2C−1) is built as exact zeros, so at step 0 the block's SE computes `sigmoid(γ)·x`. The γ half keeps Glorot, and β still gets gradient. `validate()` rejects non-`glorot` values on other SE styles. It appears in the Build New Model per-group editor (shown only for scale+bias), in the summary and diagram (`SE+/4 β0`, and only for zero-β groups, so existing summaries are byte-identical), and in presets. `NetworkWeightAnalyzer`'s expected init L2 accounts for it.
 - Format v4 (`Network/ArchitectureFormat.swift`):
