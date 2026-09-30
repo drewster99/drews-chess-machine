@@ -90,3 +90,16 @@ None planned. A decisive answer would need the no-SE arm re-run to a matched ste
 - **Unverified:**
   - No-SE build and final ModelID: no `[APP]` line in the log, and the output file was deleted or overwritten.
   - The reason both arms were stopped: no commit, CHANGELOG or memory note records it. That qeu8 superseded them is inferred from timing only (qeu8 `dcm_log_20260702-095124.txt` started 2 minutes after the SE arm's SIGINT).
+
+## Reproduce
+
+**Status: partial** — SE arm reproducible from its surviving seed; the no-SE arm's seed and build are gone.
+
+- **Commit / build:** SE arm build 2011, `e7c52d9` (DEQi `__metadata__`); dirty state unrecorded. No-SE arm: unknown (no `[APP]` line, no checkpoint).
+- **Corpus:** [`20260624-192615-w3aA5b`](../corpora/20260624-192615-w3aA5b.md) (`replay_corpus_id` in DEQi headers).
+- **Starting point:** SE seed `20260702-1-B9SE` = `Models/20260702-9blk16se-9x9stem-seed.safetensors` (`creator handcraft`, present). No-SE seed `20260701-1-B9x16` (`20260701-9blk16-9x9stem-seed.safetensors`) is **not** in `Models/` or `Sessions/`. No preset file exists; architecture is embedded in the seed.
+- **Parameters:** no file preserved. Both logs' `[REPLAY-HPARAMS]`: `lr=0.01 batch=4096 wd=0.00025 momentum=0.93 gradClip=30 pLabelSmooth=0.1 vLabelSmooth=0.013 lrWarmup=500 bufCap=1000000 replayRatio=0.48 minPrefill=500000 complementCE=on sqrtBatchLR=on`, `epochLimit=1`.
+- **Commands:** not recorded. From the log: `--replay-corpus <w3aA5b> --start-model 20260702-9blk16se-9x9stem-seed.safetensors --epochs 1` (the corpus was read from `/Volumes/20260624-192615-w3aA5b`); the `--out-model` stem was `20260702-9blk16se-9x9stem`.
+- **Probe / analysis:** `documentation/dashboards/replay.py` registry key `b9x16se` (wide probe); the no-SE arm has log metrics only. Arena rating from the 2026-07-08 arena.
+- **Expected exactness:** statistical only (unseeded `Int.random` minibatch sampling, GPU nondeterminism). A no-SE rerun needs a freshly built seed, so it would also differ in init.
+- **Missing:** no-SE seed file and build; command lines; parameters files.

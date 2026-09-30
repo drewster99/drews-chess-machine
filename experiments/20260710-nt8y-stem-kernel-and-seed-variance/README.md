@@ -212,6 +212,23 @@ Puzzle pElo and nll come from `documentation/dashboards/data/<key>.csv`, on the 
   - nt8y segment-0 hyperparameters and exact host: the log is deleted, and checkpoint metadata carries no hyperparameters. What is known is build 2009 / git e96e0b4 and a `/Volumes` corpus path.
   - What the zero-byte logs during each run were.
 
+## Reproduce
+
+**Status: partial** — 3×3/15×15 arms fully recorded; nt8y (5×5) segment 0 log and settings lost.
+
+- **Commit / build** (checkpoint `__metadata__` `built_by_build`/`built_by_git`; the replay CLI writes no `[APP]` line): nt8y3x3 2075 / `324bf6f`; nt8y3x3s2 2079 / `55f7b5a`; nt8y15x15 2080 / `29ba72e`; nt8y seg0 2009 / `e96e0b4` (see Setup). Dirty-tree state is not recorded for replay checkpoints.
+- **Corpus:** [`20260624-192615-w3aA5b`](../corpora/20260624-192615-w3aA5b.md) (`replay_corpus_id` in every step-1000 header).
+- **Starting point** (all still in `~/Library/Application Support/DrewsChessMachine/Models/`): nt8y3x3 `20260711-nt8y3x3stem-fresh.safetensors` (20260711-3-pm4J); nt8y3x3s2 `20260711-nt8y3x3stem-seed2-fresh.safetensors` (20260711-9-dOjG); nt8y15x15 `20260711-nt8y15x15stem-fresh.safetensors` (20260711-11-xE1v); nt8y `20260701-161012-20260701-3-nT8Y-manual.safetensors` (20260701-3-nT8Y). Presets `nt8y_3x3stem` / `nt8y_15x15stem` are built-in `NetworkArchitecture.Preset` cases.
+- **Parameters:** no parameters file recorded (runs used saved app settings). `[REPLAY-HPARAMS]` of all three new arms: `lr=0.01 batch=4096 wd=0.0005 momentum=0.9 gradClip=30 entropyBonus=0 drawPenalty=0 policyW=1 valueW=1 illegalW=1 pLabelSmooth=0.1 vLabelSmooth=0.013 lrWarmup=500 bufCap=1000000 replayRatio=0.48 minPrefill=500000 complementCE=on sqrtBatchLR=on`. No `[REPLAY-CYCLE]` line (these builds predate the replay LR cycle). A rerun must write these into a `--parameters` file.
+- **Commands** (per arm; reconstructed from the logs' `[REPLAY]` lines and the write-up, not a recorded shell line):
+  `"$BIN" --replay-corpus 20260624-192615-w3aA5b --start-model "$M/<fresh>" --out-model "$M/<stem>-std-replay-latest.safetensors" --parameters <file with the values above> --epochs 12 --enumerate-checkpoints`
+- **Probe / analysis:** `documentation/dashboards/replay.py` registry keys `nt8y3x3`, `nt8y3x3s2`, `nt8y15x15`, `nt8y`; wide-set `--probe-model` on each enumerated checkpoint (`replay.py track` / `probe_backfill`).
+- **Expected exactness:** statistical only, not bit-exact. Replay minibatch sampling uses unseeded `Int.random` (`ReplayBuffer.sample`), fresh nets use a random init with no seed flag, and bf16 GPU execution is not guaranteed deterministic. Corpus game *order* is deterministic, so `games=` at a given step matches exactly.
+- **Missing:**
+  - nt8y seg0 log `dcm_log_20260701-091259.txt` (deleted) — its hyperparameters and exact launch are unknown; it ran on a different host.
+  - The exact shell command lines (only reconstructable).
+  - A parameters file for any arm.
+
 ## Related: wxil
 
 - wxil (8-block 15×15 @16, 1,052,183 params) ran just before this series on the same corpus and recipe. It asks a separate question (deep-narrow vs nt8y's shallow-wide), so it has its own write-up: [`../20260710-wxil-deep-narrow/README.md`](../20260710-wxil-deep-narrow/README.md).

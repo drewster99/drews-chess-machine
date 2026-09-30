@@ -185,3 +185,96 @@ Audited 2026-09-29 (~21:20 CDT) without touching the running processes.
   startup logs carry no `[APP]` build/git line); the aborted launches' ~24 GB / 7.18 GB / ~72 GB footprints and the step
   counts (their logs were discarded); the nt8y seed-spread figure (not re-derived here).
 - No corrections to the original text.
+
+## Reproduce
+
+**Status: full** (statistical, not bit-exact). The commit, the exact binary build, the corpus manifest, the presets, the parameters file, the fresh starting checkpoints and the exact commands are all recorded.
+
+### 1. Code and build
+
+- **Commit:** `7a434ea`. The binary that ran is **build 2255**. The replay logs have no `[APP]` banner, and the `[REPLAY]` lines carry no build, so the number comes from every enumerated checkpoint's `__metadata__`: `built_by_build = 2255`, `built_by_git = 5826e1c`.
+  - `5826e1c` was HEAD when the binary was built, but the working tree was dirty: it already held the trainer-config change committed minutes later as `cbc1894` (14:37:04).
+  - `7a434ea` is `cbc1894` plus a `CHANGELOG.md` line, so `7a434ea` is the source that ran.
+  - `BuildInfo.swift` at `7a434ea` shows the next build, 2256 (14:36:20, `gitDirty = true`).
+  - The Release binary now in DerivedData was rebuilt later (2026-09-29 21:34), so it is **not** build 2255.
+- **Prerequisites:**
+  - An Apple Silicon Mac. The runs used a 64 GB machine with all three arms at once. The aborted 1M-buffer launch reportedly used about 24 GB per process (unverified, see Caveats), which is why the 500k buffer was used.
+  - The Xcode that builds this project (on the original machine, `~/Downloads/Xcode_27_beta_2.app`).
+  - Git LFS.
+  - About 3 GB for the corpus, plus the source download described in the corpus manifest.
+- **Build:**
+  ```sh
+  git clone <repo> drews-chess-machine && cd drews-chess-machine
+  git checkout 7a434ea
+  git lfs pull                          # fetches experiments/20260929-se-style-ab/models/*.safetensors
+  ```
+  Open `DrewsChessMachine/DrewsChessMachine.xcodeproj` and build the `DrewsChessMachine` scheme with the **Release** configuration (e.g. Edit Scheme ▸ Run ▸ Build Configuration = Release). The build number will differ from 2255 because `build_counter.txt` bumps on every build. That is expected; the source is what matters.
+  ```sh
+  BIN=$(ls ~/Library/Developer/Xcode/DerivedData/DrewsChessMachine-*/Build/Products/Release/DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine)
+  M=~/Library/Application\ Support/DrewsChessMachine/Models
+  ```
+
+### 2. Corpus
+
+`20260624-192615-w3aA5b`, the first 20,935,171 games of the lichess 2026-05 standard dump. Rebuild and verify it with **[../corpora/20260624-192615-w3aA5b.md](../corpora/20260624-192615-w3aA5b.md)**. It is a truncated import: rebuild it with `--max-games 20935171`, then check the shard body hashes. Replay reads the games in corpus order: the prefill logged `gamesFed=3778` at `bufCount=250012`, and the 30k checkpoints all carry `replay_next_game_index = 3867363`. A corpus with identical bodies therefore feeds the identical game stream.
+
+### 3. Inputs in this folder
+
+- `presets/test_SE_{scale+bias,attenuate-only,none}.json`: the architecture of each arm. They differ only in `se_style` and `label`.
+- `parameters.json`: the exact file passed with `--parameters`. It has `replay_buffer_capacity: 500000` and `replay_buffer_min_positions_before_training: 250000`, and the startup log confirms them (`bufCap=500000 minPrefill=250000`). The full resolved set is the `[REPLAY-HPARAMS]` / `[REPLAY-CYCLE]` line of each log, quoted under Audit notes.
+- `models/*-fresh.safetensors` (Git LFS): the untrained starting nets actually used. Their ModelIDs are `20260929-12-JZOe` (scale+bias), `20260929-13-06yp` (attenuate-only) and `20260929-18-D9is` (none). `models/*-replay-step30000.safetensors` are the step-30000 results, and [MODELS.md](MODELS.md) has their SHA-256s.
+
+Copy the fresh nets to where the commands expect them:
+
+```sh
+mkdir -p "$M" && cp experiments/20260929-se-style-ab/models/*-fresh.safetensors "$M/"
+```
+
+### 4. Launch (one process per arm, all three concurrently on one GPU)
+
+These are the exact commands used, with `<arm>` = `scale+bias`, `attenuate-only` and `none`. Run them from the repo root:
+
+```sh
+"$BIN" --replay-corpus 20260624-192615-w3aA5b \
+  --start-model "$M/20260929-test_SE_<arm>-fresh.safetensors" \
+  --out-model "$M/20260929-test_SE_<arm>-replay-latest.safetensors" \
+  --parameters experiments/20260929-se-style-ab/parameters.json \
+  --epochs 12 --enumerate-checkpoints
+```
+
+- The original three started 8 s apart (15:07:27 / :35 / :43).
+- `--enumerate-checkpoints` writes `20260929-test_SE_<arm>-replay-step<N>.safetensors` every 1000 steps, next to the rolling `-replay-latest` file.
+- The three arms shared one GPU, so steps per hour are not comparable to a solo run. Compare on step or `games_fed`, never on time.
+- Check each startup log (`~/Library/Logs/DrewsChessMachine/dcm_log_*.txt`) against Audit notes. The `[REPLAY-ARCH]` param counts must be 5,208,050 / 5,195,378 / 5,170,322, `[REPLAY-HPARAMS]` must match, and `[REPLAY-CYCLE]` must be present.
+
+**Minting fresh nets instead of using the stored ones:**
+
+```sh
+"$BIN" --new-model --architecture experiments/20260929-se-style-ab/presets/test_SE_<arm>.json \
+  --out-model "$M/20260929-test_SE_<arm>-fresh.safetensors"
+```
+
+This makes a new random init with a new ModelID. There is no seed option, so no two mints are the same. Prefer the stored fresh checkpoints: the measured seed-to-seed spread for replay runs is **6.4–43.7 pElo** (nt8y seed study), which is as large as the gaps between arms here. Reusing the stored inits removes that source of variance from a rerun.
+
+### 5. Probe and report
+
+- **Probing:** `documentation/dashboards/registry.json` has the runs as `se_sb` / `se_att` / `se_none`, each with `enum_stem`.
+  - After the checkpoints exist, run the following from `documentation/dashboards/`:
+    ```sh
+    python3 -c "import replay; [replay.probe_backfill(r) for r in ('se_sb','se_att','se_none')]"
+    ```
+    or run `python3 replay.py track <run>` periodically while training.
+  - Each checkpoint is probed with `"$BIN" --probe-model <ckpt> --probe-set wide` (the 4,435-puzzle set) and the result goes to `data/<run>.csv`.
+  - `replay.py` picks the newest Release binary under DerivedData; set `DCM_BIN` to pin one.
+  - To rerun into fresh CSVs rather than the committed ones, point `DCM_DASH_ROOT` at a copy of `documentation/dashboards/`.
+- **Report:** `python3 experiments/20260929-se-style-ab/make_report.py` regenerates `REPORT-30k.md`, `report-30k.html` and the two SVG charts from those CSVs. It has two hardcoded paths, `ROOT` (the repo) and the scale+bias log path (`~/Library/Logs/DrewsChessMachine/dcm_log_20260929-150727.txt`, used for LR per step). Edit both for a rerun.
+
+### 6. Expected exactness
+
+- **Not bit-exact. The trainer is not deterministic,** for three reasons, all verified in source:
+  - Minibatch sampling in `ReplayBuffer.sample` draws indices with unseeded `Int.random`.
+  - The dropout RNG seed is `Int.random` (dropout is 0 here, so this one doesn't apply).
+  - bf16 MPSGraph reductions on the GPU are not guaranteed order-stable.
+- What *is* identical given the manifest-verified corpus is the fresh weights (stored) and the game stream fed into the buffer (corpus order).
+- Expect curves that track closely but not exactly. Treat per-mark differences within the SE arms' own ±60–130 swings around the LR peak, and within the 6.4–43.7 seed band, as noise. Compare the trough marks (11k, 30k).
+- Checkpoints from this build can't be `--resume-exact`ed (see Caveats), so an interrupted rerun must restart from the fresh net.

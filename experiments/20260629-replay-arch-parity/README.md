@@ -149,3 +149,18 @@ Head-to-head results from `h2h.txt`, 100 games each:
   - Per-segment device/machine: the registry has no `device` for these runs, and the seg0 logs are missing.
   - t97x's reason for abort: log `dcm_log_20260629-185604.txt` is missing. Only the header note "corpus replay abort @ step 4433" survives.
   - nt8y's 111 blank-pElo rows are permanently unrecoverable (memory `dcm-parity-goal.md`; not re-checked beyond the blank count of 111 in `nt8y.csv`).
+
+## Reproduce
+
+**Status: partial** — every seed checkpoint and the corpus survive; many segment logs, all parameters files and commands are gone.
+
+- **Commit / build** (final-checkpoint `__metadata__`; no `[APP]` banners in the logs): mini2b znR7 2013 `48fd638`; coxw avoB 2033 `b5adf14`; ykkk amlg 2053 `d841bac`; t97x ASdQ 2009 `e96e0b4`; nt8y kEiZ 2025 `c003a8c`; qeu8 PVZp 2013 `48fd638`. Earlier segments' builds are in the Runs table; dirty state unrecorded.
+- **Corpus:** [`20260624-192615-w3aA5b`](../corpora/20260624-192615-w3aA5b.md) (`replay_corpus_id` in every header).
+- **Starting point:** GUI-built seeds, all present in `Models/` (matched by `model_id`): `20260629-3-3MIV` (mini2b), `20260629-5-Coxw`, `20260630-1-YkKk`, `20260630-3-T97X`, `20260701-3-nT8Y`, `20260702-7-Qeu8` (each `…-<id>-manual.safetensors`). v5: see the v5 write-up. No preset files exist for these archs except `Presets/nt8y.json`; the architecture is embedded in each seed.
+- **Parameters:** no parameters file preserved. Surviving logs' `[REPLAY-HPARAMS]` show the same trainer settings as v5 (lr 0.01 flat, batch 4096, wd 2.5e-4, momentum 0.93, gradClip 30, bufCap 1M, minPrefill 500k, replayRatio 0.48); segments with missing logs are unverified.
+- **Commands:** not recorded. Form: `--replay-corpus 20260624-192615-w3aA5b --start-model <seed or previous -replay-latest> --out-model <stem>-replay-latest.safetensors --epochs <n>`.
+- **Probe / analysis:** `documentation/dashboards/replay.py track|probe_backfill <key>` for keys `mini2b`, `coxw`, `ykkk`, `t97x`, `nt8y`, `qeu8`, `v5` (wide probe via `--probe-model`); matched-hour tables from `documentation/dashboards/data/<key>.csv`.
+- **Expected exactness:** statistical only (unseeded `Int.random` minibatch sampling, GPU bf16 nondeterminism). The 31.3 h budget is wall time on shared, changing hosts, so matched-time results won't reproduce on other hardware; matched-step results should, within seed noise.
+- **Missing:**
+  - Logs for mini2b seg 0-2, coxw seg 0, ykkk seg 0-1, t97x, nt8y seg 0, all v5 parity segments.
+  - Parameters files and exact commands for every run; per-segment host (`device`) is not in the registry.

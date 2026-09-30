@@ -116,3 +116,18 @@ settings, ratio controller) for anyone who wants the trajectories.
 - Session filenames use UTC time (`175644` = 12:56:44 CDT); log times are CDT.
 - Unverified: the fork weights' `__metadata__`, because the session directory has since been deleted.
 - No corrections: this is a new write-up.
+
+## Reproduce
+
+**Status: partial** — the script and parameter files are preserved, but the fork weights are deleted and the build was dirty.
+
+- **Commit / build:** build 1824, git `6e4e233*` (dirty), Debug binary (`[APP]`). The committed harness and dropout code are at `eacced3` / `600c016` (see Caveats).
+- **Corpus:** none (self-play).
+- **Starting point:** the stage-1 fork `20260612-175644-20260612-4-gV3q-sigusr2.dcmsession/champion.safetensors` (loads as `20260612-3-elVE`, untrained). It **no longer exists**. Because it was a random init, a rerun gets a different one.
+- **Parameters:** `params_drop_0.00.json`, `params_drop_0.30.json` and `params_drop_0.70.json` in this folder. Everything else was app defaults, including any `UserDefaults` in effect.
+- **Commands:** `run_experiment.sh` in this folder. Per arm, it runs `--train --start-model <fork>/champion.safetensors --parameters params_drop_<R>.json --training-step-limit 600 --training-time-limit 2700 --output result_drop_<R>.json`.
+- **Probe / analysis:** `result_drop_*.json` (`stats[-1]`) plus the arm logs listed in Runs.
+- **Expected exactness:** statistical only. Self-play move sampling uses unseeded `Float.random` (`MoveSampler`), minibatch sampling uses unseeded `Int.random` (`ReplayBuffer.sample`), fresh nets use a random init with no seed flag, dropout draws a random seed, and GPU execution adds its own nondeterminism. A rerun can match the curves' shape and level, never bit-for-bit.
+- **Missing:**
+  - the fork weights and their `__metadata__`
+  - the exact dirty-tree source

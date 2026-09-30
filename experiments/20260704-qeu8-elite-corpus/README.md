@@ -108,3 +108,16 @@ Head-to-head (`h2h.txt`, 100 games each):
 - **Unverified:**
   - Why e4 and e5 used different wd/momentum: no note or commit explains it. It may reflect changed `parameters.json` defaults between builds 2013 and 2028.
   - The e4 stop reason: the header says "abort @ step 26492", and the log is present but was not inspected for intent.
+
+## Reproduce
+
+**Status: partial** — seed, corpus and all hparams are recoverable; commands and parameters files were not recorded.
+
+- **Commit / build** (checkpoint `__metadata__`; no `[APP]` banners in the logs): e, e2, e3 build 2013 `48fd638`; e4 build 2028 `31cddae`; e5 build 2029 `c8ea6e1`. Dirty state unrecorded.
+- **Corpus:** [`20260704-001142-lLOrLj`](../corpora/20260704-001142-lLOrLj.md) (`replay_corpus_id` in every Qeu8e header).
+- **Starting point:** `20260702-7-Qeu8`, present as `Models/20260702-164826-20260702-7-Qeu8-manual.safetensors`. Each later segment starts from the previous segment's `-replay-latest` (model_ids in the Runs table).
+- **Parameters:** no file preserved. `[REPLAY-HPARAMS]`: e/e2/e3 `lr=0.01 batch=4096 wd=0.00025 momentum=0.93 gradClip=30 pLabelSmooth=0.1 vLabelSmooth=0.013 lrWarmup=500 bufCap=1000000 replayRatio=0.48 minPrefill=500000 complementCE=on sqrtBatchLR=on`; e4/e5 identical except `wd=0.0005 momentum=0.9`. `epochLimit` 1 / 2 / 2 / 5 / 5.
+- **Commands:** not recorded. Form per segment: `--replay-corpus 20260704-001142-lLOrLj --start-model <previous> --out-model 20260704-Qeu8e<N>-replay-latest.safetensors --epochs <1|2|2|5|5>`; e4 was stopped early (1 epoch + 491,840 games).
+- **Probe / analysis:** `documentation/dashboards/elite/registry.json` + `elite/data/qeu8e.csv`, filled by `replay.py` (`DCM_DASH_ROOT=documentation/dashboards/elite`) with the wide probe; std comparison from `data/qeu8.csv`.
+- **Expected exactness:** statistical only (unseeded `Int.random` minibatch sampling, GPU nondeterminism).
+- **Missing:** command lines; parameters files; why e4/e5 changed wd/momentum; e4's stop reason.

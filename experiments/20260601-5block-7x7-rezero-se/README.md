@@ -288,3 +288,18 @@ Unverifiable:
 - Session A parameter count 3,898,139: no `LWKa`/`WcRm` checkpoint survives and build 1562 predates `[ARCH]` lines; the value comes from the arch-lineage table (memory) and `selfplay_registry.json`.
 - The 2026-06-08 forensics were run on the since-pruned 465,670 session; re-derived instead on the surviving 467,099 champion (same `bzw3-31` weights, since no promotion happened between them).
 - Velocity tensors in the 465,670 trainer: session pruned.
+
+## Reproduce
+
+**Status: partial** — architecture, config and final checkpoint survive; no params file, 17 dirty builds.
+
+- **Commit / build:** builds 1566 (git `4f9456b*`, branch `bf16-trainer`) → 1752 (git `73978b7*`) across 17 launches (Runs table, `[APP]` banners). All dirty, so no single commit matches.
+- **Corpus:** none (self-play).
+- **Starting point:** fresh GUI-built net (`20260601-11-bzw3`, 8,445,748 params, arch in Setup); no step-0 checkpoint survives. Final state survives: `Sessions/20260607-015807-20260601-12-5K7Z-manual.dcmsession` (champion `bzw3-31` / trainer `bzw3-32`, `training_step` 467099) and `Models/20260607-015745-20260601-11-bzw3-31-manual.safetensors`.
+- **Parameters:** no `parameters.json` recorded; values from `[STATS]` / `[PARAM]` (Setup ▸ Training config): batch 4096, lr 1e-2, μ 0.9, wd 1e-4, clip 30, promote ≥ 0.53, 400 games / 900 s, 800 workers, replay ratio 0.48 (auto off), spDelay 3000 ms, buffer 1,000,000, sp.tau 1.00/0.50/0.007, ar.tau 0.60/0.20/0.020. LR/momentum cycling from 382,728 (Audit notes).
+- **Commands:** GUI Play-and-Train with manual resumes (17 logs); no command line.
+- **Probe / analysis:** in-app wide/200 puzzle probes logged as `[TACTICAL-LICHESS]`, collected per lineage by `documentation/dashboards/selfplay.py` into `documentation/dashboards/selfplay_probe/bzw3.csv` (registry `selfplay_registry.json`, key `bzw3`). Later re-probes use `--probe-model <checkpoint> --probe-set wide` and sit on a different pElo scale.
+- **Expected exactness:** statistical only. Self-play move sampling uses unseeded `Float.random` (`MoveSampler`), minibatch sampling uses unseeded `Int.random` (`ReplayBuffer.sample`), fresh nets use a random init with no seed flag, and bf16/GPU execution adds nondeterminism. Arena outcomes and promotion timing will differ run to run.
+- **Missing:**
+  - Parameter file and the exact live-setting change sequence (reconstructable only from `[PARAM]` lines).
+  - Clean commits; step-0 net; all intermediate sessions except the final one.

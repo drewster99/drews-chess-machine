@@ -141,3 +141,17 @@ Verified against `dcm_log_20260608-115907.txt` (gViN), `-133428`, `-140857`, `-2
 - **Correction (folded conclusion):** "same 8×3×3 tower" and "~495k steps stable at lr 1e-3 fp32" (see the bulleted audit under the conclusion; evidence: KbHZ-22 header, per-log `[STATS]` lr and μ).
 - **Unverified:** the "8 lineages / 80 checkpoints / 3-of-3 vs 3-of-3" sweep membership; H1 vs H2 (no follow-up run exists and its resume checkpoint is pruned); hardware.
 - **Scale note:** registry `endpoint_pElo` 540.3 / NLL 14.7415 (trainer `jaq1-5`) is a later-binary re-probe. KbHZ's probe CSV is re-probed checkpoint data. Everything else here is June in-app scale.
+
+## Reproduce
+
+**Status: partial** — arch logged and final session survives; dirty builds, no params file.
+
+- **Commit / build:** builds 1781 (git `08a74a5*`, dirty) → 1782 → 1783 (`[APP]` banners of the three logs in Setup).
+- **Corpus:** none (self-play).
+- **Starting point:** fresh GUI-built net `20260608-4-jaq1` (20,349,716 params; `[ARCH] built champion` line in `dcm_log_20260608-133428.txt`); no step-0 checkpoint. Final save survives: `Sessions/20260609-025811-20260608-5-cwkO-manual.dcmsession`.
+- **Parameters:** no `parameters.json` recorded; values only in `[STATS]` lines of the logs (see Setup).
+- **Commands:** GUI Build Network then Play-and-Train, with two resumes; no command line.
+- **Probe / analysis:** in-app wide/200 puzzle probes logged as `[TACTICAL-LICHESS]`, collected per lineage by `documentation/dashboards/selfplay.py` into `documentation/dashboards/selfplay_probe/jaq1.csv` (registry `selfplay_registry.json`, key `jaq1`). Later re-probes use `--probe-model <checkpoint> --probe-set wide` and sit on a different pElo scale.
+- **Expected exactness:** statistical only. Self-play move sampling uses unseeded `Float.random` (`MoveSampler`), minibatch sampling uses unseeded `Int.random` (`ReplayBuffer.sample`), fresh nets use a random init with no seed flag, and bf16/GPU execution adds nondeterminism. Arena outcomes and promotion timing will differ run to run.
+- **Missing:**
+  - Parameter file; clean commits; step-0 net; the intermediate sessions (including the one needed to test H1 vs H2).

@@ -132,3 +132,19 @@ The July replay-era stem-kernel series (nt8y 3×3/5×5/15×15) is corpus replay,
   - The KXvb precision regime (bf16 without fp32 masters): commit-level only, since the working tree was dirty.
   - ysdg / KXvb / LWKa / sMe9 params: from arch_hash only. No safetensors header survives; the older saves are .dcmmodel.
   - The "7×7 stable 3/3" and "7×7 tolerated lr 1e-2 to 471k (Exp 1)" claims: not re-audited here (see the linked write-ups). Memory notes bzw3 ran LR cycling from ~382.7k, so "lr 1e-2 to 471k" is likely also imprecise.
+
+## Reproduce
+
+**Status: none** — retrospective survey of 8 GUI lineages; no config was captured to re-run.
+
+- **Commit / build:** per-lineage builds in the Runs table (1093 → 1876); `[APP]` banners give git per log (e.g. KXvb build 1513 git `c249df2`, LWKa first log build 1528 git `0626cec`), and most trees were dirty (`*`), so no commit reproduces any lineage exactly.
+- **Corpus:** none (self-play).
+- **Starting point:** each lineage started from a fresh random net built in the GUI (Build New Model); no step-0 checkpoint survives. Surviving mid/late checkpoints are listed in the Runs table (KbHZ, sMe9, ysdg, wTp3 only).
+- **Parameters:** no `parameters.json` recorded. Values come from `[STATS]` lines only (shared: batch 4096, clip 30, promote ≥ 0.53, 400-game arenas, sp.tau 1.00/0.50/0.007, ar.tau 0.60/0.20/0.020; per-lineage lr / wd / μ in Results).
+- **Commands:** GUI Play-and-Train, no command line; settings changed live via the settings popover (lr, wd and cycling changed mid-run, see Results).
+- **Probe / analysis:** in-app wide/200 puzzle probes logged as `[TACTICAL-LICHESS]`, collected per lineage by `documentation/dashboards/selfplay.py` into `documentation/dashboards/selfplay_probe/<lineage>.csv` (registry `selfplay_registry.json`, key `<lineage>`). Later re-probes use `--probe-model <checkpoint> --probe-set wide` and sit on a different pElo scale.
+- **Expected exactness:** statistical only. Self-play move sampling uses unseeded `Float.random` (`MoveSampler`), minibatch sampling uses unseeded `Int.random` (`ReplayBuffer.sample`), fresh nets use a random init with no seed flag, and bf16/GPU execution adds nondeterminism. Arena outcomes and promotion timing will differ run to run.
+- **Missing:**
+  - Parameter files and the exact GUI settings sequence per lineage.
+  - Clean commits (dirty trees) and step-0 nets for every lineage.
+  - Checkpoints for KXvb, LWKa, WjRY, LMGh; the 80-checkpoint retro-probe raw data.

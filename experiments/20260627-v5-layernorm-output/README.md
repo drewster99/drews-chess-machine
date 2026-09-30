@@ -207,3 +207,22 @@ Old notes that say "cum 538.5k" refer to the same checkpoint. Those figures are 
 - **v4 failure runs 1-5 and the v3 contrast.** Not re-audited here: pElo, bn1Mean, and v3's 1269 all-time / 1137 at 13k / "1223 = v3's 25k value". Those are other runs and other logs. v3's figures are likely on a different (in-app, May-June) probe scale, so "~230 above v3's 1269" should not be read as same-scale.
 - **Weight-internals claims in design doc §3/§4.** Examples: LN γ 1.0→1.85, `bn1.running_var` 1.4→24, policy conv L2 13.0→14.45. They could be recomputed from the surviving frozen checkpoints, but that was not done here.
 - **Build/git for segments 0-6.** Only seg 7's final header was read (build 2089, git 085356f).
+
+## Reproduce
+
+**Status: partial** — seed, corpus and segment 3-7 hparams recoverable; segments 0-2 logs, parameters files and commands lost.
+
+- **Commit / build** (checkpoint `__metadata__` `built_by_build` / `built_by_git`; no log carries an `[APP]` banner):
+  - seg 0-2: not recorded (logs lost; headers predate `built_by_*`).
+  - seg 3-4 (Dg5v, h7vI): build 2014, `ee4454c`. seg 5-6 (VZ2j, Xuub): build 2088, `085356f`. seg 7 (0pTW): build 2089, `085356f`.
+  - The dirty flag is not in the headers, so whether the trees were clean is unknown.
+- **Corpus:** [`20260624-192615-w3aA5b`](../corpora/20260624-192615-w3aA5b.md) (`replay_corpus_id` in every surviving header).
+- **Starting point:** preset `v5_5block_7x7_lnout` (built-in); fresh net `20260628-1-tWtk` still exists as `Models/20260627-v5_5block_7x7_lnout-fresh.safetensors` (`creator new-model`). The segment 3 entry `20260629-1-Uf4p` is in `Models/`.
+- **Parameters:** no parameters file was preserved for any segment. Segments 3-7 `[REPLAY-HPARAMS]`: `lr=0.01 batch=4096 wd=0.00025 momentum=0.93 gradClip=30 pLabelSmooth=0.1 vLabelSmooth=0.013 lrWarmup=500 bufCap=1000000 replayRatio=0.48 minPrefill=500000 complementCE=on sqrtBatchLR=on`, no `[REPLAY-CYCLE]` (flat LR). Segments 0-2: only wd/momentum known (Setup table).
+- **Commands:** not recorded. From the logs, each segment was a `--replay-corpus 20260624-192615-w3aA5b --start-model <previous checkpoint>` run with `epochLimit` 5 (seg 3-5) or 1 (seg 6-7); `--out-model` names are the checkpoint stems in the Runs table. Segments 0-2 also used `--start-game-index` (values not recorded).
+- **Probe / analysis:** `documentation/dashboards/replay.py track v5` / `probe_backfill` (registry key `v5`), which runs `--probe-model <ckpt> --probe-set wide`; data in `documentation/dashboards/data/v5.csv`; see `documentation/v5-lineage.md` for `cumstep_base` derivation.
+- **Expected exactness:** statistical only. Minibatch sampling uses unseeded `Int.random` (`ReplayBuffer.sample`), fresh nets have no seed option, and bf16 GPU math is not bit-reproducible. The probe itself is deterministic for a given checkpoint.
+- **Missing:**
+  - Segment 0-2 logs, builds, label smoothing / loss weights / `--start-game-index` values.
+  - Exact command lines and parameters files for all segments.
+  - The seg 0-2 machine was a VM (1.327 s/step); segment timings are not reproducible on other hardware.

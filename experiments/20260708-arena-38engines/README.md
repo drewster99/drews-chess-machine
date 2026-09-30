@@ -154,3 +154,16 @@ Re-checked 2026-09-29 against `ratings.txt`, `h2h.txt`, `engines_models.tsv`, `e
 - The Temperature-0 schedule note (`startTau 2.0 → 0.2` at the time): not checked against the build-2033 source.
 - `Early 2` (`…IWkd-manual.dcmsession/trainer.dcmmodel`, legacy format): model_id `20260525-1-sMe9-33` and 2,483,667 params not re-read.
 - The pool-relative Elo scale here (Stockfish anchored at 1320) is unrelated to the puzzle pElo scale used in training dashboards; do not compare them.
+
+## Reproduce
+
+**Status: partial** — the rating analysis is fully reproducible (`reproduce.sh`); the games are not.
+
+- **Commit / build:** DCM build 2033, git `b5adf14`, dirty (per Setup; the build number and dirty state are not in the archived files). cutechess v1.5.1 (`-style fusion`), Ordo 1.2.6, Stockfish with `nn-71d6d32cb962.nnue`.
+- **Corpus:** none (engine tournament).
+- **Starting point:** the 36 DCM model files in `engines_models.tsv`; 31 are `-replay-latest` files that were being overwritten during the run and later, so the exact weights played are not recoverable for those.
+- **Parameters:** `engines.json` (engine configs) and `cutechess.ini` (40 moves / 5 s, no ply limit). The ini's `games_per_encounter=10` does not match the 100 games per pairing in the PGN; concurrency (~2) was not persisted.
+- **Commands:** the tournament was set up in the cutechess GUI (`cutechess_tournament_window.txt`); no command line was recorded. Analysis: `./reproduce.sh` (Ordo `-a 1320 -A Stockfish -V -s 100 -J`).
+- **Probe / analysis:** `reproduce.sh` → `ratings.txt`, `h2h.txt` from `games_full.pgn.gz` (first 100 warmup games stripped by `slice_tests.py`).
+- **Expected exactness:** analysis bit-exact from the archived PGN. Games: not reproducible — DCM sampled with the old `Temperature = 0` = decaying arena schedule (real sampling noise), Stockfish ran under a 5 s clock, and current builds make `Temperature = 0` near-argmax, so a rerun plays differently.
+- **Missing:** exact weights of the 31 live `-replay-latest` engines; cutechess command / tournament settings file; host load; the build's dirty diff.

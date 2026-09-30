@@ -126,3 +126,17 @@ Verified against `dcm_log_20260607-174928.txt` and `dcm_log_20260608-115345.txt`
 - **Added:** the full saved-session list (14 more saves from `[CHECKPOINT]` lines; all pruned but the 48,825 promote), the final-step row, and the late-arena stall (#57–#64, no promotion).
 - **Unverified:** "across all saved checkpoints (1.4k→48.8k) F0/F1 grow monotonically" (only one checkpoint survives); the exact averaging behind the table's pElo/NLL cells (2k-bucket means agree within ~±15 pElo); hardware.
 - **Scale note:** the registry endpoint (617.9 / 4.7526) is a later-binary re-probe of trainer `eaRt-15` and sits on a different scale from this table. `selfplay_probe/eaRt.csv` peaks at 717.3 wide (step 39,827).
+
+## Reproduce
+
+**Status: partial** — one run log and one mid-run session survive; dirty build, no params file.
+
+- **Commit / build:** build 1770, git `ff88f64*` (dirty), branch `safetensors-storage` (`[APP]` banner of `dcm_log_20260607-174928.txt`); the 06-08 build-1780 resume trained no steps.
+- **Corpus:** none (self-play).
+- **Starting point:** fresh GUI-built net `20260607-6-eaRt` (`full10Ply10Reps210` input, 9,574,708 params; `[ARCH] built champion` line); no step-0 checkpoint. Only `Sessions/20260608-140104-20260607-7-KnCx-promote.dcmsession` (step 48,825) survives; every other save was pruned, so no checkpoint covers 48,825 → 53,837.
+- **Parameters:** no `parameters.json` recorded; from `[STATS]`: identical to Exp 2 (lr 1e-2 constant, 500-step warmup, wd 1e-4, clip 30, μ 0.90, batch 4096, 800 workers, spDelay 3000 ms, promote ≥ 0.53, 400 games / 900 s, sp.tau 1.00/0.50/0.007, ar.tau 0.60/0.20/0.020).
+- **Commands:** GUI Build Network then Play-and-Train; no command line.
+- **Probe / analysis:** in-app wide/200 puzzle probes logged as `[TACTICAL-LICHESS]`, collected per lineage by `documentation/dashboards/selfplay.py` into `documentation/dashboards/selfplay_probe/eaRt.csv` (registry `selfplay_registry.json`, key `eaRt`). Later re-probes use `--probe-model <checkpoint> --probe-set wide` and sit on a different pElo scale.
+- **Expected exactness:** statistical only. Self-play move sampling uses unseeded `Float.random` (`MoveSampler`), minibatch sampling uses unseeded `Int.random` (`ReplayBuffer.sample`), fresh nets use a random init with no seed flag, and bf16/GPU execution adds nondeterminism. Arena outcomes and promotion timing will differ run to run.
+- **Missing:**
+  - Parameter file; clean commit; step-0 net; any checkpoint after 48,825.

@@ -116,3 +116,18 @@ Final `stats` row of each results JSON:
   `[ARCH] loaded model champion.safetensors → 20260601-11-bzw3-32` in each arm log. The script was not edited.
 - Unverified: the start champion's safetensors `__metadata__` (the session directory is deleted), and the source
   differences between builds 1824/1825/1827 (dirty trees).
+
+## Reproduce
+
+**Status: partial** — the script and parameter files are preserved, but the start session is deleted and builds drifted.
+
+- **Commit / build:** 1824 and 1825 (`6e4e233*`), then 1827 (`0cb7ad7*`), all dirty Debug builds (see Runs and Caveats).
+- **Corpus:** none (self-play).
+- **Starting point:** `Sessions/20260612-191329-20260601-12-5K7Z-sigusr2.dcmsession/champion.safetensors`, which loads as `20260601-11-bzw3-32` at trainer step 498,397. It **no longer exists**. The surviving `Models/20260607-015745-20260601-11-bzw3-31-manual.safetensors` is an earlier model, not a substitute.
+- **Parameters:** `params_drop_0.00.json`, `params_drop_0.30.json` and `params_drop_0.70.json` in this folder, with app defaults for the rest.
+- **Commands:** `run_experiment.sh` in this folder. Per arm, it runs `--train --start-model <above> --parameters params_drop_<R>.json --training-step-limit 600 --training-time-limit 2700 --output result_<ARM>.json`.
+- **Probe / analysis:** `result_*.json` (`stats[-1]`) plus the arm logs listed in Runs.
+- **Expected exactness:** statistical only. Self-play move sampling uses unseeded `Float.random` (`MoveSampler`), minibatch sampling uses unseeded `Int.random` (`ReplayBuffer.sample`), fresh nets use a random init with no seed flag, dropout draws a random seed, and GPU execution adds its own nondeterminism. A rerun can match the curves' shape and level, never bit-for-bit.
+- **Missing:**
+  - the start champion and its `__metadata__`
+  - the dirty-tree sources of builds 1824, 1825 and 1827

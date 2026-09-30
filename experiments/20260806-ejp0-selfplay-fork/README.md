@@ -174,3 +174,16 @@ Other run 2 facts:
   - Disk figures "148 GiB → 13 GiB free", "Sessions/ 656 GB / 89 saves, 74 promote", and "15 GiB free at stop": `Sessions/` has since been pruned to 21 entries, and no log line records free space. Run 2's logs show 96 `Saved session` events across all triggers (6 + 30 + 60), which is consistent with that magnitude but does not match the save count.
   - The seed pElo of 1731.3 and the OSWK champion 1731.3 / trainer 1641.2 probes (memory): re-probing is barred while training is live.
   - "~21.2M plies/hr" (memory): not recomputed.
+
+## Reproduce
+
+**Status: partial** — seed, builds and session parameters recorded; self-play is inherently unrepeatable and several builds were dirty.
+
+- **Commit / build:** from `[APP] launched` lines (table in Setup): 2090 `085356f*`, 2091 `c756864*`, 2092 `c756864*`, 2102 `58876cc*`, 2105 `9f88eb3*`, 2114 `0b3e5a6*`. Every build was a **dirty tree** (`*`), so no commit reproduces them exactly.
+- **Corpus:** none (self-play). The seed itself was trained on [`20260624-192615-w3aA5b`](../corpora/20260624-192615-w3aA5b.md).
+- **Starting point:** `~/Library/Application Support/DrewsChessMachine/Models/20260806-Qeu8sp-seed-from-step1300000.safetensors` (model_id 20260727-1-Ejp0, training_step 1300000; still present).
+- **Parameters:** no parameters file; the GUI used saved app settings. Each `.dcmsession/session.json` records them, e.g. `20260830-185905-20260808-2-sjIy-promote`: learningRate 0.001, momentumCoeff 0.9, gradClipMaxNorm 30, lrWarmupSteps 500, batchSize 4096, replayBufferCapacity 1000000, minPositionsBeforeTraining 500000, replayRatioTarget 0.48 (autoAdjust off), selfPlayWorkerCount 175, arenaGames 400, arenaAutoIntervalSec 900, promoteThreshold 0.53, dropoutRate 0. τ settings changed between phases (see Runs).
+- **Command:** `open <DrewsChessMachine.app> --args --train --start-model "$M/20260806-Qeu8sp-seed-from-step1300000.safetensors"`, then a reopen event (`open <app>` again) so the window materializes and auto-train fires. Parameters must be set in the app (Training Settings) beforehand.
+- **Probe / analysis:** `documentation/dashboards/selfplay.py` + `selfplay_registry.json` keys `Ejp0r1`, `Ejp0`; in-app wide probe series `documentation/dashboards/selfplay_probe/Ejp0r1.csv`, `Ejp0.csv`.
+- **Expected exactness:** statistical only. Self-play move sampling (`Float.random` in `MoveSampler`), Dirichlet noise, minibatch sampling (`Int.random`), arena outcomes, and GPU nondeterminism are all unseeded; promotion timing diverges almost immediately.
+- **Missing:** exact source for the dirty builds; a parameters file per phase (only session snapshots at save points, none for the phase-0 attempts besides their SIGUSR2 sessions); the literal τ settings per launch are only as recorded in Runs.

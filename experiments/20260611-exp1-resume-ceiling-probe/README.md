@@ -134,3 +134,20 @@ Finding — `selfplay_registry.json` bzw3 entry and `documentation/dashboards/da
 Unverifiable:
 - Checkpoint `__metadata__` for every Exp 6 save: all pruned from `Sessions/` and nothing in `Models/`.
 - Whether build 1818 (log 20260612-110030) applied any dropout: that log has no dropout line, and the dropout parameter first appears in build 1824.
+
+## Reproduce
+
+**Status: none** — the resume session is pruned, builds are dirty, parameters were changed by hand in the GUI.
+
+- **Commit / build:** 1810/1811 (`c04fe86*`), 1818, 1824, 1827 (`[APP] launched` lines; dirty trees).
+- **Corpus:** none (self-play).
+- **Starting point:** `20260606-002543-20260601-12-5K7Z-periodic.dcmsession` (step 382,635, champion `bzw3-30`, trainer `bzw3-31`, `savedBuild=1645 savedGit=eac5113`). It **no longer exists**. The nearest surviving files are `Sessions/20260607-015807-20260601-12-5K7Z-manual.dcmsession` and `Models/20260607-015745-20260601-11-bzw3-31-manual.safetensors`, which are later states, not this resume point.
+- **Parameters:** no parameters file was recorded. From the first `[STATS]` of `dcm_log_20260611-173757.txt`: lr 1e-2 constant, wd 3e-4, μ 0.90, batch 4096, clip 30, ratio target 0.48, spDelay 0 ms. The later wd 5e-4 phase and the silent `dropout_rate … applied=0.7 (defaulted)` came from `[PARAM]`/`[RESUME-PARAM]` changes (see Setup).
+- **Commands:** GUI: Load Session, then Play and Train (`[BUTTON]` 17:38:05 / 17:39:29), with live parameter edits.
+- **Probe / analysis:** in-app `[TACTICAL-LICHESS]` ticks, plus `[STATS]` window means parsed from the logs. The dashboard entry is `bzw3e6` in `selfplay_registry.json`.
+- **Expected exactness:** statistical only. Self-play move sampling uses unseeded `Float.random` (`MoveSampler`), minibatch sampling uses unseeded `Int.random` (`ReplayBuffer.sample`), fresh nets use a random init with no seed flag, dropout draws a random seed, and GPU execution adds its own nondeterminism. A rerun can match the curves' shape and level, never bit-for-bit.
+- **Missing:**
+  - the starting session (pruned)
+  - every Exp 6 checkpoint and its `__metadata__`
+  - a complete parameter record
+  - the exact source of the dirty builds

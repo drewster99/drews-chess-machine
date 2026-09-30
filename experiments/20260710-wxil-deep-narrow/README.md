@@ -80,3 +80,16 @@ pElo and nll are from `documentation/dashboards/data/wxil.csv` (replay-era probe
   - The CSV's step-1000 row reads `2026-07-11T21:11:57`, one day late. Its time-of-day values are consistent with the log.
   - **Fixed 2026-09-29:** registry segment `date` → `20260710`, and the CSV's `wallclock_iso` re-derived from it with `replay.py recompute wxil` (step 1000 now reads `2026-07-10T21:11:57`). That recompute also filled the `wall_sec` column, which this CSV's older schema lacked; `games_fed` stays blank.
 - **Unverified:** nothing further.
+
+## Reproduce
+
+**Status: partial** — start model, build, corpus, hparams known; parameters file and exact command not recorded.
+
+- **Commit / build:** 2072 / `400f63d` (`built_by_build`/`built_by_git` of `20260711-wXIL-std2026_05-replay-step1000.safetensors`). The replay CLI writes no `[APP]` line.
+- **Corpus:** [`20260624-192615-w3aA5b`](../corpora/20260624-192615-w3aA5b.md).
+- **Starting point:** `~/Library/Application Support/DrewsChessMachine/Models/20260711-014615-20260711-1-wXIL-manual.safetensors` (model_id 20260711-1-wXIL, GUI-built; still present). No preset file for this arch exists; its architecture is embedded in that checkpoint.
+- **Parameters:** no parameters file recorded. `[REPLAY-HPARAMS]` in `dcm_log_20260710-210320.txt`: `lr=0.01 batch=4096 wd=0.0005 momentum=0.9 gradClip=30 pLabelSmooth=0.1 vLabelSmooth=0.013 lrWarmup=500 bufCap=1000000 replayRatio=0.48 minPrefill=500000 complementCE=on sqrtBatchLR=on` (others 0/1 defaults as logged).
+- **Command** (reconstructed): `"$BIN" --replay-corpus 20260624-192615-w3aA5b --start-model "$M/20260711-014615-20260711-1-wXIL-manual.safetensors" --out-model "$M/20260711-wXIL-std2026_05-replay-latest.safetensors" --parameters <file with the values above> --epochs 12 --enumerate-checkpoints`; stop at step 23,350 to match.
+- **Probe / analysis:** `documentation/dashboards/replay.py`, registry key `wxil` (wide-set `--probe-model` per enumerated checkpoint).
+- **Expected exactness:** statistical only, not bit-exact. Replay minibatch sampling uses unseeded `Int.random` (`ReplayBuffer.sample`), fresh nets use a random init with no seed flag, and bf16 GPU execution is not guaranteed deterministic. Corpus game *order* is deterministic, so `games=` at a given step matches exactly.
+- **Missing:** the parameters file; the literal command line; the `-latest` out-model name is inferred from the checkpoint stem.

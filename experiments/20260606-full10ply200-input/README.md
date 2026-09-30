@@ -140,3 +140,18 @@ Verified against the session log `dcm_log_20260606-213834.txt` (`[BUTTON]`, `[SE
 - **Stem-norm check (new, read-only):** from the surviving `2Gd1-11` champion (step 54,495), the per-input-plane L2 norm of `stem.conv.weight` [128,200,7,7], divided by the He-normal expectation √(128·49·2/(200·49)) = 1.131, averaged per 20-plane frame, gives F0 2.54, F1 1.60, F2 1.10, F3 1.02, F4 0.98, F5 0.96, F6 0.95, F7 0.95, F8 0.94, F9 0.93. This assumes He-normal init, which is not re-verified in code.
 - **Unverified:** the machine or hardware (not logged). The 1,440-step "steepest-gain bucket (+43 wide)" arithmetic depends on the unrecorded bucketing.
 - **Scale note:** all pElo in this file is the June 2026 in-app scale. The registry's `endpoint_pElo` 627.1 is a later re-probe. `selfplay_probe/2Gd1.csv` peaks at 712.7 (step 48,653).
+
+## Reproduce
+
+**Status: partial** — single log and final session survive; dirty build, no params file.
+
+- **Commit / build:** build 1760, git `79c610b*` (dirty), branch `safetensors-storage` (`[APP]` banner of `dcm_log_20260606-213834.txt`).
+- **Corpus:** none (self-play).
+- **Starting point:** fresh GUI-built net, lineage `2Gd1` (`full10ply200` input, 9,511,988 params, arch in Setup); no step-0 checkpoint. Final save survives: `Sessions/20260607-195042-20260607-5-oItC-manual.dcmsession` (champion `2Gd1-11`).
+- **Parameters:** no `parameters.json` recorded; from `[STATS]`: lr 1e-2 constant (500-step warmup), wd 1e-4, clip 30, μ 0.90, batch 4096, 800 workers, spDelay 3000 ms, promote ≥ 0.53, 400 games / 900 s, sp.tau 1.00/0.50/0.007, ar.tau 0.60/0.20/0.020.
+- **Commands:** GUI Build Network (input `full10ply200`) then Play-and-Train; no command line.
+- **Probe / analysis:** in-app wide/200 puzzle probes logged as `[TACTICAL-LICHESS]`, collected per lineage by `documentation/dashboards/selfplay.py` into `documentation/dashboards/selfplay_probe/2Gd1.csv` (registry `selfplay_registry.json`, key `2Gd1`). Later re-probes use `--probe-model <checkpoint> --probe-set wide` and sit on a different pElo scale.
+- **Expected exactness:** statistical only. Self-play move sampling uses unseeded `Float.random` (`MoveSampler`), minibatch sampling uses unseeded `Int.random` (`ReplayBuffer.sample`), fresh nets use a random init with no seed flag, and bf16/GPU execution adds nondeterminism. Arena outcomes and promotion timing will differ run to run.
+- **Missing:**
+  - Parameter file; clean commit; step-0 net; all intermediate sessions.
+  - The bucketing behind the Results table's pElo/NLL cells (see Audit notes).

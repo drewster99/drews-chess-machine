@@ -96,3 +96,19 @@ Corrections:
 Unverifiable:
 - Whether builds 1795/1800/1801 carried the bug fix uncommitted.
 - Checkpoint `__metadata__`: no JhJQ/3p0G safetensors survive.
+
+## Reproduce
+
+**Status: partial** — commits known, but dirty builds, no parameters file, GUI launch, no checkpoints.
+
+- **Commit / build:** builds 1795 (`2a73f5d*`), 1800 (`a0fd962*`), 1801 (`73f539f*`), 1804 (`2e58830*`), 1806, all dirty trees (`[APP] launched` lines). A rerun of the bug-fixed code should check out `2e58830` or later.
+- **Corpus:** none (self-play).
+- **Starting point:** fresh net built in the GUI (`[BUTTON] Build Network` 09:09:42, `v4 pre … 5x[7x7 conv, SE+/4, clean_add, ReZero] … bfloat16 . 8,445,748 params`), i.e. the Exp 1 architecture (the `v4_5block_7x7` preset). The random init is not preserved.
+- **Parameters:** no parameters file was recorded. The first `[STATS]` line gives lr 1e-2 (·√b, 500-step warmup), wd 1e-4, μ 0.90, batch 4096, grad clip 30, replay-ratio target 0.48, spDelay 3000 ms, workers 800. Other values were whatever the GUI's `UserDefaults` held at the time.
+- **Commands:** GUI only: launch the app, then Build Network, then Play and Train (09:10:45). There was no CLI command.
+- **Probe / analysis:** in-app `[TACTICAL-LICHESS]` probe ticks (200-set and wide) plus `[STATS]`/`[ARENA]` log lines. `documentation/dashboards/selfplay.py` / `selfplay_registry.json` hold a later re-probe on a different scale.
+- **Expected exactness:** statistical only. Self-play move sampling uses unseeded `Float.random` (`MoveSampler`), minibatch sampling uses unseeded `Int.random` (`ReplayBuffer.sample`), fresh nets use a random init with no seed flag, dropout draws a random seed, and GPU execution adds its own nondeterminism. A rerun can match the curves' shape and level, never bit-for-bit.
+- **Missing:**
+  - the full parameter set (no file and no `--parameters`)
+  - the exact source of the dirty builds, including whether 1795/1800/1801 already carried the fix
+  - every checkpoint (all `3p0G` sessions and `JhJQ` models were pruned)

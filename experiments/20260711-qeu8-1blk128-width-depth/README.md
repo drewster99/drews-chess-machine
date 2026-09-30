@@ -105,3 +105,16 @@ Both runs trained on the same corpus from game 0, so steps map to games almost 1
 - **Unverified:**
   - Whether the preset JSON on disk still matches what was used. It was not re-read, but the embedded architecture in VRR4 is authoritative anyway.
   - The exact termination mechanism: the log has no SIGINT or `done:` line.
+
+## Reproduce
+
+**Status: partial** — qeu8b1128 arm recorded; qeu8 baseline is a multi-segment run on older builds.
+
+- **Commit / build:** qeu8b1128 2080 / `29ba72e` (checkpoint `built_by_build`/`built_by_git`). qeu8 baseline 2013 / `48fd638` for its early segments (see the parity write-up).
+- **Corpus:** [`20260624-192615-w3aA5b`](../corpora/20260624-192615-w3aA5b.md) for both.
+- **Starting point:** qeu8b1128 `~/Library/Application Support/DrewsChessMachine/Models/20260711-qeu8-1blk128-fresh.safetensors` (20260711-16-VRR4, still present); preset `~/Library/Application Support/DrewsChessMachine/Presets/qeu8_1blk_128.json` (still present; the embedded architecture in VRR4 is authoritative). qeu8 `20260702-164826-20260702-7-Qeu8-manual.safetensors` (20260702-7-Qeu8, still present).
+- **Parameters:** no parameters file recorded. qeu8b1128 `[REPLAY-HPARAMS]` (`dcm_log_20260711-101346.txt`): `lr=0.01 batch=4096 wd=0.0005 momentum=0.9 gradClip=30 pLabelSmooth=0.1 vLabelSmooth=0.013 lrWarmup=500 bufCap=1000000 replayRatio=0.48 minPrefill=500000 complementCE=on sqrtBatchLR=on`.
+- **Command** (reconstructed): `"$BIN" --replay-corpus 20260624-192615-w3aA5b --start-model "$M/20260711-qeu8-1blk128-fresh.safetensors" --out-model "$M/20260711-qeu8-1blk128-std-replay-latest.safetensors" --parameters <file with the values above> --epochs 12 --enumerate-checkpoints`; stop at step 120,000 (25.96 h) to match. The baseline's commands are per segment; see registry `qeu8` and the parity write-up.
+- **Probe / analysis:** `documentation/dashboards/replay.py`, registry keys `qeu8b1128` and `qeu8`.
+- **Expected exactness:** statistical only, not bit-exact. Replay minibatch sampling uses unseeded `Int.random` (`ReplayBuffer.sample`), fresh nets use a random init with no seed flag, and bf16 GPU execution is not guaranteed deterministic. Corpus game *order* is deterministic, so `games=` at a given step matches exactly.
+- **Missing:** parameters files for both runs; literal command lines; the qeu8 baseline cannot be rerun as one command (4 warm-restart segments on 2 hosts).

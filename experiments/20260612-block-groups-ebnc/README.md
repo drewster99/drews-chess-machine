@@ -143,3 +143,20 @@ Verified against the ten registry logs plus `dcm_log_20260614-014435.txt` (to id
 - **Verified:** architecture string, 10,659,093 params, 1×1 skip projection, 10 promotions (steps above), champion `eBNC-10` by ~46k, the 29,363 exit/resume, the gNorm ~1e10 divergence (build 1890 resume: 1.1e10 / 1.7e10).
 - **Unverified:** the disk-full cause of the 29.4k exit (no log line); the cause of the build-1839 slowdown; the root cause of the resume divergence (would require running the app); hardware.
 - **Scale note:** the registry endpoint 606.1 / 3.5653 is a later re-probe of trainer `eBNC-11` on a different scale. Every pElo figure in this file is the June in-app scale.
+
+## Reproduce
+
+**Status: partial** — the manual save survives, but the fresh init, parameters file and clean builds don't.
+
+- **Commit / build:** 1835 (`c23277b*`, fresh) → 1839 (`ed84386*`) → 1841 (`cf0e0d9*`), all dirty (`[APP] launched`). The failed resumes ran on builds 1845–1890 (see Setup).
+- **Corpus:** none (self-play).
+- **Starting point:** a fresh net built in the GUI (`[BUTTON] Build Network` 18:54:12) with the two-group block-groups tower described in Setup. The random init is not preserved. The only surviving checkpoint is `Sessions/20260614-002022-20260612-22-gFlw-manual.dcmsession`, whose `__metadata__` reads: champion `20260612-21-eBNC-10` and trainer `20260612-21-eBNC-11`, both at `training_step` 49836. It also holds `replay_buffer.bin`. This is the resume-divergence repro point.
+- **Parameters:** no parameters file was recorded. The first `[STATS]` gives lr 1e-2 (500-step warmup), wd 5e-4, μ 0.90, batch 4096, clip 30, ratio target 0.48, spDelay 0 ms, workers 170, and **drop=0.70**. `[PARAM] dropoutRate applied to training graph: 0.7000` appears at 18:54:17. This fits the dropout-A/B `UserDefaults` leak of the same afternoon; Setup's dropout multiplier of 1 is the per-block multiplier, not the rate.
+- **Commands:** GUI: Build Network, then Play and Train. The resumes used Load Session or the picker.
+- **Probe / analysis:** in-app `[TACTICAL-LICHESS]` ticks. The dashboard entry is `eBNC` in `selfplay_registry.json` (`data/eBNC.csv`).
+- **Expected exactness:** statistical only. Self-play move sampling uses unseeded `Float.random` (`MoveSampler`), minibatch sampling uses unseeded `Int.random` (`ReplayBuffer.sample`), fresh nets use a random init with no seed flag, dropout draws a random seed, and GPU execution adds its own nondeterminism. A rerun can match the curves' shape and level, never bit-for-bit.
+- **Missing:**
+  - the fresh init and every checkpoint before 49,836
+  - a parameters file
+  - the exact source of the dirty builds
+  - whether the 0.70 dropout was intended

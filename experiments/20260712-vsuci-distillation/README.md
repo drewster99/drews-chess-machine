@@ -127,3 +127,18 @@ Verified against primary data:
 - Correction (registry wording; **fixed 2026-09-29**, the seg2 label now reads "resume 2 (warm restart ~40 h after seg 1 halted on a GPU command-buffer failure, 2026-07-20 18:13)"): `vsuci_registry.json` labeled seg2 "warm restart after macOS update reboot", but seg1 ended with a **GPU command-buffer failure** (`dcm_log_20260714-123243.txt`, 18:13:36 on 2026-07-20, file mtime), not a planned stop; the restart came ~40 h later. Whether a macOS update also happened in that gap is unverified.
 - Correction: the frozen `…-step978000-STOP.safetensors` carries `training_step` **758000** (segment-local), not 978000; the name encodes the cum step. Identify it by model_id `20260714-1-NYAZ`.
 - Unverified: RESUME.md "Arc 776 (untrained)" — no probe row for the init was found; the earliest vs-UCI probe is 794.0 @ cum 6,000. Binary build/git. pElo for sf10 / sf100 / sloppy20 (no probe files). Why the short configs were stopped beyond "superseded by the next launch" (logs end without an exit line). games_fed for either run.
+
+## Reproduce
+
+**Status: partial** — start model, engines and pool recorded; build, hyperparameters and engine versions-at-run not.
+
+- **Commit / build:** unknown. `--train-vs-uci` writes no `[APP]` line and its checkpoints carry no `built_by_build`/`built_by_git` (checked on the sf200 and sf100sl100 files).
+- **Corpus:** none (vs-UCI games generated live).
+- **Starting point:** `~/Library/Application Support/DrewsChessMachine/Models/20260702-164826-20260702-7-Qeu8-manual.safetensors` (20260702-7-Qeu8; still present). sf100sl100 seg1/seg2 warm-restarted from `…-step220000-STOP` (lTiK) and `…-step978000-STOP` (NYAZ), both present.
+- **Parameters:** no parameters file recorded; values came from saved app settings. The log records only `batchSize=4096 minPrefill=500000 evalSyncEvery=10` and the per-step `lr` (warmup ramp visible: 2e-05 at step 1, 0.001 at 50, 0.002 at 100). wd, momentum, peak LR, grad clip, label smoothing are not logged.
+- **Engines:** `~/bin/stockfish` reports `Stockfish dev-20260529-b1053e60` (file mtime 2026-05-29, before the runs); `~/bin/sloppy` reports `Sloppy 0.2.2` but its file mtime is 2026-07-13, after sf100sl100 seg0 started, so the seg0 binary may differ.
+- **Command** (sf100sl100; from `~/dcm-sf100sl100-backup/RESUME.md`, with the untrained start model for a fresh run):
+  `"$BIN" --train-vs-uci "cmd=$HOME/bin/sloppy;n=100;go=movetime 10" --train-vs-uci "cmd=$HOME/bin/stockfish;n=100;go=movetime 10" --start-model "$M/20260702-164826-20260702-7-Qeu8-manual.safetensors" --out-model "$M/20260712-qeu8init-sf100sl100-vsuci-latest.safetensors"`. The short configs (sf10/sf100/sf200/sloppy20) differ only in the pool shown in the Runs table. See `documentation/UCI.md` Part 2.
+- **Probe / analysis:** `documentation/dashboards/vsuci.py` + `vsuci_registry.json` (key `sf100sl100`); probe trajectory `~/dcm-sf100sl100-backup/sf100sl100_pelo.jsonl` (wide `--probe-model` of `-latest`, ~every 1000 steps).
+- **Expected exactness:** statistical only. Unseeded minibatch sampling (`Int.random` in `ReplayBuffer.sample`) and DCM move sampling (`Float.random` in `MoveSampler`), GPU nondeterminism, and engine search under `movetime 10` (wall-clock-bound, load-dependent) all vary run to run.
+- **Missing:** binary build/git; the training hyperparameters; exact literal launch lines for seg0 and the short configs; the Sloppy binary actually used in seg0.
