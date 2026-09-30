@@ -1049,33 +1049,52 @@ Plus `CheckpointManagerSafetensorsTests` must keep passing bit-exact.
 
 - **D-1** Accept §0: GUI and train-vs-UCI get state-exact resume, not
   trajectory-exact; corpus replay is the only trajectory-exact path.
-- **D-2** Default of `random_seed_mode` for the GUI: `unseeded` (drawn + logged,
-  today's feel) vs `seeded` with a fixed default seed. Recommendation: `unseeded`.
+- **D-2 — DECIDED (2026-09-30):** GUI default is `unseeded` — a seed is drawn,
+  logged and recorded in lineage. Build New Model also gets an optional seed
+  field, so a GUI user can mint a model from a chosen seed.
 - **D-3 — DECIDED (2026-09-30):** keep He-normal / Glorot-normal, computed by
   our own restricted-domain Box–Muller (polynomial `log`/`cos` from IEEE-exact
   operations), with exhaustive accuracy tests, golden bits, a cross-machine
   test and a re-benchmark on completion (A5, B1.1, P5). No He-uniform option
   exists or ever existed; none is added.
-- **D-4** Which B2 options to ship (recommended set: SE γ bias level, branch
-  last-BN-γ zero, skip-projection identity-like, policy/value final zero, draw
-  prior). Forbidden: `res_ln` zero, feature-skip fusion zero, skip-projection
-  zero, ReZero α = 0 under the tanh ceiling.
-- **D-5** Stratified sampling: rebuild the bucket slot arrays in age order on
-  refill (fits the decided slot-0 refill, C1 #4 — nothing extra persisted),
-  persist them, or rewrite `randomSlot` as order-independent. Recommendation:
-  rebuild in age order, which makes them a pure function of the age-ordered
-  buffer — **verify** that holds after evictions (swap-remove reorders a bucket's
-  array relative to age order; if so, `randomSlot` must pick by age rank instead).
-- **D-6** Persist partial arena records across kill, or just re-trigger the arena.
-- **D-7** Resuming the three current v4 corpus-replay runs on a v5 build: allow
-  with `--accept-inexact` (recommended), or keep an old binary for them.
-- **D-8 — DECIDED (2026-09-30):** train-vs-UCI mirrors the self-play session
-  (folder with `replay_buffer.bin`, same writer), not a companion file (C1 #9).
-  Still open within it: write the buffer on every checkpoint, or only on rolling
-  (not enumerated) saves, given its size (capacity × position bytes).
-- **D-9** Legacy buffers' per-process position hashes (C1 #31, A6 O16):
-  recompute from the stored boards on load, or accept inflated duplicate stats
-  for legacy buffers and log it.
+- **D-4 — DECIDED (2026-09-30):** ship the recommended B2 set (SE γ bias level,
+  branch last-BN-γ zero, skip-projection identity-like, policy/value final zero,
+  draw prior); the forbidden list stays forbidden. UI/format requirements:
+  - every option is its own architecture field (per block group or per head, like
+    `se_beta_init`), required from format v5, shown in presets, the summary line
+    and `ArchitectureDiagramView`;
+  - Build New Model gets a **Neutral init** button (sets every option to its
+    neutral value) and a **Standard init** button (reverts);
+  - any field that differs from the standard init is highlighted in the editor
+    and the diagram (accent tint plus a marker, not color alone), compared
+    against the standard init so the highlight survives reopening a model;
+  - each highlighted field has a tooltip stating what changes at step 0;
+  - `--derive-model` can apply every option, re-initializing only the affected
+    tensors, as it does for `se_beta_init`.
+- **D-5 — DECIDED (2026-09-30):** rebuild the bucket slot arrays in age order on
+  refill, and pick "the k-th oldest slot in the bucket" so stored array order
+  never matters. Nothing extra is persisted.
+- **D-6 — DECIDED (2026-09-30):** an arena interrupted by a kill is discarded and
+  re-run on resume; no partial arena records are persisted.
+- **D-7 — DECIDED (2026-09-30):** keep `--accept-inexact`. `--resume-exact`
+  refuses a checkpoint missing any exact-resume state; `--accept-inexact` allows it,
+  seeds each missing stream freshly (logged), and marks the segment
+  `NOT EXACT: <missing items>` in the log and lineage. Needed to resume any
+  pre-v5 checkpoint. The current SE seed-2 runs will not be resumed.
+- **D-8 — DECIDED (2026-09-30):** train-vs-UCI saves use the self-play session
+  folder format and writer (C1 #9). **The replay buffer is NOT saved by default**
+  for self-play or train-vs-UCI:
+  - the autosave menu/settings gets a persisted "Include replay buffer" toggle
+    (default off) covering periodic and post-promotion saves;
+  - the manual Save Session dialog gets an "Include replay buffer" checkbox
+    (default off);
+  - train-vs-UCI gets a CLI flag to include it;
+  - a save without a buffer resumes by refilling from new games (training waits
+    for the minimum fill) and is labeled `NOT EXACT: buffer`;
+  - corpus replay never writes a buffer (rebuilt exactly from the corpus).
+- **D-9 — DECIDED (2026-09-30):** recompute position hashes from the stored
+  boards when loading a legacy buffer (owner-approved migration), logging the
+  count recomputed.
 - **D-10 — DECIDED (2026-09-30):** remove config D (issue #9) before P9. Owner
   approved deleting its two test cases (the config-D case in
   `HeadNumericsTailTests` and the config-D sweep in `MacOS27NaNIsolationTests`).
