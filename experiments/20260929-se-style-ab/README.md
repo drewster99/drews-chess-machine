@@ -1,6 +1,6 @@
 # 2026-09-29 — SE style A/B/C: scale+bias vs attenuate-only vs none (corpus replay)
 
-**Status:** in progress — all three arms are live (pids 77368 / 77398 / 77413); results below run through step 10000.
+**Status:** done (2026-09-30). All runs are stopped: seed 1 at 33,014 / 33,012 / 32,036 steps, seed 2 at 7,282 / 7,289 / 7,019, zero-β at 5,030 / 5,004. **Final write-up: [REPORT-final.md](REPORT-final.md).** The sections below were written while the runs were live; figures described as current are as of when each section was written (the first seed-1 sections through step 10000; pids 77368 / 77398 / 77413).
 
 ## Question
 
@@ -302,7 +302,7 @@ Windowed view (mean gap per window, positive = no SE better):
 | 19–24k | peak 2 | +46.0 | +27.8 | +0.067 | +0.049 |
 | 25–31k | descending to trough 2 | +21.1 | +9.3 | +0.018 | +0.015 |
 
-The gap is largest around the LR peak and shrinks at low LR; at trough 2 attenuate-only is within probe noise of no SE. SE's β term barely trains (β bias mean is structurally pinned at 0 by the block's LayerNorm; per-channel |β| ≈ 0.01; β weight row norms decay 0.465 → 0.37 under weight decay).
+The gap is largest around the LR peak and shrinks at low LR; at trough 2 attenuate-only is within probe noise of no SE. SE's β term barely trains (β bias mean is structurally pinned at 0 by the block's LayerNorm; per-channel |β| ≈ 0.01; β weight row norms decay 0.465 → 0.37 under weight decay). **Correction (final report):** the "barely trains" reading was wrong. Measured by direction rather than norm, β's weights move off their random init about as much as γ's do, and about as much as a zero-initialized β grows; the random init simply stays on top of what is learned. See [REPORT-final.md › β learning dynamics](REPORT-final.md#beta-learning-dynamics).
 
 ## Seed 2
 
@@ -346,7 +346,7 @@ Paired pElo gaps within each seed (row arm minus column arm; mean with sd in par
 | comparison | seed 1 | seed 2 | pooled | range, both seeds | seed 1, full 1k–31k | nll, seed 1 / seed 2 |
 |---|---|---|---|---|---|---|
 | none − s+b | +18.7 (16.0) | +45.2 (36.3) | +31.9 (30.2) | −2.6 … +104.9 | +30.8 (21.2) | −0.0174 / −0.0628 |
-| none − att | +9.2 (16.3) | +14.7 (50.7) | +11.9 (36.3) | −90.4 … +68.9 | +16.3 (22.6) | −0.0095 / +0.0090 |
+| none − att | +9.2 (16.3) | +14.7 (50.7) | +11.9 (36.3) | −90.4 … +69.0 | +16.2 (22.6) | −0.0095 / +0.0090 |
 | att − s+b | +9.5 (17.7) | +30.5 (32.2) | +20.0 (27.3) | −11.5 … +95.0 | +14.5 (28.4) | −0.0079 / −0.0718 |
 
 Seed-to-seed spread (seed 2 − seed 1, same arm, same step, 21 pairs):
@@ -400,3 +400,19 @@ Dashboard registry keys `se_zb1` / `se_zb2`. Startup lines match the other arms:
 **Engine differences from seed 2.** The zero-β runs use the Release binary built 2026-09-30 11:18, build 2261 (git `31253d5` with uncommitted changes = the code of `8926221`, per `derivation_history`). Engine change since seed 2's `badae6c`: `8926221` (#7) adds the `se_beta_init` option, architecture format v4 and `--derive-model`. For a `glorot` β the graph and training math are unchanged. The only effect here is the intended one: β starts at 0.
 
 **Throughput:** two arms share the GPU instead of three, so steps per hour are higher than seed 2's. Compare on step, never on time.
+
+## Zero-β: end of run
+
+Stopped by decision on 2026-09-30 at 17:15 CDT, right after both runs' 5000-step checkpoints (SIGINT, so each also wrote a stop save). All training for this experiment is finished.
+
+| run | 5000 pElo / nll | stop save | pElo / nll |
+|---|---|---|---|
+| zero-β seed 1 (`20260930-9-RrGx`) | 1228.8 / 2.5233 | 5030 | 1240.2 / 2.5022 |
+| zero-β seed 2 (`20260930-10-H51a`) | 1270.7 / 2.4707 | 5004 | 1250.5 / 2.4969 |
+
+- Paired with its Glorot-β parent over 1k–5k, zero-β averaged +2.4 pElo (seed 1) and +26.3 (seed 2), with per-mark sd 39.2 and 45.9: no consistent effect of β init. At 5k it was the worst seed-1 arm and the best seed-2 arm.
+- β learns from zero and is still growing at 5k; the Glorot β's learned (orthogonal-to-init) part is about the same size.
+
+Artifacts: gzipped logs in [`logs/`](logs/), the 5000 checkpoints and stop saves in [`models/`](models/) (Git LFS; see [MODELS.md](MODELS.md)).
+
+**Final write-up for the whole experiment: [REPORT-final.md](REPORT-final.md)** (styled: [report-final.html](report-final.html)). It has every run's per-mark table, the paired and seed-noise analysis, the β dynamics, charts in [`charts/`](charts/), and the data files in [`data/`](data/) with column descriptions in [data/README.md](data/README.md). Regenerate all of it with `python3 experiments/20260929-se-style-ab/make_final_report.py`.

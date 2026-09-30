@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 462" role="img" aria-label="Seed 2 − seed 1, same arm, same step (pElo)"><style>.bg{fill:#FFFFFF}.t{fill:#5E6770;font:11px ui-monospace,Menlo,monospace}.tt{fill:#1C2126;font:600 12px ui-monospace,Menlo,monospace}.g{stroke:#E4E7EA;stroke-width:1}.z{stroke:#9AA3AB;stroke-width:1}.lr{stroke:#8C959D}.lrf{fill:#8C959D}@media (prefers-color-scheme:dark){.bg{fill:#14171A}.t{fill:#9AA3AB}.tt{fill:#E6E9EC}.g{stroke:#262B30}.z{stroke:#5E6770}.lr{stroke:#7A838B}.lrf{fill:#7A838B}}</style>
+<rect class="bg" width="760" height="462"/>
+<text class="tt" x="70" y="18">Seed 2 − seed 1, same arm, same step (pElo)</text>
+<line x1="70" y1="38" x2="96" y2="38" stroke="#B5532E" stroke-width="2.4"/>
+<text class="t" x="102" y="42">scale+bias</text>
+<line x1="192" y1="38" x2="218" y2="38" stroke="#2F6F98" stroke-width="2.4"/>
+<text class="t" x="224" y="42">attenuate-only</text>
+<line x1="342" y1="38" x2="368" y2="38" stroke="#2F7D55" stroke-width="2.4"/>
+<text class="t" x="374" y="42">none</text>
+<line x1="422" y1="38" x2="448" y2="38" stroke="#8A5AA8" stroke-width="2.4"/>
+<text class="t" x="454" y="42">zero-β s+b</text>
+<line class="g" x1="70" y1="272.7" x2="742" y2="272.7"/>
+<text class="t" x="64" y="276.7" text-anchor="end">−50</text>
+<line class="g" x1="70" y1="228.4" x2="742" y2="228.4"/>
+<text class="t" x="64" y="232.4" text-anchor="end">−25</text>
+<line class="g" x1="70" y1="184.2" x2="742" y2="184.2"/>
+<text class="t" x="64" y="188.2" text-anchor="end">0</text>
+<line class="g" x1="70" y1="139.9" x2="742" y2="139.9"/>
+<text class="t" x="64" y="143.9" text-anchor="end">25</text>
+<line class="g" x1="70" y1="95.7" x2="742" y2="95.7"/>
+<text class="t" x="64" y="99.7" text-anchor="end">50</text>
+<line class="g" x1="70.0" y1="74" x2="70.0" y2="314"/>
+<line class="g" x1="182.0" y1="74" x2="182.0" y2="314"/>
+<line class="g" x1="294.0" y1="74" x2="294.0" y2="314"/>
+<line class="g" x1="406.0" y1="74" x2="406.0" y2="314"/>
+<line class="g" x1="518.0" y1="74" x2="518.0" y2="314"/>
+<line class="g" x1="630.0" y1="74" x2="630.0" y2="314"/>
+<line class="g" x1="742.0" y1="74" x2="742.0" y2="314"/>
+<line class="z" x1="70" y1="184.2" x2="742" y2="184.2"/>
+<text class="t" x="70" y="66">seed 2 − seed 1 (pElo)</text>
+<path d="M70.0,243.9 L182.0,215.0 L294.0,210.9 L406.0,262.5 L518.0,247.4 L630.0,237.2 L742.0,196.1" fill="none" stroke="#B5532E" stroke-width="2"/>
+<circle cx="70.0" cy="243.9" r="2.6" fill="#B5532E"/>
+<circle cx="182.0" cy="215.0" r="2.6" fill="#B5532E"/>
+<circle cx="294.0" cy="210.9" r="2.6" fill="#B5532E"/>
+<circle cx="406.0" cy="262.5" r="2.6" fill="#B5532E"/>
+<circle cx="518.0" cy="247.4" r="2.6" fill="#B5532E"/>
+<circle cx="630.0" cy="237.2" r="2.6" fill="#B5532E"/>
+<circle cx="742.0" cy="196.1" r="2.6" fill="#B5532E"/>
+<path d="M70.0,142.2 L182.0,175.8 L294.0,166.7 L406.0,229.2 L518.0,233.6 L630.0,218.9 L742.0,186.0" fill="none" stroke="#2F6F98" stroke-width="2"/>
+<circle cx="70.0" cy="142.2" r="2.6" fill="#2F6F98"/>
+<circle cx="182.0" cy="175.8" r="2.6" fill="#2F6F98"/>
+<circle cx="294.0" cy="166.7" r="2.6" fill="#2F6F98"/>
+<circle cx="406.0" cy="229.2" r="2.6" fill="#2F6F98"/>
+<circle cx="518.0" cy="233.6" r="2.6" fill="#2F6F98"/>
+<circle cx="630.0" cy="218.9" r="2.6" fill="#2F6F98"/>
+<circle cx="742.0" cy="186.0" r="2.6" fill="#2F6F98"/>
+<path d="M70.0,301.1 L182.0,86.9 L294.0,199.8 L406.0,143.9 L518.0,186.0 L630.0,186.9 L742.0,180.5" fill="none" stroke="#2F7D55" stroke-width="2"/>
+<circle cx="70.0" cy="301.1" r="2.6" fill="#2F7D55"/>
+<circle cx="182.0" cy="86.9" r="2.6" fill="#2F7D55"/>
+<circle cx="294.0" cy="199.8" r="2.6" fill="#2F7D55"/>
+<circle cx="406.0" cy="143.9" r="2.6" fill="#2F7D55"/>
+<circle cx="518.0" cy="186.0" r="2.6" fill="#2F7D55"/>
+<circle cx="630.0" cy="186.9" r="2.6" fill="#2F7D55"/>
+<circle cx="742.0" cy="180.5" r="2.6" fill="#2F7D55"/>
+<path d="M70.0,230.2 L182.0,256.4 L294.0,160.1 L406.0,211.7 L518.0,110.1" fill="none" stroke="#8A5AA8" stroke-width="2"/>
+<circle cx="70.0" cy="230.2" r="2.6" fill="#8A5AA8"/>
+<circle cx="182.0" cy="256.4" r="2.6" fill="#8A5AA8"/>
+<circle cx="294.0" cy="160.1" r="2.6" fill="#8A5AA8"/>
+<circle cx="406.0" cy="211.7" r="2.6" fill="#8A5AA8"/>
+<circle cx="518.0" cy="110.1" r="2.6" fill="#8A5AA8"/>
+<line class="g" x1="70" y1="418.0" x2="742" y2="418.0"/>
+<text class="t" x="64" y="422.0" text-anchor="end">0.001</text>
+<line class="g" x1="70" y1="383.0" x2="742" y2="383.0"/>
+<text class="t" x="64" y="387.0" text-anchor="end">0.01</text>
+<line class="g" x1="70" y1="348.0" x2="742" y2="348.0"/>
+<text class="t" x="64" y="352.0" text-anchor="end">0.1</text>
+<line class="g" x1="70.0" y1="348" x2="70.0" y2="418"/>
+<line class="g" x1="182.0" y1="348" x2="182.0" y2="418"/>
+<line class="g" x1="294.0" y1="348" x2="294.0" y2="418"/>
+<line class="g" x1="406.0" y1="348" x2="406.0" y2="418"/>
+<line class="g" x1="518.0" y1="348" x2="518.0" y2="418"/>
+<line class="g" x1="630.0" y1="348" x2="630.0" y2="418"/>
+<line class="g" x1="742.0" y1="348" x2="742.0" y2="418"/>
+<text class="t" transform="translate(14,383.0) rotate(-90)" text-anchor="middle">LR (log)</text>
+<path class="lr" d="M70.0,348.0 L75.6,348.0 L81.2,348.0 L86.8,348.1 L92.4,348.1 L98.0,348.1 L103.6,348.2 L109.2,348.2 L114.8,348.3 L120.4,348.4 L126.0,348.5 L131.6,348.6 L137.2,348.7 L142.8,348.8 L148.4,348.9 L154.0,349.0 L159.6,349.2 L165.2,349.3 L170.8,349.5 L176.4,349.7 L182.0,349.8 L187.6,350.0 L193.2,350.2 L198.8,350.4 L204.4,350.6 L210.0,350.8 L215.6,351.0 L221.2,351.2 L226.8,351.5 L232.4,351.7 L238.0,352.0 L243.6,352.2 L249.2,352.5 L254.8,352.8 L260.4,353.1 L266.0,353.3 L271.6,353.6 L277.2,354.0 L282.8,354.2 L288.4,354.6 L294.0,354.9 L299.6,355.2 L305.2,355.6 L310.8,355.9 L316.4,356.3 L322.0,356.6 L327.6,357.0 L333.2,357.4 L338.8,357.7 L344.4,358.1 L350.0,358.5 L355.6,358.9 L361.2,359.3 L366.8,359.7 L372.4,360.1 L378.0,360.5 L383.6,361.0 L389.2,361.4 L394.8,361.9 L400.4,362.3 L406.0,362.7 L411.6,363.2 L417.2,363.7 L422.8,364.1 L428.4,364.6 L434.0,365.0 L439.6,365.5 L445.2,366.0 L450.8,366.5 L456.4,367.0 L462.0,367.5 L467.6,368.0 L473.2,368.5 L478.8,369.0 L484.4,369.5 L490.0,370.0 L495.6,370.5 L501.2,371.0 L506.8,371.6 L512.4,372.1 L518.0,372.6 L523.6,373.2 L529.2,373.6 L534.8,374.2 L540.4,374.8 L546.0,375.3 L551.6,375.9 L557.2,376.3 L562.8,376.9 L568.4,377.5 L574.0,378.0 L579.6,378.6 L585.2,379.1 L590.8,379.6 L596.4,380.2 L602.0,380.7 L607.6,381.3 L613.2,381.8 L618.8,382.4 L624.4,383.0 L630.0,383.5 L635.6,384.1 L641.2,384.6 L646.8,385.2 L652.4,385.7 L658.0,386.3 L663.6,386.9 L669.2,387.4 L674.8,388.0 L680.4,388.5 L686.0,389.0 L691.6,389.6 L697.2,390.1 L702.8,390.7 L708.4,391.2 L714.0,391.8 L719.6,392.3 L725.2,392.9 L730.8,393.4 L736.4,393.9 L742.0,394.4" fill="none" stroke-width="1.6"/>
+<text class="t" x="70.0" y="434" text-anchor="middle">1k</text>
+<text class="t" x="182.0" y="434" text-anchor="middle">2k</text>
+<text class="t" x="294.0" y="434" text-anchor="middle">3k</text>
+<text class="t" x="406.0" y="434" text-anchor="middle">4k</text>
+<text class="t" x="518.0" y="434" text-anchor="middle">5k</text>
+<text class="t" x="630.0" y="434" text-anchor="middle">6k</text>
+<text class="t" x="742.0" y="434" text-anchor="middle">7k</text>
+<text class="t" x="406.0" y="452" text-anchor="middle">training step</text>
+</svg>

@@ -38,3 +38,14 @@ Zero-β fresh nets (in `models/`), derived with `--derive-model --set-se-beta-in
 | `20260929-test_SE_zerobeta-seed2-fresh.safetensors` | 20260930-8-8qyR | 20260930-1-H1Oq | 19.88 | `ab2647efa6b36752…` |
 
 Seed-2 run logs, gzipped, in `logs/` (Git LFS): `dcm_log_20260930-104101.txt.gz` (scale+bias), `-104109` (attenuate-only), `-104117` (none); 13 / 13 / 12 MB compressed from 54 / 54 / 52 MB.
+
+Zero-β final checkpoints (in `models/`): the last 1k mark plus the SIGINT stop save for each run.
+
+| file | model_id | training_step | size | sha256 |
+|---|---|---|---|---|
+| `20260929-test_SE_zerobeta-seed1-replay-step5000.safetensors` | 20260930-9-RrGx | 5000 | 39.74 | `90a3d00f93034480…` |
+| `20260929-test_SE_zerobeta-seed1-replay-step5030.safetensors` | 20260930-9-RrGx | 5030 | 39.74 | `2597047748edee24…` |
+| `20260929-test_SE_zerobeta-seed2-replay-step5000.safetensors` | 20260930-10-H51a | 5000 | 39.74 | `d5d9fc64d78b4221…` |
+| `20260929-test_SE_zerobeta-seed2-replay-step5004.safetensors` | 20260930-10-H51a | 5004 | 39.74 | `a6df9b1466088aee…` |
+
+Zero-β run logs, gzipped, in `logs/` (Git LFS): `dcm_log_20260930-150544.txt.gz` (seed 1), `-150552` (seed 2); 8.7 / 8.6 MB compressed from 37.2 / 37.0 MB.
