@@ -1,0 +1,2 @@
+cum_step,meta_step,segment,elapsed_train_sec,wallclock_iso,ms_per_step,pElo,nll,loss,pLoss,vLoss,legalMass,pIllM,bn1Mean,gNorm,sae2,eff_alpha,pLogit_mean,pLogit_peak,frozen_file,note,wall_sec,games_fed
+1000,1000,0,1579.7,2026-09-30T15:32:09,1514.0,935.43,3.0545,3.8639,2.9643,0.8383,0.9387,0.0613,0.0806,1.369,0.5368,0.4152;0.4245;0.4292,14.663,20.089792251586914,20260929-test_SE_zerobeta-seed1-replay-step1000.safetensors,,,
