@@ -1,0 +1,2 @@
+cum_step,meta_step,segment,elapsed_train_sec,wallclock_iso,ms_per_step,pElo,nll,loss,pLoss,vLoss,legalMass,pIllM,bn1Mean,gNorm,sae2,eff_alpha,pLogit_mean,pLogit_peak,frozen_file,note,wall_sec,games_fed
+1000,1000,0,2115.6,2026-09-30T11:16:21,2879.6,845.4,3.2644,3.9794,3.0931,0.8142,0.9278,0.0722,0.0407,1.575,0.5167,0.4158;0.4057;0.4234,14.618,19.60188865661621,20260929-test_SE_scale+bias-seed2-replay-step1000.safetensors,probe-backfill,,
