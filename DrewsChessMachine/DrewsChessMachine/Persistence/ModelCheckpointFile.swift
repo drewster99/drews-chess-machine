@@ -267,6 +267,12 @@ struct ModelCheckpointFile {
     /// `ValueHeadCentering`). Set by both decoders; nil only on a file built
     /// in memory to be encoded, which was never decoded.
     let valueHeadCentering: ValueHeadCentering?
+    /// The format version the embedded architecture JSON was decoded under,
+    /// with any legacy resolutions it made (see `ArchitectureFormat`). Set
+    /// by the safetensors decoder; nil for a legacy `.dcmmodel` (whose
+    /// architecture is a compiled-in preset, not decoded JSON) and for a
+    /// file built in memory to be encoded.
+    let architectureFormat: ArchitectureFormat.DecodeFormat?
 
     /// Memberwise init with `formatVersion` defaulted to the current
     /// write version, so call sites that build a file for ENCODING
@@ -279,7 +285,8 @@ struct ModelCheckpointFile {
         weights: [[Float]],
         architecture: NetworkArchitecture = .current,
         formatVersion: UInt32 = ModelCheckpointFile.formatVersion,
-        valueHeadCentering: ValueHeadCentering? = nil
+        valueHeadCentering: ValueHeadCentering? = nil,
+        architectureFormat: ArchitectureFormat.DecodeFormat? = nil
     ) {
         self.modelID = modelID
         self.createdAtUnix = createdAtUnix
@@ -288,6 +295,7 @@ struct ModelCheckpointFile {
         self.architecture = architecture
         self.formatVersion = formatVersion
         self.valueHeadCentering = valueHeadCentering
+        self.architectureFormat = architectureFormat
     }
 
     /// Count of the model's own tensors (trainables + BN running stats) —

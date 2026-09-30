@@ -170,6 +170,12 @@ struct DrewsChessMachineApp: App {
         // before SwiftUI / Metal GUI init.
         Self.handleNewModelIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: headless model derivation (--derive-model). Copies a
+        // model file bit-exact except the tensors the requested operations
+        // re-initialize (e.g. --set-se-beta-init zero), with lineage metadata.
+        // Pure file transform — no GPU, no window. Exits.
+        DeriveModelCLI.handleIfPresent(rawArgs: rawArgs)
+
         // Pre-flight: headless offline corpus-replay trainer (--replay-corpus).
         // Builds a fresh net + trainer, fills the replay buffer from recorded
         // games (no self-play, no arena, no promotion), runs a step-locked SGD
@@ -438,6 +444,13 @@ struct DrewsChessMachineApp: App {
                                               fp32/bf16/fp16 fitness of weights and activations, head offsets,
                                               ties and cross-entropy. JSON per checkpoint (default: the analyses
                                               folder), one summary line each to stdout, then exit.
+              --derive-model --from <model.safetensors> <operation> <value> [--group <index>]... --out <new.safetensors>
+                                              Write a new model copied bit-exact from --from except the tensors the
+                                              operation re-initializes, with a fresh ModelID, parent_model_id and a
+                                              derivation_history record; shape-changing requests are refused.
+                                              Operations: --set-se-beta-init glorot|zero (scale_and_bias groups;
+                                              --group <0-based index>, repeatable, narrows it). Full list, with
+                                              what each rewrites: --derive-model --help.
               --show-default-parameters       Print every default training parameter as JSON and exit.
               --create-parameters-file [<path>] [--force]
                                               Write parameters.json + parameters.md (default: ./) and exit.
@@ -492,6 +505,9 @@ struct DrewsChessMachineApp: App {
 
               # Replay a corpus for 3 full passes:
               DrewsChessMachine --replay-corpus <CorpusDir> --epochs 3 --parameters frozen.json
+
+              # Paired copy of a fresh net with a zero-initialized SE beta path (every scale_and_bias group):
+              DrewsChessMachine --derive-model --from fresh.safetensors --set-se-beta-init zero --out fresh-beta0.safetensors
             """
             for err in errors {
                 let line = "DrewsChessMachine: error: \(err)\n"

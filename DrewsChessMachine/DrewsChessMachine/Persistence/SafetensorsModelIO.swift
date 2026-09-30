@@ -14,7 +14,10 @@ import Foundation
 
 enum SafetensorsModelIO {
 
-    static let formatVersion = "3"
+    /// `dcm_format_version` stamped on every write — the architecture format
+    /// version (`ArchitectureFormat.currentVersion`), which gates how the
+    /// embedded architecture JSON is decoded on load.
+    static let formatVersion = String(ArchitectureFormat.currentVersion)
 
     enum IOError: Error, CustomStringConvertible {
         case tensorCountMismatch(weights: Int, names: Int)
@@ -51,7 +54,7 @@ enum SafetensorsModelIO {
     }
 
     // Metadata keys
-    private enum Key {
+    enum Key {
         static let formatVersion = "dcm_format_version"
         static let modelID = "model_id"
         static let createdAt = "created_at_unix"
@@ -150,18 +153,56 @@ enum SafetensorsModelIO {
         let architecture: NetworkArchitecture
         /// Velocity tensors present (trainer file) beyond the base plan.
         let hasVelocity: Bool
+        /// The format the embedded architecture was decoded under, carrying
+        /// any legacy resolutions made (see `ArchitectureFormat`). Loaders
+        /// that know the file's name call `logLegacyResolutions()` once.
+        let architectureFormat: ArchitectureFormat.DecodeFormat
     }
+
+    /// Name used in errors and log lines when the caller decodes bytes it
+    /// did not read from a named file.
+    static let unnamedSource = "safetensors data"
 
     /// Decode safetensors bytes into a `ModelCheckpointFile`, ordering weights
     /// to match the embedded architecture's plan (+ trailing velocity tensors,
     /// in trainable order, if present).
     static func decode(_ data: Data) throws -> Decoded {
-        try decode(data, valueHead: .recenterUnlessMarked)
+        try decode(data, valueHead: .recenterUnlessMarked, source: unnamedSource)
     }
 
     /// `decode(_:)`, choosing whether the value head is recentered; only
     /// analysis asks for `.asStored`.
     static func decode(_ data: Data, valueHead: ValueHeadDecoding) throws -> Decoded {
+        try decode(data, valueHead: valueHead, source: unnamedSource)
+    }
+
+    /// Decode the architecture embedded in a safetensors `__metadata__` map
+    /// under the file's own `dcm_format_version`. Shared by the full decode
+    /// and the header-only readers (model catalog, `--derive-model`) so every
+    /// reader applies the same version gate.
+    static func decodeArchitecture(
+        fromMetadata md: [String: String],
+        source: String
+    ) throws -> (architecture: NetworkArchitecture, format: ArchitectureFormat.DecodeFormat) {
+        guard let archJSON = md[Key.architecture] else { throw IOError.missingArchitecture }
+        let version = try ArchitectureFormat.safetensorsFormatVersion(
+            metadataValue: md[Key.formatVersion], source: source)
+        let format = ArchitectureFormat.DecodeFormat(formatVersion: version, source: source)
+        do {
+            let architecture = try ArchitectureFormat.makeDecoder(format: format)
+                .decode(NetworkArchitecture.self, from: Data(archJSON.utf8))
+            return (architecture, format)
+        } catch let formatError as ArchitectureFormat.FormatError {
+            // Already names the field and the file; keep it intact.
+            throw formatError
+        } catch {
+            throw IOError.badArchitectureJSON(String(describing: error))
+        }
+    }
+
+    /// `decode(_:valueHead:)` for bytes read from `source` (a file name used in
+    /// format-version errors and the legacy-resolution log line).
+    static func decode(_ data: Data, valueHead: ValueHeadDecoding, source: String) throws -> Decoded {
         let (tensors, md) = try SafetensorsFile.decode(data)
         // Keep each tensor's stored SHAPE, not just its data: the dimensions are
         // what decide whether `fromTorchLayout` un-transposes correctly, and
@@ -171,13 +212,7 @@ enum SafetensorsModelIO {
         byName.reserveCapacity(tensors.count)
         for t in tensors { byName[t.name] = t }
 
-        guard let archJSON = md[Key.architecture] else { throw IOError.missingArchitecture }
-        let architecture: NetworkArchitecture
-        do {
-            architecture = try JSONDecoder().decode(NetworkArchitecture.self, from: Data(archJSON.utf8))
-        } catch {
-            throw IOError.badArchitectureJSON(error.localizedDescription)
-        }
+        let (architecture, architectureFormat) = try decodeArchitecture(fromMetadata: md, source: source)
 
         // Identity is the embedded architecture itself (no arch_hash); integrity
         // is content_sha256 (verified in SafetensorsFile). A hand-edited config
@@ -273,9 +308,11 @@ enum SafetensorsModelIO {
             metadata: metadata,
             weights: weights,
             architecture: architecture,
-            valueHeadCentering: valueHeadCentering
+            valueHeadCentering: valueHeadCentering,
+            architectureFormat: architectureFormat
         )
-        return Decoded(file: file, architecture: architecture, hasVelocity: hasVelocity)
+        return Decoded(file: file, architecture: architecture, hasVelocity: hasVelocity,
+                       architectureFormat: architectureFormat)
     }
 
     // MARK: - Resume provenance

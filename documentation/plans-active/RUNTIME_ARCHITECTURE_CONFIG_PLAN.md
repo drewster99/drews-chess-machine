@@ -742,3 +742,29 @@ All four are now settled by the §5a/§9 walkthrough:
 
 **Remaining step before implementation:** re-sequence §12 into the actual build order
 reflecting the §5a/§6/§9/§10 finalized design (and the Phase 1–4 rework it implies).
+
+## 17. Architecture format v4: `se_beta_init` and the format-version gate (issue #7, shipped 2026-09-30)
+
+- **New per-group field** `block_groups[].se_beta_init`: `glorot` | `zero` (`BlockGroup.seBetaInit`,
+  `SEBetaInit`). With `zero`, the β half of a `scale_and_bias` SE FC2 (weight columns `C..2C−1`,
+  bias `C..2C−1`) starts at exactly 0. Only the random init changes; tensor shapes and the
+  parameter count are unchanged. `validate()` rejects any value other than `glorot` on
+  groups with another SE style. The summary appends ` β0` to the SE clause only for zero-β
+  groups, so every existing summary is byte-identical.
+- **Format version 4** (`ArchitectureFormat.currentVersion`). Safetensors write
+  `dcm_format_version` = `"4"`. Presets (`NamedArchitecture`: user `Presets/*.json` and
+  `--architecture` files) and `architecture.json` now carry a top-level integer
+  `format_version`.
+- **Decoding rules:**
+  - A file older than v4, or with no version marker, resolves a missing `se_beta_init` to
+    `glorot`. Each resolution is logged once per load:
+    `[ARCH] legacy file (format v3) <file>: block_groups[0].se_beta_init := glorot`.
+  - A v4+ file without the field fails with `ArchitectureFormat.FormatError.missingRequiredField`,
+    naming the field, the group and the file.
+  - A version newer than the build is rejected.
+  - A decode with no version supplied is treated as current (strict).
+  - Encoding always writes the field.
+- **Identity:** legacy files decode to values equal to today's presets, with the same
+  summary, parameter count and legacy `.dcmmodel` archHash.
+- **`--derive-model`** (see `documentation/deriving-models.md`) makes paired copies that
+  differ only in re-initialized tensors, and records lineage.

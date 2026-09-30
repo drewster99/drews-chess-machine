@@ -999,10 +999,17 @@ enum CheckpointManager {
     }
 
     static func decodeAnyModelFile(_ data: Data, valueHead: ValueHeadDecoding) throws -> ModelCheckpointFile {
+        try decodeAnyModelFile(data, valueHead: valueHead, source: SafetensorsModelIO.unnamedSource)
+    }
+
+    /// `decodeAnyModelFile(_:valueHead:)` for bytes read from `source` — the
+    /// file name that format-version errors and the legacy-resolution log
+    /// line report.
+    static func decodeAnyModelFile(_ data: Data, valueHead: ValueHeadDecoding, source: String) throws -> ModelCheckpointFile {
         if data.count >= 8, Array(data.prefix(8)) == ModelCheckpointFile.magic {
             return try ModelCheckpointFile.decode(data, valueHead: valueHead)
         }
-        return try SafetensorsModelIO.decode(data, valueHead: valueHead).file
+        return try SafetensorsModelIO.decode(data, valueHead: valueHead, source: source).file
     }
 
     /// A model file exactly as stored, for the numerics audit: the value
@@ -1015,7 +1022,9 @@ enum CheckpointManager {
         } catch {
             throw CheckpointManagerError.readFailed(url, error)
         }
-        return try decodeAnyModelFile(data, valueHead: .asStored)
+        let file = try decodeAnyModelFile(data, valueHead: .asStored, source: url.lastPathComponent)
+        file.architectureFormat?.logLegacyResolutions()
+        return file
     }
 
     static func loadModelFile(at url: URL) throws -> ModelCheckpointFile {
@@ -1025,7 +1034,8 @@ enum CheckpointManager {
         } catch {
             throw CheckpointManagerError.readFailed(url, error)
         }
-        let file = try decodeAnyModelFile(data)
+        let file = try decodeAnyModelFile(data, valueHead: .recenterUnlessMarked, source: url.lastPathComponent)
+        file.architectureFormat?.logLegacyResolutions()
         logValueHeadCentering(file, source: url.lastPathComponent)
         return file
     }
@@ -1076,8 +1086,14 @@ enum CheckpointManager {
     static func loadSession(at directoryURL: URL) throws -> LoadedSession {
         let (stateData, championData, trainerData) = try SessionCheckpointLayout.readAll(from: directoryURL)
         let state = try SessionCheckpointState.decode(stateData)
-        let championFile = try decodeAnyModelFile(championData)
-        let trainerFile = try decodeAnyModelFile(trainerData)
+        let championFile = try decodeAnyModelFile(
+            championData, valueHead: .recenterUnlessMarked,
+            source: "\(directoryURL.lastPathComponent) champion")
+        let trainerFile = try decodeAnyModelFile(
+            trainerData, valueHead: .recenterUnlessMarked,
+            source: "\(directoryURL.lastPathComponent) trainer")
+        championFile.architectureFormat?.logLegacyResolutions()
+        trainerFile.architectureFormat?.logLegacyResolutions()
         logValueHeadCentering(championFile, source: "\(directoryURL.lastPathComponent) champion")
         logValueHeadCentering(trainerFile, source: "\(directoryURL.lastPathComponent) trainer")
         let bufferURL = SessionCheckpointLayout.replayBufferURL(in: directoryURL)
@@ -1152,7 +1168,7 @@ enum CheckpointManager {
         }
         let readBack: ModelCheckpointFile
         do {
-            readBack = try decodeAnyModelFile(data)
+            readBack = try decodeAnyModelFile(data, valueHead: .recenterUnlessMarked, source: url.lastPathComponent)
         } catch {
             throw error
         }

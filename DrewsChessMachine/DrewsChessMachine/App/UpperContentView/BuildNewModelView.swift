@@ -202,6 +202,12 @@ struct BuildNewModelView: View {
             if model.blockGroups[i].seStyle != .none {
                 intField("SE reduction ratio", $model.blockGroups[i].seReductionRatio)
             }
+            // Only scale_and_bias has a β half. Hidden for the other styles;
+            // a non-glorot value left behind by switching style away is
+            // surfaced by validate() rather than silently reset.
+            if model.blockGroups[i].seStyle == .scaleAndBias {
+                enumPicker("SE β init", $model.blockGroups[i].seBetaInit, SEBetaInit.allCases)
+            }
             enumPicker("Activation", $model.blockGroups[i].activationFunction, ActivationFunction.allCases)
             enumPicker("Activation style", $model.blockGroups[i].activationStyle, BlockActivationStyle.allCases)
             enumPicker("Skip merge", $model.blockGroups[i].skipMerge, BlockSkipMerge.allCases)

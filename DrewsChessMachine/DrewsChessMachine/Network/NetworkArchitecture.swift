@@ -277,6 +277,50 @@ enum SEStyle: String, Codable, CaseIterable, Sendable, Hashable {
     case scaleAndBias = "scale_and_bias"
 }
 
+/// How the β (additive) half of a `scaleAndBias` SE block's FC2 is
+/// initialized when a network is built with random weights. FC2 emits
+/// `2·channels` values per position: the γ half (columns `0..<C` of the
+/// `[in, out]` weight, and bias `0..<C`) feeds `sigmoid` as the per-channel
+/// scale; the β half (columns `C..<2C`, bias `C..<2C`) is added linearly.
+/// Only meaningful for `SEStyle.scaleAndBias`; `validate()` rejects any value
+/// other than `.glorot` on groups with another SE style.
+enum SEBetaInit: String, Codable, CaseIterable, Sendable, Hashable {
+    /// The β weight half is Glorot-normal like the γ half (the only behavior
+    /// before this setting existed). Each block therefore starts by adding an
+    /// input-dependent random per-channel offset to its residual branch.
+    case glorot
+    /// The β weight half and β bias are exactly zero at build, so at step 0 a
+    /// block's SE computes `sigmoid(γ)·x` and adds nothing. β still receives
+    /// gradient (its input — the FC1 activation — is nonzero), so it can learn
+    /// an offset if one helps. The γ half keeps its Glorot init.
+    case zero
+}
+
+/// Where the β half of a `scale_and_bias` SE FC2 lives, in each layout the
+/// code handles. Single source of truth for the graph builder's zero-β init,
+/// the `--derive-model` tensor rewrite, and the tests, so "which elements are
+/// β" is never re-derived by hand. `C` = the block's channels, `r` = its SE
+/// reduced width (`C / se_reduction_ratio`).
+enum SEScaleAndBiasBetaHalf {
+    /// Native engine layout of the FC2 weight, `[in, out] = [r, 2C]`,
+    /// row-major: the β half is columns `C..<2C` of every row, i.e. one
+    /// contiguous range per row.
+    static func nativeWeightRanges(reducedChannels r: Int, channels c: Int) -> [Range<Int>] {
+        (0..<r).map { row in (row * 2 * c + c)..<(row * 2 * c + 2 * c) }
+    }
+
+    /// PyTorch / on-disk layout of the FC2 weight, `[out, in] = [2C, r]`,
+    /// row-major: the β half is output rows `C..<2C`, one contiguous range.
+    static func torchWeightRange(reducedChannels r: Int, channels c: Int) -> Range<Int> {
+        (c * r)..<(2 * c * r)
+    }
+
+    /// The FC2 bias, `[2C]` in both layouts: the β half is `C..<2C`.
+    static func biasRange(channels c: Int) -> Range<Int> {
+        c..<(2 * c)
+    }
+}
+
 /// Policy-head topology. All three emit 4864 raw logits in the current
 /// `PolicyEncoding` (76x64); masking + softmax happen CPU-side downstream.
 enum PolicyHeadStyle: String, Codable, CaseIterable, Sendable, Hashable {
@@ -369,7 +413,16 @@ struct BlockGroup: Codable, Hashable, Sendable {
     /// merge). Optional-typed so models/sessions saved before this field
     /// existed decode it as `nil`; `nil` and `.none` both mean "no output
     /// norm". Read through `resolvedOutputNorm`, never the raw Optional.
-    var outputNorm: BlockOutputNorm? = nil
+    var outputNorm: BlockOutputNorm?
+    /// Init of the β half of this group's `scale_and_bias` SE FC2 (see
+    /// `SEBetaInit`). Changes only the random-weights build, never a tensor
+    /// shape. Decoding is format-version gated (`ArchitectureFormat`): files
+    /// before format v4 resolve a missing value to `.glorot` (the only
+    /// behavior that existed then); v4+ files must state it. The in-code
+    /// value is `.glorot` for the same reason — every group built before this
+    /// field existed was Glorot — and callers opting into `.zero` set it
+    /// explicitly.
+    var seBetaInit: SEBetaInit
 
     /// `outputNorm` with the legacy-`nil` case folded into `.none`, so callers
     /// never branch on the Optional. This is the value the builder,
@@ -390,6 +443,103 @@ struct BlockGroup: Codable, Hashable, Sendable {
         case skipMerge = "skip_merge"
         case dropoutMultiplier = "dropout_multiplier"
         case outputNorm = "output_norm"
+        case seBetaInit = "se_beta_init"
+    }
+
+    /// Memberwise init (spelled out because the custom `Codable` below
+    /// suppresses the synthesized one). The two trailing fields keep the
+    /// defaults the synthesized init had: both are the behavior every group
+    /// had before the field existed.
+    init(
+        count: Int,
+        channels: Int,
+        conv1KernelSize: Int,
+        conv2KernelSize: Int,
+        seStyle: SEStyle,
+        seReductionRatio: Int,
+        useRezero: Bool,
+        rezeroAlphaInit: Float,
+        activationFunction: ActivationFunction,
+        activationStyle: BlockActivationStyle,
+        skipMerge: BlockSkipMerge,
+        dropoutMultiplier: Float,
+        outputNorm: BlockOutputNorm? = nil,
+        seBetaInit: SEBetaInit = .glorot
+    ) {
+        self.count = count
+        self.channels = channels
+        self.conv1KernelSize = conv1KernelSize
+        self.conv2KernelSize = conv2KernelSize
+        self.seStyle = seStyle
+        self.seReductionRatio = seReductionRatio
+        self.useRezero = useRezero
+        self.rezeroAlphaInit = rezeroAlphaInit
+        self.activationFunction = activationFunction
+        self.activationStyle = activationStyle
+        self.skipMerge = skipMerge
+        self.dropoutMultiplier = dropoutMultiplier
+        self.outputNorm = outputNorm
+        self.seBetaInit = seBetaInit
+    }
+
+    /// Decodes under the format attached to the decoder (strict current
+    /// version when none is attached — see `ArchitectureFormat`).
+    init(from decoder: Decoder) throws {
+        try self.init(from: decoder, format: ArchitectureFormat.DecodeFormat.from(decoder))
+    }
+
+    /// Decodes one group from a file of `format.formatVersion`. `se_beta_init`
+    /// is required from `ArchitectureFormat.seBetaInitRequiredFromVersion`;
+    /// older files resolve it to `.glorot` and record that on `format`'s log.
+    init(from decoder: Decoder, format: ArchitectureFormat.DecodeFormat) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        count = try c.decode(Int.self, forKey: .count)
+        channels = try c.decode(Int.self, forKey: .channels)
+        conv1KernelSize = try c.decode(Int.self, forKey: .conv1KernelSize)
+        conv2KernelSize = try c.decode(Int.self, forKey: .conv2KernelSize)
+        seStyle = try c.decode(SEStyle.self, forKey: .seStyle)
+        seReductionRatio = try c.decode(Int.self, forKey: .seReductionRatio)
+        useRezero = try c.decode(Bool.self, forKey: .useRezero)
+        rezeroAlphaInit = try c.decode(Float.self, forKey: .rezeroAlphaInit)
+        activationFunction = try c.decode(ActivationFunction.self, forKey: .activationFunction)
+        activationStyle = try c.decode(BlockActivationStyle.self, forKey: .activationStyle)
+        skipMerge = try c.decode(BlockSkipMerge.self, forKey: .skipMerge)
+        dropoutMultiplier = try c.decode(Float.self, forKey: .dropoutMultiplier)
+        outputNorm = try c.decodeIfPresent(BlockOutputNorm.self, forKey: .outputNorm)
+        if let stated = try c.decodeIfPresent(SEBetaInit.self, forKey: .seBetaInit) {
+            seBetaInit = stated
+        } else if format.allowsMissingSEBetaInit {
+            seBetaInit = .glorot
+            format.legacyLog.record(
+                "\(ArchitectureFormat.location(of: decoder)).\(CodingKeys.seBetaInit.rawValue) := \(SEBetaInit.glorot.rawValue)")
+        } else {
+            throw ArchitectureFormat.FormatError.missingRequiredField(
+                field: CodingKeys.seBetaInit.rawValue,
+                location: ArchitectureFormat.location(of: decoder),
+                formatVersion: format.formatVersion,
+                source: format.source)
+        }
+    }
+
+    /// Writes every field. `output_norm` keeps its pre-existing
+    /// write-only-when-set form so older fields encode byte-identically;
+    /// `se_beta_init` is ALWAYS written, so a v4+ file is self-describing.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(count, forKey: .count)
+        try c.encode(channels, forKey: .channels)
+        try c.encode(conv1KernelSize, forKey: .conv1KernelSize)
+        try c.encode(conv2KernelSize, forKey: .conv2KernelSize)
+        try c.encode(seStyle, forKey: .seStyle)
+        try c.encode(seReductionRatio, forKey: .seReductionRatio)
+        try c.encode(useRezero, forKey: .useRezero)
+        try c.encode(rezeroAlphaInit, forKey: .rezeroAlphaInit)
+        try c.encode(activationFunction, forKey: .activationFunction)
+        try c.encode(activationStyle, forKey: .activationStyle)
+        try c.encode(skipMerge, forKey: .skipMerge)
+        try c.encode(dropoutMultiplier, forKey: .dropoutMultiplier)
+        try c.encodeIfPresent(outputNorm, forKey: .outputNorm)
+        try c.encode(seBetaInit, forKey: .seBetaInit)
     }
 }
 
@@ -454,6 +604,9 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
     /// poisons the whole tower. Carries the Float directly (never coerced to
     /// Int) so it can report the NaN/infinite values it also rejects.
     case mustBeFinitePositive(field: String, value: Float)
+    /// `se_beta_init` other than `glorot` on a group whose SE style has no
+    /// β half (only `scale_and_bias` does).
+    case seBetaInitRequiresScaleAndBias(group: Int, seStyle: SEStyle, seBetaInit: SEBetaInit)
     /// Feature skip is enabled (`source != .none`) but no destination is routed.
     case featureSkipNoDestination
     /// A feature-skip combination that is config-carried but unsupported —
@@ -472,6 +625,10 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
             return "\(field) must be finite and >= 0 (got \(value))"
         case .mustBeFinitePositive(let field, let value):
             return "\(field) must be finite and > 0 (got \(value))"
+        case .seBetaInitRequiresScaleAndBias(let group, let seStyle, let seBetaInit):
+            return "blockGroups[\(group)].seBetaInit is '\(seBetaInit.rawValue)' but its se_style is "
+                + "'\(seStyle.rawValue)'; only '\(SEStyle.scaleAndBias.rawValue)' has a β half, so every "
+                + "other SE style requires se_beta_init '\(SEBetaInit.glorot.rawValue)'"
         case .kernelMustBeOdd(let field, let value):
             return "\(field) must be odd for symmetric same-padding (got \(value))"
         case .nonPositive(let field, let value):
@@ -608,7 +765,11 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 activationStyle: blockActivationStyle,
                 skipMerge: blockSkipMerge,
                 dropoutMultiplier: 1,
-                outputNorm: blockOutputNorm
+                outputNorm: blockOutputNorm,
+                // The uniform convenience init describes the historical
+                // single-recipe towers, all of which were Glorot-β. A zero-β
+                // tower sets `seBetaInit` on the returned value's groups.
+                seBetaInit: .glorot
             )],
             stemConvKernelSize: stemConvKernelSize,
             activationFunction: activationFunction,
@@ -636,6 +797,11 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     // group — every existing safetensors/session file loads unchanged.
     // `dropout_multiplier` for legacy saves is 1 (that IS the legacy
     // semantic: the global rate applied unscaled).
+    //
+    // Fields added after format v3 are version-gated per block group (see
+    // `ArchitectureFormat` and `BlockGroup.init(from:format:)`): the carrier's
+    // format version decides whether an absent field resolves to its legacy
+    // value or is a hard error.
 
     enum CodingKeys: String, CodingKey {
         case inputEncoding = "input_encoding"
@@ -666,7 +832,15 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         case legacyBlockSeReductionRatio = "block_se_reduction_ratio"
     }
 
+    /// Decodes under the format attached to the decoder (strict current
+    /// version when none is attached — see `ArchitectureFormat`).
     init(from decoder: Decoder) throws {
+        try self.init(from: decoder, format: ArchitectureFormat.DecodeFormat.from(decoder))
+    }
+
+    /// Decodes an architecture from a file of `format.formatVersion`, threading
+    /// the format into every block group (see `BlockGroup.init(from:format:)`).
+    init(from decoder: Decoder, format: ArchitectureFormat.DecodeFormat) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         inputEncoding = try c.decode(InputEncoding.self, forKey: .inputEncoding)
         stemConvKernelSize = try c.decode(Int.self, forKey: .stemConvKernelSize)
@@ -684,7 +858,12 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         featureSkipToPolicyHead = try c.decodeIfPresent(Bool.self, forKey: .featureSkipToPolicyHead) ?? false
         featureSkipToValueHead = try c.decodeIfPresent(Bool.self, forKey: .featureSkipToValueHead) ?? false
         featureSkipToFinalBlock = try c.decodeIfPresent(Bool.self, forKey: .featureSkipToFinalBlock) ?? false
-        if let groups = try c.decodeIfPresent([BlockGroup].self, forKey: .blockGroups) {
+        if c.contains(.blockGroups) {
+            var groupsContainer = try c.nestedUnkeyedContainer(forKey: .blockGroups)
+            var groups: [BlockGroup] = []
+            while !groupsContainer.isAtEnd {
+                groups.append(try BlockGroup(from: try groupsContainer.superDecoder(), format: format))
+            }
             // An empty array is structurally invalid: the stem/head/summary
             // accessors `preconditionFailure` on no groups, and they are read
             // (SessionManifest.extract, SafetensorsModelIO load) before
@@ -710,8 +889,14 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 activationFunction: activationFunction,
                 activationStyle: try c.decode(BlockActivationStyle.self, forKey: .legacyBlockActivationStyle),
                 skipMerge: try c.decode(BlockSkipMerge.self, forKey: .legacyBlockSkipMerge),
-                dropoutMultiplier: 1
+                dropoutMultiplier: 1,
+                seBetaInit: .glorot
             )]
+            // The uniform-tower keys predate block groups, so no writer of any
+            // version that has `se_beta_init` emits them: this form is legacy
+            // by construction, whatever version the carrier states.
+            format.legacyLog.record(
+                "legacy uniform-tower keys: block_groups[0].\(BlockGroup.CodingKeys.seBetaInit.rawValue) := \(SEBetaInit.glorot.rawValue)")
         }
     }
 
@@ -912,6 +1097,10 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             // entire tower. The Build-New-Model α field is an unvalidated TextField,
             // so a user clearing it or typing 0 reaches here; guard at the single
             // chokepoint both the UI build path and JSON decode pass through.
+            if g.seStyle != .scaleAndBias, g.seBetaInit != .glorot {
+                throw NetworkArchitectureError.seBetaInitRequiresScaleAndBias(
+                    group: gi, seStyle: g.seStyle, seBetaInit: g.seBetaInit)
+            }
             if g.useRezero {
                 guard g.rezeroAlphaInit.isFinite, g.rezeroAlphaInit > 0 else {
                     throw NetworkArchitectureError.mustBeFinitePositive(
@@ -1096,6 +1285,9 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         case .attenuateOnly: seDesc = "SE/\(g.seReductionRatio)"
         case .scaleAndBias: seDesc = "SE+/\(g.seReductionRatio)"
         }
+        // Rendered only for a zero-β group, so every Glorot-β summary (all
+        // architectures that predate the setting) is byte-identical.
+        let seBetaDesc = g.seBetaInit == .zero ? " β0" : ""
         let rezeroDesc = g.useRezero
             ? "ReZero(\(String(format: "%.3g", g.rezeroAlphaInit))·tanh≤\(String(format: "%.3g", Double(g.rezeroAlphaInit) * rezeroTanhCeilingMultiple)))"
             : "no-ReZero"
@@ -1103,7 +1295,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         // summaries (and their golden-string tests) are byte-identical.
         let outNormDesc = g.resolvedOutputNorm == .none ? "" : ", out:\(g.resolvedOutputNorm.rawValue)"
         return "\(g.count)x[\(g.conv1KernelSize)x\(g.conv1KernelSize)+\(g.conv2KernelSize)x\(g.conv2KernelSize)"
-            + " @\(g.channels), \(seDesc), \(g.activationFunction.rawValue)/\(g.activationStyle.rawValue)"
+            + " @\(g.channels), \(seDesc)\(seBetaDesc), \(g.activationFunction.rawValue)/\(g.activationStyle.rawValue)"
             + ", \(g.skipMerge.rawValue), \(rezeroDesc)\(outNormDesc)"
             + ", drop*\(String(format: "%g", g.dropoutMultiplier))]"
     }

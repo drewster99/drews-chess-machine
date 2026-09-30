@@ -9,6 +9,28 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-09-30 CDT — SE zero-β init option, architecture format v4, `--derive-model` (#7) (pending commit)
+
+- New per-block-group `se_beta_init` (`glorot` | `zero`, `BlockGroup.seBetaInit`). With `zero`, the β half of a `scale_and_bias` SE FC2 (weight columns C..2C−1 and bias C..2C−1) is built as exact zeros, so at step 0 the block's SE computes `sigmoid(γ)·x`. The γ half keeps Glorot, and β still gets gradient. `validate()` rejects non-`glorot` values on other SE styles. It appears in the Build New Model per-group editor (shown only for scale+bias), in the summary and diagram (`SE+/4 β0`, and only for zero-β groups, so existing summaries are byte-identical), and in presets. `NetworkWeightAnalyzer`'s expected init L2 accounts for it.
+- Format v4 (`Network/ArchitectureFormat.swift`):
+  - Safetensors write `dcm_format_version` "4". Presets / `--architecture` files and `architecture.json` gain a top-level `format_version`.
+  - Files before v4, or with no marker, resolve a missing `se_beta_init` to `glorot`. This is logged once per load (`[ARCH] legacy file (format v3) <file>: block_groups[i].se_beta_init := glorot`).
+  - A v4+ file missing the field is a hard error naming the field, the group and the file. Future versions are rejected.
+  - Encoding always writes the field. Legacy files decode to values identical to today's presets (same summary, parameter count and legacy archHash).
+  - Loaders (`CheckpointManager` model and session loads, `ModelFileCatalog`, `SessionManifest`, `ArchitecturePresetStore`, `ArchitectureConfig`) pass the file name through for errors and logs.
+  - The research `archnorm.py` accepts the field (`norm_arch_md` applies the version gate).
+- New `--derive-model --from <model> --set-se-beta-init zero|glorot [--group i]... --out <new.safetensors>` (`Persistence/ModelDerivation.swift`, `App/DeriveModelCLI.swift`):
+  - It is an extensible operation catalog (`ModelDerivation.operationKinds`), with `--derive-model --help` generated from it.
+  - It copies every tensor bit-exact except the declared β ranges, and verifies that. It refuses shape-changing requests, no-op requests and trainer-state sources.
+  - It writes a new ModelID, `parent_model_id`, `notes` and a chained `derivation_history` (operations, rewritten tensors, source SHA-256).
+  - Docs: `documentation/deriving-models.md`. Plan: RUNTIME_ARCHITECTURE_CONFIG_PLAN.md §17.
+- Tests: new `SEBetaInitTests` covers:
+  - zero-β init, mixed groups, and step-0 equivalence to `sigmoid(γ)·x` via an attenuate-only twin
+  - that one train step makes β nonzero
+  - the v3/unversioned/v4-missing/v4 round-trip/future-version gates for safetensors, presets and `architecture.json`
+  - that the identity of existing presets is unchanged
+  - derivation bit-exactness, lineage and chained history, and the refusals
+
 ## 2026-09-29 CDT — Exact resume in all three runners, τ minimum 0.01, resumed sessions keep their own values (`d15f706`)
 
 - Resume now continues training exactly as if it had never stopped, through one shared path: `ChessTrainer.exportResumeSnapshot()` / `restoreExactly(from:)` (`Training/TrainerResumeState.swift`). It restores the fp32 master weights, the optimizer velocity, the completed-step clock, the warmup length and the LR/momentum cycle with its decay envelope. Warmup does not re-run.

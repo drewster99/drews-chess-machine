@@ -23,9 +23,50 @@ import Foundation
 /// A topology plus its human label. `label` lives here (outside the
 /// purely-topological `NetworkArchitecture`) so the config's identity stays the
 /// topology alone (plan §5a decision (b)).
+///
+/// On disk (user presets, `--architecture` files) it also carries
+/// `format_version` (`ArchitectureFormat.currentVersion`, always written).
+/// A file without it predates the marker and decodes as legacy — absent
+/// version-gated fields resolve to their pre-existing behavior; a file with
+/// it must state every field its version requires (see `ArchitectureFormat`).
+/// The marker is a property of the file, not of the value: it is not stored,
+/// so two presets with equal label + architecture are equal.
 struct NamedArchitecture: Codable, Sendable, Hashable {
     var label: String
     var architecture: NetworkArchitecture
+
+    init(label: String, architecture: NetworkArchitecture) {
+        self.label = label
+        self.architecture = architecture
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case label
+        case architecture
+        case formatVersion = "format_version"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let base = ArchitectureFormat.DecodeFormat.from(decoder)
+        let version: Int
+        if let stated = try c.decodeIfPresent(Int.self, forKey: .formatVersion) {
+            version = try ArchitectureFormat.requireSupported(stated, source: base.source)
+        } else {
+            version = ArchitectureFormat.unversionedLegacyVersion
+        }
+        label = try c.decode(String.self, forKey: .label)
+        architecture = try NetworkArchitecture(
+            from: try c.superDecoder(forKey: .architecture),
+            format: base.withFormatVersion(version))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(ArchitectureFormat.currentVersion, forKey: .formatVersion)
+        try c.encode(label, forKey: .label)
+        try c.encode(architecture, forKey: .architecture)
+    }
 }
 
 enum ArchitecturePresetStore {
@@ -94,9 +135,19 @@ enum ArchitecturePresetStore {
     /// Decode + validate a `NamedArchitecture` from a JSON file. Throws on a
     /// malformed or structurally-invalid config (so a bad hand-edit is a clear
     /// error, not a silently-wrong build).
+    ///
+    /// The version gate reports `url`'s file name in errors, and a legacy
+    /// file's resolutions are logged once per call.
     static func loadFile(at url: URL) throws -> NamedArchitecture {
         let data = try Data(contentsOf: url)
-        let named = try JSONDecoder().decode(NamedArchitecture.self, from: data)
+        let format = ArchitectureFormat.DecodeFormat(
+            formatVersion: ArchitectureFormat.currentVersion, source: url.lastPathComponent)
+        let named = try ArchitectureFormat.makeDecoder(format: format).decode(NamedArchitecture.self, from: data)
+        // `NamedArchitecture.init(from:)` re-stamps the version from the
+        // file's own marker; the resolutions land on this shared log.
+        if let line = legacyPresetLogLine(format: format) {
+            SessionLogger.shared.log(line)
+        }
         do {
             try named.architecture.validate()
         } catch {
@@ -104,6 +155,15 @@ enum ArchitecturePresetStore {
                                      detail: String(describing: error))
         }
         return named
+    }
+
+    /// The one `[ARCH]` line for a preset load that made legacy resolutions
+    /// (`format`'s version is the decoder's starting value, not the file's,
+    /// so the line names the resolutions rather than a version).
+    private static func legacyPresetLogLine(format: ArchitectureFormat.DecodeFormat) -> String? {
+        let resolutions = format.legacyLog.resolutions
+        guard !resolutions.isEmpty else { return nil }
+        return "[ARCH] legacy architecture preset \(format.source): " + resolutions.joined(separator: "; ")
     }
 
     /// User-saved presets from the Presets folder, keyed by filename stem.

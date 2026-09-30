@@ -18,10 +18,21 @@ enum ArchitectureConfig {
         CheckpointPaths.rootURL.appendingPathComponent(defaultFilename)
     }
 
-    /// Decode + validate a NetworkArchitecture from a JSON file.
+    /// Decode + validate a NetworkArchitecture from a JSON file. The file's
+    /// top-level `format_version` gates version-dependent fields (see
+    /// `VersionedArchitectureFile`); a file without it is legacy, and its
+    /// resolutions are logged once.
     static func load(from url: URL) throws -> NetworkArchitecture {
         let data = try Data(contentsOf: url)
-        let arch = try JSONDecoder().decode(NetworkArchitecture.self, from: data)
+        let format = ArchitectureFormat.DecodeFormat(
+            formatVersion: ArchitectureFormat.currentVersion, source: url.lastPathComponent)
+        let arch = try ArchitectureFormat.makeDecoder(format: format)
+            .decode(VersionedArchitectureFile.self, from: data).architecture
+        let resolutions = format.legacyLog.resolutions
+        if !resolutions.isEmpty {
+            SessionLogger.shared.log("[ARCH] legacy architecture file \(url.lastPathComponent): "
+                + resolutions.joined(separator: "; "))
+        }
         try arch.validate()
         return arch
     }
@@ -51,7 +62,7 @@ enum ArchitectureConfig {
     static func writeTemplate(_ arch: NetworkArchitecture = .current, to url: URL) throws -> URL {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(arch).write(to: url, options: [.atomic])
+        try encoder.encode(VersionedArchitectureFile(architecture: arch)).write(to: url, options: [.atomic])
         return url
     }
 }

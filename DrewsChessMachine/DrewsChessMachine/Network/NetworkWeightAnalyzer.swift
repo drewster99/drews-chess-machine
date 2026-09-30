@@ -156,7 +156,15 @@ enum NetworkWeightAnalyzer {
             let outC = spec.channels
             let fanIn = spec.seStyle == .none ? outC : outC / spec.seReductionRatio
             let fanOut = spec.seStyle == .scaleAndBias ? 2 * outC : outC
-            return glorotInitL2(elementCount: n, fanIn: fanIn, fanOut: fanOut)
+            // A zero-β group draws only its γ half (the first `fanIn · outC`
+            // elements' worth) at random; the β half starts at exactly zero
+            // and contributes nothing to the initial norm.
+            let randomElementCount: Int
+            switch spec.seBetaInit {
+            case .glorot: randomElementCount = n
+            case .zero:   randomElementCount = fanIn * outC
+            }
+            return glorotInitL2(elementCount: randomElementCount, fanIn: fanIn, fanOut: fanOut)
         }
         return fanIn(forVariableNamed: name, arch: arch).map { heInitL2(elementCount: n, fanIn: $0) }
     }

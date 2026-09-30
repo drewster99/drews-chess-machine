@@ -193,5 +193,9 @@ def norm_arch(s):
             conv2_kernel_size=a['block_conv2_kernel_size'], se_style=a['block_se_style'], se_reduction_ratio=a['block_se_reduction_ratio'],
             use_rezero=a['block_use_rezero'], rezero_alpha_init=a['rezero_alpha_init'], activation_function=a['activation_function'],
             activation_style=a['block_activation_style'], skip_merge=a['block_skip_merge'], dropout_multiplier=1)]
+    # `se_beta_init` (format v4+) only changes the random init; the stored
+    # weights already carry it, so the forward ignores it. Legacy files omit it.
+    for g in a['block_groups']:
+        g.setdefault('se_beta_init', 'glorot')
     a.setdefault('feature_skip_source', 'none')
     return a

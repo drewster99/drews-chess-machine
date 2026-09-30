@@ -1,0 +1,541 @@
+//
+//  ModelDerivation.swift
+//  DrewsChessMachine
+//
+//  The engine behind `--derive-model`: make a new model file from an existing
+//  one by applying a list of *derive operations* — architecture edits that
+//  never change a tensor's shape, each of which re-initializes only the
+//  tensors it declares. Everything else is copied bit-exact from the source
+//  file. The motivating case is a paired copy for an A/B: the same fresh net
+//  with one init choice flipped (GitHub issue #7, `se_beta_init`), so the two
+//  arms differ in exactly that and nothing else.
+//
+//  Structure — built to grow:
+//  - `DeriveOperationKind` is one operation's catalog entry: its CLI flag,
+//    value syntax, the architecture fields it changes, the tensors it
+//    rewrites, and a factory. `ModelDerivation.operationKinds` is the ONE
+//    list of kinds; the CLI parser, `--derive-model --help`, and the docs
+//    are all driven from it. Adding an operation = one new `DeriveOperation`
+//    type + one entry in that list.
+//  - `DeriveOperation` is one configured operation: it validates itself
+//    against the source architecture, returns the target architecture, and
+//    lists the tensor rewrites (name, rewritten element ranges, rewrite).
+//  - `ModelDerivation.derive` applies the operations and enforces the
+//    guardrails that do not depend on which operation ran:
+//      * the source must be a plain model file (no optimizer velocity, no
+//        trainer schedule — exact-resume state is meaningless once weights
+//        are re-initialized);
+//      * the target architecture must validate and must have exactly the
+//        source's tensor plan (names AND shapes) — a shape-changing request
+//        is refused before anything is written;
+//      * every element outside an operation's declared ranges is verified
+//        bit-identical to the source after the rewrite, so an operation that
+//        writes outside what it declares is caught, not shipped;
+//      * the output is decoded back through the normal loader before it is
+//        returned.
+//  - Lineage: a new ModelID, `parent_model_id` = the source's ModelID, a
+//    human `notes` line, and `derivation_history` — a JSON array carrying
+//    the source's own history (if it was itself derived) plus one record for
+//    this derivation listing every operation applied, the fields it changed,
+//    the tensors it rewrote, and the source file's SHA-256. A chain of
+//    derivations therefore stays traceable from the newest file alone.
+//
+//  Every other `__metadata__` key of the source (training step, value-head
+//  centering marker, replay provenance, …) is carried over verbatim; the
+//  keys this file rewrites are listed in `rewrittenMetadataKeys`.
+//
+
+import CryptoKit
+import Foundation
+
+// MARK: - Operation protocol + catalog entry
+
+/// One tensor an operation rewrites: which elements (in the ON-DISK PyTorch
+/// layout the safetensors file stores) it may change, and how.
+struct DeriveTensorRewrite: Sendable {
+    let tensorName: String
+    /// Element ranges of the flat on-disk data the rewrite may change. The
+    /// engine verifies every element outside them is bit-identical afterward.
+    let rewrittenElementRanges: [Range<Int>]
+    /// Short human description for logs and the derivation record.
+    let summary: String
+    /// Rewrites the tensor's flat on-disk data in place.
+    let rewrite: @Sendable (inout [Float]) -> Void
+}
+
+/// A configured derive operation. See `ModelDerivation` for the contract.
+protocol DeriveOperation: Sendable {
+    /// The `DeriveOperationKind.name` this operation is an instance of.
+    var kindName: String { get }
+    /// The arguments as they should appear in the derivation record.
+    var recordedArguments: [String: String] { get }
+    /// Validate against `architecture` and return the edited architecture.
+    /// Throws when the request does not apply (wrong SE style, nothing to
+    /// change, group out of range, …).
+    func apply(to architecture: NetworkArchitecture) throws -> NetworkArchitecture
+    /// The tensor rewrites turning `source`-architecture weights into
+    /// `target`-architecture weights (target = `apply(to: source)`).
+    func tensorRewrites(source: NetworkArchitecture, target: NetworkArchitecture) throws -> [DeriveTensorRewrite]
+}
+
+/// The catalog entry for one kind of derive operation — what the CLI parses,
+/// what `--help` lists, and what the derivation record names.
+struct DeriveOperationKind: Sendable {
+    /// Stable name, recorded in `derivation_history` (e.g. `set-se-beta-init`).
+    let name: String
+    /// The CLI flag that requests it (e.g. `--set-se-beta-init`).
+    let flag: String
+    /// The flag's value syntax for `--help` (e.g. `glorot|zero`).
+    let valueSyntax: String
+    /// One-paragraph description for `--help` and the docs.
+    let summary: String
+    /// The architecture JSON fields this kind may change.
+    let changedArchitectureFields: [String]
+    /// Human description of the tensors this kind rewrites.
+    let rewrittenTensorsDescription: String
+    /// Whether `--group <index>` (repeatable) narrows it to chosen block groups.
+    let acceptsGroupSelection: Bool
+    /// Builds the operation from the flag's value and the `--group` indices
+    /// (nil when none were given). Throws on an unparseable value.
+    let make: @Sendable (_ value: String, _ groupIndices: [Int]?) throws -> any DeriveOperation
+}
+
+// MARK: - Engine
+
+enum ModelDerivation {
+
+    /// Every derive operation this build supports — the single place to add
+    /// one. The CLI flags, `--help`, and the docs all come from this list.
+    static let operationKinds: [DeriveOperationKind] = [
+        SetSEBetaInitDeriveOperation.kind,
+    ]
+
+    /// The kind whose `flag` is `flag`, if any.
+    static func kind(forFlag flag: String) -> DeriveOperationKind? {
+        operationKinds.first { $0.flag == flag }
+    }
+
+    /// `__metadata__` key holding the JSON array of `DerivationRecord`s.
+    static let derivationHistoryKey = "derivation_history"
+    /// `creator` value stamped on derived files.
+    static let creator = "derive-model"
+
+    /// Source `__metadata__` keys this derivation replaces rather than copies.
+    static let rewrittenMetadataKeys: Set<String> = [
+        SafetensorsModelIO.Key.formatVersion,
+        SafetensorsModelIO.Key.modelID,
+        SafetensorsModelIO.Key.createdAt,
+        SafetensorsModelIO.Key.creator,
+        SafetensorsModelIO.Key.parentModelID,
+        SafetensorsModelIO.Key.notes,
+        SafetensorsModelIO.Key.architecture,
+        SafetensorsFile.contentHashKey,
+        derivationHistoryKey,
+    ]
+
+    enum DeriveError: Error, CustomStringConvertible, Equatable {
+        case noOperations
+        case sourceHasOptimizerState(source: String, detail: String)
+        case sourceMissingModelID(source: String)
+        case operationNotApplicable(operation: String, detail: String)
+        case invalidTargetArchitecture(detail: String)
+        case shapeChangingRequest(detail: String)
+        case missingTensor(name: String)
+        case rewriteChangedElementCount(name: String, before: Int, after: Int)
+        case rewriteOutsideDeclaredRanges(name: String, elementIndex: Int)
+        case unreadableDerivationHistory(detail: String)
+        case outputFailedVerification(detail: String)
+
+        var description: String {
+            switch self {
+            case .noOperations:
+                return "no derive operation requested"
+            case .sourceHasOptimizerState(let source, let detail):
+                return "\(source) carries optimizer/exact-resume state (\(detail)); derive from a model file "
+                    + "(a fresh net or champion), not a trainer-state file — re-initialized weights would "
+                    + "not match the saved optimizer state"
+            case .sourceMissingModelID(let source):
+                return "\(source) has no model_id, so the derived file could not record its parent"
+            case .operationNotApplicable(let operation, let detail):
+                return "\(operation): \(detail)"
+            case .invalidTargetArchitecture(let detail):
+                return "the derived architecture does not validate: \(detail)"
+            case .shapeChangingRequest(let detail):
+                return "refused: the requested change would alter the tensor layout (\(detail)); "
+                    + "--derive-model only makes changes that keep every tensor's name and shape"
+            case .missingTensor(let name):
+                return "source file has no tensor '\(name)'"
+            case .rewriteChangedElementCount(let name, let before, let after):
+                return "internal error: rewrite of '\(name)' changed its element count \(before) -> \(after)"
+            case .rewriteOutsideDeclaredRanges(let name, let index):
+                return "internal error: rewrite of '\(name)' changed element \(index), outside its declared ranges"
+            case .unreadableDerivationHistory(let detail):
+                return "source \(ModelDerivation.derivationHistoryKey) is unreadable: \(detail)"
+            case .outputFailedVerification(let detail):
+                return "the derived file failed to load back: \(detail)"
+            }
+        }
+    }
+
+    /// One operation as recorded in a `DerivationRecord`.
+    struct OperationRecord: Codable, Sendable, Equatable {
+        let operation: String
+        let arguments: [String: String]
+        let changedArchitectureFields: [String]
+        let rewrittenTensors: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case operation
+            case arguments
+            case changedArchitectureFields = "changed_architecture_fields"
+            case rewrittenTensors = "rewritten_tensors"
+        }
+    }
+
+    /// One derivation step, as stored in `derivation_history`.
+    struct DerivationRecord: Codable, Sendable, Equatable {
+        let modelID: String
+        let parentModelID: String
+        let sourceFile: String
+        let sourceSHA256: String
+        let sourceFormatVersion: Int
+        let createdAtUnix: Int64
+        let build: String
+        let operations: [OperationRecord]
+
+        enum CodingKeys: String, CodingKey {
+            case modelID = "model_id"
+            case parentModelID = "parent_model_id"
+            case sourceFile = "source_file"
+            case sourceSHA256 = "source_sha256"
+            case sourceFormatVersion = "source_format_version"
+            case createdAtUnix = "created_at_unix"
+            case build
+            case operations
+        }
+    }
+
+    /// What `derive` produced.
+    struct Result: Sendable {
+        /// The derived safetensors bytes, ready to write.
+        let data: Data
+        let sourceArchitecture: NetworkArchitecture
+        let targetArchitecture: NetworkArchitecture
+        /// This derivation's record (also the last entry of `history`).
+        let record: DerivationRecord
+        /// The full `derivation_history` written to the file.
+        let history: [DerivationRecord]
+        /// Every rewrite applied, in order, for logging.
+        let rewrites: [(operation: String, tensorName: String, summary: String)]
+        /// The source's embedded-architecture decode (for legacy logging).
+        let sourceArchitectureFormat: ArchitectureFormat.DecodeFormat
+    }
+
+    /// Apply `operations` to the model in `sourceData` (read from
+    /// `sourceName`). See the file header for the guardrails. Pure: no file
+    /// or log I/O — the caller writes `Result.data` and logs.
+    static func derive(
+        sourceData: Data,
+        sourceName: String,
+        operations: [any DeriveOperation],
+        newModelID: String,
+        createdAtUnix: Int64,
+        build: String
+    ) throws -> Result {
+        guard !operations.isEmpty else { throw DeriveError.noOperations }
+
+        let (tensors, sourceMetadata) = try SafetensorsFile.decode(sourceData)
+        if let velocity = tensors.first(where: { $0.name.hasPrefix("opt.") }) {
+            throw DeriveError.sourceHasOptimizerState(source: sourceName, detail: "tensor '\(velocity.name)'")
+        }
+        if let scheduleKey = TrainerScheduleState.MetadataKey.all.first(where: { sourceMetadata[$0] != nil }) {
+            throw DeriveError.sourceHasOptimizerState(source: sourceName, detail: "metadata '\(scheduleKey)'")
+        }
+        guard let parentModelID = sourceMetadata[SafetensorsModelIO.Key.modelID], !parentModelID.isEmpty else {
+            throw DeriveError.sourceMissingModelID(source: sourceName)
+        }
+
+        // The full loader must accept the source (plan, dims, value-head
+        // marker) — the derived file is only as loadable as its source.
+        let sourceDecoded = try SafetensorsModelIO.decode(sourceData, valueHead: .asStored, source: sourceName)
+        let source = sourceDecoded.architecture
+
+        var target = source
+        for operation in operations {
+            target = try operation.apply(to: target)
+        }
+        do {
+            try target.validate()
+        } catch {
+            throw DeriveError.invalidTargetArchitecture(detail: String(describing: error))
+        }
+        try requireSameTensorLayout(source: source, target: target)
+
+        // Rewrite. Each operation's rewrites are computed against the
+        // architecture it was applied to, in order.
+        var byName: [String: Int] = [:]
+        for (index, tensor) in tensors.enumerated() { byName[tensor.name] = index }
+        var outputTensors = tensors
+        var appliedRewrites: [(operation: String, tensorName: String, summary: String)] = []
+        var operationRecords: [OperationRecord] = []
+        var stepSource = source
+        for operation in operations {
+            let stepTarget = try operation.apply(to: stepSource)
+            let rewrites = try operation.tensorRewrites(source: stepSource, target: stepTarget)
+            for rewrite in rewrites {
+                guard let index = byName[rewrite.tensorName] else {
+                    throw DeriveError.missingTensor(name: rewrite.tensorName)
+                }
+                let before = outputTensors[index]
+                var data = before.data
+                rewrite.rewrite(&data)
+                guard data.count == before.data.count else {
+                    throw DeriveError.rewriteChangedElementCount(
+                        name: rewrite.tensorName, before: before.data.count, after: data.count)
+                }
+                try requireUnchangedOutside(
+                    rewrite.rewrittenElementRanges, before: before.data, after: data, name: rewrite.tensorName)
+                outputTensors[index] = SafetensorsTensor(name: before.name, shape: before.shape, data: data)
+                appliedRewrites.append((operation.kindName, rewrite.tensorName, rewrite.summary))
+            }
+            guard let kind = operationKinds.first(where: { $0.name == operation.kindName }) else {
+                preconditionFailure("derive operation '\(operation.kindName)' is not in ModelDerivation.operationKinds")
+            }
+            operationRecords.append(OperationRecord(
+                operation: operation.kindName,
+                arguments: operation.recordedArguments,
+                changedArchitectureFields: kind.changedArchitectureFields,
+                rewrittenTensors: rewrites.map(\.tensorName)))
+            stepSource = stepTarget
+        }
+
+        // Lineage.
+        let priorHistory = try decodeHistory(sourceMetadata[derivationHistoryKey])
+        let record = DerivationRecord(
+            modelID: newModelID,
+            parentModelID: parentModelID,
+            sourceFile: sourceName,
+            sourceSHA256: SHA256.hash(data: sourceData).map { String(format: "%02x", $0) }.joined(),
+            sourceFormatVersion: sourceDecoded.architectureFormat.formatVersion,
+            createdAtUnix: createdAtUnix,
+            build: build,
+            operations: operationRecords)
+        let history = priorHistory + [record]
+
+        var metadata = sourceMetadata.filter { !rewrittenMetadataKeys.contains($0.key) }
+        metadata[SafetensorsModelIO.Key.formatVersion] = SafetensorsModelIO.formatVersion
+        metadata[SafetensorsModelIO.Key.modelID] = newModelID
+        metadata[SafetensorsModelIO.Key.createdAt] = String(createdAtUnix)
+        metadata[SafetensorsModelIO.Key.creator] = creator
+        metadata[SafetensorsModelIO.Key.parentModelID] = parentModelID
+        metadata[SafetensorsModelIO.Key.notes] = notes(for: record)
+        metadata[SafetensorsModelIO.Key.architecture] = String(decoding: try JSONEncoder().encode(target), as: UTF8.self)
+        let historyEncoder = JSONEncoder()
+        historyEncoder.outputFormatting = [.sortedKeys]
+        metadata[derivationHistoryKey] = String(decoding: try historyEncoder.encode(history), as: UTF8.self)
+
+        let data = try SafetensorsFile.encode(tensors: outputTensors, metadata: metadata)
+
+        // The derived file must load through the normal path and describe
+        // exactly the target architecture.
+        do {
+            let reloaded = try SafetensorsModelIO.decode(data, valueHead: .asStored, source: "derived output")
+            guard reloaded.architecture == target else {
+                throw DeriveError.outputFailedVerification(detail: "embedded architecture differs from the target")
+            }
+        } catch let error as DeriveError {
+            throw error
+        } catch {
+            throw DeriveError.outputFailedVerification(detail: String(describing: error))
+        }
+
+        return Result(
+            data: data,
+            sourceArchitecture: source,
+            targetArchitecture: target,
+            record: record,
+            history: history,
+            rewrites: appliedRewrites,
+            sourceArchitectureFormat: sourceDecoded.architectureFormat)
+    }
+
+    /// Read a file's `derivation_history`, or `[]` when it has none (it was
+    /// not derived).
+    static func decodeHistory(_ json: String?) throws -> [DerivationRecord] {
+        guard let json else { return [] }
+        do {
+            return try JSONDecoder().decode([DerivationRecord].self, from: Data(json.utf8))
+        } catch {
+            throw DeriveError.unreadableDerivationHistory(detail: String(describing: error))
+        }
+    }
+
+    /// The `notes` line for a derived file.
+    static func notes(for record: DerivationRecord) -> String {
+        let operations = record.operations.map { op -> String in
+            let arguments = op.arguments.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+            return "\(op.operation) [\(arguments)] rewrote \(op.rewrittenTensors.count) tensors"
+        }
+        return "derived from \(record.parentModelID) (\(record.sourceFile), sha256 \(record.sourceSHA256)): "
+            + operations.joined(separator: "; ")
+    }
+
+    /// Refuse unless `target` has exactly `source`'s tensor names and shapes.
+    static func requireSameTensorLayout(source: NetworkArchitecture, target: NetworkArchitecture) throws {
+        let sourcePlan = source.weightTensorPlan()
+        let targetPlan = target.weightTensorPlan()
+        guard sourcePlan.count == targetPlan.count else {
+            throw DeriveError.shapeChangingRequest(
+                detail: "tensor count \(sourcePlan.count) -> \(targetPlan.count)")
+        }
+        for (before, after) in zip(sourcePlan, targetPlan) where before.name != after.name || before.shape != after.shape {
+            throw DeriveError.shapeChangingRequest(
+                detail: "'\(before.name)' \(before.shape) -> '\(after.name)' \(after.shape)")
+        }
+    }
+
+    private static func requireUnchangedOutside(
+        _ ranges: [Range<Int>], before: [Float], after: [Float], name: String
+    ) throws {
+        var allowed = [Bool](repeating: false, count: before.count)
+        for range in ranges {
+            for index in range where index < allowed.count { allowed[index] = true }
+        }
+        for index in 0..<before.count where !allowed[index] && before[index].bitPattern != after[index].bitPattern {
+            throw DeriveError.rewriteOutsideDeclaredRanges(name: name, elementIndex: index)
+        }
+    }
+}
+
+// MARK: - Operation: set-se-beta-init
+
+/// Sets `se_beta_init` on `scale_and_bias` block groups and re-initializes
+/// the β half of each affected block's SE FC2 to match: `zero` writes exact
+/// zeros to the β weight rows and β bias; `glorot` re-draws the β weight rows
+/// from the same Glorot-normal distribution the graph builder uses and zeroes
+/// the β bias (the builder's bias init). The γ half, and every other tensor,
+/// is untouched.
+struct SetSEBetaInitDeriveOperation: DeriveOperation {
+    let value: SEBetaInit
+    /// 0-based block-group indices, or nil for every `scale_and_bias` group.
+    let groupIndices: [Int]?
+
+    static let kind = DeriveOperationKind(
+        name: "set-se-beta-init",
+        flag: "--set-se-beta-init",
+        valueSyntax: SEBetaInit.allCases.map(\.rawValue).joined(separator: "|"),
+        summary: "Set se_beta_init on scale_and_bias block groups (all of them, or those named by --group) "
+            + "and re-initialize the β half of each affected block's SE FC2 to match: zero = exact zeros, "
+            + "glorot = a fresh Glorot-normal draw (β bias zero). The γ half and every other tensor are "
+            + "copied bit-exact.",
+        changedArchitectureFields: ["block_groups[].se_beta_init"],
+        rewrittenTensorsDescription: "blocks.<i>.se_scalebias.fc2.weight rows C..2C-1 and "
+            + "blocks.<i>.se_scalebias.fc2.bias C..2C-1, for every block i of an affected group",
+        acceptsGroupSelection: true,
+        make: { value, groupIndices in
+            guard let parsed = SEBetaInit(rawValue: value) else {
+                throw ModelDerivation.DeriveError.operationNotApplicable(
+                    operation: "set-se-beta-init",
+                    detail: "value '\(value)' is not one of \(SEBetaInit.allCases.map(\.rawValue).joined(separator: ", "))")
+            }
+            return SetSEBetaInitDeriveOperation(value: parsed, groupIndices: groupIndices)
+        })
+
+    var kindName: String { Self.kind.name }
+
+    var recordedArguments: [String: String] {
+        let groups: String
+        if let groupIndices {
+            groups = groupIndices.map(String.init).joined(separator: ",")
+        } else {
+            groups = "all scale_and_bias"
+        }
+        return ["value": value.rawValue, "groups": groups]
+    }
+
+    /// The group indices this operation targets in `architecture`.
+    private func selectedGroups(in architecture: NetworkArchitecture) throws -> [Int] {
+        if let groupIndices {
+            for index in groupIndices where !architecture.blockGroups.indices.contains(index) {
+                throw ModelDerivation.DeriveError.operationNotApplicable(
+                    operation: kindName,
+                    detail: "--group \(index) is out of range (the model has \(architecture.blockGroups.count) block groups, 0-based)")
+            }
+            for index in groupIndices where architecture.blockGroups[index].seStyle != .scaleAndBias {
+                throw ModelDerivation.DeriveError.operationNotApplicable(
+                    operation: kindName,
+                    detail: "block group \(index) has se_style '\(architecture.blockGroups[index].seStyle.rawValue)'; "
+                        + "se_beta_init applies only to '\(SEStyle.scaleAndBias.rawValue)'")
+            }
+            return groupIndices
+        }
+        let all = architecture.blockGroups.indices.filter { architecture.blockGroups[$0].seStyle == .scaleAndBias }
+        guard !all.isEmpty else {
+            throw ModelDerivation.DeriveError.operationNotApplicable(
+                operation: kindName, detail: "the model has no '\(SEStyle.scaleAndBias.rawValue)' block group")
+        }
+        return all
+    }
+
+    func apply(to architecture: NetworkArchitecture) throws -> NetworkArchitecture {
+        let groups = try selectedGroups(in: architecture)
+        guard groups.contains(where: { architecture.blockGroups[$0].seBetaInit != value }) else {
+            throw ModelDerivation.DeriveError.operationNotApplicable(
+                operation: kindName,
+                detail: "every selected block group already has se_beta_init '\(value.rawValue)'; nothing to derive")
+        }
+        var edited = architecture
+        for index in groups { edited.blockGroups[index].seBetaInit = value }
+        return edited
+    }
+
+    func tensorRewrites(source: NetworkArchitecture, target: NetworkArchitecture) throws -> [DeriveTensorRewrite] {
+        let plan = target.weightTensorPlan()
+        var planIndexByName: [String: Int] = [:]
+        for (index, spec) in plan.enumerated() { planIndexByName[spec.name] = index }
+
+        var rewrites: [DeriveTensorRewrite] = []
+        var firstBlock = 0
+        for (groupIndex, group) in target.blockGroups.enumerated() {
+            defer { firstBlock += group.count }
+            guard source.blockGroups[groupIndex].seBetaInit != group.seBetaInit else { continue }
+            let channels = group.channels
+            let reduced = channels / group.seReductionRatio
+            let weightRange = SEScaleAndBiasBetaHalf.torchWeightRange(reducedChannels: reduced, channels: channels)
+            let biasRange = SEScaleAndBiasBetaHalf.biasRange(channels: channels)
+            for block in firstBlock..<(firstBlock + group.count) {
+                let weightName = "blocks.\(block).se_scalebias.fc2.weight"
+                let biasName = "blocks.\(block).se_scalebias.fc2.bias"
+                guard planIndexByName[weightName] != nil else { throw ModelDerivation.DeriveError.missingTensor(name: weightName) }
+                guard planIndexByName[biasName] != nil else { throw ModelDerivation.DeriveError.missingTensor(name: biasName) }
+                switch group.seBetaInit {
+                case .zero:
+                    rewrites.append(DeriveTensorRewrite(
+                        tensorName: weightName, rewrittenElementRanges: [weightRange],
+                        summary: "β rows \(channels)..<\(2 * channels) zeroed",
+                        rewrite: { data in for index in weightRange { data[index] = 0 } }))
+                case .glorot:
+                    // Same distribution as `ChessNetwork.applySE`: a Glorot
+                    // draw for the native [r, 2C] matrix, whose β columns are
+                    // copied into the on-disk [2C, r] β rows.
+                    let fresh = ChessNetwork.glorotInitFloatsFCInOut(shape: [reduced, 2 * channels])
+                    rewrites.append(DeriveTensorRewrite(
+                        tensorName: weightName, rewrittenElementRanges: [weightRange],
+                        summary: "β rows \(channels)..<\(2 * channels) re-drawn Glorot-normal",
+                        rewrite: { data in
+                            for row in 0..<reduced {
+                                for betaColumn in 0..<channels {
+                                    data[(channels + betaColumn) * reduced + row] = fresh[row * 2 * channels + channels + betaColumn]
+                                }
+                            }
+                        }))
+                }
+                rewrites.append(DeriveTensorRewrite(
+                    tensorName: biasName, rewrittenElementRanges: [biasRange],
+                    summary: "β bias \(channels)..<\(2 * channels) zeroed",
+                    rewrite: { data in for index in biasRange { data[index] = 0 } }))
+            }
+        }
+        return rewrites
+    }
+}

@@ -2923,9 +2923,27 @@ final class ChessNetwork: @unchecked Sendable {
         s = graph.addition(s, castInForward(fc1b), name: "\(prefix)_se_fc1_bias_add")
         s = activation(graph, s, spec.activationFunction, name: "\(prefix)_se_act")
 
-        // Excite FC2: C/r -> seExpand (Glorot, feeds the sigmoid gate).
+        // Excite FC2: C/r -> seExpand (Glorot, feeds the sigmoid gate). A
+        // zero-β group draws the same Glorot matrix and then zeroes its β
+        // columns, so the γ half is initialized exactly as a Glorot-β group's
+        // is and only the additive half starts at "do nothing". The FC2 bias
+        // is zero for both halves in every case.
+        let fc2InitData: Data
+        switch spec.seBetaInit {
+        case .glorot:
+            fc2InitData = glorotInitDataFCInOut(shape: [seReduced, seExpand], dataType: weightStorageDataType)
+        case .zero:
+            precondition(
+                spec.seStyle == .scaleAndBias,
+                "se_beta_init zero on a \(spec.seStyle.rawValue) SE block (validate() rejects this)")
+            var fc2Floats = glorotInitFloatsFCInOut(shape: [seReduced, seExpand])
+            for betaRange in SEScaleAndBiasBetaHalf.nativeWeightRanges(reducedChannels: seReduced, channels: channels) {
+                for index in betaRange { fc2Floats[index] = 0 }
+            }
+            fc2InitData = makeWeightData(fc2Floats, dataType: weightStorageDataType)
+        }
         let fc2 = graph.variable(
-            with: glorotInitDataFCInOut(shape: [seReduced, seExpand], dataType: weightStorageDataType),
+            with: fc2InitData,
             shape: [NSNumber(value: seReduced), NSNumber(value: seExpand)],
             dataType: weightStorageDataType, name: "\(prefix)_se_fc2_weights")
         let fc2b = graph.variable(
@@ -3325,11 +3343,17 @@ final class ChessNetwork: @unchecked Sendable {
     /// targets the activation variance a symmetric saturating nonlinearity
     /// wants, unlike He (which compensates for ReLU's half-rectification).
     static func glorotInitDataFCInOut(shape: [Int], dataType: MPSDataType) -> Data {
+        makeWeightData(glorotInitFloatsFCInOut(shape: shape), dataType: dataType)
+    }
+
+    /// The Float32 values behind `glorotInitDataFCInOut`, for callers that
+    /// edit the matrix before it becomes weight data (the zero-β SE init,
+    /// the `--derive-model` Glorot re-draw).
+    static func glorotInitFloatsFCInOut(shape: [Int]) -> [Float] {
         precondition(shape.count == 2, "FC [in, out] shape must be 2D (got \(shape))")
         let std = sqrt(2.0 / Float(shape[0] + shape[1]))
         let count = shape.reduce(1, *)
-        let values = heInitFloats(count: count, std: std)
-        return makeWeightData(values, dataType: dataType)
+        return heInitFloats(count: count, std: std)
     }
 
     /// Vectorized He initialization producing `count` random normals with

@@ -139,11 +139,13 @@ enum ModelFileCatalog {
         }
         let name = url.lastPathComponent
         let label: String
-        if let architectureJSON = metadata["architecture"] {
+        if metadata[SafetensorsModelIO.Key.architecture] != nil {
+            // Same format-version gate as a full load. Display-only, so legacy
+            // resolutions are not logged here — the real load logs them.
             do {
-                label = try JSONDecoder().decode(NetworkArchitecture.self, from: Data(architectureJSON.utf8)).shortLabel
+                label = try SafetensorsModelIO.decodeArchitecture(fromMetadata: metadata, source: name).architecture.shortLabel
             } catch {
-                throw ModelFileCatalogError.notSafetensors(file: name, detail: "unreadable architecture: \(error.localizedDescription)")
+                throw ModelFileCatalogError.notSafetensors(file: name, detail: "unreadable architecture: \(String(describing: error))")
             }
         } else {
             label = "no architecture recorded"

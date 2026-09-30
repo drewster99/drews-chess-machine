@@ -183,6 +183,22 @@ extension SessionManifest {
     /// path (`CheckpointManager` derives `manifest.json` from the exact
     /// bytes it just wrote, so there is exactly one extraction code path
     /// and the manifest can never drift from the file it summarizes).
+    /// Decode a snake_case `NetworkArchitecture` embedded in an old
+    /// `session.json`, as legacy (see `extract`). A failure is logged and
+    /// returns nil, so the caller falls back to the scalar summary.
+    private static func decodeEmbeddedArchitecture(_ arch: [String: Any], folderName: String) -> NetworkArchitecture? {
+        let source = "\(folderName)/session.json"
+        do {
+            let archData = try JSONSerialization.data(withJSONObject: arch)
+            return try ArchitectureFormat.makeDecoder(format: ArchitectureFormat.DecodeFormat(
+                formatVersion: ArchitectureFormat.unversionedLegacyVersion, source: source)
+            ).decode(NetworkArchitecture.self, from: archData)
+        } catch {
+            SessionLogger.shared.log("[SESSIONS] \(source): embedded architecture unreadable (\(String(describing: error))); showing the scalar summary")
+            return nil
+        }
+    }
+
     static func extract(
         jsonDict dict: [String: Any],
         folderName: String,
@@ -199,7 +215,11 @@ extension SessionManifest {
 
         // Architecture: runtime-config saves embed the snake_case
         // NetworkArchitecture (decode it for the canonical summary);
-        // legacy saves carry a camelCase scalar dict.
+        // legacy saves carry a camelCase scalar dict. `session.json` carries
+        // no architecture format version and no current writer embeds a
+        // NetworkArchitecture here (saves write `ArchitectureMetadata`), so
+        // any embedded one predates format v4 and decodes as legacy. Display
+        // only — resolutions are not logged.
         var archSummary: String? = nil
         var paramCount: Int? = nil
         var inputPlanes: Int? = nil
@@ -208,8 +228,7 @@ extension SessionManifest {
         if let arch = dict["architecture"] as? [String: Any] {
             func aInt(_ k: String) -> Int? { (arch[k] as? NSNumber)?.intValue }
             if arch["input_encoding"] != nil,
-               let archData = try? JSONSerialization.data(withJSONObject: arch),
-               let decoded = try? JSONDecoder().decode(NetworkArchitecture.self, from: archData) {
+               let decoded = decodeEmbeddedArchitecture(arch, folderName: folderName) {
                 archSummary = decoded.architectureSummary
                 paramCount = decoded.parameterCount
                 inputPlanes = decoded.inputPlanes
