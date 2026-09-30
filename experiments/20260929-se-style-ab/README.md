@@ -279,3 +279,50 @@ This makes a new random init with a new ModelID. There is no seed option, so no 
 - What *is* identical given the manifest-verified corpus is the fresh weights (stored) and the game stream fed into the buffer (corpus order).
 - Expect curves that track closely but not exactly. Treat per-mark differences within the SE arms' own ±60–130 swings around the LR peak, and within the 6.4–43.7 seed band, as noise. Compare the trough marks (11k, 30k).
 - Checkpoints from this build can't be `--resume-exact`ed (see Caveats), so an interrupted rerun must restart from the fresh net.
+
+## Seed 1: end of run
+
+All three seed-1 arms were stopped cleanly on 2026-09-30 (SIGINT right after an enumerated checkpoint, so each also wrote a stop save):
+
+| arm | last 1k mark | pElo / nll | stop save | pElo / nll |
+|---|---|---|---|---|
+| scale+bias | 33000 | 1461.5 / 2.2611 | 33014 | 1452.8 / 2.2669 |
+| attenuate-only | 33000 | 1484.1 / 2.2338 | 33012 | 1481.0 / 2.2369 |
+| none | 32000 | 1477.5 / 2.2373 | 32036 | 1482.1 / 2.2376 |
+
+Artifacts: gzipped logs in [`logs/`](logs/), final and stop-save checkpoints in [`models/`](models/) (Git LFS; see [MODELS.md](MODELS.md)). Full analysis at 30k: [REPORT-30k.md](REPORT-30k.md).
+
+Windowed view (mean gap per window, positive = no SE better):
+
+| steps | LR phase | none − s+b pElo | none − att pElo | s+b − none nll | att − none nll |
+|---|---|---|---|---|---|
+| 1–6k | first peak, descending | +16.9 | +5.4 | +0.018 | +0.008 |
+| 7–12k | trough 1 | +35.2 | +24.5 | +0.023 | +0.021 |
+| 13–18k | rising | +36.3 | +15.5 | +0.035 | +0.020 |
+| 19–24k | peak 2 | +46.0 | +27.8 | +0.067 | +0.049 |
+| 25–31k | descending to trough 2 | +21.1 | +9.3 | +0.018 | +0.015 |
+
+The gap is largest around the LR peak and shrinks at low LR; at trough 2 attenuate-only is within probe noise of no SE. SE's β term barely trains (β bias mean is structurally pinned at 0 by the block's LayerNorm; per-channel |β| ≈ 0.01; β weight row norms decay 0.465 → 0.37 under weight decay).
+
+## Seed 2
+
+Question: does the seed-1 ordering (none ≥ attenuate-only > scale+bias, and SE instability near the LR peak) repeat with fresh random initializations? Target: run to ≥ 31k (covers the second peak and trough).
+
+**Launch record:** 2026-09-30 10:41:01–10:41:17 CDT, all three at once, same corpus, same `parameters.json`, same flags as seed 1.
+
+| arm | fresh ModelID | pid | log |
+|---|---|---|---|
+| scale+bias | `20260930-1-H1Oq` | 94122 | `dcm_log_20260930-104101.txt` |
+| attenuate-only | `20260930-2-Gf9P` | 94143 | `dcm_log_20260930-104109.txt` |
+| none | `20260930-3-V9zk` | 94158 | `dcm_log_20260930-104117.txt` |
+
+Fresh nets: `models/20260929-test_SE_<arm>-seed2-fresh.safetensors`. Dashboard registry keys `se_sb2` / `se_att2` / `se_none2`.
+
+**Engine differences from seed 1.** Seed 1 ran build 2255 (git `5826e1c` with uncommitted changes = the code committed as `cbc1894`/`7a434ea`). Seed 2 runs the Release binary built 2026-09-29 21:34 from `5f46da0` plus an uncommitted doc-comment edit (= the code in `badae6c`). Engine commits in between (`git log 7a434ea..badae6c -- DrewsChessMachine/DrewsChessMachine`):
+
+| commit | change | can it affect a fresh corpus replay? |
+|---|---|---|
+| `d15f706` | Exact resume for GUI, corpus replay and train-vs-UCI: checkpoints now carry optimizer velocity, fp32 master weights and schedule keys; replay start logs `origin=…`; tau minimum 0.01; resumed sessions keep their own values | **Checkpoint contents and size only** (≈2× larger enumerated files). The training step math, LR/momentum cycle and warmup are unchanged for a fresh start (`origin=trainerStep 0 cycleStep 0`, confirmed in the seed-2 logs). Tau floors are self-play/arena only. |
+| `badae6c` | Doc comment in `NetworkArchitecture.swift` | No. |
+
+Seed-2 startup lines match seed 1: `wd=0.0003 bufCap=500000 minPrefill=250000`, cycle starts at LR 1e-1 / momentum 0.85.

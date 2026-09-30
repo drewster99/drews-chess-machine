@@ -11,4 +11,8 @@ Copies of these checkpoints are stored in [`models/`](models/) via Git LFS (run 
 | `20260929-test_SE_none-fresh.safetensors` | 20260929-18-D9is | 0 | 19.73 | `f4424eb972b9dda7…` |
 | `20260929-test_SE_none-replay-step30000.safetensors` | 20260929-24-834D | 30000 | 19.73 | `a74a8002b3bc21cd…` |
 
-Run logs (`dcm_log_20260929-150727/150735/150743.txt`, ~232 MB each uncompressed) will be added gzipped under `logs/` when the runs stop; they are still being written.
+Seed-1 final checkpoints (also in `models/`): `…-scale+bias-replay-step33000` / `-step33014` (stop save), `…-attenuate-only-replay-step33000` / `-step33012`, `…-none-replay-step32000` / `-step32036`.
+
+Seed-2 fresh nets (in `models/`): `20260929-test_SE_scale+bias-seed2-fresh` (20260930-1-H1Oq), `…attenuate-only-seed2-fresh` (20260930-2-Gf9P), `…none-seed2-fresh` (20260930-3-V9zk).
+
+Seed-1 run logs, gzipped, in `logs/` (Git LFS): `dcm_log_20260929-150727.txt.gz` (scale+bias), `-150735` (attenuate-only), `-150743` (none); 56.9 / 56.9 / 55.2 MB compressed from 231.9 / 232.1 / 223.6 MB.

@@ -3,6 +3,29 @@
   "models_dir": "~/Library/Application Support/DrewsChessMachine/Models",
   "logs_dir": "~/Library/Logs/DrewsChessMachine",
   "runs": {
+    "se_sb2": {
+      "label": "SE A/B/C seed 2 — scale+bias — 5.21M (3-blk 7×7 @128, bf16)",
+      "color": "#6baed6",
+      "rezero_cap": 0.4472136,
+      "n_blocks": 3,
+      "arch_summary": "Preset test_SE_scale+bias (fresh 20260930-1-H1Oq). SE style A/B/C experiment (experiments/20260929-se-style-ab). v5 · basic30(30) → stem 7×7→128 · 3× @128, 7×7+7×7, SE scale+bias/4, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out · policy intermediate_conv (128) · value WDL(16→FC128) · bf16. Seed 2 (new random init), build from badae6c.",
+      "arch_stem": "basic30 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, SE scale+bias/4, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20260929-test_SE_scale+bias-seed2-replay-latest.safetensors",
+      "frozen_glob": "20260929-test_SE_scale+bias-seed2-replay-step*.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20260930-104101.txt",
+          "date": "20260930",
+          "cumstep_base": 0,
+          "label": "seed 2 run (500k buffer, 3 arms concurrent)",
+          "enum_stem": "20260929-test_SE_scale+bias-seed2"
+        }
+      ],
+      "trainset": "std-2026-05",
+      "params": 5208050
+    },
     "se_sb": {
       "label": "SE A/B/C — scale+bias — 5.21M (3-blk 7×7 @128, bf16)",
       "color": "#1f77b4",
@@ -26,6 +49,29 @@
       "trainset": "std-2026-05",
       "params": 5208050
     },
+    "se_att2": {
+      "label": "SE A/B/C seed 2 — attenuate-only — 5.20M (3-blk 7×7 @128, bf16)",
+      "color": "#fdae6b",
+      "rezero_cap": 0.4472136,
+      "n_blocks": 3,
+      "arch_summary": "Preset test_SE_attenuate-only (fresh 20260930-2-Gf9P). SE style A/B/C experiment (experiments/20260929-se-style-ab). v5 · basic30(30) → stem 7×7→128 · 3× @128, 7×7+7×7, SE attenuate/4, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out · policy intermediate_conv (128) · value WDL(16→FC128) · bf16. Seed 2 (new random init), build from badae6c.",
+      "arch_stem": "basic30 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, SE attenuate/4, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20260929-test_SE_attenuate-only-seed2-replay-latest.safetensors",
+      "frozen_glob": "20260929-test_SE_attenuate-only-seed2-replay-step*.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20260930-104109.txt",
+          "date": "20260930",
+          "cumstep_base": 0,
+          "label": "seed 2 run (500k buffer, 3 arms concurrent)",
+          "enum_stem": "20260929-test_SE_attenuate-only-seed2"
+        }
+      ],
+      "trainset": "std-2026-05",
+      "params": 5195378
+    },
     "se_att": {
       "label": "SE A/B/C — attenuate-only — 5.20M (3-blk 7×7 @128, bf16)",
       "color": "#ff7f0e",
@@ -48,6 +94,29 @@
       ],
       "trainset": "std-2026-05",
       "params": 5195378
+    },
+    "se_none2": {
+      "label": "SE A/B/C seed 2 — none — 5.17M (3-blk 7×7 @128, bf16)",
+      "color": "#74c476",
+      "rezero_cap": 0.4472136,
+      "n_blocks": 3,
+      "arch_summary": "Preset test_SE_none (fresh 20260930-3-V9zk). SE style A/B/C experiment (experiments/20260929-se-style-ab). v5 · basic30(30) → stem 7×7→128 · 3× @128, 7×7+7×7, no SE, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out · policy intermediate_conv (128) · value WDL(16→FC128) · bf16. Seed 2 (new random init), build from badae6c.",
+      "arch_stem": "basic30 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, no SE, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20260929-test_SE_none-seed2-replay-latest.safetensors",
+      "frozen_glob": "20260929-test_SE_none-seed2-replay-step*.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20260930-104117.txt",
+          "date": "20260930",
+          "cumstep_base": 0,
+          "label": "seed 2 run (500k buffer, 3 arms concurrent)",
+          "enum_stem": "20260929-test_SE_none-seed2"
+        }
+      ],
+      "trainset": "std-2026-05",
+      "params": 5170322
     },
     "se_none": {
       "label": "SE A/B/C — none — 5.17M (3-blk 7×7 @128, bf16)",
