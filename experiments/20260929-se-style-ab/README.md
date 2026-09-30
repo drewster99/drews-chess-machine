@@ -99,6 +99,7 @@ those CSVs; this table is pElo / nll.
 | 7000 | 1268.1 / 2.4642 | 1265.0 / 2.4707 | 1297.5 / 2.4513 |
 | 8000 | 1263.5 / 2.4757 | 1276.9 / 2.4701 | 1305.2 / 2.4458 |
 | 9000 | 1269.1 / 2.4621 | 1294.4 / 2.4401 | 1313.5 / 2.4233 |
+| 10000 | 1275.3 / 2.4619 | 1284.1 / 2.4556 | 1300.1 / 2.4457 |
 
 Running read (updated as marks land): the arms were within seed noise through 6k; from 7k the no-SE arm
 leads on both pElo and nll, and scale+bias has been flat since 6k while the LR descends toward the first
