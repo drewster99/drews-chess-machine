@@ -107,6 +107,32 @@ def stats(values):
     }
 
 
+def gamma_beta_parts(name, values, tensors):
+    """Split a scale+bias SE fc2 tensor into its γ and β halves (outputs 0..C-1 / C..2C-1).
+
+    - Weights are stored [out, in]: the halves are the first / second block of rows.
+    - Optimizer velocity of an FC weight is stored flattened in the graph's [in, out]
+      layout (the transpose of the saved weight): the halves are the first / second
+      block of columns. The [out, in] shape is taken from the matching weight tensor.
+    - Biases and bias velocities are 1-D over the outputs: first / second half.
+    """
+    if name.endswith(".bias") or name.endswith(".bias.velocity"):
+        half = values.size // 2
+        return [("gamma", values[:half]), ("beta", values[half:])]
+    if name.endswith(".velocity"):
+        weight_shape = tensors[name[len("opt."):-len(".velocity")]][0]
+        outputs, inputs = weight_shape[0], weight_shape[1]
+        if values.size != outputs * inputs:
+            raise ValueError(f"{name}: {values.size} elements, expected {outputs}x{inputs}")
+        cols = values.reshape(inputs, outputs)
+        half = outputs // 2
+        return [("gamma", cols[:, :half].ravel()), ("beta", cols[:, half:].ravel())]
+    shape = tensors[name][0]
+    rows = values.reshape(shape[0], -1)
+    half = shape[0] // 2
+    return [("gamma", rows[:half].ravel()), ("beta", rows[half:].ravel())]
+
+
 def checkpoint_files(stem):
     fresh = os.path.join(HERE, "models", f"{stem}-fresh.safetensors")
     if not os.path.exists(fresh):
@@ -135,8 +161,7 @@ def main():
                 kind, group = classify(name)
                 parts = [("all", values)]
                 if ".se_scalebias.fc2." in name:
-                    half = values.size // 2
-                    parts += [("gamma", values[:half]), ("beta", values[half:])]
+                    parts += gamma_beta_parts(name, values, tensors)
                 for part, v in parts:
                     rows.append({
                         "run": run, "arm": arm, "seed": seed, "file": os.path.basename(path),

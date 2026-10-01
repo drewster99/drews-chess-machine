@@ -340,13 +340,36 @@ eight runs' logs agree with it at every step they logged; the report is generate
 | step | training step |
 | lr | learning rate in effect |
 | momentum | SGD momentum in effect |
+
+## tensor_stats.csv ({tensor_rows:,} rows)
+
+One row per (checkpoint, tensor) for every checkpoint of all eight runs: the fresh net plus every enumerated
+checkpoint and stop save. Produced by [`../tensor_stats.py`](../tensor_stats.py), which reads the fresh nets from
+`../models/` and the enumerated checkpoints from `~/Library/Application Support/DrewsChessMachine/Models/` (run it
+before this script). Summarized in [`../TENSOR-STATS.md`](../TENSOR-STATS.md).
+
+| column | meaning |
+|---|---|
+| run, arm, seed | run key, arm label, seed (1 or 2) |
+| file | checkpoint filename |
+| model_id, training_step | from the checkpoint's `__metadata__` (0 for a fresh net) |
+| tensor | tensor name as stored (`opt.<name>.velocity` = SGD momentum velocity, present from build 2259 on) |
+| part | `all`; or `gamma` / `beta` for the two halves of a scale+bias SE `fc2` tensor, i.e. outputs 0–127 / 128–255. For the weight (stored [out, in]) those are rows; for its velocity (stored flattened in the graph's [in, out] layout) they are columns; for the bias and bias velocity, the first / second half |
+| kind | `parameter`, `bn_running_stat` (BN running mean / variance) or `optimizer` |
+| group | `stem`, `block0`–`block2`, `tower_final_bn`, `policy`, `value` |
+| shape | stored shape, `x`-separated (velocity tensors are stored flat) |
+| count | number of elements |
+| mean, std, min, max | over all elements (std is the population sd) |
+| abs_max, mean_abs, rms, l2_norm | max \\|x\\|, mean \\|x\\|, sqrt(mean x²), sqrt(sum x²) |
+| zero_frac | fraction of elements exactly 0 |
+| nonfinite | count of NaN / Inf elements (0 in every row) |
 '''
 
 
 def write_readme():
     text = DATA_README.format(probes=count('probes_all_runs.csv'), gaps=count('paired_gaps.csv'),
                               seedgaps=count('seed_gaps.csv'), norms=count('se_fc2_norms.csv'),
-                              lr=count('lr_schedule.csv'))
+                              lr=count('lr_schedule.csv'), tensor_rows=count('tensor_stats.csv'))
     with open(os.path.join(OUT, 'README.md'), 'w') as fh:
         fh.write(text)
 

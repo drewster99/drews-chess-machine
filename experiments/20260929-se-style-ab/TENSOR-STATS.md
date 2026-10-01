@@ -30,21 +30,25 @@ Per-tensor statistics (mean, min, max, std, abs max, RMS, L2 norm, exact-zero fr
 
    These dead inputs cost a little compute and nothing else. They are an encoding-design observation, not a training fault.
 
-4. **Many SE bottleneck units are dead.**
+4. **Many SE bottleneck units are dead; nothing else in the network is.**
 
-   In every SE checkpoint that carries optimizer state, some FC1 units (32 per block) have exactly-zero momentum velocity. Momentum decays geometrically when the gradient is zero and reaches exactly 0 in fp32 only after roughly 600–2,000 consecutive zero-gradient steps (momentum 0.85–0.95). These units are therefore inactive (ReLU off) for all recent inputs.
+   Two measures, per SE block (32 FC1 units each):
+   - **Dead now:** the unit's FC1 bias and weight velocity are exactly 0. Momentum decays geometrically when the gradient is zero and reaches exactly 0 in fp32 only after roughly 600–2,000 consecutive zero-gradient steps (momentum 0.85–0.95), so these units have been inactive (ReLU off) for all recent inputs. Only checkpoints with optimizer state (build 2259+) have this. (FC velocity is stored in the graph's [in, out] layout; the counts use that layout and agree with the bias velocities.)
+   - **Dead almost the whole run:** the unit's FC1 weight row has kept its initial direction (cosine with init > 0.999995) and shrunk by exactly the weight-decay factor, so it got essentially no gradient since the first steps. This works for every run, seed 1 included.
 
-   | run | block 0 | block 1 | block 2 |
-   |---|---:|---:|---:|
-   | `se_sb2` (scale+bias, step 7,282) | 4 / 32 | 13 / 32 | 4 / 32 |
-   | `se_att2` (attenuate-only, step 7,289) | 8 / 32 | 7 / 32 | 5 / 32 |
-   | `se_zb1` (zero-β, step 5,030) | 13 / 32 | 6 / 32 | 4 / 32 |
-   | `se_zb2` (zero-β, step 5,004) | 9 / 32 | 4 / 32 | 2 / 32 |
+   | run | final step | dead now (b0 / b1 / b2) | dead almost the whole run (b0 / b1 / b2) |
+   |---|---:|---|---|
+   | `se_sb` (scale+bias, seed 1) | 33,014 | not saved | 2 / 4 / 0 |
+   | `se_att` (attenuate-only, seed 1) | 33,012 | not saved | 8 / 1 / 2 |
+   | `se_zb1` (zero-β, seed 1) | 5,030 | 13 / 6 / 4 | 8 / 9 / 1 |
+   | `se_sb2` (scale+bias, seed 2) | 7,282 | 4 / 13 / 4 | 1 / 5 / 2 |
+   | `se_att2` (attenuate-only, seed 2) | 7,289 | 8 / 7 / 5 | 7 / 7 / 2 |
+   | `se_zb2` (zero-β, seed 2) | 5,004 | 9 / 4 / 2 | 6 / 3 / 0 |
 
-   - **Dead from the start:** one unit in each of three runs never trained at all. Its FC1 bias is still exactly 0, its init value: `se_sb2` block 1 unit 19, `se_zb1` block 1 unit 20, `se_zb2` block 0 unit 26.
-   - **Effect in zero-β:** for those two zero-β units, the β weights reading from them are still exactly 0 (the 1/32 exact-zero fraction in the β half of fc2).
-   - **What this means:** up to 41% of a block's SE bottleneck is inactive late in training, which fits the finding that SE adds little here.
-   - **Seed 1** saved no optimizer state, so this can't be measured there.
+   - **Never trained at all:** one unit in each of three runs still has its FC1 bias at exactly 0, its init value: `se_sb2` block 1 unit 19, `se_zb1` block 1 unit 20, `se_zb2` block 0 unit 26. For the two zero-β units, the β weights reading from them are also still exactly 0 (the 1/32 exact-zero fraction in the β half of fc2).
+   - **Dead now ≥ dead all along:** most dead units died very early; a few more die later (e.g. `se_zb1` block 0: 8 dead almost the whole run, 13 dead now).
+   - **What this means:** up to 41% of a block's SE bottleneck is inactive, which fits the finding that SE adds little here.
+   - **Nothing else is dead.** Checked the same way: no conv output channel in the stem or any block, no BN γ/β, no policy channel, and none of the value head's 16 conv channels or 128 hidden units has zero velocity or a decay-only weight row. The only other dead weights in the network are the stem weights reading the seven always-zero input planes (finding 3).
 
 5. **Invariants hold.**
    - **β bias mean** (scale+bias and zero-β) stays at 0, with |mean| ≤ 4.8e-5 at every final, as the block LayerNorm requires.
@@ -883,8 +887,8 @@ Only checkpoints from build 2259 onward carry optimizer state (seed 2 and zero-�
 | `opt.blocks.0.se_scalebias.fc2.bias.velocity [gamma]` | 128 | -7.431e-05 | -0.003656 | +0.001018 | +0.0004304 | 0.0000 |
 | `opt.blocks.0.se_scalebias.fc2.bias.velocity [beta]` | 128 | +4.486e-07 | -0.00102 | +0.001286 | +0.0004119 | 0.0000 |
 | `opt.blocks.0.se_scalebias.fc2.weight.velocity` | 8,192 | -5.276e-05 | -0.03055 | +0.008894 | +0.001296 | 0.4062 |
-| `opt.blocks.0.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | -4.516e-05 | -0.03055 | +0.008555 | +0.001283 | 0.3125 |
-| `opt.blocks.0.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | -6.036e-05 | -0.02666 | +0.008894 | +0.001309 | 0.5000 |
+| `opt.blocks.0.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | -0.0001061 | -0.03055 | +0.008499 | +0.001309 | 0.4062 |
+| `opt.blocks.0.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | +5.683e-07 | -0.009059 | +0.008894 | +0.001283 | 0.4062 |
 | `opt.blocks.1.bn1.bias.velocity` | 128 | +0.0001817 | -0.001918 | +0.003291 | +0.0009874 | 0.0000 |
 | `opt.blocks.1.bn1.weight.velocity` | 128 | +3.267e-05 | -0.004693 | +0.003948 | +0.001088 | 0.0000 |
 | `opt.blocks.1.bn2.bias.velocity` | 128 | +0.0001475 | -0.001678 | +0.002675 | +0.0007495 | 0.0000 |
@@ -900,8 +904,8 @@ Only checkpoints from build 2259 onward carry optimizer state (seed 2 and zero-�
 | `opt.blocks.1.se_scalebias.fc2.bias.velocity [gamma]` | 128 | -1.206e-05 | -0.001494 | +0.001097 | +0.0003823 | 0.0000 |
 | `opt.blocks.1.se_scalebias.fc2.bias.velocity [beta]` | 128 | -3.823e-07 | -0.001137 | +0.001213 | +0.0004177 | 0.0000 |
 | `opt.blocks.1.se_scalebias.fc2.weight.velocity` | 8,192 | -5.564e-06 | -0.009392 | +0.008373 | +0.0007054 | 0.1875 |
-| `opt.blocks.1.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | -6.339e-06 | -0.009392 | +0.008373 | +0.0008234 | 0.1250 |
-| `opt.blocks.1.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | -4.79e-06 | -0.005202 | +0.005332 | +0.0005632 | 0.2500 |
+| `opt.blocks.1.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | -1.093e-05 | -0.009392 | +0.005502 | +0.0006014 | 0.1875 |
+| `opt.blocks.1.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | -2.03e-07 | -0.00578 | +0.008373 | +0.0007959 | 0.1875 |
 | `opt.blocks.2.bn1.bias.velocity` | 128 | +1.387e-05 | -0.002408 | +0.002259 | +0.000921 | 0.0000 |
 | `opt.blocks.2.bn1.weight.velocity` | 128 | +7.407e-05 | -0.009079 | +0.005908 | +0.001466 | 0.0000 |
 | `opt.blocks.2.bn2.bias.velocity` | 128 | +1.677e-05 | -0.002369 | +0.002265 | +0.000892 | 0.0000 |
@@ -917,8 +921,8 @@ Only checkpoints from build 2259 onward carry optimizer state (seed 2 and zero-�
 | `opt.blocks.2.se_scalebias.fc2.bias.velocity [gamma]` | 128 | -3.201e-05 | -0.002491 | +0.001423 | +0.0005401 | 0.0000 |
 | `opt.blocks.2.se_scalebias.fc2.bias.velocity [beta]` | 128 | -1.065e-07 | -0.001122 | +0.0007384 | +0.0003613 | 0.0000 |
 | `opt.blocks.2.se_scalebias.fc2.weight.velocity` | 8,192 | -1.443e-05 | -0.01737 | +0.006949 | +0.0008831 | 0.1250 |
-| `opt.blocks.2.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | -1.605e-05 | -0.01453 | +0.006748 | +0.0008545 | 0.1875 |
-| `opt.blocks.2.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | -1.281e-05 | -0.01737 | +0.006949 | +0.0009108 | 0.0625 |
+| `opt.blocks.2.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | -2.886e-05 | -0.01737 | +0.006949 | +0.001017 | 0.1250 |
+| `opt.blocks.2.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | -6.725e-10 | -0.007013 | +0.006198 | +0.0007254 | 0.1250 |
 | `opt.policy.conv.bias.velocity` | 76 | -3.385e-07 | -0.007619 | +0.01267 | +0.002542 | 0.0000 |
 | `opt.policy.conv.weight.velocity` | 9,728 | -0.0001805 | -0.0423 | +0.04678 | +0.004345 | 0.0000 |
 | `opt.policy.pre_bn.bias.velocity` | 128 | -2.457e-05 | -0.004932 | +0.009072 | +0.002781 | 0.0000 |
@@ -956,8 +960,8 @@ Only checkpoints from build 2259 onward carry optimizer state (seed 2 and zero-�
 | `opt.blocks.0.se_scalebias.fc2.bias.velocity [gamma]` | 128 | +2.617e-05 | -0.002227 | +0.0008878 | +0.0003443 | 0.0000 |
 | `opt.blocks.0.se_scalebias.fc2.bias.velocity [beta]` | 128 | -4.332e-07 | -0.001209 | +0.001812 | +0.0004262 | 0.0000 |
 | `opt.blocks.0.se_scalebias.fc2.weight.velocity` | 8,192 | +2.009e-05 | -0.03117 | +0.01609 | +0.001512 | 0.1252 |
-| `opt.blocks.0.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | +1.513e-05 | -0.01414 | +0.01567 | +0.0009933 | 0.1255 |
-| `opt.blocks.0.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | +2.504e-05 | -0.03117 | +0.01609 | +0.001893 | 0.1250 |
+| `opt.blocks.0.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | +4.085e-05 | -0.03117 | +0.01102 | +0.001279 | 0.1255 |
+| `opt.blocks.0.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | -6.793e-07 | -0.01519 | +0.01609 | +0.001713 | 0.1250 |
 | `opt.blocks.1.bn1.bias.velocity` | 128 | +0.0002239 | -0.002804 | +0.003905 | +0.001356 | 0.0000 |
 | `opt.blocks.1.bn1.weight.velocity` | 128 | +6.323e-05 | -0.009463 | +0.005948 | +0.001641 | 0.0000 |
 | `opt.blocks.1.bn2.bias.velocity` | 128 | -0.0001294 | -0.002515 | +0.003421 | +0.001003 | 0.0000 |
@@ -973,8 +977,8 @@ Only checkpoints from build 2259 onward carry optimizer state (seed 2 and zero-�
 | `opt.blocks.1.se_scalebias.fc2.bias.velocity [gamma]` | 128 | +6.708e-05 | -0.00107 | +0.001441 | +0.0004522 | 0.0000 |
 | `opt.blocks.1.se_scalebias.fc2.bias.velocity [beta]` | 128 | +6.024e-07 | -0.001305 | +0.001261 | +0.0004937 | 0.0000 |
 | `opt.blocks.1.se_scalebias.fc2.weight.velocity` | 8,192 | +2.393e-05 | -0.01088 | +0.009803 | +0.0009217 | 0.4062 |
-| `opt.blocks.1.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | +2.728e-05 | -0.01088 | +0.009803 | +0.0009772 | 0.3750 |
-| `opt.blocks.1.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | +2.059e-05 | -0.005743 | +0.009472 | +0.0008627 | 0.4375 |
+| `opt.blocks.1.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | +4.751e-05 | -0.006663 | +0.007124 | +0.0006899 | 0.4062 |
+| `opt.blocks.1.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | +3.533e-07 | -0.01088 | +0.009803 | +0.001106 | 0.4062 |
 | `opt.blocks.2.bn1.bias.velocity` | 128 | +0.0003236 | -0.002605 | +0.007636 | +0.00147 | 0.0000 |
 | `opt.blocks.2.bn1.weight.velocity` | 128 | +2.718e-05 | -0.004783 | +0.008197 | +0.00173 | 0.0000 |
 | `opt.blocks.2.bn2.bias.velocity` | 128 | -0.0001714 | -0.003782 | +0.003102 | +0.001212 | 0.0000 |
@@ -990,8 +994,8 @@ Only checkpoints from build 2259 onward carry optimizer state (seed 2 and zero-�
 | `opt.blocks.2.se_scalebias.fc2.bias.velocity [gamma]` | 128 | +0.0001251 | -0.002014 | +0.003331 | +0.0008771 | 0.0000 |
 | `opt.blocks.2.se_scalebias.fc2.bias.velocity [beta]` | 128 | -2.362e-06 | -0.001809 | +0.001491 | +0.0004898 | 0.0000 |
 | `opt.blocks.2.se_scalebias.fc2.weight.velocity` | 8,192 | +5.202e-05 | -0.0119 | +0.02064 | +0.001421 | 0.1250 |
-| `opt.blocks.2.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | +4.478e-05 | -0.01172 | +0.02064 | +0.001302 | 0.1875 |
-| `opt.blocks.2.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | +5.926e-05 | -0.0119 | +0.01872 | +0.001531 | 0.0625 |
+| `opt.blocks.2.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | +0.0001064 | -0.0119 | +0.02064 | +0.001678 | 0.1250 |
+| `opt.blocks.2.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | -2.321e-06 | -0.01078 | +0.00892 | +0.001107 | 0.1250 |
 | `opt.policy.conv.bias.velocity` | 76 | +1.164e-06 | -0.01897 | +0.01647 | +0.004039 | 0.0000 |
 | `opt.policy.conv.weight.velocity` | 9,728 | -0.0002785 | -0.08642 | +0.05456 | +0.006926 | 0.0000 |
 | `opt.policy.pre_bn.bias.velocity` | 128 | +0.0003164 | -0.02003 | +0.01725 | +0.004887 | 0.0000 |
@@ -1139,8 +1143,8 @@ Only checkpoints from build 2259 onward carry optimizer state (seed 2 and zero-�
 | `opt.blocks.0.se_scalebias.fc2.bias.velocity [gamma]` | 128 | -5.059e-05 | -0.001209 | +0.001019 | +0.0002785 | 0.0000 |
 | `opt.blocks.0.se_scalebias.fc2.bias.velocity [beta]` | 128 | +5.278e-07 | -0.001264 | +0.001076 | +0.0003392 | 0.0000 |
 | `opt.blocks.0.se_scalebias.fc2.weight.velocity` | 8,192 | -3.45e-05 | -0.01283 | +0.0122 | +0.001194 | 0.2812 |
-| `opt.blocks.0.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | -3.222e-05 | -0.01172 | +0.01021 | +0.001172 | 0.2500 |
-| `opt.blocks.0.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | -3.677e-05 | -0.01283 | +0.0122 | +0.001216 | 0.3125 |
+| `opt.blocks.0.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | -6.989e-05 | -0.009164 | +0.009146 | +0.0009116 | 0.2812 |
+| `opt.blocks.0.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | +9.013e-07 | -0.01283 | +0.0122 | +0.001421 | 0.2812 |
 | `opt.blocks.1.bn1.bias.velocity` | 128 | +0.0003482 | -0.001904 | +0.002816 | +0.000974 | 0.0000 |
 | `opt.blocks.1.bn1.weight.velocity` | 128 | +6.643e-05 | -0.003723 | +0.00252 | +0.001182 | 0.0000 |
 | `opt.blocks.1.bn2.bias.velocity` | 128 | +5.15e-05 | -0.001884 | +0.005398 | +0.0008709 | 0.0000 |
@@ -1156,8 +1160,8 @@ Only checkpoints from build 2259 onward carry optimizer state (seed 2 and zero-�
 | `opt.blocks.1.se_scalebias.fc2.bias.velocity [gamma]` | 128 | -5.553e-06 | -0.0009253 | +0.001241 | +0.0002899 | 0.0000 |
 | `opt.blocks.1.se_scalebias.fc2.bias.velocity [beta]` | 128 | +1.667e-07 | -0.001182 | +0.0007077 | +0.0003177 | 0.0000 |
 | `opt.blocks.1.se_scalebias.fc2.weight.velocity` | 8,192 | -4.178e-06 | -0.00718 | +0.009439 | +0.0007305 | 0.1250 |
-| `opt.blocks.1.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | -2.418e-06 | -0.00718 | +0.009439 | +0.0007231 | 0.1250 |
-| `opt.blocks.1.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | -5.939e-06 | -0.006342 | +0.006679 | +0.0007378 | 0.1250 |
+| `opt.blocks.1.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | -8.548e-06 | -0.005704 | +0.006679 | +0.000596 | 0.1250 |
+| `opt.blocks.1.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | +1.907e-07 | -0.00718 | +0.009439 | +0.0008438 | 0.1250 |
 | `opt.blocks.2.bn1.bias.velocity` | 128 | +0.0001935 | -0.002409 | +0.002554 | +0.0009295 | 0.0000 |
 | `opt.blocks.2.bn1.weight.velocity` | 128 | +3.418e-05 | -0.003208 | +0.003549 | +0.001169 | 0.0000 |
 | `opt.blocks.2.bn2.bias.velocity` | 128 | -0.0003561 | -0.002523 | +0.001447 | +0.0008445 | 0.0000 |
@@ -1173,8 +1177,8 @@ Only checkpoints from build 2259 onward carry optimizer state (seed 2 and zero-�
 | `opt.blocks.2.se_scalebias.fc2.bias.velocity [gamma]` | 128 | -0.000173 | -0.001965 | +0.00183 | +0.0006321 | 0.0000 |
 | `opt.blocks.2.se_scalebias.fc2.bias.velocity [beta]` | 128 | +4.835e-07 | -0.001622 | +0.0008488 | +0.0003766 | 0.0000 |
 | `opt.blocks.2.se_scalebias.fc2.weight.velocity` | 8,192 | -7.335e-05 | -0.01003 | +0.009769 | +0.001048 | 0.0625 |
-| `opt.blocks.2.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | -2.43e-05 | -0.008463 | +0.006933 | +0.0005877 | 0.1250 |
-| `opt.blocks.2.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | -0.0001224 | -0.01003 | +0.009769 | +0.00136 | 0.0000 |
+| `opt.blocks.2.se_scalebias.fc2.weight.velocity [gamma]` | 4,096 | -0.0001472 | -0.01003 | +0.009769 | +0.001109 | 0.0625 |
+| `opt.blocks.2.se_scalebias.fc2.weight.velocity [beta]` | 4,096 | +4.611e-07 | -0.007431 | +0.007387 | +0.0009827 | 0.0625 |
 | `opt.policy.conv.bias.velocity` | 76 | -8.763e-07 | -0.01644 | +0.007047 | +0.002915 | 0.0000 |
 | `opt.policy.conv.weight.velocity` | 9,728 | +0.0001147 | -0.06441 | +0.03313 | +0.004746 | 0.0000 |
 | `opt.policy.pre_bn.bias.velocity` | 128 | -0.0005309 | -0.01625 | +0.005174 | +0.003078 | 0.0000 |
