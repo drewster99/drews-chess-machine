@@ -94,10 +94,18 @@ struct GameState: Sendable {
     ///
     /// Unlike `repetitionCount` (which counts total occurrences regardless
     /// of when they happened), this carries the *temporal pattern* of
-    /// recent repetitions — e.g. a 2-ply cycle visited three times sets
-    /// bit 1 and bit 3 simultaneously. The intended use is letting the
-    /// network see "I'm caught in an N-ply shuffle" as a distinct feature
-    /// from "I've been at this position before."
+    /// recent repetitions. The intended use is letting the network see
+    /// "I'm caught in an N-ply shuffle" as a distinct feature from "I've
+    /// been at this position before."
+    ///
+    /// Only bits 3, 5, 7 and 9 (4, 6, 8 and 10 plies ago) can ever be set.
+    /// An odd ply distance means the other side is to move, so the
+    /// `PositionKey`s can never be equal; and 2 plies ago would require
+    /// each side to undo its own move in a single ply. The shortest
+    /// possible cycle is 4 plies (e.g. Nf3 Nf6 Ng1 Ng8), which sets bit 3.
+    /// Bits 0, 1, 2, 4, 6 and 8 are therefore always 0, and the matching
+    /// encoder planes 20, 21, 22, 24, 26 and 28 never receive gradient
+    /// (issue #10).
     ///
     /// Cleared (along with `repetitionCount`) on any irreversible move
     /// (halfmove clock = 0), matching `ChessGameEngine.positionCounts`
@@ -215,7 +223,12 @@ struct GameState: Sendable {
 /// - Plane 18: 1.0 if current position has occurred ≥1 time before in this game
 ///   (this is at least the 2nd visit — a repeat that signals possible shuffling)
 /// - Plane 19: 1.0 if current position has occurred ≥2 times before
-///   (this is at least the 3rd visit — the game is at the 3-fold draw threshold)
+///   (this is at least the 3rd visit — the game is at the 3-fold draw threshold).
+///   `ChessGameEngine` adjudicates the threefold draw on that same 3rd visit,
+///   so this plane is 1 only on a terminal position, which is never a
+///   training sample: it never receives gradient (issue #10). In training,
+///   plane 18 is the only repetition-count plane that can fire, and there it
+///   means exactly "seen once before — one more repeat draws".
 /// - Planes 20-29: temporal-repetition history, broadcast-scalar (all-0 or
 ///   all-1 across 64 cells). Plane `20 + i` is all-1 iff the position
 ///   `i + 1` plies ago is a strict chess-rules duplicate (under
@@ -225,8 +238,11 @@ struct GameState: Sendable {
 ///   padded when fewer than `i + 1` plies of history are available (game
 ///   start, or after an irreversible move that clears the window). Drives
 ///   the network's awareness of the *temporal pattern* of repetitions —
-///   distinguishing a 2-ply shuffle (bits 1 and 3 set after two visits)
-///   from a longer maneuvering cycle — which planes 18-19 cannot express.
+///   distinguishing a 4-ply shuffle (plane 23) from a longer maneuvering
+///   cycle (planes 25, 27, 29) — which planes 18-19 cannot express. Only
+///   planes 23, 25, 27 and 29 (4, 6, 8, 10 plies ago) can ever be 1: an odd
+///   ply distance puts the other side to move, and a 2-ply return is
+///   impossible. Planes 20, 21, 22, 24, 26 and 28 are always 0 (issue #10).
 enum BoardEncoder {
 
     /// Number of floats one encoded position occupies for `encoding`:
