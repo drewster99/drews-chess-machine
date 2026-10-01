@@ -144,6 +144,17 @@ Known hot spots, checked by name:
 - **Also changed:** `ChessNetwork.readFloatsFP32(from:into:count:)` now traps on a non-fp32 or wrongly sized tensor instead of copying raw bytes blindly; `computeBatchStats` reads each BN's batch stats by the tensor's own dtype (the policy pre-BN's are fp32 now); `policyOutputReadback` and `valueOutputFP32` are gone (the outputs themselves are fp32).
 - **Monitoring:** `pLogitMean` / `vLogitMean` on `[STATS]`, `[STATS] arena-start`, `[REPLAY]` and `[VS-UCI]`, and `policy_logit_mean` / `value_logit_mean` in `results.json`. On the scalar-tanh head `vLogitMean` is the raw pre-tanh logit's mean (not centered).
 
+### Phase 2b: center the heads at mint (owner-approved 2026-09-30; not started)
+
+A freshly minted net still starts with a random shared offset: `value_wdl_fc2` is He-initialized and not centered (measured on the SE-experiment fresh nets: the class-mean row has norm ≈ 0.8 against ≈ 1.6–1.8 for the class differences). Phase 2 freezes it (the SE runs show it only shrinks by the weight-decay factor: ×0.780 over 33k steps, ×0.908 over 7k), so it is harmless, but it is pointless and makes every fresh net carry it for life.
+
+- **Value:** at init, subtract each hidden row's mean over the 3 classes from `value_wdl_fc2` weights. The bias is already `[0, ln 6, 0]`; leave it, since its mean (ln 6 / 3) is a constant the centered loss never sees. The result is exactly softmax-equivalent to the uncentered init.
+- **Policy:** for the final 1×1 conv (`policy.conv`, 76 output channels), subtract the mean over output channels from the weights (and from the bias, if it is not already all zero). Then at every square the mean logit over the 76 channels equals the bias mean, so the mean over all 4864 cells is exactly 0 at init for every position. Training can regrow a per-square component (the gradient only cancels the all-4864 shared direction), which is why Phase 1b has no exact policy equivalent; init centering is still exact at step 0. `fc_bottleneck`'s final FC: subtract the mean over its 4864 outputs in the same way.
+- **Marker:** new files already carry `value_head_centered`, so no recentering on load is triggered.
+- **Interaction with plan #8:** the init is part of the versioned `init_scheme` (`DETERMINISM_RESUME_LINEAGE_PLAN.md` §B1.1). Centering changes the init values, so it lands as part of that scheme (or bumps it), with golden init bits updated accordingly, never as a silent change to an existing scheme.
+
+**Validation:** a freshly minted net has class-mean row norm 0 (to fp32 rounding) in `value_wdl_fc2`, and per-square channel-mean 0 in the policy final layer; softmax outputs at step 0 match the uncentered init to fp32 rounding; the Phase 0 static check reports the offset as fine on a fresh net.
+
 ### Phase 3 (separate ROADMAP item): full-precision checkpoints
 
 - Save the trainer's fp32 masters, optionally with the velocity, instead of the bf16 working copy. See ROADMAP "Full-precision weights in every model checkpoint".
