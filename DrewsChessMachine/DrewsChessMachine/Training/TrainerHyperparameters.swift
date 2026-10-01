@@ -135,7 +135,7 @@ extension ChessTrainer {
         hyperparameters: TrainerHyperparameters,
         arch: NetworkArchitecture,
         bf16CastInForward: Bool = false,
-        policyTailPrecision: ChessNetwork.PolicyTailPrecision = .float32FromPreBatchNorm
+        policyTailPrecision: ChessNetwork.PolicyTailPrecision = .default
     ) throws {
         try self.init(
             learningRate: hyperparameters.learningRate,

@@ -94,6 +94,79 @@ final class ParametersFileWriterTests: XCTestCase {
         XCTAssertNotEqual(try Data(contentsOf: root.appendingPathComponent("parameters.md")), Data("old".utf8))
     }
 
+    /// The markdown destination is someone's file too: `--create-parameters-file
+    /// ROADMAP` must not replace `ROADMAP.md` without `--force`.
+    func testExistingMarkdownWithoutForceIsRefused() throws {
+        let markdown = root.appendingPathComponent("ROADMAP.md")
+        try Data("plans".utf8).write(to: markdown)
+        let path = root.appendingPathComponent("ROADMAP")
+        XCTAssertThrowsError(try ParametersFileWriter.writeDefaults(path: path.path, force: false))
+        XCTAssertEqual(try Data(contentsOf: markdown), Data("plans".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path.path), "nothing is written when the request is refused")
+    }
+
+    func testAPathEndingInMarkdownIsRefused() throws {
+        let path = root.appendingPathComponent("notes.md")
+        XCTAssertThrowsError(try ParametersFileWriter.writeDefaults(path: path.path, force: true))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path.path))
+    }
+
+    /// `notes.MD` makes the markdown path `notes.md` — the same file on a
+    /// case-insensitive volume. The same-path check once compared case, so
+    /// without `--force` the JSON was published and the markdown write then
+    /// failed on it (a partial write despite "nothing is written when
+    /// refused"), and with `--force` the markdown silently replaced the JSON.
+    func testAPathEndingInMarkdownInAnyCaseIsRefusedAndNothingIsWritten() throws {
+        for name in ["notes.MD", "notes.Md", "notes.mD"] {
+            for force in [false, true] {
+                let path = root.appendingPathComponent(name)
+                XCTAssertThrowsError(try ParametersFileWriter.writeDefaults(path: path.path, force: force)) { error in
+                    XCTAssertEqual(error as? ParametersFileWriterError, .jsonAndMarkdownSamePath(path.path),
+                                   "\(name), force: \(force)")
+                }
+                XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [],
+                               "nothing may be written for \(name) (force: \(force))")
+            }
+        }
+    }
+
+    /// A JSON path with no extension whose staging name fits in `NAME_MAX`
+    /// but whose markdown sibling's (three bytes longer) does not: the JSON
+    /// publishes, then the markdown fails at staging. A deterministic way to
+    /// fail the second write after the first succeeded.
+    private func jsonPathWhoseMarkdownCannotBeStaged() -> URL {
+        let length = Int(NAME_MAX) - FileSafety.temporarySiblingNameOverhead - ".md".utf8.count + 1
+        return root.appendingPathComponent(String(repeating: "p", count: length))
+    }
+
+    func testMarkdownFailureAfterANewJSONRemovesThatJSONAgain() throws {
+        let jsonURL = jsonPathWhoseMarkdownCannotBeStaged()
+        let markdownURL = jsonURL.appendingPathExtension("md")
+        XCTAssertThrowsError(try ParametersFileWriter.writeDefaults(path: jsonURL.path, force: false)) { error in
+            guard case .markdownNotWritten(let path, _, let jsonOutcome)? = error as? ParametersFileWriterError else {
+                return XCTFail("expected markdownNotWritten, got \(error)")
+            }
+            XCTAssertEqual(path, markdownURL.path)
+            XCTAssertTrue(jsonOutcome.contains("removed again"), jsonOutcome)
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [],
+                       "the JSON written before the markdown failed must be removed, and no staging file left")
+    }
+
+    func testMarkdownFailureAfterAForcedJSONReplacementSaysTheJSONWasReplaced() throws {
+        let jsonURL = jsonPathWhoseMarkdownCannotBeStaged()
+        try Data("old".utf8).write(to: jsonURL)
+        XCTAssertThrowsError(try ParametersFileWriter.writeDefaults(path: jsonURL.path, force: true)) { error in
+            guard case .markdownNotWritten(_, _, let jsonOutcome)? = error as? ParametersFileWriterError else {
+                return XCTFail("expected markdownNotWritten, got \(error)")
+            }
+            XCTAssertTrue(jsonOutcome.contains("cannot be restored"), jsonOutcome)
+        }
+        XCTAssertEqual(try Data(contentsOf: jsonURL), try TrainingParameters.defaultsJSON())
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [jsonURL.lastPathComponent],
+                       "no staging file may be left behind")
+    }
+
     /// A folder sitting at the markdown file's path is never removed either.
     func testForceRefusesToReplaceAFolderAtTheMarkdownPath() throws {
         let markdownFolder = try makeFolder("custom.md")

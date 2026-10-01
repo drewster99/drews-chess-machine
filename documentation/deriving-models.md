@@ -33,10 +33,29 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
 | flag | values | changes | rewrites |
 |---|---|---|---|
 | `--set-se-beta-init` | `glorot` \| `zero` | `block_groups[].se_beta_init` on `scale_and_bias` groups | β half of each affected block's SE FC2: `blocks.<i>.se_scalebias.fc2.weight` rows C..2C−1 (on-disk `[2C, r]` layout) and `blocks.<i>.se_scalebias.fc2.bias` C..2C−1 |
+| `--set-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | `activation_function` and every `block_groups[].activation_function`; `block_groups[].se_activation` on SE-less groups only | none (activations have no parameters) |
+| `--set-se-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | `block_groups[].se_activation` on groups with an SE block | none (activations have no parameters) |
 
 `zero` writes exact zeros to the β weights and bias. `glorot` re-draws the β weights
 from the same Glorot-normal distribution the graph builder uses, and zeroes the β bias.
 The γ half is never touched.
+
+`--set-activation` changes the main activation at every site at once: stem, tower end,
+both heads, and each block group's main path and `activation_gated` merge. It doesn't
+accept `--group`. It leaves the SE FC1 activation (`se_activation`) of every group with an
+SE block alone. On an SE-less group `se_activation` has no effect and must equal the
+group's activation, so it changes along with it there.
+
+`--set-se-activation` sets `se_activation`, the activation after the SE excitation FC1
+(the pooled `C → C/r` bottleneck), on groups with an SE block: all of them, or those named
+by `--group`. A group without an SE block named by `--group` is refused. It exists for the
+issue #2 A/B: ReLU vs leaky ReLU at FC1 only, where dead units were measured, without
+paying for leaky ReLU on every conv.
+
+Operations run in the order listed above, so `--set-activation X --set-se-activation Y`
+gives activation X with an FC1 activation of Y, and passing the same value to both gives
+that activation everywhere. The SE gate (sigmoid) and the value output (softmax or tanh)
+are structural and don't change.
 
 ## Examples
 
@@ -46,6 +65,16 @@ DrewsChessMachine --derive-model --from fresh.safetensors --set-se-beta-init zer
 
 # Only block group 1 (0-based):
 DrewsChessMachine --derive-model --from fresh.safetensors --set-se-beta-init zero --group 1 --out fresh-g1-beta0.safetensors
+
+# The same fresh net with leaky ReLU only after the SE FC1 (every group with an SE block):
+DrewsChessMachine --derive-model --from fresh.safetensors --set-se-activation leaky_relu --out fresh-se-leaky.safetensors
+
+# Leaky ReLU on the main activation, ReLU kept at the SE FC1:
+DrewsChessMachine --derive-model --from fresh.safetensors --set-activation leaky_relu --out fresh-leaky-main.safetensors
+
+# The same fresh net with leaky ReLU at every hidden activation:
+DrewsChessMachine --derive-model --from fresh.safetensors --set-activation leaky_relu \
+    --set-se-activation leaky_relu --out fresh-leaky.safetensors
 
 # Use the derived net as a fixed starting point:
 DrewsChessMachine --replay-corpus <corpus> --start-model fresh-beta0.safetensors --parameters parameters.json ...
@@ -61,7 +90,9 @@ DrewsChessMachine --replay-corpus <corpus> --start-model fresh-beta0.safetensors
   `created_at_unix`, `build`, and `operations`. Each operation records its name,
   arguments, the architecture fields it changes, and the tensors it rewrote. A chain of
   derivations can therefore be traced from the newest file alone.
-- `dcm_format_version` = the current version (4), and the target architecture.
+- `dcm_format_version` = the current version (5), and the target architecture. A legacy
+  source (format v4 or older) is read under the legacy rules (`se_beta_init` → `glorot`,
+  `se_activation` → the group's activation); the derived file states every field.
 - Every other `__metadata__` key of the source is copied verbatim. This includes
   `training_step`, the value-head centering marker, and any `replay_*` provenance.
 
@@ -72,8 +103,9 @@ DrewsChessMachine --replay-corpus <corpus> --start-model fresh-beta0.safetensors
   written.
 - After each rewrite, every element outside the operation's declared ranges is checked
   to be bit-identical to the source.
-- A request that changes nothing is refused. So is a group out of range, or a group
-  whose SE style has no β half.
+- A request that changes nothing is refused. So is a group out of range, a group whose SE
+  style has no β half (`--set-se-beta-init`), or a group without an SE block
+  (`--set-se-activation`).
 - The output is decoded back through the normal loader before it is written.
 
 ## Adding an operation

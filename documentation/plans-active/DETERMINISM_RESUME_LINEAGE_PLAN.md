@@ -1,6 +1,11 @@
 # Determinism, Exact Resume, Ablation Init and Lineage — Design Plan
 
-Status: **PLAN ONLY — nothing here is implemented.** Audited against `main` at
+> **Note (2026-10-01):** this plan's format bump is now **v6** — v5 was taken by `se_activation`; see the note under §D2.
+
+Status: **PLAN ONLY — nothing here is implemented, except phase P14 (autosave retention
+pool), implemented 2026-10-01 (see P14) — and, by owner decision 2026-10-01, gated behind
+the `automatic_save_pruning_enabled` setting (default off) and forced off in the current
+build by `CheckpointPaths.automaticSavePruningForcedOff`.** Audited against `main` at
 `47984b0` (on top of d15f706 "exact resume", 8926221 "#7 zero-β / format v4 /
 `--derive-model`", 248e122). Owner decisions and review findings of 2026-09-30
 folded in: **all owner decisions D-1…D-10 are decided** (end of file) and the
@@ -11,8 +16,10 @@ plan text below is written to match them. Every `file:line` was verified against
 D-8 — a combined autosave retention pool over `-periodic` and `-promote` saves, with
 `-manual` and SIGUSR2 saves exempt. See the **Retention** sub-bullet of D-8 (Owner
 decisions), the **Autosave retention** bullet of §D8, and phase **P14**. One
-sub-question there (how "Promote Trainee Now" saves are treated) is flagged **OPEN**;
-everything else in that addition is decided. The superseded plan is kept, marked, in
+sub-question there (how "Promote Trainee Now" saves are treated) was flagged **OPEN**;
+**RESOLVED 2026-10-01 (owner): treat them like automatic promotions** — they stay in the
+pool under the shared `promote` tag. Everything in that addition is now decided, and P14
+is **implemented (2026-10-01)**. The superseded plan is kept, marked, in
 `documentation/plans-completed/AUTOSAVE_RETENTION_PLAN.md`.
 
 This plan is the single design for four things that have to be designed together
@@ -631,7 +638,7 @@ observability/cosmetics only; **S** = safety/operational.
 | 23 | **Old-format checkpoints** | CLI refuses (correct, `TrainerResumeState.swift:~223`); GUI session without trainer file forks from champion with zero velocity (`SessionController+Training.swift:~1389-1396`) | all | **M** | Single line `[RESUME] NOT EXACT: <list>`; record `exact_resume=false` + the list in the segment record (D2). |
 | 24 | **Step counters used by schedules** | tau schedule: per-game ply (no global counter — fine); LR/momentum/warmup/cycle: `completedTrainSteps` (restored ✓); `batchStatsInterval`: `completedTrainSteps` (✓ `:4539`); diagnostics cadence: same (✓); KL probe: separate counter (✗ #3); `ReplayRatioController`: time-based (#12); candidate-probe interval: seconds (`candidateProbeIntervalSec`) — wall clock, resets (**O**) | all | as listed | Only #3 needs a code change; probe interval ⇒ measure against `cum_train_step_sec`. |
 | 25 | **`LastSessionPointer` ordering vs rename** | pointer written by `CheckpointController.recordLastSessionPointer` (`App/UpperContentView/CheckpointController.swift:444`, called from `SessionController+Checkpoint.swift:446` and `SessionController+Arena.swift:639`) → `LastSessionPointer.write` (`Persistence/LastSessionPointer.swift:90`); orphan `.tmp` sweep `Persistence/CheckpointManager.swift:120-164` | GUI | **S** | Test: kill between rename and pointer write leaves pointer at the prior complete save. |
-| 26 | **Enumerated-name overwrite across segments** | same segment-local step name (`CorpusReplayRunner.swift:614-620`) | replay | **S** (data loss) | Include `lineage_segment_index` in the enumerated name (`…-seg3-step41000`), and refuse to overwrite an existing enumerated file whose `lineage_segment_id` differs. |
+| 26 | **Enumerated-name overwrite across segments** | same segment-local step name (`CorpusReplayRunner.swift:614-620`). *Since then:* enumerated writes never overwrite a file the run did not write, and a run whose stem already holds reachable step files refuses to start (`TrainerOutputFileGuard`); the data loss is closed, the segment index in the name is still open | replay | **S** (data loss) | Include `lineage_segment_index` in the enumerated name (`…-seg3-step41000`), and refuse to overwrite an existing enumerated file whose `lineage_segment_id` differs. |
 | 27 | **`--start-model` (branch) vs `--resume-exact`** | branch: fresh clock, zero velocity (by design, `TrainerLaunchKind.newBranch`) | CLI | by design | Branch mints a **new `lineage_run_id`** and new master seed (unless `--seed`), recording parent (D2). Exact resume inherits both. |
 | 28 | **Epoch boundaries (replay)** | epoch-completion checkpoint normalized to `(nextGame=0, epoch=N)` | replay | **S** (can't resume there, #6) | Fixed by #4/#6. |
 | 29 | **Crash mid-save** | GUI: whole session folder staged as `Sessions/<name>.tmp`, then renamed; orphan `.tmp` debris swept at launch (`Persistence/CheckpointManager.swift:120-164`) ✓; CLI: single `.safetensors` written to a temp file and renamed ✓ | all | OK | **Keep the existing temp-then-rename pattern; add no new file.** Rule: every new piece of resume state (RNG states, feed carry, serials, lineage) lives **in the same file or folder as the weights it belongs to** — corpus replay: the one `.safetensors`'s `__metadata__`; GUI and train-vs-UCI (D-8): the session folder (`session.json`, plus `replay_buffer.bin` when included), covered by its `manifest.json` and the single rename. There is therefore no separate file that could be torn from its weights. |
@@ -791,6 +798,13 @@ collisions (`bzw3-31`); hyperparameters unrecoverable when logs are lost;
 `elapsed_base_sec`; device only in registry.
 
 ## D2. Schema (format version 5)
+
+> **Renumbered 2026-10-01:** format version 5 was taken by the per-group
+> `se_activation` field (issue #2; `ArchitectureFormat.currentVersion = 5`). This
+> plan's format bump is therefore **version 6**. Throughout this plan, "format v5",
+> "`dcm_format_version` 5" and "v5 files/writers/readers" in the format-version sense
+> mean the next version after 5 — v6. ("v5" as an architecture / lineage name, e.g.
+> the v5 line, is unrelated and unchanged.)
 
 One typed struct `LineageRecord` (`Persistence/LineageRecord.swift`), `Codable`,
 written into `__metadata__` as **one JSON value under `dcm_lineage`** plus a few
@@ -995,16 +1009,28 @@ controls, one source of truth for the automatic case:
 - **Corpus replay:** never writes a buffer; unaffected.
 - **Autosave retention — ADDITION 2026-10-01** (folded in from
   `AUTOSAVE_RETENTION_PLAN.md`, owner decision 2026-10-01; implemented in **P14**).
-  Today `CheckpointPaths.prunePeriodicAutosaves` (`Persistence/CheckpointManager.swift:189`,
-  called only after a `periodic` save, `App/SessionController+Checkpoint.swift:460-466`)
+  *Before P14* (as written when this addition was made, kept for the record):
+  `CheckpointPaths.prunePeriodicAutosaves` (`Persistence/CheckpointManager.swift:189` at
+  the time; called only after a `periodic` save, `App/SessionController+Checkpoint.swift:460-466`)
   deletes only `-periodic.dcmsession` folders beyond `max_periodic_autosaves_kept`;
   `-promote` folders (arena post-promotion and "Promote Trainee Now", which share the
   `promote` disk tag — `Persistence/SessionSaveTrigger.swift`) are never pruned, nor are
-  `-manual` and `-sigusr2`. Once D-8 lands, saves no longer carry a buffer by
-  default, but the unpruned `-promote` pool still grows without bound on a long run. The rule:
+  `-manual` and `-sigusr2`. (By the time P14 was implemented that function had already been
+  narrowed further, in the uncommitted working tree, to prune **per session**: only the
+  saving session's own `-periodic` folders, verified by exact name and by the `sessionID`
+  in `session.json`, refusing placeholder session IDs, protecting the just-written save
+  and the `LastSessionPointer` target. P14 replaced it.) Once D-8 lands, saves no longer
+  carry a buffer by default, but the unpruned `-promote` pool still grows without bound on
+  a long run. *Since P14 (2026-10-01):* `CheckpointPaths.pruneAutomaticSaves` implements the
+  rule below. *Gated (owner decision 2026-10-01):* the rule applies only when the
+  `automatic_save_pruning_enabled` setting (default off) is on and the build's kill switch
+  `CheckpointPaths.automaticSavePruningForcedOff` is not set — and it is set in the current
+  build, so nothing is pruned (see P14, "Deviation — gated and forced off"). The rule:
   - **One combined pool** of automatic saves: `-periodic` **and** `-promote` (arena
     post-promotion), sorted newest-first by folder name (already chronological).
     Folders beyond the newest `max_periodic_autosaves_kept` are deleted whole.
+    **Global, not per session (owner, 2026-10-01):** the pool is every such folder in
+    `Sessions/`, from any run or session, ranked by the leading UTC timestamp alone.
   - **Parameter:** reuse `max_periodic_autosaves_kept` with its scope widened to the
     combined pool. Its `id` and property name are unchanged (no UserDefaults reset);
     its description and the Sessions-tab help text change to say "periodic and
@@ -1022,8 +1048,12 @@ controls, one source of truth for the automatic case:
     (`-sigusr2`) — exempt by owner decision 2026-10-01**: both are deliberate "keep
     this" saves. Also never pruned: the just-written save (`protecting:`, as today) and
     the current `LastSessionPointer` target, even if a different save wrote it.
-  - **"Promote Trainee Now" saves — OPEN (owner to confirm).** Recorded rule: treat
-    them like manual saves — **never pruned** — unless the owner says otherwise. They
+  - **"Promote Trainee Now" saves — RESOLVED 2026-10-01 (owner): treat like automatic
+    promotions.** They keep the shared `promote` disk tag (now declared once as
+    `SessionSaveTrigger.promotionDiskTag`, which the arena's inline save also writes) and
+    are pool members exactly like arena post-promotion saves; no new tag, no filename-parser
+    changes. *Superseded text, kept for the record — was OPEN (owner to confirm).* Recorded
+    rule: treat them like manual saves — **never pruned** — unless the owner says otherwise. They
     are user-initiated, like a manual save. Consequence: they need their own disk
     tag (e.g. `-manualpromote`), because today they share `promote` with arena
     promotions and `session.json` does not record the trigger. That means checking every
@@ -1040,6 +1070,16 @@ controls, one source of truth for the automatic case:
     adopted either; with the count cap alone the pool's span is cap × save interval.
     If the owner wants a time window as well, that is a new decision.
   - Per-folder failures log `[PRUNE-ERR]` and do not abort the sweep (as today).
+  - **Safety checks carried over and generalized (P14, 2026-10-01):** a folder is a pool
+    member only if its name is exactly `YYYYMMDD-HHMMSS-<sessionID>-(periodic|promote).dcmsession`;
+    it is counted (and so can ever be deleted) only if that session ID is a minted one
+    (`yyyymmdd-N-XXXX`, `isMintedSessionID`), the entry is a real directory (`lstat`, not a
+    symbolic link), and it holds a regular `session.json` whose `sessionID` equals the ID in
+    the name. Anything else — placeholder IDs included — is kept, logged with the reason,
+    and not counted. A protected folder keeps its rank (beyond the cap it is kept without
+    pulling an older one back under). Deletion is `FileSafety.removeOwnedItem` with the
+    identity recorded at inspection, so a folder swapped in under the same name between
+    inspection and deletion is refused, not removed.
 
 ---
 
@@ -1059,7 +1099,7 @@ P6 Format v5 + LineageRecord + writers (needs P1 for rng fields; P2 for params s
       └─> P11 Dashboard derive-registry
 P12 Resume-equivalence harness (needs P3,P4,P6,P9)  — its unit parts grow with each phase
 P13 Config D removal (D-10)   (independent; must land before P9)
-P14 Autosave retention pool (D-8 addition, 2026-10-01)   (independent; can land any time)
+P14 Autosave retention pool (D-8 addition, 2026-10-01)   (independent; IMPLEMENTED 2026-10-01; gated, forced off)
 ```
 
 Foundational: **P1** (generator) and **P6** (format v5). Independent: **P2**,
@@ -1255,7 +1295,9 @@ Validation: build succeeds; `grep` finds no remaining `bf16CastInForward` /
 unknown-argument error; issue #9 closed with the commit.
 
 **P14 — Autosave retention pool** (ADDITION 2026-10-01; D-8 Retention sub-bullet, §D8
-"Autosave retention"). Independent of every other phase. Files:
+"Autosave retention"). **IMPLEMENTED 2026-10-01** (uncommitted until the owner commits;
+build, tests and the validation run below are the owner's). Independent of every other
+phase. Files:
 `Persistence/CheckpointManager.swift` (replace `prunePeriodicAutosaves` with one sweep
 over the combined `-periodic` + `-promote` pool, built on a pure-logic decision function
 that partitions folder names into keep/delete, mirroring `PeriodicSaveController`'s
@@ -1282,6 +1324,91 @@ newest two automatic folders remaining, every `-manual` and `-sigusr2` folder un
 and the `LastSessionPointer` target present. With the cap at `0`, nothing is deleted
 (today's behavior). Resume from the newest surviving autosave works. Full test suite
 passes.
+
+*As implemented (2026-10-01), with deviations from the text above:*
+- `Persistence/CheckpointManager.swift`: `prunePeriodicAutosaves` /
+  `planPeriodicAutosavePrune` / `isPeriodicAutosaveFolderName` /
+  `inspectPeriodicAutosaveOwnership` / `periodicSessionSuffix` replaced by
+  `AutomaticSaveKind` (pool membership by disk tag), `parseAutomaticSaveFolderName`,
+  `inspectAutomaticSaveFolder` (returns `.verified(identity:)` or a kept reason),
+  the pure `planAutomaticSavePrune`, and the sweep `pruneAutomaticSaves(keeping:protecting:in:lastSessionPointerDefaults:)`.
+  The pool is **global** (every session), per the owner's 2026-10-01 clarification; the
+  previous per-session rule and its refusal to run for a non-minted saving session are
+  gone — a non-minted ID is now judged per folder (kept and logged).
+- Deletion uses `FileSafety.removeOwnedItem` with the inspected identity instead of a
+  by-name `removeItem` (not in the original text).
+- "Promote Trainee Now" resolved as an automatic promotion, so **no new disk tag** and
+  no `-promote.dcmsession` parser changes; `Persistence/SessionSaveTrigger.swift` instead
+  gained `promotionDiskTag` (single source for the arena's literal `"promote"`) and
+  `CaseIterable` (for the trigger-selection test).
+- Trigger: `SessionController.scheduleAutomaticSaveRetentionSweep(afterSaving:diskTag:)`
+  (`App/SessionController+Checkpoint.swift`) decides from the disk tag via
+  `AutomaticSaveKind(diskTag:)`, reads the cap live, and detaches the sweep at utility
+  priority. Called exactly once per successful save from `saveSessionInternal` (periodic,
+  Promote Trainee Now; manual and SIGUSR2 filtered out) and from the arena's inline
+  post-promotion save (`App/SessionController+Arena.swift`).
+- `cap == 0` still short-circuits (no listing, nothing deleted) but now logs one
+  `[PRUNE] retention: cap=0 (unlimited)` line instead of being silent, so the cap is
+  visible in the log (CLAUDE.md checklist item 6).
+- `Persistence/LastSessionPointer.swift` needed no change (`LastSessionPointer.read` is
+  used as is).
+- Tests: the pruning tests live in `DrewsChessMachineTests/CheckpointHousekeepingTests.swift`,
+  which was itself new and uncommitted; its earlier per-session pruning tests were
+  rewritten to the global rule (no committed test was modified). Added cases: pool spans
+  sessions; periodic/promote ordering by timestamp (sweep and planner); manual/SIGUSR2
+  never pool members and not counted; resume-pointer target (from another session) and
+  just-written save kept; unverified kinds kept and not counted (regular file, no
+  `session.json`, `session.json` a directory, garbled JSON, other session's
+  `session.json`, symbolic link, placeholder ID); cap boundaries (exactly cap, cap 0,
+  protected beyond cap); folder-name parsing exactness; minted-ID shape; a folder swapped
+  in after inspection is refused by the identity check; trigger selection over every
+  `SessionSaveTrigger` case plus the arena's `promotionDiskTag`. The arena path's call
+  itself needs a GPU session and is covered by the validation run above.
+- Docs: `CLAUDE.md` ("Saved model state"), `documentation/disk-cleanup.md`, the parameter
+  description (and the generated `documentation/parameters.md`), and the Sessions-tab help
+  text.
+- **Deviation — gated and forced off (owner decision 2026-10-01).** The pruning code is
+  kept, but it no longer runs on the cap alone, and in the current build it does not run
+  at all:
+  - **New setting** `automatic_save_pruning_enabled` (`AutomaticSavePruningEnabled`,
+    `Bool`, default `false`, live-tunable, category Sessions). It contradicts the text
+    above ("checklist 1–3 and 9 unchanged (no new key)"): there is now a new key, with the
+    full CLAUDE.md checklist walked — `allKeys`, singleton property / `collectValues` /
+    `applyOne` / snapshot accessor; JSON defaults are registry-driven; an Optional
+    `SessionCheckpointState.automaticSavePruningEnabled` written by
+    `buildCurrentSessionState` and restored by a `[RESUME-PARAM]` block beside
+    `max_periodic_autosaves_kept`'s (both branches log); `results.json` n/a (no training
+    effect); Sessions-tab "Prune old autosaves" toggle; read live at sweep time.
+    `max_periodic_autosaves_kept`'s description now says it applies only when pruning is on.
+  - **Kill switch** `CheckpointPaths.automaticSavePruningForcedOff`, a `static let` set to
+    `true`, pending D-8 (saves without the replay buffer by default) and more confidence in
+    automatic deletion. Changing it to `false` is the only way to re-enable pruning; the
+    setting alone cannot, since it can arrive from UserDefaults, a resumed `session.json`,
+    or a `parameters.json`/CLI override. The Sessions-tab toggle is disabled with a
+    "Disabled in this build" note while it is set.
+  - **One pure decision**, `CheckpointPaths.automaticSavePruningDecision(forcedOff:settingEnabled:cap:)`
+    → `.prune(keeping:)` only when `!forcedOff && settingEnabled && cap > 0`, otherwise
+    `.forcedOff` / `.disabledBySetting` / `.unlimitedCap` (checked in that order).
+    `scheduleAutomaticSaveRetentionSweep` still filters by disk tag first, then passes the
+    constant to this function; when the answer is not `.prune`, it logs exactly one
+    `[PRUNE] skipped after <folder>: off: <reason> (automatic_save_pruning_enabled=… max_periodic_autosaves_kept=…)`
+    line instead of detaching the sweep (so a cap of 0 now logs that line rather than
+    `pruneAutomaticSaves`' own `cap=0 (unlimited)` line, which remains for direct calls).
+    Play-and-Train start logs the effective state once:
+    `[PRUNE] automatic-save pruning at Play-and-Train start: …`.
+  - **Tests** (new file `DrewsChessMachineTests/AutomaticSavePruningGateTests.swift`; no
+    existing test modified): the shipped constant is `true`; forced off never prunes for any
+    setting or cap; with the switch injected as lifted — setting off never prunes, on + cap
+    0 does not, on + cap > 0 prunes to that cap; the declared defaults do not prune even with
+    the switch lifted; log text; the parameter's id, default, category, live tunability,
+    value round-trip and presence in the emitted defaults; the `session.json` field's
+    round-trip and absence in older sessions. The existing `test_registry_size` count in
+    `TrainingParametersTests` has to go up by one for the new key — an edit to a committed
+    test, which needs the owner's approval.
+  - **Validation (replaces the run above while the switch is set):** periodic and
+    promotion saves each log one `[PRUNE] skipped … forced off in this build …` line and
+    `Sessions/` keeps every folder. The validation run above applies once the switch is
+    lifted and the setting is turned on.
 
 ## E3. Risks
 
@@ -1397,9 +1524,15 @@ Plus `CheckpointManagerSafetensorsTests` must keep passing bit-exact.
     (scope widened; `0` still means unlimited); `-manual` and **SIGUSR2 saves are
     exempt** (owner decision 2026-10-01); the separate "Save Session (Weights Only)"
     menu item and the write-then-strip approach are dropped as redundant under D-8.
-    **OPEN:** "Promote Trainee Now" saves are recorded as never pruned, like manual
-    saves, unless the owner says otherwise — this requires giving them their own disk
-    tag.
+    **RESOLVED 2026-10-01 (owner): "Promote Trainee Now" saves are treated like
+    automatic promotions** — pool members under the shared `promote` tag, no new disk tag.
+    *(Was OPEN: "Promote Trainee Now" saves were recorded as never pruned, like manual
+    saves, unless the owner said otherwise — which would have required giving them their
+    own disk tag.)* The pool is global across sessions (owner, 2026-10-01). Implemented in
+    P14 (2026-10-01). **Gated and forced off (owner, 2026-10-01):** pruning also requires
+    the new `automatic_save_pruning_enabled` setting (default off), and the build's kill
+    switch `CheckpointPaths.automaticSavePruningForcedOff` holds it off regardless until D-8
+    lands and there is more confidence in automatic deletion.
 - **D-9 — DECIDED (2026-09-30):** recompute position hashes from the stored
   boards when loading a legacy buffer (owner-approved migration), logging the
   count recomputed.

@@ -8,6 +8,7 @@ enum CheckpointManagerError: LocalizedError {
     case writeFailed(URL, Error)
     case readFailed(URL, Error)
     case targetAlreadyExists(URL)
+    case stagingPathAlreadyExists(URL)
     case verificationBytesDiffer(tensorIndex: Int, offset: Int)
     case verificationTensorCountMismatch(expected: Int, got: Int)
     case verificationTensorSizeMismatch(tensorIndex: Int, expected: Int, got: Int)
@@ -33,6 +34,8 @@ enum CheckpointManagerError: LocalizedError {
             return "Read failed for \(url.lastPathComponent): \(err.localizedDescription)"
         case .targetAlreadyExists(let url):
             return "Target already exists (never overwriting): \(url.lastPathComponent)"
+        case .stagingPathAlreadyExists(let url):
+            return "Save staging path already exists: \(url.path). It is either another save in progress or debris from an interrupted one; this save neither reuses nor deletes it. Remove it by hand once no save is running."
         case .verificationBytesDiffer(let tensorIndex, let offset):
             return "Post-save weight byte compare failed at tensor \(tensorIndex) offset \(offset)"
         case .verificationTensorCountMismatch(let expected, let got):
@@ -104,123 +107,902 @@ enum CheckpointPaths {
     /// Create all checkpoint subdirectories if they don't already
     /// exist. Idempotent and cheap — called from every save path.
     static func ensureDirectories() throws {
-        let fm = FileManager.default
+        try ensureDirectory(sessionsDir)
+        try ensureDirectory(modelsDir)
+    }
+
+    /// Create `directory` (and any missing parents) if it does not
+    /// already exist. Idempotent. The save paths call this for the
+    /// one directory they write into, which is the canonical
+    /// `Sessions/` or `Models/` folder in the app and a temporary
+    /// folder in tests.
+    static func ensureDirectory(_ directory: URL) throws {
         do {
-            try fm.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         } catch {
-            throw CheckpointManagerError.directoryCreationFailed(sessionsDir, error)
-        }
-        do {
-            try fm.createDirectory(at: modelsDir, withIntermediateDirectories: true)
-        } catch {
-            throw CheckpointManagerError.directoryCreationFailed(modelsDir, error)
+            throw CheckpointManagerError.directoryCreationFailed(directory, error)
         }
     }
 
-    /// Remove orphan `.tmp` directories and files left behind by a
-    /// save that was interrupted mid-flight (process killed, kernel
-    /// panic, power loss). Runs once at app launch — no save or load
-    /// has a chance to contend with a `*.tmp` debris path. Each
-    /// removal is logged via `[CLEANUP]`; individual failures log
-    /// `[CLEANUP-ERR]` and do not abort the sweep, since a stuck
-    /// orphan should not prevent the app from starting.
+    // MARK: Staging names
+
+    /// Path extension every save stages under before its final rename:
+    /// `saveSession` builds `Sessions/<name>.dcmsession.tmp/` and
+    /// `saveModel` writes `Models/<name>.safetensors.tmp`. The launch
+    /// sweep below derives the names it recognizes from this, so the
+    /// writer and the sweeper cannot drift apart.
+    static let stagingPathExtension = "tmp"
+
+    /// Name suffix of `saveSession`'s staging directory.
+    static var sessionStagingSuffix: String { ".dcmsession.\(stagingPathExtension)" }
+
+    /// Name suffixes of `saveModel`'s staging file: the current
+    /// `.safetensors` format and the legacy `.dcmmodel` format, whose
+    /// interrupted saves may still be on disk from older builds.
+    static var modelStagingSuffixes: [String] {
+        [".safetensors.\(stagingPathExtension)", ".dcmmodel.\(stagingPathExtension)"]
+    }
+
+    // MARK: Staging ownership
+
+    /// Create `url` as a new, empty regular file and return a handle
+    /// open for writing it, with the file's identity. Fails with
+    /// `.stagingPathAlreadyExists` if anything at all is already at
+    /// `url`.
     ///
-    /// Two sweep patterns:
-    /// - `Sessions/<name>.tmp` — `saveSession`'s staging directory
-    ///   suffix. Entries here are directories.
-    /// - `Models/<name>.dcmmodel.tmp` — `saveModel`'s tmp file
-    ///   suffix. Entries here are files.
-    static func cleanupOrphans() {
-        let fm = FileManager.default
-        let sweep = { (root: URL, suffix: String) in
-            let entries: [URL]
-            do {
-                entries = try fm.contentsOfDirectory(
-                    at: root,
-                    includingPropertiesForKeys: nil,
-                    options: [.skipsHiddenFiles]
-                )
-            } catch {
+    /// A save's error paths delete its staging item, so the save must
+    /// know the item is its own. A plain write would silently adopt
+    /// whatever was already at the staging path — debris from an
+    /// interrupted save, or the live staging file of a save running in
+    /// another instance — and the error path would then delete it.
+    /// `FileSafety.createNewFile` makes the existence check and the
+    /// creation one atomic step, so success proves this call created
+    /// the file, and the returned identity lets the cleanup prove it is
+    /// still that file.
+    static func createStagingFileExclusively(at url: URL) throws -> FileSafety.NewFile {
+        do {
+            return try FileSafety.createNewFile(at: url)
+        } catch FileSafetyError.alreadyExists {
+            throw CheckpointManagerError.stagingPathAlreadyExists(url)
+        } catch {
+            throw CheckpointManagerError.writeFailed(url, error)
+        }
+    }
+
+    /// Create `url` as a new, empty directory and return its identity.
+    /// Fails with `.stagingPathAlreadyExists` if anything at all is
+    /// already at `url`. The directory counterpart of
+    /// `createStagingFileExclusively(at:)`, for the same reason:
+    /// `FileSafety.createNewDirectory` refuses an existing path
+    /// atomically, so success proves this call owns the directory.
+    /// (`FileManager.createDirectory` with intermediate directories
+    /// succeeds on an existing directory, which is exactly the adoption
+    /// this exists to prevent.)
+    static func createStagingDirectoryExclusively(at url: URL) throws -> FileSafety.FileIdentity {
+        do {
+            return try FileSafety.createNewDirectory(at: url)
+        } catch FileSafetyError.alreadyExists {
+            throw CheckpointManagerError.stagingPathAlreadyExists(url)
+        } catch {
+            throw CheckpointManagerError.directoryCreationFailed(url, error)
+        }
+    }
+
+    /// Remove a staging item this save created and still owns, on a
+    /// failure path — only if it is still the item with `identity`
+    /// (`FileSafety.removeOwnedItem`), so a folder or file swapped in
+    /// at the staging path is never deleted. Never throws — the save is
+    /// already failing with its own error — but logs every problem: a
+    /// removal failure leaves a large item behind, and an owned item
+    /// that has vanished or been replaced means something else touched
+    /// it while the save was running.
+    static func removeOwnedStagingItem(at url: URL, identity: FileSafety.FileIdentity) {
+        do {
+            if try FileSafety.removeOwnedItem(at: url, identity: identity) == .alreadyGone {
                 SessionLogger.shared.log(
-                    "[CLEANUP-ERR] Could not list \(root.lastPathComponent): \(error.localizedDescription)"
+                    "[CHECKPOINT-CLEANUP] staging item \(url.lastPathComponent) was already gone when this save went to remove it"
                 )
-                return
             }
-            for entry in entries where entry.lastPathComponent.hasSuffix(suffix) {
-                do {
-                    try fm.removeItem(at: entry)
-                    SessionLogger.shared.log(
-                        "[CLEANUP] Removed orphan \(entry.lastPathComponent)"
-                    )
-                } catch {
-                    SessionLogger.shared.log(
-                        "[CLEANUP-ERR] Could not remove \(entry.lastPathComponent): \(error.localizedDescription)"
+        } catch {
+            SessionLogger.shared.log(
+                "[CHECKPOINT-CLEANUP] failed to remove staging item \(url.lastPathComponent): \(error.localizedDescription)"
+            )
+        }
+    }
+
+    // MARK: Launch-time orphan sweep
+
+    /// How long a staging item must have gone unmodified before the
+    /// launch-time sweep treats it as debris from a dead save rather
+    /// than a save still running in another process.
+    ///
+    /// "This process just launched" does not mean "no save is
+    /// running": two app instances share one `Application Support`
+    /// folder, and a second instance
+    /// launched while the first is mid-save would delete the first
+    /// one's staging folder out from under it — the first save then
+    /// fails at its rename after doing all of its writing and
+    /// verification, or its error cleanup trips over a folder that is
+    /// already gone. So the sweep claims only items whose newest
+    /// modification is older than this bound.
+    ///
+    /// A live save keeps its staging item fresh: every file it writes
+    /// bumps the modification date of the item or one of its direct
+    /// children, and its longest write-free stretch is the
+    /// post-write verification read of the replay buffer. This bound
+    /// sits far beyond that stretch. The cost of a long bound is only
+    /// that a real orphan survives until a later launch, which delays
+    /// reclaiming its space but loses nothing. The age is wall-clock,
+    /// so a machine that slept through a save ages that save's staging
+    /// item while it sleeps; a second instance launched right after a
+    /// long sleep is the one case this bound does not cover.
+    static let orphanStagingMinimumAge: TimeInterval = 60 * 60
+
+    /// What kind of staging debris a directory is swept for.
+    enum OrphanStagingKind: Sendable, Equatable {
+        /// `saveSession`'s staging folder in `Sessions/`. Must be a
+        /// real directory.
+        case sessionDirectory
+        /// `saveModel`'s staging file in `Models/`. Must be a regular
+        /// file.
+        case modelFile
+        /// `FileSafety`'s hidden staging file for a write staged and
+        /// renamed into place (`FileSafety.temporarySibling(of:)`) — e.g.
+        /// a corpus-replay or train-vs-UCI rolling `--out-model` written
+        /// into `Models/`. Swept in both folders. Must be a regular file.
+        case fileSafetyStagingFile
+
+        /// `true` when `name` is a staging name of this kind: for the
+        /// save kinds, a non-hidden name ending in one of the kind's
+        /// staging suffixes with a non-empty stem in front of it (saves
+        /// never stage under a hidden name); for `FileSafety`'s staging
+        /// files, exactly the shape `FileSafety` builds.
+        func matchesName(_ name: String) -> Bool {
+            let suffixes: [String]
+            switch self {
+            case .sessionDirectory: suffixes = [CheckpointPaths.sessionStagingSuffix]
+            case .modelFile: suffixes = CheckpointPaths.modelStagingSuffixes
+            case .fileSafetyStagingFile:
+                return FileSafety.destinationName(ofTemporarySiblingName: name) != nil
+            }
+            guard !name.hasPrefix(".") else { return false }
+            return suffixes.contains { name.count > $0.count && name.hasSuffix($0) }
+        }
+    }
+
+    /// The on-disk facts the sweep decides on, gathered by
+    /// `inspectOrphanStagingCandidate(at:)`. Split out from the I/O so
+    /// the decision is a pure function the tests can drive directly.
+    struct OrphanStagingCandidate: Sendable, Equatable {
+        let name: String
+        let isDirectory: Bool
+        let isRegularFile: Bool
+        let isSymbolicLink: Bool
+        /// Newest modification date of the item itself and, for a
+        /// directory, of every entry directly inside it — the last
+        /// moment any save could have been working in it.
+        let lastActivity: Date
+    }
+
+    /// The sweep's decision for one directory entry.
+    enum OrphanStagingVerdict: Sendable, Equatable {
+        /// Not a staging name of the swept kind — an ordinary saved
+        /// session or model, left alone without comment.
+        case notStaging
+        /// A staging name, but not provably dead debris; kept and
+        /// logged with the reason.
+        case keep(reason: String)
+        /// Dead debris of the expected kind; removed.
+        case remove
+    }
+
+    /// Decide whether the launch sweep may remove `candidate`. Only an
+    /// entry with the staging name of `kind`, of exactly that kind's
+    /// filesystem type (never a symbolic link), and unmodified for at
+    /// least `minimumAge` is removable — anything less could be a save
+    /// in flight in another instance, or something that is not a
+    /// save's staging item at all.
+    static func orphanStagingVerdict(
+        for candidate: OrphanStagingCandidate,
+        kind: OrphanStagingKind,
+        now: Date,
+        minimumAge: TimeInterval
+    ) -> OrphanStagingVerdict {
+        guard kind.matchesName(candidate.name) else { return .notStaging }
+        if candidate.isSymbolicLink {
+            return .keep(reason: "is a symbolic link, not a staging item a save creates")
+        }
+        switch kind {
+        case .sessionDirectory:
+            guard candidate.isDirectory else {
+                return .keep(reason: "is not a directory, but session staging is always a directory")
+            }
+        case .modelFile:
+            guard candidate.isRegularFile else {
+                return .keep(reason: "is not a regular file, but model staging is always a regular file")
+            }
+        case .fileSafetyStagingFile:
+            guard candidate.isRegularFile else {
+                return .keep(reason: "is not a regular file, but FileSafety only ever stages regular files (a folder with this name is one whose removal was interrupted; see documentation/disk-cleanup.md)")
+            }
+        }
+        let age = now.timeIntervalSince(candidate.lastActivity)
+        guard age >= minimumAge else {
+            return .keep(
+                reason: "last modified \(Int(age.rounded()))s ago, younger than the \(Int(minimumAge))s orphan age — may be a save in progress in another instance"
+            )
+        }
+        return .remove
+    }
+
+    /// One inspected sweep entry: the facts the verdict is decided on,
+    /// and the identity of the item they were read from — the only item
+    /// the sweep may then remove.
+    struct InspectedOrphanStagingEntry: Sendable, Equatable {
+        let candidate: OrphanStagingCandidate
+        let identity: FileSafety.FileIdentity
+    }
+
+    /// Read the facts `orphanStagingVerdict` needs for the entry at
+    /// `url`, and the identity of the item they describe. Throws when
+    /// any of them cannot be read, or when the item at `url` changed
+    /// while they were being read; the sweep keeps such an entry, since
+    /// it cannot prove the entry is debris.
+    ///
+    /// The identity is read (`lstat`) before the facts and checked again
+    /// after them, so the facts are known to belong to the item whose
+    /// identity the removal later insists on.
+    static func inspectOrphanStagingCandidate(at url: URL) throws -> InspectedOrphanStagingEntry {
+        guard let item = try FileSafety.existingItem(at: url) else {
+            throw CheckpointManagerError.readFailed(
+                url,
+                CocoaError(.fileReadNoSuchFile, userInfo: [NSLocalizedDescriptionKey: "it is no longer there"])
+            )
+        }
+        let isDirectory = item.kind == .directory
+        let isRegularFile = item.kind == .regularFile
+        let isSymbolicLink = item.kind == .symbolicLink
+        guard let modified = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else {
+            throw CheckpointManagerError.readFailed(
+                url,
+                CocoaError(.fileReadUnknown, userInfo: [NSLocalizedDescriptionKey: "modification date unavailable"])
+            )
+        }
+        var lastActivity = modified
+        if isDirectory && !isSymbolicLink {
+            let children = try FileManager.default.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: []
+            )
+            for child in children {
+                guard let childModified = try child.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else {
+                    throw CheckpointManagerError.readFailed(
+                        child,
+                        CocoaError(.fileReadUnknown, userInfo: [NSLocalizedDescriptionKey: "modification date unavailable"])
                     )
                 }
+                lastActivity = max(lastActivity, childModified)
             }
         }
-        sweep(sessionsDir, ".tmp")
-        sweep(modelsDir, ".dcmmodel.tmp")
-        sweep(modelsDir, ".safetensors.tmp")
+        guard try FileSafety.existingItem(at: url)?.identity == item.identity else {
+            throw CheckpointManagerError.readFailed(
+                url,
+                CocoaError(.fileReadUnknown, userInfo: [NSLocalizedDescriptionKey: "it was replaced while being inspected"])
+            )
+        }
+        return InspectedOrphanStagingEntry(
+            candidate: OrphanStagingCandidate(
+                name: url.lastPathComponent,
+                isDirectory: isDirectory,
+                isRegularFile: isRegularFile,
+                isSymbolicLink: isSymbolicLink,
+                lastActivity: lastActivity
+            ),
+            identity: item.identity
+        )
     }
 
-    /// Suffix that uniquely identifies a periodic (4-hourly-by-default)
-    /// autosave session directory. Built from `SessionSaveTrigger.periodic`'s
-    /// disk tag so the two stay in lock-step — pruning must only ever touch
-    /// periodic saves, never `-manual` / `-promote` / `-sigusr2` ones.
-    static let periodicSessionSuffix = "-periodic.dcmsession"
+    /// Remove staging debris left behind by a save or a staged file
+    /// write that was interrupted mid-flight (process killed, kernel
+    /// panic, power loss). Runs once at GUI launch.
+    ///
+    /// Launch is not a quiet moment: another app instance sharing this
+    /// `Application Support` folder may be mid-save right now, and a
+    /// headless trainer may be writing its rolling model into
+    /// `Models/`. So an entry is removed only when
+    /// `orphanStagingVerdict` proves it is dead debris — a
+    /// `saveSession` staging directory (`Sessions/<name>.dcmsession.tmp`),
+    /// a `saveModel` staging file (`Models/<name>.safetensors.tmp`, or
+    /// the legacy `.dcmmodel.tmp`), or a `FileSafety` staging file
+    /// (`.<name>.<UUID>.tmp`, hidden, in either folder), of exactly that
+    /// filesystem type, unmodified for at least `minimumAge`. The
+    /// removal is identity-checked (`FileSafety.removeOwnedItem` with the
+    /// identity read at inspection), so an item that took the entry's
+    /// place after it was judged is refused, not removed. Every removal
+    /// logs `[CLEANUP]`; every staging-named entry that is kept logs
+    /// `[CLEANUP]` with the reason; failures log `[CLEANUP-ERR]` and do
+    /// not abort the sweep, since a stuck orphan should not prevent the
+    /// app from starting.
+    ///
+    /// The directories, clock, and age bound are parameters so tests
+    /// can sweep a temporary folder; the app uses the defaults.
+    static func cleanupOrphans(
+        sessionsDirectory: URL = CheckpointPaths.sessionsDir,
+        modelsDirectory: URL = CheckpointPaths.modelsDir,
+        now: Date = Date(),
+        minimumAge: TimeInterval = CheckpointPaths.orphanStagingMinimumAge
+    ) {
+        sweepOrphanStaging(in: sessionsDirectory, kinds: [.sessionDirectory, .fileSafetyStagingFile],
+                           now: now, minimumAge: minimumAge)
+        sweepOrphanStaging(in: modelsDirectory, kinds: [.modelFile, .fileSafetyStagingFile],
+                           now: now, minimumAge: minimumAge)
+    }
 
-    /// Enforce the periodic-autosave retention cap: keep only the `keep` most
-    /// recent `-periodic.dcmsession` directories under `Sessions/`, deleting
-    /// the older ones. `keep <= 0` means **unlimited** (no pruning — the
-    /// legacy behavior) and returns immediately.
-    ///
-    /// Only periodic saves are candidates; manual, post-promotion, and signal
-    /// saves are filtered out by the filename suffix and are never deleted
-    /// here. Ordering is by filename, which is chronological because every
-    /// name is `YYYYMMDD-HHMMSS-…` (see `makeSessionDirectoryName`). `protecting`
-    /// — typically the just-written save and/or the current LastSessionPointer
-    /// target — is never deleted regardless of its rank, a belt-and-suspenders
-    /// guard against ever pruning the directory a resume would reach for.
-    ///
-    /// Each removal logs `[PRUNE]`; a per-item failure logs `[PRUNE-ERR]` and
-    /// does not abort the sweep (a stuck file should not strand the cap). Safe
-    /// to call off the main actor — pure FileManager work, no shared state.
-    static func prunePeriodicAutosaves(keeping keep: Int, protecting: URL? = nil) {
-        guard keep > 0 else { return }
-        let fm = FileManager.default
+    private static func sweepOrphanStaging(
+        in directory: URL,
+        kinds: [OrphanStagingKind],
+        now: Date,
+        minimumAge: TimeInterval
+    ) {
         let entries: [URL]
         do {
-            entries = try fm.contentsOfDirectory(
-                at: sessionsDir,
+            // Hidden entries included: FileSafety's staging files are
+            // hidden. The save kinds' `matchesName` rejects hidden names.
+            entries = try FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil,
+                options: []
+            )
+        } catch {
+            SessionLogger.shared.log(
+                "[CLEANUP-ERR] Could not list \(directory.lastPathComponent): \(error.localizedDescription)"
+            )
+            return
+        }
+        for entry in entries {
+            guard let kind = kinds.first(where: { $0.matchesName(entry.lastPathComponent) }) else { continue }
+            let inspected: InspectedOrphanStagingEntry
+            do {
+                inspected = try inspectOrphanStagingCandidate(at: entry)
+            } catch {
+                SessionLogger.shared.log(
+                    "[CLEANUP] Kept \(entry.lastPathComponent): could not read its type, identity and modification date (\(error.localizedDescription)), so it cannot be proven to be debris"
+                )
+                continue
+            }
+            switch orphanStagingVerdict(for: inspected.candidate, kind: kind, now: now, minimumAge: minimumAge) {
+            case .notStaging:
+                continue
+            case .keep(let reason):
+                SessionLogger.shared.log("[CLEANUP] Kept \(entry.lastPathComponent): \(reason)")
+            case .remove:
+                removeInspectedOrphan(inspected, at: entry)
+            }
+        }
+    }
+
+    /// Remove the sweep entry at `url` only if it is still the item
+    /// `inspected` describes, logging the outcome. Internal rather than
+    /// private so tests can swap the entry between inspection and
+    /// removal.
+    static func removeInspectedOrphan(_ inspected: InspectedOrphanStagingEntry, at url: URL) {
+        do {
+            switch try FileSafety.removeOwnedItem(at: url, identity: inspected.identity) {
+            case .removed:
+                SessionLogger.shared.log("[CLEANUP] Removed orphan \(url.lastPathComponent)")
+            case .alreadyGone:
+                SessionLogger.shared.log(
+                    "[CLEANUP] Orphan \(url.lastPathComponent) was already gone when the sweep went to remove it"
+                )
+            }
+        } catch {
+            SessionLogger.shared.log(
+                "[CLEANUP-ERR] Could not remove \(url.lastPathComponent): \(error.localizedDescription)"
+            )
+        }
+    }
+
+    // MARK: Automatic-save retention
+
+    /// The automatic session saves that share one retention pool, capped
+    /// by `max_periodic_autosaves_kept`: periodic autosaves and
+    /// promotion saves. Every other save — `-manual` (File ▸ Save
+    /// Session), `-sigusr2` (checkpoint-and-shut-down), and any trigger
+    /// added later — is a deliberate "keep this" save and is never a
+    /// pool member, so the sweep can never select one.
+    ///
+    /// The pool is defined by disk tag, not by `SessionSaveTrigger`,
+    /// because the arena's post-promotion save does not go through a
+    /// `SessionSaveTrigger`: it writes the shared
+    /// `SessionSaveTrigger.promotionDiskTag` directly. "Promote Trainee
+    /// Now" (`SessionSaveTrigger.manualPromote`) writes the same tag and
+    /// is therefore treated exactly like an arena promotion (owner
+    /// decision 2026-10-01).
+    ///
+    /// This is also the single rule for *when* the sweep runs: after a
+    /// successful save whose disk tag maps to a kind here
+    /// (`init(diskTag:)`), and after no other.
+    enum AutomaticSaveKind: Sendable, Equatable, CaseIterable {
+        case periodic
+        case promotion
+
+        /// The tag this kind's saves carry in their folder name.
+        var diskTag: String {
+            switch self {
+            case .periodic: SessionSaveTrigger.periodic.diskTag
+            case .promotion: SessionSaveTrigger.promotionDiskTag
+            }
+        }
+
+        /// The kind whose saves carry `diskTag`, or nil when saves with
+        /// that tag are outside the retention pool.
+        init?(diskTag: String) {
+            guard let kind = Self.allCases.first(where: { $0.diskTag == diskTag }) else { return nil }
+            self = kind
+        }
+
+        /// `-<diskTag>.dcmsession`, the end of every folder name of this
+        /// kind.
+        var folderNameSuffix: String { "-\(diskTag).dcmsession" }
+    }
+
+    /// Owner-imposed kill switch for automatic-save pruning (owner
+    /// decision 2026-10-01). While this is `true`,
+    /// `automaticSavePruningDecision` answers `.forcedOff` for every
+    /// automatic save, whatever `automatic_save_pruning_enabled` and
+    /// `max_periodic_autosaves_kept` say, so `pruneAutomaticSaves` is
+    /// never reached and no session folder is ever deleted by the app.
+    /// The retention code stays in the build — reviewed and tested — but
+    /// nothing runs it.
+    ///
+    /// Why a constant on top of the setting's off default: the setting
+    /// lives in UserDefaults, is restored from a resumed session's
+    /// `session.json`, and can be set by a `parameters.json` or CLI
+    /// override, so any of those could switch on the deletion of whole
+    /// session folders — from every session, not just the running one —
+    /// without anyone deciding to in this build. The switch stays thrown
+    /// until session saves leave the replay buffer out by default (plan
+    /// #8, decision D-8) and there is more confidence in deleting saves
+    /// automatically.
+    ///
+    /// Changing this to `false` is the only way to re-enable pruning.
+    /// `AutomaticSavePruningGateTests` pins the shipped value, so that
+    /// change has to come with a deliberate, visible test edit.
+    static let automaticSavePruningForcedOff = true
+
+    /// Whether a retention sweep runs after an automatic save and, when it
+    /// does not, why. Produced only by `automaticSavePruningDecision`.
+    enum AutomaticSavePruningDecision: Sendable, Equatable {
+        /// Run `pruneAutomaticSaves` with this cap.
+        case prune(keeping: Int)
+        /// The build's kill switch (`automaticSavePruningForcedOff`) is
+        /// thrown; the setting and the cap were not consulted.
+        case forcedOff
+        /// `automatic_save_pruning_enabled` is off.
+        case disabledBySetting
+        /// `max_periodic_autosaves_kept` is 0, which means unlimited.
+        case unlimitedCap
+
+        /// Log-ready account of the decision together with the inputs
+        /// behind it, so a skipped sweep and the Play-and-Train start
+        /// line read the same way and always show both settings.
+        func logDescription(settingEnabled: Bool, cap: Int) -> String {
+            let reason: String
+            switch self {
+            case .prune(let keeping):
+                reason = "on, keeping the newest \(keeping) automatic saves"
+            case .forcedOff:
+                reason = "off: automatic-save pruning is forced off in this build"
+            case .disabledBySetting:
+                reason = "off: disabled by setting"
+            case .unlimitedCap:
+                reason = "off: cap is 0 (unlimited)"
+            }
+            return "\(reason) (\(AutomaticSavePruningEnabled.id)=\(settingEnabled) \(MaxPeriodicAutosavesKept.id)=\(cap))"
+        }
+    }
+
+    /// The single rule for whether automatic-save pruning runs: only when
+    /// the build does not force it off, the setting is on, and the cap is
+    /// above zero. The kill switch is checked first and short-circuits, so
+    /// a forced-off build never acts on the setting or the cap.
+    ///
+    /// `forcedOff` is a parameter rather than a read of
+    /// `automaticSavePruningForcedOff` so tests can reach the paths a
+    /// build with the switch lifted would take. The one production caller,
+    /// `SessionController.currentAutomaticSavePruningDecision` (behind both
+    /// the sweep trigger and the Play-and-Train start line), passes the
+    /// constant.
+    static func automaticSavePruningDecision(
+        forcedOff: Bool,
+        settingEnabled: Bool,
+        cap: Int
+    ) -> AutomaticSavePruningDecision {
+        if forcedOff { return .forcedOff }
+        guard settingEnabled else { return .disabledBySetting }
+        guard cap > 0 else { return .unlimitedCap }
+        return .prune(keeping: cap)
+    }
+
+    /// `true` when `text` has exactly the shape `format` (a
+    /// `DateFormatter` pattern of digit fields and literal separators,
+    /// such as `filenameTimestampFormat`) renders: an ASCII digit for
+    /// every pattern letter, the identical character for every other.
+    private static func matchesDigitPattern(_ text: Substring, format: String) -> Bool {
+        guard text.count == format.count else { return false }
+        return zip(text, format).allSatisfy { character, formatCharacter in
+            formatCharacter.isLetter
+                ? (character.isASCII && character.isWholeNumber)
+                : character == formatCharacter
+        }
+    }
+
+    /// `true` when `sessionID` has the shape `ModelIDMinter.mint()`
+    /// gives every Play-and-Train session: `yyyymmdd-N-XXXX` (UTC
+    /// date, positive per-day counter, base62 random suffix).
+    ///
+    /// The retention sweep deletes a folder only when the session ID
+    /// in its name matches the one inside its `session.json`, and that
+    /// cross-check only proves anything for an ID that names a single
+    /// session. A minted ID does: the random suffix keeps two sessions
+    /// from sharing one even when they start on the same day on
+    /// different machines. The placeholder IDs the save path falls back
+    /// to when a session has no ID (in `makeSessionDirectoryName` and
+    /// in `buildCurrentSessionState`) are shared by every session that
+    /// hits them, and a folder carrying one is a sign that something
+    /// went wrong when it was written — the kind of folder a person
+    /// should look at before it goes. Neither placeholder has this
+    /// shape, so such folders are kept and logged.
+    static func isMintedSessionID(_ sessionID: String) -> Bool {
+        let parts = sessionID.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3 else { return false }
+        let datePart = parts[0]
+        let counterPart = parts[1]
+        let suffixPart = parts[2]
+        guard matchesDigitPattern(datePart, format: "yyyyMMdd") else { return false }
+        guard !counterPart.isEmpty,
+              counterPart.allSatisfy({ $0.isASCII && $0.isWholeNumber }),
+              let counter = Int(counterPart), counter > 0 else { return false }
+        guard !suffixPart.isEmpty,
+              suffixPart.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isWholeNumber) }) else { return false }
+        return true
+    }
+
+    /// The parts of a folder name `makeSessionDirectoryName` produces
+    /// for an automatic save.
+    struct AutomaticSaveFolderName: Sendable, Equatable {
+        let folderName: String
+        /// Whatever sits between the timestamp and the trigger tag —
+        /// a minted session ID for every save of a properly started
+        /// session, a placeholder otherwise.
+        let sessionID: String
+        let kind: AutomaticSaveKind
+    }
+
+    /// Split `name` into its session ID and kind when it has exactly
+    /// the shape `YYYYMMDD-HHMMSS-<sessionID>-(periodic|promote).dcmsession`:
+    /// a bare UTC timestamp first, nothing in front of it, a non-empty
+    /// session ID, and an automatic-save tag as the very end. Anything
+    /// else — a manual or signal save, a staging `.tmp` folder, a
+    /// renamed or hand-made folder — returns nil and is never a pool
+    /// member. The session ID is not checked here; a placeholder ID
+    /// still parses, so the sweep can report that folder as kept.
+    static func parseAutomaticSaveFolderName(_ name: String) -> AutomaticSaveFolderName? {
+        for kind in AutomaticSaveKind.allCases where name.hasSuffix(kind.folderNameSuffix) {
+            let stem = name.dropLast(kind.folderNameSuffix.count)
+            let timestamp = stem.prefix(filenameTimestampFormat.count)
+            guard matchesDigitPattern(timestamp, format: filenameTimestampFormat) else { return nil }
+            let afterTimestamp = stem.dropFirst(filenameTimestampFormat.count)
+            guard afterTimestamp.first == "-" else { return nil }
+            let sessionID = afterTimestamp.dropFirst()
+            guard !sessionID.isEmpty else { return nil }
+            return AutomaticSaveFolderName(folderName: name, sessionID: String(sessionID), kind: kind)
+        }
+        return nil
+    }
+
+    /// Whether a name-matched automatic-save folder is provably the save
+    /// its name says it is. Only `.verified` folders are counted in the
+    /// pool, ranked, and ever deleted; every other case is kept and
+    /// logged with `keptReason`.
+    enum AutomaticSaveVerification: Sendable, Equatable {
+        /// A real directory holding a regular `session.json` whose
+        /// `sessionID` is the minted ID in the folder name. Carries the
+        /// directory's identity as inspected, so the deletion can prove
+        /// the folder at that path is still this one.
+        case verified(identity: FileSafety.FileIdentity)
+        /// The ID in the folder name is not a minted session ID.
+        case placeholderSessionID
+        /// The entry was listed but was gone by the time it was inspected.
+        case vanished
+        case unreadableFolder(detail: String)
+        case symbolicLink
+        case notADirectory(kind: FileSafety.ItemKind)
+        case missingSessionJSON
+        case sessionJSONNotARegularFile(kind: FileSafety.ItemKind)
+        case unreadableSessionJSON(detail: String)
+        case sessionIDMismatch(found: String)
+
+        var isVerified: Bool {
+            if case .verified = self { return true }
+            return false
+        }
+
+        /// Why a non-verified folder is kept, for the `[PRUNE]` log.
+        var keptReason: String {
+            switch self {
+            case .verified: "verified"
+            case .placeholderSessionID: "the session ID in its name is a placeholder, not a minted session ID"
+            case .vanished: "it was no longer there when inspected"
+            case .unreadableFolder(let detail): "its file type could not be read: \(detail)"
+            case .symbolicLink: "it is a symbolic link, not a session folder a save creates"
+            case .notADirectory(let kind): "it is a \(kind), not a directory"
+            case .missingSessionJSON: "it has no \(SessionCheckpointLayout.stateFilename) inside"
+            case .sessionJSONNotARegularFile(let kind): "its \(SessionCheckpointLayout.stateFilename) is a \(kind), not a regular file"
+            case .unreadableSessionJSON(let detail): "its \(SessionCheckpointLayout.stateFilename) could not be read: \(detail)"
+            case .sessionIDMismatch(let found): "its \(SessionCheckpointLayout.stateFilename) names session \(found)"
+            }
+        }
+    }
+
+    /// The only field of `session.json` verification reads. Decoding
+    /// just this key, rather than the whole `SessionCheckpointState`,
+    /// keeps verification independent of the format version and of
+    /// every other field, so a folder written by any older build still
+    /// verifies.
+    private struct SessionIdentityProbe: Decodable {
+        let sessionID: String
+    }
+
+    /// Establish whether the folder at `url` is the save `parsed` names,
+    /// by its contents and not just its name: the name's session ID
+    /// must be a minted one, and the entry must be a real directory
+    /// (not a symbolic link, read with `lstat`) holding a regular
+    /// `session.json` whose `sessionID` is exactly that ID.
+    static func inspectAutomaticSaveFolder(
+        at url: URL,
+        parsed: AutomaticSaveFolderName
+    ) -> AutomaticSaveVerification {
+        guard isMintedSessionID(parsed.sessionID) else { return .placeholderSessionID }
+        let folder: FileSafety.ExistingItem
+        do {
+            guard let item = try FileSafety.existingItem(at: url) else { return .vanished }
+            folder = item
+        } catch {
+            return .unreadableFolder(detail: error.localizedDescription)
+        }
+        switch folder.kind {
+        case .directory:
+            break
+        case .symbolicLink:
+            return .symbolicLink
+        case .regularFile, .fifo, .socket, .characterDevice, .blockDevice, .unknown:
+            return .notADirectory(kind: folder.kind)
+        }
+        let stateURL = SessionCheckpointLayout.stateURL(in: url)
+        let stateItem: FileSafety.ExistingItem
+        do {
+            guard let item = try FileSafety.existingItem(at: stateURL) else { return .missingSessionJSON }
+            stateItem = item
+        } catch {
+            return .unreadableSessionJSON(detail: error.localizedDescription)
+        }
+        guard stateItem.kind == .regularFile else { return .sessionJSONNotARegularFile(kind: stateItem.kind) }
+        let probe: SessionIdentityProbe
+        do {
+            probe = try JSONDecoder().decode(SessionIdentityProbe.self, from: Data(contentsOf: stateURL))
+        } catch {
+            return .unreadableSessionJSON(detail: error.localizedDescription)
+        }
+        guard probe.sessionID == parsed.sessionID else { return .sessionIDMismatch(found: probe.sessionID) }
+        return .verified(identity: folder.identity)
+    }
+
+    /// One name-matched automatic-save folder and what inspection found.
+    struct AutomaticSaveCandidate: Sendable, Equatable {
+        let folder: AutomaticSaveFolderName
+        let verification: AutomaticSaveVerification
+
+        var folderName: String { folder.folderName }
+    }
+
+    /// The outcome of one retention sweep. Pure data so the decision can
+    /// be tested without a filesystem.
+    struct AutomaticSavePrunePlan: Sendable, Equatable {
+        /// Verified folders inside the newest `keep`, newest first.
+        var keptWithinCap: [AutomaticSaveCandidate] = []
+        /// Verified folders beyond the cap that are protected, newest
+        /// first.
+        var keptProtected: [AutomaticSaveCandidate] = []
+        /// Verified, unprotected folders beyond the cap, newest first.
+        var delete: [AutomaticSaveCandidate] = []
+        /// Name-matched folders that did not verify, in input order.
+        /// Never counted in the pool.
+        var keptUnverified: [AutomaticSaveCandidate] = []
+
+        /// How many verified folders of `kind` the pool held — the
+        /// pool size the `[PRUNE]` summary reports per kind.
+        func verifiedCount(of kind: AutomaticSaveKind) -> Int {
+            (keptWithinCap + keptProtected + delete).filter { $0.folder.kind == kind }.count
+        }
+    }
+
+    /// Decide which automatic-save folders to delete. Only verified
+    /// folders form the pool; periodic and promotion saves of every
+    /// session are ranked together, newest first by folder name, which
+    /// is chronological because every name starts with its fixed-width
+    /// UTC `YYYYMMDD-HHMMSS` timestamp — so the trigger and the session
+    /// never affect the order. A protected folder holds its rank:
+    /// inside the cap it is simply kept, beyond it it is kept without
+    /// pulling any older folder back under the cap. `keep <= 0` means
+    /// unlimited and deletes nothing.
+    static func planAutomaticSavePrune(
+        candidates: [AutomaticSaveCandidate],
+        keep: Int,
+        protectedFolderNames: Set<String>
+    ) -> AutomaticSavePrunePlan {
+        var plan = AutomaticSavePrunePlan()
+        var verified: [AutomaticSaveCandidate] = []
+        for candidate in candidates {
+            if candidate.verification.isVerified {
+                verified.append(candidate)
+            } else {
+                plan.keptUnverified.append(candidate)
+            }
+        }
+        verified.sort { $0.folderName > $1.folderName }
+        for (rank, candidate) in verified.enumerated() {
+            if keep <= 0 || rank < keep {
+                plan.keptWithinCap.append(candidate)
+            } else if protectedFolderNames.contains(candidate.folderName) {
+                plan.keptProtected.append(candidate)
+            } else {
+                plan.delete.append(candidate)
+            }
+        }
+        return plan
+    }
+
+    /// Enforce the automatic-save retention cap over `directory`: keep
+    /// the `keep` most recent automatic saves — periodic and promotion
+    /// saves together, from every session that ever wrote one there —
+    /// and delete the older ones. `keep <= 0` means unlimited: it logs
+    /// that and returns without listing the folder.
+    ///
+    /// The pool is global by owner decision (2026-10-01). It replaced
+    /// `prunePeriodicAutosaves`, which already spanned every session
+    /// but covered periodic saves only: after each successful periodic
+    /// save it listed `Sessions/`, took every non-hidden entry whose
+    /// name ended in `-periodic.dcmsession` — by suffix alone, whatever
+    /// its type, with no `session.json` check and no session-ID check —
+    /// ranked them by name, and removed every one beyond the newest
+    /// `keep` by path (`FileManager.removeItem`, recursive), sparing
+    /// only the save just written; the resume-pointer target had no
+    /// protection. Promotion saves were never pruned, so `Sessions/`
+    /// grew without bound over a long campaign. One cap over
+    /// everything automatic bounds the disk the autosaves can take,
+    /// whatever the number of runs and promotions.
+    ///
+    /// What stays out of the pool, or is never deleted from it:
+    /// - every folder whose name is not exactly an automatic-save name
+    ///   (`parseAutomaticSaveFolderName`) — `-manual` and `-sigusr2`
+    ///   saves, staging folders, anything renamed or hand-made;
+    /// - every folder that does not verify
+    ///   (`inspectAutomaticSaveFolder`): a placeholder session ID in
+    ///   the name, a symbolic link, not a directory, no regular
+    ///   `session.json`, or a `session.json` naming another session.
+    ///   These are kept, logged with the reason, and not counted;
+    /// - `justWritten` and the current `LastSessionPointer` target,
+    ///   read at sweep time — a resume must always find the folder it
+    ///   would reach for, even when a different save wrote the pointer.
+    ///   Protection compares folder names, not full paths, so a pointer
+    ///   spelled through a different path to the same folder still
+    ///   protects it.
+    ///
+    /// A deletion goes through `FileSafety.removeOwnedItem` with the
+    /// identity recorded during inspection, so a folder swapped in at
+    /// that path between inspection and deletion is refused, not
+    /// removed.
+    ///
+    /// Logs one `[PRUNE] retention:` summary per sweep, a `[PRUNE]`
+    /// line for every kept-for-a-reason folder and every removal (with
+    /// its session ID and trigger), and `[PRUNE-ERR]` for a failure,
+    /// which does not abort the sweep. Safe to call off the main actor
+    /// — file system and UserDefaults work only.
+    static func pruneAutomaticSaves(
+        keeping keep: Int,
+        protecting justWritten: URL,
+        in directory: URL = CheckpointPaths.sessionsDir,
+        lastSessionPointerDefaults: UserDefaults = .standard
+    ) {
+        guard keep > 0 else {
+            SessionLogger.shared.log(
+                "[PRUNE] retention: cap=\(keep) (unlimited) — nothing pruned after \(justWritten.lastPathComponent)"
+            )
+            return
+        }
+        let entries: [URL]
+        do {
+            entries = try FileManager.default.contentsOfDirectory(
+                at: directory,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             )
         } catch {
             SessionLogger.shared.log(
-                "[PRUNE-ERR] Could not list Sessions for periodic-autosave pruning: \(error.localizedDescription)"
+                "[PRUNE-ERR] Could not list \(directory.lastPathComponent) for automatic-save retention: \(error.localizedDescription)"
             )
             return
         }
-        let protectedName = protecting?.standardizedFileURL.lastPathComponent
-        let periodic = entries
-            .filter { $0.lastPathComponent.hasSuffix(periodicSessionSuffix) }
-            .sorted { $0.lastPathComponent > $1.lastPathComponent } // newest first
-        guard periodic.count > keep else { return }
-        for url in periodic.dropFirst(keep) {
-            if let protectedName, url.lastPathComponent == protectedName { continue }
+        var urlsByName: [String: URL] = [:]
+        var candidates: [AutomaticSaveCandidate] = []
+        for entry in entries {
+            guard let parsed = parseAutomaticSaveFolderName(entry.lastPathComponent) else { continue }
+            urlsByName[parsed.folderName] = entry
+            candidates.append(AutomaticSaveCandidate(
+                folder: parsed,
+                verification: inspectAutomaticSaveFolder(at: entry, parsed: parsed)
+            ))
+        }
+
+        var protectionReasons: [String: [String]] = [:]
+        protectionReasons[justWritten.standardizedFileURL.lastPathComponent, default: []].append("the save just written")
+        if let pointer = LastSessionPointer.read(from: lastSessionPointerDefaults) {
+            protectionReasons[pointer.directoryURL.standardizedFileURL.lastPathComponent, default: []]
+                .append("the resume pointer's target")
+        }
+
+        let plan = planAutomaticSavePrune(
+            candidates: candidates,
+            keep: keep,
+            protectedFolderNames: Set(protectionReasons.keys)
+        )
+        SessionLogger.shared.log(
+            "[PRUNE] retention: cap=\(keep) periodic=\(plan.verifiedCount(of: .periodic)) promote=\(plan.verifiedCount(of: .promotion)) kept=\(plan.keptWithinCap.count) protected=\(plan.keptProtected.count) unverified=\(plan.keptUnverified.count) deleting=\(plan.delete.count)"
+        )
+        for candidate in plan.keptUnverified {
+            SessionLogger.shared.log(
+                "[PRUNE] Kept \(candidate.folderName) (session=\(candidate.folder.sessionID) trigger=\(candidate.folder.kind.diskTag)), not counted: \(candidate.verification.keptReason)"
+            )
+        }
+        for candidate in plan.keptProtected {
+            let reasons = protectionReasons[candidate.folderName, default: []].joined(separator: " and ")
+            SessionLogger.shared.log(
+                "[PRUNE] Kept \(candidate.folderName) (session=\(candidate.folder.sessionID) trigger=\(candidate.folder.kind.diskTag)) beyond the cap: it is \(reasons)"
+            )
+        }
+        for candidate in plan.delete {
+            let name = candidate.folderName
+            let label = "session=\(candidate.folder.sessionID) trigger=\(candidate.folder.kind.diskTag)"
+            guard case .verified(let identity) = candidate.verification, let url = urlsByName[name] else {
+                SessionLogger.shared.log("[PRUNE-ERR] Planned deletion \(name) (\(label)) has no verified listed folder; skipped")
+                continue
+            }
             do {
-                try fm.removeItem(at: url)
+                switch try FileSafety.removeOwnedItem(at: url, identity: identity) {
+                case .removed:
+                    SessionLogger.shared.log("[PRUNE] Removed \(name) (\(label) retention cap=\(keep))")
+                case .alreadyGone:
+                    SessionLogger.shared.log("[PRUNE] \(name) (\(label)) was already gone when the sweep went to remove it")
+                }
+            } catch FileSafetyError.fileChangedSinceWritten {
                 SessionLogger.shared.log(
-                    "[PRUNE] Removed old periodic autosave \(url.lastPathComponent) (retention cap=\(keep))"
+                    "[PRUNE-ERR] Did not remove \(name) (\(label)): the item at that path is no longer the folder that was inspected"
                 )
             } catch {
                 SessionLogger.shared.log(
-                    "[PRUNE-ERR] Could not remove \(url.lastPathComponent): \(error.localizedDescription)"
+                    "[PRUNE-ERR] Could not remove \(name) (\(label)): \(error.localizedDescription)"
                 )
             }
         }
     }
+
+    // MARK: Filenames
+
+    /// `DateFormatter` pattern of the timestamp that leads every
+    /// generated file and folder name.
+    private static let filenameTimestampFormat = "yyyyMMdd-HHmmss"
 
     /// POSIX/UTC timestamp formatter used as the leading sort key in
     /// every generated filename so Finder's alphabetical order is
@@ -229,7 +1011,7 @@ enum CheckpointPaths {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = TimeZone(identifier: "UTC")
-        f.dateFormat = "yyyyMMdd-HHmmss"
+        f.dateFormat = filenameTimestampFormat
         return f
     }()
 
@@ -384,27 +1166,10 @@ enum CheckpointManager {
     /// atomic rename, and on the parent `Sessions` directory after
     /// the rename.
     static func fullSyncPath(_ url: URL) throws {
-        let fd = open(url.path, O_RDONLY)
-        guard fd >= 0 else {
-            let err = NSError(
-                domain: NSPOSIXErrorDomain,
-                code: Int(errno),
-                userInfo: [NSLocalizedDescriptionKey: String(cString: strerror(errno))]
-            )
-            throw CheckpointManagerError.fsyncFailed(url, err)
-        }
-        defer { close(fd) }
-        if fcntl(fd, F_FULLFSYNC) == -1 {
-            // Fall back to regular fsync — F_FULLFSYNC is not supported
-            // on every filesystem (notably some network mounts).
-            if fsync(fd) == -1 {
-                let err = NSError(
-                    domain: NSPOSIXErrorDomain,
-                    code: Int(errno),
-                    userInfo: [NSLocalizedDescriptionKey: String(cString: strerror(errno))]
-                )
-                throw CheckpointManagerError.fsyncFailed(url, err)
-            }
+        do {
+            try FileSafety.fullSync(at: url)
+        } catch {
+            throw CheckpointManagerError.fsyncFailed(url, error)
         }
     }
 
@@ -449,6 +1214,17 @@ enum CheckpointManager {
     /// been paused before the export) — this function never
     /// touches the caller's network for reads.
     ///
+    /// The file is staged at `<final>.tmp`, which this call creates
+    /// exclusively (`createStagingFileExclusively`) before doing any
+    /// other work: if anything already occupies that path the save
+    /// fails with `.stagingPathAlreadyExists` and leaves it untouched.
+    /// Every failure after the claim removes the staging file — it is
+    /// provably this call's own — and a successful rename hands it
+    /// over, after which nothing here touches that path again.
+    ///
+    /// `modelsDirectory` is the canonical `Models/` folder in the app;
+    /// tests pass a temporary folder.
+    ///
     /// Runs synchronously in the caller's task context. Callers
     /// should invoke via `Task.detached` to keep MPSGraph work off
     /// the main actor.
@@ -459,9 +1235,38 @@ enum CheckpointManager {
         metadata: ModelCheckpointMetadata,
         architecture: NetworkArchitecture = .current,
         trigger: String,
-        at date: Date = Date()
+        at date: Date = Date(),
+        modelsDirectory: URL = CheckpointPaths.modelsDir
     ) async throws -> URL {
-        try CheckpointPaths.ensureDirectories()
+        try CheckpointPaths.ensureDirectory(modelsDirectory)
+
+        let filename = CheckpointPaths.makeFilename(
+            modelID: modelID,
+            trigger: trigger,
+            ext: "safetensors",
+            at: date
+        )
+        let finalURL = modelsDirectory.appendingPathComponent(filename)
+        let tmpURL = finalURL.appendingPathExtension(CheckpointPaths.stagingPathExtension)
+
+        if FileManager.default.fileExists(atPath: finalURL.path) {
+            // Never overwrite. Timestamp-to-the-second collisions are
+            // extraordinarily unlikely but refuse cleanly if it ever
+            // happens rather than silently stomping prior history.
+            throw CheckpointManagerError.targetAlreadyExists(finalURL)
+        }
+
+        let staging = try CheckpointPaths.createStagingFileExclusively(at: tmpURL)
+        // From here until the rename succeeds, `tmpURL` is this call's
+        // own, and every exit removes it. After the rename the flag is
+        // cleared: the path is free again, and whatever appears there
+        // later belongs to someone else.
+        var ownsStagingFile = true
+        defer {
+            if ownsStagingFile {
+                CheckpointPaths.removeOwnedStagingItem(at: tmpURL, identity: staging.identity)
+            }
+        }
 
         let encoded = try SafetensorsModelIO.encode(
             modelID: modelID,
@@ -472,75 +1277,37 @@ enum CheckpointManager {
             includesVelocity: false
         )
 
-        let filename = CheckpointPaths.makeFilename(
-            modelID: modelID,
-            trigger: trigger,
-            ext: "safetensors",
-            at: date
-        )
-        let finalURL = CheckpointPaths.modelsDir.appendingPathComponent(filename)
-        let tmpURL = finalURL.appendingPathExtension("tmp")
-
-        if FileManager.default.fileExists(atPath: finalURL.path) {
-            // Never overwrite. Timestamp-to-the-second collisions are
-            // extraordinarily unlikely but refuse cleanly if it ever
-            // happens rather than silently stomping prior history.
-            throw CheckpointManagerError.targetAlreadyExists(finalURL)
-        }
-
-        // Best-effort tmp cleanup helper used on every error branch
-        // below. Skips when the tmp file no longer exists (success
-        // path: moveItem consumed it), logs any other removal failure
-        // — silent try? would have hidden multi-MB orphans named
-        // `<final>.tmp` on disk.
-        func cleanupTmp() {
-            let fm = FileManager.default
-            guard fm.fileExists(atPath: tmpURL.path) else { return }
-            do {
-                try fm.removeItem(at: tmpURL)
-            } catch {
-                SessionLogger.shared.log(
-                    "[CHECKPOINT-CLEANUP] failed to remove \(tmpURL.lastPathComponent): \(error.localizedDescription)"
-                )
-            }
-        }
-
         do {
-            try encoded.write(to: tmpURL, options: [.atomic])
+            try staging.handle.write(contentsOf: encoded)
+            try staging.handle.close()
         } catch {
-            cleanupTmp()
             throw CheckpointManagerError.writeFailed(tmpURL, error)
         }
 
         // Flush tmp file to platter before verify + rename so a
         // crash after verify-returns can't leave a torn file behind.
-        do {
-            try fullSyncPath(tmpURL)
-        } catch {
-            cleanupTmp()
-            throw error
-        }
+        try fullSyncPath(tmpURL)
 
         // Verify BEFORE the rename so a failed check leaves nothing
         // with the final name.
-        do {
-            try await verifyModelFile(at: tmpURL, expectedWeights: weights, architecture: architecture)
-        } catch {
-            cleanupTmp()
-            throw error
-        }
+        try await verifyModelFile(at: tmpURL, expectedWeights: weights, architecture: architecture)
 
+        // Exclusive rename: the existence check at the top is only a
+        // fast path, and this refuses atomically if anything took the
+        // final name since.
         do {
-            try FileManager.default.moveItem(at: tmpURL, to: finalURL)
+            try FileSafety.renameWithoutReplacing(from: tmpURL, to: finalURL)
+        } catch FileSafetyError.alreadyExists {
+            throw CheckpointManagerError.targetAlreadyExists(finalURL)
         } catch {
-            cleanupTmp()
             throw CheckpointManagerError.writeFailed(finalURL, error)
         }
+        ownsStagingFile = false
 
         // Flush parent directory so the rename (directory-entry
         // change) is durable.
         do {
-            try fullSyncPath(CheckpointPaths.modelsDir)
+            try fullSyncPath(modelsDirectory)
         } catch {
             SessionLogger.shared.log(
                 "[CHECKPOINT] fullSyncPath(modelsDir) failed after rename: \(error.localizedDescription) — file visible but parent-directory flush not guaranteed"
@@ -558,6 +1325,17 @@ enum CheckpointManager {
     /// directory URL. Like `saveModel`, takes already-exported
     /// weights — callers handle any gate pausing needed to snapshot
     /// live networks safely.
+    ///
+    /// Everything is staged in `<final>.tmp/`, which this call creates
+    /// exclusively (`createStagingDirectoryExclusively`) before any
+    /// other filesystem work: if anything already occupies that path
+    /// the save fails with `.stagingPathAlreadyExists` and leaves it
+    /// untouched. Every failure after the claim removes the staging
+    /// directory — it is provably this call's own — and a successful
+    /// rename hands it over.
+    ///
+    /// `sessionsDirectory` is the canonical `Sessions/` folder in the
+    /// app; tests pass a temporary folder.
     static func saveSession(
         championWeights: [[Float]],
         championID: String,
@@ -572,17 +1350,21 @@ enum CheckpointManager {
         replayBuffer: ReplayBuffer? = nil,
         chartSnapshot: ChartCoordinatorSnapshot? = nil,
         trigger: String,
-        at date: Date = Date()
+        at date: Date = Date(),
+        sessionsDirectory: URL = CheckpointPaths.sessionsDir
     ) async throws -> URL {
-        try CheckpointPaths.ensureDirectories()
+        try CheckpointPaths.ensureDirectory(sessionsDirectory)
 
         let dirName = CheckpointPaths.makeSessionDirectoryName(
             sessionID: state.sessionID,
             trigger: trigger,
             at: date
         )
-        let finalDirURL = CheckpointPaths.sessionsDir.appendingPathComponent(dirName, isDirectory: true)
-        let tmpDirURL = CheckpointPaths.sessionsDir.appendingPathComponent(dirName + ".tmp", isDirectory: true)
+        let finalDirURL = sessionsDirectory.appendingPathComponent(dirName, isDirectory: true)
+        let tmpDirURL = sessionsDirectory.appendingPathComponent(
+            dirName + "." + CheckpointPaths.stagingPathExtension,
+            isDirectory: true
+        )
 
         if FileManager.default.fileExists(atPath: finalDirURL.path) {
             throw CheckpointManagerError.targetAlreadyExists(finalDirURL)
@@ -594,9 +1376,30 @@ enum CheckpointManager {
             )
         }
 
-        // Encode the model files up front (their inputs are already
-        // resolved) so an encoding failure aborts before we touch the
-        // filesystem. session.json is encoded LATER — after the
+        let stagingDirectoryIdentity = try CheckpointPaths.createStagingDirectoryExclusively(at: tmpDirURL)
+
+        // Single deferred cleanup that covers every throw site between
+        // here and the successful rename `tmpDirURL → finalDirURL`.
+        // Manual cleanup calls at every error branch were easy to miss —
+        // and a missed branch leaks a multi-GB staging directory
+        // (champion + trainer + replay buffer) under `Sessions/*.tmp`.
+        //
+        // The cleanup is gated on ownership, not on the path existing:
+        // the exclusive create above proves the directory is this
+        // call's, and the flag is cleared the moment the rename hands
+        // it over. An existence check alone would also delete a
+        // directory this call never made, such as debris from an
+        // interrupted save or another instance's live staging.
+        var ownsStagingDirectory = true
+        defer {
+            if ownsStagingDirectory {
+                CheckpointPaths.removeOwnedStagingItem(at: tmpDirURL, identity: stagingDirectoryIdentity)
+            }
+        }
+
+        // Encode the model files before writing anything into the
+        // staging directory; an encoding failure exits through the
+        // cleanup above. session.json is encoded LATER — after the
         // replay buffer has been written — so its
         // `replayBuffer*` counters can be derived from the snapshot
         // the buffer write captured atomically under its own lock,
@@ -622,40 +1425,6 @@ enum CheckpointManager {
             architecture: architecture,
             includesVelocity: true
         )
-
-        // Build the staging directory, write the three files, verify.
-        let fm = FileManager.default
-        do {
-            try fm.createDirectory(at: tmpDirURL, withIntermediateDirectories: true)
-        } catch {
-            throw CheckpointManagerError.directoryCreationFailed(tmpDirURL, error)
-        }
-
-        // Single deferred cleanup that covers every throw site between
-        // here and the successful `moveItem(tmpDirURL → finalDirURL)`.
-        // The pre-existing manual `cleanupTmp()` call at every error
-        // branch was easy to miss — and a missed branch leaks a
-        // multi-GB staging directory (champion + trainer + replay
-        // buffer can be several GB) under
-        // `~/Library/Application Support/.../Sessions/*.tmp`.
-        //
-        // Gating on `fileExists` makes the success path a no-op
-        // (`moveItem` already consumed the source dir) and sidesteps
-        // the NSCocoa-vs-POSIX "directory missing" error-domain
-        // ambiguity; any failure that ISN'T "already gone" gets a
-        // SessionLogger breadcrumb so disk-pressure events don't
-        // disappear into a silent `try?`.
-        defer {
-            if fm.fileExists(atPath: tmpDirURL.path) {
-                do {
-                    try fm.removeItem(at: tmpDirURL)
-                } catch {
-                    SessionLogger.shared.log(
-                        "[CHECKPOINT-CLEANUP] failed to remove tmp session dir \(tmpDirURL.lastPathComponent): \(error.localizedDescription)"
-                    )
-                }
-            }
-        }
 
         let championTmpURL = SessionCheckpointLayout.championURL(in: tmpDirURL)
         let trainerTmpURL = SessionCheckpointLayout.trainerURL(in: tmpDirURL)
@@ -956,11 +1725,16 @@ enum CheckpointManager {
             throw error
         }
 
+        // Exclusive rename, as in `saveModel`: refuses atomically if
+        // anything took the final name since the check at the top.
         do {
-            try fm.moveItem(at: tmpDirURL, to: finalDirURL)
+            try FileSafety.renameWithoutReplacing(from: tmpDirURL, to: finalDirURL)
+        } catch FileSafetyError.alreadyExists {
+            throw CheckpointManagerError.targetAlreadyExists(finalDirURL)
         } catch {
             throw CheckpointManagerError.writeFailed(finalDirURL, error)
         }
+        ownsStagingDirectory = false
 
         // Flush the parent `Sessions/` directory so the rename itself
         // (which is a directory-entry change in the parent) lands on
@@ -969,7 +1743,7 @@ enum CheckpointManager {
         // can disappear entirely even though the files inside it are
         // fully durable.
         do {
-            try fullSyncPath(CheckpointPaths.sessionsDir)
+            try fullSyncPath(sessionsDirectory)
         } catch {
             // At this point the rename has already succeeded and the
             // session is visible under its final name, so we don't

@@ -8,9 +8,35 @@ A maintenance runbook for freeing space consumed by DrewsChessMachine's saved st
 
 Rough footprint on a full disk (2026-07-02): Sessions ~210 GB across ~30 folders, Logs ~6 GB, Corpora ~3 GB, everything else (Models, Analyses, Performance, SessionIndex) under ~350 MB combined.
 
-## Why sessions accumulate without bound
+## What the app prunes on its own, and what accumulates
 
-`CheckpointPaths.prunePeriodicAutosaves` enforces the `maxPeriodicAutosavesKept` retention cap, but it **only prunes `-periodic.dcmsession` folders.** `manual` and `promote` saves are never auto-deleted. Over a long training campaign the `-promote` and `-manual` folders pile up unbounded and become the bulk of the disk usage.
+**Today the app prunes nothing.** Automatic-save pruning is off by default — the `automaticSavePruningEnabled` parameter (`automatic_save_pruning_enabled`, default `false`; the Sessions tab's "Prune old autosaves" toggle) gates it — and the current build also **forces it off** regardless of that setting: `CheckpointPaths.automaticSavePruningForcedOff` is `true` by owner decision 2026-10-01, pending D-8 (saves without the replay buffer by default) and more confidence in deleting saves automatically. Every periodic or promotion save logs one `[PRUNE] skipped after <folder>: off: <reason> (automatic_save_pruning_enabled=… max_periodic_autosaves_kept=…)` line, and each Play-and-Train start logs `[PRUNE] automatic-save pruning at Play-and-Train start: …`. Until a build lifts that switch, every `.dcmsession` folder accumulates and the manual cleanup below is the only way space comes back.
+
+The retention rule below is what pruning does when it is allowed to run. Since 2026-10-01 (plan #8, phase P14) `CheckpointPaths.pruneAutomaticSaves` keeps **one global pool** of automatic saves capped by the `maxPeriodicAutosavesKept` parameter (`max_periodic_autosaves_kept`, default 3; 0 = unlimited, nothing pruned). The pool is every `-periodic.dcmsession` and `-promote.dcmsession` folder in `Sessions/`, from any session — arena post-promotion and Train ▸ Promote Trainee Now saves both carry the `promote` tag and are treated alike — ranked newest first by the folder name's leading UTC timestamp. The sweep runs after every successful periodic or promotion save and deletes every pool member beyond the newest `N`, except the save just written and the current resume-pointer target.
+
+A folder is only counted (and only ever deleted) when its name is exactly `<YYYYMMDD-HHMMSS>-<sessionID>-(periodic|promote).dcmsession` with a minted session ID (`yyyymmdd-N-XXXX`), it is a real directory rather than a symbolic link, and its `session.json` names that same session ID. Renamed folders (named milestones) therefore never match, and a folder with a placeholder ID (`unknown`, `unknown-session`), a missing or mismatched `session.json`, or a symlink is kept and logged with the reason on every sweep. Every sweep logs a `[PRUNE] retention: cap=N periodic=a promote=b kept=… protected=… unverified=… deleting=…` line, and one `[PRUNE]` line per removal, in the session log.
+
+What still accumulates without bound, and is what this runbook is for:
+
+- **Everything, while pruning is off** — the default, and the only state of a build with the kill switch set.
+- **`-manual` and `-sigusr2` saves** — deliberate "keep this" saves; the app never deletes them.
+- **Unverified automatic-save folders** (placeholder IDs, damaged folders) — kept on purpose so a person can look at them first.
+- **Renamed milestone folders.**
+- Everything when the cap is `0`.
+
+With pruning running, lowering the cap — or turning pruning on — deletes the excess at the next periodic or promotion save, across every session at once — check that nothing you want is among the older automatic saves before doing either, or rename the folders you want to keep (a renamed folder is never a pool member).
+
+### Before 2026-10-01
+
+`CheckpointPaths.prunePeriodicAutosaves` (the last committed version before the global pool) enforced the `maxPeriodicAutosavesKept` retention cap over **`-periodic.dcmsession` folders only — from every session, selected by name suffix alone**. After each successful periodic save (and only then), when the cap was above `0`, it listed `Sessions/`, took every non-hidden entry whose name ended in `-periodic.dcmsession` — whatever it was (folder, file or symbolic link), with no `session.json` check and no check of the session ID in the name — ranked them newest first by name, and deleted every one beyond the newest `N` by path (`FileManager.removeItem`, recursive for a folder), sparing only the save just written. The resume-pointer target was **not** protected: an older periodic save that the pointer still named could be deleted. `-manual`, `-promote` and `-sigusr2` saves were never auto-deleted. Over a long training campaign the `-promote` and `-manual` folders piled up unbounded and became the bulk of the disk usage; disks filled under that rule may still hold such a backlog of `-promote` folders (and, wherever the cap was `0`, of `-periodic` ones too), which the first sweep of a build with the global pool removes down to the cap once pruning is allowed to run (it is off by default and forced off in the current build — see above).
+
+### Hidden staging leftovers
+
+Several writers — Save as Preset, `--create-parameters-file`, a corpus's `corpus.json`, the corpus-replay / train-vs-UCI rolling and step-enumerated checkpoints, and the `--new-model` / `--derive-model` outputs — stage a file first under a hidden, per-write unique sibling name, `.<file name>.<UUID>.tmp` beside it, and rename it into place only when complete (`FileSafety.temporarySibling(of:)`). A process killed between those two steps leaves the hidden staging file behind; removing a folder (pruning, a failed save's cleanup) likewise first renames it to a hidden name of the same shape, so a process killed mid-removal can leave a partly emptied hidden folder. Nothing can tell such a leftover from another process's write in flight except its age, so:
+
+- **`Models/` and `Sessions/`:** the launch sweep (`CheckpointPaths.cleanupOrphans`, at every GUI launch) removes hidden staging *files* of exactly that shape once they are older than `CheckpointPaths.orphanStagingMinimumAge`, identity-checked, logging `[CLEANUP] Removed orphan …`. A *folder* of that shape is kept and logged (`[CLEANUP] Kept …: is not a regular file …`): it is an interrupted removal of something the app had already decided to delete, and is safe to delete by hand once no app instance is running.
+- **Corpus folders:** `--validate-corpus` reports any `.tmp` entry as `stray-temp-file` and does not remove it.
+- **Everywhere else** (`Presets/`, a CLI's output folder such as a `--out-model` outside `Models/`, a `--create-parameters-file` target): leftovers stay until removed by hand. They are hidden, so list with `ls -a`.
 
 ## Two traps that make naive cleanup fail
 

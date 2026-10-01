@@ -71,10 +71,23 @@ struct NamedArchitecture: Codable, Sendable, Hashable {
 
 enum ArchitecturePresetStore {
 
-    enum StoreError: Error, CustomStringConvertible {
+    enum StoreError: Error, Equatable, CustomStringConvertible {
         case presetNotFound(String)
         case reservedName(String)
         case invalid(name: String, detail: String)
+        /// The name can't be a preset file name (see `validatePresetName`).
+        case invalidPresetName(name: String, reason: String)
+        /// A user preset with this name is already saved and the caller did
+        /// not confirm replacing it.
+        case presetAlreadyExists(String)
+        /// Something other than a regular file (a folder, a symbolic link…)
+        /// sits where the preset file would go; it is never replaced.
+        case presetPathNotARegularFile(name: String, kind: String)
+        /// The preset file's URL did not resolve to a direct child of the
+        /// Presets folder. Unreachable for a name `validatePresetName`
+        /// accepts; checked anyway so a gap in the name rules can't write
+        /// elsewhere.
+        case presetPathOutsidePresetsFolder(name: String, path: String)
 
         var description: String {
             switch self {
@@ -84,6 +97,14 @@ enum ArchitecturePresetStore {
                 return "'\(n)' is a reserved built-in preset name and cannot be overwritten."
             case .invalid(let n, let d):
                 return "Architecture preset '\(n)' is invalid: \(d)"
+            case .invalidPresetName(let n, let reason):
+                return "'\(n)' can't be a preset name: \(reason)"
+            case .presetAlreadyExists(let n):
+                return "A preset named '\(n)' already exists."
+            case .presetPathNotARegularFile(let n, let kind):
+                return "'\(n).json' in the Presets folder is not a regular file (\(kind)); it will not be replaced."
+            case .presetPathOutsidePresetsFolder(let n, let path):
+                return "Preset name '\(n)' resolves to \(path), outside the Presets folder; refusing to write it."
             }
         }
     }
@@ -236,20 +257,138 @@ enum ArchitecturePresetStore {
         return (try loadFile(at: url), url.deletingPathExtension().lastPathComponent)
     }
 
-    /// Save a user preset as `<name>.json` (pretty-printed, sorted keys for a
-    /// stable, hand-editable file). Refuses reserved built-in names.
-    @discardableResult
-    static func save(name: String, label: String, architecture: NetworkArchitecture) throws -> URL {
+    // MARK: Saving
+
+    /// The file-name suffix every user preset carries.
+    private static let presetFileExtension = "json"
+
+    /// Longest file name a macOS volume accepts, in UTF-8 bytes.
+    private static let maxFileNameUTF8Bytes = Int(NAME_MAX)
+
+    /// Characters a preset name may contain besides letters and digits.
+    private static let allowedPresetNamePunctuation: Set<Character> = [" ", "_", "-", "."]
+
+    /// Throws `.invalidPresetName` unless `name` can be the stem of a preset
+    /// file directly inside the Presets folder. The name is typed by the
+    /// user in Build New Model and becomes `<name>.json`, so it must not be
+    /// able to name anything else:
+    ///
+    /// - **Letters, digits, space, `_`, `-`, `.` only.** Excludes `/` (a
+    ///   path separator — `../x` or `a/b` would write outside the folder or
+    ///   into a subfolder), `:` (Finder shows it as `/`), and control
+    ///   characters. Letters and digits are Unicode (`Character.isLetter` /
+    ///   `isNumber`), matching what `BuildNewModelModel.defaultSaveName`
+    ///   produces from a label, so the suggested default passes these
+    ///   character rules.
+    /// - **No leading `.`** — that would be a hidden file, and rules out `.`
+    ///   and `..` outright.
+    /// - **No leading or trailing whitespace** — invisible in the picker and
+    ///   in Finder, so two presets would look identical.
+    /// - **No `.json` ending** — `resolve(nameOrPath:)` strips one `.json`
+    ///   from what it is given, so a preset saved as `x.json.json` could
+    ///   never be reached by its name from `--architecture`.
+    /// - **Fits in one file name** together with the `.json` suffix — and
+    ///   with room for the hidden staging name every save writes first
+    ///   (`FileSafety.temporarySiblingNameOverhead` more bytes), since a
+    ///   name that fits only as the final file fails at staging with
+    ///   `ENAMETOOLONG`.
+    /// - **Not a built-in preset's name** (`.reservedName`).
+    static func validatePresetName(_ name: String) throws {
+        func reject(_ reason: String) -> StoreError {
+            StoreError.invalidPresetName(name: name, reason: reason)
+        }
+        guard !name.isEmpty else { throw reject("the name is empty") }
+        guard name.trimmingCharacters(in: .whitespacesAndNewlines) == name else {
+            throw reject("it starts or ends with whitespace")
+        }
+        guard !name.hasPrefix(".") else { throw reject("it starts with '.'") }
+        if let bad = name.first(where: { !($0.isLetter || $0.isNumber || allowedPresetNamePunctuation.contains($0)) }) {
+            throw reject("'\(bad)' is not allowed — use letters, digits, spaces, '_', '-' or '.'")
+        }
+        guard !name.lowercased().hasSuffix("." + presetFileExtension) else {
+            throw reject("it ends in '.\(presetFileExtension)' (the extension is added automatically)")
+        }
+        let presetFileNameUTF8Bytes = name.utf8.count + 1 + presetFileExtension.utf8.count
+        let longestPresetFileNameUTF8Bytes = maxFileNameUTF8Bytes - FileSafety.temporarySiblingNameOverhead
+        guard presetFileNameUTF8Bytes <= longestPresetFileNameUTF8Bytes else {
+            throw reject("it is too long: '<name>.\(presetFileExtension)' may be at most "
+                + "\(longestPresetFileNameUTF8Bytes) bytes (UTF-8) so that the save's temporary file name "
+                + "still fits, and this one is \(presetFileNameUTF8Bytes)")
+        }
         guard !builtInNames.contains(name) else { throw StoreError.reservedName(name) }
+    }
+
+    /// Save a user preset as `<name>.json` in the Presets folder
+    /// (pretty-printed, sorted keys for a stable, hand-editable file).
+    ///
+    /// - `name` must pass `validatePresetName`.
+    /// - An existing preset of the same name is replaced only when
+    ///   `replacingExisting` is true — the caller's record that the user
+    ///   confirmed it. Otherwise the write is exclusive and an existing file
+    ///   throws `.presetAlreadyExists`, leaving it untouched; the UI catches
+    ///   that and asks.
+    /// - Only a regular file is ever replaced. A folder or symbolic link
+    ///   named `<name>.json` throws `.presetPathNotARegularFile` either way.
+    /// - Every write is staged in a temporary sibling and renamed into place
+    ///   (`FileSafety.publishNewFile` / `replaceRegularFile`), so a crash
+    ///   never leaves a half-written preset.
+    @discardableResult
+    static func save(name: String, label: String, architecture: NetworkArchitecture, replacingExisting: Bool) throws -> URL {
+        try save(name: name, label: label, architecture: architecture,
+                 replacingExisting: replacingExisting, presetsDirectory: presetsDirURL)
+    }
+
+    /// `save(name:label:architecture:replacingExisting:)` against an explicit
+    /// Presets folder — the production entry point passes `presetsDirURL`;
+    /// tests pass a temporary folder.
+    @discardableResult
+    static func save(
+        name: String,
+        label: String,
+        architecture: NetworkArchitecture,
+        replacingExisting: Bool,
+        presetsDirectory: URL
+    ) throws -> URL {
+        try validatePresetName(name)
         try architecture.validate()
-        let fm = FileManager.default
-        try fm.createDirectory(at: presetsDirURL, withIntermediateDirectories: true)
-        let url = presetsDirURL.appendingPathComponent("\(name).json")
+        try FileManager.default.createDirectory(at: presetsDirectory, withIntermediateDirectories: true)
+        let url = presetsDirectory.appendingPathComponent("\(name).\(presetFileExtension)", isDirectory: false)
+        guard url.deletingLastPathComponent().standardizedFileURL.path == presetsDirectory.standardizedFileURL.path,
+              url.lastPathComponent == "\(name).\(presetFileExtension)" else {
+            throw StoreError.presetPathOutsidePresetsFolder(name: name, path: url.standardizedFileURL.path)
+        }
+
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(NamedArchitecture(label: label, architecture: architecture))
-            .write(to: url, options: [.atomic])
-        SessionLogger.shared.log("[PRESET] Saved '\(name).json': \(architecture.architectureSummary)")
+        let data = try encoder.encode(NamedArchitecture(label: label, architecture: architecture))
+
+        let existing = try FileSafety.existingItem(at: url)
+        if let existing, existing.kind != .regularFile {
+            throw StoreError.presetPathNotARegularFile(name: name, kind: existing.kind.description)
+        }
+        let replacedExisting = replacingExisting && existing != nil
+        do {
+            if replacingExisting {
+                // Replaces only the regular file checked above (by identity);
+                // with nothing there it publishes a new file exclusively.
+                try FileSafety.replaceRegularFile(data, at: url, expectedIdentity: existing?.identity)
+            } else {
+                // Exclusive publish: refuses if anything is at the path,
+                // including one that appeared after the check above.
+                try FileSafety.publishNewFile(data, to: url)
+            }
+        } catch FileSafetyError.alreadyExists(path: _, kind: .regularFile) {
+            throw StoreError.presetAlreadyExists(name)
+        } catch FileSafetyError.alreadyExists(path: _, kind: let kind) {
+            throw StoreError.presetPathNotARegularFile(name: name, kind: kind.description)
+        } catch FileSafetyError.notARegularFile(path: _, kind: let kind) {
+            throw StoreError.presetPathNotARegularFile(name: name, kind: kind.description)
+        } catch FileSafetyError.fileChangedSinceWritten {
+            // A different file took the preset's place after the user
+            // confirmed replacing the one that was there; ask again.
+            throw StoreError.presetAlreadyExists(name)
+        }
+        SessionLogger.shared.log("[PRESET] \(replacedExisting ? "Replaced" : "Saved") '\(url.lastPathComponent)': \(architecture.architectureSummary)")
         return url
     }
 }

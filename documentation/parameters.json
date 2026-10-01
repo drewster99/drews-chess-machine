@@ -13,6 +13,7 @@
   "arena_start_tau" : 0.20000000000000001,
   "arena_target_tau" : 0.02,
   "arena_tau_decay_per_ply" : 0.02,
+  "automatic_save_pruning_enabled" : false,
   "batch_stats_interval" : 10,
   "candidate_probe_interval_sec" : 15,
   "draw_penalty" : 0,

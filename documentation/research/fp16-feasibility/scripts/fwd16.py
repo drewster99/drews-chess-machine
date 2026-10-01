@@ -93,6 +93,16 @@ def ln(c, h, T, n, key):
 
 def relu(x): return np.maximum(x, 0)
 
+# ActivationFunction.leakyReLUNegativeSlope in the Swift source.
+LEAKY_RELU_SLOPE = 0.01
+
+def se_act(c, name, x, fn):
+    """The SE FC1 activation (`se_activation`). ReLU is exact, so it is not a
+    rounding point; leaky ReLU is one MPSGraph op whose output is rounded."""
+    if fn == 'relu': return relu(x)
+    if fn == 'leaky_relu': return c(name, np.where(x >= 0, x, LEAKY_RELU_SLOPE * x))
+    raise ValueError(f'se_activation {fn!r} is not modelled here')
+
 def cconv(c, name, x, w):
     if c.capture: c.bound(name, conv(np.abs(x), np.abs(w)))
     return c(name, conv(x, w))
@@ -106,6 +116,8 @@ def cmm(c, name, x, W, b=None):
 def forward(T, arch, x, R=frozenset(), q=ident, capture=False):
     c = Ctx(R, q, capture)
     groups = arch['block_groups']; assert len(groups) == 1; g = groups[0]
+    # The main path is modelled as ReLU only; the SE FC1 has its own activation.
+    assert arch['activation_function'] == 'relu' and g['activation_function'] == 'relu', 'only ReLU main paths are modelled'
     style = g['activation_style']
     x = c('input', x)
     h = cconv(c, 'stem.conv', x, T['stem.conv.weight'])
@@ -127,7 +139,7 @@ def forward(T, arch, x, R=frozenset(), q=ident, capture=False):
         if g['se_style'] == 'scale_and_bias':
             base = pre + 'se_scalebias.'
             s = c(k + 'se.pool', z.mean((2, 3)))
-            s = relu(cmm(c, k + 'se.fc1', s, T[base + 'fc1.weight'], T[base + 'fc1.bias']))
+            s = se_act(c, k + 'se.act', cmm(c, k + 'se.fc1', s, T[base + 'fc1.weight'], T[base + 'fc1.bias']), g['se_activation'])
             s = cmm(c, k + 'se.fc2', s, T[base + 'fc2.weight'], T[base + 'fc2.bias'])
             sig = c(k + 'se.sig', 1 / (1 + np.exp(-s[:, :C])))
             zs = c(k + 'se.scaled', z * sig[:, :, None, None])
@@ -135,7 +147,7 @@ def forward(T, arch, x, R=frozenset(), q=ident, capture=False):
         elif g['se_style'] == 'attenuate_only':
             base = pre + 'se_attenuate.'
             s = c(k + 'se.pool', z.mean((2, 3)))
-            s = relu(cmm(c, k + 'se.fc1', s, T[base + 'fc1.weight'], T[base + 'fc1.bias']))
+            s = se_act(c, k + 'se.act', cmm(c, k + 'se.fc1', s, T[base + 'fc1.weight'], T[base + 'fc1.bias']), g['se_activation'])
             s = cmm(c, k + 'se.fc2', s, T[base + 'fc2.weight'], T[base + 'fc2.bias'])
             sig = c(k + 'se.sig', 1 / (1 + np.exp(-s)))
             z = c(k + 'se.out', z * sig[:, :, None, None])
@@ -195,7 +207,11 @@ def norm_arch(s):
             activation_style=a['block_activation_style'], skip_merge=a['block_skip_merge'], dropout_multiplier=1)]
     # `se_beta_init` (format v4+) only changes the random init; the stored
     # weights already carry it, so the forward ignores it. Legacy files omit it.
+    # `se_activation` (format v5+) is the SE FC1 activation; files written
+    # before it existed used the group's own activation there, which is what a
+    # missing value resolves to (the Swift loader's legacy rule).
     for g in a['block_groups']:
         g.setdefault('se_beta_init', 'glorot')
+        g.setdefault('se_activation', g['activation_function'])
     a.setdefault('feature_skip_source', 'none')
     return a

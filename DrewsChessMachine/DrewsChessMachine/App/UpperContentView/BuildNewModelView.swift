@@ -22,6 +22,21 @@ struct BuildNewModelView: View {
 
     @State private var saveStatus: String?
 
+    /// A Save-as-Preset the store refused because a preset of that name
+    /// already exists, captured at click time so "Replace" writes exactly
+    /// what the user was looking at when they saved — not whatever the
+    /// fields hold by the time they answer the alert.
+    private struct PendingPresetReplacement {
+        let name: String
+        let label: String
+        let architecture: NetworkArchitecture
+    }
+
+    /// Set together with `isReplacePresetAlertPresented` when a save hits an
+    /// existing preset; cleared by either alert button.
+    @State private var pendingPresetReplacement: PendingPresetReplacement?
+    @State private var isReplacePresetAlertPresented = false
+
     init(
         initial: NamedArchitecture = NamedArchitecture(label: "Custom", architecture: .current),
         onBuild: @escaping (NetworkArchitecture) -> Void,
@@ -140,6 +155,28 @@ struct BuildNewModelView: View {
             actionBar
         }
         .frame(minWidth: 1000, minHeight: 700)
+        // Saving never silently replaces a preset: the store's exclusive
+        // write refuses an existing name, and only this confirmation passes
+        // `replacingExisting: true`.
+        .alert(
+            "Replace existing preset?",
+            isPresented: $isReplacePresetAlertPresented,
+            presenting: pendingPresetReplacement,
+            actions: { pending in
+                Button("Replace", role: .destructive) {
+                    pendingPresetReplacement = nil
+                    savePreset(name: pending.name, label: pending.label,
+                               architecture: pending.architecture, replacingExisting: true)
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingPresetReplacement = nil
+                    saveStatus = "Not saved: preset \"\(pending.name)\" already exists"
+                }
+            },
+            message: { pending in
+                Text("A preset named \"\(pending.name)\" is already saved. Replacing it overwrites its saved architecture and label.")
+            }
+        )
     }
 
     // MARK: Block-group editor
@@ -208,7 +245,24 @@ struct BuildNewModelView: View {
             if model.blockGroups[i].seStyle == .scaleAndBias {
                 enumPicker("SE β init", $model.blockGroups[i].seBetaInit, SEBetaInit.allCases)
             }
-            enumPicker("Activation", $model.blockGroups[i].activationFunction, ActivationFunction.allCases)
+            // Routed through the model so the SE activation can follow the
+            // group's activation (see `setBlockActivation`). The get/set
+            // re-check the index for the same disappearing-row reason as the
+            // Output norm binding below; the getter's tower-level value is
+            // only ever shown by a row that is being removed.
+            enumPicker("Activation", Binding(
+                get: { model.blockGroups.indices.contains(i) ? model.blockGroups[i].activationFunction : model.activationFunction },
+                set: { model.setBlockActivation($0, forGroupAt: i) }
+            ), ActivationFunction.allCases)
+            // The SE FC1's own activation (issue #2). Always present so the
+            // row layout never shifts; disabled on an SE-less group, where it
+            // has no effect — unless it disagrees with the group's activation
+            // (left behind by switching SE off), in which case validate()
+            // reports it and the picker stays enabled so it can be fixed here.
+            enumPicker("SE activation", $model.blockGroups[i].seActivation, ActivationFunction.allCases)
+                .disabled(model.blockGroups[i].seStyle == .none
+                          && model.blockGroups[i].seActivation == model.blockGroups[i].activationFunction)
+                .help("Activation after the SE bottleneck FC1 (C → C/r). Follows the group's activation until set to something else; leaky_relu here keeps FC1 units from dying at almost no cost.")
             enumPicker("Activation style", $model.blockGroups[i].activationStyle, BlockActivationStyle.allCases)
             enumPicker("Skip merge", $model.blockGroups[i].skipMerge, BlockSkipMerge.allCases)
             // Optional output normalization (Optional in the model so old configs
@@ -328,19 +382,13 @@ struct BuildNewModelView: View {
                 // preset indistinguishable in the picker — so fall back to
                 // the preset name the user just chose.
                 let savedLabel = model.labelOverride.isEmpty ? name : model.labelOverride
-                do {
-                    let url = try ArchitecturePresetStore.save(
-                        name: name, label: savedLabel, architecture: model.architecture)
-                    model.refreshPresets()
-                    saveStatus = "Saved \(url.lastPathComponent)"
-                } catch {
-                    saveStatus = "\(error)"
-                }
+                savePreset(name: name, label: savedLabel, architecture: model.architecture, replacingExisting: false)
             }
             .disabled(!model.isValid)
 
             if let status = saveStatus {
                 Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .help(status)
             }
 
             Spacer()
@@ -353,6 +401,26 @@ struct BuildNewModelView: View {
     }
 
     // MARK: Helpers
+
+    /// Write the preset. An existing preset of the same name comes back as
+    /// `.presetAlreadyExists` (when `replacingExisting` is false) and opens
+    /// the replace confirmation instead of a status error; every other
+    /// failure — an invalid name, a folder in the way — lands in the status
+    /// text.
+    private func savePreset(name: String, label: String, architecture: NetworkArchitecture, replacingExisting: Bool) {
+        do {
+            let url = try ArchitecturePresetStore.save(
+                name: name, label: label, architecture: architecture, replacingExisting: replacingExisting)
+            model.refreshPresets()
+            saveStatus = "\(replacingExisting ? "Replaced" : "Saved") \(url.lastPathComponent)"
+        } catch ArchitecturePresetStore.StoreError.presetAlreadyExists(_) {
+            saveStatus = nil
+            pendingPresetReplacement = PendingPresetReplacement(name: name, label: label, architecture: architecture)
+            isReplacePresetAlertPresented = true
+        } catch {
+            saveStatus = "\(error)"
+        }
+    }
 
     /// Picker selection derived from architecture equality: shows the matching
     /// preset's name when the current fields equal a preset, else "Custom". This

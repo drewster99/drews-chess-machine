@@ -171,12 +171,15 @@ final class TrainingSettingsPopoverModel {
     // the periodic-save interval is reconciled mid-session by the heartbeat
     // (which reads `periodicAutosaveIntervalSec` off the singleton and
     // re-anchors the running `PeriodicSaveController`), and the retention cap
-    // is read at prune time after each periodic save — so a plain commit-on-Save
-    // write to `TrainingParameters.shared` is all that's needed, with no Cancel
-    // stash. The interval is edited in MINUTES for legibility (the parameter
+    // is read at prune time after each periodic or post-promotion save — so a
+    // plain commit-on-Save write to `TrainingParameters.shared` is all that's
+    // needed, with no Cancel stash. The interval is edited in MINUTES for legibility (the parameter
     // stores seconds); seeding rounds to the nearest minute.
     var periodicAutosaveIntervalMinutesText = "" { didSet { periodicAutosaveIntervalError = false } }
     var maxPeriodicAutosavesKeptText = "" { didSet { maxPeriodicAutosavesKeptError = false } }
+    /// `automatic_save_pruning_enabled`. Commit-on-Save like the rest of the
+    /// tab: it is read live after each periodic or post-promotion save.
+    var automaticSavePruningEnabledValue = false
     var klProbeIntervalText = "" { didSet { klProbeIntervalError = false } }
 
     private(set) var periodicAutosaveIntervalError = false
@@ -339,6 +342,7 @@ final class TrainingSettingsPopoverModel {
             Self.periodicAutosaveIntervalMinutes(fromSeconds: p.periodicAutosaveIntervalSec)
         )
         maxPeriodicAutosavesKeptText = String(p.maxPeriodicAutosavesKept)
+        automaticSavePruningEnabledValue = p.automaticSavePruningEnabled
         klProbeIntervalText = String(p.klProbeInterval)
         // Stash pre-edit values for the four replay-ratio control fields. The
         // Replay tab live-propagates changes to those fields; if the user hits
@@ -1259,8 +1263,8 @@ final class TrainingSettingsPopoverModel {
             anyError = true
         }
         // Max periodic autosaves kept — Int in the declared range; 0 = unlimited.
-        // Read live at prune time (after each periodic save), so a plain
-        // singleton write is all that's required.
+        // Read live at prune time (after each periodic or post-promotion
+        // save), so a plain singleton write is all that's required.
         if let n = MaxPeriodicAutosavesKept.parsedInDeclaredRange(maxPeriodicAutosavesKeptText) {
             maxPeriodicAutosavesKeptError = false
             if n != p.maxPeriodicAutosavesKept {
@@ -1270,6 +1274,17 @@ final class TrainingSettingsPopoverModel {
         } else {
             maxPeriodicAutosavesKeptError = true
             anyError = true
+        }
+        // Automatic-save pruning toggle — Bool, cannot fail to parse. Read
+        // live after each periodic or post-promotion save, so a plain
+        // singleton write is all that's required. Stored even while the
+        // build forces pruning off, so the preference is there when it is
+        // lifted.
+        if automaticSavePruningEnabledValue != p.automaticSavePruningEnabled {
+            SessionLogger.shared.log(
+                "[PARAM] automaticSavePruningEnabled: \(p.automaticSavePruningEnabled) -> \(automaticSavePruningEnabledValue)"
+            )
+            p.automaticSavePruningEnabled = automaticSavePruningEnabledValue
         }
         // KL probe interval — Int in the declared range; 0 = off. `liveTunable`, and
         // the training loop reconciles it against the running trainer on its

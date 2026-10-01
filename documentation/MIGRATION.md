@@ -50,7 +50,10 @@ Source Mac: user `andrew`, home `/Users/andrew`.
    timestamp+modelID unique, so they won't collide.
    **Overwrite risk = the rolling `*-replay-latest.safetensors` files** (one fixed name per run
    stem, overwritten on every save). Only a problem if the target already has a run with the
-   **same stem** in a different state. Our stems are, e.g.: `20260629-mini2b-3MIV-resume3`,
+   **same stem** in a different state. (A run itself no longer overwrites a pre-existing file
+   at its `--out-model` unless that file holds the `--start-model`'s `model_id` at the start
+   model's own step, or `--overwrite-out-model` is passed; copying files in by hand
+   is not covered by that check.) Our stems are, e.g.: `20260629-mini2b-3MIV-resume3`,
    `20260702-Qeu8`, `20260702-Qeu8-resume2`, `20260701-nT8Y-resume3`, `20260629-mini1b-Coxw`,
    `20260628-v5_5block_7x7_lnout`, `20260704-Qeu8e3` (full list = `ls Models/*-replay-latest*`).
    If any of those already exist on the target, compare before overwriting.

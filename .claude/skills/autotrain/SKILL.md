@@ -534,9 +534,9 @@ The canonical defaults live in code, not in this file. To produce a fresh `param
 "$ROOT/run_latest.sh" --show-default-parameters > "$ROOT/parameters.json"
 ```
 
-`--show-default-parameters` is sub-second and never opens the GUI. Per-parameter descriptions go to stderr; redirect with `2>` if you want them. The companion flag `--create-parameters-file [path]` writes both `parameters.json` (defaults) and `parameters.md` (descriptions, grouped by category) at `path` (default `./parameters.json`); refuses to overwrite an existing `parameters.json` unless `--force` is also passed.
+`--show-default-parameters` is sub-second and never opens the GUI. Per-parameter descriptions go to stderr; redirect with `2>` if you want them. The companion flag `--create-parameters-file [path]` writes both `parameters.json` (defaults) and `parameters.md` (descriptions, grouped by category) at `path` (default `./parameters.json`); refuses to overwrite either one — an existing `parameters.json` or an existing `parameters.md` — unless `--force` is also passed (and even `--force` replaces only regular files, never a folder or symbolic link).
 
-The source-of-truth for the parameter schema is `DrewsChessMachine/DrewsChessMachine/TrainingParameters.swift` (the registry + per-key `@TrainingParameter` declarations).
+The source-of-truth for the parameter schema is `DrewsChessMachine/DrewsChessMachine/Training/TrainingParameters.swift` (the registry + per-key `@TrainingParameter` declarations).
 
 ## Analysis discipline (long-session-aware)
 

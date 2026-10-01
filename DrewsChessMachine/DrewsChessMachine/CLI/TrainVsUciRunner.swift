@@ -41,7 +41,18 @@ struct TrainVsUciConfig: Sendable {
     /// `--start-model` starts a new branch (fresh clock, zero velocity).
     var resumeExact: Bool
     var presetName: String?
+    /// Explicit destination for the rolling trainer-model file; nil derives
+    /// `<start-model stem>-vsuci-latest.safetensors` next to `--start-model`,
+    /// or `<runModelID>-vsuci-latest.safetensors` in the Models directory. A
+    /// file already there is replaced only under
+    /// `TrainerOutputFileGuard.checkRollingOutput`'s rule (see
+    /// `CorpusReplayConfig.outModelPath`).
     var outModelPath: String?
+    /// `--overwrite-out-model` — see `CorpusReplayConfig.overwriteOutModel`.
+    var overwriteOutModel: Bool
+    /// `--enumerate-checkpoints`: also write `<stem>-vsuci-step<N>` copies,
+    /// never over a file this run did not write (see
+    /// `CorpusReplayConfig.enumerateCheckpoints`).
     var enumerateCheckpoints: Bool
     /// Max total half-moves before a game is dropped without flush.
     var maxPliesPerGame: Int
@@ -176,6 +187,45 @@ enum TrainVsUciRunner {
 
         emit("[VS-UCI-ARCH] (\(startModelFile == nil ? "default preset" : "start-model")) \(arch.architectureSummary)")
 
+        // Rolling trainer-model output file (mirrors CorpusReplayRunner),
+        // checked before any network is built or engine launched: a file
+        // already there is replaced only when it is the rolling file of the
+        // model line this run continues (or with --overwrite-out-model), and
+        // an enumerated stem must not already hold step files this run could
+        // reach.
+        let outModelURL: URL = {
+            if let explicit = config.outModelPath {
+                let url = URL(fileURLWithPath: (explicit as NSString).expandingTildeInPath)
+                return url.pathExtension.lowercased() == "safetensors" ? url : url.appendingPathExtension("safetensors")
+            }
+            if let sm = config.startModelPath {
+                let smURL = URL(fileURLWithPath: (sm as NSString).expandingTildeInPath)
+                let stem = smURL.deletingPathExtension().lastPathComponent
+                return smURL.deletingLastPathComponent().appendingPathComponent("\(stem)-vsuci-latest.safetensors")
+            }
+            return CheckpointPaths.modelsDir.appendingPathComponent("\(config.runModelID)-vsuci-latest.safetensors")
+        }()
+        // Every save lands on a multiple of this (plus the final save).
+        let autosaveEvery = 1000
+        let rollingPlan = try TrainerOutputFileGuard.checkRollingOutput(
+            outModelURL: outModelURL,
+            startModelURL: config.startModelPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) },
+            startModel: startModelFile.map {
+                TrainerModelFileIdentity(modelID: $0.modelID, trainingStep: $0.metadata.trainingStep)
+            },
+            overwriteAuthorized: config.overwriteOutModel)
+        let rollingWriter = RollingTrainerModelWriter(url: outModelURL, plan: rollingPlan)
+        emit("[VS-UCI] trainer-model output: \(outModelURL.path) (\(rollingPlan.logDescription))")
+        let enumeratedWriter: EnumeratedCheckpointWriter?
+        if config.enumerateCheckpoints {
+            let naming = EnumeratedCheckpointNaming(rollingOutputURL: outModelURL, runTag: EnumeratedCheckpointNaming.trainVsUciRunTag)
+            try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(naming: naming, stepLimit: config.stepLimit)
+            enumeratedWriter = EnumeratedCheckpointWriter(naming: naming)
+            emit("[VS-UCI] enumerated checkpoints: \(naming.url(step: autosaveEvery).path) and siblings (never overwritten)")
+        } else {
+            enumeratedWriter = nil
+        }
+
         emit("[VS-UCI] building play network + trainer (encoding=\(arch.inputEncoding.rawValue))")
         // `evalNet` is the network the driver plays with. It is kept ~live by
         // syncing its weights from the trainer every `evalSyncEverySteps`
@@ -273,21 +323,6 @@ enum TrainVsUciRunner {
             schedule: .argmax,
             maxPliesPerGame: config.maxPliesPerGame)
 
-        // Rolling trainer-model output file (mirrors CorpusReplayRunner).
-        let outModelURL: URL = {
-            if let explicit = config.outModelPath {
-                let url = URL(fileURLWithPath: (explicit as NSString).expandingTildeInPath)
-                return url.pathExtension.lowercased() == "safetensors" ? url : url.appendingPathExtension("safetensors")
-            }
-            if let sm = config.startModelPath {
-                let smURL = URL(fileURLWithPath: (sm as NSString).expandingTildeInPath)
-                let stem = smURL.deletingPathExtension().lastPathComponent
-                return smURL.deletingLastPathComponent().appendingPathComponent("\(stem)-vsuci-latest.safetensors")
-            }
-            return CheckpointPaths.modelsDir.appendingPathComponent("\(config.runModelID)-vsuci-latest.safetensors")
-        }()
-        emit("[VS-UCI] trainer-model output: \(outModelURL.path)")
-
         func saveTrainerModel(step: Int, reason: String) async throws {
             let encoded: Data
             do {
@@ -312,22 +347,27 @@ enum TrainVsUciRunner {
                     resumeMetadata: [:])
                 try FileManager.default.createDirectory(
                     at: outModelURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try encoded.write(to: outModelURL, options: [.atomic])
+                try rollingWriter.write(encoded)
                 emit("[VS-UCI] saved trainer model (\(reason)) step=\(step) trainerStep=\(snapshot.schedule.completedTrainSteps) -> \(outModelURL.lastPathComponent)")
+            } catch let ownershipRefusal as FileSafetyError where ownershipRefusal.isOwnershipRefusal {
+                // The rolling path no longer holds the file this run owns —
+                // halt rather than overwrite something this run did not write.
+                throw ownershipRefusal
             } catch {
                 try CorpusReplayRunner.reportSaveFailure(error, step: step, what: "trainer-model save (\(reason))")
                 return
             }
-            if config.enumerateCheckpoints {
-                let stem = outModelURL.deletingPathExtension().lastPathComponent
-                let enumName = stem.contains("-vsuci-latest")
-                    ? stem.replacingOccurrences(of: "-vsuci-latest", with: "-vsuci-step\(step)")
-                    : "\(stem)-step\(step)"
-                let enumURL = outModelURL.deletingLastPathComponent()
-                    .appendingPathComponent(enumName).appendingPathExtension("safetensors")
+            if let enumeratedWriter {
                 do {
-                    try encoded.write(to: enumURL, options: [.atomic])
-                    emit("[VS-UCI] enumerated checkpoint -> \(enumURL.lastPathComponent)")
+                    let written = try enumeratedWriter.write(encoded, step: step)
+                    let note = written.outcome == .replacedThisRunsEarlierSave
+                        ? " (replaced this run's own earlier save of step \(step))"
+                        : ""
+                    emit("[VS-UCI] enumerated checkpoint -> \(written.url.lastPathComponent)\(note)")
+                } catch let collision as TrainerOutputFileError {
+                    throw collision
+                } catch let ownershipRefusal as FileSafetyError where ownershipRefusal.isOwnershipRefusal {
+                    throw ownershipRefusal
                 } catch {
                     try CorpusReplayRunner.reportSaveFailure(error, step: step, what: "enumerated checkpoint")
                 }
@@ -418,7 +458,6 @@ enum TrainVsUciRunner {
 
             // Step-locked SGD loop. Games are produced concurrently by the driver.
             let logEvery = 50
-            let autosaveEvery = 1000
             while true {
                 if abort.isRequested { aborted = true; emit("[VS-UCI] abort requested — stopping at step \(step)"); break }
                 if let sl = config.stepLimit, step >= sl { break }

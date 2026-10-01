@@ -324,6 +324,19 @@ extension SessionController {
                         "[RESUME-PARAM] max_periodic_autosaves_kept: saved=nil applied=\(TrainingParameters.shared.maxPeriodicAutosavesKept) (defaulted)"
                     )
                 }
+                // The setting only; `CheckpointPaths.automaticSavePruningForcedOff`
+                // can still hold pruning off whatever is restored here. The
+                // effective state is logged once the session is armed.
+                if let aspe = rs.automaticSavePruningEnabled {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] \(AutomaticSavePruningEnabled.id): \(TrainingParameters.shared.automaticSavePruningEnabled) -> \(aspe) (from session)"
+                    )
+                    TrainingParameters.shared.restoreFromSession(AutomaticSavePruningEnabled.self, aspe, into: \.automaticSavePruningEnabled)
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] \(AutomaticSavePruningEnabled.id): saved=nil applied=\(TrainingParameters.shared.automaticSavePruningEnabled) (defaulted)"
+                    )
+                }
                 if let cid = rs.recordingCorpusID {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] recording_corpus_id: prior run recorded into corpus \(cid) (informational; this run starts a fresh corpus when recording is on)"
@@ -1047,6 +1060,9 @@ extension SessionController {
         periodicSaveController = controller
         periodicSaveLastPollAt = Date()
         periodicSaveInFlight = false
+        // The retention side of the autosave policy: whether this run's
+        // periodic and promotion saves will prune older automatic saves.
+        logAutomaticSavePruningState()
 
         // Expose the two gates the checkpoint save path needs and
         // anchor the session ID + wall clock. `checkpoint?.currentSessionID`

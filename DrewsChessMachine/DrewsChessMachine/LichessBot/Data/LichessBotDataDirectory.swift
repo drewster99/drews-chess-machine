@@ -34,8 +34,18 @@ struct LichessBotDataDirectory: Sendable, Equatable {
 
     static let journalExtension = "journal.jsonl"
 
+    /// `InProgress/<gameId>.journal.jsonl`, unchecked. Production paths use
+    /// `validatedInProgressJournalURL(gameID:)`; this form exists for
+    /// callers whose id is a known-good literal.
     func inProgressJournalURL(gameID: String) -> URL {
         inProgressDirectory.appendingPathComponent("\(gameID).\(Self.journalExtension)", isDirectory: false)
+    }
+
+    /// `InProgress/<gameId>.journal.jsonl`, after `LichessBotGameIDPathSafety`
+    /// has accepted the id (it throws, and logs, otherwise).
+    func validatedInProgressJournalURL(gameID: String) throws -> URL {
+        try LichessBotGameIDPathSafety.validate(gameID)
+        return inProgressJournalURL(gameID: gameID)
     }
 
     /// `Games/YYYY/MM/` for a game created at `createdAt`, in UTC so a game's
@@ -51,7 +61,15 @@ struct LichessBotDataDirectory: Sendable, Equatable {
     }
 
     /// `<YYYYMMDD-HHMMSS>-<gameId>`, from the game's creation time in UTC
-    /// (plan E50).
+    /// (plan E50), after `LichessBotGameIDPathSafety` has accepted the id (it
+    /// throws, and logs, otherwise).
+    static func validatedFileStem(gameID: String, createdAt: Date) throws -> String {
+        try LichessBotGameIDPathSafety.validate(gameID)
+        return fileStem(gameID: gameID, createdAt: createdAt)
+    }
+
+    /// `<YYYYMMDD-HHMMSS>-<gameId>`, unchecked. Production paths use
+    /// `validatedFileStem(gameID:createdAt:)`.
     static func fileStem(gameID: String, createdAt: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -65,6 +83,73 @@ struct LichessBotDataDirectory: Sendable, Equatable {
         let fm = FileManager.default
         for directory in [root, gamesDirectory, inProgressDirectory, protocolDirectory] {
             try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+    }
+}
+
+/// The check a Lichess game id passes before it becomes part of a file name.
+///
+/// The id arrives from the server (`gameStart.game.gameId`) and is used
+/// verbatim as a path component: the in-progress journal is
+/// `InProgress/<gameId>.journal.jsonl`, and the filed record, PGN and
+/// journal are `Games/YYYY/MM/<stamp>-<gameId>.*`. Unchecked, an id
+/// containing `/` or `..` would read, write or move files outside the bot's
+/// folders, a leading `.` would hide the file, and a newline or `"` would
+/// also land inside the PGN's `[Site "…"]` tag, which is built from the
+/// same id.
+///
+/// Lichess game ids are short strings of ASCII letters and digits; the
+/// longer `fullId` (the id plus a per-player secret suffix) is deliberately
+/// never decoded (plan E26). The rule here is **non-empty, at most
+/// `maximumLength` ASCII letters or digits** — long enough for either real
+/// shape, and nothing longer. There is no lower bound beyond non-empty: a
+/// shorter all-alphanumeric string is just as incapable of escaping a
+/// folder, and the test suite's fixtures use short ids (`g1`). ASCII-only on
+/// purpose — `Character.isLetter` would admit look-alike and combining
+/// characters that file systems normalize differently.
+///
+/// A refused id is logged (escaped, so the log line itself can't be split)
+/// and thrown as `LichessBotGameIDError.unsafeForFilePath`; nothing touches
+/// the disk.
+enum LichessBotGameIDPathSafety {
+    static let maximumLength = 12
+
+    /// Whether `gameID` may appear in a file name.
+    static func isSafe(_ gameID: String) -> Bool {
+        let bytes = gameID.utf8
+        guard !bytes.isEmpty, bytes.count <= maximumLength else { return false }
+        return bytes.allSatisfy { byte in
+            (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte)
+                || (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(byte)
+                || (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(byte)
+        }
+    }
+
+    /// Throws (and logs) unless `isSafe(gameID)`.
+    static func validate(_ gameID: String) throws {
+        guard isSafe(gameID) else {
+            SessionLogger.shared.log("[LICHESS-BOT] refusing game id \(escapedForDisplay(gameID)) in a file path: not 1-\(maximumLength) ASCII letters/digits")
+            throw LichessBotGameIDError.unsafeForFilePath(gameID: gameID)
+        }
+    }
+
+    /// A refused id as a quoted, escaped Swift string literal (newlines and
+    /// quotes become `\n` / `\"`), cut to a few times the legal length so a
+    /// hostile value can neither split a log line nor flood it.
+    static func escapedForDisplay(_ gameID: String) -> String {
+        String(gameID.prefix(maximumLength * 4)).debugDescription
+    }
+}
+
+enum LichessBotGameIDError: LocalizedError, Equatable {
+    /// The id fails `LichessBotGameIDPathSafety.isSafe`, so it can't name a
+    /// file.
+    case unsafeForFilePath(gameID: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsafeForFilePath(let gameID):
+            return "Game id \(LichessBotGameIDPathSafety.escapedForDisplay(gameID)) is not 1-\(LichessBotGameIDPathSafety.maximumLength) ASCII letters/digits; it is not used in a file path"
         }
     }
 }

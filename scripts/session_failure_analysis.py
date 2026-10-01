@@ -31,7 +31,7 @@ from typing import Any
 LOG_GLOB = os.path.expanduser("~/Library/Logs/DrewsChessMachine/dcm_log_*.txt")
 NUM_RE = r"([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
 TIME_RE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s+\[(\w[^\]]*)\]\s+(.*)$")
-FILE_TS_RE = re.compile(r"dcm_log_(\d{8})-(\d{6})\.txt$")
+FILE_TS_RE = re.compile(r"dcm_log_(\d{8})-(\d{6})(?:-\d+)?\.txt$")
 
 
 @dataclass

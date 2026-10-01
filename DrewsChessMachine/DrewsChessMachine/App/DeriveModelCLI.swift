@@ -165,9 +165,10 @@ enum DeriveModelCLI {
 
         do {
             try FileManager.default.createDirectory(at: outURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            // `.withoutOverwriting`: the existence check above is advisory;
-            // this makes "never overwrite" hold even against a race.
-            try result.data.write(to: outURL, options: [.withoutOverwriting])
+            // Exclusive publish: the existence check above is advisory; this
+            // makes "never overwrite" hold even against a race, and the
+            // staged rename means a crash never leaves a torn model file.
+            try FileSafety.publishNewFile(result.data, to: outURL)
         } catch {
             SessionLogger.shared.shutdown()
             fail("cannot write \(outURL.path): \(error.localizedDescription)", 98)

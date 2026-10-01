@@ -78,15 +78,29 @@ struct CorpusReplayConfig: Sendable {
     /// `startGameIndex`. Without it, `--start-model` starts a new branch.
     var resumeExact: Bool = false
     /// Explicit destination for the rolling trainer-model file. When nil the
-    /// runner derives a path next to `--start-model` (or inside the first
-    /// corpus directory). The same file is overwritten by the periodic
-    /// autosave and by the final save on exit/abort.
+    /// runner derives a path next to `--start-model` (or, without one, in the
+    /// app's Models directory, named after the first corpus). The same file is
+    /// overwritten by the periodic autosave and by the final save on
+    /// exit/abort — but a file already there before the run is replaced only
+    /// under `TrainerOutputFileGuard.checkRollingOutput`'s rule (or with
+    /// `overwriteOutModel`).
     var outModelPath: String?
+    /// `--overwrite-out-model`: replace a regular file already at the rolling
+    /// output path even when it is not the rolling file of the state this
+    /// run continues (an earlier run of the same command, another run's
+    /// output, an earlier checkpoint of the same line), and accept an output
+    /// path named like a step-enumerated checkpoint. It never permits
+    /// replacing the `--start-model` itself or anything that is not a regular
+    /// file.
+    var overwriteOutModel: Bool
     /// When true, every trainer-model save also writes a step-enumerated copy
     /// (`<stem>-replay-step<N>.safetensors`) next to the rolling `-replay-latest`
     /// file, so no checkpoint is ever lost to the overwrite. The rolling latest
     /// is still written (warm-start / probe / trackers key off it); the enumerated
     /// files accumulate — mind disk. Off by default. (`--enumerate-checkpoints`.)
+    /// Enumerated files are never written over a file this run did not write:
+    /// the run refuses to start when its stem already has step files it could
+    /// reach, and a collision at write time halts it.
     var enumerateCheckpoints: Bool = false
     /// Freshly-minted `ModelID` for this run's saved model, minted on the main
     /// actor in the pre-flight handler (the `ModelIDMinter` is main-actor
@@ -111,7 +125,7 @@ struct CorpusReplayConfig: Sendable {
     /// Where the trainer's policy head leaves the compute dtype for fp32
     /// (`--policy-tail-precision`). An A/B knob for the head-numerics cost;
     /// see `ChessNetwork.PolicyTailPrecision`.
-    var policyTailPrecision: ChessNetwork.PolicyTailPrecision = .float32FromPreBatchNorm
+    var policyTailPrecision: ChessNetwork.PolicyTailPrecision = .default
 }
 
 enum CorpusReplayError: LocalizedError {
@@ -133,6 +147,451 @@ enum CorpusReplayError: LocalizedError {
         case let .diskFullDuringSave(step, what):
             return "Disk full while writing \(what) at step \(step) — training halted so it can resume from the last checkpoint once space is freed"
         }
+    }
+}
+
+// MARK: - Trainer-model output safety (shared by corpus replay and train-vs-UCI)
+
+/// Which model a trainer-model file holds, as recorded in its safetensors
+/// `__metadata__`: the `model_id` plus the segment-local `training_step`.
+/// Checkpoints are identified by these, never by filename (see CLAUDE.md,
+/// "Identify checkpoints by safetensors `__metadata__`").
+struct TrainerModelFileIdentity: Equatable, Sendable, CustomStringConvertible {
+    let modelID: String
+    /// Nil when the file records no step (a fresh build, a champion export).
+    let trainingStep: Int?
+
+    var description: String {
+        "model \(modelID) at step \(trainingStep.map(String.init) ?? "(none recorded)")"
+    }
+
+    /// Read from the header only — the weights are never decoded.
+    static func read(from url: URL) throws -> TrainerModelFileIdentity {
+        let metadata = try ModelFileCatalog.headerMetadata(at: url)
+        guard let modelID = metadata[SafetensorsModelIO.Key.modelID], !modelID.isEmpty else {
+            throw ModelFileCatalogError.missingModelID(file: url.lastPathComponent)
+        }
+        var trainingStep: Int? = nil
+        if let text = metadata[SafetensorsModelIO.Key.trainingStep] {
+            guard let step = Int(text) else {
+                throw ModelFileCatalogError.notSafetensors(
+                    file: url.lastPathComponent, detail: "training_step \"\(text)\" is not an integer")
+            }
+            trainingStep = step
+        }
+        return TrainerModelFileIdentity(modelID: modelID, trainingStep: trainingStep)
+    }
+}
+
+/// Refusals from the trainer-model output checks. Each message names the
+/// file involved and says what to do instead; none is ever downgraded to a
+/// warning or worked around with a different path.
+enum TrainerOutputFileError: LocalizedError, Equatable {
+    case outModelIsStartModel(path: String)
+    case outModelNotARegularFile(path: String, kind: FileSafety.ItemKind)
+    case outModelUnreadable(path: String, detail: String)
+    case outModelBelongsToAnotherRun(path: String, reason: String)
+    case enumeratedStepsAlreadyPresent(firstPath: String, count: Int, steps: String, reachable: String, suggestion: String)
+    case enumeratedCheckpointExists(path: String, step: Int)
+    case outModelNamedLikeAnEnumeratedCheckpoint(path: String, step: Int)
+
+    var errorDescription: String? {
+        switch self {
+        case let .outModelIsStartModel(path):
+            return "refusing to start: --out-model \(path) is the --start-model itself. The rolling output "
+                + "file is overwritten every save, so this would destroy the model the run started from. "
+                + "Pass a new --out-model path."
+        case let .outModelNotARegularFile(path, kind):
+            return "refusing to start: --out-model \(path) is a \(kind), not a regular file. A trainer-model "
+                + "save only ever replaces a regular file. Pass a different --out-model path."
+        case let .outModelUnreadable(path, detail):
+            return "refusing to start: --out-model \(path) already exists and its model metadata cannot be read "
+                + "(\(detail)), so there is no way to tell whether this run may overwrite it. Pass a new "
+                + "--out-model path, or --overwrite-out-model to replace it anyway."
+        case let .outModelBelongsToAnotherRun(path, reason):
+            return "refusing to start: --out-model \(path) already exists and is not this run's to overwrite: "
+                + "\(reason). Pass a new --out-model path; or, to continue that run, pass that file as "
+                + "--start-model (with --resume-exact) and a new --out-model; or pass --overwrite-out-model "
+                + "to replace it anyway."
+        case let .enumeratedStepsAlreadyPresent(firstPath, count, steps, reachable, suggestion):
+            return "refusing to start: --enumerate-checkpoints would write step files this run can reach "
+                + "(\(reachable)), but \(count) step file(s) of this --out-model stem already exist there "
+                + "(steps \(steps); first: \(firstPath)). Step numbers restart in every run, so a run that "
+                + "reuses a stem collides with an earlier segment's checkpoints. Give this run its own "
+                + "--out-model stem — every resumed segment gets its own — e.g. \(suggestion)."
+        case let .outModelNamedLikeAnEnumeratedCheckpoint(path, step):
+            return "refusing to start: --out-model \(path) is named like the step-\(step) checkpoint that "
+                + "--enumerate-checkpoints writes. The rolling output is rewritten on every save, so under that "
+                + "name it would overwrite that checkpoint (if it exists) or later be mistaken for it. Pass a "
+                + "rolling-file name, e.g. <name>-replay-latest.safetensors or <name>-vsuci-latest.safetensors; "
+                + "or pass --overwrite-out-model to use this name anyway (it then replaces the regular file "
+                + "there, whatever it holds)."
+        case let .enumeratedCheckpointExists(path, step):
+            return "enumerated checkpoint for step \(step) not written: \(path) already exists and this run "
+                + "did not write it. Halting rather than overwrite another run's checkpoint; restart with "
+                + "a new --out-model stem."
+        }
+    }
+}
+
+/// How the run will treat its rolling `--out-model` file, decided before any
+/// training and carried into every save.
+struct RollingOutputPlan: Equatable, Sendable {
+    enum Disposition: Equatable, Sendable {
+        /// Nothing is there; the first save publishes a new file.
+        case createNew
+        /// The file holds the model line this run continues, at the start
+        /// model's own step, so replacing it loses nothing.
+        case continueLineage(existing: TrainerModelFileIdentity)
+        /// The operator passed `--overwrite-out-model`.
+        case overwriteAuthorized(existing: String)
+    }
+
+    let disposition: Disposition
+    /// The existing regular file's identity when one is to be replaced; the
+    /// first save replaces only that very file.
+    let existingFileIdentity: FileSafety.FileIdentity?
+
+    var logDescription: String {
+        switch disposition {
+        case .createNew:
+            return "new file"
+        case let .continueLineage(existing):
+            return "replacing the existing file, which holds \(existing) — the model line this run continues"
+        case let .overwriteAuthorized(existing):
+            return "replacing the existing file (\(existing)) as --overwrite-out-model allows"
+        }
+    }
+}
+
+/// The name of a step-enumerated checkpoint (`--enumerate-checkpoints`),
+/// derived from the rolling output file's stem: `<base>-<tag>-latest` becomes
+/// `<base>-<tag>-step<N>`, any other stem gains `-step<N>`. The one place the
+/// name is built and the only parser of it, so the pre-flight scan and the
+/// writes cannot disagree about which files are a stem's step files.
+struct EnumeratedCheckpointNaming: Equatable, Sendable {
+    /// Corpus replay's run tag (`--replay-corpus`).
+    static let corpusReplayRunTag = "replay"
+    /// Train-vs-UCI's run tag (`--train-vs-uci`).
+    static let trainVsUciRunTag = "vsuci"
+    /// Every run kind that writes step-enumerated checkpoints.
+    static let allRunTags = [
+        EnumeratedCheckpointNaming.corpusReplayRunTag,
+        EnumeratedCheckpointNaming.trainVsUciRunTag,
+    ]
+
+    /// What precedes the step number in every enumerated name.
+    private static let stepMarker = "-step"
+    private static let fileExtension = "safetensors"
+
+    let rollingOutputURL: URL
+    /// `corpusReplayRunTag` or `trainVsUciRunTag`: the run kind in the
+    /// rolling file's `-<tag>-latest` marker.
+    let runTag: String
+
+    private var rollingStem: String { rollingOutputURL.deletingPathExtension().lastPathComponent }
+    private var rollingMarker: String { "-\(runTag)-latest" }
+    var directory: URL { rollingOutputURL.deletingLastPathComponent() }
+
+    func fileName(step: Int) -> String {
+        let stem = rollingStem
+        let enumeratedStem = stem.contains(rollingMarker)
+            ? stem.replacingOccurrences(of: rollingMarker, with: "-\(runTag)\(Self.stepMarker)\(step)")
+            : "\(stem)\(Self.stepMarker)\(step)"
+        return "\(enumeratedStem).\(Self.fileExtension)"
+    }
+
+    func url(step: Int) -> URL {
+        directory.appendingPathComponent(fileName(step: step))
+    }
+
+    /// The step `name` is the enumerated checkpoint for, or nil when it is
+    /// not exactly one of this stem's step files.
+    func step(ofFileName name: String) -> Int? {
+        let stem = rollingStem
+        let prefix: String
+        if let marker = stem.range(of: rollingMarker) {
+            prefix = String(stem[..<marker.lowerBound]) + "-\(runTag)\(Self.stepMarker)"
+        } else {
+            prefix = "\(stem)\(Self.stepMarker)"
+        }
+        guard name.hasPrefix(prefix) else { return nil }
+        let digits = name.dropFirst(prefix.count).prefix { $0.isASCII && $0.isNumber }
+        guard !digits.isEmpty, let step = Int(digits), fileName(step: step) == name else { return nil }
+        return step
+    }
+
+    /// The step `name` is the enumerated checkpoint for under *some* rolling
+    /// stem of either run kind, or nil when no rolling file this naming
+    /// knows of would enumerate to it — e.g. `x-replay-step29000.safetensors`
+    /// (stem `x-replay-latest`), `x-vsuci-step7.safetensors`, or
+    /// `x-step3000.safetensors` (stem `x`). Every candidate is confirmed by
+    /// rebuilding the name with `fileName(step:)` / `step(ofFileName:)`, so
+    /// a name is only ever claimed when this naming would really produce it.
+    /// Used to keep a rolling `--out-model` off an enumerated checkpoint's
+    /// name.
+    static func step(ofEnumeratedFileNameUnderAnyStem name: String) -> Int? {
+        let suffix = ".\(fileExtension)"
+        guard name.hasSuffix(suffix) else { return nil }
+        let stem = String(name.dropLast(suffix.count))
+        var searchEnd = stem.endIndex
+        while let markerRange = stem.range(of: stepMarker, options: .backwards, range: stem.startIndex..<searchEnd) {
+            searchEnd = markerRange.lowerBound
+            let digits = stem[markerRange.upperBound...].prefix { $0.isASCII && $0.isNumber }
+            guard !digits.isEmpty, let step = Int(digits) else { continue }
+            let beforeMarker = String(stem[..<markerRange.lowerBound])
+            var candidateRollingStems: [(stem: String, runTag: String)] = []
+            // A stem without a `-<tag>-latest` marker: the step marker ends the name.
+            if !beforeMarker.isEmpty, digits.endIndex == stem.endIndex {
+                candidateRollingStems += allRunTags.map { (stem: beforeMarker, runTag: $0) }
+            }
+            // A stem whose `-<tag>-latest` marker(s) became `-<tag>-step<N>`.
+            for runTag in allRunTags where beforeMarker.hasSuffix("-\(runTag)") {
+                let rollingStem = stem.replacingOccurrences(
+                    of: "-\(runTag)\(stepMarker)\(step)", with: "-\(runTag)-latest")
+                candidateRollingStems.append((stem: rollingStem, runTag: runTag))
+            }
+            for candidate in candidateRollingStems {
+                let naming = EnumeratedCheckpointNaming(
+                    rollingOutputURL: URL(fileURLWithPath: "/").appendingPathComponent("\(candidate.stem)\(suffix)"),
+                    runTag: candidate.runTag)
+                if naming.step(ofFileName: name) == step { return step }
+            }
+        }
+        return nil
+    }
+
+    /// The `--out-model` to suggest when this stem is taken: the same name
+    /// with a `-resumeN` segment marker.
+    var newStemSuggestion: String {
+        let stem = rollingStem
+        let suggested = stem.contains(rollingMarker)
+            ? stem.replacingOccurrences(of: rollingMarker, with: "-resumeN\(rollingMarker)")
+            : "\(stem)-resumeN"
+        return directory.appendingPathComponent("\(suggested).safetensors").path
+    }
+}
+
+/// One existing enumerated checkpoint of a stem.
+struct EnumeratedCheckpointFile: Equatable, Sendable {
+    let step: Int
+    let url: URL
+}
+
+/// Writes the rolling trainer-model file, replacing only the file this run
+/// owns: the pre-existing file the plan adopted (checked by identity), then
+/// each file this writer itself wrote.
+final class RollingTrainerModelWriter {
+    let url: URL
+    private var ownedIdentity: FileSafety.FileIdentity?
+
+    init(url: URL, plan: RollingOutputPlan) {
+        self.url = url
+        self.ownedIdentity = plan.existingFileIdentity
+    }
+
+    func write(_ data: Data) throws {
+        if let ownedIdentity {
+            self.ownedIdentity = try FileSafety.replaceRegularFile(data, at: url, expectedIdentity: ownedIdentity)
+        } else {
+            self.ownedIdentity = try FileSafety.publishNewFile(data, to: url)
+        }
+    }
+}
+
+/// Writes step-enumerated checkpoints, never over a file this run did not
+/// write. A step this run already wrote (the final save landing on the same
+/// step as the last autosave) replaces this run's own file — checked by
+/// identity — so the enumerated copy matches the rolling file's final state.
+final class EnumeratedCheckpointWriter {
+    enum Outcome: Equatable {
+        case created
+        case replacedThisRunsEarlierSave
+    }
+
+    let naming: EnumeratedCheckpointNaming
+    private var writtenByThisRun: [Int: FileSafety.FileIdentity] = [:]
+
+    init(naming: EnumeratedCheckpointNaming) {
+        self.naming = naming
+    }
+
+    func write(_ data: Data, step: Int) throws -> (url: URL, outcome: Outcome) {
+        let url = naming.url(step: step)
+        if let owned = writtenByThisRun[step] {
+            writtenByThisRun[step] = try FileSafety.replaceRegularFile(data, at: url, expectedIdentity: owned)
+            return (url, .replacedThisRunsEarlierSave)
+        }
+        do {
+            writtenByThisRun[step] = try FileSafety.publishNewFile(data, to: url)
+        } catch FileSafetyError.alreadyExists(path: let path, kind: _) {
+            throw TrainerOutputFileError.enumeratedCheckpointExists(path: path, step: step)
+        }
+        return (url, .created)
+    }
+}
+
+/// The before-training checks on a trainer run's output files. An operation
+/// only ever touches the exact files it writes, replaces only regular files,
+/// and never silently overwrites a file it does not own; anything unexpected
+/// refuses the run before any GPU work is spent on it.
+enum TrainerOutputFileGuard {
+
+    /// Whether this run may replace the regular file already at its rolling
+    /// output path.
+    enum RollingOverwriteVerdict: Equatable, Sendable {
+        case continuesLineage
+        case refused(reason: String)
+    }
+
+    /// The ownership rule for an existing rolling output file, from the two
+    /// headers alone.
+    ///
+    /// Every corpus-replay / train-vs-UCI launch mints a brand-new `model_id`
+    /// for what it saves (with `parent_model_id` = the start model's), so the
+    /// file at the output path can never carry this run's own ID. The file is
+    /// this run's to replace exactly when it holds the very state the run
+    /// starts from — the `--start-model`'s `model_id` at the `--start-model`'s
+    /// `training_step` — so replacing it discards nothing that exists only
+    /// there. That covers continuing a crashed segment into its rolling file
+    /// from that segment's latest checkpoint (which, saved at the same step,
+    /// holds the same state). Everything else is refused: a fresh run (it
+    /// continues no line); a file from a different model line, which includes
+    /// an earlier run of the very same command — that run minted its own ID,
+    /// and its file may hold hours of training; a file ahead of the start
+    /// model, which holds training that exists only there; and a file
+    /// *behind* it. Same line at an earlier step is not a stale rolling file
+    /// in practice but a fixed checkpoint of that line — an enumerated step
+    /// file, or a hand-made copy of one — reached by a mistyped
+    /// `--out-model`, and the run would overwrite it with later training.
+    static func rollingOverwriteVerdict(existing: TrainerModelFileIdentity,
+                                        startModel: TrainerModelFileIdentity?) -> RollingOverwriteVerdict {
+        guard let startModel else {
+            return .refused(reason: "it holds \(existing), and this run starts a fresh network, so it "
+                + "continues no model line")
+        }
+        guard existing.modelID == startModel.modelID else {
+            return .refused(reason: "it holds \(existing), a different model line from the --start-model's "
+                + "\(startModel.modelID) — another run's output (every run, including an earlier run of "
+                + "this same command, saves under its own new model ID)")
+        }
+        guard let existingStep = existing.trainingStep, let startStep = startModel.trainingStep else {
+            return .refused(reason: "it holds \(existing) and the --start-model is \(startModel); without "
+                + "both training steps there is no telling whether replacing it loses training")
+        }
+        guard existingStep <= startStep else {
+            return .refused(reason: "it holds \(existing), \(existingStep - startStep) steps ahead of the "
+                + "--start-model (step \(startStep)); replacing it would discard training that exists only "
+                + "in that file")
+        }
+        guard existingStep == startStep else {
+            return .refused(reason: "it holds \(existing), \(startStep - existingStep) steps behind the "
+                + "--start-model (step \(startStep)), so it is not the rolling file of the state this run "
+                + "starts from but an earlier checkpoint of that line (an enumerated step file, or a copy of "
+                + "one); replacing it would overwrite that checkpoint with later training")
+        }
+        return .continuesLineage
+    }
+
+    /// True when `first` and `second` name the same file: equal after
+    /// resolving symbolic links, or — when both exist — the same device and
+    /// inode (catching hard links and case variants on a case-insensitive
+    /// volume).
+    static func isSameFile(_ first: URL, _ second: URL) throws -> Bool {
+        let firstPath = first.resolvingSymlinksInPath().standardizedFileURL.path
+        let secondPath = second.resolvingSymlinksInPath().standardizedFileURL.path
+        if firstPath == secondPath { return true }
+        guard let firstIdentity = try FileSafety.resolvedIdentity(at: first),
+              let secondIdentity = try FileSafety.resolvedIdentity(at: second) else {
+            return false
+        }
+        return firstIdentity == secondIdentity
+    }
+
+    /// Decide how the run treats its rolling output file, or refuse:
+    /// (a) never the start model itself; (b) never anything but a regular
+    /// file; (c) never a name shaped like a step-enumerated checkpoint
+    /// (`EnumeratedCheckpointNaming.step(ofEnumeratedFileNameUnderAnyStem:)`),
+    /// whether or not a file is there yet, unless `overwriteAuthorized`;
+    /// (d) an existing regular file only under `rollingOverwriteVerdict`, or
+    /// with `overwriteAuthorized` (`--overwrite-out-model`). (a) and (b) hold
+    /// even with the flag.
+    ///
+    /// (c) is checked by name because the header check cannot see it: an
+    /// enumerated checkpoint of the very line being continued, at the start
+    /// model's own step, passes (d), and a rolling file under an enumerated
+    /// name — rewritten every save — would later be taken for a fixed
+    /// checkpoint by anything that finds checkpoints by their names.
+    static func checkRollingOutput(outModelURL: URL,
+                                   startModelURL: URL?,
+                                   startModel: TrainerModelFileIdentity?,
+                                   overwriteAuthorized: Bool) throws -> RollingOutputPlan {
+        if let startModelURL, try isSameFile(outModelURL, startModelURL) {
+            throw TrainerOutputFileError.outModelIsStartModel(path: outModelURL.path)
+        }
+        if !overwriteAuthorized,
+           let step = EnumeratedCheckpointNaming.step(ofEnumeratedFileNameUnderAnyStem: outModelURL.lastPathComponent) {
+            throw TrainerOutputFileError.outModelNamedLikeAnEnumeratedCheckpoint(path: outModelURL.path, step: step)
+        }
+        guard let entry = try FileSafety.existingItem(at: outModelURL) else {
+            return RollingOutputPlan(disposition: .createNew, existingFileIdentity: nil)
+        }
+        guard entry.kind == .regularFile else {
+            throw TrainerOutputFileError.outModelNotARegularFile(path: outModelURL.path, kind: entry.kind)
+        }
+        let existing: TrainerModelFileIdentity
+        do {
+            existing = try TrainerModelFileIdentity.read(from: outModelURL)
+        } catch {
+            if overwriteAuthorized {
+                return RollingOutputPlan(
+                    disposition: .overwriteAuthorized(existing: "model metadata unreadable: \(error.localizedDescription)"),
+                    existingFileIdentity: entry.identity)
+            }
+            throw TrainerOutputFileError.outModelUnreadable(path: outModelURL.path, detail: error.localizedDescription)
+        }
+        if overwriteAuthorized {
+            return RollingOutputPlan(disposition: .overwriteAuthorized(existing: existing.description),
+                                     existingFileIdentity: entry.identity)
+        }
+        switch rollingOverwriteVerdict(existing: existing, startModel: startModel) {
+        case .continuesLineage:
+            return RollingOutputPlan(disposition: .continueLineage(existing: existing),
+                                     existingFileIdentity: entry.identity)
+        case let .refused(reason):
+            throw TrainerOutputFileError.outModelBelongsToAnotherRun(path: outModelURL.path, reason: reason)
+        }
+    }
+
+    /// The stem's existing step files this run could write over: every step
+    /// file when the run has no step limit, else those at steps
+    /// `0...stepLimit` (the final save can land on any step up to the limit —
+    /// an abort, the end of the corpus, a time limit). Sorted by step. An
+    /// absent output directory has none (it is created at the first save).
+    static func reachableEnumeratedCheckpoints(naming: EnumeratedCheckpointNaming,
+                                               stepLimit: Int?) throws -> [EnumeratedCheckpointFile] {
+        guard try FileSafety.existingItem(at: naming.directory) != nil else { return [] }
+        let names = try FileManager.default.contentsOfDirectory(atPath: naming.directory.path)
+        var found: [EnumeratedCheckpointFile] = []
+        for name in names {
+            guard let step = naming.step(ofFileName: name) else { continue }
+            if let stepLimit, step > stepLimit { continue }
+            found.append(EnumeratedCheckpointFile(step: step, url: naming.directory.appendingPathComponent(name)))
+        }
+        return found.sorted { $0.step < $1.step }
+    }
+
+    /// Refuse the run when its stem already has step files it could reach.
+    static func requireNoReachableEnumeratedCheckpoints(naming: EnumeratedCheckpointNaming,
+                                                        stepLimit: Int?) throws {
+        let collisions = try reachableEnumeratedCheckpoints(naming: naming, stepLimit: stepLimit)
+        guard let first = collisions.first, let last = collisions.last else { return }
+        throw TrainerOutputFileError.enumeratedStepsAlreadyPresent(
+            firstPath: first.url.path,
+            count: collisions.count,
+            steps: first.step == last.step ? "\(first.step)" : "\(first.step)…\(last.step)",
+            reachable: stepLimit.map { "steps 0…\($0)" } ?? "any step: the run has no step limit",
+            suggestion: "--out-model \(naming.newStemSuggestion)")
     }
 }
 
@@ -183,10 +642,15 @@ enum CorpusReplayRunner {
     }
 
     /// True when `error` means the filesystem is out of space (ENOSPC). Covers
-    /// the Cocoa `.fileWriteOutOfSpace` that `Data.write(to:options:)` throws, and
-    /// a raw POSIX ENOSPC surfaced directly or as an underlying error. Pure and
-    /// total, so the save-failure policy is unit-testable without a real full disk.
+    /// the Cocoa `.fileWriteOutOfSpace` that `Data.write(to:options:)` throws, a
+    /// raw POSIX ENOSPC surfaced directly or as an underlying error, and a
+    /// `FileSafety` system call that failed with ENOSPC (the trainer-model
+    /// writers stage, sync and rename through `FileSafety`). Pure and total, so
+    /// the save-failure policy is unit-testable without a real full disk.
     static func isOutOfSpace(_ error: Error) -> Bool {
+        if case .systemCallFailed(_, _, let errnoValue)? = error as? FileSafetyError, errnoValue == ENOSPC {
+            return true
+        }
         let ns = error as NSError
         if ns.domain == NSCocoaErrorDomain, ns.code == CocoaError.Code.fileWriteOutOfSpace.rawValue {
             return true
@@ -374,6 +838,68 @@ enum CorpusReplayRunner {
             + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
             + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)"
         emit(hparamsLine)
+        // Rolling trainer-model output file. The same file is overwritten by
+        // the periodic autosave and by the final save on exit/abort, so it
+        // always holds the latest weights. Destination precedence: explicit
+        // --out-model; else next to --start-model; else the app's Models
+        // directory named after the corpus. Overwriting during the run is
+        // deliberate (the CheckpointManager never-overwrite history rule is for
+        // the curated Models/Sessions store) — this is a single "latest"
+        // convenience file. A file already there BEFORE the run is another
+        // matter: it may be another run's only copy of hours of training, so
+        // it is checked here, before the corpus scan and the network build,
+        // and replaced only when it is the rolling file of the model line this
+        // run continues (or with --overwrite-out-model).
+        let outModelURL: URL = {
+            if let explicit = config.outModelPath {
+                // Always land on a `.safetensors` extension. The file is
+                // safetensors-encoded, and the loaders that consume it
+                // (--probe-model, --start-model) key off the extension — a
+                // bare name like `corp1model` would be written verbatim and
+                // then rejected as "no .safetensors found". Append it when the
+                // caller didn't supply it (a supplied `.safetensors` is kept).
+                let url = URL(fileURLWithPath: (explicit as NSString).expandingTildeInPath)
+                return url.pathExtension.lowercased() == "safetensors"
+                    ? url
+                    : url.appendingPathExtension("safetensors")
+            }
+            if let sm = config.startModelPath {
+                let smURL = URL(fileURLWithPath: (sm as NSString).expandingTildeInPath)
+                let stem = smURL.deletingPathExtension().lastPathComponent
+                return smURL.deletingLastPathComponent().appendingPathComponent("\(stem)-replay-latest.safetensors")
+            }
+            // No --start-model: default into the app's Models directory — always
+            // writable (even when the corpus is a read-only mounted volume),
+            // keeps the corpus data dir pristine, and lands where --probe-model
+            // and the GUI already look. Named after the corpus so runs over
+            // different corpora don't collide on one file.
+            let corpusName = config.corpusDirectories[0].lastPathComponent
+            return CheckpointPaths.modelsDir.appendingPathComponent("\(corpusName)-replay-latest.safetensors")
+        }()
+        // Every save lands on a multiple of this (plus the final save).
+        let autosaveEvery = 1000
+        let rollingPlan = try TrainerOutputFileGuard.checkRollingOutput(
+            outModelURL: outModelURL,
+            startModelURL: config.startModelPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) },
+            startModel: startModelFile.map {
+                TrainerModelFileIdentity(modelID: $0.modelID, trainingStep: $0.metadata.trainingStep)
+            },
+            overwriteAuthorized: config.overwriteOutModel)
+        let rollingWriter = RollingTrainerModelWriter(url: outModelURL, plan: rollingPlan)
+        emit("[REPLAY] trainer-model output: \(outModelURL.path) (\(rollingPlan.logDescription))")
+        // Step numbers restart in every run, so a stem reused across segments
+        // would collide with the earlier segment's step files. Refuse now,
+        // before any GPU work, rather than halt at the first colliding save.
+        let enumeratedWriter: EnumeratedCheckpointWriter?
+        if config.enumerateCheckpoints {
+            let naming = EnumeratedCheckpointNaming(rollingOutputURL: outModelURL, runTag: EnumeratedCheckpointNaming.corpusReplayRunTag)
+            try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(naming: naming, stepLimit: config.stepLimit)
+            enumeratedWriter = EnumeratedCheckpointWriter(naming: naming)
+            emit("[REPLAY] enumerated checkpoints: \(naming.url(step: autosaveEvery).path) and siblings (never overwritten)")
+        } else {
+            enumeratedWriter = nil
+        }
+
         // Resolve the corpus + resume start BEFORE building the (expensive)
         // network/trainer, so a bad --start-shard / --start-game-index (or an
         // empty corpus) fails in milliseconds instead of after a multi-second
@@ -385,12 +911,29 @@ enum CorpusReplayRunner {
         var shardURLs: [URL] = []
         var resumeCorpusID = ""
         var resumeCorpusPath = ""
+        // Read-only: replay never modifies a corpus. `GameCorpus.open` would
+        // run crash recovery on any `.open` shard — truncating, sealing,
+        // renaming or deleting it — which corrupts the live shard of a
+        // recording or import still writing into this corpus. `.open` shards
+        // are skipped and named, so the games missing from the replay are
+        // visible in the log; `--validate-corpus --fix` is the explicit,
+        // operator-invoked recovery for a crash leftover.
         for (di, dir) in config.corpusDirectories.enumerated() {
-            let corpus = try GameCorpus.open(directory: dir)
-            let urls = try corpus.sealedShardURLs()
+            let corpus = try GameCorpus.openReadOnly(directory: dir)
+            let urls = corpus.sealedShardURLs
             shardURLs.append(contentsOf: urls)
             if di == 0 { resumeCorpusID = corpus.corpusID; resumeCorpusPath = dir.path }
             emit("[REPLAY] corpus \(corpus.corpusID): \(urls.count) sealed shard(s)")
+            if !corpus.ignoredOpenShardURLs.isEmpty {
+                let names = corpus.ignoredOpenShardURLs.map(\.lastPathComponent).joined(separator: ", ")
+                let warning = "[REPLAY] WARNING corpus \(corpus.corpusID): ignoring \(corpus.ignoredOpenShardURLs.count) "
+                    + "unsealed .open shard(s) (\(names)) — their games are NOT replayed. Each is either the live "
+                    + "shard of a recording/import still writing into this corpus, or a crash leftover; replay "
+                    + "reads sealed shards only and never modifies a corpus, so it neither reads nor recovers them. "
+                    + "Once nothing is writing to this corpus, `--validate-corpus <dir> --fix` recovers a crash leftover."
+                emit(warning)
+                FileHandle.standardError.write(Data((warning + "\n").utf8))
+            }
         }
         guard !shardURLs.isEmpty else { throw CorpusReplayError.noGames }
 
@@ -564,41 +1107,6 @@ enum CorpusReplayRunner {
         emit("[REPLAY-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(trainer.lrMomentumCycle)) "
             + LRMomentumCycleLogFormat.scheduleOrigin(of: trainer, launch: launch))
 
-        // Rolling trainer-model output file. The same file is overwritten by
-        // the periodic autosave and by the final save on exit/abort, so it
-        // always holds the latest weights. Destination precedence: explicit
-        // --out-model; else next to --start-model; else the app's Models
-        // directory named after the corpus. Overwrite is deliberate here (the
-        // CheckpointManager never-overwrite history rule is for the curated
-        // Models/Sessions store) — this is a single "latest" convenience file.
-        let outModelURL: URL = {
-            if let explicit = config.outModelPath {
-                // Always land on a `.safetensors` extension. The file is
-                // safetensors-encoded, and the loaders that consume it
-                // (--probe-model, --start-model) key off the extension — a
-                // bare name like `corp1model` would be written verbatim and
-                // then rejected as "no .safetensors found". Append it when the
-                // caller didn't supply it (a supplied `.safetensors` is kept).
-                let url = URL(fileURLWithPath: (explicit as NSString).expandingTildeInPath)
-                return url.pathExtension.lowercased() == "safetensors"
-                    ? url
-                    : url.appendingPathExtension("safetensors")
-            }
-            if let sm = config.startModelPath {
-                let smURL = URL(fileURLWithPath: (sm as NSString).expandingTildeInPath)
-                let stem = smURL.deletingPathExtension().lastPathComponent
-                return smURL.deletingLastPathComponent().appendingPathComponent("\(stem)-replay-latest.safetensors")
-            }
-            // No --start-model: default into the app's Models directory — always
-            // writable (even when the corpus is a read-only mounted volume),
-            // keeps the corpus data dir pristine, and lands where --probe-model
-            // and the GUI already look. Named after the corpus so runs over
-            // different corpora don't collide on one file.
-            let corpusName = config.corpusDirectories[0].lastPathComponent
-            return CheckpointPaths.modelsDir.appendingPathComponent("\(corpusName)-replay-latest.safetensors")
-        }()
-        emit("[REPLAY] trainer-model output: \(outModelURL.path)")
-
         // Export the trainer's complete state and overwrite the rolling
         // output file. Failure handling splits on cause (see reportSaveFailure):
         // a disk-full (ENOSPC) failure is FATAL — it alarms and throws so the run
@@ -662,8 +1170,13 @@ enum CorpusReplayRunner {
                     at: outModelURL.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                try encoded.write(to: outModelURL, options: [.atomic])
+                try rollingWriter.write(encoded)
                 emit("[REPLAY] saved trainer model (\(reason)) step=\(step) trainerStep=\(snapshot.schedule.completedTrainSteps) nextGame=\(nextGameIndex) shard=\(shard) epoch=\(epoch) -> \(outModelURL.lastPathComponent)")
+            } catch let ownershipRefusal as FileSafetyError where ownershipRefusal.isOwnershipRefusal {
+                // The rolling path no longer holds the file this run owns
+                // (another file or a folder is there now). Halt: writing on
+                // would overwrite something this run did not write.
+                throw ownershipRefusal
             } catch {
                 // Throws on disk-full (halt); returns on any other failure (non-fatal).
                 try Self.reportSaveFailure(error, step: step, what: "trainer-model save (\(reason))")
@@ -674,18 +1187,20 @@ enum CorpusReplayRunner {
             // to the rolling overwrite. Reuses `encoded` (no re-export). A separate
             // do/catch so a disk-full throw here propagates OUT — it must not be
             // caught by the rolling-save catch above (which would misclassify our
-            // own halt error as "some other failure" and swallow it).
-            if config.enumerateCheckpoints {
-                let stem = outModelURL.deletingPathExtension().lastPathComponent
-                let enumName = stem.contains("-replay-latest")
-                    ? stem.replacingOccurrences(of: "-replay-latest", with: "-replay-step\(step)")
-                    : "\(stem)-step\(step)"
-                let enumURL = outModelURL.deletingLastPathComponent()
-                    .appendingPathComponent(enumName)
-                    .appendingPathExtension("safetensors")
+            // own halt error as "some other failure" and swallow it). A file this
+            // run did not write at the step's name is a hard error, never an
+            // overwrite.
+            if let enumeratedWriter {
                 do {
-                    try encoded.write(to: enumURL, options: [.atomic])
-                    emit("[REPLAY] enumerated checkpoint -> \(enumURL.lastPathComponent)")
+                    let written = try enumeratedWriter.write(encoded, step: step)
+                    let note = written.outcome == .replacedThisRunsEarlierSave
+                        ? " (replaced this run's own earlier save of step \(step))"
+                        : ""
+                    emit("[REPLAY] enumerated checkpoint -> \(written.url.lastPathComponent)\(note)")
+                } catch let collision as TrainerOutputFileError {
+                    throw collision
+                } catch let ownershipRefusal as FileSafetyError where ownershipRefusal.isOwnershipRefusal {
+                    throw ownershipRefusal
                 } catch {
                     try Self.reportSaveFailure(error, step: step, what: "enumerated checkpoint")
                 }
@@ -822,7 +1337,6 @@ enum CorpusReplayRunner {
         // Step-locked SGD loop.
         var step = 0
         let logEvery = 50
-        let autosaveEvery = 1000
         var aborted = false
         while true {
             // Ctrl-C: stop cleanly before starting another step so the

@@ -1083,13 +1083,23 @@ public enum PeriodicAutosaveIntervalSec: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Max Periodic Autosaves Kept",
-    description: "Retention cap on the number of periodic (`-periodic.dcmsession`) autosaves kept on disk. After each successful periodic save, older periodic saves beyond this count are deleted (newest kept). Default 3. 0 = unlimited (no pruning, the pre-2026-06-24 behavior). Manual (`-manual`), post-promotion (`-promote`), and signal (`-sigusr2`) saves are never pruned by this knob.",
+    description: "Retention cap on the number of periodic and post-promotion autosaves (`-periodic.dcmsession` and `-promote.dcmsession`, which includes Promote Trainee Now saves) kept on disk, counted as one pool across every session in the Sessions folder. After each successful periodic or post-promotion save, the pool is ranked newest first by the timestamp in the folder name and every autosave beyond this count is deleted. The save just written and the current resume target are never deleted, nor is any folder whose name and session.json do not agree on a minted session ID. Default 3. 0 = unlimited (no pruning). Manual (`-manual`) and signal (`-sigusr2`) saves are never pruned by this knob. Applies only when Automatic Save Pruning Enabled is on (and the build does not force pruning off); otherwise nothing is pruned whatever this cap says.",
     default: 3,
     range: 0...10000,
     category: "Sessions",
     liveTunable: true
 )
 public enum MaxPeriodicAutosavesKept: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Automatic Save Pruning Enabled",
+    description: "Turns on the automatic-save retention pool: after each successful periodic or post-promotion save, delete the oldest `-periodic.dcmsession` and `-promote.dcmsession` folders, across every session, beyond Max Periodic Autosaves Kept (with that knob's protections — the save just written, the resume target, and unverified folders are never deleted). Off by default: no automatic save is ever deleted. NOTE: the current build forces pruning off regardless of this setting (a code-level kill switch, `CheckpointPaths.automaticSavePruningForcedOff`), so turning this on has no effect until a build lifts that switch; every periodic or post-promotion save logs a `[PRUNE] skipped` line naming the reason.",
+    default: false,
+    category: "Sessions",
+    id: "automatic_save_pruning_enabled",
+    liveTunable: true
+)
+public enum AutomaticSavePruningEnabled: TrainingParameterKey {}
 
 // MARK: - TrainingParametersSnapshot
 
@@ -1207,6 +1217,7 @@ public extension TrainingParametersSnapshot {
     var momentumFollowEndHigh: Double { value(for: MomentumFollowEndHigh.self) }
     var periodicAutosaveIntervalSec: Double { value(for: PeriodicAutosaveIntervalSec.self) }
     var maxPeriodicAutosavesKept: Int { value(for: MaxPeriodicAutosavesKept.self) }
+    var automaticSavePruningEnabled: Bool { value(for: AutomaticSavePruningEnabled.self) }
 
 }
 
@@ -1333,6 +1344,7 @@ public final class TrainingParameters {
     public var momentumFollowEndHigh: Double { didSet { if !Self.commitAssignment(MomentumFollowEndHigh.self, value: momentumFollowEndHigh) { momentumFollowEndHigh = oldValue } } }
     public var periodicAutosaveIntervalSec: Double { didSet { if !Self.commitAssignment(PeriodicAutosaveIntervalSec.self, value: periodicAutosaveIntervalSec) { periodicAutosaveIntervalSec = oldValue } } }
     public var maxPeriodicAutosavesKept: Int { didSet { if !Self.commitAssignment(MaxPeriodicAutosavesKept.self, value: maxPeriodicAutosavesKept) { maxPeriodicAutosavesKept = oldValue } } }
+    public var automaticSavePruningEnabled: Bool { didSet { if !Self.commitAssignment(AutomaticSavePruningEnabled.self, value: automaticSavePruningEnabled) { automaticSavePruningEnabled = oldValue } } }
 
     private init() {
         // Read each value from UserDefaults (or definition default if absent / invalid).
@@ -1417,6 +1429,7 @@ public final class TrainingParameters {
         self.momentumFollowEndHigh = Self.read(MomentumFollowEndHigh.self)
         self.periodicAutosaveIntervalSec = Self.read(PeriodicAutosaveIntervalSec.self)
         self.maxPeriodicAutosavesKept = Self.read(MaxPeriodicAutosavesKept.self)
+        self.automaticSavePruningEnabled = Self.read(AutomaticSavePruningEnabled.self)
     }
 
     // MARK: Snapshot
@@ -1505,6 +1518,7 @@ public final class TrainingParameters {
         v[MomentumFollowEndHigh.id] = MomentumFollowEndHigh.encode(momentumFollowEndHigh)
         v[PeriodicAutosaveIntervalSec.id] = PeriodicAutosaveIntervalSec.encode(periodicAutosaveIntervalSec)
         v[MaxPeriodicAutosavesKept.id] = MaxPeriodicAutosavesKept.encode(maxPeriodicAutosavesKept)
+        v[AutomaticSavePruningEnabled.id] = AutomaticSavePruningEnabled.encode(automaticSavePruningEnabled)
         return v
     }
 
@@ -1698,6 +1712,8 @@ public final class TrainingParameters {
             try PeriodicAutosaveIntervalSec.definition.validate(raw); periodicAutosaveIntervalSec = try PeriodicAutosaveIntervalSec.decode(raw)
         case MaxPeriodicAutosavesKept.id:
             try MaxPeriodicAutosavesKept.definition.validate(raw); maxPeriodicAutosavesKept = try MaxPeriodicAutosavesKept.decode(raw)
+        case AutomaticSavePruningEnabled.id:
+            try AutomaticSavePruningEnabled.definition.validate(raw); automaticSavePruningEnabled = try AutomaticSavePruningEnabled.decode(raw)
         default:
             throw TrainingConfigError.unknownParameter(id: id)
         }
@@ -1948,7 +1964,8 @@ public final class TrainingParameters {
         MomentumFollowEndLow.self,
         MomentumFollowEndHigh.self,
         PeriodicAutosaveIntervalSec.self,
-        MaxPeriodicAutosavesKept.self
+        MaxPeriodicAutosavesKept.self,
+        AutomaticSavePruningEnabled.self
     ]
 
     public nonisolated static var allDefinitions: [TrainingParameterDefinition] {

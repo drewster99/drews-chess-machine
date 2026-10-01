@@ -85,6 +85,46 @@ struct CorpusMetadata: Codable, Equatable, Sendable {
     var sources: [CorpusSource]
 }
 
+/// What `GameCorpus.recoverOpenShard(at:)` did with one unsealed `.open`
+/// shard.
+enum OpenShardRecovery: Equatable, Sendable {
+    /// The shard held at least one complete game: it was truncated to its
+    /// last complete game (dropping `discardedTailBytes` of torn tail) and
+    /// sealed under `sealedShard`.
+    case sealed(openShard: URL, sealedShard: URL, gameCount: Int, plyCount: Int, discardedTailBytes: Int)
+    /// The shard held no complete game: it was deleted (its header plus
+    /// `discardedTailBytes` of torn tail).
+    case removedEmpty(openShard: URL, discardedTailBytes: Int)
+
+    /// One line describing the outcome, for logs and reports.
+    var summary: String {
+        switch self {
+        case let .sealed(openShard, sealedShard, gameCount, plyCount, discardedTailBytes):
+            return "\(openShard.lastPathComponent): sealed as \(sealedShard.lastPathComponent) with "
+                + "\(gameCount) complete game(s), \(plyCount) plies; dropped \(discardedTailBytes) byte(s) of "
+                + "incomplete tail"
+        case let .removedEmpty(openShard, discardedTailBytes):
+            return "\(openShard.lastPathComponent): removed — it held no complete game (header plus "
+                + "\(discardedTailBytes) byte(s) of incomplete tail)"
+        }
+    }
+}
+
+/// A corpus as seen by a reader: its metadata and sealed shards, read without
+/// modifying anything (see `GameCorpus.openReadOnly`). A value snapshot taken
+/// at open time; shards a writer seals afterwards are not in it.
+struct GameCorpusReadOnlyView: Sendable {
+    let directory: URL
+    let metadata: CorpusMetadata
+    /// Sealed shard files in stable (sequence) order.
+    let sealedShardURLs: [URL]
+    /// Unsealed `.open` shards present at open time, which this view neither
+    /// reads nor touches — a live writer's shard or a crash leftover.
+    let ignoredOpenShardURLs: [URL]
+
+    var corpusID: String { metadata.corpusID }
+}
+
 /// A standalone, append-only game corpus on disk: a directory under `Corpora/`
 /// holding a `corpus.json` and a series of self-describing shard files.
 ///
@@ -148,9 +188,21 @@ final class GameCorpus {
         return corpus
     }
 
-    /// Open an existing corpus directory. Any leftover `.open` shard (from a
-    /// crash) is recovered: scanned to its last complete game, truncated, and
-    /// sealed, leaving the corpus consistent with only sealed shards.
+    /// Open an existing corpus directory **for writing**. Any leftover `.open`
+    /// shard is recovered: scanned to its last complete game, truncated, and
+    /// sealed (or deleted when it holds no game), leaving the corpus consistent
+    /// with only sealed shards.
+    ///
+    /// That recovery modifies the corpus, and it cannot tell a crash leftover
+    /// from a shard another process is still appending to — run against a
+    /// corpus that is being recorded or imported into, it truncates and seals
+    /// the writer's live shard out from under it. So only the process that
+    /// owns the corpus as its single writer may call this. Anything that only
+    /// reads a corpus (corpus replay, inspection) uses `openReadOnly`, which
+    /// never changes a byte on disk. No app path opens an existing corpus for
+    /// writing today; the explicit, operator-invoked recovery of crash
+    /// leftovers is `--validate-corpus <dir> --fix` (`CorpusValidator`), which
+    /// shares `recoverOpenShard(at:)` with this.
     static func open(directory: URL,
                      shardSoftLimitBytes: Int = defaultShardSoftLimitBytes) throws -> GameCorpus {
         let metaURL = directory.appendingPathComponent(metadataFilename)
@@ -168,6 +220,30 @@ final class GameCorpus {
                                 nextShardSeq: nextSeq)
         try corpus.recoverOpenShardsIfPresent()
         return corpus
+    }
+
+    /// Open an existing corpus for reading only: decode `corpus.json` and list
+    /// the sealed shards, changing nothing on disk.
+    ///
+    /// Unlike `open(directory:)`, no `.open` shard is recovered, truncated,
+    /// sealed, renamed or deleted. An `.open` shard is either a writer's live
+    /// shard (a recording or import still in progress) or a crash leftover,
+    /// and a reader cannot tell which — so it never touches one, and it never
+    /// reads one either (its tail may be mid-append). Those shards are
+    /// returned in `ignoredOpenShardURLs` so the caller can say loudly which
+    /// games it is not seeing.
+    static func openReadOnly(directory: URL) throws -> GameCorpusReadOnlyView {
+        let metadata = try Self.loadMetadata(directory: directory)
+        let entries: [URL]
+        do {
+            entries = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        } catch {
+            throw GameCorpusError.ioFailed("list corpus directory \(directory.path): \(error.localizedDescription)")
+        }
+        return GameCorpusReadOnlyView(directory: directory,
+                                      metadata: metadata,
+                                      sealedShardURLs: Self.sealedShardURLs(among: entries),
+                                      ignoredOpenShardURLs: Self.openShardURLs(among: entries))
     }
 
     // MARK: Recording
@@ -269,8 +345,22 @@ final class GameCorpus {
     func sealedShardURLs() throws -> [URL] {
         let fm = FileManager.default
         let entries = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-        return entries
-            .filter { $0.pathExtension == Self.shardExtension && $0.lastPathComponent.hasPrefix("shard-") }
+        return Self.sealedShardURLs(among: entries)
+    }
+
+    /// The sealed shard files among a corpus directory's `entries`, in stable
+    /// (sequence) order.
+    static func sealedShardURLs(among entries: [URL]) -> [URL] {
+        entries
+            .filter { $0.pathExtension == shardExtension && $0.lastPathComponent.hasPrefix("shard-") }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// The unsealed (`.open`) shard files among a corpus directory's
+    /// `entries`, in stable order — the same selection crash recovery acts on.
+    static func openShardURLs(among entries: [URL]) -> [URL] {
+        entries
+            .filter { $0.pathExtension == "open" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
@@ -330,24 +420,24 @@ final class GameCorpus {
     /// corpus metadata: the instance recorder path and `CorpusValidator`'s
     /// metadata-repair path both go through here so they produce byte-identical
     /// files.
+    ///
+    /// Replaces `corpus.json` only when it is a regular file (or absent):
+    /// `replaceItemAt` over a directory of that name would swap the directory
+    /// out of existence. The staging file gets a per-call unique name and is
+    /// created exclusively, so failure cleanup removes only the file this call
+    /// created — never a pre-existing `corpus.json.tmp`, and never a folder of
+    /// that name, which a recursive `removeItem` cleanup would delete. All of
+    /// that is `FileSafety.replaceRegularFile`.
     static func persistMetadata(_ metadata: CorpusMetadata, to directory: URL) throws {
         let url = directory.appendingPathComponent(metadataFilename)
-        let tmp = url.appendingPathExtension("tmp")
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data: Data
         do { data = try encoder.encode(metadata) }
         catch { throw GameCorpusError.corruptMetadata("encode corpus.json: \(error.localizedDescription)") }
         do {
-            try data.write(to: tmp, options: [.atomic])
-            try corpusFullSync(tmp)
-            if FileManager.default.fileExists(atPath: url.path) {
-                _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
-            } else {
-                try FileManager.default.moveItem(at: tmp, to: url)
-            }
+            try FileSafety.replaceRegularFile(data, at: url, expectedIdentity: nil)
         } catch {
-            do { try FileManager.default.removeItem(at: tmp) } catch { /* best-effort cleanup */ }
             throw GameCorpusError.ioFailed("write corpus.json: \(error.localizedDescription)")
         }
     }
@@ -355,21 +445,51 @@ final class GameCorpus {
     private func recoverOpenShardsIfPresent() throws {
         let fm = FileManager.default
         let entries = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-        let openShards = entries
-            .filter { $0.pathExtension == "open" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        for openURL in openShards {
-            let scan = try GameCorpusShardIO.scanOpenShard(at: openURL)
-            let writer = try ShardWriter(resumingAt: openURL,
-                                         validByteCount: scan.validByteCount,
-                                         gameCount: scan.gameCount,
-                                         plyCount: scan.plyCount)
-            if scan.gameCount > 0 {
-                _ = try writer.seal(sealUnix: Int64(Date().timeIntervalSince1970))
-            } else {
-                try writer.discardEmpty()
-            }
+        for openURL in Self.openShardURLs(among: entries) {
+            try Self.recoverOpenShard(at: openURL)
         }
+    }
+
+    /// Recover one unsealed `.open` shard left by a crash: scan it to its
+    /// last complete game, truncate the torn tail, and seal it — or, when it
+    /// holds no complete game, delete it. Logs the outcome as
+    /// `[CORPUS-RECOVERY]` and returns it.
+    ///
+    /// This rewrites the shard, and nothing distinguishes a crash leftover
+    /// from the live shard of a recording or import still appending to it:
+    /// run against a corpus that is being written, it truncates and seals that
+    /// writer's shard out from under it. Callers — `GameCorpus.open` and
+    /// `CorpusValidator`'s `fix` pass — must only run it when nothing is
+    /// writing to the corpus. Only a regular file is ever recovered; anything
+    /// else with a `.open` name is refused, untouched.
+    @discardableResult
+    static func recoverOpenShard(at openURL: URL) throws -> OpenShardRecovery {
+        guard let item = try FileSafety.existingItem(at: openURL) else {
+            throw GameCorpusError.ioFailed("recover \(openURL.lastPathComponent): it no longer exists")
+        }
+        guard item.kind == .regularFile else {
+            throw FileSafetyError.notARegularFile(path: openURL.path, kind: item.kind)
+        }
+        let scan = try GameCorpusShardIO.scanOpenShard(at: openURL)
+        let writer = try ShardWriter(resumingAt: openURL,
+                                     validByteCount: scan.validByteCount,
+                                     gameCount: scan.gameCount,
+                                     plyCount: scan.plyCount)
+        let discardedTailBytes = scan.fileSize - scan.validByteCount
+        let recovery: OpenShardRecovery
+        if scan.gameCount > 0 {
+            let sealedURL = try writer.seal(sealUnix: Int64(Date().timeIntervalSince1970))
+            recovery = .sealed(openShard: openURL,
+                               sealedShard: sealedURL,
+                               gameCount: scan.gameCount,
+                               plyCount: scan.plyCount,
+                               discardedTailBytes: discardedTailBytes)
+        } else {
+            try writer.discardEmpty()
+            recovery = .removedEmpty(openShard: openURL, discardedTailBytes: discardedTailBytes)
+        }
+        SessionLogger.shared.log("[CORPUS-RECOVERY] \(recovery.summary)")
+        return recovery
     }
 
     private static func highestShardSeq(in directory: URL) throws -> UInt32? {

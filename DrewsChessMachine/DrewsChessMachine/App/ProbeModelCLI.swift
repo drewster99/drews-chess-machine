@@ -37,8 +37,28 @@ enum ProbeModelCLI {
         case both
     }
 
-    static func runAndExit(modelPath: String, set: ProbeSet, outPath: String?) -> Never {
+    /// `--probe-out` refuses an existing file unless this flag is also
+    /// given; the parser in `DrewsChessMachineApp` passes its presence as
+    /// `replaceExistingOut`.
+    static let replaceExistingOutFlag = "--probe-out-overwrite"
+
+    /// Run the probes and exit. `outPath`, when given, receives the same
+    /// JSON lines as stdout. It is opened before any checkpoint is loaded, and
+    /// it must be new — or, with `replaceExistingOut`, an existing *regular
+    /// file*, which is emptied first. A directory, symbolic link or other
+    /// non-regular item there is always refused. Any failure to open it ends
+    /// the process with a non-zero exit before the (long) probe run starts, so
+    /// a run never completes with its results silently undelivered.
+    static func runAndExit(modelPath: String, set: ProbeSet, outPath: String?, replaceExistingOut: Bool) -> Never {
         SessionLogger.shared.start()
+
+        if replaceExistingOut && outPath == nil {
+            FileHandle.standardError.write(Data(
+                "error: \(replaceExistingOutFlag) needs --probe-out <file>\n".utf8
+            ))
+            SessionLogger.shared.shutdown()
+            Darwin.exit(66)
+        }
 
         let expanded = (modelPath as NSString).expandingTildeInPath
         let rootURL = URL(fileURLWithPath: expanded)
@@ -52,9 +72,25 @@ enum ProbeModelCLI {
 
         var handle: FileHandle?
         if let outPath {
-            let expandedOut = (outPath as NSString).expandingTildeInPath
-            FileManager.default.createFile(atPath: expandedOut, contents: nil)
-            handle = FileHandle(forWritingAtPath: expandedOut)
+            let outURL = URL(fileURLWithPath: (outPath as NSString).expandingTildeInPath)
+            do {
+                handle = try FileSafety.openForWriting(
+                    at: outURL,
+                    existingRegularFile: replaceExistingOut ? .truncate : .refuse
+                )
+            } catch FileSafetyError.alreadyExists(path: let path, kind: .regularFile) {
+                FileHandle.standardError.write(Data(
+                    "error: --probe-out \(path) already exists; pass \(replaceExistingOutFlag) to replace it\n".utf8
+                ))
+                SessionLogger.shared.shutdown()
+                Darwin.exit(65)
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "error: --probe-out: \(error.localizedDescription)\n".utf8
+                ))
+                SessionLogger.shared.shutdown()
+                Darwin.exit(65)
+            }
         }
 
         func emit(_ obj: [String: Any]) {

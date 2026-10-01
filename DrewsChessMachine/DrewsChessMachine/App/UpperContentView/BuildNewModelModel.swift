@@ -137,6 +137,28 @@ final class BuildNewModelModel {
         )
     }
 
+    // MARK: Group activation
+
+    /// Set group `index`'s main-path activation. The group's SE FC1
+    /// activation follows it when the two were equal beforehand — the SE
+    /// activation's default is "same as the group", so a user who never
+    /// touched it keeps that — and stays put when the user chose a different
+    /// one on purpose (e.g. ReLU blocks with a leaky-ReLU FC1).
+    ///
+    /// The follow is also what keeps an SE-less group valid: `validate()`
+    /// requires its SE activation to equal its activation, and the editor
+    /// disables the SE-activation picker on such a group, so without the
+    /// follow every activation change on an SE-less group would produce a
+    /// validation error the user could not fix in place.
+    func setBlockActivation(_ activation: ActivationFunction, forGroupAt index: Int) {
+        guard blockGroups.indices.contains(index) else { return }
+        let seActivationFollowsGroup = blockGroups[index].seActivation == blockGroups[index].activationFunction
+        blockGroups[index].activationFunction = activation
+        if seActivationFollowsGroup {
+            blockGroups[index].seActivation = activation
+        }
+    }
+
     // MARK: Group manipulation (the editor's add/duplicate/remove/reorder)
 
     /// Total blocks across all groups (clamped ≥1 for ratios mid-edit).

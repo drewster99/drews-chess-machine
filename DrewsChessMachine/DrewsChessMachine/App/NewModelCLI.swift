@@ -56,6 +56,9 @@ enum NewModelCLI {
 
         // Never overwrite — same discipline as CheckpointManager.saveModel. A
         // reusable starting net is precious; refuse rather than stomp it.
+        // This check only fails fast, before the slow build; the guarantee is
+        // the exclusive publish below, which holds even when something
+        // appears at the path while the network is being built.
         if FileManager.default.fileExists(atPath: outURL.path) {
             FileHandle.standardError.write(Data(
                 "error: --new-model: refusing to overwrite existing file \(outURL.path)\n".utf8
@@ -102,7 +105,19 @@ enum NewModelCLI {
                 at: outURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            try encoded.write(to: outURL, options: [.atomic])
+            // Staged in a temporary sibling and renamed into place only if
+            // nothing — file, folder or symbolic link — is at the path, so
+            // neither something that got there after the check above nor a
+            // half-written file under the final name is possible.
+            do {
+                try FileSafety.publishNewFile(encoded, to: outURL)
+            } catch FileSafetyError.alreadyExists(path: _, kind: let kind) {
+                FileHandle.standardError.write(Data(
+                    "error: --new-model: refusing to overwrite \(outURL.path): a \(kind) already exists at that path (created while the network was being built, or a symbolic link)\n".utf8
+                ))
+                SessionLogger.shared.shutdown()
+                Darwin.exit(72)
+            }
         } catch {
             FileHandle.standardError.write(Data(
                 "error: --new-model: build/save failed: \(error)\n".utf8

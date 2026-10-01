@@ -491,8 +491,11 @@ file regardless of which entries the caller actually keeps.
 Saving a `.dcmsession` bundle that contains a replay buffer runs the
 following durability steps, in order:
 
-1. Write all four files (two `.dcmmodel`, `session.json`,
-   `.replay_buffer.bin`) into a `tmpDir` staging directory.
+1. Create the `tmpDir` staging directory (`<final>.tmp`) exclusively —
+   `mkdir` fails if anything already occupies that path, and the save
+   then stops with `stagingPathAlreadyExists`, leaving that item
+   untouched — and write all four files (two `.dcmmodel`,
+   `session.json`, `.replay_buffer.bin`) into it.
 2. `fullSyncPath` each of the four files (`F_FULLFSYNC`).
 3. Verify:
    - Both `.dcmmodel`: bit-exact + forward-pass round-trip.
@@ -507,22 +510,37 @@ following durability steps, in order:
 6. `fullSyncPath(CheckpointPaths.sessionsDir)` — flush the parent
    directory so the rename itself is durable.
 
-Any failure in steps 1-4 removes the tmp directory via `cleanupTmp()`
-and throws; no final-named artifact appears on disk. A failure in
+Any failure in steps 1-5 after the staging directory was created
+removes it — it is provably this save's own — and throws; no
+final-named artifact appears on disk. A staging path that already
+existed is never removed by the save. A failure in
 step 6 leaves the session visible (the rename is already committed)
 but logs a warning that the parent-directory flush wasn't
 guaranteed.
 
 ### Launch-time orphan sweep
 
-At app start, before any save or load UI activates,
-`CheckpointPaths.cleanupOrphans()` removes any entry ending in
-`.tmp` from `Sessions/` (directories) and any entry ending in
-`.dcmmodel.tmp` from `Models/` (files). Those are the suffixes
-`saveSession`'s staging dir and `saveModel`'s staging file use —
-their presence after launch means a previous save was interrupted
-mid-flight. Each removal is logged via `[CLEANUP]`; failures log
+At GUI launch, `CheckpointPaths.cleanupOrphans()` removes staging
+debris from interrupted saves: `Sessions/<name>.dcmsession.tmp`
+entries that are real directories, and `Models/<name>.safetensors.tmp`
+/ legacy `<name>.dcmmodel.tmp` entries that are regular files. Launch
+is not proof that no save is running — a second app instance may be
+mid-save in the same folder — so an entry is removed only when its
+newest modification date (for a directory, the newest of the
+directory and its direct children) is older than
+`CheckpointPaths.orphanStagingMinimumAge`. Symbolic links, entries of
+the wrong type, and fresh entries are kept and logged with the reason
+via `[CLEANUP]`; each removal is logged via `[CLEANUP]`; failures log
 `[CLEANUP-ERR]` and do not abort the sweep.
+
+The same sweep, under the same age bound, also removes `FileSafety`'s
+own hidden staging files from both folders — regular files named
+exactly `.<name>.<UUID>.tmp` (`FileSafety.destinationName(ofTemporarySiblingName:)`),
+left by a process killed between staging a file (e.g. a corpus-replay
+rolling `--out-model` written into `Models/`) and renaming it into
+place. Every removal is identity-checked: the item's device and inode
+are recorded when it is inspected, and `FileSafety.removeOwnedItem`
+deletes it only if the path still holds that very item.
 
 ### Session-load cross-check
 
@@ -557,6 +575,8 @@ check is skipped rather than forced to mismatch.
 | `.hashMismatch` | SHA-256 trailer does not match recomputed hash |
 | `.truncatedBody(expected, got)` | A section read returned fewer bytes than requested (should be caught by `.sizeMismatch` first, but kept as a defense) |
 | `.writeFailed(err)` | Write-side I/O failure |
+| `.destinationExists(path)` | `write(to:)` found a regular file already at the destination; it only ever creates a new file, and leaves the existing one untouched |
+| `.destinationNotAFile(path, kind)` | `write(to:)` found something other than a regular file (a folder, a symbolic link, …) at the destination; left untouched |
 | `.readFailed(err)` | Read-side I/O failure that does not fit a more specific error |
 
 ## Current format: v7

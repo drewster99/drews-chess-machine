@@ -16,7 +16,10 @@ extension SessionController {
 
     /// Whether to write a `-promote.dcmsession` autosave after each arena
     /// promotion (re-using the weight snapshots taken under the arena's
-    /// pauses). On by default.
+    /// pauses). On by default. These saves are in the automatic-save
+    /// retention pool (`max_periodic_autosaves_kept`), so each successful
+    /// one goes to `scheduleAutomaticSaveRetentionSweep`, which sweeps only
+    /// when pruning is enabled and not forced off by the build.
     nonisolated static let autosaveSessionsOnPromote: Bool = true
 
 
@@ -614,7 +617,7 @@ extension SessionController {
                         architecture: promotedArch,
                         replayBuffer: bufferForAutosave,
                         chartSnapshot: chartSnapshotForAutosave,
-                        trigger: "promote"
+                        trigger: SessionSaveTrigger.promotionDiskTag
                     )
                     let bufStr: String
                     if let snap = bufferForAutosave?.stateSnapshot() {
@@ -644,6 +647,12 @@ extension SessionController {
                         self.periodicSaveController?.noteSuccessfulSave(at: Date())
                         self.checkpoint?.lastSavedAt = Date()
                         self.checkpoint?.lastResumedAt = nil
+                        // Promotion saves share the automatic-save
+                        // retention pool with periodic autosaves.
+                        self.scheduleAutomaticSaveRetentionSweep(
+                            afterSaving: url,
+                            diskTag: SessionSaveTrigger.promotionDiskTag
+                        )
                     case .failure(let error):
                         self.checkpoint?.setCheckpointStatus(
                             "Autosave failed (post-promotion): \(error.localizedDescription)",

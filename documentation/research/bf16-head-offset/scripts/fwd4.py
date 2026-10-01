@@ -76,6 +76,10 @@ def forward(T, arch, x, R=frozenset(), capture=False, vfc2=None, q=None):
     g = groups[0]
     assert g['activation_style'] == 'pre' and g['skip_merge'] == 'clean_add' and g['se_style'] == 'scale_and_bias'
     assert g.get('output_norm') == 'layer_norm' and g['use_rezero'] and arch['policy_head_style'] == 'intermediate_conv'
+    # ReLU everywhere, SE FC1 included. A file without `se_activation`
+    # predates it (format v4 or older): its FC1 used the group's activation.
+    assert arch['activation_function'] == 'relu' and g['activation_function'] == 'relu'
+    assert g.get('se_activation', g['activation_function']) == 'relu', 'only a ReLU SE FC1 is modelled'
     x = c('input', x)
     h = c('stem.conv', conv(x, T['stem.conv.weight']))
     h = bn(c, h, T, 'stem.bn', 'stem.bn')

@@ -21,6 +21,8 @@ def act(x,fn,q):
     if fn=='relu': return np.maximum(x,0)
     if fn=='silu': return q(x*q(1/(1+np.exp(-x))))
     if fn=='gelu': return q(0.5*x*(1+_erf(x/math.sqrt(2))))
+    # ActivationFunction.leakyReLUNegativeSlope in the Swift source.
+    if fn=='leaky_relu': return np.where(x>=0,x,q(0.01*x))
     raise ValueError(fn)
 def conv(x,w,q,qm=None):
     N,C=x.shape[:2]; O,_,k,_=w.shape; p=(k-1)//2
@@ -42,7 +44,9 @@ def fc(x,W,b,q,qm=None):  # W stored [out,in]
 def se(z,T,pre,g,q,qm=None):
     base=pre+('se_attenuate.' if g['se_style']=='attenuate_only' else 'se_scalebias.')
     s=q(z.mean((2,3)))
-    s=act(fc(s,T[base+'fc1.weight'],T[base+'fc1.bias'],q,qm),g['activation_function'],q)
+    # SE FC1 has its own activation (`se_activation`); norm_arch resolves it
+    # for files that predate the field.
+    s=act(fc(s,T[base+'fc1.weight'],T[base+'fc1.bias'],q,qm),g['se_activation'],q)
     s=fc(s,T[base+'fc2.weight'],T[base+'fc2.bias'],q,qm)
     C=z.shape[1]; sig=lambda a:q(1/(1+np.exp(-a)))
     if g['se_style']=='attenuate_only': return q(z*sig(s)[:,:,None,None])

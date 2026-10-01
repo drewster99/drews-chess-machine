@@ -164,6 +164,20 @@ substring is replaced with `-vsuci-step<N>`; **otherwise** it is
 `foo-step<N>.safetensors`, while `foo-vsuci-latest.safetensors` enumerates as
 `foo-vsuci-step<N>.safetensors`.)
 
+Neither file silently replaces something the run does not own. Before
+training, the rolling `--out-model` is refused if it is the `--start-model`
+itself or not a regular file, or if its name is shaped like a step-enumerated
+checkpoint (`…-vsuci-step<N>`, `…-replay-step<N>`, `…-step<N>`) whether or not a
+file is there; an existing file there is replaced only when it holds the
+`--start-model`'s `model_id` at the start model's own `training_step` (the
+rolling file of the state being continued) — anything else, including the
+output of an earlier run of the same command (every run saves under its own new
+`model_id`) and an earlier checkpoint of the same line, refuses the run unless
+`--overwrite-out-model` is passed. Enumerated step files are never overwritten: step numbers restart
+in every run, so a run whose stem already holds step files it could reach
+refuses to start — give every resumed segment its own `--out-model` stem
+(e.g. `…-resume2-vsuci-latest.safetensors`).
+
 ## Timing model — fixed per-move only, no clock
 
 The driver sends **`go <goLimit>` verbatim every move** (a fixed per-move

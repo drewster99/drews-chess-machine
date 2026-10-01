@@ -2636,6 +2636,11 @@ final class ReplayBuffer: @unchecked Sendable {
         case upperBoundExceeded(field: String, value: Int64, max: Int64)
         case writeFailed(Error)
         case readFailed(Error)
+        /// Something other than a regular file is at the write destination.
+        case destinationNotAFile(path: String, kind: String)
+        /// A regular file is already at the write destination. `write(to:)`
+        /// only ever creates a new file.
+        case destinationExists(path: String)
 
         var errorDescription: String? {
             switch self {
@@ -2658,6 +2663,10 @@ final class ReplayBuffer: @unchecked Sendable {
                 return "Replay buffer header field '\(field)' value \(value) exceeds sanity cap \(max) — file is malformed or corrupted"
             case .writeFailed(let err): return "Replay buffer write failed: \(err)"
             case .readFailed(let err): return "Replay buffer read failed: \(err)"
+            case .destinationNotAFile(let path, let kind):
+                return "Replay buffer write refused: \(path) exists and is not a regular file (\(kind))"
+            case .destinationExists(let path):
+                return "Replay buffer write refused: \(path) already exists; a buffer file is only ever written as a new file"
             }
         }
     }
@@ -2735,6 +2744,10 @@ final class ReplayBuffer: @unchecked Sendable {
     /// of the write, which pauses appends and samples until the write
     /// finishes.
     ///
+    /// `url` must name nothing yet: the file is created exclusively, and
+    /// anything already there is refused untouched (`.destinationExists` for
+    /// a regular file, `.destinationNotAFile` for anything else).
+    ///
     /// Returns the `StateSnapshot` that was actually serialized.
     /// Post-save verification code that wants to compare the written
     /// file's counters against ground truth must use this return
@@ -2789,23 +2802,23 @@ final class ReplayBuffer: @unchecked Sendable {
         var ttl64 = Int64(totalAdded)
         withUnsafeBytes(of: &ttl64) { header.append(contentsOf: $0) }
 
-        let fm = FileManager.default
-        if fm.fileExists(atPath: url.path) {
-            do {
-                try fm.removeItem(at: url)
-            } catch {
-                // Surface the original removal failure directly —
-                // hiding it behind `try?` would let the subsequent
-                // createFile / FileHandle init throw a secondary
-                // "file busy" or "permission denied" error that
-                // obscures the root cause.
-                throw PersistenceError.writeFailed(error)
-            }
-        }
-        fm.createFile(atPath: url.path, contents: nil)
+        // The file is created exclusively: anything already at `url` — a
+        // previous buffer file, a folder, a symbolic link, a FIFO — is refused
+        // and left exactly as it was. Removing whatever sits at a path before
+        // writing is how a mistyped path once cost a whole folder elsewhere in
+        // the app, and truncating an existing buffer file in place would leave
+        // it torn by a crash mid-write. The one production caller
+        // (`CheckpointManager.saveSession`) writes into the save's own
+        // freshly created staging folder, where nothing can already be at the
+        // name, and the whole folder is renamed into place only after the
+        // write is verified.
         let handle: FileHandle
         do {
-            handle = try FileHandle(forWritingTo: url)
+            handle = try FileSafety.openForWriting(at: url, existingRegularFile: .refuse)
+        } catch FileSafetyError.alreadyExists(path: let path, kind: .regularFile) {
+            throw PersistenceError.destinationExists(path: path)
+        } catch FileSafetyError.alreadyExists(path: let path, kind: let kind) {
+            throw PersistenceError.destinationNotAFile(path: path, kind: kind.description)
         } catch {
             throw PersistenceError.writeFailed(error)
         }

@@ -30,6 +30,14 @@
 //  writes exactly one `[ARCH]` line per load (and display-only readers, such
 //  as the model catalog, stay quiet).
 //
+//  Version history (each version requires every field the earlier ones did):
+//  - v3 and unversioned: legacy; no version-gated architecture fields.
+//  - v4: block groups must state `se_beta_init` (issue #7). Older files
+//    resolve it to `glorot`.
+//  - v5: block groups must state `se_activation` (issue #2). Older files
+//    resolve it to the group's own `activation_function`, which is the
+//    activation the SE FC1 used before the field existed.
+//
 
 import Foundation
 
@@ -38,17 +46,27 @@ enum ArchitectureFormat {
     /// The version every writer stamps today. Safetensors write it as the
     /// string `dcm_format_version`; presets and `architecture.json` write it
     /// as the integer `format_version`.
-    static let currentVersion = 4
+    static let currentVersion = 5
 
     /// First version whose block groups must carry `se_beta_init`
     /// (`BlockGroup.seBetaInit`). Files older than this resolve a missing
     /// field to `.glorot`, the only behavior that existed before it.
     static let seBetaInitRequiredFromVersion = 4
 
+    /// First version whose block groups must carry `se_activation`
+    /// (`BlockGroup.seActivation`, GitHub issue #2). Files older than this
+    /// resolve a missing field to the group's own `activation_function` —
+    /// before the field existed the SE FC1 always used the group's
+    /// activation, so that resolution rebuilds exactly the graph the file
+    /// was trained with (ReLU for every model saved before SiLU/GELU/leaky
+    /// ReLU existed, and the group's activation for any model that used one).
+    static let seActivationRequiredFromVersion = 5
+
     /// The version reported for a carrier that predates version markers
     /// entirely — a safetensors file with no `dcm_format_version`, or a
     /// preset / `architecture.json` with no `format_version`. Every such file
-    /// was written before `seBetaInitRequiredFromVersion`, so it is legacy.
+    /// was written before `seBetaInitRequiredFromVersion` (and therefore
+    /// before every later gate), so it is legacy.
     static let unversionedLegacyVersion = 3
 
     /// JSON key of the version marker in presets and `architecture.json`.
@@ -76,8 +94,8 @@ enum ArchitectureFormat {
             switch self {
             case .missingRequiredField(let field, let location, let version, let source):
                 return "\(source): architecture field '\(field)' is missing at \(location); "
-                    + "it is required in format v\(version) files (a file of format "
-                    + "v\(ArchitectureFormat.seBetaInitRequiredFromVersion) or later must state it explicitly)"
+                    + "a format v\(version) file must state it explicitly (only files written before "
+                    + "the field existed may omit it)"
             case .unsupportedFutureVersion(let version, let newest, let source):
                 return "\(source): format v\(version) is newer than this build supports (newest: v\(newest))"
             case .unparseableVersion(let value, let source):
@@ -122,6 +140,10 @@ enum ArchitectureFormat {
 
         /// True when `se_beta_init` may be absent and resolves to `.glorot`.
         var allowsMissingSEBetaInit: Bool { formatVersion < ArchitectureFormat.seBetaInitRequiredFromVersion }
+
+        /// True when `se_activation` may be absent and resolves to the
+        /// group's own `activation_function`.
+        var allowsMissingSEActivation: Bool { formatVersion < ArchitectureFormat.seActivationRequiredFromVersion }
 
         /// The same file, re-stamped with the version a nested carrier
         /// declares (a preset's `format_version`), sharing the log.

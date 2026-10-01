@@ -415,6 +415,9 @@ Current v4 block (reference): `pre` / `relu` / `clean_add` / rezero on (α init
 
 ### Network-wide `activation_function`
 
+> Later changes: block groups made the activation per group, and since format v5 the
+> SE FC1 has its own per-group `se_activation` (§18). The text below is the original design.
+
 A **single** `activation_function` (`relu` \| `silu` \| `gelu`) applied at **every
 hidden nonlinearity** in the network — block main-path, SE FC1, tower-end, and both
 heads. Verified across all of git history: every architecture from the first commit
@@ -825,3 +828,44 @@ listed in the status block at the top.
   summary, parameter count and legacy `.dcmmodel` archHash.
 - **`--derive-model`** (see `documentation/deriving-models.md`) makes paired copies that
   differ only in re-initialized tensors, and records lineage.
+
+## 18. Architecture format v5: `se_activation` (issue #2, implemented 2026-10-01)
+
+- **New per-group field** `block_groups[].se_activation`: `relu` | `silu` | `gelu` | `leaky_relu`
+  (`BlockGroup.seActivation`). It is the activation after the SE excitation FC1 (the pooled
+  `C → C/r` bottleneck), independent of the group's main-path `activation_function`.
+  Before it existed the FC1 used the group's activation. The motivation is the dead FC1
+  units measured in the SE style experiment (`experiments/20260929-se-style-ab/TENSOR-STATS.md`,
+  finding 4): leaky ReLU on FC1 alone runs on `[batch, C/r]` vectors and is nearly free,
+  where leaky ReLU on every conv costs several percent of training speed. No tensor
+  changes, so the parameter count and tensor plan are unchanged.
+- **Validation:** any value is allowed on a group with an SE block. On an SE-less group
+  the field has no effect, and `validate()` requires it to equal the group's
+  `activation_function` (`NetworkArchitectureError.seActivationRequiresSE`), so two
+  architectures that build the same graph are also equal.
+- **Format version 5** (`ArchitectureFormat.currentVersion`,
+  `ArchitectureFormat.seActivationRequiredFromVersion`). Safetensors write
+  `dcm_format_version` = `"5"`; presets and `architecture.json` write `format_version` 5.
+- **Decoding rules** (same gate pattern as §17):
+  - A file older than v5 (v4, v3, or no marker) resolves a missing `se_activation` to the
+    group's own `activation_function`, which is exactly what the FC1 used when the file
+    was written. It is logged once per load, e.g.
+    `[ARCH] legacy file (format v4) <file>: block_groups[0].se_activation := relu (the group's activation_function)`.
+    The legacy uniform-tower keys resolve it to the tower's activation.
+  - A v5+ file without the field fails with `missingRequiredField`, naming the field, the
+    group and the file. Encoding always writes the field.
+- **Identity:** code presets set `seActivation` = their activation, and a legacy file of
+  every preset decodes to a value equal to the preset (same hash, summary, parameter
+  count, tensor plan and legacy `.dcmmodel` archHash), building the same forward pass
+  (`SEActivationTests`).
+- **Display:** the summary and the Build-screen diagram append ` (fc1 <activation>)` to
+  the SE clause only when it differs from the group's activation, e.g.
+  `SE+/4 (fc1 leaky_relu)`, so every existing summary is byte-identical.
+- **Build New Model:** a per-group "SE activation" picker, always present, disabled on an
+  SE-less group. It follows the group's "Activation" picker while the two are equal and
+  stays put once set to something else (`BuildNewModelModel.setBlockActivation`).
+- **`--derive-model`:** new `--set-se-activation <value> [--group i]...` sets the field on
+  SE groups and copies every tensor bit-exact. `--set-activation` now sets only the main
+  activation (tower level and every group's `activation_function`); it leaves an SE
+  group's `se_activation` alone and updates an SE-less group's to keep it valid. Both
+  flags together give "the same activation everywhere".

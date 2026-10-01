@@ -482,11 +482,18 @@ struct SessionCheckpointState: Codable, Equatable {
     /// (`TrainingParameters.shared.periodicAutosaveIntervalSec`). Optional for
     /// back-compat; absent → loader falls through to the current value.
     var periodicAutosaveIntervalSec: Double?
-    /// Periodic-autosave retention cap in effect at save time
-    /// (`TrainingParameters.shared.maxPeriodicAutosavesKept`; 0 = unlimited).
+    /// Automatic-save (periodic + post-promotion) retention cap in effect at
+    /// save time (`TrainingParameters.shared.maxPeriodicAutosavesKept`;
+    /// 0 = unlimited).
     /// Optional for back-compat; absent → loader falls through to the current
     /// value.
     var maxPeriodicAutosavesKept: Int?
+    /// Whether automatic-save pruning was switched on at save time
+    /// (`TrainingParameters.shared.automaticSavePruningEnabled`). Records
+    /// the setting only — a build can still force pruning off regardless
+    /// (`CheckpointPaths.automaticSavePruningForcedOff`). Optional for
+    /// back-compat; absent → loader falls through to the current value.
+    var automaticSavePruningEnabled: Bool?
     // --- Arena promotion criterion ---
     //
     // All Optional for back-compat; absent → the loader falls through to the

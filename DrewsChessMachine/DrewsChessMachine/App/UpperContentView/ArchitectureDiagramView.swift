@@ -148,13 +148,15 @@ struct ArchitectureDiagramView: View {
     }
 
     private func seLabel(_ g: BlockGroup) -> String {
-        // Same β0 marker as `NetworkArchitecture.groupSummary`: shown only for
-        // a zero-β group, so Glorot-β groups render exactly as before.
-        let betaMarker = g.seBetaInit == .zero ? " β0" : ""
+        // Same β0 and FC1-activation markers as
+        // `NetworkArchitecture.groupSummary`: each is shown only when it
+        // departs from the pre-setting behavior (zero-β; an SE FC1 activation
+        // different from the group's), so existing groups render as before.
+        let markers = (g.seBetaInit == .zero ? " β0" : "") + NetworkArchitecture.seActivationMarker(g)
         switch g.seStyle {
-        case .none: return "no-SE" + betaMarker
-        case .attenuateOnly: return "SE/\(g.seReductionRatio)" + betaMarker
-        case .scaleAndBias: return "SE+/\(g.seReductionRatio)" + betaMarker
+        case .none: return "no-SE" + markers
+        case .attenuateOnly: return "SE/\(g.seReductionRatio)" + markers
+        case .scaleAndBias: return "SE+/\(g.seReductionRatio)" + markers
         }
     }
 

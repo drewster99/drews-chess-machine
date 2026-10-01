@@ -201,7 +201,7 @@ final class LichessBotJournalWriter: LichessBotGameObserver {
     /// (a session's events and the controller's request records) can't
     /// reorder a headerless write ahead of the one carrying the header.
     func append(_ entries: [LichessBotJournalEntry], gameID: String, synchronize: Bool) async throws {
-        let url = directory.inProgressJournalURL(gameID: gameID)
+        let url = try directory.validatedInProgressJournalURL(gameID: gameID)
         let headerWritten = self.headerWritten
         let tailVerified = self.tailVerified
         let finalized = self.finalized

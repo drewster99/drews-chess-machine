@@ -59,13 +59,27 @@ struct CorpusValidationReport: Sendable {
 /// shards actually hold, that every shard's `sourceID` is declared, that shard
 /// sequence numbers line up, and that the recording state is coherent.
 ///
-/// A crash or a disk-full recording can leave `corpus.json` with stale counts
-/// (e.g. `gamesAdded: 0`) even though the sealed shards are intact — the counts
-/// are the one thing here that is safely re-derivable, so `fix: true` recomputes
-/// the per-source counts from the shard trailers and rewrites `corpus.json`.
-/// **Shard bytes are never modified** — a genuine data problem (bad SHA/CRC,
-/// missing shards, corpus-ID mismatch) is reported as an `error`, never
-/// silently "repaired".
+/// A crash or a disk-full recording can leave two repairable things behind:
+///
+/// - **Unsealed `.open` shards.** A recording or import that died mid-shard
+///   leaves its shard `.open`, with a possibly torn last record. Nothing else
+///   recovers these: corpus replay opens corpora read-only (it cannot tell a
+///   crash leftover from a live writer's shard), and no app path reopens an
+///   existing corpus for writing. `fix: true` is the explicit place they are
+///   recovered, through the same code `GameCorpus.open` uses
+///   (`GameCorpus.recoverOpenShard`): each is truncated to its last complete
+///   game and sealed, or deleted when it holds no complete game, and each
+///   outcome is logged and reported. Like that recovery, a `fix` run must only
+///   be made when nothing is writing to the corpus. Without `fix` they are
+///   only reported, byte-for-byte untouched.
+/// - **Stale `corpus.json` counts** (e.g. `gamesAdded: 0`) even though the
+///   sealed shards are intact — re-derivable, so `fix: true` recomputes the
+///   per-source counts from the shard trailers (after any `.open` recovery,
+///   so recovered games are counted) and rewrites `corpus.json`.
+///
+/// **Sealed shard bytes are never modified** — a genuine data problem (bad
+/// SHA/CRC, missing shards, corpus-ID mismatch) is reported as an `error`,
+/// never silently "repaired".
 enum CorpusValidator {
 
     /// Validate the corpus rooted at `directory`.
@@ -76,9 +90,11 @@ enum CorpusValidator {
     ///     and SHA-256 + per-record CRC verified — authoritative but O(corpus
     ///     bytes). When `false`, only the fixed-size front header and trailer of
     ///     each shard are read (fast, counts-only, no body integrity).
-    ///   - fix: when `true`, repair the fixable findings (rewrite per-source
-    ///     `gamesAdded`/`pliesAdded` from the shard trailers) and persist
-    ///     `corpus.json`. Never touches shard files.
+    ///   - fix: when `true`, repair the fixable findings: recover every `.open`
+    ///     shard (seal it at its last complete game, or delete it when it holds
+    ///     none — only safe when nothing is writing to the corpus), then
+    ///     rewrite per-source `gamesAdded`/`pliesAdded` from the shard trailers
+    ///     and persist `corpus.json`. Never modifies a sealed shard.
     /// - Returns: a structured report. Throws when `corpus.json` itself cannot
     ///   be read or decoded, or when the corpus directory cannot be listed
     ///   (without either, there is nothing trustworthy to validate against — a
@@ -92,13 +108,14 @@ enum CorpusValidator {
         var metadata = try GameCorpus.loadMetadata(directory: directory)
         var findings: [CorpusValidationFinding] = []
 
-        let fm = FileManager.default
-        let entries: [URL]
-        do {
-            entries = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-        } catch {
-            throw GameCorpusError.ioFailed("list corpus directory \(directory.path): \(error.localizedDescription)")
+        func listEntries() throws -> [URL] {
+            do {
+                return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            } catch {
+                throw GameCorpusError.ioFailed("list corpus directory \(directory.path): \(error.localizedDescription)")
+            }
         }
+        var entries = try listEntries()
 
         if metadata.formatVersion != CorpusMetadata.currentFormatVersion {
             // Informational, not a validity failure: a routine bump of
@@ -117,16 +134,43 @@ enum CorpusValidator {
                 fixable: false))
         }
 
-        // Leftover open shards (a normal GameCorpus.open() recovers these; their
-        // presence alongside a "sealed" state is contradictory).
-        let openShards = entries.filter { $0.pathExtension == "open" }
+        // Leftover open shards: a crashed recording or import, or the live shard
+        // of one still running. Their presence alongside a "sealed" state is
+        // contradictory. Recovered only by `fix` (see the type doc); the
+        // listing is redone afterwards so the shards it sealed are validated
+        // and counted below like any other.
+        let openShards = GameCorpus.openShardURLs(among: entries)
+        let openShardSeverity: CorpusValidationSeverity = metadata.state == "sealed" ? .error : .warning
         if !openShards.isEmpty {
-            let names = openShards.map { $0.lastPathComponent }.sorted().joined(separator: ", ")
-            findings.append(CorpusValidationFinding(
-                severity: metadata.state == "sealed" ? .error : .warning,
-                code: "open-shard-present",
-                message: "\(openShards.count) unsealed .open shard(s) present (\(names)); opening the corpus recovers/seals them",
-                fixable: false))
+            if fix {
+                for openURL in openShards {
+                    do {
+                        let recovery = try GameCorpus.recoverOpenShard(at: openURL)
+                        findings.append(CorpusValidationFinding(
+                            severity: openShardSeverity, code: "open-shard-present",
+                            message: "recovered unsealed shard \(recovery.summary)",
+                            fixable: true, fixed: true))
+                    } catch {
+                        SessionLogger.shared.log(
+                            "[CORPUS-RECOVERY] \(openURL.lastPathComponent): NOT recovered — \(error.localizedDescription)")
+                        findings.append(CorpusValidationFinding(
+                            severity: .error, code: "open-shard-unrecoverable",
+                            message: "\(openURL.lastPathComponent): could not be recovered: \(error.localizedDescription)",
+                            fixable: false))
+                    }
+                }
+                entries = try listEntries()
+            } else {
+                let names = openShards.map { $0.lastPathComponent }.joined(separator: ", ")
+                findings.append(CorpusValidationFinding(
+                    severity: openShardSeverity,
+                    code: "open-shard-present",
+                    message: "\(openShards.count) unsealed .open shard(s) present (\(names)); their games are not "
+                        + "readable until recovered. Each is a crash leftover or the live shard of a recording/import "
+                        + "still writing; once nothing is writing to this corpus, --fix seals each at its last "
+                        + "complete game (or removes one that holds none)",
+                    fixable: true))
+            }
         }
         let tmpFiles = entries.filter { $0.pathExtension == "tmp" }
         if !tmpFiles.isEmpty {
@@ -136,9 +180,7 @@ enum CorpusValidator {
                 fixable: false))
         }
 
-        let shardURLs = entries
-            .filter { $0.pathExtension == GameCorpus.shardExtension && $0.lastPathComponent.hasPrefix("shard-") }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let shardURLs = GameCorpus.sealedShardURLs(among: entries)
 
         func filenameSeq(_ url: URL) -> Int? {
             let digits = url.lastPathComponent.dropFirst("shard-".count).prefix { $0.isNumber }

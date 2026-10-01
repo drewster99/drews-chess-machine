@@ -451,25 +451,87 @@ extension SessionController {
                 periodicSaveController?.noteSuccessfulSave(at: Date())
                 checkpoint?.lastSavedAt = Date()
                 checkpoint?.lastResumedAt = nil
-                // Enforce the periodic-autosave retention cap. Only periodic
-                // saves trigger pruning (and `prunePeriodicAutosaves` only ever
-                // deletes `-periodic` directories); the just-written save is
-                // passed as `protecting` so it can never be the one removed.
-                // `maxPeriodicAutosavesKept` is read live here on the main actor;
-                // 0 = unlimited, in which case the prune is a no-op.
-                if trigger == .periodic {
-                    let keep = TrainingParameters.shared.maxPeriodicAutosavesKept
-                    if keep > 0 {
-                        Task.detached(priority: .utility) {
-                            CheckpointPaths.prunePeriodicAutosaves(keeping: keep, protecting: url)
-                        }
-                    }
-                }
+                // Periodic and Promote Trainee Now saves are in the
+                // automatic-save retention pool; manual and SIGUSR2 saves
+                // are not, and the helper decides that from the disk tag.
+                scheduleAutomaticSaveRetentionSweep(afterSaving: url, diskTag: diskTag)
             case .failure(let error):
                 checkpoint?.setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// Start the automatic-save retention sweep
+    /// (`CheckpointPaths.pruneAutomaticSaves`) after a successful
+    /// session save to `url` tagged `diskTag` — but only when saves with
+    /// that tag are in the retention pool (`AutomaticSaveKind`): periodic
+    /// autosaves and promotion saves. Manual and SIGUSR2 saves never start
+    /// a sweep, which keeps a deliberate save from deleting anything.
+    ///
+    /// Every save path that can write a pool member calls this exactly
+    /// once on success, and nothing else calls it: `saveSessionInternal`
+    /// (periodic, Promote Trainee Now — and manual and SIGUSR2, which this
+    /// filters out) and the arena's inline post-promotion save. Deciding
+    /// from the disk tag rather than from each caller's own condition is
+    /// what keeps the "which saves start a sweep" rule identical to the
+    /// "which saves are in the pool" rule.
+    ///
+    /// Whether a pool member's save actually starts a sweep is then
+    /// `CheckpointPaths.automaticSavePruningDecision` — the build's kill
+    /// switch (`automaticSavePruningForcedOff`), the
+    /// `automaticSavePruningEnabled` setting and the
+    /// `maxPeriodicAutosavesKept` cap — and nothing else. When it says
+    /// no, exactly one `[PRUNE] skipped` line names the reason and both
+    /// settings, so a save that deleted nothing is never silent about why.
+    ///
+    /// The setting and the cap are read live here, on the main actor, so
+    /// a change made mid-session applies to the next automatic save. The
+    /// sweep itself is file-system work, so it runs detached at utility
+    /// priority; it reports everything through the session log and does
+    /// not throw, so nothing is lost by not awaiting it.
+    func scheduleAutomaticSaveRetentionSweep(afterSaving url: URL, diskTag: String) {
+        guard CheckpointPaths.AutomaticSaveKind(diskTag: diskTag) != nil else { return }
+        let current = currentAutomaticSavePruningDecision()
+        guard case .prune(let keep) = current.decision else {
+            SessionLogger.shared.log(
+                "[PRUNE] skipped after \(url.lastPathComponent): \(current.logDescription)"
+            )
+            return
+        }
+        Task.detached(priority: .utility) {
+            CheckpointPaths.pruneAutomaticSaves(keeping: keep, protecting: url)
+        }
+    }
+
+    /// One `[PRUNE]` line stating whether automatic-save pruning would run
+    /// for this session's automatic saves, and why, with both settings.
+    /// Logged when Play-and-Train starts — after a resumed session's saved
+    /// values have been restored — so a run's log shows the effective state
+    /// before its first automatic save. Uses the same decision as
+    /// `scheduleAutomaticSaveRetentionSweep`, so the two cannot disagree.
+    func logAutomaticSavePruningState() {
+        SessionLogger.shared.log(
+            "[PRUNE] automatic-save pruning at Play-and-Train start: \(currentAutomaticSavePruningDecision().logDescription)"
+        )
+    }
+
+    /// The pruning decision for the current live settings, and its log
+    /// text. The one place the build's kill switch, the
+    /// `automaticSavePruningEnabled` setting and the
+    /// `maxPeriodicAutosavesKept` cap are read together.
+    private func currentAutomaticSavePruningDecision() -> (
+        decision: CheckpointPaths.AutomaticSavePruningDecision,
+        logDescription: String
+    ) {
+        let settingEnabled = TrainingParameters.shared.automaticSavePruningEnabled
+        let cap = TrainingParameters.shared.maxPeriodicAutosavesKept
+        let decision = CheckpointPaths.automaticSavePruningDecision(
+            forcedOff: CheckpointPaths.automaticSavePruningForcedOff,
+            settingEnabled: settingEnabled,
+            cap: cap
+        )
+        return (decision, decision.logDescription(settingEnabled: settingEnabled, cap: cap))
     }
 
     /// Load a standalone `.dcmmodel` into the current champion
@@ -852,6 +914,7 @@ extension SessionController {
             klProbeInterval: params.klProbeInterval,
             periodicAutosaveIntervalSec: params.periodicAutosaveIntervalSec,
             maxPeriodicAutosavesKept: params.maxPeriodicAutosavesKept,
+            automaticSavePruningEnabled: params.automaticSavePruningEnabled,
             arenaPromotionCriterion: params.arenaPromotionCriterion.logToken,
             arenaSPRTElo0: params.arenaSPRTElo0,
             arenaSPRTElo1: params.arenaSPRTElo1,

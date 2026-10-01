@@ -595,9 +595,9 @@ final class ChessNetwork: @unchecked Sendable {
     ///
     /// `bf16CastInForward` enables experimental config D (see the stored
     /// property doc); default `false` keeps the graph byte-identical.
-    /// `policyTailPrecision` defaults to the shipped fp32 tail.
+    /// `policyTailPrecision` defaults to `PolicyTailPrecision.default`.
     init(arch: NetworkArchitecture = .current, bnMode: BNMode = .inference, bf16CastInForward: Bool = false,
-         policyTailPrecision: PolicyTailPrecision = .float32FromPreBatchNorm,
+         policyTailPrecision: PolicyTailPrecision = .default,
          disableAutoLayoutConversion: Bool = false,
          reducedPrecisionFastMathRaw: UInt? = nil,
          analysisTaps: Bool = false) throws {
@@ -2310,22 +2310,27 @@ final class ChessNetwork: @unchecked Sendable {
 
     /// The tower-LEVEL hidden activation (stem act when post-act, tower-end,
     /// heads), selected by `arch.activationFunction`. Block main paths and SE
-    /// FC1 use the overload below with their group's own function.
+    /// FC1 use the overload below with their group's own function
+    /// (`activationFunction` and `seActivation` respectively).
     private static func activation(
         _ graph: MPSGraph, _ x: MPSGraphTensor, _ arch: NetworkArchitecture, name: String
     ) -> MPSGraphTensor {
         activation(graph, x, arch.activationFunction, name: name)
     }
 
-    /// SiLU = `x*sigmoid(x)`; GELU exact (erf-based). The SE gate (sigmoid)
-    /// and value output (tanh/softmax) are structural and call their own ops
-    /// directly.
-    private static func activation(
+    /// SiLU = `x*sigmoid(x)`; GELU exact (erf-based); leaky ReLU with the
+    /// fixed `ActivationFunction.leakyReLUNegativeSlope`. The SE gate
+    /// (sigmoid) and value output (tanh/softmax) are structural and call their
+    /// own ops directly. Internal (not private) so tests can check each
+    /// function's values and gradients on a bare graph.
+    static func activation(
         _ graph: MPSGraph, _ x: MPSGraphTensor, _ fn: ActivationFunction, name: String
     ) -> MPSGraphTensor {
         switch fn {
         case .relu:
             return graph.reLU(with: x, name: name)
+        case .leakyRelu:
+            return graph.leakyReLU(with: x, alpha: ActivationFunction.leakyReLUNegativeSlope, name: name)
         case .silu:
             let s = graph.sigmoid(with: x, name: "\(name)_sig")
             return graph.multiplication(x, s, name: name)
@@ -2914,7 +2919,9 @@ final class ChessNetwork: @unchecked Sendable {
         var s = graph.mean(of: z, axes: [2, 3], name: "\(prefix)_se_squeeze")
         s = graph.reshape(s, shape: [-1, NSNumber(value: channels)], name: "\(prefix)_se_squeeze_flatten")
 
-        // Excite FC1: C -> C/r (He), + activation.
+        // Excite FC1: C -> C/r (He), + the group's SE activation
+        // (`seActivation`, which may differ from the main path's — a leaky
+        // FC1 keeps a gradient through units ReLU would leave dead).
         let fc1 = graph.variable(
             with: heInitDataFCInOut(shape: [channels, seReduced], dataType: weightStorageDataType),
             shape: [NSNumber(value: channels), NSNumber(value: seReduced)],
@@ -2927,7 +2934,7 @@ final class ChessNetwork: @unchecked Sendable {
         trainables.append(fc1b); shouldDecay.append(false)
         s = graph.matrixMultiplication(primary: s, secondary: castInForward(fc1), name: "\(prefix)_se_fc1")
         s = graph.addition(s, castInForward(fc1b), name: "\(prefix)_se_fc1_bias_add")
-        s = activation(graph, s, spec.activationFunction, name: "\(prefix)_se_act")
+        s = activation(graph, s, spec.seActivation, name: "\(prefix)_se_act")
 
         // Excite FC2: C/r -> seExpand (Glorot, feeds the sigmoid gate). A
         // zero-β group draws the same Glorot matrix and then zeroes its β
@@ -3166,24 +3173,29 @@ final class ChessNetwork: @unchecked Sendable {
         }
     }
 
-    /// Where the policy head leaves the compute dtype for fp32. An
-    /// experimental A/B knob for measuring the cost of the head-numerics fix;
-    /// not an architecture field and not saved with a model, because the
-    /// weights are identical under both.
+    /// Where the policy head leaves the compute dtype for fp32. Not an
+    /// architecture field and not saved with a model: the weights are
+    /// identical under both, only the graph's arithmetic differs.
     ///
-    /// Why it exists: the fix starts the fp32 tail at the policy pre-BN, which
-    /// costs training throughput on models with a wide policy pre-conv.
-    /// Profiling attributed most of that cost to the final projection leaving
-    /// the bf16-input conv kernels for generic fp32 ones, and to fp32 BN / ReLU
-    /// passes over a twice-as-large tensor. `mixedFinalProjection` keeps both
-    /// in the compute dtype and widens only the projection's output. What it
+    /// Why there are two: the head-numerics fix first started the fp32 tail
+    /// at the policy pre-BN. That cost training throughput, because the final
+    /// projection left the bf16-input conv kernels for generic fp32 ones and
+    /// BN / ReLU ran in fp32 over a twice-as-large tensor.
+    /// `mixedFinalProjection` keeps both in the compute dtype and widens only
+    /// the projection's output, which recovers most of that cost. What it
     /// gives back: the policy features are rounded to the compute dtype before
-    /// the projection again, which the fix's research found harmful on models
-    /// whose projection carries a large shared row. The numerics audit decides
-    /// whether that matters.
+    /// the projection. On models trained with the fix that adds little to the
+    /// bf16-vs-fp32 policy divergence; on older weights whose projection
+    /// carries a large shared row it adds noticeably more (the numerics audit
+    /// measures it). `float32FromPreBatchNorm` stays selectable for that
+    /// comparison.
     enum PolicyTailPrecision: String, CaseIterable, Sendable {
-        /// The shipped fix: fp32 from the pre-BN normalize on (from the
-        /// final projection's input for `simple_conv`, which has no pre-block).
+        /// The precision every network is built with unless a caller asks
+        /// for another — the single source of the default.
+        static let `default`: PolicyTailPrecision = .mixedFinalProjection
+
+        /// fp32 from the pre-BN normalize on (from the final projection's
+        /// input for `simple_conv`, which has no pre-block).
         case float32FromPreBatchNorm = "fp32_from_pre_bn"
         /// Pre-block and final projection in the compute dtype; the
         /// projection's output, its bias add and everything after are fp32.

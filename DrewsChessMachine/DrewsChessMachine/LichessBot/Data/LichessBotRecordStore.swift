@@ -86,7 +86,7 @@ final class LichessBotRecordStore: Sendable {
     }
 
     func readJournal(gameID: String) async throws -> LichessBotJSONLines.Decoded<LichessBotJournalEntry> {
-        let url = directory.inProgressJournalURL(gameID: gameID)
+        let url = try directory.validatedInProgressJournalURL(gameID: gameID)
         return try await journalQueue.run {
             try LichessBotJournal.read(url)
         }
@@ -140,7 +140,7 @@ final class LichessBotRecordStore: Sendable {
     /// The journal-queue part of `finalize`: read, build, write and move.
     private static func fileGame(gameID: String, export: LichessBotGameExport?, exportUnavailableReason: String?, ourAccountID: String, directory: LichessBotDataDirectory) throws -> Filing {
         let fm = FileManager.default
-        let journalURL = directory.inProgressJournalURL(gameID: gameID)
+        let journalURL = try directory.validatedInProgressJournalURL(gameID: gameID)
         let journal = try LichessBotJournal.read(journalURL)
         let journalFull = LichessBotRecordBuilder.firstGameFull(in: journal.elements)
         let createdAt: Date
@@ -152,7 +152,7 @@ final class LichessBotRecordStore: Sendable {
             throw LichessBotRecordError.noGameInformation(gameID: gameID)
         }
         let folder = directory.gamesMonthDirectory(createdAt: createdAt)
-        let stem = LichessBotDataDirectory.fileStem(gameID: gameID, createdAt: createdAt)
+        let stem = try LichessBotDataDirectory.validatedFileStem(gameID: gameID, createdAt: createdAt)
         let journalSuffix = "." + LichessBotDataDirectory.journalExtension
         let recordURL = folder.appendingPathComponent("\(stem).json", isDirectory: false)
         let pgnURL = folder.appendingPathComponent("\(stem).pgn", isDirectory: false)

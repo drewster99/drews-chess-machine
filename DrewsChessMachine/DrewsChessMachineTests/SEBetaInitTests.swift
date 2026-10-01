@@ -297,7 +297,8 @@ final class SEBetaInitTests: XCTestCase {
     func testNewFilesAreStampedV4AndAlwaysCarryTheField() throws {
         let data = try encodedModel(Self.twoGroupArchitecture(group0: .glorot, group1: .glorot))
         let (_, metadata) = try SafetensorsFile.decode(data)
-        XCTAssertEqual(metadata["dcm_format_version"], "4")
+        XCTAssertEqual(metadata["dcm_format_version"], String(ArchitectureFormat.currentVersion))
+        XCTAssertGreaterThanOrEqual(ArchitectureFormat.currentVersion, ArchitectureFormat.seBetaInitRequiredFromVersion)
         XCTAssertEqual(SafetensorsModelIO.formatVersion, String(ArchitectureFormat.currentVersion))
         let archJSON = try XCTUnwrap(metadata["architecture"])
         XCTAssertEqual(archJSON.components(separatedBy: "\"se_beta_init\":\"glorot\"").count - 1, 2,
@@ -344,10 +345,11 @@ final class SEBetaInitTests: XCTestCase {
 
     func testFutureAndMalformedVersionsAreRejected() throws {
         let data = try encodedModel(Self.twoGroupArchitecture(group0: .glorot, group1: .glorot))
+        let futureVersion = ArchitectureFormat.currentVersion + 1
         XCTAssertThrowsError(try SafetensorsModelIO.decode(
-            try rewritingHeader(data, version: "5", stripField: false), valueHead: .asStored, source: "f.safetensors")) { error in
+            try rewritingHeader(data, version: String(futureVersion), stripField: false), valueHead: .asStored, source: "f.safetensors")) { error in
             XCTAssertEqual(error as? ArchitectureFormat.FormatError,
-                           .unsupportedFutureVersion(version: 5, newestSupported: 4, source: "f.safetensors"))
+                           .unsupportedFutureVersion(version: futureVersion, newestSupported: ArchitectureFormat.currentVersion, source: "f.safetensors"))
         }
         XCTAssertThrowsError(try SafetensorsModelIO.decode(
             try rewritingHeader(data, version: "four", stripField: false), valueHead: .asStored, source: "f.safetensors")) { error in
@@ -387,7 +389,7 @@ final class SEBetaInitTests: XCTestCase {
                 return XCTFail("expected missingRequiredField, got \(error)")
             }
             XCTAssertEqual(field, "se_beta_init")
-            XCTAssertEqual(version, 4)
+            XCTAssertEqual(version, ArchitectureFormat.currentVersion)
             XCTAssertEqual(source, missing.lastPathComponent)
         }
 
@@ -491,7 +493,7 @@ final class SEBetaInitTests: XCTestCase {
         XCTAssertEqual(derived.metadata["model_id"], "20260930-2-DRV1")
         XCTAssertEqual(derived.metadata["parent_model_id"], "20260930-1-SRCE")
         XCTAssertEqual(derived.metadata["creator"], ModelDerivation.creator)
-        XCTAssertEqual(derived.metadata["dcm_format_version"], "4")
+        XCTAssertEqual(derived.metadata["dcm_format_version"], String(ArchitectureFormat.currentVersion))
         XCTAssertEqual(derived.metadata[ValueHeadRecentering.metadataKey], source.metadata[ValueHeadRecentering.metadataKey])
         let history = try ModelDerivation.decodeHistory(derived.metadata[ModelDerivation.derivationHistoryKey])
         XCTAssertEqual(history.count, 1)
@@ -603,7 +605,7 @@ final class SEBetaInitTests: XCTestCase {
     }
 
     func testOperationCatalogDrivesTheCLI() {
-        XCTAssertEqual(ModelDerivation.operationKinds.map(\.flag), ["--set-se-beta-init"])
+        XCTAssertEqual(ModelDerivation.operationKinds.map(\.flag), ["--set-se-beta-init", "--set-activation", "--set-se-activation"])
         XCTAssertEqual(Set(ModelDerivation.operationKinds.map(\.name)).count, ModelDerivation.operationKinds.count)
         let help = DeriveModelCLI.helpText
         for kind in ModelDerivation.operationKinds {

@@ -10,8 +10,16 @@ import Foundation
 /// excludes `.postPromotion` — that save runs in an inline detached
 /// task in the arena coordinator and does not go through the shared
 /// `saveSessionInternal` helper, so it has its own display strings
-/// hard-coded there.
-enum SessionSaveTrigger: Sendable {
+/// hard-coded there. It does share the promotion disk tag
+/// (`promotionDiskTag`), which is what puts both kinds of promotion
+/// save in the automatic-save retention pool
+/// (`CheckpointPaths.AutomaticSaveKind`).
+///
+/// `CaseIterable` so the tests can walk every trigger and pin which of
+/// them start the retention sweep; a new case then fails to compile in
+/// that test's exhaustive switch until its retention behavior is
+/// decided.
+enum SessionSaveTrigger: Sendable, CaseIterable {
     /// User explicitly invoked File > Save Session (or the
     /// equivalent menu command).
     case manual
@@ -36,16 +44,24 @@ enum SessionSaveTrigger: Sendable {
     /// signal path (and the process then exited on success).
     case signalSave
 
+    /// Disk tag of every promotion save: the arena's inline
+    /// post-promotion save writes it directly, and `manualPromote`
+    /// returns it from `diskTag`, so the two are grep-identical on disk
+    /// (`…-promote.dcmsession`) and the retention sweep treats them as
+    /// one kind. Declared once here so the two writers cannot drift
+    /// apart from each other or from the sweep.
+    static let promotionDiskTag = "promote"
+
     /// Short tag written into the `.dcmsession` filename.
     /// Matches the `trigger:` string the existing `CheckpointManager`
-    /// API already expects. `manualPromote` reuses the `promote` tag
-    /// so its filename is grep-identical to an arena post-promotion
-    /// save (`…-promote.dcmsession`).
+    /// API already expects. `manualPromote` reuses the promotion tag
+    /// (`promotionDiskTag`) so its filename is grep-identical to an
+    /// arena post-promotion save.
     var diskTag: String {
         switch self {
         case .manual: "manual"
         case .periodic: "periodic"
-        case .manualPromote: "promote"
+        case .manualPromote: Self.promotionDiskTag
         case .signalSave: "sigusr2"
         }
     }

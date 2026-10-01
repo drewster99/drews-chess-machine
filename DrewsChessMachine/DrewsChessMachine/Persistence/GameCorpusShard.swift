@@ -192,23 +192,6 @@ enum GameCorpusShardFormat {
     }
 }
 
-/// Force the file (or directory) at `url` to durable storage with
-/// `F_FULLFSYNC`, falling back to `fsync` on filesystems that lack it. Mirrors
-/// `CheckpointManager.fullSyncPath`, kept local so the corpus layer stands
-/// alone.
-func corpusFullSync(_ url: URL) throws {
-    let fd = open(url.path, O_RDONLY)
-    guard fd >= 0 else {
-        throw GameCorpusError.ioFailed("open for fsync \(url.lastPathComponent): \(String(cString: strerror(errno)))")
-    }
-    defer { close(fd) }
-    if fcntl(fd, F_FULLFSYNC) == -1 {
-        if fsync(fd) == -1 {
-            throw GameCorpusError.ioFailed("fsync \(url.lastPathComponent): \(String(cString: strerror(errno)))")
-        }
-    }
-}
-
 /// Appends games to a single open shard file and seals it.
 ///
 /// Single-writer: the caller serializes access (recording will sit behind a
@@ -220,23 +203,46 @@ final class ShardWriter {
     /// The `….open` URL being appended to.
     let openURL: URL
     private let handle: FileHandle
+    /// The open shard's identity, read from the open handle, so
+    /// `discardEmpty` removes this very file and never whatever else might
+    /// have been put at `openURL` since.
+    private let identity: FileSafety.FileIdentity
     private var hasher: SHA256
     private(set) var byteCount: Int
     private(set) var gameCount: Int
     private(set) var plyCount: Int
 
-    /// Create a fresh open shard: writes the 256-byte front header.
+    /// Create a fresh open shard: writes the 256-byte front header. The file
+    /// is created exclusively — an existing item at `openURL` (another
+    /// writer's open shard, debris, anything) is a hard error, never
+    /// replaced.
     init(creatingAt openURL: URL,
          header: GameCorpusShardFormat.FrontHeader) throws {
         let headerData = try GameCorpusShardFormat.encodeFrontHeader(header)
+        let created: FileSafety.NewFile
         do {
-            try headerData.write(to: openURL, options: [.atomic])
+            created = try FileSafety.createNewFile(at: openURL)
         } catch {
-            throw GameCorpusError.ioFailed("write header \(openURL.lastPathComponent): \(error.localizedDescription)")
+            throw GameCorpusError.ioFailed("create \(openURL.lastPathComponent): \(error.localizedDescription)")
+        }
+        do {
+            try created.handle.write(contentsOf: headerData)
+        } catch {
+            // The file is ours (just created exclusively); remove exactly it
+            // so a half-written header never looks like a shard.
+            let writeError = error
+            do {
+                try created.handle.close()
+                _ = try FileSafety.removeOwnedItem(at: openURL, identity: created.identity)
+            } catch {
+                throw GameCorpusError.ioFailed(
+                    "write header \(openURL.lastPathComponent): \(writeError.localizedDescription); cleanup failed: \(error.localizedDescription)")
+            }
+            throw GameCorpusError.ioFailed("write header \(openURL.lastPathComponent): \(writeError.localizedDescription)")
         }
         self.openURL = openURL
-        self.handle = try FileHandle(forWritingTo: openURL)
-        _ = try self.handle.seekToEnd()
+        self.handle = created.handle
+        self.identity = created.identity
         var h = SHA256()
         h.update(data: headerData)
         self.hasher = h
@@ -260,6 +266,7 @@ final class ShardWriter {
         _ = try h.seekToEnd()
         self.openURL = openURL
         self.handle = h
+        self.identity = try FileSafety.identity(ofOpenFileDescriptor: h.fileDescriptor, path: openURL.path)
         self.hasher = hasher
         self.byteCount = validByteCount
         self.gameCount = gameCount
@@ -287,7 +294,9 @@ final class ShardWriter {
     }
 
     /// Finalize the SHA, append the 64-byte trailer, flush once, close, and
-    /// atomically rename `….open` → final. Returns the sealed file URL.
+    /// atomically rename `….open` → final. The rename refuses (and the shard
+    /// stays `….open`) when anything already has the final name, so sealing
+    /// never replaces an existing sealed shard. Returns the sealed file URL.
     @discardableResult
     func seal(sealUnix: Int64) throws -> URL {
         let digest = Data(hasher.finalize())
@@ -306,7 +315,7 @@ final class ShardWriter {
         }
         let finalURL = openURL.deletingPathExtension()
         do {
-            try FileManager.default.moveItem(at: openURL, to: finalURL)
+            try FileSafety.renameWithoutReplacing(from: openURL, to: finalURL)
         } catch {
             throw GameCorpusError.ioFailed("seal rename: \(error.localizedDescription)")
         }
@@ -314,9 +323,20 @@ final class ShardWriter {
     }
 
     /// Close and delete an open shard that holds no games (header only).
+    /// Removes only the file this writer has open (checked by identity);
+    /// anything else now at `openURL`, or nothing at all, is an error rather
+    /// than something to delete or ignore.
     func discardEmpty() throws {
         try handle.close()
-        do { try FileManager.default.removeItem(at: openURL) } catch { /* best-effort cleanup */ }
+        let removal: FileSafety.OwnedItemRemoval
+        do {
+            removal = try FileSafety.removeOwnedItem(at: openURL, identity: identity)
+        } catch {
+            throw GameCorpusError.ioFailed("remove empty shard \(openURL.lastPathComponent): \(error.localizedDescription)")
+        }
+        guard removal == .removed else {
+            throw GameCorpusError.ioFailed("remove empty shard \(openURL.lastPathComponent): it was already gone")
+        }
     }
 
     /// Flush and close the file handle without sealing, leaving the `….open`

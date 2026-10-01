@@ -18,7 +18,15 @@ import Foundation
 ///
 /// Streams one JSON object per line to `--arch-sweep-out` (flushed each write),
 /// so a long run's partial progress is readable mid-flight and survives a kill.
+/// The destination must be new, or — with `--arch-sweep-out-overwrite` — an
+/// existing regular file, which is emptied first; anything else ends the
+/// process before the first build (see `runAndExit`).
 enum ArchSweepCLI {
+
+    /// `--arch-sweep-out` refuses an existing file unless this flag is also
+    /// given; the parser in `DrewsChessMachineApp` passes its presence as
+    /// `replaceExistingOut`.
+    static let replaceExistingOutFlag = "--arch-sweep-out-overwrite"
 
     /// The regime that hung, parameterized only by depth.
     static func benchArch(blocks: Int) -> NetworkArchitecture {
@@ -45,19 +53,41 @@ enum ArchSweepCLI {
         )
     }
 
-    static func runAndExit(blocks: [Int], steps: Int, batch: Int, outPath: String) -> Never {
+    /// Run the sweep and exit. `outPath` is opened before the first trainer
+    /// is built: it must not exist, or — with `replaceExistingOut` — must be a
+    /// regular file, which is emptied. A directory, symbolic link or other
+    /// non-regular item there is always refused. Failing to open it ends the
+    /// process with a non-zero exit, so a sweep never runs with its JSONL
+    /// output silently going nowhere.
+    static func runAndExit(blocks: [Int], steps: Int, batch: Int, outPath: String, replaceExistingOut: Bool) -> Never {
         let expandedOut = (outPath as NSString).expandingTildeInPath
         SessionLogger.shared.start()
         SessionLogger.shared.log(
-            "[ARCH-SWEEP-CLI] launched build=\(BuildInfo.buildNumber) blocks=\(blocks) steps=\(steps) batch=\(batch) out=\(expandedOut)"
+            "[ARCH-SWEEP-CLI] launched build=\(BuildInfo.buildNumber) blocks=\(blocks) steps=\(steps) batch=\(batch) out=\(expandedOut) replaceExistingOut=\(replaceExistingOut)"
         )
 
-        FileManager.default.createFile(atPath: expandedOut, contents: nil)
-        let handle = FileHandle(forWritingAtPath: expandedOut)
+        let handle: FileHandle
+        do {
+            handle = try FileSafety.openForWriting(
+                at: URL(fileURLWithPath: expandedOut),
+                existingRegularFile: replaceExistingOut ? .truncate : .refuse
+            )
+        } catch FileSafetyError.alreadyExists(path: let path, kind: .regularFile) {
+            FileHandle.standardError.write(Data(
+                "error: --arch-sweep-out \(path) already exists; pass \(replaceExistingOutFlag) to replace it\n".utf8
+            ))
+            SessionLogger.shared.shutdown()
+            Darwin.exit(55)
+        } catch {
+            FileHandle.standardError.write(Data(
+                "error: --arch-sweep-out: \(error.localizedDescription)\n".utf8
+            ))
+            SessionLogger.shared.shutdown()
+            Darwin.exit(55)
+        }
 
         func emit(_ obj: [String: Any]) {
             print(obj.map { "\($0)=\($1)" }.sorted().joined(separator: " "))
-            guard let handle else { return }
             // Surface a write/encode failure to stderr rather than silently
             // dropping the JSONL line (`try?` would hide a vanished record).
             do {

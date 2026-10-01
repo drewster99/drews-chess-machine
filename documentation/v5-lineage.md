@@ -21,6 +21,10 @@ Every resumed segment **restarts its step counter at 1**, and the corpus-replay 
 `--enumerate-checkpoints` names files from that segment-local counter. Five segments
 therefore competed for the same filenames, and later runs overwrote earlier ones in
 place: **four distinct files have been named `v5-cont-replay-step1000.safetensors`.**
+(The app now refuses this: `--enumerate-checkpoints` never overwrites a step file
+the run did not write, and a run whose `--out-model` stem already holds step files
+it could reach refuses to start. Every resumed segment needs its own stem, e.g.
+`v5-cont-resume2-replay-latest.safetensors`.)
 
 A filename identifies nothing. A checkpoint's identity is its safetensors
 `__metadata__`: `model_id` (minted per segment) + `training_step`. Use

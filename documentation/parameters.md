@@ -484,7 +484,13 @@ Cadence of the periodic full-session autosave while Play-and-Train is active, in
 
 ### max_periodic_autosaves_kept
 
-Retention cap on the number of periodic (`-periodic.dcmsession`) autosaves kept on disk. After each successful periodic save, older periodic saves beyond this count are deleted (newest kept). Default 3. 0 = unlimited (no pruning, the pre-2026-06-24 behavior). Manual (`-manual`), post-promotion (`-promote`), and signal (`-sigusr2`) saves are never pruned by this knob.
+Retention cap on the number of periodic and post-promotion autosaves (`-periodic.dcmsession` and `-promote.dcmsession`, which includes Promote Trainee Now saves) kept on disk, counted as one pool across every session in the Sessions folder. After each successful periodic or post-promotion save, the pool is ranked newest first by the timestamp in the folder name and every autosave beyond this count is deleted. The save just written and the current resume target are never deleted, nor is any folder whose name and session.json do not agree on a minted session ID. Default 3. 0 = unlimited (no pruning). Manual (`-manual`) and signal (`-sigusr2`) saves are never pruned by this knob. Applies only when Automatic Save Pruning Enabled is on (and the build does not force pruning off); otherwise nothing is pruned whatever this cap says.
 
 **Type:** Int · **Range:** 0..10000 · **Default:** 3 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### automatic_save_pruning_enabled
+
+Turns on the automatic-save retention pool: after each successful periodic or post-promotion save, delete the oldest `-periodic.dcmsession` and `-promote.dcmsession` folders, across every session, beyond Max Periodic Autosaves Kept (with that knob's protections — the save just written, the resume target, and unverified folders are never deleted). Off by default: no automatic save is ever deleted. NOTE: the current build forces pruning off regardless of this setting (a code-level kill switch, `CheckpointPaths.automaticSavePruningForcedOff`), so turning this on has no effect until a build lifts that switch; every periodic or post-promotion save logs a `[PRUNE] skipped` line naming the reason.
+
+**Type:** Bool · **Range:** — · **Default:** false · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 

@@ -23,7 +23,16 @@ import Foundation
 /// resolves to
 /// `~/Library/Containers/<bundle-id>/Data/Library/Logs/DrewsChessMachine/`.
 /// Filenames follow the pattern `dcm_log_yyyymmdd-HHMMSS.txt` using
-/// the session's launch time.
+/// the session's launch time. Two processes launched within the same
+/// second (a GUI session plus a headless CLI tool, or two CLI tools)
+/// resolve to the same stamp, so the file is created exclusively and a
+/// taken name is never opened: the later launch gets
+/// `dcm_log_yyyymmdd-HHMMSS-2.txt`, then `-3`, and so on. Opening the
+/// shared name non-exclusively (`FileManager.createFile`) replaced the
+/// first process's log with a new empty file under the same name, and
+/// the first process went on writing into an unlinked file nobody could
+/// read. Every suffixed name still matches the `dcm_log_*.txt` glob, and
+/// the launch stamp keeps its position right after `dcm_log_`.
 final class SessionLogger: @unchecked Sendable {
     static let shared = SessionLogger()
 
@@ -69,6 +78,13 @@ final class SessionLogger: @unchecked Sendable {
         return f
     }()
 
+    /// How many names `start()` tries for one launch second (the plain
+    /// name, then the numeric suffixes) before giving up. Only reached if
+    /// that many processes launch within one second, or the folder is
+    /// littered with leftovers under one stamp; either way `start()` reports
+    /// the failure on stderr like any other open failure.
+    private static let maxSameSecondLogFileAttempts = 1000
+
     private init() {}
 
     /// Open the session log file. Safe to call exactly once at app
@@ -97,14 +113,15 @@ final class SessionLogger: @unchecked Sendable {
                 )
 
                 let stamp = Self.filenameFormatter.string(from: Date())
-                let fileName = "dcm_log_\(stamp).txt"
-                let url = logsDir.appendingPathComponent(fileName)
+                let created = try FileSafety.createNewFileWithNumericSuffix(
+                    in: logsDir,
+                    stem: "dcm_log_\(stamp)",
+                    pathExtension: "txt",
+                    maxAttempts: Self.maxSameSecondLogFileAttempts
+                )
 
-                FileManager.default.createFile(atPath: url.path, contents: nil)
-                let handle = try FileHandle(forWritingTo: url)
-
-                self.fileHandle = handle
-                self.fileURL = url
+                self.fileHandle = created.handle
+                self.fileURL = created.url
             } catch {
                 if !didLogStartupFailure {
                     didLogStartupFailure = true

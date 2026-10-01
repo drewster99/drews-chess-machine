@@ -108,6 +108,8 @@ enum ModelDerivation {
     /// one. The CLI flags, `--help`, and the docs all come from this list.
     static let operationKinds: [DeriveOperationKind] = [
         SetSEBetaInitDeriveOperation.kind,
+        SetActivationDeriveOperation.kind,
+        SetSEActivationDeriveOperation.kind,
     ]
 
     /// The kind whose `flag` is `flag`, if any.
@@ -537,5 +539,160 @@ struct SetSEBetaInitDeriveOperation: DeriveOperation {
             }
         }
         return rewrites
+    }
+}
+
+// MARK: - Operation: set-activation
+
+/// Sets the main hidden activation: the tower-level `activation_function`
+/// (stem, tower end, both heads) and every block group's
+/// `activation_function` (block main path, `activation_gated` merge). No
+/// activation has parameters, so no tensor is rewritten: the derived file
+/// holds the source's weights bit-exact and differs only in the activation,
+/// which is what an activation A/B from one fresh net needs.
+///
+/// The SE FC1 activation is a separate field (`se_activation`) with its own
+/// operation, `--set-se-activation`, and this one leaves it alone on every
+/// group that has an SE block — so "ReLU blocks, leaky FC1" and "leaky
+/// everywhere" are both one derive away (the latter = both flags; the
+/// catalog order applies this operation first). On an SE-less group the
+/// field has no effect and `validate()` requires it to equal the group's
+/// activation, so there it is updated alongside.
+struct SetActivationDeriveOperation: DeriveOperation {
+    let value: ActivationFunction
+
+    static let kind = DeriveOperationKind(
+        name: "set-activation",
+        flag: "--set-activation",
+        valueSyntax: ActivationFunction.allCases.map(\.rawValue).joined(separator: "|"),
+        summary: "Set the main hidden activation: the tower-level activation_function (stem, tower end, policy "
+            + "and value heads) and every block group's activation_function (block main path, activation_gated "
+            + "merge). The SE FC1 activation of groups with an SE block is not changed (use --set-se-activation; "
+            + "an SE-less group's se_activation follows, as validation requires). Activations have no "
+            + "parameters, so every tensor is copied bit-exact.",
+        changedArchitectureFields: [
+            "activation_function", "block_groups[].activation_function", "block_groups[].se_activation",
+        ],
+        rewrittenTensorsDescription: "none",
+        acceptsGroupSelection: false,
+        make: { value, _ in
+            guard let parsed = ActivationFunction(rawValue: value) else {
+                throw ModelDerivation.DeriveError.operationNotApplicable(
+                    operation: "set-activation",
+                    detail: "value '\(value)' is not one of \(ActivationFunction.allCases.map(\.rawValue).joined(separator: ", "))")
+            }
+            return SetActivationDeriveOperation(value: parsed)
+        })
+
+    var kindName: String { Self.kind.name }
+
+    var recordedArguments: [String: String] { ["value": value.rawValue] }
+
+    func apply(to architecture: NetworkArchitecture) throws -> NetworkArchitecture {
+        let alreadySet = architecture.activationFunction == value
+            && architecture.blockGroups.allSatisfy { $0.activationFunction == value }
+        guard !alreadySet else {
+            throw ModelDerivation.DeriveError.operationNotApplicable(
+                operation: kindName,
+                detail: "the tower-level and every group's activation_function are already '\(value.rawValue)'; nothing to derive")
+        }
+        var edited = architecture
+        edited.activationFunction = value
+        for index in edited.blockGroups.indices {
+            edited.blockGroups[index].activationFunction = value
+            if edited.blockGroups[index].seStyle == .none {
+                edited.blockGroups[index].seActivation = value
+            }
+        }
+        return edited
+    }
+
+    func tensorRewrites(source: NetworkArchitecture, target: NetworkArchitecture) throws -> [DeriveTensorRewrite] {
+        []
+    }
+}
+
+// MARK: - Operation: set-se-activation
+
+/// Sets `se_activation` — the activation after the SE excitation FC1 — on
+/// block groups that have an SE block (GitHub issue #2). The motivating A/B
+/// is ReLU vs leaky ReLU at FC1 from one fresh net, comparing dead FC1 units
+/// and strength, with the rest of the network (including the main-path
+/// activation) unchanged. No activation has parameters, so no tensor is
+/// rewritten: the derived file holds the source's weights bit-exact.
+struct SetSEActivationDeriveOperation: DeriveOperation {
+    let value: ActivationFunction
+    /// 0-based block-group indices, or nil for every group with an SE block.
+    let groupIndices: [Int]?
+
+    static let kind = DeriveOperationKind(
+        name: "set-se-activation",
+        flag: "--set-se-activation",
+        valueSyntax: ActivationFunction.allCases.map(\.rawValue).joined(separator: "|"),
+        summary: "Set se_activation, the activation after the SE excitation FC1, on block groups that have an "
+            + "SE block (all of them, or those named by --group). The main-path activation is not changed. "
+            + "Activations have no parameters, so every tensor is copied bit-exact.",
+        changedArchitectureFields: ["block_groups[].se_activation"],
+        rewrittenTensorsDescription: "none",
+        acceptsGroupSelection: true,
+        make: { value, groupIndices in
+            guard let parsed = ActivationFunction(rawValue: value) else {
+                throw ModelDerivation.DeriveError.operationNotApplicable(
+                    operation: "set-se-activation",
+                    detail: "value '\(value)' is not one of \(ActivationFunction.allCases.map(\.rawValue).joined(separator: ", "))")
+            }
+            return SetSEActivationDeriveOperation(value: parsed, groupIndices: groupIndices)
+        })
+
+    var kindName: String { Self.kind.name }
+
+    var recordedArguments: [String: String] {
+        let groups: String
+        if let groupIndices {
+            groups = groupIndices.map(String.init).joined(separator: ",")
+        } else {
+            groups = "all with SE"
+        }
+        return ["value": value.rawValue, "groups": groups]
+    }
+
+    /// The group indices this operation targets in `architecture`.
+    private func selectedGroups(in architecture: NetworkArchitecture) throws -> [Int] {
+        if let groupIndices {
+            for index in groupIndices where !architecture.blockGroups.indices.contains(index) {
+                throw ModelDerivation.DeriveError.operationNotApplicable(
+                    operation: kindName,
+                    detail: "--group \(index) is out of range (the model has \(architecture.blockGroups.count) block groups, 0-based)")
+            }
+            for index in groupIndices where architecture.blockGroups[index].seStyle == .none {
+                throw ModelDerivation.DeriveError.operationNotApplicable(
+                    operation: kindName,
+                    detail: "block group \(index) has se_style '\(SEStyle.none.rawValue)'; se_activation applies only "
+                        + "to a group with an SE block")
+            }
+            return groupIndices
+        }
+        let all = architecture.blockGroups.indices.filter { architecture.blockGroups[$0].seStyle != .none }
+        guard !all.isEmpty else {
+            throw ModelDerivation.DeriveError.operationNotApplicable(
+                operation: kindName, detail: "the model has no block group with an SE block")
+        }
+        return all
+    }
+
+    func apply(to architecture: NetworkArchitecture) throws -> NetworkArchitecture {
+        let groups = try selectedGroups(in: architecture)
+        guard groups.contains(where: { architecture.blockGroups[$0].seActivation != value }) else {
+            throw ModelDerivation.DeriveError.operationNotApplicable(
+                operation: kindName,
+                detail: "every selected block group already has se_activation '\(value.rawValue)'; nothing to derive")
+        }
+        var edited = architecture
+        for index in groups { edited.blockGroups[index].seActivation = value }
+        return edited
+    }
+
+    func tensorRewrites(source: NetworkArchitecture, target: NetworkArchitecture) throws -> [DeriveTensorRewrite] {
+        []
     }
 }

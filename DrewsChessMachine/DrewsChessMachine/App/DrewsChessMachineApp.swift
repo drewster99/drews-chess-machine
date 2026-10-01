@@ -435,10 +435,12 @@ struct DrewsChessMachineApp: App {
                                               Batch-size throughput sweep; print the table and exit.
               --analyze-replay-buffer <path>  Analyze a replay_buffer.bin (or a .dcmsession dir); print JSON,
                                               human summary to stderr, and exit.
-              --probe-model <path> [--probe-set 200|wide|both] [--probe-out <file>]
+              --probe-model <path> [--probe-set 200|wide|both] [--probe-out <file> [--probe-out-overwrite]]
                                               Run the Lichess probe batteries against saved checkpoints
                                               (a weight file, one .dcmsession, or a directory of sessions);
                                               one JSON line per checkpoint x set, then exit.
+                                              --probe-out must not already exist unless --probe-out-overwrite is
+                                              given (replaces a regular file only, never a folder or link).
               --analyze-numerics <path> [--numerics-corpus <shard>] [--numerics-out <dir>] [--numerics-static-only]
                                  [--policy-tail-precision fp32_from_pre_bn|mixed_final_projection]
                                               Numerics audit of a weight file or every weight file under a folder:
@@ -472,18 +474,41 @@ struct DrewsChessMachineApp: App {
                                               1000 steps and on exit/abort to a single rolling file (overwritten):
                                               --out-model <path>, else next to --start-model, else the app Models dir
                                               named after the corpus (<corpusID>-replay-latest.safetensors).
-              --out-model <path>              Destination for the rolling trainer-model file (overwrites in place);
-                                              a .safetensors extension is appended if you don't supply one.
+                                              Replay only reads the corpus: unsealed .open shards are skipped (and
+                                              listed in a warning), never recovered or modified -- recover them
+                                              with --validate-corpus <dir> --fix.
+              --out-model <path>              Destination for the rolling trainer-model file (overwritten by this
+                                              run's saves); a .safetensors extension is appended if you don't supply
+                                              one. Also used by --train-vs-uci. Checked before training: never the
+                                              --start-model itself, never anything but a regular file, never a name
+                                              shaped like an enumerated checkpoint (<stem>-replay-step<N>,
+                                              -vsuci-step<N>, -step<N>), and an existing file only when it holds the
+                                              --start-model's model ID at the start model's own step (the rolling file
+                                              of the state being continued). Any other existing file -- e.g. from an
+                                              earlier run of the same command, which saved under its own model ID, or
+                                              an earlier checkpoint of the same line -- refuses the run.
+              --overwrite-out-model           Use an --out-model the check above would refuse, replacing the file
+                                              there (still never the --start-model, never a non-regular file).
+              --enumerate-checkpoints         Also keep a copy of every save as <stem>-replay-step<N>.safetensors
+                                              (-vsuci-step<N> under --train-vs-uci; <stem>-step<N> when the stem has
+                                              no -replay-latest/-vsuci-latest marker). Never overwrites: step numbers
+                                              restart in every run, so the run refuses to start when its stem already
+                                              has step files it could reach -- give every resumed segment its own
+                                              --out-model stem (e.g. <name>-resume2-replay-latest.safetensors).
               --epochs <n>                    Replay budget: number of full passes over the corpus.
               --gpu-capture-step <n> --gpu-capture-out <file.gputrace>
                                               (with --replay-corpus) Capture training step n as an Xcode GPU trace
                                               document for per-kernel profiling, then keep training. Needs the
-                                              environment variable MTL_CAPTURE_ENABLED=1.
+                                              environment variable MTL_CAPTURE_ENABLED=1. The trace stores every
+                                              GPU buffer the step touches: one batch-4096 step of a 512-channel-
+                                              policy model passed 220 GB before filling the disk. Use a small
+                                              model and batch size, and check free space first.
               --policy-tail-precision fp32_from_pre_bn|mixed_final_projection
-                                              (with --replay-corpus or --analyze-numerics) Experimental: where the
-                                              policy head switches to fp32. Default fp32_from_pre_bn (the shipped
-                                              head-numerics fix); mixed_final_projection keeps the pre-block and final
-                                              projection in the compute dtype and widens only the logits.
+                                              (with --replay-corpus or --analyze-numerics) Where the policy head
+                                              switches to fp32. Default mixed_final_projection: the pre-block and
+                                              final projection run in the compute dtype and only the logits are
+                                              widened. fp32_from_pre_bn widens from the pre-block's BatchNorm on
+                                              (slower; slightly closer to an fp32 network on old pre-fix weights).
               --import-pgn <path>             Convert a .pgn / .pgn.zst (e.g. a Lichess monthly dump) into a
                                               corpus, then exit. .zst needs the `zstd` CLI on PATH; standard-start
                                               games only. Filters: --min-rating <elo> (both sides),
@@ -497,11 +522,16 @@ struct DrewsChessMachineApp: App {
                                               (front magic, corpus-ID stamp, trailer, whole-shard SHA-256, per-record
                                               CRC) and that corpus.json is consistent with the shards (per-source
                                               game/ply counts, sequence numbers, recording state), then prints a
-                                              report and the true game/ply totals. Exit 0 if valid, 1 if any problem
-                                              remains. Add --fix to repair fixable metadata (recompute stale per-source
-                                              gamesAdded/pliesAdded from the shard trailers and rewrite corpus.json;
-                                              shard bytes are never modified). Add --quick to skip the SHA/CRC body
-                                              pass (header/trailer counts only — fast, no integrity check).
+                                              report and the true game/ply totals. Unsealed .open shards (a crashed
+                                              recording/import, or one still running) are reported, untouched. Exit 0
+                                              if valid, 1 if any problem remains. Add --fix to repair: recover each
+                                              .open shard (truncate it to its last complete game and seal it, or
+                                              remove it when it holds none; each is logged) and recompute stale
+                                              per-source gamesAdded/pliesAdded from the shard trailers, rewriting
+                                              corpus.json. Sealed shards are never modified. Run --fix only when no
+                                              recording or import is writing to that corpus: a live writer's .open
+                                              shard looks exactly like a crash leftover. Add --quick to skip the
+                                              SHA/CRC body pass (header/trailer counts only — fast, no integrity check).
 
             Self-play recording: set the `record_self_play_games` parameter (e.g. in a --parameters file) to
             record every kept self-play game into a corpus under Corpora/ during a --train run.
@@ -1025,9 +1055,10 @@ struct DrewsChessMachineApp: App {
         var startGameIndex: Int? = nil
         var resumeExact = false
         var enumerateCheckpoints = false
+        var overwriteOutModel = false
         var gpuCaptureStep: Int? = nil
         var gpuCaptureOutPath: String? = nil
-        var policyTailPrecision: ChessNetwork.PolicyTailPrecision = .float32FromPreBatchNorm
+        var policyTailPrecision: ChessNetwork.PolicyTailPrecision = .default
 
         // Strict validation: a recognized flag with a missing or unparseable
         // value is a HARD error, never a silent default. A mistyped
@@ -1090,6 +1121,8 @@ struct DrewsChessMachineApp: App {
                 resumeExact = true; i += 1   // boolean flag, no value
             case "--enumerate-checkpoints":
                 enumerateCheckpoints = true; i += 1   // boolean flag, no value
+            case "--overwrite-out-model":
+                overwriteOutModel = true; i += 1   // boolean flag, no value
             case "--gpu-capture-step":
                 gpuCaptureStep = requireInt(arg, nextValue); i += 2
             case "--gpu-capture-out":
@@ -1188,6 +1221,7 @@ struct DrewsChessMachineApp: App {
             startGameIndex: startGameIndex,
             resumeExact: resumeExact,
             outModelPath: outModelPath,
+            overwriteOutModel: overwriteOutModel,
             enumerateCheckpoints: enumerateCheckpoints,
             runModelID: runModelID,
             outputURL: outputPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) },
@@ -1210,8 +1244,9 @@ struct DrewsChessMachineApp: App {
     /// "cmd=/path/to/stockfish;n=3;go=nodes 1;UCI_Elo=1400"` declares one
     /// opponent kind (cmd = path, n = instance count, go = per-move limit,
     /// everything else = setoption pairs). Mirrors the --replay-corpus model
-    /// I/O (--start-model, --resume-exact, --out-model, --enumerate-checkpoints,
-    /// --preset, --parameters, --training-step-limit, --training-time-limit).
+    /// I/O (--start-model, --resume-exact, --out-model, --overwrite-out-model,
+    /// --enumerate-checkpoints, --preset, --parameters, --training-step-limit,
+    /// --training-time-limit).
     private static func handleTrainVsUciIfPresent(rawArgs: [String]) {
         guard rawArgs.contains("--train-vs-uci") else { return }
 
@@ -1226,6 +1261,7 @@ struct DrewsChessMachineApp: App {
         var stepLimit: Int? = nil
         var timeLimitSec: Double? = nil
         var enumerateCheckpoints = false
+        var overwriteOutModel = false
         var resumeExact = false
         var maxPliesPerGame = 400
         var evalSyncEverySteps = 10
@@ -1282,6 +1318,8 @@ struct DrewsChessMachineApp: App {
                 evalSyncEverySteps = requireInt(arg, nextValue); i += 2
             case "--enumerate-checkpoints":
                 enumerateCheckpoints = true; i += 1
+            case "--overwrite-out-model":
+                overwriteOutModel = true; i += 1   // boolean flag, no value
             case "--resume-exact":
                 resumeExact = true; i += 1   // boolean flag, no value
             default:
@@ -1380,6 +1418,7 @@ struct DrewsChessMachineApp: App {
             resumeExact: resumeExact,
             presetName: presetName,
             outModelPath: outModelPath,
+            overwriteOutModel: overwriteOutModel,
             enumerateCheckpoints: enumerateCheckpoints,
             maxPliesPerGame: maxPliesPerGame,
             evalSyncEverySteps: evalSyncEverySteps,
@@ -1393,11 +1432,15 @@ struct DrewsChessMachineApp: App {
 
     /// Inspects `rawArgs` for `--validate-corpus <dir|id>` (repeatable). If
     /// present, validates each corpus (shard integrity + `corpus.json`
-    /// consistency), optionally repairs the fixable metadata with `--fix`, prints
-    /// a report, and exits: 0 if every corpus is valid, 1 if any problem remains
-    /// (or a target can't be resolved), 2 on a usage error. `--quick` skips the
-    /// shard-body SHA/CRC pass (header/trailer counts only). Runs before the
-    /// strict-CLI parser and the SwiftUI WindowGroup.
+    /// consistency), optionally repairs with `--fix` (recovers unsealed `.open`
+    /// shards and recomputes stale metadata counts — see `CorpusValidator`),
+    /// prints a report, and exits: 0 if every corpus is valid, 1 if any problem
+    /// remains (or a target can't be resolved), 2 on a usage error. `--quick`
+    /// skips the shard-body SHA/CRC pass (header/trailer counts only). Runs
+    /// before the strict-CLI parser and the SwiftUI WindowGroup.
+    ///
+    /// `--fix` starts the session log, so each shard recovery's
+    /// `[CORPUS-RECOVERY]` line is kept alongside the printed report.
     private static func handleValidateCorpusIfPresent(rawArgs: [String]) {
         guard rawArgs.contains("--validate-corpus") else { return }
 
@@ -1437,6 +1480,11 @@ struct DrewsChessMachineApp: App {
 
         func out(_ s: String) { FileHandle.standardOutput.write(Data((s + "\n").utf8)) }
 
+        if fix {
+            SessionLogger.shared.start()
+            SessionLogger.shared.log("[CORPUS-RECOVERY] --validate-corpus --fix build=\(BuildInfo.buildNumber) targets=\(targets)")
+        }
+
         var worstExit: Int32 = 0
         for target in targets {
             guard let dir = resolveCorpusDirectory(target) else {
@@ -1454,6 +1502,9 @@ struct DrewsChessMachineApp: App {
             }
             out(formatCorpusValidationReport(report))
             if !report.isValid { worstExit = max(worstExit, 1) }
+        }
+        if fix {
+            SessionLogger.shared.shutdown()
         }
         Darwin.exit(worstExit)
     }
@@ -1475,7 +1526,7 @@ struct DrewsChessMachineApp: App {
                 tag = "fixed"
             } else {
                 switch f.severity {
-                case .error:   tag = "error"
+                case .error:   tag = f.fixable ? "err* " : "error"
                 case .warning: tag = f.fixable ? "warn*" : "warn "
                 case .info:    tag = "info "
                 }
@@ -1488,7 +1539,7 @@ struct DrewsChessMachineApp: App {
             lines.append("  result  : OK — \(fixedCount) fixed, no problems remain")
         } else {
             let hasFixable = r.findings.contains { $0.fixable && !$0.fixed }
-            let hint = hasFixable ? "; rerun with --fix to repair the fixable ones (marked warn*)" : ""
+            let hint = hasFixable ? "; rerun with --fix to repair the fixable ones (marked *)" : ""
             lines.append("  result  : \(remaining) problem(s) remain — \(r.errorCount) error, \(r.warningCount) warning\(hint)")
         }
         return lines.joined(separator: "\n")
@@ -1677,7 +1728,8 @@ struct DrewsChessMachineApp: App {
 
     /// Inspects `rawArgs` for `--arch-sweep`. If present, parses the optional
     /// companions (`--arch-sweep-blocks <csv>`, `--arch-sweep-steps <n>`,
-    /// `--arch-sweep-batch <n>`, `--arch-sweep-out <path>`) and hands control to
+    /// `--arch-sweep-batch <n>`, `--arch-sweep-out <path>`,
+    /// `--arch-sweep-out-overwrite`) and hands control to
     /// `ArchSweepCLI.runAndExit`, which never returns. Investigation-only.
     private static func handleArchSweepIfPresent(rawArgs: [String]) {
         let flag = "--arch-sweep"
@@ -1686,8 +1738,9 @@ struct DrewsChessMachineApp: App {
         let stepsFlag = "--arch-sweep-steps"
         let batchFlag = "--arch-sweep-batch"
         let outFlag = "--arch-sweep-out"
+        let replaceOutFlag = ArchSweepCLI.replaceExistingOutFlag
 
-        let allowedFlags: Set<String> = [flag, blocksFlag, stepsFlag, batchFlag, outFlag]
+        let allowedFlags: Set<String> = [flag, blocksFlag, stepsFlag, batchFlag, outFlag, replaceOutFlag]
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
             FileHandle.standardError.write(Data(
                 "error: \(flag) does not accept '\(bad)'\n".utf8
@@ -1732,14 +1785,15 @@ struct DrewsChessMachineApp: App {
         }
         let outPath = value(after: outFlag) ?? "/tmp/arch_bench.jsonl"
 
-        ArchSweepCLI.runAndExit(blocks: blocks, steps: steps, batch: batch, outPath: outPath)
+        ArchSweepCLI.runAndExit(blocks: blocks, steps: steps, batch: batch, outPath: outPath,
+                                replaceExistingOut: rawArgs.contains(replaceOutFlag))
     }
 
     // MARK: - Checkpoint probe pre-flight (--probe-model)
 
     /// Inspects `rawArgs` for `--probe-model`. If present, parses the
     /// optional companions (`--probe-set <200|wide|both>`,
-    /// `--probe-out <path>`) and hands control to
+    /// `--probe-out <path>`, `--probe-out-overwrite`) and hands control to
     /// `ProbeModelCLI.runAndExit`, which never returns.
     /// Investigation-only — retro-probes saved checkpoints with the
     /// Lichess tactical batteries.
@@ -1748,8 +1802,9 @@ struct DrewsChessMachineApp: App {
         guard rawArgs.contains(flag) else { return }
         let setFlag = "--probe-set"
         let outFlag = "--probe-out"
+        let replaceOutFlag = ProbeModelCLI.replaceExistingOutFlag
 
-        let allowedFlags: Set<String> = [flag, setFlag, outFlag]
+        let allowedFlags: Set<String> = [flag, setFlag, outFlag, replaceOutFlag]
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
             FileHandle.standardError.write(Data(
                 "error: \(flag) does not accept '\(bad)'\n".utf8
@@ -1783,7 +1838,8 @@ struct DrewsChessMachineApp: App {
             }
             set = parsed
         }
-        ProbeModelCLI.runAndExit(modelPath: modelPath, set: set, outPath: value(after: outFlag))
+        ProbeModelCLI.runAndExit(modelPath: modelPath, set: set, outPath: value(after: outFlag),
+                                 replaceExistingOut: rawArgs.contains(replaceOutFlag))
     }
 
     // MARK: - Numerics audit pre-flight (--analyze-numerics)
@@ -1820,7 +1876,7 @@ struct DrewsChessMachineApp: App {
             FileHandle.standardError.write(Data("error: \(flag) requires a path (a weight file or a folder)\n".utf8))
             Darwin.exit(82)
         }
-        var policyTailPrecision = ChessNetwork.PolicyTailPrecision.float32FromPreBatchNorm
+        var policyTailPrecision = ChessNetwork.PolicyTailPrecision.default
         if let raw = value(after: policyTailFlag) {
             guard let parsed = ChessNetwork.PolicyTailPrecision(rawValue: raw) else {
                 let allowed = ChessNetwork.PolicyTailPrecision.allCases.map(\.rawValue).joined(separator: ", ")

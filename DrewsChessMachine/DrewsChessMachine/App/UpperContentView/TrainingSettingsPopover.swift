@@ -355,6 +355,7 @@ struct TrainingSettingsPopover: View {
                 SessionsTab(
                     periodicAutosaveIntervalMinutesText: $model.periodicAutosaveIntervalMinutesText,
                     maxPeriodicAutosavesKeptText: $model.maxPeriodicAutosavesKeptText,
+                    automaticSavePruningEnabled: $model.automaticSavePruningEnabledValue,
                     klProbeIntervalText: $model.klProbeIntervalText,
                     periodicAutosaveIntervalError: model.periodicAutosaveIntervalError,
                     maxPeriodicAutosavesKeptError: model.maxPeriodicAutosavesKeptError,
@@ -1104,20 +1105,29 @@ private struct OptimizerTab: View {
 
 // MARK: - Sessions tab
 
-/// Autosave-policy controls: the periodic full-session autosave cadence and
-/// the retention cap on how many periodic autosaves are kept on disk.
+/// Autosave-policy controls: the periodic full-session autosave cadence, the
+/// switch for pruning old automatic saves, and the retention cap on how many
+/// periodic and post-promotion autosaves pruning keeps on disk.
 ///
-/// Both commit on Save (no live-propagation). A changed interval is picked up
+/// All commit on Save (no live-propagation). A changed interval is picked up
 /// mid-session by the main-actor heartbeat, which re-anchors the running
-/// `PeriodicSaveController`; the retention cap is consulted after each periodic
-/// save completes. So neither field needs a direct push onto a live object the
-/// way the Replay tab's fields do. The interval is edited in minutes (the
-/// `periodic_autosave_interval_sec` parameter stores seconds) with an hours
-/// hint. Manual saves and post-promotion autosaves are unaffected by either
-/// knob.
+/// `PeriodicSaveController`; the pruning switch and the retention cap are
+/// consulted after each periodic or post-promotion save completes. So no field
+/// needs a direct push onto a live object the way the Replay tab's fields do.
+/// The interval is edited in minutes (the `periodic_autosave_interval_sec`
+/// parameter stores seconds) with an hours hint. Manual and SIGUSR2 saves are
+/// unaffected by any of these knobs.
+///
+/// The pruning toggle is disabled, with a "Disabled in this build" note, while
+/// `CheckpointPaths.automaticSavePruningForcedOff` holds pruning off whatever
+/// the setting says — it still shows the stored setting, but flipping it there
+/// could not change anything. The note keeps its place in the view tree and is
+/// collapsed (zero size, transparent) when the switch is lifted, rather than
+/// being added or removed by an `if`.
 private struct SessionsTab: View {
     @Binding var periodicAutosaveIntervalMinutesText: String
     @Binding var maxPeriodicAutosavesKeptText: String
+    @Binding var automaticSavePruningEnabled: Bool
     @Binding var klProbeIntervalText: String
     let periodicAutosaveIntervalError: Bool
     let maxPeriodicAutosavesKeptError: Bool
@@ -1144,6 +1154,20 @@ private struct SessionsTab: View {
                         in: TrainingSettingsPopoverModel.periodicAutosaveIntervalMinutesRange,
                         step: 30
                     )
+                }
+                HStack(spacing: 8) {
+                    Text("")
+                        .frame(width: 160, alignment: .trailing)
+                    Toggle("Prune old autosaves", isOn: $automaticSavePruningEnabled)
+                        .toggleStyle(.checkbox)
+                        .disabled(pruningForcedOff)
+                        .help("Delete the oldest periodic and post-promotion autosaves beyond the kept count after each new one is written.")
+                    Text("Disabled in this build")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .opacity(pruningForcedOff ? 1 : 0)
+                        .frame(width: pruningForcedOff ? nil : 0, height: pruningForcedOff ? nil : 0)
+                    Spacer()
                 }
                 PopoverRow(
                     label: "Max autosaves kept:",
@@ -1194,7 +1218,7 @@ private struct SessionsTab: View {
 
             Divider()
 
-            Text("The periodic autosave writes a full session checkpoint on this cadence while Play-and-Train runs; an interval change takes effect mid-session. The retention cap deletes the oldest periodic autosaves beyond the kept count after each new one is written — manual saves and post-promotion autosaves are never pruned. 0 keeps every periodic autosave (no pruning).")
+            Text("The periodic autosave writes a full session checkpoint on this cadence while Play-and-Train runs; an interval change takes effect mid-session. Pruning is off by default, and the kept count applies only when it is on. When on, the kept count covers periodic and post-promotion autosaves together, across every session, and the oldest beyond it are deleted after each new one is written. The save just written, the resume target, manual saves, and SIGUSR2 saves are never pruned. 0 keeps every autosave (no pruning).")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1217,7 +1241,15 @@ private struct SessionsTab: View {
         return String(format: "(~%.1f%% of throughput)", 100.0 / Double(n))
     }
 
+    /// The build's kill switch for automatic-save pruning; while it is set
+    /// the toggle is disabled and the "Disabled in this build" note shows.
+    private var pruningForcedOff: Bool { CheckpointPaths.automaticSavePruningForcedOff }
+
+    /// Says the kept count is unused while pruning is off (forced off by the
+    /// build or switched off by the toggle); otherwise clarifies that 0
+    /// keeps everything, and is blank for any other count.
     private var keptHint: String {
+        if pruningForcedOff || !automaticSavePruningEnabled { return "(used only when pruning is on)" }
         let trimmed = maxPeriodicAutosavesKeptText.trimmingCharacters(in: .whitespaces)
         if let n = Int(trimmed), n == 0 { return "0 = keep all" }
         return ""

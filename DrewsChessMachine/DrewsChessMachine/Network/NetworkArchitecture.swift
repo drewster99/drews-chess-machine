@@ -197,7 +197,8 @@ struct PlaneGroup: Sendable, Hashable {
 }
 
 /// Hidden-activation function. Chosen per block group (`BlockGroup.activationFunction`:
-/// block main path, `activation_gated` merge, SE FC1) and once at the tower level
+/// block main path, `activation_gated` merge; `BlockGroup.seActivation`: SE FC1) and
+/// once at the tower level
 /// (`NetworkArchitecture.activationFunction`: stem activation, tower-end activation,
 /// policy head, value head conv and FC1). Verified across all of git history: every
 /// architecture before SiLU/GELU were added used ReLU at every hidden site, so `.relu`
@@ -208,6 +209,16 @@ enum ActivationFunction: String, Codable, CaseIterable, Sendable, Hashable {
     case relu
     case silu
     case gelu
+    /// `x` for `x ≥ 0`, `leakyReLUNegativeSlope · x` below. Keeps a small
+    /// gradient where ReLU's is exactly zero, so a unit pushed negative for
+    /// every input (a dead ReLU unit, as measured in the SE bottlenecks) can
+    /// still recover.
+    case leakyRelu = "leaky_relu"
+
+    /// The negative-side slope of `leaky_relu`: a fixed constant, not an
+    /// architecture field, so `leaky_relu` means the same function in every
+    /// model. 0.01 is the conventional value (PyTorch's default).
+    static let leakyReLUNegativeSlope: Double = 0.01
 }
 
 /// Residual-block activation placement. Bundles the correlated choices: `pre` =
@@ -401,7 +412,9 @@ struct BlockGroup: Codable, Hashable, Sendable {
     var seReductionRatio: Int            // consumed only when seStyle != none
     var useRezero: Bool
     var rezeroAlphaInit: Float           // consumed only when useRezero
-    /// Hidden activation on this group's block main path + SE FC1.
+    /// Hidden activation on this group's block main path (and the merge
+    /// when `skipMerge == .activationGated`). The SE FC1 has its own
+    /// `seActivation`.
     var activationFunction: ActivationFunction
     var activationStyle: BlockActivationStyle
     var skipMerge: BlockSkipMerge
@@ -423,6 +436,21 @@ struct BlockGroup: Codable, Hashable, Sendable {
     /// field existed was Glorot — and callers opting into `.zero` set it
     /// explicitly.
     var seBetaInit: SEBetaInit
+    /// Hidden activation on this group's SE excitation FC1 (the pooled
+    /// `C → C/r` bottleneck), independent of the main path's
+    /// `activationFunction` (GitHub issue #2). It exists because the ReLU
+    /// bottleneck is the one place in the network where units were measured
+    /// dying (up to 41% of one block's FC1 units); FC1 runs on pooled
+    /// `[batch, C/r]` vectors, so a leaky ReLU there costs essentially
+    /// nothing, while leaky ReLU on every conv costs several percent of
+    /// training speed. No activation has parameters, so this never changes a
+    /// tensor. Meaningful only when `seStyle != .none`; `validate()` requires
+    /// it to equal `activationFunction` on an SE-less group so two
+    /// architectures that build the same graph are equal. Decoding is
+    /// format-version gated (`ArchitectureFormat`): files before format v5
+    /// resolve a missing value to the group's `activationFunction` (what the
+    /// SE FC1 used before the field existed); v5+ files must state it.
+    var seActivation: ActivationFunction
 
     /// `outputNorm` with the legacy-`nil` case folded into `.none`, so callers
     /// never branch on the Optional. This is the value the builder,
@@ -444,12 +472,52 @@ struct BlockGroup: Codable, Hashable, Sendable {
         case dropoutMultiplier = "dropout_multiplier"
         case outputNorm = "output_norm"
         case seBetaInit = "se_beta_init"
+        case seActivation = "se_activation"
     }
 
     /// Memberwise init (spelled out because the custom `Codable` below
-    /// suppresses the synthesized one). The two trailing fields keep the
-    /// defaults the synthesized init had: both are the behavior every group
-    /// had before the field existed.
+    /// suppresses the synthesized one). `outputNorm` and `seBetaInit` keep
+    /// the defaults the synthesized init had: both are the behavior every
+    /// group had before the field existed. `seActivation` is required here;
+    /// the overload below, which omits it, is the "SE FC1 shares the group's
+    /// activation" spelling.
+    init(
+        count: Int,
+        channels: Int,
+        conv1KernelSize: Int,
+        conv2KernelSize: Int,
+        seStyle: SEStyle,
+        seReductionRatio: Int,
+        useRezero: Bool,
+        rezeroAlphaInit: Float,
+        activationFunction: ActivationFunction,
+        activationStyle: BlockActivationStyle,
+        skipMerge: BlockSkipMerge,
+        dropoutMultiplier: Float,
+        outputNorm: BlockOutputNorm? = nil,
+        seBetaInit: SEBetaInit = .glorot,
+        seActivation: ActivationFunction
+    ) {
+        self.count = count
+        self.channels = channels
+        self.conv1KernelSize = conv1KernelSize
+        self.conv2KernelSize = conv2KernelSize
+        self.seStyle = seStyle
+        self.seReductionRatio = seReductionRatio
+        self.useRezero = useRezero
+        self.rezeroAlphaInit = rezeroAlphaInit
+        self.activationFunction = activationFunction
+        self.activationStyle = activationStyle
+        self.skipMerge = skipMerge
+        self.dropoutMultiplier = dropoutMultiplier
+        self.outputNorm = outputNorm
+        self.seBetaInit = seBetaInit
+        self.seActivation = seActivation
+    }
+
+    /// A group whose SE FC1 uses the group's own `activationFunction` — the
+    /// only arrangement that existed before `seActivation` did, so every
+    /// recipe written before it (code presets, tests) keeps its meaning.
     init(
         count: Int,
         channels: Int,
@@ -466,20 +534,22 @@ struct BlockGroup: Codable, Hashable, Sendable {
         outputNorm: BlockOutputNorm? = nil,
         seBetaInit: SEBetaInit = .glorot
     ) {
-        self.count = count
-        self.channels = channels
-        self.conv1KernelSize = conv1KernelSize
-        self.conv2KernelSize = conv2KernelSize
-        self.seStyle = seStyle
-        self.seReductionRatio = seReductionRatio
-        self.useRezero = useRezero
-        self.rezeroAlphaInit = rezeroAlphaInit
-        self.activationFunction = activationFunction
-        self.activationStyle = activationStyle
-        self.skipMerge = skipMerge
-        self.dropoutMultiplier = dropoutMultiplier
-        self.outputNorm = outputNorm
-        self.seBetaInit = seBetaInit
+        self.init(
+            count: count,
+            channels: channels,
+            conv1KernelSize: conv1KernelSize,
+            conv2KernelSize: conv2KernelSize,
+            seStyle: seStyle,
+            seReductionRatio: seReductionRatio,
+            useRezero: useRezero,
+            rezeroAlphaInit: rezeroAlphaInit,
+            activationFunction: activationFunction,
+            activationStyle: activationStyle,
+            skipMerge: skipMerge,
+            dropoutMultiplier: dropoutMultiplier,
+            outputNorm: outputNorm,
+            seBetaInit: seBetaInit,
+            seActivation: activationFunction)
     }
 
     /// Decodes under the format attached to the decoder (strict current
@@ -489,8 +559,11 @@ struct BlockGroup: Codable, Hashable, Sendable {
     }
 
     /// Decodes one group from a file of `format.formatVersion`. `se_beta_init`
-    /// is required from `ArchitectureFormat.seBetaInitRequiredFromVersion`;
-    /// older files resolve it to `.glorot` and record that on `format`'s log.
+    /// is required from `ArchitectureFormat.seBetaInitRequiredFromVersion`
+    /// (older files resolve it to `.glorot`), and `se_activation` from
+    /// `ArchitectureFormat.seActivationRequiredFromVersion` (older files
+    /// resolve it to this group's `activation_function`). Every resolution is
+    /// recorded on `format`'s log.
     init(from decoder: Decoder, format: ArchitectureFormat.DecodeFormat) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         count = try c.decode(Int.self, forKey: .count)
@@ -519,11 +592,27 @@ struct BlockGroup: Codable, Hashable, Sendable {
                 formatVersion: format.formatVersion,
                 source: format.source)
         }
+        if let stated = try c.decodeIfPresent(ActivationFunction.self, forKey: .seActivation) {
+            seActivation = stated
+        } else if format.allowsMissingSEActivation {
+            seActivation = activationFunction
+            format.legacyLog.record(
+                "\(ArchitectureFormat.location(of: decoder)).\(CodingKeys.seActivation.rawValue) := \(activationFunction.rawValue) "
+                    + "(the group's \(CodingKeys.activationFunction.rawValue))")
+        } else {
+            throw ArchitectureFormat.FormatError.missingRequiredField(
+                field: CodingKeys.seActivation.rawValue,
+                location: ArchitectureFormat.location(of: decoder),
+                formatVersion: format.formatVersion,
+                source: format.source)
+        }
     }
 
     /// Writes every field. `output_norm` keeps its pre-existing
     /// write-only-when-set form so older fields encode byte-identically;
-    /// `se_beta_init` is ALWAYS written, so a v4+ file is self-describing.
+    /// `se_beta_init` and `se_activation` are ALWAYS written (even when they
+    /// equal their legacy resolution), so a current-version file is
+    /// self-describing.
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(count, forKey: .count)
@@ -540,6 +629,7 @@ struct BlockGroup: Codable, Hashable, Sendable {
         try c.encode(dropoutMultiplier, forKey: .dropoutMultiplier)
         try c.encodeIfPresent(outputNorm, forKey: .outputNorm)
         try c.encode(seBetaInit, forKey: .seBetaInit)
+        try c.encode(seActivation, forKey: .seActivation)
     }
 }
 
@@ -607,6 +697,9 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
     /// `se_beta_init` other than `glorot` on a group whose SE style has no
     /// β half (only `scale_and_bias` does).
     case seBetaInitRequiresScaleAndBias(group: Int, seStyle: SEStyle, seBetaInit: SEBetaInit)
+    /// `se_activation` differing from the group's `activation_function` on a
+    /// group with no SE block, where it would be dead configuration.
+    case seActivationRequiresSE(group: Int, seActivation: ActivationFunction, activationFunction: ActivationFunction)
     /// Feature skip is enabled (`source != .none`) but no destination is routed.
     case featureSkipNoDestination
     /// A feature-skip combination that is config-carried but unsupported —
@@ -629,6 +722,10 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
             return "blockGroups[\(group)].seBetaInit is '\(seBetaInit.rawValue)' but its se_style is "
                 + "'\(seStyle.rawValue)'; only '\(SEStyle.scaleAndBias.rawValue)' has a β half, so every "
                 + "other SE style requires se_beta_init '\(SEBetaInit.glorot.rawValue)'"
+        case .seActivationRequiresSE(let group, let seActivation, let activationFunction):
+            return "blockGroups[\(group)].seActivation is '\(seActivation.rawValue)' but the group has no SE block "
+                + "(se_style '\(SEStyle.none.rawValue)'); an SE-less group's se_activation must equal its "
+                + "activation_function ('\(activationFunction.rawValue)')"
         case .kernelMustBeOdd(let field, let value):
             return "\(field) must be odd for symmetric same-padding (got \(value))"
         case .nonPositive(let field, let value):
@@ -769,7 +866,11 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 // The uniform convenience init describes the historical
                 // single-recipe towers, all of which were Glorot-β. A zero-β
                 // tower sets `seBetaInit` on the returned value's groups.
-                seBetaInit: .glorot
+                seBetaInit: .glorot,
+                // Every historical tower's SE FC1 used the tower's single
+                // activation. A tower with a different SE FC1 activation sets
+                // `seActivation` on the returned value's groups.
+                seActivation: activationFunction
             )],
             stemConvKernelSize: stemConvKernelSize,
             activationFunction: activationFunction,
@@ -890,13 +991,16 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 activationStyle: try c.decode(BlockActivationStyle.self, forKey: .legacyBlockActivationStyle),
                 skipMerge: try c.decode(BlockSkipMerge.self, forKey: .legacyBlockSkipMerge),
                 dropoutMultiplier: 1,
-                seBetaInit: .glorot
+                seBetaInit: .glorot,
+                seActivation: activationFunction
             )]
             // The uniform-tower keys predate block groups, so no writer of any
-            // version that has `se_beta_init` emits them: this form is legacy
-            // by construction, whatever version the carrier states.
+            // version that has `se_beta_init` or `se_activation` emits them:
+            // this form is legacy by construction, whatever version the
+            // carrier states.
             format.legacyLog.record(
-                "legacy uniform-tower keys: block_groups[0].\(BlockGroup.CodingKeys.seBetaInit.rawValue) := \(SEBetaInit.glorot.rawValue)")
+                "legacy uniform-tower keys: block_groups[0].\(BlockGroup.CodingKeys.seBetaInit.rawValue) := \(SEBetaInit.glorot.rawValue), "
+                    + "block_groups[0].\(BlockGroup.CodingKeys.seActivation.rawValue) := \(activationFunction.rawValue)")
         }
     }
 
@@ -1101,6 +1205,14 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 throw NetworkArchitectureError.seBetaInitRequiresScaleAndBias(
                     group: gi, seStyle: g.seStyle, seBetaInit: g.seBetaInit)
             }
+            // An SE-less group has no FC1, so its se_activation is dead
+            // configuration. Pinning it to the group's activation keeps one
+            // value per graph: otherwise two SE-less architectures that build
+            // the identical network would compare (and hash) unequal.
+            if g.seStyle == .none, g.seActivation != g.activationFunction {
+                throw NetworkArchitectureError.seActivationRequiresSE(
+                    group: gi, seActivation: g.seActivation, activationFunction: g.activationFunction)
+            }
             if g.useRezero {
                 guard g.rezeroAlphaInit.isFinite, g.rezeroAlphaInit > 0 else {
                     throw NetworkArchitectureError.mustBeFinitePositive(
@@ -1288,6 +1400,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         // Rendered only for a zero-β group, so every Glorot-β summary (all
         // architectures that predate the setting) is byte-identical.
         let seBetaDesc = g.seBetaInit == .zero ? " β0" : ""
+        let seActivationDesc = seActivationMarker(g)
         let rezeroDesc = g.useRezero
             ? "ReZero(\(String(format: "%.3g", g.rezeroAlphaInit))·tanh≤\(String(format: "%.3g", Double(g.rezeroAlphaInit) * rezeroTanhCeilingMultiple)))"
             : "no-ReZero"
@@ -1295,9 +1408,20 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         // summaries (and their golden-string tests) are byte-identical.
         let outNormDesc = g.resolvedOutputNorm == .none ? "" : ", out:\(g.resolvedOutputNorm.rawValue)"
         return "\(g.count)x[\(g.conv1KernelSize)x\(g.conv1KernelSize)+\(g.conv2KernelSize)x\(g.conv2KernelSize)"
-            + " @\(g.channels), \(seDesc)\(seBetaDesc), \(g.activationFunction.rawValue)/\(g.activationStyle.rawValue)"
+            + " @\(g.channels), \(seDesc)\(seBetaDesc)\(seActivationDesc), \(g.activationFunction.rawValue)/\(g.activationStyle.rawValue)"
             + ", \(g.skipMerge.rawValue), \(rezeroDesc)\(outNormDesc)"
             + ", drop*\(String(format: "%g", g.dropoutMultiplier))]"
+    }
+
+    /// The SE-activation clause of a group's rendering, e.g.
+    /// ` (fc1 leaky_relu)`: present only when the group has an SE block whose
+    /// FC1 activation differs from the group's main-path activation. Every
+    /// architecture that predates `seActivation` has them equal, so its
+    /// summary is byte-identical to the pre-field form. Shared by
+    /// `groupSummary` and the Build screen's diagram so the two never drift.
+    static func seActivationMarker(_ g: BlockGroup) -> String {
+        guard g.seStyle != .none, g.seActivation != g.activationFunction else { return "" }
+        return " (fc1 \(g.seActivation.rawValue))"
     }
 
     // MARK: Weight tensor plan
