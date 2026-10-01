@@ -1615,8 +1615,9 @@ extension NetworkArchitecture {
     /// The architecture the current build defaults to.
     static var current: NetworkArchitecture { preset(.current) }
 
-    /// Legacy `.dcmmodel` archHash (the old 7-scalar FNV value stored at byte
-    /// offset 12) -> the historical preset to rebuild. The ONLY backward-compat
+    /// Legacy `.dcmmodel` archHash (the old FNV value stored at byte offset 12:
+    /// six shape scalars for v3 files, plus the architecture version for v4)
+    /// -> the historical preset to rebuild. The ONLY backward-compat
     /// shim; used by the legacy reader (Phase F). Bidirectional via `legacyArchHash(for:)`.
     static let legacyDcmmodelArchHashes: [UInt32: Preset] = [
         0x13ba_0b55: .v3_8block_3x3,

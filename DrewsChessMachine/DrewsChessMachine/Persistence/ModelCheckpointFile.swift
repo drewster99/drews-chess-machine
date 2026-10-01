@@ -148,8 +148,9 @@ struct ModelCheckpointFile {
     static let supportedReadVersions: Set<UInt32> = [2]
 
     /// Legacy `.dcmmodel` architecture hash for a given architecture — the
-    /// 7-scalar FNV-1a mix (channels, numBlocks, inputPlanes, boardSize,
-    /// policySize, valueHeadClasses, architecture version) that historical
+    /// FNV-1a mix (channels, numBlocks, inputPlanes, boardSize, policySize,
+    /// valueHeadClasses, plus the architecture version for v4 and later;
+    /// v3 files were stamped before the version was mixed in) that historical
     /// files embedded so a stale file refused to land in wrong-sized slots.
     /// Retained only for the legacy `.dcmmodel` write/read path; the
     /// safetensors format carries the full embedded config instead. The
@@ -181,7 +182,15 @@ struct ModelCheckpointFile {
         // Topology version — distinguishes forward-graph changes the
         // shape-only mixes above can't see (e.g. the v3→v4 pre-activation
         // rebuild), so an incompatible-topology checkpoint is rejected.
-        mix(arch.architectureVersionLabel)
+        // The version scalar was only added to the mix with the v4 rebuild
+        // (cb3b4cf); every v3 file was stamped with the six shape scalars
+        // alone, and `legacyDcmmodelArchHashes` holds those historical
+        // values. Mixing it for v3 would make the v3 presets hash to values
+        // no real file carries, so they could neither be written nor
+        // matched. Label 3 therefore contributes nothing; 4 and above do.
+        if arch.architectureVersionLabel >= 4 {
+            mix(arch.architectureVersionLabel)
+        }
         return h
     }
 

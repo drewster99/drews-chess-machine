@@ -196,13 +196,21 @@ final class LichessBotRequestGateTests: XCTestCase {
         let limited = try lichessBotTestResponse(status: 429)
         let response = try ok()
 
+        // The 429's time is read inside its own request body, before the gate
+        // sees the response. Reading it after the throw races the gate's
+        // cooldown-wake task, which advances this virtual clock the full
+        // cooldown as soon as it sleeps.
+        let limitedAtBox = SyncBox<Duration?>(nil)
         do {
-            _ = try await gate.perform(priority: .chat, label: "chat") { (value: 0, response: limited) }
+            _ = try await gate.perform(priority: .chat, label: "chat") {
+                limitedAtBox.value = time.now()
+                return (value: 0, response: limited)
+            }
             XCTFail("a 429 must throw")
         } catch let error as LichessBotGateError {
             XCTAssertEqual(error, .rateLimited(cooldown: .seconds(60)))
         }
-        let limitedAt = time.now()
+        let limitedAt = try XCTUnwrap(limitedAtBox.value)
 
         let startedAt = SyncBox<Duration?>(nil)
         _ = try await gate.perform(priority: .move, label: "move") {
@@ -223,13 +231,19 @@ final class LichessBotRequestGateTests: XCTestCase {
         let limited = try lichessBotTestResponse(status: 429, headers: ["Retry-After": "300"])
         let response = try ok()
 
+        // Read inside the 429's body, as in the test above: after the throw the
+        // cooldown-wake task may already have advanced the virtual clock.
+        let limitedAtBox = SyncBox<Duration?>(nil)
         do {
-            _ = try await gate.perform(priority: .move, label: "move") { (value: 0, response: limited) }
+            _ = try await gate.perform(priority: .move, label: "move") {
+                limitedAtBox.value = time.now()
+                return (value: 0, response: limited)
+            }
             XCTFail("a 429 must throw")
         } catch let error as LichessBotGateError {
             XCTAssertEqual(error, .rateLimited(cooldown: .seconds(300)))
         }
-        let limitedAt = time.now()
+        let limitedAt = try XCTUnwrap(limitedAtBox.value)
         let startedAt = SyncBox<Duration?>(nil)
         _ = try await gate.perform(priority: .move, label: "move") {
             startedAt.value = time.now()

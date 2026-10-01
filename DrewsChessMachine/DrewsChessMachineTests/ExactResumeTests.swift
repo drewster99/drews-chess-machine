@@ -19,9 +19,10 @@
 //  different hyperparameters, as a resumed process with other settings would
 //  be — restored from the save and trained the same k steps. The effective
 //  learning rate and momentum the optimizer is fed must agree at every one of
-//  the k steps. Batches are random, so the weights themselves are not
-//  compared after training; the restored state is compared bit-exactly
-//  before it.
+//  the k steps. Both trainers take real-data steps from one fixture buffer of
+//  real positions, but each batch is sampled at random (the sampler is not
+//  seeded), so the weights themselves are not compared after training; the
+//  restored state is compared bit-exactly before it.
 //
 
 import XCTest
@@ -103,13 +104,86 @@ final class ExactResumeTests: XCTestCase {
         )
     }
 
-    /// Train `trainer` for `steps` steps, returning the schedule reading
-    /// before each one — the LR and momentum that step is fed.
-    private func train(_ trainer: ChessTrainer, steps: Int) async throws -> [ScheduleReading] {
+    /// Positions held by the fixture replay buffer — several batches' worth.
+    private let replayPositions = 512
+
+    /// A replay buffer of real positions: deterministic pseudo-random legal
+    /// games from the starting position (a fixed LCG picks each move; a game
+    /// restarts after 80 plies or when no legal move is left), each position
+    /// encoded with the played move as its policy target. Real positions are
+    /// required because the real-data step builds every sample's legal-move
+    /// mask from the decoded board.
+    private func makeReplayBuffer(arch: NetworkArchitecture) -> ReplayBuffer {
+        let encoding = arch.inputEncoding
+        let floatsPerBoard = BoardEncoder.tensorLength(for: encoding)
+        var boards = [Float](repeating: 0, count: replayPositions * floatsPerBoard)
+        var moves = [Int32](repeating: 0, count: replayPositions)
+        var plies = [UInt16](repeating: 0, count: replayPositions)
+        let taus = [Float](repeating: 1.0, count: replayPositions)
+        var hashes = [UInt64](repeating: 0, count: replayPositions)
+        let materials = [UInt8](repeating: 32, count: replayPositions)
+        var outcomes = [Float](repeating: 0, count: replayPositions)
+        var lcg: UInt64 = 0x0123_4567_89AB_CDEF
+        func next() -> UInt64 {
+            lcg = lcg &* 6364136223846793005 &+ 1442695040888963407
+            return lcg >> 33
+        }
+        var state = GameState.starting
+        var ply = 0
+        var filled = 0
+        while filled < replayPositions {
+            let legal = MoveGenerator.legalMoves(for: state)
+            if legal.isEmpty || ply >= 80 {
+                state = GameState.starting
+                ply = 0
+                continue
+            }
+            let move = legal[Int(next() % UInt64(legal.count))]
+            let encoded = BoardEncoder.encode(state, encoding: encoding)
+            boards.replaceSubrange(filled * floatsPerBoard ..< (filled + 1) * floatsPerBoard, with: encoded)
+            moves[filled] = Int32(PolicyEncoding.policyIndex(move, currentPlayer: state.currentPlayer))
+            plies[filled] = UInt16(ply)
+            hashes[filled] = next()
+            outcomes[filled] = Float(Int(next() % 3)) - 1.0
+            state = MoveGenerator.applyMove(move, to: state)
+            ply += 1
+            filled += 1
+        }
+        let buffer = ReplayBuffer(capacity: replayPositions, inputEncoding: encoding)
+        boards.withUnsafeBufferPointer { b in
+        moves.withUnsafeBufferPointer { m in
+        plies.withUnsafeBufferPointer { p in
+        taus.withUnsafeBufferPointer { t in
+        hashes.withUnsafeBufferPointer { h in
+        materials.withUnsafeBufferPointer { mc in
+        outcomes.withUnsafeBufferPointer { o in
+            guard let bb = b.baseAddress, let mb = m.baseAddress, let pb = p.baseAddress,
+                  let tb = t.baseAddress, let hb = h.baseAddress, let mcb = mc.baseAddress,
+                  let ob = o.baseAddress else {
+                preconditionFailure("fixture arrays are non-empty, so every base address exists")
+            }
+            buffer.append(
+                boards: bb, policyIndices: mb, plyIndices: pb, samplingTaus: tb,
+                stateHashes: hb, materialCounts: mcb,
+                gameLength: UInt16(replayPositions),
+                workerId: 0, intraWorkerGameIndex: 0,
+                outcomes: ob, count: replayPositions)
+        }}}}}}}
+        return buffer
+    }
+
+    /// Train `trainer` for `steps` real-data steps, returning the schedule
+    /// reading before each one — the LR and momentum that step is fed.
+    /// Uses `trainStep(replayBuffer:batchSize:)`, the step every production
+    /// runner takes: it is the only one that advances `completedTrainSteps`
+    /// (the random-data `trainStep(batchSize:)` deliberately never does, so
+    /// diagnostics can't consume warmup).
+    private func train(_ trainer: ChessTrainer, steps: Int, buffer: ReplayBuffer) async throws -> [ScheduleReading] {
         var readings: [ScheduleReading] = []
         for _ in 0..<steps {
             readings.append(reading(trainer))
-            _ = try await trainer.trainStep(batchSize: batchSize)
+            let timing = try await trainer.trainStep(replayBuffer: buffer, batchSize: batchSize)
+            XCTAssertNotNil(timing, "the fixture buffer holds more than one batch, so every step must train")
         }
         readings.append(reading(trainer))
         return readings
@@ -133,7 +207,8 @@ final class ExactResumeTests: XCTestCase {
     ) async throws {
         let original = originalRunHyperparameters()
         let uninterrupted = try ChessTrainer(hyperparameters: original, arch: .current)
-        _ = try await train(uninterrupted, steps: stepsBeforeSave)
+        let buffer = makeReplayBuffer(arch: .current)
+        _ = try await train(uninterrupted, steps: stepsBeforeSave, buffer: buffer)
         XCTAssertGreaterThan(uninterrupted.completedTrainSteps, original.lrWarmupSteps, "\(path): save must land past warmup")
 
         let saved = try await uninterrupted.exportResumeSnapshot()
@@ -161,8 +236,8 @@ final class ExactResumeTests: XCTestCase {
             "\(path): the fixture must be able to tell a restarted clock apart"
         )
 
-        let uninterruptedReadings = try await train(uninterrupted, steps: stepsAfterSave)
-        let resumedReadings = try await train(resumed, steps: stepsAfterSave)
+        let uninterruptedReadings = try await train(uninterrupted, steps: stepsAfterSave, buffer: buffer)
+        let resumedReadings = try await train(resumed, steps: stepsAfterSave, buffer: buffer)
         XCTAssertEqual(resumedReadings.count, stepsAfterSave + 1)
         for (k, (u, r)) in zip(uninterruptedReadings, resumedReadings).enumerated() {
             XCTAssertEqual(r, u, "\(path): schedule at N+\(k)")

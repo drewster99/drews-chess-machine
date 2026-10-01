@@ -439,30 +439,37 @@ final class SEBetaInitTests: XCTestCase {
     }
 
     /// Every tensor of `derived` is bit-identical to `source`'s except the β
-    /// ranges of the SE FC2 of `changedBlocks`, which must satisfy `beta`.
+    /// ranges of the SE FC2 of `changedBlocks`: the β weight rows must satisfy
+    /// `betaWeight` and the β bias half `betaBias`. They are separate because a
+    /// re-draw changes the two differently: `glorot` draws fresh β weights but
+    /// zeroes the β bias (the graph builder's bias init).
     private func assertOnlyBetaChanged(
         source: DerivedParts, derived: DerivedParts, arch: NetworkArchitecture,
-        changedBlocks: Set<Int>, beta: ([Float]) -> Bool
+        changedBlocks: Set<Int>, betaWeight: ([Float]) -> Bool, betaBias: ([Float]) -> Bool
     ) throws {
         XCTAssertEqual(Set(source.tensors.keys), Set(derived.tensors.keys))
         for (name, before) in source.tensors {
             let after = try XCTUnwrap(derived.tensors[name])
             XCTAssertEqual(before.shape, after.shape, name)
             var betaRange: Range<Int>?
+            var betaIsWeight: Bool?
             for block in changedBlocks {
                 let group = arch.expandedBlocks[block]
                 let reduced = group.channels / group.seReductionRatio
                 if name == "blocks.\(block).se_scalebias.fc2.weight" {
                     betaRange = SEScaleAndBiasBetaHalf.torchWeightRange(reducedChannels: reduced, channels: group.channels)
+                    betaIsWeight = true
                 } else if name == "blocks.\(block).se_scalebias.fc2.bias" {
                     betaRange = SEScaleAndBiasBetaHalf.biasRange(channels: group.channels)
+                    betaIsWeight = false
                 }
             }
             for index in before.data.indices where betaRange?.contains(index) != true {
                 XCTAssertEqual(before.data[index].bitPattern, after.data[index].bitPattern, "\(name)[\(index)] must be copied bit-exact")
             }
-            if let betaRange {
-                XCTAssertTrue(beta(Array(after.data[betaRange])), "\(name) β half")
+            if let betaRange, let betaIsWeight {
+                let values = Array(after.data[betaRange])
+                XCTAssertTrue(betaIsWeight ? betaWeight(values) : betaBias(values), "\(name) β half")
             }
         }
     }
@@ -477,7 +484,8 @@ final class SEBetaInitTests: XCTestCase {
         let derived = try parts(result.data)
         try assertOnlyBetaChanged(
             source: source, derived: derived, arch: sourceArch, changedBlocks: [0, 1, 2],
-            beta: { $0.allSatisfy { $0.bitPattern == 0 } })
+            betaWeight: { $0.allSatisfy { $0.bitPattern == 0 } },
+            betaBias: { $0.allSatisfy { $0.bitPattern == 0 } })
 
         // Lineage metadata.
         XCTAssertEqual(derived.metadata["model_id"], "20260930-2-DRV1")
@@ -510,7 +518,9 @@ final class SEBetaInitTests: XCTestCase {
         XCTAssertEqual(first.targetArchitecture.blockGroups.map(\.seBetaInit), [.glorot, .zero])
         try assertOnlyBetaChanged(
             source: try parts(sourceData), derived: try parts(first.data), arch: sourceArch,
-            changedBlocks: [1, 2], beta: { $0.allSatisfy { $0 == 0 } })
+            changedBlocks: [1, 2],
+            betaWeight: { $0.allSatisfy { $0 == 0 } },
+            betaBias: { $0.allSatisfy { $0 == 0 } })
 
         // Derive again from the derived file: history grows, lineage chains.
         let second = try ModelDerivation.derive(
@@ -520,7 +530,9 @@ final class SEBetaInitTests: XCTestCase {
         XCTAssertEqual(second.targetArchitecture.blockGroups.map(\.seBetaInit), [.glorot, .glorot])
         try assertOnlyBetaChanged(
             source: try parts(first.data), derived: try parts(second.data), arch: sourceArch,
-            changedBlocks: [1, 2], beta: { $0.contains { $0 != 0 } && $0.allSatisfy { $0.isFinite } })
+            changedBlocks: [1, 2],
+            betaWeight: { $0.contains { $0 != 0 } && $0.allSatisfy { $0.isFinite } },
+            betaBias: { $0.allSatisfy { $0.bitPattern == 0 } })
         let history = try ModelDerivation.decodeHistory(try parts(second.data).metadata[ModelDerivation.derivationHistoryKey])
         XCTAssertEqual(history.map(\.modelID), ["20260930-2-DRV1", "20260930-3-DRV2"])
         XCTAssertEqual(history.map(\.parentModelID), ["20260930-1-SRCE", "20260930-2-DRV1"])
