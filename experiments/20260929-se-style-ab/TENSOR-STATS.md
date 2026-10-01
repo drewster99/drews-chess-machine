@@ -55,10 +55,11 @@ Per-tensor statistics (mean, min, max, std, abs max, RMS, L2 norm, exact-zero fr
    - **The value head's WDL bias mean** stays at its init: ln 6 / 3 = 0.596354 after bf16 rounding. The finals lie in 0.595052–0.597043, because a shift common to all three logits gets no gradient through the softmax.
    - **`stem.bn.bias` matches `blocks.0.bn1.running_mean`** almost exactly in every run (e.g. −0.0184 vs −0.0184 for `se_sb`), as expected: block 0's pre-activation BN sees the stem output, whose per-channel mean is the stem BN's β.
 
-6. **ReZero α trains up, but stays below the cap.**
-   - The raw parameter starts at 0.4473 (effective 0.4472·tanh(0.4473) = 0.188).
-   - At the finals it ranges from 0.560 to 1.211 (effective 0.227–0.374), still below the 0.447 cap.
-   - `se_none2` has the smallest (block 1: raw 0.560, effective 0.227).
+6. **ReZero α trains up toward its cap.** The branch is scaled by the soft-bounded α_eff = C·tanh(α/C), with C = α₀ = 0.4472 (`ChessNetwork.swift`, `rezeroTanhCeilingMultiple` = 1.0).
+   - The raw parameter starts at 0.4473, so α_eff starts at 0.4472·tanh(1.0) = 0.341.
+   - At the finals the raw value ranges from 0.560 to 1.211, so α_eff is 0.380–0.443, i.e. 85–99% of the 0.447 cap. Seed-1 SE arms sit closest to it (raw 1.10–1.21, α_eff 0.441–0.443).
+   - `se_none2` has the smallest (block 1: raw 0.560, α_eff 0.380).
+   - (Corrected 2026-09-30: an earlier version of this finding used 0.4472·tanh(α) and reported 0.188 / 0.227–0.374.)
 
 7. **Weight scale.**
    - **Tower convs** barely change RMS (0.0179 at init → 0.0159–0.0188).
