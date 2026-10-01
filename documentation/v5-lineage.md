@@ -247,7 +247,11 @@ Run 4's abandoned 46,000→49,374 tail is recorded here and deliberately not cha
 ## 6. Surviving weights — 650 files, 616 distinct
 
 Full manifest with SHA-256 per file:
-`~/Downloads/v5-continue-bundle/monitor/checkpoint_inventory.json`.
+`~/Downloads/v5-continue-bundle/monitor/checkpoint_inventory.json` — *the bundle was
+deleted 2026-08-12 (see §10); the manifest is committed at
+`documentation/dashboards/data/v5-source/checkpoint_inventory.json`, and the checkpoints
+themselves now live in `Models/` under the per-segment names in §10.* The paragraphs
+below describe the bundle as it stood before deletion.
 
 | seg | model_id | files | step range | gap |
 |---:|---|---:|---|---|
@@ -282,9 +286,9 @@ name states which run produced it.
 | segments 0–2 per-mark source | `-frozen` checkpoint headers on the M5 host (their logs died with the VM) |
 | segment/axis config | `documentation/dashboards/registry.json` → `runs.v5` |
 | dashboard | `dcm_master.html` (+ hosted copy), 3 axes: by step / by time / by compute |
-| probe JSONL (pre-image) | `~/Downloads/v5-continue-bundle/monitor/new_ckpts*.jsonl` |
-| checkpoint manifest | `…/monitor/checkpoint_inventory.json` |
-| full per-step session logs | `~/Library/Logs/DrewsChessMachine/` **and** gzipped in `…/archive/logs/` (all 5 segments, integrity + line counts verified) |
+| probe JSONL (pre-image) | ~~`~/Downloads/v5-continue-bundle/monitor/new_ckpts*.jsonl`~~ — bundle deleted 2026-08-12; now `documentation/dashboards/data/v5-source/new_ckpts*.jsonl` (in git) |
+| checkpoint manifest | ~~`…/monitor/checkpoint_inventory.json`~~ — now `documentation/dashboards/data/v5-source/checkpoint_inventory.json` (in git) |
+| full per-step session logs | `~/Library/Logs/DrewsChessMachine/` **and** gzipped in `…/archive/logs/` (all 5 segments, integrity + line counts verified) — *the gzipped bundle copies went with the bundle on 2026-08-12; the logs in `~/Library/Logs/DrewsChessMachine/` on the master-record machine were verified byte-identical first (`5dc49f0`)* |
 | **weights** | `~/Library/Application Support/DrewsChessMachine/Models/` on the M5 — 615 files under per-segment names (see §10) |
 | probe pre-image + checkpoint manifest | `documentation/dashboards/data/v5-source/` (in git) |
 | everything unique to the bundle | `documentation/dashboards/data/v5-source/bundle-provenance/` (in git) |
@@ -292,11 +296,17 @@ name states which run produced it.
 
 `~/Library/Logs/DrewsChessMachine/` is **excluded from Time Machine**. The gzipped
 copies inside the bundle are what make those logs recoverable — keep them there, and
-compress any future run's log the same way.
+compress any future run's log the same way. *(Since 2026-08-12 the bundle is deleted, so
+those gzipped copies are gone; the session logs now survive only in
+`~/Library/Logs/DrewsChessMachine/` on the master-record machine, which is not backed up
+by Time Machine.)*
 
 ## 8. Retired by this consolidation
 
-Left in place, superseded — do not add to them:
+Left in place, superseded — do not add to them. *(Written while the bundle existed. Since
+its deletion on 2026-08-12 the tooling and narrative files below are preserved in
+`documentation/dashboards/data/v5-source/bundle-provenance/`, and the JSONL in
+`documentation/dashboards/data/v5-source/`.)*
 
 - `monitor/build_dashboard.py`, `build_html.py`, `build_table.py`, `v5-strength.html`,
   `records.json` — the bundle's separate strength tracker. `master.py` now renders v5
@@ -307,6 +317,14 @@ Left in place, superseded — do not add to them:
   New marks go through `replay.py track v5` / `import-probes`.
 
 ## 9. Reproducing the import
+
+> **The bundle at `~/Downloads/v5-continue-bundle` was deleted on 2026-08-12** (after
+> `5dc49f0` captured everything unique to it). The commands below are the record of how
+> the import was run. To redo it today, take the probe JSONL from
+> `documentation/dashboards/data/v5-source/new_ckpts*.jsonl` and the checkpoints from
+> `~/Library/Application Support/DrewsChessMachine/Models/` (renamed per segment — §10);
+> the `--ckpt-dir` layout below (`run1/`, `preserved-best/`, `quarantine/`) no longer
+> exists, and this re-run has not been tested since the move.
 
 ```bash
 cd documentation/dashboards
@@ -429,6 +447,15 @@ staging copy: 57 of its 58 files were byte-identical to the `~/Downloads` bundle
 58th — a `parameters.json` snapshot taken mid-assembly with segment 0's settings still in
 place — is committed at `documentation/dashboards/data/v5-source/v5-bundle-staging-parameters.json`.
 The repo working tree is clean as a result; there is no longer an untracked bundle in it.
+
+**The `~/Downloads/v5-continue-bundle/` working copy was deleted intentionally the same
+day (2026-08-12)**, after `5dc49f0` captured the 24 file contents that existed nowhere
+else into `documentation/dashboards/data/v5-source/bundle-provenance/`. Everything else in
+it had been verified duplicated by SHA-256 first: the 650 checkpoints in the
+master-record machine's `Models/`, the 6 session logs in its `Logs/`, the 47 corpus files
+in its `Corpora/`, and the probe JSONL, checkpoint manifest and run parameters committed in
+`documentation/dashboards/data/v5-source/`. References to bundle paths elsewhere in this
+document describe it as it stood before deletion.
 
 
 `v5-continue-bundle/` was a shipping container, not a storage location. Its contents now

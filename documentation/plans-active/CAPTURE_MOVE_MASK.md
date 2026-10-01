@@ -7,6 +7,11 @@
 > - **Paths moved.** `ChessTrainer.swift` and `ReplayBuffer.swift` now live under `DrewsChessMachine/DrewsChessMachine/Training/`.
 > - **Line numbers are stale** (off by roughly 2000 lines); treat every `ChessTrainer.swift:NNNN` / `ReplayBuffer.swift:NNNN` reference below as approximate-at-best and re-locate by symbol.
 > - **The "bump `ReplayBuffer.fileVersion` to v7" persistence scheme is dead.** v7 already exists — it was minted for an unrelated change (it *dropped* `vBaselines`), so it already consumed that version number. The on-disk persistence plan must be re-anchored against the current **v7** format and target a new version (v8+), not the v7 described here.
+>
+> **Further drift (verified 2026-10-01) — still not implemented; the trainer still runs `BoardEncoder.decodeSynthetic` + `MoveGenerator.legalMoves` per batch position (`ChessTrainer.swift` ~4715, and again ~5103 for the legal-mass snapshot):**
+> - **Self-play no longer goes through `MPSChessPlayer`.** It runs on the tick-based `BatchedSelfPlayDriver`, with per-game state on `ActiveGame` (`Training/ActiveGame.swift`); `ActiveGame` stages plies and calls `ReplayBuffer.append(...)` at game end. The `MPSChessPlayer.onChooseNextMove` / `onGameEnded` hooks in §2 below are obsolete for self-play (`MPSChessPlayer` now serves only Play Game / human-vs-network and `--uci`). The mask would be built in the tick driver's per-game sample step and flushed by `ActiveGame` alongside the other per-ply columns.
+> - **Version number.** `ReplayBuffer.fileVersion` is currently **7** (`Training/ReplayBuffer.swift:2697`). `DETERMINISM_RESUME_LINEAGE_PLAN.md` (plan #8, decisions D-8 / D-9) already claims **v8** (fixed-key position hashes + the slot-source column). So a mask section would be **v9**, or be folded into the v8 change if both land together — coordinate with plan #8 rather than picking a number independently.
+> - **Deferred elsewhere too.** `training-pipeline-optimization.md` lists the same idea as Item 25 and defers it until after the pipelined trainer, re-measuring with `[LEGAL-COST]` first.
 
 ## Context
 

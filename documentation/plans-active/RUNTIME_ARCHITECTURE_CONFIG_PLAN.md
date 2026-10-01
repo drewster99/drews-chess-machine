@@ -1,7 +1,48 @@
 # Safetensors-native storage + runtime-configurable architecture — Plan
 
-Status: **SHIPPED (2026-06-23 audit) — one CLI item open.** Branch `safetensors-storage`
-(from `bf16-trainer`). Build + commit per phase; no stopping between phases.
+Status: **ESSENTIALLY SHIPPED — small code leftovers only** (re-audited 2026-10-01;
+previous audit 2026-06-23 said "one CLI item open" — that item, the single
+`--new-model --architecture` flag, shipped in `9755461` on 2026-07-11). Branch
+`safetensors-storage` (from `bf16-trainer`), long since merged. Build + commit per phase; no
+stopping between phases.
+
+**Leftovers (not yet approved for implementation — each is "do it or drop the
+requirement"):**
+- **Remove the `= .current` default arguments** the §5a "no silent defaults" principle
+  and Phase B call for. Still present (as of 2026-10-01) at `ChessNetwork.swift:595`
+  (`init(arch:)`), `ChessMPSNetwork.swift:91`, `ChessTrainer.swift:2020`,
+  `CheckpointManager.swift:460`, `:571`, `:1159`, `ModelCheckpointFile.swift:295`,
+  `SessionController.swift:1106` (`performBuild(arch:)`), and
+  `ArchitectureConfig.swift:62` (`writeTemplate`). `SessionController.swift:1010`
+  (`var buildArchitecture: NetworkArchitecture = .current`) is a stored-property initial
+  value rather than a default argument; decide alongside the others.
+- **Preset `label` in `__metadata__`** (§10 "embedded into saved-model metadata", Phase E):
+  not done — `SafetensorsModelIO` writes no label key. Either embed it or drop the
+  requirement.
+- **Memory-budget check in `validate()`** (§5a limits, Phase A, §10 live readouts): not
+  done — `NetworkArchitecture.validate()` is structural only, and the New Network screen
+  shows estimated F32 weight bytes, not memory against the device budget. Either add it or
+  drop the requirement.
+- **Delete the dead `ArchitectureConfig.loadDefaultIfPresent()`**
+  (`Persistence/ArchitectureConfig.swift:44`) — §10 says the well-known
+  `architecture.json` loader is removed; nothing calls it any more, but the function is
+  still there.
+
+**Resolved since the 2026-06-23 audit (recorded here; the body below is kept as written):**
+- The §5a/§6/§10 design revision is complete and §12 was re-sequenced (the
+  "Design revision in progress" paragraph and §16's "Remaining step" are historical).
+- **FC storage layout:** §4/§11 say FC weights are stored `[in,out]` with a torch transpose
+  at export time. Since `16cf999` (2026-06-05) the native file is written torch-shaped —
+  FC/Linear weights `[out,in]`, biases 1-D — and decode applies the inverse transform, so
+  the engine's own load is unchanged and round-trips bit-exact. Trainer velocity stays
+  native 1-D.
+- **`architecture_version`:** resolved as a **derived label**, not a stored field —
+  `NetworkArchitecture.architectureVersionLabel` (3 / 4 / 5) is computed from the topology
+  (output norm on any group → 5; else pre-activation → 4; else 3) and feeds
+  `architectureSummary` and analysis-export metadata.
+- **Menu item:** the Build New Model screen opens from **Train ▸ New Network…** (not
+  File ▸ New Model…), and the screen is titled "New Network". There is no **Reset to
+  preset** button; re-selecting a preset in the picker repopulates the fields.
 
 **Progress:** Phases 1–4 complete (NetworkArchitecture foundation, safetensors-native
 storage, static→instance refactor, build-new-net flexibility). Phase 6a complete
@@ -28,10 +69,12 @@ user-saved preset name (with or without `.json`), or a path to a `NamedArchitect
 `NewModelCLI` mints a fresh untrained safetensors from it. (This collapsed the originally-planned
 two flags `--architecture-preset` / `--architecture-file` into one — a name and a path are
 disambiguated by whether the value resolves as a known preset name first.) The deferred
-`architecture_version`-drop decision (free-text `label` instead) also remains open. See §15
+`architecture_version`-drop decision (free-text `label` instead) also remains open.
+*(Since resolved: `architecture_version` is a derived label — see the status block.)* See §15
 for the two invariants that constrain this work.
 
-**Design revision in progress (§5a / §6 / §10):** a component-by-component design
+**Design revision (§5a / §6 / §10) — COMPLETE; §12 below is the re-sequenced list.** *(Was
+"in progress" when written.)* a component-by-component design
 walkthrough with the user has finalized the configurable-architecture surface, and it
 **diverges from the as-built Phases 1–4** — so parts of them need rework: the
 monolithic `block_style` is **decomposed** into orthogonal axes (§5a); `arch_hash` is
@@ -163,7 +206,8 @@ matching this exactly.
 - **Tensors:** every weight (trainables + BN running stats; trainer adds
   `opt.<name>.velocity`) as a **named** `F32` tensor, C-contiguous, our layout
   (conv OIHW; FC stored `[in,out]` — see §11 re: torch transpose at *export* time,
-  not on disk).
+  not on disk). *(Superseded by `16cf999`: FC is stored torch-shaped `[out,in]` on disk,
+  biases 1-D; decode transposes back to the native order.)*
 - **`__metadata__` keys:** `dcm_format_version`, `content_sha256` (hash over the
   tensor-data region), `model_id`, `created_at_unix`, `creator`, `training_step`
   (omitted if nil), `parent_model_id`, `notes`, and `architecture`
@@ -268,7 +312,8 @@ residual block + SE, policy head, value head (precision/bf16 gate is §9).
   `block_se_style`, `block_se_reduction_ratio`, `policy_head_style`,
   `policy_pre_conv_channels`, `value_head_style`, `value_head_conv_channels`,
   `value_head_hidden_units`, `compute_data_type`. (`architecture_version`: orphaned by
-  the archHash deprecation — likely dropped; see §6.)
+  the archHash deprecation — likely dropped; see §6. *Resolved: not stored; derived as
+  `architectureVersionLabel`.*)
 - **Derived (computed, never stored — can't be silently wrong):** `input_planes`
   (←`input_encoding`), `value_head_classes` + value loss type (←`value_head_style`),
   stem-ReLU / tower-end-BN presence (←`block_activation_style`), same-padding
@@ -458,6 +503,8 @@ scheme-version, 64-bit) is **dropped as unneeded**.
 - **`architecture_version`:** orphaned (its only job was the old hash;
   `architectureSummary` already carries the era marker). **Lean: drop it** — keep only
   if a hand-set generation label is wanted. *(OPEN — last remaining identity decision.)*
+  **RESOLVED:** dropped as a stored field; `architectureVersionLabel` is derived from the
+  topology (3 / 4 / 5) and used in `architectureSummary` and analysis-export metadata.
 
 ## 7. static→instance refactor
 
@@ -527,7 +574,8 @@ the app.
   a known name first, then falls through to a filesystem path; `NewModelCLI` mints the fresh
   untrained safetensors. (Collapses the originally-planned `--architecture-preset` /
   `--architecture-file` pair into one flag.) Removes the Phase-4
-  `ArchitectureConfig.loadDefaultIfPresent` well-known-file loader.
+  `ArchitectureConfig.loadDefaultIfPresent` well-known-file loader. *(Leftover: the loader
+  is no longer called but the function still exists — see the status block.)*
 - **`--uci`:** build from the model file's embedded config (shared resolver) — never
   needs a preset/arch file.
 - **`--playchess`:** GUI-launch flag (like `--train`) routing into the human-play
@@ -559,7 +607,7 @@ the app.
 ### Build New Model screen (required)
 
 A dedicated screen for creating a fresh network — opened from the Build action (and a
-**File ▸ New Model…** menu item), replacing the old immediate "build default" path. One
+**File ▸ New Model…** menu item — *as built: **Train ▸ New Network…***), replacing the old immediate "build default" path. One
 SwiftUI `View` struct in its own file under `App/UpperContentView/`, backed by an
 `@Observable` model (mirrors `TrainingSettingsPopoverModel`).
 
@@ -581,6 +629,9 @@ SwiftUI `View` struct in its own file under `App/UpperContentView/`, backed by a
   validation — invalid fields flagged, **Build disabled** until `validate()` passes.
 - **Actions:** **Build** (constructs `ChessNetwork(arch:)` + readies the session),
   **Save as Preset…** (writes a `.json` to the Presets folder), **Reset to preset**.
+  *(As built: no Reset-to-preset button — re-selecting the preset repopulates the fields.
+  The live readout shows estimated F32 weight bytes, not memory against the device
+  budget.)*
 - **Conventions:** one `View` per file; `@Observable` model with per-field bindings +
   validation (mirrors `TrainingSettingsPopoverModel`); monospaced padded digits;
   light/dark; aligned columns; keyboard/accessibility per the house UI rules.
@@ -594,6 +645,9 @@ Native format = interoperable; no exporter. Conventions to honor + document in
 
 - **Layout:** conv OIHW, FC stored `[in,out]`, **C-contiguous**, LE F32. A torch
   consumer transposes FC to `[out,in]`; TF transposes conv to HWIO.
+  *(Superseded by `16cf999`, 2026-06-05: the file is now a torch drop-in — FC/Linear
+  weights are written `[out,in]` and biases 1-D, so a torch consumer needs no transpose;
+  our decoder applies the inverse transform. TF still transposes conv to HWIO.)*
 - **BN:** gamma→`weight`, beta→`bias`; `running_mean`/`running_var` match torch.
   No `num_batches_tracked` (fixed-EMA; positional-exact loader had no slot) →
   synthesize `0` on torch import-from-us; drop it on import-to-us.
@@ -639,7 +693,8 @@ wiring yet.
 static builders branch on all decomposed axes (block_activation_style, skip_merge,
 use_rezero, conv1/2 kernel, se_style/ratio, policy_head_style + pre_conv_channels,
 value_head_style forward graph, network-wide activation_function incl. silu/gelu exact).
-Remove the `= .current` init defaults — every call site passes its arch.
+Remove the `= .current` init defaults — every call site passes its arch. *(Leftover: not
+done; the defaults are still present — see the status block.)*
 *Validate (INVARIANT CHECKPOINT, §15):* default/current config builds the **bit-identical**
 graph (forward-pass parity test + `verifyModelFile`); build-and-forward smoke for every
 preset.
@@ -676,7 +731,7 @@ unchanged. [**90% "build+train any arch" fully enabled.**]
 **H. Build UX + presets + CLI (rework Phase 4).** The **Build New Model screen** (full
 spec in §10: preset picker built-ins+user, every free-form field, live
 paramCount/summary, memory validation, Save-as-Preset, `label`) opened from the Build
-action + **File ▸ New Model…**; Presets folder (user-saved only); a single
+action + **File ▸ New Model…** (*as built: Train ▸ New Network…*); Presets folder (user-saved only); a single
 `--new-model --architecture <name|preset.json|path>` (remove the `architecture.json`
 loader); `--uci` from embedded config; `--playchess`. *Validate:* the screen builds a
 free-form arch that trains; CLI build from preset + file; `--uci`/`--playchess` resolve.
@@ -742,6 +797,8 @@ All four are now settled by the §5a/§9 walkthrough:
 
 **Remaining step before implementation:** re-sequence §12 into the actual build order
 reflecting the §5a/§6/§9/§10 finalized design (and the Phase 1–4 rework it implies).
+**DONE** — §12 is the re-sequenced list; its phases shipped apart from the leftovers
+listed in the status block at the top.
 
 ## 17. Architecture format v4: `se_beta_init` and the format-version gate (issue #7, shipped 2026-09-30)
 

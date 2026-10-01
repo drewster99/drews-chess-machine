@@ -1,8 +1,36 @@
 # Autosave retention + weights-only saves
 
-Status: planned, not started. Supersedes/completes the "Autosave retention
-pruning" entry in `ROADMAP.md` (that entry stays as design history; this file
-is the actionable plan).
+Status: **SUPERSEDED (2026-10-01) — folded into
+`../plans-active/DETERMINISM_RESUME_LINEAGE_PLAN.md` (plan #8), decision D-8.** Never
+implemented. Kept unchanged below as the record of the design and its reasoning.
+Owner decision 2026-10-01; where each idea went:
+
+- **Combined retention pool (`-periodic` + `-promote`)** — **adopted** as the D-8
+  "Retention" addition: §D8 "Autosave retention" and phase **P14** in plan #8. Same
+  parameter (`max_periodic_autosaves_kept`, scope widened, `0` still = unlimited), same
+  protection of the just-written save and the `LastSessionPointer` target, same
+  `[PRUNE]` / `[PRUNE-ERR]` logging.
+- **Manual saves never pruned** — **adopted** (unchanged from today's behavior).
+- **SIGUSR2 saves exempt** (open decision 2 below) — **decided: exempt** (owner,
+  2026-10-01).
+- **`manualPromote` ("Promote Trainee Now") saves** (open decision 1 below) — this plan
+  recommended sweeping them into the pool. Plan #8 instead records them as **never
+  pruned, like manual saves, unless the owner says otherwise**, flagged **OPEN**; that
+  rule needs a distinct disk tag.
+- **Phase 1 "Save Session (Weights Only)" menu item** (and open decision 3 below) —
+  **dropped**: under D-8 every save omits the replay buffer by default, and the manual
+  Save Session sheet has an "Include replay buffer" checkbox, so a separate item is
+  redundant. The concern that `hasReplayBuffer` must match the file on disk is covered
+  by D-8's writer rule (the flag records whether the buffer was included).
+- **Write-then-strip** (write every autosave's buffer, then delete it from older saves
+  and rewrite `session.json`) — **dropped**: under D-8 the buffer is included or not
+  before the write (`session_save_include_replay_buffer`), so there is nothing to strip.
+- **Time-based window `AutosaveWeightsRetentionHours`** (default 72 h) — **not
+  adopted** in plan #8, which uses the count cap alone. Would need a new owner decision.
+
+Original status line, kept: "planned, not started. Supersedes/completes the
+"Autosave retention pruning" entry in `ROADMAP.md` (that entry stays as design history;
+this file is the actionable plan)."
 
 ## Problem
 

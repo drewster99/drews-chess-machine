@@ -4,6 +4,17 @@ _Written 2026-08-12. **Executed 2026-08-12** — see `documentation/v5-lineage.m
 outcome. Retained as the record of what was decided and why; the one item deliberately
 left undone is noted at the end._
 
+**Status: COMPLETE** (closed 2026-10-01; moved from `plans-active/` to
+`plans-completed/`). The item left undone at the time — deleting
+`~/Downloads/v5-continue-bundle/` — was also done on 2026-08-12, intentionally, after
+`5dc49f0` captured the bundle's 24 unique file contents into
+`documentation/dashboards/data/v5-source/bundle-provenance/`; the repo-root staging copy
+had been deleted earlier that day (`cf1a6d6`). Phase 1 **shipped differently** from the
+`frozen_prefix` / `enum_prefix_for` design below: per-segment discovery landed as an
+optional `enum_stem` key per segment, resolved by `enum_specs()` in `replay.py`
+(`02b25fb`), later made discoverable from checkpoint headers
+(`replay.py discover-stems`, `47ab243` / `7faffa6`). See **Still outstanding** at the end.
+
 ## Goal
 
 v5's five continuation runs currently live in a one-off container,
@@ -108,6 +119,12 @@ Implement the `replay.py` change above. Add `frozen_prefix` to segments 3–7 in
 `registry.json`. Commit before touching any file, so the tooling change is bisectable
 independently of the data move.
 
+*As built (`02b25fb`):* the per-segment key is `enum_stem`, not `frozen_prefix`, and the
+resolver is `enum_specs(cfg)` (one glob per segment, falling back to the old single glob
+when no segment declares a stem), not `enum_prefix_for(cfg, si)`. Segments 3–7 carry
+`enum_stem` in `registry.json`. `replay.py discover-stems` (`47ab243`, fixed in
+`7faffa6`) derives the stems from checkpoint headers rather than filenames.
+
 ### Phase 2 — copy checkpoints to `Models/` under new names
 Copy — **never move** — from the bundle into
 `~/Library/Application Support/DrewsChessMachine/Models/` on the M5, resolving each
@@ -202,3 +219,18 @@ Redundant by this point, needing no home: `corpus/` (Corpora is canonical),
 
 Deleting `~/Downloads/v5-continue-bundle/` — held back pending explicit approval, per the
 standing "nothing deleted from this bundle" rule.
+
+**DONE (2026-08-12).** The bundle was deleted intentionally on 2026-08-12, after `5dc49f0`
+("docs: capture everything unique to the v5 bundle before it is deleted") committed the
+24 file contents that existed nowhere else to
+`documentation/dashboards/data/v5-source/bundle-provenance/` — the retired monitor
+tooling, the fabricated `new_ckpts_run3.jsonl.corrupt.bak` rows, the contemporaneous
+narrative (`MANIFEST.md`, `HANDOFF.md`, the original README, the quarantine README, two
+consolidation-era status docs) and sampled console output. Everything else had been
+verified duplicated by SHA-256 first: 650 checkpoints in the master-record machine's
+`Models/`, 6 session logs in its `Logs/`, 47 corpus files in its `Corpora/`, and the
+probes, checkpoint manifest and run parameters already committed in
+`documentation/dashboards/data/v5-source/`. The repo-root staging copy (2.9 GB) had been
+deleted earlier the same day (`cf1a6d6`). Not recorded anywhere in the repo: whether
+`~/v5-consolidation-backup-20260811/` was kept until the next Time Machine cycle, as
+Phase 5 asked.

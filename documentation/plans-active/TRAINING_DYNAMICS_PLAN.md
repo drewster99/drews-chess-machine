@@ -1,9 +1,37 @@
 # Training Dynamics Plan — cyclical LR/momentum + measurement
 
-Status: **PARTIALLY SHIPPED** (2026-06-13 audit). Item 0 (EMA overlay) AND
-Section 3 (cyclical LR / inverse-coupled momentum, `Training/LRMomentumCycle.swift`)
-are **implemented**; the Tier-1/2 measurement scaffolding is designed, not all built. Separate from `GPU_UTILIZATION_PLAN.md` (that's throughput; this is
-learning dynamics + how we measure them).
+Status: **PARTIALLY SHIPPED** (re-audited 2026-10-01; previous audit 2026-06-13).
+Separate from `GPU_UTILIZATION_PLAN.md` (that's throughput; this is learning
+dynamics + how we measure them).
+
+Shipped:
+- **§0 EMA overlay** on the Lichess trend charts — `540bbda`.
+- **Tier 1, NLL as the headline** — the probe reports NLL and puzzle-Elo
+  (`bd6d144`), and the trend charts plot them.
+- **Tier 1, bigger puzzle set** — **shipped differently**: instead of growing
+  the 200-puzzle set to 1000, a separate ~4,435-puzzle **wide** set (rating
+  400–3200) runs alongside the unchanged 200-set, both evaluated in one batched
+  forward pass (`9818b66`; see `../plans-completed/LICHESS_WIDE_PROBE_PLAN.md`).
+- **§2 prepared-batch replay** — **shipped differently** as **corpus replay**
+  (`--replay-corpus` / `--epochs`, `c4243b5`): a fixed *game corpus* is replayed
+  through the self-play staging path into the replay buffer, rather than saving
+  prepared batches to disk. This removes the self-play-data confound the section
+  was after, without the per-batch storage cost discussed below.
+- **§3 cyclical LR + inverse-coupled momentum** — `95e0d54`
+  (`Training/LRMomentumCycle.swift`).
+- **§3 follow-on: decaying cycle** — `0a4792d` (2026-09-29): the LR cycle's peak
+  and trough decay geometrically over a horizon of cycle steps and then hold;
+  momentum can follow the LR cycle's phase (inverted) with bounds that drift
+  linearly over the same horizon. Horizon 0 is the original fixed-band behaviour.
+
+Not started:
+- **Tier 2 fixed-anchor gauntlet** (live net vs a frozen reference net).
+- **Tier 3 ancestor rating pool.**
+- **Native N-arm sweep mode** (one CLI/JSON invocation running the same sequence
+  under N parameter sets). Partially covered today by running corpus replay once
+  per `parameters.json` file and comparing the results; there is no built-in
+  multi-arm driver. (The existing `--arch-sweep` is a block-count depth sweep,
+  not this.)
 
 ## Motivation
 
@@ -32,20 +60,31 @@ Plan, in tiers:
   - Report **NLL as the headline** metric, not argmax-count — NLL is continuous
     and far lower-variance than discrete "N/200 hits" (which bounced ±2.5pp while
     NLL barely moved).
+    — **DONE** (`bd6d144`: NLL + puzzle-Elo metrics on the probe).
   - **EMA-smooth the trend** — DONE (see Item 0).
   - **Grow the set to 1000 puzzles**, evaluated as a **single forward batch**
     (the inference executable already caches per batch size, so it's one extra
     infrequent forward). Cuts sampling variance at the root.
-- **Tier 2 — fixed-anchor gauntlet:** alongside candidate-vs-champion, periodically
+    — **DONE, differently** (`9818b66`): the 200-set was left untouched and a
+    separate ~4,435-puzzle wide set was added; both run in one batched forward.
+    See `../plans-completed/LICHESS_WIDE_PROBE_PLAN.md`.
+- **Tier 2 — fixed-anchor gauntlet** (*not started*)**:** alongside candidate-vs-champion, periodically
   play the live net vs a **frozen reference net** (pinned at experiment start) for
   an *absolute* Elo trajectory. The moving-champion arena structurally can't tell
   you "is it stronger in absolute terms."
-- **Tier 3 (optional, later):** ancestor rating pool (KataGo-style). 
+- **Tier 3 (optional, later; not started):** ancestor rating pool (KataGo-style).
 - **NOT useful now:** external engines (Stockfish / Sloppy). The net loses ~100%,
   so the metric is *floored* — zero gradient, can't distinguish better from worse.
   Revisit only once we score > 0 against them.
 
 ## 2. Prepared-batch replay → deterministic A/B + param sweeps
+
+> **Shipped differently** as corpus replay (`--replay-corpus` / `--epochs`,
+> `c4243b5`). A fixed game corpus — not a fixed sequence of prepared batches — is
+> replayed through the self-play `ActiveGame` staging path into the replay
+> buffer, so the per-batch storage concern below never arose. The CLI/JSON
+> N-arm sweep driver was **not** built; A/B comparisons are run as separate
+> corpus-replay runs, one per `parameters.json`.
 
 The cleanest answer to "we're not supervised": **save a fixed sequence of prepared
 batches to disk**, then **replay the identical sequence** under different
@@ -118,7 +157,10 @@ widget needed). Consequences:
 - **Enabling LR cycling overrides the exponential-decay baseline** — with absolute
   endpoints the LR oscillates in a *fixed* band with no long-term downward drift.
   Decay-of-the-cycle (Smith `triangular2` / shrinking endpoints) is a **follow-on**,
-  not in v1.
+  not in v1. — **Follow-on SHIPPED** (`0a4792d`, 2026-09-29): a decaying envelope
+  shrinks the LR peak and trough geometrically over a horizon of cycle steps and
+  then holds; momentum can follow the LR cycle's phase (inverted) with bounds that
+  drift linearly over the same horizon. A horizon of 0 keeps the fixed band.
 
 **`cycleCount` completion:** `0 = unbounded` (the default for open-ended
 self-play). When `count ≠ 0`, once `globalStep / period ≥ count` the channel
@@ -167,10 +209,17 @@ is the prerequisite for reading any cycling experiment off the probe.
 
 ## Sequencing
 
-1. EMA overlay — **done**.
+1. EMA overlay — **done** (`540bbda`).
 2. Probe as NLL-headline test-loss + grow to 1000 puzzles + fixed-anchor gauntlet.
+   — NLL headline **done** (`bd6d144`); bigger set **done differently** as the
+   ~4,435-puzzle wide set (`9818b66`); fixed-anchor gauntlet **not started**.
 3. Prepared-batch replay + CLI/JSON sweep mode.
+   — **done differently** as corpus replay (`c4243b5`); native N-arm sweep
+   **not started** (per-file runs instead).
 4. Cyclical LR + inverse momentum (cheap given the live scalars), then measure.
+   — **done** (`95e0d54`), plus the decaying-cycle follow-on (`0a4792d`).
 
-The **GPU pipeline (`GPU_UTILIZATION_PLAN.md` Phase 3)** is orthogonal (throughput,
-not dynamics) and proceeds in parallel.
+The **GPU pipeline (`GPU_UTILIZATION_PLAN.md`)** is orthogonal (throughput, not
+dynamics). *(The original note here said "Phase 3 proceeds in parallel"; that
+was a scheduling note from 2026-06-03 and no longer describes anything — see
+that plan's own status line for where it stands.)*

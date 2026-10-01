@@ -1,9 +1,46 @@
 # GPU Utilization Plan — training step is CPU-encode-bound
 
-Status: **Phase 2 SHIPPED** (2026-06-13 audit) — the precompiled-executable fix
-is in code (`ChessTrainer.trainingExecutables` + `executable.encode`, replacing
-per-step `graph.run`). Phase 3 (kernel fusion / baseline-forward merge) remains
-**explicitly deferred** per direction on 2026-06-02.
+Status: **Phases 1–2 SHIPPED; Phase 3 partially shipped (measurement + plumbing,
+not the pipeline); Phase 4 not started** (re-audited 2026-10-01; previous audit
+2026-06-13).
+
+*(Correction: the 2026-06-13 status line said "Phase 3 (kernel fusion /
+baseline-forward merge) remains explicitly deferred". Kernel fusion is **Phase 4**
+in the body below; Phase 3 is the encode pipeline. What was deferred on 2026-06-02
+was kernel fusion.)*
+
+Shipped:
+- **Phase 1 — telemetry gating:** `5c9e8a9`, plus `e8f6ebc` (regression test;
+  diagnostics cadence decoupled from `batchStatsInterval`).
+- **Phase 2 — compiled training executable:** `a1f1e7e` (`MPSGraphExecutable` +
+  `executable.encode`, replacing per-step `graph.run`), cached per
+  `TrainingExecutableKey` in `ChessTrainer.trainingExecutables`. The key started as
+  batch size + `includeDiagnostics`; `0c170e3` (2026-09-21) added a KL-probe-stash
+  variant to it.
+- **Phase 3, Increment 1 and its measurements:** command-buffer encode plumbing
+  (`31388e0`, recheck test `571f87c`), the `[ENCODE-COST]` probe (`720f9f9`), and the
+  two concurrent-encode prerequisite probes (`e6d3c33` caller-owned results,
+  `6ba7421` assign-safe).
+- **GPU→GPU baseline handoff — partial:** `228b78f` (non-blocking baseline forward)
+  and `5a1c764` (v(s) written to a network-owned GPU buffer bound directly as the
+  train step's `vBaseline`, no CPU round-trip). As built this is **two command
+  buffers, not one**: the value-only baseline executable commits and waits, then the
+  training step reads the buffer. The plan's "co-encode baseline → train in one
+  command buffer" form is not built.
+
+Not started:
+- Phase 3 step (1) **single-encoder encode-ahead ring** (Increment 2 done correctly).
+- Phase 3 step (2) **parallel encoders** sharing one executable.
+- **Phase 4** kernel-count reduction / fusion.
+
+**Drift in the body (kept as written, for the record):** it cites `Arena.swift`
+line numbers for promotion — that file no longer exists (the arena is now
+`Arena/TickTournamentDriver.swift` and friends, and promotion is driven from the
+session controller). Its ~3.9M-parameter sizing and the ~570 / ~340 / ~175 ms timings
+are from the June 2026 default network; the default preset is now
+`v4_5block_7x7` at ~8.45M parameters, so re-measure before relying on any of those
+numbers. Overlaps `training-pipeline-optimization.md` (its pipelined-trainer item is
+this plan's Phase 3 step (1)).
 
 ## Diagnosis
 

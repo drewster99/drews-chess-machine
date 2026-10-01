@@ -1,8 +1,23 @@
 # Training Pipeline Optimization Plan
 
-> **Status: PENDING / TODO** (2026-06-13 audit). The pipelined-trainer overlap
-> (P1/P2(N+1) with P3(N)) is NOT built; trainer phases remain serial. Note the
-> precompiled-executable lever DID ship separately (see GPU_UTILIZATION_PLAN.md Phase 2).
+> **Status: NOT STARTED** (re-audited 2026-10-01; previous audit 2026-06-13). The
+> pipelined-trainer overlap (P1/P2(N+1) with P3(N)) is NOT built; trainer phases
+> remain serial. The precompiled-executable lever DID ship separately (see
+> GPU_UTILIZATION_PLAN.md Phase 2).
+>
+> - **Overlaps `GPU_UTILIZATION_PLAN.md` Phase 3 step (1)** (single-encoder
+>   encode-ahead): both overlap step N+1's CPU-side work with step N's GPU work.
+>   Whichever is picked up should absorb the other. Part of P2's cost was already
+>   taken off the CPU by the GPU→GPU `vBaseline` handoff (`5a1c764`), which keeps
+>   v(s) on the GPU but still runs the baseline and the train step serially.
+> - **Item 24 is obsolete:** the arena port landed (`TickTournamentDriver`), and the
+>   `Array(rowConst)` per-ply copy in `MPSChessPlayer` it targeted no longer exists.
+> - **Item 25** (precomputing the legal-move mask at self-play time instead of in the
+>   trainer) stays deferred; the full-mask version of that idea is planned in
+>   `CAPTURE_MOVE_MASK.md`.
+> - The `[LEGAL-COST]` timings below are from May 2026 on the network of that time;
+>   the default preset is now `v4_5block_7x7` (~8.45M parameters), so re-measure
+>   before using them to size the win.
 
 ## Context
 
@@ -29,6 +44,14 @@ Apple's MPS Tuning Tips (canonical guidance) bullet 1 explicitly identifies this
 Our regime won't see 10× (P3 is dense GPU compute, not plumbing-dominated), but the principle applies: **the trainer's current synchronous `await` between phases is leaving framework-level pipelining on the floor.**
 
 ## Context — parallel work in flight
+
+> **Stale (2026-10-01):** this work has landed. The tick driver was renamed into the
+> canonical slot — `TickSelfPlayDriver` is now `BatchedSelfPlayDriver`
+> (`d264639`, 2026-05-16), and it is the only self-play driver, **not** deprecated;
+> the old task-per-game `BatchedSelfPlayDriver` it refers to was deleted. The arena
+> runs on `TickTournamentDriver`. `MPSChessPlayer`'s remaining users are the cold
+> interactive paths (Play Game / human-vs-network, `--uci`). Paragraph kept as
+> written:
 
 The arena code path is being ported from `MPSChessPlayer` to the new tick-based driver (`TickSelfPlayDriver` + `ActiveGame` + `MoveSampler`). When the port lands, `MPSChessPlayer`'s remaining users will be only the cold paths (human-vs-network play, Forward Pass / Play Game demo) and the deprecated `BatchedSelfPlayDriver`. This affects Item 24's value — see below.
 
@@ -136,6 +159,8 @@ Item 24 targets `MPSChessPlayer.swift:480`'s `Array(rowConst)` per-ply Sendable-
 The arena port itself eliminates the only hot user of `MPSChessPlayer.sampleMove` — arena games now go through `MoveSampler` with pointer-flavored eval, no per-ply Array allocation. Item 24's remaining beneficiaries are all paths where the optimization is invisible.
 
 **Verdict:** Drop from the list once the arena port lands. If anything pulls `MPSChessPlayer` back onto a hot path unexpectedly, re-add.
+
+**Resolved (2026-10-01): obsolete.** The arena port landed and `Array(rowConst)` is gone from `MPSChessPlayer`; nothing remains to optimize.
 
 ### Why 25 stays deferred
 

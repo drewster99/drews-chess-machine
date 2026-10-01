@@ -7,6 +7,14 @@ folded in: **all owner decisions D-1…D-10 are decided** (end of file) and the
 plan text below is written to match them. Every `file:line` was verified against
 `main` at `bd32c15`; no app code has changed since (re-checked at `2cfe5a3`).
 
+**Addition 2026-10-01 (owner decision):** `AUTOSAVE_RETENTION_PLAN.md` is folded into
+D-8 — a combined autosave retention pool over `-periodic` and `-promote` saves, with
+`-manual` and SIGUSR2 saves exempt. See the **Retention** sub-bullet of D-8 (Owner
+decisions), the **Autosave retention** bullet of §D8, and phase **P14**. One
+sub-question there (how "Promote Trainee Now" saves are treated) is flagged **OPEN**;
+everything else in that addition is decided. The superseded plan is kept, marked, in
+`documentation/plans-completed/AUTOSAVE_RETENTION_PLAN.md`.
+
 This plan is the single design for four things that have to be designed together
 because they share storage, format versioning and code paths:
 
@@ -985,6 +993,53 @@ controls, one source of truth for the automatic case:
   waits for `replay_buffer_min_positions_before_training` exactly as a fresh
   start does; `[RESUME] … NOT EXACT: buffer` (C3).
 - **Corpus replay:** never writes a buffer; unaffected.
+- **Autosave retention — ADDITION 2026-10-01** (folded in from
+  `AUTOSAVE_RETENTION_PLAN.md`, owner decision 2026-10-01; implemented in **P14**).
+  Today `CheckpointPaths.prunePeriodicAutosaves` (`Persistence/CheckpointManager.swift:189`,
+  called only after a `periodic` save, `App/SessionController+Checkpoint.swift:460-466`)
+  deletes only `-periodic.dcmsession` folders beyond `max_periodic_autosaves_kept`;
+  `-promote` folders (arena post-promotion and "Promote Trainee Now", which share the
+  `promote` disk tag — `Persistence/SessionSaveTrigger.swift`) are never pruned, nor are
+  `-manual` and `-sigusr2`. Once D-8 lands, saves no longer carry a buffer by
+  default, but the unpruned `-promote` pool still grows without bound on a long run. The rule:
+  - **One combined pool** of automatic saves: `-periodic` **and** `-promote` (arena
+    post-promotion), sorted newest-first by folder name (already chronological).
+    Folders beyond the newest `max_periodic_autosaves_kept` are deleted whole.
+  - **Parameter:** reuse `max_periodic_autosaves_kept` with its scope widened to the
+    combined pool. Its `id` and property name are unchanged (no UserDefaults reset);
+    its description and the Sessions-tab help text change to say "periodic and
+    post-promotion". **`0` keeps its current meaning — unlimited, prune nothing** —
+    and the sweep short-circuits on it exactly as `prunePeriodicAutosaves` does today.
+    Full CLAUDE.md checklist: 1–3 and 9 unchanged (no new key); 4 the existing
+    `SessionCheckpointState` field and `[RESUME-PARAM]` block already cover it; 5 n/a
+    (no training-math effect); 6 every sweep logs the resolved cap and pool sizes
+    (`[PRUNE] retention: cap=N periodic=a promote=b`); 7 Sessions tab, existing field;
+    8 read from `TrainingParameters.shared` at sweep time.
+  - **When it runs:** after every successful `periodic` **or** `promote`-tagged save
+    (both the arena's inline post-promotion save and the shared `saveSessionInternal`
+    path), detached at utility priority as today.
+  - **Never pruned:** `-manual` saves (File ▸ Save Session) and **SIGUSR2 saves
+    (`-sigusr2`) — exempt by owner decision 2026-10-01**: both are deliberate "keep
+    this" saves. Also never pruned: the just-written save (`protecting:`, as today) and
+    the current `LastSessionPointer` target, even if a different save wrote it.
+  - **"Promote Trainee Now" saves — OPEN (owner to confirm).** Recorded rule: treat
+    them like manual saves — **never pruned** — unless the owner says otherwise. They
+    are user-initiated, like a manual save. Consequence: they need their own disk
+    tag (e.g. `-manualpromote`), because today they share `promote` with arena
+    promotions and `session.json` does not record the trigger. That means checking every
+    filename parser that keys off `-promote.dcmsession` and updating
+    `documentation/disk-cleanup.md`. (The superseded plan had recommended the
+    opposite — sweep them into the pool — before this decision.)
+  - **Dropped from the superseded plan:** the separate **"Save Session (Weights Only)"**
+    menu item — redundant under D-8, where every save is weights-only by default and
+    the manual Save Session sheet has the include-buffer checkbox; and the
+    **write-then-strip** approach (write every autosave's buffer, then delete
+    `replay_buffer.bin` from older saves and rewrite `session.json`) — under D-8 the
+    buffer is decided before the write, so there is nothing to strip. Its separate
+    time-based window (`autosave_weights_retention_hours`, default 72 h) is **not**
+    adopted either; with the count cap alone the pool's span is cap × save interval.
+    If the owner wants a time window as well, that is a new decision.
+  - Per-folder failures log `[PRUNE-ERR]` and do not abort the sweep (as today).
 
 ---
 
@@ -1004,6 +1059,7 @@ P6 Format v5 + LineageRecord + writers (needs P1 for rng fields; P2 for params s
       └─> P11 Dashboard derive-registry
 P12 Resume-equivalence harness (needs P3,P4,P6,P9)  — its unit parts grow with each phase
 P13 Config D removal (D-10)   (independent; must land before P9)
+P14 Autosave retention pool (D-8 addition, 2026-10-01)   (independent; can land any time)
 ```
 
 Foundational: **P1** (generator) and **P6** (format v5). Independent: **P2**,
@@ -1198,6 +1254,35 @@ Validation: build succeeds; `grep` finds no remaining `bf16CastInForward` /
 `castWeightForForward` / `--bf16-cast-in-forward`; passing the old flag is now an
 unknown-argument error; issue #9 closed with the commit.
 
+**P14 — Autosave retention pool** (ADDITION 2026-10-01; D-8 Retention sub-bullet, §D8
+"Autosave retention"). Independent of every other phase. Files:
+`Persistence/CheckpointManager.swift` (replace `prunePeriodicAutosaves` with one sweep
+over the combined `-periodic` + `-promote` pool, built on a pure-logic decision function
+that partitions folder names into keep/delete, mirroring `PeriodicSaveController`'s
+testable-scheduler pattern), `App/SessionController+Checkpoint.swift` (run the sweep after
+`periodic` and `manualPromote` saves — or only after `periodic` if "Promote Trainee Now"
+gets its own tag), `App/SessionController+Arena.swift` (run it after the inline
+post-promotion save), `Training/TrainingParameters.swift` +
+`App/UpperContentView/TrainingSettingsPopover.swift` (description and help text for
+`max_periodic_autosaves_kept`), `Persistence/LastSessionPointer.swift` (read the protected
+target), `documentation/disk-cleanup.md`. If the owner confirms the open
+"Promote Trainee Now" rule: `Persistence/SessionSaveTrigger.swift` (new disk tag) and every
+parser of `-promote.dcmsession`.
+Tests (new; no existing test modified): the decision function, given folder names of
+every trigger, keeps exactly the newest `cap` of `-periodic` + `-promote` combined and
+never selects `-manual`, `-sigusr2`, the protected URL or the `LastSessionPointer`
+target; boundaries — exactly `cap` automatic folders present, `cap == 0` selects nothing,
+a protected folder older than the cap is kept without shifting the count of others;
+mixed periodic/promote ordering is by timestamp, not by trigger.
+Validation: a GUI run (or `--train --parameters <file>`) with
+`max_periodic_autosaves_kept: 2`, a short `periodic_autosave_interval_sec` and a short
+arena interval, long enough to write several periodic and promotion saves plus one
+manual save and, last (it shuts the process down), one SIGUSR2 save; `ls Sessions/` and the `[PRUNE]` lines show only the
+newest two automatic folders remaining, every `-manual` and `-sigusr2` folder untouched,
+and the `LastSessionPointer` target present. With the cap at `0`, nothing is deleted
+(today's behavior). Resume from the newest surviving autosave works. Full test suite
+passes.
+
 ## E3. Risks
 
 - **CPU init time** (P5): scalar per-tensor streams; mitigated by per-tensor
@@ -1305,7 +1390,16 @@ Plus `CheckpointManagerSafetensorsTests` must keep passing bit-exact.
     and train-vs-UCI), the manual-save sheet checkbox, CLI `--save-replay-buffer`;
   - a save without a buffer resumes by refilling from new games (training waits
     for the minimum fill) and is labeled `NOT EXACT: buffer`;
-  - corpus replay never writes a buffer (rebuilt exactly from the corpus).
+  - corpus replay never writes a buffer (rebuilt exactly from the corpus);
+  - **Retention — ADDITION, DECIDED 2026-10-01** (folds in `AUTOSAVE_RETENTION_PLAN.md`;
+    specified in §D8 "Autosave retention", phase P14): one combined retention pool for
+    `-periodic` and arena `-promote` saves, capped by `max_periodic_autosaves_kept`
+    (scope widened; `0` still means unlimited); `-manual` and **SIGUSR2 saves are
+    exempt** (owner decision 2026-10-01); the separate "Save Session (Weights Only)"
+    menu item and the write-then-strip approach are dropped as redundant under D-8.
+    **OPEN:** "Promote Trainee Now" saves are recorded as never pruned, like manual
+    saves, unless the owner says otherwise — this requires giving them their own disk
+    tag.
 - **D-9 — DECIDED (2026-09-30):** recompute position hashes from the stored
   boards when loading a legacy buffer (owner-approved migration), logging the
   count recomputed.

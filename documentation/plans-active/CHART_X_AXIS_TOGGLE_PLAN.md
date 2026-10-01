@@ -2,6 +2,22 @@
 
 > **Status: PENDING / TODO** (2026-06-13 audit). Not yet implemented — no chart
 > x-axis (time/steps/positions) toggle in the code.
+>
+> **Re-audited 2026-10-01: still not started — but its prerequisite is a live bug.**
+> "Positions trained" is still computed as *cumulative steps × the current batch
+> size* in three places (verified 2026-10-01):
+> - `App/UpperContentView/UpperContentView.swift` ~2867, `cumulativeStatusBar`:
+>   `totalPositions = totalSteps * trainingParams.trainingBatchSize`.
+> - `App/SessionController+LichessProbe.swift` ~64–66 (manual probe run):
+>   `positionsTrained = trainingStep.map { $0 * TrainingParameters.shared.trainingBatchSize }`.
+> - `App/UpperContentView/LichessProbeWatcher.swift` ~276–278 (periodic probe tick): same
+>   expression, written into the exported probe JSON.
+>
+> `training_batch_size` is not live-tunable, so the number is wrong whenever a session
+> was resumed with a different batch size than earlier segments used (cumulative steps
+> carry over; the multiplier is whatever is current). No `completedTrainPositions`
+> accumulator exists yet. The fix in the section below stands on its own and can ship
+> before the toggle.
 
 The main charts screen renders every series against wall-clock time. Training
 dynamics are easier to reason about against trainer steps — and once batch

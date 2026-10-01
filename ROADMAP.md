@@ -432,8 +432,10 @@ original rationale is not lost.
   ~10×→1×) — contained to `SessionController+Heartbeat`, but a high-risk
   restructure of the UI-state path.
 
-- **Safetensors-native storage + runtime-configurable architecture.** In
-  progress on branch `safetensors-storage`; full design + phase plan in
+- **Safetensors-native storage + runtime-configurable architecture.**
+  Essentially shipped (status as of 2026-10-01; developed on branch
+  `safetensors-storage`, merged; small code leftovers listed at the top of the
+  plan); full design + phase plan in
   `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md`. **Done (tested):** model/session weight
   files are now safetensors (`.safetensors`, PyTorch-drop-in layout, Python-
   loadable, no exporter); legacy `.dcmmodel` still reads; `ChessNetwork` builds
@@ -547,7 +549,10 @@ original rationale is not lost.
   footprint is a demonstrated problem — **it now is** (2026-09-27): a full plan
   covering weights-only saves, combined periodic+promotion retention, and
   time-based pruning is written up in
-  `documentation/plans-active/AUTOSAVE_RETENTION_PLAN.md`. Not yet
+  `documentation/plans-completed/AUTOSAVE_RETENTION_PLAN.md` (moved from
+  `plans-active/`; superseded 2026-10-01 — its combined periodic+promotion
+  retention pool was folded into `DETERMINISM_RESUME_LINEAGE_PLAN.md` decision
+  D-8 / phase P14). Not yet
   implemented. The "never overwrite" invariant remains
   in force until retention is explicitly implemented.
 
