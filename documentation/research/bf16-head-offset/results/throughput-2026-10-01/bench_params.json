@@ -1,0 +1,1 @@
+{"replay_buffer_capacity": 200000, "replay_buffer_min_positions_before_training": 50000}

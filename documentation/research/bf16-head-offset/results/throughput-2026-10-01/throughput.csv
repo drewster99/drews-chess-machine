@@ -1,0 +1,9 @@
+kind,run,build,log,wall_ms_per_step_200_550,gpu_wait_ms_p50_median,encode_ms_p50_median,selfplay_plies_per_hour,train_steps_per_sec,window_sec
+replay_training,parentA,3f02ae4,dcm_log_20261001-001934.txt,634.0,484.1,51.6,,,
+replay_training,fixA,da15920,dcm_log_20261001-002555.txt,682.2,522.1,58.3,,,
+replay_training,fixB,da15920,dcm_log_20261001-003246.txt,679.5,522.1,58.7,,,
+replay_training,parentB,3f02ae4,dcm_log_20261001-003936.txt,644.1,497.7,51.2,,,
+gui_selfplay_train,spold1,3f02ae4,dcm_log_20261001-004657.txt,,,,19793873,0.794,359
+gui_selfplay_train,spnew1,da15920,dcm_log_20261001-005500.txt,,,,19908923,0.766,359
+gui_selfplay_train,spnew2,da15920,dcm_log_20261001-010303.txt,,,,20078263,0.76,359
+gui_selfplay_train,spold2,3f02ae4,dcm_log_20261001-011107.txt,,,,18921750,0.755,359

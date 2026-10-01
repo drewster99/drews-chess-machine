@@ -144,6 +144,20 @@ Known hot spots, checked by name:
 - **Also changed:** `ChessNetwork.readFloatsFP32(from:into:count:)` now traps on a non-fp32 or wrongly sized tensor instead of copying raw bytes blindly; `computeBatchStats` reads each BN's batch stats by the tensor's own dtype (the policy pre-BN's are fp32 now); `policyOutputReadback` and `valueOutputFP32` are gone (the outputs themselves are fp32).
 - **Monitoring:** `pLogitMean` / `vLogitMean` on `[STATS]`, `[STATS] arena-start`, `[REPLAY]` and `[VS-UCI]`, and `policy_logit_mean` / `value_logit_mean` in `results.json`. On the scalar-tanh head `vLogitMean` is the raw pre-tanh logit's mean (not centered).
 
+### Validation results (2026-09-30 / 2026-10-01; in progress)
+
+| item | result | evidence |
+|---|---|---|
+| Phase 1: audit on Ejp0 @681k — value ties ≤ 0.1%, ΔCE ≤ 0.001, policy top-2 ties ≈ 0, KL ≤ 1e-4 | **pass** (file read as stored, fp32 tails only): ties 0, ΔCE 2.45e-4, top-2 ties 0, KL 9.64e-5 | `documentation/research/bf16-head-offset/results/numerics-audit-2026-09-30/` |
+| Phase 1: start-position W/D/L within 0.01 of fp64 | **pass**: 0.295 / 0.020 / 0.685 vs fp64 0.2951 / 0.0199 / 0.6850 | same |
+| Phase 1: throughput regression < 2% | **self-play pass** (+3.3%, noise); **training fail: −6.5%** standalone corpus replay (−1.5% when sharing the GPU with self-play). Owner decision pending: accept, or optimize (e.g. start the policy fp32 tail at the final conv). | `documentation/research/bf16-head-offset/results/throughput-2026-10-01/` |
+| Phase 1: existing tests pass | running (full suite, 2026-10-01) | — |
+| Phase 2: fresh bf16 replay, head mean logits within ±1 after 20k steps | **pass**: SE experiment seed-1 runs (fresh bf16, build 2255 with the fix), steps ≥ 20k: pLogitMean 0.52–0.78, vLogitMean 0.43–0.79 (one excursion to 1.194 at an earlier step in `se_none`) | `experiments/20260929-se-style-ab/logs/` |
+| Phase 2: resuming Ejp0 — offset gone at load (logged), no drift over 20k steps | load: **pass** (`[NUMERICS] value head recentered on load … meanRowNorm=28.9486 biasMean=+13.7292`); 20k-step drift run: pending | `dcm_log_20260930-225610.txt` |
+| Phase 2: audit on the resulting checkpoints | pending | — |
+| Phase 2: full test suite | running | — |
+| Other models in the audit (8 SE finals, fp32 control mUF5) | 0 value ties and 0 policy top-2 ties in bf16 everywhere; head offsets 0.73–1.25× init | numerics audit folder |
+
 ### Phase 2b: center the heads at mint (owner-approved 2026-09-30; not started)
 
 A freshly minted net still starts with a random shared offset: `value_wdl_fc2` is He-initialized and not centered (measured on the SE-experiment fresh nets: the class-mean row has norm ≈ 0.8 against ≈ 1.6–1.8 for the class differences). Phase 2 freezes it (the SE runs show it only shrinks by the weight-decay factor: ×0.780 over 33k steps, ×0.908 over 7k), so it is harmless, but it is pointless and makes every fresh net carry it for life.
