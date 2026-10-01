@@ -1,0 +1,138 @@
+[NUMERICS] 5 checkpoint(s), corpus /Users/andrew/Library/Application Support/DrewsChessMachine/Corpora/20260624-192615-w3aA5b/shard-00045.dcmgames
+[NUMERICS] 20261001-headfix-phase2-Ejp0-replay-step1000.safetensors
+model file:20261001-headfix-phase2-Ejp0-replay-step1000.safetensors id 20261001-18-oeNy step 1000, compute bfloat16
+overall: BAD
+value fc2 shared offset: mean-row ratio 0.006423 = 0.009083x init, bias mean 1.531e-04 (init 0.5973) -> fine
+policy final shared offset: mean-row ratio 1.387 = 12.01x init, bias mean -0.5886 -> BAD
+batch-norm stats: worst |mean|/std 34.45 at block1_bn1 channel 50 -> degraded
+ReZero: 2 blocks; tanh bound rounds to 1 in fp32 0, bf16 2, fp16 0
+masters vs working: not compared (a saved model file holds one set of weights)
+positions: 4971 (start 1, corpus 874, Lichess 4096 from 63 games; 4970 with a game result)
+value fp32: ties 0, CE 1.114 (delta 0), mean |dv| 0, argmax changed 0, shared logit median -0.02658, start W/D/L 0.520/0.027/0.454 -> fine
+value bf16: ties 0, CE 1.115 (delta 0.001327), mean |dv| 0.003321, argmax changed 0, shared logit median -0.02661, start W/D/L 0.520/0.027/0.453 -> fine
+value fp16: ties 0, CE 1.114 (delta 1.810e-04), mean |dv| 3.433e-04, argmax changed 0, shared logit median -0.02671, start W/D/L 0.520/0.027/0.454 -> fine
+policy fp32: KL 0, top-2 ties 0, top-1 changed 0, legal level median -12.62, legal spread median 2.355, all-move mean median -51.6 -> fine
+policy bf16: KL 4.545e-04, top-2 ties 0, top-1 changed 0.01891, legal level median -12.63, legal spread median 2.351, all-move mean median -51.77 -> fine
+policy fp16: KL 1.047e-05, top-2 ties 0, top-1 changed 0.003018, legal level median -12.61, legal spread median 2.356, all-move mean median -51.61 -> fine
+activation taps: 19
+findings: 1 BAD, 6 degraded
+  BAD head shared offset: policy_conv_weights — mean-row ratio 1.387 is 12.01x init; bias mean -0.5886 (init 0)
+  degraded weights: stem_conv_weights [fp16] — headroom 2.517e+04, underflow 0.01904, flush-to-zero 2.126e-05, rounding/spread 2.003e-04
+  degraded weights: value_fc1_weights [fp16] — headroom 1.221e+05, underflow 0.02026, flush-to-zero 0, rounding/spread 2.112e-04
+  degraded weights: value_wdl_fc2_weights [fp16] — headroom 2.288e+05, underflow 0.01042, flush-to-zero 0, rounding/spread 1.932e-04
+  degraded batch-norm stats: block1_bn1 — max |mean|/std 34.45 at channel 50
+  degraded activations: block1_bn1_input [bf16] — max |x| 7.625, headroom 4.451e+37, max channel |mean|/std 16.74, error vs fp32 0.003855, non-finite 0
+  degraded activations: block1_bn1_input [fp16] — max |x| 7.613, headroom 8601, max channel |mean|/std 16.78, error vs fp32 7.829e-04, non-finite 0
+
+[NUMERICS] 20261001-headfix-phase2-Ejp0-replay-step10000.safetensors
+model file:20261001-headfix-phase2-Ejp0-replay-step10000.safetensors id 20261001-18-oeNy step 10000, compute bfloat16
+overall: BAD
+value fc2 shared offset: mean-row ratio 0.006757 = 0.009556x init, bias mean 6.308e-05 (init 0.5973) -> fine
+policy final shared offset: mean-row ratio 1.174 = 10.17x init, bias mean -0.5886 -> BAD
+batch-norm stats: worst |mean|/std 207.5 at block0_bn1 channel 57 -> BAD
+ReZero: 2 blocks; tanh bound rounds to 1 in fp32 0, bf16 2, fp16 0
+masters vs working: not compared (a saved model file holds one set of weights)
+positions: 4971 (start 1, corpus 874, Lichess 4096 from 63 games; 4970 with a game result)
+value fp32: ties 0, CE 0.9188 (delta 0), mean |dv| 0, argmax changed 0, shared logit median -7.165e-04, start W/D/L 0.494/0.044/0.462 -> fine
+value bf16: ties 0, CE 0.918 (delta -8.099e-04), mean |dv| 0.009065, argmax changed 0.01147, shared logit median -7.886e-04, start W/D/L 0.495/0.043/0.462 -> fine
+value fp16: ties 0, CE 0.9189 (delta 5.695e-05), mean |dv| 8.493e-04, argmax changed 0.001207, shared logit median -6.198e-04, start W/D/L 0.494/0.044/0.462 -> fine
+policy fp32: KL 0, top-2 ties 0, top-1 changed 0, legal level median -1.506, legal spread median 0.5621, all-move mean median -46.12 -> fine
+policy bf16: KL 3.231e-04, top-2 ties 0, top-1 changed 0.02394, legal level median -1.51, legal spread median 0.5598, all-move mean median -45.88 -> fine
+policy fp16: KL 4.960e-06, top-2 ties 0, top-1 changed 0.002012, legal level median -1.506, legal spread median 0.5622, all-move mean median -46.13 -> fine
+activation taps: 19
+findings: 7 BAD, 4 degraded
+  BAD head shared offset: policy_conv_weights — mean-row ratio 1.174 is 10.17x init; bias mean -0.5886 (init 0)
+  BAD batch-norm stats: block0_bn1 — max |mean|/std 207.5 at channel 57
+  BAD batch-norm stats: block1_bn1 — max |mean|/std 72.51 at channel 62
+  BAD activations: block0_bn1_input [bf16] — max |x| 9.375, headroom 3.608e+37, max channel |mean|/std 155.4, error vs fp32 0.003414, non-finite 0
+  BAD activations: block0_bn1_input [fp16] — max |x| 9.398, headroom 6974, max channel |mean|/std 158.7, error vs fp32 4.170e-04, non-finite 0
+  BAD activations: block1_bn1_input [bf16] — max |x| 7.469, headroom 4.523e+37, max channel |mean|/std 71.03, error vs fp32 0.003383, non-finite 0
+  BAD activations: block1_bn1_input [fp16] — max |x| 7.496, headroom 8741, max channel |mean|/std 71.93, error vs fp32 4.042e-04, non-finite 0
+  degraded weights: stem_conv_weights [fp16] — headroom 2.491e+04, underflow 0.02102, flush-to-zero 3.189e-05, rounding/spread 1.918e-04
+  degraded weights: value_fc1_weights [fp16] — headroom 1.295e+05, underflow 0.02184, flush-to-zero 0, rounding/spread 2.075e-04
+  degraded weights: block0_bn1_running_var [fp16] — headroom 2.240e+04, underflow 0.01562, flush-to-zero 0, rounding/spread 3.105e-04
+  degraded weights: block1_bn1_running_var [fp16] — headroom 2.776e+04, underflow 0.01562, flush-to-zero 0, rounding/spread 1.878e-04
+
+[NUMERICS] 20261001-headfix-phase2-Ejp0-replay-step15000.safetensors
+model file:20261001-headfix-phase2-Ejp0-replay-step15000.safetensors id 20261001-18-oeNy step 15000, compute bfloat16
+overall: BAD
+value fc2 shared offset: mean-row ratio 0.006698 = 0.009472x init, bias mean 6.153e-05 (init 0.5973) -> fine
+policy final shared offset: mean-row ratio 1.172 = 10.15x init, bias mean -0.5886 -> BAD
+batch-norm stats: worst |mean|/std 86.84 at block0_bn1 channel 57 -> BAD
+ReZero: 2 blocks; tanh bound rounds to 1 in fp32 0, bf16 2, fp16 0
+masters vs working: not compared (a saved model file holds one set of weights)
+positions: 4971 (start 1, corpus 874, Lichess 4096 from 63 games; 4970 with a game result)
+value fp32: ties 0, CE 0.9144 (delta 0), mean |dv| 0, argmax changed 0, shared logit median -5.669e-04, start W/D/L 0.492/0.044/0.464 -> fine
+value bf16: ties 0, CE 0.9144 (delta -4.302e-05), mean |dv| 0.006219, argmax changed 0.01046, shared logit median -0.001815, start W/D/L 0.492/0.043/0.464 -> fine
+value fp16: ties 0, CE 0.9145 (delta 9.767e-05), mean |dv| 7.425e-04, argmax changed 0.001408, shared logit median -6.237e-04, start W/D/L 0.492/0.044/0.464 -> fine
+policy fp32: KL 0, top-2 ties 0, top-1 changed 0, legal level median -1.528, legal spread median 0.5647, all-move mean median -45.87 -> fine
+policy bf16: KL 3.785e-04, top-2 ties 0, top-1 changed 0.02515, legal level median -1.527, legal spread median 0.5644, all-move mean median -46 -> fine
+policy fp16: KL 6.100e-06, top-2 ties 0, top-1 changed 0.001811, legal level median -1.528, legal spread median 0.565, all-move mean median -45.92 -> fine
+activation taps: 19
+findings: 5 BAD, 6 degraded
+  BAD head shared offset: policy_conv_weights — mean-row ratio 1.172 is 10.15x init; bias mean -0.5886 (init 0)
+  BAD batch-norm stats: block0_bn1 — max |mean|/std 86.84 at channel 57
+  BAD batch-norm stats: block1_bn1 — max |mean|/std 64.81 at channel 62
+  BAD activations: block0_bn1_input [bf16] — max |x| 9.375, headroom 3.629e+37, max channel |mean|/std 100.4, error vs fp32 0.003589, non-finite 0
+  BAD activations: block0_bn1_input [fp16] — max |x| 9.344, headroom 7014, max channel |mean|/std 101.6, error vs fp32 3.867e-04, non-finite 0
+  degraded weights: stem_conv_weights [fp16] — headroom 2.494e+04, underflow 0.02088, flush-to-zero 3.189e-05, rounding/spread 2.094e-04
+  degraded weights: value_fc1_weights [fp16] — headroom 1.299e+05, underflow 0.02174, flush-to-zero 0, rounding/spread 2.065e-04
+  degraded weights: block0_bn1_running_var [fp16] — headroom 2.240e+04, underflow 0.01562, flush-to-zero 0, rounding/spread 2.657e-04
+  degraded weights: block1_bn1_running_var [fp16] — headroom 2.835e+04, underflow 0.01562, flush-to-zero 0, rounding/spread 7.857e-05
+  degraded activations: block1_bn1_input [bf16] — max |x| 7.438, headroom 4.552e+37, max channel |mean|/std 62.11, error vs fp32 0.0033, non-finite 0
+  degraded activations: block1_bn1_input [fp16] — max |x| 7.445, headroom 8796, max channel |mean|/std 62.75, error vs fp32 4.146e-04, non-finite 0
+
+[NUMERICS] 20261001-headfix-phase2-Ejp0-replay-step20000.safetensors
+model file:20261001-headfix-phase2-Ejp0-replay-step20000.safetensors id 20261001-18-oeNy step 20000, compute bfloat16
+overall: degraded
+value fc2 shared offset: mean-row ratio 0.005976 = 0.008452x init, bias mean 3.667e-04 (init 0.5973) -> fine
+policy final shared offset: mean-row ratio 1.128 = 9.772x init, bias mean -0.5886 -> degraded
+batch-norm stats: worst |mean|/std 48.7 at block1_bn1 channel 62 -> degraded
+ReZero: 2 blocks; tanh bound rounds to 1 in fp32 0, bf16 2, fp16 0
+masters vs working: not compared (a saved model file holds one set of weights)
+positions: 4971 (start 1, corpus 874, Lichess 4096 from 63 games; 4970 with a game result)
+value fp32: ties 0, CE 0.9593 (delta 0), mean |dv| 0, argmax changed 0, shared logit median 4.664e-04, start W/D/L 0.494/0.041/0.465 -> fine
+value bf16: ties 0, CE 0.9588 (delta -5.521e-04), mean |dv| 0.005262, argmax changed 0.009254, shared logit median 0.00141, start W/D/L 0.494/0.041/0.465 -> fine
+value fp16: ties 0, CE 0.9591 (delta -1.741e-04), mean |dv| 0.001947, argmax changed 0.004627, shared logit median 4.030e-04, start W/D/L 0.494/0.041/0.465 -> fine
+policy fp32: KL 0, top-2 ties 0, top-1 changed 0, legal level median -1.374, legal spread median 0.5724, all-move mean median -42.95 -> fine
+policy bf16: KL 2.852e-04, top-2 ties 0, top-1 changed 0.01931, legal level median -1.376, legal spread median 0.5707, all-move mean median -43.12 -> fine
+policy fp16: KL 5.776e-06, top-2 ties 0, top-1 changed 0.002615, legal level median -1.374, legal spread median 0.5725, all-move mean median -42.94 -> fine
+activation taps: 19
+findings: 0 BAD, 8 degraded
+  degraded weights: stem_conv_weights [fp16] — headroom 2.556e+04, underflow 0.02176, flush-to-zero 2.126e-05, rounding/spread 2.030e-04
+  degraded weights: value_fc1_weights [fp16] — headroom 1.353e+05, underflow 0.02289, flush-to-zero 1.526e-05, rounding/spread 2.084e-04
+  degraded weights: value_wdl_fc2_weights [fp16] — headroom 2.341e+05, underflow 0.01042, flush-to-zero 0, rounding/spread 2.216e-04
+  degraded weights: block1_bn1_running_var [fp16] — headroom 3.045e+04, underflow 0.01562, flush-to-zero 0, rounding/spread 3.497e-04
+  degraded head shared offset: policy_conv_weights — mean-row ratio 1.128 is 9.772x init; bias mean -0.5886 (init 0)
+  degraded batch-norm stats: block1_bn1 — max |mean|/std 48.7 at channel 62
+  degraded activations: block1_bn1_input [bf16] — max |x| 7.156, headroom 4.749e+37, max channel |mean|/std 48.65, error vs fp32 0.003065, non-finite 0
+  degraded activations: block1_bn1_input [fp16] — max |x| 7.141, headroom 9178, max channel |mean|/std 48.73, error vs fp32 4.998e-04, non-finite 0
+
+[NUMERICS] 20261001-headfix-phase2-Ejp0-replay-step5000.safetensors
+model file:20261001-headfix-phase2-Ejp0-replay-step5000.safetensors id 20261001-18-oeNy step 5000, compute bfloat16
+overall: BAD
+value fc2 shared offset: mean-row ratio 0.006765 = 0.009566x init, bias mean 4.387e-05 (init 0.5973) -> fine
+policy final shared offset: mean-row ratio 1.182 = 10.24x init, bias mean -0.5886 -> BAD
+batch-norm stats: worst |mean|/std 141.4 at block1_bn1 channel 62 -> BAD
+ReZero: 2 blocks; tanh bound rounds to 1 in fp32 0, bf16 2, fp16 0
+masters vs working: not compared (a saved model file holds one set of weights)
+positions: 4971 (start 1, corpus 874, Lichess 4096 from 63 games; 4970 with a game result)
+value fp32: ties 0, CE 0.9349 (delta 0), mean |dv| 0, argmax changed 0, shared logit median -8.998e-04, start W/D/L 0.493/0.041/0.466 -> fine
+value bf16: ties 0, CE 0.9338 (delta -0.001089), mean |dv| 0.005209, argmax changed 0.01388, shared logit median -0.002142, start W/D/L 0.493/0.041/0.466 -> fine
+value fp16: ties 0, CE 0.935 (delta 1.107e-04), mean |dv| 7.103e-04, argmax changed 8.047e-04, shared logit median -7.688e-04, start W/D/L 0.493/0.041/0.466 -> fine
+policy fp32: KL 0, top-2 ties 0, top-1 changed 0, legal level median -1.462, legal spread median 0.5549, all-move mean median -45.91 -> fine
+policy bf16: KL 2.646e-04, top-2 ties 0, top-1 changed 0.01871, legal level median -1.456, legal spread median 0.5564, all-move mean median -45.66 -> fine
+policy fp16: KL 4.910e-06, top-2 ties 0, top-1 changed 0.003018, legal level median -1.463, legal spread median 0.5546, all-move mean median -45.91 -> fine
+activation taps: 19
+findings: 4 BAD, 6 degraded
+  BAD head shared offset: policy_conv_weights — mean-row ratio 1.182 is 10.24x init; bias mean -0.5886 (init 0)
+  BAD batch-norm stats: block1_bn1 — max |mean|/std 141.4 at channel 62
+  BAD activations: block1_bn1_input [bf16] — max |x| 7.594, headroom 4.483e+37, max channel |mean|/std 135.8, error vs fp32 0.003583, non-finite 0
+  BAD activations: block1_bn1_input [fp16] — max |x| 7.562, headroom 8664, max channel |mean|/std 141.2, error vs fp32 4.003e-04, non-finite 0
+  degraded weights: stem_conv_weights [fp16] — headroom 2.480e+04, underflow 0.02063, flush-to-zero 2.126e-05, rounding/spread 2.002e-04
+  degraded weights: value_fc1_weights [fp16] — headroom 1.285e+05, underflow 0.02164, flush-to-zero 3.052e-05, rounding/spread 2.071e-04
+  degraded weights: block1_bn1_running_var [fp16] — headroom 2.631e+04, underflow 0.01562, flush-to-zero 0, rounding/spread 2.741e-04
+  degraded batch-norm stats: block0_bn1 — max |mean|/std 22.71 at channel 57
+  degraded activations: block0_bn1_input [bf16] — max |x| 9.562, headroom 3.545e+37, max channel |mean|/std 31.62, error vs fp32 0.003313, non-finite 0
+  degraded activations: block0_bn1_input [fp16] — max |x| 9.555, headroom 6852, max channel |mean|/std 31.53, error vs fp32 3.861e-04, non-finite 0
+

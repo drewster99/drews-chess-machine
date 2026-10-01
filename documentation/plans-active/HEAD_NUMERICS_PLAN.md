@@ -151,11 +151,11 @@ Known hot spots, checked by name:
 | Phase 1: audit on Ejp0 @681k — value ties ≤ 0.1%, ΔCE ≤ 0.001, policy top-2 ties ≈ 0, KL ≤ 1e-4 | **pass** (file read as stored, fp32 tails only): ties 0, ΔCE 2.45e-4, top-2 ties 0, KL 9.64e-5 | `documentation/research/bf16-head-offset/results/numerics-audit-2026-09-30/` |
 | Phase 1: start-position W/D/L within 0.01 of fp64 | **pass**: 0.295 / 0.020 / 0.685 vs fp64 0.2951 / 0.0199 / 0.6850 | same |
 | Phase 1: throughput regression < 2% | **self-play pass** (+3.3%, noise); **training fail: −6.5%** standalone corpus replay (−1.5% when sharing the GPU with self-play). Owner decision pending: accept, or optimize (e.g. start the policy fp32 tail at the final conv). | `documentation/research/bf16-head-offset/results/throughput-2026-10-01/` |
-| Phase 1: existing tests pass | running (full suite, 2026-10-01) | — |
+| Phase 1: existing tests pass | **fail: 6 of 1,491** on main (2026-10-01). None is caused by the head fix: 5 are test bugs (`ExactResumeTests` ×3 random-data steps never advance the clock; `SEBetaInitTests.testDeriveSelectedGroupAndChainedHistory` wrong β-bias expectation; `LichessBotRequestGateTests` virtual-clock race) and 1 is a latent code bug (`archHash` mixes the version label into v3 presets' legacy hashes). Fixes await owner approval. | xcresult `Test-DrewsChessMachine-2026.10.01_01-37-59--0500` |
 | Phase 2: fresh bf16 replay, head mean logits within ±1 after 20k steps | **pass**: SE experiment seed-1 runs (fresh bf16, build 2255 with the fix), steps ≥ 20k: pLogitMean 0.52–0.78, vLogitMean 0.43–0.79 (one excursion to 1.194 at an earlier step in `se_none`) | `experiments/20260929-se-style-ab/logs/` |
-| Phase 2: resuming Ejp0 — offset gone at load (logged), no drift over 20k steps | load: **pass** (`[NUMERICS] value head recentered on load … meanRowNorm=28.9486 biasMean=+13.7292`); 20k-step drift run: pending | `dcm_log_20260930-225610.txt` |
-| Phase 2: audit on the resulting checkpoints | pending | — |
-| Phase 2: full test suite | running | — |
+| Phase 2: resuming Ejp0 — offset gone at load (logged), no drift over 20k steps | **pass**: recentered on load (`meanRowNorm=28.9486 biasMean=+13.7292`); over 20k steps (LR peaks 0.1) the value mean logit stays within −0.0215…+0.0049, and the policy mean logit only shrinks (−57.58 → −43.74) | `documentation/research/bf16-head-offset/results/numerics-audit-phase2-2026-10-01/` |
+| Phase 2: audit on the resulting checkpoints | **value pass; policy no-drift but still flagged**: value offset ~0.01× init everywhere; the inherited policy offset (not removable on load) shrinks 12.0× → 9.77× init and stays static-flagged BAD/degraded, but bf16 outputs are clean (0 ties, KL ≤ 4.5e-4) | same |
+| Phase 2: full test suite | same run as Phase 1 (6 failures, see above) | — |
 | Other models in the audit (8 SE finals, fp32 control mUF5) | 0 value ties and 0 policy top-2 ties in bf16 everywhere; head offsets 0.73–1.25× init | numerics audit folder |
 
 ### Phase 2b: center the heads at mint (owner-approved 2026-09-30; not started)
