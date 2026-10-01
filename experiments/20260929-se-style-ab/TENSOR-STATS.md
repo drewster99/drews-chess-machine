@@ -64,6 +64,61 @@ Per-tensor statistics (mean, min, max, std, abs max, RMS, L2 norm, exact-zero fr
 
 8. **One outlier BN channel.** `se_sb2` stem BN channel 14 has a running variance of 2.57 against a median of 0.067 (38×), with a running mean of −1.00. It peaked at 3.60 at step 3,000. Its filter weights the input on plane 1 heavily (plane RMS 0.126 vs about 0.04 for the others). BN normalizes it, so it's not an error. It is the largest *relative* outlier among the stem statistics, but not the largest running statistic overall (see below).
 
+9. **Hot channels in the residual stream: every arm has one; attenuate-only's fluctuates.** For each BN, the *energy share* of a channel is its E[x²] = running variance + running mean², divided by the sum over all channels. With 128 channels, uniform would be 0.78%. For each run below, the channel with the largest energy share at block 2's input (`blocks.2.bn1`, i.e. block 1's LayerNorm output):
+
+   | run | channel | energy share | variance | mean | share of its energy from variance | max ÷ mean variance | top variance share |
+   |---|---:|---:|---:|---:|---:|---:|---:|
+   | `se_none` | 40 | 7.6% | 0.88 | +3.36 | 7% | 15× | 11.5% |
+   | `se_att` | 37 | 18.8% | 13.94 | +3.89 | 48% | 31× | 24.3% |
+   | `se_sb` | 7 | 13.8% | 7.53 | +3.41 | 39% | 27× | 21.3% |
+   | `se_zb1` | 7 | 13.6% | 10.60 | +2.96 | 55% | 24× | 18.7% |
+   | `se_none2` | 13 | 10.0% | 1.48 | +3.66 | 10% | 4× | 3.1% |
+   | `se_att2` | 62 | 12.1% | 10.77 | +2.72 | 59% | 23× | 17.7% |
+   | `se_sb2` | 83 | 8.1% | 1.34 | +3.11 | 12% | 6× | 4.9% |
+   | `se_zb2` | 83 | 6.2% | 2.26 | +2.50 | 27% | 7× | 5.8% |
+
+   The last two columns describe the highest-*variance* channel, which is not always the highest-energy one: in the no-SE runs the highest-energy channel is a near-constant offset with low variance.
+
+   - **Every run has a hot channel** (6–19% of the energy), each carrying a large constant mean (+2.5 to +3.9).
+   - **Attenuate-only's hot channel fluctuates** (48–59% of its energy is variance, 23–31× the mean variance) in both seeds.
+   - **No SE's is almost pure offset** (7–10% variance) in both seeds.
+   - **Scale+bias and zero-β** are strongly variable in seed 1 and weak in seed 2.
+   - On energy share alone, the arms are not ordered consistently: seed 2's no SE (10.0%) is above its scale+bias (8.1%) and zero-β (6.2%).
+
+   Block 2 input energy share over training:
+
+   | step | none s1 | att s1 | s+b s1 | zero-β s1 | none s2 | att s2 | s+b s2 | zero-β s2 |
+   |---:|---:|---:|---:|---:|---:|---:|---:|---:|
+   | 1,000 | 8.2 | 4.8 | 4.3 | 5.5 | 6.3 | 8.1 | 3.8 | 3.6 |
+   | 2,000 | 7.1 | 9.2 | 7.4 | 10.0 | 7.2 | 7.0 | 5.7 | 4.2 |
+   | 3,000 | 6.2 | 11.3 | 9.4 | 12.2 | 8.9 | 9.4 | 6.9 | 5.3 |
+   | 4,000 | 7.0 | 12.5 | 10.2 | 12.9 | 9.2 | 10.4 | 7.3 | 5.9 |
+   | 5,000 | 7.1 | 12.7 | 10.3 | 13.6 | 9.5 | 11.4 | 7.9 | 6.2 |
+   | 6,000 | 7.2 | 12.8 | 11.0 |  | 10.0 | 11.7 | 8.0 |  |
+   | 7,000 | 7.1 | 12.9 | 12.5 |  | 10.0 | 11.9 | 8.1 |  |
+   | 11,000 | 6.9 | 13.2 | 14.3 |  |  |  |  |  |
+   | 20,000 | 7.2 | 13.4 | 17.4 |  |  |  |  |  |
+   | 30,000 | 7.5 | 18.8 | 13.5 |  |  |  |  |  |
+
+   Every BN input at the final checkpoint (energy share %; the value head's BN has 16 channels, so uniform there is 6.25%):
+
+   | BN input | none | att | s+b | zero-β | none s2 | att s2 | s+b s2 | zero-β s2 |
+   |---|---:|---:|---:|---:|---:|---:|---:|---:|
+   | stem.bn | 2.6 | 2.7 | 3.2 | 2.5 | 2.4 | 2.7 | 20.7 | 4.1 |
+   | blocks.0.bn1 | 1.5 | 1.8 | 1.9 | 1.9 | 1.4 | 1.5 | 1.4 | 1.5 |
+   | blocks.0.bn2 | 3.5 | 3.4 | 3.9 | 5.7 | 2.8 | 4.5 | 3.9 | 2.6 |
+   | blocks.1.bn1 | 5.5 | 7.9 | 19.9 | 10.1 | 8.2 | 7.4 | 8.3 | 5.4 |
+   | blocks.1.bn2 | 2.9 | 2.8 | 1.8 | 2.0 | 2.5 | 2.0 | 2.0 | 1.9 |
+   | blocks.2.bn1 | 7.6 | 18.8 | 13.8 | 13.6 | 10.0 | 12.1 | 8.1 | 6.2 |
+   | blocks.2.bn2 | 1.8 | 2.5 | 2.1 | 1.8 | 2.4 | 2.1 | 2.9 | 3.0 |
+   | tower_final_bn | 6.4 | 11.2 | 8.1 | 10.6 | 4.9 | 11.1 | 4.7 | 5.4 |
+   | policy.pre_bn | 6.3 | 2.6 | 2.6 | 2.3 | 2.6 | 2.3 | 2.0 | 1.9 |
+   | value.bn | 16.8 | 10.5 | 16.3 | 14.0 | 13.6 | 10.3 | 10.7 | 10.0 |
+
+   - **The concentration lives in the residual stream** (each block's `bn1` input and `tower_final_bn`), which is the clean-add sum after each block's per-position LayerNorm. Inside the blocks (`bn2`, after conv1) it stays at 2–6%.
+   - **The init decides which channel wins:** zero-β and its Glorot-β parent share hottest channels 7 (seed 1) and 83 (seed 2).
+   - **The value head's 10–17% is mostly there at init.** The four fresh nets checked (`se_none`, `se_sb`, `se_none2`, `se_att2`) already show 11.2–14.6% on `value.bn`, because its 16 channels are random 1×1 projections of a stream whose channels have nonzero means. At the finals, the hottest channel's `value.conv` filter norm is only 1–9% above the median filter's. This is not caused by the residual stream's hot channels.
+
 <!-- BEGIN GENERATED TABLES -->
 
 ## Checkpoints covered
