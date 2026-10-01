@@ -951,6 +951,9 @@ def build_report(ch):
         ['[se_fc2_norms.csv](data/se_fc2_norms.csv)', len(NORMS),
          'Per checkpoint and block: γ/β norms of SE fc2, bias statistics, direction change vs init.'],
         ['[lr_schedule.csv](data/lr_schedule.csv)', len(LR), 'Learning rate and momentum at every logged step.'],
+        ['[tensor_stats.csv](data/tensor_stats.csv)', len(read('tensor_stats.csv')),
+         'Mean, min, max, std, norms, zero fraction and non-finite count of every tensor in every checkpoint '
+         '(145 checkpoints, including optimizer velocity). Findings: [TENSOR-STATS.md](TENSOR-STATS.md).'],
     ], ['l', 'r', 'l'])
     p('Source series per run (the dashboard tracker’s CSVs): '
       + ', '.join(f'[{k}.csv](../../documentation/dashboards/data/{k}.csv)' for k, *_ in R) + '.')
@@ -978,7 +981,8 @@ def build_report(ch):
         + ', '.join(f'`{FD.RUN[k][6]}.txt.gz`' for k in order) + '.',
         'Inputs: [parameters.json](parameters.json), [presets/](presets/).',
         'Generators: [final_data.py](final_data.py), [make_final_report.py](make_final_report.py); the 30k report’s '
-        '[make_report.py](make_report.py).',
+        '[make_report.py](make_report.py); per-tensor statistics: [tensor_stats.py](tensor_stats.py), '
+        '[tensor_report.py](tensor_report.py).',
     ])
 
 

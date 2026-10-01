@@ -414,6 +414,7 @@ All in [data/](data/), described column by column in [data/README.md](data/READM
 | [seed_gaps.csv](data/seed_gaps.csv) | 26 | Seed 2 − seed 1 for the same arm and mark, pElo and nll. |
 | [se_fc2_norms.csv](data/se_fc2_norms.csv) | 174 | Per checkpoint and block: γ/β norms of SE fc2, bias statistics, direction change vs init. |
 | [lr_schedule.csv](data/lr_schedule.csv) | 661 | Learning rate and momentum at every logged step. |
+| [tensor_stats.csv](data/tensor_stats.csv) | 13360 | Mean, min, max, std, norms, zero fraction and non-finite count of every tensor in every checkpoint (145 checkpoints, including optimizer velocity). Findings: [TENSOR-STATS.md](TENSOR-STATS.md). |
 
 Source series per run (the dashboard tracker’s CSVs): [se_sb.csv](../../documentation/dashboards/data/se_sb.csv), [se_att.csv](../../documentation/dashboards/data/se_att.csv), [se_none.csv](../../documentation/dashboards/data/se_none.csv), [se_sb2.csv](../../documentation/dashboards/data/se_sb2.csv), [se_att2.csv](../../documentation/dashboards/data/se_att2.csv), [se_none2.csv](../../documentation/dashboards/data/se_none2.csv), [se_zb1.csv](../../documentation/dashboards/data/se_zb1.csv), [se_zb2.csv](../../documentation/dashboards/data/se_zb2.csv).
 
@@ -436,4 +437,4 @@ Source series per run (the dashboard tracker’s CSVs): [se_sb.csv](../../docume
 - Checkpoints (Git LFS) in [models/](models/), with ModelIDs, sizes and SHA-256s in [MODELS.md](MODELS.md): fresh nets for all eight runs; seed-1 step 30000, last marks and stop saves; seed-2 step 7000 and stop saves; zero-β step 5000 and stop saves.
 - Gzipped run logs (Git LFS) in [logs/](logs/), one per run: `dcm_log_20260929-150727.txt.gz`, `dcm_log_20260929-150735.txt.gz`, `dcm_log_20260929-150743.txt.gz`, `dcm_log_20260930-150544.txt.gz`, `dcm_log_20260930-104101.txt.gz`, `dcm_log_20260930-104109.txt.gz`, `dcm_log_20260930-104117.txt.gz`, `dcm_log_20260930-150552.txt.gz`.
 - Inputs: [parameters.json](parameters.json), [presets/](presets/).
-- Generators: [final_data.py](final_data.py), [make_final_report.py](make_final_report.py); the 30k report’s [make_report.py](make_report.py).
+- Generators: [final_data.py](final_data.py), [make_final_report.py](make_final_report.py); the 30k report’s [make_report.py](make_report.py); per-tensor statistics: [tensor_stats.py](tensor_stats.py), [tensor_report.py](tensor_report.py).
