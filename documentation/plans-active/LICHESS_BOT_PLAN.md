@@ -1,8 +1,10 @@
 # Lichess Bot — native Swift client
 
-Status (2026-09-28):
+Status (2026-09-28; updated 2026-10-01):
 - **Phases 1–5 implemented** (commits `4ebcbfb`…`e66fc02`). The bot is live on lichess.org, and the live verification findings are recorded below.
 - **Implemented alongside the live testing:** the additions of 2026-09-28 in §7.2, §9.1 (first version), §12.5a and §14.3b (account refresh), as each section notes. §9.1's lineage tree and §14.3b's opponent card are planned.
+- **§7.3 shipped 2026-09-29** (commit `baa32bd`): the challenge queue, matchmaking and the finished-game hold in the grid (§14.3a).
+- **Defaults are now the owner's running configuration** (commit `c5542b8`, confirmed intentional 2026-10-01). Every default this document states matches `LichessBotSettings.swift` as of that commit. Where a section explained why an earlier, more conservative default was chosen, the explanation stays and the new value is given beside it. The same commit added challenge alert tones (§12.7). Settings saved before it no longer decode: use **Reset to defaults** once after updating (§12.1).
 - Phases 6–7 are not started.
 
 *(Original status line, kept for history: "planned, not started. Nothing in this document is implemented.")*
@@ -190,7 +192,7 @@ choices that follow from each are noted.
     call as `UCIEngine.swift:276-281` and `BatchedSelfPlayDriver.swift:354-359`).
   - Starting from a FEN leaves history empty, and the history/repetition
     planes are zero-filled. That is out of distribution, so from-position
-    games are declined by default.
+    games are always declined (§7; there is no setting to accept them).
 - **Draw adjudication.** `ChessGameEngine` **ends the game itself** on
   threefold repetition, 50 moves and insufficient material
   (`updateResult`, `:262-335`), and later moves then throw
@@ -327,9 +329,11 @@ its category, status, latency, and `Retry-After` in the protocol log (§10.3).
     further challenges are **left unanswered and logged**. They expire on
     Lichess's side, and this spends no requests.
 - **Moves.** One request per move, which cannot be reduced. For this reason
-  `maxConcurrentGames` defaults low (2) and bullet is off by default (§7).
-  The Stats view shows requests per game and per minute, so the operator
-  can see the budget and tune concurrency against it.
+  `maxConcurrentGames` originally defaulted low (2) and bullet was off by
+  default (§7). Since commit `c5542b8` the defaults are the owner's running
+  configuration: `maxConcurrentGames` 12, with ultraBullet and bullet
+  accepted. The Stats view shows requests per game and per minute, so the
+  operator can see the budget and tune concurrency against it.
 - **Reconnects** (§6):
   - Exponential backoff with jitter (equal jitter as implemented; §6): start 2 s, cap 60 s.
   - At most one stream open in flight (via the gate).
@@ -500,31 +504,44 @@ most specific Lichess decline reason.
 | `initialFen` present and ≠ startpos | decline | `standard` |
 | Rated (setting: accept rated) | **off, casual only** | `casual` |
 | Casual (setting: accept casual) | on | `rated` |
-| Speed allowlist: bullet / blitz / rapid / classical | blitz, rapid on; bullet, classical off | `tooFast` / `tooSlow` |
+| Speed allowlist: ultraBullet / bullet / blitz / rapid / classical | all five on (was blitz, rapid on; bullet, classical off) | `tooFast` / `tooSlow` |
 | Correspondence / unlimited | decline | `timeControl` |
-| Clock limit below min / above max (s) | 180 / 1800 | `tooFast` / `tooSlow` |
+| Clock limit below min / above max (s) | 15 / 1800 (min was 180) | `tooFast` / `tooSlow` |
 | Increment below min / above max (s) | 0 / 30 | `timeControl` |
 | Opponent is BOT (setting: accept bots) | on | `noBot` |
 | Opponent is human (setting: accept humans) | on | `onlyBot` |
-| Opponent rating outside [min, max] | 0 / 4000 | `generic` |
+| Opponent rating outside [min, max] | 0 / 2500 (max was 4000) | `generic` |
 | Provisional opponents (setting) | on | `generic` |
 | Blocklisted username | — | `generic` |
-| At `maxConcurrentGames` | 2 | `later` |
-| `gamesReservedForHumans`: a bot challenge when only reserved slots remain | 0 | `later` |
+| At `maxConcurrentGames` | 12 (was 2) | `later` |
+| `gamesReservedForHumans`: a bot challenge when only reserved slots remain | 2 (was 0) | `later` |
 | Already `maxSimultaneousGamesPerOpponent` vs this opponent | 1 | `later` |
-| Daily cap: total games today / per opponent today | 200 / 20 | `later` |
-| Bot-vs-bot pairing at or near Lichess's 100/day cap (tracked locally) | stop at 95 | `later` |
+| Daily cap: total games today / per opponent today | 2000 / 5 (was 200 / 20) | `later` |
+| Bot-vs-bot pairing at or near Lichess's 100/day cap (tracked locally) | stop at 95 *(not built: the incoming policy keeps no copy of Lichess's limit, which Lichess enforces itself; outgoing sends use §7.2's refusal parsing and our own 24 h count)* | `later` |
 | Rematch of the previous game (setting: accept rematches) | on | `generic` |
 | `compat.bot == false` (Lichess says the challenge isn't playable through the Bot API) | decline | `timeControl` |
 | `direction == "out"` (a challenge **we** sent, echoed on the stream) | never answered | — (no request) |
 | Over `challengeResponseBudgetPerMinute` (§5.3) | 10 | **ignore** (no request) |
 
-The defaults are conservative on purpose:
+The original defaults were conservative on purpose:
 - **Casual only:** the research found humans rating-farming a weak bot got
-  bot rated play restricted.
+  bot rated play restricted. *Still the incoming default (`acceptRated`
+  off).* Matchmaking's own outgoing challenges are now rated by default
+  (§7.3 B).
 - **No bullet:** HTTP round-trip time alone flagged a winning 1+0 game on
   time (lichess-bot #36). DCM's fast inference doesn't help, because the
   bottleneck is the network.
+
+**Since commit `c5542b8` (confirmed intentional 2026-10-01) the defaults are
+the owner's running configuration**: every speed from ultraBullet to
+classical, a 15 s minimum clock, opponents rated up to 2500, 12 concurrent
+games with 2 of them reserved for humans, and 2000 games a day with at most
+5 against any one opponent. The bullet risk above still holds; the §14.4
+lost-on-time breaker and the Stats lost-on-time counts are how it shows up.
+Unchanged by that commit: casual accepted, rated declined, bots and humans
+both accepted, provisional opponents accepted, rematches accepted, increment
+0–30 s, clock maximum 1800 s, 1 simultaneous game per opponent, and a
+challenge-response budget of 10 a minute.
 
 ### 7.1 Picking opponents: one game at a time, and outgoing challenges (decided 2026-09-28)
 
@@ -545,7 +562,9 @@ they now move into **Phase 5**.
   - Shows each candidate's ratings and our head-to-head record (§14.3a).
   - Choose time control, color and rated/casual. The defaults come from the
     §7 policy (blitz/rapid, casual), and choices outside that policy are
-    allowed only with a visible warning.
+    allowed only with a visible warning. *(As built, the sheet opens at 5+3,
+    random color, casual; these are not settings and `c5542b8` did not
+    change them.)*
   - Sends `POST /api/challenge/{username}` through the gate at
     challenge-response priority.
   - Shows the pending challenge with a **Cancel** button
@@ -554,7 +573,12 @@ they now move into **Phase 5**.
     A decline is shown with Lichess's reason.
 - **Limits:**
   - outgoing challenges to one bot count toward the same
-    `botPairDailyStop`, short of Lichess's 100-per-pair daily cap
+    `botPairDailyStop`, short of Lichess's 100-per-pair daily cap *(not
+    built as a local stop; see the §7 table)*
+  - an outgoing challenge nobody answers is withdrawn after
+    `outgoingChallengeTimeoutSeconds`, default 999 s (was 180 s before
+    `c5542b8`); 0 waits indefinitely. Busy bots often leave challenges
+    unanswered rather than declining them
   - at most one outgoing challenge pending at a time
   - no automatic matchmaking loop (that remains Phase 8)
   - an outgoing challenge echoed back on the event stream
@@ -632,7 +656,7 @@ The Favorites tab lists every favorite, online or not:
 - A skipped entry stays listed with its reason and is not retried; choosing that player again re-queues them at the end.
 - "Fill Open Slots" fills every open slot outside those reserved for humans, whatever the fill mode, one send at a time with the same spacing and per-hour cap.
 - DCM's own rating counts for the relative window only when it is established (not provisional).
-- "Prefer favorites" defaults to on.
+- "Prefer favorites" defaulted to on. *(Off since `c5542b8`; see B.)*
 - The per-hour cap counts challenges that reached Lichess; the spacing applies to every attempt.
 - Matchmaking also pauses during "Play one game".
 - An accepted challenge's game now holds its slot while its session is being set up (the manager reports starting sessions with accepted challenges), so an automatic send can't take that slot in the gap.
@@ -649,16 +673,18 @@ This supersedes §7.1's "no automatic matchmaking loop". All sends still go one 
 - **UI.** The Overview lists the queue: opponent, clock, and why it's waiting ("waiting for a free slot") or was skipped. It has per-entry Cancel and Clear Queue.
 - **Lifetime.** The queue is in memory, cleared by Go Offline (along with the pending-challenge withdrawal) and by quitting. Draining stops sending but keeps the queue until offline.
 
-**B. Matchmaking (auto-challenge). Off by default.**
+**B. Matchmaking (auto-challenge). Planned off by default; on by default since `c5542b8`.**
+
+The defaults below are the owner's running configuration (commit `c5542b8`, confirmed intentional 2026-10-01). The planned defaults, which kept a fresh install from sending anything until the operator opted in, are kept in parentheses. With matchmaking on and rated by default, a fresh install (or a Reset to defaults) starts sending rated challenges as soon as the bot goes Online.
 - **Settings** (Settings ▸ Matchmaking, live):
-  - enabled (default off);
+  - enabled (default **on**; planned off);
   - fill mode: **every free slot** (default) or **only when idle** (no game in progress);
-  - time controls to use (a subset of the sheet's clock choices; default 3+2, 5+3);
-  - rated (default off);
-  - opponent rating window relative to DCM's own rating for that speed (default −300…+300). DCM's rating comes from `/api/account`. When DCM has no rating at that speed, separate absolute bounds apply (default 1000…2200); the log says which bounds were used;
-  - "prefer favorites";
-  - a cap on challenges sent per hour (default 20);
-  - a decline cool-down per bot (default 6 h).
+  - time controls to use (a subset of the sheet's clock choices; default ¼+0, 1+0, 1+1, 2+1, 3+0, 3+2, 5+0, 5+3, 10+0; planned 3+2, 5+3). Not in the default set: 10+5, 15+10, 30+0, 30+20;
+  - rated (default **on**; planned off);
+  - opponent rating window relative to DCM's own rating for that speed (default −300…+300). DCM's rating comes from `/api/account`. When DCM has no rating at that speed, separate absolute bounds apply (default 0…2200; planned 1000…2200); the log says which bounds were used;
+  - "prefer favorites" (default off; planned on);
+  - a cap on challenges sent per hour (default 10; planned 20);
+  - a decline cool-down per bot (default 2 h; planned 6 h).
 - **Slots.** Matchmaking never takes the `gamesReservedForHumans` slots, so a human can always challenge DCM.
 - **When it runs.** Only while Online (not Draining, not in a 429 hold, not after a breaker trip), and only when the challenge queue (A) is empty, because the operator's own picks go first.
 - **Bot list.** While matchmaking is on, the online-bots list is refreshed on its own cadence at housekeeping priority (a named constant, a few minutes), since the Challenge sheet's refresh only runs while the sheet is open. A pass with a list older than that refreshes it first.
@@ -785,6 +811,11 @@ unavailable rows disabled and a `.help` reason.
 | **Trainer snapshot** | Export of `trainer.network`, pinned | Only when the operator clicks **Re-snapshot now** (or selects the source) |
 | **Live trainer** | Export of `trainer.network` into a **shared mirror** | On a cadence, `liveTrainerRefreshIntervalSec` (default 120). **Not per move**: human play's per-move export costs about 0.5 s per move and contends with SGD, which multiplies with concurrent games (§4). |
 | **Model file** | `.safetensors`/`.dcmmodel` via `CheckpointManager.loadModelFile` (the single loader) | Pinned. Records path, file SHA-256 and embedded ModelID. |
+
+**Default source: Model file** (since commit `c5542b8`, confirmed intentional 2026-10-01; it was **Champion** before). The default path is the owner's chosen checkpoint, hard-coded as an absolute path:
+`/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20260713-v5cont-resume-replay-step270000.safetensors`
+- **Portability caveat:** the path is specific to the owner's account and machine. On any other machine or account, or after that file is moved or pruned, the default does not exist. Availability only checks that a path is set, so the failure shows up when the generation is built, as the loader's error. There is no fallback to another source (below); choose another file or source in Settings.
+- Live-trainer defaults are unchanged: refresh every 120 s, `midGameRefresh` off.
 
 **Generations, not in-place mutation.** Each refresh creates a new
 *slot generation*, a network with its own weights. New games (and, only if
@@ -1123,15 +1154,22 @@ of that decision. Each group in the UI says which:
 | Play style (τ, draw/resign/claim/takeback, think delay) | next move / next offer |
 | Model source | next game (Live trainer with `midGameRefresh`: next refresh) |
 | Concurrency / caps | next challenge (never aborts running games) |
+| Alert tones | next incoming challenge |
 | Chat templates | next game |
 | Heartbeat / backoff / rate-limit spacing | next connection / next request |
 | Token | requires reconnect (explicit button) |
 
 **12.4 Play-style options and defaults**
 - **Temperature schedule:** `SamplingSchedule` start/decay/floor. Defaults
-  are start 0.5, decay 0.05/ply, floor 0.01 (≈argmax by about ply 10), which
-  gives opening variety without weakening later play. The minimum is 0.01;
-  τ=0 is unsupported. No Dirichlet noise, ever.
+  are start 0.11, decay 0.02/ply, floor 0.01 (the owner's running
+  configuration since commit `c5542b8`, confirmed intentional 2026-10-01).
+  τ is driven by game-total ply, so it reaches the floor at ply 5: DCM's
+  first two or three moves get a little variety and everything after is
+  ≈argmax. The planned defaults were start 0.5, decay 0.05/ply, floor 0.01
+  (≈argmax by about ply 10), chosen to give opening variety without
+  weakening later play. The new start keeps the opening much closer to
+  argmax, so E45's repeated-line risk is larger.
+  The minimum is 0.01; τ=0 is unsupported. No Dirichlet noise, ever.
 - **Minimum think time:** default 0 ms. Optional, for spectator
   friendliness.
 - **Resign:** default **off**. When enabled: `p_loss ≥ threshold` (0.95)
@@ -1170,8 +1208,12 @@ to earn that trust before turning them on.
 
 **12.5 Chat:** a greeting template and a goodbye template. Placeholders are
 `{modelID}`, `{source}`, `{build}` and `{opponent}`. The greeting defaults
-to on: "DrewsChessMachine: a from-scratch neural net, no search. Model
-{modelID}." The room is selectable.
+to on: "Hi, I'm DrewsChessMachine ({modelID}), a from-scratch neural net,
+no search. Type !help for commands." (since commit `c5542b8`; before it,
+"DrewsChessMachine: a from-scratch neural net, no search. Model {modelID}.
+Type !help for commands."). The goodbye defaults to off ("Thanks for the
+game, {opponent}!"). The room is selectable and defaults to the player
+room.
 
 **12.5a Chat commands (added 2026-09-28; supersedes E53's "no chat commands").** Research: `documentation/research/lichess-bot/chat-commands.md`, verified in lila, lichess-bot and BotLi source.
 
@@ -1232,6 +1274,17 @@ to on: "DrewsChessMachine: a from-scratch neural net, no search. Model
 - **Rate limits** (§5): the minimum-cooldown floor is fixed and not
   editable.
 - **Circuit breakers** (§14.4).
+
+**12.7 Challenge alert tones (added 2026-09-29, commit `c5542b8`):**
+- Two settings (Settings ▸ Alerts): a system sound for challenges from BOT
+  accounts and one for challenges from humans, each with a preview.
+- **Default: none for both** (no sound plays).
+- Every incoming challenge sounds, whatever the policy then does with it:
+  the tone means "someone wants a game", not "a game is starting".
+- Our own outgoing challenges, echoed back on the event stream, never sound
+  (the challenger is our own account), or every matchmaking send would.
+- Read live on each arrival (`LichessBotChallengeAlert`, tests in
+  `LichessBotChallengeAlertTests`).
 
 ## 13. On/off, drain, quit, signals
 
@@ -1870,7 +1923,9 @@ operator's human account; casual; each item recorded as pass/fail with its
 game id)
 
 1. Accept blitz; decline bullet, rated and variant. The Lichess UI shows the
-   correct decline reasons.
+   correct decline reasons. *(Written for the planned defaults. Since commit
+   `c5542b8` bullet is accepted by default, so test the speed decline with a
+   speed unchecked.)*
 2. Castle both sides; en passant; promotion and underpromotion. All moves
    are accepted and recorded, and the PGN opens cleanly in a PGN viewer.
 3. Draw offer declined (default). With the accept policy on, it is
@@ -1915,7 +1970,7 @@ game id)
   guarded button in the same panel.
 - **Actors** for the new network code, with the contention and reentrancy
   rules in §15.
-- **Casual only** by default.
+- **Casual only** by default. *(Still the incoming default. Since commit `c5542b8`, matchmaking's outgoing challenges are rated by default, §7.3 B.)*
 - **Raw journals and protocol logs kept indefinitely** for now.
 - **Research files** moved to `documentation/research/lichess-bot/`.
 - **Castling recorded as given** (E1).
@@ -1924,7 +1979,7 @@ game id)
 - **Keychain: option (A)**, the data-protection keychain with
   `kSecAttrAccessibleAfterFirstUnlock` and a one-time Keychain Sharing
   entitlement (§12.2).
-- **Default challenge rules approved** as listed in §7.
+- **Default challenge rules approved** as listed in §7. *(Superseded: since commit `c5542b8`, confirmed intentional 2026-10-01, the defaults are the owner's running configuration. §7 lists the current and the approved values.)*
 
 **Still open**
 1. **Font of the new Lichess Bot window and status chip.** Your global rules
@@ -1944,8 +1999,18 @@ game id)
    - at most 2 games at once, 1 per opponent
    - at most 200 games/day, 20 per opponent/day, bot pairs stopped at 95/day
    - rematches accepted
+
+   *Current defaults (commit `c5542b8`, confirmed intentional 2026-10-01):*
+   casual only and standard only (unchanged); every speed from ultraBullet
+   to classical accepted; clock 15 s–30 min, increment 0–30 s;
+   correspondence and unlimited declined; humans and bots both accepted,
+   opponents rated 0–2500, provisional OK; at most 12 games at once, 2 of
+   them reserved for humans, 1 per opponent; at most 2000 games/day, 5 per
+   opponent/day (Lichess itself caps games against bots at 100 a day; the
+   local stop at 95 was not built); rematches accepted.
 3. **Default in-game behavior** (§12.4):
-   - τ schedule 0.5 → 0.01 by ply 10
+   - τ schedule 0.5 → 0.01 by ply 10 *(now 0.11 → 0.01 by ply 5, commit
+     `c5542b8`)*
    - never resign, never offer a draw, decline all draw offers
    - decline takebacks
    - claim victory when the opponent leaves (a draw only if Lichess refuses
@@ -1971,7 +2036,9 @@ game id)
   enum values appear. Mitigations: tolerant decoding, conservative request
   budget, telemetry to see drift early.
 - **Account action.** Farming or abuse by opponents against a weak model.
-  Mitigations: casual-only default, daily caps, blocklist, breakers.
+  Mitigations: casual-only default for incoming challenges, daily caps,
+  blocklist, breakers. *(Since commit `c5542b8`, matchmaking sends rated
+  challenges by default; turn its Rated setting off to stay fully casual.)*
 - **Value-head miscalibration** makes eval-driven resign/draw
   unsafe. Mitigation: off by default, and the calibration chart gates
   turning it on.
@@ -2104,7 +2171,7 @@ Phase 6.
 | # | Situation | Handling |
 |---|---|---|
 | E45 | With τ near argmax (0.01), DCM is nearly deterministic. A human (or bot) that beats it once can **replay the same winning line** | The opening τ schedule varies early moves (§12.4). Optional per-game τ jitter. Stats flag repeated identical games vs the same opponent (same move-list hash). Rotation/A-B (Phase 8) also breaks repetition. |
-| E46 | Two near-deterministic bots can play the same game over and over | Per-opponent daily cap (default 20) and the local 100/day bot-pair tracker (§7). Repeated-game detection (E45) can auto-decline that opponent for the day. **[T]** |
+| E46 | Two near-deterministic bots can play the same game over and over | Per-opponent daily cap (default 5 since commit `c5542b8`; was 20) and the local 100/day bot-pair tracker (§7; not built as a policy stop, Lichess enforces its own limit). Repeated-game detection (E45) can auto-decline that opponent for the day. **[T]** |
 | E47 | Human openings produce positions self-play never reaches | Expected, and not a protocol bug. Stats by opening (from the export's `opening`) show where DCM struggles. That is useful learning signal, never training data (§3). |
 | E48 | `SamplingSchedule` τ decays by game-total ply | Lichess games start from startpos (from-position games are declined), so `ply = moves.count`. That matches self-play. **[T]** |
 
