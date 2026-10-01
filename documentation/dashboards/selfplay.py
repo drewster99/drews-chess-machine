@@ -34,6 +34,7 @@ Run:  python3 selfplay.py
 """
 import os, re, csv, json, bisect
 from _schema import FIELDS  # single source of the CSV column order (shared with replay.py)
+from _atomic_write import atomic_write_open  # crash-safe replace of data/<run>.csv
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOGDIR = os.path.expanduser("~/Library/Logs/DrewsChessMachine")
@@ -366,7 +367,7 @@ def build_run(key, cfg):
         out.append(row)
     out.sort(key=lambda r: r["cum_step"])
     p = os.path.join(DATA, f"{key}.csv")
-    with open(p, "w", newline="") as f:
+    with atomic_write_open(p, newline="") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS)
         w.writeheader()
         for r in out:

@@ -11,6 +11,15 @@ Append-only and idempotent: reads the highest `step` already recorded for the
 target segment and only scans forward from there, so a tick costs one pass over
 the live log instead of re-reading the whole multi-hundred-MB lineage.
 
+"Append" is logical, not an `open(path, "a")`: this CSV is a source of truth (the
+marks are not reconstructable once the log rotates away), and an in-place append
+interrupted mid-row leaves a torn last line that the NEXT append would then glue
+a new row onto. So the existing bytes are copied verbatim into a temp file, the
+new rows are written after them, and the result replaces the original atomically
+(see _atomic_write.py). The prefix is copied as text read with newline="" and
+written with newline="", so the existing rows keep their exact bytes, CRLF row
+terminators included.
+
 The `segment` column is the index of the log within the run's registry `logs`
 list. It is REQUIRED for correctness, not decoration: a lineage that restarted
 from step 1 more than once reuses the same raw step numbers under different
@@ -22,7 +31,8 @@ model interleaved in a shared log cannot contaminate the curve.
 Usage:  python3 selfplay_probe_append.py <run> [--segment N] [--spacing 250]
         (segment defaults to the LAST entry in the run's `logs` list)
 """
-import os, re, csv, sys, json, argparse
+import os, re, io, csv, sys, json, argparse
+from _atomic_write import atomic_write_open  # crash-safe replace of selfplay_probe/<run>.csv
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOGDIR = os.path.expanduser("~/Library/Logs/DrewsChessMachine")
@@ -55,31 +65,41 @@ def main():
     kept_to = cfg.get("log_kept_to", {}).get(logs[seg])
 
     path = os.path.join(HERE, "selfplay_probe", f"{a.run}.csv")
-    rows = list(csv.DictReader(open(path))) if os.path.exists(path) else []
+    existing_text = ""
+    if os.path.exists(path):
+        with open(path, newline="") as existing:
+            existing_text = existing.read()
+    rows = list(csv.DictReader(io.StringIO(existing_text, newline="")))
     last = max((int(r["step"]) for r in rows if r.get("segment") == str(seg)), default=-1)
 
-    added = 0
-    with open(path, "a", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=FIELDS)
-        if not rows:
-            w.writeheader()
-        for line in open(log, errors="replace"):
-            if "set=wide" not in line:
-                continue
-            m = LINE.search(line)
-            if not m:
-                continue
-            step = int(m.group(1))
-            if step <= last or (last >= 0 and step - last < a.spacing):
-                continue
-            if base and not m.group(4).startswith(base):
-                continue
-            if kept_to is not None and step > kept_to:
-                continue
-            w.writerow({"step": step, "pElo": m.group(3), "nll": m.group(2), "segment": seg})
-            last = step
-            added += 1
-    print(f"{a.run} seg{seg} ({logs[seg]}): +{added} marks, now through step {last}")
+    new_rows = []
+    for line in open(log, errors="replace"):
+        if "set=wide" not in line:
+            continue
+        m = LINE.search(line)
+        if not m:
+            continue
+        step = int(m.group(1))
+        if step <= last or (last >= 0 and step - last < a.spacing):
+            continue
+        if base and not m.group(4).startswith(base):
+            continue
+        if kept_to is not None and step > kept_to:
+            continue
+        new_rows.append({"step": step, "pElo": m.group(3), "nll": m.group(2), "segment": seg})
+        last = step
+
+    # Rewrite only when there is something to add (or the file does not exist
+    # yet / is empty and needs its header), so an idle tick leaves the file alone.
+    if new_rows or not existing_text:
+        with atomic_write_open(path, newline="") as fh:
+            fh.write(existing_text)
+            w = csv.DictWriter(fh, fieldnames=FIELDS)
+            if not existing_text:
+                w.writeheader()
+            for row in new_rows:
+                w.writerow(row)
+    print(f"{a.run} seg{seg} ({logs[seg]}): +{len(new_rows)} marks, now through step {last}")
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ after new autosaves/probes just extends the CSV.
 """
 import os, re, json, csv, sys
 from _schema import FIELDS
+from _atomic_write import atomic_write_open  # crash-safe replace of data/<run>.csv
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REG = json.load(open(os.path.join(HERE, "vsuci_registry.json")))
@@ -149,7 +150,7 @@ def build(key, cfg):
 def write_csv(key, rows):
     os.makedirs(DATA, exist_ok=True)
     p = os.path.join(DATA, f"{key}.csv")
-    with open(p, "w", newline="") as fh:
+    with atomic_write_open(p, newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=FIELDS)
         w.writeheader()
         for r in rows:

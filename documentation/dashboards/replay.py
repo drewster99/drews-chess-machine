@@ -30,6 +30,7 @@ Idempotent: track/migrate never duplicate a cum_step already present.
 import os, re, sys, csv, json, glob, struct, math, bisect, argparse, collections, itertools, datetime
 import numpy as np
 from _schema import FIELDS  # single source of the CSV column order (shared with selfplay.py)
+from _atomic_write import atomic_write_open  # crash-safe replace of the CSVs + registry.json
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Config/data/output root. Defaults to the script dir, but can be pointed at a
@@ -447,7 +448,7 @@ def read_csv(run):
 
 def write_csv(run, rows):
     rows = sorted(rows, key=lambda r: int(r["cum_step"]))
-    with open(csv_path(run), "w", newline="") as f:
+    with atomic_write_open(csv_path(run), newline="") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS); w.writeheader()
         for r in rows:
             w.writerow({k: r.get(k, "") for k in FIELDS})
@@ -1411,7 +1412,7 @@ if __name__ == "__main__":
             for r, new in proposed.items():
                 for i, st in new.items():
                     reg["runs"][r]["segments"][i]["enum_stem"] = st
-            with open(os.path.join(ROOT, "registry.json"), "w") as fh:
+            with atomic_write_open(os.path.join(ROOT, "registry.json")) as fh:
                 json.dump(reg, fh, indent=2, ensure_ascii=False)
             print(f"\nwrote {sum(len(v) for v in proposed.values())} enum_stem value(s) to registry.json")
         elif proposed:
