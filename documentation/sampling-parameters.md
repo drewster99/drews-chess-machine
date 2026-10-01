@@ -39,12 +39,15 @@ The linear ramp replaces an earlier two-phase model (abrupt jump from opening te
 from `TrainingParameters` (`selfPlayStartTau` / `selfPlayTargetTau` /
 `selfPlayTauDecayPerPly`, and the `arena…` equivalents), not hardcoded. The
 defaults below are what an unmodified `parameters.json` uses; `floorTau` is
-the `…TargetTau` parameter.
+the `…TargetTau` parameter. They are the owner's running configuration as of
+2026-10-01, adopted as the code defaults on that date (previously self-play
+1.0 / 0.007 / 0.5 and arena 0.6 / 0.02 / 0.2). Under these defaults the
+self-play and arena schedules are identical.
 
 | Preset | `startTau` | `decayPerPly` | `floorTau` | Floor reached at ply | Used by |
 |---|---|---|---|---|---|
-| self-play | 1.0 | 0.007 | 0.5 | ~71 | Play-and-Train self-play |
-| arena | 0.6 | 0.02 | 0.2 | 20 | Arena tournament (candidate vs champion) |
+| self-play | 0.2 | 0.02 | 0.02 | 9 | Play-and-Train self-play |
+| arena | 0.2 | 0.02 | 0.02 | 9 | Arena tournament (candidate vs champion) |
 | `.uniform` | 1.0 | 0.0 | 1.0 | never | Play Game / Forward Pass |
 
 The hardcoded `SamplingSchedule.selfPlay` / `.arena` constants in
@@ -64,7 +67,7 @@ The floor of 0.4 is higher than the prior two-phase main temperature of 0.25. Th
 
 The arena exists to measure which network is stronger. Noise in the sampling reduces the signal-to-noise ratio of the evaluation, requiring more games for statistical significance.
 
-- **Moderate opening diversity**: Without some stochastic opening play, color-alternating tournaments would collapse into a handful of deterministic lines. The arena `startTau` (default **0.6**) provides enough opening variation to keep the tournament from repeating itself while staying closer to each network's actual preferences than the self-play default (**1.0**).
+- **Moderate opening diversity**: Without some stochastic opening play, color-alternating tournaments would collapse into a handful of deterministic lines. The arena `startTau` provides enough opening variation to keep the tournament from repeating itself while staying closer to each network's actual preferences than the self-play start. (That was the v3 design intent; the 2026-10-01 defaults in *Current presets* set both schedules to the same values.)
 - **Faster decay** (`decayPerPly=0.04` vs 0.03): The arena tightens faster because evaluation accuracy matters more than exploration.
 - **Lower floor** (`floorTau=0.2`): By ply 13 both networks are playing near their actual preferences, which is what we want for scoring.
 

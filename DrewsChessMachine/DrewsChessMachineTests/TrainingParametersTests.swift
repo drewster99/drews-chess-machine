@@ -50,12 +50,12 @@ final class TrainingParametersTests: XCTestCase {
         }
     }
 
-    func test_arenaPromotionCriterion_defaultIsScoreThreshold() throws {
+    func test_arenaPromotionCriterion_defaultIsSPRT() throws {
         let raw = try ArenaPromotionCriterionParameter.decode(
             ArenaPromotionCriterionParameter.definition.defaultValue
         )
-        XCTAssertEqual(ArenaPromotionCriterion(persistedRawValue: raw), .scoreThreshold,
-                       "existing sessions must keep today's promotion rule until the user opts in")
+        XCTAssertEqual(ArenaPromotionCriterion(persistedRawValue: raw), .sprt,
+                       "SPRT is the default promotion rule per the owner's 2026-10-01 configuration")
     }
 
     func test_arenaPromotionCriterion_logTokensAreUniqueAndStable() {

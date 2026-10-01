@@ -120,10 +120,28 @@ final class ArenaSettingsPopoverModel {
         sprtRelationError = nil
     }
 
-    /// Elo hypotheses are whole numbers at their defaults (0 and 10) and read
-    /// better that way; anything else keeps one decimal.
+    /// Elo hypotheses are usually whole numbers and read better that way;
+    /// anything else keeps one decimal.
     private static func formatElo(_ v: Double) -> String {
         v == v.rounded() ? String(Int(v.rounded())) : String(format: "%.1f", v)
+    }
+
+    /// Placeholder for the Interval field: the declared default interval,
+    /// rendered by the same duration formatter that seeds the field.
+    var intervalPlaceholder: String {
+        formatDurationSpec(ArenaAutoIntervalSec.declaredDefault)
+    }
+
+    /// Placeholder for the H₀ field: the declared default, formatted as the
+    /// field is seeded.
+    var sprtElo0Placeholder: String {
+        Self.formatElo(ArenaSPRTElo0.declaredDefault)
+    }
+
+    /// Placeholder for the H₁ field: the declared default, formatted as the
+    /// field is seeded.
+    var sprtElo1Placeholder: String {
+        Self.formatElo(ArenaSPRTElo1.declaredDefault)
     }
 
     func cancel() {

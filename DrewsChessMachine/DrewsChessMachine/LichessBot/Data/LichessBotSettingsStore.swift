@@ -22,16 +22,66 @@ enum LichessBotSettingsStoreError: LocalizedError, Equatable {
 enum LichessBotSettingsStore {
     static let defaultsKey = "lichess_bot_settings"
 
+    /// What `loadReporting(from:)` read, and what it had to supply itself.
+    struct LoadResult: Equatable {
+        let settings: LichessBotSettings
+        /// Dotted paths (e.g. `alerts`, `challenge.minimumInitialSeconds`) of
+        /// non-optional settings the saved blob predates, filled from the
+        /// current defaults. Empty when the saved blob is complete.
+        let filledFromDefaults: [String]
+        /// Dotted paths in the saved blob that the current settings no longer
+        /// have (removed or renamed fields); ignored.
+        let ignoredSavedKeys: [String]
+    }
+
     /// The saved settings. With nothing saved yet (first run), the defaults;
     /// saved settings that don't decode, or decode but fail validation,
-    /// throw.
+    /// throw. Settings saved before a field existed still load: see
+    /// `loadReporting(from:)`.
     static func load(from defaults: UserDefaults) throws -> LichessBotSettings {
+        try loadReporting(from: defaults).settings
+    }
+
+    /// Like `load(from:)`, and also reports any field filled from the current
+    /// defaults because the saved settings predate it, and any saved field the
+    /// current settings no longer have. The caller logs both.
+    ///
+    /// Why: settings are one JSON blob decoded with the synthesized
+    /// `Decodable`, which throws `keyNotFound` for any non-optional field the
+    /// blob lacks. Adding a field (as `alerts` in `c5542b8`) therefore made
+    /// every earlier save unreadable and forced a Reset to defaults, losing
+    /// the operator's configuration. Settings must survive additions, so a
+    /// missing non-optional field is filled from today's default and reported
+    /// — never silently.
+    ///
+    /// How: the saved JSON object is overlaid onto the JSON of
+    /// `LichessBotSettings()` — saved values win, nested objects merge key by
+    /// key, arrays are taken whole — and the merged object is decoded. A key
+    /// absent from the save is filled only if it is non-optional. Optional
+    /// fields encode nothing when nil, so an absent optional may be the
+    /// operator's deliberate nil; it is left absent and decodes as nil. A key
+    /// is optional exactly when removing it from the full default object still
+    /// decodes. A saved value of the wrong type still fails to decode and is
+    /// reported as unreadable, as before.
+    static func loadReporting(from defaults: UserDefaults) throws -> LoadResult {
         guard let data = defaults.data(forKey: defaultsKey) else {
-            return LichessBotSettings()
+            return LoadResult(settings: LichessBotSettings(), filledFromDefaults: [], ignoredSavedKeys: [])
         }
         let settings: LichessBotSettings
+        var filled: [String] = []
+        var ignored: [String] = []
         do {
-            settings = try JSONDecoder().decode(LichessBotSettings.self, from: data)
+            guard let saved = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw LichessBotSettingsStoreError.unreadable(detail: "the saved settings are not a JSON object")
+            }
+            let defaultObject = try defaultSettingsObject()
+            let merged = try overlay(
+                saved: saved, onto: defaultObject, path: [], defaultRoot: defaultObject,
+                filled: &filled, ignored: &ignored)
+            settings = try JSONDecoder().decode(
+                LichessBotSettings.self, from: JSONSerialization.data(withJSONObject: merged))
+        } catch let error as LichessBotSettingsStoreError {
+            throw error
         } catch {
             throw LichessBotSettingsStoreError.unreadable(detail: String(describing: error))
         }
@@ -39,7 +89,115 @@ enum LichessBotSettingsStore {
         guard problems.isEmpty else {
             throw LichessBotSettingsStoreError.invalid(problems: problems)
         }
-        return settings
+        return LoadResult(settings: settings, filledFromDefaults: filled.sorted(), ignoredSavedKeys: ignored.sorted())
+    }
+
+    /// `LichessBotSettings()` as a JSON object.
+    private static func defaultSettingsObject() throws -> [String: Any] {
+        let data = try JSONEncoder().encode(LichessBotSettings())
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            preconditionFailure("LichessBotSettings must encode as a JSON object")
+        }
+        return object
+    }
+
+    /// `saved` overlaid onto `defaults` (the default object at `path`).
+    private static func overlay(
+        saved: [String: Any], onto defaults: [String: Any], path: [String], defaultRoot: [String: Any],
+        filled: inout [String], ignored: inout [String]
+    ) throws -> [String: Any] {
+        var result: [String: Any] = [:]
+        for (key, savedValue) in saved {
+            let keyPath = path + [key]
+            guard let defaultValue = defaults[key] else {
+                // Not in today's defaults: a removed or renamed field, or an
+                // optional whose default is nil. Keep it — the decoder ignores
+                // unknown keys and reads a present optional — and report it
+                // only if the current type has no such field at all.
+                result[key] = savedValue
+                if try !isKnownOptionalKey(keyPath, defaultRoot: defaultRoot) {
+                    ignored.append(keyPath.joined(separator: "."))
+                }
+                continue
+            }
+            // Merge nested objects key by key, but only when they share a key.
+            // A struct and its older save always do; an enum with associated
+            // values encodes as a one-key object named after its case, so a
+            // saved case different from the default case shares none and must
+            // be taken whole — merging would hand the decoder two cases. An
+            // empty saved object is a struct whose fields were all nil
+            // optionals (an enum case object is never empty), so it merges.
+            if let savedObject = savedValue as? [String: Any], let defaultObject = defaultValue as? [String: Any],
+               savedObject.isEmpty || !Set(savedObject.keys).isDisjoint(with: defaultObject.keys) {
+                result[key] = try overlay(
+                    saved: savedObject, onto: defaultObject, path: keyPath, defaultRoot: defaultRoot,
+                    filled: &filled, ignored: &ignored)
+            } else {
+                result[key] = savedValue
+            }
+        }
+        for (key, defaultValue) in defaults where saved[key] == nil {
+            let keyPath = path + [key]
+            if try isOptional(keyPath, defaultRoot: defaultRoot) {
+                continue
+            }
+            result[key] = defaultValue
+            filled.append(keyPath.joined(separator: "."))
+        }
+        return result
+    }
+
+    /// Whether the field at `keyPath` (present in the default object) is
+    /// optional: the default object minus that key still decodes.
+    private static func isOptional(_ keyPath: [String], defaultRoot: [String: Any]) throws -> Bool {
+        let reduced = removing(keyPath, from: defaultRoot)
+        let data = try JSONSerialization.data(withJSONObject: reduced)
+        do {
+            _ = try JSONDecoder().decode(LichessBotSettings.self, from: data)
+            return true
+        } catch DecodingError.keyNotFound {
+            return false
+        }
+    }
+
+    /// Whether `keyPath`, absent from the default object, is still a field of
+    /// the current settings — an optional whose default is nil. Decoding the
+    /// default object with a deliberately wrong-typed value at that path fails
+    /// with a type mismatch exactly when the decoder reads that key.
+    private static func isKnownOptionalKey(_ keyPath: [String], defaultRoot: [String: Any]) throws -> Bool {
+        let probe = setting(keyPath, to: ["__probe__": true], in: defaultRoot)
+        let data = try JSONSerialization.data(withJSONObject: probe)
+        do {
+            _ = try JSONDecoder().decode(LichessBotSettings.self, from: data)
+            return false
+        } catch DecodingError.typeMismatch {
+            return true
+        } catch DecodingError.dataCorrupted {
+            return true
+        }
+    }
+
+    private static func removing(_ keyPath: [String], from object: [String: Any]) -> [String: Any] {
+        guard let first = keyPath.first else { return object }
+        var copy = object
+        if keyPath.count == 1 {
+            copy.removeValue(forKey: first)
+        } else if let child = object[first] as? [String: Any] {
+            copy[first] = removing(Array(keyPath.dropFirst()), from: child)
+        }
+        return copy
+    }
+
+    private static func setting(_ keyPath: [String], to value: Any, in object: [String: Any]) -> [String: Any] {
+        guard let first = keyPath.first else { return object }
+        var copy = object
+        if keyPath.count == 1 {
+            copy[first] = value
+        } else {
+            let child = object[first] as? [String: Any] ?? [:]
+            copy[first] = setting(Array(keyPath.dropFirst()), to: value, in: child)
+        }
+        return copy
     }
 
     /// Validate, then save. Invalid settings are rejected as a whole.

@@ -197,6 +197,20 @@ public extension TrainingParameterKey {
             return false
         }
     }
+
+    /// The default declared in the key's `@TrainingParameter`, as the key's
+    /// typed value. For controls (an edit field's placeholder, a stepper's
+    /// value when its text does not parse) that must show the real default
+    /// rather than restate it as a literal — those copies drift every time the
+    /// declared default changes. A default that does not decode as its own
+    /// key's type is a programmer error in the declaration, so it traps.
+    static var declaredDefault: Value {
+        do {
+            return try decode(definition.defaultValue)
+        } catch {
+            preconditionFailure("default value for \(id) does not round-trip through decode: \(error)")
+        }
+    }
 }
 
 public extension TrainingParameterKey where Value == Double {
@@ -235,6 +249,16 @@ public extension TrainingParameterKey where Value == Int {
         guard let value = Int(text.trimmingCharacters(in: .whitespaces)),
               isWithinDeclaration(value) else { return nil }
         return value
+    }
+
+    /// The declared range as a `ClosedRange`, for controls (a `Stepper`'s
+    /// bounds) that must agree with the validator rather than restate the
+    /// range as literals. Only for keys declared with a range.
+    static var declaredClosedRange: ClosedRange<Int> {
+        guard let range = definition.intRange else {
+            preconditionFailure("\(id) is declared without a range")
+        }
+        return range.min...range.max
     }
 
     /// `value` pulled inside the declared range. Only for stepper-style
@@ -290,7 +314,7 @@ public enum ValueLabelSmoothingEpsilon: TrainingParameterKey {}
 @TrainingParameter(
     name: "Gradient Clip Max Norm",
     description: "Global L2 norm cap for gradient clipping. Above this, gradients are scaled down before the SGD step.",
-    default: 30.0,
+    default: 15.0,
     range: 0.1...1000.0,
     category: "Optimizer",
     liveTunable: true
@@ -300,7 +324,7 @@ public enum GradClipMaxNorm: TrainingParameterKey {}
 @TrainingParameter(
     name: "Weight Decay",
     description: "L2 weight decay coefficient. Couples with batch size and the number of update steps per epoch.",
-    default: 0.0001,
+    default: 0.0003,
     range: 0.0...0.1,
     category: "Optimizer",
     liveTunable: true
@@ -342,7 +366,7 @@ public enum ValueLossWeight: TrainingParameterKey {}
 @TrainingParameter(
     name: "Learning Rate",
     description: "SGD-with-momentum optimizer learning rate. Lower is slower but more stable. Pairs with sqrt_batch_scaling_lr. Note: under the bf16 weight path, updates below the bf16 weight ULP (~0.8% of a weight's magnitude) round away, so LRs much below ~1e-3 are largely no-ops.",
-    default: 1.0e-2,
+    default: 1.0e-3,
     range: 1.0e-7...1.0,
     category: "Optimizer",
     liveTunable: true
@@ -380,7 +404,7 @@ public enum SignedAdvantageComplementCE: TrainingParameterKey {}
 @TrainingParameter(
     name: "LR Warmup Steps",
     description: "Number of training steps over which the learning rate linearly ramps from zero to its target.",
-    default: 500,
+    default: 1000,
     range: 0...100000,
     category: "Optimizer",
     liveTunable: true
@@ -400,7 +424,7 @@ public enum DrawPenalty: TrainingParameterKey {}
 @TrainingParameter(
     name: "Self-Play Start Tau",
     description: "Initial sampling temperature for self-play games at game-total ply 0 (the starting position). Decays toward target by self_play_tau_decay_per_ply each game-total ply (i.e. each half-move from either side advances the schedule).",
-    default: 1.0,
+    default: 0.2,
     range: 0.01...5.0,
     category: "Self-Play Sampling",
     liveTunable: true
@@ -410,7 +434,7 @@ public enum SelfPlayStartTau: TrainingParameterKey {}
 @TrainingParameter(
     name: "Self-Play Target Tau",
     description: "Floor sampling temperature for self-play games — start_tau decays toward this value.",
-    default: 0.5,
+    default: 0.02,
     range: 0.01...5.0,
     category: "Self-Play Sampling",
     liveTunable: true
@@ -420,7 +444,7 @@ public enum SelfPlayTargetTau: TrainingParameterKey {}
 @TrainingParameter(
     name: "Self-Play Tau Decay Per Ply",
     description: "Decay applied to tau on every game-total ply (each half-move from either side), moving start_tau toward target_tau during a self-play game. tau(ply) = max(target_tau, start_tau − decay·ply).",
-    default: 0.007,
+    default: 0.02,
     range: 0.0...1.0,
     category: "Self-Play Sampling",
     liveTunable: true
@@ -478,8 +502,8 @@ public enum DrawWatchStreakLength: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Arena Start Tau",
-    description: "Initial sampling temperature for arena games. Tighter than self-play to improve W/L/D signal.",
-    default: 0.6,
+    description: "Initial sampling temperature for arena games. Decays toward Arena Target Tau by Arena Tau Decay Per Ply each game-total ply.",
+    default: 0.2,
     range: 0.01...5.0,
     category: "Arena",
     liveTunable: true
@@ -489,7 +513,7 @@ public enum ArenaStartTau: TrainingParameterKey {}
 @TrainingParameter(
     name: "Arena Target Tau",
     description: "Floor sampling temperature for arena games.",
-    default: 0.2,
+    default: 0.02,
     range: 0.01...5.0,
     category: "Arena",
     liveTunable: true
@@ -537,7 +561,7 @@ public enum RecordSelfPlayGames: TrainingParameterKey {}
 @TrainingParameter(
     name: "Self-Play Concurrency",
     description: "Parallel self-play game count. More = faster replay-buffer fill but more GPU contention.",
-    default: 800,
+    default: 180,
     range: 1...8192,
     category: "Training Window",
     liveTunable: true
@@ -557,7 +581,7 @@ public enum TrainingStepDelayMs: TrainingParameterKey {}
 @TrainingParameter(
     name: "Self-Play Delay (ms)",
     description: "Per-game-per-worker delay between self-play games in milliseconds. Used only when replay-ratio auto-adjust is OFF; auto-adjust on lets the controller manage it.",
-    default: 3000,
+    default: 0,
     range: 0...10000,
     category: "Training Window",
     liveTunable: true
@@ -728,7 +752,7 @@ public enum ArenaConcurrency: TrainingParameterKey {}
 @TrainingParameter(
     name: "Arena Promotion Criterion",
     description: "Which rule decides promotion: 0 = score threshold (candidate score over a fixed game count must clear Arena Promote Threshold), 1 = SPRT (sequential test of elo0 vs elo1 at error rates alpha/beta, running until the evidence crosses a bound). SPRT ignores Arena Games Per Tournament and Arena Promote Threshold.",
-    default: 0,
+    default: 1,
     range: 0...1,
     category: "Arena",
     id: "arena_promotion_criterion",
@@ -810,7 +834,7 @@ public enum BatchStatsInterval: TrainingParameterKey {}
 @TrainingParameter(
     name: "KL Probe Interval",
     description: "Measure KL(policy before the SGD step || policy after) on the training minibatch every N steps, and chart it with its across-batch spread. 0 disables. This is the only metric that shows how far a step moves the policy in FUNCTION space -- gNorm measures the step in parameter space, and the two diverge: a large gradient across a flat region barely moves the distribution, a small one across a sharp region can move it a lot. Costs one extra forward pass on probe steps only (roughly 8-11% of a training step at batch 4096, so ~1% at interval 10). The probe holds the dropout RNG steady across both of its forward passes, so the measurement isolates the weight update at any dropout rate.",
-    default: 0,
+    default: 100,
     range: 0...10000,
     category: "Observability",
     liveTunable: true
@@ -833,7 +857,7 @@ public enum KLProbeInterval: TrainingParameterKey {}
 @TrainingParameter(
     name: "LR Cycle Enabled",
     description: "Enable the repeating learning-rate cycle. When on, the base LR each step is set by the cycle (geometric interpolation between LR Cycle Min and Max over LR Cycle Period Steps) instead of the static Learning Rate, then composed with the √batch multiplier. The cycle begins when LR warmup ends; during warmup the LR ramps linearly up to the cycle's starting value. Overrides the static base-LR schedule while enabled.",
-    default: false,
+    default: true,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_enabled",
     liveTunable: true
@@ -897,7 +921,7 @@ public enum LRCycleInvert: TrainingParameterKey {}
 @TrainingParameter(
     name: "Momentum Cycle Enabled",
     description: "Enable the repeating Polyak-momentum cycle. When on, the momentum coefficient each step is set by the cycle (linear interpolation between Momentum Cycle Min and Max) instead of the static Momentum Coefficient. Like the LR cycle, it begins when LR warmup ends and holds its starting value during warmup.",
-    default: false,
+    default: true,
     category: "LR/Momentum Cycling",
     id: "momentum_cycle_enabled",
     liveTunable: true
@@ -907,7 +931,7 @@ public enum MomentumCycleEnabled: TrainingParameterKey {}
 @TrainingParameter(
     name: "Momentum Cycle Period (steps)",
     description: "Full up-then-down period of the momentum cycle, in optimizer steps. Set equal to the LR Cycle Period (with Momentum Cycle Invert on) for Smith-style inverse coupling — high LR paired with low momentum.",
-    default: 2000,
+    default: 1000,
     range: 1...10000000,
     category: "LR/Momentum Cycling",
     id: "momentum_cycle_period_steps",
@@ -929,7 +953,7 @@ public enum MomentumCycleCount: TrainingParameterKey {}
 @TrainingParameter(
     name: "Momentum Cycle Min",
     description: "Polyak momentum at the cycle's low point (the period midpoint when inverted, where LR peaks). Smith's recommendation is ~0.85.",
-    default: 0.85,
+    default: 0.75,
     range: 0.0...0.99,
     category: "LR/Momentum Cycling",
     id: "momentum_cycle_min",
@@ -940,7 +964,7 @@ public enum MomentumCycleMin: TrainingParameterKey {}
 @TrainingParameter(
     name: "Momentum Cycle Max",
     description: "Polyak momentum at the cycle's high point (the period boundaries when inverted, where LR bottoms). Smith's recommendation is ~0.95.",
-    default: 0.95,
+    default: 0.9,
     range: 0.0...0.99,
     category: "LR/Momentum Cycling",
     id: "momentum_cycle_max",
@@ -950,8 +974,8 @@ public enum MomentumCycleMax: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Momentum Cycle Invert",
-    description: "Flip the momentum waveform so it starts at Momentum Cycle Max and dips to Min at the midpoint. Default ON: at an equal period this makes momentum the inverse of LR (high LR ↔ low momentum), Smith's super-convergence coupling.",
-    default: true,
+    description: "Flip the momentum waveform so it starts at Momentum Cycle Max and dips to Min at the midpoint. Default OFF. Turned on at a period equal to the LR Cycle Period, this makes momentum the inverse of LR (high LR ↔ low momentum), Smith's super-convergence coupling.",
+    default: false,
     category: "LR/Momentum Cycling",
     id: "momentum_cycle_invert",
     liveTunable: true
@@ -1049,8 +1073,8 @@ public enum MomentumFollowEndHigh: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Periodic Autosave Interval (sec)",
-    description: "Cadence of the periodic full-session autosave while Play-and-Train is active, in seconds. The default 14400 = 4 hours. Read live: the heartbeat reconciles a mid-session change against the running PeriodicSaveController and re-anchors the next-save deadline, so a shorter interval takes effect without restarting Play-and-Train. Does not affect manual saves or post-promotion autosaves.",
-    default: 14400.0,
+    description: "Cadence of the periodic full-session autosave while Play-and-Train is active, in seconds. The default 21600 = 6 hours. Read live: the heartbeat reconciles a mid-session change against the running PeriodicSaveController and re-anchors the next-save deadline, so a shorter interval takes effect without restarting Play-and-Train. Does not affect manual saves or post-promotion autosaves.",
+    default: 21600.0,
     range: 60.0...604800.0,
     category: "Sessions",
     liveTunable: true

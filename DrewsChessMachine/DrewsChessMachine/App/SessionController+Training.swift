@@ -1040,7 +1040,7 @@ extension SessionController {
         // whole point of the scheduler is "saved within the last
         // interval" and the session was not being saved while stopped.
         // The interval is the live `periodic_autosave_interval_sec`
-        // parameter (default 4 hours); mid-session changes are reconciled
+        // parameter; mid-session changes are reconciled
         // by the heartbeat via `PeriodicSaveController.updateInterval`.
         let controller = PeriodicSaveController(interval: TrainingParameters.shared.periodicAutosaveIntervalSec)
         controller.arm(now: Date())

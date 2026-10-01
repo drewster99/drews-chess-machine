@@ -528,7 +528,7 @@ fileprivate struct LiveRatioBadge: View {
     let targetText: String
 
     var body: some View {
-        let target = Double(targetText.trimmingCharacters(in: .whitespaces)) ?? 1.10
+        let target = Double(targetText.trimmingCharacters(in: .whitespaces)) ?? ReplayRatioTarget.declaredDefault
         let valuePart: Text = {
             guard let cur = current else {
                 return Text("--").foregroundStyle(.secondary)
@@ -615,50 +615,50 @@ private struct CyclingTab: View {
                     .toggleStyle(.checkbox)
                     .font(.system(size: 13, weight: .semibold))
                 VStack(alignment: .leading, spacing: 6) {
-                    PopoverRow(label: "Peak LR, start:", text: $lrCycleMaxText, error: lrCycleMaxError, placeholder: "1.00e-01") {
+                    PopoverRow(label: "Peak LR, start:", text: $lrCycleMaxText, error: lrCycleMaxError, placeholder: LRCycleMax.declaredDefaultText(format: "%.2e")) {
                         Stepper(
                             "",
-                            onIncrement: { stepLogText($lrCycleMaxText, factor: sqrt(10.0), fallback: 1e-1) },
-                            onDecrement: { stepLogText($lrCycleMaxText, factor: 1.0 / sqrt(10.0), fallback: 1e-1) }
+                            onIncrement: { stepLogText($lrCycleMaxText, factor: sqrt(10.0), key: LRCycleMax.self) },
+                            onDecrement: { stepLogText($lrCycleMaxText, factor: 1.0 / sqrt(10.0), key: LRCycleMax.self) }
                         )
                     }
-                    PopoverRow(label: "Peak LR, end:", text: $lrCyclePeakEndText, error: lrCyclePeakEndError, placeholder: "1.00e-04") {
+                    PopoverRow(label: "Peak LR, end:", text: $lrCyclePeakEndText, error: lrCyclePeakEndError, placeholder: LRCyclePeakEnd.declaredDefaultText(format: "%.2e")) {
                         Stepper(
                             "",
-                            onIncrement: { stepLogText($lrCyclePeakEndText, factor: sqrt(10.0), fallback: 1e-4) },
-                            onDecrement: { stepLogText($lrCyclePeakEndText, factor: 1.0 / sqrt(10.0), fallback: 1e-4) }
+                            onIncrement: { stepLogText($lrCyclePeakEndText, factor: sqrt(10.0), key: LRCyclePeakEnd.self) },
+                            onDecrement: { stepLogText($lrCyclePeakEndText, factor: 1.0 / sqrt(10.0), key: LRCyclePeakEnd.self) }
                         )
                     }
-                    PopoverRow(label: "Trough LR, start:", text: $lrCycleMinText, error: lrCycleMinError, placeholder: "1.00e-03") {
+                    PopoverRow(label: "Trough LR, start:", text: $lrCycleMinText, error: lrCycleMinError, placeholder: LRCycleMin.declaredDefaultText(format: "%.2e")) {
                         Stepper(
                             "",
-                            onIncrement: { stepLogText($lrCycleMinText, factor: sqrt(10.0), fallback: 1e-3) },
-                            onDecrement: { stepLogText($lrCycleMinText, factor: 1.0 / sqrt(10.0), fallback: 1e-3) }
+                            onIncrement: { stepLogText($lrCycleMinText, factor: sqrt(10.0), key: LRCycleMin.self) },
+                            onDecrement: { stepLogText($lrCycleMinText, factor: 1.0 / sqrt(10.0), key: LRCycleMin.self) }
                         )
                     }
-                    PopoverRow(label: "Trough LR, end:", text: $lrCycleTroughEndText, error: lrCycleTroughEndError, placeholder: "1.00e-06") {
+                    PopoverRow(label: "Trough LR, end:", text: $lrCycleTroughEndText, error: lrCycleTroughEndError, placeholder: LRCycleTroughEnd.declaredDefaultText(format: "%.2e")) {
                         Stepper(
                             "",
-                            onIncrement: { stepLogText($lrCycleTroughEndText, factor: sqrt(10.0), fallback: 1e-6) },
-                            onDecrement: { stepLogText($lrCycleTroughEndText, factor: 1.0 / sqrt(10.0), fallback: 1e-6) }
+                            onIncrement: { stepLogText($lrCycleTroughEndText, factor: sqrt(10.0), key: LRCycleTroughEnd.self) },
+                            onDecrement: { stepLogText($lrCycleTroughEndText, factor: 1.0 / sqrt(10.0), key: LRCycleTroughEnd.self) }
                         )
                     }
-                    PopoverRow(label: "Decay steps (0=off):", text: $lrCycleDecayHorizonText, error: lrCycleDecayHorizonError, placeholder: "1000000") {
+                    PopoverRow(label: "Decay steps (0=off):", text: $lrCycleDecayHorizonText, error: lrCycleDecayHorizonError, placeholder: LRCycleDecayHorizonSteps.declaredDefaultText) {
                         Stepper(
                             "",
                             onIncrement: { stepHorizonText($lrCycleDecayHorizonText, up: true) },
                             onDecrement: { stepHorizonText($lrCycleDecayHorizonText, up: false) }
                         )
                     }
-                    PopoverRow(label: "Period (steps):", text: $lrCyclePeriodText, error: lrCyclePeriodError, placeholder: "20000") {
+                    PopoverRow(label: "Period (steps):", text: $lrCyclePeriodText, error: lrCyclePeriodError, placeholder: LRCyclePeriodSteps.declaredDefaultText) {
                         Stepper(
                             "",
-                            onIncrement: { stepPeriodText($lrCyclePeriodText, up: true) },
-                            onDecrement: { stepPeriodText($lrCyclePeriodText, up: false) }
+                            onIncrement: { stepPeriodText($lrCyclePeriodText, up: true, key: LRCyclePeriodSteps.self) },
+                            onDecrement: { stepPeriodText($lrCyclePeriodText, up: false, key: LRCyclePeriodSteps.self) }
                         )
                     }
-                    PopoverRow(label: "Cycles (0=∞):", text: $lrCycleCountText, error: lrCycleCountError, placeholder: "0") {
-                        Stepper("", value: PopoverBindings.intBinding(text: $lrCycleCountText, fallback: 0), in: 0...1_000_000, step: 1)
+                    PopoverRow(label: "Cycles (0=∞):", text: $lrCycleCountText, error: lrCycleCountError, placeholder: LRCycleCount.declaredDefaultText) {
+                        Stepper("", value: PopoverBindings.intBinding(text: $lrCycleCountText, fallback: LRCycleCount.declaredDefault), in: LRCycleCount.declaredClosedRange, step: 1)
                     }
                     HStack(spacing: 8) {
                         Text("").frame(width: 160, alignment: .trailing)
@@ -685,38 +685,38 @@ private struct CyclingTab: View {
                     .disabled(!momentumCycleEnabled)
                     .opacity(momentumCycleEnabled ? 1.0 : 0.5)
                 VStack(alignment: .leading, spacing: 6) {
-                    PopoverRow(label: "Low μ, start:", text: $momentumFollowStartLowText, error: momentumFollowStartLowError, placeholder: "0.850") {
-                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumFollowStartLowText, fallback: 0.85, format: "%.3f"), in: 0.0...0.99, step: 0.01)
+                    PopoverRow(label: "Low μ, start:", text: $momentumFollowStartLowText, error: momentumFollowStartLowError, placeholder: MomentumFollowStartLow.declaredDefaultText(format: "%.3f")) {
+                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumFollowStartLowText, fallback: MomentumFollowStartLow.declaredDefault, format: "%.3f"), in: MomentumFollowStartLow.declaredClosedRange, step: 0.01)
                     }
-                    PopoverRow(label: "Low μ, end:", text: $momentumFollowEndLowText, error: momentumFollowEndLowError, placeholder: "0.900") {
-                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumFollowEndLowText, fallback: 0.90, format: "%.3f"), in: 0.0...0.99, step: 0.01)
+                    PopoverRow(label: "Low μ, end:", text: $momentumFollowEndLowText, error: momentumFollowEndLowError, placeholder: MomentumFollowEndLow.declaredDefaultText(format: "%.3f")) {
+                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumFollowEndLowText, fallback: MomentumFollowEndLow.declaredDefault, format: "%.3f"), in: MomentumFollowEndLow.declaredClosedRange, step: 0.01)
                     }
-                    PopoverRow(label: "High μ, start:", text: $momentumFollowStartHighText, error: momentumFollowStartHighError, placeholder: "0.950") {
-                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumFollowStartHighText, fallback: 0.95, format: "%.3f"), in: 0.0...0.99, step: 0.01)
+                    PopoverRow(label: "High μ, start:", text: $momentumFollowStartHighText, error: momentumFollowStartHighError, placeholder: MomentumFollowStartHigh.declaredDefaultText(format: "%.3f")) {
+                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumFollowStartHighText, fallback: MomentumFollowStartHigh.declaredDefault, format: "%.3f"), in: MomentumFollowStartHigh.declaredClosedRange, step: 0.01)
                     }
-                    PopoverRow(label: "High μ, end:", text: $momentumFollowEndHighText, error: momentumFollowEndHighError, placeholder: "0.950") {
-                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumFollowEndHighText, fallback: 0.95, format: "%.3f"), in: 0.0...0.99, step: 0.01)
+                    PopoverRow(label: "High μ, end:", text: $momentumFollowEndHighText, error: momentumFollowEndHighError, placeholder: MomentumFollowEndHigh.declaredDefaultText(format: "%.3f")) {
+                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumFollowEndHighText, fallback: MomentumFollowEndHigh.declaredDefault, format: "%.3f"), in: MomentumFollowEndHigh.declaredClosedRange, step: 0.01)
                     }
                 }
                 .padding(.leading, 20)
                 .disabled(!(momentumCycleEnabled && momentumFollowsLRCycle))
                 .opacity(momentumCycleEnabled && momentumFollowsLRCycle ? 1.0 : 0.5)
                 VStack(alignment: .leading, spacing: 6) {
-                    PopoverRow(label: "Min μ:", text: $momentumCycleMinText, error: momentumCycleMinError, placeholder: "0.85") {
-                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumCycleMinText, fallback: 0.85, format: "%.2f"), in: 0.0...0.99, step: 0.01)
+                    PopoverRow(label: "Min μ:", text: $momentumCycleMinText, error: momentumCycleMinError, placeholder: MomentumCycleMin.declaredDefaultText(format: "%.2f")) {
+                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumCycleMinText, fallback: MomentumCycleMin.declaredDefault, format: "%.2f"), in: MomentumCycleMin.declaredClosedRange, step: 0.01)
                     }
-                    PopoverRow(label: "Max μ:", text: $momentumCycleMaxText, error: momentumCycleMaxError, placeholder: "0.95") {
-                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumCycleMaxText, fallback: 0.95, format: "%.2f"), in: 0.0...0.99, step: 0.01)
+                    PopoverRow(label: "Max μ:", text: $momentumCycleMaxText, error: momentumCycleMaxError, placeholder: MomentumCycleMax.declaredDefaultText(format: "%.2f")) {
+                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumCycleMaxText, fallback: MomentumCycleMax.declaredDefault, format: "%.2f"), in: MomentumCycleMax.declaredClosedRange, step: 0.01)
                     }
-                    PopoverRow(label: "Period (steps):", text: $momentumCyclePeriodText, error: momentumCyclePeriodError, placeholder: "2000") {
+                    PopoverRow(label: "Period (steps):", text: $momentumCyclePeriodText, error: momentumCyclePeriodError, placeholder: MomentumCyclePeriodSteps.declaredDefaultText) {
                         Stepper(
                             "",
-                            onIncrement: { stepPeriodText($momentumCyclePeriodText, up: true) },
-                            onDecrement: { stepPeriodText($momentumCyclePeriodText, up: false) }
+                            onIncrement: { stepPeriodText($momentumCyclePeriodText, up: true, key: MomentumCyclePeriodSteps.self) },
+                            onDecrement: { stepPeriodText($momentumCyclePeriodText, up: false, key: MomentumCyclePeriodSteps.self) }
                         )
                     }
-                    PopoverRow(label: "Cycles (0=∞):", text: $momentumCycleCountText, error: momentumCycleCountError, placeholder: "0") {
-                        Stepper("", value: PopoverBindings.intBinding(text: $momentumCycleCountText, fallback: 0), in: 0...1_000_000, step: 1)
+                    PopoverRow(label: "Cycles (0=∞):", text: $momentumCycleCountText, error: momentumCycleCountError, placeholder: MomentumCycleCount.declaredDefaultText) {
+                        Stepper("", value: PopoverBindings.intBinding(text: $momentumCycleCountText, fallback: MomentumCycleCount.declaredDefault), in: MomentumCycleCount.declaredClosedRange, step: 1)
                     }
                     HStack(spacing: 8) {
                         Text("").frame(width: 160, alignment: .trailing)
@@ -740,30 +740,48 @@ private struct CyclingTab: View {
         .padding(.vertical, 4)
     }
 
-    /// Multiply the edit text by `factor`, clamp to the LR parameter range
-    /// `[1e-7, 1.0]`, and re-format. Half-decade (×√10) ladder matching the
-    /// Optimizer tab's base-LR stepper — a linear step is unusable across
-    /// this many decades. The actual write to `trainingParams` still happens
-    /// on Save; this only nudges the displayed text.
-    private func stepLogText(_ text: Binding<String>, factor: Double, fallback: Double) {
-        let current = Double(text.wrappedValue.trimmingCharacters(in: .whitespaces)) ?? fallback
-        let next = min(1.0, max(1e-7, current * factor))
+    /// Multiply the edit text by `factor`, snap into `key`'s declared range,
+    /// and re-format. Half-decade (×√10) ladder matching the Optimizer tab's
+    /// base-LR stepper — a linear step is unusable across this many decades.
+    /// Text that does not parse steps from the key's declared default. The
+    /// actual write to `trainingParams` still happens on Save; this only
+    /// nudges the displayed text.
+    private func stepLogText<Key: TrainingParameterKey>(
+        _ text: Binding<String>,
+        factor: Double,
+        key: Key.Type
+    ) where Key.Value == Double {
+        let current = Double(text.wrappedValue.trimmingCharacters(in: .whitespaces)) ?? Key.declaredDefault
+        let next = Key.snappedToDeclaredRange(current * factor)
         text.wrappedValue = String(format: "%.2e", next)
     }
 
     /// Multiply / divide the decay-horizon edit text by 2, within the
-    /// parameter's range. Zero (decay off) steps up to one; stepping down
-    /// from one lands on zero, so "off" is reachable from the stepper.
+    /// parameter's declared range. Zero (decay off) steps up to one;
+    /// stepping down from one lands on zero, so "off" is reachable from the
+    /// stepper. Text that does not parse steps from the declared default.
     private func stepHorizonText(_ text: Binding<String>, up: Bool) {
-        let current = Int(text.wrappedValue.trimmingCharacters(in: .whitespaces)) ?? 1_000_000
-        let next = up ? min(1_000_000_000, max(1, current * 2)) : max(0, current / 2)
+        let current = Int(text.wrappedValue.trimmingCharacters(in: .whitespaces))
+            ?? LRCycleDecayHorizonSteps.declaredDefault
+        let range = LRCycleDecayHorizonSteps.declaredClosedRange
+        let next = up
+            ? min(range.upperBound, max(1, current * 2))
+            : max(range.lowerBound, current / 2)
         text.wrappedValue = String(next)
     }
 
-    /// Multiply / divide the period edit text by 2, clamped to `[1, 1e7]`.
-    private func stepPeriodText(_ text: Binding<String>, up: Bool) {
-        let current = Int(text.wrappedValue.trimmingCharacters(in: .whitespaces)) ?? 2000
-        let next = up ? min(10_000_000, max(1, current * 2)) : max(1, current / 2)
+    /// Multiply / divide a period edit text by 2, clamped to `key`'s declared
+    /// range. Text that does not parse steps from the key's declared default.
+    private func stepPeriodText<Key: TrainingParameterKey>(
+        _ text: Binding<String>,
+        up: Bool,
+        key: Key.Type
+    ) where Key.Value == Int {
+        let current = Int(text.wrappedValue.trimmingCharacters(in: .whitespaces)) ?? Key.declaredDefault
+        let range = Key.declaredClosedRange
+        let next = up
+            ? min(range.upperBound, max(range.lowerBound, current * 2))
+            : max(range.lowerBound, current / 2)
         text.wrappedValue = String(next)
     }
 }
@@ -816,7 +834,7 @@ private struct OptimizerTab: View {
                     label: "LR:",
                     text: $lrText,
                     error: lrError,
-                    placeholder: "5.00e-05"
+                    placeholder: LearningRate.declaredDefaultText(format: "%.2e")
                 ) {
                     // Half-decade (×√10 ≈ ×3.162) ladder: two
                     // clicks span one order of magnitude. Lets the
@@ -838,12 +856,12 @@ private struct OptimizerTab: View {
                         label: "Warm-up steps:",
                         text: $warmupText,
                         error: warmupError,
-                        placeholder: "100"
+                        placeholder: LRWarmupSteps.declaredDefaultText
                     ) {
                         Stepper(
                             "",
-                            value: PopoverBindings.intBinding(text: $warmupText, fallback: 100),
-                            in: 0...100_000,
+                            value: PopoverBindings.intBinding(text: $warmupText, fallback: LRWarmupSteps.declaredDefault),
+                            in: LRWarmupSteps.declaredClosedRange,
                             step: 100
                         )
                     }
@@ -851,16 +869,16 @@ private struct OptimizerTab: View {
                         label: "Momentum:",
                         text: $momentumText,
                         error: momentumError,
-                        placeholder: "0.000"
+                        placeholder: MomentumCoeff.declaredDefaultText(format: "%.3f")
                     ) {
                         Stepper(
                             "",
                             value: PopoverBindings.doubleBinding(
                                 text: $momentumText,
-                                fallback: 0.0,
+                                fallback: MomentumCoeff.declaredDefault,
                                 format: "%.3f"
                             ),
-                            in: 0.0...0.99,
+                            in: MomentumCoeff.declaredClosedRange,
                             step: 0.05
                         )
                     }
@@ -895,16 +913,16 @@ private struct OptimizerTab: View {
                     label: "Entropy reg. bonus:",
                     text: $entropyText,
                     error: entropyError,
-                    placeholder: "1.00e-03"
+                    placeholder: EntropyBonus.declaredDefaultText(format: "%.2e")
                 ) {
                     Stepper(
                         "",
                         value: PopoverBindings.doubleBinding(
                             text: $entropyText,
-                            fallback: 1e-3,
+                            fallback: EntropyBonus.declaredDefault,
                             format: "%.2e"
                         ),
-                        in: 0.0...0.1,
+                        in: EntropyBonus.declaredClosedRange,
                         step: 1e-3
                     )
                 }
@@ -913,16 +931,16 @@ private struct OptimizerTab: View {
                         label: "Illegal mass penalty:",
                         text: $illegalMassWeightText,
                         error: illegalMassWeightError,
-                        placeholder: "1.00"
+                        placeholder: IllegalMassWeight.declaredDefaultText(format: "%.2f")
                     ) {
                         Stepper(
                             "",
                             value: PopoverBindings.doubleBinding(
                                 text: $illegalMassWeightText,
-                                fallback: 1.0,
+                                fallback: IllegalMassWeight.declaredDefault,
                                 format: "%.2f"
                             ),
-                            in: 0.0...100.0,
+                            in: IllegalMassWeight.declaredClosedRange,
                             step: 0.5
                         )
                     }
@@ -930,16 +948,16 @@ private struct OptimizerTab: View {
                         label: "Clip:",
                         text: $gradClipText,
                         error: gradClipError,
-                        placeholder: "30.0"
+                        placeholder: GradClipMaxNorm.declaredDefaultText(format: "%.1f")
                     ) {
                         Stepper(
                             "",
                             value: PopoverBindings.doubleBinding(
                                 text: $gradClipText,
-                                fallback: 30.0,
+                                fallback: GradClipMaxNorm.declaredDefault,
                                 format: "%.1f"
                             ),
-                            in: 0.1...1000.0,
+                            in: GradClipMaxNorm.declaredClosedRange,
                             step: 1.0
                         )
                     }
@@ -947,16 +965,16 @@ private struct OptimizerTab: View {
                         label: "Decay:",
                         text: $weightDecayText,
                         error: weightDecayError,
-                        placeholder: "1.00e-04"
+                        placeholder: WeightDecay.declaredDefaultText(format: "%.2e")
                     ) {
                         Stepper(
                             "",
                             value: PopoverBindings.doubleBinding(
                                 text: $weightDecayText,
-                                fallback: 1e-4,
+                                fallback: WeightDecay.declaredDefault,
                                 format: "%.2e"
                             ),
-                            in: 0.0...0.1,
+                            in: WeightDecay.declaredClosedRange,
                             step: 1e-4
                         )
                     }
@@ -964,16 +982,16 @@ private struct OptimizerTab: View {
                         label: "Dropout rate:",
                         text: $dropoutRateText,
                         error: dropoutRateError,
-                        placeholder: "0.00"
+                        placeholder: DropoutRate.declaredDefaultText(format: "%.2f")
                     ) {
                         Stepper(
                             "",
                             value: PopoverBindings.doubleBinding(
                                 text: $dropoutRateText,
-                                fallback: 0.0,
+                                fallback: DropoutRate.declaredDefault,
                                 format: "%.2f"
                             ),
-                            in: 0.0...0.95,
+                            in: DropoutRate.declaredClosedRange,
                             step: 0.05
                         )
                     }
@@ -981,16 +999,16 @@ private struct OptimizerTab: View {
                         label: "Policy loss weight:",
                         text: $policyLossWeightText,
                         error: policyLossWeightError,
-                        placeholder: "1.00"
+                        placeholder: PolicyLossWeight.declaredDefaultText(format: "%.2f")
                     ) {
                         Stepper(
                             "",
                             value: PopoverBindings.doubleBinding(
                                 text: $policyLossWeightText,
-                                fallback: 1.0,
+                                fallback: PolicyLossWeight.declaredDefault,
                                 format: "%.2f"
                             ),
-                            in: 0.0...20.0,
+                            in: PolicyLossWeight.declaredClosedRange,
                             step: 0.5
                         )
                     }
@@ -998,16 +1016,16 @@ private struct OptimizerTab: View {
                         label: "Value loss weight:",
                         text: $valueLossWeightText,
                         error: valueLossWeightError,
-                        placeholder: "1.00"
+                        placeholder: ValueLossWeight.declaredDefaultText(format: "%.2f")
                     ) {
                         Stepper(
                             "",
                             value: PopoverBindings.doubleBinding(
                                 text: $valueLossWeightText,
-                                fallback: 1.0,
+                                fallback: ValueLossWeight.declaredDefault,
                                 format: "%.2f"
                             ),
-                            in: 0.0...20.0,
+                            in: ValueLossWeight.declaredClosedRange,
                             step: 0.5
                         )
                     }
@@ -1015,7 +1033,7 @@ private struct OptimizerTab: View {
                         label: "Value label smoothing:",
                         text: $valueLabelSmoothingText,
                         error: valueLabelSmoothingError,
-                        placeholder: "0.000",
+                        placeholder: ValueLabelSmoothingEpsilon.declaredDefaultText(format: "%.3f"),
                         hint: "ε (W/D/L CE)",
                         info: { ValueLabelSmoothingInfoButton() }
                     ) {
@@ -1023,10 +1041,10 @@ private struct OptimizerTab: View {
                             "",
                             value: PopoverBindings.doubleBinding(
                                 text: $valueLabelSmoothingText,
-                                fallback: 0.0,
+                                fallback: ValueLabelSmoothingEpsilon.declaredDefault,
                                 format: "%.3f"
                             ),
-                            in: 0.0...0.5,
+                            in: ValueLabelSmoothingEpsilon.declaredClosedRange,
                             step: 0.05
                         )
                     }
@@ -1041,16 +1059,16 @@ private struct OptimizerTab: View {
                 label: "Draw penalty:",
                 text: $drawPenaltyText,
                 error: drawPenaltyError,
-                placeholder: "0.100"
+                placeholder: DrawPenalty.declaredDefaultText(format: "%.3f")
             ) {
                 Stepper(
                     "",
                     value: PopoverBindings.doubleBinding(
                         text: $drawPenaltyText,
-                        fallback: 0.1,
+                        fallback: DrawPenalty.declaredDefault,
                         format: "%.3f"
                     ),
-                    in: 0.0...1.0,
+                    in: DrawPenalty.declaredClosedRange,
                     step: 0.05
                 )
             }
@@ -1058,11 +1076,11 @@ private struct OptimizerTab: View {
                 label: "Training batch size:",
                 text: $trainingBatchSizeText,
                 error: trainingBatchSizeError,
-                placeholder: "4096"
+                placeholder: TrainingBatchSize.declaredDefaultText
             ) {
                 Stepper(
                     "",
-                    value: PopoverBindings.intBinding(text: $trainingBatchSizeText, fallback: 4096),
+                    value: PopoverBindings.intBinding(text: $trainingBatchSizeText, fallback: TrainingBatchSize.declaredDefault),
                     in: 32...32_768,
                     step: 256
                 )
@@ -1071,13 +1089,14 @@ private struct OptimizerTab: View {
     }
 
     /// Multiply the current LR text by `factor` (`√10` for `+`,
-    /// `1/√10` for `-`), clamp into `TrainingParameters` range
-    /// `[1e-7, 1.0]`, and write back. Half-decade log ladder so
-    /// two presses move exactly one order of magnitude.
+    /// `1/√10` for `-`), snap into the learning rate's declared range,
+    /// and write back. Half-decade log ladder so two presses move
+    /// exactly one order of magnitude. Text that does not parse steps
+    /// from the declared default.
     private func stepLRBy(factor: Double) {
         let trimmed = lrText.trimmingCharacters(in: .whitespaces)
-        let current = Double(trimmed) ?? 1e-3
-        let next = max(1e-7, min(1.0, current * factor))
+        let current = Double(trimmed) ?? LearningRate.declaredDefault
+        let next = LearningRate.snappedToDeclaredRange(current * factor)
         lrText = String(format: "%.2e", next)
     }
 
@@ -1113,13 +1132,16 @@ private struct SessionsTab: View {
                     label: "Interval (min):",
                     text: $periodicAutosaveIntervalMinutesText,
                     error: periodicAutosaveIntervalError,
-                    placeholder: "240",
+                    placeholder: String(TrainingSettingsPopoverModel.periodicAutosaveIntervalDefaultMinutes),
                     hint: intervalHint
                 ) {
                     Stepper(
                         "",
-                        value: PopoverBindings.intBinding(text: $periodicAutosaveIntervalMinutesText, fallback: 240),
-                        in: 1...10_080,
+                        value: PopoverBindings.intBinding(
+                            text: $periodicAutosaveIntervalMinutesText,
+                            fallback: TrainingSettingsPopoverModel.periodicAutosaveIntervalDefaultMinutes
+                        ),
+                        in: TrainingSettingsPopoverModel.periodicAutosaveIntervalMinutesRange,
                         step: 30
                     )
                 }
@@ -1127,13 +1149,16 @@ private struct SessionsTab: View {
                     label: "Max autosaves kept:",
                     text: $maxPeriodicAutosavesKeptText,
                     error: maxPeriodicAutosavesKeptError,
-                    placeholder: "3",
+                    placeholder: MaxPeriodicAutosavesKept.declaredDefaultText,
                     hint: keptHint
                 ) {
                     Stepper(
                         "",
-                        value: PopoverBindings.intBinding(text: $maxPeriodicAutosavesKeptText, fallback: 3),
-                        in: 0...10_000,
+                        value: PopoverBindings.intBinding(
+                            text: $maxPeriodicAutosavesKeptText,
+                            fallback: MaxPeriodicAutosavesKept.declaredDefault
+                        ),
+                        in: MaxPeriodicAutosavesKept.declaredClosedRange,
                         step: 1
                     )
                 }
@@ -1148,13 +1173,16 @@ private struct SessionsTab: View {
                     label: "KL probe every N steps:",
                     text: $klProbeIntervalText,
                     error: klProbeIntervalError,
-                    placeholder: "0",
+                    placeholder: KLProbeInterval.declaredDefaultText,
                     hint: klProbeHint
                 ) {
                     Stepper(
                         "",
-                        value: PopoverBindings.intBinding(text: $klProbeIntervalText, fallback: 0),
-                        in: 0...10_000,
+                        value: PopoverBindings.intBinding(
+                            text: $klProbeIntervalText,
+                            fallback: KLProbeInterval.declaredDefault
+                        ),
+                        in: KLProbeInterval.declaredClosedRange,
                         step: 5
                     )
                 }
@@ -1272,11 +1300,14 @@ private struct SelfPlayTab: View {
                     label: "Concurrency:",
                     text: $selfPlayConcurrencyText,
                     error: selfPlayConcurrencyError,
-                    placeholder: "8"
+                    placeholder: SelfPlayConcurrency.declaredDefaultText
                 ) {
                     Stepper(
                         "",
-                        value: PopoverBindings.intBinding(text: $selfPlayConcurrencyText, fallback: 8),
+                        value: PopoverBindings.intBinding(
+                            text: $selfPlayConcurrencyText,
+                            fallback: SelfPlayConcurrency.declaredDefault
+                        ),
                         in: 1...256,
                         step: 1
                     )
@@ -1296,14 +1327,14 @@ private struct SelfPlayTab: View {
                     label: "Start of game:",
                     text: $selfPlayStartTauText,
                     error: selfPlayStartTauError,
-                    placeholder: "1.00",
+                    placeholder: SelfPlayStartTau.declaredDefaultText(format: "%.2f"),
                     hint: nil
                 ) {
                     Stepper(
                         "",
                         value: PopoverBindings.doubleBinding(
                             text: $selfPlayStartTauText,
-                            fallback: 1.0,
+                            fallback: SelfPlayStartTau.declaredDefault,
                             format: "%.2f"
                         ),
                         in: SelfPlayStartTau.declaredClosedRange,
@@ -1314,23 +1345,23 @@ private struct SelfPlayTab: View {
                     label: "Decay:",
                     text: $selfPlayDecayPerPlyText,
                     error: selfPlayDecayPerPlyError,
-                    placeholder: "0.030",
+                    placeholder: SelfPlayTauDecayPerPly.declaredDefaultText(format: "%.3f"),
                     hint: "per ply"
                 ) {
                     // Finer step than the other τ fields — at the
                     // 0.0–1.0 range, 0.05/ply would decay a starting τ
                     // of 1.0 to floor in 20 plies and miss anything in
-                    // between. 0.005 lets the user dial in the slow
-                    // decay (~0.007 is the current working value)
-                    // without round-tripping through the text field.
+                    // between. 0.005 lets the user dial in a slow
+                    // decay without round-tripping through the text
+                    // field.
                     Stepper(
                         "",
                         value: PopoverBindings.doubleBinding(
                             text: $selfPlayDecayPerPlyText,
-                            fallback: 0.03,
+                            fallback: SelfPlayTauDecayPerPly.declaredDefault,
                             format: "%.3f"
                         ),
-                        in: 0.0...1.0,
+                        in: SelfPlayTauDecayPerPly.declaredClosedRange,
                         step: 0.005
                     )
                 }
@@ -1338,14 +1369,14 @@ private struct SelfPlayTab: View {
                     label: "Floor:",
                     text: $selfPlayFloorTauText,
                     error: selfPlayFloorTauError,
-                    placeholder: "0.40",
+                    placeholder: SelfPlayTargetTau.declaredDefaultText(format: "%.2f"),
                     hint: tauReachedAtHint
                 ) {
                     Stepper(
                         "",
                         value: PopoverBindings.doubleBinding(
                             text: $selfPlayFloorTauText,
-                            fallback: 0.40,
+                            fallback: SelfPlayTargetTau.declaredDefault,
                             format: "%.2f"
                         ),
                         in: SelfPlayTargetTau.declaredClosedRange,
@@ -1400,25 +1431,25 @@ private struct SelfPlayTab: View {
                     label: "Max plies per game:",
                     text: $selfPlayMaxPliesPerGameText,
                     error: selfPlayMaxPliesPerGameError,
-                    placeholder: "150",
+                    placeholder: SelfPlayMaxPliesPerGame.declaredDefaultText,
                     hint: maxPliesHint
                 ) {
                     Stepper(
                         "",
                         value: liveIntBinding(
                             text: $selfPlayMaxPliesPerGameText,
-                            fallback: 150,
+                            fallback: SelfPlayMaxPliesPerGame.declaredDefault,
                             onChange: onLiveMaxPliesPerGameChange
                         ),
-                        in: 25...500,
+                        in: SelfPlayMaxPliesPerGame.declaredClosedRange,
                         step: 25
                     )
                 }
                 .onChange(of: selfPlayMaxPliesPerGameText) { _, newValue in
                     let trimmed = newValue.trimmingCharacters(in: .whitespaces)
                     if trimmed.isEmpty {
-                        onLiveMaxPliesPerGameChange(150)
-                    } else if let n = Int(trimmed), n >= 25, n <= 500 {
+                        onLiveMaxPliesPerGameChange(SelfPlayMaxPliesPerGame.declaredDefault)
+                    } else if let n = SelfPlayMaxPliesPerGame.parsedInDeclaredRange(trimmed) {
                         onLiveMaxPliesPerGameChange(n)
                     }
                 }
@@ -1426,7 +1457,7 @@ private struct SelfPlayTab: View {
                     label: "Draw keep fraction:",
                     text: $selfPlayDrawKeepFractionText,
                     error: selfPlayDrawKeepFractionError,
-                    placeholder: "1.00",
+                    placeholder: SelfPlayDrawKeepFraction.declaredDefaultText(format: "%.2f"),
                     hint: drawKeepHint
                 ) {
                     // Live-propagated stepper: each click flows through
@@ -1439,11 +1470,11 @@ private struct SelfPlayTab: View {
                         "",
                         value: liveDoubleBinding(
                             text: $selfPlayDrawKeepFractionText,
-                            fallback: 1.0,
+                            fallback: SelfPlayDrawKeepFraction.declaredDefault,
                             format: "%.2f",
                             onChange: onLiveSelfPlayDrawKeepFractionChange
                         ),
-                        in: 0.0...1.0,
+                        in: SelfPlayDrawKeepFraction.declaredClosedRange,
                         step: 0.05
                     )
                 }
@@ -1451,9 +1482,8 @@ private struct SelfPlayTab: View {
                     drawKeepHint = Self.makeDrawKeepHint(from: newValue)
                     let trimmed = newValue.trimmingCharacters(in: .whitespaces)
                     if trimmed.isEmpty {
-                        onLiveSelfPlayDrawKeepFractionChange(1.0)
-                    } else if let v = Double(trimmed),
-                              v >= 0.0, v <= 1.0, v.isFinite {
+                        onLiveSelfPlayDrawKeepFractionChange(SelfPlayDrawKeepFraction.declaredDefault)
+                    } else if let v = SelfPlayDrawKeepFraction.parsedInDeclaredRange(trimmed) {
                         onLiveSelfPlayDrawKeepFractionChange(v)
                     }
                 }
@@ -1467,26 +1497,25 @@ private struct SelfPlayTab: View {
                     label: "Draw-watch threshold:",
                     text: $drawWatchPDrawThresholdText,
                     error: drawWatchPDrawThresholdError,
-                    placeholder: "0.95"
+                    placeholder: DrawWatchPDrawThreshold.declaredDefaultText(format: "%.3f")
                 ) {
                     Stepper(
                         "",
                         value: liveDoubleBinding(
                             text: $drawWatchPDrawThresholdText,
-                            fallback: 0.95,
-                            format: "%.2f",
+                            fallback: DrawWatchPDrawThreshold.declaredDefault,
+                            format: "%.3f",
                             onChange: onLiveDrawWatchPDrawThresholdChange
                         ),
-                        in: 0.5...1.0,
-                        step: 0.01
+                        in: DrawWatchPDrawThreshold.declaredClosedRange,
+                        step: 0.005
                     )
                 }
                 .onChange(of: drawWatchPDrawThresholdText) { _, newValue in
                     let trimmed = newValue.trimmingCharacters(in: .whitespaces)
                     if trimmed.isEmpty {
-                        onLiveDrawWatchPDrawThresholdChange(0.95)
-                    } else if let v = Double(trimmed),
-                              v >= 0.5, v <= 1.0, v.isFinite {
+                        onLiveDrawWatchPDrawThresholdChange(DrawWatchPDrawThreshold.declaredDefault)
+                    } else if let v = DrawWatchPDrawThreshold.parsedInDeclaredRange(trimmed) {
                         onLiveDrawWatchPDrawThresholdChange(v)
                     }
                 }
@@ -1518,24 +1547,24 @@ private struct SelfPlayTab: View {
                     label: "Draw-watch streak N:",
                     text: $drawWatchStreakLengthText,
                     error: drawWatchStreakLengthError,
-                    placeholder: "8"
+                    placeholder: DrawWatchStreakLength.declaredDefaultText
                 ) {
                     Stepper(
                         "",
                         value: liveIntBinding(
                             text: $drawWatchStreakLengthText,
-                            fallback: 8,
+                            fallback: DrawWatchStreakLength.declaredDefault,
                             onChange: onLiveDrawWatchStreakLengthChange
                         ),
-                        in: 2...32,
+                        in: DrawWatchStreakLength.declaredClosedRange,
                         step: 1
                     )
                 }
                 .onChange(of: drawWatchStreakLengthText) { _, newValue in
                     let trimmed = newValue.trimmingCharacters(in: .whitespaces)
                     if trimmed.isEmpty {
-                        onLiveDrawWatchStreakLengthChange(8)
-                    } else if let n = Int(trimmed), n >= 2, n <= 32 {
+                        onLiveDrawWatchStreakLengthChange(DrawWatchStreakLength.declaredDefault)
+                    } else if let n = DrawWatchStreakLength.parsedInDeclaredRange(trimmed) {
                         onLiveDrawWatchStreakLengthChange(n)
                     }
                 }
@@ -1889,16 +1918,16 @@ private struct ReplayTab: View {
                     label: "Capacity (plies):",
                     text: $replayBufferCapacityText,
                     error: replayBufferCapacityError,
-                    placeholder: "1000000",
+                    placeholder: ReplayBufferCapacity.declaredDefaultText,
                     hint: capacityGBHint
                 ) {
                     Stepper(
                         "",
                         value: PopoverBindings.intBinding(
                             text: $replayBufferCapacityText,
-                            fallback: 1_000_000
+                            fallback: ReplayBufferCapacity.declaredDefault
                         ),
-                        in: 1024...100_000_000,
+                        in: ReplayBufferCapacity.declaredClosedRange,
                         step: 100_000
                     )
                 }
@@ -1906,16 +1935,16 @@ private struct ReplayTab: View {
                     label: "Pre-train fill:",
                     text: $replayBufferMinPositionsText,
                     error: replayBufferMinPositionsError,
-                    placeholder: "50000",
+                    placeholder: ReplayBufferMinPositionsBeforeTraining.declaredDefaultText,
                     hint: preTrainFillPctHint
                 ) {
                     Stepper(
                         "",
                         value: PopoverBindings.intBinding(
                             text: $replayBufferMinPositionsText,
-                            fallback: 50_000
+                            fallback: ReplayBufferMinPositionsBeforeTraining.declaredDefault
                         ),
-                        in: 0...100_000_000,
+                        in: ReplayBufferMinPositionsBeforeTraining.declaredClosedRange,
                         step: 10_000
                     )
                 }
@@ -1944,14 +1973,14 @@ private struct ReplayTab: View {
                     label: "Target ratio:",
                     text: $replayRatioTargetText,
                     error: replayRatioTargetError,
-                    placeholder: "1.10",
+                    placeholder: ReplayRatioTarget.declaredDefaultText(format: "%.2f"),
                     hint: nil
                 ) {
                     Stepper(
                         "",
                         value: liveDoubleBinding(
                             text: $replayRatioTargetText,
-                            fallback: 1.10,
+                            fallback: ReplayRatioTarget.declaredDefault,
                             format: "%.2f",
                             onChange: onLiveReplayRatioTargetChange
                         ),
@@ -1979,14 +2008,14 @@ private struct ReplayTab: View {
                         label: "Self-play delay:",
                         text: $replaySelfPlayDelayText,
                         error: replaySelfPlayDelayError,
-                        placeholder: "0",
+                        placeholder: SelfPlayDelayMs.declaredDefaultText,
                         hint: "ms"
                     ) {
                         Stepper(
                             "",
                             value: liveIntBinding(
                                 text: $replaySelfPlayDelayText,
-                                fallback: 0,
+                                fallback: SelfPlayDelayMs.declaredDefault,
                                 onChange: onLiveSelfPlayDelayChange
                             ),
                             in: 0...3000,
@@ -2003,23 +2032,22 @@ private struct ReplayTab: View {
                         label: "Train step delay:",
                         text: $replayTrainingStepDelayText,
                         error: replayTrainingStepDelayError,
-                        placeholder: "0",
+                        placeholder: TrainingStepDelayMs.declaredDefaultText,
                         hint: "ms"
                     ) {
                         Stepper(
                             "",
                             value: liveIntBinding(
                                 text: $replayTrainingStepDelayText,
-                                fallback: 0,
+                                fallback: TrainingStepDelayMs.declaredDefault,
                                 onChange: onLiveTrainingStepDelayChange
                             ),
-                            in: 0...10_000,
+                            in: TrainingStepDelayMs.declaredClosedRange,
                             step: 5
                         )
                     }
                     .onChange(of: replayTrainingStepDelayText) { _, newValue in
-                        if let v = Int(newValue.trimmingCharacters(in: .whitespaces)),
-                           v >= 0, v <= 10_000 {
+                        if let v = TrainingStepDelayMs.parsedInDeclaredRange(newValue) {
                             onLiveTrainingStepDelayChange(v)
                         }
                     }
@@ -2136,17 +2164,17 @@ private struct ReplayTab: View {
                     label: "Max plies per game:",
                     text: $maxPliesFromAnyOneGameText,
                     error: maxPliesFromAnyOneGameError,
-                    placeholder: "10",
+                    placeholder: MaxPliesFromAnyOneGame.declaredDefaultText,
                     hint: "plies from any 1 game"
                 ) {
                     Stepper(
                         "",
                         value: liveIntBinding(
                             text: $maxPliesFromAnyOneGameText,
-                            fallback: 10,
+                            fallback: MaxPliesFromAnyOneGame.declaredDefault,
                             onChange: onLiveMaxPliesFromAnyOneGameChange
                         ),
-                        in: 1...400,
+                        in: MaxPliesFromAnyOneGame.declaredClosedRange,
                         step: 1
                     )
                 }
@@ -2161,8 +2189,8 @@ private struct ReplayTab: View {
                     // matches what's about to be saved.
                     let trimmed = newValue.trimmingCharacters(in: .whitespaces)
                     if trimmed.isEmpty {
-                        onLiveMaxPliesFromAnyOneGameChange(10)
-                    } else if let v = Int(trimmed), v >= 1, v <= 400 {
+                        onLiveMaxPliesFromAnyOneGameChange(MaxPliesFromAnyOneGame.declaredDefault)
+                    } else if let v = MaxPliesFromAnyOneGame.parsedInDeclaredRange(trimmed) {
                         onLiveMaxPliesFromAnyOneGameChange(v)
                     }
                 }
@@ -2170,17 +2198,17 @@ private struct ReplayTab: View {
                     label: "Target avg game plies:",
                     text: $targetSampledGameLengthPliesText,
                     error: targetSampledGameLengthPliesError,
-                    placeholder: "0",
+                    placeholder: TargetSampledGameLengthPlies.declaredDefaultText,
                     hint: "plies"
                 ) {
                     Stepper(
                         "",
                         value: liveIntBinding(
                             text: $targetSampledGameLengthPliesText,
-                            fallback: 0,
+                            fallback: TargetSampledGameLengthPlies.declaredDefault,
                             onChange: onLiveTargetSampledGameLengthPliesChange
                         ),
-                        in: 0...10_000,
+                        in: TargetSampledGameLengthPlies.declaredClosedRange,
                         step: 10
                     )
                 }
@@ -2189,8 +2217,8 @@ private struct ReplayTab: View {
                 .onChange(of: targetSampledGameLengthPliesText) { _, newValue in
                     let trimmed = newValue.trimmingCharacters(in: .whitespaces)
                     if trimmed.isEmpty {
-                        onLiveTargetSampledGameLengthPliesChange(0)
-                    } else if let v = Int(trimmed), v >= 0, v <= 10_000 {
+                        onLiveTargetSampledGameLengthPliesChange(TargetSampledGameLengthPlies.declaredDefault)
+                    } else if let v = TargetSampledGameLengthPlies.parsedInDeclaredRange(trimmed) {
                         onLiveTargetSampledGameLengthPliesChange(v)
                     }
                 }
@@ -2198,17 +2226,17 @@ private struct ReplayTab: View {
                     label: "Max draws % per batch:",
                     text: $maxDrawPercentPerBatchText,
                     error: maxDrawPercentPerBatchError,
-                    placeholder: "100",
+                    placeholder: MaxDrawPercentPerBatch.declaredDefaultText,
                     hint: maxDrawPercentHint
                 ) {
                     Stepper(
                         "",
                         value: liveIntBinding(
                             text: $maxDrawPercentPerBatchText,
-                            fallback: 100,
+                            fallback: MaxDrawPercentPerBatch.declaredDefault,
                             onChange: onLiveMaxDrawPercentPerBatchChange
                         ),
-                        in: 0...100,
+                        in: MaxDrawPercentPerBatch.declaredClosedRange,
                         step: 5
                     )
                 }
@@ -2217,8 +2245,8 @@ private struct ReplayTab: View {
                 .onChange(of: maxDrawPercentPerBatchText) { _, newValue in
                     let trimmed = newValue.trimmingCharacters(in: .whitespaces)
                     if trimmed.isEmpty {
-                        onLiveMaxDrawPercentPerBatchChange(100)
-                    } else if let v = Int(trimmed), v >= 0, v <= 100 {
+                        onLiveMaxDrawPercentPerBatchChange(MaxDrawPercentPerBatch.declaredDefault)
+                    } else if let v = MaxDrawPercentPerBatch.parsedInDeclaredRange(trimmed) {
                         onLiveMaxDrawPercentPerBatchChange(v)
                     }
                 }

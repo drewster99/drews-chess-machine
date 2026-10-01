@@ -46,7 +46,7 @@ struct ArenaPromotionCriterionSection: View {
                     label: "H₀ elo0:",
                     text: $model.sprtElo0Text,
                     error: model.sprtElo0Error,
-                    placeholder: "0",
+                    placeholder: model.sprtElo0Placeholder,
                     width: 80,
                     hint: "no improvement"
                 )
@@ -54,7 +54,7 @@ struct ArenaPromotionCriterionSection: View {
                     label: "H₁ elo1:",
                     text: $model.sprtElo1Text,
                     error: model.sprtElo1Error,
-                    placeholder: "10",
+                    placeholder: model.sprtElo1Placeholder,
                     width: 80,
                     hint: "smallest gain to detect"
                 )
@@ -62,21 +62,21 @@ struct ArenaPromotionCriterionSection: View {
                     label: "α (false promote):",
                     text: $model.sprtAlphaText,
                     error: model.sprtAlphaError,
-                    placeholder: "0.050",
+                    placeholder: ArenaSPRTAlpha.declaredDefaultText(format: "%.3f"),
                     width: 80
                 )
                 ArenaPopoverField(
                     label: "β (false reject):",
                     text: $model.sprtBetaText,
                     error: model.sprtBetaError,
-                    placeholder: "0.050",
+                    placeholder: ArenaSPRTBeta.declaredDefaultText(format: "%.3f"),
                     width: 80
                 )
                 ArenaPopoverField(
                     label: "Min games:",
                     text: $model.sprtMinGamesText,
                     error: model.sprtMinGamesError,
-                    placeholder: "32",
+                    placeholder: ArenaSPRTMinGames.declaredDefaultText,
                     width: 80,
                     hint: "before it may fire"
                 )
@@ -84,7 +84,7 @@ struct ArenaPromotionCriterionSection: View {
                     label: "Max games:",
                     text: $model.sprtMaxGamesText,
                     error: model.sprtMaxGamesError,
-                    placeholder: "20000",
+                    placeholder: ArenaSPRTMaxGames.declaredDefaultText,
                     width: 80,
                     hint: "0 = unbounded"
                 )

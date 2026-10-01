@@ -183,6 +183,34 @@ final class TrainingSettingsPopoverModel {
     private(set) var maxPeriodicAutosavesKeptError = false
     private(set) var klProbeIntervalError = false
 
+    /// The minutes ↔ seconds factor for the autosave-interval field, which
+    /// is edited in minutes while `periodic_autosave_interval_sec` stores
+    /// seconds.
+    private static let secondsPerMinute: Double = 60
+
+    /// Minutes shown in the autosave-interval field for a stored interval of
+    /// `seconds`, rounded to the nearest minute. The one seconds → minutes
+    /// conversion, shared by the seeded text, the placeholder and the
+    /// stepper's fallback so the three cannot disagree.
+    static func periodicAutosaveIntervalMinutes(fromSeconds seconds: Double) -> Int {
+        Int((seconds / secondsPerMinute).rounded())
+    }
+
+    /// The declared default interval, in the field's minutes.
+    static var periodicAutosaveIntervalDefaultMinutes: Int {
+        periodicAutosaveIntervalMinutes(fromSeconds: PeriodicAutosaveIntervalSec.declaredDefault)
+    }
+
+    /// The declared interval range, in whole minutes that stay inside it
+    /// (the lower bound rounds up, the upper bound rounds down), for the
+    /// field's stepper.
+    static var periodicAutosaveIntervalMinutesRange: ClosedRange<Int> {
+        let seconds = PeriodicAutosaveIntervalSec.declaredClosedRange
+        let lowestMinutes = Int((seconds.lowerBound / secondsPerMinute).rounded(.up))
+        let highestMinutes = Int((seconds.upperBound / secondsPerMinute).rounded(.down))
+        return lowestMinutes...highestMinutes
+    }
+
     // MARK: - Cancel stash (for the live-propagated replay-ratio fields)
 
     private var originalReplayRatioTarget: Double = 1.0
@@ -292,7 +320,7 @@ final class TrainingSettingsPopoverModel {
         selfPlayFloorTauText = String(format: "%.2f", p.selfPlayTargetTau)
         selfPlayDrawKeepFractionText = String(format: "%.2f", p.selfPlayDrawKeepFraction)
         selfPlayMaxPliesPerGameText = String(p.selfPlayMaxPliesPerGame)
-        drawWatchPDrawThresholdText = String(format: "%.2f", p.drawWatchPDrawThreshold)
+        drawWatchPDrawThresholdText = String(format: "%.3f", p.drawWatchPDrawThreshold)
         drawWatchTerminateGames = p.drawWatchTerminateGames
         drawWatchStreakLengthText = String(p.drawWatchStreakLength)
         // --- Replay tab ---
@@ -307,7 +335,9 @@ final class TrainingSettingsPopoverModel {
         maxDrawPercentPerBatchText = String(p.maxDrawPercentPerBatch)
         replayBufferStratifyByMaterial = p.replayBufferStratifyByMaterial
         // --- Sessions tab ---
-        periodicAutosaveIntervalMinutesText = String(Int((p.periodicAutosaveIntervalSec / 60.0).rounded()))
+        periodicAutosaveIntervalMinutesText = String(
+            Self.periodicAutosaveIntervalMinutes(fromSeconds: p.periodicAutosaveIntervalSec)
+        )
         maxPeriodicAutosavesKeptText = String(p.maxPeriodicAutosavesKept)
         klProbeIntervalText = String(p.klProbeInterval)
         // Stash pre-edit values for the four replay-ratio control fields. The
@@ -1215,9 +1245,9 @@ final class TrainingSettingsPopoverModel {
         // Commit-on-Save: the heartbeat re-anchors the running controller from
         // the new value, so no live trainer write is needed here.
         if let mins = Int(periodicAutosaveIntervalMinutesText.trimmingCharacters(in: .whitespaces)),
-           PeriodicAutosaveIntervalSec.isWithinDeclaration(Double(mins) * 60) {
+           PeriodicAutosaveIntervalSec.isWithinDeclaration(Double(mins) * Self.secondsPerMinute) {
             periodicAutosaveIntervalError = false
-            let secs = Double(mins) * 60
+            let secs = Double(mins) * Self.secondsPerMinute
             if abs(secs - p.periodicAutosaveIntervalSec) > 0.5 {
                 SessionLogger.shared.log(
                     "[PARAM] periodicAutosaveIntervalSec: \(Int(p.periodicAutosaveIntervalSec)) -> \(Int(secs))"

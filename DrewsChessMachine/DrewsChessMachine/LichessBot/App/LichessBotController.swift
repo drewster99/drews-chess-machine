@@ -351,7 +351,14 @@ final class LichessBotController {
         }
         let loadedSettings: LichessBotSettings
         do {
-            loadedSettings = try LichessBotSettingsStore.load(from: defaults)
+            let loaded = try LichessBotSettingsStore.loadReporting(from: defaults)
+            loadedSettings = loaded.settings
+            if !loaded.filledFromDefaults.isEmpty {
+                SessionLogger.shared.log("[LICHESS-BOT] settings: saved settings predate \(loaded.filledFromDefaults.count) field(s); using today's defaults for: \(loaded.filledFromDefaults.joined(separator: ", "))")
+            }
+            if !loaded.ignoredSavedKeys.isEmpty {
+                SessionLogger.shared.log("[LICHESS-BOT] settings: ignoring saved field(s) that no longer exist: \(loaded.ignoredSavedKeys.joined(separator: ", "))")
+            }
         } catch {
             loadedSettings = LichessBotSettings()
             settingsError = error.localizedDescription

@@ -103,14 +103,14 @@ struct ArenaSettingsPopover: View {
                     label: "Start of game:",
                     text: $model.tauStartText,
                     error: model.tauStartError,
-                    placeholder: "2.00",
+                    placeholder: ArenaStartTau.declaredDefaultText(format: "%.2f"),
                     width: 100
                 )
                 ArenaPopoverField(
                     label: "Decay:",
                     text: $model.tauDecayText,
                     error: model.tauDecayError,
-                    placeholder: "0.015",
+                    placeholder: ArenaTauDecayPerPly.declaredDefaultText(format: "%.3f"),
                     width: 100,
                     hint: "per ply"
                 )
@@ -118,7 +118,7 @@ struct ArenaSettingsPopover: View {
                     label: "Floor:",
                     text: $model.tauFloorText,
                     error: model.tauFloorError,
-                    placeholder: "0.50",
+                    placeholder: ArenaTargetTau.declaredDefaultText(format: "%.2f"),
                     width: 100,
                     hint: model.tauReachedAtHint
                 )
@@ -147,7 +147,7 @@ struct ArenaSettingsPopover: View {
                     label: "# of games:",
                     text: $model.gamesText,
                     error: model.gamesError,
-                    placeholder: "200",
+                    placeholder: ArenaGamesPerTournament.declaredDefaultText,
                     width: 100
                 )
                 .disabled(model.promotionCriterion == .sprt)
@@ -156,14 +156,14 @@ struct ArenaSettingsPopover: View {
                     label: "Concurrency:",
                     text: $model.concurrencyText,
                     error: model.concurrencyError,
-                    placeholder: "200",
+                    placeholder: ArenaConcurrency.declaredDefaultText,
                     width: 100
                 )
                 ArenaPopoverField(
                     label: "Interval:",
                     text: $model.intervalText,
                     error: model.intervalError,
-                    placeholder: "15m",
+                    placeholder: model.intervalPlaceholder,
                     width: 100,
                     hint: "(e.g. 15m, 500s, 7d, 90)"
                 )
@@ -175,7 +175,7 @@ struct ArenaSettingsPopover: View {
                     label: "Promote threshold:",
                     text: $model.promoteThresholdText,
                     error: model.promoteThresholdError,
-                    placeholder: "0.550",
+                    placeholder: ArenaPromoteThreshold.declaredDefaultText(format: "%.3f"),
                     width: 100,
                     hint: "(score in [0.5, 1.0])"
                 )

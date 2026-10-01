@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import Metal
 import os
 
 /// Cross-thread one-shot "please stop" flag for the replay loop. The SIGINT
@@ -95,14 +96,31 @@ struct CorpusReplayConfig: Sendable {
     /// JSON. Previously `--output` was parsed but reached only the self-play
     /// controller, so passing it here produced nothing at all.
     var outputURL: URL?
+
+    /// One training step to capture as an Xcode GPU trace (`.gputrace`) for
+    /// per-kernel profiling (`--gpu-capture-step` / `--gpu-capture-out`), or
+    /// nil. Diagnostics only: the capture slows that one step, and nothing
+    /// else about the run changes.
+    struct GPUCapture: Sendable {
+        /// 1-based number of the training step to capture (this run's steps).
+        var step: Int
+        var outputURL: URL
+    }
+    var gpuCapture: GPUCapture? = nil
 }
 
 enum CorpusReplayError: LocalizedError {
     case noGames
     case startModelTooSmall(have: Int, need: Int)
     case diskFullDuringSave(step: Int, what: String)
+    case gpuCaptureUnavailable
+    case gpuCaptureFailed(String)
     var errorDescription: String? {
         switch self {
+        case .gpuCaptureUnavailable:
+            return "GPU trace capture is not available in this process — launch with MTL_CAPTURE_ENABLED=1 in the environment"
+        case let .gpuCaptureFailed(detail):
+            return "GPU trace capture failed to start: \(detail)"
         case .noGames:
             return "No sealed shards found in the provided corpus path(s)"
         case let .startModelTooSmall(have, need):
@@ -124,6 +142,29 @@ enum CorpusReplayRunner {
         var positionsFed: Int
         var gamesFed: Int
         var epochs: Int
+    }
+
+    /// Start capturing every command buffer `device` runs into an Xcode GPU
+    /// trace document at `capture.outputURL`. Throws instead of training on
+    /// without the capture the operator asked for.
+    private static func beginGPUCapture(_ capture: CorpusReplayConfig.GPUCapture, device: MTLDevice) throws {
+        let manager = MTLCaptureManager.shared()
+        guard manager.supportsDestination(.gpuTraceDocument) else {
+            throw CorpusReplayError.gpuCaptureUnavailable
+        }
+        guard !FileManager.default.fileExists(atPath: capture.outputURL.path) else {
+            throw CorpusReplayError.gpuCaptureFailed("\(capture.outputURL.path) already exists")
+        }
+        let descriptor = MTLCaptureDescriptor()
+        descriptor.captureObject = device
+        descriptor.destination = .gpuTraceDocument
+        descriptor.outputURL = capture.outputURL
+        do {
+            try manager.startCapture(with: descriptor)
+        } catch {
+            throw CorpusReplayError.gpuCaptureFailed(error.localizedDescription)
+        }
+        emit("[REPLAY] GPU trace capture started for step \(capture.step) -> \(capture.outputURL.path)")
     }
 
     /// Write a line to BOTH the session log file and stdout. `SessionLogger.log`
@@ -461,6 +502,16 @@ enum CorpusReplayRunner {
         // the stats / KL-probe intervals. With both cycle flags off the cycle
         // is inert and the static LR and momentum apply, exactly as in the GUI.
         let trainer = try ChessTrainer(hyperparameters: trainerHyperparameters, arch: arch)
+        // A requested GPU capture must be possible before any buffer fill or
+        // training is spent on the run (the capture itself starts at its step).
+        if let capture = config.gpuCapture {
+            guard MTLCaptureManager.shared().supportsDestination(.gpuTraceDocument) else {
+                throw CorpusReplayError.gpuCaptureUnavailable
+            }
+            guard !FileManager.default.fileExists(atPath: capture.outputURL.path) else {
+                throw CorpusReplayError.gpuCaptureFailed("\(capture.outputURL.path) already exists")
+            }
+        }
         let buffer = ReplayBuffer(capacity: p.replayBufferCapacity, inputEncoding: net.inputEncoding)
         let feeder = CorpusReplayFeeder(network: net, buffer: buffer)
 
@@ -783,7 +834,28 @@ enum CorpusReplayRunner {
             }
             if corpusExhausted && epochLimit != nil { break }
 
-            guard let timing = try await trainer.trainStep(replayBuffer: buffer, batchSize: batchSize) else {
+            // Optional one-step GPU trace (`--gpu-capture-step`). Started right
+            // before the step and stopped right after it; trainStep returns
+            // only once the step's GPU work has completed, so the trace holds
+            // the whole step. Stopped on every exit path.
+            let captureThisStep = config.gpuCapture.flatMap { $0.step == step + 1 ? $0 : nil }
+            if let captureThisStep {
+                try beginGPUCapture(captureThisStep, device: trainer.network.commandQueue.device)
+            }
+            let stepTiming: TrainStepTiming?
+            do {
+                stepTiming = try await trainer.trainStep(replayBuffer: buffer, batchSize: batchSize)
+            } catch {
+                if captureThisStep != nil {
+                    MTLCaptureManager.shared().stopCapture()
+                }
+                throw error
+            }
+            if let captureThisStep {
+                MTLCaptureManager.shared().stopCapture()
+                emit("[REPLAY] GPU trace of step \(captureThisStep.step) written to \(captureThisStep.outputURL.path)")
+            }
+            guard let timing = stepTiming else {
                 emit("[REPLAY] trainStep returned nil (bufCount=\(buffer.count)); stopping")
                 break
             }

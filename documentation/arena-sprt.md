@@ -4,8 +4,10 @@ Status: **implemented, phases 1–5.** Written 2026-09-20.
 
 All five phases have landed (`703dc77`, `26a747e`, `f21ff44`, `ea85025`, and
 this one). Everything under "Where the changes land" now describes shipped
-code. **The default is still the score threshold**, so an arena behaves exactly
-as it did until someone picks SPRT in the Arena settings popover.
+code. **Since 2026-10-01 the default is SPRT** (`arena_promotion_criterion = 1`,
+the owner's running configuration adopted as the code default). Until then the
+default was the score threshold, so an arena behaved exactly as it did before
+SPRT until someone picked SPRT in the Arena settings popover.
 
 The one design question this plan left open and the implementation did not
 settle is "Zero-variance records", below — found in phase 3, pinned by test,
@@ -89,7 +91,7 @@ take effect on the next arena and cannot mutate mid-test).
 
 | id | type | default | range | meaning |
 |---|---|---|---|---|
-| `arena_promotion_criterion` | Int | `0` | 0…1 | 0 = score threshold, 1 = SPRT |
+| `arena_promotion_criterion` | Int | `1` (was `0` until 2026-10-01) | 0…1 | 0 = score threshold, 1 = SPRT |
 | `arena_sprt_elo0` | Double | `0.0` | −50…50 | H₀: candidate is this many Elo better |
 | `arena_sprt_elo1` | Double | `10.0` | −50…50 | H₁: candidate is this many Elo better |
 | `arena_sprt_alpha` | Double | `0.05` | 0.001…0.5 | type I error (false promote) |

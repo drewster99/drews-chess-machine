@@ -471,6 +471,10 @@ struct DrewsChessMachineApp: App {
               --out-model <path>              Destination for the rolling trainer-model file (overwrites in place);
                                               a .safetensors extension is appended if you don't supply one.
               --epochs <n>                    Replay budget: number of full passes over the corpus.
+              --gpu-capture-step <n> --gpu-capture-out <file.gputrace>
+                                              (with --replay-corpus) Capture training step n as an Xcode GPU trace
+                                              document for per-kernel profiling, then keep training. Needs the
+                                              environment variable MTL_CAPTURE_ENABLED=1.
               --import-pgn <path>             Convert a .pgn / .pgn.zst (e.g. a Lichess monthly dump) into a
                                               corpus, then exit. .zst needs the `zstd` CLI on PATH; standard-start
                                               games only. Filters: --min-rating <elo> (both sides),
@@ -1012,6 +1016,8 @@ struct DrewsChessMachineApp: App {
         var startGameIndex: Int? = nil
         var resumeExact = false
         var enumerateCheckpoints = false
+        var gpuCaptureStep: Int? = nil
+        var gpuCaptureOutPath: String? = nil
 
         // Strict validation: a recognized flag with a missing or unparseable
         // value is a HARD error, never a silent default. A mistyped
@@ -1074,6 +1080,10 @@ struct DrewsChessMachineApp: App {
                 resumeExact = true; i += 1   // boolean flag, no value
             case "--enumerate-checkpoints":
                 enumerateCheckpoints = true; i += 1   // boolean flag, no value
+            case "--gpu-capture-step":
+                gpuCaptureStep = requireInt(arg, nextValue); i += 2
+            case "--gpu-capture-out":
+                gpuCaptureOutPath = requireValue(arg, nextValue); i += 2
             default:
                 FileHandle.standardError.write(Data("error: unexpected argument '\(arg)' (with --replay-corpus)\n".utf8))
                 Darwin.exit(2)
@@ -1082,6 +1092,25 @@ struct DrewsChessMachineApp: App {
 
         guard !corpusPaths.isEmpty else {
             FileHandle.standardError.write(Data("error: --replay-corpus requires at least one corpus directory path\n".utf8))
+            Darwin.exit(2)
+        }
+
+        // --gpu-capture-step / --gpu-capture-out come as a pair: one training
+        // step captured as an Xcode .gputrace document (diagnostics only).
+        switch (gpuCaptureStep, gpuCaptureOutPath) {
+        case (nil, nil):
+            break
+        case (.some(let captureStep), .some(let capturePath)):
+            guard captureStep >= 1 else {
+                FileHandle.standardError.write(Data("error: --gpu-capture-step expects a step number >= 1, got \(captureStep)\n".utf8))
+                Darwin.exit(2)
+            }
+            guard capturePath.hasSuffix(".gputrace") else {
+                FileHandle.standardError.write(Data("error: --gpu-capture-out must name a .gputrace document, got '\(capturePath)'\n".utf8))
+                Darwin.exit(2)
+            }
+        default:
+            FileHandle.standardError.write(Data("error: --gpu-capture-step and --gpu-capture-out must be given together\n".utf8))
             Darwin.exit(2)
         }
 
@@ -1143,7 +1172,14 @@ struct DrewsChessMachineApp: App {
             outModelPath: outModelPath,
             enumerateCheckpoints: enumerateCheckpoints,
             runModelID: runModelID,
-            outputURL: outputPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+            outputURL: outputPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) },
+            gpuCapture: gpuCaptureStep.flatMap { captureStep in
+                gpuCaptureOutPath.map { path in
+                    CorpusReplayConfig.GPUCapture(
+                        step: captureStep,
+                        outputURL: URL(fileURLWithPath: (path as NSString).expandingTildeInPath))
+                }
+            }
         )
         CorpusReplayRunner.runAndExit(config: config, params: params)
     }
