@@ -1,0 +1,410 @@
+[
+ {
+  "lineage": "SE scale+bias full-leaky fresh (never trained)",
+  "group": "supplement",
+  "qualifies": true,
+  "max_segment_step": -1,
+  "checkpoints": 1,
+  "reference": "Models/20261001-test_SE_scale+bias-leaky-fresh.safetensors",
+  "reference_model_id": "20261001-23-Dmwe",
+  "reference_step": -1,
+  "segments": [
+   "20261001-23-Dmwe:replay"
+  ]
+ },
+ {
+  "lineage": "leaky-FC1 (SE scale+bias, FC1 leaky)",
+  "group": "experiment",
+  "qualifies": true,
+  "max_segment_step": 12000,
+  "checkpoints": 13,
+  "reference": "Models/20261001-test_SE_scale+bias-fc1leaky-fresh.safetensors",
+  "reference_model_id": "20261001-42-2q0Q",
+  "reference_step": -1,
+  "segments": [
+   "20261001-42-2q0Q:replay",
+   "20261001-43-NbWz:replay"
+  ]
+ },
+ {
+  "lineage": "SE scale+bias s1",
+  "group": "experiment",
+  "qualifies": true,
+  "max_segment_step": 33014,
+  "checkpoints": 35,
+  "reference": "Models/20260929-test_SE_scale+bias-fresh.safetensors",
+  "reference_model_id": "20260929-12-JZOe",
+  "reference_step": -1,
+  "segments": [
+   "20260929-12-JZOe:replay",
+   "20260929-22-bWdy:replay"
+  ]
+ },
+ {
+  "lineage": "SE scale+bias s2",
+  "group": "experiment",
+  "qualifies": true,
+  "max_segment_step": 7282,
+  "checkpoints": 9,
+  "reference": "Models/20260929-test_SE_scale+bias-seed2-fresh.safetensors",
+  "reference_model_id": "20260930-1-H1Oq",
+  "reference_step": -1,
+  "segments": [
+   "20260930-1-H1Oq:replay",
+   "20260930-4-k98x:replay"
+  ]
+ },
+ {
+  "lineage": "SE attenuate-only s1",
+  "group": "experiment",
+  "qualifies": true,
+  "max_segment_step": 33012,
+  "checkpoints": 35,
+  "reference": "Models/20260929-test_SE_attenuate-only-fresh.safetensors",
+  "reference_model_id": "20260929-13-06yp",
+  "reference_step": -1,
+  "segments": [
+   "20260929-13-06yp:replay",
+   "20260929-23-L6Qm:replay"
+  ]
+ },
+ {
+  "lineage": "SE attenuate-only s2",
+  "group": "experiment",
+  "qualifies": true,
+  "max_segment_step": 7289,
+  "checkpoints": 9,
+  "reference": "Models/20260929-test_SE_attenuate-only-seed2-fresh.safetensors",
+  "reference_model_id": "20260930-2-Gf9P",
+  "reference_step": -1,
+  "segments": [
+   "20260930-2-Gf9P:replay",
+   "20260930-5-5TXu:replay"
+  ]
+ },
+ {
+  "lineage": "SE none s1",
+  "group": "experiment",
+  "qualifies": true,
+  "max_segment_step": 32036,
+  "checkpoints": 34,
+  "reference": "Models/20260929-test_SE_none-fresh.safetensors",
+  "reference_model_id": "20260929-18-D9is",
+  "reference_step": -1,
+  "segments": [
+   "20260929-18-D9is:replay",
+   "20260929-24-834D:replay"
+  ]
+ },
+ {
+  "lineage": "SE none s2",
+  "group": "experiment",
+  "qualifies": true,
+  "max_segment_step": 7019,
+  "checkpoints": 9,
+  "reference": "Models/20260929-test_SE_none-seed2-fresh.safetensors",
+  "reference_model_id": "20260930-3-V9zk",
+  "reference_step": -1,
+  "segments": [
+   "20260930-3-V9zk:replay",
+   "20260930-6-LkS6:replay"
+  ]
+ },
+ {
+  "lineage": "SE zero-beta s1",
+  "group": "experiment",
+  "qualifies": true,
+  "max_segment_step": 5030,
+  "checkpoints": 7,
+  "reference": "Models/20260929-test_SE_zerobeta-seed1-fresh.safetensors",
+  "reference_model_id": "20260930-7-crxN",
+  "reference_step": -1,
+  "segments": [
+   "20260930-7-crxN:replay",
+   "20260930-9-RrGx:replay"
+  ]
+ },
+ {
+  "lineage": "SE zero-beta s2",
+  "group": "experiment",
+  "qualifies": true,
+  "max_segment_step": 5004,
+  "checkpoints": 7,
+  "reference": "Models/20260929-test_SE_zerobeta-seed2-fresh.safetensors",
+  "reference_model_id": "20260930-8-8qyR",
+  "reference_step": -1,
+  "segments": [
+   "20260930-8-8qyR:replay",
+   "20260930-10-H51a:replay"
+  ]
+ },
+ {
+  "lineage": "v5",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 336610,
+  "checkpoints": 678,
+  "reference": "Models/20260627-v5_5block_7x7_lnout-fresh.safetensors",
+  "reference_model_id": "20260628-1-tWtk",
+  "reference_step": -1,
+  "segments": [
+   "20260628-1-tWtk:replay",
+   "20260628-2-a5fc:replay",
+   "20260628-9-OdUt:replay",
+   "20260629-1-Uf4p:replay",
+   "20260703-1-Dg5v:replay",
+   "20260714-1-h7vI:replay",
+   "20260729-1-VZ2j:replay",
+   "20260802-2-Xuub:replay",
+   "20260805-1-0pTW:replay"
+  ]
+ },
+ {
+  "lineage": "mini2b",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 120695,
+  "checkpoints": 125,
+  "reference": "Models/20260629-161538-20260629-3-3MIV-manual.safetensors",
+  "reference_model_id": "20260629-3-3MIV",
+  "reference_step": -1,
+  "segments": [
+   "20260629-3-3MIV:replay",
+   "20260629-4-y5u7:replay",
+   "20260630-5-BEKK:replay",
+   "20260701-2-SvRu:replay",
+   "20260705-1-znR7:replay"
+  ]
+ },
+ {
+  "lineage": "coxw",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 277000,
+  "checkpoints": 285,
+  "reference": "Models/20260629-182512-20260629-5-Coxw-manual.safetensors",
+  "reference_model_id": "20260629-5-Coxw",
+  "reference_step": -1,
+  "segments": [
+   "20260629-5-Coxw:replay",
+   "20260629-6-yqMI:replay",
+   "20260709-1-avoB:replay"
+  ]
+ },
+ {
+  "lineage": "ykkk",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 250803,
+  "checkpoints": 269,
+  "reference": "Models/20260630-000533-20260630-1-YkKk-manual.safetensors",
+  "reference_model_id": "20260630-1-YkKk",
+  "reference_step": -1,
+  "segments": [
+   "20260630-1-YkKk:replay",
+   "20260630-2-6y0s:replay",
+   "20260701-1-0Iwe:replay",
+   "20260710-1-amlg:replay"
+  ]
+ },
+ {
+  "lineage": "nt8y",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 140000,
+  "checkpoints": 203,
+  "reference": "Models/20260701-161012-20260701-3-nT8Y-manual.safetensors",
+  "reference_model_id": "20260701-3-nT8Y",
+  "reference_step": -1,
+  "segments": [
+   "20260701-3-nT8Y:replay",
+   "20260701-4-CIvL:replay",
+   "20260701-5-bOYQ:replay",
+   "20260706-2-3CZF:replay",
+   "20260707-1-cslu:replay",
+   "20260708-4-kEiZ:replay"
+  ]
+ },
+ {
+  "lineage": "qeu8 (replay main, ends Ejp0)",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 1397000,
+  "checkpoints": 1572,
+  "reference": "Models/20260702-164826-20260702-7-Qeu8-manual.safetensors",
+  "reference_model_id": "20260702-7-Qeu8",
+  "reference_step": -1,
+  "segments": [
+   "20260702-7-Qeu8:replay",
+   "20260702-9-GLu5:replay",
+   "20260703-1-Lnji:replay",
+   "20260706-1-PVZp:replay",
+   "20260727-1-Ejp0:replay"
+  ]
+ },
+ {
+  "lineage": "qeu8e (epoch branch)",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 88107,
+  "checkpoints": 225,
+  "reference": "Models/20260702-164826-20260702-7-Qeu8-manual.safetensors",
+  "reference_model_id": "20260702-7-Qeu8",
+  "reference_step": -1,
+  "segments": [
+   "20260702-7-Qeu8:replay",
+   "20260704-1-X79T:replay",
+   "20260704-2-jSjr:replay",
+   "20260704-3-h7Pp:replay",
+   "20260708-5-0YQL:replay",
+   "20260708-6-sFzi:replay"
+  ]
+ },
+ {
+  "lineage": "qeu8-1blk128",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 120000,
+  "checkpoints": 121,
+  "reference": "Models/20260711-qeu8-1blk128-fresh.safetensors",
+  "reference_model_id": "20260711-16-VRR4",
+  "reference_step": -1,
+  "segments": [
+   "20260711-16-VRR4:replay",
+   "20260711-17-pycz:replay"
+  ]
+ },
+ {
+  "lineage": "qeu8init sf100sl100 vs-UCI",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 758000,
+  "checkpoints": 4,
+  "reference": "Models/20260702-164826-20260702-7-Qeu8-manual.safetensors",
+  "reference_model_id": "20260702-7-Qeu8",
+  "reference_step": -1,
+  "segments": [
+   "20260702-7-Qeu8:replay",
+   "20260712-6-lTiK:replay",
+   "20260714-1-NYAZ:replay",
+   "20260722-1-syxR:replay"
+  ]
+ },
+ {
+  "lineage": "Ejp0 headfix-phase2 (from Ejp0 @681k)",
+  "group": "supplement",
+  "qualifies": true,
+  "max_segment_step": 20000,
+  "checkpoints": 20,
+  "reference": "Models/20260702-Qeu8-resume3-replay-step681000.safetensors",
+  "reference_model_id": "20260727-1-Ejp0",
+  "reference_step": 681000,
+  "segments": [
+   "20261001-18-oeNy:replay"
+  ]
+ },
+ {
+  "lineage": "Ejp0 self-play run 1",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 197340,
+  "checkpoints": 15,
+  "reference": "Models/20260702-Qeu8-resume3-replay-step1300000.safetensors",
+  "reference_model_id": "20260727-1-Ejp0",
+  "reference_step": 1300000,
+  "segments": [
+   "20260727-1-Ejp0:selfplay:run1"
+  ]
+ },
+ {
+  "lineage": "Ejp0 self-play run 2",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 1186322,
+  "checkpoints": 70,
+  "reference": "Models/20260702-Qeu8-resume3-replay-step1300000.safetensors",
+  "reference_model_id": "20260727-1-Ejp0",
+  "reference_step": 1300000,
+  "segments": [
+   "20260727-1-Ejp0:selfplay:run2"
+  ]
+ },
+ {
+  "lineage": "bzw3 self-play",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 467099,
+  "checkpoints": 3,
+  "reference": "Models/20260607-015745-20260601-11-bzw3-31-manual.safetensors",
+  "reference_model_id": "20260601-11-bzw3-31",
+  "reference_step": 467065,
+  "segments": [
+   "20260601-11-bzw3:selfplay:run1"
+  ]
+ },
+ {
+  "lineage": "KbHZ self-play (fp32)",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 532369,
+  "checkpoints": 4,
+  "reference": "Sessions/last-before-big-changeup-20260524-175426-20260514-2-Ko63-manual.dcmsession/trainer.dcmmodel",
+  "reference_model_id": "20260514-1-KbHZ-18",
+  "reference_step": 494927,
+  "segments": [
+   "20260514-1-KbHZ:selfplay:run1"
+  ]
+ },
+ {
+  "lineage": "sMe9 self-play (fp32)",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 373416,
+  "checkpoints": 3,
+  "reference": "Models/20260527-143402-20260525-1-sMe9-26-manual.dcmmodel",
+  "reference_model_id": "20260525-1-sMe9-26",
+  "reference_step": 197269,
+  "segments": [
+   "20260525-1-sMe9:selfplay:run1"
+  ]
+ },
+ {
+  "lineage": "LWKa self-play (v4 12-block)",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 106695,
+  "checkpoints": 2,
+  "reference": "KeptSelfPlayModels/LWKa/20260602-005840-20260531-10-WcRm-periodic.dcmsession__trainer.dcmmodel",
+  "reference_model_id": "20260531-9-LWKa-11",
+  "reference_step": 106695,
+  "segments": [
+   "20260531-9-LWKa:selfplay:run1"
+  ]
+ },
+ {
+  "lineage": "LMGh self-play",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 79135,
+  "checkpoints": 2,
+  "reference": "Sessions/20260609-144428-20260609-13-vJnd-promote-keep.dcmsession/trainer.safetensors",
+  "reference_model_id": "20260609-12-LMGh-4",
+  "reference_step": 79135,
+  "segments": [
+   "20260609-12-LMGh:selfplay:run1"
+  ]
+ },
+ {
+  "lineage": "WjRY self-play",
+  "group": "lineage",
+  "qualifies": true,
+  "max_segment_step": 98974,
+  "checkpoints": 2,
+  "reference": "KeptSelfPlayModels/WjRY/20260610-130641-20260609-15-tGOH-periodic.dcmsession__trainer.safetensors",
+  "reference_model_id": "20260609-14-WjRY-8",
+  "reference_step": 98974,
+  "segments": [
+   "20260609-14-WjRY:selfplay:run1"
+  ]
+ }
+]
