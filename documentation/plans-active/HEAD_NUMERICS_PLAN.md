@@ -158,6 +158,75 @@ Known hot spots, checked by name:
 | Phase 2: full test suite | same run as Phase 1 (6 failures, see above) | — |
 | Other models in the audit (8 SE finals, fp32 control mUF5) | 0 value ties and 0 policy top-2 ties in bf16 everywhere; head offsets 0.73–1.25× init | numerics audit folder |
 
+### Training cost of the fix, and the mixed policy tail (2026-10-01)
+
+**What the three builds are.** The policy head (`intermediate_conv`) runs: tower
+output → 1×1 pre-conv (C → K) → BatchNorm → ReLU → 1×1 final conv (K → 76) → bias →
+4864 logits → softmax / loss. The builds differ only in which of these run in bf16:
+
+| build | pre-conv | BN, ReLU, final conv | bias, logits, loss |
+|---|---|---|---|
+| **parent** (`3f02ae4`, before the fix) | bf16 | bf16 | bf16 |
+| **fp32 tail** (the fix as shipped in `da15920`; `fp32_from_pre_bn`) | bf16 | fp32 (pre-conv output widened before BN) | fp32 |
+| **mixed** (`mixed_final_projection`; the default from `de0f22b`) | bf16 | bf16 | fp32 (final conv output widened immediately) |
+
+Everything else in the fix (value head's fp32 last layer, logit centering in the
+loss, recentering on load) is the same in the fp32 tail and mixed builds; ReLU
+throughout in every measurement below.
+
+**Speed, parent vs fp32 tail** (corpus replay, A-B-B-A — parent, fix, fix,
+parent — 600 steps each, timed from step 200; mean of the two runs per build):
+
+| model | architecture | parent wall ms/step | fp32 tail wall ms/step | Δ |
+|---|---|---:|---:|---:|
+| Ejp0 681k | 2 blocks × 15×15 @64, **512-ch** policy pre-conv | 639 | 681 | +42 (+6.6%) |
+| SE experiment scale+bias seed 2 @7.3k | 3 blocks × 7×7 @128, LayerNorm out, 128-ch pre-conv | 836 | 864 | +28 (+3.3%) |
+| fresh `v4_5block_7x7` | 5 blocks × 7×7 @128, 128-ch pre-conv | 1186 | 1189 | +3 (within noise) |
+
+The two 128-channel nets have identical heads yet very different costs; why is
+not established (the GPU may hide head work behind the larger tower).
+
+**Speed, fp32 tail vs mixed — measured on Ejp0 only.** The v5-style and v4 mixed
+runs were stopped before completing (owner's call, to analyze Ejp0 instead), so
+mixed has no speed measurement on a 128-channel model yet.
+
+| Ejp0 681k run | wall ms/step | median step ms |
+|---|---:|---:|
+| parent A / B | 633.3 / 644.4 | 572.4 / 572.5 |
+| fp32 tail A / B (2026-09-30) | 682.3 / 679.5 | 658.5 / 629.0 |
+| fp32 tail A / B (2026-10-01) | 680.5 / 767.8\* | 666.4 / 675.8 |
+| mixed A / B (2026-10-01) | 648.8 / 648.9 | 583.2 / 582.0 |
+
+\* overlapped unrelated CPU work; wall time unusable. Mixed recovers about three
+quarters of the fix's cost on Ejp0 (≈ +10 ms over parent vs ≈ +42).
+
+**Accuracy, fp32 tail vs mixed** (numerics audit: the same weights built in fp32
+as reference and in bf16; 4,971 positions; policy KL and top-1 change of bf16 vs
+fp32; value numbers identical under both, as expected):
+
+| checkpoint | fp32 tail KL | mixed KL | fp32 tail top-1 changed | mixed top-1 changed | top-2 ties |
+|---|---:|---:|---:|---:|---|
+| Ejp0 681k (pre-fix weights) | 9.6e-5 | 1.36e-4 | 1.07% | 1.39% | 0 / 0 |
+| Ejp0 post-fix resume @20k | 2.85e-4 | 2.98e-4 | 1.93% | 2.09% | 0 / 0 |
+| SE scale+bias seed 1 @33,014 | 3.05e-4 | 3.59e-4 | 2.09% | 2.49% | 0 / 0 |
+| SE attenuate-only seed 1 @33,012 | 2.39e-4 | 2.88e-4 | 1.63% | 1.93% | 0 / 0 |
+| SE none seed 1 @32,036 | 1.81e-4 | 2.25e-4 | 1.73% | 1.99% | 0 / 0 |
+
+Mixed adds +4% KL on Ejp0's post-fix weights, +18–25% on the 128-channel SE nets,
++40% on Ejp0's pre-fix weights (which miss Phase 1's KL ≤ 1e-4 target under mixed).
+No ties anywhere.
+
+**Decision (owner, 2026-10-01):** mixed is the default; `fp32_from_pre_bn` stays
+selectable (`--policy-tail-precision`).
+
+**Not yet measured:** mixed speed on a 128-channel model (A-B-B-A on the v5-style
+net, after the running leaky-FC1 experiment frees the GPU); whether training with
+mixed learns as well as with the fp32 tail (a short same-net A/B).
+
+**Related, not part of this fix:** leaky ReLU at every hidden site costs roughly
+4–7% training speed (noisy; `experiments/20261001-se-fc1-leaky/`); leaky ReLU in
+SE FC1 only is under test there.
+
 ### Phase 2b: center the heads at mint (owner-approved 2026-09-30; not started)
 
 A freshly minted net still starts with a random shared offset: `value_wdl_fc2` is He-initialized and not centered (measured on the SE-experiment fresh nets: the class-mean row has norm ≈ 0.8 against ≈ 1.6–1.8 for the class differences). Phase 2 freezes it (the SE runs show it only shrinks by the weight-decay factor: ×0.780 over 33k steps, ×0.908 over 7k), so it is harmless, but it is pointless and makes every fresh net carry it for life.
