@@ -51,6 +51,22 @@ def main():
                    f"0, {steps[1]:,} … {steps[-1]:,} | `{', '.join(ids)}` |")
     out.append("")
 
+    finals = [r for r in rows if r["part"] == "all" and r["kind"] != "optimizer"
+              and int(r["training_step"]) == max(int(x["training_step"]) for x in by_run[r["run"]])]
+    for title, selected in (
+            ("Top 20 abs max at the final checkpoint: parameters and BN running statistics", finals),
+            ("Top 20 abs max at the final checkpoint: trainable parameters only",
+             [r for r in finals if r["kind"] == "parameter"])):
+        out.append(f"## {title}")
+        out.append("")
+        out.append("| # | run | step | tensor | kind | abs max | min | max | mean |")
+        out.append("|---:|---|---:|---|---|---:|---:|---:|---:|")
+        ranked = sorted(selected, key=lambda r: -float(r["abs_max"]))[:20]
+        for i, r in enumerate(ranked, 1):
+            out.append(f"| {i} | `{r['run']}` | {int(r['training_step']):,} | `{r['tensor']}` | {r['kind']} | "
+                       f"{float(r['abs_max']):.4f} | {fmt(r['min'])} | {fmt(r['max'])} | {fmt(r['mean'])} |")
+        out.append("")
+
     out.append("## Every tensor, fresh vs final, per run")
     out.append("")
     out.append("Network parameters and BN running statistics. `[gamma]` / `[beta]` rows split a "

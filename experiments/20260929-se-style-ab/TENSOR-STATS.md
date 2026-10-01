@@ -60,9 +60,9 @@ Per-tensor statistics (mean, min, max, std, abs max, RMS, L2 norm, exact-zero fr
    - **Tower convs** barely change RMS (0.0179 at init → 0.0159–0.0188).
    - **Stem conv** grows (0.0369 → 0.0399–0.0416), and so does **policy conv** (≈0.125 → 0.146–0.148).
    - **The value head shrinks:** fc1 0.044 → 0.035 (seed 1, 33k) and ≈0.040 (seed 2 / zero-β); wdl_fc2 ≈0.12–0.13 → 0.10–0.11.
-   - **The largest |value|** in any final is a BN parameter, 1.45–2.25.
+   - **The largest |value| of any trainable parameter** in a final is a BN parameter, 1.45–2.25 (top: `se_none` `blocks.1.bn2.weight` 2.25). **BN running statistics go higher:** the largest is `se_att` `blocks.2.bn1.running_var` at 13.94, with `blocks.2.bn1` and `tower_final_bn` running variances of 3.7–13.9 in most runs (see the top-20 table below).
 
-8. **One outlier BN channel.** `se_sb2` stem BN channel 14 has a running variance of 2.57 against a median of 0.067 (38×), with a running mean of −1.00. It peaked at 3.60 at step 3,000. Its filter weights the input on plane 1 heavily (plane RMS 0.126 vs about 0.04 for the others). BN normalizes it, so it's not an error, but it's the most extreme running statistic in the set.
+8. **One outlier BN channel.** `se_sb2` stem BN channel 14 has a running variance of 2.57 against a median of 0.067 (38×), with a running mean of −1.00. It peaked at 3.60 at step 3,000. Its filter weights the input on plane 1 heavily (plane RMS 0.126 vs about 0.04 for the others). BN normalizes it, so it's not an error. It is the largest *relative* outlier among the stem statistics, but not the largest running statistic overall (see below).
 
 <!-- BEGIN GENERATED TABLES -->
 
@@ -78,6 +78,56 @@ Per-tensor statistics (mean, min, max, std, abs max, RMS, L2 norm, exact-zero fr
 | `se_att2` | attenuate-only | 2 | 9 | 0, 1,000 … 7,289 | `20260930-5-5TXu` |
 | `se_none2` | none | 2 | 9 | 0, 1,000 … 7,019 | `20260930-6-LkS6` |
 | `se_zb2` | zero-beta scale+bias | 2 | 7 | 0, 1,000 … 5,004 | `20260930-10-H51a` |
+
+## Top 20 abs max at the final checkpoint: parameters and BN running statistics
+
+| # | run | step | tensor | kind | abs max | min | max | mean |
+|---:|---|---:|---|---|---:|---:|---:|---:|
+| 1 | `se_att` | 33,012 | `blocks.2.bn1.running_var` | bn_running_stat | 13.9375 | +0.03174 | +13.94 | +0.4479 |
+| 2 | `se_att2` | 7,289 | `blocks.2.bn1.running_var` | bn_running_stat | 10.7714 | +0.02062 | +10.77 | +0.4752 |
+| 3 | `se_zb1` | 5,030 | `blocks.2.bn1.running_var` | bn_running_stat | 10.6035 | +0.04528 | +10.6 | +0.4431 |
+| 4 | `se_att2` | 7,289 | `tower_final_bn.running_var` | bn_running_stat | 8.1271 | +0.06708 | +8.127 | +0.4957 |
+| 5 | `se_att` | 33,012 | `tower_final_bn.running_var` | bn_running_stat | 8.0000 | +0.1182 | +8 | +0.4657 |
+| 6 | `se_sb` | 33,014 | `blocks.2.bn1.running_var` | bn_running_stat | 7.5312 | +0.03394 | +7.531 | +0.2759 |
+| 7 | `se_zb1` | 5,030 | `tower_final_bn.running_var` | bn_running_stat | 6.0784 | +0.07718 | +6.078 | +0.416 |
+| 8 | `se_att2` | 7,289 | `blocks.1.bn1.running_var` | bn_running_stat | 5.8657 | +0.04462 | +5.866 | +0.4715 |
+| 9 | `se_none` | 32,036 | `blocks.2.bn1.running_var` | bn_running_stat | 5.6250 | +0.05225 | +5.625 | +0.3829 |
+| 10 | `se_sb` | 33,014 | `blocks.1.bn1.running_mean` | bn_running_stat | 5.5312 | -5.531 | +3.453 | -0.04565 |
+| 11 | `se_zb1` | 5,030 | `blocks.1.bn1.running_var` | bn_running_stat | 5.1293 | +0.01756 | +5.129 | +0.4197 |
+| 12 | `se_sb` | 33,014 | `tower_final_bn.running_var` | bn_running_stat | 4.5938 | +0.05933 | +4.594 | +0.3075 |
+| 13 | `se_att` | 33,012 | `blocks.1.bn1.running_var` | bn_running_stat | 4.4688 | +0.02527 | +4.469 | +0.3143 |
+| 14 | `se_sb` | 33,014 | `blocks.2.bn1.running_mean` | bn_running_stat | 4.2188 | -4.219 | +3.406 | +0.01355 |
+| 15 | `se_att` | 33,012 | `blocks.2.bn1.running_mean` | bn_running_stat | 3.8906 | -2.531 | +3.891 | +0.02249 |
+| 16 | `se_none` | 32,036 | `tower_final_bn.running_var` | bn_running_stat | 3.6875 | +0.1196 | +3.688 | +0.4476 |
+| 17 | `se_none2` | 7,019 | `blocks.2.bn1.running_mean` | bn_running_stat | 3.6643 | -1.779 | +3.664 | +0.01832 |
+| 18 | `se_zb1` | 5,030 | `policy.pre_bn.running_var` | bn_running_stat | 3.5101 | +0.4303 | +3.51 | +0.983 |
+| 19 | `se_none` | 32,036 | `blocks.1.bn2.running_var` | bn_running_stat | 3.4531 | +0.459 | +3.453 | +0.7128 |
+| 20 | `se_att2` | 7,289 | `blocks.2.bn1.running_mean` | bn_running_stat | 3.4362 | -2.267 | +3.436 | +0.0149 |
+
+## Top 20 abs max at the final checkpoint: trainable parameters only
+
+| # | run | step | tensor | kind | abs max | min | max | mean |
+|---:|---|---:|---|---|---:|---:|---:|---:|
+| 1 | `se_none` | 32,036 | `blocks.1.bn2.weight` | parameter | 2.2500 | +0.8828 | +2.25 | +0.9977 |
+| 2 | `se_none` | 32,036 | `blocks.1.bn1.weight` | parameter | 2.2344 | +0.8086 | +2.234 | +0.9691 |
+| 3 | `se_sb` | 33,014 | `blocks.2.bn1.bias` | parameter | 2.1406 | -2.141 | +0.1157 | -0.1012 |
+| 4 | `se_none` | 32,036 | `blocks.2.bn1.weight` | parameter | 2.0938 | +0.8242 | +2.094 | +0.9644 |
+| 5 | `se_att` | 33,012 | `blocks.1.bn1.weight` | parameter | 2.0781 | +0.7305 | +2.078 | +0.9628 |
+| 6 | `se_sb` | 33,014 | `policy.pre_bn.weight` | parameter | 2.0312 | +0.832 | +2.031 | +1.06 |
+| 7 | `se_sb` | 33,014 | `blocks.2.bn1.weight` | parameter | 2.0156 | +0.8047 | +2.016 | +0.9599 |
+| 8 | `se_att` | 33,012 | `blocks.0.bn1.weight` | parameter | 1.9609 | +0.6992 | +1.961 | +0.9764 |
+| 9 | `se_sb` | 33,014 | `blocks.1.bn1.weight` | parameter | 1.9141 | +0.7422 | +1.914 | +0.9683 |
+| 10 | `se_none` | 32,036 | `tower_final_bn.weight` | parameter | 1.9062 | +0.6875 | +1.906 | +0.9812 |
+| 11 | `se_sb` | 33,014 | `stem.conv.weight` | parameter | 1.8906 | -0.7695 | +1.891 | +0.0001769 |
+| 12 | `se_sb` | 33,014 | `blocks.0.bn1.weight` | parameter | 1.8594 | +0.7305 | +1.859 | +0.9837 |
+| 13 | `se_att` | 33,012 | `blocks.2.bn1.weight` | parameter | 1.8359 | +0.8164 | +1.836 | +0.9743 |
+| 14 | `se_att` | 33,012 | `blocks.1.bn2.weight` | parameter | 1.7969 | +0.9375 | +1.797 | +1.035 |
+| 15 | `se_zb1` | 5,030 | `stem.conv.weight` | parameter | 1.7852 | -0.8164 | +1.785 | +9.904e-05 |
+| 16 | `se_zb1` | 5,030 | `blocks.2.bn1.weight` | parameter | 1.7804 | +0.8645 | +1.78 | +0.9878 |
+| 17 | `se_none2` | 7,019 | `blocks.0.bn1.weight` | parameter | 1.7739 | +0.8616 | +1.774 | +0.9929 |
+| 18 | `se_sb` | 33,014 | `tower_final_bn.weight` | parameter | 1.7578 | +0.7852 | +1.758 | +0.9839 |
+| 19 | `se_att` | 33,012 | `blocks.2.bn2.weight` | parameter | 1.7578 | +0.918 | +1.758 | +1.016 |
+| 20 | `se_none` | 32,036 | `policy.pre_bn.weight` | parameter | 1.7578 | +0.7539 | +1.758 | +1.084 |
 
 ## Every tensor, fresh vs final, per run
 
