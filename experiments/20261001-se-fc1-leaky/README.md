@@ -101,3 +101,25 @@ precision: fp32_from_pre_bn`.
 - **Step-time caveat:** the full test suite ran on the same machine 16:42–17:12
   CDT (about steps 6,000–7,800); step times in that window are slowed by it and
   are excluded from speed figures. Training itself is unaffected.
+
+## Review at 5,000 and 10,000 steps (owner decision at 10k: continue to 33k)
+
+| | ReLU scale+bias (5k) | leaky FC1 (5k) | ReLU scale+bias (10k) | leaky FC1 (10k) |
+|---|---:|---:|---:|---:|
+| pElo (probed with the `de0f22b` build) | 1239.2 | 1221.6 | 1277.9 | 1270.2 |
+| NLL | 2.4899 | 2.5137 | 2.4621 | 2.4609 |
+| training loss (last 10 logged steps) | 3.639 | 3.649 | 3.613 | 3.612 |
+| FC1 units unmoved from init (b0 / b1 / b2) | 2 / 9 / 0 | 2 / 5 / 0 | 2 / 9 / 0 | 1 / 6 / 0 |
+| FC1 units with zero velocity | not saved | 0 / 0 / 0 | not saved | 0 / 0 / 0 |
+| FC1 units < 5% of block median velocity | not saved | 0 / 0 / 0 | not saved | 0 / 0 / 0 |
+
+Velocity comparator (ReLU scale+bias **seed 2**, same architecture, different
+init, a build that saves velocity): zero-velocity units 4 / 11 / 4 at 5k and
+3 / 11 / 5 at 7k; below 5% of the block median 12 / 15 / 11 and 10 / 15 / 8.
+
+- **Dead units:** leaky ReLU keeps every FC1 unit receiving gradient at every
+  checkpoint (1k–10k); under ReLU about a third are near-dead. A few leaky units
+  barely change direction (weakly active), none is dead.
+- **Strength:** no difference through 10k — the arms trade places within seed
+  noise (7–25 pElo); losses agree to three decimals.
+- **Cost:** median 818 ms/step alone on the GPU (excluding the test-suite window).
