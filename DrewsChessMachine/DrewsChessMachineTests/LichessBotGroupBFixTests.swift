@@ -220,7 +220,7 @@ final class LichessBotGroupBFixTests: XCTestCase {
     // MARK: - Alarms
 
     @MainActor
-    func testRepeatedAlarmIsOneRow() throws {
+    func testRepeatedAlarmIsOneRow() async throws {
         let suite = "LichessBotGroupBFixTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotGroupBFixTests-\(UUID().uuidString)", isDirectory: true)
@@ -244,5 +244,9 @@ final class LichessBotGroupBFixTests: XCTestCase {
         controller.toggleFavorite("x")
         XCTAssertEqual(controller.alarms.count, 1)
         XCTAssertEqual(controller.alarms.first?.repeatCount, 2)
+        // Raising an alarm records a protocol event, appended on the
+        // controller's file queue. Wait for it before the teardown deletes
+        // the data folder, or the removal races the append.
+        try await controller.protocolLog.flush()
     }
 }

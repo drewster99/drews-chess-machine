@@ -71,7 +71,17 @@ final class LichessBotViewRenderTests: XCTestCase {
         let suite = "LichessBotViewRenderTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotViewRenderTests-\(UUID().uuidString)", isDirectory: true)
-        addTeardownBlock {
+        try LichessBotSettingsStore.save(LichessBotSettings.testBaseline(), to: defaults)
+        let controller = LichessBotController(
+            modelProvider: LichessBotFakeModelProvider(snapshot: nil),
+            defaults: defaults,
+            dataDirectory: LichessBotDataDirectory(root: root)
+        )
+        addTeardownBlock { @MainActor in
+            // The controller appends protocol events on its file queue; wait
+            // for them before the folder is removed, or the removal races
+            // the append.
+            try await controller.protocolLog.flush()
             defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
@@ -81,12 +91,7 @@ final class LichessBotViewRenderTests: XCTestCase {
                 }
             }
         }
-        try LichessBotSettingsStore.save(LichessBotSettings.testBaseline(), to: defaults)
-        return LichessBotController(
-            modelProvider: LichessBotFakeModelProvider(snapshot: nil),
-            defaults: defaults,
-            dataDirectory: LichessBotDataDirectory(root: root)
-        )
+        return controller
     }
 
     func testGameViewsRender() throws {

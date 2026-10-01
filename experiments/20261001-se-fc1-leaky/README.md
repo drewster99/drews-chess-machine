@@ -90,3 +90,14 @@ wd 3e-4, grad clip 15, warmup 1000, buffer 500k / prefill 250k, replay ratio
 0.48, KL probe 100) and `[REPLAY-CYCLE]` (LR 1e-1 peak → 1e-3 trough over 20k,
 decay horizon 1M, momentum following the cycle). `[REPLAY] trainer policy tail
 precision: fp32_from_pre_bn`.
+
+## Progress tracking
+
+- `probe_loop.sh` probes every enumerated checkpoint (every 1,000 steps) with
+  `--probe-set wide` into `probes.jsonl`; `table.py` renders the per-1000 table
+  against the SE experiment's seed-1 arms (leaky FC1 next to ReLU scale+bias);
+  `review.py <step> <binary>` is the 5k-interval analysis (both arms probed with
+  the same binary, loss windows, FC1 units unmoved from init).
+- **Step-time caveat:** the full test suite ran on the same machine 16:42–17:12
+  CDT (about steps 6,000–7,800); step times in that window are slowed by it and
+  are excluded from speed figures. Training itself is unaffected.
