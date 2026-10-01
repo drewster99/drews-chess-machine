@@ -41,6 +41,15 @@ ARMS = {
     },
 }
 UNMOVED_COSINE = 0.999995
+# A unit whose FC1 weight-velocity row norm is below this fraction of its
+# block's median is "effectively off": under ReLU an always-off unit's velocity
+# decays to exactly 0; under leaky ReLU it keeps about the negative slope's
+# share (1%) of a live unit's gradient.
+OFF_VELOCITY_FRACTION = 0.05
+# Velocity-based comparator: ReLU scale+bias seed 2 (same architecture and
+# parameters, different random init; its build saves optimizer velocity,
+# seed 1's does not). Reached 7,282 steps.
+SEED2_RELU_STEM = "20260929-test_SE_scale+bias-seed2-replay-step"
 
 
 def read_tensors(path, wanted):
@@ -66,6 +75,28 @@ def read_tensors(path, wanted):
 
 def fc1_names(block):
     return f"blocks.{block}.se_scalebias.fc1.weight"
+
+
+def velocity_off_counts(path):
+    """Per block: (units with exactly-zero FC1 weight velocity, units below
+    OFF_VELOCITY_FRACTION of the block median), or None if the file has no
+    optimizer velocity."""
+    with open(path, "rb") as handle:
+        header_len = struct.unpack("<Q", handle.read(8))[0]
+        header = json.loads(handle.read(header_len))
+    names = [f"opt.blocks.{b}.se_scalebias.fc1.weight.velocity" for b in range(3)]
+    if not all(name in header for name in names):
+        return None
+    tensors = read_tensors(path, names)
+    counts = []
+    for name in names:
+        # Velocity is stored flat in the graph's [in, out] layout: one column
+        # per FC1 unit (checked against TENSOR-STATS.md's dead-unit counts).
+        velocity = tensors[name].reshape(-1, 32)
+        row_norm = np.linalg.norm(velocity, axis=0)
+        median = np.median(row_norm)
+        counts.append((int((row_norm == 0).sum()), int((row_norm < OFF_VELOCITY_FRACTION * median).sum())))
+    return counts
 
 
 def probe(binary, path):
@@ -129,8 +160,20 @@ def main():
             means, count = window
             print(f"  log mean over last {count} logged steps: loss {means[0]:.4f} pLoss {means[1]:.4f} vLoss {means[2]:.4f} pEnt {means[3]:.3f}")
         print(f"  FC1 units unmoved from init (cos > {UNMOVED_COSINE}) per block: {' / '.join(map(str, unmoved))} of 32")
+        off = velocity_off_counts(checkpoint)
+        if off is None:
+            print("  FC1 velocity: not saved by this run's build")
+        else:
+            print(f"  FC1 units with zero velocity per block: {' / '.join(str(z) for z, _ in off)}; "
+                  f"below {OFF_VELOCITY_FRACTION:.0%} of block median: {' / '.join(str(o) for _, o in off)}")
         for block, summary in enumerate(cos_summary):
             print(f"    block {block} cosine with init: {summary}")
+    seed2 = os.path.join(MODELS, f"{SEED2_RELU_STEM}{step}.safetensors")
+    if os.path.exists(seed2):
+        off = velocity_off_counts(seed2)
+        if off is not None:
+            print(f"\n[relu seed 2, velocity comparator] zero velocity per block: {' / '.join(str(z) for z, _ in off)}; "
+                  f"below {OFF_VELOCITY_FRACTION:.0%} of block median: {' / '.join(str(o) for _, o in off)}")
     row = baseline_csv(step)
     if row is not None:
         print(f"\nbaseline recorded in dashboards/data/se_sb.csv at {step}: pElo {row['pElo']} nll {row['nll']}")
