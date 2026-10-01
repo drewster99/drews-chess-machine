@@ -517,7 +517,6 @@ most specific Lichess decline reason.
 | `gamesReservedForHumans`: a bot challenge when only reserved slots remain | 2 (was 0) | `later` |
 | Already `maxSimultaneousGamesPerOpponent` vs this opponent | 1 | `later` |
 | Daily cap: total games today / per opponent today | 2000 / 5 (was 200 / 20) | `later` |
-| Bot-vs-bot pairing at or near Lichess's 100/day cap (tracked locally) | stop at 95 *(not built: the incoming policy keeps no copy of Lichess's limit, which Lichess enforces itself; outgoing sends use §7.2's refusal parsing and our own 24 h count)* | `later` |
 | Rematch of the previous game (setting: accept rematches) | on | `generic` |
 | `compat.bot == false` (Lichess says the challenge isn't playable through the Bot API) | decline | `timeControl` |
 | `direction == "out"` (a challenge **we** sent, echoed on the stream) | never answered | — (no request) |
@@ -1997,7 +1996,7 @@ game id)
      declined
    - humans and bots both accepted, any rating, provisional OK
    - at most 2 games at once, 1 per opponent
-   - at most 200 games/day, 20 per opponent/day, bot pairs stopped at 95/day
+   - at most 200 games/day, 20 per opponent/day
    - rematches accepted
 
    *Current defaults (commit `c5542b8`, confirmed intentional 2026-10-01):*
@@ -2006,8 +2005,8 @@ game id)
    correspondence and unlimited declined; humans and bots both accepted,
    opponents rated 0–2500, provisional OK; at most 12 games at once, 2 of
    them reserved for humans, 1 per opponent; at most 2000 games/day, 5 per
-   opponent/day (Lichess itself caps games against bots at 100 a day; the
-   local stop at 95 was not built); rematches accepted.
+   opponent/day (Lichess itself caps games against bots at 100 a day and
+   enforces it; there is no local cap, by owner decision 2026-10-01); rematches accepted.
 3. **Default in-game behavior** (§12.4):
    - τ schedule 0.5 → 0.01 by ply 10 *(now 0.11 → 0.01 by ply 5, commit
      `c5542b8`)*
@@ -2171,7 +2170,7 @@ Phase 6.
 | # | Situation | Handling |
 |---|---|---|
 | E45 | With τ near argmax (0.01), DCM is nearly deterministic. A human (or bot) that beats it once can **replay the same winning line** | The opening τ schedule varies early moves (§12.4). Optional per-game τ jitter. Stats flag repeated identical games vs the same opponent (same move-list hash). Rotation/A-B (Phase 8) also breaks repetition. |
-| E46 | Two near-deterministic bots can play the same game over and over | Per-opponent daily cap (default 5 since commit `c5542b8`; was 20) and the local 100/day bot-pair tracker (§7; not built as a policy stop, Lichess enforces its own limit). Repeated-game detection (E45) can auto-decline that opponent for the day. **[T]** |
+| E46 | Two near-deterministic bots can play the same game over and over | Per-opponent daily cap (default 5 since commit `c5542b8`; was 20) (Lichess enforces its own 100/day bot-pair limit; there is no local cap, by owner decision 2026-10-01). Repeated-game detection (E45) can auto-decline that opponent for the day. **[T]** |
 | E47 | Human openings produce positions self-play never reaches | Expected, and not a protocol bug. Stats by opening (from the export's `opening`) show where DCM struggles. That is useful learning signal, never training data (§3). |
 | E48 | `SamplingSchedule` τ decays by game-total ply | Lichess games start from startpos (from-position games are declined), so `ply = moves.count`. That matches self-play. **[T]** |
 
