@@ -15,7 +15,10 @@ import Foundation
 /// stdout, and the text summary to stderr.
 enum NumericsAuditCLI {
 
-    static func runAndExit(path: String, corpusShardPath: String?, outDirectory: String?, staticOnly: Bool) -> Never {
+    static func runAndExit(
+        path: String, corpusShardPath: String?, outDirectory: String?, staticOnly: Bool,
+        policyTailPrecision: ChessNetwork.PolicyTailPrecision
+    ) -> Never {
         SessionLogger.shared.start()
 
         let rootURL = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
@@ -34,7 +37,7 @@ enum NumericsAuditCLI {
         let outURL = outDirectory.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) } ?? CheckpointPaths.analysesDir
 
         FileHandle.standardError.write(Data(
-            "[NUMERICS] \(targets.count) checkpoint(s)\(staticOnly ? ", static checks only" : "")\(corpusURL.map { ", corpus \($0.path)" } ?? ", no corpus shard")\n".utf8
+            "[NUMERICS] \(targets.count) checkpoint(s)\(staticOnly ? ", static checks only" : ", policy tail \(policyTailPrecision.rawValue)")\(corpusURL.map { ", corpus \($0.path)" } ?? ", no corpus shard")\n".utf8
         ))
 
         var failures = 0
@@ -77,6 +80,7 @@ enum NumericsAuditCLI {
                         mastersNote: "a saved model file holds one set of weights",
                         positions: auditPositions,
                         dynamicSkippedReason: staticOnly ? "--numerics-static-only" : nil,
+                        policyTailPrecision: policyTailPrecision,
                         modelLabel: label,
                         modelID: modelID,
                         trainingStep: stepValue
@@ -151,6 +155,7 @@ enum NumericsAuditCLI {
         }
         if let dynamic = result.dynamicChecks {
             line["positions"] = dynamic.positions.total
+            line["policy_tail_precision"] = result.policyTailPrecision
             if let value = dynamic.valueHead {
                 for report in value where report.format != .fp32 {
                     line["value_ties_\(report.format.rawValue)"] = report.tieFraction

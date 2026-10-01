@@ -12,7 +12,7 @@ extension NumericsAudit.Result {
         var lines: [String] = []
         let id = modelID.map { " id \($0)" } ?? ""
         let step = trainingStep.map { " step \($0)" } ?? ""
-        lines.append("model \(modelLabel)\(id)\(step), compute \(computeDataType)")
+        lines.append("model \(modelLabel)\(id)\(step), compute \(computeDataType)\(dynamicChecks == nil ? "" : ", policy tail \(policyTailPrecision)")")
         lines.append("overall: \(overallVerdict.rawValue)")
 
         if let offset = staticChecks.valueHeadOffset {

@@ -1563,6 +1563,9 @@ final class ChessTrainer: @unchecked Sendable {
     /// working-sync). Threaded to every `ChessNetwork` the trainer builds.
     /// Default false keeps the canonical bf16-working-var / fp32-master path.
     let bf16CastInForward: Bool
+    /// Where the policy head's fp32 tail begins in every `ChessNetwork` the
+    /// trainer builds (see `ChessNetwork.PolicyTailPrecision`).
+    let policyTailPrecision: ChessNetwork.PolicyTailPrecision
     /// A/B knob for the macOS-27 NaN-isolation matrix: when true, every
     /// `ChessNetwork` this trainer builds calls `disableAutoLayoutConversion()`
     /// on its `MPSGraph`, opting out of the new (Xcode 27 b1 / macOS 27 beta)
@@ -2021,6 +2024,7 @@ final class ChessTrainer: @unchecked Sendable {
         executableOptimizationLevel: MPSGraphOptimization = .level1,
         splitWorkingWeightSync: Bool = true,
         bf16CastInForward: Bool = false,
+        policyTailPrecision: ChessNetwork.PolicyTailPrecision = .float32FromPreBatchNorm,
         disableAutoLayoutConversion: Bool = false,
         reducedPrecisionFastMathRaw: UInt? = nil
     ) throws {
@@ -2042,9 +2046,11 @@ final class ChessTrainer: @unchecked Sendable {
         self.executableOptimizationLevel = executableOptimizationLevel
         self.splitWorkingWeightSync = splitWorkingWeightSync
         self.bf16CastInForward = bf16CastInForward
+        self.policyTailPrecision = policyTailPrecision
         self.disableAutoLayoutConversion = disableAutoLayoutConversion
         self.reducedPrecisionFastMathRaw = reducedPrecisionFastMathRaw
         let net = try ChessNetwork(arch: arch, bnMode: .training, bf16CastInForward: bf16CastInForward,
+                                   policyTailPrecision: policyTailPrecision,
                                    disableAutoLayoutConversion: disableAutoLayoutConversion,
                                    reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
         net.commandQueue.label = "ChessTrainer.net(init)"
@@ -2263,6 +2269,7 @@ final class ChessTrainer: @unchecked Sendable {
 
     private func internalResetNetwork() throws {
         let net = try ChessNetwork(arch: arch, bnMode: .training, bf16CastInForward: bf16CastInForward,
+                                   policyTailPrecision: policyTailPrecision,
                                    disableAutoLayoutConversion: disableAutoLayoutConversion,
                                    reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
         net.commandQueue.label = "ChessTrainer.net(reset)"

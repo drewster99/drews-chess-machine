@@ -63,7 +63,7 @@ Persistence is automatic: every property `didSet` writes to `UserDefaults` under
 
 CLI flags for emitting defaults:
 - `DrewsChessMachine --show-default-parameters` — flat snake_case JSON to stdout, descriptions to stderr; sub-second exit, no GUI.
-- `DrewsChessMachine --create-parameters-file [path] [--force]` — writes both `parameters.json` and `parameters.md` (categorized doc).
+- `DrewsChessMachine --create-parameters-file [path] [--force]` — writes both `parameters.json` and `parameters.md` (categorized doc). `path` is a folder (existing, or ending in `/`) to write both into, or the `.json` file itself; `--force` replaces existing regular files and refuses anything else (never a folder).
 
 ## Saved model state
 

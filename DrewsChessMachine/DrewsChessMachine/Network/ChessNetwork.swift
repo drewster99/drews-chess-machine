@@ -537,6 +537,9 @@ final class ChessNetwork: @unchecked Sendable {
     /// and `castWeightForForward` is the identity.
     private let bf16CastInForward: Bool
 
+    /// Where the policy head's fp32 tail begins (see `PolicyTailPrecision`).
+    let policyTailPrecision: PolicyTailPrecision
+
     /// When true, every `graph.compile` site sets `disableAutoLayoutConversion`
     /// on its `MPSGraphCompilationDescriptor`, opting out of the new (Xcode 27 b1
     /// / macOS 27 beta) default that auto-converts conv layouts on the GPU. A/B
@@ -592,7 +595,9 @@ final class ChessNetwork: @unchecked Sendable {
     ///
     /// `bf16CastInForward` enables experimental config D (see the stored
     /// property doc); default `false` keeps the graph byte-identical.
+    /// `policyTailPrecision` defaults to the shipped fp32 tail.
     init(arch: NetworkArchitecture = .current, bnMode: BNMode = .inference, bf16CastInForward: Bool = false,
+         policyTailPrecision: PolicyTailPrecision = .float32FromPreBatchNorm,
          disableAutoLayoutConversion: Bool = false,
          reducedPrecisionFastMathRaw: UInt? = nil,
          analysisTaps: Bool = false) throws {
@@ -613,6 +618,7 @@ final class ChessNetwork: @unchecked Sendable {
         graph = g
         self.arch = arch
         self.bf16CastInForward = bf16CastInForward
+        self.policyTailPrecision = policyTailPrecision
         // macOS 27 / Xcode 27 b1 made automatic NCHW->NHWC layout conversion for
         // GPU convolutions the default (`MPSGraphCompilationDescriptor.convertLayoutToNHWC`
         // is now a deprecated no-op; the opt-out is the new
@@ -937,7 +943,7 @@ final class ChessNetwork: @unchecked Sendable {
 
         let policy = Self.policyHead(
             graph: g, arch: arch, input: policyHeadInput, inputChannels: arch.policyHeadInputChannels,
-            descriptor: conv1x1, bnMode: bnMode, taps: taps,
+            descriptor: conv1x1, bnMode: bnMode, taps: taps, tailPrecision: policyTailPrecision,
             weightStorageDataType: weightStorageDType, castInForward: castInForward,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
@@ -3002,6 +3008,7 @@ final class ChessNetwork: @unchecked Sendable {
         descriptor: MPSGraphConvolution2DOpDescriptor,
         bnMode: BNMode,
         taps: AnalysisTapRecorder?,
+        tailPrecision: PolicyTailPrecision,
         weightStorageDataType: MPSDataType,
         castInForward: (MPSGraphTensor) -> MPSGraphTensor,
         trainables: inout [MPSGraphTensor],
@@ -3038,10 +3045,17 @@ final class ChessNetwork: @unchecked Sendable {
                 dataType: weightStorageDataType, name: "policy_conv_bias")
             trainables.append(convW);    shouldDecay.append(true)
             trainables.append(convBias); shouldDecay.append(false)
-            let tailInput = widenToHeadTail(input, graph: graph, name: "policy_tail_input_f32")
-            var x = graph.convolution2D(
-                tailInput, weights: widenToHeadTail(convW, graph: graph, name: nil),
-                descriptor: descriptor, name: "policy_conv")
+            var x: MPSGraphTensor
+            switch tailPrecision {
+            case .float32FromPreBatchNorm:
+                let tailInput = widenToHeadTail(input, graph: graph, name: "policy_tail_input_f32")
+                x = graph.convolution2D(
+                    tailInput, weights: widenToHeadTail(convW, graph: graph, name: nil),
+                    descriptor: descriptor, name: "policy_conv")
+            case .mixedFinalProjection:
+                x = graph.convolution2D(input, weights: castInForward(convW), descriptor: descriptor, name: "policy_conv")
+                x = widenToHeadTail(x, graph: graph, name: "policy_conv_output_f32")
+            }
             x = graph.addition(x, widenToHeadTail(convBias, graph: graph, name: nil), name: "policy_conv_bias_add")
             let flat = graph.reshape(x, shape: [-1, NSNumber(value: Self.policySize)], name: "policy_flatten")
             return (output: flat, finalWeights: convW)
@@ -3059,12 +3073,22 @@ final class ChessNetwork: @unchecked Sendable {
                 dataType: weightStorageDataType, name: "policy_pre_conv_weights")
             trainables.append(preConvW); shouldDecay.append(true)
             var x = graph.convolution2D(input, weights: castInForward(preConvW), descriptor: descriptor, name: "policy_pre_conv")
-            x = widenToHeadTail(x, graph: graph, name: "policy_tail_input_f32")
-            x = batchNorm(graph: graph, input: x, channels: pK, name: "policy_pre_bn", taps: taps, bnMode: bnMode, dataType: headTailDataType,
-                weightStorageDataType: weightStorageDataType,
-                castInForward: { w in widenToHeadTail(w, graph: graph, name: nil) },
-                trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
-                runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
+            switch tailPrecision {
+            case .float32FromPreBatchNorm:
+                x = widenToHeadTail(x, graph: graph, name: "policy_tail_input_f32")
+                x = batchNorm(graph: graph, input: x, channels: pK, name: "policy_pre_bn", taps: taps, bnMode: bnMode, dataType: headTailDataType,
+                    weightStorageDataType: weightStorageDataType,
+                    castInForward: { w in widenToHeadTail(w, graph: graph, name: nil) },
+                    trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
+                    runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
+            case .mixedFinalProjection:
+                x = batchNorm(graph: graph, input: x, channels: pK, name: "policy_pre_bn", taps: taps, bnMode: bnMode,
+                    dataType: Self.mpsDataType(for: arch),
+                    weightStorageDataType: weightStorageDataType,
+                    castInForward: castInForward,
+                    trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
+                    runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
+            }
             x = activation(graph, x, arch, name: "policy_pre_act")
             taps?.record("policy_pre_act", x)
             let convW = graph.variable(
@@ -3077,9 +3101,15 @@ final class ChessNetwork: @unchecked Sendable {
                 dataType: weightStorageDataType, name: "policy_conv_bias")
             trainables.append(convW);    shouldDecay.append(true)
             trainables.append(convBias); shouldDecay.append(false)
-            x = graph.convolution2D(
-                x, weights: widenToHeadTail(convW, graph: graph, name: nil),
-                descriptor: descriptor, name: "policy_conv")
+            switch tailPrecision {
+            case .float32FromPreBatchNorm:
+                x = graph.convolution2D(
+                    x, weights: widenToHeadTail(convW, graph: graph, name: nil),
+                    descriptor: descriptor, name: "policy_conv")
+            case .mixedFinalProjection:
+                x = graph.convolution2D(x, weights: castInForward(convW), descriptor: descriptor, name: "policy_conv")
+                x = widenToHeadTail(x, graph: graph, name: "policy_conv_output_f32")
+            }
             x = graph.addition(x, widenToHeadTail(convBias, graph: graph, name: nil), name: "policy_conv_bias_add")
             let flat = graph.reshape(x, shape: [-1, NSNumber(value: Self.policySize)], name: "policy_flatten")
             return (output: flat, finalWeights: convW)
@@ -3093,12 +3123,22 @@ final class ChessNetwork: @unchecked Sendable {
                 dataType: weightStorageDataType, name: "policy_pre_conv_weights")
             trainables.append(preConvW); shouldDecay.append(true)
             var x = graph.convolution2D(input, weights: castInForward(preConvW), descriptor: descriptor, name: "policy_pre_conv")
-            x = widenToHeadTail(x, graph: graph, name: "policy_tail_input_f32")
-            x = batchNorm(graph: graph, input: x, channels: pK, name: "policy_pre_bn", taps: taps, bnMode: bnMode, dataType: headTailDataType,
-                weightStorageDataType: weightStorageDataType,
-                castInForward: { w in widenToHeadTail(w, graph: graph, name: nil) },
-                trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
-                runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
+            switch tailPrecision {
+            case .float32FromPreBatchNorm:
+                x = widenToHeadTail(x, graph: graph, name: "policy_tail_input_f32")
+                x = batchNorm(graph: graph, input: x, channels: pK, name: "policy_pre_bn", taps: taps, bnMode: bnMode, dataType: headTailDataType,
+                    weightStorageDataType: weightStorageDataType,
+                    castInForward: { w in widenToHeadTail(w, graph: graph, name: nil) },
+                    trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
+                    runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
+            case .mixedFinalProjection:
+                x = batchNorm(graph: graph, input: x, channels: pK, name: "policy_pre_bn", taps: taps, bnMode: bnMode,
+                    dataType: Self.mpsDataType(for: arch),
+                    weightStorageDataType: weightStorageDataType,
+                    castInForward: castInForward,
+                    trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
+                    runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
+            }
             x = activation(graph, x, arch, name: "policy_pre_act")
             taps?.record("policy_pre_act", x)
             let flatSize = pK * Self.boardSize * Self.boardSize
@@ -3113,11 +3153,41 @@ final class ChessNetwork: @unchecked Sendable {
                 dataType: weightStorageDataType, name: "policy_fc_bias")
             trainables.append(fcW);    shouldDecay.append(true)
             trainables.append(fcBias); shouldDecay.append(false)
-            x = graph.matrixMultiplication(
-                primary: x, secondary: widenToHeadTail(fcW, graph: graph, name: nil), name: "policy_fc")
+            switch tailPrecision {
+            case .float32FromPreBatchNorm:
+                x = graph.matrixMultiplication(
+                    primary: x, secondary: widenToHeadTail(fcW, graph: graph, name: nil), name: "policy_fc")
+            case .mixedFinalProjection:
+                x = graph.matrixMultiplication(primary: x, secondary: castInForward(fcW), name: "policy_fc")
+                x = widenToHeadTail(x, graph: graph, name: "policy_fc_output_f32")
+            }
             let logits = graph.addition(x, widenToHeadTail(fcBias, graph: graph, name: nil), name: "policy_fc_bias_add")
             return (output: logits, finalWeights: fcW)
         }
+    }
+
+    /// Where the policy head leaves the compute dtype for fp32. An
+    /// experimental A/B knob for measuring the cost of the head-numerics fix;
+    /// not an architecture field and not saved with a model, because the
+    /// weights are identical under both.
+    ///
+    /// Why it exists: the fix starts the fp32 tail at the policy pre-BN, which
+    /// costs training throughput on models with a wide policy pre-conv.
+    /// Profiling attributed most of that cost to the final projection leaving
+    /// the bf16-input conv kernels for generic fp32 ones, and to fp32 BN / ReLU
+    /// passes over a twice-as-large tensor. `mixedFinalProjection` keeps both
+    /// in the compute dtype and widens only the projection's output. What it
+    /// gives back: the policy features are rounded to the compute dtype before
+    /// the projection again, which the fix's research found harmful on models
+    /// whose projection carries a large shared row. The numerics audit decides
+    /// whether that matters.
+    enum PolicyTailPrecision: String, CaseIterable, Sendable {
+        /// The shipped fix: fp32 from the pre-BN normalize on (from the
+        /// final projection's input for `simple_conv`, which has no pre-block).
+        case float32FromPreBatchNorm = "fp32_from_pre_bn"
+        /// Pre-block and final projection in the compute dtype; the
+        /// projection's output, its bias add and everything after are fp32.
+        case mixedFinalProjection = "mixed_final_projection"
     }
 
     /// Compute dtype of both heads' tails (see `widenToHeadTail`). Every

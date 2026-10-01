@@ -107,6 +107,11 @@ struct CorpusReplayConfig: Sendable {
         var outputURL: URL
     }
     var gpuCapture: GPUCapture? = nil
+
+    /// Where the trainer's policy head leaves the compute dtype for fp32
+    /// (`--policy-tail-precision`). An A/B knob for the head-numerics cost;
+    /// see `ChessNetwork.PolicyTailPrecision`.
+    var policyTailPrecision: ChessNetwork.PolicyTailPrecision = .float32FromPreBatchNorm
 }
 
 enum CorpusReplayError: LocalizedError {
@@ -501,7 +506,9 @@ enum CorpusReplayRunner {
         // including the LR/momentum cycle and its decay envelope, dropout, and
         // the stats / KL-probe intervals. With both cycle flags off the cycle
         // is inert and the static LR and momentum apply, exactly as in the GUI.
-        let trainer = try ChessTrainer(hyperparameters: trainerHyperparameters, arch: arch)
+        let trainer = try ChessTrainer(
+            hyperparameters: trainerHyperparameters, arch: arch, policyTailPrecision: config.policyTailPrecision)
+        emit("[REPLAY] trainer policy tail precision: \(config.policyTailPrecision.rawValue)")
         // A requested GPU capture must be possible before any buffer fill or
         // training is spent on the run (the capture itself starts at its step).
         if let capture = config.gpuCapture {

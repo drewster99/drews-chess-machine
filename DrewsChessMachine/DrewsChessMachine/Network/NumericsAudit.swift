@@ -168,6 +168,9 @@ enum NumericsAudit {
         let modelID: String?
         let trainingStep: Int?
         let computeDataType: String
+        /// Where the audited non-fp32 builds' policy tail began
+        /// (`ChessNetwork.PolicyTailPrecision` raw value).
+        let policyTailPrecision: String
         var exportMetadata: AnalysisExportMetadata? = nil
         let staticChecks: StaticResult
         let dynamicChecks: DynamicResult?
@@ -190,6 +193,7 @@ enum NumericsAudit {
         mastersNote: String?,
         positions: PositionSet?,
         dynamicSkippedReason: String?,
+        policyTailPrecision: ChessNetwork.PolicyTailPrecision,
         modelLabel: String,
         modelID: String?,
         trainingStep: Int?
@@ -197,7 +201,8 @@ enum NumericsAudit {
         let staticResult = try runStatic(names: names, weights: weights, arch: arch, masters: masters, mastersNote: mastersNote)
         var dynamicResult: DynamicResult?
         if let positions {
-            dynamicResult = try await runDynamic(weights: weights, arch: arch, positions: positions)
+            dynamicResult = try await runDynamic(
+                weights: weights, arch: arch, positions: positions, policyTailPrecision: policyTailPrecision)
         }
         let findings = collectFindings(staticResult: staticResult, dynamicResult: dynamicResult)
         let overall = findings.map(\.verdict).max() ?? .fine
@@ -209,6 +214,7 @@ enum NumericsAudit {
             modelID: modelID,
             trainingStep: trainingStep,
             computeDataType: arch.computeDataType.rawValue,
+            policyTailPrecision: policyTailPrecision.rawValue,
             staticChecks: staticResult,
             dynamicChecks: dynamicResult,
             dynamicSkippedReason: positions == nil ? dynamicSkippedReason : nil,

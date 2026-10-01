@@ -95,7 +95,8 @@ extension NumericsAudit {
     static func runDynamic(
         weights: [[Float]],
         arch: NetworkArchitecture,
-        positions: PositionSet
+        positions: PositionSet,
+        policyTailPrecision: ChessNetwork.PolicyTailPrecision
     ) async throws -> DynamicResult {
         guard !positions.positions.isEmpty else { throw NumericsAuditError.positionSetEmpty }
 
@@ -105,7 +106,7 @@ extension NumericsAudit {
             var formatArch = arch
             formatArch.computeDataType = format.computeDataType
             do {
-                let network = try await buildAuditNetwork(arch: formatArch)
+                let network = try await buildAuditNetwork(arch: formatArch, policyTailPrecision: policyTailPrecision)
                 try await network.loadWeights(weights)
                 networks.append((format, network))
             } catch {
@@ -142,12 +143,16 @@ extension NumericsAudit {
     }
 
     /// Build an audit network off the cooperative pool (graph construction
-    /// is long synchronous work).
-    private static func buildAuditNetwork(arch: NetworkArchitecture) async throws -> ChessNetwork {
+    /// is long synchronous work). `policyTailPrecision` is moot for the fp32
+    /// build, where the whole graph is fp32 either way.
+    private static func buildAuditNetwork(
+        arch: NetworkArchitecture, policyTailPrecision: ChessNetwork.PolicyTailPrecision
+    ) async throws -> ChessNetwork {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    continuation.resume(returning: try ChessNetwork(arch: arch, bnMode: .inference, analysisTaps: true))
+                    continuation.resume(returning: try ChessNetwork(
+                        arch: arch, bnMode: .inference, policyTailPrecision: policyTailPrecision, analysisTaps: true))
                 } catch {
                     continuation.resume(throwing: error)
                 }

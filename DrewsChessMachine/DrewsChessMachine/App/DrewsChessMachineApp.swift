@@ -440,6 +440,7 @@ struct DrewsChessMachineApp: App {
                                               (a weight file, one .dcmsession, or a directory of sessions);
                                               one JSON line per checkpoint x set, then exit.
               --analyze-numerics <path> [--numerics-corpus <shard>] [--numerics-out <dir>] [--numerics-static-only]
+                                 [--policy-tail-precision fp32_from_pre_bn|mixed_final_projection]
                                               Numerics audit of a weight file or every weight file under a folder:
                                               fp32/bf16/fp16 fitness of weights and activations, head offsets,
                                               ties and cross-entropy. JSON per checkpoint (default: the analyses
@@ -453,7 +454,10 @@ struct DrewsChessMachineApp: App {
                                               what each rewrites: --derive-model --help.
               --show-default-parameters       Print every default training parameter as JSON and exit.
               --create-parameters-file [<path>] [--force]
-                                              Write parameters.json + parameters.md (default: ./) and exit.
+                                              Write parameters.json + parameters.md and exit. <path> is a folder
+                                              (existing, or ending in /) to write both into, or the .json file
+                                              (the .md goes beside it); default ./parameters.json. --force replaces
+                                              existing files, never a folder.
 
             Offline corpus replay & PGN import (each runs headless, then exits):
               --replay-corpus <dir|id>        Train on a fixed recorded game corpus — a path, or a bare corpus
@@ -475,6 +479,11 @@ struct DrewsChessMachineApp: App {
                                               (with --replay-corpus) Capture training step n as an Xcode GPU trace
                                               document for per-kernel profiling, then keep training. Needs the
                                               environment variable MTL_CAPTURE_ENABLED=1.
+              --policy-tail-precision fp32_from_pre_bn|mixed_final_projection
+                                              (with --replay-corpus or --analyze-numerics) Experimental: where the
+                                              policy head switches to fp32. Default fp32_from_pre_bn (the shipped
+                                              head-numerics fix); mixed_final_projection keeps the pre-block and final
+                                              projection in the compute dtype and widens only the logits.
               --import-pgn <path>             Convert a .pgn / .pgn.zst (e.g. a Lichess monthly dump) into a
                                               corpus, then exit. .zst needs the `zstd` CLI on PATH; standard-start
                                               games only. Filters: --min-rating <elo> (both sides),
@@ -1018,6 +1027,7 @@ struct DrewsChessMachineApp: App {
         var enumerateCheckpoints = false
         var gpuCaptureStep: Int? = nil
         var gpuCaptureOutPath: String? = nil
+        var policyTailPrecision: ChessNetwork.PolicyTailPrecision = .float32FromPreBatchNorm
 
         // Strict validation: a recognized flag with a missing or unparseable
         // value is a HARD error, never a silent default. A mistyped
@@ -1084,6 +1094,14 @@ struct DrewsChessMachineApp: App {
                 gpuCaptureStep = requireInt(arg, nextValue); i += 2
             case "--gpu-capture-out":
                 gpuCaptureOutPath = requireValue(arg, nextValue); i += 2
+            case "--policy-tail-precision":
+                let raw = requireValue(arg, nextValue)
+                guard let parsed = ChessNetwork.PolicyTailPrecision(rawValue: raw) else {
+                    let allowed = ChessNetwork.PolicyTailPrecision.allCases.map(\.rawValue).joined(separator: ", ")
+                    FileHandle.standardError.write(Data("error: --policy-tail-precision expects one of \(allowed), got '\(raw)'\n".utf8))
+                    Darwin.exit(2)
+                }
+                policyTailPrecision = parsed; i += 2
             default:
                 FileHandle.standardError.write(Data("error: unexpected argument '\(arg)' (with --replay-corpus)\n".utf8))
                 Darwin.exit(2)
@@ -1179,7 +1197,8 @@ struct DrewsChessMachineApp: App {
                         step: captureStep,
                         outputURL: URL(fileURLWithPath: (path as NSString).expandingTildeInPath))
                 }
-            }
+            },
+            policyTailPrecision: policyTailPrecision
         )
         CorpusReplayRunner.runAndExit(config: config, params: params)
     }
@@ -1779,8 +1798,9 @@ struct DrewsChessMachineApp: App {
         let corpusFlag = "--numerics-corpus"
         let outFlag = "--numerics-out"
         let staticOnlyFlag = "--numerics-static-only"
+        let policyTailFlag = "--policy-tail-precision"
 
-        let allowedFlags: Set<String> = [flag, corpusFlag, outFlag, staticOnlyFlag]
+        let allowedFlags: Set<String> = [flag, corpusFlag, outFlag, staticOnlyFlag, policyTailFlag]
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
             FileHandle.standardError.write(Data("error: \(flag) does not accept '\(bad)'\n".utf8))
             Darwin.exit(80)
@@ -1800,11 +1820,21 @@ struct DrewsChessMachineApp: App {
             FileHandle.standardError.write(Data("error: \(flag) requires a path (a weight file or a folder)\n".utf8))
             Darwin.exit(82)
         }
+        var policyTailPrecision = ChessNetwork.PolicyTailPrecision.float32FromPreBatchNorm
+        if let raw = value(after: policyTailFlag) {
+            guard let parsed = ChessNetwork.PolicyTailPrecision(rawValue: raw) else {
+                let allowed = ChessNetwork.PolicyTailPrecision.allCases.map(\.rawValue).joined(separator: ", ")
+                FileHandle.standardError.write(Data("error: \(policyTailFlag) expects one of \(allowed), got '\(raw)'\n".utf8))
+                Darwin.exit(81)
+            }
+            policyTailPrecision = parsed
+        }
         NumericsAuditCLI.runAndExit(
             path: path,
             corpusShardPath: value(after: corpusFlag),
             outDirectory: value(after: outFlag),
-            staticOnly: rawArgs.contains(staticOnlyFlag)
+            staticOnly: rawArgs.contains(staticOnlyFlag),
+            policyTailPrecision: policyTailPrecision
         )
     }
 
@@ -1996,61 +2026,14 @@ struct DrewsChessMachineApp: App {
     }
 
     private static func runCreateParametersFileAndExit(path: String, force: Bool) -> Never {
-        let expanded = (path as NSString).expandingTildeInPath
-        let jsonURL = URL(fileURLWithPath: expanded)
-        let mdURL = jsonURL.deletingPathExtension().appendingPathExtension("md")
-
-        let fm = FileManager.default
-        if fm.fileExists(atPath: jsonURL.path) && !force {
-            FileHandle.standardError.write(Data("error: \(jsonURL.path) already exists; pass --force to overwrite\n".utf8))
-            Darwin.exit(7)
-        }
-
         do {
-            let jsonData = try TrainingParameters.defaultsJSON()
-            let mdData = Data(TrainingParameters.defaultsMarkdown().utf8)
-
-            // Atomic write via temp + rename.
-            let jsonTmp = jsonURL.appendingPathExtension("tmp")
-            let mdTmp = mdURL.appendingPathExtension("tmp")
-            do {
-                try jsonData.write(to: jsonTmp, options: [.atomic])
-                try mdData.write(to: mdTmp, options: [.atomic])
-            } catch {
-                try? fm.removeItem(at: jsonTmp)
-                try? fm.removeItem(at: mdTmp)
-                throw error
-            }
-            // Both temp files written successfully; promote both. If
-            // either rename fails, attempt to clean up the other so we
-            // don't leave a half-applied state on disk.
-            do {
-                if fm.fileExists(atPath: jsonURL.path) {
-                    try fm.removeItem(at: jsonURL)
-                }
-                try fm.moveItem(at: jsonTmp, to: jsonURL)
-            } catch {
-                try? fm.removeItem(at: jsonTmp)
-                try? fm.removeItem(at: mdTmp)
-                throw error
-            }
-            do {
-                if fm.fileExists(atPath: mdURL.path) {
-                    try fm.removeItem(at: mdURL)
-                }
-                try fm.moveItem(at: mdTmp, to: mdURL)
-            } catch {
-                try? fm.removeItem(at: mdTmp)
-                // jsonURL is already in place; per the plan, parameters.md
-                // is overwritten freely "only when parameters.json is also
-                // being written". The json write succeeded; surfacing the
-                // md failure as a non-zero exit is the conservative choice.
-                throw error
-            }
-
-            FileHandle.standardOutput.write(Data("wrote: \(jsonURL.path)\n".utf8))
-            FileHandle.standardOutput.write(Data("wrote: \(mdURL.path)\n".utf8))
+            let written = try ParametersFileWriter.writeDefaults(path: path, force: force)
+            FileHandle.standardOutput.write(Data("wrote: \(written.json.path)\n".utf8))
+            FileHandle.standardOutput.write(Data("wrote: \(written.markdown.path)\n".utf8))
             Darwin.exit(0)
+        } catch let error as ParametersFileWriterError {
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+            Darwin.exit(7)
         } catch {
             FileHandle.standardError.write(Data("error: \(error)\n".utf8))
             Darwin.exit(1)

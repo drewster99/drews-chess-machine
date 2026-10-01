@@ -134,7 +134,8 @@ extension ChessTrainer {
     convenience init(
         hyperparameters: TrainerHyperparameters,
         arch: NetworkArchitecture,
-        bf16CastInForward: Bool = false
+        bf16CastInForward: Bool = false,
+        policyTailPrecision: ChessNetwork.PolicyTailPrecision = .float32FromPreBatchNorm
     ) throws {
         try self.init(
             learningRate: hyperparameters.learningRate,
@@ -152,7 +153,8 @@ extension ChessTrainer {
             sqrtBatchScalingForLR: hyperparameters.sqrtBatchScalingForLR,
             lrWarmupSteps: hyperparameters.lrWarmupSteps,
             arch: arch,
-            bf16CastInForward: bf16CastInForward
+            bf16CastInForward: bf16CastInForward,
+            policyTailPrecision: policyTailPrecision
         )
         hyperparameters.apply(to: self)
     }

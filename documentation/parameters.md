@@ -32,13 +32,13 @@ Label-smoothing coefficient on the value-head W/D/L cross-entropy target. The ta
 
 Global L2 norm cap for gradient clipping. Above this, gradients are scaled down before the SGD step.
 
-**Type:** Double · **Range:** 0.1..1000.0 · **Default:** 30.0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Double · **Range:** 0.1..1000.0 · **Default:** 15.0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### weight_decay
 
 L2 weight decay coefficient. Couples with batch size and the number of update steps per epoch.
 
-**Type:** Double · **Range:** 0.0..0.1 · **Default:** 0.0001 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Double · **Range:** 0.0..0.1 · **Default:** 0.0003 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### dropout_rate
 
@@ -62,7 +62,7 @@ Per-component weighting on the VALUE-LOSS TENSOR inside total_loss = valueLossWe
 
 SGD-with-momentum optimizer learning rate. Lower is slower but more stable. Pairs with sqrt_batch_scaling_lr. Note: under the bf16 weight path, updates below the bf16 weight ULP (~0.8% of a weight's magnitude) round away, so LRs much below ~1e-3 are largely no-ops.
 
-**Type:** Double · **Range:** 1e-07..1.0 · **Default:** 0.01 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Double · **Range:** 1e-07..1.0 · **Default:** 0.001 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### momentum_coeff
 
@@ -86,7 +86,7 @@ When true, the policy gradient runs two cross-entropies — positive-advantage s
 
 Number of training steps over which the learning rate linearly ramps from zero to its target.
 
-**Type:** Int · **Range:** 0..100000 · **Default:** 500 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Int · **Range:** 0..100000 · **Default:** 1000 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### draw_penalty
 
@@ -100,19 +100,19 @@ Contempt factor. When greater than 0, each drawn game's training outcome is rewr
 
 Initial sampling temperature for self-play games at game-total ply 0 (the starting position). Decays toward target by self_play_tau_decay_per_ply each game-total ply (i.e. each half-move from either side advances the schedule).
 
-**Type:** Double · **Range:** 0.05..5.0 · **Default:** 1.0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Double · **Range:** 0.01..5.0 · **Default:** 0.2 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### self_play_target_tau
 
 Floor sampling temperature for self-play games — start_tau decays toward this value.
 
-**Type:** Double · **Range:** 0.05..5.0 · **Default:** 0.5 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Double · **Range:** 0.01..5.0 · **Default:** 0.02 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### self_play_tau_decay_per_ply
 
 Decay applied to tau on every game-total ply (each half-move from either side), moving start_tau toward target_tau during a self-play game. tau(ply) = max(target_tau, start_tau − decay·ply).
 
-**Type:** Double · **Range:** 0.0..1.0 · **Default:** 0.007 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Double · **Range:** 0.0..1.0 · **Default:** 0.02 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### self_play_draw_keep_fraction
 
@@ -154,15 +154,15 @@ Number of consecutive plies a self-play position must clear the pDraw threshold 
 
 ### arena_start_tau
 
-Initial sampling temperature for arena games. Tighter than self-play to improve W/L/D signal.
+Initial sampling temperature for arena games. Decays toward Arena Target Tau by Arena Tau Decay Per Ply each game-total ply.
 
-**Type:** Double · **Range:** 0.05..5.0 · **Default:** 0.6 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Double · **Range:** 0.01..5.0 · **Default:** 0.2 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### arena_target_tau
 
 Floor sampling temperature for arena games.
 
-**Type:** Double · **Range:** 0.05..5.0 · **Default:** 0.2 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Double · **Range:** 0.01..5.0 · **Default:** 0.02 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### arena_tau_decay_per_ply
 
@@ -193,6 +193,48 @@ Automatic arena interval in seconds; the play-and-train loop schedules a new are
 Number of concurrent arena games. Higher = faster arena throughput at cost of GPU contention.
 
 **Type:** Int · **Range:** 1..4096 · **Default:** 400 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### arena_promotion_criterion
+
+Which rule decides promotion: 0 = score threshold (candidate score over a fixed game count must clear Arena Promote Threshold), 1 = SPRT (sequential test of elo0 vs elo1 at error rates alpha/beta, running until the evidence crosses a bound). SPRT ignores Arena Games Per Tournament and Arena Promote Threshold.
+
+**Type:** Int · **Range:** 0..1 · **Default:** 1
+
+### arena_sprt_elo0
+
+SPRT null hypothesis, in Elo: the candidate is exactly this many Elo stronger than the champion. Usually 0 -- 'no improvement'. Must be below elo1.
+
+**Type:** Double · **Range:** -50.0..50.0 · **Default:** 0.0
+
+### arena_sprt_elo1
+
+SPRT alternative hypothesis, in Elo: the smallest improvement the test is asked to detect. Smaller values need far more games (simulated at an 0.85 draw rate: ~720 median games at 10 Elo, ~190 at 20, ~60 at 35).
+
+**Type:** Double · **Range:** -50.0..50.0 · **Default:** 10.0
+
+### arena_sprt_alpha
+
+SPRT type I error rate: long-run probability of promoting a candidate that is only elo0 strong. Lower = stricter promotion, more games per decision.
+
+**Type:** Double · **Range:** 0.001..0.5 · **Default:** 0.05
+
+### arena_sprt_beta
+
+SPRT type II error rate: long-run probability of rejecting a candidate that genuinely is elo1 strong. Lower = fewer missed improvements, more games per decision. alpha + beta must be below 1.
+
+**Type:** Double · **Range:** 0.001..0.5 · **Default:** 0.05
+
+### arena_sprt_min_games
+
+Games that must complete before the SPRT may fire at all. Guards against an early streak crossing a boundary on almost no evidence.
+
+**Type:** Int · **Range:** 2..10000 · **Default:** 32
+
+### arena_sprt_max_games
+
+Runaway guard for the SPRT; 0 means unbounded. Reaching it with the evidence still between the bounds is INCONCLUSIVE and never promotes. Set it far above the expected decision point -- hitting it routinely means elo0 and elo1 are too close together, not that the candidate is bad.
+
+**Type:** Int · **Range:** 0..1000000 · **Default:** 20000
 
 ## Replay Buffer
 
@@ -250,7 +292,7 @@ Stratify training minibatches by game phase. When ON, each batch is drawn with r
 
 Parallel self-play game count. More = faster replay-buffer fill but more GPU contention.
 
-**Type:** Int · **Range:** 1..8192 · **Default:** 800 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Int · **Range:** 1..8192 · **Default:** 180 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### training_step_delay_ms
 
@@ -262,7 +304,7 @@ Delay between trainer SGD steps in milliseconds. Auto-adjusted by ReplayRatioCon
 
 Per-game-per-worker delay between self-play games in milliseconds. Used only when replay-ratio auto-adjust is OFF; auto-adjust on lets the controller manage it.
 
-**Type:** Int · **Range:** 0..10000 · **Default:** 3000 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Int · **Range:** 0..10000 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### training_batch_size
 
@@ -304,59 +346,65 @@ Compute and emit [BATCH-STATS] every N training batches. 0 disables. Cost is ~1m
 
 **Type:** Int · **Range:** 0..10000 · **Default:** 10 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
+### kl_probe_interval
+
+Measure KL(policy before the SGD step || policy after) on the training minibatch every N steps, and chart it with its across-batch spread. 0 disables. This is the only metric that shows how far a step moves the policy in FUNCTION space -- gNorm measures the step in parameter space, and the two diverge: a large gradient across a flat region barely moves the distribution, a small one across a sharp region can move it a lot. Costs one extra forward pass on probe steps only (roughly 8-11% of a training step at batch 4096, so ~1% at interval 10). The probe holds the dropout RNG steady across both of its forward passes, so the measurement isolates the weight update at any dropout rate.
+
+**Type:** Int · **Range:** 0..10000 · **Default:** 100 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
 ## LR/Momentum Cycling
 
 ### lr_cycle_enabled
 
-Enable the repeating learning-rate cycle. When on, the base LR each step is set by the cycle (geometric interpolation between LR Cycle Min and Max over LR Cycle Period Steps) instead of the static Learning Rate, then composed with the existing warmup × √batch multipliers. Overrides the static base-LR schedule while enabled.
+Enable the repeating learning-rate cycle. When on, the base LR each step is set by the cycle (geometric interpolation between LR Cycle Min and Max over LR Cycle Period Steps) instead of the static Learning Rate, then composed with the √batch multiplier. The cycle begins when LR warmup ends; during warmup the LR ramps linearly up to the cycle's starting value. Overrides the static base-LR schedule while enabled.
 
-**Type:** Bool · **Range:** — · **Default:** false · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Bool · **Range:** — · **Default:** true · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### lr_cycle_period_steps
 
 Full up-then-down period of the LR cycle, in optimizer steps. A sensible default is 2–8× the replay-buffer turnover (bufferCapacity / batchSize), the self-play analog of an epoch.
 
-**Type:** Int · **Range:** 1..10000000 · **Default:** 2000 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Int · **Range:** 1..10000000 · **Default:** 20000 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### lr_cycle_count
 
-Number of LR cycles to run before freezing at the cycle boundary (LR Cycle Min, or Max when inverted). 0 = unbounded (repeat forever), the default for open-ended self-play.
+Number of LR cycles (counted from the end of warmup) to run before freezing at the cycle boundary (LR Cycle Min, or Max when inverted). 0 = unbounded (repeat forever), the default for open-ended self-play.
 
 **Type:** Int · **Range:** 0..1000000 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### lr_cycle_min
 
-Absolute learning rate at the LR cycle's low point (the period boundaries when not inverted). Must be > 0 — geometric interpolation is undefined at zero, and LR Cycle Max must be ≥ this value or the cycle is ignored.
+Absolute learning rate at the LR cycle's trough (the period boundaries when not inverted) at the start of the decay horizon — the trough's start value. The trough decays geometrically from here to LR Cycle Trough End over LR Cycle Decay Horizon. Must be > 0 — geometric interpolation is undefined at zero, and LR Cycle Max must be ≥ this value or the cycle is ignored.
 
 **Type:** Double · **Range:** 1e-07..1.0 · **Default:** 0.001 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### lr_cycle_max
 
-Absolute learning rate at the LR cycle's high point (the period midpoint when not inverted). Must be ≥ LR Cycle Min.
+Absolute learning rate at the LR cycle's peak (the period midpoint when not inverted) at the start of the decay horizon — the peak's start value. The peak decays geometrically from here to LR Cycle Peak End over LR Cycle Decay Horizon. Must be ≥ LR Cycle Min.
 
-**Type:** Double · **Range:** 1e-07..1.0 · **Default:** 0.03 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Double · **Range:** 1e-07..1.0 · **Default:** 0.1 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### lr_cycle_invert
 
-Flip the LR waveform so the cycle starts at LR Cycle Max and dips to Min at the midpoint. Normally left off (LR rises to its peak at the midpoint); momentum is the channel usually inverted.
+Flip the LR waveform so the cycle starts at its peak and dips to its trough at the midpoint. Default ON, so each cycle opens with a high-LR burst and anneals down into the trough before the next one.
 
-**Type:** Bool · **Range:** — · **Default:** false · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Bool · **Range:** — · **Default:** true · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### momentum_cycle_enabled
 
-Enable the repeating Polyak-momentum cycle. When on, the momentum coefficient each step is set by the cycle (linear interpolation between Momentum Cycle Min and Max) instead of the static Momentum Coefficient.
+Enable the repeating Polyak-momentum cycle. When on, the momentum coefficient each step is set by the cycle (linear interpolation between Momentum Cycle Min and Max) instead of the static Momentum Coefficient. Like the LR cycle, it begins when LR warmup ends and holds its starting value during warmup.
 
-**Type:** Bool · **Range:** — · **Default:** false · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Bool · **Range:** — · **Default:** true · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### momentum_cycle_period_steps
 
 Full up-then-down period of the momentum cycle, in optimizer steps. Set equal to the LR Cycle Period (with Momentum Cycle Invert on) for Smith-style inverse coupling — high LR paired with low momentum.
 
-**Type:** Int · **Range:** 1..10000000 · **Default:** 2000 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Int · **Range:** 1..10000000 · **Default:** 1000 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### momentum_cycle_count
 
-Number of momentum cycles before freezing at the cycle boundary. 0 = unbounded (the default).
+Number of momentum cycles (counted from the end of warmup) before freezing at the cycle boundary. 0 = unbounded (the default).
 
 **Type:** Int · **Range:** 0..1000000 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
@@ -364,27 +412,75 @@ Number of momentum cycles before freezing at the cycle boundary. 0 = unbounded (
 
 Polyak momentum at the cycle's low point (the period midpoint when inverted, where LR peaks). Smith's recommendation is ~0.85.
 
-**Type:** Double · **Range:** 0.0..0.99 · **Default:** 0.85 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Double · **Range:** 0.0..0.99 · **Default:** 0.75 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### momentum_cycle_max
 
 Polyak momentum at the cycle's high point (the period boundaries when inverted, where LR bottoms). Smith's recommendation is ~0.95.
 
-**Type:** Double · **Range:** 0.0..0.99 · **Default:** 0.95 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Double · **Range:** 0.0..0.99 · **Default:** 0.9 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### momentum_cycle_invert
 
-Flip the momentum waveform so it starts at Momentum Cycle Max and dips to Min at the midpoint. Default ON: at an equal period this makes momentum the inverse of LR (high LR ↔ low momentum), Smith's super-convergence coupling.
+Flip the momentum waveform so it starts at Momentum Cycle Max and dips to Min at the midpoint. Default OFF. Turned on at a period equal to the LR Cycle Period, this makes momentum the inverse of LR (high LR ↔ low momentum), Smith's super-convergence coupling.
+
+**Type:** Bool · **Range:** — · **Default:** false · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### lr_cycle_peak_end
+
+LR cycle peak at the end of the decay horizon, and held there afterwards. The peak decays geometrically from LR Cycle Max to this value across LR Cycle Decay Horizon. Must be > 0 and ≥ LR Cycle Trough End. Ignored when the horizon is 0.
+
+**Type:** Double · **Range:** 1e-07..1.0 · **Default:** 0.0001 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### lr_cycle_trough_end
+
+LR cycle trough at the end of the decay horizon, and held there afterwards. The trough decays geometrically from LR Cycle Min to this value across LR Cycle Decay Horizon. Must be > 0 and ≤ LR Cycle Peak End. Ignored when the horizon is 0.
+
+**Type:** Double · **Range:** 1e-07..1.0 · **Default:** 1e-06 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### lr_cycle_decay_horizon_steps
+
+Number of cycle steps (counted from the end of LR warmup) over which the LR cycle's peak and trough decay from their start values (LR Cycle Max / Min) to their end values, and over which follow-mode momentum bounds drift from start to end. After the horizon the envelope holds at the end values and cycling continues. 0 = no decay (the envelope stays at its start values).
+
+**Type:** Int · **Range:** 0..1000000000 · **Default:** 1000000 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### momentum_follows_lr_cycle
+
+When on (and momentum cycling is enabled), momentum uses the LR cycle's period and phase, inverted: lowest at the LR peak, highest at the LR trough. Its low and high bounds move linearly from the Follow Start values to the Follow End values over LR Cycle Decay Horizon. The separate momentum cycle's period, count, min, max and invert settings are then ignored. Requires the LR cycle to be enabled; otherwise the static momentum coefficient applies.
 
 **Type:** Bool · **Range:** — · **Default:** true · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### momentum_follow_start_low
+
+Follow-mode momentum at the LR peak, at the start of the decay horizon. Must be ≤ Momentum Follow Start High.
+
+**Type:** Double · **Range:** 0.0..0.99 · **Default:** 0.85 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### momentum_follow_start_high
+
+Follow-mode momentum at the LR trough, at the start of the decay horizon.
+
+**Type:** Double · **Range:** 0.0..0.99 · **Default:** 0.95 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### momentum_follow_end_low
+
+Follow-mode momentum at the LR peak, at and after the end of the decay horizon. Must be ≤ Momentum Follow End High.
+
+**Type:** Double · **Range:** 0.0..0.99 · **Default:** 0.9 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### momentum_follow_end_high
+
+Follow-mode momentum at the LR trough, at and after the end of the decay horizon.
+
+**Type:** Double · **Range:** 0.0..0.99 · **Default:** 0.95 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ## Sessions
 
 ### periodic_autosave_interval_sec
 
-Cadence of the periodic full-session autosave while Play-and-Train is active, in seconds. The default 14400 = 4 hours. Read live: the heartbeat reconciles a mid-session change against the running PeriodicSaveController and re-anchors the next-save deadline, so a shorter interval takes effect without restarting Play-and-Train. Does not affect manual saves or post-promotion autosaves.
+Cadence of the periodic full-session autosave while Play-and-Train is active, in seconds. The default 21600 = 6 hours. Read live: the heartbeat reconciles a mid-session change against the running PeriodicSaveController and re-anchors the next-save deadline, so a shorter interval takes effect without restarting Play-and-Train. Does not affect manual saves or post-promotion autosaves.
 
-**Type:** Double · **Range:** 60.0..604800.0 · **Default:** 14400.0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Double · **Range:** 60.0..604800.0 · **Default:** 21600.0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### max_periodic_autosaves_kept
 

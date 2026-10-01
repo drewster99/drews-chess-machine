@@ -31,6 +31,7 @@ extension NumericsAudit {
             mastersNote: mastersNote,
             positions: positions,
             dynamicSkippedReason: nil,
+            policyTailPrecision: network.policyTailPrecision,
             modelLabel: modelLabel,
             modelID: modelID,
             trainingStep: trainingStep
