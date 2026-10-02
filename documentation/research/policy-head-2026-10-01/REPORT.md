@@ -2,6 +2,149 @@
 
 Read-only, weights-only survey of the policy head of every saved DCM checkpoint: the live leaky-FC1 run, the SE-style experiment (all arms and seeds), and every lineage whose longest segment passed 75,000 training steps. No source file, model file or git state was changed; nothing ran on the GPU. Checkpoints are identified by their `__metadata__` (`model_id`, `training_step`, `architecture`), never by filename. The leaky-FC1 run was live; its latest checkpoint at analysis time was `20261001-43-NbWz` @ 12,000.
 
+## Policy head architectures and terms used here
+
+**What the policy head does.** It turns the tower's output (C channels × 8 × 8
+squares) into 4,864 move logits: 76 move-type channels × 64 from-squares. Logit
+index = channel × 64 + row × 8 + col, in the side-to-move frame
+(`PolicyEncoding.swift`). Illegal moves are masked on the CPU after the softmax.
+
+**Three styles exist** (`ChessNetwork.policyHead`); every saved checkpoint uses
+the first two:
+
+| style | layers | used by (in this survey) |
+|---|---|---|
+| `simple_conv` | 1×1 conv C → 76 (+ bias) | ykkk; KbHZ and sMe9 (fp32 self-play) |
+| `intermediate_conv` | **pre-block** (1×1 pre-conv C → K, no bias → BatchNorm → activation) → 1×1 final conv K → 76 (+ bias) | every other line |
+| `fc_bottleneck` | pre-block → fully connected K·64 → 4,864 (+ bias) | none |
+
+**The pre-block** is the first half of `intermediate_conv`: the pre-conv, its
+BatchNorm and the activation (ReLU on every line surveyed). It turns the tower
+output into K "policy feature" channels, which the final conv then combines
+into move logits. Tensors: `policy.pre_conv.weight` [K, C, 1, 1],
+`policy.pre_bn.{weight (γ), bias (β), running_mean, running_var}` [K], and the
+final conv `policy.conv.weight` [76, K, 1, 1] + `policy.conv.bias` [76].
+
+Example — the current SE-experiment / leaky-FC1 head (C = 128, K = 128):
+
+| step | layer | shape per position | params |
+|---|---|---|---:|
+| 1 | tower output | 128 × 8 × 8 | |
+| 2 | pre-conv 1×1, 128 → 128, no bias | 128 × 8 × 8 | 16,384 |
+| 3 | BatchNorm (γ, β; running mean/var) | 128 × 8 × 8 | 256 |
+| 4 | ReLU | 128 × 8 × 8 | |
+| 5 | final conv 1×1, 128 → 76, + bias | 76 × 8 × 8 | 9,804 |
+| 6 | flatten → logits | 4,864 | |
+| | **total** | | **26,444** |
+
+K per lineage: 128 on v5, mini2b, coxw, the SE / leaky runs and most self-play
+lines; **512** on the qeu8 → Ejp0 family (C = 64, so the pre-conv widens 64 → 512)
+and nt8y; 32 on LMGh.
+
+**`k`** is a pre-block channel index, 0 … K−1 (e.g. "Ejp0 k=273" = channel 273 of
+512). Channel k has pre-conv row `pre_conv.weight[k, :]`, BN values γ[k], β[k],
+running_mean[k], running_var[k], and is read by final-conv column
+`conv.weight[:, k]`. Indices carry no meaning beyond identity; lines forked from
+one seed share indices (both Ejp0 self-play runs inherit the seed's channels).
+
+**β/|γ|, "dead", "always on".** ReLU sets negative values to 0 and passes
+positives unchanged. After BatchNorm, channel k's values are modelled as normal
+with mean β and spread |γ|, so β/|γ| says how many spreads its typical value
+sits above 0 — and therefore how often ReLU zeroes it:
+
+| β/\|γ\| | share of values ReLU zeroes | label used here |
+|---:|---:|---|
+| −3 | 99.87% | dead (≈ never on) |
+| −2 | 97.7% | mostly off |
+| 0 | 50% | |
+| +0.6 … +0.9 | 27% … 18% | typical channel on these lines |
+| +2 | 2.3% | |
+| +3 | 0.13% | always on (≈ never zeroed) |
+| +10 | ~0 | (Ejp0 k=273) |
+
+A healthy channel switches on and off across positions; that switching is the
+nonlinearity that makes it a feature. An **always-on** channel is never zeroed,
+so ReLU does nothing to it: it becomes a linear pass-through riding on a large
+constant (its mean). The final conv multiplies that constant by the channel's
+column and adds the result to every logit — a hidden second bias. Softmax
+ignores anything added to every logit, so the loss never pulls it back; that is
+how these channels came to carry ~40% of the shared policy offset on the long
+replay lines.
+
+**Other columns:** *running var / median* — how much more variable the
+channel's pre-conv output is than the median channel (BN normalizes it away,
+but it shows the pre-conv row grew); *final-conv column norm* — ‖conv.weight[:, k]‖,
+how hard the final conv reads channel k; *added to every logit* — that
+channel's constant contribution to the shared logit level (column mean × the
+channel's mean activation).
+
+### Always-on channels, every one (lineage-latest)
+
+**v5** (0pTW, cum step 859,769; 11 of 128; median final-conv column norm 4.03;
+β/|γ| median over all channels +0.94)
+
+| k | β/\|γ\| | P(on) | running var / median | final-conv column norm | added to every logit |
+|---:|---:|---:|---:|---:|---:|
+| 34 | +9.60 | 1.0000 | 1,343 | 17.40 | −17.20 |
+| 119 | +9.16 | 1.0000 | 598 | 14.30 | −11.70 |
+| 62 | +6.53 | 1.0000 | 789 | 14.61 | −11.87 |
+| 111 | +5.49 | 1.0000 | 1,373 | 16.67 | −15.16 |
+| 126 | +4.49 | 1.0000 | 1.5 | 6.50 | −3.01 |
+| 97 | +4.18 | 1.0000 | 1,248 | 15.95 | −13.53 |
+| 42 | +3.98 | 1.0000 | 664 | 14.15 | −10.48 |
+| 28 | +3.65 | 0.9999 | 139 | 10.84 | −9.33 |
+| 105 | +3.52 | 0.9998 | 1,123 | 15.33 | −12.13 |
+| 65 | +3.35 | 0.9996 | 0.8 | 5.19 | −1.48 |
+| 61 | +3.20 | 0.9993 | 481 | 13.49 | −9.21 |
+
+**Ejp0 replay** (@ 1,397,000; 20 of 512; median column norm 0.85; β/|γ| median +0.64)
+
+| k | β/\|γ\| | P(on) | running var / median | final-conv column norm | added to every logit |
+|---:|---:|---:|---:|---:|---:|
+| 273 | +10.12 | 1.0000 | 1,220 | 8.08 | −8.57 |
+| 163 | +8.33 | 1.0000 | 813 | 7.11 | −6.52 |
+| 230 | +7.91 | 1.0000 | 823 | 7.04 | −6.38 |
+| 244 | +6.38 | 1.0000 | 269 | 6.32 | −4.98 |
+| 52 | +5.97 | 1.0000 | 266 | 5.79 | −4.15 |
+| 332 | +5.78 | 1.0000 | 238 | 5.46 | −3.67 |
+| 415 | +5.69 | 1.0000 | 207 | 4.80 | −2.84 |
+| 79 | +5.58 | 1.0000 | 231 | 5.59 | −3.82 |
+| 155 | +5.44 | 1.0000 | 203 | 4.88 | −2.94 |
+| 387 | +5.44 | 1.0000 | 219 | 5.01 | −3.09 |
+| 347 | +4.89 | 1.0000 | 194 | 4.87 | −2.88 |
+| 2 | +4.34 | 1.0000 | 183 | 4.57 | −2.50 |
+| 350 | +4.19 | 1.0000 | 182 | 4.53 | −2.45 |
+| 489 | +4.10 | 1.0000 | 215 | 4.91 | −2.87 |
+| 157 | +3.97 | 1.0000 | 148 | 4.06 | −1.95 |
+| 133 | +3.50 | 0.9998 | 186 | 4.35 | −2.20 |
+| 359 | +3.49 | 0.9998 | 182 | 4.25 | −2.10 |
+| 169 | +3.24 | 0.9994 | 159 | 3.84 | −1.71 |
+| 150 | +3.18 | 0.9993 | 132 | 3.51 | −1.42 |
+| 312 | +3.17 | 0.9992 | 126 | 3.58 | −1.51 |
+
+**Ejp0 self-play run 2 champion** (@ 1,186,322; 16 of 512 — the same channel
+indices as the replay line, inherited from the 1.3M seed, each sitting less far
+positive; median column norm 0.83)
+
+| k | β/\|γ\| | P(on) | running var / median | final-conv column norm | added to every logit |
+|---:|---:|---:|---:|---:|---:|
+| 273 | +7.79 | 1.0000 | 1,696 | 6.75 | −7.01 |
+| 163 | +6.61 | 1.0000 | 1,307 | 5.94 | −5.34 |
+| 230 | +6.25 | 1.0000 | 1,099 | 5.90 | −5.22 |
+| 244 | +5.13 | 1.0000 | 477 | 5.26 | −4.01 |
+| 52 | +4.82 | 1.0000 | 382 | 4.87 | −3.38 |
+| 332 | +4.73 | 1.0000 | 341 | 4.58 | −2.99 |
+| 415 | +4.64 | 1.0000 | 303 | 3.98 | −2.28 |
+| 79 | +4.54 | 1.0000 | 372 | 4.69 | −3.11 |
+| 155 | +4.50 | 1.0000 | 309 | 4.03 | −2.34 |
+| 387 | +4.46 | 1.0000 | 325 | 4.16 | −2.48 |
+| 347 | +4.05 | 1.0000 | 303 | 4.03 | −2.31 |
+| 2 | +3.65 | 0.9999 | 284 | 3.78 | −2.01 |
+| 350 | +3.54 | 0.9998 | 280 | 3.76 | −1.97 |
+| 489 | +3.47 | 0.9997 | 330 | 4.07 | −2.29 |
+| 157 | +3.38 | 0.9996 | 236 | 3.38 | −1.58 |
+| 133 | +3.01 | 0.9987 | 262 | 3.62 | −1.76 |
+
 ## Headline
 
 - **Nothing in any policy head is dead, stuck at zero gradient, or non-finite.**
