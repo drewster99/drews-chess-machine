@@ -122,6 +122,31 @@ the step; branch scale from the enumerated checkpoint, identified by metadata).
 - Reading so far: removing ReZero costs a slower first ~3k steps and nothing after;
   no evidence it helps.
 
+## Review at 20,000 steps (`review.py 20000`)
+
+| | ReZero s1 (`se_none`) | no ReZero s1 |
+|---|---:|---:|
+| pElo / NLL | 1298.5 / 2.4057 | 1289.3 / 2.4179 |
+| loss / policy / value | 3.6212 / 2.8038 / 0.8081 | 3.6065 / 2.7890 / 0.8093 |
+| policy entropy / gNorm | 2.863 / 0.838 | 2.865 / 0.887 |
+| branch scale per block | 6.50 / 6.57 / 7.09 | 15.24 / 15.65 / 17.25 |
+
+Tallies against ReZero seed 1 (pElo; the 2k–3k lag excluded by starting at 4k):
+
+| | checkpoints | ahead / behind | mean pElo difference | lower NLL |
+|---|---:|---|---:|---:|
+| no ReZero s1, 4k–20k | 17 | 6 / 11 | −1.6 | 8 / 17 |
+| no ReZero s2, 4k–13k | 10 | 10 / 0 | +23.4 | 9 / 10 |
+
+- Seed 1 is level with ReZero (mean −1.6, NLL lower about half the time, and the
+  sign of the gap alternates checkpoint to checkpoint from 16k on). Seed 2 has led
+  ReZero at every checkpoint from 4k. The two no-ReZero seeds disagree by about
+  25 pElo — the seed spread on this setup.
+- Branch scales are unchanged from 10k and 15k in both designs.
+- Reading at 20k: no evidence ReZero helps after the first ~3k steps; whether
+  removing it helps depends on which no-ReZero seed you look at, which says the
+  effect, if any, is smaller than seed noise.
+
 ## Reproduce
 
 ```
