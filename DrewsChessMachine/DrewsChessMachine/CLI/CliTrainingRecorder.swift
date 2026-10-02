@@ -21,6 +21,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         var arenas: [Arena] = []
         var stats: [StatsLine] = []
         var probes: [CandidateTest] = []
+        var layerHealth: [LayerHealthRecord] = []
         /// Session ID captured at first append for inclusion in the
         /// top-level JSON. Written through `setSessionID(_:)` so the
         /// recorder doesn't have to read the main-actor-isolated
@@ -72,6 +73,10 @@ final class CliTrainingRecorder: @unchecked Sendable {
         lock.withLock { $0.probes.append(p) }
     }
 
+    func appendLayerHealth(_ record: LayerHealthRecord) {
+        lock.withLock { $0.layerHealth.append(record) }
+    }
+
     /// Cheap lock-protected counts used by the post-write log line
     /// so the caller doesn't have to inspect the JSON file after
     /// writing it to confirm how many events were captured.
@@ -98,6 +103,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
                 arenaResults: state.arenas,
                 stats: state.stats,
                 candidateTests: state.probes,
+                layerHealth: state.layerHealth,
                 recordingCorpusID: state.recordingCorpusID
             )
         }
@@ -227,6 +233,9 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let arenaResults: [Arena]
         let stats: [StatsLine]
         let candidateTests: [CandidateTest]
+        /// One full layer-health summary per trainer checkpoint save, in
+        /// save order. The live `[LAYER-HEALTH]` lines are log-only.
+        let layerHealth: [LayerHealthRecord]
         let recordingCorpusID: String?
 
         enum CodingKeys: String, CodingKey {
@@ -240,7 +249,31 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case arenaResults = "arena_results"
             case stats
             case candidateTests = "candidate_tests"
+            case layerHealth = "layer_health"
             case recordingCorpusID = "recording_corpus_id"
+        }
+    }
+
+    // MARK: - Layer health
+
+    /// The full `LayerHealthSummary` of one trainer checkpoint save
+    /// (`LayerHealthLog.checkpoint`), tagged with when it was taken.
+    struct LayerHealthRecord: Encodable, Sendable {
+        /// The run's own step count at the save (segment-local on the CLI
+        /// paths, matching the `stats` lines' `steps`).
+        let step: Int
+        /// The trainer's completed-step clock at the save, when known.
+        let trainerStep: Int?
+        /// The save's context, e.g. `replay-autosave` (same text as the
+        /// `[LAYER-HEALTH] checkpoint` log line).
+        let context: String
+        let summary: LayerHealthSummary
+
+        enum CodingKeys: String, CodingKey {
+            case step
+            case trainerStep = "trainer_step"
+            case context
+            case summary
         }
     }
 

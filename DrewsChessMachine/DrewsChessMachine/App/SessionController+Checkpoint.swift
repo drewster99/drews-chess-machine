@@ -451,6 +451,13 @@ extension SessionController {
                 periodicSaveController?.noteSuccessfulSave(at: Date())
                 checkpoint?.lastSavedAt = Date()
                 checkpoint?.lastResumedAt = nil
+                Self.logSavedTrainerLayerHealth(
+                    arch: sessionArch,
+                    trainerWeights: trainerWeights,
+                    context: "session-\(diskTag)",
+                    step: trainingStep,
+                    trainerStep: trainerSnapshot.schedule.completedTrainSteps,
+                    recorder: cliRecorder)
                 // Periodic and Promote Trainee Now saves are in the
                 // automatic-save retention pool; manual and SIGUSR2 saves
                 // are not, and the helper decides that from the disk tag.
@@ -458,6 +465,34 @@ extension SessionController {
             case .failure(let error):
                 checkpoint?.setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Log the full `[LAYER-HEALTH]` checkpoint block for a trainer state a
+    /// session save just wrote, and record it on the `--output` recorder
+    /// when there is one. Runs detached at utility priority from the
+    /// already-exported weights (no extra GPU read, no gate pause); the scan
+    /// itself hops to a GCD queue inside `LayerHealthLog.checkpoint`. Never
+    /// throws — a failed pass logs its own `[LAYER-HEALTH]` failure line.
+    nonisolated static func logSavedTrainerLayerHealth(
+        arch: NetworkArchitecture,
+        trainerWeights: [[Float]],
+        context: String,
+        step: Int,
+        trainerStep: Int?,
+        recorder: CliTrainingRecorder?
+    ) {
+        Task.detached(priority: .utility) {
+            let health = await LayerHealthLog.checkpoint(
+                arch: arch, trainerWeights: trainerWeights, context: context,
+                step: step, trainerStep: trainerStep)
+            for line in health.lines {
+                SessionLogger.shared.log(line)
+            }
+            if let recorder, let summary = health.summary {
+                recorder.appendLayerHealth(CliTrainingRecorder.LayerHealthRecord(
+                    step: step, trainerStep: trainerStep, context: context, summary: summary))
             }
         }
     }

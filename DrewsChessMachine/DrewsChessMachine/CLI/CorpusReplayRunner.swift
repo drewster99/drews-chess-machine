@@ -1172,6 +1172,19 @@ enum CorpusReplayRunner {
                 )
                 try rollingWriter.write(encoded)
                 emit("[REPLAY] saved trainer model (\(reason)) step=\(step) trainerStep=\(snapshot.schedule.completedTrainSteps) nextGame=\(nextGameIndex) shard=\(shard) epoch=\(epoch) -> \(outModelURL.lastPathComponent)")
+                // Full layer health of exactly the state just written, from the
+                // tensors already exported for it (no extra GPU read). Never
+                // throws: a failed pass logs a [LAYER-HEALTH] failure line and
+                // the save stands.
+                let health = await LayerHealthLog.checkpoint(
+                    arch: arch, trainerWeights: weights, context: "replay-\(reason)",
+                    step: step, trainerStep: snapshot.schedule.completedTrainSteps)
+                for line in health.lines { emit(line) }
+                if let summary = health.summary {
+                    recorder?.appendLayerHealth(CliTrainingRecorder.LayerHealthRecord(
+                        step: step, trainerStep: snapshot.schedule.completedTrainSteps,
+                        context: "replay-\(reason)", summary: summary))
+                }
             } catch let ownershipRefusal as FileSafetyError where ownershipRefusal.isOwnershipRefusal {
                 // The rolling path no longer holds the file this run owns
                 // (another file or a folder is there now). Halt: writing on
@@ -1402,6 +1415,11 @@ enum CorpusReplayRunner {
                     + (cycleValues.learningRate != nil ? " lrCyc" + LRMomentumCycleLogFormat.envelopeBounds(cycleValues) : "")
                     + " trainerStep=\(observedSteps)"
                 emit(line)
+                // Live layer health at the same cadence: BN state + ReZero α,
+                // read on the trainer's queue between steps.
+                for healthLine in await LayerHealthLog.liveLines(trainer: trainer) {
+                    emit(healthLine)
+                }
                 // Same cadence as the log line, so results.json and the log
                 // describe the same ticks.
                 recorder?.appendStats(CliTrainingRecorder.StatsLine(

@@ -457,6 +457,14 @@ struct BlockGroup: Codable, Hashable, Sendable {
     /// `weightTensorPlan`, and `parameterCount` all read.
     var resolvedOutputNorm: BlockOutputNorm { outputNorm ?? .none }
 
+    /// The ReZero soft-bound asymptote `C` in the forward's `C·tanh(α/C)`:
+    /// `rezeroAlphaInit · NetworkArchitecture.rezeroTanhCeilingMultiple`.
+    /// Meaningful only when `useRezero`. The one formula the graph builder,
+    /// the group summary, the numerics audit and layer health all read.
+    var rezeroTanhCeiling: Double {
+        Double(rezeroAlphaInit) * NetworkArchitecture.rezeroTanhCeilingMultiple
+    }
+
     enum CodingKeys: String, CodingKey {
         case count
         case channels
@@ -1402,7 +1410,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         let seBetaDesc = g.seBetaInit == .zero ? " β0" : ""
         let seActivationDesc = seActivationMarker(g)
         let rezeroDesc = g.useRezero
-            ? "ReZero(\(String(format: "%.3g", g.rezeroAlphaInit))·tanh≤\(String(format: "%.3g", Double(g.rezeroAlphaInit) * rezeroTanhCeilingMultiple)))"
+            ? "ReZero(\(String(format: "%.3g", g.rezeroAlphaInit))·tanh≤\(String(format: "%.3g", g.rezeroTanhCeiling)))"
             : "no-ReZero"
         // Only render the output-norm clause when present, so v3/v4 group
         // summaries (and their golden-string tests) are byte-identical.
@@ -1565,6 +1573,13 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         trainables.append(.init(name: "\(fc2Name).bias", shape: [1, valueHeadClasses], kind: .bias))
 
         return trainables + running
+    }
+
+    /// The trainable prefix of `weightTensorPlan()` (everything but the BN
+    /// running statistics), in trainable order — the order the optimizer's
+    /// per-trainable velocity tensors follow.
+    func trainableTensorPlan() -> [WeightTensorSpec] {
+        weightTensorPlan().filter { $0.kind != .bnRunningStat }
     }
 }
 

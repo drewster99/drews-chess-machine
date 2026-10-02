@@ -441,6 +441,23 @@ Negative inputs → 0. Positive inputs → unchanged.
 
 After batch norm, values are centered near zero, so roughly half get zeroed by ReLU and half pass through. This is the intended operating range.
 
+#### When BN + ReLU leave that range: the `[LAYER-HEALTH]` monitor
+
+γ and β are learned, so a channel can drift out of the switching range. After BN its values are ≈ normal with mean β and spread |γ|, so **β/|γ|** says how often ReLU zeroes it (Φ(−β/|γ|)):
+
+- **dead** — β/|γ| < −3: almost never on, so (for ReLU) almost never any gradient either.
+- **mostly off** — −3 ≤ β/|γ| < −2.
+- **always on** — β/|γ| > +3: never zeroed, so ReLU does nothing; the channel is a linear pass-through riding on a constant, which the next layer turns into a hidden bias. On the long v5 / Ejp0 replay lines such channels in the policy pre-block carried a large share of the bf16 shared policy offset (`documentation/research/policy-head-2026-10-01/REPORT.md`).
+
+Units with no BN in front of them (the SE excitation FC1, the value FC1) are checked from optimizer state instead: a unit whose every weight-velocity entry is exactly 0 has had zero gradient for a long run of steps — dead (`experiments/20260929-se-style-ab/TENSOR-STATS.md`).
+
+`Training/LayerHealth.swift` computes this per BN site (every BN in graph order, tagged with the activation that reads it), plus BN running-variance max/median per layer (one conv row growing out of scale), ReZero effective α as a fraction of its tanh cap, NaN/Inf counts and the largest |value| tensors. The classification applies only to ReLU / leaky ReLU sites; SiLU / GELU sites report it as not applicable. Two tiers:
+
+- **live** — a `[LAYER-HEALTH] live trainerStep=N …` line at the stats cadence (GUI `[STATS]`, `[REPLAY]`, `[VS-UCI]`), from BN γ/β/running stats and ReZero α only, read on the trainer's own queue between steps.
+- **checkpoint** — a `[LAYER-HEALTH] checkpoint <context> step=N trainerStep=N …` headline plus a per-site table on every trainer save (corpus replay, train-vs-UCI, GUI session saves), from the already-exported weights + velocity; recorded under `layer_health` in the CLI `results.json`. `--analyze-numerics` reports the same summary for saved files.
+
+Head shared offsets are not part of it: `pLogitMean` / `vLogitMean` already monitor them live, and the numerics audit measures them in the weights.
+
 ---
 
 ### Parameter Count (Small Config)

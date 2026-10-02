@@ -64,8 +64,12 @@ enum NumericsAuditCLI {
                 }
                 let planCount = arch.weightTensorPlan().count
                 // Trainer files carry optimizer velocity after the plan's
-                // tensors; the audit covers the model's own weights.
+                // tensors; the format/offset checks cover the model's own
+                // weights, and the layer-health velocity checks read the rest.
                 let weights = Array(file.weights.prefix(planCount))
+                let velocity: LayerHealth.VelocitySource = file.includesOptimizerVelocity
+                    ? .trainerVelocity(Array(file.weights.dropFirst(planCount)))
+                    : .unavailable(reason: "a model file holds no optimizer state")
                 let stepValue = file.metadata.trainingStep
                 let modelID = file.modelID.isEmpty ? nil : file.modelID
                 let label = "file:\(target.lastPathComponent)"
@@ -78,6 +82,7 @@ enum NumericsAuditCLI {
                         arch: arch,
                         masters: nil,
                         mastersNote: "a saved model file holds one set of weights",
+                        velocity: velocity,
                         positions: auditPositions,
                         dynamicSkippedReason: staticOnly ? "--numerics-static-only" : nil,
                         policyTailPrecision: policyTailPrecision,
@@ -152,6 +157,21 @@ enum NumericsAuditCLI {
         }
         if let offset = result.staticChecks.policyHeadOffset {
             line["policy_offset_ratio_to_init"] = offset.ratioToInitExpectation
+        }
+        let health = result.layerHealth
+        line["layer_health_dead_channels"] = health.deadChannelCount
+        line["layer_health_mostly_off_channels"] = health.mostlyOffChannelCount
+        line["layer_health_always_on_channels"] = health.alwaysOnChannelCount
+        line["layer_health_non_finite_values"] = health.nonFiniteValueCount
+        if let site = health.worstRunningVarianceSite, let ratio = site.runningVarianceMaxOverMedian {
+            line["layer_health_running_variance_max_over_median"] = ratio
+            line["layer_health_running_variance_worst_site"] = site.site
+        }
+        if let se = health.squeezeExcitationFC1 {
+            line["layer_health_se_zero_velocity_units"] = se.reduce(0) { $0 + $1.zeroVelocityUnitCount }
+        }
+        if let value = health.valueFC1 {
+            line["layer_health_value_fc1_zero_velocity_units"] = value.zeroVelocityUnitCount
         }
         if let dynamic = result.dynamicChecks {
             line["positions"] = dynamic.positions.total

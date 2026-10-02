@@ -69,13 +69,16 @@ enum SafetensorsModelIO {
     /// trainer file, one `opt.<trainableName>.velocity` per trainable (in
     /// trainable order) appended after the base tensors.
     static func tensorNames(for architecture: NetworkArchitecture, includesVelocity: Bool) -> [String] {
-        let plan = architecture.weightTensorPlan()
-        var names = plan.map(\.name)
+        var names = architecture.weightTensorPlan().map(\.name)
         if includesVelocity {
-            let trainables = plan.filter { $0.kind != .bnRunningStat }
-            names.append(contentsOf: trainables.map { "opt.\($0.name).velocity" })
+            names.append(contentsOf: architecture.trainableTensorPlan().map { velocityTensorName(forTrainable: $0.name) })
         }
         return names
+    }
+
+    /// The persisted name of a trainable's optimizer velocity tensor.
+    static func velocityTensorName(forTrainable trainableName: String) -> String {
+        "opt.\(trainableName).velocity"
     }
 
     /// Encode a model file to safetensors bytes. `weights` order must match

@@ -552,9 +552,14 @@ extension SessionController {
                 championID: championID,
                 trainerID: trainerID
             )
+            // One step count for both files' metadata and the save's
+            // [LAYER-HEALTH] block.
+            let promotionSaveStep = trainingStats?.steps ?? 0
+            // Captured as a `let` so the detached save task below can read it.
+            let promotionSaveTrainerStep = trainerSnapshotCompletedSteps
             let championMetadata = ModelCheckpointMetadata(
                 creator: "promote",
-                trainingStep: trainingStats?.steps ?? 0,
+                trainingStep: promotionSaveStep,
                 parentModelID: "",
                 notes: "Post-arena autosave after promotion"
             )
@@ -563,11 +568,11 @@ extension SessionController {
             // and the schedule it is running.
             let trainerMetadata = ModelCheckpointMetadata(
                 creator: "promote",
-                trainingStep: trainingStats?.steps ?? 0,
+                trainingStep: promotionSaveStep,
                 parentModelID: championID,
                 notes: "Trainer lineage at arena-start pause with optimizer velocity",
                 trainerSchedule: TrainerScheduleState(
-                    completedTrainSteps: trainerSnapshotCompletedSteps,
+                    completedTrainSteps: promotionSaveTrainerStep,
                     lrWarmupSteps: trainer.lrWarmupSteps,
                     lrMomentumCycle: trainer.lrMomentumCycle
                 )
@@ -647,6 +652,13 @@ extension SessionController {
                         self.periodicSaveController?.noteSuccessfulSave(at: Date())
                         self.checkpoint?.lastSavedAt = Date()
                         self.checkpoint?.lastResumedAt = nil
+                        Self.logSavedTrainerLayerHealth(
+                            arch: promotedArch,
+                            trainerWeights: trainerWeightsSnapshot,
+                            context: "session-\(SessionSaveTrigger.promotionDiskTag)",
+                            step: promotionSaveStep,
+                            trainerStep: promotionSaveTrainerStep,
+                            recorder: self.cliRecorder)
                         // Promotion saves share the automatic-save
                         // retention pool with periodic autosaves.
                         self.scheduleAutomaticSaveRetentionSweep(

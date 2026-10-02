@@ -15,6 +15,11 @@ enum ChessTrainerError: LocalizedError {
     case trainerWeightCountMismatch(expected: String, got: Int)
     case velocityReadbackMissing(String)
     case velocityLoadGraphFailed(String)
+    /// A layer-health readback asked for a tensor `weightTensorPlan()` does
+    /// not name.
+    case layerHealthTensorNotInPlan(String)
+    /// A layer-health readback's `graph.run` returned no value for a tensor.
+    case layerHealthReadbackMissing(String)
     /// The tower is deep enough that building its gradient graph would risk
     /// overflowing even the enlarged graph-build stack. Raised *before* the
     /// build runs so it surfaces as a catchable error instead of a SIGBUS.
@@ -38,6 +43,10 @@ enum ChessTrainerError: LocalizedError {
             return "Velocity tensor missing from graph.run results: \(name)"
         case .velocityLoadGraphFailed(let name):
             return "Velocity load graph.run returned empty/missing result for tensor: \(name)"
+        case .layerHealthTensorNotInPlan(let name):
+            return "Layer-health readback: tensor \(name) is not in the weight plan"
+        case .layerHealthReadbackMissing(let name):
+            return "Layer-health readback: tensor missing from graph.run results: \(name)"
         case .towerTooDeepToBuild(let numBlocks, let estimatedKB, let limitKB):
             return "Tower too deep to build gradients: \(numBlocks) residual blocks need ~\(estimatedKB) KB of build stack, over the \(limitKB) KB budget. Depth is the limit, not width or parameter count — reduce the block count."
         case .gpuCommandFailed(let stage, let status, let error):
@@ -5625,6 +5634,87 @@ final class ChessTrainer: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    // MARK: - Layer-health live readback
+
+    /// What the live `[LAYER-HEALTH]` tier reads: the named tensors and the
+    /// completed-step count they describe, captured together on the trainer
+    /// queue so the step label can never drift from the values.
+    struct LayerHealthLiveState: Sendable {
+        /// `LayerHealth.liveStateTensorNames(for:)` → values.
+        let tensors: [String: [Float]]
+        let completedTrainSteps: Int
+    }
+
+    /// Read every BN site's γ/β/running stats and every ReZero α — the live
+    /// layer-health tier's input, a few KB — in one `graph.run`.
+    ///
+    /// Runs on `executionQueue`, the same serial queue every SGD step runs
+    /// on (and waits for its GPU work to complete on), so the read always
+    /// lands BETWEEN steps and can never observe a half-applied update — the
+    /// exportWeights/SGD race this project has already been bitten by. Unlike
+    /// `exportTrainerWeights`, the caller does NOT need to pause training.
+    ///
+    /// Source: the fp32 masters under the mixed-precision path (the
+    /// authoritative values `exportTrainerWeights` persists, and where the
+    /// running-stat EMA accumulates), else the working variables.
+    func readLayerHealthLiveState() async throws -> LayerHealthLiveState {
+        let names = LayerHealth.liveStateTensorNames(for: arch)
+        return try await enqueue { [self] in
+            try autoreleasepool {
+                try internalReadLayerHealthLiveState(names: names)
+            }
+        }
+    }
+
+    /// Body of `readLayerHealthLiveState`; must run on `executionQueue`.
+    private func internalReadLayerHealthLiveState(names: [String]) throws -> LayerHealthLiveState {
+        let plan = arch.weightTensorPlan()
+        let persistent = network.trainableVariables + network.bnRunningStatsVariables
+        guard persistent.count == plan.count else {
+            throw ChessTrainerError.trainerWeightCountMismatch(
+                expected: "\(plan.count) persistent variables (weightTensorPlan)", got: persistent.count)
+        }
+        let readsMasters = !masterVariables.isEmpty
+        let sources = readsMasters ? masterVariables : persistent
+        guard sources.count == plan.count else {
+            throw ChessTrainerError.trainerWeightCountMismatch(
+                expected: "\(plan.count) fp32 masters (weightTensorPlan)", got: sources.count)
+        }
+        var planIndexByName: [String: Int] = [:]
+        planIndexByName.reserveCapacity(plan.count)
+        for (index, spec) in plan.enumerated() {
+            planIndexByName[spec.name] = index
+        }
+        var targets: [MPSGraphTensor] = []
+        targets.reserveCapacity(names.count)
+        for name in names {
+            guard let index = planIndexByName[name] else {
+                throw ChessTrainerError.layerHealthTensorNotInPlan(name)
+            }
+            targets.append(sources[index])
+        }
+        let results = network.graph.run(
+            with: network.commandQueue,
+            feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
+            targetTensors: targets,
+            targetOperations: nil
+        )
+        var tensors: [String: [Float]] = [:]
+        tensors.reserveCapacity(names.count)
+        for (name, variable) in zip(names, targets) {
+            guard let data = results[variable] else {
+                throw ChessTrainerError.layerHealthReadbackMissing(variable.operation.name)
+            }
+            let count = try ChessNetwork.elementCount(of: variable)
+            // Masters are fp32 regardless of the compute dtype; working
+            // variables live in the network's storage dtype.
+            tensors[name] = readsMasters
+                ? ChessNetwork.readFloatsFP32(from: data, count: count)
+                : ChessNetwork.readFloats(from: data, count: count, dataType: network.weightStorageDataType)
+        }
+        return LayerHealthLiveState(tensors: tensors, completedTrainSteps: _completedTrainSteps.value)
     }
 
     /// Seed the fp32 masters from the current bf16 working weights/stats

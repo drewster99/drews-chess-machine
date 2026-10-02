@@ -349,6 +349,17 @@ enum TrainVsUciRunner {
                     at: outModelURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try rollingWriter.write(encoded)
                 emit("[VS-UCI] saved trainer model (\(reason)) step=\(step) trainerStep=\(snapshot.schedule.completedTrainSteps) -> \(outModelURL.lastPathComponent)")
+                // Full layer health of the state just written — see
+                // CorpusReplayRunner's save. Never throws.
+                let health = await LayerHealthLog.checkpoint(
+                    arch: arch, trainerWeights: weights, context: "vsuci-\(reason)",
+                    step: step, trainerStep: snapshot.schedule.completedTrainSteps)
+                for line in health.lines { emit(line) }
+                if let summary = health.summary {
+                    recorder?.appendLayerHealth(CliTrainingRecorder.LayerHealthRecord(
+                        step: step, trainerStep: snapshot.schedule.completedTrainSteps,
+                        context: "vsuci-\(reason)", summary: summary))
+                }
             } catch let ownershipRefusal as FileSafetyError where ownershipRefusal.isOwnershipRefusal {
                 // The rolling path no longer holds the file this run owns —
                 // halt rather than overwrite something this run did not write.
@@ -493,6 +504,11 @@ enum TrainVsUciRunner {
                         + (cycleValues.learningRate != nil ? " lrCyc" + LRMomentumCycleLogFormat.envelopeBounds(cycleValues) : "")
                         + " trainerStep=\(observedSteps)"
                     emit(line)
+                    // Live layer health at the same cadence (BN state +
+                    // ReZero α, read on the trainer's queue between steps).
+                    for healthLine in await LayerHealthLog.liveLines(trainer: trainer) {
+                        emit(healthLine)
+                    }
                     // Same cadence as the log line, so results.json and the log
                     // describe the same ticks.
                     // One snapshot, reused: `statsSnapshot()` is a lock-guarded

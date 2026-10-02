@@ -40,6 +40,9 @@ extension NumericsAudit.Result {
             lines.append("masters vs working: not compared (\(note))")
         }
 
+        lines.append("layer health: \(layerHealth.compactLine())")
+        lines.append(contentsOf: layerHealth.detailedLines().map { "  \($0)" })
+
         if let dynamic = dynamicChecks {
             let p = dynamic.positions
             var positionLine = "positions: \(p.total) (start \(p.startPosition), corpus \(p.corpusPositions), Lichess \(p.lichessPositions) from \(p.lichessGames) games; \(p.withValueTarget) with a game result)"

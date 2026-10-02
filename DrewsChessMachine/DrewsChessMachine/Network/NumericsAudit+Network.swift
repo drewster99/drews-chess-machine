@@ -29,6 +29,7 @@ extension NumericsAudit {
             arch: network.arch,
             masters: masters,
             mastersNote: mastersNote,
+            velocity: .unavailable(reason: liveNetworkVelocityNote),
             positions: positions,
             dynamicSkippedReason: nil,
             policyTailPrecision: network.policyTailPrecision,
@@ -76,6 +77,10 @@ extension NumericsAudit {
         }
         return (masters, nil)
     }
+
+    /// Why an audit of a live network has no velocity for the layer-health
+    /// checks: the optimizer state lives in the trainer, not the network.
+    static let liveNetworkVelocityNote = "a network holds no optimizer state; velocity lives in the trainer"
 
     /// Why a champion has no masters to compare.
     static let championMastersNote = "the champion is an inference network; it has no fp32 masters"

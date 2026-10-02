@@ -32,3 +32,7 @@ conversation.
 - **2026-10-02 01:11 — fp32 tail for experiment arms that compare against the SE
   experiment.** The baselines trained with `fp32_from_pre_bn`; the new default
   (`mixed_final_projection`) would be a second variable.
+- **2026-10-02 01:28 — full test suite run during both training runs** (layer-health batch).
+  The GPU is shared for ~20–30 min; both runs' step times in that window are not
+  speed data. Training math unaffected. Accepted to keep the batch moving rather
+  than leave it untested until the runs finish.

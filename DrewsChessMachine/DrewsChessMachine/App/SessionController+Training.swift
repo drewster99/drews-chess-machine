@@ -1894,6 +1894,15 @@ extension SessionController {
                     // at typical throughput.
                     let legalMassBootstrapStride = 25
                     let legalMassSampleSize = 128
+                    // Live `[LAYER-HEALTH]` cadence during the per-step
+                    // bootstrap window: the first step, then whenever this
+                    // many steps have passed since the last one. Each read is
+                    // a small `graph.run` on the trainer's own queue, so a
+                    // line per bootstrap step would queue one between every
+                    // pair of SGD steps for no extra signal. After bootstrap
+                    // it rides every [STATS] emit.
+                    let layerHealthBootstrapStride = 25
+                    var lastLayerHealthStep: Int? = nil
 
                     // First-observed pwNorm becomes the session baseline
                     // so each [STATS] line can report the absolute value
@@ -2550,6 +2559,12 @@ extension SessionController {
                             }
                             let elapsed = Date().timeIntervalSince(sessionStart)
                             await logOne(elapsedTarget: elapsed, legalMassOverride: lastLegalMass)
+                            if lastLayerHealthStep.map({ steps - $0 >= layerHealthBootstrapStride }) ?? true {
+                                for line in await LayerHealthLog.liveLines(trainer: trainer) {
+                                    SessionLogger.shared.log(line)
+                                }
+                                lastLayerHealthStep = steps
+                            }
                             lastEmittedStep = steps
                             if steps >= bootstrapSteps {
                                 bootstrapDone = true
@@ -2602,6 +2617,9 @@ extension SessionController {
                         }
                         let elapsed = Date().timeIntervalSince(sessionStart)
                         await logOne(elapsedTarget: elapsed, legalMassOverride: lastLegalMass)
+                        for line in await LayerHealthLog.liveLines(trainer: trainer) {
+                            SessionLogger.shared.log(line)
+                        }
                     }
                 }
 

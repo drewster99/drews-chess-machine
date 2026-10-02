@@ -173,6 +173,10 @@ enum NumericsAudit {
         let policyTailPrecision: String
         var exportMetadata: AnalysisExportMetadata? = nil
         let staticChecks: StaticResult
+        /// Dead / always-on BN channels, BN running-variance spread, SE and
+        /// value FC1 zero-velocity units (when velocity was supplied), ReZero
+        /// saturation and the NaN sweep (`LayerHealth`), over every tensor.
+        let layerHealth: LayerHealthSummary
         let dynamicChecks: DynamicResult?
         /// Why the dynamic checks didn't run, when they didn't.
         let dynamicSkippedReason: String?
@@ -184,13 +188,16 @@ enum NumericsAudit {
 
     /// Audit `weights` (the layout `exportWeights()` produces; `names` are the
     /// matching graph variable names). `positions` nil skips the dynamic
-    /// checks and `dynamicSkippedReason` says why.
+    /// checks and `dynamicSkippedReason` says why. `velocity` feeds the
+    /// layer-health velocity checks (a trainer-state file carries it; a
+    /// model file or a live network does not, and says why).
     static func run(
         names: [String],
         weights: [[Float]],
         arch: NetworkArchitecture,
         masters: [[Float]]?,
         mastersNote: String?,
+        velocity: LayerHealth.VelocitySource,
         positions: PositionSet?,
         dynamicSkippedReason: String?,
         policyTailPrecision: ChessNetwork.PolicyTailPrecision,
@@ -199,12 +206,14 @@ enum NumericsAudit {
         trainingStep: Int?
     ) async throws -> Result {
         let staticResult = try runStatic(names: names, weights: weights, arch: arch, masters: masters, mastersNote: mastersNote)
+        let layerHealth = try LayerHealth.summarizePlanAligned(arch: arch, baseWeights: weights, velocity: velocity)
         var dynamicResult: DynamicResult?
         if let positions {
             dynamicResult = try await runDynamic(
                 weights: weights, arch: arch, positions: positions, policyTailPrecision: policyTailPrecision)
         }
-        let findings = collectFindings(staticResult: staticResult, dynamicResult: dynamicResult)
+        let findings = (collectFindings(staticResult: staticResult, dynamicResult: dynamicResult)
+            + layerHealthFindings(layerHealth)).sorted { $0.verdict > $1.verdict }
         let overall = findings.map(\.verdict).max() ?? .fine
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime]
@@ -216,6 +225,7 @@ enum NumericsAudit {
             computeDataType: arch.computeDataType.rawValue,
             policyTailPrecision: policyTailPrecision.rawValue,
             staticChecks: staticResult,
+            layerHealth: layerHealth,
             dynamicChecks: dynamicResult,
             dynamicSkippedReason: positions == nil ? dynamicSkippedReason : nil,
             findings: findings,
@@ -283,8 +293,7 @@ enum NumericsAudit {
         for name in names where name.hasSuffix("_res_scale") {
             guard let values = byName[name], let alpha = values.first,
                   let (spec, _) = NetworkWeightAnalyzer.blockSpec(forVariableNamed: name, arch: arch) else { continue }
-            let ceiling = Double(spec.rezeroAlphaInit) * NetworkArchitecture.rezeroTanhCeilingMultiple
-            reZero.append(reZeroReport(name: name, alpha: Double(alpha), ceiling: ceiling))
+            reZero.append(reZeroReport(name: name, alpha: Double(alpha), ceiling: spec.rezeroTanhCeiling))
         }
 
         var divergence: [MasterDivergence]?
@@ -571,6 +580,39 @@ enum NumericsAudit {
             findings.append(contentsOf: dynamicFindings(dynamicResult))
         }
         return findings.sorted { $0.verdict > $1.verdict }
+    }
+
+    /// Layer-health findings: any non-finite value is BAD; dead or
+    /// always-on ReLU-family BN channels and exactly-zero-velocity FC hidden
+    /// units are degraded. Running-variance spread and ReZero saturation are
+    /// reported in the summary but set no verdict (the ReZero cap is by
+    /// design, matching `ReZeroReport`).
+    static func layerHealthFindings(_ health: LayerHealthSummary) -> [Finding] {
+        var findings: [Finding] = []
+        if health.nonFiniteValueCount > 0 {
+            findings.append(Finding(
+                area: "layer health", subject: health.nonFiniteTensorNames.joined(separator: ", "),
+                format: nil, verdict: .bad,
+                detail: "\(health.nonFiniteValueCount) non-finite values in \(health.nonFiniteTensorCount) tensors"
+            ))
+        }
+        for site in health.classifiedSites {
+            let dead = site.deadChannelCount ?? 0
+            let alwaysOn = site.alwaysOnChannelCount ?? 0
+            guard dead > 0 || alwaysOn > 0 else { continue }
+            findings.append(Finding(
+                area: "layer health", subject: site.site, format: nil, verdict: .degraded,
+                detail: "\(dead) dead, \(site.mostlyOffChannelCount ?? 0) mostly off, \(alwaysOn) always on of \(site.channelCount) channels (β/|γ| \(fmt(site.minBetaOverAbsGamma)) … \(fmt(site.maxBetaOverAbsGamma)))"
+            ))
+        }
+        let hiddenLayers = (health.squeezeExcitationFC1 ?? []) + [health.valueFC1].compactMap { $0 }
+        for layer in hiddenLayers where layer.zeroVelocityUnitCount > 0 {
+            findings.append(Finding(
+                area: "layer health", subject: layer.layer, format: nil, verdict: .degraded,
+                detail: "\(layer.zeroVelocityUnitCount) of \(layer.unitCount) units have exactly zero weight velocity (no gradient)"
+            ))
+        }
+        return findings
     }
 
     static func fmt(_ value: Double?) -> String {

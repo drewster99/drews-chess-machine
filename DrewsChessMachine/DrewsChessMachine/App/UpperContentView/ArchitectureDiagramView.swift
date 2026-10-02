@@ -161,7 +161,7 @@ struct ArchitectureDiagramView: View {
     }
 
     private func rezeroLabel(_ g: BlockGroup) -> String {
-        g.useRezero ? "ReZero(\(String(format: "%.3g", g.rezeroAlphaInit))·tanh≤\(String(format: "%.3g", Double(g.rezeroAlphaInit) * NetworkArchitecture.rezeroTanhCeilingMultiple)))" : "no-ReZero"
+        g.useRezero ? "ReZero(\(String(format: "%.3g", g.rezeroAlphaInit))·tanh≤\(String(format: "%.3g", g.rezeroTanhCeiling)))" : "no-ReZero"
     }
 
     /// Marker for the optional feature skip: a single long concat skip carrying

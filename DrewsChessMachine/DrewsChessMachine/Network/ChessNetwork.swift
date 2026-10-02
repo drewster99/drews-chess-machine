@@ -2844,7 +2844,7 @@ final class ChessNetwork: @unchecked Sendable {
             // still exploded (bn1Mean 43→1384 over 1k steps, broke ~step 5800).
             // Bounding in the forward means a saved α is still bounded on reload,
             // and the branch keeps full gradient. See documentation/rezero-alpha-clamp.md.
-            let cConst = graph.constant(Double(spec.rezeroAlphaInit) * NetworkArchitecture.rezeroTanhCeilingMultiple, dataType: alpha.dataType)
+            let cConst = graph.constant(spec.rezeroTanhCeiling, dataType: alpha.dataType)
             let alphaBounded = graph.multiplication(
                 cConst,
                 graph.tanh(with: graph.division(alpha, cConst, name: nil), name: nil),
