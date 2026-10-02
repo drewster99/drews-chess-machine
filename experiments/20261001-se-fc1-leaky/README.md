@@ -141,3 +141,22 @@ init, a build that saves velocity): zero-velocity units 4 / 11 / 4 at 5k and
   probe set.
 - Block-0 FC1 units occasionally dip below 5% of the median velocity (4 / 2 / 3
   at 11k / 12k / 13k) and recover; none since 14k.
+
+## Review at 20,000 steps
+
+| | ReLU scale+bias | leaky FC1 |
+|---|---:|---:|
+| pElo (probed with the `de0f22b` build) | 1287.2 | 1268.6 |
+| NLL | 2.4410 | 2.4465 |
+| training loss / policy / value (last 10 logged steps) | 3.631 / 2.808 / 0.813 | 3.638 / 2.819 / 0.809 |
+| FC1 units unmoved from init (b0 / b1 / b2) | 2 / 6 / 0 | 1 / 3 / 0 |
+| FC1 units < 5% of block median velocity | not saved | 0 / 0 / 0 |
+
+- Leaky FC1 led its comparator at six consecutive checkpoints (14k–19k; at 19k
+  1338.2 vs 1222.1 pElo, NLL 2.3679 vs 2.4972 — best of all four arms) and is
+  behind at 20k. Single checkpoints swing by tens of pElo in every arm (the ReLU
+  attenuate-only arm reads 1226.7 at 20k after 1327.9 at 19k).
+- **Interruption:** the Mac slept (lid closed on battery) from 20:00:56 on
+  2026-10-01 at step ~17,020; training resumed intermittently on wake and fully
+  on AC power around 00:07 on 2026-10-02. Step times from 20:00 to ~00:08 are
+  excluded from speed figures; training is unaffected.
