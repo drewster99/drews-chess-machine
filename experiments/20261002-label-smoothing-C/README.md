@@ -36,3 +36,31 @@ Is ε = 0.1 more policy smoothing than needed now that the shared offset can't d
 | probes | `probes.jsonl`, via `experiments/probe_loop.sh 20261002-label-smoothing-C probes.jsonl` |
 
 `[REPLAY-HPARAMS]` matches the baseline's except `pLabelSmooth=0.03`.
+
+## Review at 5,000 steps
+
+Both checkpoints probed with the same binary (build 2275, `--probe-set wide`,
+n = 4,435); training metrics are the `[REPLAY]` line at step 5,000 of each log.
+
+| | baseline (ε 0.1) | C (ε 0.03) |
+|---|---:|---:|
+| pElo / NLL | 1239.2 / 2.4899 | 1255.7 / 2.4546 |
+| top-1 / top-5 correct (of 4,435) | 1,451 / 3,162 | 1,483 / 3,189 |
+| mean probability on the correct move / mean rank | 0.1384 / 5.50 | 0.1438 / 5.32 |
+| policy logit abs max / peak | 17.17 / 27.81 | 17.31 / 26.28 |
+| training: playedP / pEnt (nats) | 0.158 / 2.869 | 0.164 / 2.839 |
+| training: loss / vLoss | 3.6534 / 0.8118 | 3.6142 / 0.8004 |
+
+- pElo by 1k (C − baseline, dashboard values): +127.8, +53.0, +13.0, +58.6, +15.0.
+  Ahead at 5 of 5, same initial weights and data order; NLL lower at 5 of 5.
+- Every probe measure moves the same way: top-1 +32, top-5 +27, probability on the
+  correct move +0.0054, mean rank −0.17.
+- Sharper policy, as expected from a sharper target: training entropy 0.03 nats lower
+  and probability on the played move 0.006 higher. Logit magnitudes are unchanged
+  (abs max 17.3 vs 17.2; the peak is lower), so less smoothing has not pushed logits
+  outward so far.
+- `pLoss` is not comparable across arms (the smoothed target's own entropy differs),
+  so the training-loss gap is not evidence by itself.
+- Not yet measured: NLL / top-1 by legal-move-count bucket (the probe does not
+  report it).
+
