@@ -64,3 +64,27 @@ n = 4,435); training metrics are the `[REPLAY]` line at step 5,000 of each log.
 - Not yet measured: NLL / top-1 by legal-move-count bucket (the probe does not
   report it).
 
+## Review at 10,000 steps
+
+Same method as the 5k review (same probe binary for both; one `[REPLAY]` line each).
+
+| | baseline (ε 0.1) | C (ε 0.03) |
+|---|---:|---:|
+| pElo / NLL | 1277.9 / 2.4621 | 1296.0 / 2.4210 |
+| top-1 / top-5 correct (of 4,435) | 1,526 / 3,223 | 1,561 / 3,226 |
+| mean probability on the correct move / mean rank | 0.1410 / 5.31 | 0.1498 / 5.17 |
+| policy logit abs max / peak | 18.08 / 29.66 | 18.17 / 29.06 |
+| training: playedP / pEnt (nats) | 0.158 / 2.885 | 0.166 / 2.846 |
+| training: loss / vLoss (single logged step) | 3.6107 / 0.7873 | 3.5625 / 0.8026 |
+
+- Tally 1k–10k: pElo ahead at 9 of 10 (behind only at 9k, by 3.1), NLL lower at
+  10 of 10. NLL gap by 1k from 4k: 0.053, 0.035, 0.028, 0.039, 0.066, 0.019, 0.041.
+- Top-1 +35 and probability on the correct move +0.0088 — both larger than at 5k;
+  top-5 is now level (+3), so the gain is in ranking the right move first rather
+  than in getting it into the top five.
+- Logit magnitudes still match the baseline (abs max 18.2 vs 18.1, peak lower), so
+  the overconfidence risk of less smoothing has not appeared by 10k.
+- Same initial weights and data order, but one seed: the trajectories still diverge
+  (the leaky-FC1 pair swung by up to 116 pElo at a single checkpoint), so a second
+  C seed is what would make this conclusive.
+
