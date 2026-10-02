@@ -192,10 +192,35 @@ positive; median column norm 0.83)
   - An existing offset does not go away quickly: `oeNy` is still at −43.8 after 20k steps. Weights inherited from the old replay lines carry their offset, and their always-on channels, for a long time.
 - **The fp32 head tail is still needed for the old lineages.** Under `mixed_final_projection`, v5- and Ejp0-era weights get 0.04–0.11 nats of per-square noise from the shared row. That is the plan's "what it gives back" cost, now measured per checkpoint. It is negligible (< 0.01) on every line trained without a large offset.
 - **The rarest move types learn slowly by construction.** No action is needed, but they are where a shared-row error matters most, because their own signal is smallest.
-- **KbHZ's final conv looks like a random init** (fp32, simple_conv, 532k self-play steps).
-  - std 0.1256 vs an init std of 0.1250, biases within ±0.07, uniform families, and 2% row change over its last 37k steps.
-  - Its tower does all the work.
-  - This is unconfirmed: no KbHZ fresh net survives.
+- **KbHZ's final conv looks like a random init — but it was trained (corrected 2026-10-02).**
+  - The original reading (std 0.1256 vs He 0.1250, biases within ±0.07, uniform
+    move-type families, ~2% change over the last 37k steps; "its tower does all the
+    work") was checked against the run's builds, logs and both surviving trainer
+    files (with optimizer velocity):
+    - **No exclusion bug** at the run's commits (`460ee0b`…`2e58830`) or now: the
+      conv weight and bias are trainables, get gradients of the total loss
+      (`gradientMissing` would throw otherwise), and take the same update as every
+      other variable.
+    - **It received real gradient:** the bias moved from exact zeros to −0.025…+0.068
+      with mean −8e-9 (the zero-sum signature of softmax-CE gradients); the weight
+      norm went 12.296 (step-1 `pwNorm`, `dcm_log_20260514-020048.txt`) → 12.569 →
+      12.392, up then down, which decay alone cannot do (decay alone → ~11.93).
+    - **The whole network stayed near its init scale, not just the head:** tower
+      convs at RMS 0.972× He (= exactly the decay-only factor e^−0.031, since BN makes
+      their norm gradient-neutral), SE FCs 0.95–0.98×, value fc1 0.965×, policy conv
+      1.005×. Over the last segment the head moved 2.47% vs 1.5–2.3% for tower convs.
+    - **Why:** a very small optimizer budget — plain SGD, momentum 0.65, base LR
+      1.5e-4…1e-3, weight decay 1e-4: Σ lr/(1−μ) ≈ 831, a quarter of sMe9's (3,286,
+      which does show structure) — and mostly cancelling updates (~97.5% of the
+      head's path length cancelled). A random 76×128 projection has full row rank,
+      so the tower can still drive any logit pattern through it; policy learning
+      happened (legal mass 0.0036 → 0.995).
+    - **Spectral check:** KbHZ's conv has no singular values beyond the random-matrix
+      (Marchenko–Pastur) edge (ratio 1.004, like a Gaussian matrix); sMe9, mUF5 and
+      ykkk all show learned outliers. No other trained lineage looks like KbHZ.
+  - Superseded wording, kept for the record: "KbHZ's final conv looks like a random
+    init (fp32, simple_conv, 532k self-play steps) … Its tower does all the work.
+    This is unconfirmed: no KbHZ fresh net survives."
 - **The static (weights-only) shared-level estimate is reliable, so it can be tracked from checkpoints alone.**
   - On the 24 surveyed checkpoints whose measured all-logit mean exceeds 5 nats in magnitude, it matches the bf16-head-offset survey's forward pass within 2.4%.
   - LMGh is the exception, and there the survey forward is the broken one: value logits of +43,926 and infinite CE.
