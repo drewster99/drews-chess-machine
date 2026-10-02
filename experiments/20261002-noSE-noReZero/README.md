@@ -13,7 +13,7 @@ tested on its own here.
 - **Only variable:** `use_rezero` — on (existing runs) vs off (this run). With
   ReZero off, each block is `out = LayerNorm(x + F(x))` instead of
   `LayerNorm(x + α·F(x))` with α = 0.447·tanh(·).
-- **Baselines (not re-run):** `se_none` seed 1 (33k-ish: 32,036 steps) and seed 2
+- **Baselines (not re-run):** `se_none` seed 1 (32,036 steps) and seed 2
   (7,019), from `experiments/20260929-se-style-ab/`.
 - **Init caveat:** removing ReZero removes tensors (the per-block α), so this run
   cannot start from a bit-identical copy of a baseline's fresh net. It is a fresh
