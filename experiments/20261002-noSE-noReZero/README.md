@@ -164,6 +164,20 @@ Tallies against ReZero seed 1 (pElo; the 2k–3k lag excluded by starting at 4k)
   decay), and ReZero α is at its cap (effective 0.434–0.438 of 0.447).
 - Reading at 25k: no difference between the designs after the first ~3k steps.
 
+## Seed 2 at 20,000 steps
+
+- pElo 1262.9 / NLL 2.5043 at 20k, after 1382.4 / 2.3141 at 19k: −119.5 pElo and
+  +0.19 nats in one checkpoint, its worst NLL since 5k. Training was undisturbed —
+  `[REPLAY]` loss 3.57–3.67 and gNorm 0.80–1.04 across 18k–20k, no alarms or
+  non-finite values — and 20k is the LR-cycle peak (lr 0.0784), where every arm's
+  probes swing most (ReLU scale+bias seed 1: −46 at 19k vs 18k in the SE experiment;
+  no-ReZero seed 1: −46 at 17k, +52 at 18k, −46 at 19k). A snapshot taken at peak LR
+  is a noisy read of the run; the next checkpoints decide whether it recovers.
+- Training loss over the 10 logged steps up to 20k: 3.6017 (ReZero seed 1 3.6212,
+  no-ReZero seed 1 3.6065). Branch scales 15.25 / 15.63 / 17.30, same as seed 1.
+- Seed 2, 4k–20k: ahead of ReZero seed 1 at 16 of 17 checkpoints (mean +20.9 pElo),
+  lower NLL at 13 of 17.
+
 ## Reproduce
 
 ```
