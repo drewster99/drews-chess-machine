@@ -104,6 +104,24 @@ the step; branch scale from the enumerated checkpoint, identified by metadata).
   scale. The branch scale each design settles at is a property of the design, not
   of the seed.
 
+## Review at 15,000 steps (`review.py 15000`)
+
+| | ReZero s1 (`se_none`) | no ReZero s1 |
+|---|---:|---:|
+| pElo / NLL | 1315.5 / 2.4359 | 1326.9 / 2.3982 |
+| loss / policy / value | 3.5941 / 2.7718 / 0.8142 | 3.5911 / 2.7698 / 0.8141 |
+| policy entropy / gNorm | 2.879 / 0.751 | 2.878 / 0.745 |
+| branch scale per block | 6.45 / 6.34 / 6.80 | 15.52 / 15.86 / 17.16 |
+
+- Seed 1, 4k–15k: mean pElo difference +0.1 (ahead at 4 of 12, behind at 8), lower
+  NLL at 7 of 12. Over 1k–15k: behind at 10 of 15 (sign test p 0.30, mean −5.1),
+  the deficit coming from the 2k–3k lag.
+- Seed 2 (at 8k) has led every net at 6k, 7k and 8k (+24 to +36); seed 1 is level
+  over the same steps. The two no-ReZero seeds differ by about the seed spread.
+- Training losses agree to the third decimal; branch scales are unchanged from 10k.
+- Reading so far: removing ReZero costs a slower first ~3k steps and nothing after;
+  no evidence it helps.
+
 ## Reproduce
 
 ```
