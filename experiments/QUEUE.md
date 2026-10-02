@@ -16,11 +16,19 @@ conversation.
 1. **Mixed-tail timing, 128-channel models** — fp32 tail vs mixed, A-B-B-A, 600
    steps each, on the v5-style SE net and `v4_5block_7x7`. Needs the GPU to
    itself: runs in the first gap when both training runs are done.
-2. **Full test suite** for the layer-health tracking batch (in a gap).
+2. ~~**Full test suite** for the layer-health tracking batch (in a gap).~~ Done
+   2026-10-02 03:35 alongside the Lichess shutdown fix: 1701 passed, 0 failed, 1 skipped.
 3. **Label smoothing C:** policy ε 0.1 → 0.03 (`plans-active/POLICY_LABEL_SMOOTHING_EXPERIMENTS.md`).
 4. **Label smoothing D:** value ε 0.013 → 0.
 5. **Label smoothing B:** per-move policy smoothing (needs code).
 6. Second no-ReZero seed if the ReZero result is close.
+
+## Deferred (owner: interested, not spending the compute now)
+
+- **Do the SE / leaky-FC1 / ReZero findings hold at ~130k steps?** Every arm so far
+  is ≤ 33k steps (one LR-cycle region), where no-SE leads leaky-SE by ~15 pElo and
+  leaky leads its ReLU twin by ~15 (inside seed noise). Long-run behavior is
+  untested; owner raised it 2026-10-02 and deferred it.
 
 ## Decisions
 
