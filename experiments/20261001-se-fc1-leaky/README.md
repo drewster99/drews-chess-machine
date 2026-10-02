@@ -194,5 +194,8 @@ dead-unit reading in the 5k–20k reviews above:
 - The LR-cycle trough jump (~+90–130 pElo between 23k and 25k) happened in every
   arm; at 25k all four arms sit within 25 pElo (1422.0–1446.7). Leaky FC1 leads
   its comparator on pElo but trails on NLL — no separation.
-- Running tally against ReLU scale+bias (pElo): ahead at 13 of 25 checkpoints,
-  behind at 10, tied at 2 — consistent with no real difference.
+- Running tally against ReLU scale+bias (pElo, 1k–25k): **ahead at 17 of 25
+  checkpoints, behind at 7, tied at 1.** A sign test on the 24 decided checkpoints
+  gives p ≈ 0.064 (two-sided), and successive checkpoints of one run are
+  correlated, so the effective sample is smaller — a lean toward leaky FC1, not an
+  established difference.
