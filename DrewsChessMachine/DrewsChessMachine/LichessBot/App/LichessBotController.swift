@@ -705,6 +705,11 @@ final class LichessBotController {
         case .connecting, .online, .draining:
             return
         }
+        guard !isShutDown else {
+            connection = .error("The bot has shut down")
+            SessionLogger.shared.log("[ALARM] LICHESS-BOT going online refused: the bot has shut down")
+            return
+        }
         if let settingsError {
             connection = .error("Settings: \(settingsError)")
             return
@@ -714,6 +719,14 @@ final class LichessBotController {
         drainRequested = false
         do {
             try await startRuntime(oneGame: oneGame)
+            // A shutdown while the runtime started found no runtime to stop.
+            if isShutDown {
+                tearDownRuntime(reason: "the bot shut down while going online")
+                oneGameRequested = false
+                connection = .error("The bot has shut down")
+                SessionLogger.shared.log("[ALARM] LICHESS-BOT shut down while going online; the new runtime was stopped")
+                return
+            }
             // Something may have stopped the new runtime while it started.
             guard connection == .connecting, runtime != nil else { return }
             // A post-429 hold outlives going offline and back (plan §5.4).
@@ -902,18 +915,73 @@ final class LichessBotController {
             return
         }
         // Let journal and protocol-log writes already queued reach the files
-        // before the process exits; both queues run each write promptly.
-        let journalQueue = self.journalQueue
-        let fileQueue = self.fileQueue
+        // before the process exits; anything later is refused and logged
+        // rather than racing the exit.
         Task { @MainActor in
-            do {
-                try await journalQueue.run {}
-                try await fileQueue.run {}
-            } catch {
-                SessionLogger.shared.log("[ALARM] LICHESS-BOT waiting for queued file writes before quitting failed: \(error.localizedDescription)")
-            }
+            await shutdown(reason: "app quit")
             NSApp.reply(toApplicationShouldTerminate: true)
         }
+    }
+
+    // MARK: - Shutdown
+
+    /// The shutdown under way or done; every caller awaits the same one.
+    private var shutdownTask: Task<Void, Never>?
+
+    /// The controller has shut down (or is shutting down) and does no more
+    /// file work.
+    var isShutDown: Bool {
+        shutdownTask != nil
+    }
+
+    /// Stop the bot for good and wait until nothing more reaches its data
+    /// folder: stop the runtime if one is up, cancel the controller's own
+    /// timers, then close the journal queue and the general file queue.
+    /// Closing a queue first runs everything already enqueued on it — the
+    /// stopped runtime's lock release and any journal lines already queued,
+    /// every protocol event recorded so far, including this shutdown's own —
+    /// and then refuses all later work, writing each refusal to the session
+    /// log.
+    ///
+    /// Work started before the shutdown may still finish after it: a request
+    /// in flight (an opponent-profile fetch, a challenge withdrawal the
+    /// teardown started) still completes, and its gate events and request
+    /// record are protocol-log appends. Those are refused, so once this
+    /// returns the folder can be deleted without an append recreating
+    /// `Protocol/` in the middle of the removal (which makes the removal
+    /// fail). Abandoned game sessions wind down the same way: a journal line
+    /// they produce after the close is refused. The request gate is left
+    /// open on purpose: closing it would also stop the withdrawals of our
+    /// unanswered challenges, and a challenge left standing can be accepted
+    /// into a game nobody plays.
+    ///
+    /// The app calls this when it quits; tests call it before deleting a
+    /// controller's temporary data folder. A controller that has shut down
+    /// does not go online again. Idempotent: a second call waits for the
+    /// first to finish.
+    func shutdown(reason: String) async {
+        if let shutdownTask {
+            await shutdownTask.value
+            return
+        }
+        let task = Task { @MainActor in
+            await performShutdown(reason: reason)
+        }
+        shutdownTask = task
+        await task.value
+    }
+
+    private func performShutdown(reason: String) async {
+        protocolLog.record(.lifecycle, "shutting down: \(reason)")
+        stopRuntime(reason: reason)
+        cancelAutoFollowHold()
+        gridClockTask?.cancel()
+        gridClockTask = nil
+        // The journal queue first: a stopped runtime's lock release and any
+        // journal lines it already queued are on it.
+        await journalQueue.close(reason: "the bot shut down: \(reason)")
+        await fileQueue.close(reason: "the bot shut down: \(reason)")
+        SessionLogger.shared.log("[LICHESS-BOT] shut down: \(reason)")
     }
 
     // MARK: - Challenges (plan §7.1)
@@ -984,7 +1052,7 @@ final class LichessBotController {
         ])
         let url = dataDirectory.challengeOutcomesURL
         let snapshot = log
-        fileQueue.enqueue {
+        fileQueue.enqueue("save \(url.lastPathComponent) after: \(what)") {
             do {
                 try snapshot.save(to: url)
             } catch {
@@ -1926,7 +1994,7 @@ final class LichessBotController {
             try await startRuntime(oneGame: oneGame, settings: settings, accountID: accountID, token: token, lock: lock)
         } catch {
             gateEventSink.value = nil
-            journalQueue.enqueue { lock.release() }
+            journalQueue.enqueue("release the instance lock after a failed start") { lock.release() }
             throw error
         }
     }
@@ -2163,8 +2231,9 @@ final class LichessBotController {
         ProcessInfo.processInfo.endActivity(runtime.sleepActivity)
         let lock = runtime.lock
         // On the journal queue, so the lock is held until every journal
-        // append this runtime already queued has run.
-        journalQueue.enqueue { lock.release() }
+        // append this runtime already queued has run. A queue already closed
+        // by `shutdown` refuses it; the lock's deinit releases it then.
+        journalQueue.enqueue("release the instance lock (\(reason))") { lock.release() }
         for game in games where activeGameIDs.contains(game.id) {
             game.markSessionEnded(reason)
         }

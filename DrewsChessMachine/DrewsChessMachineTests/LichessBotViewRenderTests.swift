@@ -64,9 +64,13 @@ final class LichessBotViewRenderTests: XCTestCase {
         return url
     }
 
-    /// A controller isolated from the app's real settings and bot data: its
-    /// own defaults suite and a temporary data folder, both removed after
-    /// the test.
+    /// A controller isolated from the app's real settings, bot data,
+    /// Keychain and network: its own defaults suite and a temporary data
+    /// folder, both removed after the test, and no stored token. The
+    /// opponent card asks for the opponent's profile when it appears; the
+    /// live services would read the real Keychain and, with a token stored
+    /// there, send real requests to Lichess, whose protocol events arrive
+    /// after the test has finished.
     private func makeController() throws -> LichessBotController {
         let suite = "LichessBotViewRenderTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -75,13 +79,16 @@ final class LichessBotViewRenderTests: XCTestCase {
         let controller = LichessBotController(
             modelProvider: LichessBotFakeModelProvider(snapshot: nil),
             defaults: defaults,
-            dataDirectory: LichessBotDataDirectory(root: root)
+            dataDirectory: LichessBotDataDirectory(root: root),
+            services: LichessBotControllerServices(
+                makeTransport: { LichessBotFakeLichess() },
+                readToken: { _ in nil }
+            )
         )
         addTeardownBlock { @MainActor in
-            // The controller appends protocol events on its file queue; wait
-            // for them before the folder is removed, or the removal races
-            // the append.
-            try await controller.protocolLog.flush()
+            // Shutting down writes the protocol events already queued and
+            // refuses later ones, so nothing races the folder's removal.
+            await controller.shutdown(reason: "test teardown")
             defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {

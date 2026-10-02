@@ -162,8 +162,25 @@ enum LichessBotGameIDError: LocalizedError, Equatable {
 /// (index, protocol log, player notes, Keychain, lock), so nothing slow sits
 /// in front of a journal append. Each queue orders its own work; work that
 /// must stay ordered shares a queue.
+///
+/// **Closing.** `close(reason:)` ends a queue's life: it waits for
+/// everything enqueued before it, then every later `run` throws
+/// `LichessBotFileQueueError.closed` and every later `enqueue` is refused,
+/// each refusal written to the session log. The controller closes both of
+/// its queues when it shuts down. Without that, work started before the
+/// shutdown — a request still in flight, whose gate events and request
+/// record are protocol-log appends; a challenge withdrawal; an abandoned
+/// game session's journal lines — would keep writing into the data folder
+/// afterwards, and an append (which creates missing folders) could recreate
+/// `Protocol/` while the folder was being deleted. Whether a piece of work
+/// runs is decided on the queue itself, by its place relative to the
+/// closing barrier, so nothing enqueued after `close` returns can reach the
+/// disk.
 final class LichessBotFileQueue: Sendable {
     private let queue: DispatchQueue
+    /// Why the queue was closed; nil while it is open. Set only by the
+    /// closing barrier and read only by work running on `queue`.
+    private let closedReason = SyncBox<String?>(nil)
 
     init(label: String, qos: DispatchQoS) {
         queue = DispatchQueue(label: label, qos: qos)
@@ -174,9 +191,20 @@ final class LichessBotFileQueue: Sendable {
         self.init(label: "drewschess.lichessbot.files", qos: .utility)
     }
 
+    /// Run `body` on the queue and return its result. Throws
+    /// `LichessBotFileQueueError.closed`, without running `body`, if the
+    /// queue was closed before `body`'s turn came.
     func run<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
-        try await withCheckedThrowingContinuation { continuation in
+        let closedReason = self.closedReason
+        let label = queue.label
+        return try await withCheckedThrowingContinuation { continuation in
             queue.async {
+                if let reason = closedReason.value {
+                    let error = LichessBotFileQueueError.closed(queue: label, reason: reason)
+                    SessionLogger.shared.log("[LICHESS-BOT] \(error.localizedDescription)")
+                    continuation.resume(throwing: error)
+                    return
+                }
                 continuation.resume(with: Result { try body() })
             }
         }
@@ -184,9 +212,46 @@ final class LichessBotFileQueue: Sendable {
 
     /// Enqueue without waiting, for callers that can't await (the protocol
     /// log is written from synchronous callbacks). `body` must handle its
-    /// own errors.
-    func enqueue(_ body: @escaping @Sendable () -> Void) {
-        queue.async(execute: body)
+    /// own errors. If the queue was closed before `body`'s turn came, `body`
+    /// is not run, and the refusal is written to the session log with
+    /// `description`, which says what was not written.
+    func enqueue(_ description: String, _ body: @escaping @Sendable () -> Void) {
+        let closedReason = self.closedReason
+        let label = queue.label
+        queue.async {
+            if let reason = closedReason.value {
+                SessionLogger.shared.log("[LICHESS-BOT] file queue \(label) is closed (\(reason)); not run: \(description)")
+                return
+            }
+            body()
+        }
+    }
+
+    /// Wait for everything already enqueued to run, then refuse all later
+    /// work. Closing a queue that is already closed keeps the first reason.
+    func close(reason: String) async {
+        let closedReason = self.closedReason
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            queue.async {
+                if closedReason.value == nil {
+                    closedReason.value = reason
+                }
+                continuation.resume()
+            }
+        }
+    }
+}
+
+enum LichessBotFileQueueError: LocalizedError, Equatable {
+    /// The queue was closed (`LichessBotFileQueue.close(reason:)`) before
+    /// this work's turn came; the work was not run.
+    case closed(queue: String, reason: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .closed(let queue, let reason):
+            return "File queue \(queue) is closed (\(reason)); the file operation was not run"
+        }
     }
 }
 

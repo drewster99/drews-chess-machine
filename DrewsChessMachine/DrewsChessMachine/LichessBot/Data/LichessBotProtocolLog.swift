@@ -41,7 +41,9 @@ struct LichessBotProtocolEntry: Sendable, Codable, Equatable {
 /// request gate's event hook, stream loops); the write happens on the file
 /// queue. Every message is passed through `LichessBotRedaction`. A failed
 /// write is reported through `onWriteFailure` — the controller raises it as
-/// an alarm — and never silently dropped.
+/// an alarm — and never silently dropped. An entry recorded after the file
+/// queue was closed (the controller shut down) is not written; the queue
+/// writes the refusal, with the entry's kind and message, to the session log.
 ///
 /// Never synchronized to disk (plan E38 says otherwise; this is the actual
 /// behavior): entries still queued when the app crashes are lost, and written
@@ -79,7 +81,7 @@ final class LichessBotProtocolLog: Sendable {
         let url = fileURL(for: at)
         let onWriteFailure = self.onWriteFailure
         let tailVerifiedPaths = self.tailVerifiedPaths
-        fileQueue.enqueue {
+        fileQueue.enqueue("protocol event (\(entry.kind.rawValue)) \(entry.message)") {
             do {
                 var data = Data()
                 if !tailVerifiedPaths.value.contains(url.path), FileManager.default.fileExists(atPath: url.path) {
@@ -112,7 +114,8 @@ final class LichessBotProtocolLog: Sendable {
         }
     }
 
-    /// Wait until every entry recorded so far is on disk.
+    /// Wait until every entry recorded so far is on disk. Throws
+    /// `LichessBotFileQueueError.closed` once the file queue is closed.
     func flush() async throws {
         try await fileQueue.run {}
     }

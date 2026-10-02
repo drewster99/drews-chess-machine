@@ -220,11 +220,20 @@ final class LichessBotGroupBFixTests: XCTestCase {
     // MARK: - Alarms
 
     @MainActor
-    func testRepeatedAlarmIsOneRow() async throws {
+    func testRepeatedAlarmIsOneRow() throws {
         let suite = "LichessBotGroupBFixTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotGroupBFixTests-\(UUID().uuidString)", isDirectory: true)
-        addTeardownBlock {
+        let controller = LichessBotController(
+            modelProvider: LichessBotFakeModelProvider(snapshot: nil),
+            defaults: defaults,
+            dataDirectory: LichessBotDataDirectory(root: root)
+        )
+        addTeardownBlock { @MainActor in
+            // Raising an alarm records a protocol event, appended on the
+            // controller's file queue. Shutting down writes what is queued
+            // and refuses anything later, so nothing races the removal.
+            await controller.shutdown(reason: "test teardown")
             defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
@@ -234,19 +243,10 @@ final class LichessBotGroupBFixTests: XCTestCase {
                 }
             }
         }
-        let controller = LichessBotController(
-            modelProvider: LichessBotFakeModelProvider(snapshot: nil),
-            defaults: defaults,
-            dataDirectory: LichessBotDataDirectory(root: root)
-        )
         // Favorites aren't loaded, so each toggle raises the same alarm.
         controller.toggleFavorite("x")
         controller.toggleFavorite("x")
         XCTAssertEqual(controller.alarms.count, 1)
         XCTAssertEqual(controller.alarms.first?.repeatCount, 2)
-        // Raising an alarm records a protocol event, appended on the
-        // controller's file queue. Wait for it before the teardown deletes
-        // the data folder, or the removal races the append.
-        try await controller.protocolLog.flush()
     }
 }

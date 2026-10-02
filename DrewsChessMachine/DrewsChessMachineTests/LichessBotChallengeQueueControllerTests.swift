@@ -172,11 +172,11 @@ final class LichessBotChallengeQueueControllerTests: XCTestCase {
         )
         addTeardownBlock { @MainActor in
             controller.abandonAndStop()
-            // Let journal writes the stopped runtime already queued land
-            // before its folder is removed: give the stopped runtime time to
-            // queue them, then wait for the file queue to drain.
-            try await Task.sleep(for: .milliseconds(300))
-            try await controller.protocolLog.flush()
+            // Writes the stopped runtime already queued land; anything it
+            // produces later (a withdrawal's request record, an abandoned
+            // session's journal line) is refused, so nothing races the
+            // removal of its folder.
+            await controller.shutdown(reason: "test teardown")
             defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
