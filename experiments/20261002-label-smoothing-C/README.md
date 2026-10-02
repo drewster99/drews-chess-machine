@@ -52,7 +52,7 @@ n = 4,435); training metrics are the `[REPLAY]` line at step 5,000 of each log.
 | training: loss / vLoss | 3.6534 / 0.8118 | 3.6142 / 0.8004 |
 
 - pElo by 1k (C − baseline, dashboard values): +127.8, +53.0, +13.0, +58.6, +15.0.
-  Ahead at 5 of 5, same initial weights and data order; NLL lower at 5 of 5.
+  Ahead at 5 of 5, same initial weights and game feed order; NLL lower at 5 of 5.
 - Every probe measure moves the same way: top-1 +32, top-5 +27, probability on the
   correct move +0.0054, mean rank −0.17.
 - Sharper policy, as expected from a sharper target: training entropy 0.03 nats lower
@@ -84,7 +84,8 @@ Same method as the 5k review (same probe binary for both; one `[REPLAY]` line ea
   than in getting it into the top five.
 - Logit magnitudes still match the baseline (abs max 18.2 vs 18.1, peak lower), so
   the overconfidence risk of less smoothing has not appeared by 10k.
-- Same initial weights and data order, but one seed: the trajectories still diverge
+- Same initial weights and game feed order, but one seed: minibatches are drawn from the
+  replay buffer with an unseeded RNG, so the trajectories still diverge
   (the leaky-FC1 pair swung by up to 116 pElo at a single checkpoint), so a second
   C seed is what would make this conclusive.
 

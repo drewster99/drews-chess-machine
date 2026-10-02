@@ -1,6 +1,6 @@
 # 2026-09-29 — SE style A/B/C: scale+bias vs attenuate-only vs none (corpus replay)
 
-**Status:** done (2026-09-30). All runs are stopped: seed 1 at 33,014 / 33,012 / 32,036 steps, seed 2 at 7,282 / 7,289 / 7,019, zero-β at 5,030 / 5,004. **Final write-up: [REPORT-final.md](REPORT-final.md).** The sections below were written while the runs were live; figures described as current are as of when each section was written (the first seed-1 sections through step 10000; pids 77368 / 77398 / 77413).
+**Status:** done (2026-09-30). All runs are stopped: seed 1 at 33,014 / 33,012 / 32,036 steps, seed 2 at 7,282 / 7,289 / 7,019, zero-β at 5,030 / 5,004. **Final write-up: [REPORT-final.md](REPORT-final.md).** **Follow-ups (leaky FC1, no ReZero) and current conclusions: [FOLLOW-UPS.md](FOLLOW-UPS.md).** The sections below were written while the runs were live; figures described as current are as of when each section was written (the first seed-1 sections through step 10000; pids 77368 / 77398 / 77413).
 
 ## Question
 

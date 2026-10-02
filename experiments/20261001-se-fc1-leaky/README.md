@@ -254,7 +254,8 @@ Final tallies, every 1k checkpoint (pElo):
   (16–18 of 32) run on the 0.01 negative slope at under 5% of the block's p90
   velocity, steady from 15k to 33k.
 - **Strength:** leaky FC1 finishes 29.7 pElo and 0.023 NLL ahead of its ReLU twin
-  (same initial weights, same data order) and ahead of every other arm at 33k. The
+  (same initial weights and game feed order; minibatch sampling is unseeded, so the
+  pair still carries run-to-run noise) and ahead of every other arm at 33k. The
   ordering changed across the run: before the LR trough the no-SE net led leaky at
   most checkpoints; from 25k on leaky led it at 6 of 8 and its twin at 9 of 9.
 - **Strength of evidence:** one seed per arm, correlated successive checkpoints,

@@ -38,6 +38,9 @@ timing runs when every replay run has ended.
   06:13, 33k steps. Final 1492.8 pElo / 2.2381 NLL vs ReLU twin 1463.1 / 2.2614;
   conclusions in its README.
 
+- **SE / ReZero conclusions so far** (2026-10-02): `20260929-se-style-ab/FOLLOW-UPS.md` —
+  neither helps at this scale; use no SE and no ReZero as the baseline for this family.
+
 ## Deferred (owner: interested, not spending the compute now)
 
 - **Do the SE / leaky-FC1 / ReZero findings hold at ~130k steps?** Every arm so far
