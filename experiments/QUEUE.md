@@ -8,7 +8,7 @@ conversation.
 
 | started | experiment | log | ends (est.) |
 |---|---|---|---|
-| 2026-10-01 15:18 | leaky ReLU in SE FC1 only (`20261001-se-fc1-leaky/`), to 33k | `dcm_log_20261001-151822.txt` | ~2026-10-02 06:00 (shared GPU from 01:11) |
+| 2026-10-02 06:14 | label smoothing C, policy ε 0.03 (`20261002-label-smoothing-C/`), to 33k | `dcm_log_20261002-061425.txt` | after the no-ReZero runs |
 | 2026-10-02 01:11 | no SE, no ReZero (`20261002-noSE-noReZero/`), to 33k | `dcm_log_20261002-011124.txt` | ~2026-10-02 16:00 |
 | 2026-10-02 03:55 | no SE, no ReZero **seed 2** (same folder), to 33k | `dcm_log_20261002-035513.txt` | later than seed 1 (three runs share the GPU) |
 
@@ -23,12 +23,18 @@ timing runs when every replay run has ended.
    itself: runs when every replay run has ended (moved behind C and D; see decisions).
 2. ~~**Full test suite** for the layer-health tracking batch (in a gap).~~ Done
    2026-10-02 03:35 alongside the Lichess shutdown fix: 1701 passed, 0 failed, 1 skipped.
-3. **Label smoothing C:** policy ε 0.1 → 0.03 (`plans-active/POLICY_LABEL_SMOOTHING_EXPERIMENTS.md`).
-   Launches automatically when leaky-FC1 ends.
+3. ~~**Label smoothing C:** policy ε 0.1 → 0.03 (`plans-active/POLICY_LABEL_SMOOTHING_EXPERIMENTS.md`).
+   Launches automatically when leaky-FC1 ends.~~ Launched 2026-10-02 06:14.
 4. **Label smoothing D:** value ε 0.013 → 0. Launches automatically when no-ReZero
    seed 1 ends.
 5. **Label smoothing B:** per-move policy smoothing (needs code).
 6. ~~Second no-ReZero seed if the ReZero result is close.~~ Launched 2026-10-02 03:55.
+
+## Finished
+
+- **Leaky ReLU in SE FC1** (`20261001-se-fc1-leaky/`), 2026-10-01 15:18 → 2026-10-02
+  06:13, 33k steps. Final 1492.8 pElo / 2.2381 NLL vs ReLU twin 1463.1 / 2.2614;
+  conclusions in its README.
 
 ## Deferred (owner: interested, not spending the compute now)
 
@@ -58,3 +64,9 @@ timing runs when every replay run has ended.
   The original chain waited only for the first two runs and would have timed the
   benchmark beside seed 2, so it was replaced: C and D now launch as runs end (three
   at most), and the timing benchmark waits for every replay run to end.
+- **2026-10-02 06:15 — the chain records the wrong log for launched runs.** It takes
+  the newest `dcm_log_*` by name, but each probe also opens an (empty) log, so C's
+  chain line names `dcm_log_20261002-061436.txt` (empty); the real log is
+  `dcm_log_20261002-061425.txt`. Launch records are filled in from the log whose
+  `[REPLAY] start-model` line matches, not from the chain line. Left `chain2.sh`
+  running rather than edit a script that is executing.

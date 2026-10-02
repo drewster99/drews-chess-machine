@@ -227,3 +227,38 @@ dead-unit reading in the 5k–20k reviews above:
   Successive checkpoints of one run are correlated, so the sign tests overstate the
   evidence, and each arm is one seed (seed spread 7–25 pElo on this setup). Leaky
   FC1 sits consistently above its ReLU twin and consistently below the no-SE net.
+
+## Final review at 33,000 steps (run ended 2026-10-02 06:13:49)
+
+| | ReLU scale+bias | leaky FC1 |
+|---|---:|---:|
+| pElo (probed with build 2275) | 1463.1 | 1492.8 |
+| NLL | 2.2614 | 2.2381 |
+| training loss / policy / value (last 10 logged steps) | 3.543 / 2.737 / 0.802 | 3.534 / 2.728 / 0.802 |
+| FC1 units unmoved from init (per block, of 32) | 2 / 4 / 0 | 1 / 1 / 0 |
+| FC1 units with zero velocity | not saved | 0 / 0 / 0 |
+| FC1 units below 5% of block p90 velocity | not saved | 16 / 16 / 17 |
+
+Final tallies, every 1k checkpoint (pElo):
+
+| leaky FC1 vs | ahead / behind / tied | sign test p (two-sided) | mean pElo difference | leaky lower NLL | after the LR trough (25k–33k): mean, ahead |
+|---|---|---:|---:|---:|---|
+| ReLU scale+bias (same init) | 25 / 7 / 1 | 0.002 | +19.1 | 22 / 33 | +32.7, 9 of 9 |
+| ReLU attenuate-only | 19 / 13 / 1 | 0.38 | +4.6 | 19 / 33 | +20.5, 8 of 9 |
+| ReLU no SE (to 32k) | 9 / 22 / 1 | 0.029 | −11.4 | 7 / 32 | +13.5, 6 of 8 |
+
+### Conclusions
+
+- **Mechanism:** leaky ReLU removes exactly-dead SE FC1 units (zero at all 33
+  checkpoints) but does not make them useful: about half of each block's units
+  (16–18 of 32) run on the 0.01 negative slope at under 5% of the block's p90
+  velocity, steady from 15k to 33k.
+- **Strength:** leaky FC1 finishes 29.7 pElo and 0.023 NLL ahead of its ReLU twin
+  (same initial weights, same data order) and ahead of every other arm at 33k. The
+  ordering changed across the run: before the LR trough the no-SE net led leaky at
+  most checkpoints; from 25k on leaky led it at 6 of 8 and its twin at 9 of 9.
+- **Strength of evidence:** one seed per arm, correlated successive checkpoints,
+  and a seed spread of 7–25 pElo on this setup. The late gap over the ReLU twin
+  (+32.7 mean, 9 of 9) is larger than that spread; the gap over no-SE is not. A
+  second leaky seed would separate "leaky helps" from "this seed's trajectory".
+- **Cost:** none measurable — leaky ReLU runs on 4096 × 32 values per block.

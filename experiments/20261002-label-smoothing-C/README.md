@@ -1,8 +1,8 @@
 # 2026-10-02 — Label smoothing arm C: policy label smoothing ε 0.1 → 0.03 (`policy_label_smoothing_epsilon`)
 
-**Status:** queued — launched automatically by the experiment chain once the
-leaky-FC1 and no-ReZero runs finish (see `experiments/QUEUE.md`). Arms C and D
-run together, sharing the GPU.
+**Status:** running since 2026-10-02 06:14, launched by the experiment chain when
+leaky-FC1 ended (see `experiments/QUEUE.md`). Shares the GPU with the two no-ReZero
+runs; arm D launches when no-ReZero seed 1 ends.
 
 ## Question
 
@@ -26,4 +26,13 @@ Is ε = 0.1 more policy smoothing than needed now that the shared offset can't d
 
 ## Launch record
 
-(filled in at launch)
+| field | value |
+|---|---|
+| launched | 2026-10-02 06:14:25 CDT |
+| build | Release build 2275 (frozen copy), stamped `f6fdd88` — the code of `de0f22b` |
+| start model | `20260929-test_SE_scale+bias-fresh.safetensors`, ModelID `20260929-12-JZOe` |
+| out model | `20261002-label-smoothing-C-replay-latest.safetensors` (+ enumerated `…-replay-step<N>`) |
+| log | `~/Library/Logs/DrewsChessMachine/dcm_log_20261002-061425.txt` |
+| probes | `probes.jsonl`, via `experiments/probe_loop.sh 20261002-label-smoothing-C probes.jsonl` |
+
+`[REPLAY-HPARAMS]` matches the baseline's except `pLabelSmooth=0.03`.
