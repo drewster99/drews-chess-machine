@@ -1,6 +1,6 @@
 # 2026-10-01 — Leaky ReLU in the SE bottleneck (FC1 only) vs ReLU
 
-**Status:** running (launched 2026-10-01 15:18 CDT). Results are added at the 5k and 10k reviews.
+**Status:** finished — 2026-10-01 15:18 → 2026-10-02 06:13 CDT, 33,000 steps. Final review and conclusions at the end of this file.
 
 ## Question
 
