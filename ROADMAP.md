@@ -1176,6 +1176,8 @@ JSON). Don't touch `body` until Stages 1/3/5 or the type-checker may regress.
 
 ### Part B — split `Training/ChessTrainer.swift` (4,991 lines)
 
+**On hold (owner decision, 2026-10-02).**
+
 → `ChessTrainerGraph.swift` (loss/optimizer graph construction — the advantage/CE/
 label-smoothing/entropy ops, the decoupled-weight-decay + grad-clip + Polyak-
 momentum update ops) + `ChessTrainerFeeds.swift` (`buildFeeds`/`runPreparedStep`
@@ -1226,6 +1228,8 @@ and the public surface. No behavior change. Lower priority than Part A.
   is touched.
 
 ### Part D — repo hygiene (non-code, light-touch)
+
+**On hold (owner decision, 2026-10-02).**
 
 Fold the live scratch markdown (`CHECK_NEXT.md`, `TODO_NEXT.md`, `ML_REVIEW_NOTES.md`,
 `ROADMAP_NOTES.md`, `NEW_PARAMETERS.md`, `CONCURRENCY_CONCERNS.MD`, `CAPTURE_MOVE_MASK.md`)
