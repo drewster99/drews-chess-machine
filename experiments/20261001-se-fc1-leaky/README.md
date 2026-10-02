@@ -123,3 +123,21 @@ init, a build that saves velocity): zero-velocity units 4 / 11 / 4 at 5k and
 - **Strength:** no difference through 10k — the arms trade places within seed
   noise (7–25 pElo); losses agree to three decimals.
 - **Cost:** median 818 ms/step alone on the GPU (excluding the test-suite window).
+
+## Review at 15,000 steps
+
+| | ReLU scale+bias | leaky FC1 |
+|---|---:|---:|
+| pElo (probed with the `de0f22b` build) | 1283.6 | 1307.8 |
+| NLL | 2.4534 | 2.4252 |
+| training loss / policy / value (last 10 logged steps) | 3.604 / 2.779 / 0.816 | 3.603 / 2.779 / 0.815 |
+| FC1 units unmoved from init (b0 / b1 / b2) | 2 / 9 / 0 | 1 / 4 / 0 |
+| FC1 units < 5% of block median velocity | not saved | 0 / 0 / 0 |
+
+- From 14k to 16k leaky FC1 leads its comparator at three consecutive
+  checkpoints (+23 to +28 pElo, −0.022 to −0.028 NLL), the first sustained gap;
+  still near the edge of seed-to-seed noise (7–25 pElo).
+- Training losses are identical; the difference appears only on the held-out
+  probe set.
+- Block-0 FC1 units occasionally dip below 5% of the median velocity (4 / 2 / 3
+  at 11k / 12k / 13k) and recover; none since 14k.
