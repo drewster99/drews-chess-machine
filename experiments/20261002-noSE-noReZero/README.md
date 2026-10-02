@@ -42,6 +42,24 @@ tested on its own here.
 1,000-step checkpoint (`--probe-set wide`) into `probes.jsonl`; `table.py` renders
 the comparison.
 
+## Seed 2 (launched 2026-10-02 03:55)
+
+At 6,000 steps seed 1 was level with both ReZero seeds (1269.1 vs 1265.0 / 1263.5),
+inside the 7–25 pElo seed spread, so a second no-ReZero seed runs now rather than
+after seed 1 ends. It shares the GPU with leaky-FC1 and seed 1 (three runs).
+
+| field | value |
+|---|---|
+| launched | 2026-10-02 03:55:13 CDT |
+| build | same frozen build 2275 (`f6fdd88` stamp, `de0f22b` code) |
+| fresh net | `20261002-bench_v5s3_noSE_noReZero-seed2-fresh.safetensors`, ModelID `20261002-3-x4gI` (fresh mint, different init from seed 1) |
+| out model | `20261002-bench_v5s3_noSE_noReZero-seed2-replay-latest.safetensors` (+ enumerated `…-replay-step<N>`) |
+| log | `~/Library/Logs/DrewsChessMachine/dcm_log_20261002-035513.txt` |
+| probes | `probes-seed2.jsonl`, via `experiments/probe_loop.sh 20261002-bench_v5s3_noSE_noReZero-seed2 probes-seed2.jsonl` |
+
+`[REPLAY-HPARAMS]` is identical to seed 1's. Reproduce: the commands below with
+`-seed2` added to every model file name.
+
 ## Reproduce
 
 ```

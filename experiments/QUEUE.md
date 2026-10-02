@@ -10,18 +10,25 @@ conversation.
 |---|---|---|---|
 | 2026-10-01 15:18 | leaky ReLU in SE FC1 only (`20261001-se-fc1-leaky/`), to 33k | `dcm_log_20261001-151822.txt` | ~2026-10-02 06:00 (shared GPU from 01:11) |
 | 2026-10-02 01:11 | no SE, no ReZero (`20261002-noSE-noReZero/`), to 33k | `dcm_log_20261002-011124.txt` | ~2026-10-02 16:00 |
+| 2026-10-02 03:55 | no SE, no ReZero **seed 2** (same folder), to 33k | `dcm_log_20261002-035513.txt` | later than seed 1 (three runs share the GPU) |
+
+Chain (`chain2.sh`, scratchpad): label smoothing C launches when leaky-FC1 ends, D
+when no-ReZero seed 1 ends (each with `experiments/probe_loop.sh`); the mixed-tail
+timing runs when every replay run has ended.
 
 ## Next (in order)
 
 1. **Mixed-tail timing, 128-channel models** — fp32 tail vs mixed, A-B-B-A, 600
    steps each, on the v5-style SE net and `v4_5block_7x7`. Needs the GPU to
-   itself: runs in the first gap when both training runs are done.
+   itself: runs when every replay run has ended (moved behind C and D; see decisions).
 2. ~~**Full test suite** for the layer-health tracking batch (in a gap).~~ Done
    2026-10-02 03:35 alongside the Lichess shutdown fix: 1701 passed, 0 failed, 1 skipped.
 3. **Label smoothing C:** policy ε 0.1 → 0.03 (`plans-active/POLICY_LABEL_SMOOTHING_EXPERIMENTS.md`).
-4. **Label smoothing D:** value ε 0.013 → 0.
+   Launches automatically when leaky-FC1 ends.
+4. **Label smoothing D:** value ε 0.013 → 0. Launches automatically when no-ReZero
+   seed 1 ends.
 5. **Label smoothing B:** per-move policy smoothing (needs code).
-6. Second no-ReZero seed if the ReZero result is close.
+6. ~~Second no-ReZero seed if the ReZero result is close.~~ Launched 2026-10-02 03:55.
 
 ## Deferred (owner: interested, not spending the compute now)
 
@@ -44,3 +51,10 @@ conversation.
   The GPU is shared for ~20–30 min; both runs' step times in that window are not
   speed data. Training math unaffected. Accepted to keep the batch moving rather
   than leave it untested until the runs finish.
+- **2026-10-02 03:55 — second no-ReZero seed now, as a third concurrent run.** Seed 1
+  was level with both ReZero seeds at 6k (inside seed noise), and the owner asked for
+  another experiment rather than an idle GPU. It decides whether ReZero is worth
+  keeping on LayerNorm-out nets, which the zero-init / decoupled-cap idea depends on.
+  The original chain waited only for the first two runs and would have timed the
+  benchmark beside seed 2, so it was replaced: C and D now launch as runs end (three
+  at most), and the timing benchmark waits for every replay run to end.

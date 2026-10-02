@@ -31,9 +31,9 @@ def csv_points(run):
     return points
 
 
-def probe_points():
+def probe_points(file_name):
     points = {}
-    path = os.path.join(HERE, "probes.jsonl")
+    path = os.path.join(HERE, file_name)
     if os.path.exists(path):
         for line in open(path):
             record = json.loads(line)
@@ -60,7 +60,8 @@ def buffer_plies_per_game(log_name):
 
 
 def main():
-    arms = [("no SE + ReZero s1", csv_points("se_none")), ("no SE, no ReZero", probe_points()),
+    arms = [("no SE + ReZero s1", csv_points("se_none")), ("no SE, no ReZero s1", probe_points("probes.jsonl")),
+            ("no SE, no ReZero s2", probe_points("probes-seed2.jsonl")),
             ("no SE + ReZero s2", csv_points("se_none2"))]
     plies = buffer_plies_per_game(BASELINE_LOG)
     for step, value in buffer_plies_per_game(NO_REZERO_LOG).items():
