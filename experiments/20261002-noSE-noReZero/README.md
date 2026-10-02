@@ -88,6 +88,22 @@ the step; branch scale from the enumerated checkpoint, identified by metadata).
 - Tally 1k–10k: behind at 7 of 10 checkpoints (sign test p 0.34, mean −7.1),
   driven by the 2k–3k lag.
 
+## Review at 5,000 steps, all four nets (`review.py 5000`)
+
+| | ReZero s1 | ReZero s2 | no ReZero s1 | no ReZero s2 |
+|---|---:|---:|---:|---:|
+| pElo / NLL | 1246.9 / 2.5029 | 1245.9 / 2.5136 | 1274.3 / 2.4838 | 1263.4 / 2.4907 |
+| loss / policy / value | 3.6452 / 2.8198 / 0.8128 | 3.6314 / 2.8084 / 0.8106 | 3.6210 / 2.8036 / 0.8066 | 3.6252 / 2.8030 / 0.8109 |
+| branch scale per block | 6.35 / 6.30 / 6.69 | 6.52 / 6.06 / 6.91 | 15.64 / 15.99 / 17.27 | 15.64 / 15.98 / 17.31 |
+
+- Seed 2 repeats seed 1's shape: behind at 2k (1070.2 vs 1085.5 / 1140.5), level at
+  3k–4k, and at 5k both no-ReZero seeds sit above both ReZero seeds on pElo, NLL
+  and training loss — by 16–28 pElo, inside the seed spread.
+- The two no-ReZero seeds, from different random inits, land on the same conv2 norms
+  to within 0.04 per block; the two ReZero seeds agree to within 0.2 on branch
+  scale. The branch scale each design settles at is a property of the design, not
+  of the seed.
+
 ## Reproduce
 
 ```
