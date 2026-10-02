@@ -1176,7 +1176,7 @@ JSON). Don't touch `body` until Stages 1/3/5 or the type-checker may regress.
 
 ### Part B — split `Training/ChessTrainer.swift` (4,991 lines)
 
-**On hold (owner decision, 2026-10-02).**
+**On hold (owner decision, 2026-10-02); trade-offs recorded in GitHub issue #13.**
 
 → `ChessTrainerGraph.swift` (loss/optimizer graph construction — the advantage/CE/
 label-smoothing/entropy ops, the decoupled-weight-decay + grad-clip + Polyak-
@@ -1210,7 +1210,7 @@ and the public surface. No behavior change. Lower priority than Part A.
   is fine where a `while !Task.isCancelled` check follows, but standardize on a
   tiny helper or add a one-line per-site justification.
 - Value-head tanh-saturation alarm (also done in Part A Stage 2).
-- Investigate the wasted ~80 MB/step GPU→CPU policy readback in the trainer's
+- ✅ **Done (`5a1c764`, 2026-06-03): the baseline forward now runs a value-only target (`computeValueBaselineGPU`, `targetTensors: [valueOutput]`) and hands v(s) GPU→GPU, so the policy head and its readback no longer run.** Original item: investigate the wasted ~80 MB/step GPU→CPU policy readback in the trainer's
   fresh-baseline pass (it appears to use only the value output) → add
   `needsPolicy: Bool = true` to `evaluate(batchBoards:count:)` that skips the
   policy head + readback when false. (Do *not* touch the dense per-step legal-mask
@@ -1226,16 +1226,6 @@ and the public surface. No behavior change. Lower priority than Part A.
   `isPresented:`-driven and the onChange/onReceive handlers are app-wide signals
   unrelated to sheet content; reorder for hygiene the next time that modifier chain
   is touched.
-
-### Part D — repo hygiene (non-code, light-touch)
-
-**On hold (owner decision, 2026-10-02).**
-
-Fold the live scratch markdown (`CHECK_NEXT.md`, `TODO_NEXT.md`, `ML_REVIEW_NOTES.md`,
-`ROADMAP_NOTES.md`, `NEW_PARAMETERS.md`, `CONCURRENCY_CONCERNS.MD`, `CAPTURE_MOVE_MASK.md`)
-into `ROADMAP.md`/`CHANGELOG.md`; remove the 0-byte `default.profraw`; move bulky
-experiment artifacts (`results.json` ~6.8 MB, `experiment_results.js` ~921 KB, the
-508-entry `experiments/` tree) out of the published tree. **Never edit `.gitignore`.**
 
 ## Completed / corrected from older Future entries
 
