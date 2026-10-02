@@ -33,7 +33,7 @@ tested on its own here.
 | field | value |
 |---|---|
 | launched | 2026-10-02 01:11:24 CDT |
-| build | commit `de0f22b` (Release, frozen copy, same as the leaky-FC1 run) |
+| build | Release build 2275 (frozen copy, same as the leaky-FC1 run), stamped `f6fdd88` — the working tree committed as `de0f22b` |
 | fresh net | `20261002-bench_v5s3_noSE_noReZero-fresh.safetensors`, ModelID `20261002-1-bh2u` |
 | out model | `20261002-bench_v5s3_noSE_noReZero-replay-latest.safetensors` (+ enumerated `…-replay-step<N>`) |
 | log | `~/Library/Logs/DrewsChessMachine/dcm_log_20261002-011124.txt` |

@@ -19,7 +19,7 @@ Is ε = 0.1 more policy smoothing than needed now that the shared offset can't d
 - **Baseline (not re-run):** ReLU scale+bias seed 1 (`se_sb`, 33,014 steps).
 - **Everything else identical:** corpus `20260624-192615-w3aA5b`, 12 epochs, step
   limit 33,000, `--policy-tail-precision fp32_from_pre_bn` (the baseline's
-  numerics), build `de0f22b`.
+  numerics), build 2275 (= `de0f22b`'s app code; stamped `f6fdd88`).
 - **Measurements:** pElo / NLL every 1,000 steps (`--probe-set wide`); for C also
   NLL / top-1 by legal-move count bucket and policy entropy, `pLogitAbsMax`; for D
   value loss and W/D/L calibration.

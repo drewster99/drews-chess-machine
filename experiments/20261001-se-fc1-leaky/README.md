@@ -79,7 +79,7 @@ M="$HOME/Library/Application Support/DrewsChessMachine/Models"
 | field | value |
 |---|---|
 | launched | 2026-10-01 15:18:22 CDT |
-| build | commit `de0f22b` (Release, frozen copy) |
+| build | Release build 2275 (frozen copy), stamped `f6fdd88` — built from the working tree committed minutes later as `de0f22b` (only tests and docs changed in between) |
 | fresh net | `20261001-test_SE_scale+bias-fc1leaky-fresh.safetensors`, ModelID `20261001-42-2q0Q`, derived from `20260929-12-JZOe` (source sha256 `2c4b779b…df693c89`) |
 | out model | `20261001-test_SE_scale+bias-fc1leaky-replay-latest.safetensors` (+ enumerated `…-fc1leaky-replay-step<N>`) |
 | log | `~/Library/Logs/DrewsChessMachine/dcm_log_20261001-151822.txt` |
@@ -160,3 +160,25 @@ init, a build that saves velocity): zero-velocity units 4 / 11 / 4 at 5k and
   2026-10-01 at step ~17,020; training resumed intermittently on wake and fully
   on AC power around 00:07 on 2026-10-02. Step times from 20:00 to ~00:08 are
   excluded from speed figures; training is unaffected.
+
+## Correction (2026-10-02): what leaky ReLU did to the SE bottleneck
+
+The full-model analysis (`full-model-analysis/REPORT.md`, step 23,000) corrects the
+dead-unit reading in the 5k–20k reviews above:
+
+- The "below 5% of block median velocity: 0 / 0 / 0" counts are an artifact. More
+  than half of each block's FC1 units are weak, so the block *median* is itself a
+  weak unit. Against the block's 90th percentile, 15–23 units per block sit below
+  5% at every checkpoint.
+- Leaky ReLU removed **exact** deadness (no zero-velocity FC1 unit at any of 23
+  checkpoints, vs 4 / 13 / 4 for ReLU seed 2), but the units it "revived" mostly
+  just trickle: 18 / 17 / 16 units per block stay on the negative side, receiving
+  only the 0.01 slope's share of gradient (0.5–1.5% of an active unit's).
+- Units actually used (FC2 input column moved ≥ 5° from init) at 23k: leaky
+  14 / 9 / 11 vs ReLU seed 1 14 / 10 / 7 — 29 of leaky's 34 are the same units ReLU
+  uses; the net gain is ~4 units in block 2.
+- ReLU-dead SE units also revive on their own on this architecture (their input
+  keeps drifting), so "a dead SE unit can never recover" was wrong here.
+- Everything else in the net (stem, tower, LayerNorms, tower end, both heads) has
+  no dead, stuck or always-on units in either arm; the only exactly dead weights
+  are the 7 always-zero input planes and one never-read en-passant kernel row.
