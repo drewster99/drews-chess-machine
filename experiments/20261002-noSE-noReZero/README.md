@@ -147,6 +147,23 @@ Tallies against ReZero seed 1 (pElo; the 2k–3k lag excluded by starting at 4k)
   removing it helps depends on which no-ReZero seed you look at, which says the
   effect, if any, is smaller than seed noise.
 
+## Review at 25,000 steps (`review.py 25000`)
+
+| | ReZero s1 (`se_none`) | no ReZero s1 |
+|---|---:|---:|
+| pElo / NLL | 1437.9 / 2.2754 | 1441.0 / 2.2876 |
+| loss / policy / value | 3.5619 / 2.7640 / 0.7933 | 3.5560 / 2.7568 / 0.7948 |
+| policy entropy / gNorm | 2.876 / 0.641 | 2.883 / 0.653 |
+| branch scale per block | 6.45 / 6.59 / 7.26 | 14.79 / 15.33 / 17.32 |
+
+- Through the LR trough (21k–25k) both nets made the same jump: ReZero 1313.0 → 1437.9,
+  no ReZero 1358.3 → 1441.0 (no ReZero led at 21k/23k/24k, trailed at 22k, level at 25k).
+- Seed 1, 4k–25k: mean pElo difference +2.9, ahead at 10 of 22, lower NLL at 11 of 22
+  — a coin flip on both. Over 1k–25k: 11 ahead / 14 behind (sign test p 0.69), mean −0.5.
+- Branch scales still unchanged; conv2 norms are slowly shrinking in both (weight
+  decay), and ReZero α is at its cap (effective 0.434–0.438 of 0.447).
+- Reading at 25k: no difference between the designs after the first ~3k steps.
+
 ## Reproduce
 
 ```
