@@ -41,11 +41,15 @@ ARMS = {
     },
 }
 UNMOVED_COSINE = 0.999995
-# A unit whose FC1 weight-velocity row norm is below this fraction of its
-# block's median is "effectively off": under ReLU an always-off unit's velocity
-# decays to exactly 0; under leaky ReLU it keeps about the negative slope's
-# share (1%) of a live unit's gradient.
+# A unit whose FC1 weight-velocity column norm is below this fraction of its
+# block's 90th percentile is "effectively off": under ReLU an always-off unit's
+# velocity decays to exactly 0; under leaky ReLU it keeps about the negative
+# slope's share (1%) of a live unit's gradient. The reference is the 90th
+# percentile, not the median: more than half of each block's units are weak, so
+# the median is itself a weak unit and a median reference counts none (the
+# correction recorded in README.md, 2026-10-02).
 OFF_VELOCITY_FRACTION = 0.05
+OFF_VELOCITY_REFERENCE_PERCENTILE = 90
 # Velocity-based comparator: ReLU scale+bias seed 2 (same architecture and
 # parameters, different random init; its build saves optimizer velocity,
 # seed 1's does not). Reached 7,282 steps.
@@ -79,7 +83,7 @@ def fc1_names(block):
 
 def velocity_off_counts(path):
     """Per block: (units with exactly-zero FC1 weight velocity, units below
-    OFF_VELOCITY_FRACTION of the block median), or None if the file has no
+    OFF_VELOCITY_FRACTION of the block's 90th percentile), or None if the file has no
     optimizer velocity."""
     with open(path, "rb") as handle:
         header_len = struct.unpack("<Q", handle.read(8))[0]
@@ -94,8 +98,8 @@ def velocity_off_counts(path):
         # per FC1 unit (checked against TENSOR-STATS.md's dead-unit counts).
         velocity = tensors[name].reshape(-1, 32)
         row_norm = np.linalg.norm(velocity, axis=0)
-        median = np.median(row_norm)
-        counts.append((int((row_norm == 0).sum()), int((row_norm < OFF_VELOCITY_FRACTION * median).sum())))
+        reference = np.percentile(row_norm, OFF_VELOCITY_REFERENCE_PERCENTILE)
+        counts.append((int((row_norm == 0).sum()), int((row_norm < OFF_VELOCITY_FRACTION * reference).sum())))
     return counts
 
 
@@ -165,7 +169,7 @@ def main():
             print("  FC1 velocity: not saved by this run's build")
         else:
             print(f"  FC1 units with zero velocity per block: {' / '.join(str(z) for z, _ in off)}; "
-                  f"below {OFF_VELOCITY_FRACTION:.0%} of block median: {' / '.join(str(o) for _, o in off)}")
+                  f"below {OFF_VELOCITY_FRACTION:.0%} of block p{OFF_VELOCITY_REFERENCE_PERCENTILE}: {' / '.join(str(o) for _, o in off)}")
         for block, summary in enumerate(cos_summary):
             print(f"    block {block} cosine with init: {summary}")
     seed2 = os.path.join(MODELS, f"{SEED2_RELU_STEM}{step}.safetensors")
@@ -173,7 +177,7 @@ def main():
         off = velocity_off_counts(seed2)
         if off is not None:
             print(f"\n[relu seed 2, velocity comparator] zero velocity per block: {' / '.join(str(z) for z, _ in off)}; "
-                  f"below {OFF_VELOCITY_FRACTION:.0%} of block median: {' / '.join(str(o) for _, o in off)}")
+                  f"below {OFF_VELOCITY_FRACTION:.0%} of block p{OFF_VELOCITY_REFERENCE_PERCENTILE}: {' / '.join(str(o) for _, o in off)}")
     row = baseline_csv(step)
     if row is not None:
         print(f"\nbaseline recorded in dashboards/data/se_sb.csv at {step}: pElo {row['pElo']} nll {row['nll']}")

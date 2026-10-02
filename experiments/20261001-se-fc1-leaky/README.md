@@ -199,3 +199,31 @@ dead-unit reading in the 5k–20k reviews above:
   gives p ≈ 0.064 (two-sided), and successive checkpoints of one run are
   correlated, so the effective sample is smaller — a lean toward leaky FC1, not an
   established difference.
+
+## Review at 30,000 steps
+
+| | ReLU scale+bias | leaky FC1 |
+|---|---:|---:|
+| pElo (probed with build 2275) | 1448.7 | 1474.9 |
+| NLL | 2.2532 | 2.2473 |
+| training loss / policy / value (last 10 logged steps) | 3.560 / 2.740 / 0.816 | 3.558 / 2.744 / 0.810 |
+| FC1 units unmoved from init (per block, of 32) | 2 / 4 / 0 | 1 / 1 / 0 |
+| FC1 units with zero velocity | not saved | 0 / 0 / 0 |
+| FC1 units below 5% of block p90 velocity | not saved | 18 / 16 / 17 (25k: 17 / 16 / 15) |
+
+- `review.py` now measures low velocity against the block's 90th percentile, not its
+  median (the correction above); the 5k–25k "0 / 0 / 0" lines were the median
+  artifact.
+- Leaky FC1 leads its comparator on both pElo (+26.2) and NLL at 30k. Training
+  losses are indistinguishable.
+- Tallies, 1k–30k (pElo; NLL in brackets):
+
+  | leaky FC1 vs | ahead / behind / tied | sign test p (two-sided) | mean pElo difference | leaky lower NLL |
+  |---|---|---:|---:|---:|
+  | ReLU scale+bias (same init) | 22 / 7 / 1 | 0.008 | +16.9 | 19 / 30 |
+  | ReLU attenuate-only | 16 / 13 / 1 | 0.71 | +2.7 | 17 / 30 |
+  | ReLU no SE | 7 / 22 / 1 | 0.008 | −13.8 | 6 / 30 |
+
+  Successive checkpoints of one run are correlated, so the sign tests overstate the
+  evidence, and each arm is one seed (seed spread 7–25 pElo on this setup). Leaky
+  FC1 sits consistently above its ReLU twin and consistently below the no-SE net.
