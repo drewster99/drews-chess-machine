@@ -91,7 +91,9 @@ Same method as the 5k review (same probe binary for both; one `[REPLAY]` line ea
 ## Position-by-position comparison at 13,000 steps
 
 `--probe-positions-out` (added for this; one JSON line per position) on both 13k
-checkpoints, same binary; `positions/compare.py` pairs the 4,435 wide-battery
+checkpoints, same binary — Release build 2285, the code of `df25a56` before its
+last edit (the check that `--probe-out` and `--probe-positions-out` differ, which
+does not touch the output); `positions/compare.py` pairs the 4,435 wide-battery
 positions by index. Files: `positions/base-13k.jsonl.gz`, `positions/C-13k.jsonl.gz`,
 full report `positions/compare-13k.md`.
 
