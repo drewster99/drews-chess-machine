@@ -121,6 +121,35 @@ full report `positions/compare-13k.md`.
   positions cannot appear before the run starts a second pass over the corpus (33k
   steps is ~20% of the first).
 
+## Review at 15,000 steps
+
+Both checkpoints probed with Release build 2285 (`df25a56` code) with
+`--probe-positions-out`; paired report `positions/compare-15k.md`, data
+`positions/{base,C}-15k.jsonl.gz`. Training metrics: the `[REPLAY]` line at 15,000.
+
+| | baseline (ε 0.1) | C (ε 0.03) |
+|---|---:|---:|
+| pElo / NLL | 1283.6 / 2.4534 | 1333.6 / 2.3855 |
+| top-1 / top-5 correct (of 4,435) | 1,537 / 3,243 | 1,634 / 3,287 |
+| mean probability on the correct move / mean rank | 0.1407 / 5.17 | 0.1533 / 4.94 |
+| policy logit abs max / peak | 18.19 / 29.83 | 18.26 / 28.70 |
+| mean legal-masked entropy (nats) | 2.873 | 2.817 |
+| expected calibration error | 0.1293 | 0.1348 |
+| confident errors (top-1 wrong at p > 0.8) | 6 | 7 |
+| training: playedP / pEnt (nats) | 0.163 / 2.865 | 0.171 / 2.829 |
+| training: loss / vLoss (single logged step) | 3.6184 / 0.8107 | 3.5559 / 0.8066 |
+
+- **Paired over the 4,435 positions:** NLL −0.0679, 95% bootstrap [−0.0784, −0.0573],
+  t = −12.53; top-1 +97, McNemar 210 only baseline vs 307 only C, exact p < 0.0001.
+  The gap is larger than at 13k (−0.0353, +52). The improvement holds in every
+  legal-move-count bucket (NLL −0.055 to −0.078).
+- **Calibration:** both nets remain under-confident below p ≈ 0.6. C's ECE is a
+  little higher (0.1348 vs 0.1293) because it is *more* under-confident in the lowest
+  bucket (p < 0.1: accuracy 0.208 at mean p 0.082), not because it is over-confident;
+  confident errors 6 vs 7, logits unchanged.
+- **Tally 1k–15k:** NLL lower at 15 of 15, pElo ahead at 13 of 15.
+- Same caveat as before: this is one training run of each; C seed 2 is queued.
+
 ## Seed 2 (queued)
 
 Starts from the SE experiment's scale+bias **seed-2** fresh net
