@@ -182,3 +182,17 @@ dead-unit reading in the 5k–20k reviews above:
 - Everything else in the net (stem, tower, LayerNorms, tower end, both heads) has
   no dead, stuck or always-on units in either arm; the only exactly dead weights
   are the 7 always-zero input planes and one never-read en-passant kernel row.
+
+## Review at 25,000 steps
+
+| | ReLU scale+bias | leaky FC1 |
+|---|---:|---:|
+| pElo (probed with build 2275) | 1437.9 | 1446.7 |
+| NLL | 2.2813 | 2.3082 |
+| training loss / policy / value (last 10 logged steps) | 3.580 / 2.780 / 0.795 | 3.581 / 2.782 / 0.794 |
+
+- The LR-cycle trough jump (~+90–130 pElo between 23k and 25k) happened in every
+  arm; at 25k all four arms sit within 25 pElo (1422.0–1446.7). Leaky FC1 leads
+  its comparator on pElo but trails on NLL — no separation.
+- Running tally against ReLU scale+bias (pElo): ahead at 13 of 25 checkpoints,
+  behind at 10, tied at 2 — consistent with no real difference.
