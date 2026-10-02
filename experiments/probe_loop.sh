@@ -5,7 +5,7 @@
 # Usage: probe_loop.sh <out-model stem> <probes.jsonl> [step limit, default 33000]
 STEM=$1; OUT=$2; LIMIT=${3:-33000}
 [ -n "$STEM" ] && [ -n "$OUT" ] || { echo "usage: $0 <stem> <probes.jsonl> [limit]" >&2; exit 2; }
-BIN=/private/tmp/claude-501/-Users-andrew-cursor-drews-chess-machine/844f7374-7702-404b-9d25-5c985cb68170/scratchpad/DCM-de0f22b.app/Contents/MacOS/DrewsChessMachine
+BIN="$HOME/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2275-de0f22b.app/Contents/MacOS/DrewsChessMachine"
 M="$HOME/Library/Application Support/DrewsChessMachine/Models"
 touch $OUT
 while true; do
