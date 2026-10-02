@@ -60,6 +60,34 @@ after seed 1 ends. It shares the GPU with leaky-FC1 and seed 1 (three runs).
 `[REPLAY-HPARAMS]` is identical to seed 1's. Reproduce: the commands below with
 `-seed2` added to every model file name.
 
+## Review at 10,000 steps
+
+`review.py 10000` (training means over the `[REPLAY]` lines in the 500 steps up to
+the step; branch scale from the enumerated checkpoint, identified by metadata).
+
+| | ReZero s1 (`se_none`) | no ReZero s1 |
+|---|---:|---:|
+| pElo / NLL | 1300.1 / 2.4457 | 1296.0 / 2.4279 |
+| loss / policy / value | 3.6026 / 2.7801 / 0.8137 | 3.6027 / 2.7806 / 0.8145 |
+| policy entropy / gNorm | 2.879 / 0.679 | 2.883 / 0.688 |
+| ‖conv2‖ per block | 15.57 / 15.80 / 16.68 | 15.55 / 15.90 / 17.19 |
+| branch scale (eff α × ‖conv2‖) | 6.43 / 6.30 / 6.75 | 15.55 / 15.90 / 17.19 |
+
+- **Level after an early lag.** pElo difference (no ReZero − ReZero, seed 1s) by
+  1k: +19.9, −51.8, −45.9, −4.1, +27.4, +4.1, −7.2, −1.0, −7.7, −4.1. Both
+  no-ReZero seeds trail at 2k (1033.7 / 1070.2 vs 1085.5 / 1140.5, NLL 2.84 / 2.78
+  vs 2.68 / 2.64); seed 1 catches up by 4k–5k, seed 2 by 3k (1170.2 vs 1172.2 /
+  1163.4). From 4k to 10k the mean difference is +1.1 pElo (ahead at 2 of 7), and
+  NLL is lower at 10k.
+- Training losses are identical to the fourth decimal on loss and policy loss.
+- **Branch scale.** Without ReZero the residual branch runs at ~2.5× the ReZero
+  nets' scale, and the network keeps it there (block 2 grows 16.0 → 17.2). With
+  ReZero, α saturates at its tanh cap and the scale stops at ~6.5 (see
+  `rezero-scale/`). The loss is indifferent between the two after the first few
+  thousand steps.
+- Tally 1k–10k: behind at 7 of 10 checkpoints (sign test p 0.34, mean −7.1),
+  driven by the 2k–3k lag.
+
 ## Reproduce
 
 ```
