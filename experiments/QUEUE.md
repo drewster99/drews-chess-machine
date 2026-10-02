@@ -27,8 +27,10 @@ timing runs when every replay run has ended.
    Launches automatically when leaky-FC1 ends.~~ Launched 2026-10-02 06:14.
 4. **Label smoothing D:** value ε 0.013 → 0. Launches automatically when no-ReZero
    seed 1 ends.
-5. **Label smoothing B:** per-move policy smoothing (needs code).
-6. ~~Second no-ReZero seed if the ReZero result is close.~~ Launched 2026-10-02 03:55.
+5. **Label smoothing C seed 2** — from the scale+bias seed-2 fresh net; launches
+   when no-ReZero seed 2 ends (`chain3.sh`).
+6. **Label smoothing B:** per-move policy smoothing (needs code).
+7. ~~Second no-ReZero seed if the ReZero result is close.~~ Launched 2026-10-02 03:55.
 
 ## Finished
 
@@ -70,3 +72,12 @@ timing runs when every replay run has ended.
   `dcm_log_20261002-061425.txt`. Launch records are filled in from the log whose
   `[REPLAY] start-model` line matches, not from the chain line. Left `chain2.sh`
   running rather than edit a script that is executing.
+- **2026-10-02 14:39 — chain2 replaced by chain3** to queue label smoothing C seed 2
+  (owner-approved) after no-ReZero seed 2; D still launches after no-ReZero seed 1,
+  the timing benchmark still waits for every run. chain3 records each run's log by its
+  `[REPLAY] start-model` line instead of "newest log".
+- **2026-10-02 14:40 — full test suite during three training runs** for the
+  `--probe-positions-out` change (shared NLL definition + per-position records).
+  Same trade as at 01:28: the runs' step times in that window are not speed data;
+  training math is unaffected.
+

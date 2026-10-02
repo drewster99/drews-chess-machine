@@ -504,11 +504,12 @@ final class LichessProbeHistory {
                     sumRank += rank
                     countRank += 1
                 }
-                // 1e-8 floor: an errored probe / strict-illegal bookmove
-                // would otherwise contribute +∞. Floor matches the one in
-                // `LichessProbeComparison`'s analogous accumulator so live
-                // and snapshot NLL stay byte-identical at equal inputs.
-                sumNegLog += -log(Double(max(r.expectedProb, 1e-8)))
+                // Floored so an errored probe / strict-illegal bookmove
+                // contributes a finite penalty instead of +∞; the same
+                // definition `LichessProbeComparison`'s analogous
+                // accumulator uses, so live and snapshot NLL stay
+                // byte-identical at equal inputs.
+                sumNegLog += ProbeBookmoveNLL.nats(expectedProb: r.expectedProb)
                 switch r.verdict {
                 case .correctAndConfident, .correctButFlat:
                     argmaxCorrect += 1

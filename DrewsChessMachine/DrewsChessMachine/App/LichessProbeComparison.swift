@@ -75,10 +75,10 @@ struct LichessProbeComparison: Sendable {
                     sumRank += rank
                     countRank += 1
                 }
-                // 1e-8 floor matches the live-side accumulator in
-                // `LichessProbeHistory.aggregates(from:)` so live and
+                // Same definition as the live-side accumulator in
+                // `LichessProbeHistory.aggregates(from:)`, so live and
                 // snapshot NLL are byte-identical at equal inputs.
-                sumNegLog += -log(Double(max(pr.expectedProb, 1e-8)))
+                sumNegLog += ProbeBookmoveNLL.nats(expectedProb: pr.expectedProb)
                 switch pr.verdict {
                 case "correctAndConfident", "correctButFlat":
                     argmaxCorrect += 1

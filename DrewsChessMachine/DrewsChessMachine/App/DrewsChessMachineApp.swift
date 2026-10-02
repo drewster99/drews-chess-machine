@@ -435,11 +435,14 @@ struct DrewsChessMachineApp: App {
                                               Batch-size throughput sweep; print the table and exit.
               --analyze-replay-buffer <path>  Analyze a replay_buffer.bin (or a .dcmsession dir); print JSON,
                                               human summary to stderr, and exit.
-              --probe-model <path> [--probe-set 200|wide|both] [--probe-out <file> [--probe-out-overwrite]]
+              --probe-model <path> [--probe-set 200|wide|both] [--probe-out <file>]
+                                 [--probe-positions-out <file>] [--probe-out-overwrite]
                                               Run the Lichess probe batteries against saved checkpoints
                                               (a weight file, one .dcmsession, or a directory of sessions);
                                               one JSON line per checkpoint x set, then exit.
-                                              --probe-out must not already exist unless --probe-out-overwrite is
+                                              --probe-positions-out also writes one JSON line per position
+                                              (rank, probability and NLL of the bookmove, top-1, entropy, ...).
+                                              Output files must not already exist unless --probe-out-overwrite is
                                               given (replaces a regular file only, never a folder or link).
               --analyze-numerics <path> [--numerics-corpus <shard>] [--numerics-out <dir>] [--numerics-static-only]
                                  [--policy-tail-precision fp32_from_pre_bn|mixed_final_projection]
@@ -1793,7 +1796,8 @@ struct DrewsChessMachineApp: App {
 
     /// Inspects `rawArgs` for `--probe-model`. If present, parses the
     /// optional companions (`--probe-set <200|wide|both>`,
-    /// `--probe-out <path>`, `--probe-out-overwrite`) and hands control to
+    /// `--probe-out <path>`, `--probe-positions-out <path>`,
+    /// `--probe-out-overwrite`) and hands control to
     /// `ProbeModelCLI.runAndExit`, which never returns.
     /// Investigation-only — retro-probes saved checkpoints with the
     /// Lichess tactical batteries.
@@ -1803,8 +1807,9 @@ struct DrewsChessMachineApp: App {
         let setFlag = "--probe-set"
         let outFlag = "--probe-out"
         let replaceOutFlag = ProbeModelCLI.replaceExistingOutFlag
+        let positionsOutFlag = ProbeModelCLI.positionsOutFlag
 
-        let allowedFlags: Set<String> = [flag, setFlag, outFlag, replaceOutFlag]
+        let allowedFlags: Set<String> = [flag, setFlag, outFlag, positionsOutFlag, replaceOutFlag]
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
             FileHandle.standardError.write(Data(
                 "error: \(flag) does not accept '\(bad)'\n".utf8
@@ -1839,6 +1844,7 @@ struct DrewsChessMachineApp: App {
             set = parsed
         }
         ProbeModelCLI.runAndExit(modelPath: modelPath, set: set, outPath: value(after: outFlag),
+                                 positionsOutPath: value(after: positionsOutFlag),
                                  replaceExistingOut: rawArgs.contains(replaceOutFlag))
     }
 

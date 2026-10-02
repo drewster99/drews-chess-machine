@@ -25,6 +25,15 @@ import Foundation
 /// embedded/legacy architecture, so checkpoints of different
 /// architectures and encodings can be swept in one invocation.
 ///
+/// `--probe-positions-out <file>` additionally writes one JSON line per
+/// (checkpoint × set × position) — the probe's rank, probability and NLL of
+/// the bookmove, top-1 move and probability, legal-masked entropy, illegal
+/// mass, max |logit|, verdict, value W/D/L, and the puzzle's id / theme /
+/// rating — so two checkpoints can be compared position by position (paired
+/// tests, calibration, entropy by position type) instead of only through
+/// battery means. Each battery's `nll` is exactly the mean of its
+/// positions' `nll` (both use `ProbeBookmoveNLL`).
+///
 /// Interpretation reminder (learned the hard way on the KbHZ resume):
 /// NLL is sharpness-confounded — a sharper policy pays more nats for the
 /// same mistakes — so cross-model comparisons should read `argmax` /
@@ -37,24 +46,37 @@ enum ProbeModelCLI {
         case both
     }
 
-    /// `--probe-out` refuses an existing file unless this flag is also
-    /// given; the parser in `DrewsChessMachineApp` passes its presence as
-    /// `replaceExistingOut`.
+    /// `--probe-out` and `--probe-positions-out` refuse an existing file
+    /// unless this flag is also given; the parser in `DrewsChessMachineApp`
+    /// passes its presence as `replaceExistingOut`.
     static let replaceExistingOutFlag = "--probe-out-overwrite"
 
+    /// Per-position output flag (see the type doc).
+    static let positionsOutFlag = "--probe-positions-out"
+
     /// Run the probes and exit. `outPath`, when given, receives the same
-    /// JSON lines as stdout. It is opened before any checkpoint is loaded, and
-    /// it must be new — or, with `replaceExistingOut`, an existing *regular
-    /// file*, which is emptied first. A directory, symbolic link or other
-    /// non-regular item there is always refused. Any failure to open it ends
-    /// the process with a non-zero exit before the (long) probe run starts, so
-    /// a run never completes with its results silently undelivered.
-    static func runAndExit(modelPath: String, set: ProbeSet, outPath: String?, replaceExistingOut: Bool) -> Never {
+    /// JSON lines as stdout; `positionsOutPath`, when given, receives the
+    /// per-position lines (never printed to stdout — a wide battery is
+    /// thousands of lines). Both are opened before any checkpoint is loaded,
+    /// and each must be new — or, with `replaceExistingOut`, an existing
+    /// *regular file*, which is emptied first. A directory, symbolic link or
+    /// other non-regular item there is always refused. Any failure to open
+    /// either ends the process with a non-zero exit before the (long) probe
+    /// run starts, and a failed per-position write ends it immediately, so a
+    /// run never completes with its results silently undelivered or a
+    /// per-position file silently truncated.
+    static func runAndExit(
+        modelPath: String,
+        set: ProbeSet,
+        outPath: String?,
+        positionsOutPath: String?,
+        replaceExistingOut: Bool
+    ) -> Never {
         SessionLogger.shared.start()
 
-        if replaceExistingOut && outPath == nil {
+        if replaceExistingOut && outPath == nil && positionsOutPath == nil {
             FileHandle.standardError.write(Data(
-                "error: \(replaceExistingOutFlag) needs --probe-out <file>\n".utf8
+                "error: \(replaceExistingOutFlag) needs --probe-out <file> or \(positionsOutFlag) <file>\n".utf8
             ))
             SessionLogger.shared.shutdown()
             Darwin.exit(66)
@@ -70,28 +92,42 @@ enum ProbeModelCLI {
             Darwin.exit(61)
         }
 
-        var handle: FileHandle?
-        if let outPath {
-            let outURL = URL(fileURLWithPath: (outPath as NSString).expandingTildeInPath)
-            do {
-                handle = try FileSafety.openForWriting(
-                    at: outURL,
-                    existingRegularFile: replaceExistingOut ? .truncate : .refuse
-                )
-            } catch FileSafetyError.alreadyExists(path: let path, kind: .regularFile) {
+        if let outPath, let positionsOutPath {
+            let summaryURL = URL(fileURLWithPath: (outPath as NSString).expandingTildeInPath).standardizedFileURL
+            let positionsURL = URL(fileURLWithPath: (positionsOutPath as NSString).expandingTildeInPath).standardizedFileURL
+            if summaryURL.path == positionsURL.path {
                 FileHandle.standardError.write(Data(
-                    "error: --probe-out \(path) already exists; pass \(replaceExistingOutFlag) to replace it\n".utf8
-                ))
-                SessionLogger.shared.shutdown()
-                Darwin.exit(65)
-            } catch {
-                FileHandle.standardError.write(Data(
-                    "error: --probe-out: \(error.localizedDescription)\n".utf8
+                    "error: --probe-out and \(positionsOutFlag) must be different files\n".utf8
                 ))
                 SessionLogger.shared.shutdown()
                 Darwin.exit(65)
             }
         }
+
+        func openOutput(_ path: String, flagName: String) -> FileHandle {
+            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            do {
+                return try FileSafety.openForWriting(
+                    at: url,
+                    existingRegularFile: replaceExistingOut ? .truncate : .refuse
+                )
+            } catch FileSafetyError.alreadyExists(path: let path, kind: .regularFile) {
+                FileHandle.standardError.write(Data(
+                    "error: \(flagName) \(path) already exists; pass \(replaceExistingOutFlag) to replace it\n".utf8
+                ))
+                SessionLogger.shared.shutdown()
+                Darwin.exit(65)
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "error: \(flagName): \(error.localizedDescription)\n".utf8
+                ))
+                SessionLogger.shared.shutdown()
+                Darwin.exit(65)
+            }
+        }
+
+        let handle: FileHandle? = outPath.map { openOutput($0, flagName: "--probe-out") }
+        let positionsHandle: FileHandle? = positionsOutPath.map { openOutput($0, flagName: positionsOutFlag) }
 
         func emit(_ obj: [String: Any]) {
             let data: Data
@@ -125,10 +161,34 @@ enum ProbeModelCLI {
             "[PROBE-MODEL] \(targets.count) checkpoint(s), set=\(set.rawValue)\n".utf8
         ))
 
+        func writePositions(_ records: [[String: Any]], to positionsHandle: FileHandle) {
+            do {
+                var data = Data()
+                for record in records {
+                    data.append(try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]))
+                    data.append(Data("\n".utf8))
+                }
+                try positionsHandle.write(contentsOf: data)
+                try positionsHandle.synchronize()
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "error: write to \(positionsOutFlag) failed: \(error.localizedDescription)\n".utf8
+                ))
+                SessionLogger.shared.shutdown()
+                Darwin.exit(67)
+            }
+        }
+
+        let wantPositions = positionsHandle != nil
         for target in targets {
             do {
-                let results = try syncWait { try await probeOne(weightFileURL: target, set: set) }
-                for obj in results { emit(obj) }
+                let outcome = try syncWait {
+                    try await probeOne(weightFileURL: target, set: set, includePositions: wantPositions)
+                }
+                for obj in outcome.summaries { emit(obj) }
+                if let positionsHandle {
+                    writePositions(outcome.positions, to: positionsHandle)
+                }
             } catch {
                 emit([
                     "event": "error",
@@ -178,12 +238,19 @@ enum ProbeModelCLI {
             }
     }
 
+    /// One checkpoint's output: a summary per battery, and — when requested —
+    /// one record per position of every battery, in battery order.
+    private struct ProbeOutcome {
+        let summaries: [[String: Any]]
+        let positions: [[String: Any]]
+    }
+
     /// Load one checkpoint into a fresh inference network (built from the
     /// checkpoint's own embedded/legacy architecture) and run the
     /// requested batteries in a single batched forward pass, exactly like
     /// `LichessProbeWatcher.tickOnce`. Returns one JSON-ready dictionary
-    /// per battery.
-    private static func probeOne(weightFileURL: URL, set: ProbeSet) async throws -> [[String: Any]] {
+    /// per battery, plus per-position records when `includePositions`.
+    private static func probeOne(weightFileURL: URL, set: ProbeSet, includePositions: Bool) async throws -> ProbeOutcome {
         let file = try CheckpointManager.loadModelFile(at: weightFileURL)
         let network = try ChessMPSNetwork(.randomWeights, arch: file.architecture)
         // Trainer files carry optimizer velocity after the base block;
@@ -219,21 +286,85 @@ enum ProbeModelCLI {
             ? batch.logitAbsMaxPerPos : []
 
         var emitted: [[String: Any]] = []
-        if !primary.isEmpty {
+        var positions: [[String: Any]] = []
+        let batteries: [(label: String, range: Range<Int>)] = [
+            ("200", 0..<primary.count),
+            ("wide", primary.count..<probes.count),
+        ]
+        for battery in batteries where !battery.range.isEmpty {
+            let results = Array(batch.results[battery.range])
+            let logits = logitAbsMax.isEmpty ? [] : Array(logitAbsMax[battery.range])
             emitted.append(summary(
-                of: Array(batch.results[0..<primary.count]),
-                logitAbsMaxPerPos: logitAbsMax.isEmpty ? [] : Array(logitAbsMax[0..<primary.count]),
-                setLabel: "200", file: file, weightFileURL: weightFileURL, gpuMs: batch.gpuMs
+                of: results, logitAbsMaxPerPos: logits,
+                setLabel: battery.label, file: file, weightFileURL: weightFileURL, gpuMs: batch.gpuMs
             ))
+            if includePositions {
+                for (index, result) in results.enumerated() {
+                    positions.append(positionRecord(
+                        result,
+                        index: index,
+                        setLabel: battery.label,
+                        logitAbsMax: logits.isEmpty ? nil : logits[index],
+                        modelID: file.modelID,
+                        modelPath: weightFileURL.path
+                    ))
+                }
+            }
         }
-        if !wide.isEmpty {
-            emitted.append(summary(
-                of: Array(batch.results[primary.count...]),
-                logitAbsMaxPerPos: logitAbsMax.isEmpty ? [] : Array(logitAbsMax[primary.count...]),
-                setLabel: "wide", file: file, weightFileURL: weightFileURL, gpuMs: batch.gpuMs
-            ))
+        return ProbeOutcome(summaries: emitted, positions: positions)
+    }
+
+    /// One position's `--probe-positions-out` record. `index` is the
+    /// position's 0-based place in its battery (the bundled set's order, the
+    /// pairing key between checkpoints). `nll` is
+    /// `ProbeBookmoveNLL.nats(expectedProb:)`, so a battery's mean `nll`
+    /// equals its summary `nll`. Fields that do not exist for a position are
+    /// omitted rather than defaulted: `expectedRank` for a probe whose
+    /// acceptable move is not legal or that errored, `top1Move`/`top1Prob`
+    /// for an errored probe, the puzzle fields for a probe with no Lichess
+    /// metadata, `logitAbsMax` when the forward pass did not return it.
+    static func positionRecord(
+        _ result: ProbeResult,
+        index: Int,
+        setLabel: String,
+        logitAbsMax: Float?,
+        modelID: String,
+        modelPath: String
+    ) -> [String: Any] {
+        var record: [String: Any] = [
+            "model": modelPath,
+            "modelID": modelID,
+            "set": setLabel,
+            "index": index,
+            "name": result.probe.name,
+            "category": result.probe.category.rawValue,
+            "legalCount": result.legalCount,
+            "expectedProb": Double(result.expectedProb),
+            "nll": ProbeBookmoveNLL.nats(expectedProb: result.expectedProb),
+            "entropyNats": Double(result.legalEntropyNats),
+            "uniformEntropyNats": Double(result.uniformLegalEntropy),
+            "illegalMass": Double(result.illegalMass),
+            "verdict": result.verdict.rawValue,
+            "valueWin": Double(result.valueWDL.win),
+            "valueDraw": Double(result.valueWDL.draw),
+            "valueLoss": Double(result.valueWDL.loss),
+        ]
+        if let rank = result.expectedRank {
+            record["expectedRank"] = rank
         }
-        return emitted
+        if let top = result.topMoves.first {
+            record["top1Move"] = top.move.uci
+            record["top1Prob"] = Double(top.prob)
+        }
+        if let meta = LichessProbeData.metadata[result.probe.name] {
+            record["puzzleId"] = meta.id
+            record["theme"] = meta.theme
+            record["rating"] = meta.rating
+        }
+        if let logitAbsMax {
+            record["logitAbsMax"] = Double(logitAbsMax)
+        }
+        return record
     }
 
     /// Fold one battery's results into the same overall metrics the

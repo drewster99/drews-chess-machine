@@ -88,3 +88,42 @@ Same method as the 5k review (same probe binary for both; one `[REPLAY]` line ea
   (the leaky-FC1 pair swung by up to 116 pElo at a single checkpoint), so a second
   C seed is what would make this conclusive.
 
+## Position-by-position comparison at 13,000 steps
+
+`--probe-positions-out` (added for this; one JSON line per position) on both 13k
+checkpoints, same binary; `positions/compare.py` pairs the 4,435 wide-battery
+positions by index. Files: `positions/base-13k.jsonl.gz`, `positions/C-13k.jsonl.gz`,
+full report `positions/compare-13k.md`.
+
+| | baseline (ε 0.1) | C (ε 0.03) | C − baseline | test |
+|---|---:|---:|---:|---|
+| mean NLL | 2.4348 | 2.3995 | −0.0353 | 95% bootstrap [−0.0454, −0.0252]; paired t = −6.87 |
+| top-1 correct (of 4,435) | 1,539 | 1,591 | +52 | McNemar: 214 only baseline, 266 only C, exact p = 0.020 |
+| positions with lower NLL | | | 2,516 of 4,435 | |
+| mean legal-masked entropy (nats) | 2.859 | 2.813 | −0.046 | |
+| top-1 probability > 0.9 | 0.16% | 0.20% | | |
+| confident errors (top-1 wrong at p > 0.8) | 6 | 11 | | |
+| expected calibration error | 0.1260 | 0.1255 | | |
+
+- **Significance, and of what.** Over these positions the difference is clear for
+  NLL and modest for top-1 (p = 0.02). This measures the probe-set sampling noise for
+  *these two checkpoints* — not run-to-run noise. Whether a different training run
+  of C would also beat a different baseline run is what C seed 2 tests (queued).
+- **No sign of one-hot over-confidence.** Both nets are *under*-confident on these
+  puzzles (in every bucket below p = 0.6 their top-1 is right more often than their
+  stated probability), C's calibration error equals the baseline's, its entropy is
+  only 0.05 nats lower, and the gain holds in every legal-move-count bucket. Confident
+  errors rose from 6 to 11 — too few to read.
+- **Limits.** These are Lichess puzzles: each has one correct move, so positions with
+  several good moves cannot be picked out here, and over-confidence from memorizing
+  positions cannot appear before the run starts a second pass over the corpus (33k
+  steps is ~20% of the first).
+
+## Seed 2 (queued)
+
+Starts from the SE experiment's scale+bias **seed-2** fresh net
+(`20260929-test_SE_scale+bias-seed2-fresh.safetensors`), so its first 7,282 steps pair
+with the baseline's seed 2 (`se_sb2`) the way seed 1 pairs with `se_sb`. Out stem
+`20261002-label-smoothing-C-seed2`, probes `probes-seed2.jsonl`. Launched by
+`chain3.sh` when no-ReZero seed 2 ends (~2026-10-03 00:00).
+

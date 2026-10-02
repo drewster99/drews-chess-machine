@@ -135,6 +135,22 @@ struct ProbeResult: Sendable {
     }
 }
 
+/// The bookmove cross-entropy of one probe, in nats:
+/// `−log(max(expectedProb, probabilityFloor))`. The one definition every
+/// probe NLL uses — the live per-theme history, the snapshot comparison and
+/// the `--probe-positions-out` per-position records — so a per-position
+/// value averaged over a battery reproduces that battery's reported `nll`
+/// exactly. The floor keeps an errored probe, or a bookmove the network
+/// treats as illegal (`expectedProb = 0`), from contributing `+∞`; such a
+/// probe contributes `−log(1e-8) ≈ 18.4` nats, a heavy but finite penalty.
+enum ProbeBookmoveNLL {
+    static let probabilityFloor: Float = 1e-8
+
+    static func nats(expectedProb: Float) -> Double {
+        -log(Double(max(expectedProb, probabilityFloor)))
+    }
+}
+
 // MARK: - Tactical Probe — Analysis (pure, no SessionController)
 
 /// Given the raw 4864-cell policy softmax for `state`, mask to legal
