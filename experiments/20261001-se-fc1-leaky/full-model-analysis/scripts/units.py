@@ -242,9 +242,9 @@ def analyze(run, ckpt, fresh):
                             fc2_vel[sl].T if fc2_vel is not None else None, next_op=f"reads {se_act}(fc1)")
         alpha = float(ckpt[f"{p}.rezero_alpha"][0])
         alpha0 = float(fresh[f"{p}.rezero_alpha"][0])
-        init = float(group["rezero_alpha_init"])
+        rezero = ckpt.rezero_blocks[b]
         w.vector(f"{p}.rezero_alpha", f"{p}.rezero_alpha", next_op="C*tanh(alpha/C) x branch",
-                 labels=[f"raw {alpha:.6f} eff {L.rezero_effective(alpha, init):.6f} (init raw {alpha0:.6f} eff {L.rezero_effective(alpha0, init):.6f}, cap {init:.6f})"])
+                 labels=[f"raw {alpha:.6f} eff {rezero.effective(alpha):.6f} (init raw {alpha0:.6f} eff {rezero.effective(alpha0):.6f}, cap {rezero.alpha_cap:.6f})"])
         w.norm_channels(f"{p}.res_ln", f"{p}.res_ln", next_op="residual stream", has_running=False)
     w.norm_channels("tower_final_bn", "tower_final_bn", next_op="relu", has_running=True)
     # Policy head (intermediate_conv): pre_conv 1x1 -> pre_bn -> relu -> conv 1x1 + bias.

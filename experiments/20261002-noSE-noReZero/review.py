@@ -21,8 +21,10 @@ import numpy as np
 
 import table
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+import dcm_arch  # noqa: E402  each checkpoint's ReZero cap, read from its own metadata
+
 MODELS = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/Models")
-REZERO_CAP = 0.4472136  # bench_v5s3 rezero_alpha_init x rezeroTanhCeilingMultiple (1.0)
 RUNS = [
     ("ReZero s1", "dcm_log_20260929-150743.txt", "20260929-test_SE_none"),
     ("no ReZero s1", "dcm_log_20261002-011124.txt", "20261002-bench_v5s3_noSE_noReZero"),
@@ -75,15 +77,19 @@ def branch_scale(stem, step):
     path = os.path.join(MODELS, f"{stem}-replay-step{step}.safetensors")
     if not os.path.exists(path):
         return None
-    wanted = [f"blocks.{b}.{t}" for b in range(3) for t in ("conv2.weight", "rezero_alpha")]
+    blocks = dcm_arch.rezero_blocks_of_file(path)
+    wanted = [f"blocks.{b.index}.{t}" for b in blocks for t in ("conv2.weight", "rezero_alpha")]
     metadata, tensors = read_tensors(path, wanted)
     if int(metadata.get("training_step", -1)) != step:
         raise SystemExit(f"{path}: metadata training_step {metadata.get('training_step')} != {step}")
     rows = []
-    for b in range(3):
-        norm = float(np.linalg.norm(tensors[f"blocks.{b}.conv2.weight"]))
-        alpha = tensors.get(f"blocks.{b}.rezero_alpha")
-        effective = 1.0 if alpha is None else REZERO_CAP * math.tanh(float(alpha[0]) / REZERO_CAP)
+    for block in blocks:
+        norm = float(np.linalg.norm(tensors[f"blocks.{block.index}.conv2.weight"]))
+        alpha = tensors.get(f"blocks.{block.index}.rezero_alpha")
+        if (alpha is not None) != block.use_rezero:
+            raise SystemExit(f"{path}: block {block.index} use_rezero={block.use_rezero} "
+                             f"disagrees with the tensors present")
+        effective = 1.0 if alpha is None else block.effective(float(alpha[0]))
         rows.append((norm, effective, effective * norm))
     return metadata.get("model_id"), rows
 

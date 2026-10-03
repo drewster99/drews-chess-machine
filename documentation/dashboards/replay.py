@@ -32,6 +32,9 @@ import numpy as np
 from _schema import FIELDS  # single source of the CSV column order (shared with selfplay.py)
 from _atomic_write import atomic_write_open  # crash-safe replace of the CSVs + registry.json
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+import dcm_arch  # noqa: E402  each checkpoint's ReZero cap, read from its own metadata
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Config/data/output root. Defaults to the script dir, but can be pointed at a
 # separate chart set (its own registry.json + data/ + dcm_dashboard.html) via
@@ -90,15 +93,36 @@ def meta_step_of(path):
         n = struct.unpack("<Q", f.read(8))[0]
         return int(json.loads(f.read(n))["__metadata__"]["training_step"])
 
-def internals(path, cap):
+def internals(path):
+    """bn1Mean, Σαeff² and the per-block effective ReZero α of one checkpoint.
+
+    Each block's cap comes from the file's own architecture metadata (`dcm_arch`:
+    `rezero_alpha_cap`, or `rezero_alpha_init` × 1.0 for files older than format
+    v6), never from the registry, so a derived or zero-init model is read with the
+    cap it actually trains under. A model whose blocks use no ReZero has no α to
+    report: Σαeff² and the α list come back None (written as blank cells). A tower
+    mixing ReZero and non-ReZero blocks has no single Σαeff² and is refused."""
+    blocks = dcm_arch.rezero_blocks_of_file(path)
     W = _st_load(path, want=lambda k: k == "blocks.0.bn1.running_mean" or k.endswith(".rezero_alpha"))
     bn1 = float(abs(W["blocks.0.bn1.running_mean"]).max())
-    nblk = len({k.split(".")[1] for k in W if k.startswith("blocks.")})
+    users = {b.use_rezero for b in blocks}
+    if users == {False}:
+        return bn1, None, None
+    if users != {True}:
+        raise ValueError(f"{path}: some blocks use ReZero and some do not; Σαeff² is undefined")
     effs, tot = [], 0.0
-    for b in range(nblk):
-        a = float(W[f"blocks.{b}.rezero_alpha"][0]); e = cap * math.tanh(a / cap)
+    for block in blocks:
+        e = block.effective(float(W[f"blocks.{block.index}.rezero_alpha"][0]))
         effs.append(e); tot += e * e
     return bn1, tot, effs
+
+
+def internals_cells(path):
+    """The three CSV cells `internals` feeds: bn1Mean, sae2, eff_alpha."""
+    bn1, sae2, effs = internals(path)
+    return dict(bn1Mean=round(bn1, 4),
+                sae2="" if sae2 is None else round(sae2, 4),
+                eff_alpha="" if effs is None else ";".join(f"{e:.4f}" for e in effs))
 
 # ---------- probe ----------
 def probe(path):
@@ -671,7 +695,7 @@ def track(run):
         print(f"{run}: cum_step {cum} already tracked (meta {meta}) — no-op"); return
     cum, frozen = freeze(run, cfg, meta)
     pr = probe(frozen)
-    bn1, sae2, effs = internals(frozen, cfg["rezero_cap"])
+    cells = internals_cells(frozen)
     st = SegTime(cfg["segments"], run); elapsed, clock, m2, si = st.elapsed_and_clock(cum)
     met = _metrics_at(cfg["segments"][si]["log"], meta)
     lm = round(1 - met["pIllM"], 4) if "pIllM" in met else ""
@@ -681,8 +705,7 @@ def track(run):
                nll=round(pr.get("nll"), 4) if pr.get("nll") else "",
                loss=met.get("loss", ""), pLoss=met.get("pLoss", ""), vLoss=met.get("vLoss", ""),
                legalMass=lm, pIllM=met.get("pIllM", ""),
-               bn1Mean=round(bn1, 4), gNorm=met.get("gNorm", ""),
-               sae2=round(sae2, 4), eff_alpha=";".join(f"{e:.4f}" for e in effs),
+               gNorm=met.get("gNorm", ""), **cells,
                pLogit_mean=round(pr.get("pLogit_mean"), 3) if pr.get("pLogit_mean") else "",
                pLogit_peak=pr.get("pLogit_peak", ""),
                frozen_file=os.path.basename(frozen), note="")
@@ -706,13 +729,12 @@ def _backfill_one(cfg, st, rows, by, cum, path, name, verbose, segment=None):
     pr = probe(path)
     if not pr.get("pElo"):
         return 0
-    bn1, sae2, effs = internals(path, cfg["rezero_cap"])
+    cells = internals_cells(path)
     elapsed, clock, meta, si = st.elapsed_and_clock(cum, segment)
     met = _metrics_at(cfg["segments"][si]["log"], meta)
     pf = dict(pElo=round(pr["pElo"], 2),
               nll=round(pr.get("nll"), 4) if pr.get("nll") else "",
-              bn1Mean=round(bn1, 4), sae2=round(sae2, 4),
-              eff_alpha=";".join(f"{e:.4f}" for e in effs),
+              **cells,
               pLogit_mean=round(pr.get("pLogit_mean"), 3) if pr.get("pLogit_mean") else "",
               pLogit_peak=pr.get("pLogit_peak", ""), frozen_file=name)
     if r:
@@ -823,9 +845,10 @@ def recompute_cum_steps(run, verbose=True):
 def recompute_internals(run, verbose=True):
     """Re-derive bn1Mean / sae2 / eff_alpha from the checkpoints themselves.
 
-    eff_alpha and sae2 depend on the registry's `rezero_cap` (eff = cap·tanh(α/cap)),
-    so a row written while the cap was recorded wrongly carries wrong values. This
-    rereads the weights with the current cap. Only segments that declare a
+    eff_alpha and sae2 depend on each block's ReZero cap (eff = cap·tanh(α/cap)),
+    which `internals` reads from the checkpoint's own metadata. Rows written while
+    the cap came from a hand-entered registry value carry that value's error; this
+    rereads the weights and their caps. Only segments that declare a
     `model_id` take part: a checkpoint is found by (model_id, training_step) in its
     header, never by filename, because segment-local step numbering makes names
     repeat across segments. A row in such a segment whose checkpoint no longer
@@ -845,9 +868,7 @@ def recompute_internals(run, verbose=True):
             continue
         p = ck.get((segs_with_id[int(seg)], int(r["meta_step"])))
         if p:
-            bn1, sae2, effs = internals(p, cfg["rezero_cap"])
-            r.update(bn1Mean=round(bn1, 4), sae2=round(sae2, 4),
-                     eff_alpha=";".join(f"{e:.4f}" for e in effs))
+            r.update(internals_cells(p))
             redone += 1
         elif any(r.get(k) not in ("", None) for k in ("bn1Mean", "sae2", "eff_alpha")):
             r.update(bn1Mean="", sae2="", eff_alpha="")
@@ -855,7 +876,7 @@ def recompute_internals(run, verbose=True):
     write_csv(run, rows)
     if verbose:
         print(f"{run}: internals re-derived on {redone} row(s), blanked on {blanked} "
-              f"(checkpoint gone), cap {cfg['rezero_cap']}")
+              f"(checkpoint gone); caps read from each checkpoint")
     return redone
 
 
@@ -1027,6 +1048,7 @@ def import_probes(run, jsonl, segment, ckpt_dirs=(), verbose=True):
     rows = read_csv(run)
     by = {int(r["cum_step"]): r for r in rows}
     added = skipped = rejected = 0
+    internals_failed = []
 
     for line in open(os.path.expanduser(jsonl)):
         line = line.strip()
@@ -1088,11 +1110,11 @@ def import_probes(run, jsonl, segment, ckpt_dirs=(), verbose=True):
         p = ck.get((d.get("modelID"), meta))
         if p:
             try:
-                bn1, sae2, effs = internals(p, cfg["rezero_cap"])
-                row.update(bn1Mean=round(bn1, 4), sae2=round(sae2, 4),
-                           eff_alpha=";".join(f"{e:.4f}" for e in effs))
-            except (OSError, KeyError, ValueError):
-                pass
+                row.update(internals_cells(p))
+            except (OSError, KeyError, ValueError) as error:
+                internals_failed.append((p, error))
+                print(f"  WARNING step{meta}: internals of {p} unreadable ({error}); "
+                      f"bn1Mean/sae2/eff_alpha left blank", file=sys.stderr)
 
         rows.append(row); by[cum] = row; added += 1
 

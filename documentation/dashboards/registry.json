@@ -6,7 +6,6 @@
     "se_sb2": {
       "label": "SE A/B/C seed 2 — scale+bias — 5.21M (3-blk 7×7 @128, bf16)",
       "color": "#6baed6",
-      "rezero_cap": 0.4472136,
       "n_blocks": 3,
       "arch_summary": "Preset test_SE_scale+bias (fresh 20260930-1-H1Oq). SE style A/B/C experiment (experiments/20260929-se-style-ab). v5 · basic30(30) → stem 7×7→128 · 3× @128, 7×7+7×7, SE scale+bias/4, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out · policy intermediate_conv (128) · value WDL(16→FC128) · bf16. Seed 2 (new random init), build from badae6c.",
       "arch_stem": "basic30 → stem 7×7→128",
@@ -29,7 +28,6 @@
     "se_sb": {
       "label": "SE A/B/C — scale+bias — 5.21M (3-blk 7×7 @128, bf16)",
       "color": "#1f77b4",
-      "rezero_cap": 0.4472136,
       "n_blocks": 3,
       "arch_summary": "Preset test_SE_scale+bias (fresh 20260929-12-JZOe). SE style A/B/C experiment (experiments/20260929-se-style-ab). v5 · basic30(30) → stem 7×7→128 · 3× @128, 7×7+7×7, SE scale+bias/4, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out · policy intermediate_conv (128) · value WDL(16→FC128) · bf16.",
       "arch_stem": "basic30 → stem 7×7→128",
@@ -52,7 +50,6 @@
     "se_att2": {
       "label": "SE A/B/C seed 2 — attenuate-only — 5.20M (3-blk 7×7 @128, bf16)",
       "color": "#fdae6b",
-      "rezero_cap": 0.4472136,
       "n_blocks": 3,
       "arch_summary": "Preset test_SE_attenuate-only (fresh 20260930-2-Gf9P). SE style A/B/C experiment (experiments/20260929-se-style-ab). v5 · basic30(30) → stem 7×7→128 · 3× @128, 7×7+7×7, SE attenuate/4, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out · policy intermediate_conv (128) · value WDL(16→FC128) · bf16. Seed 2 (new random init), build from badae6c.",
       "arch_stem": "basic30 → stem 7×7→128",
@@ -75,7 +72,6 @@
     "se_att": {
       "label": "SE A/B/C — attenuate-only — 5.20M (3-blk 7×7 @128, bf16)",
       "color": "#ff7f0e",
-      "rezero_cap": 0.4472136,
       "n_blocks": 3,
       "arch_summary": "Preset test_SE_attenuate-only (fresh 20260929-13-06yp). SE style A/B/C experiment (experiments/20260929-se-style-ab). v5 · basic30(30) → stem 7×7→128 · 3× @128, 7×7+7×7, SE attenuate/4, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out · policy intermediate_conv (128) · value WDL(16→FC128) · bf16.",
       "arch_stem": "basic30 → stem 7×7→128",
@@ -98,7 +94,6 @@
     "se_none2": {
       "label": "SE A/B/C seed 2 — none — 5.17M (3-blk 7×7 @128, bf16)",
       "color": "#74c476",
-      "rezero_cap": 0.4472136,
       "n_blocks": 3,
       "arch_summary": "Preset test_SE_none (fresh 20260930-3-V9zk). SE style A/B/C experiment (experiments/20260929-se-style-ab). v5 · basic30(30) → stem 7×7→128 · 3× @128, 7×7+7×7, no SE, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out · policy intermediate_conv (128) · value WDL(16→FC128) · bf16. Seed 2 (new random init), build from badae6c.",
       "arch_stem": "basic30 → stem 7×7→128",
@@ -121,7 +116,6 @@
     "se_none": {
       "label": "SE A/B/C — none — 5.17M (3-blk 7×7 @128, bf16)",
       "color": "#2ca02c",
-      "rezero_cap": 0.4472136,
       "n_blocks": 3,
       "arch_summary": "Preset test_SE_none (fresh 20260929-18-D9is). SE style A/B/C experiment (experiments/20260929-se-style-ab). v5 · basic30(30) → stem 7×7→128 · 3× @128, 7×7+7×7, no SE, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out · policy intermediate_conv (128) · value WDL(16→FC128) · bf16.",
       "arch_stem": "basic30 → stem 7×7→128",
@@ -144,7 +138,6 @@
     "nt8y15x15": {
       "label": "nt8y-15x15stem — 1.73M, nt8y with 15×15 stem (std)",
       "color": "#ff9896",
-      "rezero_cap": 0.33333334,
       "n_blocks": 3,
       "params": 1725930,
       "arch_summary": "Preset nt8y_15x15stem (fresh 20260711-11-xE1v). Exactly nt8y but 15×15 stem (matches block conv kernel; nt8y's was 5×5). v5 · basic30(30) → stem 15×15→32 · 3×[15×15+15×15 @32, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64).",
@@ -167,7 +160,6 @@
     "nt8y3x3s2": {
       "label": "nt8y-3x3stem seed2 — variance control (std, stopped at 5.8k steps)",
       "color": "#9edae5",
-      "rezero_cap": 0.33333334,
       "n_blocks": 3,
       "params": 1518570,
       "arch_summary": "Preset nt8y_3x3stem, SECOND fresh seed (20260711-9-dOjG). Byte-identical arch to nt8y3x3 (seed1) — different random init only. v5 · basic30(30) → stem 3×3→32 · 3×[15×15+15×15 @32, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64). Seed-variance control vs nt8y3x3; was set to run to 31.3h but was stopped at step 5,800 (~0.77 h) to launch nt8y15x15.",
@@ -190,7 +182,6 @@
     "nt8y3x3": {
       "label": "nt8y-3x3stem — 1.52M, nt8y with 3×3 stem (std)",
       "color": "#17becf",
-      "rezero_cap": 0.33333334,
       "n_blocks": 3,
       "params": 1518570,
       "arch_summary": "Preset nt8y_3x3stem (fresh 20260711-3-pm4J). v5 · basic30(30) → stem 3×3→32 · 3×[15×15+15×15 @32, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64). Exactly nt8y but 3×3 stem (was 5×5).",
@@ -213,7 +204,6 @@
     "wxil": {
       "label": "wxil — 1.05M, 8-block 15×15 @16 narrow-fat-conv (std)",
       "color": "#e377c2",
-      "rezero_cap": 0.125,
       "n_blocks": 8,
       "params": 1052183,
       "arch_summary": "GUI-built model 20260711-1-wXIL. v5 · basic30(30) → stem 5×5→16 · 8×[15×15+15×15 @16, SE scale+bias/4, ReLU/pre, ReZero cap 0.125, LN-out] · policy intermediate_conv(4864) · value WDL(16→FC64). Deep-narrow (16ch×8) fat-conv.",
@@ -236,7 +226,6 @@
     "v5": {
       "label": "v5 — 8.45M, 5-block · full lineage: 3 warm-start segments (M5 VM) + 5 corpus-replay continuations (M4 Pro)",
       "color": "#1f77b4",
-      "rezero_cap": 0.4472136,
       "n_blocks": 5,
       "params": 8447028,
       "arch_summary": "5-block 128ch lc0-style, LayerNorm output; lineage wd1e-4 → wd5e-4 → m0.93 (3 warm-start segments, M5 VM) then 5 corpus-replay continuation segments on M4 Pro to cum step ~859.8k",
@@ -489,7 +478,6 @@
     "mini2b": {
       "label": "mini2b — 2.25M, 2-block",
       "color": "#ff7f0e",
-      "rezero_cap": 0.5,
       "n_blocks": 2,
       "params": 2252689,
       "arch_summary": "stem 7×7→128 · block0 7×7+7×7 · block1 3×3+3×3 · pre-act ReLU, LayerNorm out-norm, ReZero α₀=0.5 (cap 0.5), no SE · policy intermediate_conv · value wdl_softmax",
@@ -535,7 +523,6 @@
     "coxw": {
       "label": "coxw — 1.86M, 1-block",
       "color": "#2ca02c",
-      "rezero_cap": 1.0,
       "n_blocks": 1,
       "params": 1864336,
       "arch_summary": "stem 5×5→128 · 1×[7×7+7×7 @128, no-SE, relu/pre, ReZero(cap 1.0), LayerNorm out] · policy intermediate_conv (pre-conv 128) · value WDL(16→FC128)",
@@ -566,7 +553,6 @@
     "ykkk": {
       "label": "ykkk — 0.24M, 2-block (SE)",
       "color": "#d62728",
-      "rezero_cap": 0.707,
       "n_blocks": 2,
       "params": 242609,
       "arch_summary": "stem 3×3→64 · 2×[3×3+3×3 @64, SE/4, ReLU/pre, ReZero(0.707·tanh≤0.707), LayerNorm out] · policy simple_conv · value WDL(16→FC64)",
@@ -604,7 +590,6 @@
     "t97x": {
       "label": "t97x — 1.70M, 2-block 9×9 (SE, GELU, no-ReZero)",
       "color": "#9467bd",
-      "rezero_cap": 1.0,
       "n_blocks": 2,
       "params": 1696959,
       "arch_summary": "stem 7×7→64 · 2×[9×9+9×9 @64, SE scale+bias/4, GELU/pre, no-ReZero, LayerNorm out] · policy intermediate_conv (pre-conv 5) · value WDL(64→FC64)",
@@ -626,7 +611,6 @@
     "nt8y": {
       "label": "nt8y — 1.53M, 3-block 15×15 fat-conv (v5)",
       "color": "#000000",
-      "rezero_cap": 0.33333334,
       "n_blocks": 3,
       "params": 1533930,
       "arch_summary": "stem 5×5→32 · 3×[15×15+15×15 @32, SE scale+bias/4, relu/pre, ReZero cap 0.333, LayerNorm out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64)",
@@ -685,7 +669,6 @@
     "b9x16se": {
       "label": "b9x16se — 1.19M, 9-block 15×15 @16, 9×9 stem, +SE",
       "color": "#bcbd22",
-      "rezero_cap": 0.33333334,
       "n_blocks": 9,
       "params": 1194652,
       "arch_summary": "hand-crafted headless seed — SE ablation of b9x16 (identical + SE). stem 9×9→16 · 9×[15×15+15×15 @16, SE scale+bias/4, ReLU/pre, ReZero cap 0.333, LN-out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64). Same as b9x16 except SE added.",
@@ -707,7 +690,6 @@
     "qeu8": {
       "label": "qeu8 — 3.93M, 2-block 15×15 @64, 7×7 stem (SE)",
       "color": "#8c564b",
-      "rezero_cap": 0.5,
       "n_blocks": 2,
       "params": 3929393,
       "arch_summary": "GUI-built model 20260702-7-Qeu8. stem 7×7→64 · 2×[15×15+15×15 @64, SE scale+bias/4, ReLU/pre, ReZero cap 0.5, LN-out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64). Wide (64ch) shallow (2-block) fat-conv.",
@@ -753,7 +735,6 @@
     "qeu8b1128": {
       "label": "qeu8-1blk — 7.75M, wide-shallow 1-block 15×15 @128, 7×7 stem",
       "color": "#c5b0d5",
-      "rezero_cap": 0.5,
       "n_blocks": 1,
       "params": 7750320,
       "arch_summary": "Preset qeu8_1blk_128 (fresh 20260711-16-VRR4). qeu8 recipe but 1 block @128ch (wide-shallow). v5 · basic30(30) → stem 7×7→128 · 1×[15×15+15×15 @128, SE scale+bias/4, ReLU/pre, ReZero cap 0.5, LN-out] · policy intermediate_conv (pre-conv 512) · value WDL(16→FC64).",
@@ -776,7 +757,6 @@
     "se_zb1": {
       "label": "SE zero-β seed1 — scale+bias β0 — 5.21M (3-blk 7×7 @128, bf16)",
       "color": "#fd8d3c",
-      "rezero_cap": 0.4472136,
       "n_blocks": 3,
       "arch_summary": "Derived via --derive-model --set-se-beta-init zero from the seed1 scale+bias fresh net 20260929-12-JZOe (fresh 20260930-7-crxN); bit-identical except the β half of each SE fc2 weight. SE style experiment 4th arm (experiments/20260929-se-style-ab). Build 2261 (31253d5*, code of 8926221).",
       "arch_stem": "basic30 → stem 7×7→128",
@@ -799,7 +779,6 @@
     "se_zb2": {
       "label": "SE zero-β seed2 — scale+bias β0 — 5.21M (3-blk 7×7 @128, bf16)",
       "color": "#d94801",
-      "rezero_cap": 0.4472136,
       "n_blocks": 3,
       "arch_summary": "Derived via --derive-model --set-se-beta-init zero from the seed2 scale+bias fresh net 20260930-1-H1Oq (fresh 20260930-8-8qyR); bit-identical except the β half of each SE fc2 weight. SE style experiment 4th arm (experiments/20260929-se-style-ab). Build 2261 (31253d5*, code of 8926221).",
       "arch_stem": "basic30 → stem 7×7→128",
