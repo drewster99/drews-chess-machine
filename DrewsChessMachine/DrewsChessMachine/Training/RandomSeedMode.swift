@@ -208,10 +208,12 @@ struct RunRandomSeed: Sendable, Equatable {
         UInt64.random(in: UInt64.min...UInt64.max)
     }
 
-    /// Parse a `--seed` value: a decimal UInt64. Throws with the text it
-    /// could not read.
+    /// Parse a `--seed` value: a decimal UInt64, digits only
+    /// (`UInt64(strictDecimal:)` — no sign, so `+5` and `-0` are refused,
+    /// as `--init-seed` refuses them). Throws with the text it could not
+    /// read.
     static func parseCommandLineSeed(_ text: String) throws -> UInt64 {
-        guard let seed = UInt64(text) else {
+        guard let seed = UInt64(strictDecimal: text) else {
             throw RunRandomSeedError.invalidCommandLineSeed(text)
         }
         return seed

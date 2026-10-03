@@ -562,7 +562,7 @@ struct LineageRecord: Codable, Equatable, Sendable {
             case (nil, nil):
                 initialization = nil
             case let (seedText?, scheme?):
-                guard !seedText.hasPrefix("+"), let seed = UInt64(seedText, radix: 10) else {
+                guard let seed = UInt64(strictDecimal: seedText) else {
                     throw DecodingError.dataCorruptedError(
                         forKey: .initSeed, in: c, debugDescription: "init_seed '\(seedText)' is not a decimal UInt64")
                 }
@@ -633,6 +633,15 @@ struct LineageRecord: Codable, Equatable, Sendable {
         /// continues. Null outside train-vs-UCI.
         let opponentGameIndices: [Int]?
 
+        /// The largest game serial, arena count or opponent game index a
+        /// record may carry: far above anything a run reaches, and far
+        /// enough below `Int.max` that continuing from it cannot overflow.
+        /// A larger or negative counter is a corrupt or hand-edited record,
+        /// refused when it is decoded — a negative serial would trap the
+        /// serial counter, and one at `Int.max` overflows its next
+        /// increment.
+        static let maximumRecordedCounter = Int(UInt32.max)
+
         enum CodingKeys: String, CodingKey {
             case masterSeed = "master_seed"
             case seedOrigin = "seed_origin"
@@ -658,9 +667,10 @@ struct LineageRecord: Codable, Equatable, Sendable {
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            // A decimal string, so seeds above 2^53 survive JSON parsing.
+            // A decimal string, so seeds above 2^53 survive JSON parsing;
+            // digits only, exactly as `String(masterSeed)` writes it.
             let seedText = try c.decode(String.self, forKey: .masterSeed)
-            guard let seed = UInt64(seedText) else {
+            guard let seed = UInt64(strictDecimal: seedText) else {
                 throw DecodingError.dataCorruptedError(
                     forKey: .masterSeed, in: c, debugDescription: "master_seed \"\(seedText)\" is not a decimal UInt64")
             }
@@ -669,9 +679,19 @@ struct LineageRecord: Codable, Equatable, Sendable {
             streamDerivation = try c.decode(String.self, forKey: .streamDerivation)
             samplerState = try c.decode(DCMRandom.self, forKey: .samplerState)
             dropoutStreamState = try c.decode(DCMRandom.self, forKey: .dropoutStreamState)
-            nextGameSerial = try c.decode(Int?.self, forKey: .nextGameSerial)
-            arenasStarted = try c.decode(Int?.self, forKey: .arenasStarted)
+            let counterRange = 0...Self.maximumRecordedCounter
+            func counter(_ value: Int, _ key: CodingKeys) throws -> Int {
+                guard counterRange.contains(value) else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: key, in: c,
+                        debugDescription: "\(key.stringValue) \(value) is outside 0…\(Self.maximumRecordedCounter)")
+                }
+                return value
+            }
+            nextGameSerial = try c.decode(Int?.self, forKey: .nextGameSerial).map { try counter($0, .nextGameSerial) }
+            arenasStarted = try c.decode(Int?.self, forKey: .arenasStarted).map { try counter($0, .arenasStarted) }
             opponentGameIndices = try c.decode([Int]?.self, forKey: .opponentGameIndices)
+                .map { indices in try indices.map { try counter($0, .opponentGameIndices) } }
         }
 
         func encode(to encoder: Encoder) throws {

@@ -1087,6 +1087,56 @@ enum SessionCheckpointLayout {
     }
 }
 
+// MARK: - Saved arena promotion set
+
+extension SessionCheckpointState {
+    /// What a session saved for the arena promotion criterion and its SPRT
+    /// hypotheses, resolved once. The load-time review
+    /// (`invalidSavedSettings`) and the resume (`restoreArenaPromotionCriterion`)
+    /// both read this, so a set the review passes is exactly a set the
+    /// resume can apply.
+    enum SavedArenaPromotionSet: Equatable, Sendable {
+        /// None of the seven values: a session from before the criterion
+        /// existed, which resumes on the declared pre-feature criterion.
+        case absent
+        /// The criterion and a complete SPRT block that forms a valid test.
+        case valid(criterion: ArenaPromotionCriterion, sprt: ArenaSPRT.SPRTConfig)
+        /// Anything else, with what is wrong: an unknown criterion, a
+        /// partial set, hypotheses without a criterion, or hypotheses that
+        /// do not form a valid test. A session the app wrote never has one.
+        case invalid(problem: String)
+    }
+
+    /// The criterion and SPRT hypotheses this session saved. A session saves
+    /// all seven or none; whatever else is found is `.invalid`, never
+    /// partly applied.
+    var savedArenaPromotionSet: SavedArenaPromotionSet {
+        let elo0 = arenaSPRTElo0, elo1 = arenaSPRTElo1, alpha = arenaSPRTAlpha
+        let beta = arenaSPRTBeta, minGames = arenaSPRTMinGames, maxGames = arenaSPRTMaxGames
+        let anySPRTSaved = elo0 != nil || elo1 != nil || alpha != nil || beta != nil
+            || minGames != nil || maxGames != nil
+        guard let token = arenaPromotionCriterion else {
+            return anySPRTSaved
+                ? .invalid(problem: "SPRT hypotheses are saved without a promotion criterion; "
+                    + "a session saves all seven or none")
+                : .absent
+        }
+        guard let criterion = ArenaPromotionCriterion.allCases.first(where: { $0.logToken == token }) else {
+            return .invalid(problem: "\"\(token)\" is not a known promotion criterion")
+        }
+        guard let elo0, let elo1, let alpha, let beta, let minGames, let maxGames else {
+            return .invalid(problem: "the SPRT hypotheses are only partly saved")
+        }
+        do {
+            let sprt = try ArenaSPRT.SPRTConfig(
+                elo0: elo0, elo1: elo1, alpha: alpha, beta: beta, minGames: minGames, maxGames: maxGames)
+            return .valid(criterion: criterion, sprt: sprt)
+        } catch {
+            return .invalid(problem: "the saved SPRT hypotheses are not a valid test (\(error))")
+        }
+    }
+}
+
 // MARK: - Saved settings that cannot be resumed as found
 
 extension SessionCheckpointState {
@@ -1137,9 +1187,10 @@ extension SessionCheckpointState {
             ))
         }
 
-        // Arena promotion criterion and its SPRT hypotheses — the same checks
-        // `restoreArenaPromotionCriterion` applies, made before the resume.
-        if let token = arenaPromotionCriterion {
+        // Arena promotion criterion and its SPRT hypotheses — resolved once
+        // (`savedArenaPromotionSet`), the same resolution
+        // `restoreArenaPromotionCriterion` applies at resume.
+        if case .invalid(let problem) = savedArenaPromotionSet {
             let currentArena = "\(current.arenaPromotionCriterion.logToken), SPRT "
                 + "elo0 \(current.arenaSPRTElo0) elo1 \(current.arenaSPRTElo1) "
                 + "alpha \(current.arenaSPRTAlpha) beta \(current.arenaSPRTBeta) "
@@ -1149,31 +1200,15 @@ extension SessionCheckpointState {
                 ("alpha", arenaSPRTAlpha.map { "\($0)" }), ("beta", arenaSPRTBeta.map { "\($0)" }),
                 ("min_games", arenaSPRTMinGames.map { "\($0)" }), ("max_games", arenaSPRTMaxGames.map { "\($0)" }),
             ]
-            let foundArena = "\(token); " + sprtFields.map { "\($0.0)=\($0.1 ?? "missing")" }.joined(separator: ", ")
-            var problem: String? = nil
-            if !ArenaPromotionCriterion.allCases.contains(where: { $0.logToken == token }) {
-                problem = "\"\(token)\" is not a known promotion criterion"
-            } else if let elo0 = arenaSPRTElo0, let elo1 = arenaSPRTElo1, let alpha = arenaSPRTAlpha,
-                      let beta = arenaSPRTBeta, let minGames = arenaSPRTMinGames, let maxGames = arenaSPRTMaxGames {
-                do {
-                    _ = try ArenaSPRT.SPRTConfig(
-                        elo0: elo0, elo1: elo1, alpha: alpha, beta: beta, minGames: minGames, maxGames: maxGames
-                    )
-                } catch {
-                    problem = "the saved SPRT hypotheses are not a valid test (\(error))"
-                }
-            } else {
-                problem = "the SPRT hypotheses are only partly saved"
-            }
-            if let problem {
-                findings.append(InvalidStoredSetting(
-                    id: SavedSettingID.arenaPromotionCriterion,
-                    name: "Arena promotion criterion",
-                    found: foundArena,
-                    problem: problem,
-                    replacement: currentArena
-                ))
-            }
+            let foundArena = "\(arenaPromotionCriterion ?? "criterion missing"); "
+                + sprtFields.map { "\($0.0)=\($0.1 ?? "missing")" }.joined(separator: ", ")
+            findings.append(InvalidStoredSetting(
+                id: SavedSettingID.arenaPromotionCriterion,
+                name: "Arena promotion criterion",
+                found: foundArena,
+                problem: problem,
+                replacement: currentArena
+            ))
         }
 
         // Periodic autosave interval: a non-positive interval cannot drive the

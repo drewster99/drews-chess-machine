@@ -60,6 +60,28 @@ final class TrainVsUciSessionTests: XCTestCase {
         }
     }
 
+    /// The start is only read, so a symbolic link to a model file is
+    /// followed — and kept as the path given, so step files are named next
+    /// to it — while a link to anything that is not a model file or a
+    /// session is still refused by what it points at.
+    func testStartSourceFollowsASymbolicLinkToAModelFile() throws {
+        let model = tempDir.appendingPathComponent("m.safetensors")
+        try Data("x".utf8).write(to: model)
+        let link = tempDir.appendingPathComponent("l.safetensors")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: model)
+        XCTAssertEqual(try TrainVsUciSession.startSource(path: link.path), .modelFile(link))
+
+        let fifo = tempDir.appendingPathComponent("pipe")
+        XCTAssertEqual(mkfifo(fifo.path, 0o600), 0)
+        let fifoLink = tempDir.appendingPathComponent("pipe-link")
+        try FileManager.default.createSymbolicLink(at: fifoLink, withDestinationURL: fifo)
+        XCTAssertThrowsError(try TrainVsUciSession.startSource(path: fifoLink.path)) { error in
+            guard case .notAFileOrFolder? = error as? TrainVsUciSession.StartSourceError else {
+                return XCTFail("a link to a FIFO is refused by kind, got \(error)")
+            }
+        }
+    }
+
     // MARK: - Step-file names
 
     func testStepFilesKeepTheNamesRunsHaveAlwaysProduced() throws {
@@ -96,6 +118,24 @@ final class TrainVsUciSessionTests: XCTestCase {
             checkpointStem: stepName, startSource: nil, runModelID: "id")) { error in
             XCTAssertEqual(error as? TrainVsUciSession.CheckpointStemError,
                            .namedLikeAnEnumeratedCheckpoint(stem: stepName, step: 4000))
+        }
+    }
+
+    /// A stem is a name, and names may hold dots (`sf100-lr0.5`); only a
+    /// model or session extension says the stem names a file instead.
+    func testACheckpointStemMayContainADot() throws {
+        let stem = tempDir.appendingPathComponent("sf100-lr0.5").path
+        let naming = EnumeratedCheckpointNaming(
+            rollingOutputURL: try TrainVsUciSession.enumeratedNamingBase(
+                checkpointStem: stem, startSource: nil, runModelID: "20261003-1-AbCd"),
+            runTag: EnumeratedCheckpointNaming.trainVsUciRunTag, segmentIndex: 0)
+        XCTAssertEqual(naming.url(step: 1000), tempDir.appendingPathComponent("sf100-lr0.5-vsuci-step1000.safetensors"))
+        for named in ["run.DCMMODEL", "run.dcmsession", "run.SafeTensors"] {
+            let path = tempDir.appendingPathComponent(named).path
+            XCTAssertThrowsError(try TrainVsUciSession.enumeratedNamingBase(
+                checkpointStem: path, startSource: nil, runModelID: "id")) { error in
+                XCTAssertEqual(error as? TrainVsUciSession.CheckpointStemError, .hasExtension(stem: path))
+            }
         }
     }
 

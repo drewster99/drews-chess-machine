@@ -69,6 +69,10 @@ struct CorpusSource: Codable, Equatable, Sendable {
     var gamesAdded: Int?
     var pliesAdded: Int?
     var complete: Bool?
+    /// Why the source stopped taking games before it finished — a shard
+    /// write or seal that failed — or nil when it did not. A stopped source
+    /// is never `complete`. Omitted from `corpus.json` when nil.
+    var stoppedReason: String? = nil
 }
 
 /// The single provenance file (`corpus.json`) for a corpus. Holds only the
@@ -98,8 +102,9 @@ enum OpenShardRecovery: Equatable, Sendable {
     /// A writer still holds the shard's lock — a recording or import is
     /// appending to it. Nothing was read, changed or removed.
     case inUseByLiveWriter(openShard: URL)
-    /// The shard was listed but gone by the time recovery opened it — most
-    /// likely its writer sealed or discarded it in between. Nothing changed.
+    /// The shard was listed but gone by the time recovery opened it — sealed
+    /// or discarded by its writer in between, or recovered by another
+    /// `--validate-corpus --fix`. Nothing changed.
     case vanishedBeforeRecovery(openShard: URL)
 
     /// One line describing the outcome, for logs and reports.
@@ -117,7 +122,7 @@ enum OpenShardRecovery: Equatable, Sendable {
                 + "(its lock is held); left untouched"
         case let .vanishedBeforeRecovery(openShard):
             return "\(openShard.lastPathComponent): not recovered — it was gone when recovery opened it "
-                + "(most likely its writer sealed it just then)"
+                + "(sealed or discarded by its writer just then, or recovered by another --validate-corpus --fix)"
         }
     }
 }
@@ -153,6 +158,11 @@ final class GameCorpus {
     private var nextShardSeq: UInt32
     private var currentWriter: ShardWriter?
     private var currentSourceID: String?
+    /// Why the current source stopped taking games — a shard append or a
+    /// rotation's seal that failed — or nil while it is recording. Set once;
+    /// every later append is refused with it, and `finishSource` records it
+    /// as the source's `stoppedReason`.
+    private var stoppedSourceFailure: String?
 
     static let metadataFilename = "corpus.json"
     static let shardExtension = "dcmgames"
@@ -306,11 +316,40 @@ final class GameCorpus {
     /// Append a pre-encoded framed game (encoded off the writer thread by the
     /// caller, e.g. the parallel PGN importer). Mirrors `append(_:)` exactly but
     /// skips re-encoding; seals and rotates on the same whole-game boundary.
+    ///
+    /// A failed write stops the source (`.sourceStopped`, here and on every
+    /// later append) rather than leaving it half-alive. A rotation whose seal
+    /// or next shard fails used to leave the source with no shard, so every
+    /// later game failed with "no source in progress" and the source was
+    /// still marked complete at the end; an append that failed part-way kept
+    /// writing after the torn bytes, so the eventual seal produced a shard
+    /// whose hash check rejects all of it. Now the shard is closed unsealed
+    /// at the failure — its lock released, so `--validate-corpus --fix`
+    /// recovers its complete games and cuts any torn tail — and
+    /// `finishSource` records the source as stopped, not complete.
     func append(framed frame: Data, plyCount: Int) throws {
-        guard let writer = currentWriter else {
+        guard let sourceID = currentSourceID else {
             throw GameCorpusError.invalidState("no source in progress; call beginSource first")
         }
-        try writer.appendFramed(frame, plyCount: plyCount)
+        if let cause = stoppedSourceFailure {
+            throw GameCorpusError.sourceStopped(sourceID: sourceID, cause: cause)
+        }
+        guard let writer = currentWriter else {
+            throw GameCorpusError.invalidState("source \(sourceID) has no open shard")
+        }
+        do {
+            try writer.appendFramed(frame, plyCount: plyCount)
+        } catch {
+            currentWriter = nil
+            var cause = "append to \(writer.openURL.lastPathComponent) failed: \(error.localizedDescription)"
+            do {
+                try writer.closeWithoutSealing()
+            } catch {
+                cause += "; closing it unsealed also failed: \(error.localizedDescription)"
+            }
+            stoppedSourceFailure = cause
+            throw GameCorpusError.sourceStopped(sourceID: sourceID, cause: cause)
+        }
         if !metadata.sources.isEmpty {
             let i = metadata.sources.count - 1
             metadata.sources[i].gamesAdded = (metadata.sources[i].gamesAdded ?? 0) + 1
@@ -318,29 +357,58 @@ final class GameCorpus {
         }
         if writer.byteCount >= shardSoftLimitBytes {
             // Cleared first: a writer is unusable once `seal` has run, even
-            // when it throws, so a later append must not reach it.
+            // when it throws (it closes its file then), so a later append
+            // must not reach it.
             currentWriter = nil
-            _ = try writer.seal(sealUnix: Int64(Date().timeIntervalSince1970))
-            try openNewShard()
+            do {
+                _ = try writer.seal(sealUnix: Int64(Date().timeIntervalSince1970))
+                try openNewShard()
+            } catch {
+                let cause = "rotation after \(writer.openURL.lastPathComponent) failed: \(error.localizedDescription)"
+                stoppedSourceFailure = cause
+                throw GameCorpusError.sourceStopped(sourceID: sourceID, cause: cause)
+            }
         }
     }
 
     /// Seal the current source's open shard (or discard it if empty) and mark
-    /// the source complete in `corpus.json`.
+    /// the source complete in `corpus.json` — or, for a source that stopped
+    /// on a failed write (or whose final seal fails here), record it as not
+    /// complete with its `stoppedReason`. A failed final seal is rethrown
+    /// after `corpus.json` records it.
     func finishSource() throws {
+        var finalSealFailure: Error? = nil
         if let writer = currentWriter {
             currentWriter = nil
-            if writer.gameCount > 0 {
-                _ = try writer.seal(sealUnix: Int64(Date().timeIntervalSince1970))
-            } else {
-                try writer.discardEmpty()
+            do {
+                if writer.gameCount > 0 {
+                    _ = try writer.seal(sealUnix: Int64(Date().timeIntervalSince1970))
+                } else {
+                    try writer.discardEmpty()
+                }
+            } catch {
+                finalSealFailure = error
+                stoppedSourceFailure = "final seal of \(writer.openURL.lastPathComponent) failed: \(error.localizedDescription)"
             }
         }
         if !metadata.sources.isEmpty {
-            metadata.sources[metadata.sources.count - 1].complete = true
+            let i = metadata.sources.count - 1
+            metadata.sources[i].complete = stoppedSourceFailure == nil
+            metadata.sources[i].stoppedReason = stoppedSourceFailure
         }
         currentSourceID = nil
-        try writeMetadata()
+        stoppedSourceFailure = nil
+        guard let finalSealFailure else {
+            try writeMetadata()
+            return
+        }
+        do {
+            try writeMetadata()
+        } catch {
+            throw GameCorpusError.ioFailed(
+                "\(finalSealFailure.localizedDescription); recording that in corpus.json also failed: \(error.localizedDescription)")
+        }
+        throw finalSealFailure
     }
 
     /// Finish any in-progress source and mark the corpus frozen for replay.
@@ -442,6 +510,34 @@ final class GameCorpus {
     /// that name, which a recursive `removeItem` cleanup would delete. All of
     /// that is `FileSafety.replaceRegularFile`.
     static func persistMetadata(_ metadata: CorpusMetadata, to directory: URL) throws {
+        try persistMetadata(metadata, to: directory, expectedIdentity: nil)
+    }
+
+    /// `persistMetadata(_:to:)` that replaces `corpus.json` only while it is
+    /// still the file `identity` names — the one a caller read `metadata`
+    /// from (`metadataIdentity(directory:)`, taken before the read). Every
+    /// write publishes a new file, so a writer finishing its source in
+    /// between has changed it; that throws `.metadataChangedSinceRead` and
+    /// leaves the newer file as found instead of overwriting its counts and
+    /// completion with the reader's stale copy. (A `corpus.json` removed in
+    /// between is written anew, as `FileSafety.replaceRegularFile` does for
+    /// any missing destination.) `CorpusValidator`'s repair
+    /// uses this; the corpus's own writer owns the file and uses the
+    /// two-argument form.
+    static func persistMetadata(_ metadata: CorpusMetadata, to directory: URL,
+                                replacingOnly identity: FileSafety.FileIdentity) throws {
+        try persistMetadata(metadata, to: directory, expectedIdentity: identity)
+    }
+
+    /// The identity of the `corpus.json` in `directory` right now, or nil
+    /// when there is none. Taken before reading the metadata a caller may
+    /// later write back with `persistMetadata(_:to:replacingOnly:)`.
+    static func metadataIdentity(directory: URL) throws -> FileSafety.FileIdentity? {
+        try FileSafety.existingItem(at: directory.appendingPathComponent(metadataFilename))?.identity
+    }
+
+    private static func persistMetadata(_ metadata: CorpusMetadata, to directory: URL,
+                                         expectedIdentity: FileSafety.FileIdentity?) throws {
         let url = directory.appendingPathComponent(metadataFilename)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -449,7 +545,9 @@ final class GameCorpus {
         do { data = try encoder.encode(metadata) }
         catch { throw GameCorpusError.corruptMetadata("encode corpus.json: \(error.localizedDescription)") }
         do {
-            try FileSafety.replaceRegularFile(data, at: url, expectedIdentity: nil)
+            try FileSafety.replaceRegularFile(data, at: url, expectedIdentity: expectedIdentity)
+        } catch FileSafetyError.fileChangedSinceWritten {
+            throw GameCorpusError.metadataChangedSinceRead(path: url.path)
         } catch {
             throw GameCorpusError.ioFailed("write corpus.json: \(error.localizedDescription)")
         }
@@ -462,10 +560,15 @@ final class GameCorpus {
             switch try Self.recoverOpenShard(at: openURL) {
             case .sealed, .removedEmpty:
                 continue
-            case .inUseByLiveWriter, .vanishedBeforeRecovery:
+            case .inUseByLiveWriter:
                 throw GameCorpusError.invalidState(
-                    "\(openURL.lastPathComponent) belongs to a writer still running on this corpus; "
+                    "\(openURL.lastPathComponent) is held by a writer still running on this corpus; "
                         + "a corpus has one writer at a time")
+            case .vanishedBeforeRecovery:
+                throw GameCorpusError.invalidState(
+                    "\(openURL.lastPathComponent) disappeared while the corpus was being opened (sealed or "
+                        + "discarded by its writer, or recovered by another --validate-corpus --fix); something "
+                        + "else is using this corpus")
             }
         }
     }

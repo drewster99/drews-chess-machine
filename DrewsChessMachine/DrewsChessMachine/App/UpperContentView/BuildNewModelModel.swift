@@ -347,7 +347,7 @@ final class BuildNewModelModel {
     var initSeedEntry: BuildInitSeedEntry {
         let text = initSeedText.trimmingCharacters(in: .whitespaces)
         if text.isEmpty { return .drawnAtBuild }
-        guard let seed = UInt64(text, radix: 10), !text.hasPrefix("+") else {
+        guard let seed = UInt64(strictDecimal: text) else {
             return .invalid("Init seed must be a whole number from 0 to \(UInt64.max)")
         }
         return .entered(seed)

@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 @testable import DrewsChessMachine
 
 final class GameCorpusShardTests: XCTestCase {
@@ -51,6 +52,54 @@ final class GameCorpusShardTests: XCTestCase {
         XCTAssertEqual(shard.gameCount, games.count)
         XCTAssertEqual(shard.header.corpusID, "20260620-000000-ABC123")
         XCTAssertEqual(shard.header.sourceID, "src-TESTSRC1")
+    }
+
+    /// The trailer layout lives in one codec: it encodes to exactly the
+    /// trailer size, decodes back to the same fields, and refuses a block of
+    /// another size or with another magic.
+    func testTrailerEncodeDecodeRoundTrip() throws {
+        let trailer = GameCorpusShardFormat.Trailer(
+            gameCount: 25, plyCount: 731, sealUnix: 1_700_000_500, sha256: Data((0..<32).map { UInt8($0) }))
+        let block = try GameCorpusShardFormat.encodeTrailer(trailer)
+        XCTAssertEqual(block.count, GameCorpusShardFormat.trailerSize)
+        XCTAssertEqual(try GameCorpusShardFormat.decodeTrailer(block), trailer)
+
+        var badMagic = block
+        badMagic[badMagic.startIndex] ^= 0xFF
+        XCTAssertThrowsError(try GameCorpusShardFormat.decodeTrailer(badMagic)) { error in
+            guard case GameCorpusError.badTrailerMagic? = error as? GameCorpusError else {
+                return XCTFail("expected badTrailerMagic, got \(error)")
+            }
+        }
+        XCTAssertThrowsError(try GameCorpusShardFormat.decodeTrailer(block + Data([0])), "a longer block is not a trailer")
+        XCTAssertThrowsError(try GameCorpusShardFormat.decodeTrailer(block.dropLast()), "a shorter block is not a trailer")
+    }
+
+    /// Corpus replay matches each shard's cheap trailer hash against the one
+    /// its checkpoint recorded, then reads the shard through the verified
+    /// read; the cheap reads must report the hash the verified read checks
+    /// and the counts it finds.
+    func testCheapTrailerReadsAgreeWithVerifiedRead() throws {
+        let openURL = tempDir.appendingPathComponent("shard-00002.dcmgames.open")
+        let writer = try ShardWriter(creatingAt: openURL, header: makeHeader())
+        let games = (0..<9).map { sampleGame($0) }
+        for g in games { try writer.append(g) }
+        let sealedURL = try writer.seal(sealUnix: 1_700_000_600)
+
+        let verified = try GameCorpusShardIO.readSealed(at: sealedURL)
+        let cheap = try GameCorpusShardIO.readSealedTrailer(at: sealedURL)
+        let headerAndCounts = try GameCorpusShardIO.readSealedHeaderAndCounts(at: sealedURL)
+        let bytes = try Data(contentsOf: sealedURL)
+        let body = bytes.prefix(bytes.count - GameCorpusShardFormat.trailerSize)
+        let bodyHash = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(cheap.sealSHA256, bodyHash)
+        XCTAssertEqual(cheap.gameCount, verified.gameCount)
+        XCTAssertEqual(cheap.plyCount, verified.plyCount)
+        XCTAssertEqual(verified.plyCount, games.reduce(0) { $0 + $1.moves.count })
+        XCTAssertEqual(verified.sealUnix, 1_700_000_600)
+        XCTAssertEqual(headerAndCounts.header, verified.header)
+        XCTAssertEqual(headerAndCounts.gameCount, verified.gameCount)
+        XCTAssertEqual(headerAndCounts.plyCount, verified.plyCount)
     }
 
     func testSHATamperIsDetected() throws {

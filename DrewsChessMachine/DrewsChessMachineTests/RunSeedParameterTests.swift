@@ -78,6 +78,30 @@ final class RunSeedParameterTests: XCTestCase {
         }
     }
 
+    /// A seed is written as its decimal digits and nothing else, so a sign
+    /// is refused wherever seed text is read — `--seed`, a parameters file,
+    /// a stored setting, the settings field — the same as `--init-seed`
+    /// always refused it. `-0` names no number a writer would produce.
+    func test_signedSeedTextIsRefusedEverywhere() throws {
+        let suiteName = "RunSeedParameterTests-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            throw XCTSkip("could not create a private UserDefaults suite")
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        for text in ["+5", "-0", "+0"] {
+            XCTAssertThrowsError(try RunRandomSeed.parseCommandLineSeed(text), "--seed '\(text)'")
+            XCTAssertThrowsError(try ParameterValue(jsonValue: text, id: RandomSeed.id), "parameters file '\(text)'")
+            XCTAssertThrowsError(try JSONDecoder().decode(ParameterValue.self, from: Data("\"\(text)\"".utf8)),
+                                 "decoded value '\(text)'")
+            XCTAssertNil(RandomSeed.parsedInDeclaredRange(text), "settings field '\(text)'")
+            defaults.set(text, forKey: RandomSeed.id)
+            guard case .invalid = TrainingParameters.inspectStored(RandomSeed.self, in: defaults) else {
+                XCTFail("stored setting '\(text)' must be reported")
+                continue
+            }
+        }
+    }
+
     // MARK: - Parameter declarations
 
     func test_randomSeedMode_rangeMatchesEnumCases() {

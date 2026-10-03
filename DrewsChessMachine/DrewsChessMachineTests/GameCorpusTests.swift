@@ -39,6 +39,45 @@ final class GameCorpusTests: XCTestCase {
         return corpus.directory
     }
 
+    /// A shard rotation whose seal fails (here its rename refuses: a file
+    /// already has the sealed name) stops the source: every later append
+    /// says the source stopped and why — not that no source was begun — and
+    /// the source is recorded as incomplete, with the reason, rather than
+    /// complete. The unsealed shard is closed, so its lock is free for
+    /// `--validate-corpus --fix` to recover it.
+    func testRotationFailureStopsTheSourceAndLeavesItIncomplete() throws {
+        let corpus = try GameCorpus.create(name: "stopped", comment: nil, shardSoftLimitBytes: 1,
+                                           parentDirectory: tempDir)
+        let sourceID = try corpus.beginSource(kind: "selfPlay")
+        let blocker = corpus.directory.appendingPathComponent("shard-00000.\(GameCorpus.shardExtension)")
+        try Data("not a shard".utf8).write(to: blocker)
+
+        XCTAssertThrowsError(try corpus.append(sampleGame(0)), "the rotation's seal cannot publish its shard")
+        XCTAssertThrowsError(try corpus.append(sampleGame(1))) { error in
+            guard case let GameCorpusError.sourceStopped(stoppedID, cause)? = error as? GameCorpusError else {
+                return XCTFail("a later append must say the source stopped, got \(error)")
+            }
+            XCTAssertEqual(stoppedID, sourceID)
+            XCTAssertTrue(cause.contains("shard-00000"), cause)
+        }
+        try corpus.finishSource()
+
+        let meta = try GameCorpus.loadMetadata(directory: corpus.directory)
+        let source = try XCTUnwrap(meta.sources.first)
+        XCTAssertEqual(source.complete, false, "a stopped source is not complete")
+        XCTAssertNotNil(source.stoppedReason, "a stopped source records why it stopped")
+
+        let openShard = corpus.directory.appendingPathComponent("shard-00000.\(GameCorpus.shardExtension).open")
+        switch try FileSafety.openExistingRegularFileWithExclusiveLock(at: openShard) {
+        case .locked(let handle, _):
+            try handle.close()
+        case .heldByAnotherOpenFile:
+            XCTFail("the stopped source still holds its shard's lock")
+        case .gone:
+            XCTFail("the unsealed shard is kept for recovery")
+        }
+    }
+
     func testCreateRecordSealReopenRoundTrip() throws {
         let games = (0..<40).map { sampleGame($0) }
         // Small soft limit forces rotation into multiple shards.

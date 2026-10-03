@@ -11,15 +11,21 @@ import os
 /// `recordSelfPlayGames` is on), `record(...)`'d from the driver task per kept
 /// game, and `finishAndSeal()`'d once when the run tears down. Recording is
 /// best-effort — an append failure is logged and counted but never propagates
-/// into training.
+/// into training. A failed shard write stops the corpus source
+/// (`GameCorpusError.sourceStopped`): that is logged once, loudly, and every
+/// later game is only counted as dropped, so a full disk does not write one
+/// log line per remaining game of the run.
 final class CorpusRecorder: @unchecked Sendable {
     private let corpus: GameCorpus
     private let queue = DispatchQueue(label: "com.drewschessmachine.corpus-recorder")
 
     private struct State {
         var finished = false
-        var recorded = 0
         var appendErrors = 0
+        /// Set by the first append that stopped the source.
+        var stoppedBy: String?
+        /// Games handed in after the source stopped, none of them recorded.
+        var droppedAfterStop = 0
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -53,7 +59,20 @@ final class CorpusRecorder: @unchecked Sendable {
             if self.state.withLock({ $0.finished }) { return }
             do {
                 try self.corpus.append(game)
-                self.state.withLock { $0.recorded += 1 }
+            } catch GameCorpusError.sourceStopped(_, let cause) {
+                let isFirst = self.state.withLock { st -> Bool in
+                    if st.stoppedBy == nil {
+                        st.stoppedBy = cause
+                        return true
+                    }
+                    st.droppedAfterStop += 1
+                    return false
+                }
+                if isFirst {
+                    SessionLogger.shared.log(
+                        "[CORPUS] recording stopped: \(cause); later self-play games are not recorded "
+                            + "(the unsealed shard is recoverable with --validate-corpus --fix)")
+                }
             } catch {
                 self.state.withLock { $0.appendErrors += 1 }
                 SessionLogger.shared.log("[CORPUS] append failed: \(error.localizedDescription)")
@@ -72,16 +91,24 @@ final class CorpusRecorder: @unchecked Sendable {
                 return false
             }
             if alreadyFinished { return }
-            let recorded = self.state.withLock { $0.recorded }
-            let errors = self.state.withLock { $0.appendErrors }
+            let final = self.state.withLock { $0 }
             do {
                 try self.corpus.finishSource()
-                SessionLogger.shared.log(
-                    "[CORPUS] finished recording: \(recorded) games (\(errors) append errors) → corpus \(self.corpus.corpusID)"
-                )
             } catch {
                 SessionLogger.shared.log("[CORPUS] finishSource failed: \(error.localizedDescription)")
             }
+            // The corpus's own count: a game written just before a failed
+            // rotation is in the shard although its append threw.
+            guard let source = self.corpus.metadata.sources.last, let recorded = source.gamesAdded else {
+                SessionLogger.shared.log(
+                    "[CORPUS] finished recording → corpus \(self.corpus.corpusID), but its corpus.json has no source count")
+                return
+            }
+            var line = "[CORPUS] finished recording: \(recorded) games (\(final.appendErrors) append errors) → corpus \(self.corpus.corpusID)"
+            if let stoppedBy = final.stoppedBy {
+                line += "; recording STOPPED (\(stoppedBy)) and \(final.droppedAfterStop) later game(s) were dropped"
+            }
+            SessionLogger.shared.log(line)
         }
     }
 }

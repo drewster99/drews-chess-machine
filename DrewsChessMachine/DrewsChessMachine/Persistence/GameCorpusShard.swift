@@ -15,6 +15,15 @@ enum GameCorpusError: LocalizedError {
     case corruptMetadata(String)
     case invalidState(String)
     case ioFailed(String)
+    /// A write to the current source's shard failed, so the source stopped
+    /// taking games: the shard was left unsealed (`--validate-corpus --fix`
+    /// recovers its complete games) and every later append is refused with
+    /// this error until `finishSource` records the source as incomplete.
+    case sourceStopped(sourceID: String, cause: String)
+    /// `corpus.json` is no longer the file that was read before the rewrite
+    /// that would have replaced it — something else (a writer finishing its
+    /// source) rewrote it in between — so it was left as found.
+    case metadataChangedSinceRead(path: String)
 
     var errorDescription: String? {
         switch self {
@@ -30,6 +39,11 @@ enum GameCorpusError: LocalizedError {
         case .corruptMetadata(let s): return "Corpus metadata corrupt: \(s)"
         case .invalidState(let s): return "Invalid corpus state: \(s)"
         case .ioFailed(let s): return "Corpus I/O failed: \(s)"
+        case let .sourceStopped(sourceID, cause):
+            return "Corpus source \(sourceID) stopped recording after a failed write (\(cause)); its unsealed shard "
+                + "keeps the games written before it, recoverable with --validate-corpus --fix"
+        case .metadataChangedSinceRead(let path):
+            return "Corpus metadata \(path) changed after it was read; it was left as found"
         }
     }
 }
@@ -121,6 +135,54 @@ enum GameCorpusShardFormat {
             throw GameCorpusError.corruptMetadata("front header id utf8")
         }
         return FrontHeader(corpusID: corpusID, sourceID: sourceID, shardSeq: shardSeq, createdAtUnix: createdAt)
+    }
+
+    // MARK: Trailer codec
+
+    /// The fixed-size trailer a seal appends: the shard's counts, its seal
+    /// time, and the SHA-256 over every byte before the trailer.
+    struct Trailer: Equatable {
+        var gameCount: Int
+        var plyCount: Int
+        var sealUnix: Int64
+        /// 32 bytes.
+        var sha256: Data
+    }
+
+    /// The trailer's bytes: magic, game count, ply count, seal time (each
+    /// little-endian Int64) and the SHA-256 — exactly `trailerSize` bytes.
+    /// The one encoder; `decodeTrailer` is its one inverse.
+    static func encodeTrailer(_ trailer: Trailer) throws -> Data {
+        guard trailer.sha256.count == 32 else {
+            throw GameCorpusError.corruptMetadata("trailer SHA-256 is \(trailer.sha256.count) bytes, not 32")
+        }
+        var w = CorpusByteWriter()
+        w.appendBytes(trailerMagic)
+        w.appendInt64LE(Int64(trailer.gameCount))
+        w.appendInt64LE(Int64(trailer.plyCount))
+        w.appendInt64LE(trailer.sealUnix)
+        w.appendData(trailer.sha256)
+        let data = w.data
+        guard data.count == trailerSize else {
+            throw GameCorpusError.corruptMetadata("trailer is \(data.count) bytes, not \(trailerSize)")
+        }
+        return data
+    }
+
+    /// Decode exactly one trailer block (`trailerSize` bytes) after checking
+    /// its magic. Every reader of a sealed shard decodes its trailer here,
+    /// so the cheap trailer reads and the verified full read cannot disagree
+    /// on the layout.
+    static func decodeTrailer(_ block: Data) throws -> Trailer {
+        guard block.count == trailerSize else { throw GameCorpusError.truncatedHeader }
+        var r = CorpusByteReader(block)
+        let magic = try r.readBytes(8)
+        guard magic == trailerMagic else { throw GameCorpusError.badTrailerMagic }
+        let gameCount = Int(try r.readInt64LE())
+        let plyCount = Int(try r.readInt64LE())
+        let sealUnix = try r.readInt64LE()
+        let sha256 = try r.readData(32)
+        return Trailer(gameCount: gameCount, plyCount: plyCount, sealUnix: sealUnix, sha256: sha256)
     }
 
     // MARK: Record codec
@@ -321,14 +383,17 @@ final class ShardWriter {
     @discardableResult
     func seal(sealUnix: Int64) throws -> URL {
         let digest = Data(hasher.finalize())
-        var w = CorpusByteWriter()
-        w.appendBytes(GameCorpusShardFormat.trailerMagic)
-        w.appendInt64LE(Int64(gameCount))
-        w.appendInt64LE(Int64(plyCount))
-        w.appendInt64LE(sealUnix)
-        w.appendData(digest)
+        let trailer: Data
         do {
-            try handle.write(contentsOf: w.data)
+            trailer = try GameCorpusShardFormat.encodeTrailer(GameCorpusShardFormat.Trailer(
+                gameCount: gameCount, plyCount: plyCount, sealUnix: sealUnix, sha256: digest))
+        } catch let error as GameCorpusError {
+            throw closeAfterFailure(error)
+        } catch {
+            throw closeAfterFailure(GameCorpusError.ioFailed("seal trailer: \(error.localizedDescription)"))
+        }
+        do {
+            try handle.write(contentsOf: trailer)
             try handle.synchronize()
         } catch {
             throw closeAfterFailure(GameCorpusError.ioFailed("seal write: \(error.localizedDescription)"))
@@ -422,15 +487,10 @@ enum GameCorpusShardIO {
         let header = try GameCorpusShardFormat.decodeFrontHeader(data.subdata(in: base..<(base + frontSize)))
         let bodyEnd = data.count - trailerSize
 
-        var tr = CorpusByteReader(data.subdata(in: (base + bodyEnd)..<data.endIndex))
-        let tmagic = try tr.readBytes(8)
-        guard tmagic == GameCorpusShardFormat.trailerMagic else { throw GameCorpusError.badTrailerMagic }
-        let gameCount = Int(try tr.readInt64LE())
-        let plyCount = Int(try tr.readInt64LE())
-        let sealUnix = try tr.readInt64LE()
-        let storedSHA = try tr.readData(32)
+        let trailer = try GameCorpusShardFormat.decodeTrailer(data.subdata(in: (base + bodyEnd)..<data.endIndex))
+        let gameCount = trailer.gameCount
         let computed = Data(SHA256.hash(data: data.subdata(in: base..<(base + bodyEnd))))
-        guard computed == storedSHA else { throw GameCorpusError.shardSHAMismatch }
+        guard computed == trailer.sha256 else { throw GameCorpusError.shardSHAMismatch }
 
         var rr = CorpusByteReader(data.subdata(in: (base + frontSize)..<(base + bodyEnd)))
         var games: [GameRecord] = []
@@ -443,46 +503,37 @@ enum GameCorpusShardIO {
         }
         return SealedShard(header: header,
                            gameCount: gameCount,
-                           plyCount: plyCount,
-                           sealUnix: sealUnix,
+                           plyCount: trailer.plyCount,
+                           sealUnix: trailer.sealUnix,
                            games: games)
     }
 
-    /// Decode the fixed-size trailer's `(gameCount, plyCount)` after checking its
-    /// magic. Shared by the two cheap counts readers below so the trailer layout
-    /// lives in exactly one place.
-    private static func decodeTrailer(_ tdata: Data) throws -> (gameCount: Int, plyCount: Int) {
-        var tr = CorpusByteReader(tdata)
-        let tmagic = try tr.readBytes(8)
-        guard tmagic == GameCorpusShardFormat.trailerMagic else { throw GameCorpusError.badTrailerMagic }
-        let gameCount = Int(try tr.readInt64LE())
-        let plyCount = Int(try tr.readInt64LE())
-        return (gameCount, plyCount)
-    }
-
-    /// Cheap counts-only read of a sealed shard: seeks straight to the fixed-size
-    /// trailer and decodes `(gameCount, plyCount)` without reading or
-    /// SHA/CRC-verifying the body. For building a per-shard game-count index
-    /// (e.g. `--start-game-index` resolution and the resume `next_game_index`
-    /// logging) where reading every full shard would be gratuitous I/O — a
-    /// shard is tens of MB, the trailer is tens of bytes. Trades the integrity
-    /// check for speed; callers that need verified games still use `readSealed`.
-    static func readSealedCounts(at url: URL) throws -> (gameCount: Int, plyCount: Int) {
-        let handle: FileHandle
-        do { handle = try FileHandle(forReadingFrom: url) }
-        catch { throw GameCorpusError.ioFailed("open \(url.lastPathComponent): \(error.localizedDescription)") }
-        defer { try? handle.close() }
-
+    /// Seek to the fixed-size trailer of the sealed shard open on `handle`
+    /// and return its bytes, after checking the file is large enough to hold
+    /// a front header and a trailer. The one seek-and-read the cheap trailer
+    /// readers share.
+    private static func readTrailerBlock(handle: FileHandle, url: URL) throws -> Data {
         let trailerSize = GameCorpusShardFormat.trailerSize
         let size = try handle.seekToEnd()
         guard size >= UInt64(GameCorpusShardFormat.frontHeaderSize + trailerSize) else {
             throw GameCorpusError.truncatedHeader
         }
         try handle.seek(toOffset: size - UInt64(trailerSize))
-        guard let tdata = try handle.read(upToCount: trailerSize), tdata.count == trailerSize else {
+        guard let block = try handle.read(upToCount: trailerSize), block.count == trailerSize else {
             throw GameCorpusError.truncatedHeader
         }
-        return try decodeTrailer(tdata)
+        return block
+    }
+
+    /// Close a handle a cheap read opened. Nothing was written through it,
+    /// so a failed close loses nothing; it is logged, never thrown over the
+    /// read's own result or error.
+    private static func closeAfterRead(_ handle: FileHandle, url: URL, what: String) {
+        do {
+            try handle.close()
+        } catch {
+            SessionLogger.shared.log("[CORPUS] closing \(url.lastPathComponent) after its \(what) read failed: \(error.localizedDescription)")
+        }
     }
 
     /// Cheap trailer read: `(gameCount, plyCount)` plus the SHA-256 the shard
@@ -495,28 +546,10 @@ enum GameCorpusShardIO {
         let handle: FileHandle
         do { handle = try FileHandle(forReadingFrom: url) }
         catch { throw GameCorpusError.ioFailed("open \(url.lastPathComponent): \(error.localizedDescription)") }
-        defer {
-            do { try handle.close() } catch {
-                SessionLogger.shared.log("[CORPUS] closing \(url.lastPathComponent) after its trailer read failed: \(error.localizedDescription)")
-            }
-        }
-        let trailerSize = GameCorpusShardFormat.trailerSize
-        let size = try handle.seekToEnd()
-        guard size >= UInt64(GameCorpusShardFormat.frontHeaderSize + trailerSize) else {
-            throw GameCorpusError.truncatedHeader
-        }
-        try handle.seek(toOffset: size - UInt64(trailerSize))
-        guard let tdata = try handle.read(upToCount: trailerSize), tdata.count == trailerSize else {
-            throw GameCorpusError.truncatedHeader
-        }
-        var tr = CorpusByteReader(tdata)
-        let tmagic = try tr.readBytes(8)
-        guard tmagic == GameCorpusShardFormat.trailerMagic else { throw GameCorpusError.badTrailerMagic }
-        let gameCount = Int(try tr.readInt64LE())
-        let plyCount = Int(try tr.readInt64LE())
-        _ = try tr.readInt64LE()   // seal time, not part of the content identity
-        let sha = try tr.readData(32)
-        return (gameCount, plyCount, sha.map { String(format: "%02x", $0) }.joined())
+        defer { closeAfterRead(handle, url: url, what: "trailer") }
+        // The seal time is not part of the content identity.
+        let trailer = try GameCorpusShardFormat.decodeTrailer(try readTrailerBlock(handle: handle, url: url))
+        return (trailer.gameCount, trailer.plyCount, trailer.sha256.map { String(format: "%02x", $0) }.joined())
     }
 
     /// Cheap header+counts read: decode the fixed-size front header and trailer,
@@ -530,25 +563,16 @@ enum GameCorpusShardIO {
         let handle: FileHandle
         do { handle = try FileHandle(forReadingFrom: url) }
         catch { throw GameCorpusError.ioFailed("open \(url.lastPathComponent): \(error.localizedDescription)") }
-        defer { try? handle.close() }
+        defer { closeAfterRead(handle, url: url, what: "header and trailer") }
 
+        let trailer = try GameCorpusShardFormat.decodeTrailer(try readTrailerBlock(handle: handle, url: url))
         let frontSize = GameCorpusShardFormat.frontHeaderSize
-        let trailerSize = GameCorpusShardFormat.trailerSize
-        let size = try handle.seekToEnd()
-        guard size >= UInt64(frontSize + trailerSize) else { throw GameCorpusError.truncatedHeader }
-
         try handle.seek(toOffset: 0)
         guard let fdata = try handle.read(upToCount: frontSize), fdata.count == frontSize else {
             throw GameCorpusError.truncatedHeader
         }
         let header = try GameCorpusShardFormat.decodeFrontHeader(fdata)
-
-        try handle.seek(toOffset: size - UInt64(trailerSize))
-        guard let tdata = try handle.read(upToCount: trailerSize), tdata.count == trailerSize else {
-            throw GameCorpusError.truncatedHeader
-        }
-        let counts = try decodeTrailer(tdata)
-        return (header, counts.gameCount, counts.plyCount)
+        return (header, trailer.gameCount, trailer.plyCount)
     }
 
     struct OpenShardScan {

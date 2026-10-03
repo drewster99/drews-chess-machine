@@ -87,7 +87,10 @@ enum TrainVsUciSession {
             }
             return .session(url)
         }
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        // `attributesOfItem` does not follow a final symbolic link, so it is
+        // asked about what the path resolves to; the path given is what is
+        // returned, so step files are named next to it.
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.resolvingSymlinksInPath().path)
         guard let type = attributes[.type] as? FileAttributeType else {
             throw StartSourceError.notAFileOrFolder(path: url.path, kind: "item of unknown type")
         }
@@ -211,6 +214,10 @@ enum TrainVsUciSession {
         .withArchitecture(ArchitectureMetadata(describing: arch))
     }
 
+    /// Lower-cased extensions that make a `--checkpoint-stem` name a model
+    /// file or a session folder rather than a stem.
+    static let modelOrSessionExtensions: Set<String> = ["safetensors", "dcmmodel", "dcmsession"]
+
     enum CheckpointStemError: LocalizedError, Equatable {
         case namedLikeAnEnumeratedCheckpoint(stem: String, step: Int)
         case hasExtension(stem: String)
@@ -221,7 +228,7 @@ enum TrainVsUciSession {
                 return "--checkpoint-stem \(stem) is itself named like the step-\(step) checkpoint of another stem; "
                     + "choose a stem that is not a checkpoint name"
             case .hasExtension(let stem):
-                return "--checkpoint-stem \(stem) names a file; give the stem without an extension "
+                return "--checkpoint-stem \(stem) names a model file or session; give the stem without that extension "
                     + "(step files are <stem>-vsuci-step<N>.safetensors)"
             }
         }
@@ -234,13 +241,17 @@ enum TrainVsUciSession {
     /// otherwise the start model file's own stem next to it (the names runs
     /// have always produced), or the run's model ID in `Models/` for a fresh
     /// run or a session start.
+    ///
+    /// A stem is a name, and names may hold dots (`sf100-lr0.5`); a stem is
+    /// refused as naming a file only when its extension is a model or
+    /// session one (`modelOrSessionExtensions`, any letter case).
     static func enumeratedNamingBase(
         checkpointStem: String?, startSource: StartSource?, runModelID: String
     ) throws -> URL {
         let marker = "-\(EnumeratedCheckpointNaming.trainVsUciRunTag)-latest.safetensors"
         if let checkpointStem {
             let url = URL(fileURLWithPath: (checkpointStem as NSString).expandingTildeInPath)
-            guard url.pathExtension.isEmpty else {
+            guard !Self.modelOrSessionExtensions.contains(url.pathExtension.lowercased()) else {
                 throw CheckpointStemError.hasExtension(stem: url.path)
             }
             if let step = EnumeratedCheckpointNaming.step(

@@ -82,6 +82,33 @@ final class InvalidStoredSettingsTests: XCTestCase {
         }
     }
 
+    /// A whole-number setting stored as a real number is reported, not
+    /// truncated: 7.9 read as 7 would silently run a different setting.
+    func testFractionalNumberForWholeNumberParameterIsReported() {
+        defaults.set(7.9, forKey: LRWarmupSteps.id)
+        guard case .invalid(let finding) = TrainingParameters.inspectStored(LRWarmupSteps.self, in: defaults) else {
+            return XCTFail("a real number where a whole number belongs must be reported")
+        }
+        XCTAssertEqual(finding.found, "7.9")
+        XCTAssertTrue(finding.problem.contains("not a whole number"), finding.problem)
+    }
+
+    func testTrueForWholeNumberParameterIsReported() {
+        defaults.set(true, forKey: LRWarmupSteps.id)
+        guard case .invalid(let finding) = TrainingParameters.inspectStored(LRWarmupSteps.self, in: defaults) else {
+            return XCTFail("true/false where a whole number belongs must be reported, not read as 1")
+        }
+        XCTAssertTrue(finding.problem.contains("not a whole number"), finding.problem)
+    }
+
+    func testNumberForTrueFalseParameterIsReported() {
+        defaults.set(1, forKey: SqrtBatchScalingLR.id)
+        guard case .invalid(let finding) = TrainingParameters.inspectStored(SqrtBatchScalingLR.self, in: defaults) else {
+            return XCTFail("a number where true/false belongs must be reported, not read as true")
+        }
+        XCTAssertTrue(finding.problem.contains("not a true/false value"), finding.problem)
+    }
+
     // MARK: - Saved session settings
 
     @MainActor
@@ -165,6 +192,31 @@ final class InvalidStoredSettingsTests: XCTestCase {
         incomplete.arenaPromotionCriterion = ArenaPromotionCriterion.sprt.logToken
         incomplete.arenaSPRTElo0 = 0
         XCTAssertEqual(incomplete.invalidSavedSettings(current: current()).map(\.id),
+                       [SessionCheckpointState.SavedSettingID.arenaPromotionCriterion])
+    }
+
+    /// A session saves the criterion and its six SPRT values together or not
+    /// at all. Hypotheses without a criterion are not a pre-feature session;
+    /// resuming them would install an SPRT test nobody validated (elo1 below
+    /// elo0 here), which the next SPRT arena would refuse.
+    @MainActor
+    func testSPRTHypothesesWithoutACriterionAreAFinding() {
+        var state = sessionState()
+        state.arenaSPRTElo0 = 10
+        state.arenaSPRTElo1 = 0
+        state.arenaSPRTAlpha = 0.05
+        state.arenaSPRTBeta = 0.05
+        state.arenaSPRTMinGames = 32
+        state.arenaSPRTMaxGames = 400
+        XCTAssertEqual(state.invalidSavedSettings(current: current()).map(\.id),
+                       [SessionCheckpointState.SavedSettingID.arenaPromotionCriterion])
+    }
+
+    @MainActor
+    func testAPartialSPRTSetWithoutACriterionIsAFinding() {
+        var state = sessionState()
+        state.arenaSPRTElo1 = 10
+        XCTAssertEqual(state.invalidSavedSettings(current: current()).map(\.id),
                        [SessionCheckpointState.SavedSettingID.arenaPromotionCriterion])
     }
 
