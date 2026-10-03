@@ -583,7 +583,7 @@ final class ReplayBuffer: @unchecked Sendable {
         let version: UInt32 = headerData.withUnsafeBytes {
             $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
         }
-        guard version == fileVersion else {
+        guard isReadableFileVersion(version) else {
             throw PersistenceError.unsupportedVersion(version)
         }
         let cap64: Int64 = headerData.withUnsafeBytes {
@@ -622,7 +622,7 @@ final class ReplayBuffer: @unchecked Sendable {
         let version: UInt32 = headerData.withUnsafeBytes {
             $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
         }
-        guard version == fileVersion else {
+        guard isReadableFileVersion(version) else {
             throw PersistenceError.unsupportedVersion(version)
         }
         let fpb64: Int64 = headerData.withUnsafeBytes {
@@ -640,20 +640,67 @@ final class ReplayBuffer: @unchecked Sendable {
 
     // MARK: - Hash helper (encoded board → stable UInt64 hash)
 
-    /// Hash an encoded `[floatsPerBoard]` board tensor into a single
-    /// UInt64. Uses Swift's stdlib `Hasher` (SipHash) over the raw
-    /// bytes — process-stable but not persistence-stable. The hash dict
-    /// is rebuilt fresh on each session restore so cross-process
-    /// stability isn't required.
+    /// Hash an encoded `[floatsPerBoard]` board tensor into a single UInt64
+    /// that is the same in every process, on every build and machine.
+    ///
+    /// The per-slot hashes are saved with the buffer and restored as they
+    /// are, and a restored position must count under the same key as the
+    /// same position inserted after the resume. Swift's `Hasher` cannot do
+    /// that: it is keyed randomly in every process, so it is never used here.
+    ///
+    /// Definition (pinned by golden tests and reproducible in any language):
+    /// starting from `boardHashKey`, each little-endian 8-byte word of the
+    /// board's bytes is folded in as `h = splitmix64(h ^ word)`; a trailing
+    /// 4-byte word (an odd float count) is folded in the same way; the result
+    /// is `splitmix64(h ^ byteCount)`, so boards that differ only by a
+    /// trailing zero word still hash apart.
     @inline(__always)
     static func hashBoard(_ ptr: UnsafePointer<Float>, count: Int) -> UInt64 {
-        var hasher = Hasher()
-        let raw = UnsafeRawBufferPointer(
-            start: UnsafeRawPointer(ptr),
-            count: count * MemoryLayout<Float>.size
-        )
-        hasher.combine(bytes: raw)
-        return UInt64(bitPattern: Int64(hasher.finalize()))
+        let byteCount = count * MemoryLayout<Float>.size
+        let raw = UnsafeRawPointer(ptr)
+        var hash = boardHashKey
+        var offset = 0
+        while offset + MemoryLayout<UInt64>.size <= byteCount {
+            let word = UInt64(littleEndian: raw.loadUnaligned(fromByteOffset: offset, as: UInt64.self))
+            hash = DCMSplitMix64.mix(hash ^ word)
+            offset += MemoryLayout<UInt64>.size
+        }
+        if offset < byteCount {
+            let word = UInt64(UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: offset, as: UInt32.self)))
+            hash = DCMSplitMix64.mix(hash ^ word)
+        }
+        return DCMSplitMix64.mix(hash ^ UInt64(byteCount))
+    }
+
+    /// The fixed starting value of `hashBoard` (the first 64 bits of the
+    /// fractional part of π). Part of the hash's definition: changing it
+    /// changes every saved hash, which needs a new buffer file version.
+    static let boardHashKey: UInt64 = 0x243F_6A88_85A3_08D3
+
+    // MARK: - Logical (age-ordered) slot indices
+
+    /// The ring slot holding the `logicalIndex`-th oldest stored position
+    /// (0 = oldest). Uniform draws pick a logical index and map it here, so
+    /// which positions a given sequence of draws selects depends only on the
+    /// buffer's contents in age order, never on where the ring's write
+    /// pointer happens to sit — a buffer refilled from slot 0 after a resume
+    /// and the uninterrupted buffer it replaces then draw the same positions
+    /// from the same draws.
+    static func physicalSlot(logicalIndex: Int, storedCount: Int, capacity: Int, writeIndex: Int) -> Int {
+        precondition(logicalIndex >= 0 && logicalIndex < storedCount,
+                     "ReplayBuffer.physicalSlot: logical index \(logicalIndex) outside 0..<\(storedCount)")
+        // Until the ring first fills, positions sit in slots 0..<storedCount
+        // oldest first; once full, the oldest is the next slot to overwrite.
+        let oldestSlot = storedCount == capacity ? writeIndex : 0
+        return (oldestSlot + logicalIndex) % capacity
+    }
+
+    /// `physicalSlot(logicalIndex:…)` for this buffer's current ring state.
+    /// Must be called while holding `lock`.
+    @inline(__always)
+    private func physicalSlot(forLogicalIndex logicalIndex: Int) -> Int {
+        Self.physicalSlot(logicalIndex: logicalIndex, storedCount: storedCount,
+                          capacity: capacity, writeIndex: writeIndex)
     }
 
     /// Pack a worker_id (0..65_535) and an intra-worker game index
@@ -1780,7 +1827,7 @@ final class ReplayBuffer: @unchecked Sendable {
                     var degPerGame: [UInt32: Int] = [:]
                     degPerGame.reserveCapacity(min(sampleCount, residentGames.count) + 1)
                     for i in 0..<sampleCount {
-                        let srcIndex = Int.random(in: 0..<held)
+                        let srcIndex = physicalSlot(forLogicalIndex: Int.random(in: 0..<held))
                         emit(i, srcIndex)
                         let z = outcomeStorage[srcIndex]
                         if z > 0 { degWin += 1 }
@@ -1921,7 +1968,7 @@ final class ReplayBuffer: @unchecked Sendable {
                 if emitted < sampleCount {
                     stratAttemptBudgetHit = true
                     while emitted < sampleCount {
-                        let srcIndex = Int.random(in: 0..<held)
+                        let srcIndex = physicalSlot(forLogicalIndex: Int.random(in: 0..<held))
                         emit(emitted, srcIndex)
                         let z = outcomeStorage[srcIndex]
                         if z > 0 { stratWin += 1 }
@@ -1970,7 +2017,7 @@ final class ReplayBuffer: @unchecked Sendable {
                 fastPerGameScratch.removeAll(keepingCapacity: true)
                 fastPerGameScratch.reserveCapacity(min(sampleCount, residentGames.count) + 1)
                 for i in 0..<sampleCount {
-                    let srcIndex = Int.random(in: 0..<held)
+                    let srcIndex = physicalSlot(forLogicalIndex: Int.random(in: 0..<held))
                     emit(i, srcIndex)
                     let z = outcomeStorage[srcIndex]
                     if z > 0 { fastWin += 1 }
@@ -2186,7 +2233,7 @@ final class ReplayBuffer: @unchecked Sendable {
                     if attempts > attemptBudget {
                         attemptBudgetHit = true
                         while emitted < sampleCount {
-                            let srcIndex = Int.random(in: 0..<held)
+                            let srcIndex = physicalSlot(forLogicalIndex: Int.random(in: 0..<held))
                             emit(emitted, srcIndex)
                             tallyOutcome(srcIndex)
                             achievedSumGameLength += Int(gameLengthStorage[srcIndex])
@@ -2195,7 +2242,7 @@ final class ReplayBuffer: @unchecked Sendable {
                         }
                         break
                     }
-                    let srcIndex = Int.random(in: 0..<held)
+                    let srcIndex = physicalSlot(forLogicalIndex: Int.random(in: 0..<held))
                     let isDraw = outcomeStorage[srcIndex] == 0.0
                     if isDraw == wantDecisive { continue }   // wrong stratum
                     if !tiltAccepts(srcIndex) { continue }
@@ -2232,7 +2279,7 @@ final class ReplayBuffer: @unchecked Sendable {
             if emitted < sampleCount {
                 attemptBudgetHit = true
                 while emitted < sampleCount {
-                    let srcIndex = Int.random(in: 0..<held)
+                    let srcIndex = physicalSlot(forLogicalIndex: Int.random(in: 0..<held))
                     emit(emitted, srcIndex)
                     tallyOutcome(srcIndex)
                     achievedSumGameLength += Int(gameLengthStorage[srcIndex])
@@ -2279,12 +2326,36 @@ final class ReplayBuffer: @unchecked Sendable {
     ///
     /// Must be called while holding `lock`.
     private func solveLengthTiltBeta(target: Int) -> (beta: Double, infeasible: Bool, shortestResidentLength: Int) {
-        if residentLengthHistogram.isEmpty { return (0, false, 0) }
+        Self.lengthTiltBeta(residentLengthHistogram: residentLengthHistogram, target: target)
+    }
+
+    /// The solve behind `solveLengthTiltBeta`, as a function of the histogram
+    /// alone. The histogram is read in ascending length order: the weighted
+    /// sums below are floating-point, so summing in `Dictionary` order (which
+    /// Swift randomizes per process) would give a β that differs in its last
+    /// bits from run to run, and β decides which positions the trainer's
+    /// minibatch draw accepts.
+    static func lengthTiltBeta(
+        residentLengthHistogram: [UInt16: Int],
+        target: Int
+    ) -> (beta: Double, infeasible: Bool, shortestResidentLength: Int) {
+        let orderedLengths = residentLengthHistogram.keys.sorted()
+        guard let shortestLength = orderedLengths.first else { return (0, false, 0) }
         let t = Double(target)
-        // Snapshot histogram into arrays for the tight inner loop.
-        let lens = residentLengthHistogram.keys.map { Double($0) }
-        let wts = residentLengthHistogram.keys.map { Double(residentLengthHistogram[$0] ?? 0) }
-        let shortestLen = Int(lens.min() ?? 0)
+        // Snapshot histogram into arrays for the tight inner loop, in a fixed
+        // (ascending length) order.
+        var lens: [Double] = []
+        var wts: [Double] = []
+        lens.reserveCapacity(orderedLengths.count)
+        wts.reserveCapacity(orderedLengths.count)
+        for length in orderedLengths {
+            guard let positionCount = residentLengthHistogram[length] else {
+                preconditionFailure("ReplayBuffer.lengthTiltBeta: length \(length) vanished from the histogram it was read from")
+            }
+            lens.append(Double(length))
+            wts.append(Double(positionCount))
+        }
+        let shortestLen = Int(shortestLength)
         func tiltedMean(_ beta: Double) -> Double {
             var num = 0.0, den = 0.0
             for k in lens.indices {
@@ -2675,7 +2746,8 @@ final class ReplayBuffer: @unchecked Sendable {
     private static let fileMagic: [UInt8] = Array("DCMRPBUF".utf8)
     /// Format version. Bump on any on-disk layout change.
     ///
-    /// Current format is v7:
+    /// Current format is v8 (the v7 layout; see `fileVersion` for what
+    /// changed):
     ///   - Header: 8-byte magic + 4-byte version + 4-byte encodingTag + 5 × Int64
     ///     (floatsPerBoard, capacity, storedCount, writeIndex,
     ///     totalPositionsAdded). The encodingTag (a stable FNV-1a hash of the
@@ -2700,10 +2772,26 @@ final class ReplayBuffer: @unchecked Sendable {
     /// recomputes the policy-gradient baseline from a fresh forward pass
     /// every step, so there is nothing left to persist.
     ///
-    /// Older replay-buffer versions are rejected rather than loaded
-    /// with synthesized metadata. Session resume should either restore
-    /// the exact saved state or fail loudly.
-    private static let fileVersion: UInt32 = 7
+    /// v8 has the v7 layout unchanged; what changed is the meaning of the
+    /// `stateHashes` column. v8 hashes come from the process-independent
+    /// `hashBoard`; v7 hashes came from Swift's per-process `Hasher` and
+    /// cannot be reproduced by any later process. A v7 file is therefore
+    /// still read (`legacyFileVersion`), and every restored slot's hash is
+    /// recomputed from that slot's stored board (the boards are the source
+    /// of truth); the restore logs how many it recomputed.
+    ///
+    /// Versions before v7 are rejected rather than loaded with synthesized
+    /// metadata. Session resume should either restore the exact saved state
+    /// or fail loudly.
+    private static let fileVersion: UInt32 = 8
+    /// The one earlier version still read: same layout, hashes recomputed on
+    /// load (see `fileVersion`).
+    private static let legacyFileVersion: UInt32 = 7
+
+    /// Whether a file of this version can be read by this build.
+    private static func isReadableFileVersion(_ version: UInt32) -> Bool {
+        version == fileVersion || version == legacyFileVersion
+    }
     /// Header size in bytes: 8 magic + 4 version + 4 encodingTag + 5 × Int64 fields.
     private static let headerSize: Int = 8 + 4 + 4 + 8 * 5
 
@@ -3069,7 +3157,8 @@ final class ReplayBuffer: @unchecked Sendable {
     ///
     /// 1. File opens and header can be fully read (`truncatedHeader`).
     /// 2. Magic matches "DCMRPBUF" (`badMagic`).
-    /// 3. `fileVersion` matches the current format (`unsupportedVersion`).
+    /// 3. The version is readable: the current format, or v7, whose
+    ///    hashes are then recomputed from the boards (`unsupportedVersion`).
     /// 4. `floatsPerBoard` matches the running build's tensor length
     ///    (`incompatibleBoardSize`) — replay-buffer analog of the
     ///    `.dcmmodel` arch-hash check.
@@ -3122,7 +3211,7 @@ final class ReplayBuffer: @unchecked Sendable {
         let version: UInt32 = headerData.withUnsafeBytes {
             $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
         }
-        guard version == Self.fileVersion else {
+        guard Self.isReadableFileVersion(version) else {
             throw PersistenceError.unsupportedVersion(version)
         }
         let fpbFile: Int64 = headerData.withUnsafeBytes {
@@ -3413,6 +3502,19 @@ final class ReplayBuffer: @unchecked Sendable {
             storedCount = target
             writeIndex = (target == capacity) ? 0 : target
             _totalPositionsAdded = Int(ttlFile)
+
+            // A v7 file's hashes came from a per-process `Hasher` that no
+            // later process can reproduce; recompute each from its board so
+            // restored positions count under the same keys as new inserts.
+            if version == Self.legacyFileVersion {
+                for slot in 0..<target {
+                    stateHashStorage[slot] = Self.hashBoard(
+                        boardStorage + slot * floatsPerBoard,
+                        count: floatsPerBoard
+                    )
+                }
+                SessionLogger.shared.log("[RESUME] recomputed \(target) position hashes (legacy buffer, format v\(version))")
+            }
 
             // Rebuild the hash dict + composition aggregates + material
             // bucket index from the restored columns. The bucket index

@@ -9,6 +9,14 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-02 CDT — Replay buffer: process-independent hashes, age-ordered draws (`efcf3a75`, `e6a3221e`)
+
+- **Board hashes are the same in every process** (determinism plan O16, a bug fix). `ReplayBuffer.hashBoard` used Swift's `Hasher`, keyed randomly per process, and the per-slot hashes are saved with the buffer and restored as they are — so after a resume a position already in the buffer and the same position inserted again counted under two keys (duplicate counts, `uniquePositionCount`, `[BATCH-STATS]` duplicate figures). The hash is now SplitMix64 folded over the board's little-endian 8-byte words from a fixed key, pinned by goldens from an independent implementation. Observability only: the hashes never fed a draw or a loss.
+- **Buffer file format v8** (layout unchanged). A v7 `replay_buffer.bin` still loads; every restored slot's hash is recomputed from its stored board and the load logs `[RESUME] recomputed N position hashes (legacy buffer, format v7)`.
+- **Uniform minibatch draws pick a logical, age-ordered index** (plan O7b) and map it to a ring slot, so which positions a sequence of draws selects depends on the buffer's contents in age order, not on the ring's write pointer. Distribution unchanged.
+- **The length-tilt β is solved in a fixed order.** It summed the length histogram in `Dictionary` order, which Swift randomizes per process, so β — which decides the tilted draw's acceptances — could differ in its last bits between two runs of the same corpus replay. Now ascending length order.
+- Tests: `ReplayBufferStableBoardHashTests` (committed first; 11 failures on the old code), `ReplayBufferSamplingOrderTests`.
+
 ## 2026-10-02 CDT — Config D removed
 
 - The experimental `--bf16-cast-in-forward` mode ("config D": fp32-stored weight and BN variables cast to bf16 in the forward pass, optimizer on the fp32 path with no master/working pair) is gone — decision D-10 in `documentation/plans-active/DETERMINISM_RESUME_LINEAGE_PLAN.md`, issue #9. Passing the flag is now an unknown-argument error. Removed: the flag parsing, the GUI trainer wiring, `TrainerHyperparameters`/`ChessTrainer` parameters, and in `ChessNetwork` `bf16CastInForward`, `bf16CastActive`, `weightStorageDataType` and `castWeightForForward`. Every variable is created in the compute dtype; batch norm widens its parameters only where it normalizes in a different dtype (the policy pre-block in the fp32 head tail), exactly as before.
