@@ -929,6 +929,15 @@ LichessBot/
    the journal plus the export. Nothing is dropped. A journal whose export
    fails stays in `InProgress/` with a visible "unreconciled" badge and
    retries later.
+   - While the bot is still offline after a launch, the status chip reports
+     the leftovers from each journal's recorded finish (review 2026-10-03):
+     a game whose journal records its finish only waits to be filed (a quit
+     doesn't wait for the post-game chat fetches), so it is counted as
+     "to file" with a session-log line and no alarm; a game with no
+     recorded finish may still be live on DCM's clock and raises an alarm;
+     a journal that can't be read raises an alarm naming why. A report
+     computed while the bot was going online is dropped, since going
+     online resumes or files those games itself.
 4. **Integrity:**
    - Journals tolerate a truncated last line (a crash mid-append). The
      reader drops only an incomplete final line and logs it.
@@ -1316,6 +1325,13 @@ sheet**:
   priority), then quit.
 - **Quit now**: games are abandoned. The opponent can claim after the
   timeout, and launch recovery reconciles them. Behind a confirmation.
+
+Without games in progress the quit stops the runtime and is answered
+once the bot has shut down. That holds while offline too (review
+2026-10-03): going offline started withdrawing our unanswered
+challenges, and the shutdown waits for those withdrawals and for queued
+protocol-log, player-notes and outcome-log writes. Only a launch that
+never went online or loaded the bot's notes quits at once.
 - **Cancel**: don't quit; the bot stays Draining. Go Online again from the
   window if wanted.
 
@@ -1748,7 +1764,11 @@ before final sign-off.
     - A still-live export (E23) is retried with backoff for up to 10 min.
     - After that the game is marked unreconciled and retried every 30 min.
     - A game that still has a session is dropped from the queue; its end
-      enqueues it again.
+      enqueues it again. A session that saw its game finish hands it over
+      through the journal's finish (after the post-game chat fetches, or at
+      once in a drain); one that ended without a finish (its game stream
+      answered 404: a game Lichess deleted) is enqueued by the controller
+      when the manager reports the session's end (review 2026-10-03).
     - Launch recovery enqueues every leftover `InProgress/` journal. The
       controller wiring is Phase 5.
   - `LichessBotRecordStore` is a stateless `Sendable` class whose work all
@@ -1789,7 +1809,15 @@ before final sign-off.
   - **Menu:** Chess ▸ Lichess Bot… (⇧⌘L).
   - **Quit:** `AppDelegate` routes quit through the controller. With games
     in progress it returns `.terminateLater`, drains, and brings up the
-    bot window with the "Finishing games" sheet.
+    bot window with the "Finishing games" sheet. Without games it returns
+    `.terminateLater` and answers after the bot's shutdown, offline
+    included, unless the bot was never used this launch.
+  - **Player notes and challenge outcomes** load when the bot window
+    opens and, if they aren't loaded yet, when the bot goes online (it can
+    go online from the status chip without the window). Each loads once
+    per launch; a failed load is retried on the next call. Loading the
+    notes merges bot limits both ways with the live limits and saves any
+    the notes gained (review 2026-10-03).
   - **Protocol transcript:** the API client reports every request, and
     each game's journal records every request, stream line and keep-alive.
     Event-stream lines and keep-alive gap statistics go to the protocol
