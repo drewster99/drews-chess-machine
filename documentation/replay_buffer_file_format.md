@@ -13,13 +13,14 @@ and `session.json`. It is never used outside that session-bundle
 context; `session.json`'s `hasReplayBuffer` flag controls whether the
 file is expected to be present.
 
-> **Document status (2026-06-23).** The current on-disk version is
-> **v7** (`ReplayBuffer.fileVersion`). This document retains the full
-> **v3** and **v4** sections as historical reference and adds a
-> consolidated version history plus a complete **current v7** section
-> below. The decoder accepts only the current version — every prior
-> version is rejected with `PersistenceError.unsupportedVersion` (no
-> migration path).
+> **Document status (2026-10-02).** The current on-disk version is
+> **v8** (`ReplayBuffer.fileVersion`), which has exactly the v7 layout
+> described in the **current v7** section below; only the meaning of the
+> `stateHashes` column changed (see the version history). This document
+> retains the full **v3** and **v4** sections as historical reference. The
+> decoder accepts v8 and v7 (v7 with every hash recomputed from its board,
+> owner decision D-9); every earlier version is rejected with
+> `PersistenceError.unsupportedVersion` (no migration path).
 
 ## Design goals
 
@@ -48,10 +49,12 @@ file is expected to be present.
 
 ## Format version history
 
-The writer bumps `fileVersion` on any on-disk layout change; the reader
-hard-rejects every prior version (`PersistenceError.unsupportedVersion`).
-No backward-compatible readers, no migration — a resumed session restores
-the exact saved state or fails loudly.
+The writer bumps `fileVersion` on any on-disk layout change, and on any
+change to what a stored column means; the reader rejects every version
+before v7 (`PersistenceError.unsupportedVersion`). The one exception is v7,
+read by v8 builds with its hashes recomputed (owner decision D-9 in
+`plans-active/DETERMINISM_RESUME_LINEAGE_PLAN.md`) — otherwise a resumed
+session restores the exact saved state or fails loudly.
 
 | Version | When | Change |
 |---|---|---|
@@ -62,6 +65,7 @@ the exact saved state or fails loudly.
 | **v5** | 2026-05-02 (`c1ec893`) | Added five per-position observability columns: `plyIndices`, `gameLengths`, `samplingTaus`, `stateHashes`, `workerGameIds`. |
 | **v6** | 2026-05-02 (`dfdf22c`) | Added the `materialCounts` (UInt8) column. |
 | **v7** | 2026-05-12 (`b48793c`) | Dropped the now-dead `vBaselines` column (the W/D/L value-head rewrite made the play-time-frozen baseline obsolete — the trainer recomputes a fresh policy-gradient baseline every step). The header `pad` slot was later (2026-06-20, `3016060`) repurposed as a live `encodingTag`, backward-compatibly *within* v7. |
+| **v8** | 2026-10-02 (`e6a3221e`) | Same layout as v7. `stateHashes` now come from the process-independent `ReplayBuffer.hashBoard` (SplitMix64 over the board's little-endian 8-byte words from a fixed key, then the byte count); v7's came from Swift's per-process `Hasher` and cannot be reproduced. A v7 file still loads: every restored slot's hash is recomputed from its board, logged `[RESUME] recomputed N position hashes (legacy buffer, format v7)`. |
 
 Detailed layouts follow: **v3** and **v4** are retained as historical
 sections (v4's durability machinery is still in force); the **current v7**
