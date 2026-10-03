@@ -28,6 +28,18 @@ tested on its own here.
   33,000, `--policy-tail-precision fp32_from_pre_bn` to match the baselines' build).
 - **Concurrency:** shares the GPU with the leaky-FC1 run; compare on step only.
 
+## Charts
+
+Every compared run, from the same columns as `table.py` (zero-init ReZero included);
+regenerate with `python3 experiments/20261002-noSE-noReZero/charts.py` after new probes.
+Solid lines are seed 1, dashed seed 2.
+
+![pElo by step](charts/rezero-pelo.svg)
+
+![NLL by step](charts/rezero-nll.svg)
+
+![Each run minus no SE + ReZero (seed 1)](charts/rezero-vs-baseline.svg)
+
 ## Launch record
 
 | field | value |

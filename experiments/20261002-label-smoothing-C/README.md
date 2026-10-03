@@ -24,6 +24,18 @@ Is ε = 0.1 more policy smoothing than needed now that the shared offset can't d
   NLL / top-1 by legal-move count bucket and policy entropy, `pLogitAbsMax`; for D
   value loss and W/D/L calibration.
 
+## Charts
+
+Every compared run, from the same columns as `table.py`; regenerate with
+`python3 experiments/20261002-label-smoothing-C/charts.py` after new probes. Solid lines
+are seed 1, dashed seed 2; arm D (value ε 0) is drawn here too.
+
+![pElo by step](charts/label-smoothing-pelo.svg)
+
+![NLL by step](charts/label-smoothing-nll.svg)
+
+![Each arm minus the seed-1 baseline](charts/label-smoothing-vs-baseline.svg)
+
 ## Launch record
 
 | field | value |

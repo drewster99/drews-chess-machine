@@ -23,6 +23,15 @@ Is value-target smoothing still needed now that the shared value offset can't dr
   NLL / top-1 by legal-move count bucket and policy entropy, `pLogitAbsMax`; for D
   value loss and W/D/L calibration.
 
+## Charts
+
+Arm D is charted with arm C and the baseline in
+[label smoothing C's charts](../20261002-label-smoothing-C/README.md#charts):
+
+![pElo by step](../20261002-label-smoothing-C/charts/label-smoothing-pelo.svg)
+
+![Each arm minus the seed-1 baseline](../20261002-label-smoothing-C/charts/label-smoothing-vs-baseline.svg)
+
 ## Launch record
 
 - **Launched** 2026-10-03 00:28:16 CDT (session log `dcm_log_20261003-002816.txt`), by the

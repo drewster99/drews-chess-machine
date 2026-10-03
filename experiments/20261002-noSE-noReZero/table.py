@@ -35,7 +35,10 @@ def probe_points(file_name, model_id, label):
     return probe_record.arm_points(os.path.join(HERE, file_name), model_id, label)
 
 
-def main():
+def table_arms():
+    """(arms, builds, not_started): every column's {step: (pElo, nll)} in table order,
+    each column's probe builds, and the arms with no checkpoint yet. The table and the
+    charts both read this, so they always show the same runs."""
     probed = {label: probe_points(f, m, label) for label, f, m in PROBE_ARMS}
     files = {label: os.path.join(HERE, f) for label, f, _ in PROBE_ARMS}
     arms = [("no SE + ReZero s1", csv_points("se_none"))]
@@ -47,6 +50,11 @@ def main():
     builds += [(label, probe_record.probe_builds(files[label])) for label, points in probed.items() if points is not None]
     builds += [("no SE + ReZero s2", csv_probe_builds("se_none2"))]
     not_started = [label for label, points in probed.items() if points is None]
+    return arms, builds, not_started
+
+
+def main():
+    arms, builds, not_started = table_arms()
     plies = buffer_plies_per_game(BASELINE_LOG)
     for step, value in buffer_plies_per_game(NO_REZERO_LOG).items():
         if step in plies and abs(plies[step] - value) > 0.05:

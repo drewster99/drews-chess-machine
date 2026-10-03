@@ -43,6 +43,15 @@ reach the branch scale the no-ReZero nets chose.
   for this family.
 - One seed: differences under ~25 pElo are inside the seed spread.
 
+## Charts
+
+Zero-init ReZero is charted with the no-SE ReZero / no-ReZero runs in
+[that experiment's charts](../20261002-noSE-noReZero/README.md#charts):
+
+![pElo by step](../20261002-noSE-noReZero/charts/rezero-pelo.svg)
+
+![Each run minus no SE + ReZero (seed 1)](../20261002-noSE-noReZero/charts/rezero-vs-baseline.svg)
+
 ## Launch record
 
 - **Launched** 2026-10-02 20:24:30 CDT (session log `dcm_log_20261002-202430.txt`), in the slot

@@ -28,7 +28,10 @@ PROBE_ARMS = [
 ]
 
 
-def main():
+def table_arms():
+    """(arms, builds, not_started): every column's {step: (pElo, nll)} in table order,
+    each column's probe builds, and the arms with no checkpoint yet. The table and the
+    charts both read this, so they always show the same runs."""
     arms = [("baseline ε 0.1 / 0.013", csv_points("se_sb")),
             ("baseline seed 2", csv_points("se_sb2"))]
     builds = [("baseline ε 0.1 / 0.013", csv_probe_builds("se_sb")),
@@ -41,6 +44,11 @@ def main():
         else:
             arms.append((label, points))
             builds.append((label, probe_record.probe_builds(path)))
+    return arms, builds, not_started
+
+
+def main():
+    arms, builds, not_started = table_arms()
     plies = buffer_plies_per_game(BASELINE_LOG)
     last = max(max(p) for _, p in arms if p)
     header = ["step", "buffer plies/game"] + [f"pElo {l}" for l, _ in arms] + [f"NLL {l}" for l, _ in arms]
