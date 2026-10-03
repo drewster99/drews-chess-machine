@@ -214,6 +214,58 @@ enum FileSafety {
         return FileIdentity(device: info.st_dev, inode: info.st_ino)
     }
 
+    // MARK: - Comparing paths
+
+    /// True when `first` and `second` may name one file — the one check for
+    /// "these two paths must not be the same file" (two outputs of one run,
+    /// or an output and an input it would destroy).
+    ///
+    /// They may when their paths, with symbolic links resolved (in every
+    /// component that exists — a missing tail is kept as written,
+    /// `pathForComparison`) and `.`/`..` removed, are equal ignoring case, or
+    /// when both exist and resolve to the
+    /// same device and inode. Case is ignored because APFS and HFS+ volumes are
+    /// case-insensitive by default; on a case-sensitive volume that refuses two
+    /// genuinely different files whose names differ only in case, which costs
+    /// a caller nothing but a rename. The identity check catches what no path
+    /// comparison can: hard links, and links resolved differently than above.
+    ///
+    /// A path check, so it shares the check-then-act window of the type's
+    /// other path checks: a file linked into place between this call and the
+    /// caller's open is not seen. Callers that open both paths compare the
+    /// open descriptors' identities as well.
+    static func mayNameTheSameFile(_ first: URL, _ second: URL) throws -> Bool {
+        let firstPath = try pathForComparison(first)
+        let secondPath = try pathForComparison(second)
+        if firstPath.compare(secondPath, options: [.caseInsensitive]) == .orderedSame { return true }
+        guard let firstIdentity = try resolvedIdentity(at: first),
+              let secondIdentity = try resolvedIdentity(at: second) else {
+            return false
+        }
+        return firstIdentity == secondIdentity
+    }
+
+    /// `url` with `.`/`..` removed and every symbolic link resolved in the
+    /// part of the path that exists. `resolvingSymlinksInPath()` resolves
+    /// nothing at all when the final item does not exist, so a file not yet
+    /// created inside a linked folder would keep the link's spelling; here the
+    /// deepest existing ancestor is resolved and the missing tail re-appended.
+    private static func pathForComparison(_ url: URL) throws -> String {
+        var existingAncestor = url.standardizedFileURL
+        var missingTail: [String] = []
+        while try existingItem(at: existingAncestor) == nil {
+            let parent = existingAncestor.deletingLastPathComponent()
+            guard parent.path != existingAncestor.path else { break }
+            missingTail.insert(existingAncestor.lastPathComponent, at: 0)
+            existingAncestor = parent
+        }
+        var resolved = existingAncestor.resolvingSymlinksInPath()
+        for component in missingTail {
+            resolved.appendPathComponent(component)
+        }
+        return resolved.standardizedFileURL.path
+    }
+
     // MARK: - Creating
 
     /// Create `url` as a new, empty regular file and return a handle open for
@@ -296,6 +348,39 @@ enum FileSafety {
             // O_NONBLOCK stays set: it only guarded the open against a FIFO,
             // and it has no effect on reads or writes of a regular file.
             return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        }
+    }
+
+    /// A file opened for writing by `openForWritingReportingCreation`.
+    struct OpenedForWriting {
+        let handle: FileHandle
+        /// The open file's identity, read from the open descriptor.
+        let identity: FileIdentity
+        /// True only when this call's exclusive create made the file, so the
+        /// caller may remove it (by `identity`) if it abandons the write.
+        /// False when an existing regular file was opened and emptied.
+        let createdByThisCall: Bool
+    }
+
+    /// `openForWriting`, reporting whether the file is new — for a caller
+    /// that opens several outputs and must undo exactly what it created when
+    /// a later one is refused. The file is first created exclusively; only
+    /// when that finds an existing regular file and `policy` is `.truncate`
+    /// is that file opened and emptied (anything else there is refused, as in
+    /// `openForWriting`). Should the existing file vanish between the two
+    /// steps, the truncating open creates it and it is still reported as not
+    /// created here — the direction that leaves a file rather than deletes one.
+    static func openForWritingReportingCreation(at url: URL,
+                                                existingRegularFile policy: ExistingRegularFilePolicy) throws -> OpenedForWriting {
+        do {
+            let created = try createNewFile(at: url)
+            return OpenedForWriting(handle: created.handle, identity: created.identity, createdByThisCall: true)
+        } catch FileSafetyError.alreadyExists(let path, let kind) {
+            guard policy == .truncate else { throw FileSafetyError.alreadyExists(path: path, kind: kind) }
+            guard kind == .regularFile else { throw FileSafetyError.notARegularFile(path: path, kind: kind) }
+            let handle = try openForWriting(at: url, existingRegularFile: .truncate)
+            let identity = try self.identity(ofOpenFileDescriptor: handle.fileDescriptor, path: url.path)
+            return OpenedForWriting(handle: handle, identity: identity, createdByThisCall: false)
         }
     }
 

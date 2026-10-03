@@ -443,7 +443,9 @@ struct DrewsChessMachineApp: App {
                                               --probe-positions-out also writes one JSON line per position
                                               (rank, probability and NLL of the bookmove, top-1, entropy, ...).
                                               Output files must not already exist unless --probe-out-overwrite is
-                                              given (replaces a regular file only, never a folder or link).
+                                              given (replaces a regular file only, never a folder or link), and may
+                                              never be a probed checkpoint or each other. Exits non-zero if an
+                                              output cannot be written, or after the sweep if any checkpoint failed.
               --analyze-numerics <path> [--numerics-corpus <shard>] [--numerics-out <dir>] [--numerics-static-only]
                                  [--policy-tail-precision fp32_from_pre_bn|mixed_final_projection]
                                               Numerics audit of a weight file or every weight file under a folder:

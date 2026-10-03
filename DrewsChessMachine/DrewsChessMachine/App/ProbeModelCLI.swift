@@ -57,14 +57,19 @@ enum ProbeModelCLI {
     /// Run the probes and exit. `outPath`, when given, receives the same
     /// JSON lines as stdout; `positionsOutPath`, when given, receives the
     /// per-position lines (never printed to stdout — a wide battery is
-    /// thousands of lines). Both are opened before any checkpoint is loaded,
-    /// and each must be new — or, with `replaceExistingOut`, an existing
-    /// *regular file*, which is emptied first. A directory, symbolic link or
-    /// other non-regular item there is always refused. Any failure to open
-    /// either ends the process with a non-zero exit before the (long) probe
-    /// run starts, and a failed per-position write ends it immediately, so a
-    /// run never completes with its results silently undelivered or a
-    /// per-position file silently truncated.
+    /// thousands of lines). Both are opened before any checkpoint is loaded
+    /// (`openOutputs`), and each must be new — or, with `replaceExistingOut`,
+    /// an existing *regular file*, which is emptied. Neither may be a probed
+    /// checkpoint, and they may not be one file, whatever the flags; a refused
+    /// pair creates and empties nothing.
+    ///
+    /// Exit status says how the run ended, so a script never mistakes a
+    /// partial run for a complete one: an unusable pair of outputs ends the run
+    /// before probing; a failed or unencodable write to either output ends it
+    /// at once; a checkpoint that fails to load or probe, or whose results hold
+    /// non-finite numbers (a blown-up net), is reported as an `"event":"error"`
+    /// line — nothing of it is written to the positions file — and the sweep
+    /// carries on, then exits non-zero naming every failed checkpoint.
     static func runAndExit(
         modelPath: String,
         set: ProbeSet,
@@ -89,85 +94,73 @@ enum ProbeModelCLI {
             FileHandle.standardError.write(Data(
                 "error: --probe-model found no .dcmmodel/.safetensors/.dcmsession under \(rootURL.path)\n".utf8
             ))
+            SessionLogger.shared.shutdown()
             Darwin.exit(61)
         }
 
-        if let outPath, let positionsOutPath {
-            let summaryURL = URL(fileURLWithPath: (outPath as NSString).expandingTildeInPath).standardizedFileURL
-            let positionsURL = URL(fileURLWithPath: (positionsOutPath as NSString).expandingTildeInPath).standardizedFileURL
-            if summaryURL.path == positionsURL.path {
-                FileHandle.standardError.write(Data(
-                    "error: --probe-out and \(positionsOutFlag) must be different files\n".utf8
-                ))
-                SessionLogger.shared.shutdown()
-                Darwin.exit(65)
-            }
+        let outputs: ProbeOutputFiles
+        do {
+            outputs = try openOutputs(summaryPath: outPath,
+                                      positionsPath: positionsOutPath,
+                                      probeTargets: targets,
+                                      replaceExisting: replaceExistingOut)
+        } catch {
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+            SessionLogger.shared.shutdown()
+            Darwin.exit(65)
         }
+        let handle = outputs.summaryHandle
+        let positionsHandle = outputs.positionsHandle
 
-        func openOutput(_ path: String, flagName: String) -> FileHandle {
-            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-            do {
-                return try FileSafety.openForWriting(
-                    at: url,
-                    existingRegularFile: replaceExistingOut ? .truncate : .refuse
-                )
-            } catch FileSafetyError.alreadyExists(path: let path, kind: .regularFile) {
-                FileHandle.standardError.write(Data(
-                    "error: \(flagName) \(path) already exists; pass \(replaceExistingOutFlag) to replace it\n".utf8
-                ))
+        /// Print one already-encoded summary line and append it to
+        /// `--probe-out`; a failed write ends the run.
+        func emit(_ line: Data) {
+            guard let text = String(data: line, encoding: .utf8) else {
+                FileHandle.standardError.write(Data("error: a probe output line is not UTF-8\n".utf8))
                 SessionLogger.shared.shutdown()
-                Darwin.exit(65)
-            } catch {
-                FileHandle.standardError.write(Data(
-                    "error: \(flagName): \(error.localizedDescription)\n".utf8
-                ))
-                SessionLogger.shared.shutdown()
-                Darwin.exit(65)
+                Darwin.exit(68)
             }
-        }
-
-        let handle: FileHandle? = outPath.map { openOutput($0, flagName: "--probe-out") }
-        let positionsHandle: FileHandle? = positionsOutPath.map { openOutput($0, flagName: positionsOutFlag) }
-
-        func emit(_ obj: [String: Any]) {
-            let data: Data
-            do {
-                data = try JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys])
-            } catch {
-                FileHandle.standardError.write(Data(
-                    "error: JSON encode failed: \(error.localizedDescription)\n".utf8
-                ))
-                return
-            }
-            guard let line = String(data: data, encoding: .utf8) else {
-                FileHandle.standardError.write(Data("error: JSON bytes are not UTF-8\n".utf8))
-                return
-            }
-            print(line)
+            print(text)
             if let handle {
                 do {
-                    try handle.write(contentsOf: data)
-                    try handle.write(contentsOf: Data("\n".utf8))
-                    try handle.synchronize()
+                    try appendLine(line, to: handle)
                 } catch {
                     FileHandle.standardError.write(Data(
-                        "error: write to --probe-out failed: \(error.localizedDescription)\n".utf8
+                        "error: write to --probe-out failed: \(error.localizedDescription); the file may end in a partial line\n".utf8
                     ))
+                    SessionLogger.shared.shutdown()
+                    Darwin.exit(68)
                 }
             }
+        }
+
+        /// Report one checkpoint as failed: an `"event":"error"` summary line
+        /// (its fields are strings, so it always encodes).
+        func emitFailure(of target: URL, reason: String) {
+            let line: Data
+            do {
+                line = try encodeLine(["event": "error", "model": target.path, "error": reason])
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "error: could not encode the failure record for \(target.path): \(error.localizedDescription)\n".utf8
+                ))
+                SessionLogger.shared.shutdown()
+                Darwin.exit(68)
+            }
+            emit(line)
         }
 
         FileHandle.standardError.write(Data(
             "[PROBE-MODEL] \(targets.count) checkpoint(s), set=\(set.rawValue)\n".utf8
         ))
 
-        func writePositions(_ records: [[String: Any]], to positionsHandle: FileHandle) {
+        func writePositions(_ lines: [Data], to positionsHandle: FileHandle) {
+            var data = Data()
+            for line in lines {
+                data.append(line)
+                data.append(Data("\n".utf8))
+            }
             do {
-                var data = Data()
-                for record in records {
-                    data.append(try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]))
-                    data.append(Data("\n".utf8))
-                }
                 try positionsHandle.write(contentsOf: data)
                 try positionsHandle.synchronize()
             } catch {
@@ -180,26 +173,253 @@ enum ProbeModelCLI {
         }
 
         let wantPositions = positionsHandle != nil
+        var failedCheckpoints: [String] = []
         for target in targets {
+            let outcome: ProbeOutcome
             do {
-                let outcome = try syncWait {
+                outcome = try syncWait {
                     try await probeOne(weightFileURL: target, set: set, includePositions: wantPositions)
                 }
-                for obj in outcome.summaries { emit(obj) }
-                if let positionsHandle {
-                    writePositions(outcome.positions, to: positionsHandle)
-                }
             } catch {
-                emit([
-                    "event": "error",
-                    "model": target.path,
-                    "error": "\(error)",
-                ])
+                failedCheckpoints.append(target.path)
+                emitFailure(of: target, reason: "\(error)")
+                continue
+            }
+            // Every line of the checkpoint is encoded before any is written,
+            // so a checkpoint whose results cannot be encoded (non-finite
+            // numbers) leaves nothing partial in either output.
+            let summaryLines: [Data]
+            let positionLines: [Data]
+            do {
+                summaryLines = try outcome.summaries.map(encodeLine)
+                positionLines = try outcome.positions.map(encodeLine)
+            } catch {
+                failedCheckpoints.append(target.path)
+                emitFailure(of: target, reason: error.localizedDescription)
+                continue
+            }
+            for line in summaryLines { emit(line) }
+            if let positionsHandle {
+                writePositions(positionLines, to: positionsHandle)
             }
         }
 
         SessionLogger.shared.shutdown()
+        guard failedCheckpoints.isEmpty else {
+            FileHandle.standardError.write(Data(
+                ("[PROBE-MODEL] \(failedCheckpoints.count) of \(targets.count) checkpoint(s) failed: "
+                    + failedCheckpoints.joined(separator: ", ") + "\n").utf8
+            ))
+            Darwin.exit(69)
+        }
         Darwin.exit(0)
+    }
+
+    /// The run's two optional output files, open for writing.
+    struct ProbeOutputFiles {
+        let summaryHandle: FileHandle?
+        let positionsHandle: FileHandle?
+    }
+
+    /// Why the probe's outputs could not be opened, or a line not encoded.
+    enum ProbeOutputError: LocalizedError, Equatable {
+        case outputIsAProbedCheckpoint(flag: String, path: String, checkpoint: String)
+        case outputsMayBeTheSameFile(summaryPath: String, positionsPath: String)
+        case outputExists(flag: String, path: String)
+        case outputNotARegularFile(flag: String, path: String, kind: FileSafety.ItemKind)
+        case outputOpenFailed(flag: String, path: String, reason: String)
+        /// A refusal after the first output was created, whose removal then
+        /// failed: the created file is still there.
+        case refusedButCreatedOutputRemains(refusal: String, cleanupFailure: String)
+        case nonFiniteValues(keys: [String])
+        case notJSONEncodable(keys: [String])
+
+        var errorDescription: String? {
+            switch self {
+            case let .outputIsAProbedCheckpoint(flag, path, checkpoint):
+                return "\(flag) \(path) is the checkpoint \(checkpoint) being probed; refusing to write over it"
+            case let .outputsMayBeTheSameFile(summaryPath, positionsPath):
+                return "--probe-out \(summaryPath) and \(positionsOutFlag) \(positionsPath) may be the same file; "
+                    + "they must be different files"
+            case let .outputExists(flag, path):
+                return "\(flag) \(path) already exists; pass \(replaceExistingOutFlag) to replace it"
+            case let .outputNotARegularFile(flag, path, kind):
+                return "\(flag) \(path) is a \(kind), not a regular file; refusing to write to it"
+            case let .outputOpenFailed(flag, path, reason):
+                return "\(flag) \(path): \(reason)"
+            case let .refusedButCreatedOutputRemains(refusal, cleanupFailure):
+                return "\(refusal); the output file this run had already created could not be removed: \(cleanupFailure)"
+            case let .nonFiniteValues(keys):
+                return "non-finite value(s) in: \(keys.joined(separator: ", "))"
+            case let .notJSONEncodable(keys):
+                return "value(s) JSON cannot represent in: \(keys.joined(separator: ", "))"
+            }
+        }
+    }
+
+    /// Validate and open the run's output files, before any checkpoint is
+    /// loaded. In order, and with nothing created or emptied until every
+    /// check has passed:
+    ///
+    /// 1. No output may name a probed checkpoint — directly, through `..` or a
+    ///    symbolic link, by case, or as a hard link — whatever
+    ///    `replaceExisting` says: opening it would empty the checkpoint.
+    /// 2. The two outputs may not name one file.
+    /// 3. An existing output must be a regular file, and replacing it needs
+    ///    `replaceExisting`.
+    ///
+    /// Then the outputs are opened. A failure opening the second removes the
+    /// first when this call created it (by identity, never by name), and the
+    /// two open files' identities are compared, which catches one file reached
+    /// two ways that no path check saw (a new file through a linked folder).
+    ///
+    /// What remains: checks 1–3 look at paths, so something linked into place
+    /// between them and the opens is not seen by checks 1 and 3; check 2 is
+    /// backed by the descriptor comparison. An existing summary file that
+    /// another process swaps for a link to a checkpoint in that window would
+    /// still be emptied.
+    static func openOutputs(summaryPath: String?,
+                            positionsPath: String?,
+                            probeTargets: [URL],
+                            replaceExisting: Bool) throws -> ProbeOutputFiles {
+        let summaryFlag = "--probe-out"
+        let summaryURL = summaryPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+        let positionsURL = positionsPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+        let outputs: [(flag: String, url: URL)] =
+            [summaryURL.map { (summaryFlag, $0) }, positionsURL.map { (positionsOutFlag, $0) }].compactMap { $0 }
+
+        for output in outputs {
+            for target in probeTargets where try FileSafety.mayNameTheSameFile(output.url, target) {
+                throw ProbeOutputError.outputIsAProbedCheckpoint(flag: output.flag, path: output.url.path, checkpoint: target.path)
+            }
+        }
+        if let summaryURL, let positionsURL, try FileSafety.mayNameTheSameFile(summaryURL, positionsURL) {
+            throw ProbeOutputError.outputsMayBeTheSameFile(summaryPath: summaryURL.path, positionsPath: positionsURL.path)
+        }
+        for output in outputs {
+            guard let existing = try FileSafety.existingItem(at: output.url) else { continue }
+            guard existing.kind == .regularFile else {
+                throw ProbeOutputError.outputNotARegularFile(flag: output.flag, path: output.url.path, kind: existing.kind)
+            }
+            guard replaceExisting else {
+                throw ProbeOutputError.outputExists(flag: output.flag, path: output.url.path)
+            }
+        }
+
+        let policy: FileSafety.ExistingRegularFilePolicy = replaceExisting ? .truncate : .refuse
+        let summary = try summaryURL.map { try openOutput(at: $0, flag: summaryFlag, policy: policy) }
+        let positions: FileSafety.OpenedForWriting?
+        do {
+            positions = try positionsURL.map { try openOutput(at: $0, flag: positionsOutFlag, policy: policy) }
+        } catch {
+            // The checks above found nothing at the positions path, so a file
+            // there now may be the summary file just created, reached by a
+            // second path none of the checks saw.
+            var refusal = error
+            if case ProbeOutputError.outputExists = error, let summary, let summaryURL, let positionsURL {
+                do {
+                    if try FileSafety.resolvedIdentity(at: positionsURL) == summary.identity {
+                        refusal = ProbeOutputError.outputsMayBeTheSameFile(summaryPath: summaryURL.path,
+                                                                           positionsPath: positionsURL.path)
+                    }
+                } catch let identityError {
+                    FileHandle.standardError.write(Data(
+                        "warning: could not read the identity of \(positionsURL.path): \(identityError.localizedDescription)\n".utf8
+                    ))
+                }
+            }
+            throw abandon(summary, at: summaryURL, refusal: refusal)
+        }
+        if let summary, let positions, summary.identity == positions.identity, let summaryURL, let positionsURL {
+            closeAfterRefusal(positions, at: positionsURL)
+            throw abandon(summary, at: summaryURL,
+                          refusal: ProbeOutputError.outputsMayBeTheSameFile(summaryPath: summaryURL.path,
+                                                                            positionsPath: positionsURL.path))
+        }
+        return ProbeOutputFiles(summaryHandle: summary?.handle, positionsHandle: positions?.handle)
+    }
+
+    /// Open one output, mapping FileSafety's refusals to this tool's flags.
+    private static func openOutput(at url: URL,
+                                   flag: String,
+                                   policy: FileSafety.ExistingRegularFilePolicy) throws -> FileSafety.OpenedForWriting {
+        do {
+            return try FileSafety.openForWritingReportingCreation(at: url, existingRegularFile: policy)
+        } catch FileSafetyError.notARegularFile(_, let kind) {
+            throw ProbeOutputError.outputNotARegularFile(flag: flag, path: url.path, kind: kind)
+        } catch FileSafetyError.alreadyExists(_, let kind) {
+            guard kind == .regularFile else {
+                throw ProbeOutputError.outputNotARegularFile(flag: flag, path: url.path, kind: kind)
+            }
+            throw ProbeOutputError.outputExists(flag: flag, path: url.path)
+        }
+    }
+
+    /// Close an output that is being given up on, and remove it when this run
+    /// created it. Returns the error to throw: `refusal`, or — when the
+    /// created file could not be removed — one saying it is still there.
+    private static func abandon(_ opened: FileSafety.OpenedForWriting?, at url: URL?, refusal: Error) -> Error {
+        guard let opened, let url else { return refusal }
+        closeAfterRefusal(opened, at: url)
+        guard opened.createdByThisCall else { return refusal }
+        do {
+            try FileSafety.removeOwnedItem(at: url, identity: opened.identity)
+            return refusal
+        } catch {
+            return ProbeOutputError.refusedButCreatedOutputRemains(refusal: refusal.localizedDescription,
+                                                                   cleanupFailure: error.localizedDescription)
+        }
+    }
+
+    private static func closeAfterRefusal(_ opened: FileSafety.OpenedForWriting, at url: URL) {
+        do {
+            try opened.handle.close()
+        } catch {
+            FileHandle.standardError.write(Data("warning: closing \(url.path): \(error.localizedDescription)\n".utf8))
+        }
+    }
+
+    /// One JSON output line (without its newline) for `record`, keys sorted.
+    /// Every CLI that writes JSON lines encodes through here.
+    ///
+    /// `JSONSerialization` raises an Objective-C exception — which Swift
+    /// cannot catch, so the process aborts — for a NaN or infinite number or
+    /// any other value JSON cannot hold. A probe of a checkpoint whose weights
+    /// blew up produces exactly such numbers, so the record is checked first
+    /// and the offending keys are thrown as a Swift error.
+    static func encodeLine(_ record: [String: Any]) throws -> Data {
+        let nonFinite = nonFiniteKeyPaths(in: record, prefix: "")
+        guard nonFinite.isEmpty else { throw ProbeOutputError.nonFiniteValues(keys: nonFinite) }
+        guard JSONSerialization.isValidJSONObject(record) else {
+            throw ProbeOutputError.notJSONEncodable(keys: record.keys.sorted())
+        }
+        return try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+    }
+
+    /// The key paths (`a.b` for nested dictionaries, `a[i]` in arrays) of
+    /// every NaN or infinite number in `value`, sorted.
+    private static func nonFiniteKeyPaths(in value: Any, prefix: String) -> [String] {
+        switch value {
+        case let number as Double:
+            return number.isFinite ? [] : [prefix]
+        case let number as Float:
+            return number.isFinite ? [] : [prefix]
+        case let dictionary as [String: Any]:
+            return dictionary.sorted { $0.key < $1.key }.flatMap { entry in
+                nonFiniteKeyPaths(in: entry.value, prefix: prefix.isEmpty ? entry.key : "\(prefix).\(entry.key)")
+            }
+        case let array as [Any]:
+            return array.enumerated().flatMap { nonFiniteKeyPaths(in: $0.element, prefix: "\(prefix)[\($0.offset)]") }
+        default:
+            return []
+        }
+    }
+
+    /// Append `line` and a newline to `handle` and flush it.
+    static func appendLine(_ line: Data, to handle: FileHandle) throws {
+        try handle.write(contentsOf: line)
+        try handle.write(contentsOf: Data("\n".utf8))
+        try handle.synchronize()
     }
 
     /// Expand the user's path into the list of weight files to probe.
@@ -417,10 +637,10 @@ enum ProbeModelCLI {
         // per-position max |logit|); `peak` is the worst single position,
         // the more sensitive read on logit blow-up. Emitted only when the
         // per-position array survived the forward pass.
-        if !logitAbsMaxPerPos.isEmpty {
+        if let peak = logitAbsMaxPerPos.max() {
             let sum = logitAbsMaxPerPos.reduce(0, +)
             obj["policy_logit_abs_max"] = Double(sum / Float(logitAbsMaxPerPos.count))
-            obj["policy_logit_abs_max_peak"] = Double(logitAbsMaxPerPos.max() ?? 0)
+            obj["policy_logit_abs_max_peak"] = Double(peak)
         }
         return obj
     }

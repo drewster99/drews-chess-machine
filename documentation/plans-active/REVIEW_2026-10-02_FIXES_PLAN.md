@@ -162,11 +162,31 @@ mismatch; the GUI follows decision D-1 (never refuses; reports NOT EXACT).
   old internals.
 - `--derive-model` refuses to rewrite tensors of a source with `training_step` > 0.
 
-### C2. Probe CLI output safety — [ ]
+### C2. Probe CLI output safety — [x]
 Outputs may never be a probed checkpoint or each other (shared same-file check in
 `FileSafety`); nothing is created until both outputs are validated; write failures and
 non-finite values end the run with distinct exit codes; failed checkpoints in a sweep give a
 non-zero exit; empty session logs are no longer created per probe.
+
+As built:
+- `FileSafety.mayNameTheSameFile` replaces `ParametersFileWriter.mayNameTheSameFile` and
+  `TrainerOutputFileGuard.isSameFile`. It compares paths ignoring case after resolving links in
+  the existing part of the path (`resolvingSymlinksInPath()` resolves nothing when the leaf
+  does not exist — found by the new test, so the deepest existing ancestor is resolved and the
+  missing tail re-appended), then device+inode. Behavior changes, both toward refusing: the
+  replay out-model guard now also refuses a case variant of the start model, and
+  `--create-parameters-file` sees through a symbolic link.
+- `FileSafety.openForWritingReportingCreation` reports whether the open created the file, so
+  a refused second output removes only a first output this run created.
+- `ProbeModelCLI.openOutputs`: every check before any open, then a descriptor-identity
+  backstop. `encodeLine` checks for non-finite numbers and `isValidJSONObject` first —
+  `JSONSerialization` raises `NSInvalidArgumentException` (uncatchable in Swift) on NaN or
+  infinity, confirmed by the red run. Exit 68: a summary line could not be encoded or written.
+  Exit 69: the sweep finished but at least one checkpoint failed (listed on stderr); a failed
+  checkpoint writes nothing to the positions file. `--arch-sweep-out` write failures now end
+  that sweep (exit 56) and its lines go through the same encoder.
+- Tests: `ProbeModelCLIOutputTests`, `ProbeModelCLINonFiniteTests`, `FileSafetySameFileTests`
+  (red before the fix: 20 + 1 + 2 failures; green after, unmodified).
 
 ### C3. `--validate-corpus --fix` vs a live writer — [ ]
 Shard writers hold a per-file exclusive lock (`O_EXLOCK`) for the shard's lifetime; `--fix`

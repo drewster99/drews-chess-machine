@@ -55,7 +55,7 @@ enum ParametersFileWriter {
     /// cannot be restored, so the new JSON stays and the error says so.
     static func writeDefaults(path: String, force: Bool) throws -> (json: URL, markdown: URL) {
         let (jsonURL, mdURL) = try destinations(forPath: path)
-        guard try !mayNameTheSameFile(jsonURL, mdURL) else {
+        guard try !FileSafety.mayNameTheSameFile(jsonURL, mdURL) else {
             throw ParametersFileWriterError.jsonAndMarkdownSamePath(jsonURL.path)
         }
         let existingJSON = try existingRegularFile(at: jsonURL)
@@ -75,24 +75,6 @@ enum ParametersFileWriter {
                                   writtenJSON: writtenJSON, jsonReplacedAFile: existingJSON != nil)
         }
         return (jsonURL, mdURL)
-    }
-
-    /// True when `first` and `second` could be one file. They always share a
-    /// folder (the markdown path is the JSON path with its extension
-    /// changed), so the question is whether the two names collide: equal
-    /// paths compared without regard to case — APFS and HFS+ volumes are
-    /// case-insensitive by default, so `notes.MD` and `notes.md` are one file
-    /// there, and refusing the pair on a case-sensitive volume too costs
-    /// nothing — or, when both exist, one file under two names.
-    private static func mayNameTheSameFile(_ first: URL, _ second: URL) throws -> Bool {
-        let firstPath = first.standardizedFileURL.path
-        let secondPath = second.standardizedFileURL.path
-        if firstPath.compare(secondPath, options: [.caseInsensitive]) == .orderedSame { return true }
-        guard let firstItem = try FileSafety.existingItem(at: first),
-              let secondItem = try FileSafety.existingItem(at: second) else {
-            return false
-        }
-        return firstItem.identity == secondItem.identity
     }
 
     /// The regular file at `url`, or nil when nothing is there; throws if
