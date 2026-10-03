@@ -67,7 +67,8 @@ final class BatchedSelfPlayDriverTests: XCTestCase {
             scheduleBox: scheduleBox,
             replayRatioController: nil,
             randomStreams: DCMRandomStreams(masterSeed: 1),
-            gameSerials: GameSerialCounter(firstSerial: 0)
+            gameSerials: GameSerialCounter(firstSerial: 0),
+            pauseDrops: SyncBox(nil)
         )
         return (driver, countBox, pauseGate)
     }

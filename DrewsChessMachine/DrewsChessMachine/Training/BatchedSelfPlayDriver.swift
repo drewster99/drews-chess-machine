@@ -85,6 +85,18 @@ import os
 /// arena equivalent (`TickTournamentDriver`) carries different
 /// networks per side and partitions K games by current-side network
 /// into per-network sub-batches.
+/// The self-play games a pause dropped: how many were in progress and the
+/// plies they had played. Every pause — an arena, a session save — drops the
+/// games in progress without flushing them, so none of their positions reach
+/// the replay buffer and a save taken during the pause holds none of them
+/// (determinism plan C1 #11). Their serials were already drawn, so the games
+/// started after the pause take new streams, in a resumed run as in the
+/// uninterrupted one.
+struct DroppedInFlightGames: Sendable, Equatable {
+    let games: Int
+    let plies: Int
+}
+
 final class BatchedSelfPlayDriver: @unchecked Sendable {
 
     // MARK: - Dependencies
@@ -97,6 +109,10 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
     let pauseGate: WorkerPauseGate
     let gameWatcher: GameWatcher?
     let scheduleBox: SamplingScheduleBox
+    /// What the most recent pause dropped (`DroppedInFlightGames`), written
+    /// by the driver when it pauses and read by the pauser — the session
+    /// save path logs it. Nil until the first pause.
+    let pauseDrops: SyncBox<DroppedInFlightGames?>
     let replayRatioController: ReplayRatioController?
     /// Stealth-mode per-game `pDraw` monitor. Optional so a session
     /// can be wired without one (the no-monitor path is a cheap nil
@@ -183,8 +199,10 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         drawWatchTracker: DrawWatchTracker? = nil,
         corpusRecorder: CorpusRecorder? = nil,
         randomStreams: DCMRandomStreams,
-        gameSerials: GameSerialCounter
+        gameSerials: GameSerialCounter,
+        pauseDrops: SyncBox<DroppedInFlightGames?>
     ) {
+        self.pauseDrops = pauseDrops
         self.randomStreams = randomStreams
         self.gameSerials = gameSerials
         self.network = network
@@ -249,7 +267,14 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 // Drop in-flight games (no flush — matches legacy
                 // behavior on arena pause). The next iteration after
                 // resume will re-create games to match countBox.count
-                // and re-arm the watcher's stopwatch.
+                // and re-arm the watcher's stopwatch. Recorded before the
+                // gate reports the pause, so the pauser reads this pause's
+                // drop.
+                let dropped = DroppedInFlightGames(
+                    games: games.count,
+                    plies: games.reduce(0) { $0 + $1.totalPliesPlayed })
+                pauseDrops.value = dropped
+                SessionLogger.shared.log("[SP-TICK] paused: dropped \(dropped.games) in-flight games (\(dropped.plies) plies)")
                 games.removeAll(keepingCapacity: true)
                 gameWatcher?.markPlaying(false)
                 pauseGate.markWaiting()

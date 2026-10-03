@@ -420,6 +420,9 @@ final class SessionController {
     /// Worker-0 self-play pause gate for the current session. The checkpoint
     /// save path uses it to briefly pause champion exports. `nil` between sessions.
     var activeSelfPlayGate: WorkerPauseGate?
+    /// What the running self-play driver's most recent pause dropped
+    /// (`BatchedSelfPlayDriver.pauseDrops`); nil outside Play-and-Train.
+    @ObservationIgnored var activeSelfPlayPauseDrops: SyncBox<DroppedInFlightGames?>?
 
     /// Training-worker pause gate for the current session. The checkpoint save
     /// path uses it to briefly pause trainer-weight exports. `nil` between sessions.

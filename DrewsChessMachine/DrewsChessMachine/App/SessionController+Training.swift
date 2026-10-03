@@ -700,6 +700,8 @@ extension SessionController {
         // get polluted by the back-dated hours.
         activeSelfPlayGate = selfPlayGate
         activeTrainingGate = trainingGate
+        let selfPlayPauseDrops = SyncBox<DroppedInFlightGames?>(nil)
+        activeSelfPlayPauseDrops = selfPlayPauseDrops
         if continueMode {
             // Preserve `checkpoint?.currentSessionID`, `checkpoint?.currentSessionStart`,
             // `replayRatioTarget`, `replayRatioAutoAdjust`, and any
@@ -1308,7 +1310,8 @@ extension SessionController {
                 drawWatchTracker: drawWatch,
                 corpusRecorder: corpusRecorder,
                 randomStreams: runSeed.streams,
-                gameSerials: gameSerials
+                gameSerials: gameSerials,
+                pauseDrops: selfPlayPauseDrops
             )
 
             // Pin the probe inference network into a local the child
@@ -2719,6 +2722,7 @@ extension SessionController {
                 samplingScheduleBox = nil
                 activeSelfPlayGate = nil
                 activeTrainingGate = nil
+                activeSelfPlayPauseDrops = nil
                 checkpoint?.currentSessionID = nil
                 checkpoint?.currentSessionStart = nil
                 replayRatioController = nil

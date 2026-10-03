@@ -384,6 +384,9 @@ extension SessionController {
                 SessionLogger.shared.log("[CHECKPOINT] Save session aborted at self-play pause timeout")
                 return
             }
+            if let dropped = activeSelfPlayPauseDrops?.value {
+                SessionLogger.shared.log("[CHECKPOINT] dropped \(dropped.games) in-flight games (\(dropped.plies) plies) at the save's self-play pause; the save holds none of them")
+            }
             var championWeights: [[Float]] = []
             var championError: Error?
             do {
