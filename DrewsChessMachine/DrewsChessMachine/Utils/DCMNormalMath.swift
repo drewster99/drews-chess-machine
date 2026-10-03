@@ -14,9 +14,11 @@ import Foundation
 ///
 /// Why not the system math library: vForce (`vvlogf`, `vvcosf`) and libm
 /// (`log`, `cos`) are accurate only to about an ULP and their exact results may change
-/// with an OS update or differ between chips. Weight initialization and move
-/// sampling must reproduce from a recorded seed on every machine the lineage
-/// runs on, so the transcendental functions here are our own.
+/// with an OS update or differ between chips. Weight initialization must
+/// reproduce from a recorded seed on every machine the lineage runs on, so
+/// the transcendental functions here are our own. (Move sampling keeps the
+/// platform functions: its logits come from the GPU and do not reproduce
+/// across machines anyway; see `MoveSampler`.)
 ///
 /// The inputs are restricted by construction, which is what makes small,
 /// exact range reductions possible:

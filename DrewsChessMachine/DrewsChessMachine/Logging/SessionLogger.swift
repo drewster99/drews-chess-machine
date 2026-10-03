@@ -247,10 +247,12 @@ final class SessionLogger: @unchecked Sendable {
     /// Synchronously flush and close the log file. Called from
     /// AppDelegate.applicationWillTerminate so a normal app exit
     /// preserves the full tail that the idle-flush coalescer might
-    /// otherwise drop. `queue.sync` FIFOs behind any in-flight write,
-    /// so this never deadlocks. Not invoked on `_exit(2)` paths
-    /// (early-stop coordinator); tail loss on those paths is
-    /// consistent with the existing best-effort log posture.
+    /// otherwise drop, and by any path that ends the process with
+    /// `_exit` right after logging (the headless CLIs, and every GUI
+    /// `--train` termination through `AutoTrainTermination`): `log` only
+    /// queues a line, so without this the last lines can still be queued
+    /// when the process ends. `queue.sync` FIFOs behind any in-flight
+    /// write, so this never deadlocks. Lines logged after it are dropped.
     func shutdown() {
         queue.sync {
             isShutDown = true

@@ -9,8 +9,8 @@ import Foundation
 ///
 /// Why this exists: a CLI training run owns a `CliTrainingRecorder`
 /// that buffers stats / arena results / candidate probes in memory
-/// and writes them to disk only at the timer-expired branch (see
-/// `ContentView.swift` near the `Darwin._exit(0)` for `.timerExpired`).
+/// and writes them to disk only when the run ends (`AutoTrainTermination`,
+/// shared by the time-limit, step-limit and collapse paths).
 /// Without this coordinator, autotrain's mid-run hard-reject path
 /// (`kill <pid>`) destroys all that buffered telemetry, leaving only
 /// a stub commentary for analysis. With it, autotrain can `kill -USR1
@@ -26,10 +26,10 @@ import Foundation
 final class EarlyStopCoordinator {
     static let shared = EarlyStopCoordinator()
 
-    /// Set by `ContentView` when a CLI training run starts. Captures the
-    /// recorder, output URL, and run start time as a closure that, when
-    /// invoked, performs the same flush sequence the timer-expired
-    /// branch performs — with a different `terminationReason`.
+    /// Set by `SessionController` when a CLI training run starts. Captures
+    /// the run's `AutoTrainTermination` and start time as a closure that,
+    /// when invoked, performs the same flush-and-exit the time-limit path
+    /// performs — with a different `terminationReason`.
     ///
     /// Cleared back to `nil` when the run completes through any path
     /// (timer expiry, legal-mass collapse, user stop). Nil also means
@@ -108,9 +108,10 @@ final class EarlyStopCoordinator {
         stopRequested = true
 
         if let handler = earlyStopHandler {
-            // Hand off to ContentView's flush closure. The closure is
-            // expected to call `Darwin._exit(0)` after writing — control
-            // does not return.
+            // Hand off to the session's flush closure. It writes the results
+            // and ends the process through `AutoTrainTermination`, or — when
+            // another termination path already holds the run's claim and is
+            // doing exactly that — returns, and that path exits.
             handler(reason)
             return
         }

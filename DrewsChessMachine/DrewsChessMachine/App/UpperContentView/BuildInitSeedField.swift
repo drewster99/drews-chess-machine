@@ -8,9 +8,11 @@
 import SwiftUI
 
 /// Optional init seed for the build: empty draws one at the build (shown in
-/// the network status and logged), a decimal UInt64 reproduces a mint exactly
-/// — the same seed and architecture give the same weights here, in
-/// `--new-model --init-seed` and on every machine.
+/// the network status and logged), a decimal UInt64 reproduces a mint — the
+/// same seed and architecture give bit-identical trainable tensors here, in
+/// `--new-model --init-seed` and on every machine, and batch-norm running
+/// statistics equal to float tolerance (they are calibrated by a GPU forward
+/// pass; see `NetworkInitMode.randomWeights`).
 struct BuildInitSeedField: View {
     @Bindable var model: BuildNewModelModel
 

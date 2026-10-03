@@ -28,8 +28,9 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// `currentSessionID` directly.
         var sessionID: String?
         /// Termination reason captured by the writing path (timer task
-        /// or collapse detector). Readers should call
-        /// `setTerminationReason(_:)` before `writeJSON(...)`.
+        /// or collapse detector). Writers should call
+        /// `setTerminationReason(_:)` before `write(to:totalTrainingSeconds:)`
+        /// or `writeJSONToStdout(totalTrainingSeconds:)`.
         var terminationReason: TerminationReason?
         /// Id of the corpus self-play games are recorded into, surfaced in
         /// results.json provenance. Set via setRecordingCorpusID(_:).
@@ -78,8 +79,6 @@ final class CliTrainingRecorder: @unchecked Sendable {
         lock.withLock { $0.samplingConstraints = snapshot }
     }
 
-    /// Record how the run ended. Safe to call from any thread — the
-    /// value is included in the next snapshot write.
     /// Record the lineage of a save the run just wrote, with the saved
     /// file's `content_sha256` (nil when the record was not written to a
     /// file). Each save replaces the previous one, so the record in
@@ -103,6 +102,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
         }
     }
 
+    /// Record how the run ended. Safe to call from any thread — the
+    /// value is included in the next snapshot write.
     func setTerminationReason(_ reason: TerminationReason) {
         lock.withLock { $0.terminationReason = reason }
     }
@@ -131,8 +132,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
     }
 
     /// Encode the Codable snapshot to `Data`. Shared back-end of
-    /// `writeJSON(to:)` and `writeJSONToStdout(...)` so both paths
-    /// emit a byte-identical JSON payload. Holds the lock only for the
+    /// `write(to:totalTrainingSeconds:)` and `writeJSONToStdout(...)` so
+    /// both paths emit a byte-identical JSON payload. Holds the lock only for the
     /// array copies (assembling the Snapshot value) and releases it
     /// before the JSON encode step, which doesn't need the
     /// recorder's state.
@@ -162,17 +163,6 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try encoder.encode(snapshot)
-    }
-
-    /// Build the Codable root struct and write it to `url`, replacing a
-    /// regular file already there (never a folder or link). An explicit
-    /// replace with no ownership check: runs write their results through
-    /// `write(to:totalTrainingSeconds:)` with a `CliResultsOutput` checked
-    /// before training, which never replaces a file the run was not told
-    /// it may replace.
-    func writeJSON(to url: URL, totalTrainingSeconds: Double) throws {
-        let data = try encodedJSONData(totalTrainingSeconds: totalTrainingSeconds)
-        try FileSafety.replaceRegularFile(data, at: url, expectedIdentity: nil)
     }
 
     /// Write the results to the destination checked before the run
@@ -358,7 +348,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// How the run ended. See `TerminationReason`. Nil only in
         /// the (historical) case where the snapshot is written by
         /// a path that didn't set a reason; callers are expected to
-        /// set it before `writeJSON`.
+        /// set it before writing the results.
         let terminationReason: TerminationReason?
         let sessionID: String?
         /// Trainer steps at the moment of the last [STATS] line.

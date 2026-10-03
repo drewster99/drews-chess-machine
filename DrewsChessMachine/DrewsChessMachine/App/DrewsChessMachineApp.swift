@@ -557,6 +557,21 @@ struct DrewsChessMachineApp: App {
                                               files it could reach at its segment index -- give that run its own
                                               --out-model stem (e.g. <name>-resume2-replay-latest.safetensors).
               --epochs <n>                    Replay budget: number of full passes over the corpus.
+              --resume-exact                  (with --start-model) Continue the start model's run exactly instead of
+                                              starting a new branch from its weights: fp32 master weights, optimizer
+                                              velocity, the step clock and the warmup and LR/momentum cycle it
+                                              trained under, its random streams, and its corpus position. The
+                                              replay buffer is rebuilt by refeeding the games just before that
+                                              position, and training continues from it. Needs a corpus-replay
+                                              checkpoint written with exact trainer state, of this same corpus with
+                                              unchanged shards (a changed corpus is always refused). Logs one
+                                              [RESUME] EXACT or [RESUME] NOT EXACT: <items> line, and refuses to start
+                                              when anything is missing unless --accept-inexact names every item.
+              --accept-inexact <item,item,...>
+                                              (with --resume-exact; also with --train-vs-uci) Resume although the
+                                              named items cannot be continued: each starts fresh, and the segment
+                                              is recorded as not exact. Items:
+                                                \(ResumeGap.allCases.map(\.token).joined(separator: ", "))
               --gpu-capture-step <n> --gpu-capture-out <file.gputrace>
                                               (with --replay-corpus) Capture training step n as an Xcode GPU trace
                                               document for per-kernel profiling, then keep training. Needs the
@@ -723,9 +738,21 @@ struct DrewsChessMachineApp: App {
 
         // Sweep away `.tmp` staging debris from a save that was
         // interrupted mid-flight by a prior process kill, kernel
-        // panic, or power loss. Runs once at launch, before any save
-        // or load can race with the cleanup.
-        CheckpointPaths.cleanupOrphans()
+        // panic, or power loss. Launch is not a quiet moment: another
+        // instance of the app (or a headless run) may be mid-save into
+        // the same folders. What makes the sweep safe is
+        // `cleanupOrphans`' own rules — it touches only staging names of
+        // the expected type that have gone unmodified for
+        // `orphanStagingMinimumAge`, far longer than any save stages, and
+        // removes each only if it is still the item it inspected.
+        //
+        // Not under XCTest: the test bundle is hosted by this app, so
+        // every test run would otherwise sweep the user's real Sessions
+        // and Models folders. Tests call `cleanupOrphans` on folders of
+        // their own.
+        if !isRunningUnderXCTest {
+            CheckpointPaths.cleanupOrphans()
+        }
     }
 
     var body: some Scene {
@@ -2131,9 +2158,11 @@ struct DrewsChessMachineApp: App {
 
     /// `--new-model --architecture <name|preset.json|path> [--out-model <path>]
     /// [--init-seed <u64>]`: build an untrained net and write it to
-    /// safetensors, then exit. `--init-seed` reproduces a mint exactly (the
-    /// same seed and architecture give the same tensors); without it a seed
-    /// is drawn, logged and recorded in the file. No
+    /// safetensors, then exit. `--init-seed` reproduces a mint (the same seed
+    /// and architecture give bit-identical trainable tensors, and BN running
+    /// statistics equal to float tolerance, since a GPU warmup forward
+    /// calibrates them); without it a seed is drawn, logged and recorded in
+    /// the file. No
     /// training. `--architecture` accepts a built-in preset name, a user-saved
     /// preset (a `Presets/<name>.json` written by the Build-New-Model screen,
     /// with or without the `.json` suffix), or a path to any `NamedArchitecture`

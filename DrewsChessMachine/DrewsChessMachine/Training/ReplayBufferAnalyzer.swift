@@ -591,46 +591,48 @@ enum ReplayBufferAnalyzer {
         return (runSeed.streams.generator(stream), "stream \(stream.name) of run seed \(runSeed.masterSeed)")
     }
 
-    /// Stratified random sample of `perBucketTarget` positions per
-    /// material bucket. Returns one entry per non-empty bucket; empty
-    /// buckets are dropped from the result list.
-    ///
-    /// Two-phase: under the buffer lock, copy out per-bucket board
-    /// tensors as Sendable `[Float]` arrays (no escaped pointer);
-    /// outside the lock, forward-pass each through `network` and
-    /// accumulate the legal-masked policy entropy per bucket.
-    static func samplePolicyEntropyByMaterialBucket(
+    /// The positions one entropy probe forward-passes: for every material
+    /// bucket in order, `perBucketTarget` positions (or all of the bucket's,
+    /// if it holds fewer) drawn without replacement from `sampleRandom`, as
+    /// copied-out board tensors. A bucket with no positions has an entry
+    /// with no boards. Each bucket's candidates are listed oldest first, so
+    /// the picks depend on the stream and the positions in age order, never
+    /// on where the ring stores them: an uninterrupted run whose ring has
+    /// wrapped and a resume whose restore compacted the ring probe the same
+    /// positions at the same step.
+    struct EntropyProbeBucketSamples: Sendable, Equatable {
+        let bucketIndex: Int
+        let boards: [[Float]]
+    }
+
+    /// Phase 1 of `samplePolicyEntropyByMaterialBucket`: under the buffer
+    /// lock, bucket every position, then sample per bucket, copying the board
+    /// tensors out as Sendable value arrays. The lock is released before any
+    /// forward pass.
+    static func entropyProbeSamples(
         buffer: ReplayBuffer,
-        network: ChessMPSNetwork,
         perBucketTarget: Int,
         sampleRandom: DCMRandom
-    ) async throws -> [Result.PolicyEntropyBucketStat] {
+    ) -> [EntropyProbeBucketSamples] {
         let materialBucketCount = materialBuckets.count
-
-        // Phase 1: under lock, bucket every slot index, then random-
-        // sample per bucket, copying out board tensors as Sendable
-        // value arrays. The lock is released before any forward pass.
-        struct BucketSamples: Sendable {
-            let bucketIndex: Int
-            let boards: [[Float]]
-        }
-        let allSamples = buffer.withSlotData { slots -> [BucketSamples] in
+        return buffer.withSlotData { slots -> [EntropyProbeBucketSamples] in
             var random = sampleRandom
             var perBucketIndices: [[Int]] = Array(
                 repeating: [], count: materialBucketCount
             )
-            for i in 0..<slots.count {
-                let m = Int(slots.materialCount[i])
+            for logicalIndex in 0..<slots.count {
+                let slot = slots.physicalSlot(logicalIndex: logicalIndex)
+                let m = Int(slots.materialCount[slot])
                 let mb = materialBucketIndex(for: m)
-                perBucketIndices[mb].append(i)
+                perBucketIndices[mb].append(slot)
             }
 
-            var out: [BucketSamples] = []
+            var out: [EntropyProbeBucketSamples] = []
             out.reserveCapacity(materialBucketCount)
             for (bucketIdx, indices) in perBucketIndices.enumerated() {
                 let target = min(perBucketTarget, indices.count)
                 guard target > 0 else {
-                    out.append(BucketSamples(bucketIndex: bucketIdx, boards: []))
+                    out.append(EntropyProbeBucketSamples(bucketIndex: bucketIdx, boards: []))
                     continue
                 }
                 // Random sample without replacement, buckets in order, from
@@ -651,10 +653,29 @@ enum ReplayBufferAnalyzer {
                     )
                     boards.append(Array(buf))
                 }
-                out.append(BucketSamples(bucketIndex: bucketIdx, boards: boards))
+                out.append(EntropyProbeBucketSamples(bucketIndex: bucketIdx, boards: boards))
             }
             return out
         }
+    }
+
+    /// Stratified random sample of `perBucketTarget` positions per
+    /// material bucket. Returns one entry per non-empty bucket; empty
+    /// buckets are dropped from the result list.
+    ///
+    /// Two-phase: under the buffer lock, copy out per-bucket board
+    /// tensors as Sendable `[Float]` arrays (no escaped pointer;
+    /// `entropyProbeSamples`); outside the lock, forward-pass each through
+    /// `network` and accumulate the legal-masked policy entropy per bucket.
+    static func samplePolicyEntropyByMaterialBucket(
+        buffer: ReplayBuffer,
+        network: ChessMPSNetwork,
+        perBucketTarget: Int,
+        sampleRandom: DCMRandom
+    ) async throws -> [Result.PolicyEntropyBucketStat] {
+        let allSamples = entropyProbeSamples(
+            buffer: buffer, perBucketTarget: perBucketTarget, sampleRandom: sampleRandom
+        )
 
         // Phase 2: forward-pass each sample, compute per-position
         // policy metrics (entropy, top-K legal-mass, illegal mass,

@@ -9,6 +9,7 @@
 //  equal.
 //
 
+import Metal
 import XCTest
 @testable import DrewsChessMachine
 
@@ -189,6 +190,129 @@ final class BehaviorFingerprintTests: XCTestCase {
             let comparison = ResumeGap.environmentGaps(writtenBy: saved, runningBuild: laterBuild(than: saved.build),
                                                        runningDevice: saved.device, runningFingerprint: running)
             XCTAssertEqual(comparison.gaps, [.build], "\(String(describing: savedFingerprint))")
+        }
+    }
+
+    /// The saved record's device with every field the comparison covers
+    /// changed except the OS version, so only a device change is in play.
+    private func otherMac(than device: LineageRecord.Device) -> LineageRecord.Device {
+        LineageRecord.Device(hardwareModel: (device.hardwareModel ?? "Mac") + " (other)",
+                             cpu: (device.cpu ?? "chip") + " (other)",
+                             isVirtualMachine: device.isVirtualMachine.map { !$0 } ?? true,
+                             osVersion: device.osVersion,
+                             gpu: (device.gpu ?? "gpu") + " (other)")
+    }
+
+    /// A resume on another Mac under the same build and OS: the GPU kernels,
+    /// and so what a training step computes, can differ, which the behavior
+    /// fingerprint detects. A different fingerprint makes it a `device` gap.
+    func testADeviceChangeWithADifferentFingerprintIsAGap() throws {
+        let running = BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "ab12")
+        let saved = try record(fingerprint: BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "cd34"))
+        let comparison = ResumeGap.environmentGaps(writtenBy: saved, runningBuild: saved.build,
+                                                   runningDevice: otherMac(than: saved.device),
+                                                   runningFingerprint: running)
+        XCTAssertEqual(comparison.gaps.map(\.token), ["device"])
+        XCTAssertEqual(comparison.logLines.count, 1)
+        XCTAssertTrue(comparison.logLines.first?.hasPrefix("[RESUME] device changed (") ?? false,
+                      comparison.logLines.first ?? "no line")
+        XCTAssertTrue(comparison.logLines.first?.hasSuffix(", behavior fingerprint differs") ?? false,
+                      comparison.logLines.first ?? "no line")
+
+        // Each field alone is a change.
+        let device = saved.device
+        let oneFieldChanges = [
+            LineageRecord.Device(hardwareModel: (device.hardwareModel ?? "Mac") + " (other)", cpu: device.cpu,
+                                 isVirtualMachine: device.isVirtualMachine, osVersion: device.osVersion, gpu: device.gpu),
+            LineageRecord.Device(hardwareModel: device.hardwareModel, cpu: (device.cpu ?? "chip") + " (other)",
+                                 isVirtualMachine: device.isVirtualMachine, osVersion: device.osVersion, gpu: device.gpu),
+            LineageRecord.Device(hardwareModel: device.hardwareModel, cpu: device.cpu,
+                                 isVirtualMachine: device.isVirtualMachine.map { !$0 } ?? true,
+                                 osVersion: device.osVersion, gpu: device.gpu),
+            LineageRecord.Device(hardwareModel: device.hardwareModel, cpu: device.cpu,
+                                 isVirtualMachine: device.isVirtualMachine, osVersion: device.osVersion,
+                                 gpu: (device.gpu ?? "gpu") + " (other)"),
+        ]
+        for changed in oneFieldChanges {
+            XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: saved, runningBuild: saved.build, runningDevice: changed,
+                                                     runningFingerprint: running).gaps.map(\.token), ["device"],
+                           "\(changed)")
+        }
+
+        // The same Mac is no change, and logs nothing.
+        let same = ResumeGap.environmentGaps(writtenBy: saved, runningBuild: saved.build, runningDevice: saved.device,
+                                             runningFingerprint: running)
+        XCTAssertEqual(same.gaps, [])
+        XCTAssertEqual(same.logLines, [])
+    }
+
+    /// Another Mac whose fingerprint matches computes what the saved run
+    /// computed: the change is logged, and it is not a gap.
+    func testADeviceChangeWithAMatchingFingerprintIsNotAGap() throws {
+        let fingerprint = BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "ab12")
+        let saved = try record(fingerprint: fingerprint)
+        let comparison = ResumeGap.environmentGaps(writtenBy: saved, runningBuild: saved.build,
+                                                   runningDevice: otherMac(than: saved.device),
+                                                   runningFingerprint: fingerprint)
+        XCTAssertEqual(comparison.gaps, [])
+        XCTAssertEqual(comparison.logLines.count, 1)
+        XCTAssertTrue(comparison.logLines.first?.hasPrefix("[RESUME] device changed (") ?? false,
+                      comparison.logLines.first ?? "no line")
+        XCTAssertTrue(comparison.logLines.first?.hasSuffix(", behavior fingerprint matches") ?? false,
+                      comparison.logLines.first ?? "no line")
+    }
+
+    /// The fingerprint under heavy concurrent GPU work — another trainer
+    /// stepping large batches on the same GPU while it is computed — equals
+    /// the one computed on an idle GPU. A fingerprint that moved with load
+    /// would turn every resume on a busy machine into a `build` / `os` /
+    /// `device` gap. Computed for the architecture new models are built
+    /// with, not a toy, so the kernels it exercises are production ones.
+    func testTheFingerprintRepeatsUnderConcurrentGPULoad() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("Metal not available") }
+        let arch = NetworkArchitecture.newModelDefault
+        let settings = BehaviorFingerprint.Settings(arch: arch, policyTailPrecision: .process)
+        let idle = try await BehaviorFingerprint.computeUncached(for: settings, streamDerivation: DCMRandomStreams.self)
+
+        let load = try ChessTrainer(dropoutStream: DCMRandom(seed: 9), arch: arch, initialization: .seeded(initSeed: 9))
+        let loadBatchSize = 1024
+        let stopLoad = SyncBox(false)
+        let loadEnded = SyncBox(false)
+        let loadSteps = SyncBox(0)
+        let (underLoad, stepsDuringLoadedComputations) = try await withThrowingTaskGroup(
+            of: Void.self,
+            returning: ([BehaviorFingerprint.Record], Int).self
+        ) { group in
+            group.addTask {
+                defer { loadEnded.value = true }
+                while !stopLoad.value {
+                    _ = try await load.trainStep(batchSize: loadBatchSize)
+                    loadSteps.modify { $0 += 1 }
+                }
+            }
+            // Start measuring only once the load is on the GPU.
+            while loadSteps.value == 0 && !loadEnded.value {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            var fingerprints: [BehaviorFingerprint.Record] = []
+            let stepsBefore = loadSteps.value
+            if !loadEnded.value {
+                for _ in 0..<2 {
+                    fingerprints.append(try await BehaviorFingerprint.computeUncached(
+                        for: settings, streamDerivation: DCMRandomStreams.self))
+                }
+            }
+            let stepsDuring = loadSteps.value - stepsBefore
+            stopLoad.value = true
+            // Rethrows the load task's error, if it stopped on one.
+            try await group.waitForAll()
+            return (fingerprints, stepsDuring)
+        }
+        XCTAssertEqual(underLoad.count, 2, "the load stopped before the loaded computations ran")
+        XCTAssertGreaterThan(stepsDuringLoadedComputations, 0,
+                             "the load trainer must step while the loaded fingerprints are computed")
+        for (index, loaded) in underLoad.enumerated() {
+            XCTAssertEqual(loaded, idle, "fingerprint \(index + 1) under load differs from the idle one")
         }
     }
 

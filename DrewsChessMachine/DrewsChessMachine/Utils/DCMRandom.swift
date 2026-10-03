@@ -88,10 +88,6 @@ struct DCMRandom: RandomNumberGenerator, Codable, Sendable, Equatable {
     private(set) var s2: UInt64
     private(set) var s3: UInt64
 
-    /// Expands `seed` into the four state words with SplitMix64, the seeding
-    /// the xoshiro authors recommend. SplitMix64's outputs from consecutive
-    /// states are distinct, so at most one of the four words can be zero and
-    /// the state can never be all zero.
     /// A generator seeded from the system's random source, for draws that
     /// no saved state or reproducible result depends on — interactive play
     /// (UCI, human play, the Lichess bot) and objects that are built with a
@@ -101,6 +97,10 @@ struct DCMRandom: RandomNumberGenerator, Codable, Sendable, Equatable {
         DCMRandom(seed: UInt64.random(in: UInt64.min...UInt64.max))
     }
 
+    /// Expands `seed` into the four state words with SplitMix64, the seeding
+    /// the xoshiro authors recommend. SplitMix64's outputs from consecutive
+    /// states are distinct, so at most one of the four words can be zero and
+    /// the state can never be all zero.
     init(seed: UInt64) {
         var expander = DCMSplitMix64(state: seed)
         s0 = expander.next()

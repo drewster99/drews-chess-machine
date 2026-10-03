@@ -23,6 +23,8 @@ enum ChessNetworkError: LocalizedError {
     /// (out-of-memory, timeout, kernel fault). Surfaced instead of consuming
     /// garbage result tensors.
     case gpuCommandFailed(stage: String, status: MTLCommandBufferStatus, error: String?)
+    /// The command queue returned no command buffer to encode into.
+    case commandBufferCreationFailed(stage: String)
     /// The network was built `overwrittenByLoad` and asked to evaluate,
     /// export or train before `loadWeights` gave it real weights.
     case weightsNotLoaded(operation: String)
@@ -49,6 +51,8 @@ enum ChessNetworkError: LocalizedError {
             return "Inference input size mismatch: expected \(expected) floats, got \(got)"
         case .gpuCommandFailed(let stage, let status, let error):
             return "GPU command buffer failed during \(stage): status=\(status), error=\(error ?? "none")."
+        case .commandBufferCreationFailed(let stage):
+            return "The Metal command queue returned no command buffer for \(stage)."
         case .weightsNotLoaded(let operation):
             return "\(operation) on a network built to receive loaded weights, before any weights were loaded"
         }
@@ -540,9 +544,12 @@ final class ChessNetwork: @unchecked Sendable {
     let randomTensorRoles: [String: RandomTensorRole]
 
     /// True while an `overwrittenByLoad` network has not yet received
-    /// weights. Read and cleared only on `executionQueue` (the gate check and
-    /// `loadWeights` both run there), so the order of a load and a use is the
-    /// queue's order; the lock makes the flag safe to read from tests.
+    /// weights. Cleared only by `internalLoadWeights`, on `executionQueue`,
+    /// once the load's GPU work has completed. Read from more than one queue:
+    /// the network's own gates run on `executionQueue`, so for them a load and
+    /// a use are ordered by the queue; `ChessTrainer`'s gates run on the
+    /// trainer's queue, where a use is ordered after a load only because the
+    /// caller awaits `loadWeights` before it. The lock makes every read safe.
     private let awaitingWeightLoad: SyncBox<Bool>
 
     /// Throws unless the network holds real weights — refuses evaluating,
@@ -1929,6 +1936,9 @@ final class ChessNetwork: @unchecked Sendable {
     /// time) and runs the corresponding assign ops as target
     /// operations. After return, the network's variables hold the new
     /// values; subsequent `evaluate(board:)` calls see the loaded state.
+    /// A load whose GPU work does not complete throws
+    /// `ChessNetworkError.gpuCommandFailed`, and a network built
+    /// `overwrittenByLoad` then still refuses to be used.
     func loadWeights(_ weights: [[Float]]) async throws {
         try await enqueue {
             try self.internalLoadWeights(weights)
@@ -1964,20 +1974,56 @@ final class ChessNetwork: @unchecked Sendable {
             feeds[weightLoadPlaceholders[i]] = weightLoadTensorData[i]
         }
 
-        // graph.run requires at least one target tensor. Use the first
+        // Encode into a command buffer we own, instead of the high-level
+        // `graph.run`, which hides its buffer and reports no status: a load
+        // whose GPU work faults (out of memory, timeout, kernel error) would
+        // otherwise return normally and clear the load gate below, marking a
+        // network that still holds its zero-filled variables as loaded —
+        // the silent garbage the gate exists to refuse. Encode + commit +
+        // wait is what `graph.run` does internally.
+        //
+        // The encode needs at least one target tensor. Use the first
         // persistent variable as a dummy read — its value after the
         // assigns run is whatever we just wrote in, which we ignore.
         // Autoreleasepool-wrapped for the same reason as the other
         // graph.run sites in this file.
+        guard let rootCommandBuffer = commandQueue.makeCommandBuffer() else {
+            throw ChessNetworkError.commandBufferCreationFailed(stage: Self.weightLoadStage)
+        }
+        let commandBuffer = MPSCommandBuffer(commandBuffer: rootCommandBuffer)
         autoreleasepool {
-            _ = graph.run(
-                with: commandQueue,
+            _ = graph.encode(
+                to: commandBuffer,
                 feeds: feeds,
                 targetTensors: [allVars[0]],
-                targetOperations: weightLoadAssignOps
+                targetOperations: weightLoadAssignOps,
+                executionDescriptor: nil
             )
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
         }
+        // MPS may have committed the root buffer early and continued in a
+        // new one (`commitAndContinue`); the load completed only if both did.
+        rootCommandBuffer.waitUntilCompleted()
+        try Self.requireCompleted(
+            status: rootCommandBuffer.status, error: rootCommandBuffer.error, stage: Self.weightLoadStage)
+        try Self.requireCompleted(
+            status: commandBuffer.commandBuffer.status, error: commandBuffer.commandBuffer.error,
+            stage: Self.weightLoadStage)
         awaitingWeightLoad.value = false
+    }
+
+    /// The `gpuCommandFailed` stage a failed weight load reports.
+    static let weightLoadStage = "weight load"
+
+    /// Throws `gpuCommandFailed` unless a waited-for command buffer finished
+    /// `.completed`. `waitUntilCompleted` returns whatever happened on the
+    /// GPU, so a caller about to treat the buffer's work as done checks its
+    /// status here first.
+    static func requireCompleted(status: MTLCommandBufferStatus, error: Error?, stage: String) throws {
+        guard status == .completed else {
+            throw ChessNetworkError.gpuCommandFailed(stage: stage, status: status, error: error?.localizedDescription)
+        }
     }
 
     // MARK: - BN Warmup

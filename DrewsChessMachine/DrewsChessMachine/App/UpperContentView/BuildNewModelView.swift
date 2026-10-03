@@ -260,7 +260,7 @@ struct BuildNewModelView: View {
                     Text("Parameters:")
                     Text(model.parameterCount.formatted(.number))
                         .monospacedDigit().bold()
-                    Text("(\(ByteCountFormatter.string(fromByteCount: Int64(model.estimatedWeightBytes), countStyle: .memory)) F32)")
+                    Text("(\(BinaryByteCount.text(model.estimatedWeightBytes)) F32)")
                         .foregroundStyle(.secondary)
                 }
                 .font(.callout)
