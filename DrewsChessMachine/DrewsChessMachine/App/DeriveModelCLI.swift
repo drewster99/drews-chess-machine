@@ -165,7 +165,7 @@ enum DeriveModelCLI {
             fail("no operation requested; available: \(ModelDerivation.operationKinds.map(\.flag).joined(separator: ", ")) (see \(flag) \(helpFlag))", 94)
         }
         if let seedText = single(initSeedFlag) {
-            guard let seed = UInt64(seedText, radix: 10), !seedText.hasPrefix("+") else {
+            guard let seed = UInt64(strictDecimal: seedText) else {
                 fail("\(initSeedFlag) '\(seedText)' is not a decimal UInt64", 93)
             }
             var anyDraws = false
@@ -271,7 +271,7 @@ enum DeriveModelCLI {
         let initSeed: UInt64
         let initSeedOrigin: String
         if let initSeedText {
-            guard let seed = UInt64(initSeedText, radix: 10), !initSeedText.hasPrefix("+") else {
+            guard let seed = UInt64(strictDecimal: initSeedText) else {
                 fail("\(initSeedFlag) '\(initSeedText)' is not a decimal UInt64", 93)
             }
             initSeed = seed

@@ -466,10 +466,11 @@ struct DrewsChessMachineApp: App {
               --start-model <path>            Load this saved model (.safetensors / .dcmmodel) as the starting
                                               champion instead of a fresh random init; the trainer forks from
                                               it. For controlled A/B runs from one identical starting net.
-              --seed <n>                      Master seed (a whole number, 0 to 2^64-1) for every run this process
-                                              starts; overrides random_seed_mode and random_seed. Also accepted by
-                                              --replay-corpus and --train-vs-uci. Every run logs its seed on its
-                                              [RUN] line, so an unseeded run can be repeated by passing it here.
+              --seed <n>                      Master seed (a whole number, 0 to 2^64-1, in digits only -- no sign)
+                                              for every run this process starts; overrides random_seed_mode and
+                                              random_seed. Also accepted by --replay-corpus and --train-vs-uci.
+                                              Every run logs its seed on its [RUN] line, so an unseeded run can be
+                                              repeated by passing it here.
 
             Opponent selection (with --playchess):
               --model <path>                  .safetensors or .dcmmodel weights to play against. Without it,
@@ -1363,7 +1364,6 @@ struct DrewsChessMachineApp: App {
 
     // MARK: - Run seed (--seed)
 
-    /// Parse a `--seed` value or exit with a usage error.
     /// Parse `--accept-inexact <item,item,…>` (determinism plan D-7): the
     /// resume gaps an exact resume may proceed without. Given once; an
     /// unknown item is a usage error naming the valid ones.
@@ -1388,6 +1388,7 @@ struct DrewsChessMachineApp: App {
         }
     }
 
+    /// Parse a `--seed` value or exit with a usage error.
     static func parseCommandLineSeedOrExit(_ text: String) -> UInt64 {
         do {
             return try RunRandomSeed.parseCommandLineSeed(text)
@@ -2198,7 +2199,7 @@ struct DrewsChessMachineApp: App {
         // runs off-actor inside runAndExit.
         let enteredInitSeed: UInt64?
         if let seedText = value(after: initSeedFlag) {
-            guard let seed = UInt64(seedText, radix: 10), !seedText.hasPrefix("+") else {
+            guard let seed = UInt64(strictDecimal: seedText) else {
                 fail("error: \(flag) \(initSeedFlag) '\(seedText)' is not a decimal UInt64", 78)
             }
             enteredInitSeed = seed

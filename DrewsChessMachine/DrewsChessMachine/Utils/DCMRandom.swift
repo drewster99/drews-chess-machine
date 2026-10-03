@@ -205,7 +205,7 @@ struct DCMRandom: RandomNumberGenerator, Codable, Sendable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         func word(_ key: CodingKeys) throws -> UInt64 {
             let text = try container.decode(String.self, forKey: key)
-            guard let value = UInt64(text, radix: 10), !text.hasPrefix("+") else {
+            guard let value = UInt64(strictDecimal: text) else {
                 throw DecodingError.dataCorruptedError(
                     forKey: key, in: container,
                     debugDescription: "\"\(text)\" is not a decimal UInt64 state word")

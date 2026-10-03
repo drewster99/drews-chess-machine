@@ -162,6 +162,49 @@ final class ExactResumeCompletionTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(LineageRecord.RunStreams.self, from: data), original)
     }
 
+    /// `streams(...)` encoded, with `key` replaced by `value` (a JSON value).
+    private func streamsJSON(replacing key: String, with value: Any) throws -> Data {
+        let data = try JSONEncoder().encode(streams(seed: 77, serial: 412, arenas: 7))
+        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CocoaError(.coderReadCorrupt)
+        }
+        object[key] = value
+        return try JSONSerialization.data(withJSONObject: object)
+    }
+
+    /// A counter a resume continues from must be one a run could have
+    /// reached: a negative serial traps the serial counter, and one at
+    /// `Int.max` overflows the next increment. Each is refused when the
+    /// record is decoded, like any other malformed lineage field.
+    func testRunStreamsRefuseOutOfRangeCounters() throws {
+        let cap = LineageRecord.RunStreams.maximumRecordedCounter
+        let refused: [(String, Any)] = [
+            ("next_game_serial", -1), ("next_game_serial", cap + 1), ("next_game_serial", Int.max),
+            ("arenas_started", -1), ("arenas_started", cap + 1),
+            ("opponent_game_indices", [0, -1]), ("opponent_game_indices", [cap + 1, 0]),
+        ]
+        for (key, value) in refused {
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(LineageRecord.RunStreams.self, from: try streamsJSON(replacing: key, with: value)),
+                "\(key) = \(value)")
+        }
+        let atCap = try JSONDecoder().decode(
+            LineageRecord.RunStreams.self, from: try streamsJSON(replacing: "next_game_serial", with: cap))
+        XCTAssertEqual(atCap.nextGameSerial, cap, "a counter at the cap is a counter a run can reach")
+    }
+
+    /// The master seed is the decimal text the writer wrote: digits only. A
+    /// sign is not part of that text, so "+5" or "-0" is a corrupt record,
+    /// not seed 5 or 0.
+    func testRunStreamsRefuseASignedMasterSeed() throws {
+        for text in ["+5", "-0", "+0", " 5"] {
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(LineageRecord.RunStreams.self,
+                                         from: try streamsJSON(replacing: "master_seed", with: text)),
+                "master_seed \"\(text)\"")
+        }
+    }
+
     /// A fresh run records the init seed and scheme its weights were drawn
     /// with (`rng.init_seed` / `init_scheme`), every record of the run
     /// carries them, an exact resume keeps them, and a branch — weights from

@@ -42,7 +42,7 @@ public enum ParameterValue: Codable, Equatable, Sendable {
         } else if let text = try? c.decode(String.self) {
             // The only string-encoded kind: a full-range UInt64 written as a
             // decimal string so no reader rounds it through a Double.
-            guard let x = UInt64(text) else {
+            guard let x = UInt64(strictDecimal: text) else {
                 throw DecodingError.dataCorruptedError(
                     in: c, debugDescription: "\"\(text)\" is not a decimal UInt64 parameter value"
                 )
@@ -86,7 +86,8 @@ public enum ParameterValue: Codable, Equatable, Sendable {
     /// succeeds for any number, so `1` would read as `true`), so the kind is
     /// taken from the number's `objCType`: true/false are char-typed
     /// ("c"/"B"), JSON doubles are "d"/"f", everything else is an integer. A
-    /// string is accepted only as a decimal UInt64. Whether the kind matches
+    /// string is accepted only as a decimal UInt64, digits only
+    /// (`UInt64(strictDecimal:)`). Whether the kind matches
     /// the key is checked later, by the definition's `validate`.
     public init(jsonValue: Any, id: String) throws {
         if let n = jsonValue as? NSNumber {
@@ -101,7 +102,7 @@ public enum ParameterValue: Codable, Equatable, Sendable {
             default: self = .int(n.intValue)
             }
         } else if let text = jsonValue as? String {
-            guard let x = UInt64(text) else { throw TrainingConfigError.wrongType(id: id) }
+            guard let x = UInt64(strictDecimal: text) else { throw TrainingConfigError.wrongType(id: id) }
             self = .uint64(x)
         } else {
             throw TrainingConfigError.wrongType(id: id)
@@ -346,10 +347,11 @@ public extension TrainingParameterKey where Value == Int {
 }
 
 public extension TrainingParameterKey where Value == UInt64 {
-    /// Parse an edit field: the decimal UInt64 it holds if that value is
-    /// inside the declared range, else nil (the caller flags the field).
+    /// Parse an edit field: the decimal UInt64 it holds (digits only, after
+    /// trimming surrounding spaces) if that value is inside the declared
+    /// range, else nil (the caller flags the field).
     static func parsedInDeclaredRange(_ text: String) -> UInt64? {
-        guard let value = UInt64(text.trimmingCharacters(in: .whitespaces)),
+        guard let value = UInt64(strictDecimal: text.trimmingCharacters(in: .whitespaces)),
               isWithinDeclaration(value) else { return nil }
         return value
     }
@@ -2131,8 +2133,8 @@ public final class TrainingParameters {
             guard let text = object as? String else {
                 return invalid("\(object)", "stored as \(type(of: object)), not a decimal string")
             }
-            guard let n = UInt64(text) else {
-                return invalid(text, "not a whole number from 0 to \(UInt64.max)")
+            guard let n = UInt64(strictDecimal: text) else {
+                return invalid(text, "not a whole number from 0 to \(UInt64.max) written in digits only")
             }
             raw = .uint64(n)
         }
