@@ -1743,6 +1743,60 @@ Validation: a graft of a real v5 5-block model to a 6-block preset loads,
 infers and trains one step; its `derivation_history` lists copied/initialized/
 dropped tensors matching the target plan.
 
+*As built (`dd756a25`):* `Persistence/ModelGraft.swift` (`GraftFreshTarget`, `GraftMap`,
+`ModelDerivation.graft`), `App/DeriveModelCLI.swift` (`--graft-to`, `--graft-map`),
+`OperationRecord`'s optional graft fields, and `RandomTensorRole` recorded by
+`TensorInitializer` (exposed as `ChessNetwork.randomTensorRoles`). Tests:
+`GraftDeriveTests` (10) — copy bit-exact + new block from the seed + identity BN running
+stats; same seed reproduces / another seed differs / the drawn values equal a seeded mint
+of the target; the inserted-block map; refusals (velocity source, same-name shape
+mismatch unless dropped, unknown source / target names, a renamed shape mismatch, two
+sources for one target, malformed maps); a trained source; the record fields and the
+lineage round trip; same-layout records encode without the graft fields and old records
+decode; the help text. The derive classes (SEBetaInit, DeriveTrainedSource, RezeroAlphaCap,
+SEActivation, InitSeedRecording, LineageProvenance, LineageRecord) pass unchanged. The new
+tests were written alongside new API, so before it they could only fail to compile.
+Deviations and decisions:
+- **Fresh values come from a seeded build of the target**, not a CPU formula: the graph
+  builder is the only definition of every tensor's initial value (constants included), so
+  an initialized tensor equals the same tensor of a seeded mint. The graft therefore builds
+  the target once (no forward, no training); the same-layout operations stay GPU-free.
+- **Not a `DeriveOperationKind`.** A graft changes the layout, which the operation protocol
+  (same plan, declared element ranges) cannot express, and the catalog pins the in-place
+  flag list (`SEBetaInitTests`). It is its own entry point and is refused in combination
+  with the operations.
+- **Seed flag:** `--init-seed` (the flag `--derive-model` and `--new-model` already use),
+  not the sketch's `--seed`, which now names the run seed (P3).
+- **Not built:** `--init-overrides` (a target architecture JSON carries any per-group init
+  option itself) and `--recalibrate-bn` (new BN layers keep identity statistics, recorded
+  in the `bn_running_stats` argument).
+- **Same-name, different-shape tensors are refused**, not silently initialized as the
+  sketch said; `--graft-map name=` drops one explicitly. A copied learned tensor is never
+  replaced by surprise.
+- **Trained sources are allowed** (the plan's own validation grafts a trained v5 model).
+  The in-place refusal (C1) exists because those outputs keep the source's
+  `training_step` while weights were reset; a graft's output carries no `training_step`
+  (recorded as `source_training_step` in its record) and lists every initialized tensor.
+  Its metadata is written fresh rather than copied from the source, keeping only the
+  value-head centering marker. Its lineage continues the source's totals as a new derived
+  run (`LineageTracker.untrainedCopyRecord`).
+- **Not run:** the real-model validation (a trained 5-block → 6-block graft that infers and
+  trains one step) — needs a run outside the test suite.
+
+*Real-model validation (2026-10-03, build 2299 / `91fa768e`, owner-approved graft from a trained
+source).* Source: the trained 5-block v5 model `20260713-v5cont-resume-replay-step270000`
+(`20260714-1-h7vI`, training step 270,000; pElo 1782.9, NLL 1.8913 on `--probe-set wide`).
+Target: the same architecture with six blocks. `--graft-to` copied 110 tensors bit-exact and
+initialized the 17 tensors of block 5 under `--init-seed 20261003`; nothing dropped. The grafted
+model (`20261003-18-AkMs`, 10,066,517 parameters) loads, probes (pElo 940.9, NLL 3.6374) and
+trains: three corpus-replay steps ran clean (step-1 loss 3.4887, gNorm 1.922, `rejected=0`) and
+saved. A second graft with the new block's ReZero α initialized to 0 (cap 0.447) probed at pElo
+1080.7, NLL 3.2630 — not function-preserving, because this architecture applies a LayerNorm after
+every residual add (`out:layer_norm`), and a fresh LayerNorm is not the identity even when the
+branch contributes nothing. A function-preserving deepening of an `out:layer_norm` tower would
+need the new block's output norm initialized to undo the normalization, which no init rule does
+today.
+
 **P9 — Exact-resume completion** (C1 #3–#20, #23–#33; D-5…D-8). Files:
 `Training/ReplayBuffer.swift` (slot-source SoA column; age-order refill API that
 starts at slot 0 and sets `writeIndex`; D-5 per-bucket age-ordered FIFO with
@@ -2282,6 +2336,54 @@ output identical to today (no regressions); on synthetic v5 headers, expected re
 Validation criterion for the whole plan: corpus replay N+M vs N|resume|M gives
 identical sampled indices and dropout masks for all M steps, and identical final
 weights when the determinism probe reports `bitExact`.
+
+*As built (2026-10-03, `334de627`, `acf16048`):* **passes, bit-exact.**
+`ResumeEquivalenceTests` runs the real replay loop in-process
+(`CorpusReplayRunner.runReplay` and `ReplayAbortFlag` became internal — the only
+production change, so the loop runs without a process exit) over a synthetic
+corpus the test writes (deterministic pseudo-random legal games, split over
+several shards), from one small fp32 start model, under one configured run
+seed, and compares the uninterrupted and the interrupted run's final files:
+every tensor through `content_sha256` when the probe finds a step
+bit-reproducible (it did on this machine; otherwise per-tensor within the
+probe's relative tolerance), the sampler and dropout stream positions and the
+dropout Philox state (exact in either mode), the feed position (epoch, next
+game, shard, buffer fill, feed phase), the cumulative step/game/position totals,
+and the resumed segment's `exact_resume` with no gaps. Cases, all passing:
+resume inside the first epoch at a KL-probe step; resume early in the second
+epoch, where the refeed window crosses the wrap (C1 #6); KL probe and batch
+stats on versus off draw the same batches and masks and move no weight (C2
+isolation); and a negative control — the same split continued as a new branch —
+that the comparison must and does tell apart. Four cases, about half a minute,
+ungated (it is the correctness gate). `scripts/resume_equivalence.sh` (with
+`resume_equivalence_compare.py`) does the same comparison through the shipped
+binary on a real corpus; validated with `--help`, `--dry-run` and the compare
+logic on stubbed headers only — **the real GPU run is the owner's to do when
+nothing else is training.**
+
+Deviations from the design, and why:
+- **Per-step taps.** No per-step index or mask tap was added to production
+  code. Equal stream positions after the same number of steps from the same seed
+  mean every step drew the same number of values; with the feed position and
+  every tensor also bit-equal, every step drew the same batch and the same mask
+  (a different one anywhere moves the weights). Per-step index equality after a
+  refill is pinned directly by `ReplayBufferResumeEquivalenceTests`.
+- **Fixture.** No `test_tiny` preset was added; the test builds its own
+  architecture (one block, sixteen channels, ReZero, SE, both heads, fp32) and
+  start model. Capacity, batch, dropout, KL-probe cadence and seed follow the
+  design; corpus replay applies no sampling constraints, so stratification and
+  length tilt are not exercised here (the buffer tests cover them).
+- **Refusal variants** (a parameter change; a pre-lineage file) end the process
+  through the runner's exit path, so they are pinned at the decision level by
+  `ExactResumeCompletionTests`, not run in-process. The GUI and train-vs-UCI
+  state round trips (step 6) are covered by the P9 tests
+  (`ExactResumeCompletionTests`, `GuiResumeGapsTests`,
+  `SessionSaveReplayBufferTests`, `RunObservabilityResumeTests`).
+
+Finding while building it: corpus replay never calls
+`ReplayBuffer.setSamplingConstraints`, so its draws are always unconstrained —
+`max_draw_percent_per_batch`, material stratification and the length tilt are
+GUI-only. Not a resume bug; noted for the owner.
 
 **P13 — Config D removal** (D-10, issue #9; before P9). Delete the
 `--bf16-cast-in-forward` flag parsing (`App/DrewsChessMachineApp.swift:264-273`),

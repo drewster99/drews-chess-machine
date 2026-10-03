@@ -243,6 +243,22 @@ enum WeightInitError: Error, Equatable, LocalizedError {
     }
 }
 
+/// How a randomly initialized tensor got its first values — the record of a
+/// graph build's per-tensor choice (`TensorInitializer.randomTensorRoles`).
+enum RandomTensorRole: String, Sendable, Equatable {
+    case heNormal = "he_normal"
+    case glorotNormal = "glorot_normal"
+    /// A scale-and-bias SE FC2 whose β half is zeroed after the Glorot draw.
+    case glorotNormalZeroBeta = "glorot_normal_zero_beta"
+
+    init(_ distribution: WeightInitScheme.Distribution) {
+        switch distribution {
+        case .heNormal: self = .heNormal
+        case .glorotNormal: self = .glorotNormal
+        }
+    }
+}
+
 /// Hands the graph builder each random tensor's initial data during one
 /// `ChessNetwork` build, by the tensor's plan name, and checks the build
 /// against the architecture's tensor plan: every name requested must be in
@@ -255,6 +271,11 @@ final class TensorInitializer {
     let initialization: WeightInitialization
     private let planByName: [String: WeightTensorSpec]
     private var initializedNames: Set<String> = []
+    /// The distribution each randomly initialized tensor was given, by plan
+    /// name (`RandomTensorRole`). Every conv and FC weight of a completed
+    /// build is here; constant tensors (biases, BN, ReZero α, priors) are
+    /// not. Recorded by `--derive-model --graft-to` for every tensor it draws.
+    private(set) var randomTensorRoles: [String: RandomTensorRole] = [:]
 
     init(initialization: WeightInitialization, architecture: NetworkArchitecture) {
         self.initialization = initialization
@@ -278,6 +299,7 @@ final class TensorInitializer {
     func weightData(_ name: String, nativeShape: [Int], distribution: WeightInitScheme.Distribution,
                     dataType: MPSDataType) throws -> Data {
         let spec = try claim(name, nativeShape: nativeShape)
+        randomTensorRoles[name] = RandomTensorRole(distribution)
         switch initialization {
         case let .seeded(initSeed):
             let values = try WeightInitScheme.nativeValues(initSeed: initSeed, spec: spec, distribution: distribution)
@@ -290,6 +312,7 @@ final class TensorInitializer {
     /// The initial data of a block's SE FC2 weight (Glorot, zero-β aware).
     func seFC2Data(_ name: String, nativeShape: [Int], group: BlockGroup, dataType: MPSDataType) throws -> Data {
         let spec = try claim(name, nativeShape: nativeShape)
+        randomTensorRoles[name] = group.seBetaInit == .zero ? .glorotNormalZeroBeta : .glorotNormal
         switch initialization {
         case let .seeded(initSeed):
             let values = try WeightInitScheme.seFC2NativeValues(initSeed: initSeed, spec: spec, group: group)

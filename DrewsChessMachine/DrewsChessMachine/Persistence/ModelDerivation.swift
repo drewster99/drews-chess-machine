@@ -205,17 +205,51 @@ enum ModelDerivation {
     }
 
     /// One operation as recorded in a `DerivationRecord`.
+    ///
+    /// The fields after `rewrittenTensors` are written only by a graft
+    /// (`--graft-to`); every other operation leaves them nil, and nil fields
+    /// are omitted when encoded, so the records of same-layout operations —
+    /// and every history written before grafts existed — read and write
+    /// exactly as before.
     struct OperationRecord: Codable, Sendable, Equatable {
         let operation: String
         let arguments: [String: String]
         let changedArchitectureFields: [String]
+        /// Tensors the operation wrote. For a graft: every target tensor it
+        /// initialized (all of them freshly drawn or builder constants).
         let rewrittenTensors: [String]
+        /// Graft: target tensors copied bit-exact from the source, as
+        /// `target name` (or `source name -> target name` when renamed).
+        var copiedTensors: [String]? = nil
+        /// Graft: source tensors with no place in the target.
+        var droppedTensors: [String]? = nil
+        /// Graft: the init seed the initialized tensors were drawn under.
+        var initSeed: String? = nil
+        /// Graft: the weight-initialization scheme (`WeightInitScheme.current`).
+        var initRuleVersion: String? = nil
+        /// Graft: how each initialized tensor got its values —
+        /// `RandomTensorRole` for a drawn tensor, `builder_constant` for one
+        /// the graph builder sets to a fixed value.
+        var perTensorInit: [String: String]? = nil
+
+        init(operation: String, arguments: [String: String], changedArchitectureFields: [String],
+             rewrittenTensors: [String]) {
+            self.operation = operation
+            self.arguments = arguments
+            self.changedArchitectureFields = changedArchitectureFields
+            self.rewrittenTensors = rewrittenTensors
+        }
 
         enum CodingKeys: String, CodingKey {
             case operation
             case arguments
             case changedArchitectureFields = "changed_architecture_fields"
             case rewrittenTensors = "rewritten_tensors"
+            case copiedTensors = "copied_tensors"
+            case droppedTensors = "dropped_tensors"
+            case initSeed = "init_seed"
+            case initRuleVersion = "init_rule_version"
+            case perTensorInit = "per_tensor_init"
         }
     }
 
@@ -275,15 +309,7 @@ enum ModelDerivation {
         guard !operations.isEmpty else { throw DeriveError.noOperations }
 
         let (tensors, sourceMetadata) = try SafetensorsFile.decode(sourceData)
-        if let velocity = tensors.first(where: { $0.name.hasPrefix("opt.") }) {
-            throw DeriveError.sourceHasOptimizerState(source: sourceName, detail: "tensor '\(velocity.name)'")
-        }
-        if let scheduleKey = TrainerScheduleState.MetadataKey.all.first(where: { sourceMetadata[$0] != nil }) {
-            throw DeriveError.sourceHasOptimizerState(source: sourceName, detail: "metadata '\(scheduleKey)'")
-        }
-        guard let parentModelID = sourceMetadata[SafetensorsModelIO.Key.modelID], !parentModelID.isEmpty else {
-            throw DeriveError.sourceMissingModelID(source: sourceName)
-        }
+        let parentModelID = try requirePlainModelSource(tensors: tensors, metadata: sourceMetadata, sourceName: sourceName)
 
         // The full loader must accept the source (plan, dims, value-head
         // marker) — the derived file is only as loadable as its source.
@@ -427,6 +453,24 @@ enum ModelDerivation {
         }
         return "derived from \(record.parentModelID) (\(record.sourceFile), sha256 \(record.sourceSHA256)): "
             + operations.joined(separator: "; ")
+    }
+
+    /// Refuse a source that is not a plain model file — one carrying
+    /// optimizer velocity or trainer schedule (exact-resume state means
+    /// nothing once weights are re-initialized) — or that has no ModelID to
+    /// record as the parent. Returns that ModelID.
+    static func requirePlainModelSource(tensors: [SafetensorsTensor], metadata: [String: String],
+                                        sourceName: String) throws -> String {
+        if let velocity = tensors.first(where: { $0.name.hasPrefix("opt.") }) {
+            throw DeriveError.sourceHasOptimizerState(source: sourceName, detail: "tensor '\(velocity.name)'")
+        }
+        if let scheduleKey = TrainerScheduleState.MetadataKey.all.first(where: { metadata[$0] != nil }) {
+            throw DeriveError.sourceHasOptimizerState(source: sourceName, detail: "metadata '\(scheduleKey)'")
+        }
+        guard let parentModelID = metadata[SafetensorsModelIO.Key.modelID], !parentModelID.isEmpty else {
+            throw DeriveError.sourceMissingModelID(source: sourceName)
+        }
+        return parentModelID
     }
 
     /// Refuse a tensor rewrite on a trained source: one whose raw

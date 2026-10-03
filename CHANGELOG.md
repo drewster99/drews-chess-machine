@@ -9,6 +9,21 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-03 CDT — Resume-equivalence harness (`334de627`, `acf16048`)
+
+- `ResumeEquivalenceTests` (the exact-resume correctness gate, determinism plan C6/P12) runs the real corpus-replay loop in-process over a synthetic corpus: N+M steps straight through versus N steps, a save and `--resume-exact` for M more. The final files match bit for bit — every tensor, the sampler and dropout stream positions, the dropout Philox state, the feed position and the cumulative totals — and the resumed segment records an exact resume. Also: a resume early in the second epoch (the refeed crosses the wrap), probes on versus off, and a branch from the same save as a negative control. Ungated, about half a minute.
+- `CorpusReplayRunner.runReplay` and `ReplayAbortFlag` are internal so the test can run the loop without a process exit.
+- `scripts/resume_equivalence.sh` + `resume_equivalence_compare.py`: the same comparison through the shipped binary on a real corpus (`--dry-run` prints the commands). Trains on the GPU; run it when nothing else is training.
+- Noted: corpus replay never applies the replay buffer's sampling constraints (draw cap, material stratification, length tilt); they are GUI-only.
+
+## 2026-10-03 CDT — `--derive-model --graft-to`: graft a model onto another architecture (`dd756a25`)
+
+- **Graft.** `--derive-model --from <model> --graft-to <preset | arch.json> [--graft-map …] [--init-seed …] --out <file>` makes a model of the target architecture: target tensors whose name and shape match a source tensor are copied bit-exact; the rest get a fresh mint's values under the init seed (new BN layers keep identity running statistics, not recalibrated); unmatched source tensors are dropped and listed. The only layout-changing derive; not combined with the in-place operations.
+- **`--graft-map`** renames source tensors (exact names, or prefixes ending in `.` to move a block) or drops one (`old=`). A same-named tensor of another shape is refused unless dropped explicitly.
+- **Trained sources are allowed.** The output claims no `training_step` (the source's is recorded as `source_training_step`) and lists every initialized tensor.
+- **Derivation record.** Graft records add `copied_tensors`, `dropped_tensors`, `init_seed`, `init_rule_version` and `per_tensor_init`; other operations' records omit them, so existing histories are unchanged. The graph builder now records each drawn tensor's distribution (`ChessNetwork.randomTensorRoles`).
+- Tests: `GraftDeriveTests` (10).
+
 ## 2026-10-02 CDT — Behavior fingerprint trains the checkpoint's own architecture (`662c1506`)
 
 - **Fingerprint recipe 2.** The training part builds the checkpoint's own architecture (block groups, SE, ReZero, activations, heads, encoding, compute type) from a fixed init seed and hashes one dropout SGD step's losses, weights and velocity. Before, it used a fixed tiny network, so a change in a block type that network lacked went undetected.
