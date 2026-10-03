@@ -10,13 +10,13 @@ import Foundation
 /// (a `Task.detached` still runs on that pool).
 enum InferenceNetworkFactory {
 
-    /// A `.randomWeights` network of `arch`, with no weights loaded. For a
+    /// An `.overwrittenByLoad` network of `arch`, with no weights loaded. For a
     /// mirror whose weights are overwritten before every use.
     static func build(arch: NetworkArchitecture) async throws -> ChessMPSNetwork {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    continuation.resume(returning: try ChessMPSNetwork(.randomWeights, arch: arch))
+                    continuation.resume(returning: try ChessMPSNetwork(.overwrittenByLoad, arch: arch))
                 } catch {
                     continuation.resume(throwing: error)
                 }

@@ -19,7 +19,7 @@ final class ActiveGameTests: XCTestCase {
         // existing network-bearing tests in this target follow the same
         // pattern (`try!` on init for the shared instance).
         do {
-            return try ChessMPSNetwork(.randomWeights)
+            return try ChessMPSNetwork(.randomWeights(initSeed: 1))
         } catch {
             fatalError("ActiveGameTests: ChessMPSNetwork(.randomWeights) failed: \(error)")
         }
@@ -33,7 +33,8 @@ final class ActiveGameTests: XCTestCase {
             whiteNetwork: Self.sharedNetwork,
             blackNetwork: Self.sharedNetwork,
             capPlies: capPlies,
-            schedule: .uniform
+            schedule: .uniform,
+            random: DCMRandom(seed: 1)
         )
     }
 
@@ -125,9 +126,9 @@ final class ActiveGameTests: XCTestCase {
     func test_reset_bumpsIntraWorkerGameIndex() {
         let g = makeGame(capPlies: 10)
         XCTAssertEqual(g.intraWorkerGameIndex, 0)
-        g.resetForNewGame(maxPliesCap: 10, schedule: .uniform)
+        g.resetForNewGame(maxPliesCap: 10, schedule: .uniform, random: DCMRandom(seed: 2))
         XCTAssertEqual(g.intraWorkerGameIndex, 1)
-        g.resetForNewGame(maxPliesCap: 10, schedule: .uniform)
+        g.resetForNewGame(maxPliesCap: 10, schedule: .uniform, random: DCMRandom(seed: 2))
         XCTAssertEqual(g.intraWorkerGameIndex, 2)
     }
 
@@ -138,7 +139,7 @@ final class ActiveGameTests: XCTestCase {
         record(g, side: .white, seed: 3)
         XCTAssertEqual(g.totalPliesPlayed, 3)
 
-        g.resetForNewGame(maxPliesCap: 10, schedule: .uniform)
+        g.resetForNewGame(maxPliesCap: 10, schedule: .uniform, random: DCMRandom(seed: 2))
         XCTAssertEqual(g.whitePliesRecorded, 0)
         XCTAssertEqual(g.blackPliesRecorded, 0)
         XCTAssertEqual(g.totalPliesPlayed, 0)
@@ -149,7 +150,7 @@ final class ActiveGameTests: XCTestCase {
         // (perSideCap=5). Slot stays at 10 — never shrink.
         let g = makeGame(capPlies: 20)
         XCTAssertEqual(g.perSideCap, 10)
-        g.resetForNewGame(maxPliesCap: 10, schedule: .uniform)
+        g.resetForNewGame(maxPliesCap: 10, schedule: .uniform, random: DCMRandom(seed: 2))
         XCTAssertEqual(g.perSideCap, 10, "Reset to smaller cap must NOT shrink")
         XCTAssertEqual(g.maxPliesCap, 10, "maxPliesCap field DOES follow the new value")
     }
@@ -158,7 +159,7 @@ final class ActiveGameTests: XCTestCase {
         // Allocate at cap=10 (perSideCap=5), reset at cap=30 (perSideCap=15).
         let g = makeGame(capPlies: 10)
         XCTAssertEqual(g.perSideCap, 5)
-        g.resetForNewGame(maxPliesCap: 30, schedule: .uniform)
+        g.resetForNewGame(maxPliesCap: 30, schedule: .uniform, random: DCMRandom(seed: 2))
         XCTAssertEqual(g.perSideCap, 15, "Reset to larger cap must grow")
         XCTAssertEqual(g.maxPliesCap, 30)
         // After grow, recording 15 per side must succeed (no overflow).
@@ -174,7 +175,7 @@ final class ActiveGameTests: XCTestCase {
 
     func test_flush_emptyGame_returnsNil() {
         let g = makeGame(capPlies: 10)
-        let buffer = ReplayBuffer(capacity: 100)
+        let buffer = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 1))
         let result = g.flush(buffer: buffer, result: .stalemate)
         XCTAssertNil(result, "Flush of an empty game should return nil")
         XCTAssertEqual(buffer.count, 0)
@@ -189,7 +190,7 @@ final class ActiveGameTests: XCTestCase {
             record(g, side: .white, seed: UInt32(i * 2 + 1), policyIndex: 100 + i)
             record(g, side: .black, seed: UInt32(i * 2 + 2), policyIndex: 200 + i)
         }
-        let buffer = ReplayBuffer(capacity: 100)
+        let buffer = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 2))
         let stats = g.flush(buffer: buffer, result: .checkmate(winner: .white))
         XCTAssertNotNil(stats)
         XCTAssertEqual(stats?.positions, 12)
@@ -202,7 +203,7 @@ final class ActiveGameTests: XCTestCase {
             record(g, side: .white, seed: UInt32(i + 1))
             record(g, side: .black, seed: UInt32(i + 100))
         }
-        let buffer = ReplayBuffer(capacity: 100)
+        let buffer = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 3))
         let stats = g.flush(buffer: buffer, result: .drawByThreefoldRepetition)
         XCTAssertEqual(stats?.positions, 6)
         XCTAssertEqual(buffer.count, 6)
@@ -234,7 +235,7 @@ final class ActiveGameTests: XCTestCase {
             record(g, side: .white, seed: UInt32(i + 1))
             record(g, side: .black, seed: UInt32(i + 100))
         }
-        let buffer = ReplayBuffer(capacity: 100)
+        let buffer = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 4))
         _ = g.flush(buffer: buffer, result: .checkmate(winner: .black))
         XCTAssertEqual(buffer.count, 64)
 
@@ -269,13 +270,13 @@ final class ActiveGameTests: XCTestCase {
         record(g, side: .black, seed: 2)
         record(g, side: .white, seed: 3)
         record(g, side: .black, seed: 4)
-        let buffer = ReplayBuffer(capacity: 100)
+        let buffer = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 5))
         _ = g.flush(buffer: buffer, result: .stalemate)
         XCTAssertEqual(buffer.count, 4)
 
         // Reset for a new game; record only 2 plies (1 each side) and
         // flush. Buffer should grow by exactly 2.
-        g.resetForNewGame(maxPliesCap: 20, schedule: .uniform)
+        g.resetForNewGame(maxPliesCap: 20, schedule: .uniform, random: DCMRandom(seed: 2))
         record(g, side: .white, seed: 99)
         record(g, side: .black, seed: 100)
         _ = g.flush(buffer: buffer, result: .stalemate)

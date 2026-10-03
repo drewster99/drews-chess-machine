@@ -58,6 +58,34 @@ enum DCMStream: Sendable, Equatable {
 struct DCMRandomStreams: Sendable, Equatable {
     let masterSeed: UInt64
 
+    /// Identifies the derivation (`childSeed`, `stableHash64`, the stream
+    /// names and `DCMRandom`'s draws) in logs and run records, so a recorded
+    /// seed is only ever replayed under the derivation that produced it.
+    /// Changing any part of the derivation means a new identifier, never an
+    /// edit of this one.
+    static let derivationVersion = "v1"
+
+    /// Name of the stream that walks the random game whose positions calibrate
+    /// a freshly initialized network's batch-norm statistics. Part of a
+    /// model's initialization, so its parent is the model's init seed, not a
+    /// run's master seed.
+    static let batchNormCalibrationStreamName = "init.bn_calibration"
+
+    /// Name under the master seed of the init seed of a model a run builds
+    /// fresh (a corpus-replay or train-vs-UCI run without `--start-model`),
+    /// so `--seed` reproduces that model's initialization too.
+    static let freshModelInitStreamName = "init"
+
+    /// The init seed of a model this run builds fresh.
+    var freshModelInitSeed: UInt64 {
+        Self.childSeed(parent: masterSeed, name: Self.freshModelInitStreamName)
+    }
+
+    /// The generator for a model's batch-norm calibration walk.
+    static func batchNormCalibrationGenerator(initSeed: UInt64) -> DCMRandom {
+        DCMRandom(seed: childSeed(parent: initSeed, name: batchNormCalibrationStreamName))
+    }
+
     /// A generator for `stream`, seeded by `childSeed(parent: masterSeed, name: stream.name)`.
     func generator(_ stream: DCMStream) -> DCMRandom {
         DCMRandom(seed: Self.childSeed(parent: masterSeed, name: stream.name))

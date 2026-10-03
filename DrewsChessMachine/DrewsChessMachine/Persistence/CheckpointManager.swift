@@ -1675,7 +1675,8 @@ enum CheckpointManager {
                     // architecture — e.g. basic20 = 1280) so the verify
                     // restore doesn't reject it on a stride mismatch.
                     let scratchFloatsPerBoard = try ReplayBuffer.peekFloatsPerBoard(at: bufferTmpURL)
-                    scratch = ReplayBuffer(capacity: scratchCapacity, floatsPerBoard: scratchFloatsPerBoard)
+                    // Restored and compared, never sampled.
+                    scratch = ReplayBuffer(capacity: scratchCapacity, floatsPerBoard: scratchFloatsPerBoard, sampler: DCMRandom.seededFromSystem())
                     try scratch.restore(from: bufferTmpURL)
                 } catch {
                     throw CheckpointManagerError.replayVerificationFailed(
@@ -1991,7 +1992,7 @@ enum CheckpointManager {
         //    loadWeights → graph state is caught end-to-end.
         let scratch: ChessMPSNetwork
         do {
-            scratch = try ChessMPSNetwork(.randomWeights, arch: architecture)
+            scratch = try ChessMPSNetwork(.overwrittenByLoad, arch: architecture)
             scratch.network.commandQueue.label = "verifyModelFile scratch"
         } catch {
             throw CheckpointManagerError.verificationScratchBuildFailed(error)

@@ -93,6 +93,11 @@ final class TrainVsUciDriver: @unchecked Sendable {
     private let opponents: [Opponent]
     private let schedule: SamplingSchedule
     private let maxPliesPerGame: Int
+    /// The run's named streams. Each game's trainer-side draws come from
+    /// `vsuci.game.<serial>`, with serials from `gameSerials` taken on the
+    /// driver task as games start.
+    private let randomStreams: DCMRandomStreams
+    private let gameSerials: GameSerialCounter
 
     // MARK: - Cross-task delivery
 
@@ -118,8 +123,12 @@ final class TrainVsUciDriver: @unchecked Sendable {
         buffer: ReplayBuffer,
         opponents: [Opponent],
         schedule: SamplingSchedule,
-        maxPliesPerGame: Int
+        maxPliesPerGame: Int,
+        randomStreams: DCMRandomStreams,
+        gameSerials: GameSerialCounter
     ) {
+        self.randomStreams = randomStreams
+        self.gameSerials = gameSerials
         self.network = network
         self.buffer = buffer
         self.opponents = opponents
@@ -330,12 +339,11 @@ final class TrainVsUciDriver: @unchecked Sendable {
             // feeds the tau schedule and the Dirichlet opening gate, both
             // expressed in game-total ply terms.
             let currentHalfMove = g.engine.moveHistory.count
-            let result = MoveSampler.sampleMove(
+            let result = g.sampleMove(
                 logits: policySlice,
                 legalMoves: legal,
                 currentPlayer: sideToMove,
                 ply: currentHalfMove,
-                schedule: g.schedule,
                 probsScratch: probsSlice,
                 etaScratch: etaSlice
             )
@@ -488,7 +496,7 @@ final class TrainVsUciDriver: @unchecked Sendable {
     private func beginFirstGame(_ slot: Slot) {
         slot.gameIndex = 0
         slot.trainerColor = trainerColor(forGameIndex: 0)
-        slot.game.resetForNewGame(maxPliesCap: maxPliesPerGame, schedule: schedule)
+        slot.game.resetForNewGame(maxPliesCap: maxPliesPerGame, schedule: schedule, random: nextGameRandom())
         slot.phase = .idle
     }
 
@@ -538,7 +546,7 @@ final class TrainVsUciDriver: @unchecked Sendable {
     private func recycleSlot(_ slot: Slot) {
         slot.gameIndex += 1
         slot.trainerColor = trainerColor(forGameIndex: slot.gameIndex)
-        slot.game.resetForNewGame(maxPliesCap: maxPliesPerGame, schedule: schedule)
+        slot.game.resetForNewGame(maxPliesCap: maxPliesPerGame, schedule: schedule, random: nextGameRandom())
         slot.phase = .preparing
         let idx = slot.index
         let arbiter = slot.opponent.arbiter
@@ -560,7 +568,7 @@ final class TrainVsUciDriver: @unchecked Sendable {
     private func recoverEngine(_ slot: Slot) {
         slot.gameIndex += 1
         slot.trainerColor = trainerColor(forGameIndex: slot.gameIndex)
-        slot.game.resetForNewGame(maxPliesCap: maxPliesPerGame, schedule: schedule)
+        slot.game.resetForNewGame(maxPliesCap: maxPliesPerGame, schedule: schedule, random: nextGameRandom())
         slot.phase = .preparing
         let idx = slot.index
         let arbiter = slot.opponent.arbiter
@@ -597,6 +605,11 @@ final class TrainVsUciDriver: @unchecked Sendable {
         case .stalemate, .drawByFiftyMoveRule, .drawByInsufficientMaterial, .drawByThreefoldRepetition:
             return 0
         }
+    }
+
+    /// The stream of the next game to start. Called only on the driver task.
+    private func nextGameRandom() -> DCMRandom {
+        randomStreams.generator(.trainVsUciGame(serial: gameSerials.next()))
     }
 
     /// Map a stable slot `index` (== the opponent's position in the
@@ -637,12 +650,16 @@ private final class Slot {
         // Both network refs are the trainer network; the driver evaluates
         // via its own `network` and never reads these, but ActiveGame
         // requires them for its scratch sizing (encoding width).
+        // The slot's first game is started by `beginFirstGame`, which gives it
+        // its own `vsuci.game.<serial>` stream; the game `init` sets up is
+        // never played, so its generator is never drawn from.
         self.game = ActiveGame(
             workerId: UInt16(truncatingIfNeeded: index),
             whiteNetwork: network,
             blackNetwork: network,
             capPlies: capPlies,
-            schedule: schedule
+            schedule: schedule,
+            random: DCMRandom.seededFromSystem()
         )
     }
 }

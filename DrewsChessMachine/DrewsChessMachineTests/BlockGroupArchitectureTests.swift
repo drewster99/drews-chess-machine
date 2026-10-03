@@ -238,7 +238,7 @@ final class BlockGroupArchitectureTests: XCTestCase {
     func testV5OutputLayerNormBuildsAndEvaluates() async throws {
         let arch = NetworkArchitecture.preset(.v5_5block_7x7_lnout)
         try arch.validate()
-        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 1), arch: arch)
         // exportWeights count == plan count confirms the GRAPH BUILDER appended
         // exactly the tensors weightTensorPlan lists — i.e. the res_ln γ/β are
         // wired in the builder in lockstep with the plan (the index-aligned
@@ -260,7 +260,7 @@ final class BlockGroupArchitectureTests: XCTestCase {
     func testMixedArchBuildsAndEvaluates() async throws {
         let arch = mixedArch()
         try arch.validate()
-        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 2), arch: arch)
         let weights = try await net.network.exportWeights()
         XCTAssertEqual(weights.count, arch.weightTensorPlan().count)
 
@@ -279,7 +279,7 @@ final class BlockGroupArchitectureTests: XCTestCase {
         // per-width dropout mask shapes) hard-fails here, not at runtime.
         let arch = mixedArch()
         try arch.validate()
-        let champion = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let champion = try ChessMPSNetwork(.randomWeights(initSeed: 3), arch: arch)
         let championWeights = try await champion.network.exportWeights()
 
         let trainer = try ChessTrainer(arch: arch)
@@ -297,7 +297,7 @@ final class BlockGroupArchitectureTests: XCTestCase {
         // graph (projection included) all have to agree bit-for-bit.
         let arch = mixedArch()
         try arch.validate()
-        let champion = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let champion = try ChessMPSNetwork(.randomWeights(initSeed: 4), arch: arch)
         let weights = try await champion.network.exportWeights()
 
         let url = try await CheckpointManager.saveModel(

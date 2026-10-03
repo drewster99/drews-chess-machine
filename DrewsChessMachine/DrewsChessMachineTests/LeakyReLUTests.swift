@@ -124,8 +124,8 @@ final class LeakyReLUTests: XCTestCase {
         leakyArch.activationFunction = .leakyRelu
         for index in leakyArch.blockGroups.indices { leakyArch.blockGroups[index].activationFunction = .leakyRelu }
 
-        let reluNet = try ChessMPSNetwork(.randomWeights, arch: reluArch)
-        let leakyNet = try ChessMPSNetwork(.randomWeights, arch: leakyArch)
+        let reluNet = try ChessMPSNetwork(.randomWeights(initSeed: 1), arch: reluArch)
+        let leakyNet = try ChessMPSNetwork(.randomWeights(initSeed: 2), arch: leakyArch)
         try await leakyNet.network.loadWeights(try await reluNet.network.exportWeights())
         let board = BoardEncoder.encode(.starting, encoding: reluNet.inputEncoding)
         func policy(_ net: ChessMPSNetwork) async throws -> [Float] {

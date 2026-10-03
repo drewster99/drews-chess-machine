@@ -158,7 +158,7 @@ final class Basic24EncodingTests: XCTestCase {
         let arch = Self.smallArchitecture(.basic24)
         try arch.validate()
         XCTAssertEqual(arch.inputPlanes, 24)
-        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 1), arch: arch)
         let board = BoardEncoder.encode(.starting, encoding: .basic24)
         try await net.evaluate(board: board) { policyBuf, value in
             XCTAssertEqual(policyBuf.count, arch.policySize)
@@ -170,7 +170,7 @@ final class Basic24EncodingTests: XCTestCase {
     /// 24-plane stem and takes a 24-plane champion's weights.
     func testA24PlaneTrainerBuildsAndLoadsChampionWeights() async throws {
         let arch = Self.smallArchitecture(.basic24)
-        let champion = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let champion = try ChessMPSNetwork(.randomWeights(initSeed: 2), arch: arch)
         let weights = try await champion.network.exportWeights()
         let trainer = try ChessTrainer(arch: arch)
         XCTAssertEqual(trainer.arch.inputPlanes, 24)
@@ -194,7 +194,7 @@ final class Basic24EncodingTests: XCTestCase {
     }
 
     func testReplayBufferUsesThe24PlaneStride() {
-        let buffer = ReplayBuffer(capacity: 8, inputEncoding: .basic24)
+        let buffer = ReplayBuffer(capacity: 8, inputEncoding: .basic24, sampler: DCMRandom(seed: 1))
         XCTAssertEqual(buffer.floatsPerBoard, 24 * Self.area)
         XCTAssertEqual(ReplayBuffer.singleFrameEncoding(forStoredStride: 24 * Self.area), .basic24)
         XCTAssertEqual(ReplayBuffer.singleFrameEncoding(forStoredStride: 30 * Self.area), .basic30)

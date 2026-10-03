@@ -54,7 +54,7 @@ final class RuntimeArchReachTests: XCTestCase {
 
     func testBasic20NetworkBuildsAndEvaluates() async throws {
         try requireMetal()
-        let net = try ChessMPSNetwork(.randomWeights, arch: basic20Arch())
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 1), arch: basic20Arch())
         XCTAssertEqual(net.inputEncoding, .basic20)
 
         // Encode at the network's own encoding — 1280 floats — and run a
@@ -102,7 +102,7 @@ final class RuntimeArchReachTests: XCTestCase {
     func testBasic20BufferSaveRestoreRoundTripViaPeek() throws {
         let stride = BoardEncoder.tensorLength(for: .basic20)
         XCTAssertEqual(stride, 1280)
-        let buffer = ReplayBuffer(capacity: 64, floatsPerBoard: stride)
+        let buffer = ReplayBuffer(capacity: 64, floatsPerBoard: stride, sampler: DCMRandom(seed: 1))
         XCTAssertEqual(buffer.floatsPerBoard, stride)
 
         var board = [Float](repeating: 0, count: stride)
@@ -151,14 +151,14 @@ final class RuntimeArchReachTests: XCTestCase {
         let cap = try ReplayBuffer.peekCapacity(at: url)
         let restored = ReplayBuffer(
             capacity: cap,
-            floatsPerBoard: try ReplayBuffer.peekFloatsPerBoard(at: url))
+            floatsPerBoard: try ReplayBuffer.peekFloatsPerBoard(at: url), sampler: DCMRandom(seed: 2))
         try restored.restore(from: url)
         XCTAssertEqual(restored.count, 1)
         XCTAssertEqual(restored.floatsPerBoard, stride)
 
         // Negative: a default-stride (basic30) buffer must reject the basic20
         // file — proving the peek is load-bearing, not cosmetic.
-        let wrongStride = ReplayBuffer(capacity: cap)
+        let wrongStride = ReplayBuffer(capacity: cap, sampler: DCMRandom(seed: 3))
         XCTAssertThrowsError(
             try wrongStride.restore(from: url),
             "a basic30-stride buffer must reject a basic20 file")
@@ -174,7 +174,7 @@ final class RuntimeArchReachTests: XCTestCase {
 
     func testScalarTanhNetworkValueInTanhRange() async throws {
         try requireMetal()
-        let net = try ChessMPSNetwork(.randomWeights, arch: scalarTanhArch())
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 2), arch: scalarTanhArch())
         let board = BoardEncoder.encode(.starting, encoding: net.inputEncoding)
         let valueBox = SyncBox<Float>(2)
         try await net.evaluate(board: board) { _, v in valueBox.value = v }
@@ -208,7 +208,7 @@ final class RuntimeArchReachTests: XCTestCase {
         // projects the single tanh scalar v onto (win, draw, loss) preserving
         // win - loss = v. This asserts the projection is sane and matches the
         // derived scalar from the universal eval path.
-        let net = try ChessMPSNetwork(.randomWeights, arch: scalarTanhArch())
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 3), arch: scalarTanhArch())
         let board = BoardEncoder.encode(.starting, encoding: net.inputEncoding)
 
         let wdl = try await net.evaluateValueDistribution(board: board)
@@ -249,7 +249,7 @@ final class RuntimeArchReachTests: XCTestCase {
         // network builds and runs a finite forward pass" checks skip unless
         // `.current` is bf16. Pin it explicitly so per-arch precision threading
         // (compute_data_type) is exercised regardless of the active preset.
-        let net = try ChessMPSNetwork(.randomWeights, arch: bf16Arch())
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 4), arch: bf16Arch())
         XCTAssertEqual(net.arch.computeDataType, .bFloat16)
 
         let board = BoardEncoder.encode(.starting, encoding: net.inputEncoding)
@@ -295,14 +295,14 @@ final class RuntimeArchReachTests: XCTestCase {
         // it over each net overwrites the build-time BN warmup stats too, so
         // the ONLY difference between the three forward passes is the
         // activation function itself.
-        let reluNet = try ChessMPSNetwork(.randomWeights, arch: reluArch)
+        let reluNet = try ChessMPSNetwork(.randomWeights(initSeed: 5), arch: reluArch)
         let weights = try await reluNet.network.exportWeights()
         let board = BoardEncoder.encode(.starting, encoding: reluNet.inputEncoding)
 
         func policy(_ activation: ActivationFunction) async throws -> [Float] {
             var arch = reluArch
             arch.activationFunction = activation
-            let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+            let net = try ChessMPSNetwork(.randomWeights(initSeed: 6), arch: arch)
             try await net.network.loadWeights(weights)
             let box = SyncBox<[Float]>([])
             try await net.evaluate(board: board) { p, _ in box.value = Array(p) }

@@ -270,7 +270,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
 
         var allRatios: [Double] = []
         for _ in 0..<networkCount {
-            let net = try ChessMPSNetwork(.randomWeights)
+            let net = try ChessMPSNetwork(.randomWeights(initSeed: 1))
             let states = sampleStates(count: positionCount)
             for state in states {
                 let legal = MoveGenerator.legalMoves(for: state)
@@ -951,7 +951,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         var legalMassSamples: [Double] = []
         var ratios: [Double] = []
         for trial in 0..<trialsCount {
-            let net = try ChessMPSNetwork(.randomWeights)
+            let net = try ChessMPSNetwork(.randomWeights(initSeed: 3))
             let state: GameState = .starting
             let legal = MoveGenerator.legalMoves(for: state)
             let tensor = BoardEncoder.encode(state, encoding: .basic30)
@@ -1220,7 +1220,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let net = try ChessMPSNetwork(.randomWeights)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 4))
         let weights = try await net.exportWeights()
         let nTrain = net.network.trainableVariables.count
         let nStats = net.network.bnRunningStatsVariables.count

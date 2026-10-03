@@ -135,7 +135,7 @@ final class SEBetaInitTests: XCTestCase {
         try requireMetal()
         let arch = Self.twoGroupArchitecture(group0: .zero, group1: .zero)
         try arch.validate()
-        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 1), arch: arch)
         let weights = try await net.network.exportWeights()
         for block in 0..<arch.numBlocks {
             let halves = try seHalves(weights, block: block, arch: arch)
@@ -149,7 +149,7 @@ final class SEBetaInitTests: XCTestCase {
         try requireMetal()
         let arch = Self.twoGroupArchitecture(group0: .zero, group1: .glorot)
         try arch.validate()
-        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 2), arch: arch)
         let weights = try await net.network.exportWeights()
         // Block 0 is group 0 (zero-β); blocks 1–2 are group 1 (Glorot-β).
         let zeroBlock = try seHalves(weights, block: 0, arch: arch)
@@ -171,7 +171,7 @@ final class SEBetaInitTests: XCTestCase {
         let board = BoardEncoder.encode(.starting, encoding: .basic30)
 
         func forward(_ arch: NetworkArchitecture, _ weights: [[Float]]) async throws -> [Float] {
-            let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+            let net = try ChessMPSNetwork(.randomWeights(initSeed: 3), arch: arch)
             try await net.network.loadWeights(weights)
             let box = SyncBox<[Float]>([])
             try await net.evaluate(board: board) { policy, value in box.value = Array(policy) + [value] }
@@ -211,7 +211,7 @@ final class SEBetaInitTests: XCTestCase {
         }
 
         let zeroArch = Self.twoGroupArchitecture(group0: .zero, group1: .zero)
-        let zeroWeights = try await ChessMPSNetwork(.randomWeights, arch: zeroArch).network.exportWeights()
+        let zeroWeights = try await ChessMPSNetwork(.randomWeights(initSeed: 4), arch: zeroArch).network.exportWeights()
         let (twinArch, twinWeights) = try attenuateTwin(zeroArch, zeroWeights)
         let zeroOut = try await forward(zeroArch, zeroWeights)
         let twinOut = try await forward(twinArch, twinWeights)
@@ -220,7 +220,7 @@ final class SEBetaInitTests: XCTestCase {
         XCTAssertLessThan(maxZeroDiff, 1e-4, "zero-β forward must equal the sigmoid(γ)·x forward")
 
         let glorotArch = Self.twoGroupArchitecture(group0: .glorot, group1: .glorot)
-        let glorotWeights = try await ChessMPSNetwork(.randomWeights, arch: glorotArch).network.exportWeights()
+        let glorotWeights = try await ChessMPSNetwork(.randomWeights(initSeed: 5), arch: glorotArch).network.exportWeights()
         let (glorotTwinArch, glorotTwinWeights) = try attenuateTwin(glorotArch, glorotWeights)
         let glorotOut = try await forward(glorotArch, glorotWeights)
         let glorotTwinOut = try await forward(glorotTwinArch, glorotTwinWeights)

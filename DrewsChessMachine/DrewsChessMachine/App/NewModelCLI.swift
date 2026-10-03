@@ -73,8 +73,12 @@ enum NewModelCLI {
         do {
             // Build with random weights (includes the BN warmup forward) and
             // export the persistent tensors, off the main actor.
+            // The init seed is drawn and printed, so the mint's initialization
+            // (today the batch-norm calibration walk) can be reproduced.
+            let initSeed = RunRandomSeed.systemDrawnSeed()
+            FileHandle.standardError.write(Data("[NEW-MODEL] init seed=\(initSeed) (drawn)\n".utf8))
             let weights = try syncWait { () async throws -> [[Float]] in
-                let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+                let net = try ChessMPSNetwork(.randomWeights(initSeed: initSeed), arch: arch)
                 return try await net.network.exportWeights()
             }
             // Sanity: the exported tensor count must equal the plan — the same

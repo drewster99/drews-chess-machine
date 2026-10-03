@@ -125,6 +125,11 @@ struct CorpusReplayConfig: Sendable {
     /// (`--policy-tail-precision`). An A/B knob for the head-numerics cost;
     /// see `ChessNetwork.PolicyTailPrecision`.
     var policyTailPrecision: ChessNetwork.PolicyTailPrecision = .process
+
+    /// The run's master seed (`RunRandomSeed.resolve`, at launch): the
+    /// replay buffer's `sampler` stream and, for a run without
+    /// `--start-model`, the fresh model's init seed derive from it.
+    var runRandomSeed: RunRandomSeed
 }
 
 /// Consecutive failures of one kind of trainer save (the rolling file, or the
@@ -834,8 +839,10 @@ enum CorpusReplayRunner {
             let r = CliTrainingRecorder()
             r.setSessionID(config.runModelID)
             r.setRunKind(.corpusReplay)
+            r.setRunRandomSeed(config.runRandomSeed)
             return r
         }()
+        for line in config.runRandomSeed.logLines { emit(line) }
         let runStart = CFAbsoluteTimeGetCurrent()
         // --start-model: load a saved model and continue training from it. The
         // file embeds its own architecture, which then drives both the trainer
@@ -909,6 +916,12 @@ enum CorpusReplayRunner {
             for line in p.trainer.scheduleDifferences(from: resumeSnapshot.schedule) {
                 emit("[REPLAY-RESUME] WARNING \(line)")
             }
+            // Checkpoints do not record the run seed or the sampler stream's
+            // state yet (they arrive with the lineage record, determinism
+            // plan P6/P9), so the minibatch draws after the resume are not
+            // the uninterrupted run's.
+            emit("[REPLAY-RESUME] NOT EXACT: rng — the checkpoint records no run seed or sampler state; "
+                + "this segment draws from seed \(config.runRandomSeed.masterSeed)")
             trainerHyperparameters = p.trainer.adoptingSchedule(resumeSnapshot.schedule)
         }
         let hp = trainerHyperparameters
@@ -1133,7 +1146,18 @@ enum CorpusReplayRunner {
         let startGlobalIndex = cumGames[startShardCursor] + startWithinShardSkip
 
         emit("[REPLAY] building network + trainer (encoding=\(arch.inputEncoding.rawValue))")
-        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        // With --start-model the file's weights and batch-norm statistics
+        // replace the network's right below; otherwise the run builds a fresh
+        // model whose init seed derives from the run seed.
+        let netInitMode: NetworkInitMode
+        if startModelFile != nil {
+            netInitMode = .overwrittenByLoad
+        } else {
+            let initSeed = config.runRandomSeed.streams.freshModelInitSeed
+            emit("[REPLAY] fresh model init seed=\(initSeed) (from run seed \(config.runRandomSeed.masterSeed))")
+            netInitMode = .randomWeights(initSeed: initSeed)
+        }
+        let net = try ChessMPSNetwork(netInitMode, arch: arch)
         // Configured through `TrainerHyperparameters` — the same path the GUI
         // session uses — so this trainer gets every trainer-level parameter,
         // including the LR/momentum cycle and its decay envelope, dropout, and
@@ -1150,7 +1174,10 @@ enum CorpusReplayRunner {
                 throw CorpusReplayError.gpuCaptureUnavailable
             }
         }
-        let buffer = ReplayBuffer(capacity: p.replayBufferCapacity, inputEncoding: net.inputEncoding)
+        let buffer = ReplayBuffer(
+            capacity: p.replayBufferCapacity,
+            inputEncoding: net.inputEncoding,
+            sampler: config.runRandomSeed.streams.generator(.sampler))
         let feeder = CorpusReplayFeeder(network: net, buffer: buffer)
 
         // Seed the feeder net (computes the value baseline while feeding) from

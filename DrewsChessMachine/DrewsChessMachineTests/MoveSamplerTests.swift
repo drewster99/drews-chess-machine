@@ -52,6 +52,11 @@ final class MoveSamplerTests: XCTestCase {
     private let move3 = ChessMove(fromRow: 0, fromCol: 1, toRow: 2, toCol: 2, promotion: nil) // Nb1-c3
     private let move4 = ChessMove(fromRow: 0, fromCol: 6, toRow: 2, toCol: 5, promotion: nil) // Ng1-f3
 
+    /// The stream every `sample(...)` call in one test draws from. XCTest
+    /// makes a fresh instance per test method, so each test starts from the
+    /// same fixed seed and successive calls continue the stream.
+    private var rng = DCMRandom(seed: 1)
+
     /// Allocates and runs a single sample with caller-friendly defaults.
     /// Returns the result; scratches are recreated per call so a test can
     /// rely on no cross-call state.
@@ -75,7 +80,8 @@ final class MoveSamplerTests: XCTestCase {
                         ply: ply,
                         schedule: schedule,
                         probsScratch: probsBuf,
-                        etaScratch: etaBuf
+                        etaScratch: etaBuf,
+                        rng: &rng
                     )
                 }
             }

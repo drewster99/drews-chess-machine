@@ -68,26 +68,6 @@ extension SessionController {
             onClearTrainingDisplay()
         }
 
-        let buffer: ReplayBuffer
-        if continueMode, let existing = replayBuffer {
-            buffer = existing
-        } else {
-            // The buffer is keyed off the champion network's input encoding
-            // so it derives both the stored single-frame stride and the
-            // reconstructed full-stack stride. For a history encoding
-            // (full10ply200) it stores one mover-relative frame per ply and
-            // reconstructs the stacked network input at sample time; for
-            // single-frame encodings stored == reconstructed.
-            buffer = ReplayBuffer(
-                capacity: TrainingParameters.shared.replayBufferCapacity,
-                inputEncoding: network.inputEncoding)
-            replayBuffer = buffer
-        }
-        // Seed the buffer's per-batch sampling constraints from the
-        // current parameters. Subsequent updates come reactively from
-        // `ControlSideEffectsProbe.onChange(of: trainingParams.X)` —
-        // not from the heartbeat.
-        buffer.setSamplingConstraints(ReplayBuffer.SamplingConstraints.fromCurrentParameters())
         let box: TrainingLiveStatsBox
         if continueMode, let existing = trainingBox {
             box = existing
@@ -263,6 +243,32 @@ extension SessionController {
                 logResumeUsesCurrent("batch_size", saved: rs.batchSize, current: p.trainingBatchSize)
                 logResumeUsesCurrent("promote_threshold", saved: rs.promoteThreshold, current: p.arenaPromoteThreshold)
                 logResumeUsesCurrent("arena_games", saved: rs.arenaGames, current: p.arenaGamesPerTournament)
+                // The run's master seed is lineage state that no session
+                // records yet: it must travel with the game serials and arena
+                // index it seeds (restoring the seed alone would replay the
+                // run's first game streams), and those land with the lineage
+                // record (determinism plan P6). Every resume therefore
+                // resolves the seed as a session saved before seeding existed:
+                // the mode is held at unseeded for this run, so a fresh seed is
+                // drawn and logged on the [RUN] line, and the seed is NOT EXACT.
+                resume.restore(
+                    RandomSeedModeParameter.self,
+                    saved: nil,
+                    current: p.randomSeedMode.rawValue,
+                    describe: { RandomSeedMode(persistedRawValue: $0).logToken },
+                    write: { rawValue, source in
+                        let mode = RandomSeedMode(persistedRawValue: rawValue)
+                        switch source {
+                        case .session:
+                            p.randomSeedMode = mode
+                        case .preFeature:
+                            p.holdForThisRun { p.randomSeedMode = mode }
+                        case .currentSetting, .notExact:
+                            break
+                        }
+                    }
+                )
+                resume.restore(RandomSeed.self, saved: nil, into: \.randomSeed)
                 if let notExact = resume.notExactSummary() {
                     SessionLogger.shared.log(notExact)
                 }
@@ -278,6 +284,51 @@ extension SessionController {
             }
             trainingStats = initialTrainingStats
         }
+        // The run's master seed. A continue after Stop goes on with the same
+        // run, so it keeps the seed and the game serials; anything else starts
+        // a run and resolves it here — after the resume above, which decides
+        // the seed mode a resumed session runs with.
+        let runSeed: RunRandomSeed
+        let gameSerials: GameSerialCounter
+        if continueMode, let existingSeed = runRandomSeed, let existingSerials = selfPlayGameSerials {
+            runSeed = existingSeed
+            gameSerials = existingSerials
+            SessionLogger.shared.log("[RUN] continuing seed=\(runSeed.masterSeed) (next self-play game serial \(gameSerials.nextSerial), arenas started \(arenasStartedThisRun))")
+        } else {
+            let p = TrainingParameters.shared
+            runSeed = RunRandomSeed.resolve(
+                mode: p.randomSeedMode,
+                configuredSeed: p.randomSeed,
+                commandLineSeed: commandLineSeed,
+                drawSeed: RunRandomSeed.systemDrawnSeed
+            )
+            gameSerials = GameSerialCounter(firstSerial: 0)
+            runRandomSeed = runSeed
+            selfPlayGameSerials = gameSerials
+            arenasStartedThisRun = 0
+            for line in runSeed.logLines { SessionLogger.shared.log(line) }
+        }
+        let buffer: ReplayBuffer
+        if continueMode, let existing = replayBuffer {
+            buffer = existing
+        } else {
+            // The buffer is keyed off the champion network's input encoding
+            // so it derives both the stored single-frame stride and the
+            // reconstructed full-stack stride. For a history encoding
+            // (full10ply200) it stores one mover-relative frame per ply and
+            // reconstructs the stacked network input at sample time; for
+            // single-frame encodings stored == reconstructed.
+            buffer = ReplayBuffer(
+                capacity: TrainingParameters.shared.replayBufferCapacity,
+                inputEncoding: network.inputEncoding,
+                sampler: runSeed.streams.generator(.sampler))
+            replayBuffer = buffer
+        }
+        // Seed the buffer's per-batch sampling constraints from the
+        // current parameters. Subsequent updates come reactively from
+        // `ControlSideEffectsProbe.onChange(of: trainingParams.X)` —
+        // not from the heartbeat.
+        buffer.setSamplingConstraints(ReplayBuffer.SamplingConstraints.fromCurrentParameters())
         // Game-run mode is meaningless with N > 1 self-play workers
         // (the live board hides itself behind a "N concurrent games"
         // overlay) and the Game-run / Candidate-test picker is hidden
@@ -653,6 +704,7 @@ extension SessionController {
             // discriminator only present on some records cannot be used to tell
             // a self-play record from one written before the key existed.
             r.setRunKind(.selfPlay)
+            r.setRunRandomSeed(runSeed)
             recorder = r
             cliRecorder = r
         } else {
@@ -768,7 +820,7 @@ extension SessionController {
             if needsCandidateBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights, arch: champArch)
+                        try ChessMPSNetwork(.overwrittenByLoad, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining candidate Inference"
                     await MainActor.run {
@@ -788,7 +840,7 @@ extension SessionController {
             if needsProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights, arch: champArch)
+                        try ChessMPSNetwork(.overwrittenByLoad, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining probe Inference"
                     await MainActor.run {
@@ -809,7 +861,7 @@ extension SessionController {
             if needsArenaChampionBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights, arch: champArch)
+                        try ChessMPSNetwork(.overwrittenByLoad, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining arena champion"
                     await MainActor.run {
@@ -837,7 +889,7 @@ extension SessionController {
             if needsLichessProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights, arch: champArch)
+                        try ChessMPSNetwork(.overwrittenByLoad, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining lichess probe Inference"
                     await MainActor.run {
@@ -864,7 +916,7 @@ extension SessionController {
             if needsTacticalProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights, arch: champArch)
+                        try ChessMPSNetwork(.overwrittenByLoad, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining tactical probe Inference"
                     await MainActor.run {
@@ -1159,7 +1211,9 @@ extension SessionController {
                 scheduleBox: scheduleBox,
                 replayRatioController: ratioController,
                 drawWatchTracker: drawWatch,
-                corpusRecorder: corpusRecorder
+                corpusRecorder: corpusRecorder,
+                randomStreams: runSeed.streams,
+                gameSerials: gameSerials
             )
 
             // Pin the probe inference network into a local the child

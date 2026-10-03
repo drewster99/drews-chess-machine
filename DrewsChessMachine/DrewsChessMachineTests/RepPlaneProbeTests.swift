@@ -416,7 +416,7 @@ final class RepPlaneProbeTests: XCTestCase {
         let arch = NetworkArchitecture.preset(.v3_8block_3x3)
         precondition(arch.inputEncoding == .basic30,
                      "probe encodes basic30; the probe network must be a basic30 arch")
-        return try ChessMPSNetwork(.randomWeights, arch: arch)
+        return try ChessMPSNetwork(.randomWeights(initSeed: 1), arch: arch)
     }
 
     // MARK: - Probe-state generator

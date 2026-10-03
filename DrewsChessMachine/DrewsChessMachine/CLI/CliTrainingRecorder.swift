@@ -36,6 +36,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
         var recordingCorpusID: String?
         /// Which driver is producing this run. See `RunKind`.
         var runKind: RunKind?
+        /// The run's master seed, set once at run start.
+        var runRandomSeed: RunRandomSeed?
     }
     private let lock = OSAllocatedUnfairLock<State>(initialState: State())
 
@@ -53,6 +55,12 @@ final class CliTrainingRecorder: @unchecked Sendable {
     /// `setSessionID(_:)`.
     func setRunKind(_ kind: RunKind) {
         lock.withLock { $0.runKind = kind }
+    }
+
+    /// Record the run's master seed (resolved once at run start). Call next
+    /// to `setRunKind(_:)`.
+    func setRunRandomSeed(_ seed: RunRandomSeed) {
+        lock.withLock { $0.runRandomSeed = seed }
     }
 
     /// Record how the run ended. Safe to call from any thread — the
@@ -104,7 +112,10 @@ final class CliTrainingRecorder: @unchecked Sendable {
                 stats: state.stats,
                 candidateTests: state.probes,
                 layerHealth: state.layerHealth,
-                recordingCorpusID: state.recordingCorpusID
+                recordingCorpusID: state.recordingCorpusID,
+                randomSeed: state.runRandomSeed.map { String($0.masterSeed) },
+                randomSeedMode: state.runRandomSeed.map { $0.effectiveMode.logToken },
+                rngStreamDerivation: state.runRandomSeed.map { _ in DCMRandomStreams.derivationVersion }
             )
         }
 
@@ -289,6 +300,15 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// save order. The live `[LAYER-HEALTH]` lines are log-only.
         let layerHealth: [LayerHealthRecord]
         let recordingCorpusID: String?
+        /// The run's master seed as a decimal string (a JSON number would lose
+        /// the low bits of a seed above 2^53 in most readers), the mode it ran
+        /// in (`RandomSeedMode.logToken`; a `--seed` run is seeded) and the
+        /// stream-derivation identifier. Passing the seed back with `--seed`
+        /// replays the run's random streams. Nil only when a path did not set
+        /// the seed; every training path does.
+        let randomSeed: String?
+        let randomSeedMode: String?
+        let rngStreamDerivation: String?
 
         enum CodingKeys: String, CodingKey {
             case runKind = "run_kind"
@@ -303,6 +323,9 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case candidateTests = "candidate_tests"
             case layerHealth = "layer_health"
             case recordingCorpusID = "recording_corpus_id"
+            case randomSeed = "random_seed"
+            case randomSeedMode = "random_seed_mode"
+            case rngStreamDerivation = "rng_stream_derivation"
         }
     }
 

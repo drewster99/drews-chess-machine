@@ -19,8 +19,25 @@ enum ChessMPSNetworkError: LocalizedError {
 
 /// How to initialize the network weights.
 enum NetworkInitMode {
-    /// He-initialized random weights — untrained network.
-    case randomWeights
+    /// He-initialized random weights — untrained network. `initSeed` is the
+    /// model's init seed: the parent of its initialization streams, starting
+    /// with the batch-norm calibration walk
+    /// (`DCMRandomStreams.batchNormCalibrationGenerator(initSeed:)`). A
+    /// network whose weights and batch-norm statistics are replaced by a
+    /// load right after it is built (a load container) passes
+    /// `RunRandomSeed.systemDrawnSeed()`: nothing of its initialization
+    /// survives.
+    case randomWeights(initSeed: UInt64)
+
+    /// A container whose weights and batch-norm statistics are replaced by a
+    /// load before first use (inference mirrors, arena and probe networks,
+    /// checkpoint verification, a run continuing from a model file). Nothing
+    /// of its initialization survives the load, so it is built from a
+    /// system-drawn init seed. (Per-tensor initialization will make this a
+    /// mode that skips initialization altogether.)
+    static var overwrittenByLoad: NetworkInitMode {
+        .randomWeights(initSeed: RunRandomSeed.systemDrawnSeed())
+    }
     /// Load a previously serialized MPSGraphExecutable package.
     case package(URL)
 }
@@ -92,10 +109,13 @@ final class ChessMPSNetwork: @unchecked Sendable {
         let start = CFAbsoluteTimeGetCurrent()
 
         switch mode {
-        case .randomWeights:
+        case .randomWeights(let initSeed):
             let net = try ChessNetwork(arch: arch)
             net.commandQueue.label = "ChessMPSNetwork.net(init)"
-            try Self.calibrateBNRunningStats(into: net)
+            try Self.calibrateBNRunningStats(
+                into: net,
+                random: DCMRandomStreams.batchNormCalibrationGenerator(initSeed: initSeed)
+            )
             network = net
 
         case .package:
@@ -117,11 +137,13 @@ final class ChessMPSNetwork: @unchecked Sendable {
     private static let warmupBatchSize: Int = 64
 
     /// Synthesize a varied batch of encoded chess positions for BN
-    /// warmup. Walks one random self-play game from `.starting`,
-    /// restarting on terminal positions, until the batch is full.
-    /// Outputs are concatenated `BoardEncoder.encode` tensors in the
-    /// position-major NCHW layout the network expects.
-    private static func warmupBatch(encoding: InputEncoding) -> [Float] {
+    /// warmup. Walks one random game from `.starting`, each move a uniform
+    /// pick from `random` over `MoveGenerator.legalMoves` (whose order is
+    /// pinned by test), restarting on terminal positions, until the batch is
+    /// full. Outputs are concatenated `BoardEncoder.encode` tensors in the
+    /// position-major NCHW layout the network expects. A function of the
+    /// encoding and `random`'s state alone.
+    static func warmupBatch(encoding: InputEncoding, random: inout DCMRandom) -> [Float] {
         let perBoard = BoardEncoder.tensorLength(for: encoding)
         // Prior frames a history-stacking encoding needs (0 for single-frame).
         let historyDepth = max(0, encoding.historyFrameCount - 1)
@@ -150,13 +172,15 @@ final class ChessMPSNetwork: @unchecked Sendable {
                 )
                 BoardEncoder.encode(state, history: history, into: slot, encoding: encoding)
                 ply += 1
-                guard let move = MoveGenerator.legalMoves(for: state).randomElement() else {
+                let legalMoves = MoveGenerator.legalMoves(for: state)
+                guard !legalMoves.isEmpty else {
                     // No legal moves (mate/stalemate) — reset to the opening
                     // and keep generating warmup positions. New game → no history.
                     state = .starting
                     history.removeAll(keepingCapacity: true)
                     continue
                 }
+                let move = legalMoves[random.nextBounded(legalMoves.count)]
                 if historyDepth > 0 {
                     history.insert(state, at: 0)
                     if history.count > historyDepth {
@@ -176,7 +200,7 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// async export/compute/load primitives — called from the
     /// non-async `init(_:)` so the network is fully calibrated by the
     /// time it's handed back to the caller.
-    private static func calibrateBNRunningStats(into inference: ChessNetwork) throws {
+    private static func calibrateBNRunningStats(into inference: ChessNetwork, random: DCMRandom) throws {
         // Build a parallel training-mode network. Its trainable weights
         // are independently He-init at first; we copy `inference`'s in
         // so the batch stats reflect the inference network's actual
@@ -184,7 +208,8 @@ final class ChessMPSNetwork: @unchecked Sendable {
         // activation distribution → different needed running stats).
         let trainingNet = try ChessNetwork(arch: inference.arch, bnMode: .training)
         trainingNet.commandQueue.label = "calibrateBNRunningStats trainingNet"
-        let boards = warmupBatch(encoding: inference.arch.inputEncoding)
+        var walkRandom = random
+        let boards = warmupBatch(encoding: inference.arch.inputEncoding, random: &walkRandom)
 
         // Bridge async → sync via a semaphore + a Sendable holder for
         // the caught error. The work runs on each network's private
