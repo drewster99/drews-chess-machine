@@ -229,10 +229,10 @@ final class ReplayBuffer: @unchecked Sendable {
     // (23–30 non-pawn pieces) is geometrically unreachable in standard
     // chess but is kept for index alignment with the analyzer.
     //
-    // `materialBucketSlots[b]` provides O(1) insert, O(1) remove-by-slot,
-    // and O(1) uniform random pick — backed by a contiguous `[Int]`
-    // plus a `[Int: Int]` reverse-index. Updated only while holding
-    // `lock`. Drives:
+    // `materialBucketSlots[b]` holds bucket `b`'s resident slots oldest
+    // first (`AgeOrderedSlotQueue`): amortized O(1) insert of the newest,
+    // eviction of the oldest, and pick by age rank. Updated only while
+    // holding `lock`. Drives:
     //   - the in-memory bucket distribution surfaced in
     //     `compositionSnapshot()` (the UI's per-batch mini-chart
     //     "buffer" row);
@@ -243,7 +243,7 @@ final class ReplayBuffer: @unchecked Sendable {
     // `materialCountStorage` once at the end of `restore(from:)`,
     // matching the same pattern used for `hashStats` and the
     // composition aggregates.
-    private var materialBucketSlots: [IndexedSlotSet]
+    private var materialBucketSlots: [AgeOrderedSlotQueue]
 
     /// The run's `sampler` stream: every random draw of `sample(...)`. Guarded
     /// by `lock`, like the rest of the buffer's state. Only the trainer's
@@ -257,54 +257,69 @@ final class ReplayBuffer: @unchecked Sendable {
 
     // MARK: - Lifetime
 
-    /// O(1)-everything container for the per-bucket slot index. Backs
-    /// `materialBucketSlots`. NOT thread-safe on its own — must be
-    /// touched only while the surrounding `ReplayBuffer.lock` is held.
+    /// One material bucket's resident ring slots, oldest first. Backs
+    /// `materialBucketSlots`. NOT thread-safe on its own — must be touched
+    /// only while the surrounding `ReplayBuffer.lock` is held.
     ///
-    /// `slots` is the contiguous list of resident ring-slot indices in
-    /// this bucket. `slotPosition[slot]` is the index of `slot` within
-    /// `slots`, so `remove(slot)` does the standard "swap with last,
-    /// pop, fix-up reverse index" trick in O(1).
-    struct IndexedSlotSet {
-        private(set) var slots: [Int] = []
-        private var slotPosition: [Int: Int] = [:]
+    /// The ring only ever evicts its globally oldest slot, which is
+    /// necessarily the oldest member of that slot's bucket, so each bucket
+    /// is a FIFO: inserts append at the back (the newest position), evictions
+    /// pop the front. A stratified draw picks the bucket's k-th oldest
+    /// resident for a uniform `k` (determinism plan C1 #5, decision D-5), so
+    /// which position a draw selects depends only on the bucket's members in
+    /// age order — never on the order earlier inserts and evictions left an
+    /// array in. A buffer refilled after a resume, holding the same positions
+    /// in the same age order, therefore draws the same positions as the
+    /// buffer it replaces.
+    ///
+    /// Storage is an array with a moving head: the live members are
+    /// `slots[head...]`. The consumed prefix is dropped once it is both large
+    /// and at least half the array, so every operation is amortized O(1).
+    struct AgeOrderedSlotQueue {
+        private var slots: [Int] = []
+        private var head = 0
 
-        var count: Int { slots.count }
-        var isEmpty: Bool { slots.isEmpty }
+        var count: Int { slots.count - head }
+        var isEmpty: Bool { count == 0 }
 
-        mutating func insert(_ slot: Int) {
-            // Guard against double-insert: the bucket index is
-            // maintained alongside materialCountStorage, so a slot
-            // being inserted twice for the same write would mean the
-            // eviction pass was skipped — we want a precondition
-            // failure not silent corruption.
-            precondition(slotPosition[slot] == nil,
-                "IndexedSlotSet.insert: slot \(slot) is already a member")
-            slotPosition[slot] = slots.count
+        /// Add the newest resident.
+        mutating func append(_ slot: Int) {
             slots.append(slot)
         }
 
-        mutating func remove(_ slot: Int) {
-            guard let idx = slotPosition.removeValue(forKey: slot) else { return }
-            let last = slots.count - 1
-            if idx != last {
-                let moved = slots[last]
-                slots[idx] = moved
-                slotPosition[moved] = idx
+        /// Remove the oldest resident, which must be `slot`: the ring evicts
+        /// in age order, so anything else means the bucket and the ring have
+        /// diverged — a precondition failure, not silent corruption.
+        mutating func removeOldest(_ slot: Int) {
+            precondition(!isEmpty, "AgeOrderedSlotQueue.removeOldest: bucket is empty, cannot evict slot \(slot)")
+            precondition(slots[head] == slot,
+                "AgeOrderedSlotQueue.removeOldest: evicted slot \(slot) is not the bucket's oldest (\(slots[head]))")
+            head += 1
+            if head >= Self.compactionThreshold && head * 2 >= slots.count {
+                slots.removeFirst(head)
+                head = 0
             }
-            slots.removeLast()
         }
 
-        /// Uniform random pick from `random`. Caller must check `!isEmpty`
-        /// first.
+        /// The `k`-th oldest resident (0 = oldest).
+        func slot(ageRank k: Int) -> Int {
+            precondition(k >= 0 && k < count, "AgeOrderedSlotQueue.slot(ageRank:): \(k) outside 0..<\(count)")
+            return slots[head + k]
+        }
+
+        /// A uniform pick by age rank from `random`. Caller checks
+        /// `!isEmpty` first.
         func randomSlot(using random: inout DCMRandom) -> Int {
-            slots[random.nextBounded(slots.count)]
+            slot(ageRank: random.nextBounded(count))
         }
 
         mutating func removeAll(keepingCapacity: Bool = true) {
             slots.removeAll(keepingCapacity: keepingCapacity)
-            slotPosition.removeAll(keepingCapacity: keepingCapacity)
+            head = 0
         }
+
+        /// Consumed-prefix length below which compaction is not worth its copy.
+        private static let compactionThreshold = 4096
     }
 
     /// Resolve a `materialCount` (non-pawn piece count) to its bucket
@@ -370,11 +385,11 @@ final class ReplayBuffer: @unchecked Sendable {
         self.floatsPerBoard = storedStride
         self.reconstructedStride = inputEncoding.planeCount * area
 
-        // Pre-allocate one IndexedSlotSet per analyzer bucket. The 5th
+        // Pre-allocate one AgeOrderedSlotQueue per analyzer bucket. The 5th
         // (23–30) is structurally unreachable but kept to keep array
         // arithmetic 1:1 with the analyzer's outputs.
         self.materialBucketSlots = Array(
-            repeating: IndexedSlotSet(),
+            repeating: AgeOrderedSlotQueue(),
             count: ReplayBufferAnalyzer.materialBuckets.count
         )
 
@@ -1301,14 +1316,14 @@ final class ReplayBuffer: @unchecked Sendable {
                 // incoming `materialCounts` pointer at the same offset
                 // so the bucket index is provably consistent with the
                 // on-ring data (the same data that `restore`'s rebuild
-                // loop walks). One bucket per slot; the slot is fresh
-                // (the matching eviction pass above just removed any
-                // pre-existing tenant), so `insert` won't trip its
-                // double-insert precondition.
+                // loop walks). One bucket per slot, appended as that
+                // bucket's newest resident: the slots are written in age
+                // order, and the matching eviction pass above already took
+                // any previous tenant off the front of its bucket.
                 for i in 0..<chunk {
                     let slot = writeIndex + i
                     let bucket = Self.materialBucketIndex(for: materialCountStorage[slot])
-                    materialBucketSlots[bucket].insert(slot)
+                    materialBucketSlots[bucket].append(slot)
                 }
 
                 let newWrite = writeIndex + chunk
@@ -1419,7 +1434,7 @@ final class ReplayBuffer: @unchecked Sendable {
         // overwrites it — same ordering invariant the outcome/length/gid
         // reads above rely on.
         let oldBucket = Self.materialBucketIndex(for: materialCountStorage[slot])
-        materialBucketSlots[oldBucket].remove(slot)
+        materialBucketSlots[oldBucket].removeOldest(slot)
     }
 
     /// Drop all composition aggregates (used by `restore` before refilling).
@@ -3574,7 +3589,7 @@ final class ReplayBuffer: @unchecked Sendable {
                     gameIsDecisive: isWin || isLoss
                 )
                 let bucket = Self.materialBucketIndex(for: materialCountStorage[slot])
-                materialBucketSlots[bucket].insert(slot)
+                materialBucketSlots[bucket].append(slot)
             }
         }
     }
