@@ -517,8 +517,8 @@ private struct BlockGroupFieldsView: View {
 /// `validate()` refuses after the layer was switched off can be fixed here.
 ///
 /// `nonStandard` and `groupsWithSkipProjection` come from the screen, which
-/// computes each once per redraw: asking the model from every row rebuilt
-/// the architecture once per row per question. Where the skip projections
+/// computes each once per redraw: each question rebuilds the architecture
+/// from every field, so it is not asked again by every row. Where the skip projections
 /// are is worked out per group (`NetworkArchitecture.groupsWithSkipProjection`),
 /// never by expanding the tower, so a block count the user is still typing —
 /// negative, or near `Int.max` — draws without trapping.
