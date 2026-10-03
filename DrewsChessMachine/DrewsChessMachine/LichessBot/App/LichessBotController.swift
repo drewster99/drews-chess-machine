@@ -790,6 +790,16 @@ final class LichessBotController {
         connection = .connecting
         oneGameRequested = oneGame
         drainRequested = false
+        // The running bot consults the player notes (favorites, bot limits,
+        // decline cool-downs) and records into them and the challenge-outcome
+        // log. The bot window loads both when it opens, but the bot can go
+        // online from the status chip without that window ever opening.
+        if playerNotes == nil {
+            await loadPlayerNotes()
+        }
+        if challengeOutcomeLog == nil {
+            await loadChallengeOutcomes()
+        }
         do {
             try await startRuntime(oneGame: oneGame)
             // A shutdown while the runtime started found no runtime to stop.
@@ -1278,12 +1288,21 @@ final class LichessBotController {
     /// Load favorites and bot limit times from disk. A missing file is an
     /// empty set of notes; an unreadable one raises an alarm and leaves the
     /// notes unloaded (so nothing overwrites the file).
+    ///
+    /// Loaded once: from then on the notes in memory are the truth and each
+    /// change saves them, so reading the file again (the bot window
+    /// reopening, or its load overlapping going online's) could replace a
+    /// change whose save hasn't landed. Unloaded notes are tried again on
+    /// the next call.
     func loadPlayerNotes() async {
+        guard playerNotes == nil else { return }
         let url = dataDirectory.playerNotesURL
         do {
             var notes = try await fileQueue.run {
                 try LichessBotPlayerNotes.load(from: url)
             }
+            // Another load finished first; its notes may have changed since.
+            guard playerNotes == nil else { return }
             notes.pruneExpiredLimits(now: Date())
             playerNotes = notes
             // A refusal recorded before the notes loaded stays: the later of
@@ -1298,13 +1317,17 @@ final class LichessBotController {
 
     /// Load the outgoing-challenge outcome log. A missing file is an empty
     /// log; an unreadable one raises an alarm and leaves the log unloaded,
-    /// so nothing overwrites the file.
+    /// so nothing overwrites the file. Loaded once, like the player notes
+    /// (`loadPlayerNotes`): the log in memory is the truth from then on.
     func loadChallengeOutcomes() async {
+        guard challengeOutcomeLog == nil else { return }
         let url = dataDirectory.challengeOutcomesURL
         do {
             var log = try await fileQueue.run {
                 try LichessBotChallengeOutcomeLog.load(from: url)
             }
+            // Another load finished first; its log may have changed since.
+            guard challengeOutcomeLog == nil else { return }
             log.prune(now: Date())
             challengeOutcomeLog = log
         } catch {
