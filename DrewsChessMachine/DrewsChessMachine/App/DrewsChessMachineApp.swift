@@ -536,9 +536,10 @@ struct DrewsChessMachineApp: App {
                                               .open shard (truncate it to its last complete game and seal it, or
                                               remove it when it holds none; each is logged) and recompute stale
                                               per-source gamesAdded/pliesAdded from the shard trailers, rewriting
-                                              corpus.json. Sealed shards are never modified. Run --fix only when no
-                                              recording or import is writing to that corpus: a live writer's .open
-                                              shard looks exactly like a crash leftover. Add --quick to skip the
+                                              corpus.json. Sealed shards are never modified. A shard a running
+                                              recording or import still holds (its lock is held) is left untouched
+                                              and reported, and corpus.json is then not rewritten; rerun --fix
+                                              after that writer finishes. Add --quick to skip the
                                               SHA/CRC body pass (header/trailer counts only — fast, no integrity check).
 
             Self-play recording: set the `record_self_play_games` parameter (e.g. in a --parameters file) to

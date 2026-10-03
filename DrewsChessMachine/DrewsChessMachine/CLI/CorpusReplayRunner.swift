@@ -919,7 +919,7 @@ enum CorpusReplayRunner {
                     + "unsealed .open shard(s) (\(names)) — their games are NOT replayed. Each is either the live "
                     + "shard of a recording/import still writing into this corpus, or a crash leftover; replay "
                     + "reads sealed shards only and never modifies a corpus, so it neither reads nor recovers them. "
-                    + "Once nothing is writing to this corpus, `--validate-corpus <dir> --fix` recovers a crash leftover."
+                    + "`--validate-corpus <dir> --fix` recovers a crash leftover and leaves a live writer's shard alone."
                 emit(warning)
                 FileHandle.standardError.write(Data((warning + "\n").utf8))
             }

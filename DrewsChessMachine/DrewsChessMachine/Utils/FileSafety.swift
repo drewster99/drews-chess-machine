@@ -273,7 +273,14 @@ enum FileSafety {
     /// naming what is there — when anything at all already exists at `url`;
     /// that item is never opened, truncated or followed.
     static func createNewFile(at url: URL) throws -> NewFile {
-        let descriptor = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, newFileMode)
+        try createNewFile(at: url, additionalOpenFlags: 0)
+    }
+
+    /// `createNewFile`, with extra `open` flags (a lock request).
+    private static func createNewFile(at url: URL, additionalOpenFlags: Int32) throws -> NewFile {
+        let descriptor = Darwin.open(url.path,
+                                     O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | additionalOpenFlags,
+                                     newFileMode)
         guard descriptor >= 0 else {
             let code = errno
             throw failureForExclusiveCreate(at: url, errnoValue: code, call: "open")
@@ -408,6 +415,107 @@ enum FileSafety {
         }
         throw FileSafetyError.noFreeNumericSuffix(
             directory: directory.path, stem: stem, pathExtension: pathExtension, maxAttempts: maxAttempts)
+    }
+
+    // MARK: - Exclusively locked files (a writer's file that others must leave alone)
+
+    /// What `openExistingRegularFileWithExclusiveLock` found.
+    enum ExistingFileLockAttempt {
+        /// The lock was free and is now held by `handle` (open read-write)
+        /// for as long as the handle stays open; `identity` is the file's.
+        case locked(handle: FileHandle, identity: FileIdentity)
+        /// Another open file holds the lock — in this process or another.
+        /// Nothing was opened or changed.
+        case heldByAnotherOpenFile
+        /// Nothing is at the path.
+        case gone
+    }
+
+    /// `createNewFile`, also taking an exclusive lock on the new file
+    /// (`O_EXLOCK`), held until the returned handle is closed — explicitly,
+    /// by its release, or by the kernel when the process exits however it
+    /// exits. It marks the file as in use by a live writer:
+    /// `openExistingRegularFileWithExclusiveLock` elsewhere finds it held.
+    ///
+    /// The lock is BSD `flock`-style: it belongs to this one open file, so
+    /// opening and closing the same file elsewhere in this process (a
+    /// whole-file read, say) leaves it in place. That is why it is not an
+    /// `fcntl` lock, which any close of the file by this process would drop.
+    ///
+    /// `open` creates the file and then takes the lock, so another process
+    /// can open the new, empty file in between; this call waits for the lock
+    /// in that case (no `O_NONBLOCK`) rather than failing, and the other side
+    /// sees an empty file, which no recovery treats as a shard. A volume that
+    /// cannot lock (some network mounts) fails the call with the system's
+    /// error — there is no unlocked fallback — and can leave the new empty
+    /// file behind, which this does not remove (its identity is unknown).
+    static func createNewFileHoldingExclusiveLock(at url: URL) throws -> NewFile {
+        try createNewFile(at: url, additionalOpenFlags: O_EXLOCK)
+    }
+
+    /// Open the existing regular file at `url` read-write and take its
+    /// exclusive lock without waiting — the counterpart to
+    /// `createNewFileHoldingExclusiveLock` for a caller that may change the
+    /// file only when no writer holds it. Returns `.heldByAnotherOpenFile`
+    /// when the lock is taken, `.gone` when nothing is at `url`. A symbolic
+    /// link, directory or other non-regular item is refused
+    /// (`.notARegularFile`); so is a file replaced at `url` while it was
+    /// being opened (`.fileChangedSinceWritten`). A volume that cannot lock
+    /// is an error (`.systemCallFailed`), never treated as unlocked.
+    static func openExistingRegularFileWithExclusiveLock(at url: URL) throws -> ExistingFileLockAttempt {
+        let descriptor = Darwin.open(url.path, O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | O_EXLOCK)
+        guard descriptor >= 0 else {
+            let code = errno
+            switch code {
+            case EAGAIN:
+                // EWOULDBLOCK, the same value: the lock is held.
+                return .heldByAnotherOpenFile
+            case ENOENT:
+                return .gone
+            case ELOOP:
+                throw FileSafetyError.notARegularFile(path: url.path, kind: .symbolicLink)
+            case EISDIR:
+                throw FileSafetyError.notARegularFile(path: url.path, kind: .directory)
+            default:
+                // A FIFO or device cannot take the lock (ENOTSUP) before its
+                // type can be checked on a descriptor, so name what is there
+                // when it is not a regular file; otherwise the failure is the
+                // system's own (on a regular file, ENOTSUP means the volume
+                // cannot lock).
+                if let existing = existingItemForDiagnosis(at: url), existing.kind != .regularFile {
+                    throw FileSafetyError.notARegularFile(path: url.path, kind: existing.kind)
+                }
+                throw FileSafetyError.systemCallFailed(path: url.path, call: "open", errnoValue: code)
+            }
+        }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else {
+            let code = errno
+            closeDescriptorAfterFailure(descriptor, path: url.path)
+            throw FileSafetyError.systemCallFailed(path: url.path, call: "fstat", errnoValue: code)
+        }
+        // `O_NONBLOCK` lets the open succeed on a FIFO with no writer, so the
+        // type is checked on the descriptor before the file is ever used.
+        let kind = ItemKind(mode: info.st_mode)
+        guard kind == .regularFile else {
+            closeDescriptorAfterFailure(descriptor, path: url.path)
+            throw FileSafetyError.notARegularFile(path: url.path, kind: kind)
+        }
+        let identity = FileIdentity(device: info.st_dev, inode: info.st_ino)
+        let atPath: ExistingItem?
+        do {
+            atPath = try existingItem(at: url)
+        } catch {
+            closeDescriptorAfterFailure(descriptor, path: url.path)
+            throw error
+        }
+        guard let atPath, atPath.identity == identity else {
+            closeDescriptorAfterFailure(descriptor, path: url.path)
+            throw FileSafetyError.fileChangedSinceWritten(path: url.path)
+        }
+        // O_NONBLOCK stays set: it has no effect on reads or writes of a
+        // regular file.
+        return .locked(handle: FileHandle(fileDescriptor: descriptor, closeOnDealloc: true), identity: identity)
     }
 
     // MARK: - Writing whole files
