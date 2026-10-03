@@ -389,6 +389,55 @@ draw order, consumer identity or iteration order could vary:
 | O18 | **Sort ties** — Swift's `sort` is stable in practice but not documented as stable | A sort with equal keys that decides data order (shard lists, bucket rebuilds, emitted records) could reorder between toolchains. | Rule: every sort that decides data order uses a total order (explicit tie-break on a unique key). Audited 2026-09-30 on data paths: corpus shard lists sort by unique `lastPathComponent` (`GameCorpus.swift:274, 360`) — no ties; `highestShardSeq` (`:374-384`) is a max, order-free; `SafetensorsFile.swift:192` sorts by unique byte offset. The rest found (`ReplayBufferAnalyzer`, `NumericsAudit`, `ModelFileCatalog`, `ModelLineageTree`, `CheckpointManager.swift:208`) are statistics or UI listings. P3 re-runs the sweep and records it. |
 | O19 | **Float sums accumulated in thread-completion order** that feed training | Float addition isn't associative, so a thread-order sum varies by ULPs between runs; if it feeds training math, bit-exact replay breaks with no visible cause. Matters only for corpus replay (the only trajectory-exact path). | Preliminary check 2026-09-30: no `concurrentPerform`/`TaskGroup` in `CLI/CorpusReplayRunner.swift`, `Training/ReplayBuffer.swift`, `Training/ChessTrainer.swift` or `Persistence/GameCorpus.swift`; parallel regions exist only in self-play, arena, vs-UCI, UCI, the recorder and the Lichess bot. P3 confirms by reading the replay feed path (`CorpusReplayFeeder`) end to end and records the result; any such sum found on the replay path gets a fixed-order reduction. |
 
+#### O17–O19 sweep (P3, 2026-10-02, at `44eadde1`)
+
+Method: on `Training/`, `CLI/`, `Arena/`, `Persistence/`, `Network/`, `Encoding/`, `Chess/`
+— every `for (…, …) in <Dictionary>`, `.keys`/`.values` use, `Set<…>`/`Set(…)`,
+`hashValue`/`Hasher`, and every `sort`/`sorted` (the `enumerated()`/array iterations the
+grep also returns are ordered by construction and are not listed).
+
+**Dictionary / Set iteration and hash-values-as-data (O17)**
+
+| Site | What it does | Class |
+|---|---|---|
+| `Training/ReplayBuffer.swift` `solveLengthTiltBeta` (`residentLengthHistogram.keys.map`) | Float sums `num`/`den` over the length histogram in dictionary order → the length-tilt β → `tiltAccepts` acceptance on the trainer's minibatch draw | **Hazard, fixed in P3**: the histogram is read in ascending length order, so β is a fixed function of the histogram (O19). |
+| `Training/ReplayBuffer.swift` `hashBoard` (`Hasher()`) | Per-position hash persisted with the buffer | **Hazard, fixed in P3** (O16). |
+| `Training/ReplayBuffer.swift` `compositionSnapshot` (`for (length, positionCount) in residentLengthHistogram`) | Float sum `estimatedGameCount` for the composition readout | Observability only (`[BATCH-STATS]` / UI); never feeds a draw or a loss. |
+| `Training/ReplayBuffer.swift` `degPerGame` / `stratPerGame` / `fastPerGameScratch` / `perGameCount` loops in `sample()` | Max over per-game counts | Order-independent reduction (already checked, O9). |
+| `Training/ReplayBuffer.swift` `computeBatchStats` (`for (_, c) in perHashCount`) | Max and integer histogram of duplicate counts | Order-independent reduction; observability. |
+| `Training/ReplayBufferAnalyzer.swift` `perGame` loops | Integer tallies for the analyzer report | Order-independent; observability. |
+| `Training/TrainingParameters.swift` `apply(_:)` (`for (id, raw) in values`) | Assigns each validated value to its own stored property | Order-independent: every key writes only its own property (the map is validated first, all-or-nothing). |
+| `Training/TrainingParameters.swift` `save(to:)` / `load(from:)` | Dictionary ↔ JSON | Order-independent (`.sortedKeys` on write; load builds a dictionary). |
+| `CLI/CliTrainingRecorder.swift` `pct` (`for (k, v) in d`) | Builds a dictionary | Order-independent. |
+| `Persistence/SafetensorsModelIO.swift` metadata copies | Dictionary → dictionary | Order-independent. |
+| `Persistence/SafetensorsFile.swift` header parse | Collects tensor entries, then `sort` by unique byte offset | Order-independent (sorted on a unique key, O18). |
+| `Training/LayerHealth.swift` (`for (name, values) in tensors`) | Validation; first failure thrown | Observability (which error is reported first could differ; the unknown-name check already uses `keys.sorted()`). |
+| `Training/ChessTrainer.swift` `feedCache` loops, `feeds` loops, `reachableLeaves` sets | Free staging; build MPSGraph feed dictionaries; membership | Order-independent. |
+| `Training/ChessTrainer.swift` `legalIndexSet` | Membership while summing in `legalMoves` array order | Order-independent (the sum runs in array order). |
+| `Network/NumericsAuditPositions.swift` `plies` set | Converted with `.sorted()` before use | Sorted. |
+| `Network/NumericsAudit+Dynamic.swift` `networks`, `formatBuildErrors` | Audit loops; error lists iterated `sorted(by: key)` | Observability / sorted. |
+| `Network/NetworkWeightAnalyzer.swift` (`for (name, values) in variables`) | Analyzer report | Observability. |
+| `Chess/MoveGenerator.swift` crosscheck sets | Debug cross-check (`--crosscheck-movegen`) diff text | Observability. |
+| `Chess/ChessGameEngine.swift` `bishopSquareColors` | Count of square colors | Order-independent. |
+| `Training/GameDiversityTracker.swift` `hashSet` | Unique-game count | Order-independent; observability. |
+| `Persistence/ModelLineageTree.swift`, `ArchitecturePresetStore`, `CheckpointManager` protected-name set | UI listings; membership | Not on a training path. |
+
+No other `hashValue` / `Hasher` use on these paths.
+
+**Sort ties (O18)** — sorts that decide data order all use a unique key: corpus shard lists
+by file name (`GameCorpus.swift`), enumerated checkpoints by step (`CorpusReplayRunner.swift`,
+one file per step), session folders by folder name (`CheckpointManager.swift`), safetensors
+entries by byte offset (`SafetensorsFile.swift`), `TrainingStepBackfill.normalize` by elapsed
+time with equal times collapsed to their maximum step (tie-free result). Every other sort on
+these paths orders statistics (equal keys are equal values) or UI rows.
+
+**Thread-order float sums on the replay path (O19)** — `CLI/CorpusReplayRunner.swift`,
+`Persistence/CorpusReplayFeeder.swift`, `Persistence/GameCorpus*.swift`,
+`Training/ActiveGame.swift`, `Encoding/BoardEncoder.swift`, `Training/ReplayBuffer.swift` and
+`Training/ChessTrainer.swift` contain no `concurrentPerform`, task group, dispatch group or
+`async let`; the feed is sequential. The one order-dependent float sum found on the replay
+path is the dictionary-ordered length-tilt solve above (fixed).
+
 ---
 
 # PART B — Ablation- and derivation-friendly initialization
@@ -1190,6 +1239,55 @@ Validation: `[RUN] seed=` logged on all paths; unseeded mode logs a drawn seed;
 Risk: sampler lock — RNG work moves inside the existing lock; xoshiro is faster
 than `SystemRandomNumberGenerator` (which calls `arc4random_buf`), so hold time
 drops. Measure `sample()` µs before/after with the existing timing taps.
+
+**Partly done (2026-10-02, `efcf3a75` test + `e6a3221e` fix): the parts that change no
+existing test's call shape are in; stream threading and the seed parameters wait on
+two owner decisions (below).** As built:
+- **O16 fixed-key board hash (bug fix; regression test committed first, `efcf3a75`,
+  red: 11 failures on the old code).** `ReplayBuffer.hashBoard` is now
+  `splitmix64` folded over the board's little-endian 8-byte words from a fixed key
+  (`boardHashKey`), a 4-byte tail word, then `splitmix64(h ^ byteCount)`; goldens from
+  an independent Python implementation. `ReplayBuffer.fileVersion` 7 → 8 (layout
+  unchanged); v7 files are still read and every restored slot's hash is recomputed
+  from its board, logged `[RESUME] recomputed N position hashes (legacy buffer, format
+  v7)` (D-9). Deviation: §D8 / C1 #9 describe v8 as "fixed-key hashes + the
+  slot-source column"; the slot-source column is P9's, so it lands there as **v9**
+  (v8 = fixed-key hashes only), and P9 reads v8 files as "no slot sources".
+- **O7b logical indices.** Every uniform `sample()` draw (degenerate, stratified-
+  fallback, fast, tilted and budget-fallback paths) now picks a logical age-ordered
+  index and maps it through `ReplayBuffer.physicalSlot(logicalIndex:storedCount:
+  capacity:writeIndex:)`. Distribution unchanged; the stratified bucket path keeps its
+  physical slot arrays until the D-5 age-rank change (C1 #5, P9).
+- **O19 hazard found and fixed.** `solveLengthTiltBeta` summed the length histogram in
+  `Dictionary` order (randomized per process), so β — which decides the tilted
+  draw's acceptances — could differ in its last bits between runs of the same corpus
+  replay. Now `ReplayBuffer.lengthTiltBeta(residentLengthHistogram:target:)` reads it
+  in ascending length order.
+- **O17–O19 sweeps** recorded below the A6 table.
+- Tests: `ReplayBufferStableBoardHashTests` (4; three red before the fix),
+  `ReplayBufferSamplingOrderTests` (6; new API, so red only by not compiling).
+
+**Not done — owner decisions needed:**
+1. **Threading the streams needs existing tests changed.** The sampler stream, the
+   per-game self-play / arena / vs-UCI streams and the BN-calibration stream all need a
+   generator passed in where none is passed today, and the tests call those APIs
+   without one: `ReplayBuffer(…)` 78 call sites in 14 test files (if the buffer is
+   seeded at init) or `ReplayBuffer.sample(…)` 6 sites in 4 files (if the generator is
+   passed per draw); `MoveSampler.sampleMove(…)` 1 (`MoveSamplerTests`);
+   `ActiveGame(…)` 1 (`ActiveGameTests`); `BatchedSelfPlayDriver(…)` 1;
+   `TickTournamentDriver(…)` 8 (`TickTournamentDriverTests`); `ChessMPSNetwork(…)` 60
+   in 19 files (BN calibration, if seeded at init). Choose: (a) approve adding the
+   explicit generator argument at those test sites (recommended — no hidden source of
+   randomness anywhere), or (b) give the new parameters a default that draws a seed
+   from the system generator (keeps every test unchanged, but a production caller
+   that forgets the argument silently runs unseeded — against the no-silent-defaults
+   rule).
+2. **The seed parameters** (`random_seed_mode`, `random_seed`, `--seed`, A3.2) need
+   P2's `UInt64` value kind and `absentValue` in `TrainingParametersMacro`; they land
+   after P2 merges.
+Also deferred with the threading: O12/O13 (pinned `legalMoves` order for fixed FENs,
+which matters once `MoveSampler` draws from a seeded stream) and the `sample()` µs
+re-measure (the draws still come from the system generator).
 
 **P4 — Dropout state.** Files: `Network/ChessNetwork.swift` (placeholder assign,
 no baked constant), `Training/ChessTrainer.swift` (`captureDropoutState()`,
