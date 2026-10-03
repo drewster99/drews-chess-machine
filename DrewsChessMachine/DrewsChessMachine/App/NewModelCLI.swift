@@ -10,8 +10,11 @@
 //  Cost profile mirrors `--probe-model`: one network build (a seeded fresh
 //  network, which includes a one-shot BN warmup forward) + a weight export + a
 //  file write. The init seed (`--init-seed`, or drawn) and its scheme are
-//  logged and written into the file, so the same seed re-mints the same
-//  tensors. Forward-only, so it coexists with a running training job the same way
+//  logged and written into the file, so the same seed re-mints bit-identical
+//  trainable tensors; the BN running statistics come from the GPU warmup
+//  forward and match only to float tolerance (across chips or OS builds, and
+//  for a bf16/fp16 model across `--policy-tail-precision` values, their last
+//  bits can differ, which is why the notes record the precision). Forward-only, so it coexists with a running training job the same way
 //  a probe does (it does NOT open a second training command stream).
 //
 

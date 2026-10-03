@@ -48,10 +48,21 @@ import Foundation
 /// inverse-CDF draw), so a game's moves are a function of its stream, its
 /// positions and the network's outputs. Self-play, arena and train-vs-UCI
 /// pass the game's own named stream; interactive paths pass a generator
-/// seeded from the system for that session. The normal draws inside the
-/// Gamma sampler still use the platform `logf`/`cosf`, whose last-bit
-/// results can differ between OS builds; replacing them with the
-/// restricted-domain functions is part of the per-tensor init work.
+/// seeded from the system for that session.
+///
+/// The math is deliberately the platform's: the softmax uses vForce `exp`,
+/// and the Dirichlet draws (Gamma boost, Marsaglia–Tsang acceptance,
+/// Box–Muller) use libm `log` / `pow` / `cos`, whose last bits can change
+/// with an OS build or chip. That is the recorded deviation from determinism
+/// decision D-3, which planned to move these onto `DCMNormalMath`'s
+/// restricted-domain functions. It was not done because the sampler's other
+/// input, the network's logits, comes from a GPU forward pass that is not
+/// bit-reproducible across machines (determinism plan A5), so a game's moves
+/// cannot reproduce across machines whatever this CPU math does. What is
+/// pinned is the draw sequence: which stream draws feed which step. A libm
+/// change that alters a run's computation still shows up on resume, because
+/// the behavior fingerprint covers Dirichlet-noised `MoveSampler` choices
+/// (`BehaviorFingerprint`).
 enum MoveSampler {
 
     /// Upper bound on the number of legal moves in any chess position.

@@ -75,8 +75,11 @@ final class BuildNewModelModel {
     var saveAsName: String = ""
 
     /// The optional init seed (decimal UInt64): the same seed and
-    /// architecture mint the same weights here, in `--new-model --init-seed`
-    /// and on every machine. Not part of the architecture or a preset.
+    /// architecture mint bit-identical trainable tensors here, in
+    /// `--new-model --init-seed` and on every machine; the batch-norm running
+    /// statistics are calibrated by a GPU forward pass and match only to float
+    /// tolerance (see `NetworkInitMode.randomWeights`). Not part of the
+    /// architecture or a preset.
     var initSeedText: String = ""
 
     /// Cached preset list (built-ins + user-saved). Scanned once at init (and
