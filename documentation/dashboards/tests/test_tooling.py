@@ -243,6 +243,74 @@ class InitReproducibilityScriptTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
 
+class ProbeLoopScriptTests(unittest.TestCase):
+    """experiments/probe_loop.sh, run with HOME pointed at a temporary folder (its Models
+    folder is built from $HOME, so nothing under the real Application Support is read or
+    written) and a stub probe binary inside a temporary .app bundle."""
+
+    STEM = "20261003-probe-loop-test"
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.home = os.path.join(self.folder.name, "home")
+        self.models = os.path.join(self.home, "Library", "Application Support", "DrewsChessMachine", "Models")
+        os.makedirs(self.models)
+        self.probes = os.path.join(self.folder.name, "probes.jsonl")
+        self.processes = []
+
+    def tearDown(self):
+        for process in self.processes:
+            process.kill()
+            process.wait()
+        self.folder.cleanup()
+
+    def app_executable(self, bundle, body):
+        macos = os.path.join(self.folder.name, bundle, "Contents", "MacOS")
+        os.makedirs(macos)
+        path = os.path.join(macos, "DrewsChessMachine")
+        with open(path, "w") as handle:
+            handle.write("#!/bin/sh\n" + body)
+        os.chmod(path, 0o755)
+        return path
+
+    def run_loop(self, arguments, **environment):
+        env = dict(os.environ, HOME=self.home, **environment)
+        return subprocess.run(["/bin/zsh", os.path.join(REPO, "experiments", "probe_loop.sh")] + arguments,
+                              capture_output=True, text=True, timeout=120, env=env)
+
+    def test_probe_loop_refuses_a_trainer_pid_that_is_not_the_trainer(self):
+        trainer = self.app_executable("Trainer.app", "sleep 60\n")
+        rolling = os.path.join(self.models, f"{self.STEM}-replay-latest.safetensors")
+        self.processes.append(subprocess.Popen([trainer, "--replay-corpus", "corpus", "--out-model", rolling]))
+        probe = self.app_executable("Probe.app", "exit 0\n")
+        completed = self.run_loop([self.STEM, self.probes], PROBE_BIN=probe, TRAINER_PID=str(os.getpid()),
+                                  PROBE_START_WAIT_SEC="30")
+        self.assertEqual(completed.returncode, 3, completed.stdout + completed.stderr)
+        self.assertIn(f"TRAINER_PID {os.getpid()} is not the trainer", completed.stderr)
+
+    def test_probe_loop_does_not_record_a_probe_that_exited_nonzero(self):
+        write_header(os.path.join(self.models, f"{self.STEM}-replay-step2000.safetensors"),
+                     {"model_id": "M1", "training_step": "2000"})
+        summary = json.dumps({"modelID": "M1", "pElo": 1200.5, "nll": 2.4, "set": "wide"})
+        probe = self.app_executable("Probe.app", f"echo '{summary}'\nexit 1\n")
+        completed = self.run_loop(["--once", self.STEM, self.probes], PROBE_BIN=probe, PROBE_MAX_ATTEMPTS="1")
+        with open(self.probes) as handle:
+            self.assertEqual(handle.read(), "", "a probe that exited non-zero is not a measurement")
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertIn("probe exit 1", completed.stderr)
+
+    def test_probe_loop_records_a_probe_that_succeeded(self):
+        write_header(os.path.join(self.models, f"{self.STEM}-replay-step2000.safetensors"),
+                     {"model_id": "M1", "training_step": "2000"})
+        summary = json.dumps({"modelID": "M1", "pElo": 1200.5, "nll": 2.4, "set": "wide"})
+        probe = self.app_executable("Probe.app", f"echo '{summary}'\n")
+        completed = self.run_loop(["--once", self.STEM, self.probes], PROBE_BIN=probe)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        with open(self.probes) as handle:
+            records = [json.loads(line) for line in handle]
+        self.assertEqual([(r["step"], r["model_id"], r["pElo"]) for r in records], [(2000, "M1", 1200.5)])
+
+
 class BufferGameLengthTests(unittest.TestCase):
     def test_games_at_the_boundary_are_interpolated(self):
         feed = [(50, 0, 0), (100, 400_000, 6_000), (150, 800_000, 12_000)]
