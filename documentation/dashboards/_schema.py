@@ -47,3 +47,9 @@ FIELDS = ["cum_step", "meta_step", "segment", "elapsed_train_sec", "wallclock_is
           #                   stays beside it for rows that predate records. Blank on
           #                   files without a record and where the record holds null.
           "train_step_sec"]
+
+# The `note` a row carries when its checkpoint was probed and the probe measured a
+# non-finite pElo (the probe then omits the key, and the row's pElo cell is blank).
+# It is what tells such a row apart from one that was never probed: the trackers
+# write it, and the experiment tables read it to show "non-finite" instead of a gap.
+NON_FINITE_PELO_NOTE = "probe: pElo non-finite"

@@ -175,6 +175,14 @@ def pelo_cell(points, step):
     return "non-finite" if pelo is None else f"{pelo:.1f}"
 
 
+def nll_cell(points, step):
+    """Table cell for an NLL: blank where the run never reached the step, and where the
+    measurement holds no NLL value."""
+    if step not in points or points[step][1] is None:
+        return ""
+    return f"{points[step][1]:.4f}"
+
+
 def main():
     if len(sys.argv) != 5:
         print(__doc__.split("\n\n")[1], file=sys.stderr)

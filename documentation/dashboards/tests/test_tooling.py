@@ -5,17 +5,20 @@ replay-buffer game length (experiments/table_common.py).
 Run: python3 -m unittest discover -s documentation/dashboards/tests
 Every test works on synthetic files in a temporary folder.
 """
+import csv
 import json
 import os
 import struct
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 sys.path.insert(0, os.path.join(REPO, "experiments"))
+sys.path.insert(0, os.path.join(REPO, "documentation", "dashboards"))
 import dcm_arch  # noqa: E402
 import dcm_session_logs  # noqa: E402
 import probe_record  # noqa: E402
@@ -180,6 +183,45 @@ class ProbeRecordTests(unittest.TestCase):
             handle.write(json.dumps({"step": 1000, "modelID": "M1", "pElo": 1.0, "nll": 2.0}) + "\n")
         with self.assertRaises(ValueError):
             probe_record.arm_points(self.probes, probe_record.NOT_STARTED, "D")
+
+
+class CsvPointsTests(unittest.TestCase):
+    """table_common's dashboard-CSV arm reads a non-finite probe as a measurement, the way
+    probe_record reads a probes.jsonl arm, never as a step the run did not reach."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        rows = [
+            dict(cum_step="1000", pElo="1500.25", nll="2.4", note="", probe_build="A.app@sha256:1"),
+            dict(cum_step="2000", pElo="", nll="2.5", note="probe-backfill; probe: pElo non-finite",
+                 probe_build="A.app@sha256:2"),
+            dict(cum_step="3000", pElo="", nll="", note="log-backfill (fast-net)", probe_build=""),
+            dict(cum_step="4000", pElo="1510", nll="", note="", probe_build="A.app@sha256:1"),
+        ]
+        with open(os.path.join(self.folder.name, "arm.csv"), "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["cum_step", "pElo", "nll", "note", "probe_build"])
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def test_csv_points_keeps_non_finite_rows(self):
+        with mock.patch.object(table_common, "DATA", self.folder.name):
+            points = table_common.csv_points("arm")
+            builds = table_common.csv_probe_builds("arm")
+        self.assertEqual(points, {1000: (1500.25, 2.4), 2000: (None, 2.5), 4000: (1510.0, None)})
+        self.assertEqual(probe_record.pelo_cell(points, 2000), "non-finite")
+        self.assertEqual(probe_record.pelo_cell(points, 3000), "", "a row never probed is not a measurement")
+        self.assertEqual(builds, {"A.app@sha256:1", "A.app@sha256:2"})
+
+    def test_nll_cell_is_blank_where_there_is_no_value(self):
+        points = {1000: (1500.25, 2.4), 4000: (1510.0, None)}
+        self.assertEqual([probe_record.nll_cell(points, s) for s in (1000, 3000, 4000)], ["2.4000", "", ""])
+
+    def test_marker_string_has_one_source(self):
+        import _schema
+        self.assertIs(table_common.NON_FINITE_PELO_NOTE, _schema.NON_FINITE_PELO_NOTE)
 
 
 class BufferGameLengthTests(unittest.TestCase):

@@ -30,6 +30,7 @@ Idempotent: track/migrate never duplicate a cum_step already present.
 import os, re, sys, csv, json, glob, struct, math, bisect, argparse, collections, itertools, datetime
 import numpy as np
 from _schema import FIELDS  # single source of the CSV column order (shared with selfplay.py)
+from _schema import NON_FINITE_PELO_NOTE  # the non-finite-measurement marker (read by experiments/table_common.py)
 # Crash-safe (_atomic_write), compare-and-swap, no-silent-shrink replace of the CSVs and
 # registry.json.
 from _guarded_csv import (read_rows, read_text, replace_rows, replace_text_if_unchanged,
@@ -135,7 +136,6 @@ def internals_cells(path):
 # cannot hold a tick (and with it the cron lock) forever. The child is killed when it
 # runs out; the checkpoint is untouched and is retried on a later tick.
 PROBE_TIMEOUT_SECONDS = 300
-NON_FINITE_PELO_NOTE = "probe: pElo non-finite"
 
 
 class ProbeFailure(RuntimeError):

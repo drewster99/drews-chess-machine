@@ -48,7 +48,7 @@ def main():
     for step in range(1000, last + 1, 1000):
         row = [f"{step:,}", f"{plies[step]:.1f}" if step in plies else ""]
         row += [probe_record.pelo_cell(points, step) for _, points in arms]
-        row += [f"{points[step][1]:.4f}" if step in points else "" for _, points in arms]
+        row += [probe_record.nll_cell(points, step) for _, points in arms]
         print("| " + " | ".join(row) + " |")
     builds = [(label, csv_probe_builds(run)) for label, run in SE_ARMS]
     print_probe_builds([builds[0], ("leaky FC1 scale+bias", probe_record.probe_builds(
