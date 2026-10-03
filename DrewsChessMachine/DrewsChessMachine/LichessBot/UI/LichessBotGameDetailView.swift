@@ -118,7 +118,7 @@ struct LichessBotGameDetailContent: View {
                     // Both panels keep their full size while hidden: a
                     // collapsed scroll view loses its scroll position.
                     ZStack {
-                        LichessBotTranscriptView(entries: game.transcript, isVisible: panel == .transcript)
+                        LichessBotTranscriptView(game: game, isVisible: panel == .transcript)
                             .opacity(panel == .transcript ? 1 : 0)
                             .allowsHitTesting(panel == .transcript)
                             .accessibilityHidden(panel != .transcript)

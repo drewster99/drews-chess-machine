@@ -5,8 +5,12 @@ import SwiftUI
 /// notes in between. Click an entry to show its raw text. Follows the newest
 /// entry while "Follow" is on; turn it off to read back without the view
 /// jumping.
+///
+/// Takes the game rather than its entries so the transcript is read here:
+/// a keep-alive, a request record or a note then re-renders only this view,
+/// not the whole game view around it.
 struct LichessBotTranscriptView: View {
-    let entries: [LichessBotTranscriptEntry]
+    let game: LichessBotLiveGame
     /// Whether the transcript is on screen; coming back into view scrolls
     /// to the newest entry while following.
     let isVisible: Bool
@@ -14,6 +18,7 @@ struct LichessBotTranscriptView: View {
     @State private var follows = true
 
     var body: some View {
+        let entries = game.transcript
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("\(entries.count) entries")
@@ -59,8 +64,10 @@ struct LichessBotTranscriptList: View {
                 }
                 .padding(6)
             }
+            // Only while on screen: a hidden transcript catches up when it
+            // comes back into view.
             .onChange(of: entries.last?.id) {
-                if follows, let last = entries.last?.id {
+                if isVisible, follows, let last = entries.last?.id {
                     proxy.scrollTo(last, anchor: .bottom)
                 }
             }
