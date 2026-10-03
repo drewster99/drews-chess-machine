@@ -68,6 +68,15 @@ struct TrainingSettingsPopover: View {
     let replayRatioComputedSelfPlayDelayMs: Int?
     /// Bytes-per-position for the auto-GB readout (`ReplayBuffer.bytesPerPosition(floatsPerBoard:)`).
     let bytesPerPosition: Int
+
+    /// Disk size of a full replay buffer at the capacity in the field (or,
+    /// while that does not parse, the committed capacity): what a save that
+    /// includes the buffer writes once the buffer has filled.
+    private var replayBufferSaveSizeText: String {
+        let capacity = ReplayBufferCapacity.parsedInDeclaredRange(model.replayBufferCapacityText)
+            ?? TrainingParameters.shared.replayBufferCapacity
+        return "≈ " + BinaryByteCount.text(capacity * bytesPerPosition) + " when full"
+    }
     /// Live resident-set composition of the replay buffer, for the
     /// "Replay sampling" section's pre-constraint readout. `nil` outside
     /// a Play-and-Train session / before the first heartbeat.
@@ -372,6 +381,8 @@ struct TrainingSettingsPopover: View {
                     periodicAutosaveIntervalMinutesText: $model.periodicAutosaveIntervalMinutesText,
                     maxPeriodicAutosavesKeptText: $model.maxPeriodicAutosavesKeptText,
                     automaticSavePruningEnabled: $model.automaticSavePruningEnabledValue,
+                    sessionSaveIncludeReplayBuffer: $model.sessionSaveIncludeReplayBufferValue,
+                    replayBufferSaveSizeText: replayBufferSaveSizeText,
                     klProbeIntervalText: $model.klProbeIntervalText,
                     randomSeedMode: $model.randomSeedModeValue,
                     randomSeedText: $model.randomSeedText,
@@ -1238,6 +1249,9 @@ private struct SessionsTab: View {
     @Binding var periodicAutosaveIntervalMinutesText: String
     @Binding var maxPeriodicAutosavesKeptText: String
     @Binding var automaticSavePruningEnabled: Bool
+    @Binding var sessionSaveIncludeReplayBuffer: Bool
+    /// Disk size of the buffer a save would include, shown beside the toggle.
+    let replayBufferSaveSizeText: String
     @Binding var klProbeIntervalText: String
     @Binding var randomSeedMode: RandomSeedMode
     @Binding var randomSeedText: String
@@ -1282,6 +1296,18 @@ private struct SessionsTab: View {
                         .foregroundStyle(.secondary)
                         .opacity(pruningForcedOff ? 1 : 0)
                         .frame(width: pruningForcedOff ? nil : 0, height: pruningForcedOff ? nil : 0)
+                    Spacer()
+                }
+                HStack(spacing: 8) {
+                    Text("")
+                        .frame(width: 160, alignment: .trailing)
+                    Toggle("Include replay buffer", isOn: $sessionSaveIncludeReplayBuffer)
+                        .toggleStyle(.checkbox)
+                        .help("Write the replay buffer into periodic, post-promotion and SIGUSR2 saves. Off: a resume refills the buffer from new games. Manual saves ask each time.")
+                    Text(replayBufferSaveSizeText)
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
                     Spacer()
                 }
                 PopoverRow(
@@ -1343,7 +1369,7 @@ private struct SessionsTab: View {
 
             Divider()
 
-            Text("The periodic autosave writes a full session checkpoint on this cadence while Play-and-Train runs; an interval change takes effect mid-session. Pruning is off by default, and the kept count applies only when it is on. When on, the kept count covers periodic and post-promotion autosaves together, across every session, and the oldest beyond it are deleted after each new one is written. The save just written, the resume target, manual saves, and SIGUSR2 saves are never pruned. 0 keeps every autosave (no pruning).")
+            Text("The periodic autosave writes a session checkpoint on this cadence while Play-and-Train runs; an interval change takes effect mid-session. Automatic saves include the replay buffer only when Include replay buffer is on; without it a save is far smaller, and a resume from it refills the buffer from new games before training continues (logged NOT EXACT: buffer). Pruning is off by default, and the kept count applies only when it is on. When on, the kept count covers periodic and post-promotion autosaves together, across every session, and the oldest beyond it are deleted after each new one is written. The save just written, the resume target, manual saves, and SIGUSR2 saves are never pruned. 0 keeps every autosave (no pruning).")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

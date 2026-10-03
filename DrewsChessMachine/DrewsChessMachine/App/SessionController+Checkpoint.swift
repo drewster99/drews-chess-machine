@@ -141,28 +141,25 @@ extension SessionController {
     nonisolated static let saveGateTimeoutMs: Int = 15_000
 
     /// Manual "Save Session" — writes a full `.dcmsession` with
-    /// champion and trainer model files plus `session.json`.
+    /// champion and trainer model files plus `session.json`, and the replay
+    /// buffer when `includeReplayBuffer` (the Save Session sheet's choice).
     /// Requires an active Play-and-Train session and an available
     /// trainer. Briefly pauses both self-play worker 0 and the
     /// training gate to snapshot the two networks' weights.
-    func handleSaveSessionManual() {
+    func handleSaveSessionManual(includeReplayBuffer: Bool) {
         // Belt-and-suspenders guards — menu disable is the primary
         // gate but these cover keyboard-shortcut / URL-scheme
-        // invocations under a race.
-        if checkpoint?.checkpointSaveInFlight == true {
-            onRefuseMenuAction("A save is already in progress. Wait for it to finish.")
+        // invocations under a race, and a state change while the Save
+        // Session sheet was open.
+        if let reason = manualSaveSessionRefusal() {
+            onRefuseMenuAction(reason)
             return
         }
-        if isArenaRunning {
-            onRefuseMenuAction("Can't save the session while the arena is running. Wait for it to finish.")
-            return
-        }
-        guard realTraining,
-              let champion = network,
+        guard let champion = network,
               let trainer,
               let selfPlayGate = activeSelfPlayGate,
               let trainingGate = activeTrainingGate else {
-            onRefuseMenuAction("No active training session to save. Start Play and Train first.")
+            onRefuseMenuAction(Self.noTrainingSessionToSave)
             return
         }
         saveSessionInternal(
@@ -170,8 +167,42 @@ extension SessionController {
             trainer: trainer,
             selfPlayGate: selfPlayGate,
             trainingGate: trainingGate,
-            trigger: .manual
+            trigger: .manual,
+            includeReplayBuffer: includeReplayBuffer
         )
+    }
+
+    private static let noTrainingSessionToSave = "No active training session to save. Start Play and Train first."
+
+    /// Why a manual Save Session cannot run now, or nil when it can: checked
+    /// before the Save Session sheet opens and again when it saves.
+    func manualSaveSessionRefusal() -> String? {
+        if checkpoint?.checkpointSaveInFlight == true {
+            return "A save is already in progress. Wait for it to finish."
+        }
+        if isArenaRunning {
+            return "Can't save the session while the arena is running. Wait for it to finish."
+        }
+        guard realTraining, network != nil, trainer != nil,
+              activeSelfPlayGate != nil, activeTrainingGate != nil else {
+            return Self.noTrainingSessionToSave
+        }
+        return nil
+    }
+
+    /// The Save Session sheet's request: the checkbox starts from
+    /// `session_save_include_replay_buffer`, and the size is the live
+    /// buffer's on disk (stored positions × bytes per position).
+    func saveSessionSheetRequest() -> SaveSessionSheetRequest {
+        let sizeText: String
+        if let buffer = replayBuffer {
+            sizeText = "≈ " + BinaryByteCount.text(buffer.count * buffer.bytesPerPosition)
+        } else {
+            sizeText = "no buffer"
+        }
+        return SaveSessionSheetRequest(
+            initialIncludeReplayBuffer: TrainingParameters.shared.sessionSaveIncludeReplayBuffer,
+            replayBufferSizeText: sizeText)
     }
 
     /// SIGUSR2 entry point — "checkpoint now, then shut down." Writes a full
@@ -205,6 +236,7 @@ extension SessionController {
             selfPlayGate: selfPlayGate,
             trainingGate: trainingGate,
             trigger: .signalSave,
+            includeReplayBuffer: TrainingParameters.shared.sessionSaveIncludeReplayBuffer,
             onComplete: { success in
                 if success {
                     SessionLogger.shared.log("[SIGUSR2] session checkpoint written — shutting down")
@@ -258,7 +290,8 @@ extension SessionController {
             trainer: trainer,
             selfPlayGate: selfPlayGate,
             trainingGate: trainingGate,
-            trigger: .periodic
+            trigger: .periodic,
+            includeReplayBuffer: TrainingParameters.shared.sessionSaveIncludeReplayBuffer
         )
     }
 
@@ -272,13 +305,17 @@ extension SessionController {
     /// weights already snapshotted under the arena's own pause and so
     /// does not need to dance the gates again here. (`internal` rather
     /// than `private` so the manual-promote path in another extension
-    /// file can reach it.)
+    /// file can reach it.) `includeReplayBuffer` decides whether the save
+    /// writes the replay buffer (determinism plan D-8): the Save Session
+    /// sheet's choice for a manual save, `session_save_include_replay_buffer`
+    /// for every other trigger.
     func saveSessionInternal(
         champion: ChessMPSNetwork,
         trainer: ChessTrainer,
         selfPlayGate: WorkerPauseGate,
         trainingGate: WorkerPauseGate,
         trigger: SessionSaveTrigger,
+        includeReplayBuffer: Bool,
         onComplete: (@MainActor @Sendable (Bool) -> Void)? = nil
     ) {
         let championID = champion.identifier?.description ?? "unknown"
@@ -299,10 +336,11 @@ extension SessionController {
         let sessionState = buildCurrentSessionState(
             championID: championID,
             trainerID: trainerID,
-            arenaClock: .live
+            arenaClock: .live,
+            includeReplayBuffer: includeReplayBuffer
         )
         let trainingStep = trainingStats?.steps ?? 0
-        let bufferForSave = replayBuffer
+        let bufferForSave = includeReplayBuffer ? replayBuffer : nil
         // Snapshot the chart-coordinator state on the main actor
         // BEFORE jumping to detached work — the rings are
         // `@MainActor`-isolated so the array copies have to happen
@@ -463,14 +501,9 @@ extension SessionController {
             case .success(let url):
                 didSucceed = true
                 checkpoint?.setCheckpointStatus("Saved \(url.lastPathComponent)\(uiSuffix)", kind: .success)
-                let bufStr: String
-                if let snap = bufferForSave?.stateSnapshot() {
-                    bufStr = " replay=\(snap.storedCount)/\(snap.capacity)"
-                } else {
-                    bufStr = ""
-                }
                 SessionLogger.shared.log(
-                    "[CHECKPOINT] Saved session (\(diskTag)): \(url.lastPathComponent) build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(bufStr)"
+                    "[CHECKPOINT] Saved session (\(diskTag)): \(url.lastPathComponent) build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)"
+                        + Self.savedReplayBufferLogFields(writtenBuffer: bufferForSave)
                 )
                 checkpoint?.recordLastSessionPointer(
                     directoryURL: url,
@@ -943,6 +976,14 @@ extension SessionController {
         case arenaJustFinished
     }
 
+    /// The replay-buffer fields of a `[CHECKPOINT] Saved session` line:
+    /// `buffer=included` with the buffer's fill when the save wrote it
+    /// (`writtenBuffer`), `buffer=omitted` when it did not (D-8).
+    nonisolated static func savedReplayBufferLogFields(writtenBuffer: ReplayBuffer?) -> String {
+        guard let snap = writtenBuffer?.stateSnapshot() else { return " buffer=omitted" }
+        return " buffer=included replay=\(snap.storedCount)/\(snap.capacity)"
+    }
+
     /// Build the Codable snapshot of the current session state (counters,
     /// hyperparameters, arena history, replay-buffer footprint, build info).
     /// Called at save time with the live state read off the main actor by both
@@ -950,12 +991,15 @@ extension SessionController {
     /// save. Closes the active training segment at save time (and re-opens a
     /// fresh one if training is still in progress) so the on-disk cumulative
     /// wall-time totals stay correct across mid-training saves.
-    /// `arenaClock` says which arena clock the save records.
+    /// `arenaClock` says which arena clock the save records;
+    /// `includeReplayBuffer` whether the save writes the replay buffer, which
+    /// `hasReplayBuffer` and the buffer counters then describe.
     @MainActor
     func buildCurrentSessionState(
         championID: String,
         trainerID: String,
-        arenaClock: ArenaClockAtSave
+        arenaClock: ArenaClockAtSave,
+        includeReplayBuffer: Bool
     ) -> SessionCheckpointState {
         let params = TrainingParameters.shared
         let wasTraining = realTraining
@@ -1004,7 +1048,7 @@ extension SessionController {
         let lr = trainer?.learningRate ?? Self.trainerLearningRateDefault
         let entropyCoeff = trainer?.entropyRegularizationCoeff ?? Self.entropyRegularizationCoeffDefault
         let drawPen = trainer?.drawPenalty ?? Float(params.drawPenalty)
-        let bufferSnap = replayBuffer?.stateSnapshot()
+        let bufferSnap = includeReplayBuffer ? replayBuffer?.stateSnapshot() : nil
         // Architecture metadata must reflect the ACTUAL built network, not the
         // ChessNetwork static defaults (which only describe the current preset).
         // Without this, a non-default session (e.g. a rebuilt v3 8-block) saved
@@ -1069,6 +1113,7 @@ extension SessionController {
             periodicAutosaveIntervalSec: params.periodicAutosaveIntervalSec,
             maxPeriodicAutosavesKept: params.maxPeriodicAutosavesKept,
             automaticSavePruningEnabled: params.automaticSavePruningEnabled,
+            sessionSaveIncludeReplayBuffer: params.sessionSaveIncludeReplayBuffer,
             arenaPromotionCriterion: params.arenaPromotionCriterion.logToken,
             arenaSPRTElo0: params.arenaSPRTElo0,
             arenaSPRTElo1: params.arenaSPRTElo1,

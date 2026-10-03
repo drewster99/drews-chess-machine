@@ -1308,6 +1308,17 @@ public enum MaxPeriodicAutosavesKept: TrainingParameterKey {}
 )
 public enum AutomaticSavePruningEnabled: TrainingParameterKey {}
 
+@TrainingParameter(
+    name: "Session Save Include Replay Buffer",
+    description: "Whether automatic session saves write the replay buffer (`replay_buffer.bin`, several GB at the usual capacities) into the session folder: the GUI's periodic, post-promotion and SIGUSR2 saves. A manual File > Save Session asks each time, starting from this setting. Off by default: a save holds the weights, optimizer state and run state, and a resume from it refills the buffer from new games before training continues, reported as `[RESUME] NOT EXACT: buffer`. On: the buffer is saved and a resume restores it. Read at each save.",
+    default: false,
+    category: "Sessions",
+    id: "session_save_include_replay_buffer",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum SessionSaveIncludeReplayBuffer: TrainingParameterKey {}
+
 // MARK: Reproducibility (determinism plan, Part A3.2)
 //
 // One master seed per run; every random stream (replay-buffer draws, each
@@ -1461,6 +1472,7 @@ public extension TrainingParametersSnapshot {
     var periodicAutosaveIntervalSec: Double { value(for: PeriodicAutosaveIntervalSec.self) }
     var maxPeriodicAutosavesKept: Int { value(for: MaxPeriodicAutosavesKept.self) }
     var automaticSavePruningEnabled: Bool { value(for: AutomaticSavePruningEnabled.self) }
+    var sessionSaveIncludeReplayBuffer: Bool { value(for: SessionSaveIncludeReplayBuffer.self) }
     var randomSeedMode: RandomSeedMode {
         RandomSeedMode(persistedRawValue: value(for: RandomSeedModeParameter.self))
     }
@@ -1604,6 +1616,7 @@ public final class TrainingParameters {
     public var periodicAutosaveIntervalSec: Double { didSet { if !Self.commitAssignment(PeriodicAutosaveIntervalSec.self, value: periodicAutosaveIntervalSec) { periodicAutosaveIntervalSec = oldValue } } }
     public var maxPeriodicAutosavesKept: Int { didSet { if !Self.commitAssignment(MaxPeriodicAutosavesKept.self, value: maxPeriodicAutosavesKept) { maxPeriodicAutosavesKept = oldValue } } }
     public var automaticSavePruningEnabled: Bool { didSet { if !Self.commitAssignment(AutomaticSavePruningEnabled.self, value: automaticSavePruningEnabled) { automaticSavePruningEnabled = oldValue } } }
+    public var sessionSaveIncludeReplayBuffer: Bool { didSet { if !Self.commitAssignment(SessionSaveIncludeReplayBuffer.self, value: sessionSaveIncludeReplayBuffer) { sessionSaveIncludeReplayBuffer = oldValue } } }
     /// Stored as the enum; the raw value appears only at the persistence
     /// boundary (see `RandomSeedMode`).
     public var randomSeedMode: RandomSeedMode {
@@ -1710,6 +1723,7 @@ public final class TrainingParameters {
         self.periodicAutosaveIntervalSec = Self.read(PeriodicAutosaveIntervalSec.self)
         self.maxPeriodicAutosavesKept = Self.read(MaxPeriodicAutosavesKept.self)
         self.automaticSavePruningEnabled = Self.read(AutomaticSavePruningEnabled.self)
+        self.sessionSaveIncludeReplayBuffer = Self.read(SessionSaveIncludeReplayBuffer.self)
         self.randomSeedMode = RandomSeedMode(persistedRawValue: Self.read(RandomSeedModeParameter.self))
         self.randomSeed = Self.read(RandomSeed.self)
         self.invalidStoredSettings = Self.invalidStoredValuesFound.value.values.sorted { $0.id < $1.id }
@@ -1805,6 +1819,7 @@ public final class TrainingParameters {
         v[PeriodicAutosaveIntervalSec.id] = PeriodicAutosaveIntervalSec.encode(periodicAutosaveIntervalSec)
         v[MaxPeriodicAutosavesKept.id] = MaxPeriodicAutosavesKept.encode(maxPeriodicAutosavesKept)
         v[AutomaticSavePruningEnabled.id] = AutomaticSavePruningEnabled.encode(automaticSavePruningEnabled)
+        v[SessionSaveIncludeReplayBuffer.id] = SessionSaveIncludeReplayBuffer.encode(sessionSaveIncludeReplayBuffer)
         v[RandomSeedModeParameter.id] = RandomSeedModeParameter.encode(randomSeedMode.rawValue)
         v[RandomSeed.id] = RandomSeed.encode(randomSeed)
         return v
@@ -2011,6 +2026,8 @@ public final class TrainingParameters {
             try MaxPeriodicAutosavesKept.definition.validate(raw); maxPeriodicAutosavesKept = try MaxPeriodicAutosavesKept.decode(raw)
         case AutomaticSavePruningEnabled.id:
             try AutomaticSavePruningEnabled.definition.validate(raw); automaticSavePruningEnabled = try AutomaticSavePruningEnabled.decode(raw)
+        case SessionSaveIncludeReplayBuffer.id:
+            try SessionSaveIncludeReplayBuffer.definition.validate(raw); sessionSaveIncludeReplayBuffer = try SessionSaveIncludeReplayBuffer.decode(raw)
         case RandomSeedModeParameter.id:
             try RandomSeedModeParameter.definition.validate(raw)
             randomSeedMode = RandomSeedMode(persistedRawValue: try RandomSeedModeParameter.decode(raw))
@@ -2398,6 +2415,7 @@ public final class TrainingParameters {
         PeriodicAutosaveIntervalSec.self,
         MaxPeriodicAutosavesKept.self,
         AutomaticSavePruningEnabled.self,
+        SessionSaveIncludeReplayBuffer.self,
         RandomSeedModeParameter.self,
         RandomSeed.self
     ]

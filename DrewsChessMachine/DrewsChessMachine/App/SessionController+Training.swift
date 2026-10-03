@@ -147,6 +147,7 @@ extension SessionController {
                 // can still hold pruning off whatever is restored here. The
                 // effective state is logged once the session is armed.
                 resume.restore(AutomaticSavePruningEnabled.self, saved: rs.automaticSavePruningEnabled, into: \.automaticSavePruningEnabled)
+                resume.restore(SessionSaveIncludeReplayBuffer.self, saved: rs.sessionSaveIncludeReplayBuffer, into: \.sessionSaveIncludeReplayBuffer)
                 if let cid = rs.recordingCorpusID {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] recording_corpus_id: prior run recorded into corpus \(cid) (informational; this run starts a fresh corpus when recording is on)"

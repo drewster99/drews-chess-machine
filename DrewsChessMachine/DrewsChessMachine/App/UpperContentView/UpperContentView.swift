@@ -592,6 +592,8 @@ struct UpperContentView: View {
     /// configured to show only the promoted records, opened by
     /// clicking the "Promotions" cell in the top status bar.
     @State private var showPromotionsSheet: Bool = false
+    /// The open Save Session sheet, nil while it is closed.
+    @State private var saveSessionSheetRequest: SaveSessionSheetRequest?
     @State private var showBuildNewModelSheet: Bool = false
     /// Presents `InvalidStoredSettingsSheet`; set on appear when
     /// `TrainingParameters` found unusable stored values at launch.
@@ -1261,6 +1263,20 @@ struct UpperContentView: View {
             InvalidStoredSettingsSheet(
                 trainingParams: trainingParams,
                 onClose: { showInvalidStoredSettingsSheet = false }
+            )
+        }
+        .sheet(item: $saveSessionSheetRequest) { request in
+            SaveSessionSheet(
+                request: request,
+                onSave: { includeReplayBuffer in
+                    SessionLogger.shared.log("[BUTTON] Save Session confirmed buffer=\(includeReplayBuffer ? "included" : "omitted")")
+                    saveSessionSheetRequest = nil
+                    session.handleSaveSessionManual(includeReplayBuffer: includeReplayBuffer)
+                },
+                onCancel: {
+                    SessionLogger.shared.log("[BUTTON] Save Session cancelled")
+                    saveSessionSheetRequest = nil
+                }
             )
         }
         // A session load stopped on saved settings it cannot use as found.
@@ -2359,7 +2375,11 @@ struct UpperContentView: View {
         commandHub.promoteTrainerNow = { promoteTrainerNowFromMenu() }
         commandHub.saveSession = {
             SessionLogger.shared.log("[BUTTON] Save Session")
-            session.handleSaveSessionManual()
+            if let reason = session.manualSaveSessionRefusal() {
+                refuseMenuAction(reason)
+                return
+            }
+            saveSessionSheetRequest = session.saveSessionSheetRequest()
         }
         commandHub.saveChampion = {
             SessionLogger.shared.log("[BUTTON] Save Champion")

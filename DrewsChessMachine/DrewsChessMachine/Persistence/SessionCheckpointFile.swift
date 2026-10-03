@@ -536,6 +536,12 @@ struct SessionCheckpointState: Codable, Equatable {
     /// (`CheckpointPaths.automaticSavePruningForcedOff`). Optional for
     /// back-compat; absent → loader falls through to the current value.
     var automaticSavePruningEnabled: Bool?
+    /// Whether automatic saves included the replay buffer at save time
+    /// (`TrainingParameters.shared.sessionSaveIncludeReplayBuffer`). The
+    /// setting, not what this save did — `hasReplayBuffer` records that.
+    /// Optional for back-compat; absent → the loader keeps the current
+    /// value (`absentValue: .currentSetting`).
+    var sessionSaveIncludeReplayBuffer: Bool?
     // --- Arena promotion criterion ---
     //
     // All Optional for back-compat; absent → the loader falls through to the

@@ -279,8 +279,8 @@ final class ExactResumeCompletionTests: XCTestCase {
     func testAPostPromotionSaveRecordsTheArenaAsJustFinished() {
         let controller = SessionController()
         controller.arenaTriggerBox = ArenaTriggerBox(startTime: Date().addingTimeInterval(-900))
-        let live = controller.buildCurrentSessionState(championID: "c", trainerID: "t", arenaClock: .live)
-        let postPromotion = controller.buildCurrentSessionState(championID: "c", trainerID: "t", arenaClock: .arenaJustFinished)
+        let live = controller.buildCurrentSessionState(championID: "c", trainerID: "t", arenaClock: .live, includeReplayBuffer: false)
+        let postPromotion = controller.buildCurrentSessionState(championID: "c", trainerID: "t", arenaClock: .arenaJustFinished, includeReplayBuffer: false)
         XCTAssertEqual(live.arenaSecondsSinceLastArena ?? -1, 900, accuracy: 5)
         XCTAssertEqual(postPromotion.arenaSecondsSinceLastArena, 0)
     }

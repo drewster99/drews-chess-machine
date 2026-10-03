@@ -603,10 +603,12 @@ extension SessionController {
         if promoted && Self.autosaveSessionsOnPromote && !promotedChampionWeights.isEmpty {
             let championID = champion.identifier?.description ?? "unknown"
             let trainerID = trainer.identifier?.description ?? "unknown"
+            let includeReplayBuffer = TrainingParameters.shared.sessionSaveIncludeReplayBuffer
             let sessionState = buildCurrentSessionState(
                 championID: championID,
                 trainerID: trainerID,
-                arenaClock: .arenaJustFinished
+                arenaClock: .arenaJustFinished,
+                includeReplayBuffer: includeReplayBuffer
             )
             // One step count for both files' metadata and the save's
             // [LAYER-HEALTH] block.
@@ -657,7 +659,7 @@ extension SessionController {
             // Champion + trainer share the topology; capture it on the main
             // actor (the detached task below must not touch `self`).
             let promotedArch = trainer.arch
-            let bufferForAutosave = replayBuffer
+            let bufferForAutosave = includeReplayBuffer ? replayBuffer : nil
             // Same main-actor snapshot rule as the manual/periodic
             // path — rings are @MainActor-isolated, so the array
             // copies have to happen here before we go detached.
@@ -696,13 +698,7 @@ extension SessionController {
                         chartSnapshot: chartSnapshotForAutosave,
                         trigger: SessionSaveTrigger.promotionDiskTag
                     )
-                    let bufStr: String
-                    if let snap = bufferForAutosave?.stateSnapshot() {
-                        bufStr = " replay=\(snap.storedCount)/\(snap.capacity)"
-                    } else {
-                        bufStr = ""
-                    }
-                    outcome = .success((url, bufStr))
+                    outcome = .success((url, SessionController.savedReplayBufferLogFields(writtenBuffer: bufferForAutosave)))
                 } catch {
                     outcome = .failure(error)
                 }

@@ -207,7 +207,8 @@ extension SessionController {
                     trainer: trainer,
                     selfPlayGate: selfPlayGate,
                     trainingGate: trainingGate,
-                    trigger: .manualPromote
+                    trigger: .manualPromote,
+                    includeReplayBuffer: TrainingParameters.shared.sessionSaveIncludeReplayBuffer
                 )
             } else {
                 checkpoint?.checkpointSaveInFlight = false

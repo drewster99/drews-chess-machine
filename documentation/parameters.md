@@ -512,6 +512,12 @@ Turns on the automatic-save retention pool: after each successful periodic or po
 
 **Type:** Bool · **Range:** — · **Default:** false · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
+### session_save_include_replay_buffer
+
+Whether automatic session saves write the replay buffer (`replay_buffer.bin`, several GB at the usual capacities) into the session folder: the GUI's periodic, post-promotion and SIGUSR2 saves. A manual File > Save Session asks each time, starting from this setting. Off by default: a save holds the weights, optimizer state and run state, and a resume from it refills the buffer from new games before training continues, reported as `[RESUME] NOT EXACT: buffer`. On: the buffer is saved and a resume restores it. Read at each save.
+
+**Type:** Bool · **Range:** — · **Default:** false · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
 ## Reproducibility
 
 ### random_seed_mode

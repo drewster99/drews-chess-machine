@@ -193,6 +193,9 @@ final class TrainingSettingsPopoverModel {
     /// `automatic_save_pruning_enabled`. Commit-on-Save like the rest of the
     /// tab: it is read live after each periodic or post-promotion save.
     var automaticSavePruningEnabledValue = false
+    /// `session_save_include_replay_buffer`. Commit-on-Save like the rest of
+    /// the tab: it is read at each automatic save.
+    var sessionSaveIncludeReplayBufferValue = false
     var klProbeIntervalText = "" { didSet { klProbeIntervalError = false } }
 
     private(set) var periodicAutosaveIntervalError = false
@@ -416,6 +419,7 @@ final class TrainingSettingsPopoverModel {
         )
         maxPeriodicAutosavesKeptText = String(p.maxPeriodicAutosavesKept)
         automaticSavePruningEnabledValue = p.automaticSavePruningEnabled
+        sessionSaveIncludeReplayBufferValue = p.sessionSaveIncludeReplayBuffer
         klProbeIntervalText = String(p.klProbeInterval)
         randomSeedModeValue = p.randomSeedMode
         randomSeedText = String(p.randomSeed)
@@ -1424,6 +1428,15 @@ final class TrainingSettingsPopoverModel {
                 "[PARAM] automaticSavePruningEnabled: \(p.automaticSavePruningEnabled) -> \(automaticSavePruningEnabledValue)"
             )
             p.automaticSavePruningEnabled = automaticSavePruningEnabledValue
+        }
+        // Include-replay-buffer toggle — Bool, cannot fail to parse. Read at
+        // each automatic save, so a plain singleton write is all that's
+        // required.
+        if sessionSaveIncludeReplayBufferValue != p.sessionSaveIncludeReplayBuffer {
+            SessionLogger.shared.log(
+                "[PARAM] sessionSaveIncludeReplayBuffer: \(p.sessionSaveIncludeReplayBuffer) -> \(sessionSaveIncludeReplayBufferValue)"
+            )
+            p.sessionSaveIncludeReplayBuffer = sessionSaveIncludeReplayBufferValue
         }
         // KL probe interval — Int in the declared range; 0 = off. `liveTunable`, and
         // the training loop reconciles it against the running trainer on its
