@@ -8,22 +8,16 @@ final class PruneUnreadableResumePointerTests: XCTestCase {
 
     private var sessionsDir: URL!
     private var defaults: UserDefaults!
-    private var defaultsSuiteName: String!
     private let sessionID = "20261001-1-AbCd"
 
     override func setUpWithError() throws {
         sessionsDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("PruneUnreadableResumePointerTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
-        defaultsSuiteName = "dcm-prune-pointer-tests-\(UUID().uuidString)"
-        defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuiteName))
-        defaults.removePersistentDomain(forName: defaultsSuiteName)
+        defaults = try makeTemporaryDefaults()
     }
 
     override func tearDownWithError() throws {
-        if let defaults, let defaultsSuiteName {
-            defaults.removePersistentDomain(forName: defaultsSuiteName)
-        }
         if let sessionsDir, FileManager.default.fileExists(atPath: sessionsDir.path) {
             try FileManager.default.removeItem(at: sessionsDir)
         }

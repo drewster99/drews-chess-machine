@@ -50,8 +50,7 @@ final class LichessBotQuitWithdrawalTests: XCTestCase {
         configure: (inout LichessBotSettings) -> Void = { _ in },
         makeController: (UserDefaults, LichessBotDataDirectory, LichessBotControllerServices) -> LichessBotController
     ) async throws -> (controller: LichessBotController, root: URL) {
-        let suite = "LichessBotQuitWithdrawalTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = try makeTemporaryDefaults()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotQuitWithdrawalTests-\(UUID().uuidString)", isDirectory: true)
         var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
@@ -72,7 +71,6 @@ final class LichessBotQuitWithdrawalTests: XCTestCase {
             lichess.release.open()
             controller.abandonAndStop()
             await controller.shutdown(reason: "test teardown")
-            defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
                     try FileManager.default.removeItem(at: root)

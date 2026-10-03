@@ -4,8 +4,9 @@
 //
 //  Unit tests for the persisted "most-recently-saved session"
 //  pointer used by the app-launch auto-resume flow. Each test
-//  uses a fresh in-memory `UserDefaults` suite so the global
-//  `.standard` store is never touched.
+//  that stores a pointer uses its own temporary `UserDefaults` suite
+//  (`makeTemporaryDefaults()`), so the global `.standard` store is
+//  never touched.
 //
 
 import XCTest
@@ -13,29 +14,15 @@ import XCTest
 
 final class LastSessionPointerTests: XCTestCase {
 
-    /// Fresh UserDefaults backed by an in-memory suite unique to
-    /// this test invocation. Using a suiteName per invocation —
-    /// rather than UserDefaults() — guarantees isolation even if a
-    /// crash leaves stale on-disk data from a previous run.
-    private func makeEphemeralDefaults() -> UserDefaults {
-        let suiteName = "dcm-tests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        // Wipe the suite's on-disk plist before the test starts so
-        // we always observe a clean slate. `removePersistentDomain`
-        // is the canonical clear for a suite.
-        defaults.removePersistentDomain(forName: suiteName)
-        return defaults
-    }
-
     // MARK: - Basic round-trip
 
-    func testReadOnEmptyReturnsNil() {
-        let defaults = makeEphemeralDefaults()
+    func testReadOnEmptyReturnsNil() throws {
+        let defaults = try makeTemporaryDefaults()
         XCTAssertNil(LastSessionPointer.read(from: defaults))
     }
 
-    func testWriteThenReadRoundTrip() {
-        let defaults = makeEphemeralDefaults()
+    func testWriteThenReadRoundTrip() throws {
+        let defaults = try makeTemporaryDefaults()
         let pointer = LastSessionPointer(
             sessionID: "20260420-1-abcd",
             directoryPath: "/tmp/fake/20260420-103214-20260420-1-abcd-manual.dcmsession",
@@ -47,8 +34,8 @@ final class LastSessionPointerTests: XCTestCase {
         XCTAssertEqual(round, pointer)
     }
 
-    func testWriteOverwritesPriorValue() {
-        let defaults = makeEphemeralDefaults()
+    func testWriteOverwritesPriorValue() throws {
+        let defaults = try makeTemporaryDefaults()
         let first = LastSessionPointer(
             sessionID: "A", directoryPath: "/tmp/A",
             savedAtUnix: 100, trigger: "manual"
@@ -62,8 +49,8 @@ final class LastSessionPointerTests: XCTestCase {
         XCTAssertEqual(LastSessionPointer.read(from: defaults), second)
     }
 
-    func testClearRemovesValue() {
-        let defaults = makeEphemeralDefaults()
+    func testClearRemovesValue() throws {
+        let defaults = try makeTemporaryDefaults()
         let pointer = LastSessionPointer(
             sessionID: "A", directoryPath: "/tmp/A",
             savedAtUnix: 100, trigger: "manual"
@@ -76,8 +63,8 @@ final class LastSessionPointerTests: XCTestCase {
 
     // MARK: - Corrupt data tolerance
 
-    func testCorruptDataReturnsNilWithoutCrash() {
-        let defaults = makeEphemeralDefaults()
+    func testCorruptDataReturnsNilWithoutCrash() throws {
+        let defaults = try makeTemporaryDefaults()
         // Write garbage bytes under the key. The decoder should
         // fail cleanly and `read` should return nil rather than
         // propagate the error.
@@ -86,12 +73,12 @@ final class LastSessionPointerTests: XCTestCase {
         XCTAssertNil(LastSessionPointer.read(from: defaults))
     }
 
-    func testCorruptDataLeftAlone() {
+    func testCorruptDataLeftAlone() throws {
         // Deliberate behavior: a failed decode does not wipe the
         // key. A future build with a different schema might still
         // be able to interpret those bytes. Verify the raw Data
         // survives the read call.
-        let defaults = makeEphemeralDefaults()
+        let defaults = try makeTemporaryDefaults()
         let garbage = "still-not-json".data(using: .utf8)!
         defaults.set(garbage, forKey: LastSessionPointer.userDefaultsKey)
         _ = LastSessionPointer.read(from: defaults)

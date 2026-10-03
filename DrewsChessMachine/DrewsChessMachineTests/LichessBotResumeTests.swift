@@ -19,15 +19,13 @@ final class LichessBotResumeTests: XCTestCase {
     /// One "installation": a defaults suite and a data folder that several
     /// controllers (launches) share, removed after the test.
     private struct Installation {
-        let suite: String
         let defaults: UserDefaults
         let root: URL
         var directory: LichessBotDataDirectory { LichessBotDataDirectory(root: root) }
     }
 
     private func makeInstallation(configure: (inout LichessBotSettings) -> Void = { _ in }) throws -> Installation {
-        let suite = "LichessBotResumeTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = try makeTemporaryDefaults()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotResumeTests-\(UUID().uuidString)", isDirectory: true)
         var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
@@ -36,7 +34,6 @@ final class LichessBotResumeTests: XCTestCase {
         configure(&settings)
         try LichessBotSettingsStore.save(settings, to: defaults)
         addTeardownBlock {
-            defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
                     try FileManager.default.removeItem(at: root)
@@ -45,7 +42,7 @@ final class LichessBotResumeTests: XCTestCase {
                 }
             }
         }
-        return Installation(suite: suite, defaults: defaults, root: root)
+        return Installation(defaults: defaults, root: root)
     }
 
     /// A controller (one app launch) over the installation, online.

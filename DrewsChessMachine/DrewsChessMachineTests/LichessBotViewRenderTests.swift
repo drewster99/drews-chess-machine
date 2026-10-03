@@ -72,8 +72,7 @@ final class LichessBotViewRenderTests: XCTestCase {
     /// there, send real requests to Lichess, whose protocol events arrive
     /// after the test has finished.
     private func makeController() throws -> LichessBotController {
-        let suite = "LichessBotViewRenderTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = try makeTemporaryDefaults()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotViewRenderTests-\(UUID().uuidString)", isDirectory: true)
         try LichessBotSettingsStore.save(LichessBotSettings.testBaseline(), to: defaults)
         let controller = LichessBotController(
@@ -89,7 +88,6 @@ final class LichessBotViewRenderTests: XCTestCase {
             // Shutting down writes the protocol events already queued and
             // refuses later ones, so nothing races the folder's removal.
             await controller.shutdown(reason: "test teardown")
-            defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
                     try FileManager.default.removeItem(at: root)

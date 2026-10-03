@@ -344,9 +344,7 @@ final class LichessBotMatchmakingTests: XCTestCase {
     }
 
     func testMatchmakingSettingsRoundTrip() throws {
-        let suite = "LichessBotMatchmakingTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let defaults = try makeTemporaryDefaults()
         var settings = LichessBotSettings()
         settings.matchmaking.enabled = true
         settings.matchmaking.fillMode = .onlyWhenIdle

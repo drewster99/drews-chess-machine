@@ -32,8 +32,7 @@ final class LichessBotNotesAtGoOnlineTests: XCTestCase {
     /// the controller exists), not yet online; everything is removed after
     /// the test.
     private func makeController(lichess: LichessBotResumeFakeLichess, prepare: (LichessBotDataDirectory) throws -> Void) throws -> (controller: LichessBotController, directory: LichessBotDataDirectory) {
-        let suite = "LichessBotNotesAtGoOnlineTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = try makeTemporaryDefaults()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotNotesAtGoOnlineTests-\(UUID().uuidString)", isDirectory: true)
         let directory = LichessBotDataDirectory(root: root)
         try directory.createDirectories()
@@ -57,7 +56,6 @@ final class LichessBotNotesAtGoOnlineTests: XCTestCase {
         addTeardownBlock { @MainActor in
             controller.abandonAndStop()
             await controller.shutdown(reason: "test teardown")
-            defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
                     try FileManager.default.removeItem(at: root)

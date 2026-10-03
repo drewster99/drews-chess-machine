@@ -32,8 +32,7 @@ final class LichessBotLeftoverJournalReportTests: XCTestCase {
     }
 
     private func makeInstallation() throws -> Installation {
-        let suite = "LichessBotLeftoverJournalReportTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = try makeTemporaryDefaults()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotLeftoverJournalReportTests-\(UUID().uuidString)", isDirectory: true)
         var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
@@ -42,7 +41,6 @@ final class LichessBotLeftoverJournalReportTests: XCTestCase {
         settings.challenge.outgoingChallengeTimeoutSeconds = 0
         try LichessBotSettingsStore.save(settings, to: defaults)
         addTeardownBlock {
-            defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
                     try FileManager.default.removeItem(at: root)

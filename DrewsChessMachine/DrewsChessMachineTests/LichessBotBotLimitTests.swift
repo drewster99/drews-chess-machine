@@ -25,8 +25,7 @@ final class LichessBotBotLimitTests: XCTestCase {
 
     /// An online controller whose player-notes file is unreadable.
     private func makeOnlineControllerWithUnreadableNotes(lichess: LichessBotResumeFakeLichess, configure: (inout LichessBotSettings) -> Void) async throws -> LichessBotController {
-        let suite = "LichessBotBotLimitTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = try makeTemporaryDefaults()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotBotLimitTests-\(UUID().uuidString)", isDirectory: true)
         let directory = LichessBotDataDirectory(root: root)
         try directory.createDirectories()
@@ -51,7 +50,6 @@ final class LichessBotBotLimitTests: XCTestCase {
         addTeardownBlock { @MainActor in
             controller.abandonAndStop()
             await controller.shutdown(reason: "test teardown")
-            defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
                     try FileManager.default.removeItem(at: root)

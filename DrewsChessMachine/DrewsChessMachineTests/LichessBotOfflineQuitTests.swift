@@ -26,8 +26,7 @@ final class LichessBotOfflineQuitTests: XCTestCase {
     /// `replies`, with its own defaults suite and data folder, removed after
     /// the test.
     private func makeController(transport: any LichessBotTransport, token: String, replies: SyncBox<[Bool]>, root: URL) throws -> LichessBotController {
-        let suite = "LichessBotOfflineQuitTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = try makeTemporaryDefaults()
         var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
         settings.connection.preventSleepWhileOnline = false
@@ -48,7 +47,6 @@ final class LichessBotOfflineQuitTests: XCTestCase {
         addTeardownBlock { @MainActor in
             controller.abandonAndStop()
             await controller.shutdown(reason: "test teardown")
-            defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
                     try FileManager.default.removeItem(at: root)

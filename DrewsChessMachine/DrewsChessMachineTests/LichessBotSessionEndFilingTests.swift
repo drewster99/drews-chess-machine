@@ -31,8 +31,7 @@ final class LichessBotSessionEndFilingTests: XCTestCase {
     }
 
     func testASessionEndingWithoutAFinishIsHandedToFiling() async throws {
-        let suite = "LichessBotSessionEndFilingTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = try makeTemporaryDefaults()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotSessionEndFilingTests-\(UUID().uuidString)", isDirectory: true)
         var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
@@ -61,7 +60,6 @@ final class LichessBotSessionEndFilingTests: XCTestCase {
         addTeardownBlock { @MainActor in
             controller.abandonAndStop()
             await controller.shutdown(reason: "test teardown")
-            defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
                     try FileManager.default.removeItem(at: root)

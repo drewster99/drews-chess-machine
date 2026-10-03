@@ -222,8 +222,7 @@ final class LichessBotGroupBFixTests: XCTestCase {
 
     @MainActor
     func testRepeatedAlarmIsOneRow() throws {
-        let suite = "LichessBotGroupBFixTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = try makeTemporaryDefaults()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotGroupBFixTests-\(UUID().uuidString)", isDirectory: true)
         let controller = LichessBotController(
             modelProvider: LichessBotFakeModelProvider(snapshot: nil),
@@ -235,7 +234,6 @@ final class LichessBotGroupBFixTests: XCTestCase {
             // controller's file queue. Shutting down writes what is queued
             // and refuses anything later, so nothing races the removal.
             await controller.shutdown(reason: "test teardown")
-            defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
                     try FileManager.default.removeItem(at: root)

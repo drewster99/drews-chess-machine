@@ -44,7 +44,6 @@ final class CheckpointHousekeepingTests: XCTestCase {
     private var sessionsDir: URL!
     private var modelsDir: URL!
     private var defaults: UserDefaults!
-    private var defaultsSuiteName: String!
 
     private let sessionA = "20261001-1-AbCd"
     private let sessionB = "20261001-2-WxYz"
@@ -56,15 +55,10 @@ final class CheckpointHousekeepingTests: XCTestCase {
         modelsDir = root.appendingPathComponent("Models", isDirectory: true)
         try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: modelsDir, withIntermediateDirectories: true)
-        defaultsSuiteName = "dcm-housekeeping-tests-\(UUID().uuidString)"
-        defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuiteName))
-        defaults.removePersistentDomain(forName: defaultsSuiteName)
+        defaults = try makeTemporaryDefaults()
     }
 
     override func tearDownWithError() throws {
-        if let defaults, let defaultsSuiteName {
-            defaults.removePersistentDomain(forName: defaultsSuiteName)
-        }
         if let root, FileManager.default.fileExists(atPath: root.path) {
             try FileManager.default.removeItem(at: root)
         }

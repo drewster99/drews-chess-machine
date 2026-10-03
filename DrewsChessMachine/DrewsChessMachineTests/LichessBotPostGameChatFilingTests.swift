@@ -27,8 +27,7 @@ final class LichessBotPostGameChatFilingTests: XCTestCase {
     }
 
     func testChatFetchedAfterTheFirstPostGameFetchReachesTheRecord() async throws {
-        let suite = "LichessBotPostGameChatFilingTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = try makeTemporaryDefaults()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotPostGameChatFilingTests-\(UUID().uuidString)", isDirectory: true)
         var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
@@ -57,7 +56,6 @@ final class LichessBotPostGameChatFilingTests: XCTestCase {
         addTeardownBlock { @MainActor in
             controller.abandonAndStop()
             await controller.shutdown(reason: "test teardown")
-            defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
                     try FileManager.default.removeItem(at: root)
