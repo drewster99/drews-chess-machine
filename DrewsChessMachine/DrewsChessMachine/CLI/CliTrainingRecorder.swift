@@ -38,6 +38,9 @@ final class CliTrainingRecorder: @unchecked Sendable {
         var runKind: RunKind?
         /// The run's master seed, set once at run start.
         var runRandomSeed: RunRandomSeed?
+        /// The lineage of the run's latest save; the last one set is the
+        /// run's final lineage.
+        var finalLineage: ResultsLineage?
     }
     private let lock = OSAllocatedUnfairLock<State>(initialState: State())
 
@@ -65,6 +68,29 @@ final class CliTrainingRecorder: @unchecked Sendable {
 
     /// Record how the run ended. Safe to call from any thread — the
     /// value is included in the next snapshot write.
+    /// Record the lineage of a save the run just wrote, with the saved
+    /// file's `content_sha256` (nil when the record was not written to a
+    /// file). Each save replaces the previous one, so the record in
+    /// `results.json` is the run's last.
+    func setFinalLineage(_ record: LineageRecord, checkpointSHA256: String?) {
+        lock.withLock { $0.finalLineage = ResultsLineage(record: record, checkpointSHA256: checkpointSHA256) }
+    }
+
+    /// Record the lineage of a save just written to `url`, with the file's
+    /// `content_sha256` read back from its header. A failed read is logged
+    /// through `log` and the save's lineage is recorded without the hash; it
+    /// never fails the save, which already succeeded.
+    func recordSave(of record: LineageRecord, savedAt url: URL, log: (String) -> Void) {
+        do {
+            let header = try ModelFileCatalog.headerMetadata(at: url)
+            setFinalLineage(record, checkpointSHA256: header[SafetensorsFile.contentHashKey])
+        } catch {
+            log("[RESULTS] reading \(url.lastPathComponent)'s content hash for results.json failed: "
+                + "\(error.localizedDescription); its lineage is recorded without checkpoint_sha256")
+            setFinalLineage(record, checkpointSHA256: nil)
+        }
+    }
+
     func setTerminationReason(_ reason: TerminationReason) {
         lock.withLock { $0.terminationReason = reason }
     }
@@ -115,7 +141,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
                 recordingCorpusID: state.recordingCorpusID,
                 randomSeed: state.runRandomSeed.map { String($0.masterSeed) },
                 randomSeedMode: state.runRandomSeed.map { $0.effectiveMode.logToken },
-                rngStreamDerivation: state.runRandomSeed.map { _ in DCMRandomStreams.derivationVersion }
+                rngStreamDerivation: state.runRandomSeed.map { _ in DCMRandomStreams.derivationVersion },
+                lineage: state.finalLineage
             )
         }
 
@@ -266,6 +293,41 @@ final class CliTrainingRecorder: @unchecked Sendable {
         case trainVsUci = "train_vs_uci"
     }
 
+    /// A run's lineage totals at one stats tick.
+    typealias LineageTotals = LineageTracker.Totals
+
+    /// The run's lineage as `results.json` records it (determinism plan
+    /// D5): the record of the run's last save minus its segment history and
+    /// derivation history (both stay in the model file), plus the SHA-256
+    /// of that saved file, the file the record describes.
+    struct ResultsLineage: Encodable, Sendable {
+        let record: LineageRecord
+        /// `content_sha256` of the file the record was saved in; nil when the
+        /// record was not written to a file.
+        let checkpointSHA256: String?
+
+        enum CodingKeys: String, CodingKey {
+            case schema, run, parent, steps, fed, time, parameters, build, invocation, device, rng
+            case checkpointSHA256 = "checkpoint_sha256"
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(record.schema, forKey: .schema)
+            try c.encode(record.run, forKey: .run)
+            try c.encode(record.parent, forKey: .parent)
+            try c.encode(record.steps, forKey: .steps)
+            try c.encode(record.fed, forKey: .fed)
+            try c.encode(record.time, forKey: .time)
+            try c.encode(record.parameters, forKey: .parameters)
+            try c.encode(record.build, forKey: .build)
+            try c.encode(record.invocation, forKey: .invocation)
+            try c.encode(record.device, forKey: .device)
+            try c.encode(record.rng, forKey: .rng)
+            try c.encode(checkpointSHA256, forKey: .checkpointSHA256)
+        }
+    }
+
     struct Snapshot: Encodable, Sendable {
         /// See `RunKind`. Nil only for a snapshot written by a path that never
         /// declared itself.
@@ -309,6 +371,9 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let randomSeed: String?
         let randomSeedMode: String?
         let rngStreamDerivation: String?
+        /// The lineage of the run's last save (`setFinalLineage`); nil, and
+        /// left out, for a run that recorded none.
+        let lineage: ResultsLineage?
 
         enum CodingKeys: String, CodingKey {
             case runKind = "run_kind"
@@ -326,6 +391,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case randomSeed = "random_seed"
             case randomSeedMode = "random_seed_mode"
             case rngStreamDerivation = "rng_stream_derivation"
+            case lineage
         }
     }
 
@@ -818,6 +884,14 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// and trainer of the run is built with. Nil only on a construction
         /// site that predates it; every production call site sets it.
         var policyTailPrecision: String? = nil
+        /// The run's lineage totals at this tick (`LineageTracker.totals`):
+        /// the trainer clock, measured trainer-step seconds and games fed,
+        /// each continuing across the sessions of the run. Nil where no
+        /// predecessor recorded the total (a resume of a file written before
+        /// lineage), and then left out of the row.
+        let cumTrainerStep: Int?
+        let cumTrainStepSec: Double?
+        let cumGames: Int?
 
         enum CodingKeys: String, CodingKey {
             case elapsedSec = "elapsed_sec"
@@ -923,6 +997,9 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case policyLabelSmoothingPerMove = "policy_label_smoothing_per_move"
             case policyLabelSmoothingPerMoveCap = "policy_label_smoothing_per_move_cap"
             case policyTailPrecision = "policy_tail_precision"
+            case cumTrainerStep = "cum_trainer_step"
+            case cumTrainStepSec = "cum_train_step_sec"
+            case cumGames = "cum_games"
         }
     }
 
@@ -1087,7 +1164,9 @@ extension CliTrainingRecorder.StatsLine {
         /// Replay-ratio TARGET, where one governs the run. Corpus replay has a
         /// real one (it sets `perStepFeed = batchSize / target`); train-vs-UCI
         /// never reads it, so passing it there would be a fresh false claim.
-        replayRatioTarget: Double? = nil
+        replayRatioTarget: Double? = nil,
+        /// The run's lineage totals at this tick (`LineageTracker.totals`).
+        lineageTotals: CliTrainingRecorder.LineageTotals
     ) {
         self.init(
             elapsedSec: elapsedSec,
@@ -1187,7 +1266,10 @@ extension CliTrainingRecorder.StatsLine {
             lrCyclePeak: nil,
             lrCycleTrough: nil,
             lrCycleDecayHorizonSteps: nil,
-            momentumFollowsLRCycle: nil
+            momentumFollowsLRCycle: nil,
+            cumTrainerStep: lineageTotals.cumTrainerStep,
+            cumTrainStepSec: lineageTotals.cumTrainStepSec,
+            cumGames: lineageTotals.cumGames
         )
     }
 
@@ -1227,7 +1309,8 @@ extension CliTrainingRecorder.StatsLine {
         gamesPlayed: Int?,
         pliesCapDropped: Int?,
         maxPliesPerGame: Int?,
-        replayRatioTarget: Double?
+        replayRatioTarget: Double?,
+        lineageTotals: CliTrainingRecorder.LineageTotals
     ) {
         self.init(
             elapsedSec: elapsedSec,
@@ -1265,7 +1348,8 @@ extension CliTrainingRecorder.StatsLine {
             gamesPlayed: gamesPlayed,
             pliesCapDropped: pliesCapDropped,
             maxPliesPerGame: maxPliesPerGame,
-            replayRatioTarget: replayRatioTarget
+            replayRatioTarget: replayRatioTarget,
+            lineageTotals: lineageTotals
         )
         lrCycleActive = cycleValues.learningRate != nil
         momentumCycleActive = cycleValues.momentum != nil

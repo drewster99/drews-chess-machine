@@ -163,6 +163,7 @@ enum DeriveModelCLI {
             fail("\(error)", 97)
         }
         result.sourceArchitectureFormat.logLegacyResolutions()
+        SessionLogger.shared.log(RunProvenanceLine.line(record: result.lineage, seed: nil))
 
         do {
             try FileManager.default.createDirectory(at: outURL.deletingLastPathComponent(), withIntermediateDirectories: true)

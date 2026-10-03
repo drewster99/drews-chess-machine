@@ -49,5 +49,6 @@ extension LineageRecord {
         device: Device(hardwareModel: "Mac16,8", cpu: "Apple M4 Pro", isVirtualMachine: false,
                        osVersion: "Version 27.2", gpu: "Apple M4 Pro"),
         rng: .unseeded(dropoutPhiloxState: nil),
-        segments: [])
+        segments: [],
+        derivationHistory: [])
 }

@@ -17,7 +17,8 @@ final class CliTrainingRecorderUnmeasuredStatsTests: XCTestCase {
             batchSize: 4096, learningRate: 1e-3, gradClipMaxNorm: 30, weightDecayC: 5e-4, dropoutRate: 0,
             entropyRegularizationCoeff: 0, drawPenalty: 0, policyLossWeight: 1, valueLossWeight: 1,
             lrEffectiveBase: 1e-3, momentumEffective: 0.9, buildNumber: 1, trainerID: "20260928-1-TEST",
-            positionsProduced: 4096
+            positionsProduced: 4096,
+            lineageTotals: CliTrainingRecorder.LineageTotals(cumTrainerStep: nil, cumTrainStepSec: nil, cumGames: nil)
         )
     }
 

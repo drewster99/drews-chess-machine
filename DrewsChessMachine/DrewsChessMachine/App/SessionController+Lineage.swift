@@ -29,11 +29,14 @@ extension SessionController {
 
     enum LineageSegmentError: LocalizedError {
         case noSegment(String)
+        case noRunSeed
 
         var errorDescription: String? {
             switch self {
             case .noSegment(let what):
                 return "No lineage segment is running for \(what)."
+            case .noRunSeed:
+                return "The run's master seed was not resolved before its lineage segment began."
             }
         }
     }
@@ -68,7 +71,11 @@ extension SessionController {
                         modelID: trainer.identifier?.description ?? "unknown",
                         contentSHA256: nil,
                         trainerCompletedSteps: trainer.completedTrainSteps,
-                        lineage: .unrecorded(formatVersion: ArchitectureFormat.currentVersion)),
+                        lineage: .unrecorded(formatVersion: ArchitectureFormat.currentVersion),
+                        // No file states this trainer's history: none is
+                        // carried, and `continues_unrecorded_history` says
+                        // the run's earlier history is unrecorded.
+                        derivationHistory: []),
                     notExactItems: LineageTracker.NotExactItem.guiResume + [LineageTracker.NotExactItem.buffer],
                     legacyTotals: nil)
             }
@@ -104,6 +111,22 @@ extension SessionController {
         }
         lineageFedCarry.baselineGames = counts?.emittedGames
         lineageFedCarry.baselinePositions = counts?.emittedPositions
+        // The one [RUN] line of this Play-and-Train start: the segment as it
+        // stands now (a continued segment reports its totals so far).
+        guard let seed = runRandomSeed else { throw LineageSegmentError.noRunSeed }
+        SessionLogger.shared.log(RunProvenanceLine.line(
+            record: try lineageRecordForSave(at: Date(), trainerCompletedSteps: trainer.completedTrainSteps,
+                                             dropoutPhiloxState: nil),
+            seed: seed))
+    }
+
+    /// The running segment's lineage now, for `results.json`: its record as
+    /// of this moment (no trainer snapshot behind it, so no dropout state,
+    /// and no saved file) and the per-row totals it implies.
+    func lineageForResults(trainerCompletedSteps: Int) throws -> (totals: LineageTracker.Totals, record: LineageRecord) {
+        let record = try lineageRecordForSave(at: Date(), trainerCompletedSteps: trainerCompletedSteps,
+                                              dropoutPhiloxState: nil)
+        return (LineageTracker.Totals(of: record), record)
     }
 
     /// Fold what the live stats box counted for the segment into the carry,
@@ -169,7 +192,8 @@ extension SessionController {
                                             dropoutPhiloxState: nil)
         }
         if let source = championLineageSource {
-            return LineageTracker.untrainedCopyRecord(source: source, pathKind: .gui, argv: CommandLine.arguments, at: date)
+            return LineageTracker.untrainedCopyRecord(source: source, derivation: nil, pathKind: .gui,
+                                                      argv: CommandLine.arguments, at: date)
         }
         return try LineageTracker.mintRecord(pathKind: .gui, argv: CommandLine.arguments, at: date)
     }

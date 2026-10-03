@@ -64,7 +64,7 @@ final class LineageRecordTests: XCTestCase {
 
         let unrecorded = try LineageTracker(
             start: .resume(parent: LineageTracker.ParentFile(modelID: "m", contentSHA256: nil, trainerCompletedSteps: 5,
-                                                           lineage: .unrecorded(formatVersion: 6)),
+                                                           lineage: .unrecorded(formatVersion: 6), derivationHistory: []),
                            notExactItems: [], legacyTotals: nil),
             pathKind: .replay, argv: ["dcm"], startedAt: Date(timeIntervalSince1970: 1_000), segmentStartTrainerStep: 5)
             .record(at: Date(timeIntervalSince1970: 1_010), trainerCompletedSteps: 6, segmentLocalStep: 1,
@@ -90,7 +90,8 @@ final class LineageRecordTests: XCTestCase {
         let withParameters = LineageRecord(
             schema: record.schema, run: record.run, parent: record.parent, steps: record.steps, fed: record.fed,
             time: record.time, parameters: try parameters(), build: record.build, invocation: record.invocation,
-            device: record.device, rng: record.rng, segments: record.segments)
+            device: record.device, rng: record.rng, segments: record.segments,
+            derivationHistory: record.derivationHistory)
         let text = try withParameters.jsonText()
         XCTAssertEqual(try LineageRecord.decode(jsonText: text), withParameters)
         let tampered = text.replacingOccurrences(of: "4096", with: "2048")
@@ -306,7 +307,7 @@ final class LineageRecordTests: XCTestCase {
     /// null, and `lineage` is listed among what the resume did not restore.
     func testResumeOfALegacyFileLeavesItsUnrecordedTotalsNull() throws {
         let parent = LineageTracker.ParentFile(modelID: "20260901-1-OLDX", contentSHA256: "abc", trainerCompletedSteps: 41_000,
-                                               lineage: .unrecorded(formatVersion: 6))
+                                               lineage: .unrecorded(formatVersion: 6), derivationHistory: [])
         let tracker = try LineageTracker(
             start: .resume(parent: parent, notExactItems: LineageTracker.NotExactItem.replayResume, legacyTotals: nil),
             pathKind: .replay, argv: ["dcm"], startedAt: Date(timeIntervalSince1970: 10), segmentStartTrainerStep: 41_000)
@@ -333,7 +334,7 @@ final class LineageRecordTests: XCTestCase {
     /// used.
     func testLegacyGUISessionContinuesItsElapsedTimeOnly() throws {
         let parent = LineageTracker.ParentFile(modelID: "20260901-2-OLDS", contentSHA256: "def", trainerCompletedSteps: 900,
-                                               lineage: .unrecorded(formatVersion: 6))
+                                               lineage: .unrecorded(formatVersion: 6), derivationHistory: [])
         let tracker = try LineageTracker(
             start: .resume(parent: parent, notExactItems: LineageTracker.NotExactItem.guiResume,
                            legacyTotals: LineageTracker.LegacySessionTotals(wallSec: 3_600)),
@@ -348,7 +349,8 @@ final class LineageRecordTests: XCTestCase {
 
     func testLegacyTotalsWithARecordedParentAreRefused() throws {
         let record = try LineageRecord.forTests(trainerCompletedSteps: 5, corpus: nil)
-        let parent = LineageTracker.ParentFile(modelID: "m", contentSHA256: "x", trainerCompletedSteps: 5, lineage: .recorded(record))
+        let parent = LineageTracker.ParentFile(modelID: "m", contentSHA256: "x", trainerCompletedSteps: 5, lineage: .recorded(record),
+                                               derivationHistory: record.derivationHistory)
         XCTAssertThrowsError(try LineageTracker(
             start: .resume(parent: parent, notExactItems: [], legacyTotals: LineageTracker.LegacySessionTotals(wallSec: 1)),
             pathKind: .gui, argv: [], startedAt: Date(), segmentStartTrainerStep: 5))

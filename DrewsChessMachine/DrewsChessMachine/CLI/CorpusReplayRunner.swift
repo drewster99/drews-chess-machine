@@ -847,7 +847,7 @@ enum CorpusReplayRunner {
             r.setRunRandomSeed(config.runRandomSeed)
             return r
         }()
-        for line in config.runRandomSeed.logLines { emit(line) }
+        for line in config.runRandomSeed.parameterNotes { emit(line) }
         let runStart = CFAbsoluteTimeGetCurrent()
         // --start-model: load a saved model and continue training from it. The
         // file embeds its own architecture, which then drives both the trainer
@@ -1250,6 +1250,10 @@ enum CorpusReplayRunner {
         let lineageTracker = try LineageTracker(
             start: lineageStart, pathKind: .replay, argv: CommandLine.arguments,
             startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)
+        emit(RunProvenanceLine.line(
+            record: try lineageTracker.startRecord(at: Date(), trainerCompletedSteps: trainer.completedTrainSteps,
+                                                   parameters: p.lineageParameters),
+            seed: config.runRandomSeed))
 
         // Export the trainer's complete state and overwrite the rolling
         // output file. Failure handling splits on cause (see reportSaveFailure):
@@ -1324,6 +1328,7 @@ enum CorpusReplayRunner {
                 )
                 try rollingWriter.write(encoded)
                 rollingSaveFailures.recordSuccess()
+                recorder?.recordSave(of: lineage, savedAt: outModelURL, log: emit)
                 emit("[REPLAY] saved trainer model (\(reason)) step=\(step) trainerStep=\(snapshot.schedule.completedTrainSteps) nextGame=\(nextGameIndex) shard=\(shard) epoch=\(epoch) -> \(outModelURL.lastPathComponent)")
                 // Full layer health of exactly the state just written, from the
                 // tensors already exported for it (no extra GPU read). Never
@@ -1646,7 +1651,10 @@ enum CorpusReplayRunner {
                     pliesCapDropped: nil,
                     maxPliesPerGame: nil,
                     // A real knob here: `perStepFeed = batchSize / target`.
-                    replayRatioTarget: p.replayRatioTarget
+                    replayRatioTarget: p.replayRatioTarget,
+                    lineageTotals: lineageTracker.totals(
+                        trainerCompletedSteps: observedSteps,
+                        segmentGames: feedTally.games - reconstructionFed.games)
                 ))
             }
             // Periodic autosave (overwrites the rolling output file). A disk-full

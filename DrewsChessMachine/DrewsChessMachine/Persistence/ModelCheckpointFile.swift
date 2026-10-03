@@ -324,6 +324,9 @@ struct ModelCheckpointFile {
         /// nil only for a file written by a tool that did not stamp it.
         let contentSHA256: String?
         let lineage: LineageRecord.Presence
+        /// The derivations the weights went through
+        /// (`LineageTracker.ParentFile.derivationHistory(lineage:metadata:)`).
+        let derivationHistory: [ModelDerivation.DerivationRecord]
     }
 
     /// Memberwise init with `formatVersion` defaulted to the current
@@ -367,13 +370,17 @@ struct ModelCheckpointFile {
             trainerClock = metadata.trainingStep
         }
         guard let provenance = safetensorsProvenance else {
+            // `.dcmmodel` predates `--derive-model`, so it states no
+            // derivation history.
             return LineageTracker.ParentFile(
                 modelID: modelID, contentSHA256: nil, trainerCompletedSteps: trainerClock,
-                lineage: .unrecorded(formatVersion: ArchitectureFormat.unversionedLegacyVersion))
+                lineage: .unrecorded(formatVersion: ArchitectureFormat.unversionedLegacyVersion),
+                derivationHistory: [])
         }
         return LineageTracker.ParentFile(
             modelID: modelID, contentSHA256: provenance.contentSHA256,
-            trainerCompletedSteps: trainerClock, lineage: provenance.lineage)
+            trainerCompletedSteps: trainerClock, lineage: provenance.lineage,
+            derivationHistory: provenance.derivationHistory)
     }
 
     /// Count of the model's own tensors (trainables + BN running stats) —
