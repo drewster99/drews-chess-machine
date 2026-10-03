@@ -76,6 +76,10 @@ extension SessionController {
             } catch {
                 exportError = error
             }
+            // Where the exported weights came from, read in the same pause:
+            // the file's lineage record and training step describe these
+            // weights, not whatever the champion holds later.
+            let exportedOrigin = championOrigin
             gate?.resume()
 
             if let exportError {
@@ -92,10 +96,10 @@ extension SessionController {
             let lineage: LineageRecord
             let metadata: ModelCheckpointMetadata
             do {
-                lineage = try lineageRecordForChampionSave(at: saveDate)
+                lineage = try Self.championFileLineageRecord(origin: exportedOrigin, at: saveDate)
                 metadata = ModelCheckpointMetadata(
                     creator: "manual",
-                    trainingStep: try Self.championFileTrainingStep(origin: championOrigin),
+                    trainingStep: try Self.championFileTrainingStep(origin: exportedOrigin),
                     parentModelID: "",
                     notes: "Manual Save Champion export"
                 )
@@ -327,11 +331,14 @@ extension SessionController {
         // Both files are written under these IDs and the trainer file names
         // the champion as its parent; a network without an identity is a
         // failed save, never a file under a placeholder ID.
+        // The run's step count is what the trainer file's `training_step`
+        // states; a save runs only inside a run, which always has one.
         guard let championID = champion.identifier?.description,
-              let trainerID = trainer.identifier?.description else {
+              let trainerID = trainer.identifier?.description,
+              let trainingStep = trainingStats?.steps else {
             checkpoint?.checkpointSaveInFlight = false
             periodicSaveInFlight = false
-            let message = "Save failed: the champion or the trainer has no model ID"
+            let message = "Save failed: the champion or the trainer has no model ID, or the run has no step count"
             checkpoint?.setCheckpointStatus("\(message)\(uiSuffix)", kind: .error)
             SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(message)")
             onComplete?(false)
@@ -354,7 +361,6 @@ extension SessionController {
             arenaClock: .live,
             includeReplayBuffer: includeReplayBuffer
         )
-        let trainingStep = trainingStats?.steps ?? 0
         let bufferForSave = includeReplayBuffer ? replayBuffer : nil
         // Snapshot the chart-coordinator state on the main actor
         // BEFORE jumping to detached work — the rings are
@@ -411,6 +417,9 @@ extension SessionController {
             } catch {
                 championError = error
             }
+            // The champion file's record and step describe the exported
+            // weights, so their origin is read in the same pause.
+            let exportedChampionOrigin = championOrigin
             selfPlayGate.resume()
 
             if let championError {
@@ -454,14 +463,25 @@ extension SessionController {
                 return
             }
             let trainerWeights = trainerSnapshot.trainerWeights
-            // The run's lineage at this save, for the session's champion
-            // file, trainer file and session.json.
+            // The run's lineage at this save, for the session's trainer
+            // file and session.json; the champion file's own record and
+            // training step come from where its weights came from.
+            let saveDate = Date()
             let lineage: LineageRecord
+            let championLineage: LineageRecord
+            let championMetadata: ModelCheckpointMetadata
             do {
                 lineage = try lineageRecordForSave(
-                    at: Date(), trainerCompletedSteps: trainerSnapshot.schedule.completedTrainSteps,
+                    at: saveDate, trainerCompletedSteps: trainerSnapshot.schedule.completedTrainSteps,
                     dropoutPhiloxState: trainerSnapshot.dropoutRNG.philoxState,
                     dropoutStreamState: try await trainer.dropoutStreamState())
+                championLineage = try Self.championFileLineageRecord(origin: exportedChampionOrigin, at: saveDate)
+                championMetadata = ModelCheckpointMetadata(
+                    creator: diskTag,
+                    trainingStep: try Self.championFileTrainingStep(origin: exportedChampionOrigin),
+                    parentModelID: "",
+                    notes: "Session checkpoint (\(diskTag))"
+                )
             } catch {
                 clearInFlight()
                 checkpoint?.setCheckpointStatus("Save failed (lineage): \(error.localizedDescription)", kind: .error)
@@ -471,12 +491,6 @@ extension SessionController {
 
             // Final write + verify on a detached task so UI stays
             // responsive during the scratch-network build (sub-second).
-            let championMetadata = ModelCheckpointMetadata(
-                creator: diskTag,
-                trainingStep: trainingStep,
-                parentModelID: "",
-                notes: "Session checkpoint (\(diskTag))"
-            )
             let trainerMetadata = ModelCheckpointMetadata.trainerFile(
                 creator: diskTag,
                 trainingStep: trainingStep,
@@ -503,6 +517,7 @@ extension SessionController {
                         trainerCreatedAtUnix: now,
                         state: sessionState,
                         lineage: lineage,
+                        championLineage: championLineage,
                         architecture: sessionArch,
                         replayBuffer: bufferForSave,
                         chartSnapshot: chartSnapshotForSave,

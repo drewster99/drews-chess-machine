@@ -159,7 +159,7 @@ final class TrainVsUciSessionTests: XCTestCase {
                 creator: "train-vs-uci", trainingStep: 0, parentModelID: "", notes: "test",
                 schedule: snapshot.schedule, policyTailPrecision: trainer.policyTailPrecision),
             trainerCreatedAtUnix: Int64(saved.timeIntervalSince1970),
-            state: state, lineage: lineage, architecture: arch,
+            state: state, lineage: lineage, championLineage: lineage.withoutTrainerState(), architecture: arch,
             replayBuffer: buffer, chartSnapshot: nil,
             trigger: TrainVsUciSession.SaveKind.final.diskTag, at: saved, sessionsDirectory: sessions)
 

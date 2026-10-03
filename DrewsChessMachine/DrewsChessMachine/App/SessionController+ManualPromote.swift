@@ -137,9 +137,22 @@ extension SessionController {
                 return
             }
 
-            // 3) Re-stamp identities and resume both gates.
+            // 3) Re-stamp identities, record where the champion's new
+            //    weights came from — the trainer's, at its clock now, under
+            //    the pause — and resume both gates.
             champion.identifier = newChampionID
             trainer.identifier = ModelIDMinter.mintTrainerGeneration(from: newChampionID)
+            let promotedAtStep = trainer.completedTrainSteps
+            let promotionRecord: Result<LineageRecord, Error>
+            do {
+                promotionRecord = .success(try lineageRecordForSave(
+                    at: Date(), trainerCompletedSteps: promotedAtStep,
+                    dropoutPhiloxState: nil, dropoutStreamState: nil))
+            } catch {
+                promotionRecord = .failure(error)
+            }
+            recordPromotedChampionOrigin(championID: newChampionID, trainerCompletedSteps: promotedAtStep,
+                                         record: promotionRecord)
             trainingGate.resume()
             selfPlayGate.resume()
 

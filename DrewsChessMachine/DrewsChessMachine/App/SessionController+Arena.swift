@@ -548,37 +548,21 @@ extension SessionController {
             rebaselineLineageFedCounts()
             let trainerIDStr = trainer.identifier?.description ?? "?"
             let championIDStr = champion.identifier?.description ?? "?"
-            // The champion now holds weights this run trained: as a parent
-            // for a later branch, it is described by the run's record at the
-            // promoted trainer state (it was never written as a file here).
-            let championLineage: LineageRecord.Presence
+            // The champion now holds weights this run trained: every later
+            // champion file, and a later branch, describes them by the run's
+            // record at the promoted trainer state (they were never written
+            // as a file here).
+            let promotionRecord: Result<LineageRecord, Error>
             do {
-                championLineage = .recorded(try lineageRecordForSave(
+                promotionRecord = .success(try lineageRecordForSave(
                     at: Date(), trainerCompletedSteps: trainerSnapshotCompletedSteps,
-                    dropoutPhiloxState: trainerSnapshotDropoutState,
-                    dropoutStreamState: try await trainer.dropoutStreamState()))
+                    dropoutPhiloxState: nil, dropoutStreamState: nil))
             } catch {
-                SessionLogger.shared.log("[LINEAGE] promoted champion's lineage not recorded: \(error.localizedDescription)")
-                championLineage = .unrecorded(formatVersion: ArchitectureFormat.currentVersion)
+                promotionRecord = .failure(error)
             }
-            let championDerivationHistory: [ModelDerivation.DerivationRecord]
-            switch championLineage {
-            case .recorded(let record):
-                championDerivationHistory = record.derivationHistory
-            case .unrecorded:
-                // The run's record could not be built (logged above), so
-                // no history is carried with the promoted weights.
-                championDerivationHistory = []
-            }
-            if let promotedChampionID = champion.identifier {
-                championOrigin = .file(LineageTracker.ParentFile(
-                    modelID: promotedChampionID.description, contentSHA256: nil,
-                    trainerCompletedSteps: trainerSnapshotCompletedSteps, lineage: championLineage,
-                    derivationHistory: championDerivationHistory))
-            } else {
-                SessionLogger.shared.log("[LINEAGE] promoted champion has no model ID: its origin is cleared, so a later save or branch from it fails")
-                championOrigin = nil
-            }
+            recordPromotedChampionOrigin(championID: champion.identifier,
+                                         trainerCompletedSteps: trainerSnapshotCompletedSteps,
+                                         record: promotionRecord)
             SessionLogger.shared.log(
                 "[STATS] post-promote  steps=\(trainingStats?.steps ?? 0) champion=\(championIDStr) trainer=\(trainerIDStr)"
             )
@@ -606,9 +590,12 @@ extension SessionController {
         // post-promotion save already covered the window, the
         // next periodic tick runs a full 4 hours later from now.
         if promoted && Self.autosaveSessionsOnPromote && !promotedChampionWeights.isEmpty {
+            // One step count for the trainer file's metadata and the save's
+            // [LAYER-HEALTH] block.
             guard let championID = champion.identifier?.description,
-                  let trainerID = trainer.identifier?.description else {
-                let message = "Post-promotion save failed: the champion or the trainer has no model ID"
+                  let trainerID = trainer.identifier?.description,
+                  let promotionSaveStep = trainingStats?.steps else {
+                let message = "Post-promotion save failed: the champion or the trainer has no model ID, or the run has no step count"
                 checkpoint?.setCheckpointStatus(message, kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] \(message)")
                 return
@@ -620,17 +607,8 @@ extension SessionController {
                 arenaClock: .arenaJustFinished,
                 includeReplayBuffer: includeReplayBuffer
             )
-            // One step count for both files' metadata and the save's
-            // [LAYER-HEALTH] block.
-            let promotionSaveStep = trainingStats?.steps ?? 0
             // Captured as a `let` so the detached save task below can read it.
             let promotionSaveTrainerStep = trainerSnapshotCompletedSteps
-            let championMetadata = ModelCheckpointMetadata(
-                creator: "promote",
-                trainingStep: promotionSaveStep,
-                parentModelID: "",
-                notes: "Post-arena autosave after promotion"
-            )
             // The trainer was rewound to exactly this state on promotion:
             // arena-start weights and velocity, the clock captured with them,
             // and the schedule it is running.
@@ -648,13 +626,24 @@ extension SessionController {
             )
             let saveDate = Date()
             let createdAtUnix = Int64(saveDate.timeIntervalSince1970)
-            // The run's lineage at the promoted state, for all three files.
+            // The run's lineage at the promoted state, for the trainer file
+            // and session.json; the champion file's record and step are the
+            // promoted weights' own (the origin recorded above).
             let promotionLineage: LineageRecord
+            let championLineage: LineageRecord
+            let championMetadata: ModelCheckpointMetadata
             do {
                 promotionLineage = try lineageRecordForSave(
                     at: saveDate, trainerCompletedSteps: promotionSaveTrainerStep,
                     dropoutPhiloxState: trainerSnapshotDropoutState,
                     dropoutStreamState: try await trainer.dropoutStreamState())
+                championLineage = try Self.championFileLineageRecord(origin: championOrigin, at: saveDate)
+                championMetadata = ModelCheckpointMetadata(
+                    creator: "promote",
+                    trainingStep: try Self.championFileTrainingStep(origin: championOrigin),
+                    parentModelID: "",
+                    notes: "Post-arena autosave after promotion"
+                )
             } catch {
                 let message = "Post-promotion save failed (lineage): \(error.localizedDescription)"
                 checkpoint?.setCheckpointStatus(message, kind: .error)
@@ -703,6 +692,7 @@ extension SessionController {
                         trainerCreatedAtUnix: createdAtUnix,
                         state: sessionState,
                         lineage: promotionLineage,
+                        championLineage: championLineage,
                         architecture: promotedArch,
                         replayBuffer: bufferForAutosave,
                         chartSnapshot: chartSnapshotForAutosave,

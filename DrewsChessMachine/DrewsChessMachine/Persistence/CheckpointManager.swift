@@ -1352,6 +1352,15 @@ enum CheckpointManager {
     /// directory — it is provably this call's own — and a successful
     /// rename hands it over.
     ///
+    /// `lineage` is the run's record at this save, written into the
+    /// trainer file and session.json. `championLineage` is the record of
+    /// the weights the champion file holds, which are not the trainer's
+    /// whenever training has moved on since the champion was built, loaded
+    /// or promoted (`SessionController.championFileLineageRecord`); it
+    /// carries no trainer state. A writer whose champion is the trainer's
+    /// weights at the save passes the run's record without its trainer
+    /// state.
+    ///
     /// `sessionsDirectory` is the canonical `Sessions/` folder in the
     /// app; tests pass a temporary folder.
     static func saveSession(
@@ -1365,6 +1374,7 @@ enum CheckpointManager {
         trainerCreatedAtUnix: Int64,
         state stateWithoutLineage: SessionCheckpointState,
         lineage: LineageRecord,
+        championLineage: LineageRecord,
         architecture: NetworkArchitecture = .current,
         replayBuffer: ReplayBuffer? = nil,
         chartSnapshot: ChartCoordinatorSnapshot? = nil,
@@ -1372,8 +1382,8 @@ enum CheckpointManager {
         at date: Date = Date(),
         sessionsDirectory: URL = CheckpointPaths.sessionsDir
     ) async throws -> URL {
-        // The session's champion file, trainer file and session.json all
-        // carry the one lineage record of this save.
+        // The trainer file and session.json carry the run's record; the
+        // champion file carries its own weights' record.
         let state = stateWithoutLineage.withLineage(lineage)
         try CheckpointPaths.ensureDirectory(sessionsDirectory)
 
@@ -1434,7 +1444,7 @@ enum CheckpointManager {
             weights: championWeights,
             architecture: architecture,
             includesVelocity: false,
-            lineage: lineage
+            lineage: championLineage
         )
 
         // Trainer file = base weights (trainables + BN running stats) followed by

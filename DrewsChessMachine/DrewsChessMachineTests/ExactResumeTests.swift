@@ -347,7 +347,7 @@ final class ExactResumeTests: XCTestCase {
                         trainerSchedule: snapshot.schedule
                     ),
                     trainerCreatedAtUnix: 1_780_000_001,
-                    state: try minimalSessionState(trainingSteps: 0), lineage: try LineageRecord.forTests(trainerCompletedSteps: snapshot.schedule.completedTrainSteps, corpus: nil),
+                    state: try minimalSessionState(trainingSteps: 0), lineage: try LineageRecord.forTests(trainerCompletedSteps: snapshot.schedule.completedTrainSteps, corpus: nil), championLineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil),
                     trigger: "unittest"
                 )
                 sessionDirectories.append(directory)

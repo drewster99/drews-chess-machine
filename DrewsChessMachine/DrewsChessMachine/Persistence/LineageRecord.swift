@@ -869,6 +869,30 @@ struct LineageRecord: Codable, Equatable, Sendable {
         static let unrecorded = "unrecorded"
     }
 
+    /// This record for a model file that holds the same weights but no
+    /// trainer state (a champion file): the run's dropout Philox state,
+    /// stream positions and behavior fingerprint describe a trainer
+    /// snapshot that file does not carry, so they are dropped; the run's
+    /// init seed and scheme describe the weights and stay. A run started
+    /// from such a file branches with fresh random state, never resumes
+    /// this one's.
+    func withoutTrainerState() -> LineageRecord {
+        LineageRecord(
+            schema: schema,
+            run: run,
+            parent: parent,
+            steps: steps,
+            fed: fed,
+            time: time,
+            parameters: parameters,
+            build: build,
+            invocation: invocation,
+            device: device,
+            rng: RNG.withoutRunStreams(dropoutPhiloxState: nil).withInitialization(rng.initialization),
+            segments: segments,
+            derivationHistory: derivationHistory)
+    }
+
     /// The record as the compact, sorted-key JSON text stored in a file.
     func jsonText() throws -> String {
         let encoder = JSONEncoder()

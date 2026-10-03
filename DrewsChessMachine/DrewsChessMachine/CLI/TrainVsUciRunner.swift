@@ -608,6 +608,10 @@ enum TrainVsUciRunner {
                     trainerCreatedAtUnix: createdAt,
                     state: state,
                     lineage: save.lineage,
+                    // The play network was just synced from the trainer, so
+                    // it holds exactly the weights the run's record
+                    // describes; a model file carries no trainer state.
+                    championLineage: save.lineage.withoutTrainerState(),
                     architecture: arch,
                     replayBuffer: bufferForSave,
                     chartSnapshot: nil,

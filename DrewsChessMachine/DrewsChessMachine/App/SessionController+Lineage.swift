@@ -300,26 +300,68 @@ extension SessionController {
             opponentGameIndices: nil)
     }
 
-    /// The record for a model-only save of the champion (Save Champion):
-    /// the running segment's state when one exists; otherwise the
-    /// champion's own origin — a fresh mint, or an untrained copy of the
-    /// file it was loaded from.
-    func lineageRecordForChampionSave(at date: Date) throws -> LineageRecord {
-        if lineageTracker != nil, let trainer {
-            // A champion-only save carries no trainer state, so no dropout
-            // state either.
-            return try lineageRecordForSave(at: date, trainerCompletedSteps: trainer.completedTrainSteps,
-                                            dropoutPhiloxState: nil, dropoutStreamState: nil)
-        }
-        switch championOrigin {
-        case .file(let source):
-            return LineageTracker.untrainedCopyRecord(source: source, derivation: nil, pathKind: .gui,
-                                                      argv: CommandLine.arguments, at: date)
+    /// The lineage record of a champion model file — Save Champion, and the
+    /// champion file of every session save — from where the champion's
+    /// weights came, never from the trainer's run at the save: the champion
+    /// holds weights from an earlier point (its build, its load, the last
+    /// promotion) whenever training has moved on, so the run's record would
+    /// claim steps, games and time those weights never saw.
+    ///
+    /// - built here: a fresh mint record of its initialization;
+    /// - from a file or a promotion whose record exists: that record as it
+    ///   is (the weights are exactly the ones it describes, so a save does
+    ///   not start a new run), without trainer state, which a model file
+    ///   does not carry;
+    /// - from a file written before lineage: an untrained copy of it, whose
+    ///   totals stay unrecorded;
+    /// - no recorded origin: an error, never a guess.
+    static func championFileLineageRecord(origin: ChampionOrigin?, at date: Date) throws -> LineageRecord {
+        switch origin {
         case .built(let initialization):
             return try LineageTracker.mintRecord(pathKind: .gui, argv: CommandLine.arguments,
                                                  initialization: initialization, at: date)
+        case .file(let source):
+            switch source.lineage {
+            case .recorded(let record):
+                return record.withoutTrainerState()
+            case .unrecorded:
+                return LineageTracker.untrainedCopyRecord(source: source, derivation: nil, pathKind: .gui,
+                                                          argv: CommandLine.arguments, at: date)
+            }
         case nil:
             throw LineageSegmentError.noChampionOrigin
+        }
+    }
+
+    /// Record where a promoted champion's weights came from — the trainer's
+    /// weights at `trainerCompletedSteps`, described by the run's `record`
+    /// at that point — as the champion's origin, used by every later
+    /// champion file and by a run that branches from the champion. Shared
+    /// by arena promotion and Promote Trainee Now.
+    ///
+    /// The record is kept without trainer state (a champion file carries
+    /// none, and a branch draws fresh random state). When the record could
+    /// not be built, or the champion has no model ID, the origin is cleared
+    /// and logged: a later save or branch then fails loudly instead of
+    /// describing the promoted weights by the previous champion's origin or
+    /// as unrecorded history.
+    func recordPromotedChampionOrigin(championID: ModelID?, trainerCompletedSteps: Int,
+                                      record: Result<LineageRecord, Error>) {
+        guard let championID else {
+            SessionLogger.shared.log("[LINEAGE] promoted champion has no model ID: its origin is cleared, so a later save or branch from it fails")
+            championOrigin = nil
+            return
+        }
+        switch record {
+        case .success(let record):
+            let champion = record.withoutTrainerState()
+            championOrigin = .file(LineageTracker.ParentFile(
+                modelID: championID.description, contentSHA256: nil,
+                trainerCompletedSteps: trainerCompletedSteps, lineage: .recorded(champion),
+                derivationHistory: champion.derivationHistory))
+        case .failure(let error):
+            SessionLogger.shared.log("[LINEAGE] promoted champion's lineage could not be recorded (\(error.localizedDescription)): its origin is cleared, so a later save or branch from it fails")
+            championOrigin = nil
         }
     }
 }
