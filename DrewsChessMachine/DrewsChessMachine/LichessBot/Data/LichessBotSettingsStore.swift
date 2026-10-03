@@ -5,6 +5,10 @@ enum LichessBotSettingsStoreError: LocalizedError, Equatable {
     /// error state, never a silent return to defaults).
     case unreadable(detail: String)
     case invalid(problems: [String])
+    /// This build's defaults don't encode as a JSON object, so saved
+    /// settings can't be overlaid onto them: a defect in the build, not in
+    /// the saved data, which is left as it is.
+    case defaultsNotAJSONObject(typeName: String)
 
     var errorDescription: String? {
         switch self {
@@ -12,6 +16,8 @@ enum LichessBotSettingsStoreError: LocalizedError, Equatable {
             return "Saved Lichess bot settings can't be read: \(detail). Reset them in Settings to continue."
         case .invalid(let problems):
             return "Lichess bot settings are invalid: " + problems.joined(separator: "; ")
+        case .defaultsNotAJSONObject(let typeName):
+            return "This build's default \(typeName) don't encode as a JSON object, so the saved Lichess bot settings can't be read with them. The saved settings were left unchanged."
         }
     }
 }
@@ -94,9 +100,14 @@ enum LichessBotSettingsStore {
 
     /// `LichessBotSettings()` as a JSON object.
     private static func defaultSettingsObject() throws -> [String: Any] {
-        let data = try JSONEncoder().encode(LichessBotSettings())
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            preconditionFailure("LichessBotSettings must encode as a JSON object")
+        try jsonObject(encoding: LichessBotSettings())
+    }
+
+    /// `value` encoded as a JSON object.
+    static func jsonObject<Value: Encodable>(encoding value: Value) throws -> [String: Any] {
+        let data = try JSONEncoder().encode(value)
+        guard let object = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) as? [String: Any] else {
+            throw LichessBotSettingsStoreError.defaultsNotAJSONObject(typeName: String(describing: Value.self))
         }
         return object
     }
