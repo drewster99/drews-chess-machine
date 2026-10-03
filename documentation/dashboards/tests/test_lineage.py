@@ -319,6 +319,126 @@ class RegistryPlanTests(unittest.TestCase):
             _lineage_registry.plan(reg, self.runs)
 
 
+class DeriveRegistryCommandTests(unittest.TestCase):
+    """The command around `plan`: it writes only on --write, only fills, and refuses on conflict."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        write_chain(self.dir)
+        self.paths = sorted(os.path.join(self.dir, n) for n in os.listdir(self.dir))
+        self.registry = os.path.join(self.dir, "registry.json")
+
+    def write_registry(self, segments):
+        text = json.dumps(registry_with(segments), indent=2, ensure_ascii=False)
+        with open(self.registry, "w") as handle:
+            handle.write(text)
+        return text
+
+    def read_registry(self):
+        with open(self.registry) as handle:
+            return handle.read()
+
+    def run_command(self, write, path_kind="replay"):
+        lines = []
+        status = _lineage_registry.derive_registry(self.registry, self.paths, path_kind, write, out=lines.append)
+        return status, lines
+
+    def test_proposal_only_changes_nothing(self):
+        before = self.write_registry([{"log": "a.txt", "model_id": "20261003-1-AAAA", "cumstep_base": 0},
+                                      {"log": "b.txt", "model_id": "20261003-2-BBBB"},
+                                      {"log": "c.txt", "model_id": "20261003-3-CCCC"}])
+        status, lines = self.run_command(write=False)
+        self.assertEqual(status, 0)
+        self.assertEqual(self.read_registry(), before)
+        self.assertTrue(any("proposal only" in line for line in lines))
+
+    def test_write_fills_and_a_second_run_finds_everything_agreeing(self):
+        self.write_registry([{"log": "a.txt", "model_id": "20261003-1-AAAA", "cumstep_base": 0},
+                             {"log": "b.txt", "model_id": "20261003-2-BBBB"},
+                             {"log": "c.txt", "model_id": "20261003-3-CCCC"}])
+        status, _ = self.run_command(write=True)
+        self.assertEqual(status, 0)
+        written = json.loads(self.read_registry())["runs"]["r"]["segments"]
+        self.assertEqual([s["segment_id"] for s in written], ["seg-a", "seg-b", "seg-c"])
+        self.assertEqual([s["cumstep_base"] for s in written], [0, 1000, 2500])
+        self.assertEqual(written[1]["log"], "b.txt")
+        after_first = self.read_registry()
+        status, lines = self.run_command(write=True)
+        self.assertEqual(status, 0)
+        self.assertEqual(self.read_registry(), after_first)
+        self.assertTrue(any("nothing to write" in line for line in lines))
+
+    def test_conflict_refuses_the_whole_write(self):
+        before = self.write_registry([{"log": "a.txt", "model_id": "20261003-1-AAAA", "cumstep_base": 0},
+                                      {"log": "b.txt", "model_id": "20261003-2-BBBB", "games_base": 1},
+                                      {"log": "c.txt", "model_id": "20261003-3-CCCC"}])
+        status, lines = self.run_command(write=True)
+        self.assertEqual(status, 1)
+        self.assertEqual(self.read_registry(), before)
+        self.assertTrue(any(line.startswith("  CONFLICT r seg 1: games_base") for line in lines))
+
+    def test_other_path_kinds_are_ignored(self):
+        before = self.write_registry([{"log": "a.txt", "model_id": "20261003-1-AAAA", "cumstep_base": 0}])
+        status, lines = self.run_command(write=True, path_kind="vsuci")
+        self.assertEqual((status, self.read_registry()), (0, before))
+        self.assertTrue(lines[0].startswith(f"scanned {len(self.paths)} file(s): 0 with a vsuci lineage record"))
+
+
+class TrackerCellTests(unittest.TestCase):
+    """replay.py's lineage cells and header-identified checkpoints, on a temporary registry."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = tempfile.TemporaryDirectory()
+        root = cls.folder.name
+        write_chain(root)
+        write_header(os.path.join(root, "old-replay-step1000.safetensors"),
+                     {"dcm_format_version": "6", "model_id": "old", "training_step": "1000"})
+        with open(os.path.join(root, "registry.json"), "w") as handle:
+            json.dump({"models_dir": root, "logs_dir": root, "runs": {}}, handle)
+        os.environ["DCM_DASH_ROOT"] = root
+        import importlib
+        import replay
+        cls.replay = importlib.reload(replay)
+        cls.root = root
+
+    @classmethod
+    def tearDownClass(cls):
+        os.environ.pop("DCM_DASH_ROOT")
+        cls.folder.cleanup()
+
+    def test_cells_come_from_the_record(self):
+        path = os.path.join(self.root, "seg-b-replay-step1000.safetensors")
+        cells = self.replay.lineage_cells(path, {"segment_id": "seg-b", "games_base": 5000}, 1000)
+        self.assertEqual(cells["games_fed"], 5000 + round(7400 * 1000 / 1500))
+        self.assertAlmostEqual(cells["train_step_sec"], 900.5 + 1300.0 * 1000 / 1500, places=3)
+
+    def test_a_file_without_a_record_gives_no_cells(self):
+        path = os.path.join(self.root, "old-replay-step1000.safetensors")
+        self.assertEqual(self.replay.lineage_cells(path, {}, 1000), {})
+
+    def test_cells_refuse_a_file_filed_under_the_wrong_segment_or_step(self):
+        path = os.path.join(self.root, "seg-b-replay-step1000.safetensors")
+        with self.assertRaises(dcm_lineage.LineageError):
+            self.replay.lineage_cells(path, {"segment_id": "seg-c"}, 1000)
+        with self.assertRaises(dcm_lineage.LineageError):
+            self.replay.lineage_cells(path, {"segment_id": "seg-b"}, 999)
+        with self.assertRaises(dcm_lineage.LineageError):
+            self.replay.lineage_cells(path, {"segment_id": "seg-b", "games_base": 4000}, 1000)
+
+    def test_checkpoints_are_found_by_segment_id_and_skipped_by_enum_specs(self):
+        cfg = {"out_model": "seg-c-replay-latest.safetensors",
+               "segments": [{"cumstep_base": 0, "enum_stem": "seg-a"},
+                            {"cumstep_base": 1000, "segment_id": "seg-b"},
+                            {"cumstep_base": 2500, "segment_id": "seg-c"}]}
+        found = self.replay.lineage_checkpoints(cfg)
+        self.assertEqual([(si, os.path.basename(p), n) for si, p, n in found],
+                         [(1, "seg-b-replay-step500.safetensors", 500), (1, "seg-b-replay-step1000.safetensors", 1000),
+                          (1, "seg-b-replay-step1500.safetensors", 1500), (2, "seg-c-replay-step500.safetensors", 500),
+                          (2, "seg-c-replay-step1000.safetensors", 1000), (2, "seg-c-replay-step1500.safetensors", 1500)])
+        self.assertEqual(self.replay.enum_specs(cfg), [(0, "seg-a-replay-step*.safetensors")])
+
+
 class InventoryTests(unittest.TestCase):
     def test_inventory_reports_lineage_and_unrecorded(self):
         directory = tempfile.mkdtemp()

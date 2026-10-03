@@ -251,32 +251,37 @@ class FileLineage:
         self.record = record
 
 
-def scan(directory):
-    """Every .safetensors file in `directory` (not recursive), read header-only.
+def scan_files(paths):
+    """Read the lineage of each .safetensors path, header-only.
 
     Returns (recorded, unrecorded, errors): `recorded` is a list of
-    FileLineage, `unrecorded` maps file name -> format version, and `errors`
-    maps file name -> message for files that could not be read or that the app
-    would refuse. Nothing is skipped silently: every file lands in one of the
+    FileLineage, `unrecorded` maps path -> format version, and `errors` maps
+    path -> message for files that could not be read or that the app would
+    refuse. Nothing is skipped silently: every path lands in one of the
     three."""
     recorded, unrecorded, errors = [], {}, {}
-    for name in sorted(os.listdir(directory)):
-        if not name.endswith(".safetensors"):
-            continue
-        path = os.path.join(directory, name)
-        if not os.path.isfile(path):
-            continue
+    for path in paths:
         try:
             metadata = read_metadata(path)
-            lineage = lineage_of(metadata, name)
+            lineage = lineage_of(metadata, os.path.basename(path))
         except (OSError, ValueError, struct.error) as error:
-            errors[name] = str(error)
+            errors[path] = str(error)
             continue
         if isinstance(lineage, Unrecorded):
-            unrecorded[name] = lineage.format_version
+            unrecorded[path] = lineage.format_version
         else:
             recorded.append(FileLineage(path, metadata, lineage))
     return recorded, unrecorded, errors
+
+
+def scan(directory):
+    """`scan_files` over every .safetensors file directly in `directory`, keyed
+    by file name."""
+    paths = [os.path.join(directory, name) for name in sorted(os.listdir(directory))
+             if name.endswith(".safetensors") and os.path.isfile(os.path.join(directory, name))]
+    recorded, unrecorded, errors = scan_files(paths)
+    return (recorded, {os.path.basename(p): v for p, v in unrecorded.items()},
+            {os.path.basename(p): v for p, v in errors.items()})
 
 
 def _segment_fields(record, run_origin):

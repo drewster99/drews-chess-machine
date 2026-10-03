@@ -1,8 +1,8 @@
 """Reconcile the run registry with the lineage records in the model files.
 
-`replay.py derive-registry` (and the equivalent self-play / vs-UCI commands)
-use this module. It is pure — no file access, no registry loaded at import — so
-the reconciliation rules can be tested on synthetic inputs.
+`replay.py derive-registry` and `vsuci.py derive-registry` use this module.
+`plan` is pure — no file access — so the reconciliation rules can be tested on
+synthetic inputs; `derive_registry` is the command around it.
 
 What is derived, per registry segment, from `scripts/dcm_lineage.py`:
 `lineage_run_id`, `segment_id`, `model_id`, `date`, `cumstep_base`,
@@ -31,6 +31,12 @@ Rules:
   registry counterpart is reported as a proposal for the owner to add.
 """
 import copy
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+import dcm_lineage  # noqa: E402
 
 # The fields reconciled, in report order. `segment_id` and `lineage_run_id` are
 # identity; the rest are the measured bases.
@@ -147,3 +153,64 @@ def plan(reg, derived_runs):
                 else:
                     report["conflicts"].append((name, index, field, target[field], values[field]))
     return updated, report
+
+
+def _show(value):
+    return "—" if value is None else repr(value)
+
+
+def derive_registry(registry_path, model_paths, path_kind, write, out=print):
+    """Scan `model_paths` (header-only), reconcile the lineage runs written by
+    `path_kind` with the registry at `registry_path`, print the diff, and with
+    `write` apply the fills.
+
+    Returns the process exit status: 0 when nothing needs the owner's
+    attention, 1 when there are conflicts, unreadable or refused files, or
+    lineage runs / segments with no registry entry. A write is refused
+    outright when there is any conflict or refused file — a registry is never
+    half-reconciled against evidence that contradicts it."""
+    from _guarded_csv import read_text, replace_text_if_unchanged
+    recorded, unrecorded, errors = dcm_lineage.scan_files(model_paths)
+    recorded = [f for f in recorded if f.record["invocation"]["path_kind"] == path_kind]
+    try:
+        derived = dcm_lineage.derive_runs(recorded)
+    except dcm_lineage.LineageError as error:
+        out(f"refused: {error}")
+        return 1
+    registry_text, snapshot = read_text(registry_path)
+    registry = json.loads(registry_text)
+    try:
+        updated, report = plan(registry, derived)
+    except RegistryContradiction as error:
+        out(f"refused: {error}")
+        return 1
+    out(f"scanned {len(model_paths)} file(s): {len(recorded)} with a {path_kind} lineage record, "
+        f"{len(unrecorded)} written before lineage records (unrecorded), {len(errors)} refused or unreadable")
+    for path, message in sorted(errors.items()):
+        out(f"  REFUSED {os.path.basename(path)}: {message}")
+    for name, index, field, _, value in report["fills"]:
+        out(f"  + {name} seg {index}: {field} = {_show(value)}")
+    for name, index, field, held, value in report["conflicts"]:
+        out(f"  CONFLICT {name} seg {index}: {field} registry {_show(held)}, files state {_show(value)}")
+    for name, index, field in report["unrecorded"]:
+        out(f"  unrecorded {name} seg {index}: {field} (the records hold no value; left as is)")
+    for name, fields in report["unmatched_segments"]:
+        out(f"  NEW SEGMENT for {name} (add by hand with its session log and label): "
+            f"{json.dumps(fields, sort_keys=True)}")
+    for run_id, segments in sorted(report["unmatched_runs"].items()):
+        out(f"  NEW RUN {run_id} (add by hand with label, color and session logs): "
+            f"{json.dumps(segments, sort_keys=True)}")
+    out(f"  {len(report['same'])} field(s) already agree")
+    needs_attention = bool(report["conflicts"] or errors or report["unmatched_segments"] or report["unmatched_runs"])
+    if write:
+        if report["conflicts"] or errors:
+            out("not written: resolve the conflicts / refused files above first")
+            return 1
+        if report["fills"]:
+            replace_text_if_unchanged(registry_path, json.dumps(updated, indent=2, ensure_ascii=False), snapshot)
+            out(f"wrote {len(report['fills'])} field(s) to {registry_path}")
+        else:
+            out("nothing to write")
+    elif report["fills"]:
+        out("(proposal only — re-run with --write to apply)")
+    return 1 if needs_attention else 0
