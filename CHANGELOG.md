@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-03 10:56 CDT — Removing a block group no longer crashes Build New Model (`c9f5b17c`)
+
+- **Fix.** Removing any block group in Build New Model trapped the app in `BuildNewModelModel.position(of:)`. SwiftUI draws a removed group's row once more after its draft has left the model, and the init-options row (P7, `67f5ef09`) looked up its position on every draw through the lookup that treats a missing draft as a defect. The row now reads `positionInTower(of:)`, which is nil for a removed draft, and draws nothing then; move, duplicate and remove keep the strict lookup, since they come from buttons on rows that are on screen.
+- **Test.** `BuildNewModelGroupRemovalRenderTests` hosts the real screen in a window (through a new `BuildNewModelView(model:onBuild:onCancel:)` init), removes the first, middle or last of three groups and lets it redraw. It traps with the app's fatal error before the fix and passes after.
+- **Validation runs (FINDING).** `ReplayBuffer.sample()` in a Release build is faster with the seeded, age-ordered draws than with the system generator (median 4.00 → 2.78 ms per 4096 batch at the trainer defaults); Build New Model's Neutral init screens checked in light and dark. Details in the determinism plan's seventh pass.
+- **`parameters.json`** at the repository root regenerated from the current defaults (it predated seven parameters).
+
 ## 2026-10-03 01:55 CDT — Segment-indexed step-file names; legal-mass-collapse detector persisted (`fc8eb2fa`, `132d9e70`)
 
 - **Step files carry the segment index** (`fc8eb2fa`, determinism plan C1 #26). An exact resume of a recorded run writes `<stem>-replay-seg<k>-step<N>` (`-vsuci-seg<k>-step<N>`, or `<stem>-seg<k>-step<N>` for a stem without a tag marker), `k` its lineage segment index, so a resumed segment can keep its `--out-model` stem. Segment 0, a fresh run, a branch and a resume of an unrecorded file write no marker, so every existing name is unchanged. `LineageTracker.segmentIndex(exactResumeOf:)` is the one rule, shared by the lineage record and `EnumeratedCheckpointNaming`; `TrainerOutputFileGuard` refuses only reachable step files at the run's own segment index.

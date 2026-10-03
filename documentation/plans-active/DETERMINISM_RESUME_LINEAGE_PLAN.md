@@ -2377,6 +2377,32 @@ baseline.
     (`scripts/resume_equivalence.sh`); the GUI validation runs and
     screenshots; an end-to-end corpus-replay resume that writes
     `-replay-seg1-step*` files, probed with `PROBE_SEGMENT=1`.
+- **Seventh pass (2026-10-03): validation runs.** Run on the M5 Max while
+  three corpus-replay experiments were training on the same GPU.
+  - **`sample()` in a Release build — not slower; faster.** `efcf3a75`
+    (system `Int.random`) against `06c6b90b` (seeded streams, age-ordered
+    draws), Release `-O -whole-module-optimization`, a wrapped 500,000-position
+    ring, batch 4096, the trainer's default constraints, six alternating runs
+    per build. Median per batch 4.00 → 2.78 ms (p90 6.31 → 4.32 ms) on basic30,
+    3.33 → 2.66 ms on basic24. Time beyond copying the positions fell from
+    about 0.77 to 0.30 ms per batch; the copying itself (about 1.9 ms on
+    basic30) did not change. The bare draw costs 25–53 ns with the system
+    generator and 3–6 ns with `nextBounded` plus the logical-to-physical
+    mapping. The benchmark was a scratch test and is not in the repository.
+  - **GUI validation — done, and it found a crash.** Build New Model with
+    Neutral init applied, screenshotted in light and dark: the diagram's group
+    and head markers (`init:γb2.2`, `init: final zero`), the highlighted rows
+    and the "3 non-standard" count all agree, and both themes are readable.
+    Removing a block group trapped the app: SwiftUI draws a removed row once
+    more after its draft has left the model, and the init-options row added
+    in P7 looked up its position through the lookup that treats a missing
+    draft as a defect. Fixed in `c9f5b17c` (the row reads
+    `positionInTower(of:)`, nil for a removed draft, and draws nothing; the
+    edits keep the strict lookup), with `BuildNewModelGroupRemovalRenderTests`,
+    which traps before the fix and passes after; the GUI repro (remove the
+    middle of three groups) no longer crashes.
+  - **C6 step 7 (`scripts/resume_equivalence.sh`) and the segment-indexed
+    resume run** are running; results to follow here.
 
 **P10 — Provenance + carry-forward.** `[RUN]` formatter (`Logging/`), recorder
 fields, B4 fix. Tests: derive → train → save keeps `derivation_history`; `[RUN]`
