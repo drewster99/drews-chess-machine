@@ -9,6 +9,11 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-03 CDT — Last-save rule shared by both CLI runners; sessions_summary.py fixed (`e6254573`, `4a04d17b`)
+
+- **A failed final or abort save fails corpus replay** (`e6254573`), as it already did train-vs-UCI: the last save is the run's only record of its end state and has no next attempt. Both runners call `TrainerSaveFailureStreak.requireLastSaveSucceeded` (throws `LastSaveFailedError`); train-vs-UCI's own error case is gone. No `results.json` is written. Tests: `FinalTrainerSaveFailureTests` (the real replay loop writing into a read-only folder; both cases exited cleanly before), `TrainerSaveFailureStreakTests`.
+- **`scripts/sessions_summary.py` reads `session.json`** (`4a04d17b`); it had read a `metadata.json` no session folder holds, so every row was `?` / `NO_METADATA`. It shows trigger (from the folder name, checked against the session ID), trainer → champion, steps, training hours, games, arenas / promotions, base-2 size, the replay buffer checked against the folder (`MISSING` / `UNLISTED`), and from format v2 the lineage record, validated by `dcm_lineage.validated_record` (factored out of `lineage_of`). Unreadable folders are listed with the reason (exit 1). Tests: `test_sessions_summary.py` (10).
+
 ## 2026-10-03 CDT — Train-vs-UCI saves session folders (`943f69e4`, `7a8dce34`, `841afe91`)
 
 - **Session folders replace the rolling file.** `--train-vs-uci` saves `.dcmsession` folders through the GUI's `CheckpointManager.saveSession`, each a new folder tagged `vsuci-periodic` (`periodic_autosave_interval_sec`), `vsuci-final` or `vsuci-abort`, in `--out-session-dir` (default `Sessions/`). `trainer.safetensors` is the complete trainer state; `champion.safetensors` is the play network synced from the trainer; `session.json` carries lineage `path_kind` `vsuci`. The `[VS-UCI] session saves: …` launch line states folder, cadence and buffer choice.
