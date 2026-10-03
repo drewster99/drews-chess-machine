@@ -6,7 +6,7 @@
 //
 //  - Every head output (`policyOutput`, `valueLogits`, `valueProbs`,
 //    `valueOutput`) is fp32 for every compute dtype, every policy head style,
-//    and config D.
+//    and training-mode BN.
 //  - A bf16 forward reads the value head back as fp32: the W/D/L softmax
 //    sums to 1 at fp32 precision, which a bf16 readback cannot reach.
 //  - In the real training graph, the policy's final bias and the W/D/L
@@ -61,11 +61,8 @@ final class HeadNumericsTailTests: XCTestCase {
         }
     }
 
-    func testHeadOutputsAreFP32UnderConfigDAndTrainingMode() throws {
+    func testHeadOutputsAreFP32UnderTrainingMode() throws {
         try requireMetal()
-        let configD = try ChessNetwork(arch: arch(.bFloat16), bnMode: .training, bf16CastInForward: true)
-        XCTAssertTrue(configD.bf16CastActive)
-        assertHeadOutputsFP32(configD, "config D, training BN")
         let scalar = try ChessNetwork(arch: arch(.bFloat16, value: .scalarTanh), bnMode: .training)
         assertHeadOutputsFP32(scalar, "bf16 scalar-tanh, training BN")
     }

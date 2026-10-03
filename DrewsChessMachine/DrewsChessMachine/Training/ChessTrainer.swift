@@ -1573,13 +1573,6 @@ final class ChessTrainer: @unchecked Sendable {
     /// `.level0` trainer and check whether the level-1 codegen path is what
     /// turns bf16 multi-step gradients non-finite.
     let executableOptimizationLevel: MPSGraphOptimization
-    /// Experimental "config D" mixed-precision mode (see
-    /// `ChessNetwork.bf16CastInForward`). When true, the trainer builds its
-    /// training-mode network with fp32-stored weights cast to bf16 in the
-    /// forward, and the optimizer runs the plain fp32 path (no masters, no
-    /// working-sync). Threaded to every `ChessNetwork` the trainer builds.
-    /// Default false keeps the canonical bf16-working-var / fp32-master path.
-    let bf16CastInForward: Bool
     /// Where the policy head's fp32 tail begins in every `ChessNetwork` the
     /// trainer builds (see `ChessNetwork.PolicyTailPrecision`).
     let policyTailPrecision: ChessNetwork.PolicyTailPrecision
@@ -2053,7 +2046,6 @@ final class ChessTrainer: @unchecked Sendable {
         arch: NetworkArchitecture = .current,
         executableOptimizationLevel: MPSGraphOptimization = .level1,
         splitWorkingWeightSync: Bool = true,
-        bf16CastInForward: Bool = false,
         policyTailPrecision: ChessNetwork.PolicyTailPrecision = .process,
         disableAutoLayoutConversion: Bool = false,
         reducedPrecisionFastMathRaw: UInt? = nil
@@ -2078,11 +2070,10 @@ final class ChessTrainer: @unchecked Sendable {
         self.arch = arch
         self.executableOptimizationLevel = executableOptimizationLevel
         self.splitWorkingWeightSync = splitWorkingWeightSync
-        self.bf16CastInForward = bf16CastInForward
         self.policyTailPrecision = policyTailPrecision
         self.disableAutoLayoutConversion = disableAutoLayoutConversion
         self.reducedPrecisionFastMathRaw = reducedPrecisionFastMathRaw
-        let net = try ChessNetwork(arch: arch, bnMode: .training, bf16CastInForward: bf16CastInForward,
+        let net = try ChessNetwork(arch: arch, bnMode: .training,
                                    policyTailPrecision: policyTailPrecision,
                                    disableAutoLayoutConversion: disableAutoLayoutConversion,
                                    reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
@@ -2160,9 +2151,8 @@ final class ChessTrainer: @unchecked Sendable {
         }
         // Experiment: when the working-weight sync is split out of the fused
         // executable, build the separate `working = cast(master)` assigns here
-        // (no-op / empty unless splitWorkingWeightSync && bf16). Config D has
-        // no working vars and no masters at all, so no working-sync is built.
-        if splitWorkingWeightSync && !bf16CastInForward {
+        // (no-op / empty unless splitWorkingWeightSync && bf16).
+        if splitWorkingWeightSync {
             self.workingSyncOps = Self.buildWorkingSyncOps(
                 net: net, masterVariables: built.masterVariables, arch: arch)
         }
@@ -2317,7 +2307,7 @@ final class ChessTrainer: @unchecked Sendable {
     }
 
     private func internalResetNetwork() throws {
-        let net = try ChessNetwork(arch: arch, bnMode: .training, bf16CastInForward: bf16CastInForward,
+        let net = try ChessNetwork(arch: arch, bnMode: .training,
                                    policyTailPrecision: policyTailPrecision,
                                    disableAutoLayoutConversion: disableAutoLayoutConversion,
                                    reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
@@ -2394,9 +2384,8 @@ final class ChessTrainer: @unchecked Sendable {
             self.assignOps.append(advance)
         }
         // Rebuild the split working-sync ops against the fresh network (stale
-        // ops from the previous net must not be reused). Config D has no
-        // working vars / masters, so no working-sync is built.
-        self.workingSyncOps = (splitWorkingWeightSync && !bf16CastInForward)
+        // ops from the previous net must not be reused).
+        self.workingSyncOps = splitWorkingWeightSync
             ? Self.buildWorkingSyncOps(net: net, masterVariables: built.masterVariables, arch: arch)
             : []
         // Rebuild the scalar feeds against the new network's device so the
@@ -2642,7 +2631,7 @@ final class ChessTrainer: @unchecked Sendable {
         // `widenForReduction` lifts such a tensor to fp32 *before* the reduce
         // so the accumulator is fp32. It keys off the tensor's own dtype, so
         // it is the identity on anything already fp32 (the whole loss path, a
-        // `.float32` build, config D's fp32 variables).
+        // `.float32` build).
         let widenForReduction: (MPSGraphTensor) -> MPSGraphTensor = { t in
             t.dataType == .float32 ? t : graph.cast(t, to: .float32, name: nil)
         }
@@ -4048,13 +4037,7 @@ final class ChessTrainer: @unchecked Sendable {
         // copy is re-derived each step as `cast(master)`. Under `.float32`
         // there is no separate master (working weights are the master) and
         // this collapses to the prior plain path.
-        // Config D (`network.bf16CastActive`): the persistent weight/stat
-        // variables are stored fp32 (the variable IS the master; the forward
-        // casts each to bf16 at point of use). The optimizer therefore runs
-        // exactly the fp32 path — SGD on the fp32 variable directly, fp32
-        // velocity, NO master, NO working-sync — so `useMaster` is forced
-        // off even though `dtype` is bf16.
-        let useMaster = (dtype != .float32) && !network.bf16CastActive
+        let useMaster = dtype != .float32
         // fp32 zero-init bytes for an fp32 variable of `count` elements.
         func fp32Zeros(_ count: Int) -> Data { Data(count: count * MemoryLayout<Float>.size) }
 
@@ -5796,10 +5779,10 @@ final class ChessTrainer: @unchecked Sendable {
             }
             let count = try ChessNetwork.elementCount(of: variable)
             // Masters are fp32 regardless of the compute dtype; working
-            // variables live in the network's storage dtype.
+            // variables live in the compute dtype.
             tensors[name] = readsMasters
                 ? ChessNetwork.readFloatsFP32(from: data, count: count)
-                : ChessNetwork.readFloats(from: data, count: count, dataType: network.weightStorageDataType)
+                : ChessNetwork.readFloats(from: data, count: count, dataType: ChessNetwork.mpsDataType(for: network.arch))
         }
         return LayerHealthLiveState(tensors: tensors, completedTrainSteps: _completedTrainSteps.value)
     }
