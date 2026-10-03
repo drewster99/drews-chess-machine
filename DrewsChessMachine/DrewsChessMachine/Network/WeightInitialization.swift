@@ -243,13 +243,20 @@ enum WeightInitError: Error, Equatable, LocalizedError {
     }
 }
 
-/// How a randomly initialized tensor got its first values — the record of a
-/// graph build's per-tensor choice (`TensorInitializer.randomTensorRoles`).
+/// How a conv or FC weight got its first values (a draw, or an init option's
+/// constant) — the record of a graph build's per-tensor choice
+/// (`TensorInitializer.randomTensorRoles`).
 enum RandomTensorRole: String, Sendable, Equatable {
     case heNormal = "he_normal"
     case glorotNormal = "glorot_normal"
     /// A scale-and-bias SE FC2 whose β half is zeroed after the Glorot draw.
     case glorotNormalZeroBeta = "glorot_normal_zero_beta"
+    /// A width-transition skip projection under `skip_projection_init:
+    /// identity_like` — a constant, not a draw.
+    case identityLike = "identity_like"
+    /// A head's final layer under `policy_head_final_init` /
+    /// `value_head_final_init: zero` — a constant, not a draw.
+    case zero
 
     init(_ distribution: WeightInitScheme.Distribution) {
         switch distribution {
@@ -271,10 +278,11 @@ final class TensorInitializer {
     let initialization: WeightInitialization
     private let planByName: [String: WeightTensorSpec]
     private var initializedNames: Set<String> = []
-    /// The distribution each randomly initialized tensor was given, by plan
-    /// name (`RandomTensorRole`). Every conv and FC weight of a completed
-    /// build is here; constant tensors (biases, BN, ReZero α, priors) are
-    /// not. Recorded by `--derive-model --graft-to` for every tensor it draws.
+    /// How each conv and FC weight was initialized (its draw, or an init
+    /// option's constant), by plan name (`RandomTensorRole`). Every conv and
+    /// FC weight of a completed build is here; biases, BN, ReZero α and the
+    /// value prior are not. Recorded by `--derive-model --graft-to` for every
+    /// conv and FC weight it initializes.
     private(set) var randomTensorRoles: [String: RandomTensorRole] = [:]
 
     init(initialization: WeightInitialization, architecture: NetworkArchitecture) {
@@ -334,6 +342,7 @@ final class TensorInitializer {
             guard spec.kind == .conv, spec.shape.count == 4, spec.shape[2] == 1, spec.shape[3] == 1 else {
                 throw WeightInitError.identityLikeOnUnsupportedTensor(name: name, shape: spec.shape)
             }
+            randomTensorRoles[name] = .identityLike
             switch initialization {
             case .seeded:
                 return ChessNetwork.makeWeightData(
@@ -354,6 +363,7 @@ final class TensorInitializer {
             return try weightData(name, nativeShape: nativeShape, distribution: .heNormal, dataType: dataType)
         case .zero:
             let spec = try claim(name, nativeShape: nativeShape)
+            randomTensorRoles[name] = .zero
             return ChessNetwork.zerosData(count: spec.elementCount, dataType: dataType)
         }
     }

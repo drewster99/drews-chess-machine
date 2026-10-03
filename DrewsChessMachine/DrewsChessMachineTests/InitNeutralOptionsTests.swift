@@ -376,6 +376,41 @@ final class InitNeutralOptionsTests: XCTestCase {
         return changed
     }
 
+    /// A graft onto a neutral-init target gives every tensor it initializes
+    /// the target's option values (the fresh build's), and records the
+    /// constant ones by their option rather than as a draw.
+    func testAGraftOntoANeutralTargetInitializesWithTheTargetsOptions() throws {
+        try requireMetal()
+        var target = Self.architecture().withNeutralInit()
+        target.blockGroups[1].count = 3
+        try target.validate()
+        let fresh = try GraftFreshTarget.build(architecture: target, initSeed: 5)
+        // Dropping the source's projection and head finals leaves the
+        // target's to be initialized, beside the new block 3.
+        let map = try GraftMap.parse("blocks.1.skip_proj.weight=,policy.conv.weight=,value.wdl_fc2.weight=")
+        let result = try ModelDerivation.graft(
+            sourceData: try encodedModel(Self.architecture()), sourceName: "source.safetensors", fresh: fresh,
+            targetLabel: "neutral target", map: map, initSeedOrigin: "entered", newModelID: "20261003-3-GRFT",
+            createdAtUnix: 1_790_000_200, build: "test", invocationArguments: ["test"])
+
+        let perTensor = try XCTUnwrap(try XCTUnwrap(result.record.operations.last).perTensorInit)
+        XCTAssertEqual(perTensor["blocks.1.skip_proj.weight"], RandomTensorRole.identityLike.rawValue)
+        XCTAssertEqual(perTensor["policy.conv.weight"], RandomTensorRole.zero.rawValue)
+        XCTAssertEqual(perTensor["value.wdl_fc2.weight"], RandomTensorRole.zero.rawValue)
+        XCTAssertEqual(perTensor["blocks.3.bn2.weight"], ModelDerivation.builderConstantInit)
+
+        let (tensors, _) = try SafetensorsFile.decode(result.data)
+        var byName: [String: [Float]] = [:]
+        for tensor in tensors { byName[tensor.name] = tensor.data }
+        let projection = try XCTUnwrap(byName["blocks.1.skip_proj.weight"])
+        XCTAssertEqual(projection, WeightInitScheme.identityLikeProjectionValues(outChannels: 24, inChannels: 16))
+        XCTAssertTrue(try XCTUnwrap(byName["policy.conv.weight"]).allSatisfy { $0 == 0 })
+        XCTAssertTrue(try XCTUnwrap(byName["value.wdl_fc2.weight"]).allSatisfy { $0 == 0 })
+        XCTAssertTrue(try XCTUnwrap(byName["blocks.3.bn2.weight"]).allSatisfy { $0 == 0 })
+        XCTAssertEqual(Array(try XCTUnwrap(byName["blocks.3.se_scalebias.fc2.bias"]).prefix(24)),
+                       [Float](repeating: BlockGroup.neutralSEGammaBiasInit, count: 24))
+    }
+
     private func kind(_ flag: String) throws -> DeriveOperationKind {
         try XCTUnwrap(ModelDerivation.kind(forFlag: flag), "no derive operation \(flag)")
     }
