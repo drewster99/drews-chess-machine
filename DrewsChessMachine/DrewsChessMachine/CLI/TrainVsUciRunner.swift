@@ -40,6 +40,10 @@ struct TrainVsUciConfig: Sendable {
     /// refills from new games before training resumes. Without this flag,
     /// `--start-model` starts a new branch (fresh clock, zero velocity).
     var resumeExact: Bool
+    /// Resume gaps `--resume-exact` may proceed without (`--accept-inexact`,
+    /// determinism plan D-7). The replay buffer is never saved by this path,
+    /// so `buffer` must be named for any exact resume to proceed.
+    var acceptInexact: Set<ResumeGap>
     var presetName: String?
     /// Explicit destination for the rolling trainer-model file; nil derives
     /// `<start-model stem>-vsuci-latest.safetensors` next to `--start-model`,
@@ -150,10 +154,8 @@ enum TrainVsUciRunner {
             let r = CliTrainingRecorder()
             r.setSessionID(config.runModelID)
             r.setRunKind(.trainVsUci)
-            r.setRunRandomSeed(config.runRandomSeed)
             return r
         }()
-        for line in config.runRandomSeed.logLines { emit(line) }
         let runStart = CFAbsoluteTimeGetCurrent()
         guard !config.opponents.isEmpty else { throw TrainVsUciError.noOpponents }
 
@@ -164,6 +166,13 @@ enum TrainVsUciRunner {
         let parentModelID: String
         // Set only for `--resume-exact` (see `TrainVsUciConfig.resumeExact`).
         var resumeSnapshot: TrainerResumeSnapshot? = nil
+        // The run's master seed: inherited from the checkpoint on an exact
+        // resume that records the run's streams (see CorpusReplayRunner).
+        var runSeed = config.runRandomSeed
+        var resumedStreams: LineageRecord.RunStreams? = nil
+        // This path never saves its replay buffer: every exact resume refills
+        // from new games (decision D-8).
+        var resumeGaps: [ResumeGap] = [.buffer]
         if let sm = config.startModelPath {
             let url = URL(fileURLWithPath: (sm as NSString).expandingTildeInPath)
             let file = try CheckpointManager.loadModelFile(at: url)
@@ -172,13 +181,37 @@ enum TrainVsUciRunner {
             arch = file.architecture
             emit("[VS-UCI] start-model: \(url.lastPathComponent) modelID=\(file.modelID) encoding=\(arch.inputEncoding.rawValue)")
             if config.resumeExact {
-                resumeSnapshot = try TrainerResumeSnapshot(checkpoint: file, fileName: url.lastPathComponent)
-                let precisionDecision = PolicyTailPrecisionResume.exactResumeDecision(
-                    saved: file.metadata.trainerPolicyTailPrecision,
-                    running: ChessNetwork.PolicyTailPrecision.process
-                )
-                emit(precisionDecision.logLine)
-                if let refusal = precisionDecision.refusal {
+                let snapshot = try TrainerResumeSnapshot(checkpoint: file, fileName: url.lastPathComponent)
+                resumeSnapshot = snapshot
+                emit(PolicyTailPrecisionResume.exactResumeLogLine(
+                    saved: file.metadata.trainerPolicyTailPrecision, running: ChessNetwork.PolicyTailPrecision.process))
+                resumeGaps += PolicyTailPrecisionResume.gaps(
+                    saved: file.metadata.trainerPolicyTailPrecision, running: ChessNetwork.PolicyTailPrecision.process)
+                resumeGaps += ResumeGap.dropoutGaps(restoring: snapshot.dropoutRNG)
+                if let parentRecord = file.lineageParent.lineage.record {
+                    if let streams = parentRecord.rng.streams, streams.nextGameSerial != nil {
+                        do {
+                            runSeed = try RunRandomSeed.inherited(
+                                from: streams,
+                                configuredSeed: config.runRandomSeed.configuredSeed,
+                                commandLineSeed: config.runRandomSeed.origin == .commandLine ? config.runRandomSeed.masterSeed : nil)
+                        } catch {
+                            FileHandle.standardError.write(Data("error: --resume-exact: \(error.localizedDescription)\n".utf8))
+                            Darwin.exit(2)
+                        }
+                        resumedStreams = streams
+                    } else {
+                        resumeGaps += [.rngSampler, .serials]
+                    }
+                    if parentRecord.parameters == nil { resumeGaps.append(.params) }
+                    resumeGaps += ResumeGap.environmentGaps(
+                        writtenBy: parentRecord, runningBuild: .current, runningDevice: .current)
+                } else {
+                    resumeGaps += [.lineage, .rngSampler, .serials, .params]
+                }
+                let exactness = ResumeExactness(gaps: resumeGaps)
+                emit(exactness.logLine)
+                if let refusal = exactness.refusal(accepting: config.acceptInexact) {
                     FileHandle.standardError.write(Data("error: \(refusal)\n".utf8))
                     Darwin.exit(2)
                 }
@@ -199,6 +232,8 @@ enum TrainVsUciRunner {
             }
         }
 
+        for line in runSeed.logLines { emit(line) }
+        recorder?.setRunRandomSeed(runSeed)
         emit("[VS-UCI-ARCH] (\(startModelFile == nil ? "default preset" : "start-model")) \(arch.architectureSummary)")
 
         // Rolling trainer-model output file (mirrors CorpusReplayRunner),
@@ -261,14 +296,11 @@ enum TrainVsUciRunner {
             for line in p.trainer.scheduleDifferences(from: resumeSnapshot.schedule) {
                 emit("[VS-UCI-RESUME] WARNING \(line)")
             }
-            // See `[REPLAY-RESUME] NOT EXACT: rng` in CorpusReplayRunner.
-            emit("[VS-UCI-RESUME] NOT EXACT: rng — the checkpoint records no run seed, sampler state or game serial; "
-                + "this segment draws from seed \(config.runRandomSeed.masterSeed)")
             resumedHyperparameters = p.trainer.adoptingSchedule(resumeSnapshot.schedule)
         }
         let hp = resumedHyperparameters
         let trainer = try ChessTrainer(
-            dropoutStream: config.runRandomSeed.streams.generator(.dropout),
+            dropoutStream: runSeed.streams.generator(.dropout),
             hyperparameters: hp, arch: arch
         )
         emit(ChessNetwork.PolicyTailPrecision.processLogLine)
@@ -291,7 +323,11 @@ enum TrainVsUciRunner {
         let buffer = ReplayBuffer(
             capacity: p.replayBufferCapacity,
             inputEncoding: evalNet.inputEncoding,
-            sampler: config.runRandomSeed.streams.generator(.sampler))
+            sampler: runSeed.streams.generator(.sampler))
+        if let resumedStreams {
+            buffer.restoreSamplerState(resumedStreams.samplerState)
+            emit("[RESUME] rng: sampler=restored")
+        }
 
         // Number of base tensors (trainables + BN running stats) — the prefix
         // both the trainer's masters/working copy and evalNet's inference net
@@ -305,6 +341,10 @@ enum TrainVsUciRunner {
             try await evalNet.network.loadWeights(file.networkWeights)
             if let resumeSnapshot {
                 try await trainer.restoreExactly(from: resumeSnapshot)
+                if let resumedStreams {
+                    try await trainer.restoreDropoutStreamState(resumedStreams.dropoutStreamState)
+                    emit("[RESUME] rng: dropout stream=restored")
+                }
                 emit("[VS-UCI] start-model trainer state restored exactly (fp32 masters, velocity, trainerStep=\(trainer.completedTrainSteps)) + play net (base tensors=\(baseCount))")
             } else {
                 try await trainer.loadBaseWeightsResetVelocity(file.networkWeights)
@@ -327,12 +367,8 @@ enum TrainVsUciRunner {
         // This segment's lineage — see CorpusReplayRunner. A vs-UCI resume
         // starts from a fresh buffer, so it is not exact in that either.
         let lineageStart: LineageTracker.Start
-        if let file = startModelFile, let resumeSnapshot {
-            lineageStart = .resume(
-                parent: file.lineageParent,
-                notExactItems: LineageTracker.NotExactItem.resumeGaps(
-                    LineageTracker.NotExactItem.vsUciResume, restoring: resumeSnapshot.dropoutRNG),
-                legacyTotals: nil)
+        if let file = startModelFile, resumeSnapshot != nil {
+            lineageStart = .resume(parent: file.lineageParent, gaps: resumeGaps, legacyTotals: nil)
         } else if let file = startModelFile {
             lineageStart = .branch(parent: file.lineageParent)
         } else {
@@ -361,6 +397,9 @@ enum TrainVsUciRunner {
         }
         emit("[VS-UCI] opponent pool: " + config.opponents.map { "\($0.kind)×\($0.count) [go=\($0.goLimit)]" }.joined(separator: ", "))
 
+        // Game serials continue the saved run's on an exact resume, so later
+        // games draw from streams that run never used.
+        let gameSerials = GameSerialCounter(firstSerial: resumedStreams?.nextGameSerial ?? 0)
         let driver = TrainVsUciDriver(
             network: evalNet,
             buffer: buffer,
@@ -370,8 +409,8 @@ enum TrainVsUciRunner {
             // come from start positions, not temperature (see `.argmax` doc).
             schedule: .argmax,
             maxPliesPerGame: config.maxPliesPerGame,
-            randomStreams: config.runRandomSeed.streams,
-            gameSerials: GameSerialCounter(firstSerial: 0))
+            randomStreams: runSeed.streams,
+            gameSerials: gameSerials)
 
         // Consecutive-failure tracking per kind of save — see
         // `TrainerSaveFailureStreak` and `CorpusReplayRunner.reportSaveFailure`.
@@ -384,6 +423,10 @@ enum TrainVsUciRunner {
                 // `training_step` stays segment-local as in CorpusReplayRunner.
                 // The SGD loop awaits each step, so none is in flight here.
                 let snapshot = try await trainer.exportResumeSnapshot()
+                let streams = runSeed.runStreams(
+                    samplerState: buffer.samplerState(),
+                    dropoutStreamState: try await trainer.dropoutStreamState(),
+                    nextGameSerial: gameSerials.nextSerial, arenasStarted: nil)
                 let weights = snapshot.trainerWeights
                 let metadata = ModelCheckpointMetadata.trainerFile(
                     creator: "train-vs-uci",
@@ -403,7 +446,7 @@ enum TrainVsUciRunner {
                     segmentPositions: slots.reduce(0) { $0 + $1.pliesPlayed },
                     corpus: nil,
                     parameters: p.lineageParameters,
-                    dropoutPhiloxState: snapshot.dropoutRNG.philoxState)
+                    rng: LineageRecord.RNG(dropoutPhiloxState: snapshot.dropoutRNG.philoxState, streams: streams))
                 encoded = try SafetensorsModelIO.encode(
                     modelID: config.runModelID,
                     createdAtUnix: Int64(saveDate.timeIntervalSince1970),

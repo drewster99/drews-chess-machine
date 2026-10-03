@@ -82,6 +82,10 @@ struct CorpusReplayConfig: Sendable {
     /// keys of a file written before lineage); mutually exclusive with `startShard` /
     /// `startGameIndex`. Without it, `--start-model` starts a new branch.
     var resumeExact: Bool = false
+    /// Resume gaps `--resume-exact` may proceed without (`--accept-inexact`,
+    /// determinism plan D-7): each named gap starts fresh and the segment is
+    /// recorded as not exact. A changed corpus is never acceptable.
+    var acceptInexact: Set<ResumeGap>
     /// Explicit destination for the rolling trainer-model file. When nil the
     /// runner derives a path next to `--start-model` (or, without one, in the
     /// app's Models directory, named after the first corpus). The same file is
@@ -179,8 +183,13 @@ enum CorpusReplayError: LocalizedError {
     /// The same kind of save failed on consecutive attempts; see
     /// `TrainerSaveFailureStreak`.
     case repeatedSaveFailures(count: Int, lastStep: Int, what: String)
+    /// A shard could not be read during an exact resume, so the fed stream
+    /// can no longer be the saved run's.
+    case exactResumeShardUnreadable(shard: String, detail: String)
     var errorDescription: String? {
         switch self {
+        case let .exactResumeShardUnreadable(shard, detail):
+            return "--resume-exact: shard \(shard) could not be read (\(detail)); an exact resume feeds every game the checkpoint's run fed, so it stops instead of skipping the shard"
         case let .gpuCaptureStepUnreachable(step, stepLimit):
             return "--gpu-capture-step \(step) is past the run's step limit \(stepLimit); the capture could never happen"
         case let .gpuCaptureFolderUnusable(path, reason):
@@ -844,10 +853,8 @@ enum CorpusReplayRunner {
             let r = CliTrainingRecorder()
             r.setSessionID(config.runModelID)
             r.setRunKind(.corpusReplay)
-            r.setRunRandomSeed(config.runRandomSeed)
             return r
         }()
-        for line in config.runRandomSeed.logLines { emit(line) }
         let runStart = CFAbsoluteTimeGetCurrent()
         // --start-model: load a saved model and continue training from it. The
         // file embeds its own architecture, which then drives both the trainer
@@ -875,15 +882,8 @@ enum CorpusReplayRunner {
                     FileHandle.standardError.write(Data("error: --resume-exact: \(error.localizedDescription)\n".utf8))
                     Darwin.exit(2)
                 }
-                let precisionDecision = PolicyTailPrecisionResume.exactResumeDecision(
-                    saved: file.metadata.trainerPolicyTailPrecision,
-                    running: config.policyTailPrecision
-                )
-                emit(precisionDecision.logLine)
-                if let refusal = precisionDecision.refusal {
-                    FileHandle.standardError.write(Data("error: \(refusal)\n".utf8))
-                    Darwin.exit(2)
-                }
+                emit(PolicyTailPrecisionResume.exactResumeLogLine(
+                    saved: file.metadata.trainerPolicyTailPrecision, running: config.policyTailPrecision))
             }
         } else {
             startModelFile = nil
@@ -921,12 +921,6 @@ enum CorpusReplayRunner {
             for line in p.trainer.scheduleDifferences(from: resumeSnapshot.schedule) {
                 emit("[REPLAY-RESUME] WARNING \(line)")
             }
-            // Checkpoints do not record the run seed or the sampler stream's
-            // state yet (they arrive with the lineage record, determinism
-            // plan P6/P9), so the minibatch draws after the resume are not
-            // the uninterrupted run's.
-            emit("[REPLAY-RESUME] NOT EXACT: rng — the checkpoint records no run seed or sampler state; "
-                + "this segment draws from seed \(config.runRandomSeed.masterSeed)")
             trainerHyperparameters = p.trainer.adoptingSchedule(resumeSnapshot.schedule)
         }
         let hp = trainerHyperparameters
@@ -1050,7 +1044,8 @@ enum CorpusReplayRunner {
         // the saved `next_game_index`. cumGames[i] = games in shards 0..<i, so
         // cumGames[i] is the global index of shard i's first game and
         // cumGames.last! the corpus total.
-        let shardCounts = try shardURLs.map { try GameCorpusShardIO.readSealedCounts(at: $0) }
+        let shardCounts = try shardURLs.map { try GameCorpusShardIO.readSealedTrailer(at: $0) }
+        let shardSHA256 = shardCounts.map(\.sealSHA256)
         let shardGameCounts = shardCounts.map { $0.gameCount }
         let totalPlies = shardCounts.reduce(0) { $0 + $1.plyCount }
         var cumGames: [Int] = [0]
@@ -1078,6 +1073,22 @@ enum CorpusReplayRunner {
         var startWithinShardSkip = 0
         var reconstructUntil: Int? = nil   // resume-exact: refeed up to here, then train
         var startEpoch = 0
+        // Epoch the reconstruction refeed starts in: the saved epoch, or the
+        // one before it when the buffer's oldest residents were fed before
+        // the saved epoch began.
+        var reconstructStartEpoch = 0
+        // Positions fed per trainer step: K = batchSize / R, so each position
+        // is sampled ~R times before eviction. Fixed for the run.
+        let perStepFeed = max(1, Int((Double(max(1, p.trainingBatchSize)) / p.replayRatioTarget).rounded()))
+        // An exact resume's saved feed phase (positions fed ahead of the
+        // next step's target); nil when the checkpoint does not carry it.
+        var resumedFeedAheadPositions: Int? = nil
+        // The run's master seed: the configured or drawn one, or — for an
+        // exact resume of a checkpoint that records the run's streams — the
+        // run's own, with every stream position it saved.
+        var runSeed = config.runRandomSeed
+        var resumedStreams: LineageRecord.RunStreams? = nil
+        var resumeGaps: [ResumeGap] = []
         if config.resumeExact {
             // Read the saved resume metadata from the --start-model header (no
             // tensor decode) and validate it's for THIS corpus.
@@ -1097,8 +1108,56 @@ enum CorpusReplayRunner {
                 FileHandle.standardError.write(Data("error: --resume-exact: checkpoint corpus_id '\(rm.corpusID)' != this corpus '\(resumeCorpusID)'\n".utf8))
                 Darwin.exit(2)
             }
-            if let g = rm.builtByGit, g != BuildInfo.gitHash {
-                SessionLogger.shared.log("[REPLAY] WARNING --resume-exact: checkpoint built by git \(g) but running \(BuildInfo.gitHash) — if the encoder/feeder changed, the reconstructed buffer may differ from the original.")
+            guard let startFile = startModelFile, let snapshot = resumeSnapshot else {
+                preconditionFailure("--resume-exact loaded its start model and trainer snapshot above")
+            }
+            let parentRecord = startFile.lineageParent.lineage.record
+            resumeGaps += ResumeGap.dropoutGaps(restoring: snapshot.dropoutRNG)
+            resumeGaps += PolicyTailPrecisionResume.gaps(
+                saved: startFile.metadata.trainerPolicyTailPrecision, running: config.policyTailPrecision)
+            if let parentRecord, let corpus = parentRecord.fed.corpus {
+                // The corpus must be the one the checkpoint fed: same shards,
+                // same content. A changed corpus is not a gap anyone can
+                // accept — the refeed and every later game would differ.
+                guard corpus.shardSHA256 == shardSHA256 else {
+                    let changed = zip(corpus.shardSHA256, shardSHA256).enumerated()
+                        .filter { $0.element.0 != $0.element.1 }.map { shardURLs[$0.offset].lastPathComponent }
+                    let detail = corpus.shardSHA256.count != shardSHA256.count
+                        ? "the checkpoint fed \(corpus.shardSHA256.count) sealed shard(s), this corpus has \(shardSHA256.count)"
+                        : "changed shard(s): \(changed.joined(separator: ", "))"
+                    FileHandle.standardError.write(Data("error: --resume-exact: corpus \(resumeCorpusID) is not the content the checkpoint fed (\(detail)); a changed corpus cannot be resumed exactly, even with --accept-inexact\n".utf8))
+                    Darwin.exit(2)
+                }
+                if corpus.feedPerStep == perStepFeed {
+                    resumedFeedAheadPositions = corpus.feedAheadPositions
+                } else {
+                    emit("[RESUME] feed per step: checkpoint \(corpus.feedPerStep), this run \(perStepFeed) (batch size or replay ratio changed) — the feed phase cannot continue")
+                    resumeGaps += [.params, .feedCarry]
+                }
+                if let streams = parentRecord.rng.streams {
+                    do {
+                        runSeed = try RunRandomSeed.inherited(
+                            from: streams,
+                            configuredSeed: config.runRandomSeed.configuredSeed,
+                            commandLineSeed: config.runRandomSeed.origin == .commandLine ? config.runRandomSeed.masterSeed : nil)
+                    } catch {
+                        FileHandle.standardError.write(Data("error: --resume-exact: \(error.localizedDescription)\n".utf8))
+                        Darwin.exit(2)
+                    }
+                    resumedStreams = streams
+                } else {
+                    resumeGaps.append(.rngSampler)
+                }
+                if parentRecord.parameters == nil { resumeGaps.append(.params) }
+                resumeGaps += ResumeGap.environmentGaps(
+                    writtenBy: parentRecord, runningBuild: .current, runningDevice: .current)
+            } else {
+                // Written before lineage: no streams, feed phase, shard
+                // hashes or parameter snapshot to continue from.
+                resumeGaps += [.lineage, .rngSampler, .feedCarry, .params]
+                if let g = rm.builtByGit, g != BuildInfo.gitHash {
+                    emit("[RESUME] WARNING checkpoint built by git \(g) but running \(BuildInfo.gitHash)")
+                }
             }
             // Refeed enough games before `until` to overflow the ring, which then
             // self-trims to the exact last-capacity plies (so the precise refeed
@@ -1121,15 +1180,29 @@ enum CorpusReplayRunner {
             // alternative rather than silently reconstruct a short/empty buffer.
             // (epoch 0 is always fine — no prior epoch, so [0, until) IS the
             // exact buffer contents, full or legitimately partial.)
+            // The refeed window: the games before `until` that cover the
+            // ring. When the saved epoch had not yet fed that many, the window
+            // wraps back into the previous epoch's tail — corpus order is
+            // sequential, so those are exactly the games the run fed then
+            // (C1 #6). Epoch 0 has no previous epoch: games [0, until) are the
+            // whole history, full or legitimately partial.
+            let reconstructStart: Int
             if startEpoch > 0 && until < gamesBack {
-                FileHandle.standardError.write(Data("error: --resume-exact from an early-epoch checkpoint (epoch \(startEpoch), nextGame \(until) < \(gamesBack)-game reconstruction window) needs cross-epoch buffer reconstruction, not yet supported. Resume from a mid-epoch checkpoint, or use --start-game-index \(until) for an approximate cold-refill resume.\n".utf8))
-                Darwin.exit(2)
+                let fromPreviousEpoch = gamesBack - until
+                guard fromPreviousEpoch <= totalCorpusGames else {
+                    FileHandle.standardError.write(Data("error: --resume-exact: the buffer holds more than one whole epoch of this corpus (\(gamesBack)-game window, \(totalCorpusGames) games); reconstructing it would span several epochs, which is not supported\n".utf8))
+                    Darwin.exit(2)
+                }
+                reconstructStartEpoch = startEpoch - 1
+                reconstructStart = totalCorpusGames - fromPreviousEpoch
+            } else {
+                reconstructStartEpoch = startEpoch
+                reconstructStart = max(0, until - gamesBack)
             }
-            let reconstructStart = max(0, until - gamesBack)
             let (s, off) = locate(reconstructStart)
             startShardCursor = s
             startWithinShardSkip = off
-            SessionLogger.shared.log("[REPLAY] --resume-exact: nextGame=\(until) epoch=\(startEpoch) cap=\(cap) savedPlies=\(rm.populatedPlies) -> refeed games [\(reconstructStart), \(until)) (\(until - reconstructStart) games ≈ \(Int(Double(until - reconstructStart) * avgPly)) plies) from \(shardURLs[s].lastPathComponent) offset \(off)")
+            SessionLogger.shared.log("[REPLAY] --resume-exact: nextGame=\(until) epoch=\(startEpoch) cap=\(cap) savedPlies=\(rm.populatedPlies) -> refeed from epoch \(reconstructStartEpoch) game \(reconstructStart) to epoch \(startEpoch) game \(until) (window \(gamesBack) games ≈ \(Int(Double(gamesBack) * avgPly)) plies) from \(shardURLs[s].lastPathComponent) offset \(off)")
         } else if let ss = config.startShard {
             guard ss >= 0 && ss < shardURLs.count else {
                 FileHandle.standardError.write(Data("error: --start-shard \(ss) out of range; valid 0…\(shardURLs.count - 1)\n".utf8))
@@ -1153,6 +1226,20 @@ enum CorpusReplayRunner {
         // `reconstructUntil` once the buffer is rebuilt.
         let startGlobalIndex = cumGames[startShardCursor] + startWithinShardSkip
 
+        // One exactness decision for the resume (plan C3): logged once,
+        // recorded in the segment's lineage, and refused unless
+        // `--accept-inexact` names every gap (D-7).
+        let resumeExactness = ResumeExactness(gaps: resumeGaps)
+        if config.resumeExact {
+            emit(resumeExactness.logLine)
+            if let refusal = resumeExactness.refusal(accepting: config.acceptInexact) {
+                FileHandle.standardError.write(Data("error: \(refusal)\n".utf8))
+                Darwin.exit(2)
+            }
+        }
+        for line in runSeed.logLines { emit(line) }
+        recorder?.setRunRandomSeed(runSeed)
+
         emit("[REPLAY] building network + trainer (encoding=\(arch.inputEncoding.rawValue))")
         // With --start-model the file's weights and batch-norm statistics
         // replace the network's right below; otherwise the run builds a fresh
@@ -1161,8 +1248,8 @@ enum CorpusReplayRunner {
         if startModelFile != nil {
             netInitMode = .overwrittenByLoad
         } else {
-            let initSeed = config.runRandomSeed.streams.freshModelInitSeed
-            emit("[REPLAY] fresh model init seed=\(initSeed) (from run seed \(config.runRandomSeed.masterSeed))")
+            let initSeed = runSeed.streams.freshModelInitSeed
+            emit("[REPLAY] fresh model init seed=\(initSeed) (from run seed \(runSeed.masterSeed))")
             netInitMode = .randomWeights(initSeed: initSeed)
         }
         let net = try ChessMPSNetwork(netInitMode, arch: arch)
@@ -1172,7 +1259,7 @@ enum CorpusReplayRunner {
         // the stats / KL-probe intervals. With both cycle flags off the cycle
         // is inert and the static LR and momentum apply, exactly as in the GUI.
         let trainer = try ChessTrainer(
-            dropoutStream: config.runRandomSeed.streams.generator(.dropout),
+            dropoutStream: runSeed.streams.generator(.dropout),
             hyperparameters: trainerHyperparameters, arch: arch, policyTailPrecision: config.policyTailPrecision)
         emit(ChessNetwork.PolicyTailPrecision.processLogLine)
         // A requested GPU capture must be possible before any buffer fill or
@@ -1186,7 +1273,13 @@ enum CorpusReplayRunner {
         let buffer = ReplayBuffer(
             capacity: p.replayBufferCapacity,
             inputEncoding: net.inputEncoding,
-            sampler: config.runRandomSeed.streams.generator(.sampler))
+            sampler: runSeed.streams.generator(.sampler))
+        if let resumedStreams {
+            // The sampler continues from where the saved run's next batch
+            // would have drawn; the refeed below only appends, never draws.
+            buffer.restoreSamplerState(resumedStreams.samplerState)
+            emit("[RESUME] rng: sampler=restored")
+        }
         let feeder = CorpusReplayFeeder(network: net, buffer: buffer)
 
         // Seed the feeder net (computes the value baseline while feeding) from
@@ -1214,6 +1307,10 @@ enum CorpusReplayRunner {
             try await net.network.loadWeights(file.networkWeights)
             if let resumeSnapshot {
                 try await trainer.restoreExactly(from: resumeSnapshot)
+                if let resumedStreams {
+                    try await trainer.restoreDropoutStreamState(resumedStreams.dropoutStreamState)
+                    emit("[RESUME] rng: dropout stream=restored")
+                }
                 emit("[REPLAY] start-model trainer state restored exactly (fp32 masters, velocity, trainerStep=\(trainer.completedTrainSteps)) + feeder net (base tensors=\(baseCount))")
             } else {
                 try await trainer.loadBaseWeightsResetVelocity(file.networkWeights)
@@ -1236,12 +1333,8 @@ enum CorpusReplayRunner {
         // record, so totals (trainer steps, games and positions fed, measured
         // step time) continue across resumes without hand-entered bases.
         let lineageStart: LineageTracker.Start
-        if let file = startModelFile, let resumeSnapshot {
-            lineageStart = .resume(
-                parent: file.lineageParent,
-                notExactItems: LineageTracker.NotExactItem.resumeGaps(
-                    LineageTracker.NotExactItem.replayResume, restoring: resumeSnapshot.dropoutRNG),
-                legacyTotals: nil)
+        if let file = startModelFile, resumeSnapshot != nil {
+            lineageStart = .resume(parent: file.lineageParent, gaps: resumeExactness.gaps, legacyTotals: nil)
         } else if let file = startModelFile {
             lineageStart = .branch(parent: file.lineageParent)
         } else {
@@ -1270,7 +1363,8 @@ enum CorpusReplayRunner {
         func saveTrainerModel(step: Int, reason: String,
                               nextGameIndex: Int, shard: Int, epoch: Int, populatedPlies: Int,
                               corpusID: String, corpusPath: String,
-                              segmentGames: Int, segmentPositions: Int) async throws {
+                              segmentGames: Int, segmentPositions: Int,
+                              feedAheadPositions: Int) async throws {
             // Rolling save (overwrites the output file). `encoded` is reused by the
             // enumerated copy below, so it outlives this do/catch. A disk-full
             // failure re-throws (fatal, halts the run); any other failure is a
@@ -1285,6 +1379,13 @@ enum CorpusReplayRunner {
                 // `trainer_completed_steps`. The loop is sequential, so no SGD
                 // step is in flight during the export.
                 let snapshot = try await trainer.exportResumeSnapshot()
+                // The run's stream positions, in the same cut as the trainer
+                // state: the loop is sequential, so no batch is drawn and no
+                // step runs between these reads.
+                let streams = runSeed.runStreams(
+                    samplerState: buffer.samplerState(),
+                    dropoutStreamState: try await trainer.dropoutStreamState(),
+                    nextGameSerial: nil, arenasStarted: nil)
                 let weights = snapshot.trainerWeights
                 let metadata = ModelCheckpointMetadata.trainerFile(
                     creator: "replay",
@@ -1306,9 +1407,11 @@ enum CorpusReplayRunner {
                     corpus: LineageRecord.CorpusPosition(
                         corpusID: corpusID, corpusPath: corpusPath, epoch: epoch,
                         nextGameIndex: nextGameIndex, shard: shard,
-                        populatedPlies: populatedPlies, bufferCapacity: p.replayBufferCapacity),
+                        populatedPlies: populatedPlies, bufferCapacity: p.replayBufferCapacity,
+                        feedAheadPositions: feedAheadPositions, feedPerStep: perStepFeed,
+                        shardSHA256: shardSHA256),
                     parameters: p.lineageParameters,
-                    dropoutPhiloxState: snapshot.dropoutRNG.philoxState)
+                    rng: LineageRecord.RNG(dropoutPhiloxState: snapshot.dropoutRNG.philoxState, streams: streams))
                 encoded = try SafetensorsModelIO.encode(
                     modelID: config.runModelID,
                     createdAtUnix: Int64(saveDate.timeIntervalSince1970),
@@ -1379,9 +1482,6 @@ enum CorpusReplayRunner {
 
         let batchSize = max(1, p.trainingBatchSize)
         let reuse = p.replayRatioTarget
-        // Positions to feed per step so each is sampled ~`reuse` times before
-        // eviction: K = batchSize / R.
-        let perStepFeed = max(1, Int((Double(batchSize) / reuse).rounded()))
         let minPrefill = max(batchSize, p.replayBufferMinPositionsBeforeTraining)
 
         // Budget: explicit step limit wins; otherwise bound by epochs (default
@@ -1395,7 +1495,9 @@ enum CorpusReplayRunner {
         var shardCursor = startShardCursor
         var currentGames: [GameRecord] = []
         var gameCursor = 0
-        var epochsCompleted = startEpoch   // resume-exact carries the saved epoch; else 0
+        // Resume-exact starts in the refeed's first epoch (the saved one, or
+        // the one before it); otherwise 0.
+        var epochsCompleted = reconstructStartEpoch
         // One-shot within-shard skip applied to the FIRST loaded shard
         // (--start-game-index); cleared after that shard and on any epoch wrap.
         var firstShardSkip = startWithinShardSkip
@@ -1403,6 +1505,10 @@ enum CorpusReplayRunner {
         // starts at the resume point, +1 per returned game, resets to 0 on the
         // epoch wrap. Logged as `nextGame=` and saved as `next_game_index`.
         var nextGameWithinEpoch = startGlobalIndex
+        // An exact resume reproduces the fed stream only if every shard reads
+        // as the content its hash names; a shard that fails to read ends such
+        // a run with this error instead of being skipped.
+        var exactResumeShardFailure: Error? = nil
 
         func nextGame() -> GameRecord? {
             while gameCursor >= currentGames.count {
@@ -1424,6 +1530,11 @@ enum CorpusReplayRunner {
                 do {
                     currentGames = try GameCorpusShardIO.readSealed(at: url).games
                 } catch {
+                    if config.resumeExact {
+                        exactResumeShardFailure = CorpusReplayError.exactResumeShardUnreadable(
+                            shard: url.lastPathComponent, detail: error.localizedDescription)
+                        return nil
+                    }
                     emit("[REPLAY] skipping unreadable shard \(url.lastPathComponent): \(error.localizedDescription)")
                     currentGames = []
                 }
@@ -1487,10 +1598,15 @@ enum CorpusReplayRunner {
         // stays within one epoch (reconstructStart..until are both in [0,
         // totalCorpusGames)), so no wrap fires mid-reconstruction.
         if let until = reconstructUntil {
-            while nextGameWithinEpoch < until {
+            // Positions in the corpus's epoch-linear order: a game index
+            // counted across epochs, where the end of epoch e is the start of
+            // epoch e + 1. Refeed until the saved resume point.
+            let target = startEpoch * totalCorpusGames + until
+            while epochsCompleted * totalCorpusGames + nextGameWithinEpoch < target {
                 guard let g = nextGame() else { corpusExhausted = true; break }
                 feedAndCount(g)
             }
+            if let exactResumeShardFailure { throw exactResumeShardFailure }
             SessionLogger.shared.log("[REPLAY] --resume-exact: buffer reconstructed bufCount=\(buffer.count)/\(p.replayBufferCapacity) (refed \(feedTally.games) games / \(feedTally.positions) plies;\(feedTally.countsSuffix)); resuming at game \(nextGameWithinEpoch) epoch \(epochsCompleted)")
         } else {
             while buffer.count < minPrefill {
@@ -1498,7 +1614,19 @@ enum CorpusReplayRunner {
                 feedAndCount(g)
             }
         }
-        let prefillPositions = feedTally.positions
+        // The feed target of step j is `base + j × K`. A fresh run's base is
+        // its prefill; an exact resume's continues the saved phase, so the
+        // games fed before every later step are the uninterrupted run's.
+        let feedPhase: CorpusFeedPhase
+        if let resumedFeedAheadPositions {
+            feedPhase = .continuing(reconstructedFedPositions: feedTally.positions,
+                                    savedFeedAheadPositions: resumedFeedAheadPositions, perStep: perStepFeed)
+        } else {
+            feedPhase = .starting(fedPositions: feedTally.positions, perStep: perStepFeed)
+        }
+        func feedAheadPositions(atStep step: Int) -> Int {
+            feedPhase.feedAhead(fedPositions: feedTally.positions, step: step)
+        }
         // A resume's reconstruction refeeds games its parent already fed;
         // the segment's own feed starts after them.
         let reconstructionFed = reconstructUntil != nil
@@ -1532,11 +1660,12 @@ enum CorpusReplayRunner {
                 break
             }
             if let sl = stepLimit, step >= sl { break }
-            let targetFed = prefillPositions + step * perStepFeed
+            let targetFed = feedPhase.target(step: step)
             while feedTally.positions < targetFed && !corpusExhausted {
                 guard let g = nextGame() else { corpusExhausted = true; break }
                 feedAndCount(g)
             }
+            if let exactResumeShardFailure { throw exactResumeShardFailure }
             if corpusExhausted && epochLimit != nil { break }
 
             // Optional one-step GPU trace (`--gpu-capture-step`). Started right
@@ -1659,7 +1788,8 @@ enum CorpusReplayRunner {
                     epoch: rp.epoch, populatedPlies: buffer.count,
                     corpusID: resumeCorpusID, corpusPath: resumeCorpusPath,
                     segmentGames: feedTally.games - reconstructionFed.games,
-                    segmentPositions: feedTally.positions - reconstructionFed.positions)
+                    segmentPositions: feedTally.positions - reconstructionFed.positions,
+                    feedAheadPositions: feedAheadPositions(atStep: step))
             }
         }
 
@@ -1686,7 +1816,8 @@ enum CorpusReplayRunner {
             epoch: finalResume.epoch, populatedPlies: buffer.count,
             corpusID: resumeCorpusID, corpusPath: resumeCorpusPath,
             segmentGames: feedTally.games - reconstructionFed.games,
-            segmentPositions: feedTally.positions - reconstructionFed.positions)
+            segmentPositions: feedTally.positions - reconstructionFed.positions,
+            feedAheadPositions: feedAheadPositions(atStep: step))
         // The run asked for a capture it did not get: fail it, after the save.
         // No results.json — a failed run does not claim a clean record.
         if let gpuCaptureFailure {

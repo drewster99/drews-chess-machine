@@ -403,7 +403,8 @@ extension SessionController {
             do {
                 lineage = try lineageRecordForSave(
                     at: Date(), trainerCompletedSteps: trainerSnapshot.schedule.completedTrainSteps,
-                    dropoutPhiloxState: trainerSnapshot.dropoutRNG.philoxState)
+                    dropoutPhiloxState: trainerSnapshot.dropoutRNG.philoxState,
+                    dropoutStreamState: try await trainer.dropoutStreamState())
             } catch {
                 clearInFlight()
                 checkpoint?.setCheckpointStatus("Save failed (lineage): \(error.localizedDescription)", kind: .error)

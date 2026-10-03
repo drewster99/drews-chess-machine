@@ -69,19 +69,16 @@ extension SessionController {
                         contentSHA256: nil,
                         trainerCompletedSteps: trainer.completedTrainSteps,
                         lineage: .unrecorded(formatVersion: ArchitectureFormat.currentVersion)),
-                    notExactItems: LineageTracker.NotExactItem.guiResume + [LineageTracker.NotExactItem.buffer],
+                    gaps: [.rngSampler, .serials, .buffer, .clocks],
                     legacyTotals: nil)
             }
         case .newSessionResetTrainerFromChampion:
             start = championLineageStart
         case .freshOrFromLoadedSession:
             if let resumed {
-                var gaps = LineageTracker.NotExactItem.resumeGaps(
-                    LineageTracker.NotExactItem.guiResume,
-                    restoring: DropoutRNGResumeState(lineage: resumed.trainerFile.safetensorsProvenance?.lineage))
-                if resumed.replayBufferURL == nil {
-                    gaps.append(LineageTracker.NotExactItem.buffer)
-                }
+                let gaps = Self.guiResumeGaps(resumed: resumed, trainer: trainer)
+                let exactness = ResumeExactness(gaps: gaps)
+                SessionLogger.shared.log(exactness.logLine)
                 // A session written before lineage still recorded its
                 // elapsed time; that is its one usable total.
                 let legacyTotals: LineageTracker.LegacySessionTotals?
@@ -91,7 +88,7 @@ extension SessionController {
                     legacyTotals = nil
                 }
                 start = .resume(parent: resumed.trainerFile.lineageParent,
-                                notExactItems: gaps, legacyTotals: legacyTotals)
+                                gaps: exactness.gaps, legacyTotals: legacyTotals)
             } else {
                 start = championLineageStart
             }
@@ -104,6 +101,54 @@ extension SessionController {
         }
         lineageFedCarry.baselineGames = counts?.emittedGames
         lineageFedCarry.baselinePositions = counts?.emittedPositions
+    }
+
+    /// What a GUI resume of `resumed` does not restore (determinism plan C3,
+    /// D-1: a GUI resume is state-exact at most, so it is reported, never
+    /// refused). The arena-trigger and periodic-save clocks always restart.
+    static func guiResumeGaps(resumed: LoadedSession, trainer: ChessTrainer) -> [ResumeGap] {
+        let lineage = resumed.trainerFile.safetensorsProvenance?.lineage
+        var gaps: [ResumeGap] = [.clocks]
+        gaps += ResumeGap.dropoutGaps(restoring: DropoutRNGResumeState(lineage: lineage))
+        gaps += PolicyTailPrecisionResume.gaps(
+            saved: resumed.trainerFile.metadata.trainerPolicyTailPrecision, running: trainer.policyTailPrecision)
+        if resumed.replayBufferURL == nil {
+            gaps.append(.buffer)
+        }
+        if resumableRunStreams(of: resumed) == nil {
+            gaps += [.rngSampler, .serials]
+        }
+        if let record = lineage?.record {
+            if record.parameters == nil { gaps.append(.params) }
+            gaps += ResumeGap.environmentGaps(writtenBy: record, runningBuild: .current, runningDevice: .current)
+        } else {
+            gaps.append(.lineage)
+        }
+        return gaps
+    }
+
+    /// The run streams a resumed session continues: its trainer file's
+    /// record's, when they include the self-play serial and the arena count
+    /// a GUI run needs; nil otherwise (a session saved before the record
+    /// carried them).
+    static func resumableRunStreams(of resumed: LoadedSession) -> LineageRecord.RunStreams? {
+        guard let streams = resumed.trainerFile.safetensorsProvenance?.lineage.record?.rng.streams,
+              streams.nextGameSerial != nil, streams.arenasStarted != nil else { return nil }
+        return streams
+    }
+
+    /// The saved run's seed for a GUI resume, or nil — logged — when it
+    /// cannot be continued (a `--seed` naming another seed, or streams named
+    /// under another derivation); the resume then runs on a newly resolved
+    /// seed and reports `rng_sampler` / `serials` NOT EXACT.
+    static func inheritedRunSeed(streams: LineageRecord.RunStreams, commandLineSeed: UInt64?) -> RunRandomSeed? {
+        do {
+            return try RunRandomSeed.inherited(
+                from: streams, configuredSeed: TrainingParameters.shared.randomSeed, commandLineSeed: commandLineSeed)
+        } catch {
+            SessionLogger.shared.log("[RESUME] rng: the saved run's seed is not continued: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     /// Fold what the live stats box counted for the segment into the carry,
@@ -128,10 +173,13 @@ extension SessionController {
 
     /// The record for a save of the running segment's state, with the
     /// trainer clock `trainerCompletedSteps` the saved trainer state carries
-    /// and the dropout state captured with it (nil when the save has no
-    /// trainer snapshot).
+    /// and the dropout state and dropout-stream position captured with it
+    /// (both nil when the save has no trainer snapshot). A save with a
+    /// trainer snapshot also records the run's streams: its seed, the replay
+    /// buffer's sampler, the next self-play game serial and the arena count.
     func lineageRecordForSave(at date: Date, trainerCompletedSteps: Int,
-                              dropoutPhiloxState: DropoutPhiloxState?) throws -> LineageRecord {
+                              dropoutPhiloxState: DropoutPhiloxState?,
+                              dropoutStreamState: DCMRandom?) throws -> LineageRecord {
         guard let tracker = lineageTracker else {
             throw LineageSegmentError.noSegment("this save")
         }
@@ -154,7 +202,23 @@ extension SessionController {
             segmentPositions: positions,
             corpus: nil,
             parameters: try LineageRecord.Parameters(values: TrainingParameters.shared.snapshot().rawValueMap()),
-            dropoutPhiloxState: dropoutPhiloxState)
+            rng: LineageRecord.RNG(dropoutPhiloxState: dropoutPhiloxState, streams: try runStreamsForSave(dropoutStreamState: dropoutStreamState)))
+    }
+
+    /// The run's streams for a save that carries trainer state; nil for one
+    /// that does not (`dropoutStreamState` nil). A save with trainer state
+    /// happens only inside a run, which always has its seed, game serials
+    /// and buffer — their absence is an error, not an unrecorded value.
+    private func runStreamsForSave(dropoutStreamState: DCMRandom?) throws -> LineageRecord.RunStreams? {
+        guard let dropoutStreamState else { return nil }
+        guard let runSeed = runRandomSeed, let serials = selfPlayGameSerials, let buffer = replayBuffer else {
+            throw LineageSegmentError.noSegment("a save with trainer state outside a run")
+        }
+        return runSeed.runStreams(
+            samplerState: buffer.samplerState(),
+            dropoutStreamState: dropoutStreamState,
+            nextGameSerial: serials.nextSerial,
+            arenasStarted: arenasStartedThisRun)
     }
 
     /// The record for a model-only save of the champion (Save Champion):
@@ -166,7 +230,7 @@ extension SessionController {
             // A champion-only save carries no trainer state, so no dropout
             // state either.
             return try lineageRecordForSave(at: date, trainerCompletedSteps: trainer.completedTrainSteps,
-                                            dropoutPhiloxState: nil)
+                                            dropoutPhiloxState: nil, dropoutStreamState: nil)
         }
         if let source = championLineageSource {
             return LineageTracker.untrainedCopyRecord(source: source, pathKind: .gui, argv: CommandLine.arguments, at: date)

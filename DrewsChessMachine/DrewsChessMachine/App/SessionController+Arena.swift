@@ -555,7 +555,8 @@ extension SessionController {
             do {
                 championLineage = .recorded(try lineageRecordForSave(
                     at: Date(), trainerCompletedSteps: trainerSnapshotCompletedSteps,
-                    dropoutPhiloxState: trainerSnapshotDropoutState))
+                    dropoutPhiloxState: trainerSnapshotDropoutState,
+                    dropoutStreamState: try await trainer.dropoutStreamState()))
             } catch {
                 SessionLogger.shared.log("[LINEAGE] promoted champion's lineage not recorded: \(error.localizedDescription)")
                 championLineage = .unrecorded(formatVersion: ArchitectureFormat.currentVersion)
@@ -629,7 +630,8 @@ extension SessionController {
             do {
                 promotionLineage = try lineageRecordForSave(
                     at: saveDate, trainerCompletedSteps: promotionSaveTrainerStep,
-                    dropoutPhiloxState: trainerSnapshotDropoutState)
+                    dropoutPhiloxState: trainerSnapshotDropoutState,
+                    dropoutStreamState: try await trainer.dropoutStreamState())
             } catch {
                 let message = "Post-promotion save failed (lineage): \(error.localizedDescription)"
                 checkpoint?.setCheckpointStatus(message, kind: .error)

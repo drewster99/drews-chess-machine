@@ -77,6 +77,11 @@ struct RunRandomSeed: Sendable, Equatable {
         case commandLine
         /// Drawn from the system because `random_seed_mode` = unseeded.
         case drawn
+        /// Carried over from the checkpoint an exact resume continues: the
+        /// resumed segment is the same run, so it keeps the run's seed
+        /// (determinism plan C4). `firstSegment` is how the run's first
+        /// segment got it.
+        case inherited(firstSegment: LineageRecord.RunStreams.SeedOrigin)
     }
 
     let masterSeed: UInt64
@@ -92,8 +97,18 @@ struct RunRandomSeed: Sendable, Equatable {
     /// The mode the run effectively ran in: a `--seed` run is seeded.
     var effectiveMode: RandomSeedMode {
         switch origin {
-        case .configured, .commandLine: return .seeded
-        case .drawn: return .unseeded
+        case .configured, .commandLine, .inherited(firstSegment: .configured): return .seeded
+        case .drawn, .inherited(firstSegment: .drawn): return .unseeded
+        }
+    }
+
+    /// How the run's seed is recorded in its lineage record: configured
+    /// (settings or `--seed`) or drawn, as the run's first segment got it.
+    var recordedOrigin: LineageRecord.RunStreams.SeedOrigin {
+        switch origin {
+        case .configured, .commandLine: return .configured
+        case .drawn: return .drawn
+        case .inherited(let firstSegment): return firstSegment
         }
     }
 
@@ -104,8 +119,41 @@ struct RunRandomSeed: Sendable, Equatable {
         case .configured: modeText = "seeded"
         case .commandLine: modeText = "seeded(--seed)"
         case .drawn: modeText = "unseeded(drawn)"
+        case .inherited(let firstSegment): modeText = "resumed(\(firstSegment.rawValue))"
         }
         return "[RUN] seed=\(masterSeed) mode=\(modeText) derivation=\(DCMRandomStreams.derivationVersion)"
+    }
+
+    /// The record of this run's streams at a save: the seed plus the stream
+    /// positions the caller read in the save's consistent cut.
+    func runStreams(samplerState: DCMRandom, dropoutStreamState: DCMRandom,
+                    nextGameSerial: Int?, arenasStarted: Int?) -> LineageRecord.RunStreams {
+        LineageRecord.RunStreams(
+            masterSeed: masterSeed,
+            seedOrigin: recordedOrigin,
+            streamDerivation: DCMRandomStreams.derivationVersion,
+            samplerState: samplerState,
+            dropoutStreamState: dropoutStreamState,
+            nextGameSerial: nextGameSerial,
+            arenasStarted: arenasStarted)
+    }
+
+    /// The seed of the run an exact resume continues. A `--seed` naming a
+    /// different seed contradicts the resume and throws; the settings'
+    /// `random_seed` is reported as not used.
+    static func inherited(from streams: LineageRecord.RunStreams,
+                          configuredSeed: UInt64,
+                          commandLineSeed: UInt64?) throws -> RunRandomSeed {
+        if let commandLineSeed, commandLineSeed != streams.masterSeed {
+            throw RunRandomSeedError.resumeSeedConflict(commandLine: commandLineSeed, checkpoint: streams.masterSeed)
+        }
+        guard streams.streamDerivation == DCMRandomStreams.derivationVersion else {
+            throw RunRandomSeedError.resumeDerivationMismatch(checkpoint: streams.streamDerivation,
+                                                               running: DCMRandomStreams.derivationVersion)
+        }
+        return RunRandomSeed(masterSeed: streams.masterSeed,
+                             origin: .inherited(firstSegment: streams.seedOrigin),
+                             configuredSeed: configuredSeed)
     }
 
     /// Every line a path logs at run start: what happened to the configured
@@ -118,6 +166,8 @@ struct RunRandomSeed: Sendable, Equatable {
             return ["[PARAM] random_seed from --seed: \(masterSeed) (overrides random_seed_mode and random_seed=\(configuredSeed) for this process)", logLine]
         case .drawn:
             return ["[PARAM] random_seed=\(configuredSeed) ignored: random_seed_mode=unseeded draws the run seed", logLine]
+        case .inherited:
+            return ["[PARAM] random_seed_mode and random_seed=\(configuredSeed) not used: an exact resume keeps the run's seed", logLine]
         }
     }
 
@@ -159,11 +209,19 @@ struct RunRandomSeed: Sendable, Equatable {
 
 enum RunRandomSeedError: Error, Equatable, LocalizedError {
     case invalidCommandLineSeed(String)
+    case resumeSeedConflict(commandLine: UInt64, checkpoint: UInt64)
+    case resumeDerivationMismatch(checkpoint: String, running: String)
 
     var errorDescription: String? {
         switch self {
         case .invalidCommandLineSeed(let text):
             return "--seed needs a whole number from 0 to \(UInt64.max); got \"\(text)\""
+        case .resumeSeedConflict(let commandLine, let checkpoint):
+            return "--seed \(commandLine) contradicts the exact resume: the checkpoint's run seed is \(checkpoint). "
+                + "Drop --seed to continue the run, or start a new branch without --resume-exact."
+        case .resumeDerivationMismatch(let checkpoint, let running):
+            return "the checkpoint's streams were named under derivation \(checkpoint), this build uses \(running); "
+                + "its stream positions cannot be continued"
         }
     }
 }

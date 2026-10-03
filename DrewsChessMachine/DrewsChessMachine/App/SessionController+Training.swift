@@ -290,10 +290,25 @@ extension SessionController {
         // the seed mode a resumed session runs with.
         let runSeed: RunRandomSeed
         let gameSerials: GameSerialCounter
+        // A resumed session whose record carries the run's streams continues
+        // that run: its seed, game serials, arena count, sampler and dropout
+        // stream positions (determinism plan P9).
+        var resumedRunStreams: LineageRecord.RunStreams? = nil
         if continueMode, let existingSeed = runRandomSeed, let existingSerials = selfPlayGameSerials {
             runSeed = existingSeed
             gameSerials = existingSerials
             SessionLogger.shared.log("[RUN] continuing seed=\(runSeed.masterSeed) (next self-play game serial \(gameSerials.nextSerial), arenas started \(arenasStartedThisRun))")
+        } else if let streams = pendingLoadedSession.flatMap(Self.resumableRunStreams(of:)),
+                  let nextSerial = streams.nextGameSerial, let arenasStarted = streams.arenasStarted,
+                  let inherited = Self.inheritedRunSeed(streams: streams, commandLineSeed: commandLineSeed) {
+            runSeed = inherited
+            gameSerials = GameSerialCounter(firstSerial: nextSerial)
+            runRandomSeed = runSeed
+            selfPlayGameSerials = gameSerials
+            arenasStartedThisRun = arenasStarted
+            resumedRunStreams = streams
+            for line in runSeed.logLines { SessionLogger.shared.log(line) }
+            SessionLogger.shared.log("[RESUME] rng: run seed, game serials (next \(nextSerial)) and arena count (\(arenasStarted)) continue the saved run")
         } else {
             let p = TrainingParameters.shared
             runSeed = RunRandomSeed.resolve(
@@ -322,6 +337,12 @@ extension SessionController {
                 capacity: TrainingParameters.shared.replayBufferCapacity,
                 inputEncoding: network.inputEncoding,
                 sampler: runSeed.streams.generator(.sampler))
+            if let resumedRunStreams {
+                // Restoring the buffer's contents later leaves the sampler
+                // alone, so its saved position holds from here.
+                buffer.restoreSamplerState(resumedRunStreams.samplerState)
+                SessionLogger.shared.log("[RESUME] rng: sampler=restored")
+            }
             replayBuffer = buffer
         }
         // Seed the buffer's per-batch sampling constraints from the
@@ -1035,8 +1056,28 @@ extension SessionController {
                 // continue after Stop, which keeps its run and its masks)
                 // starts the dropout masks from its own seed's stream.
                 if mode != .continueAfterStop {
-                    try await trainer.beginDropoutStream(runSeed.streams.generator(.dropout))
-                    SessionLogger.shared.log("[RUN] dropout masks: stream dropout of run seed \(runSeed.masterSeed)")
+                    let restoredSavedPhilox: Bool
+                    if mode == .freshOrFromLoadedSession, resumedTrainerWeights != nil,
+                       case .philox = resumedTrainerDropoutRNG {
+                        restoredSavedPhilox = true
+                    } else {
+                        restoredSavedPhilox = false
+                    }
+                    if let resumedRunStreams {
+                        // The saved Philox state is restored with the trainer
+                        // state; the stream continues from its saved position.
+                        try await trainer.restoreDropoutStreamState(resumedRunStreams.dropoutStreamState)
+                        SessionLogger.shared.log("[RESUME] rng: dropout stream=restored")
+                    } else if restoredSavedPhilox {
+                        // The masks continue the saved Philox state; reseeding
+                        // here would discard it. The stream itself starts from
+                        // this run's seed.
+                        try await trainer.restoreDropoutStreamState(runSeed.streams.generator(.dropout))
+                        SessionLogger.shared.log("[RUN] dropout masks: continue the session's saved state; stream dropout of run seed \(runSeed.masterSeed)")
+                    } else {
+                        try await trainer.beginDropoutStream(runSeed.streams.generator(.dropout))
+                        SessionLogger.shared.log("[RUN] dropout masks: stream dropout of run seed \(runSeed.masterSeed)")
+                    }
                 }
             } catch {
                 box.recordError("Reset failed: \(error.localizedDescription)")
@@ -1154,15 +1195,10 @@ extension SessionController {
                     )
                 case .freshOrFromLoadedSession:
                     if let resumed = pendingLoadedSession {
-                        // A GUI resume never refuses over the policy-tail
-                        // precision (determinism plan D-1); a mismatch or an
-                        // unrecorded value is reported as NOT EXACT.
-                        if let notExact = PolicyTailPrecisionResume.guiNotExactLine(
-                            saved: resumed.trainerFile.metadata.trainerPolicyTailPrecision,
-                            running: trainer.policyTailPrecision
-                        ) {
-                            SessionLogger.shared.log(notExact)
-                        }
+                        // A GUI resume never refuses (determinism plan D-1);
+                        // what it could not restore — the policy-tail
+                        // precision included — is named on the one
+                        // `[RESUME]` line `beginLineageSegment` logs.
                         trainer.identifier = ModelID(value: resumed.trainerFile.modelID)
                     } else {
                         trainer.identifier = ModelIDMinter.mintTrainerGeneration(

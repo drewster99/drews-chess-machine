@@ -57,6 +57,32 @@ enum PolicyTailPrecisionResume {
         }
     }
 
+    /// The resume gap the finding is: none when the precision matches,
+    /// `policy_tail` when it differs or the checkpoint predates recording it
+    /// (determinism plan C3 — a gap `--accept-inexact policy_tail` accepts).
+    static func gaps(saved: ChessNetwork.PolicyTailPrecision?,
+                     running: ChessNetwork.PolicyTailPrecision) -> [ResumeGap] {
+        finding(saved: saved, running: running) == .matches ? [] : [.policyTail]
+    }
+
+    /// The `[RESUME-NUMERICS]` line a CLI exact resume logs. A mismatch is a
+    /// `policy_tail` gap: the one `[RESUME]` line names it and the resume is
+    /// refused unless `--accept-inexact` names it.
+    static func exactResumeLogLine(saved: ChessNetwork.PolicyTailPrecision?,
+                                   running: ChessNetwork.PolicyTailPrecision) -> String {
+        switch finding(saved: saved, running: running) {
+        case .matches:
+            return "[RESUME-NUMERICS] policy_tail_precision=\(running.rawValue) matches the checkpoint"
+        case .differs(let saved):
+            return "[RESUME-NUMERICS] the checkpoint was trained with policy tail precision \(saved.rawValue) "
+                + "but this run uses \(running.rawValue) (gap policy_tail); \(ChessNetwork.PolicyTailPrecision.flag) "
+                + "\(saved.rawValue) continues it exactly"
+        case .unrecorded:
+            return "[RESUME-NUMERICS] the checkpoint does not record its policy tail precision (written before "
+                + "the setting was saved); this run uses \(running.rawValue) (gap policy_tail)"
+        }
+    }
+
     /// The line a GUI resume logs, or nil when the precision matches.
     static func guiNotExactLine(
         saved: ChessNetwork.PolicyTailPrecision?,

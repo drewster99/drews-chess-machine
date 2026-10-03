@@ -179,7 +179,7 @@ final class DropoutRNGStateTests: XCTestCase {
         let lineage = try tracker.record(
             at: start.addingTimeInterval(10), trainerCompletedSteps: snapshot.schedule.completedTrainSteps,
             segmentLocalStep: 0, segmentGames: 0, segmentPositions: 0, corpus: nil, parameters: nil,
-            dropoutPhiloxState: snapshot.dropoutRNG.philoxState)
+            rng: .withoutRunStreams(dropoutPhiloxState: snapshot.dropoutRNG.philoxState))
         let data = try SafetensorsModelIO.encode(
             modelID: "20261002-1-DRPF", createdAtUnix: 1_790_000_000,
             metadata: ModelCheckpointMetadata.trainerFile(

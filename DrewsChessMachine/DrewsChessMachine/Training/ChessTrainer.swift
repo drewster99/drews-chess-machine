@@ -5985,6 +5985,21 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
+    /// The `dropout` stream's position: what the next reseed of the graph's
+    /// Philox state (a training-graph rebuild) draws from. Saved with the
+    /// trainer state so an exact resume continues the stream, not only the
+    /// current mask sequence. Caller pauses training first.
+    func dropoutStreamState() async throws -> DCMRandom {
+        try await enqueue { self.dropoutStream }
+    }
+
+    /// Continue the `dropout` stream from a saved position without reseeding
+    /// the graph — the graph's Philox state is restored separately
+    /// (`restoreDropoutState`). Caller pauses training first.
+    func restoreDropoutStreamState(_ state: DCMRandom) async throws {
+        try await enqueue { self.dropoutStream = state }
+    }
+
     /// Suspend until every unit of work already enqueued on `executionQueue` has
     /// finished. The queue is serial and FIFO, so a block appended here cannot
     /// begin until everything submitted before it has completed — which is

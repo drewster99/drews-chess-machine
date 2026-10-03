@@ -38,7 +38,10 @@ import CryptoKit
 /// Provenance of a model file's weights — see the file comment.
 struct LineageRecord: Codable, Equatable, Sendable {
     /// Schema of the record itself, independent of the architecture format.
-    static let currentSchema = 1
+    /// Schema 2 records the run's random streams (`rng.streams`) and the
+    /// corpus feed phase and shard identities (`fed.corpus`) an exact resume
+    /// continues from.
+    static let currentSchema = 2
 
     let schema: Int
     let run: Run
@@ -261,6 +264,17 @@ struct LineageRecord: Codable, Equatable, Sendable {
         /// Plies resident in the replay buffer at the save.
         let populatedPlies: Int
         let bufferCapacity: Int
+        /// Positions fed beyond the feed target of the next untrained step
+        /// (`positions fed − (feed base + step × feedPerStep)`; negative
+        /// while that step's feed is still owed). Whole games overshoot their
+        /// target, so this phase is state: a resume continues it, so the
+        /// games fed before every later step are the uninterrupted run's.
+        let feedAheadPositions: Int
+        /// Positions the run feeds per trainer step.
+        let feedPerStep: Int
+        /// Each sealed shard's trailer SHA-256 (hex), in feed order — what a
+        /// resume checks the corpus against before refeeding any of it.
+        let shardSHA256: [String]
 
         enum CodingKeys: String, CodingKey {
             case corpusID = "corpus_id"
@@ -270,6 +284,9 @@ struct LineageRecord: Codable, Equatable, Sendable {
             case shard
             case populatedPlies = "populated_plies"
             case bufferCapacity = "buffer_capacity"
+            case feedAheadPositions = "feed_ahead_positions"
+            case feedPerStep = "feed_per_step"
+            case shardSHA256 = "shard_sha256"
         }
     }
 
@@ -468,20 +485,8 @@ struct LineageRecord: Codable, Equatable, Sendable {
     // MARK: RNG
 
     /// How the run's randomness was seeded, and the random state a resume
-    /// needs to continue the run's draws.
-    ///
-    /// Integration point for the seeded streams (determinism plan phase P3):
-    /// until training draws come from named seeded streams, every run draws
-    /// from the system generator and is recorded `unseeded`. P3 adds the
-    /// seeded mode with its master seed and stream derivation, and P9 the
-    /// replay-buffer sampler state captured at the save.
+    /// needs to continue the run's draws where they left off.
     struct RNG: Codable, Equatable, Sendable {
-        enum SeedMode: String, Codable, Sendable {
-            /// Draws came from the system generator; nothing can replay them.
-            case unseeded
-        }
-
-        let seedMode: SeedMode
         /// The training graph's dropout Philox state when the saved trainer
         /// state was captured — the state the next step's masks start from.
         /// Present on every record written with a trainer snapshot (it is
@@ -490,33 +495,118 @@ struct LineageRecord: Codable, Equatable, Sendable {
         /// a derived or untrained copy). A resume restores it, so the
         /// resumed run's masks continue the saved run's sequence.
         let dropoutPhiloxState: DropoutPhiloxState?
+        /// The run's master seed and every stream position a resume
+        /// continues; null for a record with no training run behind it.
+        let streams: RunStreams?
 
         enum CodingKeys: String, CodingKey {
-            case seedMode = "seed_mode"
             case dropoutPhiloxState = "dropout_philox_state"
+            case streams
         }
 
-        init(seedMode: SeedMode, dropoutPhiloxState: DropoutPhiloxState?) {
-            self.seedMode = seedMode
+        init(dropoutPhiloxState: DropoutPhiloxState?, streams: RunStreams?) {
             self.dropoutPhiloxState = dropoutPhiloxState
+            self.streams = streams
         }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            seedMode = try c.decode(SeedMode.self, forKey: .seedMode)
             dropoutPhiloxState = try c.decode(DropoutPhiloxState?.self, forKey: .dropoutPhiloxState)
+            streams = try c.decode(RunStreams?.self, forKey: .streams)
         }
 
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
-            try c.encode(seedMode, forKey: .seedMode)
             try c.encode(dropoutPhiloxState, forKey: .dropoutPhiloxState)
+            try c.encode(streams, forKey: .streams)
         }
 
-        /// An unseeded run's record, with the dropout state of the trainer
-        /// snapshot it was written with (nil when there is none).
-        static func unseeded(dropoutPhiloxState: DropoutPhiloxState?) -> RNG {
-            RNG(seedMode: .unseeded, dropoutPhiloxState: dropoutPhiloxState)
+        /// A record with no training run behind it (a mint, a derive, a
+        /// model-only save before any training), with the dropout state of
+        /// the trainer snapshot it was written with (nil when there is none).
+        static func withoutRunStreams(dropoutPhiloxState: DropoutPhiloxState?) -> RNG {
+            RNG(dropoutPhiloxState: dropoutPhiloxState, streams: nil)
+        }
+    }
+
+    /// The run's named random streams at the save (determinism plan A3): the
+    /// master seed every stream derives from, and the position of each
+    /// stream that lives across the run's steps. A resume that restores them
+    /// continues every draw the uninterrupted run would have made.
+    struct RunStreams: Codable, Equatable, Sendable {
+        /// Whether the master seed was configured (`random_seed_mode` =
+        /// seeded, or `--seed`) or drawn at run start. Either way it is the
+        /// run's seed; a drawn seed replays the run when passed to `--seed`.
+        enum SeedOrigin: String, Codable, Sendable {
+            case configured
+            case drawn
+        }
+
+        let masterSeed: UInt64
+        let seedOrigin: SeedOrigin
+        /// `DCMRandomStreams.derivationVersion` the streams were named under.
+        let streamDerivation: String
+        /// The replay buffer's `sampler` stream: what the next minibatch
+        /// draws from.
+        let samplerState: DCMRandom
+        /// The trainer's `dropout` stream: what the next dropout reseed (a
+        /// training-graph rebuild) draws from.
+        let dropoutStreamState: DCMRandom
+        /// The serial the next self-play (GUI) or train-vs-UCI game takes,
+        /// naming its stream; null on corpus replay, whose recorded games
+        /// draw nothing.
+        let nextGameSerial: Int?
+        /// Arenas the run has started, naming the next arena's game streams;
+        /// null outside the GUI.
+        let arenasStarted: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case masterSeed = "master_seed"
+            case seedOrigin = "seed_origin"
+            case streamDerivation = "stream_derivation"
+            case samplerState = "sampler_state"
+            case dropoutStreamState = "dropout_stream_state"
+            case nextGameSerial = "next_game_serial"
+            case arenasStarted = "arenas_started"
+        }
+
+        init(masterSeed: UInt64, seedOrigin: SeedOrigin, streamDerivation: String, samplerState: DCMRandom,
+             dropoutStreamState: DCMRandom, nextGameSerial: Int?, arenasStarted: Int?) {
+            self.masterSeed = masterSeed
+            self.seedOrigin = seedOrigin
+            self.streamDerivation = streamDerivation
+            self.samplerState = samplerState
+            self.dropoutStreamState = dropoutStreamState
+            self.nextGameSerial = nextGameSerial
+            self.arenasStarted = arenasStarted
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            // A decimal string, so seeds above 2^53 survive JSON parsing.
+            let seedText = try c.decode(String.self, forKey: .masterSeed)
+            guard let seed = UInt64(seedText) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .masterSeed, in: c, debugDescription: "master_seed \"\(seedText)\" is not a decimal UInt64")
+            }
+            masterSeed = seed
+            seedOrigin = try c.decode(SeedOrigin.self, forKey: .seedOrigin)
+            streamDerivation = try c.decode(String.self, forKey: .streamDerivation)
+            samplerState = try c.decode(DCMRandom.self, forKey: .samplerState)
+            dropoutStreamState = try c.decode(DCMRandom.self, forKey: .dropoutStreamState)
+            nextGameSerial = try c.decode(Int?.self, forKey: .nextGameSerial)
+            arenasStarted = try c.decode(Int?.self, forKey: .arenasStarted)
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(String(masterSeed), forKey: .masterSeed)
+            try c.encode(seedOrigin, forKey: .seedOrigin)
+            try c.encode(streamDerivation, forKey: .streamDerivation)
+            try c.encode(samplerState, forKey: .samplerState)
+            try c.encode(dropoutStreamState, forKey: .dropoutStreamState)
+            try c.encode(nextGameSerial, forKey: .nextGameSerial)
+            try c.encode(arenasStarted, forKey: .arenasStarted)
         }
     }
 

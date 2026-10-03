@@ -289,7 +289,8 @@ final class ExactResumeTests: XCTestCase {
     func test_corpusReplay_resumeExact_continuesTheScheduleAsIfNeverStopped() async throws {
         try await assertCLIExactResume(creator: "replay", corpus: LineageRecord.CorpusPosition(
             corpusID: "unit-test-corpus", corpusPath: "/unit-test-corpus", epoch: 0,
-            nextGameIndex: 12, shard: 0, populatedPlies: 0, bufferCapacity: 0))
+            nextGameIndex: 12, shard: 0, populatedPlies: 0, bufferCapacity: 0,
+            feedAheadPositions: 0, feedPerStep: 1, shardSHA256: []))
     }
 
     func test_trainVsUci_resumeExact_continuesTheScheduleAsIfNeverStopped() async throws {
@@ -425,7 +426,8 @@ final class ExactResumeTests: XCTestCase {
             includesVelocity: false,
             lineage: try LineageRecord.forTests(trainerCompletedSteps: 9, corpus: LineageRecord.CorpusPosition(
                 corpusID: "unit-test-corpus", corpusPath: "/unit-test-corpus", epoch: 0,
-                nextGameIndex: 0, shard: 0, populatedPlies: 0, bufferCapacity: 0))
+                nextGameIndex: 0, shard: 0, populatedPlies: 0, bufferCapacity: 0,
+            feedAheadPositions: 0, feedPerStep: 1, shardSHA256: []))
         )
         let file = try CheckpointManager.decodeAnyModelFile(data)
         XCTAssertFalse(file.includesOptimizerVelocity)

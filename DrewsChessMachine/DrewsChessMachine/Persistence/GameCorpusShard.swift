@@ -485,6 +485,40 @@ enum GameCorpusShardIO {
         return try decodeTrailer(tdata)
     }
 
+    /// Cheap trailer read: `(gameCount, plyCount)` plus the SHA-256 the shard
+    /// was sealed with (hex) — the shard's content identity, without reading
+    /// or verifying the body. `readSealed` verifies the body against this
+    /// same hash, so a resume that matches each shard's recorded hash here
+    /// and then reads it through `readSealed` feeds exactly the recorded
+    /// content.
+    static func readSealedTrailer(at url: URL) throws -> (gameCount: Int, plyCount: Int, sealSHA256: String) {
+        let handle: FileHandle
+        do { handle = try FileHandle(forReadingFrom: url) }
+        catch { throw GameCorpusError.ioFailed("open \(url.lastPathComponent): \(error.localizedDescription)") }
+        defer {
+            do { try handle.close() } catch {
+                SessionLogger.shared.log("[CORPUS] closing \(url.lastPathComponent) after its trailer read failed: \(error.localizedDescription)")
+            }
+        }
+        let trailerSize = GameCorpusShardFormat.trailerSize
+        let size = try handle.seekToEnd()
+        guard size >= UInt64(GameCorpusShardFormat.frontHeaderSize + trailerSize) else {
+            throw GameCorpusError.truncatedHeader
+        }
+        try handle.seek(toOffset: size - UInt64(trailerSize))
+        guard let tdata = try handle.read(upToCount: trailerSize), tdata.count == trailerSize else {
+            throw GameCorpusError.truncatedHeader
+        }
+        var tr = CorpusByteReader(tdata)
+        let tmagic = try tr.readBytes(8)
+        guard tmagic == GameCorpusShardFormat.trailerMagic else { throw GameCorpusError.badTrailerMagic }
+        let gameCount = Int(try tr.readInt64LE())
+        let plyCount = Int(try tr.readInt64LE())
+        _ = try tr.readInt64LE()   // seal time, not part of the content identity
+        let sha = try tr.readData(32)
+        return (gameCount, plyCount, sha.map { String(format: "%02x", $0) }.joined())
+    }
+
     /// Cheap header+counts read: decode the fixed-size front header and trailer,
     /// without reading or SHA/CRC-verifying the body. Gives the per-shard
     /// `sourceID` (front header) alongside the sealed `(gameCount, plyCount)` —

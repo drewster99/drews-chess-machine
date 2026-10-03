@@ -57,12 +57,12 @@ final class LineageTracker: @unchecked Sendable {
         /// Train from `parent`'s weights with a fresh trainer clock: a new
         /// run that records its parent.
         case branch(parent: ParentFile)
-        /// Continue `parent`'s run by exact resume. `notExactItems` names
-        /// whatever the resume could not restore (empty for a complete
-        /// restore). `legacyTotals` supplies the totals of a GUI session
-        /// written before lineage existed; it must be nil when the parent
-        /// carries a lineage.
-        case resume(parent: ParentFile, notExactItems: [String], legacyTotals: LegacySessionTotals?)
+        /// Continue `parent`'s run by exact resume. `gaps` names whatever the
+        /// resume could not restore (empty for a complete restore; `lineage`
+        /// is added here when the parent carries no record).
+        /// `legacyTotals` supplies the totals of a GUI session written before
+        /// lineage existed; it must be nil when the parent carries a lineage.
+        case resume(parent: ParentFile, gaps: [ResumeGap], legacyTotals: LegacySessionTotals?)
     }
 
     enum TrackerError: Error, CustomStringConvertible {
@@ -122,15 +122,16 @@ final class LineageTracker: @unchecked Sendable {
             parent = file.recordParent
             segments = []
             baseGames = 0; basePositions = 0; baseTrainStepSec = 0; baseWallSec = 0
-        case .resume(let file, let notExactItems, let legacyTotals):
+        case .resume(let file, let gaps, let legacyTotals):
             parent = file.recordParent
             switch file.lineage {
             case .recorded(let record):
                 guard legacyTotals == nil else {
                     throw TrackerError.legacyTotalsWithRecordedLineage(parentModelID: file.modelID)
                 }
+                let exactness = ResumeExactness(gaps: gaps)
                 run = (record.run.lineageRunID, record.run.segmentIndex + 1, segmentID, .resume,
-                       notExactItems.isEmpty, notExactItems, record.run.continuesUnrecordedHistory)
+                       exactness.isExact, exactness.tokens, record.run.continuesUnrecordedHistory)
                 segments = record.segments + [LineageRecord.SegmentSummary(of: record)]
                 baseGames = record.fed.cumGames
                 basePositions = record.fed.cumPositions
@@ -140,52 +141,13 @@ final class LineageTracker: @unchecked Sendable {
                 // The parent predates lineage: this run starts here, and the
                 // history before it is unrecorded except what a legacy GUI
                 // session counted itself.
-                let items = notExactItems.contains(Self.lineageNotExactItem)
-                    ? notExactItems : notExactItems + [Self.lineageNotExactItem]
-                run = (UUID().uuidString, 0, segmentID, .resume, false, items, true)
+                let exactness = ResumeExactness(gaps: gaps + [.lineage])
+                run = (UUID().uuidString, 0, segmentID, .resume, false, exactness.tokens, true)
                 segments = []
                 baseGames = nil
                 basePositions = nil
                 baseTrainStepSec = nil
                 baseWallSec = legacyTotals.map(\.wallSec)
-            }
-        }
-    }
-
-    /// The `not_exact_items` token for a resume whose parent carried no
-    /// lineage (determinism plan C3 `lineage`).
-    static let lineageNotExactItem = "lineage"
-
-    /// `not_exact_items` tokens (determinism plan C3) for the state a resume
-    /// does not yet restore. Provisional: the plan's `ResumeGap` /
-    /// `ResumeExactness` (phase P9) becomes their single source and decides
-    /// them per checkpoint; until then each path lists what it is known not
-    /// to restore.
-    enum NotExactItem {
-        /// The replay-buffer sampler draws from the system generator.
-        static let rngSampler = "rng_sampler"
-        /// The parent carried no dropout Philox state (it was written before
-        /// the lineage record stored it), so the resumed masks start from
-        /// this run's own dropout seed.
-        static let dropoutState = "dropout_state"
-        /// Corpus replay's feed phase restarts at the resume.
-        static let feedCarry = "feed_carry"
-        /// The replay buffer was not saved with the checkpoint.
-        static let buffer = "buffer"
-
-        static let replayResume = [rngSampler, feedCarry]
-        static let vsUciResume = [rngSampler, buffer]
-        static let guiResume = [rngSampler]
-
-        /// `pathItems` plus `dropoutState` when the resume restores no
-        /// dropout Philox state — the gap follows from what the resume
-        /// actually restored, not from the path.
-        static func resumeGaps(_ pathItems: [String], restoring dropoutRNG: DropoutRNGResumeState) -> [String] {
-            switch dropoutRNG {
-            case .philox:
-                return pathItems
-            case .notInCheckpoint:
-                return pathItems + [dropoutState]
             }
         }
     }
@@ -207,9 +169,10 @@ final class LineageTracker: @unchecked Sendable {
     ///     games the parent had already fed).
     ///   - corpus: the corpus position, for corpus replay only.
     ///   - parameters: the training parameters in force.
-    ///   - dropoutPhiloxState: the dropout state of the trainer snapshot the
-    ///     saved trainer state comes from (the same consistent cut as its
-    ///     weights and clock); nil when the record has no trainer snapshot.
+    ///   - rng: the run's random state captured in the same consistent cut as
+    ///     the saved trainer state (its dropout Philox state and stream
+    ///     positions), or `.withoutRunStreams` for a save with no run behind
+    ///     it.
     func record(at date: Date,
                 trainerCompletedSteps: Int?,
                 segmentLocalStep: Int,
@@ -217,7 +180,7 @@ final class LineageTracker: @unchecked Sendable {
                 segmentPositions: Int,
                 corpus: LineageRecord.CorpusPosition?,
                 parameters: LineageRecord.Parameters?,
-                dropoutPhiloxState: DropoutPhiloxState?) throws -> LineageRecord {
+                rng: LineageRecord.RNG) throws -> LineageRecord {
         guard segmentGames >= 0 else { throw TrackerError.negativeSegmentCount(what: "games", value: segmentGames) }
         guard segmentPositions >= 0 else { throw TrackerError.negativeSegmentCount(what: "positions", value: segmentPositions) }
         guard segmentLocalStep >= 0 else { throw TrackerError.negativeSegmentCount(what: "steps", value: segmentLocalStep) }
@@ -259,7 +222,7 @@ final class LineageTracker: @unchecked Sendable {
             build: .current,
             invocation: LineageRecord.Invocation(argv: argv, pathKind: pathKind),
             device: .current,
-            rng: .unseeded(dropoutPhiloxState: dropoutPhiloxState),
+            rng: rng,
             segments: segments
         )
     }
@@ -273,7 +236,7 @@ final class LineageTracker: @unchecked Sendable {
                                          startedAt: date, segmentStartTrainerStep: nil)
         return try tracker.record(at: date, trainerCompletedSteps: 0, segmentLocalStep: 0,
                                   segmentGames: 0, segmentPositions: 0, corpus: nil, parameters: nil,
-                                  dropoutPhiloxState: nil)
+                                  rng: .withoutRunStreams(dropoutPhiloxState: nil))
     }
 
     /// The record of a model made from `source` without training —
@@ -330,7 +293,7 @@ final class LineageTracker: @unchecked Sendable {
             device: .current,
             // The copy has no trainer behind it: there is no dropout state
             // to continue.
-            rng: .unseeded(dropoutPhiloxState: nil),
+            rng: .withoutRunStreams(dropoutPhiloxState: nil),
             segments: []
         )
     }

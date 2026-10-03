@@ -1133,6 +1133,7 @@ struct DrewsChessMachineApp: App {
         var startShard: Int? = nil
         var startGameIndex: Int? = nil
         var resumeExact = false
+        var acceptInexact: Set<ResumeGap>? = nil
         var enumerateCheckpoints = false
         var overwriteOutModel = false
         var gpuCaptureStep: Int? = nil
@@ -1200,6 +1201,8 @@ struct DrewsChessMachineApp: App {
                 startGameIndex = requireInt(arg, nextValue); i += 2
             case "--resume-exact":
                 resumeExact = true; i += 1   // boolean flag, no value
+            case "--accept-inexact":
+                acceptInexact = parseAcceptInexactOrExit(requireValue(arg, nextValue), current: acceptInexact); i += 2
             case "--enumerate-checkpoints":
                 enumerateCheckpoints = true; i += 1   // boolean flag, no value
             case "--overwrite-out-model":
@@ -1261,6 +1264,7 @@ struct DrewsChessMachineApp: App {
                 Darwin.exit(2)
             }
         }
+        requireResumeExactForAcceptInexactOrExit(acceptInexact: acceptInexact, resumeExact: resumeExact)
 
         // Snapshot parameters on the main actor (init() runs on the main
         // thread), applying a --parameters file first. Everything below the
@@ -1308,6 +1312,7 @@ struct DrewsChessMachineApp: App {
             startShard: startShard,
             startGameIndex: startGameIndex,
             resumeExact: resumeExact,
+            acceptInexact: acceptInexact ?? [],
             outModelPath: outModelPath,
             overwriteOutModel: overwriteOutModel,
             enumerateCheckpoints: enumerateCheckpoints,
@@ -1329,6 +1334,30 @@ struct DrewsChessMachineApp: App {
     // MARK: - Run seed (--seed)
 
     /// Parse a `--seed` value or exit with a usage error.
+    /// Parse `--accept-inexact <item,item,…>` (determinism plan D-7): the
+    /// resume gaps an exact resume may proceed without. Given once; an
+    /// unknown item is a usage error naming the valid ones.
+    static func parseAcceptInexactOrExit(_ text: String, current: Set<ResumeGap>?) -> Set<ResumeGap> {
+        guard current == nil else {
+            FileHandle.standardError.write(Data("error: --accept-inexact specified more than once\n".utf8))
+            Darwin.exit(2)
+        }
+        do {
+            return try ResumeGap.parseAcceptList(text)
+        } catch {
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+            Darwin.exit(2)
+        }
+    }
+
+    /// `--accept-inexact` qualifies `--resume-exact` and means nothing alone.
+    static func requireResumeExactForAcceptInexactOrExit(acceptInexact: Set<ResumeGap>?, resumeExact: Bool) {
+        if acceptInexact != nil && !resumeExact {
+            FileHandle.standardError.write(Data("error: --accept-inexact qualifies --resume-exact and needs it\n".utf8))
+            Darwin.exit(2)
+        }
+    }
+
     static func parseCommandLineSeedOrExit(_ text: String) -> UInt64 {
         do {
             return try RunRandomSeed.parseCommandLineSeed(text)
@@ -1381,6 +1410,7 @@ struct DrewsChessMachineApp: App {
         var enumerateCheckpoints = false
         var overwriteOutModel = false
         var resumeExact = false
+        var acceptInexact: Set<ResumeGap>? = nil
         var maxPliesPerGame = 400
         var evalSyncEverySteps = 10
         var commandLineSeed: UInt64? = nil
@@ -1443,6 +1473,8 @@ struct DrewsChessMachineApp: App {
                 overwriteOutModel = true; i += 1   // boolean flag, no value
             case "--resume-exact":
                 resumeExact = true; i += 1   // boolean flag, no value
+            case "--accept-inexact":
+                acceptInexact = parseAcceptInexactOrExit(requireValue(arg, nextValue), current: acceptInexact); i += 2
             case ChessNetwork.PolicyTailPrecision.flag:
                 // Validated at launch; read through `PolicyTailPrecision.process`.
                 _ = requireValue(arg, nextValue); i += 2
@@ -1462,6 +1494,7 @@ struct DrewsChessMachineApp: App {
             FileHandle.standardError.write(Data("error: --resume-exact requires --start-model (a checkpoint carrying exact trainer state)\n".utf8))
             Darwin.exit(2)
         }
+        requireResumeExactForAcceptInexactOrExit(acceptInexact: acceptInexact, resumeExact: resumeExact)
 
         // Parse each opponent spec: "cmd=/path;n=3;go=nodes 1;UCI_Elo=1400".
         func parseOpponent(_ s: String) -> TrainVsUciOpponentSpec {
@@ -1552,6 +1585,7 @@ struct DrewsChessMachineApp: App {
             timeLimitSec: timeLimitSec,
             startModelPath: startModelPath,
             resumeExact: resumeExact,
+            acceptInexact: acceptInexact ?? [],
             presetName: presetName,
             outModelPath: outModelPath,
             overwriteOutModel: overwriteOutModel,
