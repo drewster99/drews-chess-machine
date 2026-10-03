@@ -161,6 +161,45 @@ final class DropoutRNGStateTests: XCTestCase {
                        "MPSGraph's Philox state for a fixed seed changed: \(first.words)")
     }
 
+    /// Phase P6: the state reaches disk. A trainer-state file written the
+    /// way the CLI runners write theirs carries the snapshot's Philox state in
+    /// its lineage record (`rng.dropout_philox_state`), the resume snapshot
+    /// read back from the file holds it, and a differently seeded trainer
+    /// restored from that file continues the source's mask sequence.
+    func testDropoutStateSurvivesATrainerFileAndContinuesOnResume() async throws {
+        try requireMetal()
+        let source = try makeTrainer(dropoutSeed: 41)
+        _ = try await stateSequence(of: source, steps: 2)
+        let snapshot = try await source.exportResumeSnapshot()
+        let carried = try XCTUnwrap(snapshot.dropoutRNG.philoxState)
+
+        let start = Date(timeIntervalSince1970: 1_790_000_000)
+        let tracker = try LineageTracker(start: .fresh, pathKind: .replay, argv: ["dcm"],
+                                         startedAt: start, segmentStartTrainerStep: snapshot.schedule.completedTrainSteps)
+        let lineage = try tracker.record(
+            at: start.addingTimeInterval(10), trainerCompletedSteps: snapshot.schedule.completedTrainSteps,
+            segmentLocalStep: 0, segmentGames: 0, segmentPositions: 0, corpus: nil, parameters: nil,
+            dropoutPhiloxState: snapshot.dropoutRNG.philoxState)
+        let data = try SafetensorsModelIO.encode(
+            modelID: "20261002-1-DRPF", createdAtUnix: 1_790_000_000,
+            metadata: ModelCheckpointMetadata.trainerFile(
+                creator: "replay", trainingStep: 0, parentModelID: "", notes: "dropout state file test",
+                schedule: snapshot.schedule, policyTailPrecision: source.policyTailPrecision),
+            weights: snapshot.trainerWeights, architecture: archWithDropout(), includesVelocity: true, lineage: lineage)
+
+        let file = try CheckpointManager.decodeAnyModelFile(data)
+        let reloaded = try TrainerResumeSnapshot(checkpoint: file, fileName: "dropout-state.safetensors")
+        XCTAssertEqual(reloaded.dropoutRNG, .philox(carried))
+
+        let target = try makeTrainer(dropoutSeed: 77)
+        try await target.restoreExactly(from: reloaded)
+        let targetNow = try await target.captureDropoutState()
+        XCTAssertEqual(targetNow, carried)
+        let sourceNext = try await stateSequence(of: source, steps: 2)
+        let targetNext = try await stateSequence(of: target, steps: 2)
+        XCTAssertEqual(sourceNext, targetNext, "a trainer resumed from the file must continue the source's mask sequence")
+    }
+
     /// Recorded on macOS 27 beta / Xcode 27.2 beta for `randomPhiloxStateTensor(withSeed: 0x5EED)`.
     static let pinnedStateForSeed5EED: [Int32] = [
         1, 11912374, -1985430587, 2110984159, 266232230, 67638122, 2073528346

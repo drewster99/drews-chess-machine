@@ -909,6 +909,9 @@ extension SessionController {
             let resumedTrainerFileSchedule: TrainerScheduleState? = await MainActor.run {
                 pendingLoadedSession?.trainerFile.metadata.trainerSchedule
             }
+            let resumedTrainerDropoutRNG: DropoutRNGResumeState = await MainActor.run {
+                DropoutRNGResumeState(lineage: pendingLoadedSession?.trainerFile.safetensorsProvenance?.lineage)
+            }
             let resumedBufferURL: URL? = await MainActor.run {
                 pendingLoadedSession?.replayBufferURL
             }
@@ -939,11 +942,13 @@ extension SessionController {
                             SessionLogger.shared.log("[RESUME-PARAM] \(line)")
                         }
                         let schedule = resolved.schedule
-                        // A session folder does not store the dropout Philox
-                        // state yet (the lineage record will), so the resumed
-                        // masks start from this run's own dropout seed.
+                        // The dropout Philox state comes from the trainer
+                        // file's lineage record; a session written before
+                        // lineage has none, and the resumed masks start from
+                        // this run's own dropout seed.
                         let snapshot = TrainerResumeSnapshot(
-                            trainerWeights: trainerWeights, schedule: schedule, dropoutRNG: .notInCheckpoint
+                            trainerWeights: trainerWeights, schedule: schedule,
+                            dropoutRNG: resumedTrainerDropoutRNG
                         )
                         try await Task.detached(priority: .userInitiated) {
                             try await trainer.restoreExactly(from: snapshot)

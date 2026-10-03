@@ -313,10 +313,14 @@ enum TrainVsUciRunner {
         // This segment's lineage — see CorpusReplayRunner. A vs-UCI resume
         // starts from a fresh buffer, so it is not exact in that either.
         let lineageStart: LineageTracker.Start
-        if let file = startModelFile {
-            lineageStart = resumeSnapshot != nil
-                ? .resume(parent: file.lineageParent, notExactItems: LineageTracker.NotExactItem.vsUciResume, legacyTotals: nil)
-                : .branch(parent: file.lineageParent)
+        if let file = startModelFile, let resumeSnapshot {
+            lineageStart = .resume(
+                parent: file.lineageParent,
+                notExactItems: LineageTracker.NotExactItem.resumeGaps(
+                    LineageTracker.NotExactItem.vsUciResume, restoring: resumeSnapshot.dropoutRNG),
+                legacyTotals: nil)
+        } else if let file = startModelFile {
+            lineageStart = .branch(parent: file.lineageParent)
         } else {
             lineageStart = .fresh
         }
@@ -382,7 +386,8 @@ enum TrainVsUciRunner {
                     segmentGames: slots.reduce(0) { $0 + $1.gamesCompleted },
                     segmentPositions: slots.reduce(0) { $0 + $1.pliesPlayed },
                     corpus: nil,
-                    parameters: p.lineageParameters)
+                    parameters: p.lineageParameters,
+                    dropoutPhiloxState: snapshot.dropoutRNG.philoxState)
                 encoded = try SafetensorsModelIO.encode(
                     modelID: config.runModelID,
                     createdAtUnix: Int64(saveDate.timeIntervalSince1970),

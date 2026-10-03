@@ -1209,10 +1209,14 @@ enum CorpusReplayRunner {
         // record, so totals (trainer steps, games and positions fed, measured
         // step time) continue across resumes without hand-entered bases.
         let lineageStart: LineageTracker.Start
-        if let file = startModelFile {
-            lineageStart = resumeSnapshot != nil
-                ? .resume(parent: file.lineageParent, notExactItems: LineageTracker.NotExactItem.replayResume, legacyTotals: nil)
-                : .branch(parent: file.lineageParent)
+        if let file = startModelFile, let resumeSnapshot {
+            lineageStart = .resume(
+                parent: file.lineageParent,
+                notExactItems: LineageTracker.NotExactItem.resumeGaps(
+                    LineageTracker.NotExactItem.replayResume, restoring: resumeSnapshot.dropoutRNG),
+                legacyTotals: nil)
+        } else if let file = startModelFile {
+            lineageStart = .branch(parent: file.lineageParent)
         } else {
             lineageStart = .fresh
         }
@@ -1276,7 +1280,8 @@ enum CorpusReplayRunner {
                         corpusID: corpusID, corpusPath: corpusPath, epoch: epoch,
                         nextGameIndex: nextGameIndex, shard: shard,
                         populatedPlies: populatedPlies, bufferCapacity: p.replayBufferCapacity),
-                    parameters: p.lineageParameters)
+                    parameters: p.lineageParameters,
+                    dropoutPhiloxState: snapshot.dropoutRNG.philoxState)
                 encoded = try SafetensorsModelIO.encode(
                     modelID: config.runModelID,
                     createdAtUnix: Int64(saveDate.timeIntervalSince1970),

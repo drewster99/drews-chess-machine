@@ -464,13 +464,14 @@ struct LineageRecord: Codable, Equatable, Sendable {
 
     // MARK: RNG
 
-    /// How the run's randomness was seeded.
+    /// How the run's randomness was seeded, and the random state a resume
+    /// needs to continue the run's draws.
     ///
     /// Integration point for the seeded streams (determinism plan phase P3):
     /// until training draws come from named seeded streams, every run draws
     /// from the system generator and is recorded `unseeded`. P3 adds the
-    /// seeded mode with its master seed and stream derivation, and P4/P9 the
-    /// sampler and dropout states captured at the save.
+    /// seeded mode with its master seed and stream derivation, and P9 the
+    /// replay-buffer sampler state captured at the save.
     struct RNG: Codable, Equatable, Sendable {
         enum SeedMode: String, Codable, Sendable {
             /// Draws came from the system generator; nothing can replay them.
@@ -478,12 +479,42 @@ struct LineageRecord: Codable, Equatable, Sendable {
         }
 
         let seedMode: SeedMode
+        /// The training graph's dropout Philox state when the saved trainer
+        /// state was captured — the state the next step's masks start from.
+        /// Present on every record written with a trainer snapshot (it is
+        /// part of the same consistent cut as the weights and the clock);
+        /// null for a record with no trainer state behind it (a fresh mint,
+        /// a derived or untrained copy). A resume restores it, so the
+        /// resumed run's masks continue the saved run's sequence.
+        let dropoutPhiloxState: DropoutPhiloxState?
 
         enum CodingKeys: String, CodingKey {
             case seedMode = "seed_mode"
+            case dropoutPhiloxState = "dropout_philox_state"
         }
 
-        static let unseeded = RNG(seedMode: .unseeded)
+        init(seedMode: SeedMode, dropoutPhiloxState: DropoutPhiloxState?) {
+            self.seedMode = seedMode
+            self.dropoutPhiloxState = dropoutPhiloxState
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            seedMode = try c.decode(SeedMode.self, forKey: .seedMode)
+            dropoutPhiloxState = try c.decode(DropoutPhiloxState?.self, forKey: .dropoutPhiloxState)
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(seedMode, forKey: .seedMode)
+            try c.encode(dropoutPhiloxState, forKey: .dropoutPhiloxState)
+        }
+
+        /// An unseeded run's record, with the dropout state of the trainer
+        /// snapshot it was written with (nil when there is none).
+        static func unseeded(dropoutPhiloxState: DropoutPhiloxState?) -> RNG {
+            RNG(seedMode: .unseeded, dropoutPhiloxState: dropoutPhiloxState)
+        }
     }
 
     // MARK: Segment history

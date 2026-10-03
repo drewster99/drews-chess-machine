@@ -53,7 +53,7 @@ final class LineageRecordTests: XCTestCase {
         tracker.recordTrainingStep(totalMs: 1500)
         let record = try tracker.record(at: Date(timeIntervalSince1970: 1_100), trainerCompletedSteps: 1,
                                         segmentLocalStep: 1, segmentGames: 3, segmentPositions: 200,
-                                        corpus: nil, parameters: try parameters())
+                                        corpus: nil, parameters: try parameters(), dropoutPhiloxState: nil)
         let text = try record.jsonText()
         XCTAssertEqual(try LineageRecord.decode(jsonText: text), record)
         XCTAssertTrue(text.contains("\"lineage_run_id\""), text)
@@ -68,7 +68,7 @@ final class LineageRecordTests: XCTestCase {
                            notExactItems: [], legacyTotals: nil),
             pathKind: .replay, argv: ["dcm"], startedAt: Date(timeIntervalSince1970: 1_000), segmentStartTrainerStep: 5)
             .record(at: Date(timeIntervalSince1970: 1_010), trainerCompletedSteps: 6, segmentLocalStep: 1,
-                    segmentGames: 1, segmentPositions: 60, corpus: nil, parameters: nil)
+                    segmentGames: 1, segmentPositions: 60, corpus: nil, parameters: nil, dropoutPhiloxState: nil)
         let unrecordedText = try unrecorded.jsonText()
         XCTAssertTrue(unrecordedText.contains("\"cum_games\":null"), unrecordedText)
         XCTAssertTrue(unrecordedText.contains("\"cum_train_step_sec\":null"), unrecordedText)
@@ -131,6 +131,56 @@ final class LineageRecordTests: XCTestCase {
         }
     }
 
+    // MARK: - Dropout RNG state
+
+    func testDropoutPhiloxStateTravelsThroughTheFileAndDecidesTheResumeGap() throws {
+        let state = try DropoutPhiloxState(words: [1, 2, 3, 4, 5, 6, -7])
+        let start = Date(timeIntervalSince1970: 1_000)
+        let tracker = try LineageTracker(start: .fresh, pathKind: .replay, argv: ["dcm"],
+                                         startedAt: start, segmentStartTrainerStep: 0)
+        let withState = try tracker.record(at: start.addingTimeInterval(5), trainerCompletedSteps: 12, segmentLocalStep: 12,
+                                           segmentGames: 1, segmentPositions: 50, corpus: nil, parameters: nil,
+                                           dropoutPhiloxState: state)
+        let withStateText = try withState.jsonText()
+        XCTAssertTrue(withStateText.contains("\"dropout_philox_state\":[1,2,3,4,5,6,-7]"), withStateText)
+
+        let file = try SafetensorsModelIO.decode(try trainerFile(modelID: "20261002-1-LNGR", steps: 12, lineage: withState)).file
+        let snapshot = try TrainerResumeSnapshot(checkpoint: file, fileName: "a.safetensors")
+        XCTAssertEqual(snapshot.dropoutRNG, .philox(state))
+        let resumed = try LineageTracker(
+            start: .resume(parent: file.lineageParent,
+                           notExactItems: LineageTracker.NotExactItem.resumeGaps(
+                               LineageTracker.NotExactItem.replayResume, restoring: snapshot.dropoutRNG),
+                           legacyTotals: nil),
+            pathKind: .replay, argv: ["dcm"], startedAt: start.addingTimeInterval(100), segmentStartTrainerStep: 12)
+            .record(at: start.addingTimeInterval(110), trainerCompletedSteps: 13, segmentLocalStep: 1,
+                    segmentGames: 0, segmentPositions: 0, corpus: nil, parameters: nil, dropoutPhiloxState: state)
+        XCTAssertFalse(resumed.run.notExactItems.contains(LineageTracker.NotExactItem.dropoutState), "\(resumed.run.notExactItems)")
+
+        // A record with no trainer snapshot behind it writes an explicit null,
+        // and a resume from it names the gap.
+        let withoutState = try LineageRecord.forTests(trainerCompletedSteps: 12, corpus: nil)
+        let withoutStateText = try withoutState.jsonText()
+        XCTAssertTrue(withoutStateText.contains("\"dropout_philox_state\":null"), withoutStateText)
+        let bareFile = try SafetensorsModelIO.decode(try trainerFile(modelID: "20261002-1-LNGS", steps: 12, lineage: withoutState)).file
+        let bareSnapshot = try TrainerResumeSnapshot(checkpoint: bareFile, fileName: "b.safetensors")
+        XCTAssertEqual(bareSnapshot.dropoutRNG, .notInCheckpoint)
+        XCTAssertEqual(LineageTracker.NotExactItem.resumeGaps(LineageTracker.NotExactItem.replayResume, restoring: bareSnapshot.dropoutRNG),
+                       LineageTracker.NotExactItem.replayResume + [LineageTracker.NotExactItem.dropoutState])
+        // A file written before lineage carries no state either.
+        XCTAssertEqual(DropoutRNGResumeState(lineage: .unrecorded(formatVersion: 6)), .notInCheckpoint)
+    }
+
+    func testRecordWithoutTheDropoutStateKeyFailsToDecode() throws {
+        let record = try LineageRecord.forTests(trainerCompletedSteps: 4, corpus: nil)
+        var object = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(try record.jsonText().utf8)) as? [String: Any])
+        var rng = try XCTUnwrap(object["rng"] as? [String: Any])
+        rng.removeValue(forKey: "dropout_philox_state")
+        object["rng"] = rng
+        let stripped = String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        XCTAssertThrowsError(try LineageRecord.decode(jsonText: stripped))
+    }
+
     func testCurrentFormatFileWithoutLineageIsRefused() throws {
         let record = try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil)
         let data = try SafetensorsModelIO.encode(
@@ -176,7 +226,7 @@ final class LineageRecordTests: XCTestCase {
         let s0 = try LineageTracker(start: .fresh, pathKind: .replay, argv: ["dcm"], startedAt: t0, segmentStartTrainerStep: 0)
         for _ in 0..<100 { s0.recordTrainingStep(totalMs: 500) }
         let r0 = try s0.record(at: t0.addingTimeInterval(80), trainerCompletedSteps: 100, segmentLocalStep: 100,
-                               segmentGames: 40, segmentPositions: 2_600, corpus: nil, parameters: try parameters())
+                               segmentGames: 40, segmentPositions: 2_600, corpus: nil, parameters: try parameters(), dropoutPhiloxState: nil)
         let file0 = try trainerFile(modelID: "20261002-1-SEG0", steps: 100, lineage: r0)
         let (decoded0, parent0) = try decodedParent(file0)
 
@@ -186,7 +236,7 @@ final class LineageRecordTests: XCTestCase {
                                     pathKind: .replay, argv: ["dcm"], startedAt: t1, segmentStartTrainerStep: 100)
         for _ in 0..<50 { s1.recordTrainingStep(totalMs: 250) }
         let r1 = try s1.record(at: t1.addingTimeInterval(20), trainerCompletedSteps: 150, segmentLocalStep: 50,
-                               segmentGames: 10, segmentPositions: 700, corpus: nil, parameters: try parameters())
+                               segmentGames: 10, segmentPositions: 700, corpus: nil, parameters: try parameters(), dropoutPhiloxState: nil)
         let file1 = try trainerFile(modelID: "20261002-2-SEG1", steps: 150, lineage: r1)
         let (_, parent1) = try decodedParent(file1)
 
@@ -196,7 +246,7 @@ final class LineageRecordTests: XCTestCase {
                                     pathKind: .replay, argv: ["dcm"], startedAt: t2, segmentStartTrainerStep: 150)
         for _ in 0..<30 { s2.recordTrainingStep(totalMs: 1_000) }
         let r2 = try s2.record(at: t2.addingTimeInterval(40), trainerCompletedSteps: 180, segmentLocalStep: 30,
-                               segmentGames: 5, segmentPositions: 300, corpus: nil, parameters: try parameters())
+                               segmentGames: 5, segmentPositions: 300, corpus: nil, parameters: try parameters(), dropoutPhiloxState: nil)
         let file2 = try trainerFile(modelID: "20261002-3-SEG2", steps: 180, lineage: r2)
         let (_, parent2) = try decodedParent(file2)
 
@@ -240,7 +290,7 @@ final class LineageRecordTests: XCTestCase {
                                         startedAt: t3, segmentStartTrainerStep: 0)
         branch.recordTrainingStep(totalMs: 400)
         let rb = try branch.record(at: t3.addingTimeInterval(5), trainerCompletedSteps: 1, segmentLocalStep: 1,
-                                   segmentGames: 2, segmentPositions: 90, corpus: nil, parameters: try parameters())
+                                   segmentGames: 2, segmentPositions: 90, corpus: nil, parameters: try parameters(), dropoutPhiloxState: nil)
         XCTAssertNotEqual(rb.run.lineageRunID, r0.run.lineageRunID)
         XCTAssertEqual(rb.run.segmentIndex, 0)
         XCTAssertEqual(rb.run.start, .branch)
@@ -263,7 +313,7 @@ final class LineageRecordTests: XCTestCase {
         tracker.recordTrainingStep(totalMs: 2_000)
         let record = try tracker.record(at: Date(timeIntervalSince1970: 20), trainerCompletedSteps: 41_001,
                                         segmentLocalStep: 1, segmentGames: 3, segmentPositions: 190,
-                                        corpus: nil, parameters: nil)
+                                        corpus: nil, parameters: nil, dropoutPhiloxState: nil)
         XCTAssertTrue(record.run.continuesUnrecordedHistory)
         XCTAssertFalse(record.run.exactResume)
         XCTAssertTrue(record.run.notExactItems.contains(LineageTracker.lineageNotExactItem))
@@ -290,7 +340,7 @@ final class LineageRecordTests: XCTestCase {
             pathKind: .gui, argv: ["dcm"], startedAt: Date(timeIntervalSince1970: 100), segmentStartTrainerStep: 900)
         let record = try tracker.record(at: Date(timeIntervalSince1970: 160), trainerCompletedSteps: 910,
                                         segmentLocalStep: 10, segmentGames: 4, segmentPositions: 250,
-                                        corpus: nil, parameters: nil)
+                                        corpus: nil, parameters: nil, dropoutPhiloxState: nil)
         XCTAssertEqual(try XCTUnwrap(record.time.cumWallSec), 3_660, accuracy: 1e-9)
         XCTAssertNil(record.fed.cumGames)
         XCTAssertNil(record.time.cumTrainStepSec)

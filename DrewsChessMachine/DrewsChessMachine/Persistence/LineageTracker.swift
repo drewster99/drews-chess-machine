@@ -164,16 +164,30 @@ final class LineageTracker: @unchecked Sendable {
     enum NotExactItem {
         /// The replay-buffer sampler draws from the system generator.
         static let rngSampler = "rng_sampler"
-        /// Dropout masks are reseeded per process.
+        /// The parent carried no dropout Philox state (it was written before
+        /// the lineage record stored it), so the resumed masks start from
+        /// this run's own dropout seed.
         static let dropoutState = "dropout_state"
         /// Corpus replay's feed phase restarts at the resume.
         static let feedCarry = "feed_carry"
         /// The replay buffer was not saved with the checkpoint.
         static let buffer = "buffer"
 
-        static let replayResume = [rngSampler, dropoutState, feedCarry]
-        static let vsUciResume = [rngSampler, dropoutState, buffer]
-        static let guiResume = [rngSampler, dropoutState]
+        static let replayResume = [rngSampler, feedCarry]
+        static let vsUciResume = [rngSampler, buffer]
+        static let guiResume = [rngSampler]
+
+        /// `pathItems` plus `dropoutState` when the resume restores no
+        /// dropout Philox state — the gap follows from what the resume
+        /// actually restored, not from the path.
+        static func resumeGaps(_ pathItems: [String], restoring dropoutRNG: DropoutRNGResumeState) -> [String] {
+            switch dropoutRNG {
+            case .philox:
+                return pathItems
+            case .notInCheckpoint:
+                return pathItems + [dropoutState]
+            }
+        }
     }
 
     /// Add one measured trainer step.
@@ -193,13 +207,17 @@ final class LineageTracker: @unchecked Sendable {
     ///     games the parent had already fed).
     ///   - corpus: the corpus position, for corpus replay only.
     ///   - parameters: the training parameters in force.
+    ///   - dropoutPhiloxState: the dropout state of the trainer snapshot the
+    ///     saved trainer state comes from (the same consistent cut as its
+    ///     weights and clock); nil when the record has no trainer snapshot.
     func record(at date: Date,
                 trainerCompletedSteps: Int?,
                 segmentLocalStep: Int,
                 segmentGames: Int,
                 segmentPositions: Int,
                 corpus: LineageRecord.CorpusPosition?,
-                parameters: LineageRecord.Parameters?) throws -> LineageRecord {
+                parameters: LineageRecord.Parameters?,
+                dropoutPhiloxState: DropoutPhiloxState?) throws -> LineageRecord {
         guard segmentGames >= 0 else { throw TrackerError.negativeSegmentCount(what: "games", value: segmentGames) }
         guard segmentPositions >= 0 else { throw TrackerError.negativeSegmentCount(what: "positions", value: segmentPositions) }
         guard segmentLocalStep >= 0 else { throw TrackerError.negativeSegmentCount(what: "steps", value: segmentLocalStep) }
@@ -241,7 +259,7 @@ final class LineageTracker: @unchecked Sendable {
             build: .current,
             invocation: LineageRecord.Invocation(argv: argv, pathKind: pathKind),
             device: .current,
-            rng: .unseeded,
+            rng: .unseeded(dropoutPhiloxState: dropoutPhiloxState),
             segments: segments
         )
     }
@@ -254,7 +272,8 @@ final class LineageTracker: @unchecked Sendable {
         let tracker = try LineageTracker(start: .fresh, pathKind: pathKind, argv: argv,
                                          startedAt: date, segmentStartTrainerStep: nil)
         return try tracker.record(at: date, trainerCompletedSteps: 0, segmentLocalStep: 0,
-                                  segmentGames: 0, segmentPositions: 0, corpus: nil, parameters: nil)
+                                  segmentGames: 0, segmentPositions: 0, corpus: nil, parameters: nil,
+                                  dropoutPhiloxState: nil)
     }
 
     /// The record of a model made from `source` without training —
@@ -309,7 +328,9 @@ final class LineageTracker: @unchecked Sendable {
             build: .current,
             invocation: LineageRecord.Invocation(argv: LineageRecord.redactedArguments(argv), pathKind: pathKind),
             device: .current,
-            rng: .unseeded,
+            // The copy has no trainer behind it: there is no dropout state
+            // to continue.
+            rng: .unseeded(dropoutPhiloxState: nil),
             segments: []
         )
     }

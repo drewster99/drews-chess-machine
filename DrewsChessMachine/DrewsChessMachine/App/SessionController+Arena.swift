@@ -132,17 +132,23 @@ extension SessionController {
         var trainerSnapshotWeights: [[Float]] = []
         var trainerSnapshotVelocity: [[Float]] = []
         var trainerSnapshotCompletedSteps = 0
+        // And the dropout Philox state at the same instant, so a promotion
+        // rewinds the trainer's masks with its weights and clock, and the
+        // post-promotion save records the state that goes with them.
+        let trainerSnapshotDropoutState: DropoutPhiloxState
         do {
-            let snapshot: ([[Float]], [[Float]], Int) = try await Task.detached(priority: .userInitiated) {
+            let snapshot: ([[Float]], [[Float]], Int, DropoutPhiloxState) = try await Task.detached(priority: .userInitiated) {
                 let weights = try await trainer.network.exportWeights()
                 let velocity = try await trainer.exportVelocitySnapshot()
                 let completedSteps = trainer.completedTrainSteps
+                let dropoutState = try await trainer.captureDropoutState()
                 try await candidateInference.loadWeights(weights)
-                return (weights, velocity, completedSteps)
+                return (weights, velocity, completedSteps, dropoutState)
             }.value
             trainerSnapshotWeights = snapshot.0
             trainerSnapshotVelocity = snapshot.1
             trainerSnapshotCompletedSteps = snapshot.2
+            trainerSnapshotDropoutState = snapshot.3
         } catch {
             trainingBox?.recordError("Arena candidate sync failed: \(error.localizedDescription)")
             trainingGate.resume()
@@ -362,7 +368,8 @@ extension SessionController {
             if !Task.isCancelled {
                 do {
                     promotedChampionWeights = try await Task.detached(priority: .userInitiated) {
-                        [candidateInference, champion, trainer, trainerSnapshotVelocity, trainerSnapshotCompletedSteps] in
+                        [candidateInference, champion, trainer, trainerSnapshotVelocity, trainerSnapshotCompletedSteps,
+                         trainerSnapshotDropoutState] in
                         let weights = try await candidateInference.exportWeights()
                         try await champion.loadWeights(weights)
                         // Open the replacement window; the trainer's new
@@ -396,6 +403,10 @@ extension SessionController {
                         // the weights and drive the immature network
                         // into collapse with an oversized LR.
                         trainer.completedTrainSteps = trainerSnapshotCompletedSteps
+                        // The masks rewind with the weights and the clock:
+                        // the rewound trainer draws the dropout sequence
+                        // from where the candidate's training left it.
+                        try await trainer.restoreDropoutState(trainerSnapshotDropoutState)
                         return weights
                     }.value
                     // Promoted: champion now holds the arena candidate's
@@ -530,7 +541,8 @@ extension SessionController {
             let championLineage: LineageRecord.Presence
             do {
                 championLineage = .recorded(try lineageRecordForSave(
-                    at: Date(), trainerCompletedSteps: trainerSnapshotCompletedSteps))
+                    at: Date(), trainerCompletedSteps: trainerSnapshotCompletedSteps,
+                    dropoutPhiloxState: trainerSnapshotDropoutState))
             } catch {
                 SessionLogger.shared.log("[LINEAGE] promoted champion's lineage not recorded: \(error.localizedDescription)")
                 championLineage = .unrecorded(formatVersion: ArchitectureFormat.currentVersion)
@@ -603,7 +615,8 @@ extension SessionController {
             let promotionLineage: LineageRecord
             do {
                 promotionLineage = try lineageRecordForSave(
-                    at: saveDate, trainerCompletedSteps: promotionSaveTrainerStep)
+                    at: saveDate, trainerCompletedSteps: promotionSaveTrainerStep,
+                    dropoutPhiloxState: trainerSnapshotDropoutState)
             } catch {
                 let message = "Post-promotion save failed (lineage): \(error.localizedDescription)"
                 checkpoint?.setCheckpointStatus(message, kind: .error)

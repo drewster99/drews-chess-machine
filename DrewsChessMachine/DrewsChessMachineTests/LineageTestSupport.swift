@@ -17,7 +17,8 @@ extension LineageRecord {
             segmentGames: 0,
             segmentPositions: 0,
             corpus: corpus,
-            parameters: nil)
+            parameters: nil,
+            dropoutPhiloxState: nil)
     }
 
     /// `sessionTestFixture` as the JSON value a session.json fixture at the
@@ -47,6 +48,6 @@ extension LineageRecord {
         invocation: Invocation(argv: ["DrewsChessMachine"], pathKind: .gui),
         device: Device(hardwareModel: "Mac16,8", cpu: "Apple M4 Pro", isVirtualMachine: false,
                        osVersion: "Version 27.2", gpu: "Apple M4 Pro"),
-        rng: .unseeded,
+        rng: .unseeded(dropoutPhiloxState: nil),
         segments: [])
 }

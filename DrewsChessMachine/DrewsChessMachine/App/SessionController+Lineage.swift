@@ -76,7 +76,9 @@ extension SessionController {
             start = championLineageStart
         case .freshOrFromLoadedSession:
             if let resumed {
-                var gaps = LineageTracker.NotExactItem.guiResume
+                var gaps = LineageTracker.NotExactItem.resumeGaps(
+                    LineageTracker.NotExactItem.guiResume,
+                    restoring: DropoutRNGResumeState(lineage: resumed.trainerFile.safetensorsProvenance?.lineage))
                 if resumed.replayBufferURL == nil {
                     gaps.append(LineageTracker.NotExactItem.buffer)
                 }
@@ -125,8 +127,11 @@ extension SessionController {
     }
 
     /// The record for a save of the running segment's state, with the
-    /// trainer clock `trainerCompletedSteps` the saved trainer state carries.
-    func lineageRecordForSave(at date: Date, trainerCompletedSteps: Int) throws -> LineageRecord {
+    /// trainer clock `trainerCompletedSteps` the saved trainer state carries
+    /// and the dropout state captured with it (nil when the save has no
+    /// trainer snapshot).
+    func lineageRecordForSave(at date: Date, trainerCompletedSteps: Int,
+                              dropoutPhiloxState: DropoutPhiloxState?) throws -> LineageRecord {
         guard let tracker = lineageTracker else {
             throw LineageSegmentError.noSegment("this save")
         }
@@ -148,7 +153,8 @@ extension SessionController {
             segmentGames: games,
             segmentPositions: positions,
             corpus: nil,
-            parameters: try LineageRecord.Parameters(values: TrainingParameters.shared.snapshot().rawValueMap()))
+            parameters: try LineageRecord.Parameters(values: TrainingParameters.shared.snapshot().rawValueMap()),
+            dropoutPhiloxState: dropoutPhiloxState)
     }
 
     /// The record for a model-only save of the champion (Save Champion):
@@ -157,7 +163,10 @@ extension SessionController {
     /// file it was loaded from.
     func lineageRecordForChampionSave(at date: Date) throws -> LineageRecord {
         if lineageTracker != nil, let trainer {
-            return try lineageRecordForSave(at: date, trainerCompletedSteps: trainer.completedTrainSteps)
+            // A champion-only save carries no trainer state, so no dropout
+            // state either.
+            return try lineageRecordForSave(at: date, trainerCompletedSteps: trainer.completedTrainSteps,
+                                            dropoutPhiloxState: nil)
         }
         if let source = championLineageSource {
             return LineageTracker.untrainedCopyRecord(source: source, pathKind: .gui, argv: CommandLine.arguments, at: date)
