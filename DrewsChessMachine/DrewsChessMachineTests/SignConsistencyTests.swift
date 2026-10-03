@@ -136,7 +136,7 @@ final class SignConsistencyTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let net = try ChessNetwork(bnMode: .inference)
+        let net = try ChessNetwork(bnMode: .inference, initialization: .seeded(initSeed: 1))
 
         // Starting position encoded from both POVs (Test A scenario).
         let whiteToMove = GameState.starting

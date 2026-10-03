@@ -1494,12 +1494,14 @@ seed.
   internal type rather than private to `DCMRandom`, so the exhaustive tests can call
   it. (4) `InferenceNetworkFactory.build(arch:)` keeps drawing random weights (an
   existing test uses it that way); the live-trainer mirror uses the new
-  `buildAwaitingLoad(arch:)`. (5) `ChessNetwork`, `ChessTrainer` and the
-  `TrainerHyperparameters` convenience init still default `initialization` to
-  `.drawnSeed()`, because removing the default changes ~90 existing test call sites
-  that P4 also edits; production sites all pass it explicitly. The owner's rule (no
-  default; tests pass explicit values) is to be applied after this branch is merged
-  with P4. (6) `SetSEBetaInitDeriveOperation.init(value:groupIndices:)` draws a seed
+  `buildAwaitingLoad(arch:)`. (5) `initialization` has no default on `ChessNetwork`, `ChessTrainer`
+  or the `TrainerHyperparameters` convenience init, and `resetNetwork()` without an
+  argument is gone (owner rule: no silent defaults). It landed after the merge with
+  P2/P4/P13 so it did not collide with P4's edits to the same test lines: every test
+  construction passes `.seeded(initSeed: N)` — `N` counting the constructions within
+  its function, so networks built side by side stay distinct, and the
+  training-vs-inference BN diagnostic varies it per trial; production sweeps pass
+  `.drawnSeed()`. (6) `SetSEBetaInitDeriveOperation.init(value:groupIndices:)` draws a seed
   (existing tests use that form); the CLI path always records the seed it used.
 
 **P6 — Format v5 + `LineageRecord`.** Files: `Persistence/LineageRecord.swift`,

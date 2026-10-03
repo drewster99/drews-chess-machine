@@ -102,7 +102,7 @@ final class WeightPlanContractTests: XCTestCase {
             let arch = NetworkArchitecture.current
             // Construction itself now enforces this contract, so a divergence
             // surfaces here as a throw rather than as the comparisons below.
-            let net = try ChessNetwork(arch: arch, bnMode: mode)
+            let net = try ChessNetwork(arch: arch, bnMode: mode, initialization: .seeded(initSeed: 1))
             let plan = arch.weightTensorPlan()
             let allVars = net.trainableVariables + net.bnRunningStatsVariables
 

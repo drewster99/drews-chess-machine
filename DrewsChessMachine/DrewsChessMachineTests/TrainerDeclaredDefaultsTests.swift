@@ -14,7 +14,7 @@ import XCTest
 final class TrainerDeclaredDefaultsTests: XCTestCase {
 
     func testABareTrainerStartsAtTheDeclaredDefaults() throws {
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1))
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), initialization: .seeded(initSeed: 1))
         XCTAssertEqual(trainer.learningRate, Float(LearningRate.declaredDefault))
         XCTAssertEqual(trainer.entropyRegularizationCoeff, Float(EntropyBonus.declaredDefault))
         XCTAssertEqual(trainer.policyLossWeight, Float(PolicyLossWeight.declaredDefault))

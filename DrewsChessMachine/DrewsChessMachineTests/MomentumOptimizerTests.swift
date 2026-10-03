@@ -84,7 +84,7 @@ final class MomentumOptimizerTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, initialization: .seeded(initSeed: 1))
         let weights = try await trainer.exportTrainerWeights()
         let p = partition(weights, trainer: trainer)
         XCTAssertEqual(
@@ -108,7 +108,7 @@ final class MomentumOptimizerTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0.0, lrWarmupSteps: 0)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0.0, lrWarmupSteps: 0, initialization: .seeded(initSeed: 1))
         _ = try await trainer.trainStep(batchSize: 32)
         let weights = try await trainer.exportTrainerWeights()
         let p = partition(weights, trainer: trainer)
@@ -127,7 +127,7 @@ final class MomentumOptimizerTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0.9, lrWarmupSteps: 0)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0.9, lrWarmupSteps: 0, initialization: .seeded(initSeed: 1))
         _ = try await trainer.trainStep(batchSize: 32)
         let after1 = try await trainer.exportTrainerWeights()
         let v1 = partition(after1, trainer: trainer).velocity
@@ -155,7 +155,7 @@ final class MomentumOptimizerTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0.9, lrWarmupSteps: 0)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0.9, lrWarmupSteps: 0, initialization: .seeded(initSeed: 1))
         // Run a few steps so weights AND velocities are non-trivial.
         for _ in 0..<3 {
             _ = try await trainer.trainStep(batchSize: 32)
@@ -201,7 +201,7 @@ final class MomentumOptimizerTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0.9, lrWarmupSteps: 0)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0.9, lrWarmupSteps: 0, initialization: .seeded(initSeed: 1))
         _ = try await trainer.trainStep(batchSize: 32)
         let v2Snapshot = try await trainer.exportTrainerWeights()
         let p2 = partition(v2Snapshot, trainer: trainer)
@@ -223,13 +223,13 @@ final class MomentumOptimizerTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0.9, lrWarmupSteps: 0)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0.9, lrWarmupSteps: 0, initialization: .seeded(initSeed: 1))
         _ = try await trainer.trainStep(batchSize: 32)
         let snapshot = try await trainer.exportTrainerWeights()
         let partitioned = partition(snapshot, trainer: trainer)
         XCTAssertFalse(allZero(partitioned.velocity), "Velocity should be non-zero after one step at μ=0.9")
 
-        try await trainer.resetNetwork()
+        try await trainer.resetNetwork(initialization: .seeded(initSeed: 2))
         try await trainer.loadBaseWeightsResetVelocity(partitioned.base)
         let after = try await trainer.exportTrainerWeights()
         let pa = partition(after, trainer: trainer)
@@ -252,7 +252,7 @@ final class MomentumOptimizerTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0.9, lrWarmupSteps: 0)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0.9, lrWarmupSteps: 0, initialization: .seeded(initSeed: 1))
         for _ in 0..<3 {
             _ = try await trainer.trainStep(batchSize: 32)
         }
@@ -282,7 +282,7 @@ final class MomentumOptimizerTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, initialization: .seeded(initSeed: 1))
         let bogus: [[Float]] = [[1.0, 2.0, 3.0]] // single tiny tensor — wrong count
         do {
             try await trainer.loadTrainerWeights(bogus)
@@ -402,7 +402,8 @@ final class MomentumOptimizerTests: XCTestCase {
             dropoutStream: DCMRandom(seed: 1),
             weightDecayC: 1e-3,
             momentumCoeff: 0.0,
-            lrWarmupSteps: 0
+            lrWarmupSteps: 0,
+            initialization: .seeded(initSeed: 1)
         )
         // After one step at μ=0, velocity should hold combinedUpdate
         // (just clippedGrad in the decoupled form), and weights should
@@ -431,7 +432,7 @@ final class MomentumOptimizerTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0.7, lrWarmupSteps: 0)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0.7, lrWarmupSteps: 0, initialization: .seeded(initSeed: 1))
         // Build up some velocity.
         for _ in 0..<3 {
             _ = try await trainer.trainStep(batchSize: 32)
@@ -528,7 +529,8 @@ final class MomentumOptimizerTests: XCTestCase {
             gradClipMaxNorm: 1e9,   // effectively no clipping
             momentumCoeff: 0,
             sqrtBatchScalingForLR: false,
-            lrWarmupSteps: 0
+            lrWarmupSteps: 0,
+            initialization: .seeded(initSeed: 1)
         )
         let baseCount = trainer.network.trainableVariables.count
             + trainer.network.bnRunningStatsVariables.count
@@ -608,7 +610,7 @@ final class MomentumOptimizerTests: XCTestCase {
         guard NetworkArchitecture.current.computeDataType != .float32 else {
             throw XCTSkip("fp32 master path is inactive under .float32 dataType")
         }
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), learningRate: 1e-2, lrWarmupSteps: 0)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), learningRate: 1e-2, lrWarmupSteps: 0, initialization: .seeded(initSeed: 1))
         let baseCount = trainer.network.trainableVariables.count
             + trainer.network.bnRunningStatsVariables.count
 

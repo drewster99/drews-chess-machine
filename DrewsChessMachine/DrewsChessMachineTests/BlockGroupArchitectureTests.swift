@@ -282,7 +282,7 @@ final class BlockGroupArchitectureTests: XCTestCase {
         let champion = try ChessMPSNetwork(.randomWeights, arch: arch)
         let championWeights = try await champion.network.exportWeights()
 
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: arch)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: arch, initialization: .seeded(initSeed: 1))
         XCTAssertEqual(trainer.arch, arch)
         try await trainer.network.loadWeights(championWeights)
     }

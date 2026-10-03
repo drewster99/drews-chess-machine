@@ -177,10 +177,10 @@ final class NumericsAuditStaticTests: XCTestCase {
     // MARK: - Analysis taps
 
     func testAnalysisTapsExistOnlyWhenRequested() throws {
-        let production = try ChessNetwork(arch: .current, bnMode: .inference)
+        let production = try ChessNetwork(arch: .current, bnMode: .inference, initialization: .seeded(initSeed: 1))
         XCTAssertTrue(production.analysisTapReadbacks.isEmpty)
 
-        let audit = try ChessNetwork(arch: .current, bnMode: .inference, analysisTaps: true)
+        let audit = try ChessNetwork(arch: .current, bnMode: .inference, initialization: .seeded(initSeed: 2), analysisTaps: true)
         let names = Set(audit.analysisTapReadbacks.map(\.name))
         for expected in ["stem_bn_input", "stem_output", "block0_output", "tower_output", "policy_logits", "value_logits", "value_probs", "value_fc1_act"] {
             XCTAssertTrue(names.contains(expected), "missing tap \(expected)")

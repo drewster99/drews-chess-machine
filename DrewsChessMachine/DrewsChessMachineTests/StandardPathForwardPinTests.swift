@@ -59,7 +59,7 @@ final class StandardPathForwardPinTests: XCTestCase {
         var arch = NetworkArchitecture.current
         arch.computeDataType = fixture.dtype
         arch.policyHeadStyle = fixture.policyStyle
-        let net = try ChessNetwork(arch: arch, policyTailPrecision: fixture.tail)
+        let net = try ChessNetwork(arch: arch, initialization: .seeded(initSeed: 1), policyTailPrecision: fixture.tail)
         try await net.loadWeights(Self.deterministicWeights(for: arch))
         let board = BoardEncoder.encode(.starting, encoding: arch.inputEncoding)
         let result = SyncBox<UInt64?>(nil)

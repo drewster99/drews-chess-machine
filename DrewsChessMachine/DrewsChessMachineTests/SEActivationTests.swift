@@ -420,7 +420,7 @@ final class SEActivationTests: XCTestCase {
     func testTrainingStepIsFiniteWithLeakyFC1() async throws {
         try requireMetal()
         let arch = Self.twoGroupArchitecture(group0SE: .leakyRelu, group1SE: .leakyRelu)
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), learningRate: 1e-2, lrWarmupSteps: 0, arch: arch)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), learningRate: 1e-2, lrWarmupSteps: 0, arch: arch, initialization: .seeded(initSeed: 1))
         let before = try await trainer.network.exportWeights()
         let timing = try await trainer.trainStep(batchSize: 16)
         XCTAssertTrue(timing.policyLoss.isFinite, "policy loss must be finite")

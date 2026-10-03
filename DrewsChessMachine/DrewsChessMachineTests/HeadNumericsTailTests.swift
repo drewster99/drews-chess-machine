@@ -55,7 +55,7 @@ final class HeadNumericsTailTests: XCTestCase {
         try requireMetal()
         for dtype in [ComputeDataType.float32, .bFloat16, .float16] {
             for style in PolicyHeadStyle.allCases {
-                let net = try ChessNetwork(arch: arch(dtype, policy: style))
+                let net = try ChessNetwork(arch: arch(dtype, policy: style), initialization: .seeded(initSeed: 1))
                 assertHeadOutputsFP32(net, "\(dtype) \(style.rawValue)")
             }
         }
@@ -63,7 +63,7 @@ final class HeadNumericsTailTests: XCTestCase {
 
     func testHeadOutputsAreFP32UnderTrainingMode() throws {
         try requireMetal()
-        let scalar = try ChessNetwork(arch: arch(.bFloat16, value: .scalarTanh), bnMode: .training)
+        let scalar = try ChessNetwork(arch: arch(.bFloat16, value: .scalarTanh), bnMode: .training, initialization: .seeded(initSeed: 1))
         assertHeadOutputsFP32(scalar, "bf16 scalar-tanh, training BN")
     }
 
@@ -71,7 +71,7 @@ final class HeadNumericsTailTests: XCTestCase {
 
     func testBF16ForwardReadsTheValueHeadBackInFP32() async throws {
         try requireMetal()
-        let net = try ChessNetwork(arch: arch(.bFloat16))
+        let net = try ChessNetwork(arch: arch(.bFloat16), initialization: .seeded(initSeed: 1))
         let board = BoardEncoder.encode(.starting, encoding: net.arch.inputEncoding)
         let policyBox = SyncBox<[Float]>([])
         let wdlBox = SyncBox<[Float]>([])
@@ -126,7 +126,7 @@ final class HeadNumericsTailTests: XCTestCase {
     func testTrainingGraphGivesTheHeadsSharedDirectionZeroGradient() async throws {
         try requireMetal()
         let architecture = arch(.float32)
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0, lrWarmupSteps: 0, arch: architecture)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0, lrWarmupSteps: 0, arch: architecture, initialization: .seeded(initSeed: 1))
         let timing = try await trainer.trainStep(batchSize: 32)
         XCTAssertTrue(timing.hasDiagnostics, "the synthetic-data step always computes diagnostics")
         XCTAssertTrue(timing.policyLogitMean.isFinite, "policy mean logit must be measured")
@@ -156,7 +156,7 @@ final class HeadNumericsTailTests: XCTestCase {
     func testScalarTanhValueHeadIsNotCentered() async throws {
         try requireMetal()
         let architecture = arch(.float32, value: .scalarTanh)
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0, lrWarmupSteps: 0, arch: architecture)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0, lrWarmupSteps: 0, arch: architecture, initialization: .seeded(initSeed: 1))
         _ = try await trainer.trainStep(batchSize: 32)
         let exported = try await velocities(after: trainer, architecture: architecture)
         // Centering a single logit subtracts it from itself: the loss would

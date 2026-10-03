@@ -325,7 +325,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let net = try ChessNetwork(bnMode: .inference)
+        let net = try ChessNetwork(bnMode: .inference, initialization: .seeded(initSeed: 1))
 
         // 8 positions: starting + 7 random walks.
         let states = sampleStates(count: 8)
@@ -573,7 +573,8 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             learningRate: 10.0,
             weightDecayC: 0,
             sqrtBatchScalingForLR: false,
-            lrWarmupSteps: 0
+            lrWarmupSteps: 0,
+            initialization: .seeded(initSeed: 1)
         )
         var primed = try await trainer.network.exportWeights()
         let trainableVars = trainer.network.trainableVariables
@@ -630,7 +631,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1))
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), initialization: .seeded(initSeed: 1))
         // Initial running stats — exportWeights returns trainables
         // followed by running stats.
         let nTrain = trainer.network.trainableVariables.count
@@ -686,7 +687,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1))
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), initialization: .seeded(initSeed: 1))
 
         // Run many steps on synthesized random data via the public path.
         // We're not asserting clean monotonic loss decrease (random-data
@@ -1051,7 +1052,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let net = try ChessNetwork(bnMode: .inference)
+        let net = try ChessNetwork(bnMode: .inference, initialization: .seeded(initSeed: 1))
         let zeroBoard = [Float](repeating: 0, count: BoardEncoder.tensorLength(for: .basic30))
         nonisolated(unsafe) var policy: [Float] = []
         nonisolated(unsafe) var value: Float = 0
@@ -1110,9 +1111,9 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             throw XCTSkip("Metal not available")
         }
         let trials = 4
-        for _ in 0..<trials {
-            let infNet = try ChessNetwork(bnMode: .inference)
-            let trnNet = try ChessNetwork(bnMode: .training)
+        for trial in 0..<trials {
+            let infNet = try ChessNetwork(bnMode: .inference, initialization: .seeded(initSeed: UInt64(2 * trial + 1)))
+            let trnNet = try ChessNetwork(bnMode: .training, initialization: .seeded(initSeed: UInt64(2 * trial + 2)))
 
             var batchBoards: [Float] = []
             let states = sampleStates(count: 8)
@@ -1164,7 +1165,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let net = try ChessNetwork(bnMode: .training)
+        let net = try ChessNetwork(bnMode: .training, initialization: .seeded(initSeed: 1))
         let states = sampleStates(count: 64)
         var batch: [Float] = []
         for s in states { batch.append(contentsOf: BoardEncoder.encode(s, encoding: .basic30)) }
@@ -1331,7 +1332,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let net = try ChessNetwork(bnMode: .inference)
+        let net = try ChessNetwork(bnMode: .inference, initialization: .seeded(initSeed: 1))
         let weights = try await net.exportWeights()
         let exportedElementCount = weights.reduce(0) { $0 + $1.count }
         XCTAssertEqual(

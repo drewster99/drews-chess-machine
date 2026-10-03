@@ -213,7 +213,7 @@ final class WeightInitializationTests: XCTestCase {
     func testTrainerBuiltForLoadRefusesTrainingUntilLoaded() async throws {
         try requireMetal()
         let arch = Self.smallArchitecture()
-        let trainer = try ChessTrainer(arch: arch, initialization: .overwrittenByLoad)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: arch, initialization: .overwrittenByLoad)
         do {
             _ = try await trainer.trainStep(batchSize: 4)
             XCTFail("a trainer built for loaded weights must not train before the load")

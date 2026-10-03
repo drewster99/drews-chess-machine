@@ -28,7 +28,8 @@ final class TrainerEffectiveScheduleTests: XCTestCase {
             learningRate: 0.01,
             momentumCoeff: 0.5,
             sqrtBatchScalingForLR: false,
-            lrWarmupSteps: 100
+            lrWarmupSteps: 100,
+            initialization: .seeded(initSeed: 1)
         )
 
         // --- Cycling off → static fallbacks (post-warmup so warmupMul == 1). ---

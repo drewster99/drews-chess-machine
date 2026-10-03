@@ -42,8 +42,8 @@ enum ValueHeadAnalyzer {
     /// denominator of the `currentL2 / initL2` ratio reported per
     /// variable. Computed as `sqrt(N) · std`, where `std = sqrt(2 / fanIn)`
     /// is the per-element He-init standard deviation and `N` is the
-    /// tensor's element count. Mirrors `ChessNetwork.heInitDataConvOIHW`
-    /// / `heInitDataFCInOut`. A ratio near 1 means the tensor's
+    /// tensor's element count. Mirrors the He-normal role of
+    /// `WeightInitScheme.standardDeviation`. A ratio near 1 means the tensor's
     /// magnitude is close to its initialization scale (weight decay
     /// hasn't pulled it down much); a ratio near 0 means the tensor
     /// has collapsed toward zero.

@@ -124,7 +124,7 @@ extension SessionController {
                 // through the same `TrainerHyperparameters` path a fresh start
                 // uses. The trainer's completed-step clock is restored later,
                 // with its weights and velocity, by `restoreExactly` (after
-                // `resetNetwork()`, which zeroes it).
+                // `resetNetwork(initialization:)`, which zeroes it).
                 let p = TrainingParameters.shared
                 let resume = SessionParameterResume(parameters: p, log: { SessionLogger.shared.log($0) })
                 resume.restore(LearningRate.self, savedFloat: rs.learningRate, into: \.learningRate)
@@ -923,7 +923,7 @@ extension SessionController {
                         // the same `restoreExactly` the CLI runners'
                         // `--resume-exact` uses — weights and fp32 masters,
                         // optimizer velocity, and the completed-step clock,
-                        // restored after `resetNetwork()` zeroed it, so
+                        // restored after `resetNetwork(initialization:)` zeroed it, so
                         // warmup does not re-run and the cycle phase and
                         // decay envelope continue where they stopped. The
                         // warmup length and cycle are the session's own,

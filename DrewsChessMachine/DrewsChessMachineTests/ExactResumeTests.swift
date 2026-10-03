@@ -206,7 +206,7 @@ final class ExactResumeTests: XCTestCase {
         resumedTrainerHyperparameters: (TrainerResumeSnapshot) -> TrainerHyperparameters
     ) async throws {
         let original = originalRunHyperparameters()
-        let uninterrupted = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: original, arch: .current)
+        let uninterrupted = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: original, arch: .current, initialization: .seeded(initSeed: 1))
         let buffer = makeReplayBuffer(arch: .current)
         _ = try await train(uninterrupted, steps: stepsBeforeSave, buffer: buffer)
         XCTAssertGreaterThan(uninterrupted.completedTrainSteps, original.lrWarmupSteps, "\(path): save must land past warmup")
@@ -217,7 +217,7 @@ final class ExactResumeTests: XCTestCase {
         XCTAssertEqual(reloaded.schedule, saved.schedule, "\(path): schedule round trip")
         assertBitExact(reloaded.trainerWeights, saved.trainerWeights, "\(path): trainer state round trip")
 
-        let resumed = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: resumedTrainerHyperparameters(reloaded), arch: .current)
+        let resumed = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: resumedTrainerHyperparameters(reloaded), arch: .current, initialization: .seeded(initSeed: 2))
         try await resume(resumed, reloaded)
 
         // Restored state, bit-exact, before any step.
@@ -229,7 +229,7 @@ final class ExactResumeTests: XCTestCase {
         // Warmup does not re-run: the first resumed step is fed the full,
         // un-ramped LR the uninterrupted run is fed — and that differs from
         // what a trainer whose clock restarted would be fed.
-        let restartedClock = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: original, arch: .current)
+        let restartedClock = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: original, arch: .current, initialization: .seeded(initSeed: 3))
         XCTAssertNotEqual(
             restartedClock.effectiveLearningRate(forBatchSize: batchSize),
             uninterrupted.effectiveLearningRate(forBatchSize: batchSize),
@@ -369,7 +369,7 @@ final class ExactResumeTests: XCTestCase {
                 // zeroes the clock), then restores.
                 trainer.lrWarmupSteps = snapshot.schedule.lrWarmupSteps
                 trainer.lrMomentumCycle = snapshot.schedule.lrMomentumCycle
-                try await trainer.resetNetwork()
+                try await trainer.resetNetwork(initialization: .seeded(initSeed: 1))
                 XCTAssertEqual(trainer.completedTrainSteps, 0)
                 try await trainer.restoreExactly(from: snapshot)
             },

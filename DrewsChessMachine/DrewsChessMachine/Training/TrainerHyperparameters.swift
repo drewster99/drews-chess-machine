@@ -151,7 +151,7 @@ extension ChessTrainer {
         dropoutStream: DCMRandom,
         hyperparameters: TrainerHyperparameters,
         arch: NetworkArchitecture,
-        initialization: WeightInitialization = .drawnSeed(),
+        initialization: WeightInitialization,
         policyTailPrecision: ChessNetwork.PolicyTailPrecision = .process
     ) throws {
         try self.init(

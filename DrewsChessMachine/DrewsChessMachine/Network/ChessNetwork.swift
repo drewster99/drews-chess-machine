@@ -583,7 +583,7 @@ final class ChessNetwork: @unchecked Sendable {
     /// `policyTailPrecision` defaults to the process's value
     /// (`PolicyTailPrecision.process`).
     init(arch: NetworkArchitecture = .current, bnMode: BNMode = .inference,
-         initialization: WeightInitialization = .drawnSeed(),
+         initialization: WeightInitialization,
          policyTailPrecision: PolicyTailPrecision = .process,
          disableAutoLayoutConversion: Bool = false,
          reducedPrecisionFastMathRaw: UInt? = nil,

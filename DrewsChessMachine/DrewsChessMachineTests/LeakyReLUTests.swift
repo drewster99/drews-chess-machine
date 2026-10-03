@@ -139,7 +139,7 @@ final class LeakyReLUTests: XCTestCase {
         XCTAssertTrue(leakyPolicy.allSatisfy(\.isFinite), "leaky_relu logits must be finite")
         XCTAssertNotEqual(reluPolicy, leakyPolicy, "same weights: leaky_relu must change the forward pass")
 
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: leakyArch)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: leakyArch, initialization: .seeded(initSeed: 1))
         let timing = try await trainer.trainStep(batchSize: 8)
         XCTAssertTrue(timing.policyLoss.isFinite, "leaky_relu policy loss must be finite")
         XCTAssertTrue(timing.valueLoss.isFinite, "leaky_relu value loss must be finite")

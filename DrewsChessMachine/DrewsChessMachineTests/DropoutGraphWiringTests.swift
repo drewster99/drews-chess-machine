@@ -44,7 +44,7 @@ final class DropoutGraphWiringTests: XCTestCase {
         }
         let arch = archWithDropout()
 
-        let training = try ChessNetwork(arch: arch, bnMode: .training)
+        let training = try ChessNetwork(arch: arch, bnMode: .training, initialization: .seeded(initSeed: 1))
         XCTAssertNotNil(training.dropoutRateFeedPlaceholder,
                         "training graph must own a dropout rate placeholder")
         XCTAssertNotNil(training.dropoutRngStateVariable,
@@ -56,7 +56,7 @@ final class DropoutGraphWiringTests: XCTestCase {
         XCTAssertNotNil(training.dropoutRateLiveTensorData,
                         "training graph must expose the live-rate binding")
 
-        let inference = try ChessNetwork(arch: arch, bnMode: .inference)
+        let inference = try ChessNetwork(arch: arch, bnMode: .inference, initialization: .seeded(initSeed: 2))
         XCTAssertNil(inference.dropoutRateFeedPlaceholder,
                      "inference graph must NOT contain a dropout rate placeholder")
         XCTAssertNil(inference.dropoutRngStateVariable,
@@ -90,7 +90,7 @@ final class DropoutGraphWiringTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: archWithDropout())
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: archWithDropout(), initialization: .seeded(initSeed: 1))
         let live = try XCTUnwrap(trainer.network.dropoutRateLiveNDArray)
         let zero = try XCTUnwrap(trainer.network.dropoutRateZeroTensorData).mpsndarray()
 
@@ -116,13 +116,13 @@ final class DropoutGraphWiringTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: archWithDropout())
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: archWithDropout(), initialization: .seeded(initSeed: 1))
         trainer.dropoutRate = 0.3
         // No wait needed: the setter stores `_dropoutRate` synchronously, and
         // `resetNetwork()` is itself a FIFO barrier on the same queue whose last
         // act is re-writing the NEW network's buffer from that stored value.
 
-        try await trainer.resetNetwork()
+        try await trainer.resetNetwork(initialization: .seeded(initSeed: 1))
 
         XCTAssertEqual(trainer.dropoutRate, 0.3, accuracy: 1e-6,
                        "the reported rate must survive a reset")
@@ -152,7 +152,7 @@ final class DropoutGraphWiringTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: archWithDropout())
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: archWithDropout(), initialization: .seeded(initSeed: 1))
         XCTAssertNil(trainer.lastStepBoundLiveDropoutRate,
                      "nothing should be recorded before the first step")
 
@@ -184,7 +184,7 @@ final class DropoutGraphWiringTests: XCTestCase {
             throw XCTSkip("Metal not available")
         }
         let arch = archWithDropout()
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: arch)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: arch, initialization: .seeded(initSeed: 1))
         // Fully serialize the baseline so the result buffer has settled before
         // the host reads it (the default path commits without waiting).
         trainer.network.blockingValueBaseline = true
