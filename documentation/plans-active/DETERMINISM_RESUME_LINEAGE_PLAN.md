@@ -1163,6 +1163,46 @@ Tests: C5 list (Exp 6 regression first — must fail before the fix, pass after,
 unmodified). Validation: `[RESUME-DIFF]` on a legacy fixture session; no
 `UserDefaults` writes for defaulted keys.
 
+*As built (2026-10-02, `536181f9`):*
+- `TrainingParameterAbsence<Value>` (macro support module) with four cases —
+  `.preFeature(v)`, `.declaredRangeMaximum` (pre-feature "unbounded", e.g.
+  `max_plies_from_any_one_game`), `.currentSetting` (operational knobs) and
+  `.refuseExact`. The plan named two; the extra two keep "unbounded" tied to the
+  declared range and make the live-setting choice for operational knobs explicit
+  rather than a fallback. `absentValue:` is an optional macro argument only so the
+  macro still expands without it; the `TrainingParameterKey` protocol requires
+  `absentValue`, so enforcement is at compile time instead of an `allKeys` test.
+  All 82 keys declare one. The UInt64 kind for P3's seed is left to P3 (no seed
+  parameter exists yet).
+- `TrainingParameterResolution.resolve(_:saved:current:)` is the one resolver;
+  `SessionParameterResume` applies it in the GUI resume block (one call per key,
+  replacing the hand branches), logs `[RESUME-DIFF]`, and collects not-exact keys
+  for a `[RESUME] NOT EXACT: parameters …` line. Pre-feature values are held for
+  the run (`TrainingParameters.holdForThisRun`), never persisted. The trainer is
+  then configured through `TrainerHyperparameters(p.snapshot()).apply(to:)`, the
+  fresh-start path. Composite sets keep their set semantics (policy smoothing
+  mode/δ/cap; arena criterion + SPRT; the load-time review of unusable values) but
+  resolve each key through the same resolver.
+- **Deviation — CLI:** corpus replay and train-vs-UCI checkpoints carry only the
+  trainer schedule (warmup, LR/momentum cycle) until P6 adds the full
+  `training_parameters` snapshot (C1 #22), so there is nothing else for the CLI to
+  resolve yet; their existing schedule-difference lines stand. The runners adopt
+  the resolver with P6.
+- Behavior changes, legacy sessions only: a session without
+  `arena_promotion_criterion` resumes under score threshold (the log already said
+  "score threshold preserved" while keeping the live criterion);
+  `max_draw_percent_per_batch` resolves to 100 (no cap) and
+  `replay_buffer_stratify_by_material` to off, their pre-feature behavior.
+- Tests: `SessionParameterResumeTests` (Exp 6 case incl. the saved setting left
+  untouched; session value restored; operational key keeps the live setting;
+  training key reported NOT EXACT; range-maximum case; every declared pre-feature
+  value inside its declared range; session-file resolvers agree with the
+  declarations) — new API, so red only by not compiling before the change; two new
+  macro expansion tests (red before, green after). Four older macro expansion tests
+  (`test_boolParameter`, `test_intParameter_withRange`, both acronym tests) already
+  fail on the base commit on an indentation difference in the expected text; left
+  untouched.
+
 **P3 — Wire streams.** Files: `Training/ReplayBuffer.swift` (sampler RNG under
 existing lock; all 9 sites), `Network/MoveSampler.swift` (inout rng),
 `Training/ActiveGame.swift`, `Training/BatchedSelfPlayDriver.swift`,

@@ -289,4 +289,110 @@ final class TrainingParameterMacroTests: XCTestCase {
             macros: macros
         )
     }
+
+    /// `absentValue:` declares what a resume applies when a checkpoint carries
+    /// no value for the key; the macro surfaces it as `absentValue`, typed by
+    /// the parameter's value type.
+    func test_absentValue_isEmittedWhenDeclared() {
+        assertMacroExpansion(
+            """
+            @TrainingParameter(
+                name: "Dropout Rate",
+                description: "Channel dropout.",
+                default: 0.0,
+                range: 0.0...0.95,
+                category: "Regularization",
+                absentValue: .preFeature(0.0)
+            )
+            public enum DropoutRate: TrainingParameterKey {}
+            """,
+            expandedSource: """
+            public enum DropoutRate: TrainingParameterKey {
+
+                public static let id: String = "dropout_rate"
+
+                public static let definition: TrainingParameterDefinition = TrainingParameterDefinition(
+                    id: id,
+                    name: "Dropout Rate",
+                    description: "Channel dropout.",
+                    type: .double,
+                    defaultValue: .double(0.0),
+                    doubleRange: NumericRange(min: 0.0, max: 0.95),
+                    category: "Regularization",
+                    liveTunable: false
+                )
+
+                public static func encode(_ value: Double) -> ParameterValue {
+                    .double(value)
+                }
+
+                public static func decode(_ value: ParameterValue) throws -> Double {
+                    switch value {
+                    case .double(let x):
+                        return x
+                    case .int(let x):
+                        return Double(x)
+                    default:
+                        throw TrainingConfigError.wrongType(id: id)
+                    }
+                }
+
+                public static let absentValue: TrainingParameterAbsence<Double> = .preFeature(0.0)
+            }
+            """,
+            macros: macros
+        )
+    }
+
+    func test_absentValue_currentSetting() {
+        assertMacroExpansion(
+            """
+            @TrainingParameter(
+                name: "Arena Auto Interval",
+                description: "Seconds between automatic arenas.",
+                default: 900.0,
+                range: 60.0...86400.0,
+                category: "Arena",
+                liveTunable: true,
+                absentValue: .currentSetting
+            )
+            public enum ArenaAutoIntervalSec: TrainingParameterKey {}
+            """,
+            expandedSource: """
+            public enum ArenaAutoIntervalSec: TrainingParameterKey {
+
+                public static let id: String = "arena_auto_interval_sec"
+
+                public static let definition: TrainingParameterDefinition = TrainingParameterDefinition(
+                    id: id,
+                    name: "Arena Auto Interval",
+                    description: "Seconds between automatic arenas.",
+                    type: .double,
+                    defaultValue: .double(900.0),
+                    doubleRange: NumericRange(min: 60.0, max: 86400.0),
+                    category: "Arena",
+                    liveTunable: true
+                )
+
+                public static func encode(_ value: Double) -> ParameterValue {
+                    .double(value)
+                }
+
+                public static func decode(_ value: ParameterValue) throws -> Double {
+                    switch value {
+                    case .double(let x):
+                        return x
+                    case .int(let x):
+                        return Double(x)
+                    default:
+                        throw TrainingConfigError.wrongType(id: id)
+                    }
+                }
+
+                public static let absentValue: TrainingParameterAbsence<Double> = .currentSetting
+            }
+            """,
+            macros: macros
+        )
+    }
 }

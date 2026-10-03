@@ -160,11 +160,16 @@ public enum TrainingConfigError: Error, CustomStringConvertible, LocalizedError 
 // MARK: - TrainingParameterKey
 
 public protocol TrainingParameterKey: Sendable {
-    associatedtype Value: Sendable
+    associatedtype Value: Sendable & Equatable
     static var id: String { get }
     static var definition: TrainingParameterDefinition { get }
     static func encode(_ value: Value) -> ParameterValue
     static func decode(_ value: ParameterValue) throws -> Value
+    /// What a session resume applies when the saved checkpoint carries no
+    /// value for this key — declared per key through `@TrainingParameter`'s
+    /// `absentValue:` and applied by `TrainingParameterResolution` (the one
+    /// resolver every resume path uses).
+    static var absentValue: TrainingParameterAbsence<Value> { get }
 }
 
 // MARK: - Declared-range validation (the one validator)
@@ -277,7 +282,8 @@ public extension TrainingParameterKey where Value == Int {
     default: 0.0,
     range: 0.0...0.1,
     category: "Optimizer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum EntropyBonus: TrainingParameterKey {}
 
@@ -287,7 +293,8 @@ public enum EntropyBonus: TrainingParameterKey {}
     default: 1.0,
     range: 0.0...100.0,
     category: "Optimizer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .preFeature(0.0)
 )
 public enum IllegalMassWeight: TrainingParameterKey {}
 
@@ -297,7 +304,8 @@ public enum IllegalMassWeight: TrainingParameterKey {}
     default: 0.1,
     range: 0.0...0.9,
     category: "Optimizer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .preFeature(0.0)
 )
 public enum PolicyLabelSmoothingEpsilon: TrainingParameterKey {}
 
@@ -316,7 +324,8 @@ public enum PolicyLabelSmoothingEpsilon: TrainingParameterKey {}
     range: 0...1,
     category: "Optimizer",
     id: "policy_label_smoothing_mode",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .preFeature(0)
 )
 public enum PolicyLabelSmoothingModeParameter: TrainingParameterKey {}
 
@@ -326,7 +335,8 @@ public enum PolicyLabelSmoothingModeParameter: TrainingParameterKey {}
     default: 0.0033,
     range: 0.0...0.05,
     category: "Optimizer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum PolicyLabelSmoothingPerMove: TrainingParameterKey {}
 
@@ -336,7 +346,8 @@ public enum PolicyLabelSmoothingPerMove: TrainingParameterKey {}
     default: 0.5,
     range: 0.0...0.9,
     category: "Optimizer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum PolicyLabelSmoothingPerMoveCap: TrainingParameterKey {}
 
@@ -346,7 +357,8 @@ public enum PolicyLabelSmoothingPerMoveCap: TrainingParameterKey {}
     default: 0.013,
     range: 0.0...0.5,
     category: "Optimizer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .preFeature(0.0)
 )
 public enum ValueLabelSmoothingEpsilon: TrainingParameterKey {}
 
@@ -356,7 +368,8 @@ public enum ValueLabelSmoothingEpsilon: TrainingParameterKey {}
     default: 15.0,
     range: 0.1...1000.0,
     category: "Optimizer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum GradClipMaxNorm: TrainingParameterKey {}
 
@@ -366,7 +379,8 @@ public enum GradClipMaxNorm: TrainingParameterKey {}
     default: 0.0003,
     range: 0.0...0.1,
     category: "Optimizer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum WeightDecay: TrainingParameterKey {}
 
@@ -376,7 +390,8 @@ public enum WeightDecay: TrainingParameterKey {}
     default: 0.0,
     range: 0.0...0.95,
     category: "Optimizer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .preFeature(0.0)
 )
 public enum DropoutRate: TrainingParameterKey {}
 
@@ -387,7 +402,8 @@ public enum DropoutRate: TrainingParameterKey {}
     range: 0.0...20.0,
     category: "Optimizer",
     id: "policy_loss_weight",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum PolicyLossWeight: TrainingParameterKey {}
 
@@ -398,7 +414,8 @@ public enum PolicyLossWeight: TrainingParameterKey {}
     range: 0.0...20.0,
     category: "Optimizer",
     id: "value_loss_weight",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum ValueLossWeight: TrainingParameterKey {}
 
@@ -408,7 +425,8 @@ public enum ValueLossWeight: TrainingParameterKey {}
     default: 1.0e-3,
     range: 1.0e-7...1.0,
     category: "Optimizer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum LearningRate: TrainingParameterKey {}
 
@@ -418,7 +436,8 @@ public enum LearningRate: TrainingParameterKey {}
     default: 0.9,
     range: 0.0...0.99,
     category: "Optimizer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .preFeature(0.0)
 )
 public enum MomentumCoeff: TrainingParameterKey {}
 
@@ -427,7 +446,8 @@ public enum MomentumCoeff: TrainingParameterKey {}
     description: "When true, scales the effective learning rate by sqrt(batch / referenceBatch). Standard practice when scaling SGD-with-momentum by batch size.",
     default: true,
     category: "Optimizer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum SqrtBatchScalingLR: TrainingParameterKey {}
 
@@ -436,7 +456,8 @@ public enum SqrtBatchScalingLR: TrainingParameterKey {}
     description: "When true, the policy gradient runs two cross-entropies — positive-advantage samples teach via standard smoothed CE on the played move, negative-advantage samples teach via a complementary smoothed CE that pushes mass off the played move toward the OTHER legal moves. Each contribution is bounded below by zero so the total policy loss stays bounded below by zero on both signs. When false, only positive-advantage samples teach the policy (legacy clamp-on regime) and negative samples contribute zero gradient. Note: complement-target entropy is structurally higher than positive-target entropy (the (1−ε) main mass spreads over (|legal|−1) cells vs 1 cell), so the per-position negative-branch loss magnitudes will look larger in [STATS] — that's the target geometry, not a divergence signal.",
     default: true,
     category: "Optimizer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .preFeature(false)
 )
 public enum SignedAdvantageComplementCE: TrainingParameterKey {}
 
@@ -446,7 +467,8 @@ public enum SignedAdvantageComplementCE: TrainingParameterKey {}
     default: 1000,
     range: 0...100000,
     category: "Optimizer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum LRWarmupSteps: TrainingParameterKey {}
 
@@ -456,7 +478,8 @@ public enum LRWarmupSteps: TrainingParameterKey {}
     default: 0.0,
     range: 0.0...1.0,
     category: "Optimizer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum DrawPenalty: TrainingParameterKey {}
 
@@ -466,7 +489,8 @@ public enum DrawPenalty: TrainingParameterKey {}
     default: 0.2,
     range: 0.01...5.0,
     category: "Self-Play Sampling",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum SelfPlayStartTau: TrainingParameterKey {}
 
@@ -476,7 +500,8 @@ public enum SelfPlayStartTau: TrainingParameterKey {}
     default: 0.02,
     range: 0.01...5.0,
     category: "Self-Play Sampling",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum SelfPlayTargetTau: TrainingParameterKey {}
 
@@ -486,7 +511,8 @@ public enum SelfPlayTargetTau: TrainingParameterKey {}
     default: 0.02,
     range: 0.0...1.0,
     category: "Self-Play Sampling",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum SelfPlayTauDecayPerPly: TrainingParameterKey {}
 
@@ -496,7 +522,8 @@ public enum SelfPlayTauDecayPerPly: TrainingParameterKey {}
     default: 1.0,
     range: 0.0...1.0,
     category: "Self-Play Sampling",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum SelfPlayDrawKeepFraction: TrainingParameterKey {}
 
@@ -506,7 +533,8 @@ public enum SelfPlayDrawKeepFraction: TrainingParameterKey {}
     default: 450,
     range: 25...500,
     category: "Self-Play Sampling",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum SelfPlayMaxPliesPerGame: TrainingParameterKey {}
 
@@ -516,7 +544,8 @@ public enum SelfPlayMaxPliesPerGame: TrainingParameterKey {}
     default: 0.985,
     range: 0.5...1.0,
     category: "Self-Play Sampling",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum DrawWatchPDrawThreshold: TrainingParameterKey {}
 
@@ -525,7 +554,8 @@ public enum DrawWatchPDrawThreshold: TrainingParameterKey {}
     description: "When ON: self-play games whose N-ply pDraw streak completes are dropped on the spot — same drop path as ply-cap-terminated games (no flush to the replay buffer, counted as 'dropped' in the [STATS] outcomes). Saves the GPU/throughput cost of playing out games the network has already decided are drawn. When OFF (default): the draw-watch is purely observational; games play to natural termination. Toggling this OFF mid-session lets the calibration metric on the Draw-watch chart tile resume showing flag→draw precision (a meaningless metric when termination is engaged because every flagged game is forced to a draw).",
     default: false,
     category: "Self-Play Sampling",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum DrawWatchTerminateGames: TrainingParameterKey {}
 
@@ -535,7 +565,8 @@ public enum DrawWatchTerminateGames: TrainingParameterKey {}
     default: 8,
     range: 2...32,
     category: "Self-Play Sampling",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum DrawWatchStreakLength: TrainingParameterKey {}
 
@@ -545,7 +576,8 @@ public enum DrawWatchStreakLength: TrainingParameterKey {}
     default: 0.2,
     range: 0.01...5.0,
     category: "Arena",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum ArenaStartTau: TrainingParameterKey {}
 
@@ -555,7 +587,8 @@ public enum ArenaStartTau: TrainingParameterKey {}
     default: 0.02,
     range: 0.01...5.0,
     category: "Arena",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum ArenaTargetTau: TrainingParameterKey {}
 
@@ -565,7 +598,8 @@ public enum ArenaTargetTau: TrainingParameterKey {}
     default: 0.02,
     range: 0.0...1.0,
     category: "Arena",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum ArenaTauDecayPerPly: TrainingParameterKey {}
 
@@ -575,7 +609,8 @@ public enum ArenaTauDecayPerPly: TrainingParameterKey {}
     default: 0.48,
     range: 0.01...100.0,
     category: "Replay Buffer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum ReplayRatioTarget: TrainingParameterKey {}
 
@@ -584,7 +619,8 @@ public enum ReplayRatioTarget: TrainingParameterKey {}
     description: "Whether ReplayRatioController auto-tunes the trainer step delay to track Replay Ratio Target.",
     default: false,
     category: "Replay Buffer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum ReplayRatioAutoAdjust: TrainingParameterKey {}
 
@@ -593,7 +629,8 @@ public enum ReplayRatioAutoAdjust: TrainingParameterKey {}
     description: "Record completed (post-draw-filter) self-play games to a reusable game corpus under Corpora/. Read once at run start (not live-tunable).",
     default: false,
     category: "Self-Play Sampling",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .currentSetting
 )
 public enum RecordSelfPlayGames: TrainingParameterKey {}
 
@@ -603,7 +640,8 @@ public enum RecordSelfPlayGames: TrainingParameterKey {}
     default: 180,
     range: 1...8192,
     category: "Training Window",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum SelfPlayConcurrency: TrainingParameterKey {}
 
@@ -613,7 +651,8 @@ public enum SelfPlayConcurrency: TrainingParameterKey {}
     default: 0,
     range: 0...10000,
     category: "Training Window",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum TrainingStepDelayMs: TrainingParameterKey {}
 
@@ -623,7 +662,8 @@ public enum TrainingStepDelayMs: TrainingParameterKey {}
     default: 0,
     range: 0...10000,
     category: "Training Window",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum SelfPlayDelayMs: TrainingParameterKey {}
 
@@ -633,7 +673,8 @@ public enum SelfPlayDelayMs: TrainingParameterKey {}
     default: 4096,
     range: 32...65536,
     category: "Training Window",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .refuseExact
 )
 public enum TrainingBatchSize: TrainingParameterKey {}
 
@@ -643,7 +684,8 @@ public enum TrainingBatchSize: TrainingParameterKey {}
     default: 1000000,
     range: 1000...10000000,
     category: "Replay Buffer",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .refuseExact
 )
 public enum ReplayBufferCapacity: TrainingParameterKey {}
 
@@ -653,7 +695,8 @@ public enum ReplayBufferCapacity: TrainingParameterKey {}
     default: 500000,
     range: 0...10000000,
     category: "Replay Buffer",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .currentSetting
 )
 public enum ReplayBufferMinPositionsBeforeTraining: TrainingParameterKey {}
 
@@ -663,7 +706,8 @@ public enum ReplayBufferMinPositionsBeforeTraining: TrainingParameterKey {}
     default: 10,
     range: 1...400,
     category: "Replay Buffer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .declaredRangeMaximum
 )
 public enum MaxPliesFromAnyOneGame: TrainingParameterKey {}
 
@@ -673,7 +717,8 @@ public enum MaxPliesFromAnyOneGame: TrainingParameterKey {}
     default: 999,
     range: 0...10000,
     category: "Replay Buffer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .refuseExact
 )
 public enum TargetSampledGameLengthPlies: TrainingParameterKey {}
 
@@ -683,7 +728,8 @@ public enum TargetSampledGameLengthPlies: TrainingParameterKey {}
     default: 100,
     range: 0...100,
     category: "Replay Buffer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .preFeature(100)
 )
 public enum MaxDrawPercentPerBatch: TrainingParameterKey {}
 
@@ -692,7 +738,8 @@ public enum MaxDrawPercentPerBatch: TrainingParameterKey {}
     description: "Stratify training minibatches by game phase. When ON, each batch is drawn with roughly equal weight from four game-phase buckets defined by NON-PAWN piece count: 0–4 (deep endgame), 5–8 (late endgame), 9–14 (middlegame), 15–22 (full piece set). This compensates for the replay buffer's natural skew toward late-endgame positions, where the trainer otherwise sees ~2× as many endgame as middlegame samples. The per-batch draw-percent cap and per-game K cap do NOT apply while this is on (V1 limitation) — the UI grays those controls out with an inline banner while stratification is on. Bucket distribution converges to balanced as the buffer fills; the popover's per-batch mini-chart shows the realized mix vs the buffer's natural mix.",
     default: false,
     category: "Replay Buffer",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .preFeature(false)
 )
 public enum ReplayBufferStratifyByMaterial: TrainingParameterKey {}
 
@@ -702,7 +749,8 @@ public enum ReplayBufferStratifyByMaterial: TrainingParameterKey {}
     default: 0.53,
     range: 0.5...1.0,
     category: "Arena",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .currentSetting
 )
 public enum ArenaPromoteThreshold: TrainingParameterKey {}
 
@@ -712,7 +760,8 @@ public enum ArenaPromoteThreshold: TrainingParameterKey {}
     default: 400,
     range: 4...10000,
     category: "Arena",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .currentSetting
 )
 public enum ArenaGamesPerTournament: TrainingParameterKey {}
 
@@ -722,7 +771,8 @@ public enum ArenaGamesPerTournament: TrainingParameterKey {}
     default: 900.0,
     range: 60.0...86400.0,
     category: "Arena",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum ArenaAutoIntervalSec: TrainingParameterKey {}
 
@@ -732,7 +782,8 @@ public enum ArenaAutoIntervalSec: TrainingParameterKey {}
     default: 15.0,
     range: 1.0...3600.0,
     category: "Collapse Detection",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .currentSetting
 )
 public enum CandidateProbeIntervalSec: TrainingParameterKey {}
 
@@ -742,7 +793,8 @@ public enum CandidateProbeIntervalSec: TrainingParameterKey {}
     default: 0.99,
     range: 0.5...1.0,
     category: "Collapse Detection",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .currentSetting
 )
 public enum LegalMassCollapseThreshold: TrainingParameterKey {}
 
@@ -752,7 +804,8 @@ public enum LegalMassCollapseThreshold: TrainingParameterKey {}
     default: 600.0,
     range: 0.0...86400.0,
     category: "Collapse Detection",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .currentSetting
 )
 public enum LegalMassCollapseGraceSeconds: TrainingParameterKey {}
 
@@ -762,7 +815,8 @@ public enum LegalMassCollapseGraceSeconds: TrainingParameterKey {}
     default: 8,
     range: 1...1000,
     category: "Collapse Detection",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .currentSetting
 )
 public enum LegalMassCollapseNoImprovementProbes: TrainingParameterKey {}
 
@@ -772,7 +826,8 @@ public enum LegalMassCollapseNoImprovementProbes: TrainingParameterKey {}
     default: 400,
     range: 1...4096,
     category: "Arena",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum ArenaConcurrency: TrainingParameterKey {}
 
@@ -795,7 +850,8 @@ public enum ArenaConcurrency: TrainingParameterKey {}
     range: 0...1,
     category: "Arena",
     id: "arena_promotion_criterion",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .preFeature(0)
 )
 public enum ArenaPromotionCriterionParameter: TrainingParameterKey {}
 
@@ -805,7 +861,8 @@ public enum ArenaPromotionCriterionParameter: TrainingParameterKey {}
     default: 0.0,
     range: -50.0...50.0,
     category: "Arena",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .currentSetting
 )
 public enum ArenaSPRTElo0: TrainingParameterKey {}
 
@@ -815,7 +872,8 @@ public enum ArenaSPRTElo0: TrainingParameterKey {}
     default: 10.0,
     range: -50.0...50.0,
     category: "Arena",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .currentSetting
 )
 public enum ArenaSPRTElo1: TrainingParameterKey {}
 
@@ -825,7 +883,8 @@ public enum ArenaSPRTElo1: TrainingParameterKey {}
     default: 0.05,
     range: 0.001...0.5,
     category: "Arena",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .currentSetting
 )
 public enum ArenaSPRTAlpha: TrainingParameterKey {}
 
@@ -835,7 +894,8 @@ public enum ArenaSPRTAlpha: TrainingParameterKey {}
     default: 0.05,
     range: 0.001...0.5,
     category: "Arena",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .currentSetting
 )
 public enum ArenaSPRTBeta: TrainingParameterKey {}
 
@@ -845,7 +905,8 @@ public enum ArenaSPRTBeta: TrainingParameterKey {}
     default: 32,
     range: 2...10000,
     category: "Arena",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .currentSetting
 )
 public enum ArenaSPRTMinGames: TrainingParameterKey {}
 
@@ -855,7 +916,8 @@ public enum ArenaSPRTMinGames: TrainingParameterKey {}
     default: 20000,
     range: 0...1000000,
     category: "Arena",
-    liveTunable: false
+    liveTunable: false,
+    absentValue: .currentSetting
 )
 public enum ArenaSPRTMaxGames: TrainingParameterKey {}
 
@@ -866,7 +928,8 @@ public enum ArenaSPRTMaxGames: TrainingParameterKey {}
     default: 10,
     range: 0...10000,
     category: "Observability",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum BatchStatsInterval: TrainingParameterKey {}
 
@@ -876,7 +939,8 @@ public enum BatchStatsInterval: TrainingParameterKey {}
     default: 100,
     range: 0...10000,
     category: "Observability",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum KLProbeInterval: TrainingParameterKey {}
 
@@ -899,7 +963,8 @@ public enum KLProbeInterval: TrainingParameterKey {}
     default: true,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_enabled",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .preFeature(false)
 )
 public enum LRCycleEnabled: TrainingParameterKey {}
 
@@ -910,7 +975,8 @@ public enum LRCycleEnabled: TrainingParameterKey {}
     range: 1...10000000,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_period_steps",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum LRCyclePeriodSteps: TrainingParameterKey {}
 
@@ -921,7 +987,8 @@ public enum LRCyclePeriodSteps: TrainingParameterKey {}
     range: 0...1000000,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_count",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum LRCycleCount: TrainingParameterKey {}
 
@@ -932,7 +999,8 @@ public enum LRCycleCount: TrainingParameterKey {}
     range: 1.0e-7...1.0,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_min",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum LRCycleMin: TrainingParameterKey {}
 
@@ -943,7 +1011,8 @@ public enum LRCycleMin: TrainingParameterKey {}
     range: 1.0e-7...1.0,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_max",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum LRCycleMax: TrainingParameterKey {}
 
@@ -953,7 +1022,8 @@ public enum LRCycleMax: TrainingParameterKey {}
     default: true,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_invert",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum LRCycleInvert: TrainingParameterKey {}
 
@@ -963,7 +1033,8 @@ public enum LRCycleInvert: TrainingParameterKey {}
     default: true,
     category: "LR/Momentum Cycling",
     id: "momentum_cycle_enabled",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .preFeature(false)
 )
 public enum MomentumCycleEnabled: TrainingParameterKey {}
 
@@ -974,7 +1045,8 @@ public enum MomentumCycleEnabled: TrainingParameterKey {}
     range: 1...10000000,
     category: "LR/Momentum Cycling",
     id: "momentum_cycle_period_steps",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum MomentumCyclePeriodSteps: TrainingParameterKey {}
 
@@ -985,7 +1057,8 @@ public enum MomentumCyclePeriodSteps: TrainingParameterKey {}
     range: 0...1000000,
     category: "LR/Momentum Cycling",
     id: "momentum_cycle_count",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum MomentumCycleCount: TrainingParameterKey {}
 
@@ -996,7 +1069,8 @@ public enum MomentumCycleCount: TrainingParameterKey {}
     range: 0.0...0.99,
     category: "LR/Momentum Cycling",
     id: "momentum_cycle_min",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum MomentumCycleMin: TrainingParameterKey {}
 
@@ -1007,7 +1081,8 @@ public enum MomentumCycleMin: TrainingParameterKey {}
     range: 0.0...0.99,
     category: "LR/Momentum Cycling",
     id: "momentum_cycle_max",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum MomentumCycleMax: TrainingParameterKey {}
 
@@ -1017,7 +1092,8 @@ public enum MomentumCycleMax: TrainingParameterKey {}
     default: false,
     category: "LR/Momentum Cycling",
     id: "momentum_cycle_invert",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum MomentumCycleInvert: TrainingParameterKey {}
 
@@ -1028,7 +1104,8 @@ public enum MomentumCycleInvert: TrainingParameterKey {}
     range: 1.0e-7...1.0,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_peak_end",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum LRCyclePeakEnd: TrainingParameterKey {}
 
@@ -1039,7 +1116,8 @@ public enum LRCyclePeakEnd: TrainingParameterKey {}
     range: 1.0e-7...1.0,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_trough_end",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum LRCycleTroughEnd: TrainingParameterKey {}
 
@@ -1050,7 +1128,8 @@ public enum LRCycleTroughEnd: TrainingParameterKey {}
     range: 0...1000000000,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_decay_horizon_steps",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .preFeature(0)
 )
 public enum LRCycleDecayHorizonSteps: TrainingParameterKey {}
 
@@ -1060,7 +1139,8 @@ public enum LRCycleDecayHorizonSteps: TrainingParameterKey {}
     default: true,
     category: "LR/Momentum Cycling",
     id: "momentum_follows_lr_cycle",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .preFeature(false)
 )
 public enum MomentumFollowsLRCycle: TrainingParameterKey {}
 
@@ -1071,7 +1151,8 @@ public enum MomentumFollowsLRCycle: TrainingParameterKey {}
     range: 0.0...0.99,
     category: "LR/Momentum Cycling",
     id: "momentum_follow_start_low",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum MomentumFollowStartLow: TrainingParameterKey {}
 
@@ -1082,7 +1163,8 @@ public enum MomentumFollowStartLow: TrainingParameterKey {}
     range: 0.0...0.99,
     category: "LR/Momentum Cycling",
     id: "momentum_follow_start_high",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum MomentumFollowStartHigh: TrainingParameterKey {}
 
@@ -1093,7 +1175,8 @@ public enum MomentumFollowStartHigh: TrainingParameterKey {}
     range: 0.0...0.99,
     category: "LR/Momentum Cycling",
     id: "momentum_follow_end_low",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum MomentumFollowEndLow: TrainingParameterKey {}
 
@@ -1104,7 +1187,8 @@ public enum MomentumFollowEndLow: TrainingParameterKey {}
     range: 0.0...0.99,
     category: "LR/Momentum Cycling",
     id: "momentum_follow_end_high",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum MomentumFollowEndHigh: TrainingParameterKey {}
 
@@ -1116,7 +1200,8 @@ public enum MomentumFollowEndHigh: TrainingParameterKey {}
     default: 21600.0,
     range: 60.0...604800.0,
     category: "Sessions",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum PeriodicAutosaveIntervalSec: TrainingParameterKey {}
 
@@ -1126,7 +1211,8 @@ public enum PeriodicAutosaveIntervalSec: TrainingParameterKey {}
     default: 3,
     range: 0...10000,
     category: "Sessions",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum MaxPeriodicAutosavesKept: TrainingParameterKey {}
 
@@ -1136,7 +1222,8 @@ public enum MaxPeriodicAutosavesKept: TrainingParameterKey {}
     default: false,
     category: "Sessions",
     id: "automatic_save_pruning_enabled",
-    liveTunable: true
+    liveTunable: true,
+    absentValue: .currentSetting
 )
 public enum AutomaticSavePruningEnabled: TrainingParameterKey {}
 
@@ -1997,6 +2084,30 @@ public final class TrainingParameters {
         into keyPath: ReferenceWritableKeyPath<TrainingParameters, Double>
     ) where K.Value == Double {
         restoreFromSession(K.self, Self.doubleFromSavedFloat(savedFloat), into: keyPath)
+    }
+
+    /// Session resume's write for a value that belongs to the resumed run but
+    /// not to the user's settings: a parameter's declared pre-feature value,
+    /// applied because the session predates the parameter. Validated like
+    /// every assignment, but never written to `UserDefaults` — the session
+    /// factually trained without the feature, while the user's saved setting
+    /// (say, dropout 0.7) still governs the next fresh run. A later edit of
+    /// the field persists normally; a later session save carries the held
+    /// value forward.
+    func holdForThisRun(_ assign: () -> Void) {
+        let previous = Self.suppressPersistence
+        Self.suppressPersistence = true
+        defer { Self.suppressPersistence = previous }
+        assign()
+    }
+
+    /// `holdForThisRun(_:)` for one key path.
+    func holdForThisRun<K: TrainingParameterKey>(
+        _ key: K.Type,
+        _ value: K.Value,
+        into keyPath: ReferenceWritableKeyPath<TrainingParameters, K.Value>
+    ) {
+        holdForThisRun { self[keyPath: keyPath] = value }
     }
 
     /// The `Double` whose shortest decimal text is the same as `saved`'s: the
