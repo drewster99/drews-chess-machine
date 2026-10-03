@@ -1306,6 +1306,24 @@ Validation: build succeeds; `grep` finds no remaining `bf16CastInForward` /
 `castWeightForForward` / `--bf16-cast-in-forward`; passing the old flag is now an
 unknown-argument error; issue #9 closed with the commit.
 
+*As built (2026-10-02, `7ca42dc0`):* done as specified. Every variable is now
+created in the compute dtype; batch norm widens γ/β/running stats only where it
+normalizes in another dtype (the policy pre-block in the fp32 head tail), which is
+what the old cast closure did there. Byte-identity is proven by a new
+`StandardPathForwardPinTests`: forward-pass output fingerprints (FNV-1a over
+every policy logit and the value scalar, deterministic weights from the weight
+plan) for bf16 with the mixed and fp32-from-pre-BN tails, bf16 `fc_bottleneck`,
+and fp32 were recorded on the pre-removal build, repeated exactly on a second
+run there, and match exactly after the removal. Related classes (head numerics,
+fp16 path, momentum optimizer, safetensors round trips, trainer hyperparameters,
+exact resume, policy tail, policy head correctness, layer health, argument
+parsing) pass: 95 tests, 0 failures. `grep` finds no Swift reference left; the
+old flag exits with "unrecognized argument(s)". The approved test deletions were
+made (`HeadNumericsTailTests`' config-D case, now
+`testHeadOutputsAreFP32UnderTrainingMode`; the `MacOS27NaNIsolationTests`
+config-D sweeps, whose production-config sweep also lost its config-D switch).
+Issue #9 is still open — closing it goes with pushing this commit.
+
 **P14 — Autosave retention pool** (ADDITION 2026-10-01; D-8 Retention sub-bullet, §D8
 "Autosave retention"). **IMPLEMENTED 2026-10-01** (uncommitted until the owner commits;
 build, tests and the validation run below are the owner's). Independent of every other
