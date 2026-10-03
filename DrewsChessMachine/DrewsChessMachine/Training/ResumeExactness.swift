@@ -48,6 +48,11 @@ enum ResumeGap: String, CaseIterable, Sendable {
     case build
     /// A different OS version than the one that wrote the checkpoint.
     case os
+    /// A different Mac than the one that wrote the checkpoint: hardware
+    /// model, chip, virtual-machine flag or GPU name. (The GPU name does not
+    /// carry the GPU core count, so two configurations of one chip compare
+    /// equal.)
+    case device
     /// The policy-head tail precision differs from the checkpoint's, or the
     /// checkpoint predates recording it.
     case policyTail = "policy_tail"
@@ -78,12 +83,18 @@ enum ResumeGap: String, CaseIterable, Sendable {
     }
 
     /// How the resuming process compares with the one that wrote `record`
-    /// (plan C1 #33): `gaps` holds `build` / `os` when the build (git hash,
-    /// dirty flag, build number) or OS version differs **and** the behavior
-    /// fingerprints do not match — a different fingerprint, a saved file
-    /// without one, or one of another recipe (`BehaviorFingerprint`). A
-    /// change whose fingerprint matches computes what the saved run computed
-    /// and is not a gap. `logLines` reports every change either way.
+    /// (plan C1 #33): `gaps` holds `build` / `os` / `device` when the build
+    /// (git hash, dirty flag, build number), the OS version or the Mac
+    /// (hardware model, chip, virtual-machine flag, GPU name) differs **and**
+    /// the behavior fingerprints do not match — a different fingerprint, a
+    /// saved file without one, or one of another recipe
+    /// (`BehaviorFingerprint`). A change whose fingerprint matches computes
+    /// what the saved run computed and is not a gap. `logLines` reports every
+    /// change either way.
+    ///
+    /// A device field the system did not report is recorded as null, and is
+    /// compared as a value: null against null is no change, null against a
+    /// value is one.
     static func environmentGaps(writtenBy record: LineageRecord,
                                 runningBuild: LineageRecord.Build,
                                 runningDevice: LineageRecord.Device,
@@ -92,6 +103,10 @@ enum ResumeGap: String, CaseIterable, Sendable {
             || record.build.gitDirty != runningBuild.gitDirty
             || record.build.buildNumber != runningBuild.buildNumber
         let osChanged = record.device.osVersion != runningDevice.osVersion
+        let deviceChanged = record.device.hardwareModel != runningDevice.hardwareModel
+            || record.device.cpu != runningDevice.cpu
+            || record.device.isVirtualMachine != runningDevice.isVirtualMachine
+            || record.device.gpu != runningDevice.gpu
         let saved = record.rng.behaviorFingerprint
         let fingerprintMatches = saved?.matches(runningFingerprint) == true
         let fingerprintText: String
@@ -116,12 +131,25 @@ enum ResumeGap: String, CaseIterable, Sendable {
             logLines.append("[RESUME] OS changed (\(record.device.osVersion) → \(runningDevice.osVersion)), \(fingerprintText)")
             if !fingerprintMatches { gaps.append(.os) }
         }
+        if deviceChanged {
+            logLines.append("[RESUME] device changed (\(deviceText(record.device)) → \(deviceText(runningDevice))), "
+                + fingerprintText)
+            if !fingerprintMatches { gaps.append(.device) }
+        }
         return EnvironmentComparison(gaps: gaps, logLines: logLines)
+    }
+
+    /// The device fields `environmentGaps` compares, as its log line shows
+    /// them; a field the system did not report shows as `unreported`.
+    private static func deviceText(_ device: LineageRecord.Device) -> String {
+        func field(_ value: String?) -> String { value ?? "unreported" }
+        return "hw_model=\(field(device.hardwareModel)) chip=\(field(device.cpu))"
+            + " is_vm=\(field(device.isVirtualMachine.map(String.init))) gpu_name=\(field(device.gpu))"
     }
 }
 
-/// The build/OS comparison of a resume (`ResumeGap.environmentGaps`): the
-/// gaps it adds and the lines it logs.
+/// The build/OS/device comparison of a resume (`ResumeGap.environmentGaps`):
+/// the gaps it adds and the lines it logs.
 struct EnvironmentComparison: Equatable, Sendable {
     let gaps: [ResumeGap]
     let logLines: [String]

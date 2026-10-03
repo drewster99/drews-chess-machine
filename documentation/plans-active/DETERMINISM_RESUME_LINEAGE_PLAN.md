@@ -354,6 +354,7 @@ Inference graphs have no dropout scaffolding, so nothing changes for them.
   - **FMA:** Swift does not contract `a * b + c` into a fused multiply-add on its own, so the explicit operation order is stable across builds; the golden bits catch any change.
   - **Validation:** (1) exhaustive test over all 2²⁴ inputs of each function against a `Double` reference, asserting a stated max-ULP bound (A2.4); (2) golden output bits for fixed seeds (A2.4, B1.1); (3) **re-benchmark on completion** against vForce and Swift libm and report the numbers. Prototype (2026-09-30, 8.45M values, `swiftc -O`, M4 Pro): vForce 10.4–13.9 ms, Swift libm 31.5 ms, draft polynomial 10.6 ms. Init runs once per mint, so speed is not a deciding factor.
   - **Re-benchmark of the finished transform (P5, 2026-10-02):** same harness shape, 8,445,748 values including the xoshiro draws, `swiftc -O`, best of several runs, on the M4 Pro while other builds and test runs were loading it (load average ≈ 4.4), so the absolute numbers are inflated against the idle prototype; the ratios are the useful part. `DCMRandom.nextStandardNormalPair`: 45.6 ms (earlier run 55.6); vForce Box–Muller: 33.6 ms (39.0); Swift libm (`Double`): 60.7 ms (74.8). Ours is ≈ 1.35× vForce and ≈ 0.75× libm. A re-run on an idle machine is still worth doing if the absolute figure ever matters.
+  - **Deviation (review fixes 2026-10-03, owner sign-off): `MoveSampler` keeps the platform math.** D-3 also covered `MoveSampler`'s libm `log`/`cos`, but P5 replaced only the init path. `MoveSampler` still uses vForce `exp` in the softmax and libm `log`/`pow`/`cos` in the Dirichlet draws (Gamma boost, Marsaglia–Tsang acceptance, Box–Muller). They stay: the sampler's other input is the network's logits, from a GPU forward that is not bit-reproducible across machines (A5 above), so sampled moves cannot reproduce across machines whatever the CPU math does; only the draw sequence (which stream draws feed which step) is pinned. A libm change that alters what a run computes is still detected on resume: the behavior fingerprint hashes Dirichlet-noised `MoveSampler` choices (`BehaviorFingerprint`), so a changed fingerprint makes the OS / build / device change a gap. The stale TODO in `MoveSampler` and the "move sampling" clause in `DCMNormalMath`'s doc were rewritten to say this. Moving the Dirichlet draws onto deterministic math (option B in `review-2026-10-03/G14.md`) would change every seeded self-play trajectory and every saved behavior fingerprint, and was not taken.
   - **Not a concern — bf16 narrowing:** bf16 training keeps fp32 master weights (fp32 master + bf16 working copy; config D, issue #9, also stored fp32 and is removed anyway under D-10), so init always produces fp32 values, and the one CPU narrowing (`float32ToBFloat16Bits`, `ChessNetwork.swift:3572`) is a fixed round-to-nearest-even rule pinned by B1.1's goldens.
 - **Self-play/GUI concurrency** (§0) — not numeric, but the dominant source of trajectory divergence.
 
@@ -746,7 +747,9 @@ and records it in the new segment record (D2).
 `rng_sampler`, `dropout_state`, `feed_carry` (replay), `buffer` (GUI/vs-UCI save
 without a buffer, D-8), `serials`, `clocks` (arena/save/ratio controller),
 `params` (no full snapshot — legacy), `lineage` (no `dcm_lineage` — legacy),
-`build`, `os` (C1 #33), `policy_tail` (the trainer file's
+`build`, `os` (C1 #33), `device` (added by the 2026-10-03 review fixes: a
+different hardware model, chip, VM flag or GPU name; like `build` and `os`, a gap
+only when the behavior fingerprint does not match), `policy_tail` (the trainer file's
 `trainer_policy_tail_precision` differs from the process's
 `--policy-tail-precision`, or the file predates recording it).
 
@@ -2425,6 +2428,24 @@ baseline.
     bit-exact run of this check needs an idle machine and, if MPSGraph is
     deterministic there, would then be expected to match.
   - **The segment-indexed resume run** is running; result to follow here.
+- **Review fixes (2026-10-03, `review-2026-10-03/G9.md`, `G14.md`).**
+  - **The fingerprint is stable under GPU load.** Today's eight replay runs
+    (straight, first, second and A–E), all trained while other processes
+    shared the GPU, wrote one identical fingerprint. Pinned by
+    `BehaviorFingerprintTests.testTheFingerprintRepeatsUnderConcurrentGPULoad`:
+    the new-model default architecture's fingerprint, computed idle and twice
+    more while a second trainer steps batch-1024 SGD on the same GPU, is equal
+    all three times.
+  - **New `device` gap.** `environmentGaps` compared only build and OS; the
+    record's `hw_model` / `chip` / `is_vm` / `gpu_name` were never compared.
+    It now compares them (as values: an unreported field against an unreported
+    one is no change), logs `[RESUME] device changed (<saved> → <running>),
+    <fingerprint verdict>`, and adds `ResumeGap.device` when the fingerprints
+    do not match. `gpu_name` does not carry the GPU core count, so two
+    configurations of one chip compare equal. Tests:
+    `testADeviceChangeWithADifferentFingerprintIsAGap`,
+    `testADeviceChangeWithAMatchingFingerprintIsNotAGap`.
+  - **D-3 deviation recorded** (see A5): `MoveSampler` keeps the platform math.
 
 **P10 — Provenance + carry-forward.** `[RUN]` formatter (`Logging/`), recorder
 fields, B4 fix. Tests: derive → train → save keeps `derivation_history`; `[RUN]`
