@@ -379,6 +379,48 @@ final class TrainingAlarmController {
         resetStreaks()
     }
 
+    /// The consecutive-sample counters behind the divergence, value-saturation
+    /// and value-draw alarms: what a session save records so a resume keeps
+    /// counting where the saved run was (determinism plan C1 #20).
+    struct Streaks: Codable, Equatable, Sendable {
+        var divergenceWarning = 0
+        var divergenceCritical = 0
+        var divergenceRecovery = 0
+        var valueAbsMeanSaturationWarning = 0
+        var valueAbsMeanSaturationCritical = 0
+        var valueAbsMeanSaturationRecovery = 0
+        var valueDrawCollapseWarning = 0
+        var valueDrawCollapseCritical = 0
+        var valueDrawCollapseRecovery = 0
+    }
+
+    /// The current streak counters.
+    var streaks: Streaks {
+        Streaks(
+            divergenceWarning: divergenceWarningStreak,
+            divergenceCritical: divergenceCriticalStreak,
+            divergenceRecovery: divergenceRecoveryStreak,
+            valueAbsMeanSaturationWarning: valueAbsMeanSaturationWarningStreak,
+            valueAbsMeanSaturationCritical: valueAbsMeanSaturationCriticalStreak,
+            valueAbsMeanSaturationRecovery: valueAbsMeanSaturationRecoveryStreak,
+            valueDrawCollapseWarning: valueDrawCollapseWarningStreak,
+            valueDrawCollapseCritical: valueDrawCollapseCriticalStreak,
+            valueDrawCollapseRecovery: valueDrawCollapseRecoveryStreak)
+    }
+
+    /// Continue counting from `saved` (a resumed session's counters).
+    func restore(streaks saved: Streaks) {
+        divergenceWarningStreak = saved.divergenceWarning
+        divergenceCriticalStreak = saved.divergenceCritical
+        divergenceRecoveryStreak = saved.divergenceRecovery
+        valueAbsMeanSaturationWarningStreak = saved.valueAbsMeanSaturationWarning
+        valueAbsMeanSaturationCriticalStreak = saved.valueAbsMeanSaturationCritical
+        valueAbsMeanSaturationRecoveryStreak = saved.valueAbsMeanSaturationRecovery
+        valueDrawCollapseWarningStreak = saved.valueDrawCollapseWarning
+        valueDrawCollapseCriticalStreak = saved.valueDrawCollapseCritical
+        valueDrawCollapseRecoveryStreak = saved.valueDrawCollapseRecovery
+    }
+
     /// Zero the divergence streak counters without touching the banner. Paired
     /// with `clear()` by session-lifecycle resets (start new session, promote,
     /// new game) that previously zeroed the `divergence*Streak` `@State`

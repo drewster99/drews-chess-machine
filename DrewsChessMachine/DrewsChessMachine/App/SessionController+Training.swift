@@ -569,6 +569,26 @@ extension SessionController {
             spDiversityTracker = GameDiversityTracker(windowSize: 200)
             selfPlayDiversityTracker = spDiversityTracker
             chartCoordinator?.setDiversityHistogramBars([])
+            // A resumed session continues its rolling observability state:
+            // the diversity window and the alarm streaks (C1 #18, #20). The
+            // replay-ratio controller's rate windows are wall-clock
+            // measurements of this machine and refill within a minute; its
+            // step delay starts from `last_auto_computed_delay_ms` (C1 #12).
+            if let loaded = pendingLoadedSession {
+                if let window = loaded.state.selfPlayDiversityWindow {
+                    spDiversityTracker.restore(windowSequences: window)
+                    SessionLogger.shared.log("[RESUME] diversity window: \(window.count) games restored")
+                } else {
+                    SessionLogger.shared.log("[RESUME] diversity window starts empty: the session did not record it")
+                }
+                if let streaks = loaded.state.trainingAlarmStreaks {
+                    trainingAlarm?.restore(streaks: streaks)
+                    SessionLogger.shared.log("[RESUME] alarm streaks restored")
+                } else {
+                    SessionLogger.shared.log("[RESUME] alarm streaks start at zero: the session did not record them")
+                }
+                SessionLogger.shared.log("[RESUME] replay-ratio controller: rate windows restart (wall-clock measurements); the step delay starts from the saved last_auto_computed_delay_ms")
+            }
         }
         let drawWatch: DrawWatchTracker
         if continueMode, let existing = drawWatchTracker {

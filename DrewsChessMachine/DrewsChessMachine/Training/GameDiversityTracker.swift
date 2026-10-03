@@ -112,6 +112,31 @@ final class GameDiversityTracker: @unchecked Sendable {
         }
     }
 
+    /// The window's games, oldest first, as stored policy-index sequences:
+    /// what a session save records so a resume continues the window
+    /// (determinism plan C1 #18).
+    func windowSequences() -> [[Int16]] {
+        lock.withLock {
+            let oldest = stored < windowSize ? 0 : writeIndex
+            return (0..<stored).map { sequences[(oldest + $0) % windowSize] }
+        }
+    }
+
+    /// Refill an empty tracker with `windowSequences`, oldest first, as
+    /// `windowSequences()` returned them; only the newest `windowSize` are
+    /// kept, as recording them in order would.
+    func restore(windowSequences saved: [[Int16]]) {
+        lock.withLock {
+            precondition(stored == 0, "GameDiversityTracker.restore needs an empty tracker")
+            for sequence in saved.suffix(windowSize) {
+                self.sequences[self.writeIndex] = sequence
+                self.hashes[self.writeIndex] = Self.fnv1a(sequence)
+                self.writeIndex = (self.writeIndex + 1) % self.windowSize
+                self.stored += 1
+            }
+        }
+    }
+
     /// Take an immutable snapshot of the current diversity metrics.
     ///
     /// Divergence-ply values are recomputed against the *current*

@@ -774,6 +774,17 @@ struct SessionCheckpointState: Codable, Equatable {
     /// save, and in sessions saved before the clock was recorded; such a
     /// resume restarts the clock and reports `clocks` NOT EXACT.
     var arenaSecondsSinceLastArena: Double?
+    /// The self-play diversity window's games, oldest first
+    /// (`GameDiversityTracker.windowSequences()`), so a resume continues the
+    /// rolling diversity readings instead of starting them empty
+    /// (determinism plan C1 #18). Nil in sessions saved before it was
+    /// recorded.
+    var selfPlayDiversityWindow: [[Int16]]?
+    /// The training alarms' streak counters (`TrainingAlarmController.Streaks`)
+    /// at save time, so a resume keeps counting toward (or out of) an alarm
+    /// (determinism plan C1 #20). Nil in sessions saved before it was
+    /// recorded.
+    var trainingAlarmStreaks: TrainingAlarmController.Streaks?
 
     // MARK: - Training Segments
 
@@ -898,6 +909,17 @@ struct SessionCheckpointState: Codable, Equatable {
     func withArenaClock(secondsSinceLastArena: Double?) -> SessionCheckpointState {
         var copy = self
         copy.arenaSecondsSinceLastArena = secondsSinceLastArena
+        return copy
+    }
+
+    /// Return a copy carrying the run's rolling observability state: the
+    /// self-play diversity window and the alarm streak counters. Same
+    /// builder-helper pattern as `withTrainingSegments`.
+    func withRunObservability(diversityWindow: [[Int16]]?,
+                              alarmStreaks: TrainingAlarmController.Streaks?) -> SessionCheckpointState {
+        var copy = self
+        copy.selfPlayDiversityWindow = diversityWindow
+        copy.trainingAlarmStreaks = alarmStreaks
         return copy
     }
 

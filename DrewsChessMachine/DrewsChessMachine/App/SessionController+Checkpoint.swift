@@ -1189,6 +1189,8 @@ extension SessionController {
             tactical: tacticalProbeHistory.makeSnapshot()
         )
         .withArenaClock(secondsSinceLastArena: secondsSinceLastArena)
+        .withRunObservability(diversityWindow: selfPlayDiversityTracker?.windowSequences(),
+                              alarmStreaks: trainingAlarm?.streaks)
     }
 
     // MARK: - Session resume (Stage 4k)
