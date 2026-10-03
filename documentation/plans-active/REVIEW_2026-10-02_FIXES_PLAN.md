@@ -112,7 +112,7 @@ Not changed (owner): finished-game retention stays as is; a casual resend is sen
 
 ## B. Training and data
 
-### B1. Corpus replay drops games past an unclaimed draw — [ ]
+### B1. Corpus replay drops games past an unclaimed draw — [x] (`14e5ce9`; UCI part `290f4a7`)
 Replay ran games through DCM's own adjudication, so any game played on past an unclaimed
 threefold was discarded whole, silently (w3aA5b 0.045% of games, elite 0.32%).
 - Feeder replays with `.serverAuthoritative` adjudication; value targets stay the recorded
@@ -126,6 +126,18 @@ threefold was discarded whole, silently (w3aA5b 0.045% of games, elite 0.32%).
   plane 19 set, correct outcome signs; games without an adjudication point store byte-identical
   positions under both modes; post-mate and illegal moves are still rejected; UCI position
   test past a threefold.
+- As implemented: `CorpusReplayFeedOutcome` (`fed` / `skippedEmpty` / `skippedStartFEN` /
+  `rejected(ply:error:)`) and `CorpusReplayFeedTally`, one helper at all three feed sites;
+  `[REPLAY-ERR] epoch=E game=G rejected at ply N: …`; `games=` still counts every consumed
+  game. The flush-returned-nil case is a `preconditionFailure` (a defect in the feeder, not a
+  corpus property — never counted as a rejection). Regression tests (`CorpusReplayFeederTests`)
+  were shown red by switching only the feeder's adjudication back to `.automatic`.
+- UCI, decided during implementation: a `position` that cannot be applied is rejected whole —
+  `info string position rejected: …` at once, and every `go` answers `bestmove 0000` with an
+  `info string` until the next valid `position` or `ucinewgame` (never a move for a position
+  the GUI is not in). New testable seam `UCIEngine.engine(forPositionArguments:)`.
+- `RepPlaneProbeTests`' stale comment about plane 19 left as is (editing a test needs owner
+  approval).
 
 ### B2. Per-move label smoothing: the complement target could favor the played move — [ ]
 - The played move's floor in the "this move was bad" target becomes the same per-alternative
@@ -174,11 +186,34 @@ skips any locked shard and does not repair counts while a writer is live. Owner:
 with proof the locking works — tests cover a live writer mid-record, a header-only shard after
 rotation, `corpus.json` untouched, a cross-process holder, and recovery once the holder exits.
 
-### C4. Replay runner pre-flight — [ ]
+### C4. Replay runner pre-flight — [x] (`0701b5d7`, `3ec17ecb`, `ce51cb5f`)
 Rolling and enumerated output names checked against the staging name limit before training;
 GPU capture request validated up front, and a capture that fails to start stops the run after
 its final save; negative training steps in headers are refused; a corrupt resume pointer
 aborts the pruning sweep; CLI `--output` refuses an existing file unless `--overwrite-output`.
+- As implemented: `FileSafety.requireStageableDestination` / `longestStageableFileNameUTF8Bytes`
+  (new errors `nameTooLongToStage` / `pathTooLongToStage`, not ownership refusals), called by
+  `checkRollingOutput` (even with `--overwrite-out-model`) and folded into
+  `requireNoReachableEnumeratedCheckpoints` (worst-case step name: the step limit, or `Int.max`
+  with none). Names are measured in the URL's UTF-8 bytes (the decomposed form the kernel
+  sees). Runtime-red regression tests through the existing guard API.
+- `TrainerSaveFailureStreak` (threshold two consecutive failures, separate counters for the
+  rolling file and the enumerated copies, both runners); `reportSaveFailure`'s documented
+  contract updated — a single non-disk-full failure is still a warning.
+- `validateGPUCaptureRequest` is the one rule set for the pre-flight and the capture start
+  (folder checked before the trace path, since inspecting a path under a file fails with
+  `ENOTDIR`). A failed start: `[ALARM]`, final save with reason `capture-failed`, then the run
+  fails without `results.json`. An unreached capture step is a warning. These tests are new-API
+  tests (the checks were inline before); the in-loop stop-and-save path needs a GPU and
+  `MTL_CAPTURE_ENABLED` and was not exercised by XCTest.
+- `LastSessionPointer.stored(in:)` throws `LastSessionPointerError` (`notData` / `undecodable`);
+  `read(from:)` is built on it and now also logs the wrong-type case.
+- `--output`: `CliResultsOutput.preflight` at all three parse sites (one rule set), plumbed to
+  the GUI as `cliResultsOutput`; `CliTrainingRecorder.write(to:)` publishes new / replaces only
+  the authorized file; a destination changed mid-run gets a numbered sibling and an `[ALARM]`
+  (a name without an extension gets `.json` there). `writeJSON(to:)` kept as an explicit
+  regular-file-only replace through `FileSafety`, so `testWriteOverwritesExistingFile` is
+  unchanged. `--overwrite-output` without `--output` is an error.
 
 ### C5. Invalid stored settings are shown, never silently replaced — [ ]
 Owner: "anytime settings are loaded that seem corrupted or invalid we should show something in
