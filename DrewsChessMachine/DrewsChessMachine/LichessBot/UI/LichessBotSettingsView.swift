@@ -4,18 +4,17 @@ import SwiftUI
 /// settings that fail validation are shown with their problems and not
 /// applied, and the last valid settings stay in force.
 ///
-/// The tab picker and the problem header sit above the tabs, so one draft
-/// covers every tab and a rejected edit stays visible whichever tab is
-/// shown. A tab whose own fields have a problem is marked in the picker
-/// (see `LichessBotSettingsTab` for how problems are attributed), so a
-/// problem on a tab that isn't shown can still be found. A rejected edit
+/// Plain tabs: a segmented tab bar, and below it only the selected tab's
+/// form. (SwiftUI's `TabView` would do the same, but it can't be drawn
+/// off-screen, which the render tests rely on.) The tab bar and the problem
+/// header sit above the form, so one draft covers every tab and a rejected
+/// edit stays visible whichever tab is shown. A tab whose own fields have a
+/// problem is marked in its title (see `LichessBotSettingsTab` for how
+/// problems are attributed), so a problem on a tab that isn't shown can
+/// still be found. A rejected edit
 /// never switches tabs by itself: edits apply as they are typed, so a
 /// switch would pull the operator off the field they are typing in on every
 /// rejected keystroke.
-///
-/// Every tab stays mounted, hidden rather than removed, so state a section
-/// keeps for itself (a half-typed token, the blocked-players text) survives
-/// switching tabs, as it did when all sections shared one scroll.
 struct LichessBotSettingsView: View {
     let controller: LichessBotController
     @State private var draft: LichessBotSettings
@@ -23,7 +22,7 @@ struct LichessBotSettingsView: View {
     /// Bumped on Reset to Defaults: sections that keep their own editing
     /// text (blocked players, the account id) are rebuilt and re-read it.
     @State private var resetGeneration = 0
-    /// The tab shown. Only a pick made in the picker is also remembered
+    /// The tab shown. Only a pick the operator makes is also remembered
     /// (`controller.rememberedSettingsTab`); Account, which this view
     /// selects by itself when the token check finds no token, is shown but
     /// not remembered.
@@ -42,8 +41,8 @@ struct LichessBotSettingsView: View {
         // Derived from the draft on every render rather than stored, so the
         // marks can never disagree with what the draft holds.
         let tabsWithProblems = LichessBotSettingsTab.tabsWithProblems(in: draft, comparedWith: controller.settings)
-        // The picker is the only place the operator picks a tab, so the pick
-        // is remembered right here, where it is known to be theirs; the
+        // The tab bar is the only place the operator picks a tab, so the
+        // pick is remembered right here, where it is known to be theirs; the
         // getter is `selectedTab` itself.
         let operatorSelection = Binding<LichessBotSettingsTab>(
             get: { selectedTab },
@@ -53,11 +52,22 @@ struct LichessBotSettingsView: View {
             }
         )
         VStack(alignment: .leading, spacing: 0) {
-            LichessBotSettingsTabPicker(selection: operatorSelection, tabsWithProblems: tabsWithProblems)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 4)
+            Picker("Settings", selection: operatorSelection) {
+                ForEach(LichessBotSettingsTab.allCases) { tab in
+                    Text(Self.tabTitle(tab, tabsWithProblems: tabsWithProblems))
+                        .accessibilityLabel(tabsWithProblems.contains(tab) ? "\(tab.title), has a problem" : tab.title)
+                        .tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            // Wide enough that a warning sign never truncates a title, narrow
+            // enough to fit beside the sidebar at the window's minimum width.
+            .frame(maxWidth: 600)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
             HStack(spacing: 10) {
                 Text(controller.settingsError ?? "")
                     .foregroundStyle(.red)
@@ -74,28 +84,11 @@ struct LichessBotSettingsView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, (controller.settingsError != nil || problems != nil) ? 8 : 0)
-            ZStack {
-                LichessBotSettingsTabPage(isSelected: selectedTab == .games) {
-                    LichessBotChallengeSettingsSection(settings: $draft.challenge)
-                    LichessBotMatchmakingSettingsSection(settings: $draft.matchmaking)
-                }
-                LichessBotSettingsTabPage(isSelected: selectedTab == .play) {
-                    LichessBotPlaySettingsSection(settings: $draft.play)
-                    LichessBotModelSettingsSection(settings: $draft.model)
-                }
-                LichessBotSettingsTabPage(isSelected: selectedTab == .chat) {
-                    LichessBotChatSettingsSection(settings: $draft.chat)
-                }
-                LichessBotSettingsTabPage(isSelected: selectedTab == .alerts) {
-                    LichessBotAlertSettingsSection(settings: $draft.alerts)
-                }
-                LichessBotSettingsTabPage(isSelected: selectedTab == .connection) {
-                    LichessBotConnectionSettingsSection(settings: $draft.connection, display: $draft.display)
-                }
-                LichessBotSettingsTabPage(isSelected: selectedTab == .account) {
-                    LichessBotAccountSettingsSection(controller: controller, expectedAccountID: $draft.connection.expectedAccountID)
-                }
-            }
+            LichessBotSettingsTabForm(
+                tab: selectedTab,
+                controller: controller,
+                draft: $draft
+            )
             .id(resetGeneration)
         }
         .onChange(of: draft) {
@@ -115,6 +108,15 @@ struct LichessBotSettingsView: View {
                 }
             }
         }
+    }
+
+    /// A tab's title, with a warning sign when its own fields have a
+    /// problem. U+26A0 WARNING SIGN with U+FE0E: the text glyph, not the
+    /// emoji, so it takes the segment's own text color. The sign is part of
+    /// the title text because a segment shows its title text reliably and
+    /// may drop an embedded image or a text color.
+    static func tabTitle(_ tab: LichessBotSettingsTab, tabsWithProblems: [LichessBotSettingsTab]) -> String {
+        tabsWithProblems.contains(tab) ? "\(tab.title) \u{26A0}\u{FE0E}" : tab.title
     }
 
     private func apply() {
@@ -142,58 +144,32 @@ struct LichessBotSettingsView: View {
     }
 }
 
-// MARK: - Tabs
-
-/// The Settings tabs as one segmented control — the same control the bot
-/// window uses for its other in-section switches (Single / Grid, the game
-/// panels, the challenge sheet's player lists). A tab with a problem in its
-/// own fields carries a warning sign in its title. The sign is part of the
-/// title text, not a separate image or color, because a segment shows its
-/// title text reliably and may drop an embedded image or a text color.
-struct LichessBotSettingsTabPicker: View {
-    @Binding var selection: LichessBotSettingsTab
-    let tabsWithProblems: [LichessBotSettingsTab]
-
-    var body: some View {
-        Picker("Settings", selection: $selection) {
-            ForEach(LichessBotSettingsTab.allCases) { tab in
-                // U+26A0 WARNING SIGN with U+FE0E: the text glyph, not the
-                // emoji, so it takes the segment's own text color.
-                Text(tabsWithProblems.contains(tab) ? "\(tab.title) \u{26A0}\u{FE0E}" : tab.title)
-                    .accessibilityLabel(tabsWithProblems.contains(tab) ? "\(tab.title), has a problem" : tab.title)
-                    .tag(tab)
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        // Wide enough that a warning sign never truncates a title, narrow
-        // enough to fit beside the sidebar at the window's minimum width.
-        .frame(maxWidth: 600)
-    }
-}
-
-/// One tab's form. Hidden tabs keep their full size and stay mounted, so a
-/// form keeps its scroll position and its sections keep their own state;
-/// they are disabled while hidden so keyboard focus can't land in a field
-/// nobody can see.
-struct LichessBotSettingsTabPage<Content: View>: View {
-    let isSelected: Bool
-    let content: Content
-
-    init(isSelected: Bool, @ViewBuilder content: () -> Content) {
-        self.isSelected = isSelected
-        self.content = content()
-    }
+/// The selected settings tab's form.
+struct LichessBotSettingsTabForm: View {
+    let tab: LichessBotSettingsTab
+    let controller: LichessBotController
+    @Binding var draft: LichessBotSettings
 
     var body: some View {
         Form {
-            content
+            switch tab {
+            case .games:
+                LichessBotChallengeSettingsSection(settings: $draft.challenge)
+                LichessBotMatchmakingSettingsSection(settings: $draft.matchmaking)
+            case .play:
+                LichessBotPlaySettingsSection(settings: $draft.play)
+                LichessBotModelSettingsSection(settings: $draft.model)
+            case .chat:
+                LichessBotChatSettingsSection(settings: $draft.chat)
+            case .alerts:
+                LichessBotAlertSettingsSection(settings: $draft.alerts)
+            case .connection:
+                LichessBotConnectionSettingsSection(settings: $draft.connection, display: $draft.display)
+            case .account:
+                LichessBotAccountSettingsSection(controller: controller, expectedAccountID: $draft.connection.expectedAccountID)
+            }
         }
         .formStyle(.grouped)
-        .opacity(isSelected ? 1 : 0)
-        .allowsHitTesting(isSelected)
-        .accessibilityHidden(!isSelected)
-        .disabled(!isSelected)
     }
 }
 
