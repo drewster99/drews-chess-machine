@@ -1053,18 +1053,6 @@ extension SessionController {
                 }
             }
 
-            // Trainer ID — branched by `mode`, matching the
-            // trainer-weights logic above:
-            //
-            // - `.freshOrFromLoadedSession`: inherit from the
-            //   loaded session's trainer file if present, else
-            //   mint a new generation off the champion.
-            // - `.newSessionResetTrainerFromChampion`: mint a new
-            //   generation off the current champion (trainer
-            //   weights were just forked from champion).
-            // - `.continueAfterStop` and `.newSessionKeepTrainer`:
-            //   keep the trainer's existing ID — its weights
-            //   weren't touched, so the lineage is continuous.
             // The process's behavior fingerprint for this trainer's numerics:
             // every trainer-state save records it, and a resume under another
             // build or OS compares against it (cached per process).
@@ -1078,55 +1066,13 @@ extension SessionController {
             let bufferRestoredIntoRun = replayBufferRestored
             let lineageStart: Result<LineageTracker, Error> = await MainActor.run {
                 SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
-                switch mode {
-                case .continueAfterStop, .newSessionKeepTrainer:
-                    break
-                case .newSessionResetTrainerFromChampion:
-                    trainer.identifier = ModelIDMinter.mintTrainerGeneration(
-                        from: network.identifier ?? ModelIDMinter.mint()
-                    )
-                case .freshOrFromLoadedSession:
-                    if let resumed = pendingLoadedSession {
-                        // A GUI resume never refuses (determinism plan D-1);
-                        // what it could not restore — the policy-tail
-                        // precision included — is named on the one
-                        // `[RESUME]` line `beginLineageSegment` logs.
-                        trainer.identifier = ModelID(value: resumed.trainerFile.modelID)
-                    } else {
-                        trainer.identifier = ModelIDMinter.mintTrainerGeneration(
-                            from: network.identifier ?? ModelIDMinter.mint()
-                        )
-                    }
-                }
                 // The lineage segment every save of this run takes its
                 // record from — begun (or continued) now that the trainer
                 // holds its starting state and the stats box exists.
-                let segmentResult: Result<LineageTracker, Error>
-                do {
-                    let fingerprint = try fingerprintResult.get()
-                    SessionLogger.shared.log("[RUN] behavior fingerprint recipe=\(fingerprint.recipe) sha256=\(fingerprint.sha256)")
-                    runBehaviorFingerprint = fingerprint
-                    try beginLineageSegment(mode: mode, trainer: trainer, resumed: pendingLoadedSession,
-                                            continuedRunStreams: continuedRunStreams,
-                                            replayBufferRestored: bufferRestoredIntoRun,
-                                            behaviorFingerprint: fingerprint)
-                    if let tracker = lineageTracker {
-                        segmentResult = .success(tracker)
-                    } else {
-                        segmentResult = .failure(LineageSegmentError.noSegment("Play and Train"))
-                    }
-                } catch {
-                    segmentResult = .failure(error)
-                }
-                // Consume the pending load — from here on, the
-                // running session owns the restored state.
-                pendingLoadedSession = nil
-                pendingLoadedSessionAcceptedReplacements = []
-                // A training segment has started, so clear the
-                // "champion replaced since last training" flag
-                // (the Start dialog's annotation is resolved).
-                championLoadedSinceLastTrainingSegment = false
-                return segmentResult
+                return beginRunLineage(
+                    mode: mode, trainer: trainer, championIdentifier: network.identifier,
+                    continuedRunStreams: continuedRunStreams, replayBufferRestored: bufferRestoredIntoRun,
+                    fingerprintResult: fingerprintResult)
             }
             let segmentLineage: LineageTracker
             switch lineageStart {

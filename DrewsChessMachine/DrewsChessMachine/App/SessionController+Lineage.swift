@@ -79,6 +79,93 @@ extension SessionController {
         }
     }
 
+    /// The lineage part of a Play-and-Train start, run on the main actor
+    /// once the trainer holds its starting state: stamp the trainer's ID for
+    /// `mode`, record the run's behavior fingerprint, begin (or continue) the
+    /// lineage segment, and — only when all of that succeeded — consume the
+    /// pending loaded session, which the running session now owns.
+    ///
+    /// Trainer ID by mode, matching how the start set the trainer's weights:
+    /// - `.freshOrFromLoadedSession`: the loaded session's trainer file's ID
+    ///   when resuming one, else a new generation off the champion;
+    /// - `.newSessionResetTrainerFromChampion`: a new generation off the
+    ///   champion (the trainer was just forked from it);
+    /// - `.continueAfterStop`, `.newSessionKeepTrainer`: kept — its weights
+    ///   were not touched, so the lineage is continuous.
+    ///
+    /// A failure leaves things as the next start can use them. A loaded
+    /// session stays pending, so the next start redoes the whole resume from
+    /// it (consuming it here would have left the restored trainer to a
+    /// "Continue" that re-records the run as unrecorded history). A kept
+    /// trainer's segment is put back as it was, since a failed `[RUN]`
+    /// record must not replace or reset it. A trainer this start already
+    /// reset leaves no segment behind: the old one no longer describes it.
+    func beginRunLineage(mode: TrainingStartMode, trainer: ChessTrainer, championIdentifier: ModelID?,
+                         continuedRunStreams: LineageRecord.RunStreams?, replayBufferRestored: Bool,
+                         fingerprintResult: Result<BehaviorFingerprint.Record, Error>) -> Result<LineageTracker, Error> {
+        let previousTracker = lineageTracker
+        let previousCarry = lineageFedCarry
+        let previousExactness = checkpoint?.runResumeExactness
+        do {
+            switch mode {
+            case .continueAfterStop, .newSessionKeepTrainer:
+                break
+            case .newSessionResetTrainerFromChampion:
+                trainer.identifier = ModelIDMinter.mintTrainerGeneration(from: try Self.requiredChampionID(championIdentifier))
+            case .freshOrFromLoadedSession:
+                if let resumed = pendingLoadedSession {
+                    // A GUI resume never refuses (determinism plan D-1);
+                    // what it could not restore — the policy-tail precision
+                    // included — is named on the one `[RESUME]` line
+                    // `beginLineageSegment` logs.
+                    trainer.identifier = ModelID(value: resumed.trainerFile.modelID)
+                } else {
+                    trainer.identifier = ModelIDMinter.mintTrainerGeneration(from: try Self.requiredChampionID(championIdentifier))
+                }
+            }
+            let fingerprint = try fingerprintResult.get()
+            SessionLogger.shared.log("[RUN] behavior fingerprint recipe=\(fingerprint.recipe) sha256=\(fingerprint.sha256)")
+            runBehaviorFingerprint = fingerprint
+            try beginLineageSegment(mode: mode, trainer: trainer, resumed: pendingLoadedSession,
+                                    continuedRunStreams: continuedRunStreams,
+                                    replayBufferRestored: replayBufferRestored,
+                                    behaviorFingerprint: fingerprint)
+            guard let tracker = lineageTracker else {
+                throw LineageSegmentError.noSegment("Play and Train")
+            }
+            // Consume the pending load — from here on, the running session
+            // owns the restored state.
+            pendingLoadedSession = nil
+            pendingLoadedSessionAcceptedReplacements = []
+            // A training segment has started, so clear the "champion
+            // replaced since last training" flag (the Start dialog's
+            // annotation is resolved).
+            championLoadedSinceLastTrainingSegment = false
+            return .success(tracker)
+        } catch {
+            switch mode {
+            case .continueAfterStop, .newSessionKeepTrainer:
+                lineageTracker = previousTracker
+                lineageFedCarry = previousCarry
+                checkpoint?.runResumeExactness = previousExactness
+            case .freshOrFromLoadedSession, .newSessionResetTrainerFromChampion:
+                lineageTracker = nil
+                lineageFedCarry = LineageFedCarry()
+                checkpoint?.runResumeExactness = nil
+            }
+            return .failure(error)
+        }
+    }
+
+    /// The champion's ID, which a trainer generation is minted from; a
+    /// champion without one is an error, never a freshly minted stand-in.
+    private static func requiredChampionID(_ identifier: ModelID?) throws -> ModelID {
+        guard let identifier else {
+            throw LineageTracker.TrackerError.noModelID(what: "the champion")
+        }
+        return identifier
+    }
+
     /// Begin (or continue) the lineage segment for a Play-and-Train start.
     /// Call once the trainer holds its starting state and the run's stats
     /// box exists; `resumed` is the loaded session being resumed, if any,

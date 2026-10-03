@@ -114,7 +114,7 @@ final class LineageTracker: @unchecked Sendable {
             case .negativeSegmentCount(let what, let value):
                 return "lineage: segment \(what) is negative (\(value))"
             case .noModelID(let what):
-                return "lineage: \(what) has no model ID to record as a parent"
+                return "lineage: \(what) has no model ID"
             }
         }
     }
