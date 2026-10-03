@@ -33,7 +33,7 @@ replay run has ended.
 6. **Label smoothing C seed 2** — from the scale+bias seed-2 fresh net; launches when
    a slot frees (queue order).
 7. **Label smoothing B:** per-move policy smoothing (code in place; its complement
-   target is being fixed first — `plans-active/REVIEW_2026-10-02_FIXES_PLAN.md` B2).
+   target is being fixed first — `plans-completed/REVIEW_2026-10-02_FIXES_PLAN.md` B2).
 8. ~~Second no-ReZero seed if the ReZero result is close.~~ Launched 2026-10-02 03:55.
 
 ## Finished

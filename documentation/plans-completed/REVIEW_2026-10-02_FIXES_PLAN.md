@@ -136,7 +136,7 @@ each game with enough detail to decide per game.
     and `LichessBotChallengeCreditsLineTests` (offset tests) failed before the fixes; the
     withdrawal-limit test and the padding-API test use new API, so they could not run before.
 
-### A5. Other bot items — [~] (5c12989, 57c75afe; bot-limit item in the bot-data group)
+### A5. Other bot items — [x] (5c12989, 57c75afe; bot limit 9aa9b8ce)
 - Bot-limit refusal kept in memory even when player notes failed to load; status line names
   the limit and its end time. — [x] 9aa9b8ce. As built: the controller's `botLimitUntil` is
   the live source (loaded from the notes, updated on every refusal; the notes stay the saved
@@ -218,7 +218,7 @@ Sixteen resume sites converted saved Float values with `Double(float)` and persi
   `SessionCheckpointState` field comments that claimed absent values fall through to the live
   setting (each resolves to its pre-feature value).
 
-### B4. Trainer defaults — [~] (6045ce4e, partial)
+### B4. Trainer defaults — [x] (6045ce4e matched defaults; 6dc13e21 the six drifted ones — every bare-trainer test class passed unchanged with the declared values)
 `ChessTrainer.init` defaults come from the declared parameter defaults (five had drifted:
 draw penalty, momentum, value smoothing, weight decay, grad clip).
 - *As built (partial):* every default that already matched its declaration now reads it (LR,
@@ -245,7 +245,7 @@ mismatch; the GUI follows decision D-1 (never refuses; reports NOT EXACT).
 
 ## C. Model tools
 
-### C1. Build New Model vs `--derive-model` — [ ]
+### C1. Build New Model vs `--derive-model` — [x] (e23866f5)
 - One shared rule (`BlockGroup.setActivationFunction`): an SE-less group's SE activation
   follows; otherwise each field changes only when set. ReZero init and cap are independent.
 - Build New Model rows become identity-addressed drafts (no index bindings), fixing the
@@ -384,7 +384,7 @@ replaced without the user choosing it.
   its place, with "Resume with Replacements" or "Don't Resume". The session file is never
   changed. Lichess bot settings keep their existing unreadable + reset flow.
 
-### C6. Board encoding without the always-zero repetition planes — [ ]
+### C6. Board encoding without the always-zero repetition planes — [x] (b2b76643; issue #10 commented)
 Planes 20, 21, 22, 24, 26 and 28 (repetition 1, 2, 3, 5, 7, 9 plies ago) can never be 1 in
 any legal game, in training or at inference. A new input encoding omits them (24 planes);
 existing models keep their 30-plane encoding, since their stem weights expect it. Plane 19
@@ -443,7 +443,7 @@ Outcome: within the offset are 6k (+3.1), 9k (−3.1) and 11k (−1.0); C leads 
 at 8 of 10 (1k–10k) and 12 of 15 (1k–15k). The D README's status line and C seed 2's
 launch note now describe the queue order instead of a retired chain script.
 
-### D4. Dashboard data safety and the cron tick — [x] code (809f9c6c, d2db411f, b30e98e5, cfee96cf); [ ] cron reinstall
+### D4. Dashboard data safety and the cron tick — [x] code (809f9c6c, d2db411f, b30e98e5, cfee96cf); cron tick reinstalled 2026-10-02 (`*/5` crontab entry; first tick 19:55 logged)
 Guarded CSV replace (row-key diff, compare-and-swap, folder lock); missing inputs are errors;
 session-log sort key shared by the scripts; cron tick resolves its own folder, logs skipped
 ticks and held locks, times out probes, rotates its log to timestamped names; then reinstalled.
