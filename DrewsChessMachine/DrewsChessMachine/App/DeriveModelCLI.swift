@@ -172,7 +172,8 @@ enum DeriveModelCLI {
                 operations: operations,
                 newModelID: modelID,
                 createdAtUnix: Int64(Date().timeIntervalSince1970),
-                build: "\(BuildInfo.buildNumber) (\(BuildInfo.gitHash)\(BuildInfo.gitDirty ? "*" : ""))")
+                build: "\(BuildInfo.buildNumber) (\(BuildInfo.gitHash)\(BuildInfo.gitDirty ? "*" : ""))",
+                invocationArguments: CommandLine.arguments)
         } catch {
             SessionLogger.shared.log("[DERIVE] refused \(sourceURL.lastPathComponent): \(error)")
             SessionLogger.shared.shutdown()

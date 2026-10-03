@@ -44,6 +44,10 @@ extension SessionController {
         // across the replay / value-head / weight JSONs produced
         // together.
         let exportMetadata = currentAnalysisExportMetadata()
+        let entropySample = ReplayBufferAnalyzer.entropyProbeRandom(
+            runSeed: runRandomSeed,
+            trainerStep: trainingBox?.snapshot().stats.steps
+        )
 
         if bufferRef == nil && championRef == nil && trainerRef == nil {
             Self.presentRunAllAlert(
@@ -74,11 +78,13 @@ extension SessionController {
             if let buf = bufferRef {
                 let modelLabel = "champion:\(championRef?.identifier?.description ?? "<no-id>")"
                 let entropyProbe = await Self.buildTrainerEntropyProbeNetwork(trainer: trainerRef)
+                SessionLogger.shared.log("[ANALYSIS] replay-buffer entropy probe positions: \(entropySample.description)")
                 let step = await Self.runReplayBufferStep(
                     buffer: buf,
                     network: championRef,
                     modelLabel: modelLabel,
                     entropyProbe: entropyProbe,
+                    sampleRandom: entropySample.random,
                     metadata: exportMetadata
                 )
                 summaryLines.append(step.summaryLine)
@@ -283,7 +289,7 @@ extension SessionController {
         guard let trainer else { return nil }
         do {
             let weights = try await trainer.network.exportWeights()
-            let probe = try ChessMPSNetwork(.weightsToBeLoaded, arch: trainer.arch)
+            let probe = try ChessMPSNetwork(.overwrittenByLoad, arch: trainer.arch)
             try await probe.loadWeights(weights)
             // Inherit the trainer's id so logs / JSON record exactly
             // whose weights are being probed — same pattern as
@@ -320,6 +326,7 @@ extension SessionController {
         network: ChessMPSNetwork?,
         modelLabel: String,
         entropyProbe: (network: ChessMPSNetwork, label: String)? = nil,
+        sampleRandom: DCMRandom,
         metadata: AnalysisExportMetadata
     ) async -> AnalysisStepResult {
         var result: ReplayBufferAnalyzer.Result
@@ -329,13 +336,15 @@ extension SessionController {
                     buffer: buffer,
                     network: probe.network,
                     modelLabel: modelLabel,
-                    entropyModelLabel: probe.label
+                    entropyModelLabel: probe.label,
+                    sampleRandom: sampleRandom
                 )
             } else if let net = network {
                 result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
                     buffer: buffer,
                     network: net,
-                    modelLabel: modelLabel
+                    modelLabel: modelLabel,
+                    sampleRandom: sampleRandom
                 )
             } else {
                 result = ReplayBufferAnalyzer.run(buffer: buffer, modelLabel: modelLabel)

@@ -10,6 +10,8 @@ final class LichessBotChatCommandsTests: XCTestCase {
     }
 
     private let hardware = HardwareInfo(
+        hardwareModel: "Mac17,6",
+        isVirtualMachine: false,
         cpuBrand: "Apple M5 Max",
         cpuPhysicalCores: 18,
         cpuPerformanceLevels: [
@@ -92,7 +94,7 @@ final class LichessBotChatCommandsTests: XCTestCase {
     }
 
     func testMissingHardwareFactsSayUnknown() throws {
-        let blank = HardwareInfo(cpuBrand: nil, cpuPhysicalCores: nil, cpuPerformanceLevels: [], memoryBytes: nil, gpuModel: nil, gpuCoreCount: nil, readFailures: ["test"])
+        let blank = HardwareInfo(hardwareModel: nil, isVirtualMachine: nil, cpuBrand: nil, cpuPhysicalCores: nil, cpuPerformanceLevels: [], memoryBytes: nil, gpuModel: nil, gpuCoreCount: nil, readFailures: ["test"])
         XCTAssertEqual(try LichessBotChatCommands.replies(to: .cpu, context: context(hardware: blank)), ["unknown CPU · unknown core count"])
         XCTAssertEqual(try LichessBotChatCommands.replies(to: .ram, context: context(hardware: blank)), ["unknown memory"])
     }

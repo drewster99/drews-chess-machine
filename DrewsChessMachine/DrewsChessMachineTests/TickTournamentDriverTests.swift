@@ -34,8 +34,8 @@ final class TickTournamentDriverTests: XCTestCase {
 
     private static let networkPair: (cand: ChessMPSNetwork, champ: ChessMPSNetwork) = {
         do {
-            let cand = try ChessMPSNetwork(.randomWeights)
-            let champ = try ChessMPSNetwork(.randomWeights)
+            let cand = try ChessMPSNetwork(.randomWeights(initSeed: 1))
+            let champ = try ChessMPSNetwork(.randomWeights(initSeed: 2))
             return (cand, champ)
         } catch {
             fatalError("TickTournamentDriverTests: network build failed: \(error)")
@@ -101,6 +101,8 @@ final class TickTournamentDriverTests: XCTestCase {
     func test_zeroGames_returnsEmptyStats() async throws {
         let driver = TickTournamentDriver()
         let stats = try await driver.run(
+            randomStreams: DCMRandomStreams(masterSeed: 1),
+            arenaIndex: 0,
             candidateNetwork: Self.networkPair.cand,
             championNetwork: Self.networkPair.champ,
             arenaSchedule: .arena,
@@ -122,6 +124,8 @@ final class TickTournamentDriverTests: XCTestCase {
         // slots; a lock-protected box keeps the accumulation Swift 6-safe.
         let completedSeen = OSAllocatedUnfairLock(initialState: 0)
         let stats = try await driver.run(
+            randomStreams: DCMRandomStreams(masterSeed: 1),
+            arenaIndex: 0,
             candidateNetwork: Self.networkPair.cand,
             championNetwork: Self.networkPair.champ,
             arenaSchedule: .arena,
@@ -149,6 +153,8 @@ final class TickTournamentDriverTests: XCTestCase {
         let totalGames = 4
         let recordCount = OSAllocatedUnfairLock(initialState: 0)
         let stats = try await driver.run(
+            randomStreams: DCMRandomStreams(masterSeed: 1),
+            arenaIndex: 0,
             candidateNetwork: Self.networkPair.cand,
             championNetwork: Self.networkPair.champ,
             arenaSchedule: .arena,
@@ -169,6 +175,8 @@ final class TickTournamentDriverTests: XCTestCase {
         let driver = TickTournamentDriver()
         let totalGames = 4
         let stats = try await driver.run(
+            randomStreams: DCMRandomStreams(masterSeed: 1),
+            arenaIndex: 0,
             candidateNetwork: Self.networkPair.cand,
             championNetwork: Self.networkPair.champ,
             arenaSchedule: .arena,
@@ -189,6 +197,8 @@ final class TickTournamentDriverTests: XCTestCase {
         // second tick.
         cancelFlag.signal()
         let stats = try await driver.run(
+            randomStreams: DCMRandomStreams(masterSeed: 1),
+            arenaIndex: 0,
             candidateNetwork: Self.networkPair.cand,
             championNetwork: Self.networkPair.champ,
             arenaSchedule: .arena,
@@ -218,6 +228,8 @@ final class TickTournamentDriverTests: XCTestCase {
         let driver = TickTournamentDriver()
         let totalGames = 4
         let stats = try await driver.run(
+            randomStreams: DCMRandomStreams(masterSeed: 1),
+            arenaIndex: 0,
             candidateNetwork: Self.networkPair.cand,
             championNetwork: Self.networkPair.champ,
             arenaSchedule: .arena,
@@ -244,6 +256,8 @@ final class TickTournamentDriverTests: XCTestCase {
             minGames: 2, maxGames: 4
         )
         let stats = try await driver.run(
+            randomStreams: DCMRandomStreams(masterSeed: 1),
+            arenaIndex: 0,
             candidateNetwork: Self.networkPair.cand,
             championNetwork: Self.networkPair.champ,
             arenaSchedule: .arena,
@@ -277,6 +291,8 @@ final class TickTournamentDriverTests: XCTestCase {
         let cancelFlag = ManagedAtomicFlag()
         cancelFlag.signal()
         let stats = try await driver.run(
+            randomStreams: DCMRandomStreams(masterSeed: 1),
+            arenaIndex: 0,
             candidateNetwork: Self.networkPair.cand,
             championNetwork: Self.networkPair.champ,
             arenaSchedule: .arena,

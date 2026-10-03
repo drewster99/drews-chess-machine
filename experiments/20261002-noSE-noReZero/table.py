@@ -27,7 +27,7 @@ NO_REZERO_LOG = "dcm_log_20261002-011124.txt"
 PROBE_ARMS = [
     ("no SE, no ReZero s1", "probes.jsonl", "20261002-2-5tKN"),
     ("no SE, no ReZero s2", "probes-seed2.jsonl", "20261002-4-T79u"),
-    ("zero-init ReZero", os.path.join("..", "20261002-rezero-zero-init", "probes.jsonl"), probe_record.NOT_STARTED),
+    ("zero-init ReZero", os.path.join("..", "20261002-rezero-zero-init", "probes.jsonl"), "20261003-1-NKTv"),
 ]
 
 

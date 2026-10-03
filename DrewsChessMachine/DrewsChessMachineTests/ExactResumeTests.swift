@@ -149,7 +149,7 @@ final class ExactResumeTests: XCTestCase {
             ply += 1
             filled += 1
         }
-        let buffer = ReplayBuffer(capacity: replayPositions, inputEncoding: encoding)
+        let buffer = ReplayBuffer(capacity: replayPositions, inputEncoding: encoding, sampler: DCMRandom(seed: 1))
         boards.withUnsafeBufferPointer { b in
         moves.withUnsafeBufferPointer { m in
         plies.withUnsafeBufferPointer { p in
@@ -252,7 +252,7 @@ final class ExactResumeTests: XCTestCase {
     /// into a snapshot by `TrainerResumeSnapshot(checkpoint:)`, the trainer
     /// is built from `--parameters` with the checkpoint's schedule adopted,
     /// and `restoreExactly` restores it.
-    private func assertCLIExactResume(creator: String, resumeMetadata: [String: String]) async throws {
+    private func assertCLIExactResume(creator: String, corpus: LineageRecord.CorpusPosition?) async throws {
         try await assertExactResume(
             creator,
             saveAndReload: { snapshot in
@@ -269,7 +269,8 @@ final class ExactResumeTests: XCTestCase {
                     weights: snapshot.trainerWeights,
                     architecture: .current,
                     includesVelocity: true,
-                    resumeMetadata: resumeMetadata
+                    lineage: try LineageRecord.forTests(
+                        trainerCompletedSteps: snapshot.schedule.completedTrainSteps, corpus: corpus)
                 )
                 let file = try CheckpointManager.decodeAnyModelFile(data)
                 // `training_step` stays the segment-local value it was given.
@@ -286,15 +287,13 @@ final class ExactResumeTests: XCTestCase {
     }
 
     func test_corpusReplay_resumeExact_continuesTheScheduleAsIfNeverStopped() async throws {
-        try await assertCLIExactResume(creator: "replay", resumeMetadata: [
-            "replay_corpus_id": "unit-test-corpus",
-            "replay_next_game_index": "12",
-            "replay_epoch": "0",
-        ])
+        try await assertCLIExactResume(creator: "replay", corpus: LineageRecord.CorpusPosition(
+            corpusID: "unit-test-corpus", corpusPath: "/unit-test-corpus", epoch: 0,
+            nextGameIndex: 12, shard: 0, populatedPlies: 0, bufferCapacity: 0))
     }
 
     func test_trainVsUci_resumeExact_continuesTheScheduleAsIfNeverStopped() async throws {
-        try await assertCLIExactResume(creator: "train-vs-uci", resumeMetadata: [:])
+        try await assertCLIExactResume(creator: "train-vs-uci", corpus: nil)
     }
 
     // MARK: - GUI Play-and-Train session resume
@@ -303,6 +302,7 @@ final class ExactResumeTests: XCTestCase {
         let json = """
         {
           "formatVersion": \(SessionCheckpointState.currentFormatVersion),
+          "lineage": \(LineageRecord.sessionTestFixtureJSON),
           "sessionID": "20260929-1-TEST", "savedAtUnix": 1700000000,
           "sessionStartUnix": 1699996400, "elapsedTrainingSec": 3600,
           "trainingSteps": \(trainingSteps), "selfPlayGames": 678, "selfPlayMoves": 45678,
@@ -346,7 +346,7 @@ final class ExactResumeTests: XCTestCase {
                         trainerSchedule: snapshot.schedule
                     ),
                     trainerCreatedAtUnix: 1_780_000_001,
-                    state: try minimalSessionState(trainingSteps: 0),
+                    state: try minimalSessionState(trainingSteps: 0), lineage: try LineageRecord.forTests(trainerCompletedSteps: snapshot.schedule.completedTrainSteps, corpus: nil),
                     trigger: "unittest"
                 )
                 sessionDirectories.append(directory)
@@ -404,7 +404,8 @@ final class ExactResumeTests: XCTestCase {
             metadata: ModelCheckpointMetadata(creator: "replay", trainingStep: 9, parentModelID: "", notes: "", trainerSchedule: schedule),
             weights: baseWeights,
             architecture: .current,
-            includesVelocity: false
+            includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: schedule.completedTrainSteps, corpus: nil)
         ))
     }
 
@@ -422,7 +423,9 @@ final class ExactResumeTests: XCTestCase {
             weights: baseWeights,
             architecture: .current,
             includesVelocity: false,
-            resumeMetadata: ["replay_corpus_id": "unit-test-corpus"]
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: 9, corpus: LineageRecord.CorpusPosition(
+                corpusID: "unit-test-corpus", corpusPath: "/unit-test-corpus", epoch: 0,
+                nextGameIndex: 0, shard: 0, populatedPlies: 0, bufferCapacity: 0))
         )
         let file = try CheckpointManager.decodeAnyModelFile(data)
         XCTAssertFalse(file.includesOptimizerVelocity)
@@ -449,7 +452,8 @@ final class ExactResumeTests: XCTestCase {
             metadata: ModelCheckpointMetadata(creator: "replay", trainingStep: 9, parentModelID: "", notes: "", trainerSchedule: schedule),
             weights: baseWeights + velocity,
             architecture: .current,
-            includesVelocity: true
+            includesVelocity: true,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: schedule.completedTrainSteps, corpus: nil)
         )
         let file = try CheckpointManager.decodeAnyModelFile(data)
         XCTAssertTrue(file.includesOptimizerVelocity)

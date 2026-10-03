@@ -73,7 +73,7 @@ final class Full10Ply10Reps210EncodingTests: XCTestCase {
 
         let workerId: UInt16 = 7
         let gameIndex: UInt32 = 1
-        let buffer = ReplayBuffer(capacity: 1024, inputEncoding: .full10Ply10Reps210)
+        let buffer = ReplayBuffer(capacity: 1024, inputEncoding: .full10Ply10Reps210, sampler: DCMRandom(seed: 1))
         // Stored frame is the 20-plane basic20 block — identical to full10ply200.
         XCTAssertEqual(buffer.floatsPerBoard, BoardEncoder.tensorLength(for: .basic20))
         XCTAssertEqual(buffer.reconstructedStride,
@@ -109,7 +109,7 @@ final class Full10Ply10Reps210EncodingTests: XCTestCase {
     /// applied, reconstruction == bake-in exactly as before.
     func test_full10ply200_buffer_unaffected() {
         let captured = playKnightCycleGame()
-        let buffer = ReplayBuffer(capacity: 1024, inputEncoding: .full10ply200)
+        let buffer = ReplayBuffer(capacity: 1024, inputEncoding: .full10ply200, sampler: DCMRandom(seed: 2))
         appendGame(captured, to: buffer, whiteOutcome: 0.0, workerId: 9, gameIndex: 1)
         let packedId = ReplayBuffer.packWorkerGameId(workerId: 9, gameIndex: 1)
         let stride = BoardEncoder.tensorLength(for: .full10ply200)

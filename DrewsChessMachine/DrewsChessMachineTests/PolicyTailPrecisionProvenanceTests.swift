@@ -55,7 +55,7 @@ final class PolicyTailPrecisionProvenanceTests: XCTestCase {
 
     @MainActor
     func testNetworksAndTrainersAreBuiltWithTheProcessValue() throws {
-        let network = try ChessMPSNetwork(.randomWeights)
+        let network = try ChessMPSNetwork(.randomWeights(initSeed: 1))
         XCTAssertEqual(network.network.policyTailPrecision, Precision.process)
         let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), initialization: .seeded(initSeed: 1))
         XCTAssertEqual(trainer.policyTailPrecision, Precision.process)
@@ -88,7 +88,8 @@ final class PolicyTailPrecisionProvenanceTests: XCTestCase {
             metadata: metadata,
             weights: snapshot.trainerWeights,
             architecture: arch,
-            includesVelocity: true
+            includesVelocity: true,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: metadata.trainerSchedule.map(\.completedTrainSteps), corpus: nil)
         )
         let header = try SafetensorsFile.decode(data)
         XCTAssertEqual(header.metadata[SafetensorsModelIO.Key.trainerPolicyTailPrecision], "fp32_from_pre_bn")

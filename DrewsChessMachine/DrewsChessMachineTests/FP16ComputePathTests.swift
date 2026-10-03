@@ -81,7 +81,7 @@ final class FP16ComputePathTests: XCTestCase {
     func test_fp16ForwardProducesFiniteWellFormedOutputs() async throws {
         try requireMetal()
         let arch = fp16Arch()
-        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 1), arch: arch)
         let count = 4
         let batch = startingBatch(count: count)
         let classes = arch.valueHeadClasses
@@ -202,7 +202,7 @@ final class FP16ComputePathTests: XCTestCase {
     func test_fp16ModelSafetensorsRoundTrips() async throws {
         try requireMetal()
         let arch = fp16Arch()
-        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 2), arch: arch)
         let weights = try await net.network.exportWeights()
         XCTAssertEqual(weights.count, arch.weightTensorPlan().count)
 
@@ -215,7 +215,7 @@ final class FP16ComputePathTests: XCTestCase {
             createdAtUnix: 1_780_000_001,
             metadata: meta,
             architecture: arch,
-            trigger: "unittest"
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil), trigger: "unittest"
         )
         defer {
             do { try FileManager.default.removeItem(at: url) }

@@ -113,7 +113,8 @@ enum ArchSweepCLI {
             do {
                 let t0 = CFAbsoluteTimeGetCurrent()
                 let trainer = try ChessTrainer(
-                    dropoutStream: RunMasterSeed.systemDrawn(context: "arch-sweep").generator(.dropout),
+                    // A build/step-time benchmark: no run, so no run seed.
+                    dropoutStream: DCMRandom.seededFromSystem(),
                     arch: arch,
                     initialization: .drawnSeed()
                 )

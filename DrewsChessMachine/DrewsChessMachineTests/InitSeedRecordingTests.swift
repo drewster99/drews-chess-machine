@@ -33,7 +33,8 @@ final class InitSeedRecordingTests: XCTestCase {
         }
         return try SafetensorsModelIO.encode(
             modelID: "20261002-1-INIT", createdAtUnix: 1_790_000_000, metadata: metadata, weights: weights,
-            architecture: Self.architecture, includesVelocity: false)
+            architecture: Self.architecture, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil))
     }
 
     // MARK: File metadata
@@ -94,7 +95,7 @@ final class InitSeedRecordingTests: XCTestCase {
     private func derive(_ source: Data, _ operations: [any DeriveOperation]) throws -> ModelDerivation.Result {
         try ModelDerivation.derive(
             sourceData: source, sourceName: "source.safetensors", operations: operations,
-            newModelID: "20261002-2-DRVE", createdAtUnix: 1_790_000_100, build: "test")
+            newModelID: "20261002-2-DRVE", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"])
     }
 
     /// A seeded `glorot` β re-draw writes exactly the β rows a fresh mint
@@ -106,7 +107,11 @@ final class InitSeedRecordingTests: XCTestCase {
         let operation = SetSEBetaInitDeriveOperation(value: .glorot, groupIndices: nil, initSeed: 4242)
         let first = try derive(source, [operation])
         let second = try derive(source, [operation])
-        XCTAssertEqual(first.data, second.data)
+        // The files differ in their lineage (each records when it was
+        // written); the tensors must not.
+        let firstWeights = try SafetensorsModelIO.decode(first.data, valueHead: .asStored).file.weights
+        let secondWeights = try SafetensorsModelIO.decode(second.data, valueHead: .asStored).file.weights
+        XCTAssertEqual(firstWeights.map { $0.map(\.bitPattern) }, secondWeights.map { $0.map(\.bitPattern) })
 
         let arguments = try XCTUnwrap(first.record.operations.first?.arguments)
         XCTAssertEqual(arguments["init_seed"], "4242")
@@ -136,7 +141,8 @@ final class InitSeedRecordingTests: XCTestCase {
         let source = try SafetensorsModelIO.encode(
             modelID: "20261002-3-ZERO", createdAtUnix: 1_790_000_000,
             metadata: ModelCheckpointMetadata(creator: "test", trainingStep: nil, parentModelID: "", notes: "fixture"),
-            weights: weights, architecture: arch, includesVelocity: false)
+            weights: weights, architecture: arch, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil))
         let result = try derive(source, [SetSEBetaInitDeriveOperation(value: .zero, groupIndices: nil, initSeed: 9)])
         let arguments = try XCTUnwrap(result.record.operations.first?.arguments)
         XCTAssertNil(arguments["init_seed"])

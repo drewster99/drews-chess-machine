@@ -38,6 +38,17 @@ enum SafetensorsModelIO {
         /// `init_seed` / `init_scheme` present without the other, or an
         /// `init_seed` that is not a decimal UInt64.
         case malformedInitRecord(String)
+        /// A file at a format version that requires `dcm_lineage` has none.
+        case missingLineage(formatVersion: Int)
+        /// `dcm_lineage` is present but does not decode.
+        case malformedLineage(String)
+        /// A header without `model_id`.
+        case missingModelID(source: String)
+        /// `training_step` is present but not an integer.
+        case malformedTrainingStep(String, source: String)
+        /// A trainer-state file's lineage total disagrees with its trainer
+        /// clock (`trainer_completed_steps`), on write.
+        case lineageStepDisagreesWithTrainerClock(lineageStep: Int?, trainerClock: Int)
 
         var description: String {
             switch self {
@@ -59,6 +70,18 @@ enum SafetensorsModelIO {
                 return "safetensors model: trainer_policy_tail_precision is '\(raw)', expected one of \(allowed)"
             case .malformedInitRecord(let detail):
                 return "safetensors model: init seed metadata is malformed (\(detail))"
+            case .missingLineage(let version):
+                return "safetensors model: format version \(version) requires a \(LineageRecord.metadataKey) record "
+                    + "in __metadata__ (required from version \(ArchitectureFormat.lineageRequiredFromVersion)), and this file has none"
+            case .malformedLineage(let detail):
+                return "safetensors model: \(LineageRecord.metadataKey) does not decode (\(detail))"
+            case .missingModelID(let source):
+                return "safetensors model \(source): no model_id in __metadata__"
+            case .malformedTrainingStep(let raw, let source):
+                return "safetensors model \(source): training_step '\(raw)' is not an integer"
+            case .lineageStepDisagreesWithTrainerClock(let lineageStep, let trainerClock):
+                return "safetensors model: lineage cum_trainer_step \(lineageStep.map(String.init) ?? "null") must equal the "
+                    + "trainer-state file's trainer_completed_steps \(trainerClock)"
             }
         }
     }
@@ -103,7 +126,7 @@ enum SafetensorsModelIO {
         weights: [[Float]],
         architecture: NetworkArchitecture,
         includesVelocity: Bool,
-        resumeMetadata: [String: String]? = nil
+        lineage: LineageRecord
     ) throws -> Data {
         let names = tensorNames(for: architecture, includesVelocity: includesVelocity)
         guard weights.count == names.count else {
@@ -139,6 +162,12 @@ enum SafetensorsModelIO {
         // captured alongside; one without the other is not resumable.
         if let schedule = metadata.trainerSchedule {
             guard includesVelocity else { throw IOError.trainerScheduleWithoutVelocity }
+            // The lineage total of a trainer-state file IS its trainer clock;
+            // two values that could disagree would not be one source.
+            guard lineage.steps.cumTrainerStep == schedule.completedTrainSteps else {
+                throw IOError.lineageStepDisagreesWithTrainerClock(
+                    lineageStep: lineage.steps.cumTrainerStep, trainerClock: schedule.completedTrainSteps)
+            }
             for (key, value) in try schedule.metadataEntries() { md[key] = value }
         }
         if let precision = metadata.trainerPolicyTailPrecision {
@@ -155,18 +184,8 @@ enum SafetensorsModelIO {
         let archData = try JSONEncoder().encode(architecture)
         md[Key.architecture] = String(decoding: archData, as: UTF8.self)
 
-        // Optional resume provenance (e.g. corpus-replay `replay_*` / `built_by_*`
-        // keys). Caller-namespaced strings written verbatim into `__metadata__`;
-        // current decode ignores unknown keys, so this is purely additive. Never
-        // overwrite a reserved key (the caller prefixes avoid collision anyway).
-        if let rm = resumeMetadata {
-            let reserved = Set([
-                Key.formatVersion, Key.modelID, Key.createdAt, Key.creator,
-                Key.trainingStep, Key.parentModelID, Key.notes, Key.architecture,
-                Key.trainerPolicyTailPrecision, Key.initSeed, Key.initScheme, ValueHeadRecentering.metadataKey,
-            ] + TrainerScheduleState.MetadataKey.all)
-            for (k, v) in rm where !reserved.contains(k) { md[k] = v }
-        }
+        // The file's lineage: the record's JSON plus its derived flat mirrors.
+        for (key, value) in try lineage.metadataEntries() { md[key] = value }
 
         return try SafetensorsFile.encode(tensors: tensors, metadata: md)
     }
@@ -342,6 +361,10 @@ enum SafetensorsModelIO {
         case (nil, .some):
             throw IOError.malformedInitRecord("\(Key.initScheme) without \(Key.initSeed)")
         }
+        let provenance = ModelCheckpointFile.SafetensorsProvenance(
+            contentSHA256: md[SafetensorsFile.contentHashKey],
+            lineage: try lineage(fromMetadata: md, formatVersion: architectureFormat.formatVersion)
+        )
         let metadata = ModelCheckpointMetadata(
             creator: md[Key.creator] ?? "",
             trainingStep: md[Key.trainingStep].flatMap { Int($0) },
@@ -358,17 +381,71 @@ enum SafetensorsModelIO {
             weights: weights,
             architecture: architecture,
             valueHeadCentering: valueHeadCentering,
-            architectureFormat: architectureFormat
+            architectureFormat: architectureFormat,
+            safetensorsProvenance: provenance
         )
         return Decoded(file: file, architecture: architecture, hasVelocity: hasVelocity,
                        architectureFormat: architectureFormat)
     }
 
+    // MARK: - Lineage
+
+    /// The lineage a safetensors `__metadata__` map carries, under the file's
+    /// own format version: required (and decoded strictly) from
+    /// `ArchitectureFormat.lineageRequiredFromVersion`, reported unrecorded
+    /// for older files. Shared by the full decode and the header-only reader.
+    static func lineage(fromMetadata md: [String: String], formatVersion: Int) throws -> LineageRecord.Presence {
+        guard formatVersion >= ArchitectureFormat.lineageRequiredFromVersion else {
+            return .unrecorded(formatVersion: formatVersion)
+        }
+        guard let text = md[LineageRecord.metadataKey] else {
+            throw IOError.missingLineage(formatVersion: formatVersion)
+        }
+        do {
+            return .recorded(try LineageRecord.decode(jsonText: text))
+        } catch {
+            throw IOError.malformedLineage(String(describing: error))
+        }
+    }
+
+    /// Header-only read of a safetensors model file's identity and lineage:
+    /// model ID, content hash, trainer clock (`trainer_completed_steps`, or
+    /// the plain file's `training_step`) and lineage, with no tensor decode.
+    static func readParentFile(at url: URL) throws -> LineageTracker.ParentFile {
+        let md = try ModelFileCatalog.headerMetadata(at: url)
+        let version = try ArchitectureFormat.safetensorsFormatVersion(
+            metadataValue: md[Key.formatVersion], source: url.lastPathComponent)
+        guard let modelID = md[Key.modelID] else {
+            throw IOError.missingModelID(source: url.lastPathComponent)
+        }
+        return LineageTracker.ParentFile(
+            modelID: modelID,
+            contentSHA256: md[SafetensorsFile.contentHashKey],
+            trainerCompletedSteps: try trainerClock(fromMetadata: md, source: url.lastPathComponent),
+            lineage: try lineage(fromMetadata: md, formatVersion: version)
+        )
+    }
+
+    /// A file's trainer clock: `trainer_completed_steps` on a trainer-state
+    /// file, otherwise the `training_step` its weights were taken at, nil
+    /// when it states neither. A value that is present but not an integer
+    /// is an error, never read as absent.
+    static func trainerClock(fromMetadata md: [String: String], source: String) throws -> Int? {
+        if let schedule = try TrainerScheduleState.decode(fromMetadata: md) {
+            return schedule.completedTrainSteps
+        }
+        guard let raw = md[Key.trainingStep] else { return nil }
+        guard let value = Int(raw) else {
+            throw IOError.malformedTrainingStep(raw, source: source)
+        }
+        return value
+    }
+
     // MARK: - Resume provenance
 
-    /// Resume provenance read back from a checkpoint's `__metadata__` — the
-    /// `replay_*` / `built_by_*` keys a corpus-replay run writes (Phase 1).
-    /// Present only on checkpoints saved by `CorpusReplayRunner`.
+    /// Where a corpus-replay checkpoint stood in its corpus. Read from the
+    /// file's lineage record, or — for a file written before lineage — from
+    /// the `replay_*` / `built_by_*` keys corpus replay wrote then.
     struct ReplayResumeMetadata: Sendable {
         var corpusID: String
         var corpusPath: String
@@ -378,6 +455,49 @@ enum SafetensorsModelIO {
         var capacity: Int
         var builtByBuild: Int?
         var builtByGit: String?
+    }
+
+    /// Why a file cannot be exact-resumed by corpus replay.
+    enum ReplayResumeError: Error, CustomStringConvertible {
+        case noCorpusPosition(file: String)
+        case noLegacyResumeMetadata(file: String)
+
+        var description: String {
+            switch self {
+            case .noCorpusPosition(let file):
+                return "\(file) carries a lineage without a corpus position (not a corpus-replay checkpoint)"
+            case .noLegacyResumeMetadata(let file):
+                return "\(file) carries no replay_* resume metadata (not a corpus-replay checkpoint)"
+            }
+        }
+    }
+
+    /// Where a corpus-replay checkpoint stood in its corpus: from its
+    /// lineage record (`fed.corpus`) when it has one, else — for a file
+    /// written before lineage — from the legacy `replay_*` keys.
+    static func replayResumePoint(at url: URL) throws -> ReplayResumeMetadata {
+        let parent = try readParentFile(at: url)
+        switch parent.lineage {
+        case .recorded(let record):
+            guard let corpus = record.fed.corpus else {
+                throw ReplayResumeError.noCorpusPosition(file: url.lastPathComponent)
+            }
+            return ReplayResumeMetadata(
+                corpusID: corpus.corpusID,
+                corpusPath: corpus.corpusPath,
+                nextGameIndex: corpus.nextGameIndex,
+                epoch: corpus.epoch,
+                populatedPlies: corpus.populatedPlies,
+                capacity: corpus.bufferCapacity,
+                builtByBuild: record.build.buildNumber,
+                builtByGit: record.build.gitHash
+            )
+        case .unrecorded:
+            guard let legacy = readResumeMetadata(at: url) else {
+                throw ReplayResumeError.noLegacyResumeMetadata(file: url.lastPathComponent)
+            }
+            return legacy
+        }
     }
 
     /// Header-only read of the resume metadata: parses just the safetensors JSON

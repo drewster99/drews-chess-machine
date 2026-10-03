@@ -483,7 +483,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
     // `network.blockingValueBaseline` (false = overlap, true = waitUntilCompleted).
 
     private func populateReplayBuffer(_ a: NetworkArchitecture, positions: Int) -> ReplayBuffer {
-        let buf = ReplayBuffer(capacity: max(positions, 4096), inputEncoding: a.inputEncoding)
+        let buf = ReplayBuffer(capacity: max(positions, 4096), inputEncoding: a.inputEncoding, sampler: DCMRandom(seed: 1))
         let fpb = a.inputPlanes * 64
         var boards = [Float](repeating: 0, count: positions * fpb)
         var moves = [Int32](repeating: 0, count: positions)

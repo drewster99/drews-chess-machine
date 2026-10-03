@@ -158,7 +158,7 @@ final class Basic24EncodingTests: XCTestCase {
         let arch = Self.smallArchitecture(.basic24)
         try arch.validate()
         XCTAssertEqual(arch.inputPlanes, 24)
-        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 1), arch: arch)
         let board = BoardEncoder.encode(.starting, encoding: .basic24)
         try await net.evaluate(board: board) { policyBuf, value in
             XCTAssertEqual(policyBuf.count, arch.policySize)
@@ -170,7 +170,7 @@ final class Basic24EncodingTests: XCTestCase {
     /// 24-plane stem and takes a 24-plane champion's weights.
     func testA24PlaneTrainerBuildsAndLoadsChampionWeights() async throws {
         let arch = Self.smallArchitecture(.basic24)
-        let champion = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let champion = try ChessMPSNetwork(.randomWeights(initSeed: 2), arch: arch)
         let weights = try await champion.network.exportWeights()
         let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: arch, initialization: .seeded(initSeed: 1))
         XCTAssertEqual(trainer.arch.inputPlanes, 24)
@@ -186,7 +186,8 @@ final class Basic24EncodingTests: XCTestCase {
             let data = try SafetensorsModelIO.encode(
                 modelID: "20261002-1-ENC\(encoding.planeCount)", createdAtUnix: 1_790_000_000,
                 metadata: ModelCheckpointMetadata(creator: "test", trainingStep: nil, parentModelID: "", notes: ""),
-                weights: weights, architecture: arch, includesVelocity: false)
+                weights: weights, architecture: arch, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil))
             let decoded = try SafetensorsModelIO.decode(data, valueHead: .asStored, source: "fixture")
             XCTAssertEqual(decoded.architecture, arch)
             XCTAssertEqual(decoded.architecture.inputEncoding, encoding)
@@ -194,7 +195,7 @@ final class Basic24EncodingTests: XCTestCase {
     }
 
     func testReplayBufferUsesThe24PlaneStride() {
-        let buffer = ReplayBuffer(capacity: 8, inputEncoding: .basic24)
+        let buffer = ReplayBuffer(capacity: 8, inputEncoding: .basic24, sampler: DCMRandom(seed: 1))
         XCTAssertEqual(buffer.floatsPerBoard, 24 * Self.area)
         XCTAssertEqual(ReplayBuffer.singleFrameEncoding(forStoredStride: 24 * Self.area), .basic24)
         XCTAssertEqual(ReplayBuffer.singleFrameEncoding(forStoredStride: 30 * Self.area), .basic30)

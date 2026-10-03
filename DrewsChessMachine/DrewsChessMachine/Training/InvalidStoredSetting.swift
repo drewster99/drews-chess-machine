@@ -32,12 +32,14 @@ public struct InvalidStoredSetting: Identifiable, Equatable, Sendable {
 }
 
 extension ParameterValue {
-    /// The value as it appears in `parameters.json`.
+    /// The value as text — as `parameters.json` writes it, except that a
+    /// UInt64 appears without the quotes of its JSON string.
     var displayText: String {
         switch self {
         case .bool(let b): return b ? "true" : "false"
         case .int(let n): return String(n)
         case .double(let d): return "\(d)"
+        case .uint64(let n): return String(n)
         }
     }
 }

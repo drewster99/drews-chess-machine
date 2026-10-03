@@ -34,6 +34,9 @@ struct ContentView: View {
     /// Forwarded `--start-model <path>` value (starting champion for
     /// `--train`). Nil ⇒ fresh random build.
     let trainStartModelPath: String?
+    /// Forwarded `--seed <n>` value (with `--train`). Nil ⇒ the seed
+    /// settings decide each run's master seed.
+    let trainCommandLineSeed: UInt64?
     let cliConfig: CliTrainingConfig?
     let cliResultsOutput: CliResultsOutput?
     /// View > Show Training Graphs preference, forwarded from
@@ -108,6 +111,7 @@ struct ContentView: View {
             autoPlayChessOnLaunch: autoPlayChessOnLaunch,
             playChessModelPath: playChessModelPath,
             trainStartModelPath: trainStartModelPath,
+            trainCommandLineSeed: trainCommandLineSeed,
             cliConfig: cliConfig,
             cliResultsOutput: cliResultsOutput,
             chartCoordinator: chartCoordinator
@@ -160,6 +164,7 @@ struct ContentView: View {
         autoPlayChessOnLaunch: false,
         playChessModelPath: nil,
         trainStartModelPath: nil,
+        trainCommandLineSeed: nil,
         cliConfig: nil,
         cliResultsOutput: nil,
         showTrainingGraphs: true,

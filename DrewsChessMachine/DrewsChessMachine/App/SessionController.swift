@@ -174,6 +174,15 @@ final class SessionController {
     /// `parallelStats`. Created on Play-and-Train start, `nil` otherwise.
     var parallelWorkerStatsBox: ParallelWorkerStatsBox?
 
+    /// The lineage segment of the trainer this process is training, if any
+    /// (see `SessionController+Lineage`). Not displayed.
+    @ObservationIgnored var lineageTracker: LineageTracker?
+    /// Fed counts the lineage segment carried across stats boxes.
+    @ObservationIgnored var lineageFedCarry = LineageFedCarry()
+    /// The file the champion's weights were loaded from, as a lineage
+    /// parent; nil when the champion was built fresh in this process.
+    @ObservationIgnored var championLineageSource: LineageTracker.ParentFile?
+
     /// Rolling-window game-diversity tracker for self-play. Fed by every
     /// self-play worker at game end; snapshot polled by the heartbeat for
     /// display and by the stats logger for `[STATS]` lines. `nil` outside a
@@ -276,6 +285,28 @@ final class SessionController {
     /// The replay buffer self-play workers fill and the trainer samples from.
     /// `nil` outside a Play-and-Train session.
     var replayBuffer: ReplayBuffer?
+
+    /// The current run's master seed, resolved when a run starts
+    /// (`RunRandomSeed.resolve`) and kept across a Stop + continue, which goes
+    /// on with the same run. Every seeded stream of the run derives from it.
+    /// `nil` before the first Play-and-Train start of this launch.
+    var runRandomSeed: RunRandomSeed?
+
+    /// Serials of the current run's self-play games (each names the game's
+    /// stream). Lives with `runRandomSeed`: replaced when a run starts, kept
+    /// across a Stop + continue so the continued run never replays a game
+    /// stream. Not view state.
+    @ObservationIgnored var selfPlayGameSerials: GameSerialCounter?
+
+    /// How many arenas the current run has started; the next arena's index
+    /// in its game streams (`arena.<index>.game.<g>`). Reset with
+    /// `runRandomSeed`. Not view state.
+    @ObservationIgnored var arenasStartedThisRun: Int = 0
+
+    /// `--seed` from the command line (GUI `--train`), which overrides the
+    /// seed settings for every run this process starts. Set by
+    /// `UpperContentView.runAutoTrainLaunchSequence`.
+    var commandLineSeed: UInt64?
 
     /// Rolling-window averages of the most recent self-play training losses,
     /// split into the policy (outcome-weighted CE) and value (categorical
@@ -956,8 +987,13 @@ final class SessionController {
             // Initialized from a drawn seed: every Play-and-Train start
             // replaces these weights (a reset + load), but the trainer exists
             // from here on, so it holds real weights until then.
+            //
+            // Every Play-and-Train run replaces this stream with its own
+            // seed's `dropout` stream when it starts (`beginDropoutStream`);
+            // the system-seeded one only drives steps taken outside a run
+            // (the demo trainer, the batch-size sweep), which no run records.
             let t = try ChessTrainer(
-                dropoutStream: RunMasterSeed.systemDrawn(context: "trainer").generator(.dropout),
+                dropoutStream: DCMRandom.seededFromSystem(),
                 hyperparameters: hyperparameters,
                 arch: trainerArch,
                 initialization: .drawnSeed()
@@ -1047,6 +1083,9 @@ final class SessionController {
         // Drop the trainer (it owns graph state we're about to invalidate by
         // rebuilding) and wipe all training/sweep display state.
         onDropTrainer()
+        // The dropped trainer's lineage segment ends with it.
+        lineageTracker = nil
+        lineageFedCarry = LineageFedCarry()
         onClearTrainingDisplay()
 
         // `buildArchitecture` is set by the Build-New-Model screen (or, headless,
@@ -1055,13 +1094,15 @@ final class SessionController {
         let arch = buildArchitecture
         Task {
             let result = await Task.detached(priority: .userInitiated) {
-                Self.performBuild(arch: arch, mode: .seededRandomWeights(initSeed: initSeed))
+                Self.performBuild(arch: arch, initMode: .randomWeights(initSeed: initSeed))
             }.value
 
             switch result {
             case .success(let net):
                 net.identifier = ModelIDMinter.mint()
                 network = net
+                // Weights initialized here: a run from this champion is fresh.
+                championLineageSource = nil
                 net.network.commandQueue.label = "champion (self-play)"
                 runner = ChessRunner(network: net)
                 let idStr = net.identifier?.description ?? "?"
@@ -1108,7 +1149,7 @@ final class SessionController {
         // Every caller loads weights into the champion right after, so the
         // build draws nothing and the network refuses use until that load.
         let result = await Task.detached(priority: .userInitiated) {
-            Self.performBuild(arch: targetArch, mode: .weightsToBeLoaded)
+            Self.performBuild(arch: targetArch, initMode: .overwrittenByLoad)
         }.value
         switch result {
         case .success(let net):
@@ -1130,7 +1171,7 @@ final class SessionController {
     /// The actual network construction. Runs on a detached `.userInitiated`
     /// task at the call sites (MPSGraph build is long synchronous work), so
     /// this is `nonisolated`.
-    nonisolated static func performBuild(arch: NetworkArchitecture, mode: NetworkInitMode) -> Result<ChessMPSNetwork, Error> {
-        Result { try ChessMPSNetwork(mode, arch: arch) }
+    nonisolated static func performBuild(arch: NetworkArchitecture, initMode: NetworkInitMode) -> Result<ChessMPSNetwork, Error> {
+        Result { try ChessMPSNetwork(initMode, arch: arch) }
     }
 }

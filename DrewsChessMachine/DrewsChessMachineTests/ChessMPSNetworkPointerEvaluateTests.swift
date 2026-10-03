@@ -36,7 +36,7 @@ final class ChessMPSNetworkPointerEvaluateTests: XCTestCase {
     }
 
     func test_pointerOverload_byteIdenticalToArrayOverload() async throws {
-        let net = try ChessMPSNetwork(.randomWeights)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 1))
         let count = 8
         let batch = makeBatch(count: count)
 

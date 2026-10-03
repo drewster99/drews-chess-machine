@@ -33,7 +33,7 @@ final class InitSchemeGoldenTests: XCTestCase {
         for (name, seed) in expected {
             XCTAssertEqual(WeightInitScheme.tensorSeed(initSeed: 42, tensorName: name), seed, name)
         }
-        XCTAssertEqual(WeightInitScheme.bnCalibrationSeed(initSeed: 42), 0x5a98_1c36_fdcb_f5bb)
+        XCTAssertEqual(DCMRandomStreams.batchNormCalibrationGenerator(initSeed: 42), DCMRandom(seed: 0x5a98_1c36_fdcb_f5bb))
     }
 
     func testConvTensorGoldens() throws {

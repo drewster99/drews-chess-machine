@@ -67,24 +67,7 @@ struct CliTrainingConfig: Sendable {
                 continue
             }
 
-            // NSNumber bridging is treacherous: `as? Bool` succeeds for any
-            // NSNumber (so `1` parses as `true`). Disambiguate via objCType
-            // — true/false are char-typed ("c"/"B"), JSON ints are "q",
-            // JSON doubles are "d". The cast-to-Bool path only fires when
-            // JSONSerialization actually emitted a Bool.
-            if let n = anyValue as? NSNumber {
-                let typeChar = String(cString: n.objCType)
-                switch typeChar {
-                case "c", "B":
-                    values[id] = .bool(n.boolValue)
-                case "d", "f":
-                    values[id] = .double(n.doubleValue)
-                default:
-                    values[id] = .int(n.intValue)
-                }
-            } else {
-                throw TrainingConfigError.wrongType(id: id)
-            }
+            values[id] = try ParameterValue(jsonValue: anyValue, id: id)
         }
 
         return CliTrainingConfig(
@@ -103,11 +86,7 @@ struct CliTrainingConfig: Sendable {
         let sortedIds = trainingParameters.keys.sorted()
         for id in sortedIds {
             guard let value = trainingParameters[id] else { continue }
-            switch value {
-            case .bool(let x): parts.append("\(id)=\(x)")
-            case .int(let x): parts.append("\(id)=\(x)")
-            case .double(let x): parts.append("\(id)=\(x)")
-            }
+            parts.append("\(id)=\(value.displayText)")
         }
         if let t = trainingTimeLimitSec {
             parts.append("training_time_limit=\(t)")

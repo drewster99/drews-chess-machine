@@ -78,7 +78,7 @@ final class LegacyDcmmodelLoadTests: XCTestCase {
             let file = try CheckpointManager.loadModelFile(at: url)
 
             // Build the resolved architecture and load the file's weights into it.
-            let net = try ChessMPSNetwork(.randomWeights, arch: file.architecture)
+            let net = try ChessMPSNetwork(.randomWeights(initSeed: 1), arch: file.architecture)
             let base = net.network.trainableVariables.count
                 + net.network.bnRunningStatsVariables.count
 
@@ -112,7 +112,8 @@ final class LegacyDcmmodelLoadTests: XCTestCase {
                 metadata: file.metadata,
                 weights: file.weights,
                 architecture: file.architecture,
-                includesVelocity: includesVelocity)
+                includesVelocity: includesVelocity,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: file.metadata.trainerSchedule.map(\.completedTrainSteps), corpus: nil))
             let reloaded = try SafetensorsModelIO.decode(bytes)
             XCTAssertEqual(reloaded.architecture, file.architecture,
                            "\(url.lastPathComponent): architecture changed across formats")

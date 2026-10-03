@@ -15,7 +15,7 @@ final class CorpusReplayFeederTests: XCTestCase {
 
     private static var sharedNetwork: ChessMPSNetwork = {
         do {
-            return try ChessMPSNetwork(.randomWeights)
+            return try ChessMPSNetwork(.randomWeights(initSeed: 1))
         } catch {
             fatalError("CorpusReplayFeederTests: ChessMPSNetwork(.randomWeights) failed: \(error)")
         }
@@ -39,7 +39,7 @@ final class CorpusReplayFeederTests: XCTestCase {
     }
 
     private func makeBuffer() -> ReplayBuffer {
-        ReplayBuffer(capacity: 64, inputEncoding: Self.sharedNetwork.inputEncoding)
+        ReplayBuffer(capacity: 64, inputEncoding: Self.sharedNetwork.inputEncoding, sampler: DCMRandom(seed: 1))
     }
 
     private struct StoredSlots: Sendable {

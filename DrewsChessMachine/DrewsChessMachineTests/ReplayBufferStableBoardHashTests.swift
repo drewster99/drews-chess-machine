@@ -46,7 +46,7 @@ final class ReplayBufferStableBoardHashTests: XCTestCase {
 
     func testABufferIsWrittenAsFormatEight() throws {
         let url = root.appendingPathComponent("buffer.bin")
-        let buffer = ReplayBuffer(capacity: 16)
+        let buffer = ReplayBuffer(capacity: 16, sampler: DCMRandom(seed: 1))
         try Self.appendGame(to: buffer, boards: Self.distinctBoards(count: 3, floatsPerBoard: buffer.floatsPerBoard),
                             hashes: [11, 22, 33])
         try buffer.write(to: url)
@@ -58,7 +58,7 @@ final class ReplayBufferStableBoardHashTests: XCTestCase {
     /// the slot's stored board, so the restored positions count under the same
     /// keys as new inserts of the same boards.
     func testAFormatSevenBufferHasItsHashesRecomputedFromTheBoardsOnLoad() throws {
-        let source = ReplayBuffer(capacity: 16)
+        let source = ReplayBuffer(capacity: 16, sampler: DCMRandom(seed: 2))
         let boards = Self.distinctBoards(count: 3, floatsPerBoard: source.floatsPerBoard)
         let staleHashes: [UInt64] = [0xDEAD_0001, 0xDEAD_0002, 0xDEAD_0003]
         try Self.appendGame(to: source, boards: boards, hashes: staleHashes)
@@ -66,7 +66,7 @@ final class ReplayBufferStableBoardHashTests: XCTestCase {
         try source.write(to: url)
         try Self.rewriteAsFormatSeven(url: url)
 
-        let restored = ReplayBuffer(capacity: 16)
+        let restored = ReplayBuffer(capacity: 16, sampler: DCMRandom(seed: 3))
         try restored.restore(from: url)
 
         for (index, board) in boards.enumerated() {
@@ -82,14 +82,14 @@ final class ReplayBufferStableBoardHashTests: XCTestCase {
     /// A current-format file is trusted as written: its hashes were produced by
     /// the stable hash, so the load does not spend time recomputing them.
     func testAFormatEightBufferKeepsItsSavedHashes() throws {
-        let source = ReplayBuffer(capacity: 16)
+        let source = ReplayBuffer(capacity: 16, sampler: DCMRandom(seed: 4))
         let boards = Self.distinctBoards(count: 2, floatsPerBoard: source.floatsPerBoard)
         let savedHashes: [UInt64] = [0xABCD_0001, 0xABCD_0002]
         try Self.appendGame(to: source, boards: boards, hashes: savedHashes)
         let url = root.appendingPathComponent("current.bin")
         try source.write(to: url)
 
-        let restored = ReplayBuffer(capacity: 16)
+        let restored = ReplayBuffer(capacity: 16, sampler: DCMRandom(seed: 5))
         try restored.restore(from: url)
         for hash in savedHashes {
             XCTAssertEqual(restored.bufferedPositionStats(forHash: hash)?.count, 1)

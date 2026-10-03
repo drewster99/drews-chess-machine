@@ -135,7 +135,7 @@ final class SEBetaInitTests: XCTestCase {
         try requireMetal()
         let arch = Self.twoGroupArchitecture(group0: .zero, group1: .zero)
         try arch.validate()
-        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 1), arch: arch)
         let weights = try await net.network.exportWeights()
         for block in 0..<arch.numBlocks {
             let halves = try seHalves(weights, block: block, arch: arch)
@@ -149,7 +149,7 @@ final class SEBetaInitTests: XCTestCase {
         try requireMetal()
         let arch = Self.twoGroupArchitecture(group0: .zero, group1: .glorot)
         try arch.validate()
-        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 2), arch: arch)
         let weights = try await net.network.exportWeights()
         // Block 0 is group 0 (zero-β); blocks 1–2 are group 1 (Glorot-β).
         let zeroBlock = try seHalves(weights, block: 0, arch: arch)
@@ -171,7 +171,7 @@ final class SEBetaInitTests: XCTestCase {
         let board = BoardEncoder.encode(.starting, encoding: .basic30)
 
         func forward(_ arch: NetworkArchitecture, _ weights: [[Float]]) async throws -> [Float] {
-            let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+            let net = try ChessMPSNetwork(.randomWeights(initSeed: 3), arch: arch)
             try await net.network.loadWeights(weights)
             let box = SyncBox<[Float]>([])
             try await net.evaluate(board: board) { policy, value in box.value = Array(policy) + [value] }
@@ -211,7 +211,7 @@ final class SEBetaInitTests: XCTestCase {
         }
 
         let zeroArch = Self.twoGroupArchitecture(group0: .zero, group1: .zero)
-        let zeroWeights = try await ChessMPSNetwork(.randomWeights, arch: zeroArch).network.exportWeights()
+        let zeroWeights = try await ChessMPSNetwork(.randomWeights(initSeed: 4), arch: zeroArch).network.exportWeights()
         let (twinArch, twinWeights) = try attenuateTwin(zeroArch, zeroWeights)
         let zeroOut = try await forward(zeroArch, zeroWeights)
         let twinOut = try await forward(twinArch, twinWeights)
@@ -220,7 +220,7 @@ final class SEBetaInitTests: XCTestCase {
         XCTAssertLessThan(maxZeroDiff, 1e-4, "zero-β forward must equal the sigmoid(γ)·x forward")
 
         let glorotArch = Self.twoGroupArchitecture(group0: .glorot, group1: .glorot)
-        let glorotWeights = try await ChessMPSNetwork(.randomWeights, arch: glorotArch).network.exportWeights()
+        let glorotWeights = try await ChessMPSNetwork(.randomWeights(initSeed: 5), arch: glorotArch).network.exportWeights()
         let (glorotTwinArch, glorotTwinWeights) = try attenuateTwin(glorotArch, glorotWeights)
         let glorotOut = try await forward(glorotArch, glorotWeights)
         let glorotTwinOut = try await forward(glorotTwinArch, glorotTwinWeights)
@@ -276,7 +276,8 @@ final class SEBetaInitTests: XCTestCase {
         let meta = ModelCheckpointMetadata(creator: "test", trainingStep: nil, parentModelID: "", notes: "fixture")
         return try SafetensorsModelIO.encode(
             modelID: modelID, createdAtUnix: 1_790_000_000, metadata: meta, weights: weights,
-            architecture: arch, includesVelocity: false)
+            architecture: arch, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: meta.trainerSchedule.map(\.completedTrainSteps), corpus: nil))
     }
 
     /// Re-encode `data` with `dcm_format_version` set to `version` (nil =
@@ -437,7 +438,7 @@ final class SEBetaInitTests: XCTestCase {
     ) throws -> ModelDerivation.Result {
         try ModelDerivation.derive(
             sourceData: source, sourceName: "source.safetensors", operations: operations,
-            newModelID: newModelID, createdAtUnix: 1_790_000_100, build: "test")
+            newModelID: newModelID, createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"])
     }
 
     /// Every tensor of `derived` is bit-identical to `source`'s except the β
@@ -528,7 +529,7 @@ final class SEBetaInitTests: XCTestCase {
         let second = try ModelDerivation.derive(
             sourceData: first.data, sourceName: "first.safetensors",
             operations: [SetSEBetaInitDeriveOperation(value: .glorot, groupIndices: [1])],
-            newModelID: "20260930-3-DRV2", createdAtUnix: 1_790_000_200, build: "test")
+            newModelID: "20260930-3-DRV2", createdAtUnix: 1_790_000_200, build: "test", invocationArguments: ["test"])
         XCTAssertEqual(second.targetArchitecture.blockGroups.map(\.seBetaInit), [.glorot, .glorot])
         try assertOnlyBetaChanged(
             source: try parts(first.data), derived: try parts(second.data), arch: sourceArch,
@@ -596,7 +597,8 @@ final class SEBetaInitTests: XCTestCase {
         let data = try SafetensorsModelIO.encode(
             modelID: "20260930-1-TRNR", createdAtUnix: 1_790_000_000,
             metadata: ModelCheckpointMetadata(creator: "test", trainingStep: 10, parentModelID: "", notes: ""),
-            weights: weights, architecture: arch, includesVelocity: true)
+            weights: weights, architecture: arch, includesVelocity: true,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil))
         XCTAssertThrowsError(try derive(data, [SetSEBetaInitDeriveOperation(value: .zero, groupIndices: nil)])) { error in
             guard case .sourceHasOptimizerState? = error as? ModelDerivation.DeriveError else {
                 return XCTFail("expected sourceHasOptimizerState, got \(error)")

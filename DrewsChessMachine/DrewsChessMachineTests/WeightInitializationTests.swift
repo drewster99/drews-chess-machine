@@ -172,9 +172,9 @@ final class WeightInitializationTests: XCTestCase {
     func testWeightsToBeLoadedMPSNetworkRefusesUntilLoaded() async throws {
         try requireMetal()
         let arch = Self.smallArchitecture()
-        let fresh = try ChessMPSNetwork(.seededRandomWeights(initSeed: 21), arch: arch)
+        let fresh = try ChessMPSNetwork(.randomWeights(initSeed: 21), arch: arch)
         let weights = try await fresh.network.exportWeights()
-        let mirror = try ChessMPSNetwork(.weightsToBeLoaded, arch: arch)
+        let mirror = try ChessMPSNetwork(.overwrittenByLoad, arch: arch)
         let board = BoardEncoder.encode(.starting, encoding: arch.inputEncoding)
         do {
             try await mirror.evaluate(board: board) { _, _ in }
@@ -191,8 +191,8 @@ final class WeightInitializationTests: XCTestCase {
     func testSeededMintIsReproducible() async throws {
         try requireMetal()
         let arch = Self.smallArchitecture()
-        let first = try await ChessMPSNetwork(.seededRandomWeights(initSeed: 77), arch: arch).network.exportWeights()
-        let second = try await ChessMPSNetwork(.seededRandomWeights(initSeed: 77), arch: arch).network.exportWeights()
+        let first = try await ChessMPSNetwork(.randomWeights(initSeed: 77), arch: arch).network.exportWeights()
+        let second = try await ChessMPSNetwork(.randomWeights(initSeed: 77), arch: arch).network.exportWeights()
         let trainableCount = arch.trainableTensorPlan().count
         XCTAssertEqual(Self.bits(Array(first.prefix(trainableCount))), Self.bits(Array(second.prefix(trainableCount))))
         for (a, b) in zip(first.suffix(from: trainableCount), second.suffix(from: trainableCount)) {
@@ -204,10 +204,12 @@ final class WeightInitializationTests: XCTestCase {
 
     func testWarmupBatchFollowsTheInitSeed() {
         let encoding = InputEncoding.basic30
-        XCTAssertEqual(ChessMPSNetwork.warmupBatch(encoding: encoding, initSeed: 5),
-                       ChessMPSNetwork.warmupBatch(encoding: encoding, initSeed: 5))
-        XCTAssertNotEqual(ChessMPSNetwork.warmupBatch(encoding: encoding, initSeed: 5),
-                          ChessMPSNetwork.warmupBatch(encoding: encoding, initSeed: 6))
+        var first = DCMRandomStreams.batchNormCalibrationGenerator(initSeed: 5)
+        var again = DCMRandomStreams.batchNormCalibrationGenerator(initSeed: 5)
+        var other = DCMRandomStreams.batchNormCalibrationGenerator(initSeed: 6)
+        let firstBatch = ChessMPSNetwork.warmupBatch(encoding: encoding, random: &first)
+        XCTAssertEqual(firstBatch, ChessMPSNetwork.warmupBatch(encoding: encoding, random: &again))
+        XCTAssertNotEqual(firstBatch, ChessMPSNetwork.warmupBatch(encoding: encoding, random: &other))
     }
 
     func testTrainerBuiltForLoadRefusesTrainingUntilLoaded() async throws {

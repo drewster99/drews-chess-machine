@@ -529,18 +529,24 @@ enum ReplayBufferAnalyzer {
     /// buffer's lock (no pointer escape), and forward-passes each
     /// outside the lock so live training isn't paused for the duration
     /// of the inference loop.
+    ///
+    /// `sampleRandom` picks the positions: the run's
+    /// `probe.entropy_by_bucket.<trainerStep>` stream when the buffer belongs
+    /// to a run (`entropyProbeRandom(runSeed:trainerStep:)`).
     static func runWithPolicyEntropy(
         buffer: ReplayBuffer,
         network: ChessMPSNetwork,
         modelLabel: String,
         entropyModelLabel: String? = nil,
-        perBucketTarget: Int = defaultPolicyEntropyPerBucketTarget
+        perBucketTarget: Int = defaultPolicyEntropyPerBucketTarget,
+        sampleRandom: DCMRandom
     ) async throws -> Result {
         let base = run(buffer: buffer, modelLabel: modelLabel)
         let entropyStats = try await samplePolicyEntropyByMaterialBucket(
             buffer: buffer,
             network: network,
-            perBucketTarget: perBucketTarget
+            perBucketTarget: perBucketTarget,
+            sampleRandom: sampleRandom
         )
         // Produce a new Result with the optional field replaced. Result
         // fields are `let` so we can't mutate in-place; rebuild instead.
@@ -564,6 +570,27 @@ enum ReplayBufferAnalyzer {
         )
     }
 
+    /// Name of the entropy probe's stream (`probe.<name>.<trainerStep>`).
+    static let entropyProbeStreamName = "entropy_by_bucket"
+
+    /// The generator for one entropy probe: the run's
+    /// `probe.entropy_by_bucket.<trainerStep>` stream, so a probe at a given
+    /// step of a seeded run samples the same positions every time. A buffer
+    /// that is not part of a run in this process (no run seed, or no trainer
+    /// step yet) is not reproducible anyway; its probe is seeded from the
+    /// system, and the returned description says so for the caller's log
+    /// line.
+    static func entropyProbeRandom(
+        runSeed: RunRandomSeed?,
+        trainerStep: Int?
+    ) -> (random: DCMRandom, description: String) {
+        guard let runSeed, let trainerStep else {
+            return (DCMRandom.seededFromSystem(), "seeded from the system (no run seed or trainer step in this process)")
+        }
+        let stream = DCMStream.probe(name: entropyProbeStreamName, trainerStep: trainerStep)
+        return (runSeed.streams.generator(stream), "stream \(stream.name) of run seed \(runSeed.masterSeed)")
+    }
+
     /// Stratified random sample of `perBucketTarget` positions per
     /// material bucket. Returns one entry per non-empty bucket; empty
     /// buckets are dropped from the result list.
@@ -575,7 +602,8 @@ enum ReplayBufferAnalyzer {
     static func samplePolicyEntropyByMaterialBucket(
         buffer: ReplayBuffer,
         network: ChessMPSNetwork,
-        perBucketTarget: Int
+        perBucketTarget: Int,
+        sampleRandom: DCMRandom
     ) async throws -> [Result.PolicyEntropyBucketStat] {
         let materialBucketCount = materialBuckets.count
 
@@ -587,6 +615,7 @@ enum ReplayBufferAnalyzer {
             let boards: [[Float]]
         }
         let allSamples = buffer.withSlotData { slots -> [BucketSamples] in
+            var random = sampleRandom
             var perBucketIndices: [[Int]] = Array(
                 repeating: [], count: materialBucketCount
             )
@@ -604,10 +633,12 @@ enum ReplayBufferAnalyzer {
                     out.append(BucketSamples(bucketIndex: bucketIdx, boards: []))
                     continue
                 }
-                // Random sample without replacement. `shuffled()` is
-                // O(n) on the bucket's index list; cheap relative to
-                // the upstream walk.
-                let shuffled = indices.shuffled()
+                // Random sample without replacement, buckets in order, from
+                // the probe's own stream (our Fisher–Yates, so the picks do
+                // not depend on the standard library's shuffle). O(n) on the
+                // bucket's index list; cheap relative to the upstream walk.
+                var shuffled = indices
+                shuffled.stableShuffle(using: &random)
                 var boards: [[Float]] = []
                 boards.reserveCapacity(target)
                 for slotIdx in shuffled.prefix(target) {

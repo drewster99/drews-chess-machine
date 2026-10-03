@@ -95,7 +95,8 @@ final class RezeroAlphaCapTests: XCTestCase {
         let meta = ModelCheckpointMetadata(creator: "test", trainingStep: nil, parentModelID: "", notes: "fixture")
         return try SafetensorsModelIO.encode(
             modelID: modelID, createdAtUnix: 1_790_000_000, metadata: meta, weights: weights,
-            architecture: arch, includesVelocity: false)
+            architecture: arch, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: meta.trainerSchedule.map(\.completedTrainSteps), corpus: nil))
     }
 
     /// Re-encode `data` with `dcm_format_version` set to `version` (nil =
@@ -217,7 +218,7 @@ final class RezeroAlphaCapTests: XCTestCase {
         let arch = Self.twoGroupArchitecture()
         let legacy = try rewritingHeader(try encodedModel(arch), version: "5", stripCap: true)
         let decodedArch = try SafetensorsModelIO.decode(legacy, valueHead: .asStored, source: "old.safetensors").architecture
-        let weights = try await ChessMPSNetwork(.randomWeights, arch: arch).network.exportWeights()
+        let weights = try await ChessMPSNetwork(.randomWeights(initSeed: 1), arch: arch).network.exportWeights()
         let inCode = try await forward(arch, weights)
         let fromFile = try await forward(decodedArch, weights)
         XCTAssertEqual(inCode.map(\.bitPattern), fromFile.map(\.bitPattern))
@@ -403,7 +404,7 @@ final class RezeroAlphaCapTests: XCTestCase {
 
     /// Policy logits followed by the value scalar for the starting position.
     private func forward(_ arch: NetworkArchitecture, _ weights: [[Float]]) async throws -> [Float] {
-        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 2), arch: arch)
         try await net.network.loadWeights(weights)
         let board = BoardEncoder.encode(.starting, encoding: arch.inputEncoding)
         let box = SyncBox<[Float]>([])
@@ -418,7 +419,7 @@ final class RezeroAlphaCapTests: XCTestCase {
         let legacyCap = Self.twoGroupArchitecture()
         var widerCap = legacyCap
         widerCap.blockGroups[0].rezeroAlphaCap = 2
-        let weights = try await ChessMPSNetwork(.randomWeights, arch: legacyCap).network.exportWeights()
+        let weights = try await ChessMPSNetwork(.randomWeights(initSeed: 3), arch: legacyCap).network.exportWeights()
         let a = try await forward(legacyCap, weights)
         let b = try await forward(widerCap, weights)
         XCTAssertTrue(a.allSatisfy(\.isFinite) && b.allSatisfy(\.isFinite))
@@ -460,7 +461,7 @@ final class RezeroAlphaCapTests: XCTestCase {
     private func derive(_ source: Data, _ operations: [any DeriveOperation]) throws -> ModelDerivation.Result {
         try ModelDerivation.derive(
             sourceData: source, sourceName: "source.safetensors", operations: operations,
-            newModelID: "20261002-2-DRV1", createdAtUnix: 1_790_000_100, build: "test")
+            newModelID: "20261002-2-DRV1", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"])
     }
 
     /// Every tensor of `derivedData` bit-exact to `sourceData` except the

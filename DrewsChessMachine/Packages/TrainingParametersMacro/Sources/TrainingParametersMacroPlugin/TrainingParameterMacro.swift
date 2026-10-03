@@ -35,6 +35,10 @@ public struct TrainingParameterMacro: MemberMacro {
             defaultValueFragment = ".int(\(args.defaultExpr))"
             parameterTypeCase = ".int"
             rangeArgLine = "    intRange: NumericRange(min: \(lo), max: \(hi)),\n"
+        case .uint64(let lo, let hi):
+            defaultValueFragment = ".uint64(\(args.defaultExpr))"
+            parameterTypeCase = ".uint64"
+            rangeArgLine = "    uint64Range: NumericRange(min: \(lo), max: \(hi)),\n"
         case .bool:
             defaultValueFragment = ".bool(\(args.defaultExpr))"
             parameterTypeCase = ".bool"
@@ -76,6 +80,17 @@ public struct TrainingParameterMacro: MemberMacro {
                 throw TrainingConfigError.wrongType(id: id)
             }
             return x
+            """
+        case .uint64:
+            // A non-negative JSON integer is accepted as well as the decimal
+            // string the app writes (it is exact up to `Int.max`); a negative
+            // one, a fraction or anything else is the wrong type.
+            decodeBody = """
+            switch value {
+            case .uint64(let x): return x
+            case .int(let x) where x >= 0: return UInt64(x)
+            default: throw TrainingConfigError.wrongType(id: id)
+            }
             """
         case .bool:
             decodeBody = """
@@ -119,12 +134,17 @@ private struct ParsedArgs {
 private enum ValueKind {
     case double(min: String, max: String)
     case int(min: String, max: String)
+    /// Declared with `default: UInt64(<literal>)` — the explicit conversion is
+    /// how the declaration says the full unsigned 64-bit range is meant (an
+    /// integer literal alone reads as `Int`).
+    case uint64(min: String, max: String)
     case bool
 
     var swiftTypeName: String {
         switch self {
         case .double: return "Double"
         case .int: return "Int"
+        case .uint64: return "UInt64"
         case .bool: return "Bool"
         }
     }
@@ -145,7 +165,7 @@ private enum MacroError: Error, CustomStringConvertible {
         case .rangeRequired:
             return "@TrainingParameter requires 'range:' for numeric parameters"
         case .unknownDefaultType:
-            return "@TrainingParameter could not infer the parameter type from 'default:' (must be a Double, Int, or Bool literal)"
+            return "@TrainingParameter could not infer the parameter type from 'default:' (must be a Double, Int, or Bool literal, or UInt64(<integer literal>))"
         }
     }
 }
@@ -187,6 +207,13 @@ private func parseArguments(_ node: AttributeSyntax) throws -> ParsedArgs {
 private func valueKind(forDefault defaultExpr: ExprSyntax, range: ExprSyntax?) throws -> ValueKind {
     if defaultExpr.is(BooleanLiteralExprSyntax.self) {
         return .bool
+    }
+    if let call = defaultExpr.as(FunctionCallExprSyntax.self),
+       let callee = call.calledExpression.as(DeclReferenceExprSyntax.self),
+       callee.baseName.text == "UInt64" {
+        guard let r = range else { throw MacroError.rangeRequired }
+        let (lo, hi) = try parseRange(r)
+        return .uint64(min: lo, max: hi)
     }
     if defaultExpr.is(FloatLiteralExprSyntax.self) {
         guard let r = range else { throw MacroError.rangeRequired }

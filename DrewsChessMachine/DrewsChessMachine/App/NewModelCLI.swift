@@ -88,7 +88,7 @@ enum NewModelCLI {
             // Build with random weights (includes the BN warmup forward) and
             // export the persistent tensors, off the main actor.
             let (weights, buildTimeMs) = try syncWait { () async throws -> ([[Float]], Double) in
-                let net = try ChessMPSNetwork(.seededRandomWeights(initSeed: initSeed), arch: arch)
+                let net = try ChessMPSNetwork(.randomWeights(initSeed: initSeed), arch: arch)
                 return (try await net.network.exportWeights(), net.buildTimeMs)
             }
             let builtLine = "[NEW-MODEL] built \(name) in \(String(format: "%.1f", buildTimeMs)) ms"
@@ -112,13 +112,15 @@ enum NewModelCLI {
                     + "BN warm-up under policy tail precision \(ChessNetwork.PolicyTailPrecision.process.rawValue)",
                 initRecord: ModelInitRecord(initSeed: initSeed, scheme: WeightInitScheme.current)
             )
+            let mintDate = Date()
             let encoded = try SafetensorsModelIO.encode(
                 modelID: modelID,
-                createdAtUnix: Int64(Date().timeIntervalSince1970),
+                createdAtUnix: Int64(mintDate.timeIntervalSince1970),
                 metadata: metadata,
                 weights: weights,
                 architecture: arch,
-                includesVelocity: false
+                includesVelocity: false,
+                lineage: try LineageTracker.mintRecord(pathKind: .newModel, argv: CommandLine.arguments, at: mintDate)
             )
             try FileManager.default.createDirectory(
                 at: outURL.deletingLastPathComponent(),

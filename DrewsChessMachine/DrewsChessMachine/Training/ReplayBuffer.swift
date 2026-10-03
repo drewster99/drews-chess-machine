@@ -245,6 +245,16 @@ final class ReplayBuffer: @unchecked Sendable {
     // composition aggregates.
     private var materialBucketSlots: [IndexedSlotSet]
 
+    /// The run's `sampler` stream: every random draw of `sample(...)`. Guarded
+    /// by `lock`, like the rest of the buffer's state. Only the trainer's
+    /// minibatch draw uses it, in batch-slot order, so a sequence of batches
+    /// is a function of the stream's state and the buffer's contents in age
+    /// order (see `physicalSlot(logicalIndex:…)`); every other consumer of
+    /// randomness has its own named stream. Its state can be read and
+    /// restored (`samplerState()` / `restoreSamplerState(_:)`) for exact
+    /// resume.
+    private var samplerRandom: DCMRandom
+
     // MARK: - Lifetime
 
     /// O(1)-everything container for the per-bucket slot index. Backs
@@ -285,9 +295,10 @@ final class ReplayBuffer: @unchecked Sendable {
             slots.removeLast()
         }
 
-        /// Uniform random pick. Caller must check `!isEmpty` first.
-        func randomSlot() -> Int {
-            slots[Int.random(in: 0..<slots.count)]
+        /// Uniform random pick from `random`. Caller must check `!isEmpty`
+        /// first.
+        func randomSlot(using random: inout DCMRandom) -> Int {
+            slots[random.nextBounded(slots.count)]
         }
 
         mutating func removeAll(keepingCapacity: Bool = true) {
@@ -341,9 +352,15 @@ final class ReplayBuffer: @unchecked Sendable {
     /// 64`; the reconstructed stride (`reconstructedStride`, the full
     /// network input width handed to the trainer's GPU staging) as
     /// `planeCount × 64`. The two coincide for single-frame encodings.
-    init(capacity: Int, inputEncoding: InputEncoding) {
+    ///
+    /// `sampler` is the run's `sampler` stream
+    /// (`DCMRandomStreams.generator(.sampler)`); a buffer that is only ever
+    /// restored and analyzed, never sampled, passes
+    /// `DCMRandom.seededFromSystem()`.
+    init(capacity: Int, inputEncoding: InputEncoding, sampler: DCMRandom) {
         precondition(capacity > 0, "Replay buffer capacity must be positive")
         self.capacity = capacity
+        self.samplerRandom = sampler
         self.inputEncoding = inputEncoding
         self.historyFrameCount = inputEncoding.historyFrameCount
         self.planesPerFrame = inputEncoding.planesPerFrame
@@ -415,11 +432,13 @@ final class ReplayBuffer: @unchecked Sendable {
     /// live training path does.
     convenience init(
         capacity: Int,
-        floatsPerBoard: Int = ReplayBuffer.defaultFloatsPerBoard
+        floatsPerBoard: Int = ReplayBuffer.defaultFloatsPerBoard,
+        sampler: DCMRandom
     ) {
         self.init(
             capacity: capacity,
-            inputEncoding: ReplayBuffer.singleFrameEncoding(forStoredStride: floatsPerBoard)
+            inputEncoding: ReplayBuffer.singleFrameEncoding(forStoredStride: floatsPerBoard),
+            sampler: sampler
         )
         precondition(
             self.floatsPerBoard == floatsPerBoard,
@@ -676,6 +695,20 @@ final class ReplayBuffer: @unchecked Sendable {
     /// fractional part of π). Part of the hash's definition: changing it
     /// changes every saved hash, which needs a new buffer file version.
     static let boardHashKey: UInt64 = 0x243F_6A88_85A3_08D3
+
+    // MARK: - Sampler stream state
+
+    /// The `sampler` stream's current state: what the next `sample(...)` will
+    /// draw from. Read under the buffer lock, so it is the state between two
+    /// batches, never mid-batch.
+    func samplerState() -> DCMRandom {
+        lock.withLock { samplerRandom }
+    }
+
+    /// Continue the `sampler` stream from a saved state (exact resume).
+    func restoreSamplerState(_ state: DCMRandom) {
+        lock.withLock { samplerRandom = state }
+    }
 
     // MARK: - Logical (age-ordered) slot indices
 
@@ -1827,7 +1860,7 @@ final class ReplayBuffer: @unchecked Sendable {
                     var degPerGame: [UInt32: Int] = [:]
                     degPerGame.reserveCapacity(min(sampleCount, residentGames.count) + 1)
                     for i in 0..<sampleCount {
-                        let srcIndex = physicalSlot(forLogicalIndex: Int.random(in: 0..<held))
+                        let srcIndex = physicalSlot(forLogicalIndex: samplerRandom.nextBounded(held))
                         emit(i, srcIndex)
                         let z = outcomeStorage[srcIndex]
                         if z > 0 { degWin += 1 }
@@ -1948,7 +1981,7 @@ final class ReplayBuffer: @unchecked Sendable {
                     let target = targets[b]
                     if target == 0 || materialBucketSlots[b].isEmpty { continue }
                     for _ in 0..<target {
-                        let srcIndex = materialBucketSlots[b].randomSlot()
+                        let srcIndex = materialBucketSlots[b].randomSlot(using: &samplerRandom)
                         emit(emitted, srcIndex)
                         let z = outcomeStorage[srcIndex]
                         if z > 0 { stratWin += 1 }
@@ -1968,7 +2001,7 @@ final class ReplayBuffer: @unchecked Sendable {
                 if emitted < sampleCount {
                     stratAttemptBudgetHit = true
                     while emitted < sampleCount {
-                        let srcIndex = physicalSlot(forLogicalIndex: Int.random(in: 0..<held))
+                        let srcIndex = physicalSlot(forLogicalIndex: samplerRandom.nextBounded(held))
                         emit(emitted, srcIndex)
                         let z = outcomeStorage[srcIndex]
                         if z > 0 { stratWin += 1 }
@@ -2017,7 +2050,7 @@ final class ReplayBuffer: @unchecked Sendable {
                 fastPerGameScratch.removeAll(keepingCapacity: true)
                 fastPerGameScratch.reserveCapacity(min(sampleCount, residentGames.count) + 1)
                 for i in 0..<sampleCount {
-                    let srcIndex = physicalSlot(forLogicalIndex: Int.random(in: 0..<held))
+                    let srcIndex = physicalSlot(forLogicalIndex: samplerRandom.nextBounded(held))
                     emit(i, srcIndex)
                     let z = outcomeStorage[srcIndex]
                     if z > 0 { fastWin += 1 }
@@ -2198,7 +2231,7 @@ final class ReplayBuffer: @unchecked Sendable {
                 guard beta > 0 else { return true }
                 let len = Int(gameLengthStorage[srcIndex])
                 guard len > effectiveTarget else { return true }
-                return Double.random(in: 0..<1) < exp(-beta * Double(len - effectiveTarget))
+                return samplerRandom.nextUnitDouble() < exp(-beta * Double(len - effectiveTarget))
             }
 
             // Achievement tallies — accumulate as we emit, then publish
@@ -2233,7 +2266,7 @@ final class ReplayBuffer: @unchecked Sendable {
                     if attempts > attemptBudget {
                         attemptBudgetHit = true
                         while emitted < sampleCount {
-                            let srcIndex = physicalSlot(forLogicalIndex: Int.random(in: 0..<held))
+                            let srcIndex = physicalSlot(forLogicalIndex: samplerRandom.nextBounded(held))
                             emit(emitted, srcIndex)
                             tallyOutcome(srcIndex)
                             achievedSumGameLength += Int(gameLengthStorage[srcIndex])
@@ -2242,7 +2275,7 @@ final class ReplayBuffer: @unchecked Sendable {
                         }
                         break
                     }
-                    let srcIndex = physicalSlot(forLogicalIndex: Int.random(in: 0..<held))
+                    let srcIndex = physicalSlot(forLogicalIndex: samplerRandom.nextBounded(held))
                     let isDraw = outcomeStorage[srcIndex] == 0.0
                     if isDraw == wantDecisive { continue }   // wrong stratum
                     if !tiltAccepts(srcIndex) { continue }
@@ -2279,7 +2312,7 @@ final class ReplayBuffer: @unchecked Sendable {
             if emitted < sampleCount {
                 attemptBudgetHit = true
                 while emitted < sampleCount {
-                    let srcIndex = physicalSlot(forLogicalIndex: Int.random(in: 0..<held))
+                    let srcIndex = physicalSlot(forLogicalIndex: samplerRandom.nextBounded(held))
                     emit(emitted, srcIndex)
                     tallyOutcome(srcIndex)
                     achievedSumGameLength += Int(gameLengthStorage[srcIndex])

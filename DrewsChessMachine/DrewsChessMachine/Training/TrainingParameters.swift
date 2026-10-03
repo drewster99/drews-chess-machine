@@ -8,6 +8,9 @@ public enum ParameterType: String, Codable, Sendable {
     case bool
     case int
     case double
+    /// Full-range unsigned 64-bit (a random seed). Written as a decimal
+    /// string everywhere it is serialized (see `ParameterValue.jsonValue`).
+    case uint64
 }
 
 // MARK: - ParameterValue
@@ -16,12 +19,14 @@ public enum ParameterValue: Codable, Equatable, Sendable {
     case bool(Bool)
     case int(Int)
     case double(Double)
+    case uint64(UInt64)
 
     public var type: ParameterType {
         switch self {
         case .bool: .bool
         case .int: .int
         case .double: .double
+        case .uint64: .uint64
         }
     }
 
@@ -34,6 +39,15 @@ public enum ParameterValue: Codable, Equatable, Sendable {
             self = .int(x)
         } else if let x = try? c.decode(Double.self) {
             self = .double(x)
+        } else if let text = try? c.decode(String.self) {
+            // The only string-encoded kind: a full-range UInt64 written as a
+            // decimal string so no reader rounds it through a Double.
+            guard let x = UInt64(text) else {
+                throw DecodingError.dataCorruptedError(
+                    in: c, debugDescription: "\"\(text)\" is not a decimal UInt64 parameter value"
+                )
+            }
+            self = .uint64(x)
         } else {
             throw DecodingError.typeMismatch(
                 ParameterValue.self,
@@ -49,6 +63,48 @@ public enum ParameterValue: Codable, Equatable, Sendable {
         case .bool(let x): try c.encode(x)
         case .int(let x): try c.encode(x)
         case .double(let x): try c.encode(x)
+        case .uint64(let x): try c.encode(String(x))
+        }
+    }
+
+    /// The value as a `JSONSerialization` object: the number or Bool itself,
+    /// and a UInt64 as its decimal string (JSON numbers are doubles in many
+    /// readers, which would silently drop the low bits of a seed above 2^53).
+    /// The one encoding every JSON writer of parameters uses.
+    public var jsonValue: Any {
+        switch self {
+        case .bool(let x): x
+        case .int(let x): x
+        case .double(let x): x
+        case .uint64(let x): String(x)
+        }
+    }
+
+    /// Parse one value of a parameters JSON object (`JSONSerialization`
+    /// output) — the one reader both the `--parameters` loader and the
+    /// settings "load" path use. `NSNumber` bridging is treacherous (`as? Bool`
+    /// succeeds for any number, so `1` would read as `true`), so the kind is
+    /// taken from the number's `objCType`: true/false are char-typed
+    /// ("c"/"B"), JSON doubles are "d"/"f", everything else is an integer. A
+    /// string is accepted only as a decimal UInt64. Whether the kind matches
+    /// the key is checked later, by the definition's `validate`.
+    public init(jsonValue: Any, id: String) throws {
+        if let n = jsonValue as? NSNumber {
+            switch String(cString: n.objCType) {
+            case "c", "B": self = .bool(n.boolValue)
+            case "d", "f": self = .double(n.doubleValue)
+            // An unsigned 64-bit number: `intValue` would wrap one above
+            // `Int.max` to a negative value, so that one is read as unsigned.
+            case "Q":
+                let unsigned = n.uint64Value
+                self = unsigned <= UInt64(Int.max) ? .int(Int(unsigned)) : .uint64(unsigned)
+            default: self = .int(n.intValue)
+            }
+        } else if let text = jsonValue as? String {
+            guard let x = UInt64(text) else { throw TrainingConfigError.wrongType(id: id) }
+            self = .uint64(x)
+        } else {
+            throw TrainingConfigError.wrongType(id: id)
         }
     }
 }
@@ -79,6 +135,7 @@ public struct TrainingParameterDefinition: Sendable {
     public let defaultValue: ParameterValue
     public let intRange: NumericRange<Int>?
     public let doubleRange: NumericRange<Double>?
+    public let uint64Range: NumericRange<UInt64>?
     public let category: String
     public let liveTunable: Bool
 
@@ -90,6 +147,7 @@ public struct TrainingParameterDefinition: Sendable {
         defaultValue: ParameterValue,
         intRange: NumericRange<Int>? = nil,
         doubleRange: NumericRange<Double>? = nil,
+        uint64Range: NumericRange<UInt64>? = nil,
         category: String,
         liveTunable: Bool
     ) {
@@ -100,6 +158,7 @@ public struct TrainingParameterDefinition: Sendable {
         self.defaultValue = defaultValue
         self.intRange = intRange
         self.doubleRange = doubleRange
+        self.uint64Range = uint64Range
         self.category = category
         self.liveTunable = liveTunable
     }
@@ -124,6 +183,18 @@ public struct TrainingParameterDefinition: Sendable {
             let asDouble = Double(x)
             if let doubleRange, !doubleRange.contains(asDouble) {
                 throw TrainingConfigError.outOfRange(id: id, value: "\(asDouble)")
+            }
+
+        case (.uint64, .uint64(let x)):
+            if let uint64Range, !uint64Range.contains(x) {
+                throw TrainingConfigError.outOfRange(id: id, value: "\(x)")
+            }
+
+        case (.uint64, .int(let x)) where x >= 0:
+            // Tolerate a non-negative JSON integer for a UInt64 parameter
+            // (exact up to `Int.max`); the app itself writes a decimal string.
+            if let uint64Range, !uint64Range.contains(UInt64(x)) {
+                throw TrainingConfigError.outOfRange(id: id, value: "\(x)")
             }
 
         default:
@@ -271,6 +342,16 @@ public extension TrainingParameterKey where Value == Int {
     static func snappedToDeclaredRange(_ value: Int) -> Int {
         guard let range = definition.intRange else { return value }
         return Swift.min(range.max, Swift.max(range.min, value))
+    }
+}
+
+public extension TrainingParameterKey where Value == UInt64 {
+    /// Parse an edit field: the decimal UInt64 it holds if that value is
+    /// inside the declared range, else nil (the caller flags the field).
+    static func parsedInDeclaredRange(_ text: String) -> UInt64? {
+        guard let value = UInt64(text.trimmingCharacters(in: .whitespaces)),
+              isWithinDeclaration(value) else { return nil }
+        return value
     }
 }
 
@@ -1227,6 +1308,37 @@ public enum MaxPeriodicAutosavesKept: TrainingParameterKey {}
 )
 public enum AutomaticSavePruningEnabled: TrainingParameterKey {}
 
+// MARK: Reproducibility (determinism plan, Part A3.2)
+//
+// One master seed per run; every random stream (replay-buffer draws, each
+// self-play / arena / train-vs-UCI game, probe subsets) derives from it by
+// name. Not live-tunable: the seed is fixed for the life of a run. See
+// `RunRandomSeed` (the one resolver) and `RandomSeedMode`.
+
+@TrainingParameter(
+    name: "Random Seed Mode",
+    description: "Where a run's master seed comes from: 0 = unseeded (a seed is drawn at run start), 1 = seeded (Random Seed is used). Either way the run uses the seeded random streams and logs its seed on the [RUN] line, so an unseeded run can be replayed by giving its logged seed back (seeded mode, or --seed on the command line, which overrides both settings).",
+    default: 0,
+    range: 0...1,
+    category: "Reproducibility",
+    id: "random_seed_mode",
+    liveTunable: false,
+    absentValue: .preFeature(0)
+)
+public enum RandomSeedModeParameter: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Random Seed",
+    description: "The master seed used when Random Seed Mode = 1 (seeded); ignored, and logged as ignored, when unseeded. A whole number from 0 to 18446744073709551615, written in parameters.json as a decimal string (JSON numbers are doubles in many readers, which would drop the low bits of a large seed). Every random stream of the run — replay-buffer draws, each game's moves, probe subsets — derives from it by name, so the same seed on the same build, device and data reproduces the same draws.",
+    default: UInt64(0),
+    range: 0...UInt64.max,
+    category: "Reproducibility",
+    id: "random_seed",
+    liveTunable: false,
+    absentValue: .refuseExact
+)
+public enum RandomSeed: TrainingParameterKey {}
+
 // MARK: - TrainingParametersSnapshot
 
 public struct TrainingParametersSnapshot: Sendable {
@@ -1349,6 +1461,10 @@ public extension TrainingParametersSnapshot {
     var periodicAutosaveIntervalSec: Double { value(for: PeriodicAutosaveIntervalSec.self) }
     var maxPeriodicAutosavesKept: Int { value(for: MaxPeriodicAutosavesKept.self) }
     var automaticSavePruningEnabled: Bool { value(for: AutomaticSavePruningEnabled.self) }
+    var randomSeedMode: RandomSeedMode {
+        RandomSeedMode(persistedRawValue: value(for: RandomSeedModeParameter.self))
+    }
+    var randomSeed: UInt64 { value(for: RandomSeed.self) }
 
 }
 
@@ -1488,6 +1604,16 @@ public final class TrainingParameters {
     public var periodicAutosaveIntervalSec: Double { didSet { if !Self.commitAssignment(PeriodicAutosaveIntervalSec.self, value: periodicAutosaveIntervalSec) { periodicAutosaveIntervalSec = oldValue } } }
     public var maxPeriodicAutosavesKept: Int { didSet { if !Self.commitAssignment(MaxPeriodicAutosavesKept.self, value: maxPeriodicAutosavesKept) { maxPeriodicAutosavesKept = oldValue } } }
     public var automaticSavePruningEnabled: Bool { didSet { if !Self.commitAssignment(AutomaticSavePruningEnabled.self, value: automaticSavePruningEnabled) { automaticSavePruningEnabled = oldValue } } }
+    /// Stored as the enum; the raw value appears only at the persistence
+    /// boundary (see `RandomSeedMode`).
+    public var randomSeedMode: RandomSeedMode {
+        didSet {
+            if !Self.commitAssignment(RandomSeedModeParameter.self, value: randomSeedMode.rawValue) {
+                randomSeedMode = oldValue
+            }
+        }
+    }
+    public var randomSeed: UInt64 { didSet { if !Self.commitAssignment(RandomSeed.self, value: randomSeed) { randomSeed = oldValue } } }
 
     /// Stored preferences found unusable at launch (wrong type or outside the
     /// declared range). The app runs on each one's declared default meanwhile;
@@ -1584,6 +1710,8 @@ public final class TrainingParameters {
         self.periodicAutosaveIntervalSec = Self.read(PeriodicAutosaveIntervalSec.self)
         self.maxPeriodicAutosavesKept = Self.read(MaxPeriodicAutosavesKept.self)
         self.automaticSavePruningEnabled = Self.read(AutomaticSavePruningEnabled.self)
+        self.randomSeedMode = RandomSeedMode(persistedRawValue: Self.read(RandomSeedModeParameter.self))
+        self.randomSeed = Self.read(RandomSeed.self)
         self.invalidStoredSettings = Self.invalidStoredValuesFound.value.values.sorted { $0.id < $1.id }
     }
 
@@ -1677,6 +1805,8 @@ public final class TrainingParameters {
         v[PeriodicAutosaveIntervalSec.id] = PeriodicAutosaveIntervalSec.encode(periodicAutosaveIntervalSec)
         v[MaxPeriodicAutosavesKept.id] = MaxPeriodicAutosavesKept.encode(maxPeriodicAutosavesKept)
         v[AutomaticSavePruningEnabled.id] = AutomaticSavePruningEnabled.encode(automaticSavePruningEnabled)
+        v[RandomSeedModeParameter.id] = RandomSeedModeParameter.encode(randomSeedMode.rawValue)
+        v[RandomSeed.id] = RandomSeed.encode(randomSeed)
         return v
     }
 
@@ -1881,6 +2011,11 @@ public final class TrainingParameters {
             try MaxPeriodicAutosavesKept.definition.validate(raw); maxPeriodicAutosavesKept = try MaxPeriodicAutosavesKept.decode(raw)
         case AutomaticSavePruningEnabled.id:
             try AutomaticSavePruningEnabled.definition.validate(raw); automaticSavePruningEnabled = try AutomaticSavePruningEnabled.decode(raw)
+        case RandomSeedModeParameter.id:
+            try RandomSeedModeParameter.definition.validate(raw)
+            randomSeedMode = RandomSeedMode(persistedRawValue: try RandomSeedModeParameter.decode(raw))
+        case RandomSeed.id:
+            try RandomSeed.definition.validate(raw); randomSeed = try RandomSeed.decode(raw)
         default:
             throw TrainingConfigError.unknownParameter(id: id)
         }
@@ -1961,6 +2096,14 @@ public final class TrainingParameters {
                 return invalid("\(object)", "stored as \(type(of: object)), not a number")
             }
             raw = .double(n.doubleValue)
+        case .uint64:
+            guard let text = object as? String else {
+                return invalid("\(object)", "stored as \(type(of: object)), not a decimal string")
+            }
+            guard let n = UInt64(text) else {
+                return invalid(text, "not a whole number from 0 to \(UInt64.max)")
+            }
+            raw = .uint64(n)
         }
         do {
             try definition.validate(raw)
@@ -2162,6 +2305,9 @@ public final class TrainingParameters {
         case .bool(let x): defaults.set(x, forKey: K.id)
         case .int(let x): defaults.set(x, forKey: K.id)
         case .double(let x): defaults.set(x, forKey: K.id)
+        // A decimal string, like every other serialization of a UInt64
+        // parameter: a property-list integer is signed 64-bit.
+        case .uint64(let x): defaults.set(String(x), forKey: K.id)
         }
         return true
     }
@@ -2251,7 +2397,9 @@ public final class TrainingParameters {
         MomentumFollowEndHigh.self,
         PeriodicAutosaveIntervalSec.self,
         MaxPeriodicAutosavesKept.self,
-        AutomaticSavePruningEnabled.self
+        AutomaticSavePruningEnabled.self,
+        RandomSeedModeParameter.self,
+        RandomSeed.self
     ]
 
     public nonisolated static var allDefinitions: [TrainingParameterDefinition] {
@@ -2267,11 +2415,7 @@ public final class TrainingParameters {
         var dict: [String: Any] = [:]
         for key in allKeys {
             let def = key.definition
-            switch def.defaultValue {
-            case .bool(let x): dict[def.id] = x
-            case .int(let x): dict[def.id] = x
-            case .double(let x): dict[def.id] = x
-            }
+            dict[def.id] = def.defaultValue.jsonValue
         }
         return try JSONSerialization.data(
             withJSONObject: dict,
@@ -2297,6 +2441,12 @@ public final class TrainingParameters {
                     rangeText = "Double, range \(r.min)..\(r.max)"
                 } else {
                     rangeText = "Double"
+                }
+            case .uint64:
+                if let r = def.uint64Range {
+                    rangeText = "UInt64 as a decimal string, range \(r.min)..\(r.max)"
+                } else {
+                    rangeText = "UInt64 as a decimal string"
                 }
             }
             return "\(def.id): \(def.description) (\(rangeText))"
@@ -2339,6 +2489,10 @@ public final class TrainingParameters {
                     typeText = "Double"
                     rangeText = def.doubleRange.map { "\($0.min)..\($0.max)" } ?? "—"
                     if case .double(let x) = def.defaultValue { defaultText = "\(x)" } else { defaultText = "?" }
+                case .uint64:
+                    typeText = "UInt64 (written as a decimal string)"
+                    rangeText = def.uint64Range.map { "\($0.min)..\($0.max)" } ?? "—"
+                    if case .uint64(let x) = def.defaultValue { defaultText = "\"\(x)\"" } else { defaultText = "?" }
                 }
                 out += "**Type:** \(typeText) · **Range:** \(rangeText) · **Default:** \(defaultText)"
                 if def.liveTunable {
@@ -2357,11 +2511,7 @@ public final class TrainingParameters {
         let snap = collectValues()
         var dict: [String: Any] = [:]
         for (id, raw) in snap {
-            switch raw {
-            case .bool(let x): dict[id] = x
-            case .int(let x): dict[id] = x
-            case .double(let x): dict[id] = x
-            }
+            dict[id] = raw.jsonValue
         }
         let data = try JSONSerialization.data(
             withJSONObject: dict,
@@ -2377,19 +2527,7 @@ public final class TrainingParameters {
         }
         var values: [String: ParameterValue] = [:]
         for (id, anyValue) in dict {
-            if let b = anyValue as? Bool {
-                values[id] = .bool(b)
-            } else if let n = anyValue as? NSNumber {
-                // Distinguish Int from Double via objCType — ".d" / ".f" are floats.
-                let typeChar = String(cString: n.objCType)
-                if typeChar == "d" || typeChar == "f" {
-                    values[id] = .double(n.doubleValue)
-                } else {
-                    values[id] = .int(n.intValue)
-                }
-            } else {
-                throw TrainingConfigError.wrongType(id: id)
-            }
+            values[id] = try ParameterValue(jsonValue: anyValue, id: id)
         }
         try apply(values)
     }

@@ -104,6 +104,16 @@ final class ActiveGame: @unchecked Sendable {
     /// publish `gameDurationMs` into `ParallelWorkerStatsBox`.
     private(set) var gameStartedAt: CFAbsoluteTime
 
+    /// The current game's own random stream (`selfplay.game.<serial>`,
+    /// `arena.<a>.game.<g>` or `vsuci.game.<serial>`), replaced with each new
+    /// game. Every draw the game makes — each move sample and the draw-keep
+    /// decision — comes from it, inside the game's own task, so a game's
+    /// moves depend only on its stream, its positions and the network's
+    /// outputs: not on how many other games run, which slot it occupies, or
+    /// the order the tick's parallel tasks finish in. No lock: one task owns
+    /// a game at a time.
+    private var random: DCMRandom
+
     // MARK: - Per-game completed-ply staging (per-side)
 
     /// Current per-side allocated capacity (in plies). Equal to
@@ -229,15 +239,22 @@ final class ActiveGame: @unchecked Sendable {
     /// Allocates all per-side scratch and creates a fresh engine. The
     /// per-side cap is derived from `capPlies` (the total-game cap)
     /// as `(capPlies + 1) / 2`.
+    ///
+    /// `random` is the first game's stream. A driver that immediately starts
+    /// the slot's first game with `resetForNewGame` passes that game's stream
+    /// to both; a game whose moves come from a record (corpus replay) never
+    /// draws and passes `DCMRandom.seededFromSystem()`.
     init(
         workerId: UInt16,
         whiteNetwork: ChessMPSNetwork,
         blackNetwork: ChessMPSNetwork,
         capPlies: Int,
-        schedule: SamplingSchedule
+        schedule: SamplingSchedule,
+        random: DCMRandom
     ) {
         precondition(capPlies >= 1, "ActiveGame.init: capPlies must be >= 1")
         self.workerId = workerId
+        self.random = random
         self.whiteNetwork = whiteNetwork
         self.blackNetwork = blackNetwork
         self.engine = ChessGameEngine()
@@ -318,9 +335,12 @@ final class ActiveGame: @unchecked Sendable {
     /// since this slot was allocated), all per-side scratch is
     /// reallocated to the new size. Cap shrinks are ignored — never
     /// shrinks (avoids thrash when the user toggles back and forth).
-    func resetForNewGame(maxPliesCap newCap: Int, schedule newSchedule: SamplingSchedule) {
+    ///
+    /// `random` is the new game's own stream (see `random`).
+    func resetForNewGame(maxPliesCap newCap: Int, schedule newSchedule: SamplingSchedule, random newRandom: DCMRandom) {
         precondition(newCap >= 1, "ActiveGame.resetForNewGame: newCap must be >= 1")
         intraWorkerGameIndex &+= 1
+        random = newRandom
         engine = ChessGameEngine()
         schedule = newSchedule
         maxPliesCap = newCap
@@ -335,6 +355,34 @@ final class ActiveGame: @unchecked Sendable {
         if neededSideCap > perSideCap {
             growSideScratches(to: neededSideCap)
         }
+    }
+
+    /// Sample the move for the current position from this game's stream,
+    /// under the game's sampling schedule. See `MoveSampler.sampleMove`.
+    func sampleMove(
+        logits: UnsafeBufferPointer<Float>,
+        legalMoves: [ChessMove],
+        currentPlayer: PieceColor,
+        ply: Int,
+        probsScratch: UnsafeMutableBufferPointer<Float>,
+        etaScratch: UnsafeMutableBufferPointer<Float>
+    ) -> MoveSampler.Result {
+        MoveSampler.sampleMove(
+            logits: logits,
+            legalMoves: legalMoves,
+            currentPlayer: currentPlayer,
+            ply: ply,
+            schedule: schedule,
+            probsScratch: probsScratch,
+            etaScratch: etaScratch,
+            rng: &random
+        )
+    }
+
+    /// A uniform draw in [0, 1) from this game's stream, for a decision about
+    /// the game itself (the self-play draw-keep filter at game end).
+    func nextUnitDouble() -> Double {
+        random.nextUnitDouble()
     }
 
     /// Swap which networks play which side for this slot's next game.

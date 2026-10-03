@@ -13,14 +13,14 @@ enum InferenceNetworkFactory {
     /// A `.randomWeights` network of `arch`: untrained weights from a freshly
     /// drawn init seed, usable at once.
     static func build(arch: NetworkArchitecture) async throws -> ChessMPSNetwork {
-        try await build(mode: .randomWeights, arch: arch)
+        try await build(mode: .randomWeights(initSeed: WeightInitialization.drawnInitSeed()), arch: arch)
     }
 
-    /// A `.weightsToBeLoaded` network of `arch`: for a mirror whose weights
+    /// An `.overwrittenByLoad` network of `arch`: for a mirror whose weights
     /// are overwritten before every use. It draws no weights and refuses to
     /// evaluate until the first load.
     static func buildAwaitingLoad(arch: NetworkArchitecture) async throws -> ChessMPSNetwork {
-        try await build(mode: .weightsToBeLoaded, arch: arch)
+        try await build(mode: .overwrittenByLoad, arch: arch)
     }
 
     /// A network of `arch` carrying `weights` (the layout `exportWeights()`

@@ -46,6 +46,22 @@ public macro TrainingParameter(
     absentValue: TrainingParameterAbsence<Int>? = nil
 ) = #externalMacro(module: "TrainingParametersMacroPlugin", type: "TrainingParameterMacro")
 
+/// A full-range unsigned 64-bit parameter (a random seed). Declare the default
+/// as `UInt64(<literal>)`; values are written to `parameters.json` and to
+/// UserDefaults as decimal strings, because JSON numbers are doubles in most
+/// readers and would silently lose bits above 2^53.
+@attached(member, names: named(id), named(definition), named(encode), named(decode), named(absentValue))
+public macro TrainingParameter(
+    name: String,
+    description: String,
+    default: UInt64,
+    range: ClosedRange<UInt64>,
+    category: String,
+    id: String? = nil,
+    liveTunable: Bool = false,
+    absentValue: TrainingParameterAbsence<UInt64>? = nil
+) = #externalMacro(module: "TrainingParametersMacroPlugin", type: "TrainingParameterMacro")
+
 @attached(member, names: named(id), named(definition), named(encode), named(decode), named(absentValue))
 public macro TrainingParameter(
     name: String,

@@ -127,7 +127,7 @@ final class ReplayBufferMaterialBucketTests: XCTestCase {
     /// `materialCountStorage` — every appended position lands in its
     /// correct bucket and the `residentPerBucket` surface matches.
     func testBucketIndexInsertionTracksMaterialCount() {
-        let buf = ReplayBuffer(capacity: 10_000)
+        let buf = ReplayBuffer(capacity: 10_000, sampler: DCMRandom(seed: 1))
         // Three games, one per active bucket, of length 30.
         appendGame(to: buf, length: 30, outcome: 1, workerId: 0, gameIndex: 0, materialCount: 2)
         appendGame(to: buf, length: 30, outcome: 0, workerId: 1, gameIndex: 0, materialCount: 7)
@@ -147,7 +147,7 @@ final class ReplayBufferMaterialBucketTests: XCTestCase {
     /// newly-inserted slots show up in the right bucket. Sized so the
     /// ring wraps several times.
     func testBucketIndexHonorsRingEviction() {
-        let buf = ReplayBuffer(capacity: 60)  // tight ring → forced eviction
+        let buf = ReplayBuffer(capacity: 60, sampler: DCMRandom(seed: 2))  // tight ring → forced eviction
         // Round 1: fill the ring with a 60-position game in bucket 3.
         appendGame(to: buf, length: 60, outcome: 0, workerId: 0, gameIndex: 0, materialCount: 18)
         var snap = buf.compositionSnapshot()
@@ -172,7 +172,7 @@ final class ReplayBufferMaterialBucketTests: XCTestCase {
     /// change) and the in-memory derived state are checked.
     func testBucketIndexRebuildOnRestore() throws {
         let cap = 5_000
-        let buf = ReplayBuffer(capacity: cap)
+        let buf = ReplayBuffer(capacity: cap, sampler: DCMRandom(seed: 3))
         appendGame(to: buf, length: 100, outcome: 1, workerId: 0, gameIndex: 0, materialCount: 2)
         appendGame(to: buf, length: 100, outcome: 0, workerId: 1, gameIndex: 0, materialCount: 7)
         appendGame(to: buf, length: 100, outcome: -1, workerId: 2, gameIndex: 0, materialCount: 12)
@@ -181,7 +181,7 @@ final class ReplayBufferMaterialBucketTests: XCTestCase {
         try buf.write(to: tempFile)
 
         // Fresh buffer, same capacity, restore from disk.
-        let restored = ReplayBuffer(capacity: cap)
+        let restored = ReplayBuffer(capacity: cap, sampler: DCMRandom(seed: 4))
         try restored.restore(from: tempFile)
         let after = restored.compositionSnapshot()
         XCTAssertEqual(after.residentPerBucket, original.residentPerBucket,
@@ -194,7 +194,7 @@ final class ReplayBufferMaterialBucketTests: XCTestCase {
     /// `achievedBucketCounts` track the buffer's natural mix within
     /// statistical noise. Regression guard.
     func testFastPathStillUsedWhenStratificationOff() {
-        let buf = ReplayBuffer(capacity: 10_000)
+        let buf = ReplayBuffer(capacity: 10_000, sampler: DCMRandom(seed: 5))
         // Skewed buffer: 80% bucket 0, 20% bucket 3.
         for i in 0..<8 {
             appendGame(to: buf, length: 100, outcome: 0,
@@ -227,7 +227,7 @@ final class ReplayBufferMaterialBucketTests: XCTestCase {
     /// counts should be ~equal for a balanced target — no clamping,
     /// no slack redistribution.
     func testStratifiedSampleReachesBalancedTargetMix() {
-        let buf = ReplayBuffer(capacity: 20_000)
+        let buf = ReplayBuffer(capacity: 20_000, sampler: DCMRandom(seed: 6))
         let mats: [UInt8] = [2, 7, 12, 18]
         // Each active bucket holds 400 resident positions — comfortably
         // above the per-bucket target of 250 for a 1000-position batch,
@@ -286,7 +286,7 @@ final class ReplayBufferMaterialBucketTests: XCTestCase {
     /// exercising; broken out into its own test so the contract is
     /// explicit.)
     func testStratifiedSampleClampsAndRedistributesPerResidency() {
-        let buf = ReplayBuffer(capacity: 20_000)
+        let buf = ReplayBuffer(capacity: 20_000, sampler: DCMRandom(seed: 7))
         let mats: [UInt8] = [2, 7, 12, 18]
         // Skewed residency: 800 / 400 / 200 / 100. With a 1000-position
         // balanced-target batch, buckets 2 and 3 clamp at residency
@@ -334,7 +334,7 @@ final class ReplayBufferMaterialBucketTests: XCTestCase {
     /// should still be filled exactly. Tests the slack-redistribution
     /// loop.
     func testStratifiedSampleRedistributesEmptyBucket() {
-        let buf = ReplayBuffer(capacity: 10_000)
+        let buf = ReplayBuffer(capacity: 10_000, sampler: DCMRandom(seed: 8))
         // Only 3 of 4 active buckets populated. Bucket 3 (15–22)
         // intentionally empty.
         for i in 0..<5 {

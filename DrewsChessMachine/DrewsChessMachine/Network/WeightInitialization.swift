@@ -38,8 +38,7 @@ enum WeightInitialization: Sendable, Equatable {
 
     /// An init seed drawn from the system generator.
     static func drawnInitSeed() -> UInt64 {
-        var system = SystemRandomNumberGenerator()
-        return system.next()
+        RunRandomSeed.systemDrawnSeed()
     }
 
     /// The init seed, or nil when the weights come from a load.
@@ -85,13 +84,6 @@ enum WeightInitScheme {
     /// The seed of `tensorName`'s initial values under `initSeed`.
     static func tensorSeed(initSeed: UInt64, tensorName: String) -> UInt64 {
         DCMRandomStreams.childSeed(parent: initSeed, name: streamName(tensorName: tensorName))
-    }
-
-    /// The seed of the BN-calibration warmup game walked for a fresh mint
-    /// (`ChessMPSNetwork`), so a seeded mint's running statistics come from
-    /// the same positions on every machine.
-    static func bnCalibrationSeed(initSeed: UInt64) -> UInt64 {
-        DCMRandomStreams.childSeed(parent: initSeed, name: "init.bn_calibration")
     }
 
     /// `count` standard normals from a generator seeded with `seed`: each

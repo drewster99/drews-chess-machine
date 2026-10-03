@@ -1281,9 +1281,10 @@ Risk: sampler lock — RNG work moves inside the existing lock; xoshiro is faste
 than `SystemRandomNumberGenerator` (which calls `arc4random_buf`), so hold time
 drops. Measure `sample()` µs before/after with the existing timing taps.
 
-**Partly done (2026-10-02, `efcf3a75` test + `e6a3221e` fix): the parts that change no
-existing test's call shape are in; stream threading and the seed parameters wait on
-two owner decisions (below).** As built:
+**DONE (2026-10-02).** First part (`efcf3a75` test + `e6a3221e` fix) — **the parts that
+change no existing test's call shape**; stream threading and the seed parameters waited
+on two owner decisions (below, now decided) and landed in `86ddc626`, `9f97426a`,
+`26f4d112` (as built at the end of this entry). First part as built:
 - **O16 fixed-key board hash (bug fix; regression test committed first, `efcf3a75`,
   red: 11 failures on the old code).** `ReplayBuffer.hashBoard` is now
   `splitmix64` folded over the board's little-endian 8-byte words from a fixed key
@@ -1308,7 +1309,7 @@ two owner decisions (below).** As built:
 - Tests: `ReplayBufferStableBoardHashTests` (4; three red before the fix),
   `ReplayBufferSamplingOrderTests` (6; new API, so red only by not compiling).
 
-**Not done — owner decisions needed:**
+**Owner decisions (were needed; both decided 2026-10-02 — see the as-built record below):**
 1. **Threading the streams needs existing tests changed.** The sampler stream, the
    per-game self-play / arena / vs-UCI streams and the BN-calibration stream all need a
    generator passed in where none is passed today, and the tests call those APIs
@@ -1329,6 +1330,88 @@ two owner decisions (below).** As built:
 Also deferred with the threading: O12/O13 (pinned `legalMoves` order for fixed FENs,
 which matters once `MoveSampler` draws from a seeded stream) and the `sample()` µs
 re-measure (the draws still come from the system generator).
+
+**Decisions.** (1) Option (a), owner: "no silent default. edit all the sites." Every
+seeded API takes its generator or seed as a required argument, and every existing test
+call site passes a fixed one (mechanical edits, assertions unchanged). (2) The `UInt64`
+value kind was not part of P2, so it landed here.
+
+**As built — stream threading and seed parameters (`86ddc626`; registry-count test
+`9f97426a`; dropout wired to the run seed after merging P4, `26f4d112`):**
+- **Run seed (A3.1/A3.2).** `random_seed_mode` (Int 0…1 ↔ `RandomSeedMode`, default
+  0 = draw a seed; resume declaration `.preFeature(0)`) and `random_seed` (`UInt64`,
+  full range, default 0; resume declaration `.refuseExact`), category
+  "Reproducibility", both not live-tunable; `--seed <n>` on GUI `--train`,
+  `--replay-corpus` and `--train-vs-uci` (duplicate or malformed → usage error).
+  `RunRandomSeed.resolve` (`Training/RandomSeedMode.swift`) is the one resolver for all
+  three paths; each logs `[RUN] seed=<n> mode=seeded|seeded(--seed)|unseeded(drawn)
+  derivation=v1` plus a `[PARAM]` line when the configured seed is overridden or
+  ignored, and `results.json` carries `random_seed` (decimal string),
+  `random_seed_mode`, `rng_stream_derivation`. UI: Sessions tab "Run seed" — mode
+  picker, configured seed (in effect only in "Use this seed"), this run's seed with
+  Copy and Use.
+- **`UInt64` parameter kind.** Macro: `default: UInt64(<literal>)` selects it;
+  `ParameterValue.uint64`, persisted and written to JSON as a decimal string; decode
+  also accepts a non-negative JSON integer. One JSON → `ParameterValue` parser
+  (`ParameterValue(jsonValue:id:)`) now serves `TrainingParameters.load`, the CLI
+  `--parameters` loader and stored settings. Two latent issues it fixed: the old
+  loader tested `as? Bool` first, so a JSON 0/1 could be read as a Bool; and an
+  unsigned `NSNumber` above `Int.max` is no longer read through `intValue` (which would
+  wrap it negative).
+- **Streams wired.** Replay buffer: `sampler` stream owned by the buffer under its lock
+  — every draw (the six uniform `nextBounded` sites, stratified `randomSlot`, tilt
+  acceptance), `samplerState()` / `restoreSamplerState(_:)` for P9. `MoveSampler`:
+  `rng: inout DCMRandom` through the inverse CDF, Dirichlet, Gamma and normal draws.
+  `ActiveGame` owns its game's stream and samples through it; draw-keep draws from it.
+  Self-play: `selfplay.game.<serial>` with serials from `GameSerialCounter`, assigned in
+  the serial grow and game-end passes in slot order, never in the parallel tick.
+  Arena: `arena.<arenaIndex>.game.<g>`, `arenaIndex` counting arenas started in the run.
+  Train-vs-UCI: `vsuci.game.<serial>`. BN calibration: `init.bn_calibration` from the
+  model's init seed (`NetworkInitMode.randomWeights(initSeed:)`; GUI Build and
+  `--new-model` draw and log it; a fresh corpus-replay net uses
+  `childSeed(master, "init")`); load containers use `.overwrittenByLoad`. Entropy
+  probe: `probe.entropy_by_bucket.<trainerStep>` with the stable Fisher–Yates; outside
+  a run it is system-seeded and the log says so. Dropout: P4's
+  `RunMasterSeed.systemDrawn(context:)` integration point is replaced and removed —
+  replay and train-vs-UCI build their trainer with the run's `dropout` stream; the GUI
+  trainer outlives runs, so each new run calls `ChessTrainer.beginDropoutStream` with
+  its stream (a continue after Stop keeps its masks); the two sweeps are benchmarks and
+  use an explicit system-seeded generator.
+- **Deliberately system-seeded (explicit `DCMRandom.seededFromSystem()`):** UCI,
+  human play (`MPSChessPlayer`), the Lichess bot chooser, a corpus-replay
+  feeder's game slots (recorded games never draw), the never-played train-vs-UCI slot
+  placeholder, and buffers that are restored and analyzed but never sampled.
+- **Continue vs. resume.** A Stop + continue keeps the run's seed, game serials and
+  arena count. A session resume records none of them yet, so it holds the mode at
+  unseeded for the run (a fresh seed is drawn and logged) and reports the seed NOT
+  EXACT; CLI `--resume-exact` logs `NOT EXACT: rng`. Persisting the seed alone would
+  replay the run's first game streams, so it waits for the serials and arena index in
+  the lineage record (P6/P9).
+- **O12/O13 verified and pinned.** `legalMoves(for:)` is the pin-based filter over
+  `pseudoLegalMoves`, which scans the board in row/column order into an array — no
+  `Set` or `Dictionary` on the path (the `Set`s in `crosscheckGenerators` are only the
+  `--crosscheck-movegen` diagnostic and never feed the result). `LegalMoveOrderPinTests`
+  pins the ordered UCI list of 20 FENs (SHA-256 prefix each).
+- **Timing re-measure.** In the Debug test build: system `Int.random(in:)` 183 ns per
+  bounded draw vs `DCMRandom.nextBounded` 68 ns (≈0.75 ms vs ≈0.28 ms of draws per
+  4096-sample batch); a full 4096-position `sample()` 5.4 ms, dominated by copying
+  positions. Not slower; the Release-build figures in A2.2 stand.
+- **Deviations.** `--seed` is parsed with the other flags in `DrewsChessMachineApp`
+  rather than in `CliTrainingConfig` (which loads `--parameters` files). The per-game
+  K-independence test drives `MoveSampler` through per-game streams in lockstep
+  (K = 1 vs K = 8) rather than a stubbed `evaluateBatched` in the driver — the
+  drivers take a concrete `ChessMPSNetwork`, and the property under test is that no
+  draw is shared between games. libm `logf`/`cosf` in the Gamma/normal draws remain
+  (P5's restricted-domain math).
+- **Tests.** New: `RunSeedParameterTests` (14), `SeededStreamDeterminismTests` (11),
+  `LegalMoveOrderPinTests` (2), `DropoutRunStreamTests` (2), macro
+  `test_uint64Parameter_withRange`. Red: compile-only (new API) — the first run of
+  the new classes failed only the pin test, whose goldens were then filled from the
+  generator and checked against known perft move counts. Changed: the owner-approved
+  mechanical call-site edits, plus `TrainingParametersTests.test_registry_size` 82 → 84
+  (`9f97426a`). Macro package: 4 expansion tests (`test_boolParameter`,
+  `test_intParameter_withRange`, both acronym tests) fail on `e1026596` too — a
+  `throw` indentation difference with the current swift-syntax, not touched here.
 
 **P4 — Dropout state.** Files: `Network/ChessNetwork.swift` (placeholder assign,
 no baked constant), `Training/ChessTrainer.swift` (`captureDropoutState()`,
@@ -1517,6 +1600,94 @@ Validation: a real 200-step replay run and a GUI session each write v5 files
 whose `dcm_lineage` decodes and whose flat mirrors equal the struct; E4 legacy
 fixtures all pass.
 
+**Done (`8c53f718`, merge of P4 `a34a3a41`, dropout state `d862d8d5`,
+2026-10-02).** As built:
+- **Version.** The plan's "format v5" is **v7**: v5 and v6 were taken by
+  `se_activation` and `rezero_alpha_cap` before this phase.
+  `ArchitectureFormat.currentVersion` 6 → 7 with
+  `lineageRequiredFromVersion = 7` and no new architecture field. A v7 file
+  without `dcm_lineage` is a load error. Older files load as before, their
+  lineage `.unrecorded(formatVersion:)`. `session.json` goes to format v2 with
+  the same record embedded (`lineage`, required from v2; v1 still decodes).
+- **`Persistence/LineageRecord.swift`.** The D2 record:
+  - run, parent, steps, fed (+ `corpus`), time, parameters (snapshot + SHA-256,
+    verified on decode), build, invocation (argv redacted), device, rng and
+    segments.
+  - Every key is required on decode, and absent values are explicit JSON null.
+  - The flat mirrors are derived on write and never read.
+- **`Persistence/LineageTracker.swift`.** The single builder, one per segment
+  per path:
+  - Start kinds: `.fresh`, `.branch(parent:)`,
+    `.resume(parent:notExactItems:legacyTotals:)`.
+  - Totals are the parent record's totals plus this segment's.
+  - Step time is measured per trainer step (`recordTrainingStep(totalMs:)`).
+  - `mintRecord` / `untrainedCopyRecord` cover `--new-model`, `--derive-model`
+    and Save Champion of a loaded model.
+- **Writers.** Corpus replay, train-vs-UCI, GUI session saves (manual,
+  periodic, post-promotion), Save Champion, `--new-model` and `--derive-model`.
+  - On a trainer-state file, `cum_trainer_step` must equal
+    `trainer_completed_steps`; `SafetensorsModelIO.encode` refuses otherwise.
+  - Corpus replay writes its position into `fed.corpus` and no longer writes
+    `replay_*` / `built_by_*`. `--resume-exact` reads the record, and the
+    legacy keys for files before v7 (`replayResumePoint(at:)`).
+- **GUI fed counts.** These are the stats box's emitted counters, folded into
+  a carry and rebaselined whenever the box is reset (promotion), replaced (new
+  session) or torn down (Stop). That makes one segment total however many
+  boxes it lived through.
+- **Dropout state (P4 → disk).** `rng.dropout_philox_state` is written from
+  the trainer snapshot of every trainer-state save. It is null for records with
+  no trainer state behind them (mint, derive, champion-only save).
+  - `TrainerResumeSnapshot(checkpoint:)` and the GUI session resume restore it
+    (`DropoutRNGResumeState(lineage:)`).
+  - `dropout_state` is a not-exact item only when the parent holds none
+    (`NotExactItem.resumeGaps`).
+  - A promotion now also rewinds the trainer's dropout state to the arena-start
+    capture, with its weights, velocity and clock. This keeps the live trainer
+    and the `-promote` save identical.
+- **Owner requirement (continuous time and steps).** It is pinned by
+  `LineageRecordTests`:
+  - A three-segment exact-resume chain: run ID stable, `segment_index` +1,
+    `parent.content_sha256` equal to the parent file's, and every total equal to
+    the uninterrupted sum. A branch mints a new run.
+  - Resumes from a legacy file and from a legacy GUI session: totals null, wall
+    time from `elapsedTrainingSec`, and `continues_unrecorded_history`.
+- **Tests.**
+  - New: `LineageRecordTests` (19), plus
+    `DropoutRNGStateTests.testDropoutStateSurvivesATrainerFileAndContinuesOnResume`.
+  - Edited sites: every test that writes a model file or a current-version
+    session now passes a lineage record (`LineageTestSupport`). Assertions are
+    unchanged.
+  - Red: compile-only (new API). The first run of the edited suite had 34
+    failures, all current-version session fixtures without `lineage`; the
+    fixtures were then given one.
+  - Green before the P4 merge: the rerun of the failing classes passed 92/92.
+    After the merge and the dropout work: 69/69 across `LineageRecordTests`,
+    `DropoutRNGStateTests`, `ExactResumeTests`, `CheckpointManager*`,
+    `SessionCheckpointSchemaExpansionTests` and `TrainerHyperparametersTests`.
+    The other 19 classes whose call sites were edited passed 216 tests, with 1
+    skip and 0 failures. The full suite was not run.
+- **Deviations and what was left for later phases:**
+  1. P7's B2 init-neutral fields need their own format bump (v8), since v7 is
+     lineage alone.
+  2. `session.json` v2 keeps its explicit parameter fields, because P2's resume
+     reads them; the lineage parameter snapshot is provenance only.
+  3. `parameters.trainer_hyperparameters` is omitted (derivable from the
+     snapshot).
+  4. `derivation_history` carry-forward, the `[RUN]` line and the
+     `results.json` lineage (D4/D5/B4) are left to P10.
+  5. `fed.corpus` lacks `oldest_resident`, `feed_carry` and `shard_sha256`
+     (P9).
+  6. `rng` holds `seed_mode: unseeded` plus the dropout state. The master seed,
+     stream derivation and sampler state are P3/P9's, and `RNG` is their marked
+     integration point.
+  7. `not_exact_items` tokens are provisional until P9's `ResumeGap`.
+  8. Resuming a file before v7 starts a new run at `segment_index` 0.
+  9. A session's champion file carries the run's record at save time, the same
+     record as its trainer file.
+  10. `ckpt_inventory.py` reads the `replay_*` keys, which v7 files lack (P11).
+- **Validation still owed.** The real 200-step replay run and the GUI session
+  writing v7 files were not run here: no app runs were made from this worktree.
+
 **P7 — Init-neutral options** (B2, B2.1; D-4): `se_gamma_bias_init`,
 `branch_output_init`, `skip_projection_init`, `policy_head_final_init`,
 `value_head_final_init`, `value_head_draw_prior`; ReZero `> 0` validation.
@@ -1590,6 +1761,75 @@ a real launch; a `results.json` from a short replay run carries `lineage`.
 **P11 — Tracker.** `documentation/dashboards/replay.py`, `ckpt_inventory.py`,
 `selfplay.py`, `vsuci.py`; pytest fixtures. Validation: on existing v4 data,
 output identical to today (no regressions); on synthetic v5 headers, expected registry.
+
+**Done (`d493e9cb`, `fb3f4016`, 2026-10-03).** As built, against P6's as-built record
+(format **v7**, `dcm_lineage`):
+- **`scripts/dcm_lineage.py`** — the one Python reader of the record. Format version is
+  read as `ArchitectureFormat` reads it (absent = 3); a file before v7 is
+  `Unrecorded(format v<N>)`; a v7+ file without a record, with a record that is not
+  JSON, of another schema, or missing a key the derivation reads, is refused; a v6 file
+  carrying a record is refused (no writer of v6 produced one). The flat mirror keys are
+  never read. `derive_runs` groups files by `lineage_run_id` and segment and derives the
+  registry fields `lineage_run_id`, `segment_id`, `model_id`, `date`, `cumstep_base`
+  (`segment_start_trainer_step − run origin`), `games_base` (`cum_games −
+  segment_games`), `elapsed_base_sec` (`cum_train_step_sec − segment_train_step_sec`),
+  `wall_base_sec` and `device` ("M4 Pro", "M5 (VM)" — the hand-entered form). A total the
+  record holds as null stays absent and is listed as unrecorded. Files of one segment that
+  disagree on index, model ID or bases are refused (time bases agree within a 1e-9
+  relative rounding tolerance, since each file computes them by subtraction). A segment
+  whose files are gone is derived from a later record's `segments` history (its model ID
+  stays unrecorded: summaries do not carry it). Constants mirror the Swift ones and a test
+  reads the Swift source to keep them equal.
+- **`ckpt_inventory.py`** — each entry gains `lineage` (run, segment, start, exact,
+  cumulative steps / games / train-step seconds, corpus position, path kind) or
+  `"unrecorded (format vN)"`; a refused file is an `error` entry. On the 4056 real
+  checkpoints the output is otherwise identical to before (all are v3–v6).
+- **`replay.py derive-registry [--models-dir] [--write]`** and **`vsuci.py
+  --derive-registry DIR [--write]`** — reconcile (`_lineage_registry.plan`, pure) the
+  lineage runs written by that path with the registry: a run matches by
+  `lineage_run_id`, else by a segment `model_id`; a segment by `segment_id`, else
+  `model_id`. Fill-only: a field the registry holds is "same" or a reported
+  **conflict**, never overwritten; `--write` is refused outright when anything conflicts
+  or any file is refused. The step axis: when the lineage run's segment 0 is the registry
+  run's first segment and it did not continue unrecorded history, its trainer clock is
+  the registry axis; otherwise the registry's own `cumstep_base` for the segment matching
+  segment 0 is the anchor; with neither, `cumstep_base` stays unrecorded.
+- **`selfplay.py --lineage-table DIR`** — read-only segment table of the GUI session files
+  (`*.dcmsession/*.safetensors`); that registry is keyed by session logs and holds no
+  per-segment bases to fill.
+- **Tracker rows.** A registry segment with a `segment_id` has its checkpoints found by
+  that id in their headers (`lineage_checkpoints`), not an `enum_stem` glob, and
+  `discover-stems` proposes no stem for it (the `enum_stem` field is then unneeded). Rows
+  from a file with a record get `games_fed` = the record's `cum_games` (measured) and a
+  new CSV column `train_step_sec` = `cum_train_step_sec` (measured step time — no clamp
+  needed; `elapsed_train_sec` stays beside it for older rows). A record that names a
+  different segment, a different segment-local step, or disagrees with the segment's
+  `games_base` refuses the row.
+- **Tests** (`documentation/dashboards/tests/test_lineage.py`, stdlib unittest, 25 new):
+  three synthetic v7 segments (fresh + two exact resumes, enumerated files every 500
+  steps) → the expected registry segments; bases + segment totals reproduce every file's
+  cumulative values; history-only segments; null totals stay unrecorded; v3/v6
+  unrecorded; six refusal cases; segment disagreement; reconciliation fill / same /
+  conflict / anchor / no-anchor / double match; the command's proposal-only, write,
+  idempotent rewrite, conflict refusal and path-kind filter on a temp registry; the
+  tracker cells and header enumeration on a temp `DCM_DASH_ROOT`; inventory columns. All
+  53 dashboard tests pass.
+- **Validation on real data (read-only).** `derive-registry` (with `DCM_DASH_ROOT` on a
+  scratch copy) and `vsuci.py --derive-registry` over the real Models folder: 4056 files,
+  all unrecorded, nothing changed, exit 0; `selfplay.py --lineage-table` over Sessions:
+  32 files, all unrecorded; `discover-stems` output byte-identical to the previous code.
+  No real v7 file exists yet (the running experiments use builds before P6), so the
+  derivation on real v7 headers is still owed — first real run: `replay.py
+  derive-registry` once a v7 corpus-replay run has saved checkpoints.
+- **Deviations.** (1) Registry entries are never *created*: a lineage run or segment with
+  no registry counterpart is printed as a proposal, because a registry run needs a label,
+  color and session log no file states (filling those would be a silent default). (2)
+  Plotting `train_step_sec` beside `elapsed_train_sec` in `master.py` is not done; the
+  column is recorded. (3) Schema extension: the shared CSV schema gains the
+  `train_step_sec` column (blank on every existing row), so the next rewrite of an
+  existing CSV adds an empty column — values are unchanged. (4) The rewrite of the
+  registry uses the file's existing format (`indent=2`, no trailing newline), checked to
+  round-trip byte for byte.
 
 **P12 — Harness** (C6). `DrewsChessMachineTests/ResumeEquivalenceTests.swift`,
 `scripts/resume_equivalence.sh`, `test_tiny` preset + corpus fixture.

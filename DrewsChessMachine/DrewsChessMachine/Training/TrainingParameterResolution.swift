@@ -106,6 +106,8 @@ enum TrainingParameterResolution {
             raw = .int(range.max)
         } else if let range = K.definition.doubleRange {
             raw = .double(range.max)
+        } else if let range = K.definition.uint64Range {
+            raw = .uint64(range.max)
         } else {
             preconditionFailure("\(K.id) declares absentValue .declaredRangeMaximum but has no range")
         }

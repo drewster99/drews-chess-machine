@@ -199,6 +199,24 @@ final class TrainingSettingsPopoverModel {
     private(set) var maxPeriodicAutosavesKeptError = false
     private(set) var klProbeIntervalError = false
 
+    /// Pending `random_seed_mode`. Commit-on-Save; read only when a run
+    /// starts (`RunRandomSeed.resolve`), so an edit made during a run takes
+    /// effect at the next start, and a continue after Stop keeps its seed.
+    /// The seed field is in effect only in `seeded` mode: in `unseeded` mode
+    /// Save leaves `random_seed` untouched, like the inactive policy-smoothing
+    /// fields, so an edit there is discarded rather than committed unseen.
+    var randomSeedModeValue: RandomSeedMode = .unseeded
+    var randomSeedText = "" { didSet { randomSeedError = false } }
+    private(set) var randomSeedError = false
+
+    /// Make the given run's seed the configured one: `seeded` mode with that
+    /// seed in the field, committed by Save like any edit. Repeats an
+    /// unseeded run without retyping its seed.
+    func useRunSeed(_ runSeed: RunRandomSeed) {
+        randomSeedModeValue = .seeded
+        randomSeedText = String(runSeed.masterSeed)
+    }
+
     /// The minutes ↔ seconds factor for the autosave-interval field, which
     /// is edited in minutes while `periodic_autosave_interval_sec` stores
     /// seconds.
@@ -399,6 +417,8 @@ final class TrainingSettingsPopoverModel {
         maxPeriodicAutosavesKeptText = String(p.maxPeriodicAutosavesKept)
         automaticSavePruningEnabledValue = p.automaticSavePruningEnabled
         klProbeIntervalText = String(p.klProbeInterval)
+        randomSeedModeValue = p.randomSeedMode
+        randomSeedText = String(p.randomSeed)
         // Stash pre-edit values for the four replay-ratio control fields. The
         // Replay tab live-propagates changes to those fields; if the user hits
         // Cancel we restore from this stash, matching the standard
@@ -475,6 +495,7 @@ final class TrainingSettingsPopoverModel {
         periodicAutosaveIntervalError = false
         maxPeriodicAutosavesKeptError = false
         klProbeIntervalError = false
+        randomSeedError = false
     }
 
     /// Restore the seven live-propagated Replay-tab fields (four replay-ratio
@@ -1416,6 +1437,37 @@ final class TrainingSettingsPopoverModel {
         } else {
             klProbeIntervalError = true
             anyError = true
+        }
+        // Run seed — the mode, then (in seeded mode only) a UInt64 seed.
+        // Read when a run starts, so a plain singleton write is all that's
+        // required. The seed is validated before either is written, so a bad
+        // seed never leaves `seeded` committed over the previous seed.
+        let pendingSeed: UInt64?
+        switch randomSeedModeValue {
+        case .seeded:
+            if let seed = RandomSeed.parsedInDeclaredRange(randomSeedText) {
+                randomSeedError = false
+                pendingSeed = seed
+            } else {
+                randomSeedError = true
+                anyError = true
+                pendingSeed = nil
+            }
+        case .unseeded:
+            randomSeedError = false
+            pendingSeed = nil
+        }
+        if !randomSeedError {
+            if randomSeedModeValue != p.randomSeedMode {
+                SessionLogger.shared.log(
+                    "[PARAM] randomSeedMode: \(p.randomSeedMode.logToken) -> \(randomSeedModeValue.logToken)"
+                )
+                p.randomSeedMode = randomSeedModeValue
+            }
+            if let pendingSeed, pendingSeed != p.randomSeed {
+                SessionLogger.shared.log("[PARAM] randomSeed: \(p.randomSeed) -> \(pendingSeed)")
+                p.randomSeed = pendingSeed
+            }
         }
 
         // Push the committed configuration onto the live trainer in one call,

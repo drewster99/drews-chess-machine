@@ -132,17 +132,23 @@ extension SessionController {
         var trainerSnapshotWeights: [[Float]] = []
         var trainerSnapshotVelocity: [[Float]] = []
         var trainerSnapshotCompletedSteps = 0
+        // And the dropout Philox state at the same instant, so a promotion
+        // rewinds the trainer's masks with its weights and clock, and the
+        // post-promotion save records the state that goes with them.
+        let trainerSnapshotDropoutState: DropoutPhiloxState
         do {
-            let snapshot: ([[Float]], [[Float]], Int) = try await Task.detached(priority: .userInitiated) {
+            let snapshot: ([[Float]], [[Float]], Int, DropoutPhiloxState) = try await Task.detached(priority: .userInitiated) {
                 let weights = try await trainer.network.exportWeights()
                 let velocity = try await trainer.exportVelocitySnapshot()
                 let completedSteps = trainer.completedTrainSteps
+                let dropoutState = try await trainer.captureDropoutState()
                 try await candidateInference.loadWeights(weights)
-                return (weights, velocity, completedSteps)
+                return (weights, velocity, completedSteps, dropoutState)
             }.value
             trainerSnapshotWeights = snapshot.0
             trainerSnapshotVelocity = snapshot.1
             trainerSnapshotCompletedSteps = snapshot.2
+            trainerSnapshotDropoutState = snapshot.3
         } catch {
             trainingBox?.recordError("Arena candidate sync failed: \(error.localizedDescription)")
             trainingGate.resume()
@@ -244,6 +250,17 @@ extension SessionController {
         let recordsBox = TournamentRecordsBox()
         let stats: TournamentStats
 
+        // The arena's game streams (`arena.<index>.game.<g>`) derive from
+        // the run's seed. Arenas are started only by the Play-and-Train
+        // task, which resolves the seed before it launches anything.
+        guard let runSeed = runRandomSeed else {
+            preconditionFailure("arena started with no run seed; Play-and-Train resolves it before any arena")
+        }
+        let arenaIndex = arenasStartedThisRun
+        arenasStartedThisRun += 1
+        let arenaStreams = runSeed.streams
+        SessionLogger.shared.log("[ARENA] game streams: arena index \(arenaIndex), run seed \(runSeed.masterSeed)")
+
         // Tick-based arena driver — ticks K games in lockstep against
         // the candidate and champion networks directly, two batched
         // `evaluateBatched` calls per tick (one per network). K
@@ -253,9 +270,11 @@ extension SessionController {
         do {
             stats = try await withTaskCancellationHandler {
                 try await Task.detached(priority: .userInitiated) {
-                    [tBox, cancelBox, overrideBox, arenaDiversity, arenaScheduleSnapshot, liveK, recordsBox, sprtConfig, progressTotalGames] in
+                    [tBox, cancelBox, overrideBox, arenaDiversity, arenaScheduleSnapshot, liveK, recordsBox, sprtConfig, progressTotalGames, arenaStreams, arenaIndex] in
                     let driver = TickTournamentDriver()
                     return try await driver.run(
+                        randomStreams: arenaStreams,
+                        arenaIndex: arenaIndex,
                         candidateNetwork: candidateInference,
                         championNetwork: arenaChampion,
                         arenaSchedule: arenaScheduleSnapshot,
@@ -362,7 +381,8 @@ extension SessionController {
             if !Task.isCancelled {
                 do {
                     promotedChampionWeights = try await Task.detached(priority: .userInitiated) {
-                        [candidateInference, champion, trainer, trainerSnapshotVelocity, trainerSnapshotCompletedSteps] in
+                        [candidateInference, champion, trainer, trainerSnapshotVelocity, trainerSnapshotCompletedSteps,
+                         trainerSnapshotDropoutState] in
                         let weights = try await candidateInference.exportWeights()
                         try await champion.loadWeights(weights)
                         // Open the replacement window; the trainer's new
@@ -396,6 +416,10 @@ extension SessionController {
                         // the weights and drive the immature network
                         // into collapse with an oversized LR.
                         trainer.completedTrainSteps = trainerSnapshotCompletedSteps
+                        // The masks rewind with the weights and the clock:
+                        // the rewound trainer draws the dropout sequence
+                        // from where the candidate's training left it.
+                        try await trainer.restoreDropoutState(trainerSnapshotDropoutState)
                         return weights
                     }.value
                     // Promoted: champion now holds the arena candidate's
@@ -516,9 +540,29 @@ extension SessionController {
         // may not fire for up to an hour at this point in the
         // schedule).
         if promoted {
+            // The reset below zeroes the box's emitted counters, so the
+            // lineage segment banks what it counted first and recounts from
+            // the reset.
+            foldLineageFedCounts()
             parallelWorkerStatsBox?.resetGameStats()
+            rebaselineLineageFedCounts()
             let trainerIDStr = trainer.identifier?.description ?? "?"
             let championIDStr = champion.identifier?.description ?? "?"
+            // The champion now holds weights this run trained: as a parent
+            // for a later branch, it is described by the run's record at the
+            // promoted trainer state (it was never written as a file here).
+            let championLineage: LineageRecord.Presence
+            do {
+                championLineage = .recorded(try lineageRecordForSave(
+                    at: Date(), trainerCompletedSteps: trainerSnapshotCompletedSteps,
+                    dropoutPhiloxState: trainerSnapshotDropoutState))
+            } catch {
+                SessionLogger.shared.log("[LINEAGE] promoted champion's lineage not recorded: \(error.localizedDescription)")
+                championLineage = .unrecorded(formatVersion: ArchitectureFormat.currentVersion)
+            }
+            championLineageSource = LineageTracker.ParentFile(
+                modelID: championIDStr, contentSHA256: nil,
+                trainerCompletedSteps: trainerSnapshotCompletedSteps, lineage: championLineage)
             SessionLogger.shared.log(
                 "[STATS] post-promote  steps=\(trainingStats?.steps ?? 0) champion=\(championIDStr) trainer=\(trainerIDStr)"
             )
@@ -578,7 +622,20 @@ extension SessionController {
                 ),
                 policyTailPrecision: trainer.policyTailPrecision
             )
-            let createdAtUnix = Int64(Date().timeIntervalSince1970)
+            let saveDate = Date()
+            let createdAtUnix = Int64(saveDate.timeIntervalSince1970)
+            // The run's lineage at the promoted state, for all three files.
+            let promotionLineage: LineageRecord
+            do {
+                promotionLineage = try lineageRecordForSave(
+                    at: saveDate, trainerCompletedSteps: promotionSaveTrainerStep,
+                    dropoutPhiloxState: trainerSnapshotDropoutState)
+            } catch {
+                let message = "Post-promotion save failed (lineage): \(error.localizedDescription)"
+                checkpoint?.setCheckpointStatus(message, kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] \(message)")
+                return
+            }
             // Copy captured arrays for clean Sendable semantics
             // (they're already Sendable but this makes the
             // transfer to the detached task explicit).
@@ -620,6 +677,7 @@ extension SessionController {
                         trainerMetadata: trainerMetadata,
                         trainerCreatedAtUnix: createdAtUnix,
                         state: sessionState,
+                        lineage: promotionLineage,
                         architecture: promotedArch,
                         replayBuffer: bufferForAutosave,
                         chartSnapshot: chartSnapshotForAutosave,
