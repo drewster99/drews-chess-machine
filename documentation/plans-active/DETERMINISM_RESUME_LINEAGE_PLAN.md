@@ -1611,6 +1611,17 @@ seed.
     phase that completes `rng` (P9/P10); until then the flat `init_seed` /
     `init_scheme` keys of a `--new-model` file are the record, written next to its
     `dcm_lineage`.
+  - **Superseded (owner decision, 2026-10-03: one source of truth).** P9 added
+    `rng.init_seed` / `init_scheme` to the record; the flat keys are now gone. No writer
+    emits them, no reader reads them, `ModelCheckpointMetadata` has no init field and
+    `SafetensorsModelIO.IOError.malformedInitRecord` is removed — a malformed seed is
+    a `malformedLineage` decode error. A header scan of every model and session file
+    on the training Mac (4,068 + 127) found none carrying the flat keys, so no reader
+    for them was kept. The legacy `.dcmmodel` writer now refuses any file whose
+    lineage is recorded (it has no place for the record, so it would drop the init
+    seed with it). `InitSeedRecordingTests` asserts the seed through the lineage record
+    (owner-approved edit); `resume_equivalence_compare.py` also compares
+    `rng.init_seed` / `init_scheme`.
 
 **P6 — Format v5 + `LineageRecord`.** Files: `Persistence/LineageRecord.swift`,
 `Persistence/LineageTracker.swift`, `Network/ArchitectureFormat.swift` (v5),

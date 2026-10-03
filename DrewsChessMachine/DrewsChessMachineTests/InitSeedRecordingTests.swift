@@ -3,8 +3,9 @@
 //  DrewsChessMachineTests
 //
 //  Where a model's init seed travels (determinism plan, phase P5): the
-//  safetensors `init_seed` / `init_scheme` metadata of a fresh mint, the
-//  seeded `--derive-model` β re-draw, and the Build-New-Model seed field.
+//  lineage record's `rng.init_seed` / `init_scheme` of a fresh mint (its only
+//  home), the seeded `--derive-model` β re-draw, and the Build-New-Model seed
+//  field.
 //
 
 import XCTest
@@ -27,38 +28,59 @@ final class InitSeedRecordingTests: XCTestCase {
         return arch
     }()
 
-    private func encoded(metadata: ModelCheckpointMetadata) throws -> Data {
+    private func encoded(metadata: ModelCheckpointMetadata, lineage: LineageRecord? = nil) throws -> Data {
         let weights = Self.architecture.weightTensorPlan().enumerated().map { index, spec in
             (0..<spec.elementCount).map { Float(index * 5 + $0 % 11) * 0.25 + 0.125 }
         }
         return try SafetensorsModelIO.encode(
             modelID: "20261002-1-INIT", createdAtUnix: 1_790_000_000, metadata: metadata, weights: weights,
             architecture: Self.architecture, includesVelocity: false,
-            lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil))
+            lineage: try lineage ?? LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil))
+    }
+
+    private func mintLineage(_ initialization: ModelInitRecord) throws -> LineageRecord {
+        try LineageTracker.mintRecord(pathKind: .newModel, argv: ["DrewsChessMachine", "--new-model"],
+                                      initialization: initialization,
+                                      at: Date(timeIntervalSince1970: 1_790_000_000))
+    }
+
+    private func recordedInitialization(_ data: Data) throws -> ModelInitRecord? {
+        let decoded = try SafetensorsModelIO.decode(data, valueHead: .asStored)
+        let lineage = try XCTUnwrap(decoded.file.safetensorsProvenance?.lineage.record)
+        return lineage.rng.initialization
     }
 
     // MARK: File metadata
 
-    func testInitRecordRoundTripsThroughSafetensors() throws {
+    /// A mint's init seed and scheme travel in the lineage record only; the
+    /// header carries no second copy.
+    func testInitRecordRoundTripsThroughTheLineageRecord() throws {
         let record = ModelInitRecord(initSeed: 0xFFFF_FFFF_FFFF_FFF1, scheme: WeightInitScheme.current)
-        let data = try encoded(metadata: ModelCheckpointMetadata(
-            creator: "new-model", trainingStep: nil, parentModelID: "", notes: "fresh", initRecord: record))
+        let data = try encoded(
+            metadata: ModelCheckpointMetadata(creator: "new-model", trainingStep: nil, parentModelID: "", notes: "fresh"),
+            lineage: try mintLineage(record))
         let (_, metadata) = try SafetensorsFile.decode(data)
-        XCTAssertEqual(metadata["init_seed"], "18446744073709551601")
-        XCTAssertEqual(metadata["init_scheme"], "dcm-init-1")
-        let decoded = try SafetensorsModelIO.decode(data, valueHead: .asStored)
-        XCTAssertEqual(decoded.file.metadata.initRecord, record)
+        XCTAssertNil(metadata["init_seed"])
+        XCTAssertNil(metadata["init_scheme"])
+        let lineageText = try XCTUnwrap(metadata[LineageRecord.metadataKey])
+        XCTAssertTrue(lineageText.contains("\"init_seed\":\"18446744073709551601\""), lineageText)
+        XCTAssertTrue(lineageText.contains("\"init_scheme\":\"\(WeightInitScheme.current)\""), lineageText)
+        XCTAssertEqual(try recordedInitialization(data), record)
     }
 
+    /// A model made from another file's weights records no init seed of its
+    /// own: the derive copies weights, it draws none.
     func testFileWithoutInitRecordDecodesToNil() throws {
-        let data = try encoded(metadata: ModelCheckpointMetadata(
+        let source = try encoded(metadata: ModelCheckpointMetadata(
             creator: "test", trainingStep: nil, parentModelID: "", notes: "none"))
-        XCTAssertNil(try SafetensorsModelIO.decode(data, valueHead: .asStored).file.metadata.initRecord)
+        let derived = try derive(source, [SetSEBetaInitDeriveOperation(value: .glorot, groupIndices: nil, initSeed: 4242)])
+        XCTAssertNil(try recordedInitialization(derived.data))
     }
 
     func testMalformedInitRecordsAreRefused() throws {
-        let base = try encoded(metadata: ModelCheckpointMetadata(
-            creator: "test", trainingStep: nil, parentModelID: "", notes: "none"))
+        let base = try encoded(
+            metadata: ModelCheckpointMetadata(creator: "test", trainingStep: nil, parentModelID: "", notes: "none"),
+            lineage: try mintLineage(ModelInitRecord(initSeed: 12, scheme: WeightInitScheme.current)))
         let cases: [[String: String?]] = [
             ["init_seed": "12", "init_scheme": nil],
             ["init_seed": nil, "init_scheme": "dcm-init-1"],
@@ -70,24 +92,37 @@ final class InitSeedRecordingTests: XCTestCase {
             let (tensors, decodedMetadata) = try SafetensorsFile.decode(base)
             var metadata = decodedMetadata
             metadata.removeValue(forKey: SafetensorsFile.contentHashKey)
-            for (key, value) in edits { metadata[key] = value }
+            let lineageText = try XCTUnwrap(metadata[LineageRecord.metadataKey])
+            var lineage = try XCTUnwrap(
+                try JSONSerialization.jsonObject(with: Data(lineageText.utf8)) as? [String: Any])
+            var rng = try XCTUnwrap(lineage["rng"] as? [String: Any])
+            for (key, value) in edits { rng[key] = value.map { $0 as Any } ?? NSNull() }
+            lineage["rng"] = rng
+            let edited = try JSONSerialization.data(withJSONObject: lineage, options: [.sortedKeys])
+            metadata[LineageRecord.metadataKey] = String(decoding: edited, as: UTF8.self)
             let data = try SafetensorsFile.encode(tensors: tensors, metadata: metadata)
             XCTAssertThrowsError(try SafetensorsModelIO.decode(data, valueHead: .asStored), "\(edits)") { error in
-                guard case SafetensorsModelIO.IOError.malformedInitRecord = error else {
-                    return XCTFail("expected malformedInitRecord for \(edits), got \(error)")
+                guard case SafetensorsModelIO.IOError.malformedLineage = error else {
+                    return XCTFail("expected malformedLineage for \(edits), got \(error)")
                 }
             }
         }
     }
 
-    func testLegacyWriterRefusesAnInitRecord() throws {
-        let file = ModelCheckpointFile(
-            modelID: "20261002-1-INIT", createdAtUnix: 1_790_000_000,
-            metadata: ModelCheckpointMetadata(
-                creator: "new-model", trainingStep: nil, parentModelID: "", notes: "fresh",
-                initRecord: ModelInitRecord(initSeed: 1, scheme: WeightInitScheme.current)),
-            weights: [])
-        XCTAssertThrowsError(try file.encode())
+    /// The positional `.dcmmodel` layout has no place for a lineage record —
+    /// and so for an init seed — so the legacy writer refuses a file carrying
+    /// one rather than dropping it.
+    func testLegacyWriterRefusesAFileWithALineageRecord() throws {
+        let data = try encoded(
+            metadata: ModelCheckpointMetadata(creator: "new-model", trainingStep: nil, parentModelID: "", notes: "fresh"),
+            lineage: try mintLineage(ModelInitRecord(initSeed: 1, scheme: WeightInitScheme.current)))
+        let file = try SafetensorsModelIO.decode(data, valueHead: .asStored).file
+        XCTAssertNotNil(file.safetensorsProvenance?.lineage.record)
+        XCTAssertThrowsError(try file.encode()) { error in
+            guard case ModelCheckpointError.encodingFailed(let message) = error, message.contains("lineage") else {
+                return XCTFail("expected a lineage refusal, got \(error)")
+            }
+        }
     }
 
     // MARK: Derive

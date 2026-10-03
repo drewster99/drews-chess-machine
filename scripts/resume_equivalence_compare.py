@@ -8,7 +8,9 @@ Reads only the safetensors headers. Every field is compared exactly:
 - `content_sha256` — the SHA-256 of the tensor data region (every master,
   batch-norm statistic and velocity tensor);
 - the run's stream positions (`rng.streams.sampler_state`,
-  `rng.streams.dropout_stream_state`) and `rng.dropout_philox_state`;
+  `rng.streams.dropout_stream_state`), `rng.dropout_philox_state`, and the
+  run's init seed and scheme (`rng.init_seed` / `rng.init_scheme`, carried
+  unchanged across an exact resume);
 - the corpus feed position (`fed.corpus` epoch, next game, shard, buffer
   fill, feed phase) and the cumulative trainer step, games and positions;
 - the resumed file's segment must record an exact resume with no gaps.
@@ -52,6 +54,8 @@ COMPARED = [
     ("rng", "streams", "sampler_state"),
     ("rng", "streams", "dropout_stream_state"),
     ("rng", "dropout_philox_state"),
+    ("rng", "init_seed"),
+    ("rng", "init_scheme"),
     ("fed", "corpus", "epoch"),
     ("fed", "corpus", "next_game_index"),
     ("fed", "corpus", "shard"),
