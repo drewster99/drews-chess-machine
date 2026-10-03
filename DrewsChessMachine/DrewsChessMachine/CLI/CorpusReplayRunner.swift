@@ -8,8 +8,9 @@ import os
 /// loop (running on the detached replay task) reads it once per step. An
 /// `OSAllocatedUnfairLock` — the project standard — guards the single Bool;
 /// this is not on any hot path (one read per GPU step), so the lock cost is
-/// irrelevant.
-private final class ReplayAbortFlag: @unchecked Sendable {
+/// irrelevant. Internal (not private) so the resume-equivalence harness can
+/// run the real replay loop in-process without a signal source.
+final class ReplayAbortFlag: @unchecked Sendable {
     private let state = OSAllocatedUnfairLock(initialState: false)
     func request() { state.withLock { $0 = true } }
     var isRequested: Bool { state.withLock { $0 } }
@@ -846,7 +847,11 @@ enum CorpusReplayRunner {
 
     // MARK: - The run
 
-    private static func runReplay(config: CorpusReplayConfig, params p: ReplayParams, abort: ReplayAbortFlag) async throws -> Result {
+    /// The whole replay run. Internal (not private) only so
+    /// `ResumeEquivalenceTests` can run the real loop in-process — a full run,
+    /// then the same run split by a save and a `--resume-exact` — and compare
+    /// the files they end with. Production enters through `runAndExit`.
+    static func runReplay(config: CorpusReplayConfig, params p: ReplayParams, abort: ReplayAbortFlag) async throws -> Result {
         // `--output` support. Only allocated when a destination was given, so a
         // run without `--output` carries no per-step recording cost at all.
         let recorder: CliTrainingRecorder? = config.output == nil ? nil : {
