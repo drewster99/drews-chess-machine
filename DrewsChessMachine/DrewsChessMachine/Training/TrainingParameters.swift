@@ -1912,6 +1912,35 @@ public final class TrainingParameters {
         self[keyPath: keyPath] = value
     }
 
+    /// Restore a `Double` parameter whose session copy is stored as `Float`.
+    ///
+    /// Sessions keep the trainer's hyperparameters as `Float` (what the graph
+    /// is fed). Widening one with `Double(_:)` keeps the float's binary value,
+    /// so a saved 0.1 comes back as 0.10000000149011612 — which then persists
+    /// to `UserDefaults`, shows up in `parameters.json`, and can land a value
+    /// typed at a declared bound just outside it. The session value is the
+    /// number that was set, so it is widened through
+    /// `doubleFromSavedFloat(_:)` instead.
+    func restoreFromSession<K: TrainingParameterKey>(
+        _ key: K.Type,
+        savedFloat: Float,
+        into keyPath: ReferenceWritableKeyPath<TrainingParameters, Double>
+    ) where K.Value == Double {
+        restoreFromSession(K.self, Self.doubleFromSavedFloat(savedFloat), into: keyPath)
+    }
+
+    /// The `Double` whose shortest decimal text is the same as `saved`'s: the
+    /// value that was typed or computed before it was narrowed to `Float`.
+    /// `Float.description` is the shortest text that reads back as the same
+    /// `Float` (including `nan` / `inf`), and every such text parses as a
+    /// `Double`, so a failure here is a toolchain defect, not bad data.
+    nonisolated static func doubleFromSavedFloat(_ saved: Float) -> Double {
+        guard let value = Double(saved.description) else {
+            preconditionFailure("Float.description of \(saved) did not parse as a Double")
+        }
+        return value
+    }
+
     /// The singleton's setter hook: validate the newly assigned value against
     /// the declared range and, if it passes, persist it to `UserDefaults`
     /// (unless `suppressPersistence`). Returns false for an out-of-range

@@ -265,7 +265,8 @@ struct SessionCheckpointState: Codable, Equatable {
     var gradClipMaxNorm: Float?
     var weightDecayCoeff: Float?
     /// Channel-dropout rate (drop probability, 0 = off). Optional for
-    /// back-compat with session files written before dropout existed.
+    /// back-compat with session files written before dropout existed;
+    /// absent → rate 0 (`resolvedDropoutRate`).
     var dropoutRate: Float?
     /// Policy-loss coefficient applied to the policy term in
     /// `total_loss = valueLossWeight·valueLoss +
@@ -282,8 +283,8 @@ struct SessionCheckpointState: Codable, Equatable {
     var valueLossWeight: Float?
     /// Polyak momentum coefficient μ in effect at save time. Optional
     /// for back-compat with session files written before momentum
-    /// landed in the schema; absent → loader falls through to the
-    /// user's current `TrainingParameters.shared.momentumCoeff`.
+    /// landed in the schema; absent → plain SGD, μ = 0
+    /// (`resolvedMomentumCoeff`), the pre-feature behavior.
     /// The optimizer's velocity buffers themselves are persisted
     /// separately in `trainer.dcmmodel` (v2 layout); this scalar
     /// controls how aggressively the saved velocity is mixed in
@@ -293,14 +294,14 @@ struct SessionCheckpointState: Codable, Equatable {
     /// into the unmasked-softmax illegal-mass term in `total_loss`,
     /// where positive values pull probability mass off illegal cells.
     /// Optional for back-compat with session files written before
-    /// the term existed; absent → loader falls through to the user's
-    /// current `TrainingParameters.shared.illegalMassWeight`.
+    /// the term existed; absent → weight 0
+    /// (`resolvedIllegalMassPenaltyWeight`), the pre-feature behavior.
     var illegalMassPenaltyWeight: Float?
     /// Policy-CE label-smoothing coefficient ε in effect at save time.
     /// ε=0 → one-hot played-move target; ε>0 → `(1−ε)·oneHot + ε·uniform(legal)`.
     /// Optional for back-compat with session files written before this
-    /// term existed; absent → loader falls through to the user's
-    /// current `TrainingParameters.shared.policyLabelSmoothingEpsilon`.
+    /// term existed; absent → ε = 0
+    /// (`resolvedPolicyLabelSmoothingEpsilon`), the pre-feature behavior.
     var policyLabelSmoothingEpsilon: Float?
     /// `PolicyLabelSmoothingMode.logToken` in effect at save time
     /// (`fixed_total` / `per_move`). Stored as the token, not the raw `Int`,
@@ -324,8 +325,8 @@ struct SessionCheckpointState: Codable, Equatable {
     /// effect at save time. ε=0 → hard one-hot on the game result;
     /// ε>0 → `(1−ε)·oneHot(slot) + ε·(⅓,⅓,⅓)`. Optional for back-compat
     /// with session files written before the WDL value head landed;
-    /// absent → loader falls through to the user's current
-    /// `TrainingParameters.shared.valueLabelSmoothingEpsilon`.
+    /// absent → ε = 0 (`resolvedValueLabelSmoothingEpsilon`), the
+    /// pre-feature behavior.
     var valueLabelSmoothingEpsilon: Float?
 
     // Replay-ratio controller settings. All Optional so older
