@@ -1743,6 +1743,46 @@ Validation: a graft of a real v5 5-block model to a 6-block preset loads,
 infers and trains one step; its `derivation_history` lists copied/initialized/
 dropped tensors matching the target plan.
 
+*As built (`dd756a25`):* `Persistence/ModelGraft.swift` (`GraftFreshTarget`, `GraftMap`,
+`ModelDerivation.graft`), `App/DeriveModelCLI.swift` (`--graft-to`, `--graft-map`),
+`OperationRecord`'s optional graft fields, and `RandomTensorRole` recorded by
+`TensorInitializer` (exposed as `ChessNetwork.randomTensorRoles`). Tests:
+`GraftDeriveTests` (10) — copy bit-exact + new block from the seed + identity BN running
+stats; same seed reproduces / another seed differs / the drawn values equal a seeded mint
+of the target; the inserted-block map; refusals (velocity source, same-name shape
+mismatch unless dropped, unknown source / target names, a renamed shape mismatch, two
+sources for one target, malformed maps); a trained source; the record fields and the
+lineage round trip; same-layout records encode without the graft fields and old records
+decode; the help text. The derive classes (SEBetaInit, DeriveTrainedSource, RezeroAlphaCap,
+SEActivation, InitSeedRecording, LineageProvenance, LineageRecord) pass unchanged. The new
+tests were written alongside new API, so before it they could only fail to compile.
+Deviations and decisions:
+- **Fresh values come from a seeded build of the target**, not a CPU formula: the graph
+  builder is the only definition of every tensor's initial value (constants included), so
+  an initialized tensor equals the same tensor of a seeded mint. The graft therefore builds
+  the target once (no forward, no training); the same-layout operations stay GPU-free.
+- **Not a `DeriveOperationKind`.** A graft changes the layout, which the operation protocol
+  (same plan, declared element ranges) cannot express, and the catalog pins the in-place
+  flag list (`SEBetaInitTests`). It is its own entry point and is refused in combination
+  with the operations.
+- **Seed flag:** `--init-seed` (the flag `--derive-model` and `--new-model` already use),
+  not the sketch's `--seed`, which now names the run seed (P3).
+- **Not built:** `--init-overrides` (a target architecture JSON carries any per-group init
+  option itself) and `--recalibrate-bn` (new BN layers keep identity statistics, recorded
+  in the `bn_running_stats` argument).
+- **Same-name, different-shape tensors are refused**, not silently initialized as the
+  sketch said; `--graft-map name=` drops one explicitly. A copied learned tensor is never
+  replaced by surprise.
+- **Trained sources are allowed** (the plan's own validation grafts a trained v5 model).
+  The in-place refusal (C1) exists because those outputs keep the source's
+  `training_step` while weights were reset; a graft's output carries no `training_step`
+  (recorded as `source_training_step` in its record) and lists every initialized tensor.
+  Its metadata is written fresh rather than copied from the source, keeping only the
+  value-head centering marker. Its lineage continues the source's totals as a new derived
+  run (`LineageTracker.untrainedCopyRecord`).
+- **Not run:** the real-model validation (a trained 5-block → 6-block graft that infers and
+  trains one step) — needs a run outside the test suite.
+
 **P9 — Exact-resume completion** (C1 #3–#20, #23–#33; D-5…D-8). Files:
 `Training/ReplayBuffer.swift` (slot-source SoA column; age-order refill API that
 starts at slot 0 and sets `writeIndex`; D-5 per-bucket age-ordered FIFO with
