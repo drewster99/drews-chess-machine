@@ -9,6 +9,17 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-02 CDT — Session saves leave the replay buffer out unless asked; resumes carry more of the run (`3998b39b`, `4514ea6a`, `ea84fe9d`, `cdf1d7ee`, `cbe72cf8`, `af9df2cd`, `6192246b`)
+
+- **Replay buffer only when asked (D-8, GUI).** New parameter `session_save_include_replay_buffer` (default off; Sessions tab "Include replay buffer", with the full buffer's size) governs the periodic, post-promotion, Promote Trainee Now and SIGUSR2 saves. File ▸ Save Session opens a sheet whose "Include replay buffer" checkbox starts from it. Every `[CHECKPOINT] Saved session` line ends `buffer=included replay=a/b` or `buffer=omitted`. A resume without a buffer refills from new games and reports `NOT EXACT: buffer`.
+- **One resume verdict.** The `[RESUME]` line, the `--resume-exact` refusal and the `[RUN]` line's "not exact" list all come from the same decision and list the gaps the same way.
+- **The init seed is in the lineage record.** `rng.init_seed` / `init_scheme` are set on a run that drew its starting weights (`--new-model`, a GUI-built champion, a fresh corpus-replay or train-vs-UCI model) and carried across its exact resumes. The dashboards' lineage reader accepts schema 2.
+- **Train-vs-UCI resume keeps each opponent's colour alternation** (`rng.streams.opponent_game_indices`).
+- **Dropped in-flight games are logged** at every self-play pause and on each session save.
+- **A not-exact GUI resume shows in the status bar** (`resumed not exact: <gaps>`).
+- **Session saves carry the self-play diversity window and the alarm streak counters**, and a resume continues them.
+- Tests: `GuiResumeGapsTests`, `SessionSaveReplayBufferTests`, `SelfPlayPauseDropTests`, `RunObservabilityResumeTests`, and additions to `ExactResumeCompletionTests`. `test_registry_size` 84 → 85.
+
 ## 2026-10-02 CDT — A resume continues the run's random streams and says exactly what it did not restore (`dc74df3b`, `d962a239`, `dc2a0a40`, `9b2f575f`)
 
 - **One verdict per resume** (determinism plan P9). Every resume logs `[RESUME] EXACT` or `[RESUME] NOT EXACT: <tokens>`. The tokens are `rng_sampler`, `dropout_state`, `feed_carry`, `buffer`, `serials`, `clocks`, `params`, `lineage`, `build`, `os` and `policy_tail`, and the new segment records them as its `not_exact_items`.

@@ -1776,7 +1776,7 @@ the default settings has no `replay_buffer.bin` and its save log line says
 writes and restores the buffer; `sample()` µs per batch not slower than the A2.2
 baseline.
 
-**Partly done (2026-10-02; `dc74df3b`, `d962a239`, `dc2a0a40`, `9b2f575f`).** As built:
+**Partly done (2026-10-02; `dc74df3b`, `d962a239`, `dc2a0a40`, `9b2f575f`; second pass `5c86aae2`, `3998b39b`, `4514ea6a`, `ea84fe9d`, `cdf1d7ee`, `cbe72cf8`, `af9df2cd`, `6192246b`).** As built:
 
 - **D-5 bucket FIFO (`dc74df3b`).** `MaterialBucketSlots` now keeps each
   bucket as an `AgeOrderedSlotQueue`: an array with a moving head, where
@@ -1906,21 +1906,132 @@ baseline.
     two new classes). Also green: 61 tests in the buffer and sampling classes,
     and 39 after the arena-clock commit.
   - The full suite was not run.
-- **Not done (remaining P9 work):**
+- **Not done after the first pass (as recorded then; each item's status after
+  the second pass follows it):**
   - D-8 buffer save policy: the `session_save_include_replay_buffer`
     parameter, the manual-save sheet checkbox, `--save-replay-buffer`,
     train-vs-UCI session-folder checkpoints, and the `buffer=omitted` log.
-  - C1 #10: train-vs-UCI per-opponent and per-color counters.
-  - C1 #11: the dropped in-flight games line.
+    *GUI part done (`ea84fe9d`); train-vs-UCI part remaining — see below.*
+  - C1 #10: train-vs-UCI per-opponent and per-color counters. *Done
+    (`cbe72cf8`).*
+  - C1 #11: the dropped in-flight games line. *Done (`cdf1d7ee`).*
   - #12 / #18 / #20: ratio-controller, diversity-tracker and alarm state.
-  - #26: segment-indexed enumerated checkpoint names.
+    *#18 and #20 (alarm streaks) done (`6192246b`); #12 accepted and logged;
+    the legal-mass-collapse window remains — see below.*
+  - #26: segment-indexed enumerated checkpoint names. *Remaining.*
   - A GUI status-bar "resumed (not exact: …)" message (today it is the log
-    line only).
+    line only). *Done (`af9df2cd`).*
   - A unit test of `guiResumeGaps` itself; the parts it composes are tested.
-  - `sample()` µs measurement.
-  - The C6 step-7 end-to-end run and the GUI validation runs.
+    *Done (`3998b39b`).*
+  - `sample()` µs measurement. *Remaining.*
+  - The C6 step-7 end-to-end run and the GUI validation runs. *Remaining
+    (owner-run).*
   - `PolicyTailPrecisionResume.exactResumeDecision` / `guiNotExactLine` are no
     longer used by production; they are kept because their tests pin them.
+    *Unchanged: deleting them and their tests awaits owner approval.*
+- **Second pass (2026-10-02).** Merged main at `67295a29` (P5 and P10;
+  `5c86aae2`), then:
+  - **One verdict source (`3998b39b`).** `ResumeExactness.resume(of:gaps:)`
+    is the one decision. It adds `lineage` for a parent written before
+    lineage. The CLI runners, the GUI and `LineageTracker` all call it, so
+    the `[RESUME]` line, the `--resume-exact` refusal and the recorded
+    `not_exact_items` cannot disagree. P10's `[RUN]` line reports
+    `not_exact_items`, listed with the same `ResumeExactness.tokenList` as
+    the `[RESUME]` line.
+    - `guiResumeGaps` takes the running policy-tail precision, build and
+      device instead of the trainer. `GuiResumeGapsTests` pins each gap.
+  - **Init seed in the record (`4514ea6a`).** `rng.init_seed` /
+    `init_scheme` (D2) are set on a run that drew its starting weights:
+    `--new-model`, a GUI-built champion, and a fresh corpus-replay or
+    train-vs-UCI model. Every record of the run carries them, and so do
+    exact resumes. They are null for a branch, a derive or an untrained
+    copy.
+    - A seed without its scheme is refused on decode.
+    - `LineageTracker.Start.fresh(initialization:)` and `mintRecord` require
+      the record.
+    - The GUI keeps the champion's origin as one value (`ChampionOrigin`:
+      built under an init record, or loaded from a file) instead of an
+      optional parent whose nil meant "built fresh".
+    - **Deviation:** P5's flat `init_seed` / `init_scheme` keys on
+      `--new-model` files stay, because `InitSeedRecordingTests` pins them.
+      Folding them away needs the owner's approval to change that test.
+    - The dashboards' lineage reader (`scripts/dcm_lineage.py`) moves to
+      schema 2, and its test fixture follows.
+  - **D-8 in the GUI (`ea84fe9d`).** `session_save_include_replay_buffer`
+    (Bool, default off, Sessions, live-tunable) went through the full
+    checklist.
+    - `absentValue: .currentSetting`. **Deviation from D8's "absentValue:
+      false":** P2's absence vocabulary has no "owner default" case, and
+      `.preFeature(false)` would claim pre-feature sessions omitted the
+      buffer, which is false. The live setting never re-enables multi-GB
+      saves unless the user turned the setting on.
+    - The periodic, post-promotion, Promote Trainee Now and SIGUSR2 saves
+      follow the parameter.
+    - File ▸ Save Session opens `SaveSessionSheet`. Its checkbox starts from
+      the parameter and applies to that save only. It shows the live
+      buffer's size in base-2 units (`BinaryByteCount`), and `[BUTTON]` logs
+      the choice.
+    - Every save line ends `buffer=included replay=a/b` or `buffer=omitted`.
+    - `test_registry_size` moves 84 → 85. `documentation/parameters.json` and
+      `parameters.md` were regenerated (only the new key changed).
+  - **C1 #11 (`cdf1d7ee`).** Every self-play pause already dropped the games
+    in progress, in the uninterrupted run as well.
+    - The driver records the count and plies before it reports the pause:
+      `[SP-TICK] paused: dropped N in-flight games (P plies)`.
+    - A session save logs `[CHECKPOINT] dropped N in-flight games … the save
+      holds none of them`.
+  - **C1 #10 (`cbe72cf8`).** `rng.streams.opponent_game_indices` records each
+    train-vs-UCI opponent instance's current game index, which sets the
+    trainer's colour.
+    - An exact resume into the same pool size continues them. A different
+      pool, or none recorded, starts every instance at 0 and adds `serials`.
+    - The games in progress at the save are not continued, and the resume
+      says so.
+  - **Status bar (`af9df2cd`).** While the running segment began with a
+    not-exact session resume, the save label carries `resumed not exact:
+    <gaps>`. It is cleared when a segment begins fresh or as a branch.
+  - **#18 / #20 / #12 (`6192246b`).** `session.json` gains
+    `selfPlayDiversityWindow` (oldest first) and `trainingAlarmStreaks`. A
+    resume refills the diversity tracker and restores the streak counters;
+    a session without them logs that they start empty.
+    - #12: the replay-ratio controller's windows are wall-clock rates of the
+      running machine and refill within a minute. They are not saved. The
+      step delay is seeded from `last_auto_computed_delay_ms` as before, and
+      the resume logs this.
+  - **Earlier items now settled:** C1 #3 (the KL-probe counter) was removed
+    by P4, where the probe schedule became step-derived, so nothing is left
+    for P9. D-6 needs no discard path, as recorded above.
+  - **Tests (final tree).** One run of 43 related classes: 373 tests, 369
+    passed. The classes are:
+    - lineage, resume, seed, recorder and derive;
+    - replay buffer and sampling;
+    - session checkpoint and parameter resume;
+    - training parameters;
+    - the self-play driver;
+    - the new `SessionSaveReplayBufferTests`, `SelfPlayPauseDropTests`,
+      `GuiResumeGapsTests` and `RunObservabilityResumeTests`.
+
+    The 4 failures are all in `SessionResumeSummaryTests`. Its fixture
+    decodes a current-version `session.json` with no `lineage`, which P6
+    made a load error (`missingLineage(formatVersion: 2)`). The failure
+    predates P9: P6 did not update this test class. Fixing the fixture needs
+    approval to edit the test. The dashboard Python tests pass (53).
+- **Remaining after the second pass:**
+  - Train-vs-UCI under D-8: session-folder checkpoints through the shared
+    session writer, and `--save-replay-buffer`. This changes the vs-UCI
+    output contract: `--out-model`, the enumerated checkpoints, the
+    out-model guard, and `documentation/dashboards/vsuci.py`, which reads
+    `.safetensors`. It needs a decision on whether the folder replaces the
+    rolling `--out-model` file or sits beside it.
+  - #26: segment-indexed enumerated names (`…-seg3-step41000`). Overwrites
+    are already refused (`TrainerOutputFileGuard`). The name change touches
+    `EnumeratedCheckpointNaming` and P11's `discover-stems`, so it should be
+    coordinated with the tracker.
+  - #20's legal-mass-collapse detector window and grace anchor (closure
+    state in the training task) are not persisted. A resume restarts its
+    grace period.
+  - `sample()` µs versus A2.2; the C6 step-7 end-to-end run and the GUI
+    validation runs (owner-run).
 
 **P10 — Provenance + carry-forward.** `[RUN]` formatter (`Logging/`), recorder
 fields, B4 fix. Tests: derive → train → save keeps `derivation_history`; `[RUN]`
