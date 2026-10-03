@@ -458,4 +458,116 @@ final class ResumeEquivalenceTests: XCTestCase {
             XCTAssertEqual(onEnd.contentSHA256, offEnd.contentSHA256, "probes changed the weights")
         }
     }
+
+    // MARK: - Sampling constraints
+
+    /// The four sampling parameters on the live training parameters, with
+    /// persistence suppressed, for the duration of `body`; every parameter is
+    /// put back afterwards, whether `body` returns or throws. The harness's
+    /// `replayParams` reads the live parameters, so this is how a test fixes
+    /// the constraints a run samples under.
+    private func withSamplingParameters<T>(
+        maxPerGame: Int, maxDrawPercent: Int, targetLength: Int, stratifyByMaterial: Bool,
+        _ body: () async throws -> T
+    ) async throws -> T {
+        let parameters = TrainingParameters.shared
+        let saved = parameters.snapshot().rawValueMap()
+        let suppressedBefore = TrainingParameters.suppressPersistence
+        TrainingParameters.suppressPersistence = true
+        func restore() throws {
+            try parameters.apply(saved)
+            TrainingParameters.suppressPersistence = suppressedBefore
+        }
+        parameters.maxPliesFromAnyOneGame = maxPerGame
+        parameters.maxDrawPercentPerBatch = maxDrawPercent
+        parameters.targetSampledGameLengthPlies = targetLength
+        parameters.replayBufferStratifyByMaterial = stratifyByMaterial
+        let value: T
+        do {
+            value = try await body()
+        } catch {
+            do { try restore() } catch let restoreError {
+                XCTFail("restoring the training parameters failed: \(restoreError)")
+            }
+            throw error
+        }
+        try restore()
+        return value
+    }
+
+    /// Corpus replay samples under the run's sampling constraints. With a
+    /// per-game cap of one, a batch can take only one position from each
+    /// game; the fixture buffer holds far fewer games than a batch would
+    /// draw from uniformly without repeats, so the cap rejects draws and the
+    /// sampler stream ends somewhere other than in a run whose constraints
+    /// are all inactive (a cap at the range maximum, above the batch size;
+    /// no draw cap; no length target), which samples uniformly.
+    func testReplaySamplesUnderTheRunsPerGameCap() async throws {
+        let steps = 12
+        let capped = try await withSamplingParameters(
+            maxPerGame: 1, maxDrawPercent: 100, targetLength: 0, stratifyByMaterial: false
+        ) {
+            try await run(stepLimit: steps, from: startModelURL, resumeExact: false, out: "cap-one.safetensors",
+                          probesOn: false)
+        }
+        let capRangeMaximum = try XCTUnwrap(MaxPliesFromAnyOneGame.definition.intRange).max
+        XCTAssertGreaterThanOrEqual(capRangeMaximum, try replayParams(probesOn: false).trainingBatchSize,
+                                    "a cap at the range maximum is inactive for the harness's batch")
+        let inactive = try await withSamplingParameters(
+            maxPerGame: capRangeMaximum, maxDrawPercent: 100, targetLength: 0,
+            stratifyByMaterial: false
+        ) {
+            try await run(stepLimit: steps, from: startModelURL, resumeExact: false, out: "cap-inactive.safetensors",
+                          probesOn: false)
+        }
+        XCTAssertNotEqual(try endState(capped.url, "per-game cap of one").streams.samplerState,
+                          try endState(inactive.url, "inactive constraints").streams.samplerState,
+                          "a per-game cap of one must change how replay draws its batches")
+    }
+
+    /// N + M straight through versus N, save, `--resume-exact`, M, under each
+    /// set of sampling constraints: the declared defaults; every constraint
+    /// binding (a per-game cap of one, a draw cap, and a length target below
+    /// the fixture's mean game length); and material stratification.
+    func testAResumeUnderSamplingConstraintsEndsWhereTheUninterruptedRunEnds() async throws {
+        let agreement = try await determinismProbe()
+        struct Constraints {
+            let name: String
+            let maxPerGame: Int
+            let maxDrawPercent: Int
+            let targetLength: Int
+            let stratify: Bool
+        }
+        let cases = [
+            Constraints(name: "declared-defaults",
+                        maxPerGame: MaxPliesFromAnyOneGame.declaredDefault,
+                        maxDrawPercent: MaxDrawPercentPerBatch.declaredDefault,
+                        targetLength: TargetSampledGameLengthPlies.declaredDefault,
+                        stratify: ReplayBufferStratifyByMaterial.declaredDefault),
+            Constraints(name: "all-binding", maxPerGame: 1, maxDrawPercent: 50,
+                        targetLength: Self.gamePlyRange.lowerBound + 6, stratify: false),
+            Constraints(name: "stratified",
+                        maxPerGame: MaxPliesFromAnyOneGame.declaredDefault,
+                        maxDrawPercent: MaxDrawPercentPerBatch.declaredDefault,
+                        targetLength: TargetSampledGameLengthPlies.declaredDefault,
+                        stratify: true),
+        ]
+        let n = 21, m = 20
+        for c in cases {
+            try await withSamplingParameters(
+                maxPerGame: c.maxPerGame, maxDrawPercent: c.maxDrawPercent, targetLength: c.targetLength,
+                stratifyByMaterial: c.stratify
+            ) {
+                let straight = try await run(stepLimit: n + m, from: startModelURL, resumeExact: false,
+                                             out: "\(c.name)-straight.safetensors")
+                let first = try await run(stepLimit: n, from: startModelURL, resumeExact: false,
+                                          out: "\(c.name)-first.safetensors")
+                let second = try await run(stepLimit: m, from: first.url, resumeExact: true,
+                                           out: "\(c.name)-second.safetensors")
+                assertSameEnd(try endState(second.url, "\(c.name) resumed"),
+                              try endState(straight.url, "\(c.name) uninterrupted"),
+                              agreement: agreement, "\(c.name) resume")
+            }
+        }
+    }
 }
