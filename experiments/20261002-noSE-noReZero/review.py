@@ -115,9 +115,10 @@ def tally(step, allow_mixed_builds):
         raise SystemExit(f"the two arms' pElo come from probe builds {sorted(builds)}; a difference between "
                          f"them includes any offset between builds. Rerun with --allow-mixed-builds to tally anyway.")
     steps = [s for s in range(1000, step + 1, 1000) if s in a and s in b]
-    non_finite = [s for s in steps if b[s][0] is None]
-    if non_finite:
-        raise SystemExit(f"{label}: non-finite pElo at step(s) {non_finite}; no sign test over them")
+    for arm_label, points in (("no SE + ReZero s1 (se_none)", a), (label, b)):
+        non_finite = [s for s in steps if points[s][0] is None]
+        if non_finite:
+            raise SystemExit(f"{arm_label}: non-finite pElo at step(s) {non_finite}; no sign test over them")
     diffs = [b[s][0] - a[s][0] for s in steps]
     ahead = sum(d > 0 for d in diffs)
     behind = sum(d < 0 for d in diffs)

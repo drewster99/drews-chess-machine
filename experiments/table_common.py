@@ -7,7 +7,9 @@ import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "documentation", "dashboards"))
 from dcm_probe_build import UNRECORDED  # noqa: E402
+from _schema import NON_FINITE_PELO_NOTE  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "..", "documentation", "dashboards", "data")
@@ -19,23 +21,36 @@ BUFFER = 500_000
 BASELINE_LOG = "dcm_log_20260929-150727.txt"
 
 
+def _is_probed(row):
+    """Whether a dashboard CSV row holds a probe measurement: a pElo, or the marker of
+    a probe that measured a non-finite pElo (whose pElo cell is blank). A row that was
+    only backfilled from the log has neither and is not a measurement."""
+    return bool(row.get("pElo")) or NON_FINITE_PELO_NOTE in (row.get("note") or "")
+
+
 def csv_points(run):
-    """{cum_step: (pElo, nll)} for the dashboard CSV rows of `run` that carry a pElo."""
+    """{cum_step: (pElo or None, nll or None)} for the dashboard CSV rows of `run` that
+    hold a probe measurement, in the shape `probe_record.load_probe_points` gives a
+    probes.jsonl arm: pElo None is a measured non-finite value (shown as such by
+    `probe_record.pelo_cell`), never a step the run did not reach; nll None is a
+    blank nll cell."""
     points = {}
     with open(os.path.join(DATA, f"{run}.csv")) as handle:
         for row in csv.DictReader(handle):
-            if row.get("pElo"):
-                points[int(float(row["cum_step"]))] = (float(row["pElo"]), float(row["nll"]))
+            if _is_probed(row):
+                pelo = float(row["pElo"]) if row.get("pElo") else None
+                nll = float(row["nll"]) if row.get("nll") else None
+                points[int(float(row["cum_step"]))] = (pelo, nll)
     return points
 
 
 def csv_probe_builds(run):
-    """The probe builds behind a dashboard CSV's pElo values (UNRECORDED for rows written
-    before the tracker recorded them)."""
+    """The probe builds behind a dashboard CSV's measurements, the rows `csv_points`
+    reads (UNRECORDED for rows written before the tracker recorded them)."""
     builds = set()
     with open(os.path.join(DATA, f"{run}.csv")) as handle:
         for row in csv.DictReader(handle):
-            if row.get("pElo"):
+            if _is_probed(row):
                 builds.add(row.get("probe_build") or UNRECORDED)
     return builds
 

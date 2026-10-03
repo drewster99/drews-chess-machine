@@ -142,6 +142,18 @@ class SessionsSummaryTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(out.getvalue().count("ERROR:"), 6)
 
+    def test_lineage_without_not_exact_items_is_a_row_error(self):
+        broken = vsuci_record()
+        del broken["run"]["not_exact_items"]
+        self.write("20261003-010000-20261003-1-AAAA-manual.dcmsession", state("20261003-1-AAAA", lineage=broken))
+        self.write("20261003-020000-20261003-1-AAAA-manual.dcmsession",
+                   state("20261003-1-AAAA", lineage=vsuci_record()))
+        rows = self.rows()
+        self.assertIn("lineage has no run.not_exact_items",
+                      rows["20261003-010000-20261003-1-AAAA-manual.dcmsession"]["error"])
+        self.assertNotIn("error", rows["20261003-020000-20261003-1-AAAA-manual.dcmsession"],
+                         "one bad session.json does not stop the listing")
+
     def test_only_session_folders_are_read(self):
         self.write("20261003-010000-20261003-1-AAAA-manual.dcmsession", state("20261003-1-AAAA", lineage=vsuci_record()))
         self.write("20261003-020000-20261003-1-AAAA-manual.dcmsession.tmp", state("20261003-1-AAAA"))

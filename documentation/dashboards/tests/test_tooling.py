@@ -5,17 +5,21 @@ replay-buffer game length (experiments/table_common.py).
 Run: python3 -m unittest discover -s documentation/dashboards/tests
 Every test works on synthetic files in a temporary folder.
 """
+import csv
 import json
 import os
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 sys.path.insert(0, os.path.join(REPO, "experiments"))
+sys.path.insert(0, os.path.join(REPO, "documentation", "dashboards"))
 import dcm_arch  # noqa: E402
 import dcm_session_logs  # noqa: E402
 import probe_record  # noqa: E402
@@ -63,6 +67,48 @@ class ArchitectureTests(unittest.TestCase):
                                          "dcm_format_version": "5"})
         with self.assertRaises(dcm_arch.ArchitectureError):
             blocks[0].effective(0.1)
+
+
+class HeaderReadTests(unittest.TestCase):
+    """`dcm_arch.read_metadata` is the one safetensors header reader; a damaged header is an
+    ArchitectureError, never an OverflowError / MemoryError / AttributeError from reading it."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.folder.name, "damaged.safetensors")
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def write_raw(self, data):
+        with open(self.path, "wb") as handle:
+            handle.write(data)
+
+    def test_damaged_header_length_is_refused(self):
+        self.write_raw(struct.pack("<Q", 2 ** 63) + b"{}")
+        with self.assertRaises(dcm_arch.ArchitectureError):
+            dcm_arch.read_metadata(self.path)
+
+    def test_header_length_beyond_the_bound_or_zero_is_refused(self):
+        for length in (dcm_arch.MAX_HEADER_BYTES + 1, 0):
+            self.write_raw(struct.pack("<Q", length) + b"{}")
+            with self.assertRaises(dcm_arch.ArchitectureError):
+                dcm_arch.read_metadata(self.path)
+
+    def test_header_that_is_not_an_object_or_has_no_metadata_object_is_refused(self):
+        for header in (b"[1, 2]", b'{"__metadata__": [1]}', b'{"x": 1}', b"not json", b"\xff\xfe"):
+            self.write_raw(struct.pack("<Q", len(header)) + header)
+            with self.assertRaises(dcm_arch.ArchitectureError, msg=header):
+                dcm_arch.read_metadata(self.path)
+
+    def test_lineage_reader_is_the_same_reader_with_its_own_error_type(self):
+        import dcm_lineage
+        self.assertEqual(dcm_lineage.MAX_HEADER_BYTES, dcm_arch.MAX_HEADER_BYTES)
+        self.write_raw(struct.pack("<Q", 2 ** 63) + b"{}")
+        with self.assertRaises(dcm_lineage.LineageError):
+            dcm_lineage.read_metadata(self.path)
+        write_header(self.path, {"model_id": "M1"})
+        self.assertEqual(dcm_lineage.read_metadata(self.path), dcm_arch.read_metadata(self.path))
 
 
 class SessionLogTests(unittest.TestCase):
@@ -138,6 +184,131 @@ class ProbeRecordTests(unittest.TestCase):
             handle.write(json.dumps({"step": 1000, "modelID": "M1", "pElo": 1.0, "nll": 2.0}) + "\n")
         with self.assertRaises(ValueError):
             probe_record.arm_points(self.probes, probe_record.NOT_STARTED, "D")
+
+
+class CsvPointsTests(unittest.TestCase):
+    """table_common's dashboard-CSV arm reads a non-finite probe as a measurement, the way
+    probe_record reads a probes.jsonl arm, never as a step the run did not reach."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        rows = [
+            dict(cum_step="1000", pElo="1500.25", nll="2.4", note="", probe_build="A.app@sha256:1"),
+            dict(cum_step="2000", pElo="", nll="2.5", note="probe-backfill; probe: pElo non-finite",
+                 probe_build="A.app@sha256:2"),
+            dict(cum_step="3000", pElo="", nll="", note="log-backfill (fast-net)", probe_build=""),
+            dict(cum_step="4000", pElo="1510", nll="", note="", probe_build="A.app@sha256:1"),
+        ]
+        with open(os.path.join(self.folder.name, "arm.csv"), "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["cum_step", "pElo", "nll", "note", "probe_build"])
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def test_csv_points_keeps_non_finite_rows(self):
+        with mock.patch.object(table_common, "DATA", self.folder.name):
+            points = table_common.csv_points("arm")
+            builds = table_common.csv_probe_builds("arm")
+        self.assertEqual(points, {1000: (1500.25, 2.4), 2000: (None, 2.5), 4000: (1510.0, None)})
+        self.assertEqual(probe_record.pelo_cell(points, 2000), "non-finite")
+        self.assertEqual(probe_record.pelo_cell(points, 3000), "", "a row never probed is not a measurement")
+        self.assertEqual(builds, {"A.app@sha256:1", "A.app@sha256:2"})
+
+    def test_nll_cell_is_blank_where_there_is_no_value(self):
+        points = {1000: (1500.25, 2.4), 4000: (1510.0, None)}
+        self.assertEqual([probe_record.nll_cell(points, s) for s in (1000, 3000, 4000)], ["2.4000", "", ""])
+
+    def test_marker_string_has_one_source(self):
+        import _schema
+        self.assertIs(table_common.NON_FINITE_PELO_NOTE, _schema.NON_FINITE_PELO_NOTE)
+
+
+class InitReproducibilityScriptTests(unittest.TestCase):
+    """scripts/init_reproducibility.sh fails when a minted file cannot be hashed, rather than
+    printing the other lines and exiting 0 (which reads as a complete, comparable listing)."""
+
+    def test_init_reproducibility_fails_when_hashing_fails(self):
+        with tempfile.TemporaryDirectory() as folder:
+            fake = os.path.join(folder, "fake-dcm")
+            with open(fake, "w") as handle:
+                handle.write('#!/bin/zsh\nwhile [ $# -gt 0 ]; do\n'
+                             '  if [ "$1" = "--out-model" ]; then print -r -- "not a safetensors file" > "$2"; fi\n'
+                             '  shift\ndone\n')
+            os.chmod(fake, 0o755)
+            completed = subprocess.run(
+                ["/bin/zsh", os.path.join(REPO, "scripts", "init_reproducibility.sh"), fake,
+                 os.path.join(folder, "minted")], capture_output=True, text=True, timeout=120)
+        self.assertNotEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+
+class ProbeLoopScriptTests(unittest.TestCase):
+    """experiments/probe_loop.sh, run with HOME pointed at a temporary folder (its Models
+    folder is built from $HOME, so nothing under the real Application Support is read or
+    written) and a stub probe binary inside a temporary .app bundle."""
+
+    STEM = "20261003-probe-loop-test"
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.home = os.path.join(self.folder.name, "home")
+        self.models = os.path.join(self.home, "Library", "Application Support", "DrewsChessMachine", "Models")
+        os.makedirs(self.models)
+        self.probes = os.path.join(self.folder.name, "probes.jsonl")
+        self.processes = []
+
+    def tearDown(self):
+        for process in self.processes:
+            process.kill()
+            process.wait()
+        self.folder.cleanup()
+
+    def app_executable(self, bundle, body):
+        macos = os.path.join(self.folder.name, bundle, "Contents", "MacOS")
+        os.makedirs(macos)
+        path = os.path.join(macos, "DrewsChessMachine")
+        with open(path, "w") as handle:
+            handle.write("#!/bin/sh\n" + body)
+        os.chmod(path, 0o755)
+        return path
+
+    def run_loop(self, arguments, **environment):
+        env = dict(os.environ, HOME=self.home, **environment)
+        return subprocess.run(["/bin/zsh", os.path.join(REPO, "experiments", "probe_loop.sh")] + arguments,
+                              capture_output=True, text=True, timeout=120, env=env)
+
+    def test_probe_loop_refuses_a_trainer_pid_that_is_not_the_trainer(self):
+        trainer = self.app_executable("Trainer.app", "sleep 60\n")
+        rolling = os.path.join(self.models, f"{self.STEM}-replay-latest.safetensors")
+        self.processes.append(subprocess.Popen([trainer, "--replay-corpus", "corpus", "--out-model", rolling]))
+        probe = self.app_executable("Probe.app", "exit 0\n")
+        completed = self.run_loop([self.STEM, self.probes], PROBE_BIN=probe, TRAINER_PID=str(os.getpid()),
+                                  PROBE_START_WAIT_SEC="30")
+        self.assertEqual(completed.returncode, 3, completed.stdout + completed.stderr)
+        self.assertIn(f"TRAINER_PID {os.getpid()} is not the trainer", completed.stderr)
+
+    def test_probe_loop_does_not_record_a_probe_that_exited_nonzero(self):
+        write_header(os.path.join(self.models, f"{self.STEM}-replay-step2000.safetensors"),
+                     {"model_id": "M1", "training_step": "2000"})
+        summary = json.dumps({"modelID": "M1", "pElo": 1200.5, "nll": 2.4, "set": "wide"})
+        probe = self.app_executable("Probe.app", f"echo '{summary}'\nexit 1\n")
+        completed = self.run_loop(["--once", self.STEM, self.probes], PROBE_BIN=probe, PROBE_MAX_ATTEMPTS="1")
+        with open(self.probes) as handle:
+            self.assertEqual(handle.read(), "", "a probe that exited non-zero is not a measurement")
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertIn("probe exit 1", completed.stderr)
+
+    def test_probe_loop_records_a_probe_that_succeeded(self):
+        write_header(os.path.join(self.models, f"{self.STEM}-replay-step2000.safetensors"),
+                     {"model_id": "M1", "training_step": "2000"})
+        summary = json.dumps({"modelID": "M1", "pElo": 1200.5, "nll": 2.4, "set": "wide"})
+        probe = self.app_executable("Probe.app", f"echo '{summary}'\n")
+        completed = self.run_loop(["--once", self.STEM, self.probes], PROBE_BIN=probe)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        with open(self.probes) as handle:
+            records = [json.loads(line) for line in handle]
+        self.assertEqual([(r["step"], r["model_id"], r["pElo"]) for r in records], [(2000, "M1", 1200.5)])
 
 
 class BufferGameLengthTests(unittest.TestCase):

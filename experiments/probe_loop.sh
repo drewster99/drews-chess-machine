@@ -13,7 +13,11 @@
 #   PROBE_BIN               probe binary (needed for checkpoints in an architecture format
 #                           the default frozen build cannot read)
 #   TRAINER_PID             the trainer's pid, when the launcher knows it; otherwise the
-#                           trainer is found by its exact --out-model path
+#                           trainer is found by its exact --out-model path. It must be the
+#                           app process itself (not a nohup / caffeinate / open wrapper):
+#                           a pid that is not the trainer writing this out-model stops the
+#                           loop at start (exit 3), instead of reading as a trainer that
+#                           has already exited and ending the loop after one pass
 #   PROBE_START_WAIT_SEC    how long to wait for the trainer to appear
 #   PROBE_MAX_ATTEMPTS      failed probes of one checkpoint before it is given up on
 #   PROBE_SEGMENT           the lineage segment index of the run segment to probe. A
@@ -25,7 +29,9 @@
 # name's step must match the header's training_step and the probe's modelID the header's
 # model_id, and the probes file must hold a single model_id. A mismatch stops the loop.
 # A failed probe is retried on later passes; its stderr and output are kept under
-# <probes>.errors/ and reported, never silently dropped.
+# <probes>.errors/ and reported, never silently dropped. A probe that exits non-zero has
+# failed even when it printed a summary first (a crash in teardown, say): its output is
+# not recorded, the same rule the dashboard tracker's probe follows.
 set -u
 HERE=${0:A:h}
 ONCE=0
@@ -74,7 +80,18 @@ if [ $ONCE = 0 ]; then
     [ $waited -ge $START_WAIT ] && { echo "no trainer for $ROLLING appeared within ${START_WAIT}s" >&2; exit 3; }
     sleep 5; waited=$((waited + 5))
   done
+  if [ -n "${TRAINER_PID:-}" ] && ! trainer_pids | grep -qx "$TRAINER_PID"; then
+    echo "TRAINER_PID $TRAINER_PID is not the trainer writing $ROLLING (found: $(trainer_pids))" >&2
+    exit 3
+  fi
 fi
+
+# One failed attempt at probing step $1, for reason $2; the probe's output is in $raw.
+failed_attempt() {
+  attempts[$1]=$(( ${attempts[$1]:-0} + 1 ))
+  { echo "--- $(date '+%Y-%m-%d %H:%M:%S') attempt ${attempts[$1]} $2"; print -r -- "$raw"; } >> "$ERRDIR/step$1.err"
+  echo "probe FAILED step $1 attempt ${attempts[$1]}/$MAX_ATTEMPTS ($2; see $ERRDIR/step$1.err)" >&2
+}
 
 while true; do
   # Sampled before the pass: a trainer that has exited has already published every
@@ -89,17 +106,19 @@ while true; do
     grep -q "\"step\":$s," "$OUT" && continue
     [ "${attempts[$s]:-0}" -ge "$MAX_ATTEMPTS" ] && continue
     raw=$("$BIN" --probe-model "$f" --probe-set wide 2>>"$ERRDIR/step$s.stderr"); rc=$?
+    if [ "$rc" != 0 ]; then
+      failed_attempt "$s" "probe exit $rc"
+      continue
+    fi
     rec=$(print -r -- "$raw" | python3 "$HERE/probe_record.py" "$f" "$s" "$OUT" "$BUILD" 2>>"$ERRDIR/step$s.err"); prc=$?
-    if [ $prc -eq 0 ]; then
+    if [ "$prc" = 0 ]; then
       print -r -- "$rec" >> "$OUT"
       echo "probed $s"
-    elif [ $prc -eq 4 ] || [ $prc -eq 5 ]; then   # probe_record.py EXIT_IDENTITY / EXIT_OTHER_RUN
+    elif [ "$prc" = 4 ] || [ "$prc" = 5 ]; then   # probe_record.py EXIT_IDENTITY / EXIT_OTHER_RUN
       echo "identity check failed at step $s (see $ERRDIR/step$s.err); stopping" >&2
       exit 4
     else
-      attempts[$s]=$(( ${attempts[$s]:-0} + 1 ))
-      { echo "--- $(date '+%Y-%m-%d %H:%M:%S') attempt ${attempts[$s]} probe exit $rc record exit $prc"; print -r -- "$raw"; } >> "$ERRDIR/step$s.err"
-      echo "probe FAILED step $s attempt ${attempts[$s]}/$MAX_ATTEMPTS (see $ERRDIR/step$s.err)" >&2
+      failed_attempt "$s" "probe exit 0 record exit $prc"
     fi
   done
   [ $ONCE = 1 ] && break

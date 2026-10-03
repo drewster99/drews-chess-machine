@@ -57,7 +57,7 @@ def main():
     for step in range(1000, last + 1, 1000):
         row = [f"{step:,}", f"{plies[step]:.1f}" if step in plies else ""]
         row += [probe_record.pelo_cell(p, step) for _, p in arms]
-        row += [f"{p[step][1]:.4f}" if step in p else "" for _, p in arms]
+        row += [probe_record.nll_cell(p, step) for _, p in arms]
         print("| " + " | ".join(row) + " |")
     print_probe_builds(builds)
     if not_started:

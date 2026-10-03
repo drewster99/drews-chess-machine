@@ -134,6 +134,12 @@ class SwiftMirrorTests(unittest.TestCase):
                          dcm_lineage.SUPPORTED_SCHEMA)
         self.assertEqual(re.search(r'static let metadataKey = "([^"]+)"', rec).group(1), dcm_lineage.METADATA_KEY)
 
+    def test_session_trainer_filename_matches_the_app(self):
+        with open(os.path.join(SWIFT, "Persistence", "SessionCheckpointFile.swift")) as handle:
+            layout = handle.read()
+        self.assertEqual(re.search(r'static let trainerFilename = "([^"]+)"', layout).group(1),
+                         dcm_lineage.SESSION_TRAINER_FILENAME)
+
 
 class LineageReadTests(unittest.TestCase):
     def setUp(self):
@@ -444,6 +450,95 @@ class SessionFolderTests(unittest.TestCase):
             written = json.load(handle)["runs"]["r"]["segments"]
         self.assertEqual([s["segment_id"] for s in written], ["seg-a", "seg-b"])
         self.assertEqual([s["cumstep_base"] for s in written], [0, 1000])
+
+
+def gui_record(local_step, segment_index=0, specs=SEGMENTS):
+    record = record_for(segment_index, local_step, specs=specs)
+    record["invocation"]["path_kind"] = "gui"
+    return record
+
+
+class GuiSessionLineageTests(unittest.TestCase):
+    """A GUI session folder holds trainer.safetensors (the trainer generation's ID) and
+    champion.safetensors (the champion's ID), and the trainer ID changes at every
+    promotion within a segment: a GUI segment has several model IDs by design."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def session(self, stamp, files):
+        folder = os.path.join(self.dir, f"{stamp}-20261003-1-AAAA-periodic.dcmsession")
+        os.mkdir(folder)
+        for name, record, model_id, step in files:
+            write_v7(folder, name, record, model_id, step)
+        return folder
+
+    def test_gui_session_folder_with_differing_champion_and_trainer_ids_derives(self):
+        record = gui_record(500)
+        self.session("20261003-010000", [("trainer.safetensors", record, "20261003-1-AAAA-4", 500),
+                                         ("champion.safetensors", record, "20261003-1-AAAA-3", 500)])
+        recorded, _, errors = dcm_lineage.scan(self.dir)
+        self.assertEqual(errors, {})
+        segment = dcm_lineage.segment_table(dcm_lineage.derive_runs(recorded))["run-1"]["segments"][0]
+        self.assertEqual(segment["model_ids"], ["20261003-1-AAAA-3", "20261003-1-AAAA-4"])
+        self.assertNotIn("model_id", segment)
+        self.assertEqual((segment["segment_id"], segment["cumstep_base"]), ("seg-a", 0))
+
+    def test_gui_segment_whose_trainer_id_changes_at_a_promotion_derives(self):
+        self.session("20261003-010000", [("trainer.safetensors", gui_record(500), "20261003-1-AAAA-4", 500)])
+        self.session("20261003-020000", [("trainer.safetensors", gui_record(1000), "20261003-1-AAAA-6", 1000)])
+        recorded, _, _ = dcm_lineage.scan(self.dir)
+        run = dcm_lineage.derive_runs(recorded)["run-1"]
+        self.assertEqual(run.segments[0].fields["model_ids"], ["20261003-1-AAAA-4", "20261003-1-AAAA-6"])
+        self.assertEqual(len(run.segments[0].files), 2)
+
+    def test_a_gui_file_without_a_model_id_is_refused(self):
+        folder = self.session("20261003-010000", [("trainer.safetensors", gui_record(500), "20261003-1-AAAA-4", 500)])
+        write_header(os.path.join(folder, "champion.safetensors"), {
+            "dcm_format_version": "7", "training_step": "500",
+            "dcm_lineage": json.dumps(gui_record(500), sort_keys=True)})
+        recorded, _, _ = dcm_lineage.scan(self.dir)
+        with self.assertRaises(dcm_lineage.LineageError):
+            dcm_lineage.derive_runs(recorded)
+
+    def test_replay_and_vsuci_segments_keep_one_model_id(self):
+        for path_kind in ("replay", "vsuci"):
+            directory = tempfile.mkdtemp()
+            for local, model_id in ((500, "20261003-1-AAAA"), (1000, "20261003-1-ZZZZ")):
+                record = record_for(0, local)
+                record["invocation"]["path_kind"] = path_kind
+                write_v7(directory, f"seg-a-step{local}.safetensors", record, model_id, local)
+            recorded, _, _ = dcm_lineage.scan(directory)
+            with self.assertRaises(dcm_lineage.LineageError, msg=path_kind):
+                dcm_lineage.derive_runs(recorded)
+
+    def test_a_segment_written_by_two_path_kinds_is_refused(self):
+        self.session("20261003-010000", [("trainer.safetensors", gui_record(500), "20261003-1-AAAA", 500)])
+        write_v7(self.dir, "seg-a-replay-step1000.safetensors", record_for(0, 1000), "20261003-1-AAAA", 1000)
+        recorded, _, _ = dcm_lineage.scan(self.dir)
+        with self.assertRaises(dcm_lineage.LineageError) as caught:
+            dcm_lineage.derive_runs(recorded)
+        self.assertIn("path_kind", str(caught.exception))
+
+    def test_lineage_table_reads_trainer_files_only(self):
+        import contextlib
+        import io
+        import selfplay
+        # The champion file's record describes another run (the file the champion came
+        # from), which is not this run's progress and must not join its segments.
+        other = gui_record(1000, segment_index=1)
+        other["run"]["lineage_run_id"] = "run-earlier"
+        self.session("20261003-010000", [("trainer.safetensors", gui_record(500), "20261003-1-AAAA-4", 500),
+                                         ("champion.safetensors", other, "20261003-1-AAAA-3", 1000)])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            status = selfplay.print_lineage_table(self.dir)
+        text = out.getvalue()
+        self.assertEqual(status, 0, text)
+        self.assertTrue(text.startswith("scanned 1 session trainer file(s)"), text)
+        table = json.loads(text[text.index("{"):])
+        self.assertEqual(list(table), ["run-1"])
+        self.assertEqual(table["run-1"]["segments"][0]["model_ids"], ["20261003-1-AAAA-4"])
 
 
 class TrackerCellTests(unittest.TestCase):
