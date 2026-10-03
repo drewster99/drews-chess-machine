@@ -108,7 +108,7 @@ def format_version_of(metadata, source):
 _REQUIRED = {
     "": ("schema", "run", "parent", "steps", "fed", "time", "device", "invocation", "segments"),
     "run": ("lineage_run_id", "segment_index", "segment_id", "segment_started_unix", "start",
-            "exact_resume", "continues_unrecorded_history", "recorded_unix"),
+            "exact_resume", "not_exact_items", "continues_unrecorded_history", "recorded_unix"),
     "steps": ("cum_trainer_step", "segment_start_trainer_step", "segment_local_step"),
     "fed": ("cum_games", "cum_positions", "segment_games", "segment_positions", "corpus"),
     "time": ("cum_train_step_sec", "cum_wall_sec", "segment_train_step_sec", "segment_wall_sec"),
