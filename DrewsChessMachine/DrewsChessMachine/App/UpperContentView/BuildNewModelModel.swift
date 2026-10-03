@@ -175,11 +175,21 @@ final class BuildNewModelModel {
     /// Total blocks across all groups (clamped ≥1 for ratios mid-edit).
     var totalBlocks: Int { max(1, blockGroups.reduce(0) { $0 + max(0, $1.count) }) }
 
-    /// Position of `draft` in the tower. Every caller is a control of a row
-    /// that is on screen, so a draft that is not in the model is a defect,
-    /// never a stale row to skip quietly.
+    /// Position of `draft` in the tower, or nil once its group has been
+    /// removed. SwiftUI evaluates a removed row's views once more after the
+    /// draft has left `blockGroupDrafts`, so anything a row reads while
+    /// drawing goes through this and shows nothing for a removed draft: that
+    /// row is on its way off screen and has no group left to describe.
+    func positionInTower(of draft: BlockGroupDraft) -> Int? {
+        blockGroupDrafts.firstIndex(where: { $0 === draft })
+    }
+
+    /// Position of `draft` for an edit of the tower. The edits come from a
+    /// row's buttons, which act only on a row that is on screen, so a draft
+    /// that is not in the model is a defect, never a stale row to skip
+    /// quietly.
     private func position(of draft: BlockGroupDraft) -> Int {
-        guard let index = blockGroupDrafts.firstIndex(where: { $0 === draft }) else {
+        guard let index = positionInTower(of: draft) else {
             preconditionFailure("BuildNewModelModel: block-group draft is not in this model")
         }
         return index
@@ -258,15 +268,10 @@ final class BuildNewModelModel {
         Set(architecture.nonStandardInitOptions)
     }
 
-    /// Whether `draft`'s group has a skip projection, where its
+    /// Whether the group at `position` has a skip projection, where its
     /// `skipProjectionInit` takes effect (the field is shown only there).
-    func groupHasSkipProjection(_ draft: BlockGroupDraft) -> Bool {
-        architecture.groupHasSkipProjection(position(of: draft))
-    }
-
-    /// `draft`'s group's position, for the init-option highlight.
-    func groupIndex(of draft: BlockGroupDraft) -> Int {
-        position(of: draft)
+    func groupHasSkipProjection(at position: Int) -> Bool {
+        architecture.groupHasSkipProjection(position)
     }
 
     // MARK: Group ReZero

@@ -42,7 +42,17 @@ struct BuildNewModelView: View {
         onBuild: @escaping (BuildNewModelRequest) -> Void,
         onCancel: @escaping () -> Void
     ) {
-        _model = State(initialValue: BuildNewModelModel(initial))
+        self.init(model: BuildNewModelModel(initial), onBuild: onBuild, onCancel: onCancel)
+    }
+
+    /// Edits `model`, which the caller keeps a reference to — how the
+    /// group-removal render tests change the tower under the live screen.
+    init(
+        model: BuildNewModelModel,
+        onBuild: @escaping (BuildNewModelRequest) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        _model = State(initialValue: model)
         self.onBuild = onBuild
         self.onCancel = onCancel
     }
@@ -477,30 +487,33 @@ private struct BlockGroupInitOptionsView: View {
     @Bindable var draft: BlockGroupDraft
 
     var body: some View {
-        let groupIndex = model.groupIndex(of: draft)
-        let nonStandard = model.nonStandardInitOptions
-        if draft.group.seStyle != .none || nonStandard.contains(.seGammaBiasInit(group: groupIndex)) {
-            InitOptionRow(
-                isNonStandard: nonStandard.contains(.seGammaBiasInit(group: groupIndex)),
-                stepZeroEffect: InitOptionField.seGammaBiasInit(group: groupIndex).stepZeroEffect
-            ) {
-                floatField("SE γ bias init", $draft.group.seGammaBiasInit)
+        // A removed group's row is drawn once more after its draft has left
+        // the model; it has no position then and shows nothing.
+        if let groupIndex = model.positionInTower(of: draft) {
+            let nonStandard = model.nonStandardInitOptions
+            if draft.group.seStyle != .none || nonStandard.contains(.seGammaBiasInit(group: groupIndex)) {
+                InitOptionRow(
+                    isNonStandard: nonStandard.contains(.seGammaBiasInit(group: groupIndex)),
+                    stepZeroEffect: InitOptionField.seGammaBiasInit(group: groupIndex).stepZeroEffect
+                ) {
+                    floatField("SE γ bias init", $draft.group.seGammaBiasInit)
+                }
             }
-        }
-        if draft.group.activationStyle == .post || nonStandard.contains(.branchOutputInit(group: groupIndex)) {
-            InitOptionRow(
-                isNonStandard: nonStandard.contains(.branchOutputInit(group: groupIndex)),
-                stepZeroEffect: InitOptionField.branchOutputInit(group: groupIndex).stepZeroEffect
-            ) {
-                enumPicker("Branch output init", $draft.group.branchOutputInit, BranchOutputInit.allCases)
+            if draft.group.activationStyle == .post || nonStandard.contains(.branchOutputInit(group: groupIndex)) {
+                InitOptionRow(
+                    isNonStandard: nonStandard.contains(.branchOutputInit(group: groupIndex)),
+                    stepZeroEffect: InitOptionField.branchOutputInit(group: groupIndex).stepZeroEffect
+                ) {
+                    enumPicker("Branch output init", $draft.group.branchOutputInit, BranchOutputInit.allCases)
+                }
             }
-        }
-        if model.groupHasSkipProjection(draft) || nonStandard.contains(.skipProjectionInit(group: groupIndex)) {
-            InitOptionRow(
-                isNonStandard: nonStandard.contains(.skipProjectionInit(group: groupIndex)),
-                stepZeroEffect: InitOptionField.skipProjectionInit(group: groupIndex).stepZeroEffect
-            ) {
-                enumPicker("Skip projection init", $draft.group.skipProjectionInit, SkipProjectionInit.allCases)
+            if model.groupHasSkipProjection(at: groupIndex) || nonStandard.contains(.skipProjectionInit(group: groupIndex)) {
+                InitOptionRow(
+                    isNonStandard: nonStandard.contains(.skipProjectionInit(group: groupIndex)),
+                    stepZeroEffect: InitOptionField.skipProjectionInit(group: groupIndex).stepZeroEffect
+                ) {
+                    enumPicker("Skip projection init", $draft.group.skipProjectionInit, SkipProjectionInit.allCases)
+                }
             }
         }
     }
