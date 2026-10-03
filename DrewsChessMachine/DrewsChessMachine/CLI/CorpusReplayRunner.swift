@@ -150,11 +150,17 @@ struct CorpusReplayConfig: Sendable {
     var runRandomSeed: RunRandomSeed
 }
 
-/// Consecutive failures of one kind of trainer save (the rolling file, or the
-/// step-enumerated copies), shared by corpus replay and train-vs-UCI. One
-/// failure is tolerated — a transient error on an external volume should not
-/// end a long run — but the next attempt failing too halts the run: from then
-/// on it would train with nothing being kept. A success resets the count.
+/// Consecutive failures of one kind of trainer save (the rolling file, the
+/// session folder, or the step-enumerated copies), shared by corpus replay
+/// and train-vs-UCI. One failure is tolerated — a transient error on an
+/// external volume should not end a long run — but the next attempt failing
+/// too halts the run: from then on it would train with nothing being kept. A
+/// success resets the count.
+///
+/// The run's last save (the final save, or the abort save on Ctrl-C) has no
+/// next attempt to recover it, and it is the only record of the state the
+/// run ends in. After it, `requireLastSaveSucceeded` fails the run when it
+/// did not succeed, so a run never exits as if its end state had been saved.
 struct TrainerSaveFailureStreak {
     /// What is being saved, for the halt message.
     let what: String
@@ -175,6 +181,26 @@ struct TrainerSaveFailureStreak {
         consecutiveFailures += 1
         if consecutiveFailures >= Self.haltThreshold {
             throw CorpusReplayError.repeatedSaveFailures(count: consecutiveFailures, lastStep: step, what: what)
+        }
+    }
+
+    /// The run's last save of this kind failed; its end state is not on disk.
+    struct LastSaveFailedError: LocalizedError, Equatable {
+        let what: String
+        let reason: String
+        let step: Int
+
+        var errorDescription: String? {
+            "the \(reason) \(what) at step \(step) failed (see the log above); the run's end state was not saved"
+        }
+    }
+
+    /// Call right after the run's last save of this kind (`reason`: the
+    /// final or abort save). Every save records a success or a failure, so
+    /// a non-zero streak here means that save failed.
+    func requireLastSaveSucceeded(step: Int, reason: String) throws {
+        guard consecutiveFailures == 0 else {
+            throw LastSaveFailedError(what: what, reason: reason, step: step)
         }
     }
 }
@@ -1871,6 +1897,9 @@ enum CorpusReplayRunner {
             segmentGames: feedTally.games - reconstructionFed.games,
             segmentPositions: feedTally.positions - reconstructionFed.positions,
             feedAheadPositions: feedAheadPositions(atStep: step))
+        // The rolling file is the end state; a step-enumerated copy is not
+        // required for it.
+        try rollingSaveFailures.requireLastSaveSucceeded(step: step, reason: finalReason)
         // The run asked for a capture it did not get: fail it, after the save.
         // No results.json — a failed run does not claim a clean record.
         if let gpuCaptureFailure {

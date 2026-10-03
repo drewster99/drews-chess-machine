@@ -80,16 +80,9 @@ enum TrainVsUciError: LocalizedError {
     case noOpponents
     case startModelTooSmall(have: Int, need: Int)
     case noGamesProduced
-    /// The run's last session save failed. With session saves hours apart,
-    /// that save is the only record of the run's end state, so the run fails
-    /// rather than exit as if it had been saved.
-    case finalSessionSaveFailed(step: Int, kind: String)
 
     var errorDescription: String? {
         switch self {
-        case let .finalSessionSaveFailed(step, kind):
-            return "the \(kind) session save at step \(step) failed (see the log above); "
-                + "the run's end state was not saved"
         case .noOpponents:
             return "--train-vs-uci requires at least one opponent engine"
         case let .startModelTooSmall(have, need):
@@ -862,13 +855,12 @@ enum TrainVsUciRunner {
         // final step's enumerated checkpoint.
         let finalKind: TrainVsUciSession.SaveKind = aborted ? .abort : .final
         try await saveSession(step: step, kind: finalKind)
-        let finalSessionSaved = sessionSaveFailures.consecutiveFailures == 0
         if step % autosaveEvery != 0 {
             try await writeEnumeratedCheckpoint(step: step, reason: finalKind.rawValue)
         }
-        guard finalSessionSaved else {
-            throw TrainVsUciError.finalSessionSaveFailed(step: step, kind: finalKind.diskTag)
-        }
+        // The session folder is the end state: the run fails without it,
+        // even when the step-enumerated copy above was written.
+        try sessionSaveFailures.requireLastSaveSucceeded(step: step, reason: finalKind.diskTag)
 
         // `results.json` last, after the final model save — a run that dies
         // saving weights should not also claim a clean results record.
