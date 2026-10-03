@@ -187,6 +187,12 @@ As built:
   that sweep (exit 56) and its lines go through the same encoder.
 - Tests: `ProbeModelCLIOutputTests`, `ProbeModelCLINonFiniteTests`, `FileSafetySameFileTests`
   (red before the fix: 20 + 1 + 2 failures; green after, unmodified).
+- Empty logs (separate commit): `SessionLogger` creates its file on the first line written,
+  under the name `start()`'s time gives it, so a run that never logs leaves no file;
+  `activeLogPath` is nil until then; a line after `shutdown()` creates nothing. The logger
+  gained `init(location:)` so tests use a temporary folder (`SessionLoggerLazyFileTests`,
+  red before: 2 tests). Verified end to end: a refused `--probe-model` run left the count of
+  `dcm_log_*` files unchanged.
 
 ### C3. `--validate-corpus --fix` vs a live writer — [ ]
 Shard writers hold a per-file exclusive lock (`O_EXLOCK`) for the shard's lifetime; `--fix`

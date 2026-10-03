@@ -33,12 +33,35 @@ import Foundation
 /// the first process went on writing into an unlinked file nobody could
 /// read. Every suffixed name still matches the `dcm_log_*.txt` glob, and
 /// the launch stamp keeps its position right after `dcm_log_`.
+///
+/// The file itself is created by the first line written, not by `start()`,
+/// still under the name `start()`'s time gives it. Every CLI tool calls
+/// `start()`, and some runs never log a line (a `--probe-model` of a
+/// current-format checkpoint), so creating the file up front left an empty
+/// log behind for each of them — dozens a day from a probe loop. Until the
+/// first line, `activeLogPath` is nil.
 final class SessionLogger: @unchecked Sendable {
-    static let shared = SessionLogger()
+    static let shared = SessionLogger(location: .userLibraryLogs)
+
+    /// Where the log file goes.
+    enum Location {
+        /// `~/Library/Logs/DrewsChessMachine/` — every real session.
+        case userLibraryLogs
+        /// An explicit folder (tests).
+        case directory(URL)
+    }
+
+    private let location: Location
 
     private let queue = DispatchQueue(label: "drewschess.sessionlogger.serial")
     private var fileHandle: FileHandle?
     private var fileURL: URL?
+    /// Where the first logged line creates the file: set by `start()`,
+    /// cleared once the file exists (or its creation failed). Queue-protected.
+    private var pendingFile: (directory: URL, stem: String)?
+    /// Set by `shutdown()`: a line logged afterwards is dropped rather than
+    /// creating a file. Queue-protected.
+    private var isShutDown = false
     private var didLogStartupFailure = false
     /// Once-only breadcrumb flag for the idle-flush `synchronize()`
     /// path. Same shape as `didLogStartupFailure`: queue-protected,
@@ -85,52 +108,84 @@ final class SessionLogger: @unchecked Sendable {
     /// the failure on stderr like any other open failure.
     private static let maxSameSecondLogFileAttempts = 1000
 
-    private init() {}
+    init(location: Location) {
+        self.location = location
+    }
 
-    /// Open the session log file. Safe to call exactly once at app
-    /// launch; calling again is a no-op after the first success. If
-    /// the file can't be opened (disk full, permissions issue, etc.)
+    /// The folder log files are created in, created if missing.
+    private func logsDirectory() throws -> URL {
+        switch location {
+        case .directory(let url):
+            return url
+        case .userLibraryLogs:
+            let libraryURL = try FileManager.default.url(
+                for: .libraryDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            let logsDir = libraryURL
+                .appendingPathComponent("Logs", isDirectory: true)
+                .appendingPathComponent("DrewsChessMachine", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: logsDir,
+                withIntermediateDirectories: true
+            )
+            return logsDir
+        }
+    }
+
+    /// Begin the session: fix the log file's name from the current time
+    /// and make sure its folder exists. The file is created by the first
+    /// `log` line. Safe to call exactly once at app launch; calling again
+    /// is a no-op once a session has begun. If the folder can't be made, or
+    /// later the file can't be created (disk full, permissions issue, etc.),
     /// the error is printed to stderr and all subsequent `log` calls
     /// silently drop — the logger never crashes or escalates a log
     /// failure into an app-level error.
     func start() {
         queue.sync {
-            if fileHandle != nil { return }
-
+            if fileHandle != nil || pendingFile != nil { return }
             do {
-                let libraryURL = try FileManager.default.url(
-                    for: .libraryDirectory,
-                    in: .userDomainMask,
-                    appropriateFor: nil,
-                    create: true
-                )
-                let logsDir = libraryURL
-                    .appendingPathComponent("Logs", isDirectory: true)
-                    .appendingPathComponent("DrewsChessMachine", isDirectory: true)
-                try FileManager.default.createDirectory(
-                    at: logsDir,
-                    withIntermediateDirectories: true
-                )
-
+                let logsDir = try logsDirectory()
                 let stamp = Self.filenameFormatter.string(from: Date())
-                let created = try FileSafety.createNewFileWithNumericSuffix(
-                    in: logsDir,
-                    stem: "dcm_log_\(stamp)",
-                    pathExtension: "txt",
-                    maxAttempts: Self.maxSameSecondLogFileAttempts
-                )
-
-                self.fileHandle = created.handle
-                self.fileURL = created.url
+                pendingFile = (directory: logsDir, stem: "dcm_log_\(stamp)")
+                isShutDown = false
             } catch {
-                if !didLogStartupFailure {
-                    didLogStartupFailure = true
-                    FileHandle.standardError.write(
-                        Data("SessionLogger: failed to open log file: \(error)\n".utf8)
-                    )
-                }
+                reportStartupFailure("failed to prepare the log folder: \(error)")
             }
         }
+    }
+
+    /// The open log file, creating it on the first call after `start()`.
+    /// Nil before `start()`, after `shutdown()`, or when creation failed.
+    /// Called only on `queue`.
+    private func openLogFileIfNeeded() -> FileHandle? {
+        if let fileHandle { return fileHandle }
+        guard !isShutDown, let pending = pendingFile else { return nil }
+        pendingFile = nil
+        do {
+            let created = try FileSafety.createNewFileWithNumericSuffix(
+                in: pending.directory,
+                stem: pending.stem,
+                pathExtension: "txt",
+                maxAttempts: Self.maxSameSecondLogFileAttempts
+            )
+            fileHandle = created.handle
+            fileURL = created.url
+            return created.handle
+        } catch {
+            reportStartupFailure("failed to open log file: \(error)")
+            return nil
+        }
+    }
+
+    /// Print a logging failure to stderr once per session, so a persistent
+    /// failure leaves one breadcrumb without spamming. Called only on `queue`.
+    private func reportStartupFailure(_ message: String) {
+        guard !didLogStartupFailure else { return }
+        didLogStartupFailure = true
+        FileHandle.standardError.write(Data("SessionLogger: \(message)\n".utf8))
     }
 
     /// Write a line to the session log. The timestamp and trailing
@@ -147,7 +202,7 @@ final class SessionLogger: @unchecked Sendable {
 
         queue.async { [weak self] in
             guard let self else { return }
-            guard let fileHandle = self.fileHandle else { return }
+            guard let fileHandle = self.openLogFileIfNeeded() else { return }
             do {
                 try fileHandle.write(contentsOf: data)
             } catch {
@@ -180,9 +235,11 @@ final class SessionLogger: @unchecked Sendable {
         log("[ARCH] \(event) | \(arch.architectureSummary)")
     }
 
-    /// Path of the active log file, if any. Useful for surfacing the
-    /// location to the user (e.g. via a "Reveal in Finder" menu item)
-    /// or for debugging from LLDB.
+    /// Path of the active log file, if any — nil until the first line has
+    /// been written, because that line creates the file. Waits behind lines
+    /// already queued, so it is set right after a `log` call returns. Useful
+    /// for surfacing the location to the user (e.g. via a "Reveal in
+    /// Finder" menu item) or for debugging from LLDB.
     var activeLogPath: String? {
         queue.sync { fileURL?.path }
     }
@@ -196,10 +253,18 @@ final class SessionLogger: @unchecked Sendable {
     /// consistent with the existing best-effort log posture.
     func shutdown() {
         queue.sync {
+            isShutDown = true
+            pendingFile = nil
             pendingFlush?.cancel()
             pendingFlush = nil
-            try? fileHandle?.synchronize()
-            try? fileHandle?.close()
+            if let fileHandle {
+                do {
+                    try fileHandle.synchronize()
+                    try fileHandle.close()
+                } catch {
+                    FileHandle.standardError.write(Data("SessionLogger: closing the log file failed: \(error)\n".utf8))
+                }
+            }
             fileHandle = nil
         }
     }
