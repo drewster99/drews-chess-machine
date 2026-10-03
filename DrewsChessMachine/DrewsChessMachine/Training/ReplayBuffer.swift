@@ -537,6 +537,13 @@ final class ReplayBuffer: @unchecked Sendable {
     struct SlotPointers: @unchecked Sendable {
         let count: Int
         let capacity: Int
+        /// The ring's next write slot: once the ring is full, the oldest
+        /// position's slot. Slot order is ring order, not age order; a
+        /// reader whose result must not depend on the ring layout (two
+        /// buffers holding the same positions — an uninterrupted run's
+        /// wrapped ring and a restore's compacted one — must give the same
+        /// answer) walks `physicalSlot(logicalIndex:)` instead.
+        let writeIndex: Int
         let boards: UnsafePointer<Float>
         let moves: UnsafePointer<Int32>
         let outcomes: UnsafePointer<Float>
@@ -546,6 +553,13 @@ final class ReplayBuffer: @unchecked Sendable {
         let stateHash: UnsafePointer<UInt64>
         let workerGameId: UnsafePointer<UInt32>
         let materialCount: UnsafePointer<UInt8>
+
+        /// The slot holding the position `logicalIndex` places from the
+        /// oldest (0 = oldest, `count - 1` = newest).
+        func physicalSlot(logicalIndex: Int) -> Int {
+            ReplayBuffer.physicalSlot(logicalIndex: logicalIndex, storedCount: count,
+                                      capacity: capacity, writeIndex: writeIndex)
+        }
     }
 
     /// Hold the buffer's lock and hand `block` a `SlotPointers` view of
@@ -571,6 +585,7 @@ final class ReplayBuffer: @unchecked Sendable {
             let view = SlotPointers(
                 count: storedCount,
                 capacity: capacity,
+                writeIndex: writeIndex,
                 boards: UnsafePointer(boardStorage),
                 moves: UnsafePointer(moveStorage),
                 outcomes: UnsafePointer(outcomeStorage),
