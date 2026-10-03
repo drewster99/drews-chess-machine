@@ -287,6 +287,44 @@ final class TrainingSettingsPopoverModel {
 
     // MARK: - Seed / cancel
 
+    /// The `Double` edit fields whose seeded text is a rounded rendering of
+    /// the live value (`%.2e`, `%.3f`, …). Save compares each against what
+    /// seeding wrote, so an untouched field never writes its rounded text
+    /// back over a more precise value (a `parameters.json` δ of 1/300 shown
+    /// as "0.0033" must stay 1/300), and an untouched field holding a session
+    /// value outside today's declared range never blocks Save.
+    private static let roundedTextFields: [ReferenceWritableKeyPath<TrainingSettingsPopoverModel, String>] = [
+        \.lrText, \.momentumText,
+        \.lrCycleMinText, \.lrCycleMaxText, \.momentumCycleMinText, \.momentumCycleMaxText,
+        \.lrCyclePeakEndText, \.lrCycleTroughEndText,
+        \.momentumFollowStartLowText, \.momentumFollowStartHighText,
+        \.momentumFollowEndLowText, \.momentumFollowEndHighText,
+        \.entropyText, \.illegalMassWeightText, \.gradClipText, \.weightDecayText,
+        \.dropoutRateText, \.policyLossWeightText, \.valueLossWeightText,
+        \.valueLabelSmoothingText, \.drawPenaltyText,
+        \.policyLabelSmoothingText, \.policyLabelSmoothingPerMoveText, \.policyLabelSmoothingPerMoveCapText,
+        \.selfPlayStartTauText, \.selfPlayDecayPerPlyText, \.selfPlayFloorTauText,
+    ]
+
+    /// Each `roundedTextFields` entry's text as `seedFromParams` wrote it.
+    /// Empty until the first seed, in which case every field is parsed.
+    @ObservationIgnored private var seededText: [ReferenceWritableKeyPath<TrainingSettingsPopoverModel, String>: String] = [:]
+
+    /// What Save takes from a rounded `Double` field: the live value itself
+    /// when the field still reads exactly what seeding wrote (nothing was
+    /// edited, so nothing is written), otherwise the parsed text — nil when
+    /// it is not a finite number inside the declared range.
+    private func editedValue<K: TrainingParameterKey>(
+        _ key: K.Type,
+        _ field: ReferenceWritableKeyPath<TrainingSettingsPopoverModel, String>,
+        current: Double
+    ) -> Double? where K.Value == Double {
+        if let seeded = seededText[field], seeded == self[keyPath: field] {
+            return current
+        }
+        return K.parsedInDeclaredRange(self[keyPath: field])
+    }
+
     /// Seed the edit fields from the live `trainingParams` snapshot. Called
     /// when the popover opens so it always reflects current state, even if a
     /// CLI / parameters-file override changed something since the last open.
@@ -384,6 +422,7 @@ final class TrainingSettingsPopoverModel {
         originalDrawWatchPDrawThreshold = p.drawWatchPDrawThreshold
         originalDrawWatchTerminateGames = p.drawWatchTerminateGames
         originalDrawWatchStreakLength = p.drawWatchStreakLength
+        seededText = Dictionary(uniqueKeysWithValues: Self.roundedTextFields.map { ($0, self[keyPath: $0]) })
         // Reset every error flag — a fresh open should never carry red overlays
         // from a previously-cancelled bad input.
         lrError = false
@@ -704,11 +743,11 @@ final class TrainingSettingsPopoverModel {
         var anyError = false
 
         // LR — Double in the declared range.
-        if let v = LearningRate.parsedInDeclaredRange(lrText) {
+        if let v = editedValue(LearningRate.self, \.lrText, current: p.learningRate) {
             lrError = false
             if abs(v - p.learningRate) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] learningRate: %.3e -> %.3e", p.learningRate, v)
+                    String(format: "[PARAM] learningRate: %.6g -> %.6g", p.learningRate, v)
                 )
                 p.learningRate = v
             }
@@ -730,11 +769,11 @@ final class TrainingSettingsPopoverModel {
         }
 
         // Momentum — Double in the declared range.
-        if let v = MomentumCoeff.parsedInDeclaredRange(momentumText) {
+        if let v = editedValue(MomentumCoeff.self, \.momentumText, current: p.momentumCoeff) {
             momentumError = false
             if abs(v - p.momentumCoeff) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] momentumCoeff: %.3f -> %.3f", p.momentumCoeff, v)
+                    String(format: "[PARAM] momentumCoeff: %.6g -> %.6g", p.momentumCoeff, v)
                 )
                 p.momentumCoeff = v
             }
@@ -754,14 +793,14 @@ final class TrainingSettingsPopoverModel {
         // 12-line-per-Save log spew.
         if lrCycleEnabledValue != p.lrCycleEnabled { p.lrCycleEnabled = lrCycleEnabledValue }
         if lrCycleInvertValue != p.lrCycleInvert { p.lrCycleInvert = lrCycleInvertValue }
-        if let v = LRCycleMin.parsedInDeclaredRange(lrCycleMinText) {
+        if let v = editedValue(LRCycleMin.self, \.lrCycleMinText, current: p.lrCycleMin) {
             lrCycleMinError = false
             if abs(v - p.lrCycleMin) > Double.ulpOfOne { p.lrCycleMin = v }
         } else {
             lrCycleMinError = true
             anyError = true
         }
-        if let v = LRCycleMax.parsedInDeclaredRange(lrCycleMaxText) {
+        if let v = editedValue(LRCycleMax.self, \.lrCycleMaxText, current: p.lrCycleMax) {
             lrCycleMaxError = false
             if abs(v - p.lrCycleMax) > Double.ulpOfOne { p.lrCycleMax = v }
         } else {
@@ -793,14 +832,14 @@ final class TrainingSettingsPopoverModel {
         }
         if momentumCycleEnabledValue != p.momentumCycleEnabled { p.momentumCycleEnabled = momentumCycleEnabledValue }
         if momentumCycleInvertValue != p.momentumCycleInvert { p.momentumCycleInvert = momentumCycleInvertValue }
-        if let v = MomentumCycleMin.parsedInDeclaredRange(momentumCycleMinText) {
+        if let v = editedValue(MomentumCycleMin.self, \.momentumCycleMinText, current: p.momentumCycleMin) {
             momentumCycleMinError = false
             if abs(v - p.momentumCycleMin) > Double.ulpOfOne { p.momentumCycleMin = v }
         } else {
             momentumCycleMinError = true
             anyError = true
         }
-        if let v = MomentumCycleMax.parsedInDeclaredRange(momentumCycleMaxText) {
+        if let v = editedValue(MomentumCycleMax.self, \.momentumCycleMaxText, current: p.momentumCycleMax) {
             momentumCycleMaxError = false
             if abs(v - p.momentumCycleMax) > Double.ulpOfOne { p.momentumCycleMax = v }
         } else {
@@ -830,14 +869,14 @@ final class TrainingSettingsPopoverModel {
             anyError = true
         }
         // Decay envelope. Ranges mirror the `@TrainingParameter` declarations.
-        if let v = LRCyclePeakEnd.parsedInDeclaredRange(lrCyclePeakEndText) {
+        if let v = editedValue(LRCyclePeakEnd.self, \.lrCyclePeakEndText, current: p.lrCyclePeakEnd) {
             lrCyclePeakEndError = false
             if abs(v - p.lrCyclePeakEnd) > Double.ulpOfOne { p.lrCyclePeakEnd = v }
         } else {
             lrCyclePeakEndError = true
             anyError = true
         }
-        if let v = LRCycleTroughEnd.parsedInDeclaredRange(lrCycleTroughEndText) {
+        if let v = editedValue(LRCycleTroughEnd.self, \.lrCycleTroughEndText, current: p.lrCycleTroughEnd) {
             lrCycleTroughEndError = false
             if abs(v - p.lrCycleTroughEnd) > Double.ulpOfOne { p.lrCycleTroughEnd = v }
         } else {
@@ -860,28 +899,28 @@ final class TrainingSettingsPopoverModel {
         }
         // Momentum-follow bounds.
         if momentumFollowsLRCycleValue != p.momentumFollowsLRCycle { p.momentumFollowsLRCycle = momentumFollowsLRCycleValue }
-        if let v = MomentumFollowStartLow.parsedInDeclaredRange(momentumFollowStartLowText) {
+        if let v = editedValue(MomentumFollowStartLow.self, \.momentumFollowStartLowText, current: p.momentumFollowStartLow) {
             momentumFollowStartLowError = false
             if abs(v - p.momentumFollowStartLow) > Double.ulpOfOne { p.momentumFollowStartLow = v }
         } else {
             momentumFollowStartLowError = true
             anyError = true
         }
-        if let v = MomentumFollowStartHigh.parsedInDeclaredRange(momentumFollowStartHighText) {
+        if let v = editedValue(MomentumFollowStartHigh.self, \.momentumFollowStartHighText, current: p.momentumFollowStartHigh) {
             momentumFollowStartHighError = false
             if abs(v - p.momentumFollowStartHigh) > Double.ulpOfOne { p.momentumFollowStartHigh = v }
         } else {
             momentumFollowStartHighError = true
             anyError = true
         }
-        if let v = MomentumFollowEndLow.parsedInDeclaredRange(momentumFollowEndLowText) {
+        if let v = editedValue(MomentumFollowEndLow.self, \.momentumFollowEndLowText, current: p.momentumFollowEndLow) {
             momentumFollowEndLowError = false
             if abs(v - p.momentumFollowEndLow) > Double.ulpOfOne { p.momentumFollowEndLow = v }
         } else {
             momentumFollowEndLowError = true
             anyError = true
         }
-        if let v = MomentumFollowEndHigh.parsedInDeclaredRange(momentumFollowEndHighText) {
+        if let v = editedValue(MomentumFollowEndHigh.self, \.momentumFollowEndHighText, current: p.momentumFollowEndHigh) {
             momentumFollowEndHighError = false
             if abs(v - p.momentumFollowEndHigh) > Double.ulpOfOne { p.momentumFollowEndHigh = v }
         } else {
@@ -918,11 +957,11 @@ final class TrainingSettingsPopoverModel {
         }
 
         // Entropy regularization — Double in the declared range.
-        if let v = EntropyBonus.parsedInDeclaredRange(entropyText) {
+        if let v = editedValue(EntropyBonus.self, \.entropyText, current: p.entropyBonus) {
             entropyError = false
             if abs(v - p.entropyBonus) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] entropyBonus: %.3e -> %.3e", p.entropyBonus, v)
+                    String(format: "[PARAM] entropyBonus: %.6g -> %.6g", p.entropyBonus, v)
                 )
                 p.entropyBonus = v
             }
@@ -932,11 +971,11 @@ final class TrainingSettingsPopoverModel {
         }
 
         // Illegal mass penalty — Double in the declared range.
-        if let v = IllegalMassWeight.parsedInDeclaredRange(illegalMassWeightText) {
+        if let v = editedValue(IllegalMassWeight.self, \.illegalMassWeightText, current: p.illegalMassWeight) {
             illegalMassWeightError = false
             if abs(v - p.illegalMassWeight) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] illegalMassWeight: %.2f -> %.2f", p.illegalMassWeight, v)
+                    String(format: "[PARAM] illegalMassWeight: %.6g -> %.6g", p.illegalMassWeight, v)
                 )
                 p.illegalMassWeight = v
             }
@@ -946,11 +985,11 @@ final class TrainingSettingsPopoverModel {
         }
 
         // Grad clip — Double in the declared range.
-        if let v = GradClipMaxNorm.parsedInDeclaredRange(gradClipText) {
+        if let v = editedValue(GradClipMaxNorm.self, \.gradClipText, current: p.gradClipMaxNorm) {
             gradClipError = false
             if abs(v - p.gradClipMaxNorm) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] gradClipMaxNorm: %.2f -> %.2f", p.gradClipMaxNorm, v)
+                    String(format: "[PARAM] gradClipMaxNorm: %.6g -> %.6g", p.gradClipMaxNorm, v)
                 )
                 p.gradClipMaxNorm = v
             }
@@ -960,11 +999,11 @@ final class TrainingSettingsPopoverModel {
         }
 
         // Weight decay — Double in the declared range.
-        if let v = WeightDecay.parsedInDeclaredRange(weightDecayText) {
+        if let v = editedValue(WeightDecay.self, \.weightDecayText, current: p.weightDecay) {
             weightDecayError = false
             if abs(v - p.weightDecay) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] weightDecay: %.3e -> %.3e", p.weightDecay, v)
+                    String(format: "[PARAM] weightDecay: %.6g -> %.6g", p.weightDecay, v)
                 )
                 p.weightDecay = v
             }
@@ -976,11 +1015,11 @@ final class TrainingSettingsPopoverModel {
         // Dropout rate — Double in the declared range. Drop probability
         // (PyTorch/Keras convention); 0 disables. Pushed onto the live
         // trainer via the graph-variable assign (`ChessTrainer.dropoutRate`).
-        if let v = DropoutRate.parsedInDeclaredRange(dropoutRateText) {
+        if let v = editedValue(DropoutRate.self, \.dropoutRateText, current: p.dropoutRate) {
             dropoutRateError = false
             if abs(v - p.dropoutRate) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] dropoutRate: %.3f -> %.3f", p.dropoutRate, v)
+                    String(format: "[PARAM] dropoutRate: %.6g -> %.6g", p.dropoutRate, v)
                 )
                 p.dropoutRate = v
             }
@@ -990,11 +1029,11 @@ final class TrainingSettingsPopoverModel {
         }
 
         // Policy loss weight — Double in the declared range.
-        if let v = PolicyLossWeight.parsedInDeclaredRange(policyLossWeightText) {
+        if let v = editedValue(PolicyLossWeight.self, \.policyLossWeightText, current: p.policyLossWeight) {
             policyLossWeightError = false
             if abs(v - p.policyLossWeight) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] policyLossWeight: %.2f -> %.2f", p.policyLossWeight, v)
+                    String(format: "[PARAM] policyLossWeight: %.6g -> %.6g", p.policyLossWeight, v)
                 )
                 p.policyLossWeight = v
             }
@@ -1004,11 +1043,11 @@ final class TrainingSettingsPopoverModel {
         }
 
         // Value loss weight — Double in the declared range.
-        if let v = ValueLossWeight.parsedInDeclaredRange(valueLossWeightText) {
+        if let v = editedValue(ValueLossWeight.self, \.valueLossWeightText, current: p.valueLossWeight) {
             valueLossWeightError = false
             if abs(v - p.valueLossWeight) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] valueLossWeight: %.2f -> %.2f", p.valueLossWeight, v)
+                    String(format: "[PARAM] valueLossWeight: %.6g -> %.6g", p.valueLossWeight, v)
                 )
                 p.valueLossWeight = v
             }
@@ -1018,11 +1057,11 @@ final class TrainingSettingsPopoverModel {
         }
 
         // Value-head label smoothing ε — Double in the declared range.
-        if let v = ValueLabelSmoothingEpsilon.parsedInDeclaredRange(valueLabelSmoothingText) {
+        if let v = editedValue(ValueLabelSmoothingEpsilon.self, \.valueLabelSmoothingText, current: p.valueLabelSmoothingEpsilon) {
             valueLabelSmoothingError = false
             if abs(v - p.valueLabelSmoothingEpsilon) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] valueLabelSmoothingEpsilon: %.3f -> %.3f", p.valueLabelSmoothingEpsilon, v)
+                    String(format: "[PARAM] valueLabelSmoothingEpsilon: %.6g -> %.6g", p.valueLabelSmoothingEpsilon, v)
                 )
                 p.valueLabelSmoothingEpsilon = v
             }
@@ -1042,12 +1081,12 @@ final class TrainingSettingsPopoverModel {
         case .fixedTotal:
             policyLabelSmoothingPerMoveError = false
             policyLabelSmoothingPerMoveCapError = false
-            let epsilon = PolicyLabelSmoothingEpsilon.parsedInDeclaredRange(policyLabelSmoothingText)
+            let epsilon = editedValue(PolicyLabelSmoothingEpsilon.self, \.policyLabelSmoothingText, current: p.policyLabelSmoothingEpsilon)
             policyLabelSmoothingError = epsilon == nil
             if let epsilon {
                 if abs(epsilon - p.policyLabelSmoothingEpsilon) > Double.ulpOfOne {
                     SessionLogger.shared.log(
-                        String(format: "[PARAM] policyLabelSmoothingEpsilon: %.3f -> %.3f", p.policyLabelSmoothingEpsilon, epsilon)
+                        String(format: "[PARAM] policyLabelSmoothingEpsilon: %.6g -> %.6g", p.policyLabelSmoothingEpsilon, epsilon)
                     )
                     p.policyLabelSmoothingEpsilon = epsilon
                 }
@@ -1057,20 +1096,20 @@ final class TrainingSettingsPopoverModel {
             }
         case .perMove:
             policyLabelSmoothingError = false
-            let perMove = PolicyLabelSmoothingPerMove.parsedInDeclaredRange(policyLabelSmoothingPerMoveText)
-            let perMoveCap = PolicyLabelSmoothingPerMoveCap.parsedInDeclaredRange(policyLabelSmoothingPerMoveCapText)
+            let perMove = editedValue(PolicyLabelSmoothingPerMove.self, \.policyLabelSmoothingPerMoveText, current: p.policyLabelSmoothingPerMove)
+            let perMoveCap = editedValue(PolicyLabelSmoothingPerMoveCap.self, \.policyLabelSmoothingPerMoveCapText, current: p.policyLabelSmoothingPerMoveCap)
             policyLabelSmoothingPerMoveError = perMove == nil
             policyLabelSmoothingPerMoveCapError = perMoveCap == nil
             if let perMove, let perMoveCap {
                 if abs(perMove - p.policyLabelSmoothingPerMove) > Double.ulpOfOne {
                     SessionLogger.shared.log(
-                        String(format: "[PARAM] policyLabelSmoothingPerMove: %.4f -> %.4f", p.policyLabelSmoothingPerMove, perMove)
+                        String(format: "[PARAM] policyLabelSmoothingPerMove: %.6g -> %.6g", p.policyLabelSmoothingPerMove, perMove)
                     )
                     p.policyLabelSmoothingPerMove = perMove
                 }
                 if abs(perMoveCap - p.policyLabelSmoothingPerMoveCap) > Double.ulpOfOne {
                     SessionLogger.shared.log(
-                        String(format: "[PARAM] policyLabelSmoothingPerMoveCap: %.2f -> %.2f", p.policyLabelSmoothingPerMoveCap, perMoveCap)
+                        String(format: "[PARAM] policyLabelSmoothingPerMoveCap: %.6g -> %.6g", p.policyLabelSmoothingPerMoveCap, perMoveCap)
                     )
                     p.policyLabelSmoothingPerMoveCap = perMoveCap
                 }
@@ -1081,11 +1120,11 @@ final class TrainingSettingsPopoverModel {
         }
 
         // Draw penalty — Double in the declared range.
-        if let v = DrawPenalty.parsedInDeclaredRange(drawPenaltyText) {
+        if let v = editedValue(DrawPenalty.self, \.drawPenaltyText, current: p.drawPenalty) {
             drawPenaltyError = false
             if abs(v - p.drawPenalty) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] drawPenalty: %.3f -> %.3f", p.drawPenalty, v)
+                    String(format: "[PARAM] drawPenalty: %.6g -> %.6g", p.drawPenalty, v)
                 )
                 p.drawPenalty = v
             }
@@ -1125,11 +1164,11 @@ final class TrainingSettingsPopoverModel {
         // declared range. Rebuilt by `buildSelfPlaySchedule()` next time
         // the schedule box is constructed; mid-session changes don't
         // retroactively alter games already in progress.
-        if let v = SelfPlayStartTau.parsedInDeclaredRange(selfPlayStartTauText) {
+        if let v = editedValue(SelfPlayStartTau.self, \.selfPlayStartTauText, current: p.selfPlayStartTau) {
             selfPlayStartTauError = false
             if abs(v - p.selfPlayStartTau) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] selfPlayStartTau: %.2f -> %.2f", p.selfPlayStartTau, v)
+                    String(format: "[PARAM] selfPlayStartTau: %.6g -> %.6g", p.selfPlayStartTau, v)
                 )
                 p.selfPlayStartTau = v
             }
@@ -1137,11 +1176,11 @@ final class TrainingSettingsPopoverModel {
             selfPlayStartTauError = true
             anyError = true
         }
-        if let v = SelfPlayTauDecayPerPly.parsedInDeclaredRange(selfPlayDecayPerPlyText) {
+        if let v = editedValue(SelfPlayTauDecayPerPly.self, \.selfPlayDecayPerPlyText, current: p.selfPlayTauDecayPerPly) {
             selfPlayDecayPerPlyError = false
             if abs(v - p.selfPlayTauDecayPerPly) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] selfPlayTauDecayPerPly: %.3f -> %.3f", p.selfPlayTauDecayPerPly, v)
+                    String(format: "[PARAM] selfPlayTauDecayPerPly: %.6g -> %.6g", p.selfPlayTauDecayPerPly, v)
                 )
                 p.selfPlayTauDecayPerPly = v
             }
@@ -1149,11 +1188,11 @@ final class TrainingSettingsPopoverModel {
             selfPlayDecayPerPlyError = true
             anyError = true
         }
-        if let v = SelfPlayTargetTau.parsedInDeclaredRange(selfPlayFloorTauText) {
+        if let v = editedValue(SelfPlayTargetTau.self, \.selfPlayFloorTauText, current: p.selfPlayTargetTau) {
             selfPlayFloorTauError = false
             if abs(v - p.selfPlayTargetTau) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] selfPlayTargetTau: %.2f -> %.2f", p.selfPlayTargetTau, v)
+                    String(format: "[PARAM] selfPlayTargetTau: %.6g -> %.6g", p.selfPlayTargetTau, v)
                 )
                 p.selfPlayTargetTau = v
             }
@@ -1400,7 +1439,7 @@ final class TrainingSettingsPopoverModel {
             // is the single authoritative log line per Save.
             if abs(p.replayRatioTarget - originalReplayRatioTarget) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] replayRatioTarget: %.2f -> %.2f", originalReplayRatioTarget, p.replayRatioTarget)
+                    String(format: "[PARAM] replayRatioTarget: %.6g -> %.6g", originalReplayRatioTarget, p.replayRatioTarget)
                 )
             }
             if p.selfPlayDelayMs != originalReplaySelfPlayDelayMs {
@@ -1451,7 +1490,7 @@ final class TrainingSettingsPopoverModel {
             }
             if abs(p.drawWatchPDrawThreshold - originalDrawWatchPDrawThreshold) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] drawWatchPDrawThreshold: %.3f -> %.3f",
+                    String(format: "[PARAM] drawWatchPDrawThreshold: %.6g -> %.6g",
                         originalDrawWatchPDrawThreshold,
                         p.drawWatchPDrawThreshold
                     )

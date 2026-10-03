@@ -254,15 +254,16 @@ final class PolicyLabelSmoothingModeTests: XCTestCase {
 
     // MARK: - Per-move complement target
 
-    /// The mirror: the played move gets the per-move floor `min(δ, cap)` and
-    /// the other legal moves share the rest equally.
+    /// The mirror: the played move gets the per-move floor — the positive
+    /// target's per-alternative mass, `min(δ, cap/(n − 1))` — and the other
+    /// legal moves share the rest equally.
     func testPerMoveComplementPutsTheFloorOnThePlayedMoveAndTheRestOnTheOthers() throws {
         let batch = makeBatch(legalCounts)
         let cases: [(perMove: Float, cap: Float)] = [(0.0033, 0.5), (0.05, 0.02), (0, 0.5)]
         for (perMove, cap) in cases {
             let targets = try selectedTargets(batch, mode: .perMove, perMove: perMove, perMoveCap: cap)
-            let floor = min(Double(perMove), Double(cap))
             for (row, n) in legalCounts.enumerated() where n > 1 {
+                let floor = expectedPerAlternative(legalCount: n, perMove: perMove, perMoveCap: cap)
                 XCTAssertEqual(targets.valid[row], 1, "|legal|=\(n): complement weight")
                 XCTAssertEqual(rowSum(targets.complement, row), 1, accuracy: 1e-6,
                                "δ=\(perMove) cap=\(cap) |legal|=\(n): complement sum")
@@ -274,6 +275,43 @@ final class PolicyLabelSmoothingModeTests: XCTestCase {
                     XCTAssertEqual(Double(targets.complement[i]), other, accuracy: other * 1e-5,
                                    "δ=\(perMove) cap=\(cap) |legal|=\(n): other legal move's complement mass")
                 }
+            }
+        }
+    }
+
+    /// "This move was bad" must never make the bad move the most favoured
+    /// target. A floor of `min(δ, cap)` on the played move did, once δ
+    /// reached `1/n` (δ 0.05 ties at 20 legal moves and wins above it). Swept
+    /// over the declared ranges' corners and every legal-move count.
+    func testPerMoveComplementNeverFavoursThePlayedMove() throws {
+        let batch = makeBatch(legalCounts)
+        for perMove: Float in [0.0033, 0.005, 0.01, 0.03, 0.05] {
+            for cap: Float in [0.02, 0.5, 0.9] {
+                let targets = try selectedTargets(batch, mode: .perMove, perMove: perMove, perMoveCap: cap)
+                for (row, n) in legalCounts.enumerated() where n > 1 {
+                    let playedIndex = row * policySize + Int(batch.played[row])
+                    let played = targets.complement[playedIndex]
+                    for i in rowRange(row) where batch.mask[i] == 1 && i != playedIndex {
+                        XCTAssertLessThan(played, targets.complement[i],
+                                          "δ=\(perMove) cap=\(cap) |legal|=\(n): played move must get less than every alternative")
+                    }
+                }
+            }
+        }
+    }
+
+    /// The complement's floor on the played move is exactly the positive
+    /// target's per-alternative mass, `min(δ, cap/(n − 1))`.
+    func testPerMoveComplementFloorEqualsThePositivePerAlternativeMass() throws {
+        let batch = makeBatch(legalCounts)
+        let cases: [(perMove: Float, cap: Float)] = [(0.0033, 0.5), (0.05, 0.02), (0.05, 0.9)]
+        for (perMove, cap) in cases {
+            let targets = try selectedTargets(batch, mode: .perMove, perMove: perMove, perMoveCap: cap)
+            for (row, n) in legalCounts.enumerated() where n > 1 {
+                let playedIndex = row * policySize + Int(batch.played[row])
+                let floor = expectedPerAlternative(legalCount: n, perMove: perMove, perMoveCap: cap)
+                XCTAssertEqual(Double(targets.complement[playedIndex]), floor, accuracy: 1e-7,
+                               "δ=\(perMove) cap=\(cap) |legal|=\(n): played move's complement floor")
             }
         }
     }

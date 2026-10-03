@@ -76,7 +76,7 @@ enum HeadLossGraph {
         let smoothed: MPSGraphTensor
         /// The complement (negative-advantage) target, renormalized. Fixed
         /// total: `(1 − ε)·uniform(other legal) + ε·uniform(legal)`. Per
-        /// move: `(1 − f)·uniform(other legal) + f·oneHot`, `f = min(δ, cap)`.
+        /// move: `(1 − f)·uniform(other legal) + f·oneHot`, `f = min(δ, cap/(n − 1))`.
         let complement: MPSGraphTensor
         /// `[batch, 1]`: 1 where the position has more than one legal move,
         /// else 0. The weight the complement cross-entropy must carry.
@@ -231,9 +231,14 @@ enum HeadLossGraph {
     ///
     /// **Per-move complement target.** The mirror of the positive one, with
     /// the roles swapped: the target set is now the other legal moves and the
-    /// one legal move outside it is the played move, which gets the per-move
-    /// floor `f = min(δ, cap)` (δ for one alternative, capped like any total);
-    /// the other legal moves share `1 − f` equally. The fixed-total
+    /// one legal move outside it is the played move, which gets the floor
+    /// `f = min(δ, cap/(n − 1))` — exactly the mass the positive target gives
+    /// each non-played move — and the other legal moves share `1 − f`
+    /// equally. A floor of `min(δ, cap)` instead would not shrink with n:
+    /// once δ reached `1/n` the played move would tie or outrank every
+    /// alternative, so a sample saying "this move was bad" would train the
+    /// bad move up. With `f ≤ cap/(n − 1)` and `cap < 1` the played move
+    /// always gets strictly less than each alternative. The fixed-total
     /// complement likewise keeps a floor (`ε/|legal|`) on the played move,
     /// and that floor is what makes the negative branch's equilibrium
     /// reachable: without it the complement CE would ask for
@@ -349,8 +354,11 @@ enum HeadLossGraph {
             name: "policy_per_move_target"
         )
 
-        // f = min(δ, cap): the played move's floor in the mirrored target.
-        let playedFloor = graph.minimum(perMove, perMoveCap, name: "per_move_complement_played_floor")
+        // The played move's floor in the mirrored target is the same
+        // per-alternative mass the positive target gives each non-played
+        // move, so it never reaches what any other legal move receives,
+        // whatever δ, the cap and |legal| are.
+        let playedFloor = perAlternative
         let complement = renormalizedTarget(
             graph.addition(
                 graph.multiplication(

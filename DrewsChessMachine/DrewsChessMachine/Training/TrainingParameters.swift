@@ -332,7 +332,7 @@ public enum PolicyLabelSmoothingPerMove: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Policy Label Smoothing Per Move Cap",
-    description: "Cap on the total per-move smoothing mass δ·(n−1), used only when Policy Label Smoothing Mode = 1 (per move). Wide positions (up to ~218 legal moves) would otherwise give the played move little or no target mass. Above the cap the capped total is shared equally over the non-played legal moves. Also caps the played move's mass in the complement (negative-advantage) target, which is δ. Same ceiling as Policy Label Smoothing ε. Range [0, 0.9].",
+    description: "Cap on the total per-move smoothing mass δ·(n−1), used only when Policy Label Smoothing Mode = 1 (per move). Wide positions (up to ~218 legal moves) would otherwise give the played move little or no target mass. Above the cap the capped total is shared equally over the non-played legal moves. In the complement (negative-advantage) target the played move gets the same per-alternative mass, min(δ, cap/(n−1)), so it never gets more than any other legal move. Same ceiling as Policy Label Smoothing ε. Range [0, 0.9].",
     default: 0.5,
     range: 0.0...0.9,
     category: "Optimizer",

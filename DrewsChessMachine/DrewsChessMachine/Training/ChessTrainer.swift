@@ -1385,8 +1385,9 @@ final class ChessTrainer: @unchecked Sendable {
 
     /// Per-move smoothing mass δ: in `.perMove` mode every non-played legal
     /// move's target, until the total `δ·(n − 1)` reaches
-    /// `policyLabelSmoothingPerMoveCap`. Also the played move's floor in the
-    /// complement target. Fed each step as a scalar placeholder.
+    /// `policyLabelSmoothingPerMoveCap`. The played move's floor in the
+    /// complement target is that same per-alternative mass. Fed each step as
+    /// a scalar placeholder.
     var policyLabelSmoothingPerMove: Float
 
     /// Cap on the per-move mode's total smoothing mass; above it the capped

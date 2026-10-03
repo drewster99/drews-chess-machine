@@ -171,6 +171,16 @@ the deviations and decisions noted below.
     mirror: the played move (the one legal move outside the complement's target set)
     gets the per-move floor `min(δ, cap)`; the other legal moves share the rest equally.
     The negative branch's equilibrium is then p(played) → δ instead of ε/|legal|.
+  - **Deviation (2026-10-02 review):** the `min(δ, cap)` floor did not shrink with the
+    number of legal moves, so once δ reached 1/n the played move tied or outranked every
+    alternative (δ 0.05 ties at n = 20 and wins above it; δ 0.03 wins from n = 34) — a
+    "this move was bad" sample then trained the bad move up. Latent at the default δ
+    (inverts only above 302 legal moves), and no run used per-move mode. The floor is now
+    the positive target's own per-alternative mass, `min(δ, cap/(n − 1))`: identical to
+    `min(δ, cap)` wherever δ·(n − 1) ≤ cap, and strictly below every alternative across
+    the declared ranges (owner approved, including updating the test that pinned the old
+    floor). Pinned by `testPerMoveComplementNeverFavoursThePlayedMove` and
+    `testPerMoveComplementFloorEqualsThePositivePerAlternativeMass`.
   - Rows with no legal moves (impossible in practice) are handled the way the
     fixed-total form handles them: |legal| clamped at 1, so the target is finite.
 - Tests: target sums to exactly 1 for every legal count 1…218; per-move mass equals δ
