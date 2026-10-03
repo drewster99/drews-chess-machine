@@ -9,6 +9,12 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-02 CDT — Config D removed
+
+- The experimental `--bf16-cast-in-forward` mode ("config D": fp32-stored weight and BN variables cast to bf16 in the forward pass, optimizer on the fp32 path with no master/working pair) is gone — decision D-10 in `documentation/plans-active/DETERMINISM_RESUME_LINEAGE_PLAN.md`, issue #9. Passing the flag is now an unknown-argument error. Removed: the flag parsing, the GUI trainer wiring, `TrainerHyperparameters`/`ChessTrainer` parameters, and in `ChessNetwork` `bf16CastInForward`, `bf16CastActive`, `weightStorageDataType` and `castWeightForForward`. Every variable is created in the compute dtype; batch norm widens its parameters only where it normalizes in a different dtype (the policy pre-block in the fp32 head tail), exactly as before.
+- The standard path is unchanged bit for bit: new `StandardPathForwardPinTests` pins forward-pass output fingerprints (bf16 mixed and fp32 head tails, fp32) recorded from the build before the removal.
+- Tests: the config-D case in `HeadNumericsTailTests` (now `testHeadOutputsAreFP32UnderTrainingMode`) and the config-D sweeps in `MacOS27NaNIsolationTests` were removed, as the decision approved; the production-config sweep there lost its now-meaningless config-D switch.
+
 ## 2026-10-02 CDT — Headless runs check their outputs before training
 
 - **`--output` never silently replaces an earlier run's results.** GUI `--train`, `--replay-corpus` and `--train-vs-uci` check the destination at launch (`CliResultsOutput.preflight`): the folder must exist and be writable, a folder or link at the path is refused, and an existing file is refused unless the new `--overwrite-output` flag is passed — and then only that very file is replaced. If something appears at, or replaces, the destination during the run, it is left untouched and the results go to `<name>-2.<ext>` (…) with an `[ALARM]`. `CliTrainingRecorder.writeJSON(to:)` is now a regular-file-only replace through `FileSafety`.

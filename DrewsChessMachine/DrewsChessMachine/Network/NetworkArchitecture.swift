@@ -405,7 +405,7 @@ enum ComputeDataType: String, Codable, CaseIterable, Sendable, Hashable {
     /// min normal ≈ 6.1e-5). ANE-native, so inference may run faster than
     /// bf16; training carries no loss scaling here, so small gradients can
     /// underflow to zero in the fp16 forward/backward even though the
-    /// optimizer keeps fp32 masters (see `weightStorageDataType`).
+    /// optimizer keeps fp32 masters (see `ChessTrainer`'s optimizer).
     case float16
 }
 

@@ -173,7 +173,7 @@ computation of the loss + auxiliary terms**. Captured by the two known-failing
 | Workaround | Where | Default | Purpose |
 |---|---|---|---|
 | Split trainable working-sync into its own pass | `ChessTrainer.splitWorkingWeightSync` | **on** | The §1 fix — eliminates the fused dual-write stomp |
-| Config-D: store fp32, cast to bf16 in forward (no masters) | `ChessNetwork.bf16CastInForward` / `--bf16-cast-in-forward` | off (experimental) | Alternative to the master/working path; sidesteps the dual-write differently |
+| ~~Config-D: store fp32, cast to bf16 in forward (no masters)~~ **Removed 2026-10-02** (decision D-10, issue #9) | was `ChessNetwork.bf16CastInForward` / `--bf16-cast-in-forward` | — | Was an alternative to the master/working path that sidestepped the dual-write differently; the split working-sync above is the shipped fix, and a second storage/optimizer path would have needed its own lineage field, resume check and determinism-harness variant |
 | Opt out of auto layout conversion | `disableAutoLayoutConversion()` | off | §2 A/B probe |
 | Force `reducedPrecisionFastMath = .none` | `reducedPrecisionFastMathRaw` | off (leave default) | §3 A/B probe |
 | Continue training in **fp32** on resume | Auto-resume sheet `loadAsFloat32` (→ `forceFloat32` load path) | offered | Escape hatch: bf16 is unstable on this beta; fp32 weights load losslessly |

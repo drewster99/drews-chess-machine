@@ -953,19 +953,9 @@ final class SessionController {
             // The trainer forks champion weights, so its net must match the
             // champion's architecture.
             let trainerArch = network?.network.arch ?? .current
-            // Experimental config-D opt-in (`--bf16-cast-in-forward`): for bf16
-            // models, store weights fp32 and cast to bf16 in the forward instead
-            // of the bf16-working-variable + fp32-master path — the macOS-27-beta
-            // bf16-divergence workaround. No-op for fp32 archs.
-            let bf16CastInForward = trainerArch.computeDataType == .bFloat16
-                && CommandLine.arguments.contains("--bf16-cast-in-forward")
-            if bf16CastInForward {
-                SessionLogger.shared.log("[APP] --bf16-cast-in-forward: trainer using config D (fp32 weight storage, bf16 cast-in-forward)")
-            }
             let t = try ChessTrainer(
                 hyperparameters: hyperparameters,
-                arch: trainerArch,
-                bf16CastInForward: bf16CastInForward
+                arch: trainerArch
             )
             trainer = t
             SessionLogger.shared.logArchitecture(
