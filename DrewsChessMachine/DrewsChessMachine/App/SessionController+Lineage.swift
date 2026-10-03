@@ -67,7 +67,8 @@ extension SessionController {
     /// Begin (or continue) the lineage segment for a Play-and-Train start.
     /// Call once the trainer holds its starting state and the run's stats
     /// box exists; `resumed` is the loaded session being resumed, if any.
-    func beginLineageSegment(mode: TrainingStartMode, trainer: ChessTrainer, resumed: LoadedSession?) throws {
+    func beginLineageSegment(mode: TrainingStartMode, trainer: ChessTrainer, resumed: LoadedSession?,
+                             behaviorFingerprint: BehaviorFingerprint.Record) throws {
         let counts = parallelWorkerStatsBox?.snapshot()
         let start: LineageTracker.Start?
         switch mode {
@@ -99,7 +100,7 @@ extension SessionController {
             if let resumed {
                 let gaps = Self.guiResumeGaps(
                     resumed: resumed, runningPolicyTailPrecision: trainer.policyTailPrecision,
-                    runningBuild: .current, runningDevice: .current)
+                    runningBuild: .current, runningDevice: .current, runningFingerprint: behaviorFingerprint)
                 let exactness = ResumeExactness.resume(of: resumed.trainerFile.lineageParent, gaps: gaps)
                 SessionLogger.shared.log(exactness.logLine)
                 checkpoint?.runResumeExactness = exactness
@@ -155,7 +156,8 @@ extension SessionController {
     static func guiResumeGaps(resumed: LoadedSession,
                               runningPolicyTailPrecision: ChessNetwork.PolicyTailPrecision,
                               runningBuild: LineageRecord.Build,
-                              runningDevice: LineageRecord.Device) -> [ResumeGap] {
+                              runningDevice: LineageRecord.Device,
+                              runningFingerprint: BehaviorFingerprint.Record) -> [ResumeGap] {
         let lineage = resumed.trainerFile.safetensorsProvenance?.lineage
         var gaps: [ResumeGap] = []
         if resumed.state.arenaSecondsSinceLastArena == nil {
@@ -172,7 +174,10 @@ extension SessionController {
         }
         if let record = lineage?.record {
             if record.parameters == nil { gaps.append(.params) }
-            gaps += ResumeGap.environmentGaps(writtenBy: record, runningBuild: runningBuild, runningDevice: runningDevice)
+            let environment = ResumeGap.environmentGaps(writtenBy: record, runningBuild: runningBuild,
+                                                        runningDevice: runningDevice, runningFingerprint: runningFingerprint)
+            for line in environment.logLines { SessionLogger.shared.log(line) }
+            gaps += environment.gaps
         }
         return gaps
     }
@@ -252,7 +257,19 @@ extension SessionController {
             segmentPositions: positions,
             corpus: nil,
             parameters: try LineageRecord.Parameters(values: TrainingParameters.shared.snapshot().rawValueMap()),
-            rng: LineageRecord.RNG(dropoutPhiloxState: dropoutPhiloxState, streams: try runStreamsForSave(dropoutStreamState: dropoutStreamState)))
+            rng: LineageRecord.RNG(dropoutPhiloxState: dropoutPhiloxState,
+                                   streams: try runStreamsForSave(dropoutStreamState: dropoutStreamState),
+                                   behaviorFingerprint: try behaviorFingerprintForSave(dropoutStreamState: dropoutStreamState)))
+    }
+
+    /// The behavior fingerprint for a save that carries trainer state (the
+    /// run's, computed at its start); nil for one that does not.
+    private func behaviorFingerprintForSave(dropoutStreamState: DCMRandom?) throws -> BehaviorFingerprint.Record? {
+        guard dropoutStreamState != nil else { return nil }
+        guard let fingerprint = runBehaviorFingerprint else {
+            throw LineageSegmentError.noSegment("a save with trainer state before the run's behavior fingerprint")
+        }
+        return fingerprint
     }
 
     /// The run's streams for a save that carries trainer state; nil for one

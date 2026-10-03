@@ -16,6 +16,7 @@ final class GuiResumeGapsTests: XCTestCase {
 
     private let arch = NetworkArchitecture.current
     private let savedPrecision = ChessNetwork.PolicyTailPrecision.float32FromPreBatchNorm
+    private static let fingerprint = BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "ab")
 
     private func trainerWeights() -> [[Float]] {
         arch.weightTensorPlan().enumerated().map { i, spec in
@@ -39,7 +40,8 @@ final class GuiResumeGapsTests: XCTestCase {
             segmentGames: 2, segmentPositions: 120, corpus: nil,
             parameters: try LineageRecord.Parameters(values: ["learning_rate": .double(0.0005)]),
             rng: LineageRecord.RNG(dropoutPhiloxState: try DropoutPhiloxState(words: [1, 2, 3, 4, 5, 6, 7]),
-                                   streams: withStreams ? streams : nil))
+                                   streams: withStreams ? streams : nil,
+                                   behaviorFingerprint: Self.fingerprint))
         let data = try SafetensorsModelIO.encode(
             modelID: "20261002-1-GUIR", createdAtUnix: 1_790_000_060,
             metadata: ModelCheckpointMetadata.trainerFile(
@@ -78,7 +80,7 @@ final class GuiResumeGapsTests: XCTestCase {
                       running: ChessNetwork.PolicyTailPrecision? = nil) -> [String] {
         let gaps = SessionController.guiResumeGaps(
             resumed: resumed, runningPolicyTailPrecision: running ?? savedPrecision,
-            runningBuild: .current, runningDevice: .current)
+            runningBuild: .current, runningDevice: .current, runningFingerprint: Self.fingerprint)
         return ResumeExactness.resume(of: resumed.trainerFile.lineageParent, gaps: gaps).tokens
     }
 

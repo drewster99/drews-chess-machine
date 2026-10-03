@@ -77,21 +77,54 @@ enum ResumeGap: String, CaseIterable, Sendable {
         }
     }
 
-    /// `build` / `os` when the process differs from the one that wrote
-    /// `record` (plan C1 #33): any difference in git hash, dirty flag, build
-    /// number or OS version can change the trajectory.
+    /// How the resuming process compares with the one that wrote `record`
+    /// (plan C1 #33): `gaps` holds `build` / `os` when the build (git hash,
+    /// dirty flag, build number) or OS version differs **and** the behavior
+    /// fingerprints do not match — a different fingerprint, a saved file
+    /// without one, or one of another recipe (`BehaviorFingerprint`). A
+    /// change whose fingerprint matches computes what the saved run computed
+    /// and is not a gap. `logLines` reports every change either way.
     static func environmentGaps(writtenBy record: LineageRecord,
                                 runningBuild: LineageRecord.Build,
-                                runningDevice: LineageRecord.Device) -> [ResumeGap] {
-        var gaps: [ResumeGap] = []
-        if record.build.gitHash != runningBuild.gitHash
+                                runningDevice: LineageRecord.Device,
+                                runningFingerprint: BehaviorFingerprint.Record) -> EnvironmentComparison {
+        let buildChanged = record.build.gitHash != runningBuild.gitHash
             || record.build.gitDirty != runningBuild.gitDirty
-            || record.build.buildNumber != runningBuild.buildNumber {
-            gaps.append(.build)
+            || record.build.buildNumber != runningBuild.buildNumber
+        let osChanged = record.device.osVersion != runningDevice.osVersion
+        let saved = record.rng.behaviorFingerprint
+        let fingerprintMatches = saved?.matches(runningFingerprint) == true
+        let fingerprintText: String
+        if fingerprintMatches {
+            fingerprintText = "behavior fingerprint matches"
+        } else if let saved {
+            fingerprintText = saved.recipe == runningFingerprint.recipe
+                ? "behavior fingerprint differs"
+                : "behavior fingerprint recipe \(saved.recipe) cannot be compared with recipe \(runningFingerprint.recipe)"
+        } else {
+            fingerprintText = "the checkpoint records no behavior fingerprint"
         }
-        if record.device.osVersion != runningDevice.osVersion { gaps.append(.os) }
-        return gaps
+        var gaps: [ResumeGap] = []
+        var logLines: [String] = []
+        if buildChanged {
+            logLines.append("[RESUME] build changed (\(record.build.buildNumber) \(record.build.gitHash)"
+                + "\(record.build.gitDirty ? "+dirty" : "") → \(runningBuild.buildNumber) \(runningBuild.gitHash)"
+                + "\(runningBuild.gitDirty ? "+dirty" : "")), \(fingerprintText)")
+            if !fingerprintMatches { gaps.append(.build) }
+        }
+        if osChanged {
+            logLines.append("[RESUME] OS changed (\(record.device.osVersion) → \(runningDevice.osVersion)), \(fingerprintText)")
+            if !fingerprintMatches { gaps.append(.os) }
+        }
+        return EnvironmentComparison(gaps: gaps, logLines: logLines)
     }
+}
+
+/// The build/OS comparison of a resume (`ResumeGap.environmentGaps`): the
+/// gaps it adds and the lines it logs.
+struct EnvironmentComparison: Equatable, Sendable {
+    let gaps: [ResumeGap]
+    let logLines: [String]
 }
 
 /// The outcome of a resume, as every path reports it.

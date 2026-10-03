@@ -1217,6 +1217,16 @@ extension SessionController {
             // - `.continueAfterStop` and `.newSessionKeepTrainer`:
             //   keep the trainer's existing ID — its weights
             //   weren't touched, so the lineage is continuous.
+            // The process's behavior fingerprint for this trainer's numerics:
+            // every trainer-state save records it, and a resume under another
+            // build or OS compares against it (cached per process).
+            let fingerprintResult: Result<BehaviorFingerprint.Record, Error>
+            do {
+                fingerprintResult = .success(try await BehaviorFingerprint.compute(
+                    for: .init(arch: trainer.arch, policyTailPrecision: trainer.policyTailPrecision)))
+            } catch {
+                fingerprintResult = .failure(error)
+            }
             let lineageStart: Result<LineageTracker, Error> = await MainActor.run {
                 SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
                 switch mode {
@@ -1244,7 +1254,11 @@ extension SessionController {
                 // holds its starting state and the stats box exists.
                 let segmentResult: Result<LineageTracker, Error>
                 do {
-                    try beginLineageSegment(mode: mode, trainer: trainer, resumed: pendingLoadedSession)
+                    let fingerprint = try fingerprintResult.get()
+                    SessionLogger.shared.log("[RUN] behavior fingerprint recipe=\(fingerprint.recipe) sha256=\(fingerprint.sha256)")
+                    runBehaviorFingerprint = fingerprint
+                    try beginLineageSegment(mode: mode, trainer: trainer, resumed: pendingLoadedSession,
+                                            behaviorFingerprint: fingerprint)
                     if let tracker = lineageTracker {
                         segmentResult = .success(tracker)
                     } else {

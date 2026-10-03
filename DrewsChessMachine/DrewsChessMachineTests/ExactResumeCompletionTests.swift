@@ -120,16 +120,23 @@ final class ExactResumeCompletionTests: XCTestCase {
         }
     }
 
+    /// A changed build or OS is a gap when the checkpoint has no behavior
+    /// fingerprint to compare (this fixture records none); see
+    /// `BehaviorFingerprintTests` for the fingerprinted cases.
     func testAChangedBuildOrOSIsAGap() throws {
         let record = try LineageRecord.forTests(trainerCompletedSteps: 1, corpus: nil)
-        XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: record, runningBuild: record.build, runningDevice: record.device), [])
+        let running = BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "00")
+        XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: record, runningBuild: record.build, runningDevice: record.device,
+                                                 runningFingerprint: running).gaps, [])
         let otherBuild = LineageRecord.Build(buildNumber: record.build.buildNumber + 1, gitHash: record.build.gitHash,
                                              gitBranch: record.build.gitBranch, gitDirty: record.build.gitDirty)
-        XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: record, runningBuild: otherBuild, runningDevice: record.device), [.build])
+        XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: record, runningBuild: otherBuild, runningDevice: record.device,
+                                                 runningFingerprint: running).gaps, [.build])
         let otherOS = LineageRecord.Device(hardwareModel: record.device.hardwareModel, cpu: record.device.cpu,
                                            isVirtualMachine: record.device.isVirtualMachine,
                                            osVersion: record.device.osVersion + " (later)", gpu: record.device.gpu)
-        XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: record, runningBuild: record.build, runningDevice: otherOS), [.os])
+        XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: record, runningBuild: record.build, runningDevice: otherOS,
+                                                 runningFingerprint: running).gaps, [.os])
     }
 
     func testDropoutGapFollowsWhatTheResumeRestores() {

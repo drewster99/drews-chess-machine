@@ -1149,8 +1149,12 @@ enum CorpusReplayRunner {
                     resumeGaps.append(.rngSampler)
                 }
                 if parentRecord.parameters == nil { resumeGaps.append(.params) }
-                resumeGaps += ResumeGap.environmentGaps(
-                    writtenBy: parentRecord, runningBuild: .current, runningDevice: .current)
+                let environment = ResumeGap.environmentGaps(
+                    writtenBy: parentRecord, runningBuild: .current, runningDevice: .current,
+                    runningFingerprint: try await BehaviorFingerprint.compute(
+                        for: .init(arch: arch, policyTailPrecision: config.policyTailPrecision)))
+                for line in environment.logLines { emit(line) }
+                resumeGaps += environment.gaps
             } else {
                 // Written before lineage: no streams, feed phase, shard
                 // hashes or parameter snapshot to continue from.
@@ -1420,7 +1424,10 @@ enum CorpusReplayRunner {
                         feedAheadPositions: feedAheadPositions, feedPerStep: perStepFeed,
                         shardSHA256: shardSHA256),
                     parameters: p.lineageParameters,
-                    rng: LineageRecord.RNG(dropoutPhiloxState: snapshot.dropoutRNG.philoxState, streams: streams))
+                    rng: LineageRecord.RNG(
+                        dropoutPhiloxState: snapshot.dropoutRNG.philoxState, streams: streams,
+                        behaviorFingerprint: try await BehaviorFingerprint.compute(
+                            for: .init(arch: arch, policyTailPrecision: trainer.policyTailPrecision))))
                 encoded = try SafetensorsModelIO.encode(
                     modelID: config.runModelID,
                     createdAtUnix: Int64(saveDate.timeIntervalSince1970),

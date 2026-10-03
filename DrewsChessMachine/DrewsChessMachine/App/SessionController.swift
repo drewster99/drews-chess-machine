@@ -179,6 +179,10 @@ final class SessionController {
     @ObservationIgnored var lineageTracker: LineageTracker?
     /// Fed counts the lineage segment carried across stats boxes.
     @ObservationIgnored var lineageFedCarry = LineageFedCarry()
+    /// This process's behavior fingerprint for the running trainer's
+    /// numerics (`BehaviorFingerprint`), set at Play-and-Train start and
+    /// recorded by every trainer-state save.
+    @ObservationIgnored var runBehaviorFingerprint: BehaviorFingerprint.Record?
     /// Where the champion's current weights came from; nil when there is no
     /// champion, or its weights are still awaiting a load.
     @ObservationIgnored var championOrigin: ChampionOrigin?

@@ -514,36 +514,48 @@ struct LineageRecord: Codable, Equatable, Sendable {
         /// own record says how they were drawn, and for a run continuing a
         /// file written before this field.
         let initialization: ModelInitRecord?
+        /// The writing process's behavior fingerprint for the saved trainer's
+        /// numerics (`BehaviorFingerprint`): a resume under another build or
+        /// OS whose fingerprint matches it is not a `build` / `os` gap. Null
+        /// for a record with no trainer state behind it.
+        let behaviorFingerprint: BehaviorFingerprint.Record?
 
         enum CodingKeys: String, CodingKey {
             case dropoutPhiloxState = "dropout_philox_state"
             case streams
             case initSeed = "init_seed"
             case initScheme = "init_scheme"
+            case behaviorFingerprint = "behavior_fingerprint"
         }
 
-        /// The random state a save captures. `initialization` is the run's,
-        /// which `LineageTracker` fills in (`withInitialization`).
-        init(dropoutPhiloxState: DropoutPhiloxState?, streams: RunStreams?) {
-            self.init(dropoutPhiloxState: dropoutPhiloxState, streams: streams, initialization: nil)
+        /// The random state a save captures, with the fingerprint of the
+        /// process that captured it. `initialization` is the run's, which
+        /// `LineageTracker` fills in (`withInitialization`).
+        init(dropoutPhiloxState: DropoutPhiloxState?, streams: RunStreams?,
+             behaviorFingerprint: BehaviorFingerprint.Record?) {
+            self.init(dropoutPhiloxState: dropoutPhiloxState, streams: streams, initialization: nil,
+                      behaviorFingerprint: behaviorFingerprint)
         }
 
         private init(dropoutPhiloxState: DropoutPhiloxState?, streams: RunStreams?,
-                     initialization: ModelInitRecord?) {
+                     initialization: ModelInitRecord?, behaviorFingerprint: BehaviorFingerprint.Record?) {
             self.dropoutPhiloxState = dropoutPhiloxState
             self.streams = streams
             self.initialization = initialization
+            self.behaviorFingerprint = behaviorFingerprint
         }
 
         /// This state with the run's init seed and scheme.
         func withInitialization(_ initialization: ModelInitRecord?) -> RNG {
-            RNG(dropoutPhiloxState: dropoutPhiloxState, streams: streams, initialization: initialization)
+            RNG(dropoutPhiloxState: dropoutPhiloxState, streams: streams, initialization: initialization,
+                behaviorFingerprint: behaviorFingerprint)
         }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             dropoutPhiloxState = try c.decode(DropoutPhiloxState?.self, forKey: .dropoutPhiloxState)
             streams = try c.decode(RunStreams?.self, forKey: .streams)
+            behaviorFingerprint = try c.decode(BehaviorFingerprint.Record?.self, forKey: .behaviorFingerprint)
             let seedText = try c.decode(String?.self, forKey: .initSeed)
             let scheme = try c.decode(String?.self, forKey: .initScheme)
             switch (seedText, scheme) {
@@ -573,13 +585,14 @@ struct LineageRecord: Codable, Equatable, Sendable {
             // number in every reader.
             try c.encode(initialization.map { String($0.initSeed) }, forKey: .initSeed)
             try c.encode(initialization?.scheme, forKey: .initScheme)
+            try c.encode(behaviorFingerprint, forKey: .behaviorFingerprint)
         }
 
         /// A record with no training run behind it (a mint, a derive, a
         /// model-only save before any training), with the dropout state of
         /// the trainer snapshot it was written with (nil when there is none).
         static func withoutRunStreams(dropoutPhiloxState: DropoutPhiloxState?) -> RNG {
-            RNG(dropoutPhiloxState: dropoutPhiloxState, streams: nil)
+            RNG(dropoutPhiloxState: dropoutPhiloxState, streams: nil, behaviorFingerprint: nil)
         }
     }
 
