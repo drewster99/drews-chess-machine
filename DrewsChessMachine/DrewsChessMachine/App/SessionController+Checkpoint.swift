@@ -398,10 +398,19 @@ extension SessionController {
                 periodicSaveInFlight = false
             }
 
-            // Pause self-play briefly so the champion export is
-            // race-free, snapshot weights, then resume. Uses the
-            // bounded variant so a session end mid-save doesn't
-            // spin forever waiting for workers that have exited.
+            // One consistent cut. Self-play is paused for the champion
+            // export and stays paused while training is paused for the
+            // trainer export, and the run's record — the replay buffer's
+            // sampler, the next game serial, the fed counts — is read
+            // under both pauses, so a resume that continues those streams
+            // continues them from the instant the trainer state was taken.
+            // Releasing self-play earlier let new games take serials and
+            // feed the buffer before the record read them. Training is
+            // released once the record is built; self-play once the
+            // replay buffer is written when the save includes it (the
+            // written buffer must be the one the record describes), right
+            // after the record otherwise. Bounded waits, so a session end
+            // mid-save cannot leave the save waiting on exited workers.
             let selfPlayAcquired = await selfPlayGate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
             guard selfPlayAcquired else {
                 clearInFlight()
@@ -409,6 +418,11 @@ extension SessionController {
                 SessionLogger.shared.log("[CHECKPOINT] Save session aborted at self-play pause timeout")
                 return
             }
+            // Every exit from here on releases self-play through this
+            // hold, which resumes the gate once whichever path gets there
+            // first.
+            let selfPlayHold = WorkerPauseGateHold(selfPlayGate)
+            defer { selfPlayHold.release() }
             if let dropped = activeSelfPlayPauseDrops?.value {
                 SessionLogger.shared.log("[CHECKPOINT] dropped \(dropped.games) in-flight games (\(dropped.plies) plies) at the save's self-play pause; the save holds none of them")
             }
@@ -424,7 +438,6 @@ extension SessionController {
             // The champion file's record and step describe the exported
             // weights, so their origin is read in the same pause.
             let exportedChampionOrigin = championOrigin
-            selfPlayGate.resume()
 
             if let championError {
                 clearInFlight()
@@ -433,7 +446,6 @@ extension SessionController {
                 return
             }
 
-            // Pause training briefly to snapshot trainer weights.
             let trainingAcquired = await trainingGate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
             guard trainingAcquired else {
                 clearInFlight()
@@ -444,8 +456,6 @@ extension SessionController {
             // The complete resumable trainer state: trainables + BN (fp32
             // masters under mixed precision), momentum velocity, and the
             // completed-step clock + schedule read under the same pause.
-            // Caller is responsible for pausing both gates, which we did
-            // above.
             let trainerExport: Result<TrainerResumeSnapshot, Error>
             do {
                 trainerExport = .success(try await Task.detached(priority: .userInitiated) {
@@ -454,13 +464,12 @@ extension SessionController {
             } catch {
                 trainerExport = .failure(error)
             }
-            trainingGate.resume()
-
             let trainerSnapshot: TrainerResumeSnapshot
             switch trainerExport {
             case .success(let snapshot):
                 trainerSnapshot = snapshot
             case .failure(let trainerError):
+                trainingGate.resume()
                 clearInFlight()
                 checkpoint?.setCheckpointStatus("Save failed (trainer export): \(trainerError.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session failed at trainer export: \(trainerError.localizedDescription)")
@@ -468,25 +477,40 @@ extension SessionController {
             }
             let trainerWeights = trainerSnapshot.trainerWeights
             // The run's lineage at this save, for the session's trainer
-            // file and session.json; the champion file's own record and
-            // training step come from where its weights came from.
+            // file and session.json, read under both pauses; the champion
+            // file's own record and training step come from where its
+            // weights came from.
             let saveDate = Date()
-            let lineage: LineageRecord
-            let championLineage: LineageRecord
-            let championMetadata: ModelCheckpointMetadata
+            let lineageResult: Result<(run: LineageRecord, champion: LineageRecord, championMetadata: ModelCheckpointMetadata), Error>
             do {
-                lineage = try lineageRecordForSave(
+                let run = try lineageRecordForSave(
                     at: saveDate, trainerCompletedSteps: trainerSnapshot.schedule.completedTrainSteps,
                     dropoutPhiloxState: trainerSnapshot.dropoutRNG.philoxState,
                     dropoutStreamState: try await trainer.dropoutStreamState())
-                championLineage = try Self.championFileLineageRecord(origin: exportedChampionOrigin, at: saveDate)
-                championMetadata = ModelCheckpointMetadata(
+                let champion = try Self.championFileLineageRecord(origin: exportedChampionOrigin, at: saveDate)
+                let championMetadata = ModelCheckpointMetadata(
                     creator: diskTag,
                     trainingStep: try Self.championFileTrainingStep(origin: exportedChampionOrigin),
                     parentModelID: "",
                     notes: "Session checkpoint (\(diskTag))"
                 )
+                lineageResult = .success((run, champion, championMetadata))
             } catch {
+                lineageResult = .failure(error)
+            }
+            trainingGate.resume()
+            if bufferForSave == nil {
+                selfPlayHold.release()
+            }
+            let lineage: LineageRecord
+            let championLineage: LineageRecord
+            let championMetadata: ModelCheckpointMetadata
+            switch lineageResult {
+            case .success(let records):
+                lineage = records.run
+                championLineage = records.champion
+                championMetadata = records.championMetadata
+            case .failure(let error):
                 clearInFlight()
                 checkpoint?.setCheckpointStatus("Save failed (lineage): \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session failed building its lineage record: \(error.localizedDescription)")
@@ -526,7 +550,8 @@ extension SessionController {
                         replayBuffer: bufferForSave,
                         chartSnapshot: chartSnapshotForSave,
                         trigger: diskTag,
-                        sessionsDirectory: sessionsDirectory
+                        sessionsDirectory: sessionsDirectory,
+                        onReplayBufferWritten: { selfPlayHold.release() }
                     )
                     return .success(url)
                 } catch {

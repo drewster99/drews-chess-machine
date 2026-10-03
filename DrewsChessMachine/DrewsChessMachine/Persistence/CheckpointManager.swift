@@ -1361,6 +1361,13 @@ enum CheckpointManager {
     /// weights at the save passes the run's record without its trainer
     /// state.
     ///
+    /// `onReplayBufferWritten` runs as soon as the replay buffer file is
+    /// written (and before the save's verification re-reads it), for a
+    /// caller that holds self-play paused so the written buffer is the one
+    /// its record describes and can let self-play go as early as possible;
+    /// it does not run when the save writes no buffer or fails before the
+    /// write completes.
+    ///
     /// `sessionsDirectory` is the canonical `Sessions/` folder in the
     /// app; tests pass a temporary folder.
     static func saveSession(
@@ -1380,7 +1387,8 @@ enum CheckpointManager {
         chartSnapshot: ChartCoordinatorSnapshot? = nil,
         trigger: String,
         at date: Date = Date(),
-        sessionsDirectory: URL = CheckpointPaths.sessionsDir
+        sessionsDirectory: URL = CheckpointPaths.sessionsDir,
+        onReplayBufferWritten: (@Sendable () -> Void)? = nil
     ) async throws -> URL {
         // The trainer file and session.json carry the run's record; the
         // champion file carries its own weights' record.
@@ -1520,6 +1528,7 @@ enum CheckpointManager {
             } catch {
                 throw CheckpointManagerError.writeFailed(bufferTmpURL, error)
             }
+            onReplayBufferWritten?()
         }
 
         // Optional chart-data dump. Two plain-JSON files

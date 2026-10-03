@@ -59,6 +59,36 @@ extension SessionController {
         // (cancellation, sync errors) don't — clearing here keeps
         // all exit paths honest.
         _ = overrideBox.consume()
+
+        // --- Wait out an in-flight save, then claim the arena ---
+        //
+        // A session save holds the pause gates in a set order (self-play,
+        // then training, both through its record) and a gate's `resume()`
+        // is not counted, so an arena pausing and resuming the same gates
+        // mid-save would release the save's hold and break its cut; it
+        // would also count an arena start into the save's record. Saves
+        // refuse to start while an arena runs, so the arena waits for one
+        // already running, then marks itself active with no suspension
+        // point between the check and the claim — no save can start in
+        // between.
+        if checkpoint?.checkpointSaveInFlight == true {
+            SessionLogger.shared.log("[ARENA] waiting for an in-flight session save to finish before starting")
+            while checkpoint?.checkpointSaveInFlight == true {
+                do {
+                    try await Task.sleep(for: .milliseconds(50))
+                } catch {
+                    SessionLogger.shared.log("[ARENA] cancelled while waiting for a session save to finish; no arena ran")
+                    return
+                }
+            }
+        }
+        // Mark arena active. Arena-active suppresses the candidate test
+        // probe for the duration so probe and arena don't race on the
+        // candidate inference network, and refuses manual / periodic /
+        // SIGUSR2 saves; isArenaRunning is the mirror the UI reads to
+        // disable the Run Arena button and adjust the busy label.
+        arenaFlag.set()
+        isArenaRunning = true
         let (steps, totalGames, startTime, arenaStartTrainingSnapshot) = await beginArenaRun(
             trainer: trainer, champion: champion, tBox: tBox, arenaFlag: arenaFlag
         )
@@ -370,6 +400,19 @@ extension SessionController {
         // end without needing to re-read them from the live
         // network (which would race against self-play again).
         var promotedChampionWeights: [[Float]] = []
+        // The run's record at the promoted state, built under the
+        // promotion's pauses (below): the promotion save's trainer file and
+        // session.json record, and — without trainer state — the promoted
+        // champion's origin. Nil until a promotion succeeds.
+        var promotionRecord: Result<LineageRecord, Error>?
+        // Read once: whether the post-promotion save writes the replay
+        // buffer, which decides how long self-play stays paused.
+        let promotionSaveIncludesReplayBuffer = TrainingParameters.shared.sessionSaveIncludeReplayBuffer
+        // Self-play's promotion pause, released right after the pause
+        // block — or, when the post-promotion save writes the replay
+        // buffer, once that buffer is written, so the written buffer is the
+        // one the save's record describes.
+        var promotionSelfPlayHold: WorkerPauseGateHold?
         if shouldPromote {
             // Pause both self-play and training, then copy the
             // promoted candidate into both the champion and the live
@@ -377,6 +420,7 @@ extension SessionController {
             // exact promoted weights rather than letting training
             // continue from a later, unvalidated post-arena state.
             await selfPlayGate.pauseAndWait()
+            promotionSelfPlayHold = WorkerPauseGateHold(selfPlayGate)
             await trainingGate.pauseAndWait()
             if !Task.isCancelled {
                 do {
@@ -445,12 +489,34 @@ extension SessionController {
                     trainingBox?.resetRollingWindows()
                     trainingAlarm?.resetStreaks()
                     trainingAlarm?.clear()
+                    // The promotion's lineage bookkeeping, under both
+                    // pauses so it is one cut with the rewound trainer: the
+                    // segment banks its fed counts with the stats reset,
+                    // and the run's record reads the sampler, the game
+                    // serial and the fed counts as they stand here.
+                    resetSelfPlayGameStatsForNewChampion()
+                    let record: Result<LineageRecord, Error>
+                    do {
+                        record = .success(try lineageRecordForSave(
+                            at: Date(), trainerCompletedSteps: trainerSnapshotCompletedSteps,
+                            dropoutPhiloxState: trainerSnapshotDropoutState,
+                            dropoutStreamState: try await trainer.dropoutStreamState()))
+                    } catch {
+                        record = .failure(error)
+                    }
+                    promotionRecord = record
+                    recordPromotedChampionOrigin(championID: champion.identifier,
+                                                 trainerCompletedSteps: trainerSnapshotCompletedSteps,
+                                                 record: record)
                 } catch {
                     trainingBox?.recordError("Promotion copy failed: \(error.localizedDescription)")
                 }
             }
             trainingGate.resume()
-            selfPlayGate.resume()
+        }
+        let promotionSaveWillRun = promoted && Self.autosaveSessionsOnPromote && !promotedChampionWeights.isEmpty
+        if !(promotionSaveWillRun && promotionSaveIncludesReplayBuffer) {
+            promotionSelfPlayHold?.release()
         }
 
         // Append to history and clear arena state.
@@ -531,33 +597,21 @@ extension SessionController {
             diversity: arenaDiversity.snapshot(),
             extended: extendedSummary
         )
+        // The post-promotion save is marked in flight before the arena is
+        // released, so no manual, periodic or SIGUSR2 save can start in the
+        // gap between the two.
+        if promotionSaveWillRun {
+            checkpoint?.checkpointSaveInFlight = true
+        }
         cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
 
-        // On promotion: reset game-play stats so the display
-        // reflects only the new champion's self-play performance,
-        // and emit a STATS log line so the post-promotion state
-        // is visible in the session log (the fixed STATS ticker
-        // may not fire for up to an hour at this point in the
-        // schedule).
+        // On promotion, emit a STATS log line so the post-promotion state
+        // is visible in the session log (the fixed STATS ticker may not
+        // fire for up to an hour at this point in the schedule). The game
+        // stats were reset under the promotion's pause above.
         if promoted {
-            resetSelfPlayGameStatsForNewChampion()
             let trainerIDStr = trainer.identifier?.description ?? "?"
             let championIDStr = champion.identifier?.description ?? "?"
-            // The champion now holds weights this run trained: every later
-            // champion file, and a later branch, describes them by the run's
-            // record at the promoted trainer state (they were never written
-            // as a file here).
-            let promotionRecord: Result<LineageRecord, Error>
-            do {
-                promotionRecord = .success(try lineageRecordForSave(
-                    at: Date(), trainerCompletedSteps: trainerSnapshotCompletedSteps,
-                    dropoutPhiloxState: nil, dropoutStreamState: nil))
-            } catch {
-                promotionRecord = .failure(error)
-            }
-            recordPromotedChampionOrigin(championID: champion.identifier,
-                                         trainerCompletedSteps: trainerSnapshotCompletedSteps,
-                                         record: promotionRecord)
             SessionLogger.shared.log(
                 "[STATS] post-promote  steps=\(trainingStats?.steps ?? 0) champion=\(championIDStr) trainer=\(trainerIDStr)"
             )
@@ -567,12 +621,14 @@ extension SessionController {
         // writes a full session snapshot using the weights we
         // already captured above under the arena-start training
         // pause and the promotion self-play pause. The detached
-        // task touches no live networks and no pause gates, so
-        // it is safe to run past a session cancel — unstructured
-        // save tasks don't inherit `realTrainingTask`
-        // cancellation, and any post-return gate interaction
-        // here would potentially deadlock against workers that
-        // have already exited their loops.
+        // task touches no live networks and never waits on a pause
+        // gate, so it is safe to run past a session cancel —
+        // unstructured save tasks don't inherit `realTrainingTask`
+        // cancellation, and waiting on a gate here could deadlock
+        // against workers that have already exited their loops. Its
+        // one gate interaction is releasing self-play's promotion
+        // pause once a buffer-included save has written the buffer
+        // (or has failed), which only clears a flag and cannot block.
         //
         // Status row: we publish the "Saving… / Saved" progression
         // via the same `setCheckpointStatus` channel the manual
@@ -584,18 +640,26 @@ extension SessionController {
         // defers the periodic one — which matches the spec: if a
         // post-promotion save already covered the window, the
         // next periodic tick runs a full 4 hours later from now.
-        if promoted && Self.autosaveSessionsOnPromote && !promotedChampionWeights.isEmpty {
+        if promotionSaveWillRun {
+            // Every exit before the detached save releases what the save
+            // held: the in-flight mark and, for a buffer-included save,
+            // self-play.
+            let heldSelfPlay = promotionSelfPlayHold
+            func failBeforeWriting(_ message: String) {
+                checkpoint?.checkpointSaveInFlight = false
+                heldSelfPlay?.release()
+                checkpoint?.setCheckpointStatus(message, kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] \(message)")
+            }
             // One step count for the trainer file's metadata and the save's
             // [LAYER-HEALTH] block.
             guard let championID = champion.identifier?.description,
                   let trainerID = trainer.identifier?.description,
                   let promotionSaveStep = trainingStats?.steps else {
-                let message = "Post-promotion save failed: the champion or the trainer has no model ID, or the run has no step count"
-                checkpoint?.setCheckpointStatus(message, kind: .error)
-                SessionLogger.shared.log("[CHECKPOINT] \(message)")
+                failBeforeWriting("Post-promotion save failed: the champion or the trainer has no model ID, or the run has no step count")
                 return
             }
-            let includeReplayBuffer = TrainingParameters.shared.sessionSaveIncludeReplayBuffer
+            let includeReplayBuffer = promotionSaveIncludesReplayBuffer
             let sessionState = buildCurrentSessionState(
                 championID: championID,
                 trainerID: trainerID,
@@ -621,17 +685,18 @@ extension SessionController {
             )
             let saveDate = Date()
             let createdAtUnix = Int64(saveDate.timeIntervalSince1970)
-            // The run's lineage at the promoted state, for the trainer file
-            // and session.json; the champion file's record and step are the
-            // promoted weights' own (the origin recorded above).
+            // The run's record at the promoted state, built under the
+            // promotion's pauses, for the trainer file and session.json; the
+            // champion file's record and step are the promoted weights' own
+            // (the origin recorded from that same record).
             let promotionLineage: LineageRecord
             let championLineage: LineageRecord
             let championMetadata: ModelCheckpointMetadata
             do {
-                promotionLineage = try lineageRecordForSave(
-                    at: saveDate, trainerCompletedSteps: promotionSaveTrainerStep,
-                    dropoutPhiloxState: trainerSnapshotDropoutState,
-                    dropoutStreamState: try await trainer.dropoutStreamState())
+                guard let promotionRecord else {
+                    preconditionFailure("a promotion that succeeded always built its record")
+                }
+                promotionLineage = try promotionRecord.get()
                 championLineage = try Self.championFileLineageRecord(origin: championOrigin, at: saveDate)
                 championMetadata = ModelCheckpointMetadata(
                     creator: "promote",
@@ -640,9 +705,7 @@ extension SessionController {
                     notes: "Post-arena autosave after promotion"
                 )
             } catch {
-                let message = "Post-promotion save failed (lineage): \(error.localizedDescription)"
-                checkpoint?.setCheckpointStatus(message, kind: .error)
-                SessionLogger.shared.log("[CHECKPOINT] \(message)")
+                failBeforeWriting("Post-promotion save failed (lineage): \(error.localizedDescription)")
                 return
             }
             // Copy captured arrays for clean Sendable semantics
@@ -660,7 +723,6 @@ extension SessionController {
             let chartSnapshotForAutosave = chartCoordinator?.buildSnapshot()
 
             checkpoint?.setCheckpointStatus("Saving session (post-promotion)…", kind: .progress)
-            checkpoint?.checkpointSaveInFlight = true
             checkpoint?.startSlowSaveWatchdog(label: "session save (post-promotion)")
             // Fire-and-forget detached task. The closure captures
             // only Sendable value types (weight arrays, metadata
@@ -691,12 +753,14 @@ extension SessionController {
                         architecture: promotedArch,
                         replayBuffer: bufferForAutosave,
                         chartSnapshot: chartSnapshotForAutosave,
-                        trigger: SessionSaveTrigger.promotionDiskTag
+                        trigger: SessionSaveTrigger.promotionDiskTag,
+                        onReplayBufferWritten: { heldSelfPlay?.release() }
                     )
                     outcome = .success((url, SessionController.savedReplayBufferLogFields(writtenBuffer: bufferForAutosave)))
                 } catch {
                     outcome = .failure(error)
                 }
+                heldSelfPlay?.release()
                 await MainActor.run {
                     switch outcome {
                     case .success(let (url, bufStr)):
@@ -915,8 +979,8 @@ extension SessionController {
 
     /// Open an arena run: pull the trainer's start-of-arena snapshot (and
     /// mirror it into the live training-stats fields), emit the start log
-    /// lines, mark the arena active for the probe / periodic-save / UI
-    /// machinery, anchor the chart's live arena band, and seed the
+    /// lines, tell the periodic-save scheduler an arena began (the caller
+    /// has already marked it active), anchor the chart's live arena band, and seed the
     /// tournament-progress box. Returns the step count, configured game
     /// count, and start time the rest of `runArenaParallel` needs. Split
     /// out so `runArenaParallel`'s body stays under the long-type-check
@@ -938,13 +1002,7 @@ extension SessionController {
 
         logArenaStart(steps: steps, trainer: trainer, champion: champion, startSnapshot: arenaStartTrainingSnapshot)
 
-        // Mark arena active and seed live progress. Arena-active
-        // suppresses the candidate test probe for the duration so
-        // probe and arena don't race on the candidate inference
-        // network. isArenaRunning is @State mirror the UI reads to
-        // disable the Run Arena button and adjust the busy label.
-        arenaFlag.set()
-        isArenaRunning = true
+        // The caller has already marked the arena active.
         // Let the periodic-save scheduler know an arena is in
         // progress. A 4-hour deadline that crosses while an arena
         // runs will be held as a pending fire and only dispatched
