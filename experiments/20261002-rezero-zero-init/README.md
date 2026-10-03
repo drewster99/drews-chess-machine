@@ -1,6 +1,6 @@
 # 2026-10-02 — Zero-init ReZero (α₀ = 0, cap 1.0), no SE
 
-**Status:** queued — launches when no-ReZero seed 1 (`20261002-noSE-noReZero/`) ends.
+**Status:** running since 2026-10-02 20:24 CDT.
 
 ## Question
 
@@ -45,4 +45,25 @@ reach the branch scale the no-ReZero nets chose.
 
 ## Launch record
 
-(filled in at launch)
+- **Launched** 2026-10-02 20:24:30 CDT (session log `dcm_log_20261002-202430.txt`), in the slot
+  freed by no-ReZero seed 1, by the experiment queue.
+- **Build** 2290, git `9a36f9f`, frozen as `FrozenBuilds/DCM-2290-9a36f9f.app` (binary sha256
+  prefix `59228bed24fb`). It is the first build that reads architecture format v6. The comparators
+  ran on build 2275 (`de0f22b`); the engine changes between the two are the zero-init ReZero
+  support itself (explicit `rezero_alpha_cap`), per-move label smoothing (off here: mode
+  `fixed_total`), and Lichess-bot work. Corpus replay's adjudication fix lands after this build,
+  so this run's fed stream matches its comparators.
+- **Run model ID** `20261003-1-NKTv` (parent `20261002-6-SGuE`, the derived starting net).
+- **Command**
+
+```
+"$HOME/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2290-9a36f9f.app/Contents/MacOS/DrewsChessMachine" \
+  --replay-corpus 20260624-192615-w3aA5b \
+  --start-model "$HOME/Library/Application Support/DrewsChessMachine/Models/20260929-test_SE_none-rz0cap1-fresh.safetensors" \
+  --out-model "$HOME/Library/Application Support/DrewsChessMachine/Models/20261002-rezero-zero-init-replay-latest.safetensors" \
+  --parameters experiments/20261002-rezero-zero-init/parameters.json \
+  --epochs 12 --training-step-limit 33000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn
+```
+
+- **Probes** `experiments/probe_loop.sh 20261002-rezero-zero-init experiments/20261002-rezero-zero-init/probes.jsonl`
+  with `PROBE_BIN` set to the same build (build 2275 cannot read format v6).
