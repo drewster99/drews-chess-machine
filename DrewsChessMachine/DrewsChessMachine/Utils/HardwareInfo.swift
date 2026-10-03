@@ -14,6 +14,12 @@ struct HardwareInfo: Sendable, Equatable {
         let physicalCores: Int
     }
 
+    /// `hw.model`: the Mac's model identifier (e.g. `Mac16,8`).
+    let hardwareModel: String?
+    /// `kern.hv_vmm_present`: whether this macOS runs inside a virtual
+    /// machine. Recorded with training runs because a VM's step times are
+    /// not comparable to the host's.
+    let isVirtualMachine: Bool?
     /// `machdep.cpu.brand_string`: the CPU's marketing name.
     let cpuBrand: String?
     /// `hw.physicalcpu`.
@@ -37,6 +43,8 @@ struct HardwareInfo: Sendable, Equatable {
     static func read() -> HardwareInfo {
         var failures: [String] = []
 
+        let hardwareModel = sysctlString("hw.model", failures: &failures)
+        let isVirtualMachine = sysctlInteger("kern.hv_vmm_present", failures: &failures).map { $0 != 0 }
         let brand = sysctlString("machdep.cpu.brand_string", failures: &failures)
         let physicalCores = sysctlInteger("hw.physicalcpu", failures: &failures)
         var levels: [CorePerformanceLevel] = []
@@ -71,6 +79,8 @@ struct HardwareInfo: Sendable, Equatable {
         }
 
         return HardwareInfo(
+            hardwareModel: hardwareModel,
+            isVirtualMachine: isVirtualMachine,
             cpuBrand: brand,
             cpuPhysicalCores: physicalCores,
             cpuPerformanceLevels: levels,

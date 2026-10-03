@@ -486,6 +486,7 @@ extension SessionController {
             checkpoint?.trainingStepsAtSegmentStart = 0
             pStatsBox = ParallelWorkerStatsBox(sessionStart: Date())
         }
+        foldLineageFedCounts()
         parallelWorkerStatsBox = pStatsBox
         parallelStats = pStatsBox.snapshot()
         let spDiversityTracker: GameDiversityTracker
@@ -1073,7 +1074,7 @@ extension SessionController {
             // - `.continueAfterStop` and `.newSessionKeepTrainer`:
             //   keep the trainer's existing ID — its weights
             //   weren't touched, so the lineage is continuous.
-            await MainActor.run {
+            let lineageStart: Result<LineageTracker, Error> = await MainActor.run {
                 SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
                 switch mode {
                 case .continueAfterStop, .newSessionKeepTrainer:
@@ -1100,6 +1101,20 @@ extension SessionController {
                         )
                     }
                 }
+                // The lineage segment every save of this run takes its
+                // record from — begun (or continued) now that the trainer
+                // holds its starting state and the stats box exists.
+                let segmentResult: Result<LineageTracker, Error>
+                do {
+                    try beginLineageSegment(mode: mode, trainer: trainer, resumed: pendingLoadedSession)
+                    if let tracker = lineageTracker {
+                        segmentResult = .success(tracker)
+                    } else {
+                        segmentResult = .failure(LineageSegmentError.noSegment("Play and Train"))
+                    }
+                } catch {
+                    segmentResult = .failure(error)
+                }
                 // Consume the pending load — from here on, the
                 // running session owns the restored state.
                 pendingLoadedSession = nil
@@ -1108,6 +1123,22 @@ extension SessionController {
                 // "champion replaced since last training" flag
                 // (the Start dialog's annotation is resolved).
                 championLoadedSinceLastTrainingSegment = false
+                return segmentResult
+            }
+            let segmentLineage: LineageTracker
+            switch lineageStart {
+            case .success(let tracker):
+                segmentLineage = tracker
+            case .failure(let error):
+                let message = "Lineage tracking could not start: \(error.localizedDescription)"
+                box.recordError(message)
+                SessionLogger.shared.log("[LINEAGE] \(message)")
+                await MainActor.run {
+                    self.checkpoint?.setCheckpointStatus(message, kind: .error)
+                    realTraining = false
+                    realTrainingTask = nil
+                }
+                return
             }
 
             // Grab the candidate inference network and arena champion
@@ -1291,6 +1322,7 @@ extension SessionController {
 
                         box.recordStep(timing)
                         pStatsBox.recordTrainingStep()
+                        segmentLineage.recordTrainingStep(totalMs: timing.totalMs)
 
                         // Candidate-test probe firing check. Method
                         // guards internally on all preconditions
@@ -2541,6 +2573,7 @@ extension SessionController {
                 arenaActiveFlag = nil
                 arenaTriggerBox = nil
                 arenaOverrideBox = nil
+                foldLineageFedCounts()
                 parallelWorkerStatsBox = nil
                 parallelStats = nil
                 chartCoordinator?.setDiversityHistogramBars([])

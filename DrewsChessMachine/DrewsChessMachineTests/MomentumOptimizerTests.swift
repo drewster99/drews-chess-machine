@@ -372,7 +372,7 @@ final class MomentumOptimizerTests: XCTestCase {
             championID: "champ-id",
             trainerID: "train-id",
             arenaHistory: []
-        )
+        ).withLineage(LineageRecord.sessionTestFixture)
         let encoded = try original.encode()
         let decoded = try SessionCheckpointState.decode(encoded)
         XCTAssertEqual(decoded.momentumCoeff, 0.7,

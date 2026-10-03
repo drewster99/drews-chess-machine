@@ -38,6 +38,7 @@ final class SessionCheckpointSchemaExpansionTests: XCTestCase {
         let jsonText = """
         {
           "formatVersion": \(formatVersion),
+          "lineage": \(LineageRecord.sessionTestFixtureJSON),
           "sessionID": "test-session",
           "savedAtUnix": 1700000000,
           "sessionStartUnix": 1699996400,
@@ -115,6 +116,7 @@ final class SessionCheckpointSchemaExpansionTests: XCTestCase {
         let jsonText = """
         {
           "formatVersion": \(formatVersion),
+          "lineage": \(LineageRecord.sessionTestFixtureJSON),
           "sessionID": "legacy-session",
           "savedAtUnix": 1700000000,
           "sessionStartUnix": 1699996400,
@@ -160,6 +162,7 @@ final class SessionCheckpointSchemaExpansionTests: XCTestCase {
         let baseJSON = """
         {
           "formatVersion": \(formatVersion),
+          "lineage": \(LineageRecord.sessionTestFixtureJSON),
           "sessionID": "cycle-session",
           "savedAtUnix": 1700000000,
           "sessionStartUnix": 1699996400,
@@ -244,6 +247,7 @@ final class SessionCheckpointSchemaExpansionTests: XCTestCase {
         let sessionJSON = """
         {
           "formatVersion": \(formatVersion),
+          "lineage": \(LineageRecord.sessionTestFixtureJSON),
           "sessionID": "x",
           "savedAtUnix": 0,
           "sessionStartUnix": 0,
@@ -286,6 +290,7 @@ final class SessionCheckpointSchemaExpansionTests: XCTestCase {
         let jsonText = """
         {
           "formatVersion": \(formatVersion),
+          "lineage": \(LineageRecord.sessionTestFixtureJSON),
           "sessionID": "rec-session",
           "savedAtUnix": 1700000000,
           "sessionStartUnix": 1699996400,
@@ -323,6 +328,7 @@ final class SessionCheckpointSchemaExpansionTests: XCTestCase {
         let jsonText = """
         {
           "formatVersion": \(formatVersion),
+          "lineage": \(LineageRecord.sessionTestFixtureJSON),
           "sessionID": "legacy-rec",
           "savedAtUnix": 1700000000,
           "sessionStartUnix": 1699996400,

@@ -41,6 +41,9 @@
 //    forward ReZero soft bound `C·tanh(α/C)`. Older files resolve it to
 //    `rezero_alpha_init × NetworkArchitecture.rezeroTanhCeilingMultiple`,
 //    which is exactly the C the engine computed before the field existed.
+//  - v7: no new architecture field; every safetensors model file must
+//    carry a `dcm_lineage` record (`LineageRecord`). Older files load with
+//    their lineage reported as unrecorded.
 //
 
 import Foundation
@@ -50,7 +53,7 @@ enum ArchitectureFormat {
     /// The version every writer stamps today. Safetensors write it as the
     /// string `dcm_format_version`; presets and `architecture.json` write it
     /// as the integer `format_version`.
-    static let currentVersion = 6
+    static let currentVersion = 7
 
     /// First version whose block groups must carry `se_beta_init`
     /// (`BlockGroup.seBetaInit`). Files older than this resolve a missing
@@ -75,6 +78,12 @@ enum ArchitectureFormat {
     /// with, and the architecture compares (and hashes) equal to what the same
     /// file decoded to before the field existed.
     static let rezeroAlphaCapRequiredFromVersion = 6
+
+    /// First version whose safetensors model files must carry a
+    /// `dcm_lineage` record (`LineageRecord`). A file older than this has
+    /// no lineage, and its lineage is reported as unrecorded — never
+    /// reconstructed.
+    static let lineageRequiredFromVersion = 7
 
     /// The version reported for a carrier that predates version markers
     /// entirely — a safetensors file with no `dcm_format_version`, or a

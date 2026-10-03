@@ -9,6 +9,8 @@ enum SessionCheckpointError: LocalizedError {
     case invalidJSON(Error, detail: String = "")
     case unsupportedVersion(Int)
     case targetDirectoryExists(URL)
+    /// A session.json at a format version that requires a lineage has none.
+    case missingLineage(formatVersion: Int)
 
     var errorDescription: String? {
         switch self {
@@ -25,6 +27,9 @@ enum SessionCheckpointError: LocalizedError {
             return "Unsupported session.json format version \(v)"
         case .targetDirectoryExists(let url):
             return "Refusing to overwrite existing session at \(url.lastPathComponent)"
+        case .missingLineage(let version):
+            return "session.json format version \(version) requires a lineage record (required from version "
+                + "\(SessionCheckpointState.lineageRequiredFromFormatVersion)), and this one has none"
         }
     }
 }
@@ -226,7 +231,11 @@ struct ArchitectureMetadata: Codable, Equatable {
 /// to re-seed counters, hyperparameter display, and network
 /// identity.
 struct SessionCheckpointState: Codable, Equatable {
-    static let currentFormatVersion: Int = 1
+    /// Version history: 1 — the original layout; 2 — adds `lineage`
+    /// (`LineageRecord`), required from then on.
+    static let currentFormatVersion: Int = 2
+    /// First format version whose session.json must carry `lineage`.
+    static let lineageRequiredFromFormatVersion: Int = 2
 
     let formatVersion: Int
     let sessionID: String
@@ -745,6 +754,12 @@ struct SessionCheckpointState: Codable, Equatable {
     /// `lichessProbeHistory`.
     var tacticalProbeHistory: TacticalProbeHistorySnapshot?
 
+    /// The run's lineage at the save — the same record the session's
+    /// champion and trainer files carry (see `LineageRecord`). Required from
+    /// format version 2; nil only in a version-1 file, written before
+    /// lineage existed.
+    var lineage: LineageRecord?
+
     // MARK: - Training Segments
 
     /// One Play-and-Train run, bounded by start and end wall-clock
@@ -790,8 +805,11 @@ struct SessionCheckpointState: Codable, Equatable {
     static func decode(_ data: Data) throws -> SessionCheckpointState {
         do {
             let state = try JSONDecoder().decode(SessionCheckpointState.self, from: data)
-            guard state.formatVersion == Self.currentFormatVersion else {
+            guard (1...Self.currentFormatVersion).contains(state.formatVersion) else {
                 throw SessionCheckpointError.unsupportedVersion(state.formatVersion)
+            }
+            if state.formatVersion >= Self.lineageRequiredFromFormatVersion && state.lineage == nil {
+                throw SessionCheckpointError.missingLineage(formatVersion: state.formatVersion)
             }
             return state
         } catch let err as SessionCheckpointError {
@@ -860,7 +878,18 @@ struct SessionCheckpointState: Codable, Equatable {
         return copy
     }
 
+    /// Return a copy carrying `lineage`. Same builder-helper pattern as
+    /// `withTrainingSegments`.
+    func withLineage(_ lineage: LineageRecord) -> SessionCheckpointState {
+        var copy = self
+        copy.lineage = lineage
+        return copy
+    }
+
     func encode() throws -> Data {
+        if formatVersion >= Self.lineageRequiredFromFormatVersion && lineage == nil {
+            throw SessionCheckpointError.missingLineage(formatVersion: formatVersion)
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
         do {

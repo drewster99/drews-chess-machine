@@ -86,7 +86,8 @@ final class PolicyTailPrecisionProvenanceTests: XCTestCase {
             metadata: metadata,
             weights: snapshot.trainerWeights,
             architecture: arch,
-            includesVelocity: true
+            includesVelocity: true,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: metadata.trainerSchedule.map(\.completedTrainSteps), corpus: nil)
         )
         let header = try SafetensorsFile.decode(data)
         XCTAssertEqual(header.metadata[SafetensorsModelIO.Key.trainerPolicyTailPrecision], "fp32_from_pre_bn")

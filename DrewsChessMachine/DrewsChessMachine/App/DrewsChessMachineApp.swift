@@ -1218,7 +1218,7 @@ struct DrewsChessMachineApp: App {
         // cold-refill resume flags.
         if resumeExact {
             if startModelPath == nil {
-                FileHandle.standardError.write(Data("error: --resume-exact requires --start-model (a checkpoint carrying exact trainer state and replay_* metadata)\n".utf8))
+                FileHandle.standardError.write(Data("error: --resume-exact requires --start-model (a corpus-replay checkpoint carrying exact trainer state and its corpus position)\n".utf8))
                 Darwin.exit(2)
             }
             if startShard != nil || startGameIndex != nil {
@@ -1242,7 +1242,12 @@ struct DrewsChessMachineApp: App {
                     Darwin.exit(2)
                 }
             }
-            return ReplayParams(TrainingParameters.shared.snapshot())
+            do {
+                return try ReplayParams(TrainingParameters.shared.snapshot())
+            } catch {
+                FileHandle.standardError.write(Data("error: recording the training parameters failed: \(error.localizedDescription)\n".utf8))
+                Darwin.exit(2)
+            }
         }
 
         // Mint the run's saved-model ModelID here on the main thread — the
@@ -1458,7 +1463,12 @@ struct DrewsChessMachineApp: App {
                     Darwin.exit(2)
                 }
             }
-            return ReplayParams(TrainingParameters.shared.snapshot())
+            do {
+                return try ReplayParams(TrainingParameters.shared.snapshot())
+            } catch {
+                FileHandle.standardError.write(Data("error: recording the training parameters failed: \(error.localizedDescription)\n".utf8))
+                Darwin.exit(2)
+            }
         }
 
         let runModelID = MainActor.assumeIsolated { ModelIDMinter.mint().value }

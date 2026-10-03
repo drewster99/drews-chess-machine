@@ -95,7 +95,8 @@ final class RezeroAlphaCapTests: XCTestCase {
         let meta = ModelCheckpointMetadata(creator: "test", trainingStep: nil, parentModelID: "", notes: "fixture")
         return try SafetensorsModelIO.encode(
             modelID: modelID, createdAtUnix: 1_790_000_000, metadata: meta, weights: weights,
-            architecture: arch, includesVelocity: false)
+            architecture: arch, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: meta.trainerSchedule.map(\.completedTrainSteps), corpus: nil))
     }
 
     /// Re-encode `data` with `dcm_format_version` set to `version` (nil =
@@ -460,7 +461,7 @@ final class RezeroAlphaCapTests: XCTestCase {
     private func derive(_ source: Data, _ operations: [any DeriveOperation]) throws -> ModelDerivation.Result {
         try ModelDerivation.derive(
             sourceData: source, sourceName: "source.safetensors", operations: operations,
-            newModelID: "20261002-2-DRV1", createdAtUnix: 1_790_000_100, build: "test")
+            newModelID: "20261002-2-DRV1", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"])
     }
 
     /// Every tensor of `derivedData` bit-exact to `sourceData` except the

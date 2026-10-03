@@ -29,7 +29,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
             modelID: "unittest-st-roundtrip",
             createdAtUnix: 1_780_000_000,
             metadata: meta,
-            trigger: "unittest"
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil), trigger: "unittest"
         )
         defer {
             do { try FileManager.default.removeItem(at: url) }
@@ -53,6 +53,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
         let json = """
         {
           "formatVersion": \(SessionCheckpointState.currentFormatVersion),
+          "lineage": \(LineageRecord.sessionTestFixtureJSON),
           "sessionID": "\(sessionID)", "savedAtUnix": 1700000000,
           "sessionStartUnix": 1699996400, "elapsedTrainingSec": 3600,
           "trainingSteps": 12345, "selfPlayGames": 678, "selfPlayMoves": 45678,
@@ -91,7 +92,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
             championMetadata: cMeta, championCreatedAtUnix: 1_700_000_000,
             trainerWeights: trainerWeights, trainerID: "20260420-2-efgh",
             trainerMetadata: tMeta, trainerCreatedAtUnix: 1_700_000_001,
-            state: state, trigger: "unittest"
+            state: state, lineage: try LineageRecord.forTests(trainerCompletedSteps: tMeta.trainerSchedule.map(\.completedTrainSteps), corpus: nil), trigger: "unittest"
         )
         defer {
             do { try FileManager.default.removeItem(at: dir) }
@@ -165,7 +166,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
             weights: championWeights, modelID: "unittest-nondefault",
             createdAtUnix: 1_780_000_000,
             metadata: ModelCheckpointMetadata(creator: "manual", trainingStep: nil, parentModelID: "", notes: "nd"),
-            architecture: arch, trigger: "unittest"
+            architecture: arch, lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil), trigger: "unittest"
         )
         defer { do { try FileManager.default.removeItem(at: url) } catch {} }
 
@@ -203,7 +204,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
             championMetadata: meta, championCreatedAtUnix: 1_780_000_000,
             trainerWeights: trainerWeights, trainerID: "20260420-9-ndtt",
             trainerMetadata: meta, trainerCreatedAtUnix: 1_780_000_001,
-            state: state, architecture: arch, trigger: "unittest-nd"
+            state: state, lineage: try LineageRecord.forTests(trainerCompletedSteps: meta.trainerSchedule.map(\.completedTrainSteps), corpus: nil), architecture: arch, trigger: "unittest-nd"
         )
         defer { do { try FileManager.default.removeItem(at: dir) } catch {} }
 
@@ -245,7 +246,8 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
         let stData = try SafetensorsModelIO.encode(
             modelID: fromLegacy.modelID, createdAtUnix: fromLegacy.createdAtUnix,
             metadata: fromLegacy.metadata, weights: fromLegacy.weights,
-            architecture: .current, includesVelocity: false
+            architecture: .current, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: fromLegacy.metadata.trainerSchedule.map(\.completedTrainSteps), corpus: nil)
         )
         let viaSafetensors = try CheckpointManager.decodeAnyModelFile(stData)
         assertBitEqual(viaSafetensors.weights, w0, "legacy->safetensors->reload")
@@ -256,7 +258,8 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
         // Direction 2: safetensors -> decode -> re-encode legacy .dcmmodel -> decode.
         let stData2 = try SafetensorsModelIO.encode(
             modelID: id, createdAtUnix: created, metadata: meta, weights: w0,
-            architecture: .current, includesVelocity: false
+            architecture: .current, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: meta.trainerSchedule.map(\.completedTrainSteps), corpus: nil)
         )
         let fromST = try CheckpointManager.decodeAnyModelFile(stData2)
         let legacyData2 = try ModelCheckpointFile(
@@ -315,7 +318,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
             trainerID: legacyLoaded.trainerFile.modelID,
             trainerMetadata: legacyLoaded.trainerFile.metadata,
             trainerCreatedAtUnix: legacyLoaded.trainerFile.createdAtUnix,
-            state: legacyLoaded.state, trigger: "unittest-migrate"
+            state: legacyLoaded.state, lineage: try LineageRecord.forTests(trainerCompletedSteps: legacyLoaded.trainerFile.metadata.trainerSchedule.map(\.completedTrainSteps), corpus: nil), trigger: "unittest-migrate"
         )
         defer { do { try FileManager.default.removeItem(at: newDir) } catch {} }
 

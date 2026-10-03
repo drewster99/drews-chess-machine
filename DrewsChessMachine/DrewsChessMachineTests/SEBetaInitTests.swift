@@ -276,7 +276,8 @@ final class SEBetaInitTests: XCTestCase {
         let meta = ModelCheckpointMetadata(creator: "test", trainingStep: nil, parentModelID: "", notes: "fixture")
         return try SafetensorsModelIO.encode(
             modelID: modelID, createdAtUnix: 1_790_000_000, metadata: meta, weights: weights,
-            architecture: arch, includesVelocity: false)
+            architecture: arch, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: meta.trainerSchedule.map(\.completedTrainSteps), corpus: nil))
     }
 
     /// Re-encode `data` with `dcm_format_version` set to `version` (nil =
@@ -437,7 +438,7 @@ final class SEBetaInitTests: XCTestCase {
     ) throws -> ModelDerivation.Result {
         try ModelDerivation.derive(
             sourceData: source, sourceName: "source.safetensors", operations: operations,
-            newModelID: newModelID, createdAtUnix: 1_790_000_100, build: "test")
+            newModelID: newModelID, createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"])
     }
 
     /// Every tensor of `derived` is bit-identical to `source`'s except the β
@@ -528,7 +529,7 @@ final class SEBetaInitTests: XCTestCase {
         let second = try ModelDerivation.derive(
             sourceData: first.data, sourceName: "first.safetensors",
             operations: [SetSEBetaInitDeriveOperation(value: .glorot, groupIndices: [1])],
-            newModelID: "20260930-3-DRV2", createdAtUnix: 1_790_000_200, build: "test")
+            newModelID: "20260930-3-DRV2", createdAtUnix: 1_790_000_200, build: "test", invocationArguments: ["test"])
         XCTAssertEqual(second.targetArchitecture.blockGroups.map(\.seBetaInit), [.glorot, .glorot])
         try assertOnlyBetaChanged(
             source: try parts(first.data), derived: try parts(second.data), arch: sourceArch,
@@ -596,7 +597,8 @@ final class SEBetaInitTests: XCTestCase {
         let data = try SafetensorsModelIO.encode(
             modelID: "20260930-1-TRNR", createdAtUnix: 1_790_000_000,
             metadata: ModelCheckpointMetadata(creator: "test", trainingStep: 10, parentModelID: "", notes: ""),
-            weights: weights, architecture: arch, includesVelocity: true)
+            weights: weights, architecture: arch, includesVelocity: true,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil))
         XCTAssertThrowsError(try derive(data, [SetSEBetaInitDeriveOperation(value: .zero, groupIndices: nil)])) { error in
             guard case .sourceHasOptimizerState? = error as? ModelDerivation.DeriveError else {
                 return XCTFail("expected sourceHasOptimizerState, got \(error)")

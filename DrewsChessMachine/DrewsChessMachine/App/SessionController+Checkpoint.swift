@@ -89,8 +89,19 @@ extension SessionController {
                 parentModelID: "",
                 notes: "Manual Save Champion export"
             )
-            let createdAtUnix = Int64(Date().timeIntervalSince1970)
+            let saveDate = Date()
+            let createdAtUnix = Int64(saveDate.timeIntervalSince1970)
             let championArch = champion.network.arch
+            let lineage: LineageRecord
+            do {
+                lineage = try lineageRecordForChampionSave(at: saveDate)
+            } catch {
+                checkpoint?.cancelSlowSaveWatchdog()
+                checkpoint?.checkpointSaveInFlight = false
+                checkpoint?.setCheckpointStatus("Save failed (lineage): \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Save champion failed building its lineage record: \(error.localizedDescription)")
+                return
+            }
 
             let outcome: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
                 do {
@@ -100,6 +111,7 @@ extension SessionController {
                         createdAtUnix: createdAtUnix,
                         metadata: metadata,
                         architecture: championArch,
+                        lineage: lineage,
                         trigger: "manual"
                     )
                     return .success(url)
@@ -385,6 +397,18 @@ extension SessionController {
                 return
             }
             let trainerWeights = trainerSnapshot.trainerWeights
+            // The run's lineage at this save, for the session's champion
+            // file, trainer file and session.json.
+            let lineage: LineageRecord
+            do {
+                lineage = try lineageRecordForSave(
+                    at: Date(), trainerCompletedSteps: trainerSnapshot.schedule.completedTrainSteps)
+            } catch {
+                clearInFlight()
+                checkpoint?.setCheckpointStatus("Save failed (lineage): \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Save session failed building its lineage record: \(error.localizedDescription)")
+                return
+            }
 
             // Final write + verify on a detached task so UI stays
             // responsive during the scratch-network build (sub-second).
@@ -419,6 +443,7 @@ extension SessionController {
                         trainerMetadata: trainerMetadata,
                         trainerCreatedAtUnix: now,
                         state: sessionState,
+                        lineage: lineage,
                         architecture: sessionArch,
                         replayBuffer: bufferForSave,
                         chartSnapshot: chartSnapshotForSave,
@@ -664,6 +689,8 @@ extension SessionController {
             switch applyResult {
             case .success:
                 champion.identifier = ModelID(value: file.modelID)
+                // A branch from this champion records the file as its parent.
+                championLineageSource = file.lineageParent
                 networkStatus = "Loaded model \(file.modelID)\nFrom: \(url.lastPathComponent)"
                 checkpoint?.setCheckpointStatus("Loaded \(file.modelID)", kind: .success)
                 SessionLogger.shared.log("[CHECKPOINT] Loaded model: \(url.lastPathComponent) → \(file.modelID)")
@@ -843,6 +870,8 @@ extension SessionController {
             switch applyResult {
             case .success:
                 champion.identifier = ModelID(value: loaded.championFile.modelID)
+                // A branch from this champion records its file as the parent.
+                championLineageSource = loaded.championFile.lineageParent
                 pendingLoadedSession = loaded
                 pendingLoadedSessionAcceptedReplacements = Set(findings.map(\.id))
                 networkStatus = """

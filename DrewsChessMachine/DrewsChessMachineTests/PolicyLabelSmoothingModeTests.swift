@@ -535,7 +535,7 @@ final class PolicyLabelSmoothingModeTests: XCTestCase {
             championID: "champ-id",
             trainerID: "train-id",
             arenaHistory: []
-        )
+        ).withLineage(LineageRecord.sessionTestFixture)
     }
 
     func testSessionStateRoundTripsTheNewFields() throws {
@@ -676,7 +676,7 @@ final class PolicyLabelSmoothingModeParameterTests: XCTestCase {
         XCTAssertEqual(hyperparameters.policyLabelSmoothingMode, .perMove)
         XCTAssertEqual(hyperparameters.policyLabelSmoothingPerMove, Float(0.004))
         XCTAssertEqual(hyperparameters.policyLabelSmoothingPerMoveCap, Float(0.4))
-        XCTAssertEqual(ReplayParams(snapshot).trainer, hyperparameters, "the CLI runners carry the same configuration")
+        XCTAssertEqual(try ReplayParams(snapshot).trainer, hyperparameters, "the CLI runners carry the same configuration")
 
         let cliTrainer = try ChessTrainer(hyperparameters: hyperparameters, arch: .current)
         XCTAssertEqual(TrainerHyperparameters(currentlyAppliedTo: cliTrainer), hyperparameters)

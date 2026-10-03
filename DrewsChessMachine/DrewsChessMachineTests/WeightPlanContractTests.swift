@@ -49,7 +49,8 @@ final class WeightPlanContractTests: XCTestCase {
                                            parentModelID: "", notes: "plan contract test")
         let good = try SafetensorsModelIO.encode(
             modelID: "20260812-1-PLAN", createdAtUnix: 1_780_000_000,
-            metadata: meta, weights: weights, architecture: arch, includesVelocity: false
+            metadata: meta, weights: weights, architecture: arch, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: meta.trainerSchedule.map(\.completedTrainSteps), corpus: nil)
         )
         // Sanity: the unmodified file round-trips, so a throw below is
         // attributable to the shape edit and nothing else.

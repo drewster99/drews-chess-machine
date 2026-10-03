@@ -516,9 +516,28 @@ extension SessionController {
         // may not fire for up to an hour at this point in the
         // schedule).
         if promoted {
+            // The reset below zeroes the box's emitted counters, so the
+            // lineage segment banks what it counted first and recounts from
+            // the reset.
+            foldLineageFedCounts()
             parallelWorkerStatsBox?.resetGameStats()
+            rebaselineLineageFedCounts()
             let trainerIDStr = trainer.identifier?.description ?? "?"
             let championIDStr = champion.identifier?.description ?? "?"
+            // The champion now holds weights this run trained: as a parent
+            // for a later branch, it is described by the run's record at the
+            // promoted trainer state (it was never written as a file here).
+            let championLineage: LineageRecord.Presence
+            do {
+                championLineage = .recorded(try lineageRecordForSave(
+                    at: Date(), trainerCompletedSteps: trainerSnapshotCompletedSteps))
+            } catch {
+                SessionLogger.shared.log("[LINEAGE] promoted champion's lineage not recorded: \(error.localizedDescription)")
+                championLineage = .unrecorded(formatVersion: ArchitectureFormat.currentVersion)
+            }
+            championLineageSource = LineageTracker.ParentFile(
+                modelID: championIDStr, contentSHA256: nil,
+                trainerCompletedSteps: trainerSnapshotCompletedSteps, lineage: championLineage)
             SessionLogger.shared.log(
                 "[STATS] post-promote  steps=\(trainingStats?.steps ?? 0) champion=\(championIDStr) trainer=\(trainerIDStr)"
             )
@@ -578,7 +597,19 @@ extension SessionController {
                 ),
                 policyTailPrecision: trainer.policyTailPrecision
             )
-            let createdAtUnix = Int64(Date().timeIntervalSince1970)
+            let saveDate = Date()
+            let createdAtUnix = Int64(saveDate.timeIntervalSince1970)
+            // The run's lineage at the promoted state, for all three files.
+            let promotionLineage: LineageRecord
+            do {
+                promotionLineage = try lineageRecordForSave(
+                    at: saveDate, trainerCompletedSteps: promotionSaveTrainerStep)
+            } catch {
+                let message = "Post-promotion save failed (lineage): \(error.localizedDescription)"
+                checkpoint?.setCheckpointStatus(message, kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] \(message)")
+                return
+            }
             // Copy captured arrays for clean Sendable semantics
             // (they're already Sendable but this makes the
             // transfer to the detached task explicit).
@@ -620,6 +651,7 @@ extension SessionController {
                         trainerMetadata: trainerMetadata,
                         trainerCreatedAtUnix: createdAtUnix,
                         state: sessionState,
+                        lineage: promotionLineage,
                         architecture: promotedArch,
                         replayBuffer: bufferForAutosave,
                         chartSnapshot: chartSnapshotForAutosave,

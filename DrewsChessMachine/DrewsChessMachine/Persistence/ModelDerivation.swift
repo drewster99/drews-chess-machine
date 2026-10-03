@@ -131,7 +131,7 @@ enum ModelDerivation {
     static let creator = "derive-model"
 
     /// Source `__metadata__` keys this derivation replaces rather than copies.
-    static let rewrittenMetadataKeys: Set<String> = [
+    static let rewrittenMetadataKeys: Set<String> = Set([
         SafetensorsModelIO.Key.formatVersion,
         SafetensorsModelIO.Key.modelID,
         SafetensorsModelIO.Key.createdAt,
@@ -141,7 +141,8 @@ enum ModelDerivation {
         SafetensorsModelIO.Key.architecture,
         SafetensorsFile.contentHashKey,
         derivationHistoryKey,
-    ]
+        LineageRecord.metadataKey,
+    ]).union(LineageRecord.MirrorKey.all)
 
     enum DeriveError: Error, CustomStringConvertible, Equatable {
         case noOperations
@@ -259,7 +260,8 @@ enum ModelDerivation {
         operations: [any DeriveOperation],
         newModelID: String,
         createdAtUnix: Int64,
-        build: String
+        build: String,
+        invocationArguments: [String]
     ) throws -> Result {
         guard !operations.isEmpty else { throw DeriveError.noOperations }
 
@@ -355,6 +357,19 @@ enum ModelDerivation {
         let historyEncoder = JSONEncoder()
         historyEncoder.outputFormatting = [.sortedKeys]
         metadata[derivationHistoryKey] = String(decoding: try historyEncoder.encode(history), as: UTF8.self)
+        // The derived model's lineage: a new run whose weights carry the
+        // source's history (totals continue from the source's record, or
+        // stay unrecorded for a source written before lineage).
+        let sourceParent = LineageTracker.ParentFile(
+            modelID: parentModelID,
+            contentSHA256: sourceMetadata[SafetensorsFile.contentHashKey],
+            trainerCompletedSteps: try SafetensorsModelIO.trainerClock(fromMetadata: sourceMetadata, source: sourceName),
+            lineage: try SafetensorsModelIO.lineage(
+                fromMetadata: sourceMetadata, formatVersion: sourceDecoded.architectureFormat.formatVersion))
+        let lineage = LineageTracker.untrainedCopyRecord(
+            source: sourceParent, pathKind: .derive, argv: invocationArguments,
+            at: Date(timeIntervalSince1970: TimeInterval(createdAtUnix)))
+        for (key, value) in try lineage.metadataEntries() { metadata[key] = value }
 
         let data = try SafetensorsFile.encode(tensors: outputTensors, metadata: metadata)
 

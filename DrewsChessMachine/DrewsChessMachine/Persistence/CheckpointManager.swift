@@ -1250,6 +1250,7 @@ enum CheckpointManager {
         createdAtUnix: Int64,
         metadata: ModelCheckpointMetadata,
         architecture: NetworkArchitecture = .current,
+        lineage: LineageRecord,
         trigger: String,
         at date: Date = Date(),
         modelsDirectory: URL = CheckpointPaths.modelsDir
@@ -1290,7 +1291,8 @@ enum CheckpointManager {
             metadata: metadata,
             weights: weights,
             architecture: architecture,
-            includesVelocity: false
+            includesVelocity: false,
+            lineage: lineage
         )
 
         do {
@@ -1361,7 +1363,8 @@ enum CheckpointManager {
         trainerID: String,
         trainerMetadata: ModelCheckpointMetadata,
         trainerCreatedAtUnix: Int64,
-        state: SessionCheckpointState,
+        state stateWithoutLineage: SessionCheckpointState,
+        lineage: LineageRecord,
         architecture: NetworkArchitecture = .current,
         replayBuffer: ReplayBuffer? = nil,
         chartSnapshot: ChartCoordinatorSnapshot? = nil,
@@ -1369,6 +1372,9 @@ enum CheckpointManager {
         at date: Date = Date(),
         sessionsDirectory: URL = CheckpointPaths.sessionsDir
     ) async throws -> URL {
+        // The session's champion file, trainer file and session.json all
+        // carry the one lineage record of this save.
+        let state = stateWithoutLineage.withLineage(lineage)
         try CheckpointPaths.ensureDirectory(sessionsDirectory)
 
         let dirName = CheckpointPaths.makeSessionDirectoryName(
@@ -1427,7 +1433,8 @@ enum CheckpointManager {
             metadata: championMetadata,
             weights: championWeights,
             architecture: architecture,
-            includesVelocity: false
+            includesVelocity: false,
+            lineage: lineage
         )
 
         // Trainer file = base weights (trainables + BN running stats) followed by
@@ -1439,7 +1446,8 @@ enum CheckpointManager {
             metadata: trainerMetadata,
             weights: trainerWeights,
             architecture: architecture,
-            includesVelocity: true
+            includesVelocity: true,
+            lineage: lineage
         )
 
         let championTmpURL = SessionCheckpointLayout.championURL(in: tmpDirURL)

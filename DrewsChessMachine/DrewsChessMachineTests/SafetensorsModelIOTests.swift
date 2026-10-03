@@ -38,7 +38,8 @@ final class SafetensorsModelIOTests: XCTestCase {
                                             parentModelID: "20260601-11-bzw3-26", notes: "rt test")
         let data = try SafetensorsModelIO.encode(
             modelID: "20260601-11-bzw3-25", createdAtUnix: 1_780_000_000,
-            metadata: meta, weights: weights, architecture: arch, includesVelocity: false
+            metadata: meta, weights: weights, architecture: arch, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: meta.trainerSchedule.map(\.completedTrainSteps), corpus: nil)
         )
         let decoded = try SafetensorsModelIO.decode(data)
 
@@ -65,7 +66,8 @@ final class SafetensorsModelIOTests: XCTestCase {
                                            parentModelID: "", notes: "")
         let data = try SafetensorsModelIO.encode(
             modelID: "20260601-11-bzw3-27", createdAtUnix: 1_780_000_001,
-            metadata: meta, weights: weights, architecture: arch, includesVelocity: true
+            metadata: meta, weights: weights, architecture: arch, includesVelocity: true,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: meta.trainerSchedule.map(\.completedTrainSteps), corpus: nil)
         )
         let decoded = try SafetensorsModelIO.decode(data)
         XCTAssertTrue(decoded.hasVelocity)
@@ -84,7 +86,8 @@ final class SafetensorsModelIOTests: XCTestCase {
         let data = try SafetensorsModelIO.encode(
             modelID: "x", createdAtUnix: 0,
             metadata: ModelCheckpointMetadata(creator: "manual", trainingStep: nil, parentModelID: "", notes: ""),
-            weights: weights, architecture: arch, includesVelocity: false
+            weights: weights, architecture: arch, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil)
         )
         let (tensors, _) = try SafetensorsFile.decode(data)
         var shapeByName: [String: [Int]] = [:]
@@ -132,7 +135,8 @@ final class SafetensorsModelIOTests: XCTestCase {
         XCTAssertThrowsError(try SafetensorsModelIO.encode(
             modelID: "x", createdAtUnix: 0,
             metadata: ModelCheckpointMetadata(creator: "manual", trainingStep: nil, parentModelID: "", notes: ""),
-            weights: [[1, 2, 3]], architecture: arch, includesVelocity: false
+            weights: [[1, 2, 3]], architecture: arch, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil)
         ))
     }
 

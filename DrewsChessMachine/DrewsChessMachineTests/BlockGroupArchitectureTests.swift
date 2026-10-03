@@ -306,7 +306,7 @@ final class BlockGroupArchitectureTests: XCTestCase {
             metadata: ModelCheckpointMetadata(
                 creator: "manual", trainingStep: nil, parentModelID: "", notes: "mixed-groups"
             ),
-            architecture: arch, trigger: "unittest"
+            architecture: arch, lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil), trigger: "unittest"
         )
         defer {
             do { try FileManager.default.removeItem(at: url) }

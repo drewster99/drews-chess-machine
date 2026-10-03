@@ -307,6 +307,20 @@ enum TrainVsUciRunner {
         emit("[VS-UCI-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(trainer.lrMomentumCycle)) "
             + LRMomentumCycleLogFormat.scheduleOrigin(of: trainer, launch: launch))
 
+        // This segment's lineage — see CorpusReplayRunner. A vs-UCI resume
+        // starts from a fresh buffer, so it is not exact in that either.
+        let lineageStart: LineageTracker.Start
+        if let file = startModelFile {
+            lineageStart = resumeSnapshot != nil
+                ? .resume(parent: file.lineageParent, notExactItems: LineageTracker.NotExactItem.vsUciResume, legacyTotals: nil)
+                : .branch(parent: file.lineageParent)
+        } else {
+            lineageStart = .fresh
+        }
+        let lineageTracker = try LineageTracker(
+            start: lineageStart, pathKind: .vsuci, argv: CommandLine.arguments,
+            startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)
+
         // Build the opponent pool: one UCIArbiter per instance.
         var opponents: [TrainVsUciDriver.Opponent] = []
         for spec in config.opponents {
@@ -355,14 +369,25 @@ enum TrainVsUciRunner {
                     notes: "train-vs-uci \(reason) @ step \(step)",
                     schedule: snapshot.schedule,
                     policyTailPrecision: trainer.policyTailPrecision)
+                // Games and plies the driver flushed into the buffer.
+                let slots = driver.statsSnapshot()
+                let saveDate = Date()
+                let lineage = try lineageTracker.record(
+                    at: saveDate,
+                    trainerCompletedSteps: snapshot.schedule.completedTrainSteps,
+                    segmentLocalStep: step,
+                    segmentGames: slots.reduce(0) { $0 + $1.gamesCompleted },
+                    segmentPositions: slots.reduce(0) { $0 + $1.pliesPlayed },
+                    corpus: nil,
+                    parameters: p.lineageParameters)
                 encoded = try SafetensorsModelIO.encode(
                     modelID: config.runModelID,
-                    createdAtUnix: Int64(Date().timeIntervalSince1970),
+                    createdAtUnix: Int64(saveDate.timeIntervalSince1970),
                     metadata: metadata,
                     weights: weights,
                     architecture: arch,
                     includesVelocity: true,
-                    resumeMetadata: [:])
+                    lineage: lineage)
                 try FileManager.default.createDirectory(
                     at: outModelURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try rollingWriter.write(encoded)
@@ -504,6 +529,7 @@ enum TrainVsUciRunner {
                 guard let timing = try await trainer.trainStep(replayBuffer: buffer, batchSize: batchSize) else {
                     try await Task.sleep(for: .milliseconds(50)); continue
                 }
+                lineageTracker.recordTrainingStep(totalMs: timing.totalMs)
                 step += 1
 
                 // Keep the play network ~live.

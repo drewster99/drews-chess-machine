@@ -174,6 +174,15 @@ final class SessionController {
     /// `parallelStats`. Created on Play-and-Train start, `nil` otherwise.
     var parallelWorkerStatsBox: ParallelWorkerStatsBox?
 
+    /// The lineage segment of the trainer this process is training, if any
+    /// (see `SessionController+Lineage`). Not displayed.
+    @ObservationIgnored var lineageTracker: LineageTracker?
+    /// Fed counts the lineage segment carried across stats boxes.
+    @ObservationIgnored var lineageFedCarry = LineageFedCarry()
+    /// The file the champion's weights were loaded from, as a lineage
+    /// parent; nil when the champion was built fresh in this process.
+    @ObservationIgnored var championLineageSource: LineageTracker.ParentFile?
+
     /// Rolling-window game-diversity tracker for self-play. Fed by every
     /// self-play worker at game end; snapshot polled by the heartbeat for
     /// display and by the stats logger for `[STATS]` lines. `nil` outside a
@@ -1027,6 +1036,9 @@ final class SessionController {
         // Drop the trainer (it owns graph state we're about to invalidate by
         // rebuilding) and wipe all training/sweep display state.
         onDropTrainer()
+        // The dropped trainer's lineage segment ends with it.
+        lineageTracker = nil
+        lineageFedCarry = LineageFedCarry()
         onClearTrainingDisplay()
 
         // `buildArchitecture` is set by the Build-New-Model screen (or, headless,
@@ -1042,6 +1054,8 @@ final class SessionController {
             case .success(let net):
                 net.identifier = ModelIDMinter.mint()
                 network = net
+                // Weights initialized here: a run from this champion is fresh.
+                championLineageSource = nil
                 net.network.commandQueue.label = "champion (self-play)"
                 runner = ChessRunner(network: net)
                 let idStr = net.identifier?.description ?? "?"

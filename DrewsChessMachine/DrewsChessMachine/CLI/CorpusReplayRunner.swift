@@ -34,9 +34,13 @@ struct ReplayParams: Sendable {
     var replayBufferCapacity: Int
     var replayRatioTarget: Double
     var replayBufferMinPositionsBeforeTraining: Int
+    /// The complete parameter set, as every lineage record of the run
+    /// carries it.
+    var lineageParameters: LineageRecord.Parameters
 
-    init(_ parameters: TrainingParametersSnapshot) {
+    init(_ parameters: TrainingParametersSnapshot) throws {
         trainer = TrainerHyperparameters(parameters)
+        lineageParameters = try LineageRecord.Parameters(values: parameters.rawValueMap())
         trainingBatchSize = parameters.trainingBatchSize
         replayBufferCapacity = parameters.replayBufferCapacity
         replayRatioTarget = parameters.replayRatioTarget
@@ -73,8 +77,9 @@ struct CorpusReplayConfig: Sendable {
     /// re-run; and reconstructs the replay buffer to its contents at the saved
     /// `next_game_index` (feed the preceding capacity-worth of games so the
     /// ring self-trims to the exact last-C plies) before continuing from there.
-    /// Requires a `--start-model` carrying that trainer state and `replay_*`
-    /// metadata for this same corpus; mutually exclusive with `startShard` /
+    /// Requires a `--start-model` carrying that trainer state and a corpus
+    /// position for this same corpus (its lineage record, or the `replay_*`
+    /// keys of a file written before lineage); mutually exclusive with `startShard` /
     /// `startGameIndex`. Without it, `--start-model` starts a new branch.
     var resumeExact: Bool = false
     /// Explicit destination for the rolling trainer-model file. When nil the
@@ -1068,8 +1073,11 @@ enum CorpusReplayRunner {
                 Darwin.exit(2)
             }
             let smURL = URL(fileURLWithPath: (smPath as NSString).expandingTildeInPath)
-            guard let rm = SafetensorsModelIO.readResumeMetadata(at: smURL) else {
-                FileHandle.standardError.write(Data("error: --resume-exact: \(smURL.lastPathComponent) carries no replay_* resume metadata (not a corpus-replay checkpoint)\n".utf8))
+            let rm: SafetensorsModelIO.ReplayResumeMetadata
+            do {
+                rm = try SafetensorsModelIO.replayResumePoint(at: smURL)
+            } catch {
+                FileHandle.standardError.write(Data("error: --resume-exact: \(smURL.lastPathComponent): \(error)\n".utf8))
                 Darwin.exit(2)
             }
             guard rm.corpusID == resumeCorpusID else {
@@ -1195,6 +1203,22 @@ enum CorpusReplayRunner {
         emit("[REPLAY-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(trainer.lrMomentumCycle)) "
             + LRMomentumCycleLogFormat.scheduleOrigin(of: trainer, launch: launch))
 
+        // This segment's lineage: a fresh run, a new branch from the start
+        // model, or the start model's run continued. Every save carries the
+        // record, so totals (trainer steps, games and positions fed, measured
+        // step time) continue across resumes without hand-entered bases.
+        let lineageStart: LineageTracker.Start
+        if let file = startModelFile {
+            lineageStart = resumeSnapshot != nil
+                ? .resume(parent: file.lineageParent, notExactItems: LineageTracker.NotExactItem.replayResume, legacyTotals: nil)
+                : .branch(parent: file.lineageParent)
+        } else {
+            lineageStart = .fresh
+        }
+        let lineageTracker = try LineageTracker(
+            start: lineageStart, pathKind: .replay, argv: CommandLine.arguments,
+            startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)
+
         // Export the trainer's complete state and overwrite the rolling
         // output file. Failure handling splits on cause (see reportSaveFailure):
         // a disk-full (ENOSPC) failure is FATAL — it alarms and throws so the run
@@ -1204,17 +1228,17 @@ enum CorpusReplayRunner {
         // (`TrainerSaveFailureStreak`) — a run that cannot save at all must not
         // train on keeping nothing.
         // Resume info is passed in (not captured): the corpus index / stream
-        // cursor are resolved AFTER this nested func, so the call sites — which
-        // run inside the SGD loop where those are in scope — supply them. The
-        // `replay_*` keys land in the safetensors `__metadata__` (write-only in
-        // Phase 1; the exact-reconstruction resume reads them later). `built_by_*`
-        // pins which encoder/feeder build wrote them, so a byte-exact resume can
-        // refuse a build whose encoding may differ.
+        // cursor and the feed counters are resolved AFTER this nested func, so
+        // the call sites — which run inside the SGD loop where those are in
+        // scope — supply them. They land in the file's lineage record, whose
+        // corpus position the exact-reconstruction resume reads back and whose
+        // build stamp lets a resume warn about a different encoder/feeder.
         var rollingSaveFailures = TrainerSaveFailureStreak(what: "trainer-model save")
         var enumeratedSaveFailures = TrainerSaveFailureStreak(what: "enumerated checkpoint save")
         func saveTrainerModel(step: Int, reason: String,
                               nextGameIndex: Int, shard: Int, epoch: Int, populatedPlies: Int,
-                              corpusID: String, corpusPath: String) async throws {
+                              corpusID: String, corpusPath: String,
+                              segmentGames: Int, segmentPositions: Int) async throws {
             // Rolling save (overwrites the output file). `encoded` is reused by the
             // enumerated copy below, so it outlives this do/catch. A disk-full
             // failure re-throws (fatal, halts the run); any other failure is a
@@ -1238,24 +1262,28 @@ enum CorpusReplayRunner {
                     schedule: snapshot.schedule,
                     policyTailPrecision: trainer.policyTailPrecision
                 )
-                let resumeMeta: [String: String] = [
-                    "replay_corpus_id": corpusID,
-                    "replay_corpus_path": corpusPath,
-                    "replay_next_game_index": String(nextGameIndex),
-                    "replay_epoch": String(epoch),
-                    "replay_populated_plies": String(populatedPlies),
-                    "replay_capacity": String(p.replayBufferCapacity),
-                    "built_by_build": String(BuildInfo.buildNumber),
-                    "built_by_git": BuildInfo.gitHash,
-                ]
+                // The corpus position (what `--resume-exact` resumes from)
+                // and the build that wrote it travel in the lineage record.
+                let saveDate = Date()
+                let lineage = try lineageTracker.record(
+                    at: saveDate,
+                    trainerCompletedSteps: snapshot.schedule.completedTrainSteps,
+                    segmentLocalStep: step,
+                    segmentGames: segmentGames,
+                    segmentPositions: segmentPositions,
+                    corpus: LineageRecord.CorpusPosition(
+                        corpusID: corpusID, corpusPath: corpusPath, epoch: epoch,
+                        nextGameIndex: nextGameIndex, shard: shard,
+                        populatedPlies: populatedPlies, bufferCapacity: p.replayBufferCapacity),
+                    parameters: p.lineageParameters)
                 encoded = try SafetensorsModelIO.encode(
                     modelID: config.runModelID,
-                    createdAtUnix: Int64(Date().timeIntervalSince1970),
+                    createdAtUnix: Int64(saveDate.timeIntervalSince1970),
                     metadata: metadata,
                     weights: weights,
                     architecture: arch,
                     includesVelocity: true,
-                    resumeMetadata: resumeMeta
+                    lineage: lineage
                 )
                 try FileManager.default.createDirectory(
                     at: outModelURL.deletingLastPathComponent(),
@@ -1438,6 +1466,11 @@ enum CorpusReplayRunner {
             }
         }
         let prefillPositions = feedTally.positions
+        // A resume's reconstruction refeeds games its parent already fed;
+        // the segment's own feed starts after them.
+        let reconstructionFed = reconstructUntil != nil
+            ? (games: feedTally.games, positions: feedTally.positions)
+            : (games: 0, positions: 0)
         emit("[REPLAY] pre-filled: bufCount=\(buffer.count) positionsFed=\(feedTally.positions) gamesFed=\(feedTally.games)\(feedTally.countsSuffix)")
 
         // Format a possibly-not-measured diagnostic. The trainer only computes
@@ -1512,6 +1545,7 @@ enum CorpusReplayRunner {
                 emit("[REPLAY] trainStep returned nil (bufCount=\(buffer.count)); stopping")
                 break
             }
+            lineageTracker.recordTrainingStep(totalMs: timing.totalMs)
             step += 1
             if step == 1 || step % logEvery == 0 {
                 // Live, warmup-adjusted LR read from the trainer (single source
@@ -1590,7 +1624,9 @@ enum CorpusReplayRunner {
                 try await saveTrainerModel(step: step, reason: "autosave",
                     nextGameIndex: rp.nextGame, shard: rp.shard,
                     epoch: rp.epoch, populatedPlies: buffer.count,
-                    corpusID: resumeCorpusID, corpusPath: resumeCorpusPath)
+                    corpusID: resumeCorpusID, corpusPath: resumeCorpusPath,
+                    segmentGames: feedTally.games - reconstructionFed.games,
+                    segmentPositions: feedTally.positions - reconstructionFed.positions)
             }
         }
 
@@ -1615,7 +1651,9 @@ enum CorpusReplayRunner {
         try await saveTrainerModel(step: step, reason: finalReason,
             nextGameIndex: finalResume.nextGame, shard: finalResume.shard,
             epoch: finalResume.epoch, populatedPlies: buffer.count,
-            corpusID: resumeCorpusID, corpusPath: resumeCorpusPath)
+            corpusID: resumeCorpusID, corpusPath: resumeCorpusPath,
+            segmentGames: feedTally.games - reconstructionFed.games,
+            segmentPositions: feedTally.positions - reconstructionFed.positions)
         // The run asked for a capture it did not get: fail it, after the save.
         // No results.json — a failed run does not claim a clean record.
         if let gpuCaptureFailure {
