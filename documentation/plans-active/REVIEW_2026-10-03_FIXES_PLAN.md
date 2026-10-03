@@ -144,8 +144,9 @@ U5 `f273b890`, U3 `748afe20`, U4 `fbf2a4f1`. CLAUDE.md and CHANGELOG updated aft
       state"); a resume takes its clocks from the trainer file and the record
       (`trainer_completed_steps: 22 (from trainer file; session step count 20)`), so only the
       resumed run's displayed counters start that far behind.
-    - A bare `--help` is not a recognized argument: it prints "unrecognized argument(s):
-      '--help'" before the usage and exits 2.
+    - A bare `--help` was not a recognized argument: it printed "unrecognized argument(s):
+      '--help'" before the usage and exited 2. **Fixed** (`fecee76b`): `--help` / `-h` print the
+      usage to stdout and exit 0 before any other launch step (`CommandLineHelp`).
     - `~/Library/Preferences` holds 1,398 `<TestClass>-<UUID>.plist` domains left by test
       suites (`LichessBot*Tests` and others) that create a private defaults suite and never
       remove it.
