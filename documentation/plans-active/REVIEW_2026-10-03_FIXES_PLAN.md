@@ -159,9 +159,18 @@ U5 `f273b890`, U3 `748afe20`, U4 `fbf2a4f1`. CLAUDE.md and CHANGELOG updated aft
     - A bare `--help` was not a recognized argument: it printed "unrecognized argument(s):
       '--help'" before the usage and exited 2. **Fixed** (`fecee76b`): `--help` / `-h` print the
       usage to stdout and exit 0 before any other launch step (`CommandLineHelp`).
-    - `~/Library/Preferences` holds 1,398 `<TestClass>-<UUID>.plist` domains left by test
-      suites (`LichessBot*Tests` and others) that create a private defaults suite and never
-      remove it.
+    - `~/Library/Preferences` held `<TestClass>-<UUID>.plist` domains left by test suites
+      (3,199 counted by the fix: 1,834 empty 42-byte files from suites that did call
+      `removePersistentDomain(forName:)` — `cfprefsd` keeps the empty plist and rewrites a
+      deleted one seconds later — 1,360 `dcm-tests-*` files from `LastSessionPointerTests`,
+      which never cleaned up, and 3 from `LichessBotSettingsViewRenderTests`). **Fixed**
+      (`5bea0f5e`): every private suite comes from `makeTemporaryDefaultsSuite()` /
+      `makeTemporaryDefaults()` (`DrewsChessMachineTests/TemporaryDefaultsSuite.swift`), a suite
+      named by the absolute path of a plist in a temp folder removed at teardown; pinned by
+      `TemporaryDefaultsSuiteTests`. A run of the 25 touched classes on `main` added no file to
+      `~/Library/Preferences`. The existing leftovers are not removed automatically.
+      `SessionParameterResumeTests.testLegacySessionWithoutDropoutResumesAtPreFeatureRateWithoutTouchingSavedSettings`
+      still writes the real app domain through `UserDefaults.standard` (restored by `defer`).
   - `TrainVsUciRunner` still restores the replay buffer and then checks
     `totalPositionsAdded` (`verifyReplayBufferMatchesSession`); a mismatch fails the run either
     way, so there is no wrong-state outcome, but the GUI's check-before-restore

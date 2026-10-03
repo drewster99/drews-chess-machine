@@ -9,6 +9,12 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-03 16:05 CDT — Fixes from the review's manual checks (`fecee76b`, `5eabb5c2`, `5bea0f5e`)
+
+- **A session save's counts describe its cut** (`5eabb5c2`). `session.json`'s `trainingSteps`, `selfPlayGames` and emitted counts, and the trainer file's `training_step`, are read from the live stats boxes with self-play and training paused (`publishRunCountersAtCut`), not from the heartbeat's last copy taken before the pause. The arena's post-promotion save builds its state the same way, after the history append and before training resumes; Promote Trainee Now's history step is read at its own pause. Seen in a GUI save: 20 steps / 2,340 games in `session.json` against the trainer's 22 and the record's 2,362. Tests: `SessionSaveConsistentCutTests.testASessionSavesCountsDescribeItsCut`, `testPromoteTraineeNowRecordsItsStepAtItsPause` (both failed before the fix).
+- **`--help` / `-h`** (`fecee76b`) print the full usage to stdout and exit 0 before any other launch step, instead of failing as an unrecognized argument with exit 2. `--derive-model --help` (and now `-h`) still prints that mode's help. The usage text lives in `CommandLineHelp.usageText`, shared with the usage-error banner. Tests: `CommandLineHelpTests`.
+- **Tests no longer leave `<TestClass>-<UUID>.plist` files in `~/Library/Preferences`** (`5bea0f5e`). `removePersistentDomain(forName:)` leaves an empty plist that `cfprefsd` writes back even after it is deleted, and `LastSessionPointerTests` never cleaned up at all (3,199 files had accumulated). Every private defaults suite now comes from `makeTemporaryDefaultsSuite()`, a plist in a temp folder removed at teardown. `InvalidStoredSettingsTests` and `RunSeedParameterTests` now fail instead of skipping when a suite cannot be made. Pinned by `TemporaryDefaultsSuiteTests`. Existing leftover files are not removed automatically.
+
 ## 2026-10-03 14:07 CDT — Review fixes from the 72-hour code review (`b9eac4fd`, `47cbdc50`, `47f1303e`, `f273b890`, `748afe20`, `fbf2a4f1`)
 
 Every HIGH and MEDIUM item of `documentation/plans-active/REVIEW_2026-10-03_FIXES_PLAN.md`, plus the cheap LOW items in the same code, in six merged units. Each bug's regression test was seen failing before its fix (or, where only a compile failure was possible, the commit says so).
