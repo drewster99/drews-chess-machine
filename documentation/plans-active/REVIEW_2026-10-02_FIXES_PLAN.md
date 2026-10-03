@@ -197,24 +197,65 @@ GitHub issue #10.
 
 ## D. Experiment and dashboard tooling
 
-### D1. ReZero analysis reads the cap from each checkpoint — [ ]
+### D1. ReZero analysis reads the cap from each checkpoint — [x] (d88fddd)
 v6 files carry `rezero_alpha_cap`; older files resolve it as `rezero_alpha_init × 1.0`, the
 same rule the app applies. No hard-coded cap anywhere. Needed before the zero-init analysis.
 
-### D2. Probe loop — [ ]
+Decisions: the shared resolver is `scripts/dcm_arch.py` (both `experiments/` and
+`documentation/research/` import it; `archnorm.py` and `fwd16.py` delegate to it). The
+dashboard tracker's `internals()` reads caps from each checkpoint too, so `rezero_cap` is
+removed from both registries (a model without ReZero now writes blank `sae2`/`eff_alpha`).
+`rezero_wd.py` refuses to overwrite its output CSV (`--output` for a new path). Other
+historical research scripts are untouched; the ones that call `norm_arch(md['architecture'])`
+without the format version keep the legacy (unversioned) resolution.
+
+### D2. Probe loop — [x] (70ad7ad, b110cd5, b30e98e5)
 Exact trainer match, start wait, liveness sampled before each pass (final checkpoint never
 missed), failures captured per step with bounded retries, checkpoint identity from the
 safetensors metadata, table scripts assert one model ID per probes file. Committed scratch
 paths replaced with the durable frozen-build path.
 
-### D3. Label smoothing C README — [ ]
+Decisions: the historical per-experiment loop copies got the path-only fix (an exec wrapper
+would need a live trainer and change the recorded method). A non-finite pElo is a recorded
+measurement (`null`, shown "non-finite"), not a retried failure. The step limit is optional
+and logs what it skips. `--once` re-probes a finished run. Shared table helpers live in
+`experiments/table_common.py`; arms not yet started are declared `NOT_STARTED` and refuse to
+be read once their probes file has records until their model_id is filled in. Every record
+also names its probe build (`probe_build`, see D4). Scratch paths and tool names were removed
+from committed non-log files; raw logs keep theirs (owner).
+
+### D3. Label smoothing C README — [x] (1315754)
 Pass/fail tallies annotated as cross-build (about 2.6 pElo offset between the probe builds);
 NLL conclusions unchanged.
 
-### D4. Dashboard data safety and the cron tick — [ ]
+Outcome: within the offset are 6k (+3.1), 9k (−3.1) and 11k (−1.0); C leads by more than it
+at 8 of 10 (1k–10k) and 12 of 15 (1k–15k). The D README's status line and C seed 2's
+launch note now describe the queue order instead of a retired chain script.
+
+### D4. Dashboard data safety and the cron tick — [x] code (809f9c6c, d2db411f, b30e98e5, cfee96cf); [ ] cron reinstall
 Guarded CSV replace (row-key diff, compare-and-swap, folder lock); missing inputs are errors;
 session-log sort key shared by the scripts; cron tick resolves its own folder, logs skipped
 ticks and held locks, times out probes, rotates its log to timestamped names; then reinstalled.
+
+Decisions:
+- A missing self-play log stops the rebuild; a run whose logs are gone for good is marked
+  `"rebuild": false` in `selfplay_registry.json` (logged, CSV left as it is).
+- `--allow-shrink` (selfplay.py, vsuci.py, replay.py migrate) is the only way to drop rows or
+  blank values; `recompute-internals` may blank only its three internals columns.
+- Probe builds are recorded, not pinned: `replay.py` still probes with the newest DerivedData
+  Release build (or `DCM_BIN`), and every row and probe record now names the build
+  (`probe_build`, `<bundle>.app@sha256:<prefix>`). Rows from before this are "unrecorded";
+  tables print each column's builds, and the noSE sign test refuses mixed builds unless
+  `--allow-mixed-builds`.
+- Probe timeout in the tracker is a named constant (the child is killed; the checkpoint is
+  retried next tick). Held-lock alarm threshold and log rotation size are named constants
+  in `cron_tick.sh`; rotated logs are `cron_tick-<timestamp>.log` (already ignored by `*.log`).
+- The replay-buffer game length is interpolated at the exact boundary (values move by at
+  most 0.41 plies/game).
+- Python tests: `documentation/dashboards/tests/` (stdlib unittest, temporary folders only):
+  `python3 -m unittest discover -s documentation/dashboards/tests`.
+- Cron: install `*/5 * * * * /bin/bash /Users/andrew/cursor/drews-chess-machine/documentation/dashboards/cron_tick.sh`
+  after the merge (not done in this branch).
 
 ## After this plan
 
