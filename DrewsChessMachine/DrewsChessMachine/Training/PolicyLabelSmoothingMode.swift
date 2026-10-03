@@ -80,13 +80,14 @@ public enum PolicyLabelSmoothingMode: Int, CaseIterable, Sendable, Identifiable 
 
     /// Converts a persisted raw value.
     ///
-    /// Every path that can reach this — `TrainingParameters.read`,
-    /// `applyOne`, and the snapshot accessor — validates against the
-    /// parameter's declared range first, and that range is pinned to
-    /// `parameterRawValueRange` by test. An unrepresentable value here is
-    /// therefore a programmer error in one of those validators, not bad user
-    /// input, so it traps rather than quietly training under a target form
-    /// the user did not choose.
+    /// Every path that can reach this receives a valid raw value:
+    /// `TrainingParameters.read` and `applyOne` check it against the
+    /// parameter's declared range first (pinned to `parameterRawValueRange`
+    /// by test), and the snapshot accessor only ever sees the `rawValue` of a
+    /// live case, because `collectValues` — the snapshot's only source —
+    /// encodes the singleton's stored enum. An unrepresentable value here is
+    /// therefore a programmer error, not bad user input, so it traps rather
+    /// than quietly training under a target form the user did not choose.
     public init(persistedRawValue raw: Int) {
         guard let mode = PolicyLabelSmoothingMode(rawValue: raw) else {
             preconditionFailure(

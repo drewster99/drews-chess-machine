@@ -116,13 +116,13 @@ extension SessionController {
                     "[RESUME-PARAM] learning_rate: \(TrainingParameters.shared.learningRate) -> \(rs.learningRate) (from session)"
                 )
                 trainer.learningRate = rs.learningRate
-                TrainingParameters.shared.restoreFromSession(LearningRate.self, Double(rs.learningRate), into: \.learningRate)
+                TrainingParameters.shared.restoreFromSession(LearningRate.self, savedFloat: rs.learningRate, into: \.learningRate)
                 if let entropyCoeff = rs.entropyRegularizationCoeff {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] entropy_bonus: \(TrainingParameters.shared.entropyBonus) -> \(entropyCoeff) (from session)"
                     )
                     trainer.entropyRegularizationCoeff = entropyCoeff
-                    TrainingParameters.shared.restoreFromSession(EntropyBonus.self, Double(entropyCoeff), into: \.entropyBonus)
+                    TrainingParameters.shared.restoreFromSession(EntropyBonus.self, savedFloat: entropyCoeff, into: \.entropyBonus)
                 } else {
                     trainer.entropyRegularizationCoeff = Float(TrainingParameters.shared.entropyBonus)
                     SessionLogger.shared.log(
@@ -134,7 +134,7 @@ extension SessionController {
                         "[RESUME-PARAM] draw_penalty: \(TrainingParameters.shared.drawPenalty) -> \(dp) (from session)"
                     )
                     trainer.drawPenalty = dp
-                    TrainingParameters.shared.restoreFromSession(DrawPenalty.self, Double(dp), into: \.drawPenalty)
+                    TrainingParameters.shared.restoreFromSession(DrawPenalty.self, savedFloat: dp, into: \.drawPenalty)
                 } else {
                     trainer.drawPenalty = Float(TrainingParameters.shared.drawPenalty)
                     SessionLogger.shared.log(
@@ -151,7 +151,7 @@ extension SessionController {
                         "[RESUME-PARAM] weight_decay: \(TrainingParameters.shared.weightDecay) -> \(wd) (from session)"
                     )
                     trainer.weightDecayC = wd
-                    TrainingParameters.shared.restoreFromSession(WeightDecay.self, Double(wd), into: \.weightDecay)
+                    TrainingParameters.shared.restoreFromSession(WeightDecay.self, savedFloat: wd, into: \.weightDecay)
                 } else {
                     trainer.weightDecayC = Float(TrainingParameters.shared.weightDecay)
                     SessionLogger.shared.log(
@@ -172,13 +172,13 @@ extension SessionController {
                     )
                 }
                 trainer.dropoutRate = resolvedDropout
-                TrainingParameters.shared.restoreFromSession(DropoutRate.self, Double(resolvedDropout), into: \.dropoutRate)
+                TrainingParameters.shared.restoreFromSession(DropoutRate.self, savedFloat: resolvedDropout, into: \.dropoutRate)
                 if let clip = rs.gradClipMaxNorm {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] grad_clip_max_norm: \(TrainingParameters.shared.gradClipMaxNorm) -> \(clip) (from session)"
                     )
                     trainer.gradClipMaxNorm = clip
-                    TrainingParameters.shared.restoreFromSession(GradClipMaxNorm.self, Double(clip), into: \.gradClipMaxNorm)
+                    TrainingParameters.shared.restoreFromSession(GradClipMaxNorm.self, savedFloat: clip, into: \.gradClipMaxNorm)
                 } else {
                     trainer.gradClipMaxNorm = Float(TrainingParameters.shared.gradClipMaxNorm)
                     SessionLogger.shared.log(
@@ -190,7 +190,7 @@ extension SessionController {
                         "[RESUME-PARAM] policy_loss_weight: \(TrainingParameters.shared.policyLossWeight) -> \(plw) (from session)"
                     )
                     trainer.policyLossWeight = plw
-                    TrainingParameters.shared.restoreFromSession(PolicyLossWeight.self, Double(plw), into: \.policyLossWeight)
+                    TrainingParameters.shared.restoreFromSession(PolicyLossWeight.self, savedFloat: plw, into: \.policyLossWeight)
                 } else {
                     trainer.policyLossWeight = Float(TrainingParameters.shared.policyLossWeight)
                     SessionLogger.shared.log(
@@ -202,7 +202,7 @@ extension SessionController {
                         "[RESUME-PARAM] value_loss_weight: \(TrainingParameters.shared.valueLossWeight) -> \(vlw) (from session)"
                     )
                     trainer.valueLossWeight = vlw
-                    TrainingParameters.shared.restoreFromSession(ValueLossWeight.self, Double(vlw), into: \.valueLossWeight)
+                    TrainingParameters.shared.restoreFromSession(ValueLossWeight.self, savedFloat: vlw, into: \.valueLossWeight)
                 } else {
                     trainer.valueLossWeight = Float(TrainingParameters.shared.valueLossWeight)
                     SessionLogger.shared.log(
@@ -227,7 +227,7 @@ extension SessionController {
                     )
                 }
                 trainer.momentumCoeff = resolvedMu
-                TrainingParameters.shared.restoreFromSession(MomentumCoeff.self, Double(resolvedMu), into: \.momentumCoeff)
+                TrainingParameters.shared.restoreFromSession(MomentumCoeff.self, savedFloat: resolvedMu, into: \.momentumCoeff)
                 let resolvedIllM = SessionCheckpointState.resolvedIllegalMassPenaltyWeight(saved: rs.illegalMassPenaltyWeight)
                 if let imw = rs.illegalMassPenaltyWeight {
                     SessionLogger.shared.log(
@@ -239,7 +239,7 @@ extension SessionController {
                     )
                 }
                 trainer.illegalMassPenaltyWeight = resolvedIllM
-                TrainingParameters.shared.restoreFromSession(IllegalMassWeight.self, Double(resolvedIllM), into: \.illegalMassWeight)
+                TrainingParameters.shared.restoreFromSession(IllegalMassWeight.self, savedFloat: resolvedIllM, into: \.illegalMassWeight)
                 let resolvedSmoothing = SessionCheckpointState.resolvedPolicyLabelSmoothingEpsilon(saved: rs.policyLabelSmoothingEpsilon)
                 if let lse = rs.policyLabelSmoothingEpsilon {
                     SessionLogger.shared.log(
@@ -251,57 +251,65 @@ extension SessionController {
                     )
                 }
                 trainer.policyLabelSmoothingEpsilon = resolvedSmoothing
-                TrainingParameters.shared.restoreFromSession(PolicyLabelSmoothingEpsilon.self, Double(resolvedSmoothing), into: \.policyLabelSmoothingEpsilon)
-                // saved=nil means the session predates the per-move form, so
-                // it factually trained with fixed-total smoothing — reproduce
-                // that rather than inherit the live mode. A token no mode
-                // spells can only come from a hand-edited or corrupt file; the
-                // current mode is kept and the line says so, not guessed.
-                if let token = rs.policyLabelSmoothingMode {
-                    if let savedMode = PolicyLabelSmoothingMode(logToken: token) {
-                        let resolvedMode = SessionCheckpointState.resolvedPolicyLabelSmoothingMode(saved: savedMode)
-                        SessionLogger.shared.log(
-                            "[RESUME-PARAM] policy_label_smoothing_mode: \(TrainingParameters.shared.policyLabelSmoothingMode.logToken) -> \(resolvedMode.logToken) (from session)"
-                        )
-                        trainer.policyLabelSmoothingMode = resolvedMode
-                        TrainingParameters.shared.policyLabelSmoothingMode = resolvedMode
-                    } else {
-                        trainer.policyLabelSmoothingMode = TrainingParameters.shared.policyLabelSmoothingMode
-                        SessionLogger.shared.log(
-                            "[RESUME-PARAM] policy_label_smoothing_mode: saved=\"\(token)\" is not a known mode; "
-                            + "keeping \(TrainingParameters.shared.policyLabelSmoothingMode.logToken) (not guessed)"
-                        )
+                TrainingParameters.shared.restoreFromSession(PolicyLabelSmoothingEpsilon.self, savedFloat: resolvedSmoothing, into: \.policyLabelSmoothingEpsilon)
+                // The mode, δ and cap travel as a set. A session missing all
+                // three predates the per-move form and factually trained with
+                // fixed-total smoothing, so that is reproduced rather than the
+                // live mode inherited. A partial set or an unknown mode only
+                // reaches here after the user reviewed it at load time and
+                // accepted the current settings in its place
+                // (`invalidSavedSettings`).
+                if pendingLoadedSessionAcceptedReplacements.contains(SessionCheckpointState.SavedSettingID.policyLabelSmoothing) {
+                    let p = TrainingParameters.shared
+                    trainer.policyLabelSmoothingMode = p.policyLabelSmoothingMode
+                    trainer.policyLabelSmoothingPerMove = Float(p.policyLabelSmoothingPerMove)
+                    trainer.policyLabelSmoothingPerMoveCap = Float(p.policyLabelSmoothingPerMoveCap)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] policy_label_smoothing: saved mode=\(rs.policyLabelSmoothingMode ?? "nil") "
+                            + "per_move=\(rs.policyLabelSmoothingPerMove.map { "\($0)" } ?? "nil") "
+                            + "per_move_cap=\(rs.policyLabelSmoothingPerMoveCap.map { "\($0)" } ?? "nil") is unusable; "
+                            + "replaced with the current mode=\(p.policyLabelSmoothingMode.logToken) "
+                            + "per_move=\(p.policyLabelSmoothingPerMove) per_move_cap=\(p.policyLabelSmoothingPerMoveCap) "
+                            + "(accepted by the user at load)"
+                    )
+                } else if let token = rs.policyLabelSmoothingMode,
+                          let perMove = rs.policyLabelSmoothingPerMove,
+                          let perMoveCap = rs.policyLabelSmoothingPerMoveCap {
+                    guard let savedMode = PolicyLabelSmoothingMode(logToken: token) else {
+                        preconditionFailure("session load reviews an unknown policy_label_smoothing_mode before resume; got \(token)")
                     }
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] policy_label_smoothing_mode: \(TrainingParameters.shared.policyLabelSmoothingMode.logToken) -> \(savedMode.logToken) (from session)"
+                    )
+                    trainer.policyLabelSmoothingMode = savedMode
+                    TrainingParameters.shared.policyLabelSmoothingMode = savedMode
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] policy_label_smoothing_per_move: \(TrainingParameters.shared.policyLabelSmoothingPerMove) -> \(perMove) (from session)"
+                    )
+                    trainer.policyLabelSmoothingPerMove = perMove
+                    TrainingParameters.shared.restoreFromSession(PolicyLabelSmoothingPerMove.self, savedFloat: perMove, into: \.policyLabelSmoothingPerMove)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] policy_label_smoothing_per_move_cap: \(TrainingParameters.shared.policyLabelSmoothingPerMoveCap) -> \(perMoveCap) (from session)"
+                    )
+                    trainer.policyLabelSmoothingPerMoveCap = perMoveCap
+                    TrainingParameters.shared.restoreFromSession(PolicyLabelSmoothingPerMoveCap.self, savedFloat: perMoveCap, into: \.policyLabelSmoothingPerMoveCap)
                 } else {
+                    guard rs.policyLabelSmoothingMode == nil,
+                          rs.policyLabelSmoothingPerMove == nil,
+                          rs.policyLabelSmoothingPerMoveCap == nil else {
+                        preconditionFailure("session load reviews a partial policy label-smoothing set before resume")
+                    }
                     let resolvedMode = SessionCheckpointState.resolvedPolicyLabelSmoothingMode(saved: nil)
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] policy_label_smoothing_mode: saved=nil applied=\(resolvedMode.logToken) (session predates the feature; fixed-total smoothing preserved)"
                     )
                     trainer.policyLabelSmoothingMode = resolvedMode
                     TrainingParameters.shared.policyLabelSmoothingMode = resolvedMode
-                }
-                if let perMove = rs.policyLabelSmoothingPerMove {
-                    SessionLogger.shared.log(
-                        "[RESUME-PARAM] policy_label_smoothing_per_move: \(TrainingParameters.shared.policyLabelSmoothingPerMove) -> \(perMove) (from session)"
-                    )
-                    trainer.policyLabelSmoothingPerMove = perMove
-                    TrainingParameters.shared.restoreFromSession(PolicyLabelSmoothingPerMove.self, Double(perMove), into: \.policyLabelSmoothingPerMove)
-                } else {
                     trainer.policyLabelSmoothingPerMove = Float(TrainingParameters.shared.policyLabelSmoothingPerMove)
-                    SessionLogger.shared.log(
-                        "[RESUME-PARAM] policy_label_smoothing_per_move: saved=nil applied=\(TrainingParameters.shared.policyLabelSmoothingPerMove) (defaulted)"
-                    )
-                }
-                if let perMoveCap = rs.policyLabelSmoothingPerMoveCap {
-                    SessionLogger.shared.log(
-                        "[RESUME-PARAM] policy_label_smoothing_per_move_cap: \(TrainingParameters.shared.policyLabelSmoothingPerMoveCap) -> \(perMoveCap) (from session)"
-                    )
-                    trainer.policyLabelSmoothingPerMoveCap = perMoveCap
-                    TrainingParameters.shared.restoreFromSession(PolicyLabelSmoothingPerMoveCap.self, Double(perMoveCap), into: \.policyLabelSmoothingPerMoveCap)
-                } else {
                     trainer.policyLabelSmoothingPerMoveCap = Float(TrainingParameters.shared.policyLabelSmoothingPerMoveCap)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] policy_label_smoothing_per_move_cap: saved=nil applied=\(TrainingParameters.shared.policyLabelSmoothingPerMoveCap) (defaulted)"
+                        "[RESUME-PARAM] policy_label_smoothing_per_move / _cap: saved=nil applied=\(TrainingParameters.shared.policyLabelSmoothingPerMove) / "
+                            + "\(TrainingParameters.shared.policyLabelSmoothingPerMoveCap) (session predates the feature; inert under fixed-total)"
                     )
                 }
                 let resolvedValueSmoothing = SessionCheckpointState.resolvedValueLabelSmoothingEpsilon(saved: rs.valueLabelSmoothingEpsilon)
@@ -315,7 +323,7 @@ extension SessionController {
                     )
                 }
                 trainer.valueLabelSmoothingEpsilon = resolvedValueSmoothing
-                TrainingParameters.shared.restoreFromSession(ValueLabelSmoothingEpsilon.self, Double(resolvedValueSmoothing), into: \.valueLabelSmoothingEpsilon)
+                TrainingParameters.shared.restoreFromSession(ValueLabelSmoothingEpsilon.self, savedFloat: resolvedValueSmoothing, into: \.valueLabelSmoothingEpsilon)
                 if let bsi = rs.batchStatsInterval {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] batch_stats_interval: \(TrainingParameters.shared.batchStatsInterval) -> \(bsi) (from session)"
@@ -357,7 +365,8 @@ extension SessionController {
                         TrainingParameters.shared.restoreFromSession(PeriodicAutosaveIntervalSec.self, pai, into: \.periodicAutosaveIntervalSec)
                     } else {
                         SessionLogger.shared.log(
-                            "[RESUME-PARAM] ERROR periodic_autosave_interval_sec: saved=\(pai) is not a usable interval (must be > 0; the session file is corrupt or hand-edited) — kept current \(TrainingParameters.shared.periodicAutosaveIntervalSec)"
+                            "[RESUME-PARAM] periodic_autosave_interval_sec: saved=\(pai) is unusable (must be > 0); "
+                                + "replaced with the current \(TrainingParameters.shared.periodicAutosaveIntervalSec) (accepted by the user at load)"
                         )
                     }
                 } else {
@@ -740,28 +749,17 @@ extension SessionController {
                     "[RESUME-PARAM] arena_tau: start=\(TrainingParameters.shared.arenaStartTau) floor=\(TrainingParameters.shared.arenaTargetTau) decay=\(TrainingParameters.shared.arenaTauDecayPerPly) -> start=\(rs.arenaTau.startTau) floor=\(rs.arenaTau.floorTau) decay=\(rs.arenaTau.decayPerPly) (from session)"
                 )
                 // Each saved τ is restored as the session's own value through
-                // `restoreFromSession`, which warns — but still restores — when
-                // it lies outside today's declared range (see there). The
-                // session stores τ as `Float`; widening it with `Double(_:)`
-                // would turn a saved 0.01 into 0.00999999977…, just under the
-                // declared floor, so each value is widened through its
-                // shortest decimal form — the number that was typed.
-                func restoreTau<K: TrainingParameterKey>(
-                    _ key: K.Type,
-                    saved: Float,
-                    into keyPath: ReferenceWritableKeyPath<TrainingParameters, Double>
-                ) where K.Value == Double {
-                    guard let value = Double(saved.description) else {
-                        preconditionFailure("Float.description of \(saved) did not parse as a Double")
-                    }
-                    TrainingParameters.shared.restoreFromSession(K.self, value, into: keyPath)
-                }
-                restoreTau(SelfPlayStartTau.self, saved: rs.selfPlayTau.startTau, into: \.selfPlayStartTau)
-                restoreTau(SelfPlayTargetTau.self, saved: rs.selfPlayTau.floorTau, into: \.selfPlayTargetTau)
-                restoreTau(SelfPlayTauDecayPerPly.self, saved: rs.selfPlayTau.decayPerPly, into: \.selfPlayTauDecayPerPly)
-                restoreTau(ArenaStartTau.self, saved: rs.arenaTau.startTau, into: \.arenaStartTau)
-                restoreTau(ArenaTargetTau.self, saved: rs.arenaTau.floorTau, into: \.arenaTargetTau)
-                restoreTau(ArenaTauDecayPerPly.self, saved: rs.arenaTau.decayPerPly, into: \.arenaTauDecayPerPly)
+                // `restoreFromSession(_:savedFloat:into:)`, which widens the
+                // stored `Float` through its shortest decimal form and warns —
+                // but still restores — when it lies outside today's declared
+                // range (see there).
+                let p = TrainingParameters.shared
+                p.restoreFromSession(SelfPlayStartTau.self, savedFloat: rs.selfPlayTau.startTau, into: \.selfPlayStartTau)
+                p.restoreFromSession(SelfPlayTargetTau.self, savedFloat: rs.selfPlayTau.floorTau, into: \.selfPlayTargetTau)
+                p.restoreFromSession(SelfPlayTauDecayPerPly.self, savedFloat: rs.selfPlayTau.decayPerPly, into: \.selfPlayTauDecayPerPly)
+                p.restoreFromSession(ArenaStartTau.self, savedFloat: rs.arenaTau.startTau, into: \.arenaStartTau)
+                p.restoreFromSession(ArenaTargetTau.self, savedFloat: rs.arenaTau.floorTau, into: \.arenaTargetTau)
+                p.restoreFromSession(ArenaTauDecayPerPly.self, savedFloat: rs.arenaTau.decayPerPly, into: \.arenaTauDecayPerPly)
                 // Saved-but-not-applied trio: persisted for the resume
                 // sheet, but the resumed run deliberately reads the LIVE
                 // TrainingParameters values for these. Surface the saved
@@ -1137,9 +1135,9 @@ extension SessionController {
         } else if let resumed = pendingLoadedSession {
             checkpoint?.currentSessionID = resumed.state.sessionID
             checkpoint?.currentSessionStart = Date().addingTimeInterval(-resumed.state.elapsedTrainingSec)
-            TrainingParameters.shared.restoreFromSession(LearningRate.self, Double(resumed.state.learningRate), into: \.learningRate)
+            TrainingParameters.shared.restoreFromSession(LearningRate.self, savedFloat: resumed.state.learningRate, into: \.learningRate)
             if let entropyCoeff = resumed.state.entropyRegularizationCoeff {
-                TrainingParameters.shared.restoreFromSession(EntropyBonus.self, Double(entropyCoeff), into: \.entropyBonus)
+                TrainingParameters.shared.restoreFromSession(EntropyBonus.self, savedFloat: entropyCoeff, into: \.entropyBonus)
             }
         } else {
             checkpoint?.currentSessionID = ModelIDMinter.mint().value
@@ -1586,6 +1584,7 @@ extension SessionController {
             //   keep the trainer's existing ID — its weights
             //   weren't touched, so the lineage is continuous.
             await MainActor.run {
+                SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
                 switch mode {
                 case .continueAfterStop, .newSessionKeepTrainer:
                     break
@@ -1595,6 +1594,15 @@ extension SessionController {
                     )
                 case .freshOrFromLoadedSession:
                     if let resumed = pendingLoadedSession {
+                        // A GUI resume never refuses over the policy-tail
+                        // precision (determinism plan D-1); a mismatch or an
+                        // unrecorded value is reported as NOT EXACT.
+                        if let notExact = PolicyTailPrecisionResume.guiNotExactLine(
+                            saved: resumed.trainerFile.metadata.trainerPolicyTailPrecision,
+                            running: trainer.policyTailPrecision
+                        ) {
+                            SessionLogger.shared.log(notExact)
+                        }
                         trainer.identifier = ModelID(value: resumed.trainerFile.modelID)
                     } else {
                         trainer.identifier = ModelIDMinter.mintTrainerGeneration(
@@ -1605,6 +1613,7 @@ extension SessionController {
                 // Consume the pending load — from here on, the
                 // running session owns the restored state.
                 pendingLoadedSession = nil
+                pendingLoadedSessionAcceptedReplacements = []
                 // A training segment has started, so clear the
                 // "champion replaced since last training" flag
                 // (the Start dialog's annotation is resolved).
@@ -3220,7 +3229,7 @@ extension SessionController {
         guard let criterion = ArenaPromotionCriterion.allCases.first(where: { $0.logToken == token }) else {
             SessionLogger.shared.log(
                 "[RESUME-PARAM] arena_promotion_criterion: saved=\"\(token)\" is not a known criterion; "
-                + "keeping \(p.arenaPromotionCriterion.logToken) (not guessed)"
+                + "replaced with the current \(p.arenaPromotionCriterion.logToken) (accepted by the user at load)"
             )
             return
         }
@@ -3233,8 +3242,8 @@ extension SessionController {
               let maxGames = rs.arenaSPRTMaxGames else {
             SessionLogger.shared.log(
                 "[RESUME-PARAM] arena_promotion_criterion: saved=\(token) but the SPRT block is incomplete; "
-                + "keeping \(p.arenaPromotionCriterion.logToken) and today's hypotheses rather than "
-                + "running a half-restored test"
+                + "replaced with the current \(p.arenaPromotionCriterion.logToken) and today's hypotheses "
+                + "(accepted by the user at load)"
             )
             return
         }
@@ -3250,7 +3259,8 @@ extension SessionController {
         } catch {
             SessionLogger.shared.log(
                 "[RESUME-PARAM] arena_promotion_criterion: saved SPRT block is invalid (\(error)); "
-                + "keeping \(p.arenaPromotionCriterion.logToken) and today's hypotheses"
+                + "replaced with the current \(p.arenaPromotionCriterion.logToken) and today's hypotheses "
+                + "(accepted by the user at load)"
             )
             return
         }

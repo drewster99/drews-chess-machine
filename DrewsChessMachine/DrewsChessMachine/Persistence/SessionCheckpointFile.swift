@@ -265,7 +265,8 @@ struct SessionCheckpointState: Codable, Equatable {
     var gradClipMaxNorm: Float?
     var weightDecayCoeff: Float?
     /// Channel-dropout rate (drop probability, 0 = off). Optional for
-    /// back-compat with session files written before dropout existed.
+    /// back-compat with session files written before dropout existed;
+    /// absent → rate 0 (`resolvedDropoutRate`).
     var dropoutRate: Float?
     /// Policy-loss coefficient applied to the policy term in
     /// `total_loss = valueLossWeight·valueLoss +
@@ -282,8 +283,8 @@ struct SessionCheckpointState: Codable, Equatable {
     var valueLossWeight: Float?
     /// Polyak momentum coefficient μ in effect at save time. Optional
     /// for back-compat with session files written before momentum
-    /// landed in the schema; absent → loader falls through to the
-    /// user's current `TrainingParameters.shared.momentumCoeff`.
+    /// landed in the schema; absent → plain SGD, μ = 0
+    /// (`resolvedMomentumCoeff`), the pre-feature behavior.
     /// The optimizer's velocity buffers themselves are persisted
     /// separately in `trainer.dcmmodel` (v2 layout); this scalar
     /// controls how aggressively the saved velocity is mixed in
@@ -293,14 +294,14 @@ struct SessionCheckpointState: Codable, Equatable {
     /// into the unmasked-softmax illegal-mass term in `total_loss`,
     /// where positive values pull probability mass off illegal cells.
     /// Optional for back-compat with session files written before
-    /// the term existed; absent → loader falls through to the user's
-    /// current `TrainingParameters.shared.illegalMassWeight`.
+    /// the term existed; absent → weight 0
+    /// (`resolvedIllegalMassPenaltyWeight`), the pre-feature behavior.
     var illegalMassPenaltyWeight: Float?
     /// Policy-CE label-smoothing coefficient ε in effect at save time.
     /// ε=0 → one-hot played-move target; ε>0 → `(1−ε)·oneHot + ε·uniform(legal)`.
     /// Optional for back-compat with session files written before this
-    /// term existed; absent → loader falls through to the user's
-    /// current `TrainingParameters.shared.policyLabelSmoothingEpsilon`.
+    /// term existed; absent → ε = 0
+    /// (`resolvedPolicyLabelSmoothingEpsilon`), the pre-feature behavior.
     var policyLabelSmoothingEpsilon: Float?
     /// `PolicyLabelSmoothingMode.logToken` in effect at save time
     /// (`fixed_total` / `per_move`). Stored as the token, not the raw `Int`,
@@ -324,8 +325,8 @@ struct SessionCheckpointState: Codable, Equatable {
     /// effect at save time. ε=0 → hard one-hot on the game result;
     /// ε>0 → `(1−ε)·oneHot(slot) + ε·(⅓,⅓,⅓)`. Optional for back-compat
     /// with session files written before the WDL value head landed;
-    /// absent → loader falls through to the user's current
-    /// `TrainingParameters.shared.valueLabelSmoothingEpsilon`.
+    /// absent → ε = 0 (`resolvedValueLabelSmoothingEpsilon`), the
+    /// pre-feature behavior.
     var valueLabelSmoothingEpsilon: Float?
 
     // Replay-ratio controller settings. All Optional so older
@@ -959,5 +960,109 @@ enum SessionCheckpointLayout {
         let championData = try Data(contentsOf: championURL)
         let trainerData = try Data(contentsOf: trainerURL)
         return (stateData, championData, trainerData)
+    }
+}
+
+// MARK: - Saved settings that cannot be resumed as found
+
+extension SessionCheckpointState {
+    /// Stable ids for the saved-setting groups `invalidSavedSettings(current:)`
+    /// checks; the resume block names the same ids when it applies a
+    /// replacement the user accepted.
+    enum SavedSettingID {
+        static let policyLabelSmoothing = "policy_label_smoothing"
+        static let arenaPromotionCriterion = "arena_promotion_criterion"
+        static let periodicAutosaveInterval = "periodic_autosave_interval_sec"
+    }
+
+    /// The saved settings a resume cannot use as found — a hand-edited,
+    /// corrupt, or partially written `session.json` — each with the current
+    /// setting offered in its place. Empty for every session the app wrote
+    /// itself. A load with findings stops for the user to review them; a
+    /// replacement is applied only when the user accepts it.
+    func invalidSavedSettings(current: TrainingParametersSnapshot) -> [InvalidStoredSetting] {
+        var findings: [InvalidStoredSetting] = []
+
+        // Policy label smoothing: the mode, δ and cap are saved together or
+        // not at all (a pre-feature session has none and resumes fixed-total).
+        let smoothingFields: [(String, String?)] = [
+            ("mode", policyLabelSmoothingMode),
+            ("per_move", policyLabelSmoothingPerMove.map { "\($0)" }),
+            ("per_move_cap", policyLabelSmoothingPerMoveCap.map { "\($0)" }),
+        ]
+        let presentSmoothingCount = smoothingFields.filter { $0.1 != nil }.count
+        let currentSmoothing = "mode \(current.policyLabelSmoothingMode.logToken), "
+            + "per_move \(current.value(for: PolicyLabelSmoothingPerMove.self)), "
+            + "per_move_cap \(current.value(for: PolicyLabelSmoothingPerMoveCap.self))"
+        let foundSmoothing = smoothingFields.map { "\($0.0)=\($0.1 ?? "missing")" }.joined(separator: ", ")
+        if presentSmoothingCount > 0 && presentSmoothingCount < smoothingFields.count {
+            findings.append(InvalidStoredSetting(
+                id: SavedSettingID.policyLabelSmoothing,
+                name: "Policy label smoothing (mode, per-move δ, cap)",
+                found: foundSmoothing,
+                problem: "only part of the set is saved; a session saves all three or none",
+                replacement: currentSmoothing
+            ))
+        } else if let token = policyLabelSmoothingMode, PolicyLabelSmoothingMode(logToken: token) == nil {
+            findings.append(InvalidStoredSetting(
+                id: SavedSettingID.policyLabelSmoothing,
+                name: "Policy label smoothing (mode, per-move δ, cap)",
+                found: foundSmoothing,
+                problem: "mode \"\(token)\" is not a known mode (fixed_total or per_move)",
+                replacement: currentSmoothing
+            ))
+        }
+
+        // Arena promotion criterion and its SPRT hypotheses — the same checks
+        // `restoreArenaPromotionCriterion` applies, made before the resume.
+        if let token = arenaPromotionCriterion {
+            let currentArena = "\(current.arenaPromotionCriterion.logToken), SPRT "
+                + "elo0 \(current.arenaSPRTElo0) elo1 \(current.arenaSPRTElo1) "
+                + "alpha \(current.arenaSPRTAlpha) beta \(current.arenaSPRTBeta) "
+                + "games \(current.arenaSPRTMinGames)…\(current.arenaSPRTMaxGames)"
+            let sprtFields: [(String, String?)] = [
+                ("elo0", arenaSPRTElo0.map { "\($0)" }), ("elo1", arenaSPRTElo1.map { "\($0)" }),
+                ("alpha", arenaSPRTAlpha.map { "\($0)" }), ("beta", arenaSPRTBeta.map { "\($0)" }),
+                ("min_games", arenaSPRTMinGames.map { "\($0)" }), ("max_games", arenaSPRTMaxGames.map { "\($0)" }),
+            ]
+            let foundArena = "\(token); " + sprtFields.map { "\($0.0)=\($0.1 ?? "missing")" }.joined(separator: ", ")
+            var problem: String? = nil
+            if !ArenaPromotionCriterion.allCases.contains(where: { $0.logToken == token }) {
+                problem = "\"\(token)\" is not a known promotion criterion"
+            } else if let elo0 = arenaSPRTElo0, let elo1 = arenaSPRTElo1, let alpha = arenaSPRTAlpha,
+                      let beta = arenaSPRTBeta, let minGames = arenaSPRTMinGames, let maxGames = arenaSPRTMaxGames {
+                do {
+                    _ = try ArenaSPRT.SPRTConfig(
+                        elo0: elo0, elo1: elo1, alpha: alpha, beta: beta, minGames: minGames, maxGames: maxGames
+                    )
+                } catch {
+                    problem = "the saved SPRT hypotheses are not a valid test (\(error))"
+                }
+            } else {
+                problem = "the SPRT hypotheses are only partly saved"
+            }
+            if let problem {
+                findings.append(InvalidStoredSetting(
+                    id: SavedSettingID.arenaPromotionCriterion,
+                    name: "Arena promotion criterion",
+                    found: foundArena,
+                    problem: problem,
+                    replacement: currentArena
+                ))
+            }
+        }
+
+        // Periodic autosave interval: a non-positive interval cannot drive the
+        // periodic save timer.
+        if let interval = periodicAutosaveIntervalSec, !(interval > 0) {
+            findings.append(InvalidStoredSetting(
+                id: SavedSettingID.periodicAutosaveInterval,
+                name: "Periodic autosave interval",
+                found: "\(interval) s",
+                problem: "an interval must be greater than zero",
+                replacement: "\(current.periodicAutosaveIntervalSec) s"
+            ))
+        }
+        return findings
     }
 }

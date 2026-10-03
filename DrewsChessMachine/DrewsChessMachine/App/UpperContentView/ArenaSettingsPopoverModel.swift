@@ -85,6 +85,35 @@ final class ArenaSettingsPopoverModel {
         seedFromParams()
     }
 
+    /// The `Double` edit fields whose seeded text is a rounded rendering of
+    /// the live value. Save compares each against what seeding wrote, so an
+    /// untouched field never writes its rounded text back over a more precise
+    /// value, and an untouched field holding a session value outside today's
+    /// declared range never blocks Save.
+    private static let roundedTextFields: [ReferenceWritableKeyPath<ArenaSettingsPopoverModel, String>] = [
+        \.promoteThresholdText, \.tauStartText, \.tauDecayText, \.tauFloorText,
+        \.sprtElo0Text, \.sprtElo1Text, \.sprtAlphaText, \.sprtBetaText,
+    ]
+
+    /// Each `roundedTextFields` entry's text as `seedFromParams` wrote it.
+    /// Empty until the first seed, in which case every field is parsed.
+    @ObservationIgnored private var seededText: [ReferenceWritableKeyPath<ArenaSettingsPopoverModel, String>: String] = [:]
+
+    /// What Save takes from a rounded `Double` field: the live value itself
+    /// when the field still reads exactly what seeding wrote (nothing was
+    /// edited, so nothing is written), otherwise the parsed text — nil when
+    /// it is not a finite number inside the declared range.
+    private func editedValue<K: TrainingParameterKey>(
+        _ key: K.Type,
+        _ field: ReferenceWritableKeyPath<ArenaSettingsPopoverModel, String>,
+        current: Double
+    ) -> Double? where K.Value == Double {
+        if let seeded = seededText[field], seeded == self[keyPath: field] {
+            return current
+        }
+        return K.parsedInDeclaredRange(self[keyPath: field])
+    }
+
     /// Seed the edit fields from the live `trainingParams` snapshot. Called
     /// when the popover opens so the user always sees current values, even if
     /// a CLI / parameters-file override changed them since the last open.
@@ -104,6 +133,7 @@ final class ArenaSettingsPopoverModel {
         sprtBetaText = String(format: "%.3f", p.arenaSPRTBeta)
         sprtMinGamesText = String(p.arenaSPRTMinGames)
         sprtMaxGamesText = String(p.arenaSPRTMaxGames)
+        seededText = Dictionary(uniqueKeysWithValues: Self.roundedTextFields.map { ($0, self[keyPath: $0]) })
         gamesError = false
         concurrencyError = false
         intervalError = false
@@ -190,11 +220,11 @@ final class ArenaSettingsPopoverModel {
         // Promote threshold — the declared range starts at "at-least-even":
         // anything below would let the candidate displace the champion on a
         // coin-flip arena, so the parameter type refuses to go there.
-        if let v = ArenaPromoteThreshold.parsedInDeclaredRange(promoteThresholdText) {
+        if let v = editedValue(ArenaPromoteThreshold.self, \.promoteThresholdText, current: p.arenaPromoteThreshold) {
             promoteThresholdError = false
             if abs(v - p.arenaPromoteThreshold) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] arenaPromoteThreshold: %.3f -> %.3f", p.arenaPromoteThreshold, v)
+                    String(format: "[PARAM] arenaPromoteThreshold: %.6g -> %.6g", p.arenaPromoteThreshold, v)
                 )
                 p.arenaPromoteThreshold = v
             }
@@ -208,11 +238,11 @@ final class ArenaSettingsPopoverModel {
         // a floor below the declared minimum through: the singleton then
         // refused to persist it, so the running session used a value the
         // next launch silently dropped.
-        if let v = ArenaStartTau.parsedInDeclaredRange(tauStartText) {
+        if let v = editedValue(ArenaStartTau.self, \.tauStartText, current: p.arenaStartTau) {
             tauStartError = false
             if abs(v - p.arenaStartTau) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] ar.startTau: %.3f -> %.3f", p.arenaStartTau, v)
+                    String(format: "[PARAM] ar.startTau: %.6g -> %.6g", p.arenaStartTau, v)
                 )
                 p.arenaStartTau = v
             }
@@ -221,11 +251,11 @@ final class ArenaSettingsPopoverModel {
             anyError = true
         }
 
-        if let v = ArenaTauDecayPerPly.parsedInDeclaredRange(tauDecayText) {
+        if let v = editedValue(ArenaTauDecayPerPly.self, \.tauDecayText, current: p.arenaTauDecayPerPly) {
             tauDecayError = false
             if abs(v - p.arenaTauDecayPerPly) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] ar.decayPerPly: %.4f -> %.4f", p.arenaTauDecayPerPly, v)
+                    String(format: "[PARAM] ar.decayPerPly: %.6g -> %.6g", p.arenaTauDecayPerPly, v)
                 )
                 p.arenaTauDecayPerPly = v
             }
@@ -234,11 +264,11 @@ final class ArenaSettingsPopoverModel {
             anyError = true
         }
 
-        if let v = ArenaTargetTau.parsedInDeclaredRange(tauFloorText) {
+        if let v = editedValue(ArenaTargetTau.self, \.tauFloorText, current: p.arenaTargetTau) {
             tauFloorError = false
             if abs(v - p.arenaTargetTau) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] ar.floorTau: %.3f -> %.3f", p.arenaTargetTau, v)
+                    String(format: "[PARAM] ar.floorTau: %.6g -> %.6g", p.arenaTargetTau, v)
                 )
                 p.arenaTargetTau = v
             }
@@ -297,10 +327,11 @@ final class ArenaSettingsPopoverModel {
 
         func parseDouble<K: TrainingParameterKey>(
             _ key: K.Type,
-            _ text: String,
+            _ field: ReferenceWritableKeyPath<ArenaSettingsPopoverModel, String>,
+            current: Double,
             error: (Bool) -> Void
         ) -> Double? where K.Value == Double {
-            guard let v = K.parsedInDeclaredRange(text) else {
+            guard let v = editedValue(K.self, field, current: current) else {
                 error(true)
                 ok = false
                 return nil
@@ -323,10 +354,10 @@ final class ArenaSettingsPopoverModel {
             return v
         }
 
-        let elo0 = parseDouble(ArenaSPRTElo0.self, sprtElo0Text) { self.sprtElo0Error = $0 }
-        let elo1 = parseDouble(ArenaSPRTElo1.self, sprtElo1Text) { self.sprtElo1Error = $0 }
-        let alpha = parseDouble(ArenaSPRTAlpha.self, sprtAlphaText) { self.sprtAlphaError = $0 }
-        let beta = parseDouble(ArenaSPRTBeta.self, sprtBetaText) { self.sprtBetaError = $0 }
+        let elo0 = parseDouble(ArenaSPRTElo0.self, \.sprtElo0Text, current: p.arenaSPRTElo0) { self.sprtElo0Error = $0 }
+        let elo1 = parseDouble(ArenaSPRTElo1.self, \.sprtElo1Text, current: p.arenaSPRTElo1) { self.sprtElo1Error = $0 }
+        let alpha = parseDouble(ArenaSPRTAlpha.self, \.sprtAlphaText, current: p.arenaSPRTAlpha) { self.sprtAlphaError = $0 }
+        let beta = parseDouble(ArenaSPRTBeta.self, \.sprtBetaText, current: p.arenaSPRTBeta) { self.sprtBetaError = $0 }
         let minGames = parseInt(ArenaSPRTMinGames.self, sprtMinGamesText) { self.sprtMinGamesError = $0 }
         let maxGames = parseInt(ArenaSPRTMaxGames.self, sprtMaxGamesText) { self.sprtMaxGamesError = $0 }
 
@@ -350,7 +381,7 @@ final class ArenaSettingsPopoverModel {
 
         func assign(_ new: Double, to current: Double, name: String, write: (Double) -> Void) {
             guard abs(new - current) > Double.ulpOfOne else { return }
-            SessionLogger.shared.log(String(format: "[PARAM] %@: %.4f -> %.4f", name, current, new))
+            SessionLogger.shared.log(String(format: "[PARAM] %@: %.6g -> %.6g", name, current, new))
             write(new)
         }
 

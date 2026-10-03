@@ -586,6 +586,9 @@ struct UpperContentView: View {
     /// clicking the "Promotions" cell in the top status bar.
     @State private var showPromotionsSheet: Bool = false
     @State private var showBuildNewModelSheet: Bool = false
+    /// Presents `InvalidStoredSettingsSheet`; set on appear when
+    /// `TrainingParameters` found unusable stored values at launch.
+    @State private var showInvalidStoredSettingsSheet: Bool = false
     // Sampling cadence (`chartCoordinator.progressRateLastFetch`,
     // `chartCoordinator.progressRateNextId`, `chartCoordinator.trainingChartNextId`,
     // `chartCoordinator.prevChartTotalGpuMs`), chart navigation (`chartCoordinator.scrollX`,
@@ -1244,6 +1247,22 @@ struct UpperContentView: View {
                 displayIndices: promotedPairs.map { $0.0 }
             )
         }
+        // Stored preferences found unusable at launch; opened from
+        // `handleBodyOnAppear` when there are any.
+        .sheet(isPresented: $showInvalidStoredSettingsSheet) {
+            InvalidStoredSettingsSheet(
+                trainingParams: trainingParams,
+                onClose: { showInvalidStoredSettingsSheet = false }
+            )
+        }
+        // A session load stopped on saved settings it cannot use as found.
+        .sheet(item: $session.sessionSettingsReview) { review in
+            SessionSettingsReviewSheet(
+                review: review,
+                onResumeWithReplacements: { session.acceptSessionSettingsReview(review) },
+                onDoNotResume: { session.declineSessionSettingsReview(review) }
+            )
+        }
     }
 
     // MARK: - body sub-views
@@ -1709,6 +1728,9 @@ struct UpperContentView: View {
     /// would stall a backgrounded `exec`-launched process.
     @MainActor
     private func handleBodyOnAppear() {
+        if !trainingParams.invalidStoredSettings.isEmpty {
+            showInvalidStoredSettingsSheet = true
+        }
         wireMenuCommandHub()
         syncMenuCommandHubState()
         // Begin the always-on tactical-probe watcher. Idempotent so

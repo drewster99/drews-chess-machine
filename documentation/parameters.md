@@ -22,6 +22,24 @@ Label-smoothing coefficient on the policy CE target. ε=0 = one-hot played-move 
 
 **Type:** Double · **Range:** 0.0..0.9 · **Default:** 0.1 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
+### policy_label_smoothing_mode
+
+How the policy CE target spreads its label-smoothing mass over the legal moves: 0 = fixed total (Policy Label Smoothing ε is the total, split evenly over all legal moves, so the mass per alternative shrinks as the number of legal moves grows), 1 = per move (every non-played legal move gets Policy Label Smoothing Per Move δ, so the total grows with the number of legal moves, capped at Policy Label Smoothing Per Move Cap and shared equally above it). Fixed total ignores δ and the cap; per move ignores ε.
+
+**Type:** Int · **Range:** 0..1 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### policy_label_smoothing_per_move
+
+Per-move label-smoothing mass, used only when Policy Label Smoothing Mode = 1 (per move). Every non-played legal move gets δ and the played move gets the rest: target = (1 − δ·(n−1))·one_hot(played) + δ·(other legal moves), n = number of legal moves, so the trained gap between the played move and each alternative is nearly independent of n. The total δ·(n−1) is capped by Policy Label Smoothing Per Move Cap. A position with one legal move gets an exact one-hot. δ=0 = one-hot. Range [0, 0.05].
+
+**Type:** Double · **Range:** 0.0..0.05 · **Default:** 0.0033 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### policy_label_smoothing_per_move_cap
+
+Cap on the total per-move smoothing mass δ·(n−1), used only when Policy Label Smoothing Mode = 1 (per move). Wide positions (up to ~218 legal moves) would otherwise give the played move little or no target mass. Above the cap the capped total is shared equally over the non-played legal moves. In the complement (negative-advantage) target the played move gets the same per-alternative mass, min(δ, cap/(n−1)), so it never gets more than any other legal move. Same ceiling as Policy Label Smoothing ε. Range [0, 0.9].
+
+**Type:** Double · **Range:** 0.0..0.9 · **Default:** 0.5 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
 ### value_label_smoothing_epsilon
 
 Label-smoothing coefficient on the value-head W/D/L cross-entropy target. The target is built in-graph as (1−ε)·one_hot(1−z) + ε·(1/3), where 1−z maps the play-time outcome z ∈ {+1,0,−1} to the [win,draw,loss] slot. ε=0 = hard one-hot on the game result. ε>0 gives the value CE a reachable finite-logit equilibrium instead of ±∞, the same way Policy Label Smoothing does for the policy CE. Range [0, 0.5].

@@ -1242,9 +1242,9 @@ final class ChessTrainer: @unchecked Sendable {
     /// naturally weaker than the value head's (z−v)². If the policy
     /// head is starving for signal early, raise `policyLossWeight`
     /// (or lower `valueLossWeight`) — the prior `K=5` default did
-    /// the former implicitly.
-    static let policyLossWeightDefault: Float = 1.0
-    static let valueLossWeightDefault: Float = 1.0
+    /// the former implicitly. Read from the declared training parameters.
+    static let policyLossWeightDefault: Float = Float(PolicyLossWeight.declaredDefault)
+    static let valueLossWeightDefault: Float = Float(ValueLossWeight.declaredDefault)
 
     var learningRate: Float
     /// Base batch size at which `learningRate` and `weightDecayC`
@@ -1385,8 +1385,9 @@ final class ChessTrainer: @unchecked Sendable {
 
     /// Per-move smoothing mass δ: in `.perMove` mode every non-played legal
     /// move's target, until the total `δ·(n − 1)` reaches
-    /// `policyLabelSmoothingPerMoveCap`. Also the played move's floor in the
-    /// complement target. Fed each step as a scalar placeholder.
+    /// `policyLabelSmoothingPerMoveCap`. The played move's floor in the
+    /// complement target is that same per-alternative mass. Fed each step as
+    /// a scalar placeholder.
     var policyLabelSmoothingPerMove: Float
 
     /// Cap on the per-move mode's total smoothing mass; above it the capped
@@ -2040,33 +2041,34 @@ final class ChessTrainer: @unchecked Sendable {
     // MARK: Init
 
     init(
-        // Mirrors the `LearningRate` TrainingParameter default; 1e-3 is a
-        // bf16-appropriate floor (smaller LRs produce sub-ULP, no-op weight
-        // updates under the bf16 weight path). The live session always
-        // passes an explicit value from TrainingParameters, so this is only
-        // a test / fallback default.
-        learningRate: Float = 1e-3,
-        entropyRegularizationCoeff: Float = 0.0,
+        // Every production trainer is built through `TrainerHyperparameters`
+        // with explicit values; these defaults serve tests and the timing
+        // sweeps. Where a default matches its declared training parameter it
+        // is read from the declaration, so the two cannot drift apart.
+        learningRate: Float = Float(LearningRate.declaredDefault),
+        entropyRegularizationCoeff: Float = Float(EntropyBonus.declaredDefault),
         drawPenalty: Float = 0.1,
         weightDecayC: Float = ChessTrainer.weightDecayCDefault,
         gradClipMaxNorm: Float = ChessTrainer.gradClipMaxNormDefault,
         policyLossWeight: Float = ChessTrainer.policyLossWeightDefault,
         valueLossWeight: Float = ChessTrainer.valueLossWeightDefault,
-        illegalMassPenaltyWeight: Float = 1.0,
-        policyLabelSmoothingEpsilon: Float = 0.1,
-        policyLabelSmoothingMode: PolicyLabelSmoothingMode = .fixedTotal,
-        policyLabelSmoothingPerMove: Float = 0.0033,
-        policyLabelSmoothingPerMoveCap: Float = 0.5,
+        illegalMassPenaltyWeight: Float = Float(IllegalMassWeight.declaredDefault),
+        policyLabelSmoothingEpsilon: Float = Float(PolicyLabelSmoothingEpsilon.declaredDefault),
+        policyLabelSmoothingMode: PolicyLabelSmoothingMode = PolicyLabelSmoothingMode(
+            persistedRawValue: PolicyLabelSmoothingModeParameter.declaredDefault
+        ),
+        policyLabelSmoothingPerMove: Float = Float(PolicyLabelSmoothingPerMove.declaredDefault),
+        policyLabelSmoothingPerMoveCap: Float = Float(PolicyLabelSmoothingPerMoveCap.declaredDefault),
         valueLabelSmoothingEpsilon: Float = 0.0,
         momentumCoeff: Float = 0.0,
-        useSignedAdvantageComplementCE: Bool = true,
-        sqrtBatchScalingForLR: Bool = true,
+        useSignedAdvantageComplementCE: Bool = SignedAdvantageComplementCE.declaredDefault,
+        sqrtBatchScalingForLR: Bool = SqrtBatchScalingLR.declaredDefault,
         lrWarmupSteps: Int = 100,
         arch: NetworkArchitecture = .current,
         executableOptimizationLevel: MPSGraphOptimization = .level1,
         splitWorkingWeightSync: Bool = true,
         bf16CastInForward: Bool = false,
-        policyTailPrecision: ChessNetwork.PolicyTailPrecision = .default,
+        policyTailPrecision: ChessNetwork.PolicyTailPrecision = .process,
         disableAutoLayoutConversion: Bool = false,
         reducedPrecisionFastMathRaw: UInt? = nil
     ) throws {

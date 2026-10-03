@@ -332,7 +332,7 @@ public enum PolicyLabelSmoothingPerMove: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Policy Label Smoothing Per Move Cap",
-    description: "Cap on the total per-move smoothing mass δ·(n−1), used only when Policy Label Smoothing Mode = 1 (per move). Wide positions (up to ~218 legal moves) would otherwise give the played move little or no target mass. Above the cap the capped total is shared equally over the non-played legal moves. Also caps the played move's mass in the complement (negative-advantage) target, which is δ. Same ceiling as Policy Label Smoothing ε. Range [0, 0.9].",
+    description: "Cap on the total per-move smoothing mass δ·(n−1), used only when Policy Label Smoothing Mode = 1 (per move). Wide positions (up to ~218 legal moves) would otherwise give the played move little or no target mass. Above the cap the capped total is shared equally over the non-played legal moves. In the complement (negative-advantage) target the played move gets the same per-alternative mass, min(δ, cap/(n−1)), so it never gets more than any other legal move. Same ceiling as Policy Label Smoothing ε. Range [0, 0.9].",
     default: 0.5,
     range: 0.0...0.9,
     category: "Optimizer",
@@ -1402,6 +1402,12 @@ public final class TrainingParameters {
     public var maxPeriodicAutosavesKept: Int { didSet { if !Self.commitAssignment(MaxPeriodicAutosavesKept.self, value: maxPeriodicAutosavesKept) { maxPeriodicAutosavesKept = oldValue } } }
     public var automaticSavePruningEnabled: Bool { didSet { if !Self.commitAssignment(AutomaticSavePruningEnabled.self, value: automaticSavePruningEnabled) { automaticSavePruningEnabled = oldValue } } }
 
+    /// Stored preferences found unusable at launch (wrong type or outside the
+    /// declared range). The app runs on each one's declared default meanwhile;
+    /// the settings list shows them until the user resets each one
+    /// (`resetInvalidStoredSetting(id:)`).
+    public private(set) var invalidStoredSettings: [InvalidStoredSetting]
+
     private init() {
         // Read each value from UserDefaults (or definition default if absent / invalid).
         // didSet does not fire on initial assignment in init — which is what we want.
@@ -1491,6 +1497,7 @@ public final class TrainingParameters {
         self.periodicAutosaveIntervalSec = Self.read(PeriodicAutosaveIntervalSec.self)
         self.maxPeriodicAutosavesKept = Self.read(MaxPeriodicAutosavesKept.self)
         self.automaticSavePruningEnabled = Self.read(AutomaticSavePruningEnabled.self)
+        self.invalidStoredSettings = Self.invalidStoredValuesFound.value.values.sorted { $0.id < $1.id }
     }
 
     // MARK: Snapshot
@@ -1811,45 +1818,108 @@ public final class TrainingParameters {
         read(key)
     }
 
+    /// The value `init` and `persistedValue(_:)` use for `key`: the stored
+    /// value when it is usable, else the declared default. An unusable stored
+    /// value is never silently replaced: it is recorded (see
+    /// `invalidStoredSettings`), logged once, and left in `UserDefaults`
+    /// untouched until the user resets it.
     private nonisolated static func read<K: TrainingParameterKey>(_ key: K.Type) -> K.Value {
-        let defaults = UserDefaults.standard
+        switch inspectStored(key, in: .standard) {
+        case .absent:
+            return K.declaredDefault
+        case .valid(let value):
+            return value
+        case .invalid(let finding):
+            recordInvalidStoredValue(finding)
+            return K.declaredDefault
+        }
+    }
 
-        if let object = defaults.object(forKey: K.id) {
-            switch K.definition.type {
-            case .bool:
-                if let b = object as? Bool {
-                    let raw: ParameterValue = .bool(b)
-                    if (try? K.definition.validate(raw)) != nil,
-                       let decoded = try? K.decode(raw) {
-                        return decoded
-                    }
-                }
-            case .int:
-                if let n = object as? NSNumber {
-                    let raw: ParameterValue = .int(n.intValue)
-                    if (try? K.definition.validate(raw)) != nil,
-                       let decoded = try? K.decode(raw) {
-                        return decoded
-                    }
-                }
-            case .double:
-                if let n = object as? NSNumber {
-                    let raw: ParameterValue = .double(n.doubleValue)
-                    if (try? K.definition.validate(raw)) != nil,
-                       let decoded = try? K.decode(raw) {
-                        return decoded
-                    }
-                }
+    /// What `defaults` holds for one parameter.
+    enum StoredInspection<Value: Sendable>: Sendable {
+        case absent
+        case valid(Value)
+        case invalid(InvalidStoredSetting)
+    }
+
+    /// Classify the stored entry for `key` in `defaults`: absent, usable, or
+    /// unusable with the reason. Pure apart from reading `defaults`, so tests
+    /// run it against a private suite.
+    nonisolated static func inspectStored<K: TrainingParameterKey>(
+        _ key: K.Type,
+        in defaults: UserDefaults
+    ) -> StoredInspection<K.Value> {
+        guard let object = defaults.object(forKey: K.id) else { return .absent }
+        let definition = K.definition
+        let replacement = definition.defaultValue.displayText
+        func invalid(_ found: String, _ problem: String) -> StoredInspection<K.Value> {
+            .invalid(InvalidStoredSetting(
+                id: K.id, name: definition.name, found: found, problem: problem, replacement: replacement
+            ))
+        }
+        let raw: ParameterValue
+        switch definition.type {
+        case .bool:
+            guard let b = object as? Bool else {
+                return invalid("\(object)", "stored as \(type(of: object)), not a true/false value")
             }
+            raw = .bool(b)
+        case .int:
+            guard let n = object as? NSNumber else {
+                return invalid("\(object)", "stored as \(type(of: object)), not a whole number")
+            }
+            raw = .int(n.intValue)
+        case .double:
+            guard let n = object as? NSNumber else {
+                return invalid("\(object)", "stored as \(type(of: object)), not a number")
+            }
+            raw = .double(n.doubleValue)
         }
-        // Fall back to definition default. If the baked-in default doesn't
-        // round-trip, that's a programmer error — surface it rather than
-        // crash with an opaque `try!`.
         do {
-            return try K.decode(K.definition.defaultValue)
+            try definition.validate(raw)
         } catch {
-            preconditionFailure("default value for \(K.id) does not round-trip through decode: \(error)")
+            return invalid(raw.displayText, "\(error)")
         }
+        do {
+            return .valid(try K.decode(raw))
+        } catch {
+            return invalid(raw.displayText, "\(error)")
+        }
+    }
+
+    /// Unusable stored values found by `read`, keyed by parameter id. Read
+    /// can run before the singleton exists (the CLI's `persistedValue`) and
+    /// more than once per key, so findings are collected here, deduplicated,
+    /// and logged the first time each is seen.
+    private nonisolated static let invalidStoredValuesFound = SyncBox<[String: InvalidStoredSetting]>([:])
+
+    private nonisolated static func recordInvalidStoredValue(_ finding: InvalidStoredSetting) {
+        let isNew = invalidStoredValuesFound.mutate { found -> Bool in
+            guard found[finding.id] == nil else { return false }
+            found[finding.id] = finding
+            return true
+        }
+        guard isNew else { return }
+        let line = "[PARAM-INVALID] \(finding.id): stored value \(finding.found) cannot be used (\(finding.problem)); "
+            + "using \(finding.replacement) until it is reset — the stored value is left as found"
+        SessionLogger.shared.log(line)
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+    }
+
+    /// Reset one unusable stored value (from `invalidStoredSettings`) to the
+    /// declared default the app is already using, writing it to
+    /// `UserDefaults` — the user's explicit choice from the settings list.
+    public func resetInvalidStoredSetting(id: String) throws {
+        guard invalidStoredSettings.contains(where: { $0.id == id }) else {
+            throw TrainingConfigError.unknownParameter(id: id)
+        }
+        guard let key = Self.allKeys.first(where: { $0.id == id }) else {
+            throw TrainingConfigError.unknownParameter(id: id)
+        }
+        try applyOne(id: id, raw: key.definition.defaultValue)
+        invalidStoredSettings.removeAll { $0.id == id }
+        Self.invalidStoredValuesFound.modify { $0[id] = nil }
+        SessionLogger.shared.log("[PARAM-INVALID] \(id): reset to \(key.definition.defaultValue.displayText) by the user")
     }
 
     /// When true, the `didSet` persisters skip writing to `UserDefaults`.
@@ -1910,6 +1980,35 @@ public final class TrainingParameters {
         Self.admittingSessionValueOutsideDeclaredRange = true
         defer { Self.admittingSessionValueOutsideDeclaredRange = false }
         self[keyPath: keyPath] = value
+    }
+
+    /// Restore a `Double` parameter whose session copy is stored as `Float`.
+    ///
+    /// Sessions keep the trainer's hyperparameters as `Float` (what the graph
+    /// is fed). Widening one with `Double(_:)` keeps the float's binary value,
+    /// so a saved 0.1 comes back as 0.10000000149011612 — which then persists
+    /// to `UserDefaults`, shows up in `parameters.json`, and can land a value
+    /// typed at a declared bound just outside it. The session value is the
+    /// number that was set, so it is widened through
+    /// `doubleFromSavedFloat(_:)` instead.
+    func restoreFromSession<K: TrainingParameterKey>(
+        _ key: K.Type,
+        savedFloat: Float,
+        into keyPath: ReferenceWritableKeyPath<TrainingParameters, Double>
+    ) where K.Value == Double {
+        restoreFromSession(K.self, Self.doubleFromSavedFloat(savedFloat), into: keyPath)
+    }
+
+    /// The `Double` whose shortest decimal text is the same as `saved`'s: the
+    /// value that was typed or computed before it was narrowed to `Float`.
+    /// `Float.description` is the shortest text that reads back as the same
+    /// `Float` (including `nan` / `inf`), and every such text parses as a
+    /// `Double`, so a failure here is a toolchain defect, not bad data.
+    nonisolated static func doubleFromSavedFloat(_ saved: Float) -> Double {
+        guard let value = Double(saved.description) else {
+            preconditionFailure("Float.description of \(saved) did not parse as a Double")
+        }
+        return value
     }
 
     /// The singleton's setter hook: validate the newly assigned value against

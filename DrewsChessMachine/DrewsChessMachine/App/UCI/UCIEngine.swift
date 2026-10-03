@@ -59,6 +59,7 @@ enum UCIEngine {
         if let path = SessionLogger.shared.activeLogPath {
             SessionLogger.shared.log("[UCI] session log: \(path)")
         }
+        SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
 
         var session = Session()
         if let path = modelPath {

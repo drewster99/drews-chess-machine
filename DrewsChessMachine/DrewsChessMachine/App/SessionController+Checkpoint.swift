@@ -394,12 +394,13 @@ extension SessionController {
                 parentModelID: "",
                 notes: "Session checkpoint (\(diskTag))"
             )
-            let trainerMetadata = ModelCheckpointMetadata(
+            let trainerMetadata = ModelCheckpointMetadata.trainerFile(
                 creator: diskTag,
                 trainingStep: trainingStep,
                 parentModelID: championID,
                 notes: "Trainer lineage at session checkpoint (\(diskTag))",
-                trainerSchedule: trainerSnapshot.schedule
+                schedule: trainerSnapshot.schedule,
+                policyTailPrecision: trainer.policyTailPrecision
             )
             let now = Int64(Date().timeIntervalSince1970)
             // Champion and trainer share a topology; the trainer was built to
@@ -709,6 +710,41 @@ extension SessionController {
     /// Xcode 27 / macOS 27 beta bf16 training stomp. Driven by the auto-resume
     /// sheet's "Load as float32" checkbox.
     func loadSessionFrom(url: URL, startAfterLoad: Bool = false, forceFloat32: Bool = false) {
+        loadSessionFrom(url: url, startAfterLoad: startAfterLoad, forceFloat32: forceFloat32, acceptedReplacements: [])
+    }
+
+    /// Resume the load the user reviewed, replacing the listed saved settings
+    /// with the current ones.
+    func acceptSessionSettingsReview(_ review: SessionSettingsReview) {
+        sessionSettingsReview = nil
+        let ids = Set(review.findings.map(\.id))
+        SessionLogger.shared.log(
+            "[RESUME] user accepted replacements for \(ids.sorted().joined(separator: ", ")) in \(review.sessionURL.lastPathComponent)"
+        )
+        loadSessionFrom(
+            url: review.sessionURL,
+            startAfterLoad: review.startAfterLoad,
+            forceFloat32: review.forceFloat32,
+            acceptedReplacements: ids
+        )
+    }
+
+    /// The user chose not to resume a session with unusable saved settings.
+    func declineSessionSettingsReview(_ review: SessionSettingsReview) {
+        sessionSettingsReview = nil
+        SessionLogger.shared.log("[RESUME] user declined to resume \(review.sessionURL.lastPathComponent) (unusable saved settings)")
+        checkpoint?.setCheckpointStatus("Not resumed: \(review.sessionURL.lastPathComponent) has unusable saved settings", kind: .error)
+    }
+
+    /// `acceptedReplacements`: ids of saved settings the user has already
+    /// agreed to replace (`acceptSessionSettingsReview`). Any other unusable
+    /// saved setting stops the load for review before anything is built.
+    private func loadSessionFrom(
+        url: URL,
+        startAfterLoad: Bool,
+        forceFloat32: Bool,
+        acceptedReplacements: Set<String>
+    ) {
         // In-function guards (belt-and-suspenders with menu disable).
         if isBuildingOrBusyProvider() {
             onRefuseMenuAction(busyReasonProvider())
@@ -740,6 +776,32 @@ extension SessionController {
                     checkpoint?.setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
                     SessionLogger.shared.log("[CHECKPOINT] Load session decode failed: \(error.localizedDescription)")
                 }
+                if startAfterLoad { onResumeFinished() }
+                return
+            }
+
+            // 1b. Saved settings that cannot be used as found stop the load
+            //     until the user reviews them; nothing is replaced silently.
+            let findings = loaded.state.invalidSavedSettings(current: TrainingParameters.shared.snapshot())
+            let unaccepted = findings.filter { !acceptedReplacements.contains($0.id) }
+            if !unaccepted.isEmpty {
+                checkpoint?.checkpointSaveInFlight = false
+                for finding in unaccepted {
+                    SessionLogger.shared.log(
+                        "[RESUME] ERROR \(url.lastPathComponent): saved \(finding.id) = \(finding.found) cannot be used "
+                            + "(\(finding.problem)); offered replacement: \(finding.replacement)"
+                    )
+                }
+                checkpoint?.setCheckpointStatus(
+                    "Session \(url.lastPathComponent) has \(unaccepted.count) unusable saved setting(s) — review to resume",
+                    kind: .error
+                )
+                sessionSettingsReview = SessionSettingsReview(
+                    sessionURL: url,
+                    startAfterLoad: startAfterLoad,
+                    forceFloat32: forceFloat32,
+                    findings: findings
+                )
                 if startAfterLoad { onResumeFinished() }
                 return
             }
@@ -782,6 +844,7 @@ extension SessionController {
             case .success:
                 champion.identifier = ModelID(value: loaded.championFile.modelID)
                 pendingLoadedSession = loaded
+                pendingLoadedSessionAcceptedReplacements = Set(findings.map(\.id))
                 networkStatus = """
                     Loaded session \(loaded.state.sessionID)
                     Champion: \(loaded.championFile.modelID)
