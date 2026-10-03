@@ -1,0 +1,12 @@
+find-cli (partial, truncated after #4):
+1 HIGH: cross-epoch exact-resume refeed (CorpusReplayRunner:1291-1302,1608,1640-1644,1722-1728,1787,1933-1941) shares nextGame() wrap with default epochLimit (epochs ?? (stepLimit==nil ? 1 : nil)); refeed hits nil -> corpusExhausted, logs reconstructed, exits at step 0, final save resumePoint (0,0,epoch1) -> later resume retrains games. Stale comments 1275-1283, 1712-1717. Fix: throw if refeed ends before target; assert buffer.count == populatedPlies.
+2 MED (likely): resume of run started mid-corpus (--start-game-index) refeeds games before parent's start (reconstructStart = max(0, until - gamesBack), :1301); CorpusPosition lacks parent feed start; savedPlies only logged (1306,1728); verdict EXACT.
+3 MED: TrainVsUci save holds ReplayBuffer lock during multi-GB write (ReplayBuffer:2936-2937) while driver runs (TrainVsUciRunner:586-616) -> game flush (TrainVsUciDriver:534) blocks cooperative thread; restore via Task.detached multi-GB sync read (TrainVsUciRunner:390-392).
+4 MED-LOW (likely): TrainVsUciSession:72-97 symlinked model refused (attributesOfItem lstat) though doc says links followed [truncated]
+4 (full) MED-LOW: TrainVsUciSession:72-97 attributesOfItem doesn't follow final symlink -> symlinked model refused; doc says followed.
+5 MED-LOW: TrainVsUciSession session.json records unused values: maxPliesPerGame p.selfPlayMaxPliesPerGame (:193) vs actual config.maxPliesPerGame (--max-plies default 400); replayRatioTarget (:159) though runner says it's a false claim; trainingPositionsSeen = cumSteps * current batch (:130).
+6 LOW-MED: Darwin.exit(2) inside runReplay/runTraining (CorpusReplayRunner:1201,1226,1241,1294,1337; TrainVsUciRunner:226,257) -> async SessionLogger lines ([RESUME] NOT EXACT verdict) lost; kills xctest process on refusal paths. Fix: throw.
+7 LOW: RunStreams decode next_game_serial / opponent_game_indices unvalidated (LineageRecord:672-674) -> GameSerialCounter precondition (:22) trap; Int.max index overflows (TrainVsUciDriver:573,596). [dup training#4]
+8 LOW: CliTrainingRecorder:80-85 misplaced doc (setTerminationReason vs setFinalLineage); writeJSON (:173-176) unchecked replace, test-only.
+9 LOW: TrainVsUciSession:243 --checkpoint-stem with dot refused (pathExtension).
+10 LOW: CorpusReplayRunner:1062-1065 default out-model <startstem>-replay-latest + :417-419 replacingOccurrences replaces every marker -> X-replay-seg1-step1000-replay-seg1-step1000 names on resume from X-replay-latest.

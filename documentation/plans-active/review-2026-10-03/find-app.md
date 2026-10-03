@@ -1,0 +1,11 @@
+find-app:
+1 HIGH (likely): session & promotion saves capture sampler/dropout-stream/serial state AFTER gates resume (Checkpoint:399,429,446-449; Arena:452-453,556-559,644-647; Lineage runStreamsForSave :281-289) -> not a consistent cut; promotion doesn't rewind dropout stream/sampler; exact resume of such saves reports restored but is off by k steps.
+2 HIGH/MED: guiResumeGaps (Lineage:172-174,195-207) adds rngSampler/serials only when streams missing; inheritedRunSeed nil for conflicting --seed or derivation mismatch -> fresh seed, serials 0, sampler not restored, but no gap reported (Training:302-305).
+3 MED: every GUI resume restores RandomSeed with saved nil -> refuseExact -> false "[RESUME] NOT EXACT: random_seed" line; random_seed_mode held unseeded in-process; stale comment (Training:247-276 vs 302-311).
+4 MED: replay buffer restore failure logs "continuing with empty buffer" but no .buffer gap; sampler restored anyway (Training:1197-1226; Lineage:169-171).
+5 MED: Save Champion / session save stamp champion with trainer's lineage (Lineage:296-302; Checkpoint ~92-100, 443-444); championOrigin (Arena:573) ignored. [dup of persist#3]
+6 MED (likely): ensureChampionBuilt (SessionController:1159) drops trainer but keeps lineageTracker -> later start: negativeSegmentCount abort or false continuity; ensureTrainer comment false (:999-1001).
+7 MED: lineage-start failure consumes pendingLoadedSession (Training:1291-1312) -> next start resets trainer, session trainer state lost.
+8 LOW (likely): promotion fold/reset/rebaseline of fed counts after gates resume, non-atomic (Arena:546-548) -> cum_games undercount.
+9 LOW: second restore of LR/entropy outside SessionParameterResume (Training:753-756); replay ratio/workers/delay still hand-written [RESUME-PARAM] (498-556).
+10 LOW: (a) lineage parent "unknown"/"?" defaults (Lineage:86, Arena:573); (b) arenaConcurrency clamped before resolver (Training:374); (c) misplaced doc / two --init-seed parsers (App ~1522-1547); (d) stale comments re atomic writes/flush before _exit (Training:2427-2444) and SessionLogger async lines lost before _exit; (e) exit 0 after results.json write FAILED (2491-2495,2536-2540,2735-2739,856-860); (f) ArchSweepCLI depends on ProbeModelCLI helpers.

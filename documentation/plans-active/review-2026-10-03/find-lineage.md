@@ -1,0 +1,6 @@
+find-lineage:
+1 HIGH: derive trained-source guard bypassable: ModelDerivation.requireUntrainedSource (:480-488, called :367-369) only reads raw training_step (missing/0 = fresh). Graft output has no training_step (ModelGraft:380-389); GUI Save Champion writes trainingStats?.steps (nil) (SessionController+Checkpoint:88); session save writes ?? 0 (:342). Graft trained -> derive --set-neutral-init zeroes trained layers. False docs ModelDerivation:916-919, :28-33. Fix: use lineage cum_trainer_step / trainerClock; refuse when unrecorded.
+2 MED: LineageTracker.untrainedCopyRecord (:341-349): sourceStepTotal = trainerCompletedSteps which falls back to segment-local training_step for model-only files -> records wrong cum_trainer_step (e.g. 300k vs 1.39M) for pre-v7 resumed-segment sources; violates "never guessed". Only trainer_completed_steps should feed; else null.
+3 MED (unsure): BehaviorFingerprint (:163-173) hashes GPU train-step loss + weights bits; GPU not bit-reproducible under load (plan :2420) -> spurious build/os gap -> --resume-exact refuses after any rebuild. Test: fingerprint twice in-process under load.
+4 LOW: LineageRecord:663 master_seed UInt64(seedText) accepts "+5"; init_seed (:565) rejects.
+5 LOW: LineageTracker:232 wallSec = max(0, ...) silently clamps clock skew.
