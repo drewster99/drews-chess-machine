@@ -385,14 +385,23 @@ def print_lineage_table(sessions_dir):
     per-segment bases, so there is nothing in it to fill; this shows the measured
     bases (steps, games, trainer-step and wall seconds) each Play-and-Train
     segment carried, for files written at format v7 and later. Returns the exit
-    status: 1 when a file is refused or unreadable, else 0."""
+    status: 1 when a file is refused or unreadable, else 0.
+
+    Only each session folder's trainer.safetensors is read. Its record is the
+    run's own progress at the save. The champion file holds weights from an
+    earlier point (the last promotion, or the file the champion was loaded
+    from), so its record may describe an earlier segment, or another run
+    altogether; mixed in, it would add that run to the table or contradict this
+    segment's bases. A GUI segment's files carry several model IDs (the trainer
+    generation changes at each promotion), listed as the segment's `model_ids`."""
     sys.path.insert(0, os.path.join(HERE, "..", "..", "scripts"))
     import dcm_lineage
     paths = [p for p in dcm_lineage.model_paths(sessions_dir)
-             if os.path.basename(os.path.dirname(p)).endswith(dcm_lineage.SESSION_FOLDER_SUFFIX)]
+             if os.path.basename(os.path.dirname(p)).endswith(dcm_lineage.SESSION_FOLDER_SUFFIX)
+             and os.path.basename(p) == dcm_lineage.SESSION_TRAINER_FILENAME]
     recorded, unrecorded, errors = dcm_lineage.scan_files(paths)
     recorded = [f for f in recorded if f.record["invocation"]["path_kind"] == "gui"]
-    print(f"scanned {len(paths)} session file(s): {len(recorded)} with a GUI lineage record, "
+    print(f"scanned {len(paths)} session trainer file(s): {len(recorded)} with a GUI lineage record, "
           f"{len(unrecorded)} written before lineage records (unrecorded), {len(errors)} refused or unreadable")
     for path, message in sorted(errors.items()):
         print(f"  REFUSED {path}: {message}")
@@ -410,8 +419,9 @@ def main():
     ap.add_argument("--allow-shrink", action="store_true",
                     help="allow a rebuild to drop rows / blank values a CSV holds (each one is printed first)")
     ap.add_argument("--lineage-table", metavar="SESSIONS_DIR",
-                    help="instead of rebuilding: print (read-only) the segment table the lineage records "
-                         "(format v7+) of the GUI session files under SESSIONS_DIR/*.dcmsession/ state")
+                    help="instead of rebuilding: print (read-only) the segment table stated by the lineage "
+                         "records (format v7+) of the GUI sessions' trainer files, "
+                         "SESSIONS_DIR/*.dcmsession/trainer.safetensors")
     args = ap.parse_args()
     if args.lineage_table:
         sys.exit(print_lineage_table(os.path.expanduser(args.lineage_table)))

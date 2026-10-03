@@ -60,6 +60,17 @@ MAX_HEADER_BYTES = dcm_arch.MAX_HEADER_BYTES
 DERIVED_SEGMENT_FIELDS = ("lineage_run_id", "segment_id", "model_id", "date", "cumstep_base",
                           "games_base", "elapsed_base_sec", "wall_base_sec", "device")
 
+# Code paths (`invocation.path_kind`) whose segments write files under more than one
+# model ID. A GUI session folder holds trainer.safetensors (the trainer generation's
+# ID) and champion.safetensors (the champion's ID), and the trainer's ID changes at
+# every promotion within one segment. Every other path writes one model ID per
+# segment — corpus replay and train-vs-UCI mint it once per process — so there two
+# IDs in one segment are a contradiction and are refused. A GUI segment reports its
+# IDs as `model_ids` instead of `model_id`; that is a description of the segment, not
+# a registry field, so it is not in DERIVED_SEGMENT_FIELDS (the registry tools read
+# only replay and train-vs-UCI files).
+MULTIPLE_MODEL_ID_PATH_KINDS = frozenset({"gui"})
+
 
 class LineageError(ValueError):
     """A header whose lineage the app would refuse, or files that contradict
@@ -212,8 +223,10 @@ def _local_date(unix_seconds):
 class DerivedSegment:
     """One segment of a lineage run, as the registry describes a segment.
 
-    `fields` holds the derived registry values that are known; `unrecorded`
-    names the derivable fields whose source total the record holds as null.
+    `fields` holds the derived registry values that are known (a GUI segment
+    holds `model_ids`, every model ID its files carry, in place of `model_id`;
+    see MULTIPLE_MODEL_ID_PATH_KINDS); `unrecorded` names the derivable fields
+    whose source total the record holds as null.
     `files` lists the checkpoint files of this segment (empty for a segment
     known only from a later record's history)."""
 
@@ -244,6 +257,9 @@ class DerivedRun:
 # A session folder's name ends with this (CheckpointPaths.makeSessionDirectoryName);
 # its staging folder adds a further extension and is never read.
 SESSION_FOLDER_SUFFIX = ".dcmsession"
+# SessionCheckpointLayout.trainerFilename: a session folder's trainer file, whose
+# record is the run's own progress at the save.
+SESSION_TRAINER_FILENAME = "trainer.safetensors"
 
 
 def display_name(path):
@@ -398,9 +414,10 @@ def derive_runs(recorded):
     """Group FileLineage entries by lineage run and derive each run's segments.
 
     Returns {lineage_run_id: DerivedRun}. Raises LineageError when files of one
-    segment disagree about what they should share (model ID, segment index, or
-    the segment's bases) — a contradiction is reported, never resolved by
-    picking one."""
+    segment disagree about what they should share (segment index, path kind,
+    the segment's bases, and — except on a path in MULTIPLE_MODEL_ID_PATH_KINDS,
+    whose segment reports its `model_ids` — model ID), or a file has no model ID:
+    a contradiction is reported, never resolved by picking one."""
     by_run = {}
     for file in recorded:
         by_run.setdefault(file.record["run"]["lineage_run_id"], []).append(file)
@@ -417,14 +434,22 @@ def derive_runs(recorded):
             if len(indices) != 1:
                 raise LineageError(f"lineage run {run_id} segment {segment_id}: files disagree on "
                                    f"segment_index {sorted(indices)}")
-            model_ids = {f.metadata.get("model_id") for f in segment_files}
-            if len(model_ids) != 1 or None in model_ids:
+            path_kinds = {f.record["invocation"]["path_kind"] for f in segment_files}
+            if len(path_kinds) != 1:
                 raise LineageError(f"lineage run {run_id} segment {segment_id}: files disagree on "
-                                   f"model_id {sorted(str(m) for m in model_ids)}")
+                                   f"path_kind {sorted(path_kinds)}")
+            model_ids = {f.metadata.get("model_id") for f in segment_files}
+            if None in model_ids:
+                raise LineageError(f"lineage run {run_id} segment {segment_id}: a file has no model_id")
+            single_model = not (path_kinds & MULTIPLE_MODEL_ID_PATH_KINDS)
+            if single_model and len(model_ids) != 1:
+                raise LineageError(f"lineage run {run_id} segment {segment_id}: files disagree on "
+                                   f"model_id {sorted(model_ids)}")
             views = []
             for f in segment_files:
                 fields, unrecorded = _segment_fields(f.record, run_origin)
-                fields["model_id"] = f.metadata["model_id"]
+                if single_model:
+                    fields["model_id"] = f.metadata["model_id"]
                 views.append((fields, tuple(sorted(unrecorded)), f))
             # The most progressed file's view is the one reported; every other
             # file must agree with it.
@@ -438,7 +463,10 @@ def derive_runs(recorded):
                         f"{reference_fields} (unrecorded {list(reference_unrecorded)})")
             index = indices.pop()
             ordered = sorted(segment_files, key=_progress)
-            segments[index] = DerivedSegment(index, reference_fields, list(reference_unrecorded),
+            fields = dict(reference_fields)
+            if not single_model:
+                fields["model_ids"] = sorted(model_ids)
+            segments[index] = DerivedSegment(index, fields, list(reference_unrecorded),
                                              [f.name for f in ordered], "file")
         for summary in latest_record_file.record["segments"]:
             index = summary["segment_index"]
@@ -482,7 +510,7 @@ def segment_table(derived):
             path_kinds=run.path_kinds, latest_file=run.latest_file,
             continues_unrecorded_history=run.continues_unrecorded_history,
             segments=[dict(segment_index=s.segment_index, source=s.source,
-                           **{k: s.fields[k] for k in DERIVED_SEGMENT_FIELDS if k in s.fields},
+                           **{k: s.fields[k] for k in DERIVED_SEGMENT_FIELDS + ("model_ids",) if k in s.fields},
                            unrecorded=s.unrecorded, files=s.files)
                       for s in run.segments])
     return out
