@@ -207,9 +207,9 @@ enum TrainVsUciRunner {
                     resumeGaps += ResumeGap.environmentGaps(
                         writtenBy: parentRecord, runningBuild: .current, runningDevice: .current)
                 } else {
-                    resumeGaps += [.lineage, .rngSampler, .serials, .params]
+                    resumeGaps += [.rngSampler, .serials, .params]
                 }
-                let exactness = ResumeExactness(gaps: resumeGaps)
+                let exactness = ResumeExactness.resume(of: file.lineageParent, gaps: resumeGaps)
                 emit(exactness.logLine)
                 if let refusal = exactness.refusal(accepting: config.acceptInexact) {
                     FileHandle.standardError.write(Data("error: \(refusal)\n".utf8))

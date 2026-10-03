@@ -79,7 +79,7 @@ enum RunProvenanceLine {
             if record.run.exactResume {
                 return "exact resume of \(parent)"
             }
-            return "resume of \(parent), not exact: \(record.run.notExactItems.joined(separator: ","))"
+            return "resume of \(parent), not exact: \(ResumeExactness.tokenList(record.run.notExactItems))"
         }
     }
 

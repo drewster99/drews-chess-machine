@@ -1154,7 +1154,7 @@ enum CorpusReplayRunner {
             } else {
                 // Written before lineage: no streams, feed phase, shard
                 // hashes or parameter snapshot to continue from.
-                resumeGaps += [.lineage, .rngSampler, .feedCarry, .params]
+                resumeGaps += [.rngSampler, .feedCarry, .params]
                 if let g = rm.builtByGit, g != BuildInfo.gitHash {
                     emit("[RESUME] WARNING checkpoint built by git \(g) but running \(BuildInfo.gitHash)")
                 }
@@ -1229,8 +1229,8 @@ enum CorpusReplayRunner {
         // One exactness decision for the resume (plan C3): logged once,
         // recorded in the segment's lineage, and refused unless
         // `--accept-inexact` names every gap (D-7).
-        let resumeExactness = ResumeExactness(gaps: resumeGaps)
-        if config.resumeExact {
+        let resumeExactness = startModelFile.map { ResumeExactness.resume(of: $0.lineageParent, gaps: resumeGaps) }
+        if config.resumeExact, let resumeExactness {
             emit(resumeExactness.logLine)
             if let refusal = resumeExactness.refusal(accepting: config.acceptInexact) {
                 FileHandle.standardError.write(Data("error: \(refusal)\n".utf8))
@@ -1340,7 +1340,7 @@ enum CorpusReplayRunner {
         // step time) continue across resumes without hand-entered bases.
         let lineageStart: LineageTracker.Start
         if let file = startModelFile, resumeSnapshot != nil {
-            lineageStart = .resume(parent: file.lineageParent, gaps: resumeExactness.gaps, legacyTotals: nil)
+            lineageStart = .resume(parent: file.lineageParent, gaps: resumeGaps, legacyTotals: nil)
         } else if let file = startModelFile {
             lineageStart = .branch(parent: file.lineageParent)
         } else {

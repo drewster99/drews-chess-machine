@@ -104,6 +104,23 @@ struct ResumeExactness: Equatable, Sendable {
         self.gaps = ResumeGap.allCases.filter(present.contains)
     }
 
+    /// The decision for a resume of `parent` missing `gaps`: a parent written
+    /// before lineage also lacks `lineage`. Every path decides through this —
+    /// the `[RESUME]` line, the `--resume-exact` refusal and the segment's
+    /// recorded `not_exact_items` (which the `[RUN]` line reports) all come
+    /// from the one value.
+    static func resume(of parent: LineageTracker.ParentFile, gaps: [ResumeGap]) -> ResumeExactness {
+        switch parent.lineage {
+        case .recorded: return ResumeExactness(gaps: gaps)
+        case .unrecorded: return ResumeExactness(gaps: gaps + [.lineage])
+        }
+    }
+
+    /// Gap tokens as both the `[RESUME]` and the `[RUN]` line list them.
+    static func tokenList(_ tokens: [String]) -> String {
+        tokens.joined(separator: ", ")
+    }
+
     var isExact: Bool { gaps.isEmpty }
 
     /// The tokens recorded in the lineage record's `not_exact_items`.
@@ -111,7 +128,7 @@ struct ResumeExactness: Equatable, Sendable {
 
     /// The one `[RESUME]` line every path logs.
     var logLine: String {
-        isExact ? "[RESUME] EXACT" : "[RESUME] NOT EXACT: " + tokens.joined(separator: ", ")
+        isExact ? "[RESUME] EXACT" : "[RESUME] NOT EXACT: " + Self.tokenList(tokens)
     }
 
     /// The refusal a `--resume-exact` gets when `accepted` does not name every

@@ -272,4 +272,26 @@ final class ExactResumeCompletionTests: XCTestCase {
         XCTAssertTrue(exactRecord.run.exactResume)
         XCTAssertEqual(exactRecord.run.notExactItems, [])
     }
+
+    /// The `[RUN]` line reports the same verdict as the `[RESUME]` line: both
+    /// come from the one decision, listed the same way.
+    func testTheRunLineAndTheResumeLineListTheSameGaps() throws {
+        let parentRecord = try LineageRecord.forTests(trainerCompletedSteps: 10, corpus: nil)
+        let parent = LineageTracker.ParentFile(modelID: "20261003-2-PRNT", contentSHA256: "cd", trainerCompletedSteps: 10,
+                                               lineage: .recorded(parentRecord), derivationHistory: [])
+        let gaps: [ResumeGap] = [.os, .buffer, .rngSampler]
+        let exactness = ResumeExactness.resume(of: parent, gaps: gaps)
+        let tracker = try LineageTracker(start: .resume(parent: parent, gaps: gaps, legacyTotals: nil),
+                                         pathKind: .vsuci, argv: ["dcm"], startedAt: Date(timeIntervalSince1970: 1_790_000_000),
+                                         segmentStartTrainerStep: 10)
+        let record = try tracker.startRecord(at: Date(timeIntervalSince1970: 1_790_000_000), trainerCompletedSteps: 10,
+                                             parameters: nil)
+        let runLine = RunProvenanceLine.line(record: record, seed: nil)
+        XCTAssertEqual(exactness.logLine, "[RESUME] NOT EXACT: rng_sampler, buffer, os")
+        XCTAssertTrue(runLine.contains("not exact: rng_sampler, buffer, os"), runLine)
+
+        let legacyParent = LineageTracker.ParentFile(modelID: "20260901-1-OLDP", contentSHA256: nil, trainerCompletedSteps: 10,
+                                                     lineage: .unrecorded(formatVersion: 6), derivationHistory: [])
+        XCTAssertEqual(ResumeExactness.resume(of: legacyParent, gaps: [.buffer]).tokens, ["buffer", "lineage"])
+    }
 }

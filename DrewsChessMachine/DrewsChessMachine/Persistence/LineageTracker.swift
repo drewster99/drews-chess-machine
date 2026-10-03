@@ -149,12 +149,12 @@ final class LineageTracker: @unchecked Sendable {
         case .resume(let file, let gaps, let legacyTotals):
             parent = file.recordParent
             derivationHistory = file.derivationHistory
+            let exactness = ResumeExactness.resume(of: file, gaps: gaps)
             switch file.lineage {
             case .recorded(let record):
                 guard legacyTotals == nil else {
                     throw TrackerError.legacyTotalsWithRecordedLineage(parentModelID: file.modelID)
                 }
-                let exactness = ResumeExactness(gaps: gaps)
                 run = (record.run.lineageRunID, record.run.segmentIndex + 1, segmentID, .resume,
                        exactness.isExact, exactness.tokens, record.run.continuesUnrecordedHistory)
                 segments = record.segments + [LineageRecord.SegmentSummary(of: record)]
@@ -166,7 +166,6 @@ final class LineageTracker: @unchecked Sendable {
                 // The parent predates lineage: this run starts here, and the
                 // history before it is unrecorded except what a legacy GUI
                 // session counted itself.
-                let exactness = ResumeExactness(gaps: gaps + [.lineage])
                 run = (UUID().uuidString, 0, segmentID, .resume, false, exactness.tokens, true)
                 segments = []
                 baseGames = nil

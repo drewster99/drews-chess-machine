@@ -83,9 +83,10 @@ extension SessionController {
             start = championLineageStart
         case .freshOrFromLoadedSession:
             if let resumed {
-                let gaps = Self.guiResumeGaps(resumed: resumed, trainer: trainer)
-                let exactness = ResumeExactness(gaps: gaps)
-                SessionLogger.shared.log(exactness.logLine)
+                let gaps = Self.guiResumeGaps(
+                    resumed: resumed, runningPolicyTailPrecision: trainer.policyTailPrecision,
+                    runningBuild: .current, runningDevice: .current)
+                SessionLogger.shared.log(ResumeExactness.resume(of: resumed.trainerFile.lineageParent, gaps: gaps).logLine)
                 // A session written before lineage still recorded its
                 // elapsed time; that is its one usable total.
                 let legacyTotals: LineageTracker.LegacySessionTotals?
@@ -95,7 +96,7 @@ extension SessionController {
                     legacyTotals = nil
                 }
                 start = .resume(parent: resumed.trainerFile.lineageParent,
-                                gaps: exactness.gaps, legacyTotals: legacyTotals)
+                                gaps: gaps, legacyTotals: legacyTotals)
             } else {
                 start = championLineageStart
             }
@@ -130,8 +131,12 @@ extension SessionController {
     /// D-1: a GUI resume is state-exact at most, so it is reported, never
     /// refused). The periodic-save clock needs nothing: the save being
     /// resumed reset it. The arena clock is restored when the session
-    /// recorded it.
-    static func guiResumeGaps(resumed: LoadedSession, trainer: ChessTrainer) -> [ResumeGap] {
+    /// recorded it. A session whose trainer file predates lineage also lacks
+    /// `lineage`, which `ResumeExactness.resume(of:gaps:)` adds.
+    static func guiResumeGaps(resumed: LoadedSession,
+                              runningPolicyTailPrecision: ChessNetwork.PolicyTailPrecision,
+                              runningBuild: LineageRecord.Build,
+                              runningDevice: LineageRecord.Device) -> [ResumeGap] {
         let lineage = resumed.trainerFile.safetensorsProvenance?.lineage
         var gaps: [ResumeGap] = []
         if resumed.state.arenaSecondsSinceLastArena == nil {
@@ -139,7 +144,7 @@ extension SessionController {
         }
         gaps += ResumeGap.dropoutGaps(restoring: DropoutRNGResumeState(lineage: lineage))
         gaps += PolicyTailPrecisionResume.gaps(
-            saved: resumed.trainerFile.metadata.trainerPolicyTailPrecision, running: trainer.policyTailPrecision)
+            saved: resumed.trainerFile.metadata.trainerPolicyTailPrecision, running: runningPolicyTailPrecision)
         if resumed.replayBufferURL == nil {
             gaps.append(.buffer)
         }
@@ -148,9 +153,7 @@ extension SessionController {
         }
         if let record = lineage?.record {
             if record.parameters == nil { gaps.append(.params) }
-            gaps += ResumeGap.environmentGaps(writtenBy: record, runningBuild: .current, runningDevice: .current)
-        } else {
-            gaps.append(.lineage)
+            gaps += ResumeGap.environmentGaps(writtenBy: record, runningBuild: runningBuild, runningDevice: runningDevice)
         }
         return gaps
     }
