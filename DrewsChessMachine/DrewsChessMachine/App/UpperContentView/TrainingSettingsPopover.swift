@@ -339,7 +339,8 @@ struct TrainingSettingsPopover: View {
                     onLiveDrawWatchPDrawThresholdChange: { model.applyLiveDrawWatchPDrawThreshold($0) },
                     onLiveDrawWatchTerminateGamesChange: { model.applyLiveDrawWatchTerminateGames($0) },
                     onLiveDrawWatchStreakLengthChange: { model.applyLiveDrawWatchStreakLength($0) },
-                    parallelStats: parallelStats
+                    parallelStats: parallelStats,
+                    selfPlayConcurrencyRange: model.selfPlayConcurrencyRange
                 )
             case .replay:
                 ReplayTab(
@@ -370,6 +371,8 @@ struct TrainingSettingsPopover: View {
                     onLiveReplayRatioTargetChange: { model.applyLiveReplayRatioTarget($0) },
                     onLiveSelfPlayDelayChange: { model.applyLiveSelfPlayDelay($0) },
                     onLiveTrainingStepDelayChange: { model.applyLiveTrainingStepDelay($0) },
+                    selfPlayDelayRange: model.selfPlayDelayRange,
+                    trainingStepDelayRange: model.trainingStepDelayRange,
                     onLiveReplayRatioAutoAdjustChange: { model.applyLiveReplayRatioAutoAdjust($0) },
                     onLiveMaxPliesFromAnyOneGameChange: { model.applyLiveMaxPliesFromAnyOneGame($0) },
                     onLiveTargetSampledGameLengthPliesChange: { model.applyLiveTargetSampledGameLengthPlies($0) },
@@ -1203,7 +1206,7 @@ private struct OptimizerTab: View {
                 Stepper(
                     "",
                     value: PopoverBindings.intBinding(text: $trainingBatchSizeText, fallback: TrainingBatchSize.declaredDefault),
-                    in: 32...32_768,
+                    in: TrainingBatchSize.declaredClosedRange,
                     step: 256
                 )
             }
@@ -1551,6 +1554,11 @@ private struct SelfPlayTab: View {
     /// tab tolerates `nil` by rendering dashes in the readout cells.
     let parallelStats: ParallelWorkerStatsBox.Snapshot?
 
+    /// The Concurrency stepper's range, from the model
+    /// (`TrainingSettingsPopoverModel.selfPlayConcurrencyRange`), which Save
+    /// validates against too.
+    let selfPlayConcurrencyRange: ClosedRange<Int>
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
@@ -1568,7 +1576,7 @@ private struct SelfPlayTab: View {
                             text: $selfPlayConcurrencyText,
                             fallback: SelfPlayConcurrency.declaredDefault
                         ),
-                        in: 1...256,
+                        in: selfPlayConcurrencyRange,
                         step: 1
                     )
                 }
@@ -2162,6 +2170,11 @@ private struct ReplayTab: View {
     let onLiveReplayRatioTargetChange: (Double) -> Void
     let onLiveSelfPlayDelayChange: (Int) -> Void
     let onLiveTrainingStepDelayChange: (Int) -> Void
+    /// The delay steppers' and text handlers' ranges, from the model
+    /// (`TrainingSettingsPopoverModel.selfPlayDelayRange` /
+    /// `trainingStepDelayRange`), which Save validates against too.
+    let selfPlayDelayRange: ClosedRange<Int>
+    let trainingStepDelayRange: ClosedRange<Int>
     let onLiveReplayRatioAutoAdjustChange: (Bool) -> Void
     let onLiveMaxPliesFromAnyOneGameChange: (Int) -> Void
     let onLiveTargetSampledGameLengthPliesChange: (Int) -> Void
@@ -2244,13 +2257,12 @@ private struct ReplayTab: View {
                             format: "%.2f",
                             onChange: onLiveReplayRatioTargetChange
                         ),
-                        in: 0.1...5.0,
+                        in: ReplayRatioTarget.declaredClosedRange,
                         step: 0.05
                     )
                 }
                 .onChange(of: replayRatioTargetText) { _, newValue in
-                    if let v = Double(newValue.trimmingCharacters(in: .whitespaces)),
-                       v >= 0.1, v <= 5.0, v.isFinite {
+                    if let v = ReplayRatioTarget.parsedInDeclaredRange(newValue) {
                         onLiveReplayRatioTargetChange(v)
                     }
                 }
@@ -2278,13 +2290,13 @@ private struct ReplayTab: View {
                                 fallback: SelfPlayDelayMs.declaredDefault,
                                 onChange: onLiveSelfPlayDelayChange
                             ),
-                            in: 0...3000,
+                            in: selfPlayDelayRange,
                             step: 5
                         )
                     }
                     .onChange(of: replaySelfPlayDelayText) { _, newValue in
                         if let v = Int(newValue.trimmingCharacters(in: .whitespaces)),
-                           v >= 0, v <= 3000 {
+                           selfPlayDelayRange.contains(v) {
                             onLiveSelfPlayDelayChange(v)
                         }
                     }
@@ -2302,12 +2314,13 @@ private struct ReplayTab: View {
                                 fallback: TrainingStepDelayMs.declaredDefault,
                                 onChange: onLiveTrainingStepDelayChange
                             ),
-                            in: TrainingStepDelayMs.declaredClosedRange,
+                            in: trainingStepDelayRange,
                             step: 5
                         )
                     }
                     .onChange(of: replayTrainingStepDelayText) { _, newValue in
-                        if let v = TrainingStepDelayMs.parsedInDeclaredRange(newValue) {
+                        if let v = Int(newValue.trimmingCharacters(in: .whitespaces)),
+                           trainingStepDelayRange.contains(v) {
                             onLiveTrainingStepDelayChange(v)
                         }
                     }

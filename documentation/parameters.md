@@ -210,7 +210,7 @@ Automatic arena interval in seconds; the play-and-train loop schedules a new are
 
 Number of concurrent arena games. Higher = faster arena throughput at cost of GPU contention.
 
-**Type:** Int · **Range:** 1..4096 · **Default:** 400 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Int · **Range:** 1..1024 · **Default:** 400 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### arena_promotion_criterion
 
@@ -316,13 +316,13 @@ Parallel self-play game count. More = faster replay-buffer fill but more GPU con
 
 Delay between trainer SGD steps in milliseconds. Auto-adjusted by ReplayRatioController when auto-adjust is on.
 
-**Type:** Int · **Range:** 0..10000 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Int · **Range:** 0..3000 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### self_play_delay_ms
 
 Per-game-per-worker delay between self-play games in milliseconds. Used only when replay-ratio auto-adjust is OFF; auto-adjust on lets the controller manage it.
 
-**Type:** Int · **Range:** 0..10000 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Int · **Range:** 0..3000 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### training_batch_size
 

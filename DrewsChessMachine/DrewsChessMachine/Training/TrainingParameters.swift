@@ -730,7 +730,7 @@ public enum SelfPlayConcurrency: TrainingParameterKey {}
     name: "Training Step Delay (ms)",
     description: "Delay between trainer SGD steps in milliseconds. Auto-adjusted by ReplayRatioController when auto-adjust is on.",
     default: 0,
-    range: 0...10000,
+    range: 0...3000,
     category: "Training Window",
     liveTunable: true,
     absentValue: .currentSetting
@@ -741,7 +741,7 @@ public enum TrainingStepDelayMs: TrainingParameterKey {}
     name: "Self-Play Delay (ms)",
     description: "Per-game-per-worker delay between self-play games in milliseconds. Used only when replay-ratio auto-adjust is OFF; auto-adjust on lets the controller manage it.",
     default: 0,
-    range: 0...10000,
+    range: 0...3000,
     category: "Training Window",
     liveTunable: true,
     absentValue: .currentSetting
@@ -905,7 +905,7 @@ public enum LegalMassCollapseNoImprovementProbes: TrainingParameterKey {}
     name: "Arena Concurrency",
     description: "Number of concurrent arena games. Higher = faster arena throughput at cost of GPU contention.",
     default: 400,
-    range: 1...4096,
+    range: 1...1024,
     category: "Arena",
     liveTunable: true,
     absentValue: .currentSetting

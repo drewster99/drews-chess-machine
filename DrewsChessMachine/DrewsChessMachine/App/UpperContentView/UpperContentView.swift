@@ -290,27 +290,18 @@ struct UpperContentView: View {
     /// candidate and champion each play half as white and half as
     /// black.
     nonisolated static let tournamentGames = 200
-    /// Default number of arena games run concurrently per tournament.
-    /// The arena tick driver (`TickTournamentDriver`) partitions its K
-    /// active games by current-side network and fires one
-    /// `evaluateBatched` call per unique network (candidate / champion)
-    /// per tick, so the GPU sees batched-position calls instead of
-    /// serial single-position calls. K is chosen to keep the GPU
-    /// saturated without monopolizing it against the concurrent
-    /// training worker. User-overridable via the
-    /// `trainingParams.arenaConcurrency` runtime setting (UI Stepper /
-    /// session save+load / parameters.json key `arena_concurrency`).
-    nonisolated static let arenaConcurrencyDefault = 200
-    /// Hard ceiling on `trainingParams.arenaConcurrency`. Mirrors the
-    /// self-play `absoluteMaxSelfPlayWorkers` pattern: bounds the
-    /// UI Stepper AND clamps values loaded from `parameters.json` /
-    /// `session.json` so a stale or hand-edited file can't push K
-    /// past what the GPU can usefully batch in one fire. The
-    /// ceiling sits well past the per-batch GPU throughput knee on
-    /// Apple Silicon for this network — raising it further wouldn't
-    /// help arena throughput because batches that large stall on
-    /// memory bandwidth before they finish.
-    nonisolated static let absoluteMaxArenaConcurrency: Int = 1024
+    /// Hard ceiling on `trainingParams.arenaConcurrency` — the number of
+    /// arena games the tick driver (`TickTournamentDriver`) runs at once,
+    /// batching each side's positions into one `evaluateBatched` call per
+    /// tick. It is the `ArenaConcurrency` declaration's upper bound (one
+    /// source of truth): every writer — the popover, a `parameters.json`
+    /// file, a stored setting — is validated against the declaration, so a
+    /// value past it is an error rather than a silent clamp. The ceiling sits
+    /// well past the per-batch GPU throughput knee on Apple Silicon for this
+    /// network; batches that large stall on memory bandwidth before they
+    /// finish. A resumed session's own saved value is the one exception
+    /// (`TrainingParameters.restoreFromSession`).
+    nonisolated static let absoluteMaxArenaConcurrency: Int = ArenaConcurrency.declaredClosedRange.upperBound
     /// Coalescing-window upper bound (ms) for the arena's per-network
     /// batchers. The barrier fires on either count-met OR window-
     /// elapsed, whichever happens first; the window only kicks in when
@@ -466,8 +457,10 @@ struct UpperContentView: View {
     /// memory — the limit is now the batcher's per-batch-size feed
     /// cache footprint (one `[N, inputPlanes, 8, 8]` float32 MPSNDArray
     /// per distinct N, so ~5.1 KB per slot) plus the per-batch
-    /// `graph.run` latency. Must be ≥ `initialSelfPlayWorkerCount`.
-    nonisolated static let absoluteMaxSelfPlayWorkers: Int = 8192
+    /// `graph.run` latency. Must be ≥ `initialSelfPlayWorkerCount`. It is
+    /// the `SelfPlayConcurrency` declaration's upper bound, so every control
+    /// and validator shares one ceiling.
+    nonisolated static let absoluteMaxSelfPlayWorkers: Int = SelfPlayConcurrency.declaredClosedRange.upperBound
     /// Current active self-play worker count for the running
     /// session. The Stepper writes through `workerCountBinding`
     /// which updates this value and `workerCountBox` atomically;
@@ -477,21 +470,25 @@ struct UpperContentView: View {
     /// the user's last chosen concurrency level survives app
     /// restart. Bounded at runtime by `absoluteMaxSelfPlayWorkers`.
     // selfPlayWorkerCount migrated to `trainingParams.selfPlayConcurrency`.
-    /// Upper bound on the adjustable training-step delay. At the
-    /// ceiling a ~60 steps/s training worker is throttled to well
-    /// under 1 step/s, which is as slow as anyone reasonably wants
-    /// to crawl the learning rate while still making progress.
-    nonisolated static let stepDelayMaxMs: Int = 3000
+    /// Upper bound on the adjustable training-step delay: the
+    /// `TrainingStepDelayMs` declaration's upper bound, so the stepper,
+    /// the popover's Save, the `parameters.json` loader and the
+    /// replay-ratio controller share one ceiling. At the ceiling a
+    /// typical training worker is throttled to well under one step per
+    /// second, which is as slow as anyone reasonably wants to crawl the
+    /// learning rate while still making progress.
+    nonisolated static let stepDelayMaxMs: Int = TrainingStepDelayMs.declaredClosedRange.upperBound
     /// Upper bound on the self-play-side per-game delay the replay-
-    /// ratio auto-adjuster may impose. This is the reverse lever
-    /// that kicks in when GPU training overhead alone exceeds the
+    /// ratio auto-adjuster may impose, and on the manual setting: the
+    /// `SelfPlayDelayMs` declaration's upper bound. This is the reverse
+    /// lever that kicks in when GPU training overhead alone exceeds the
     /// target cycle and training can't be slowed down any further
     /// (its delay is already 0). Per-slot, per-game — a few hundred
     /// ms of added delay with N workers cuts aggregate production
     /// substantially, which is usually more than enough to bring
     /// the ratio back. The ceiling caps a runaway auto-adjust so
     /// it can't stall the session outright.
-    nonisolated static let selfPlayDelayMaxMs: Int = 3000
+    nonisolated static let selfPlayDelayMaxMs: Int = SelfPlayDelayMs.declaredClosedRange.upperBound
     /// Discrete set of valid delay values in milliseconds used by
     /// both manual stepper edits and auto-computed delay handoff.
     /// Fine-grained 5 ms increments at the low end where small
@@ -2227,25 +2224,18 @@ struct UpperContentView: View {
     @MainActor
     @discardableResult
     private func applyCliConfigOverrides(cfg: CliTrainingConfig) -> [ParameterOverrideChange] {
-        // Pre-process the value map: apply UI-specific clamps that the
-        // macro's range alone can't express (e.g. snapping
-        // training_step_delay_ms onto the Stepper's ladder, or
-        // narrowing self_play_concurrency to a per-build absolute cap that
-        // is tighter than the macro's permissive 1...256).
+        // Pre-process the value map: snap an in-range
+        // training_step_delay_ms onto the Stepper's ladder, which the
+        // declared range alone can't express. Nothing is clamped: the app's
+        // caps (self-play workers, the delays, arena concurrency) are the
+        // declarations' own upper bounds, so a value past one fails
+        // validation below with an error naming it, instead of being
+        // silently pulled inside.
         var values = cfg.trainingParameters
-        if case .int(let v) = values[SelfPlayConcurrency.id] {
-            let clamped = max(1, min(Self.absoluteMaxSelfPlayWorkers, v))
-            values[SelfPlayConcurrency.id] = .int(clamped)
-        }
-        if case .int(let v) = values[TrainingStepDelayMs.id] {
-            let clamped = max(0, min(Self.stepDelayMaxMs, v))
+        if case .int(let v) = values[TrainingStepDelayMs.id], TrainingStepDelayMs.isWithinDeclaration(v) {
             let ladder = Self.validDelayRungsMs
-            let nearest = ladder.min(by: { abs($0 - clamped) < abs($1 - clamped) }) ?? clamped
+            let nearest = ladder.min(by: { abs($0 - v) < abs($1 - v) }) ?? v
             values[TrainingStepDelayMs.id] = .int(nearest)
-        }
-        if case .int(let v) = values[ArenaConcurrency.id] {
-            let clamped = max(1, min(Self.absoluteMaxArenaConcurrency, v))
-            values[ArenaConcurrency.id] = .int(clamped)
         }
 
         // Capture before-snapshot for diffing.

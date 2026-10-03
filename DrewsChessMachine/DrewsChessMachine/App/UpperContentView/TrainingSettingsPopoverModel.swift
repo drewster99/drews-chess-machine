@@ -287,6 +287,27 @@ final class TrainingSettingsPopoverModel {
     /// `samplingScheduleBox`. No-op before the first session.
     var pushSelfPlaySchedule: () -> Void = {}
 
+    /// The self-play worker counts the Concurrency field and stepper accept:
+    /// the declared range, capped at the injected worker limit. One range
+    /// for the stepper, the text field and Save.
+    var selfPlayConcurrencyRange: ClosedRange<Int> {
+        SelfPlayConcurrency.declaredClosedRange.clamped(to: Int.min...maxSelfPlayWorkers)
+    }
+
+    /// The self-play delays the Replay tab accepts: the declared range,
+    /// capped at the injected limit (the app passes the declaration's own
+    /// bound, so the cap only narrows for a caller that asks it to).
+    var selfPlayDelayRange: ClosedRange<Int> {
+        SelfPlayDelayMs.declaredClosedRange.clamped(to: Int.min...selfPlayDelayMaxMs)
+    }
+
+    /// The training-step delays the Replay tab accepts, like
+    /// `selfPlayDelayRange`. Save refuses a value outside it rather than
+    /// letting `applyLiveTrainingStepDelay` clamp it unseen.
+    var trainingStepDelayRange: ClosedRange<Int> {
+        TrainingStepDelayMs.declaredClosedRange.clamped(to: Int.min...stepDelayMaxMs)
+    }
+
     init(
         selfPlayDelayMaxMs: Int,
         stepDelayMaxMs: Int,
@@ -304,46 +325,94 @@ final class TrainingSettingsPopoverModel {
     /// opened) shows the new value rather than the stale pre-override one.
     func resyncLrWarmupText(_ s: String) {
         warmupText = s
+        markSeeded(\.warmupText)
     }
 
     // MARK: - Seed / cancel
 
-    /// The `Double` edit fields whose seeded text is a rounded rendering of
-    /// the live value (`%.2e`, `%.3f`, …). Save compares each against what
-    /// seeding wrote, so an untouched field never writes its rounded text
-    /// back over a more precise value (a `parameters.json` δ of 1/300 shown
-    /// as "0.0033" must stay 1/300), and an untouched field holding a session
-    /// value outside today's declared range never blocks Save.
-    private static let roundedTextFields: [ReferenceWritableKeyPath<TrainingSettingsPopoverModel, String>] = [
-        \.lrText, \.momentumText,
-        \.lrCycleMinText, \.lrCycleMaxText, \.momentumCycleMinText, \.momentumCycleMaxText,
-        \.lrCyclePeakEndText, \.lrCycleTroughEndText,
-        \.momentumFollowStartLowText, \.momentumFollowStartHighText,
-        \.momentumFollowEndLowText, \.momentumFollowEndHighText,
+    /// Every text field `seedFromParams` fills from a live value (all but the
+    /// run seed, whose field is read only in seeded mode). Save compares each
+    /// against what seeding wrote and treats a field that still reads the
+    /// same as untouched: it keeps the live value, unvalidated and unwritten.
+    /// So an untouched field never writes a rounded rendering back over a
+    /// more precise value (a `parameters.json` δ of 1/300 shown as "0.0033"
+    /// must stay 1/300; an autosave interval of a non-whole number of minutes
+    /// must not become the rounded minutes), and a value nobody edited — a
+    /// resumed session's value outside today's declared range, which
+    /// `restoreFromSession` deliberately holds — never keeps Save from
+    /// closing, even on a tab that is not showing.
+    private static let seededTextFields: [ReferenceWritableKeyPath<TrainingSettingsPopoverModel, String>] = [
+        \.lrText, \.warmupText, \.momentumText,
         \.entropyText, \.illegalMassWeightText, \.gradClipText, \.weightDecayText,
         \.dropoutRateText, \.policyLossWeightText, \.valueLossWeightText,
         \.valueLabelSmoothingText, \.drawPenaltyText,
         \.policyLabelSmoothingText, \.policyLabelSmoothingPerMoveText, \.policyLabelSmoothingPerMoveCapText,
-        \.selfPlayStartTauText, \.selfPlayDecayPerPlyText, \.selfPlayFloorTauText,
+        \.trainingBatchSizeText,
+        \.lrCycleMinText, \.lrCycleMaxText, \.lrCyclePeriodText, \.lrCycleCountText,
+        \.momentumCycleMinText, \.momentumCycleMaxText, \.momentumCyclePeriodText, \.momentumCycleCountText,
+        \.lrCyclePeakEndText, \.lrCycleTroughEndText, \.lrCycleDecayHorizonText,
+        \.momentumFollowStartLowText, \.momentumFollowStartHighText,
+        \.momentumFollowEndLowText, \.momentumFollowEndHighText,
+        \.selfPlayConcurrencyText, \.selfPlayStartTauText, \.selfPlayDecayPerPlyText, \.selfPlayFloorTauText,
+        \.selfPlayDrawKeepFractionText, \.selfPlayMaxPliesPerGameText,
+        \.drawWatchPDrawThresholdText, \.drawWatchStreakLengthText,
+        \.replayBufferCapacityText, \.replayBufferMinPositionsText,
+        \.replayRatioTargetText, \.replaySelfPlayDelayText, \.replayTrainingStepDelayText,
+        \.maxPliesFromAnyOneGameText, \.targetSampledGameLengthPliesText, \.maxDrawPercentPerBatchText,
+        \.periodicAutosaveIntervalMinutesText, \.maxPeriodicAutosavesKeptText, \.klProbeIntervalText,
     ]
 
-    /// Each `roundedTextFields` entry's text as `seedFromParams` wrote it.
-    /// Empty until the first seed, in which case every field is parsed.
+    /// Each `seededTextFields` entry's text as `seedFromParams` (or a resync
+    /// from a live value) wrote it. Empty until the first seed, in which
+    /// case every field counts as edited.
     @ObservationIgnored private var seededText: [ReferenceWritableKeyPath<TrainingSettingsPopoverModel, String>: String] = [:]
 
-    /// What Save takes from a rounded `Double` field: the live value itself
-    /// when the field still reads exactly what seeding wrote (nothing was
-    /// edited, so nothing is written), otherwise the parsed text — nil when
-    /// it is not a finite number inside the declared range.
+    /// True when `field` still reads exactly what seeding wrote.
+    private func isUntouched(_ field: ReferenceWritableKeyPath<TrainingSettingsPopoverModel, String>) -> Bool {
+        seededText[field].map { $0 == self[keyPath: field] } ?? false
+    }
+
+    /// What Save takes from a `Double` field: the live value itself when the
+    /// field is untouched (nothing was edited, so nothing is written),
+    /// otherwise the parsed text — nil when it is not a finite number inside
+    /// the declared range.
     private func editedValue<K: TrainingParameterKey>(
         _ key: K.Type,
         _ field: ReferenceWritableKeyPath<TrainingSettingsPopoverModel, String>,
         current: Double
     ) -> Double? where K.Value == Double {
-        if let seeded = seededText[field], seeded == self[keyPath: field] {
-            return current
+        isUntouched(field) ? current : K.parsedInDeclaredRange(self[keyPath: field])
+    }
+
+    /// `editedValue` for an `Int` field: the live value when untouched,
+    /// otherwise the parsed text if it is inside the declared range.
+    private func editedValue<K: TrainingParameterKey>(
+        _ key: K.Type,
+        _ field: ReferenceWritableKeyPath<TrainingSettingsPopoverModel, String>,
+        current: Int
+    ) -> Int? where K.Value == Int {
+        isUntouched(field) ? current : K.parsedInDeclaredRange(self[keyPath: field])
+    }
+
+    /// `editedValue` for an `Int` field with an app cap tighter than its
+    /// declaration (`selfPlayConcurrencyRange`, the delay ranges): the cap
+    /// applies only to a value the user typed.
+    private func editedValue(
+        _ field: ReferenceWritableKeyPath<TrainingSettingsPopoverModel, String>,
+        current: Int,
+        accepting range: ClosedRange<Int>
+    ) -> Int? {
+        if isUntouched(field) { return current }
+        guard let n = Int(self[keyPath: field].trimmingCharacters(in: .whitespaces)), range.contains(n) else {
+            return nil
         }
-        return K.parsedInDeclaredRange(self[keyPath: field])
+        return n
+    }
+
+    /// Record `field`'s current text as the seeded one (it now shows the
+    /// live value), so Save treats it as untouched.
+    private func markSeeded(_ field: ReferenceWritableKeyPath<TrainingSettingsPopoverModel, String>) {
+        seededText[field] = self[keyPath: field]
     }
 
     /// Seed the edit fields from the live `trainingParams` snapshot. Called
@@ -446,7 +515,7 @@ final class TrainingSettingsPopoverModel {
         originalDrawWatchPDrawThreshold = p.drawWatchPDrawThreshold
         originalDrawWatchTerminateGames = p.drawWatchTerminateGames
         originalDrawWatchStreakLength = p.drawWatchStreakLength
-        seededText = Dictionary(uniqueKeysWithValues: Self.roundedTextFields.map { ($0, self[keyPath: $0]) })
+        seededText = Dictionary(uniqueKeysWithValues: Self.seededTextFields.map { ($0, self[keyPath: $0]) })
         // Reset every error flag — a fresh open should never carry red overlays
         // from a previously-cancelled bad input.
         lrError = false
@@ -619,6 +688,8 @@ final class TrainingSettingsPopoverModel {
                     let q = TrainingParameters.shared
                     self.replaySelfPlayDelayText = String(q.selfPlayDelayMs)
                     self.replayTrainingStepDelayText = String(q.trainingStepDelayMs)
+                    self.markSeeded(\.replaySelfPlayDelayText)
+                    self.markSeeded(\.replayTrainingStepDelayText)
                 }
             }
         }
@@ -782,7 +853,7 @@ final class TrainingSettingsPopoverModel {
         }
 
         // LR Warmup steps — Int in the declared range.
-        if let n = LRWarmupSteps.parsedInDeclaredRange(warmupText) {
+        if let n = editedValue(LRWarmupSteps.self, \.warmupText, current: p.lrWarmupSteps) {
             warmupError = false
             if n != p.lrWarmupSteps {
                 SessionLogger.shared.log("[PARAM] lrWarmupSteps: \(p.lrWarmupSteps) -> \(n)")
@@ -841,14 +912,14 @@ final class TrainingSettingsPopoverModel {
             lrCycleMaxError = true
             anyError = true
         }
-        if let n = LRCyclePeriodSteps.parsedInDeclaredRange(lrCyclePeriodText) {
+        if let n = editedValue(LRCyclePeriodSteps.self, \.lrCyclePeriodText, current: p.lrCyclePeriodSteps) {
             lrCyclePeriodError = false
             if n != p.lrCyclePeriodSteps { p.lrCyclePeriodSteps = n }
         } else {
             lrCyclePeriodError = true
             anyError = true
         }
-        if let n = LRCycleCount.parsedInDeclaredRange(lrCycleCountText) {
+        if let n = editedValue(LRCycleCount.self, \.lrCycleCountText, current: p.lrCycleCount) {
             lrCycleCountError = false
             if n != p.lrCycleCount { p.lrCycleCount = n }
         } else {
@@ -879,14 +950,14 @@ final class TrainingSettingsPopoverModel {
             momentumCycleMaxError = true
             anyError = true
         }
-        if let n = MomentumCyclePeriodSteps.parsedInDeclaredRange(momentumCyclePeriodText) {
+        if let n = editedValue(MomentumCyclePeriodSteps.self, \.momentumCyclePeriodText, current: p.momentumCyclePeriodSteps) {
             momentumCyclePeriodError = false
             if n != p.momentumCyclePeriodSteps { p.momentumCyclePeriodSteps = n }
         } else {
             momentumCyclePeriodError = true
             anyError = true
         }
-        if let n = MomentumCycleCount.parsedInDeclaredRange(momentumCycleCountText) {
+        if let n = editedValue(MomentumCycleCount.self, \.momentumCycleCountText, current: p.momentumCycleCount) {
             momentumCycleCountError = false
             if n != p.momentumCycleCount { p.momentumCycleCount = n }
         } else {
@@ -915,7 +986,7 @@ final class TrainingSettingsPopoverModel {
             lrCyclePeakEndError = true
             anyError = true
         }
-        if let n = LRCycleDecayHorizonSteps.parsedInDeclaredRange(lrCycleDecayHorizonText) {
+        if let n = editedValue(LRCycleDecayHorizonSteps.self, \.lrCycleDecayHorizonText, current: p.lrCycleDecayHorizonSteps) {
             lrCycleDecayHorizonError = false
             if n != p.lrCycleDecayHorizonSteps { p.lrCycleDecayHorizonSteps = n }
         } else {
@@ -1160,7 +1231,7 @@ final class TrainingSettingsPopoverModel {
 
         // Training batch size — Int in the declared range. Snapshot-only; the live
         // trainer rebuilds its feed cache lazily on the next batch shape.
-        if let n = TrainingBatchSize.parsedInDeclaredRange(trainingBatchSizeText) {
+        if let n = editedValue(TrainingBatchSize.self, \.trainingBatchSizeText, current: p.trainingBatchSize) {
             trainingBatchSizeError = false
             if n != p.trainingBatchSize {
                 SessionLogger.shared.log("[PARAM] trainingBatchSize: \(p.trainingBatchSize) -> \(n)")
@@ -1173,8 +1244,8 @@ final class TrainingSettingsPopoverModel {
 
         // Self-play workers — Int in the declared range. Live-tunable: the
         // BatchedSelfPlayDriver reconcile loop picks up the new count.
-        if let n = SelfPlayConcurrency.parsedInDeclaredRange(selfPlayConcurrencyText),
-           n <= maxSelfPlayWorkers {
+        if let n = editedValue(\.selfPlayConcurrencyText, current: p.selfPlayConcurrency,
+                               accepting: selfPlayConcurrencyRange) {
             selfPlayConcurrencyError = false
             if n != p.selfPlayConcurrency {
                 SessionLogger.shared.log("[PARAM] selfPlayConcurrency: \(p.selfPlayConcurrency) -> \(n)")
@@ -1239,7 +1310,7 @@ final class TrainingSettingsPopoverModel {
         // (which has already fired the live propagation by the time
         // we get here).
         let drawKeepTrimmed = selfPlayDrawKeepFractionText.trimmingCharacters(in: .whitespaces)
-        if drawKeepTrimmed.isEmpty {
+        if isUntouched(\.selfPlayDrawKeepFractionText) || drawKeepTrimmed.isEmpty {
             selfPlayDrawKeepFractionError = false
         } else if SelfPlayDrawKeepFraction.parsedInDeclaredRange(drawKeepTrimmed) != nil {
             selfPlayDrawKeepFractionError = false
@@ -1253,7 +1324,7 @@ final class TrainingSettingsPopoverModel {
         // each game, so save() just validates the current text and
         // logs a [PARAM] line if the committed value changed.
         let selfPlayMaxPliesPerGameTrimmed = selfPlayMaxPliesPerGameText.trimmingCharacters(in: .whitespaces)
-        if selfPlayMaxPliesPerGameTrimmed.isEmpty {
+        if isUntouched(\.selfPlayMaxPliesPerGameText) || selfPlayMaxPliesPerGameTrimmed.isEmpty {
             selfPlayMaxPliesPerGameError = false
         } else if SelfPlayMaxPliesPerGame.parsedInDeclaredRange(selfPlayMaxPliesPerGameTrimmed) != nil {
             selfPlayMaxPliesPerGameError = false
@@ -1268,7 +1339,7 @@ final class TrainingSettingsPopoverModel {
         // text and logs a [PARAM] line if the committed value
         // changed.
         let drawWatchPDrawThresholdTrimmed = drawWatchPDrawThresholdText.trimmingCharacters(in: .whitespaces)
-        if drawWatchPDrawThresholdTrimmed.isEmpty {
+        if isUntouched(\.drawWatchPDrawThresholdText) || drawWatchPDrawThresholdTrimmed.isEmpty {
             drawWatchPDrawThresholdError = false
         } else if DrawWatchPDrawThreshold.parsedInDeclaredRange(drawWatchPDrawThresholdTrimmed) != nil {
             drawWatchPDrawThresholdError = false
@@ -1279,7 +1350,7 @@ final class TrainingSettingsPopoverModel {
         // Draw-watch streak length — Int in the declared range. Same live-
         // propagated pattern; driver re-reads each tick.
         let drawWatchStreakLengthTrimmed = drawWatchStreakLengthText.trimmingCharacters(in: .whitespaces)
-        if drawWatchStreakLengthTrimmed.isEmpty {
+        if isUntouched(\.drawWatchStreakLengthText) || drawWatchStreakLengthTrimmed.isEmpty {
             drawWatchStreakLengthError = false
         } else if DrawWatchStreakLength.parsedInDeclaredRange(drawWatchStreakLengthTrimmed) != nil {
             drawWatchStreakLengthError = false
@@ -1295,7 +1366,7 @@ final class TrainingSettingsPopoverModel {
 
         // Replay buffer capacity — Int in the declared range. Snapshot-only:
         // the live ring cannot resize mid-session.
-        if let n = ReplayBufferCapacity.parsedInDeclaredRange(replayBufferCapacityText) {
+        if let n = editedValue(ReplayBufferCapacity.self, \.replayBufferCapacityText, current: p.replayBufferCapacity) {
             replayBufferCapacityError = false
             if n != p.replayBufferCapacity {
                 SessionLogger.shared.log("[PARAM] replayBufferCapacity: \(p.replayBufferCapacity) -> \(n)")
@@ -1307,7 +1378,7 @@ final class TrainingSettingsPopoverModel {
         }
 
         // Pre-train fill threshold — Int in the declared range. Live-tunable.
-        if let n = ReplayBufferMinPositionsBeforeTraining.parsedInDeclaredRange(replayBufferMinPositionsText) {
+        if let n = editedValue(ReplayBufferMinPositionsBeforeTraining.self, \.replayBufferMinPositionsText, current: p.replayBufferMinPositionsBeforeTraining) {
             replayBufferMinPositionsError = false
             if n != p.replayBufferMinPositionsBeforeTraining {
                 SessionLogger.shared.log(
@@ -1335,7 +1406,7 @@ final class TrainingSettingsPopoverModel {
         // field for blank input even though the live readout below
         // the field already shows the default value.
         let maxPliesTrimmed = maxPliesFromAnyOneGameText.trimmingCharacters(in: .whitespaces)
-        if maxPliesTrimmed.isEmpty {
+        if isUntouched(\.maxPliesFromAnyOneGameText) || maxPliesTrimmed.isEmpty {
             maxPliesFromAnyOneGameError = false
         } else if MaxPliesFromAnyOneGame.parsedInDeclaredRange(maxPliesTrimmed) != nil {
             maxPliesFromAnyOneGameError = false
@@ -1344,7 +1415,7 @@ final class TrainingSettingsPopoverModel {
             anyError = true
         }
         let targetLenTrimmed = targetSampledGameLengthPliesText.trimmingCharacters(in: .whitespaces)
-        if targetLenTrimmed.isEmpty {
+        if isUntouched(\.targetSampledGameLengthPliesText) || targetLenTrimmed.isEmpty {
             targetSampledGameLengthPliesError = false
         } else if TargetSampledGameLengthPlies.parsedInDeclaredRange(targetLenTrimmed) != nil {
             targetSampledGameLengthPliesError = false
@@ -1353,7 +1424,7 @@ final class TrainingSettingsPopoverModel {
             anyError = true
         }
         let maxDrawTrimmed = maxDrawPercentPerBatchText.trimmingCharacters(in: .whitespaces)
-        if maxDrawTrimmed.isEmpty {
+        if isUntouched(\.maxDrawPercentPerBatchText) || maxDrawTrimmed.isEmpty {
             maxDrawPercentPerBatchError = false
         } else if MaxDrawPercentPerBatch.parsedInDeclaredRange(maxDrawTrimmed) != nil {
             maxDrawPercentPerBatchError = false
@@ -1363,27 +1434,41 @@ final class TrainingSettingsPopoverModel {
         }
 
         // Replay-ratio control fields are live-propagated during edits via
-        // `applyLive…` — the writes already reached `trainingParams`. Save
-        // validates the current text values for red-overlay display only; no
-        // parameter writes here.
-        if ReplayRatioTarget.parsedInDeclaredRange(replayRatioTargetText) != nil {
+        // `applyLive…`, but the text handlers push only values they accept,
+        // so Save commits each field through the same `applyLive…` call —
+        // a value typed anywhere in its range is applied, never left behind
+        // while Save closes as if it had been. The delays are edited only
+        // while automatic control is off; with it on, their rows are hidden
+        // and the controller owns them, so Save leaves them alone.
+        if isUntouched(\.replayRatioTargetText) {
             replayRatioTargetError = false
+        } else if let ratio = ReplayRatioTarget.parsedInDeclaredRange(replayRatioTargetText) {
+            replayRatioTargetError = false
+            applyLiveReplayRatioTarget(ratio)
         } else {
             replayRatioTargetError = true
             anyError = true
         }
-        if let n = SelfPlayDelayMs.parsedInDeclaredRange(replaySelfPlayDelayText),
-           n <= selfPlayDelayMaxMs {
+        if replayRatioAutoAdjust {
             replaySelfPlayDelayError = false
-        } else {
-            replaySelfPlayDelayError = true
-            anyError = true
-        }
-        if TrainingStepDelayMs.parsedInDeclaredRange(replayTrainingStepDelayText) != nil {
             replayTrainingStepDelayError = false
         } else {
-            replayTrainingStepDelayError = true
-            anyError = true
+            if let n = editedValue(\.replaySelfPlayDelayText, current: p.selfPlayDelayMs,
+                                   accepting: selfPlayDelayRange) {
+                replaySelfPlayDelayError = false
+                applyLiveSelfPlayDelay(n)
+            } else {
+                replaySelfPlayDelayError = true
+                anyError = true
+            }
+            if let n = editedValue(\.replayTrainingStepDelayText, current: p.trainingStepDelayMs,
+                                   accepting: trainingStepDelayRange) {
+                replayTrainingStepDelayError = false
+                applyLiveTrainingStepDelay(n)
+            } else {
+                replayTrainingStepDelayError = true
+                anyError = true
+            }
         }
 
         // --- Sessions tab ---
@@ -1391,7 +1476,9 @@ final class TrainingSettingsPopoverModel {
         // validated in seconds against the parameter's declared range.
         // Commit-on-Save: the heartbeat re-anchors the running controller from
         // the new value, so no live trainer write is needed here.
-        if let mins = Int(periodicAutosaveIntervalMinutesText.trimmingCharacters(in: .whitespaces)),
+        if isUntouched(\.periodicAutosaveIntervalMinutesText) {
+            periodicAutosaveIntervalError = false
+        } else if let mins = Int(periodicAutosaveIntervalMinutesText.trimmingCharacters(in: .whitespaces)),
            PeriodicAutosaveIntervalSec.isWithinDeclaration(Double(mins) * Self.secondsPerMinute) {
             periodicAutosaveIntervalError = false
             let secs = Double(mins) * Self.secondsPerMinute
@@ -1408,7 +1495,7 @@ final class TrainingSettingsPopoverModel {
         // Max periodic autosaves kept — Int in the declared range; 0 = unlimited.
         // Read live at prune time (after each periodic or post-promotion
         // save), so a plain singleton write is all that's required.
-        if let n = MaxPeriodicAutosavesKept.parsedInDeclaredRange(maxPeriodicAutosavesKeptText) {
+        if let n = editedValue(MaxPeriodicAutosavesKept.self, \.maxPeriodicAutosavesKeptText, current: p.maxPeriodicAutosavesKept) {
             maxPeriodicAutosavesKeptError = false
             if n != p.maxPeriodicAutosavesKept {
                 SessionLogger.shared.log("[PARAM] maxPeriodicAutosavesKept: \(p.maxPeriodicAutosavesKept) -> \(n)")
@@ -1441,7 +1528,7 @@ final class TrainingSettingsPopoverModel {
         // KL probe interval — Int in the declared range; 0 = off. `liveTunable`, and
         // the training loop reconciles it against the running trainer on its
         // poll, so a plain singleton write is all that is required here.
-        if let n = KLProbeInterval.parsedInDeclaredRange(klProbeIntervalText) {
+        if let n = editedValue(KLProbeInterval.self, \.klProbeIntervalText, current: p.klProbeInterval) {
             klProbeIntervalError = false
             if n != p.klProbeInterval {
                 SessionLogger.shared.log("[PARAM] klProbeInterval: \(p.klProbeInterval) -> \(n)")
