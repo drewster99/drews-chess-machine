@@ -24,6 +24,7 @@ final class TrainerEffectiveScheduleTests: XCTestCase {
         // 100-step warmup; no √batch scaling so effectiveLR == baseLR · warmupMul
         // and the cycle's contribution is isolated.
         let trainer = try ChessTrainer(
+            dropoutStream: DCMRandom(seed: 1),
             learningRate: 0.01,
             momentumCoeff: 0.5,
             sqrtBatchScalingForLR: false,

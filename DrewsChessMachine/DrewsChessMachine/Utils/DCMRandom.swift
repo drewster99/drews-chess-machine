@@ -74,6 +74,11 @@ enum DCMRandomError: Error, Equatable, LocalizedError {
 /// iteration over a `Dictionary` or `Set` (their order differs per process);
 /// iterate sorted keys instead.
 ///
+/// Probe isolation: a probe, diagnostic or observer never draws from a
+/// training stream (or advances the graph's dropout RNG beyond the step's
+/// own advance); it gets its own `probe.<name>.<step>` stream, so turning a
+/// probe on or off cannot change a run.
+///
 /// The state is four 64-bit words. `Codable` writes them as decimal strings,
 /// because many JSON readers (Python's included) parse numbers as doubles and
 /// would silently drop the low bits of a word above 2^53.

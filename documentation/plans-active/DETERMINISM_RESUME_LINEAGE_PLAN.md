@@ -1338,6 +1338,55 @@ cadence on a fresh run; masks for steps N+1… identical with the KL probe on an
 off (C2 probe-isolation rule). Also: add the probe-isolation rule to the project
 `CLAUDE.md` "Concurrency invariants". Validation: `[RESUME] rng: dropout=restored`.
 
+**Done (`6a208a25`, 2026-10-02).** As built:
+- `Training/DropoutPhiloxState.swift`: the seven Int32 words as an opaque
+  `Codable` blob (exact word count enforced, on init and decode);
+  `derived(fromSeed:device:commandQueue:)` builds `randomPhiloxStateTensor` in a
+  one-off graph and reads it back (the A4 option chosen; no per-seed graph
+  rebuild); `tensorData(device:)` / `init(reading:)` move it to and from the GPU.
+- `ChessNetwork`: the state assign takes a fed `dropout_rng_seed_state` `[7]`
+  Int32 placeholder (`dropoutRngStateFeedPlaceholder`); the `Int.random` constant
+  is gone.
+- `ChessTrainer` takes a **required** `dropoutStream: DCMRandom` (first
+  parameter of both the designated and the `TrainerHyperparameters` initializer;
+  owner decision: no defaults, every test site edited to pass an explicit
+  `DCMRandom(seed: 1)` — 70 sites in 23 files, mechanical, assertions unchanged).
+  Every graph build (init, network reset) seeds the state from the stream's next
+  draw (`Int(next() >> 1)`, since the MPSGraph seed is a non-negative `Int`).
+  `captureDropoutState()` / `restoreDropoutState(_:)` run on `executionQueue`
+  under `weightAccessLock`.
+- `TrainerResumeSnapshot.dropoutRNG: DropoutRNGResumeState` — `.philox(state)`
+  from `exportResumeSnapshot()`, `.notInCheckpoint` from checkpoint files and the
+  GUI session path (no file stores the state until P6's lineage record);
+  `restoreExactly` restores it and logs `[RESUME] rng: dropout=restored`, or
+  `dropout=not restored (…)` for `.notInCheckpoint`.
+- KL counter deleted: `ChessTrainer.isKLProbeStep(stepIndex:interval:)`, with the
+  replay path passing `completedTrainSteps` (read before the step's increment) —
+  identical to the old counter on a fresh run, correct on resume. The random-data
+  harness (`trainStep(batchSize:)`, sweeps) never advances `completedTrainSteps`,
+  so it keeps a harness-only `syntheticTrainStepCount` for its probe index.
+- Probe isolation settled: the KL probe path issues the step's **single** advance
+  after its own forward (it removes the advance from the training executable on
+  probe steps), so it does not violate the rule; pinned by
+  `testKLProbeDoesNotChangeTheDropoutSequence`. Rule added to `CLAUDE.md`
+  "Concurrency invariants" and to `DCMRandom`'s doc.
+- Master seed: production trainers (GUI, replay, train-vs-UCI, both sweeps) take
+  their stream from `RunMasterSeed.systemDrawn(context:)`, which draws and logs
+  `[RNG] <context> master seed=…` — the integration point P3's seed parameters
+  replace.
+- Tests: `DropoutRNGStateTests` (7). Red: compile-only (new API). Green: 7/7;
+  related classes 205 + 47 tests, 0 failures. The pinned canary
+  (`randomPhiloxStateTensor(withSeed: 0x5EED)` →
+  `[1, 11912374, -1985430587, 2110984159, 266232230, 67638122, 2073528346]`) was
+  recorded on this machine's OS and MPSGraph build.
+- Deviations: (1) the snapshot carries the Philox state only — the sampler state
+  is P3's; (2) the trainer's `dropout` generator state itself (used again only on
+  a network reset) is not in the snapshot; a reset after an exact resume therefore
+  draws the stream's next value from the resumed process's own position, not the
+  saved run's — P9 can add it with the lineage record; (3) masks are compared as
+  Philox state sequences, since a step's mask is a pure function of its starting
+  state and the batch shape.
+
 **P5 — Per-tensor init.** Files: `Network/ChessNetwork.swift` (all init sites;
 `WeightInitialization`), `Network/ChessMPSNetwork.swift`,
 `Network/InferenceNetworkFactory.swift`, every `ChessNetwork(` construction site

@@ -678,10 +678,10 @@ final class PolicyLabelSmoothingModeParameterTests: XCTestCase {
         XCTAssertEqual(hyperparameters.policyLabelSmoothingPerMoveCap, Float(0.4))
         XCTAssertEqual(ReplayParams(snapshot).trainer, hyperparameters, "the CLI runners carry the same configuration")
 
-        let cliTrainer = try ChessTrainer(hyperparameters: hyperparameters, arch: .current)
+        let cliTrainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: hyperparameters, arch: .current)
         XCTAssertEqual(TrainerHyperparameters(currentlyAppliedTo: cliTrainer), hyperparameters)
 
-        let guiTrainer = try ChessTrainer(arch: .current)
+        let guiTrainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: .current)
         XCTAssertEqual(guiTrainer.policyLabelSmoothingMode, .fixedTotal, "a bare trainer starts in fixed-total mode")
         hyperparameters.apply(to: guiTrainer)
         XCTAssertEqual(guiTrainer.policyLabelSmoothingMode, .perMove)

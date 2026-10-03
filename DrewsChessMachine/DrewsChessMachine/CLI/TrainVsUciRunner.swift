@@ -267,7 +267,10 @@ enum TrainVsUciRunner {
             resumedHyperparameters = p.trainer.adoptingSchedule(resumeSnapshot.schedule)
         }
         let hp = resumedHyperparameters
-        let trainer = try ChessTrainer(hyperparameters: hp, arch: arch)
+        let trainer = try ChessTrainer(
+            dropoutStream: RunMasterSeed.systemDrawn(context: "train-vs-uci").generator(.dropout),
+            hyperparameters: hp, arch: arch
+        )
         emit(ChessNetwork.PolicyTailPrecision.processLogLine)
         // Field for field with `[REPLAY-HPARAMS]` so the two CLI paths can be
         // diffed directly.
