@@ -118,7 +118,11 @@ enum UCIEngine {
         /// established, plus all moves applied on top. Refreshed
         /// from scratch on every `position` command (UCI senders pass
         /// the full move list every time).
-        var engine: ChessGameEngine = ChessGameEngine(state: .starting)
+        var engine: ChessGameEngine = ChessGameEngine(state: .starting, adjudication: .serverAuthoritative)
+        /// Why the most recent `position` command was rejected, or nil when it
+        /// was accepted. While set, `go` refuses to move: `engine` no longer
+        /// describes the GUI's game.
+        var positionRejection: String? = nil
         /// Current Temperature option value. Flat tau = value / 100,
         /// floored at 0.01; `0` (the default) ⇒ tau 0.01 ≈ argmax.
         var temperatureSpin: Int = temperatureDefault
@@ -163,7 +167,8 @@ enum UCIEngine {
             case "isready":
                 respond("readyok")
             case "ucinewgame":
-                session.engine = ChessGameEngine(state: .starting)
+                session.engine = ChessGameEngine(state: .starting, adjudication: .serverAuthoritative)
+                session.positionRejection = nil
             case "position":
                 handlePosition(tokens: Array(tokens.dropFirst()), session: &session)
             case "go":
@@ -212,12 +217,64 @@ enum UCIEngine {
     }
 
     private static func handlePosition(tokens: [String], session: inout Session) {
-        // Acceptable shapes:
-        //   position startpos
-        //   position startpos moves <m1> <m2> ...
-        //   position fen <f1> <f2> <f3> <f4> <f5> <f6>
-        //   position fen <...> moves <m1> <m2> ...
-        guard let first = tokens.first else { return }
+        do {
+            session.engine = try engine(forPositionArguments: tokens)
+            session.positionRejection = nil
+        } catch {
+            // Never leave a partly applied move list behind as "the position":
+            // the next `go` would answer for a position the GUI is not in, and
+            // a move that is legal there can be illegal in the real game — a
+            // forfeit. Record the rejection so `go` refuses instead, and tell
+            // the GUI now.
+            session.positionRejection = "\(error)"
+            SessionLogger.shared.log("[UCI] position rejected: \(error)")
+            respond("info string position rejected: \(error)")
+        }
+    }
+
+    /// Why a `position` command could not be turned into a position.
+    enum PositionError: Error, CustomStringConvertible {
+        case missingArguments
+        case unexpectedToken(String)
+        case fenTooShort
+        case fenParseFailed(String)
+        case expectedMovesKeyword(found: String)
+        /// `ply` counts the moves after the base position, from 0.
+        case moveNotLegal(token: String, ply: Int)
+        case moveFailed(token: String, ply: Int, reason: String)
+
+        var description: String {
+            switch self {
+            case .missingArguments: return "no arguments"
+            case .unexpectedToken(let token): return "unexpected token '\(token)' (expected startpos or fen)"
+            case .fenTooShort: return "fen needs six fields"
+            case .fenParseFailed(let reason): return "fen parse failed: \(reason)"
+            case .expectedMovesKeyword(let found): return "expected 'moves', got '\(found)'"
+            case .moveNotLegal(let token, let ply): return "move \(ply + 1) '\(token)' is illegal or unparseable here"
+            case .moveFailed(let token, let ply, let reason): return "move \(ply + 1) '\(token)' could not be applied: \(reason)"
+            }
+        }
+    }
+
+    /// The position a `position` command describes (arguments after the word
+    /// `position`), with every listed move applied.
+    ///
+    /// Acceptable shapes:
+    ///   startpos
+    ///   startpos moves <m1> <m2> ...
+    ///   fen <f1> <f2> <f3> <f4> <f5> <f6>
+    ///   fen <...> moves <m1> <m2> ...
+    ///
+    /// When DCM is the engine, the GUI runs the game and decides how it ends.
+    /// A GUI or bridge that leaves draws to a claim (Lichess games continue
+    /// past an unclaimed threefold) sends move lists that go on past positions
+    /// DCM's own rules would call drawn, so the replay engine never adjudicates
+    /// draws (`.serverAuthoritative`); it stops only where no move exists.
+    ///
+    /// `internal` (not `private`) so a unit test can drive it; the command loop
+    /// itself is stdin/stdout-driven.
+    static func engine(forPositionArguments tokens: [String]) throws -> ChessGameEngine {
+        guard let first = tokens.first else { throw PositionError.missingArguments }
         var idx = 0
         let baseState: GameState
         switch first {
@@ -226,43 +283,32 @@ enum UCIEngine {
             idx = 1
         case "fen":
             // FEN has exactly 6 space-separated fields.
-            guard tokens.count >= 7 else {
-                SessionLogger.shared.log("[UCI] position fen: not enough tokens for a 6-field FEN")
-                return
-            }
+            guard tokens.count >= 7 else { throw PositionError.fenTooShort }
             let fenFields = tokens[1...6].joined(separator: " ")
             do {
                 baseState = try FENParser.parse(fenFields)
             } catch {
-                SessionLogger.shared.log("[UCI] position fen parse failed: \(error)")
-                return
+                throw PositionError.fenParseFailed("\(error)")
             }
             idx = 7
         default:
-            SessionLogger.shared.log("[UCI] position: unexpected token '\(first)'")
-            return
+            throw PositionError.unexpectedToken(first)
         }
 
-        let engine = ChessGameEngine(state: baseState)
-        session.engine = engine
-
-        guard idx < tokens.count else { return }
-        guard tokens[idx] == "moves" else {
-            SessionLogger.shared.log("[UCI] position: expected 'moves', got '\(tokens[idx])'")
-            return
-        }
-        for moveToken in tokens[(idx + 1)...] {
-            guard let move = ChessMove.parseUCI(moveToken, legal: session.engine.currentLegalMoves) else {
-                SessionLogger.shared.log("[UCI] position moves: illegal or unparseable move '\(moveToken)' — aborting position update")
-                return
+        let engine = ChessGameEngine(state: baseState, adjudication: .serverAuthoritative)
+        guard idx < tokens.count else { return engine }
+        guard tokens[idx] == "moves" else { throw PositionError.expectedMovesKeyword(found: tokens[idx]) }
+        for (ply, moveToken) in tokens[(idx + 1)...].enumerated() {
+            guard let move = ChessMove.parseUCI(moveToken, legal: engine.currentLegalMoves) else {
+                throw PositionError.moveNotLegal(token: moveToken, ply: ply)
             }
             do {
-                try session.engine.applyMoveAndAdvance(move)
+                try engine.applyMoveAndAdvance(move)
             } catch {
-                SessionLogger.shared.log("[UCI] position moves: applyMoveAndAdvance failed for '\(moveToken)': \(error)")
-                return
+                throw PositionError.moveFailed(token: moveToken, ply: ply, reason: "\(error)")
             }
         }
+        return engine
     }
 
     /// Encode the position `engine` is about to move from, threading the
@@ -282,6 +328,14 @@ enum UCIEngine {
     }
 
     private static func handleGo(session: inout Session) {
+        if let rejection = session.positionRejection {
+            // A null move rather than a move for the wrong position: the GUI
+            // sees an explicit refusal, not a possibly illegal move.
+            respond("info string no valid position (\(rejection)); not moving")
+            respond("bestmove 0000")
+            SessionLogger.shared.log("[UCI] go: refused — last position was rejected (\(rejection)); sent bestmove 0000")
+            return
+        }
         let engine = session.engine
         // Game already over — emit a UCI null move so the GUI gets a
         // deterministic reply instead of hanging on an empty stdout.

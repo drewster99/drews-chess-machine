@@ -224,11 +224,13 @@ struct GameState: Sendable {
 ///   (this is at least the 2nd visit — a repeat that signals possible shuffling)
 /// - Plane 19: 1.0 if current position has occurred ≥2 times before
 ///   (this is at least the 3rd visit — the game is at the 3-fold draw threshold).
-///   `ChessGameEngine` adjudicates the threefold draw on that same 3rd visit,
-///   so this plane is 1 only on a terminal position, which is never a
-///   training sample: it never receives gradient (issue #10). In training,
-///   plane 18 is the only repetition-count plane that can fire, and there it
-///   means exactly "seen once before — one more repeat draws".
+///   In self-play `ChessGameEngine` adjudicates the threefold draw on that same
+///   3rd visit, so there the plane is 1 only on a terminal position, which is
+///   never a training sample. It does fire in corpus replay, which replays a
+///   recorded game to its end even when the players played on past an
+///   unclaimed threefold (rarely: a small fraction of a percent of positions),
+///   and at inference wherever an outside authority decides draws (the Lichess
+///   bot, `--uci`). See issue #10.
 /// - Planes 20-29: temporal-repetition history, broadcast-scalar (all-0 or
 ///   all-1 across 64 cells). Plane `20 + i` is all-1 iff the position
 ///   `i + 1` plies ago is a strict chess-rules duplicate (under

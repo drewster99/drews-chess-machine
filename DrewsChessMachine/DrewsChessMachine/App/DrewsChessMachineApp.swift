@@ -57,12 +57,12 @@ struct DrewsChessMachineApp: App {
     /// keys it names.
     private let cliConfig: CliTrainingConfig?
 
-    /// Destination URL for `--output <file>`. When set, the runtime
+    /// Checked destination for `--output <file>`. When set, the runtime
     /// spins up a `CliTrainingRecorder`, wires arena/stats/probe
     /// events into it, and writes a JSON snapshot at
     /// `training_time_limit` expiry before terminating the process.
     /// Nil = no snapshot.
-    private let cliOutputURL: URL?
+    private let cliResultsOutput: CliResultsOutput?
 
     /// True iff the process was launched with `--playchess`. A GUI-launch
     /// flag (like `--train`, not a pre-flight exit): the window opens and
@@ -199,7 +199,7 @@ struct DrewsChessMachineApp: App {
         Self.handleValidateCorpusIfPresent(rawArgs: rawArgs)
 
         // Known flags.
-        let booleanFlags: Set<String> = ["--train", "--playchess"]
+        let booleanFlags: Set<String> = ["--train", "--playchess", "--overwrite-output"]
         let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit", "--training-step-limit", "--start-model", "--model"]
 
         // Indices of rawArgs that were consumed by a known flag.
@@ -347,14 +347,27 @@ struct DrewsChessMachineApp: App {
         self.cliConfig = parsedConfig
 
         // `--output <path>` — destination for the final JSON
-        // snapshot. Stored as a URL so later code doesn't have to
-        // re-resolve the tilde or the current working directory.
-        var parsedOutputURL: URL? = nil
-        if let path = takeValue(for: "--output") {
-            let expanded = (path as NSString).expandingTildeInPath
-            parsedOutputURL = URL(fileURLWithPath: expanded)
+        // snapshot, checked now (`CliResultsOutput.preflight`) so a bad
+        // destination fails at launch, not at the end of the run, and an
+        // existing file is replaced only with `--overwrite-output`.
+        let overwriteOutputIndices = rawArgs.indices.filter { rawArgs[$0] == "--overwrite-output" }
+        for idx in overwriteOutputIndices { consumedIndices.insert(idx) }
+        if overwriteOutputIndices.count > 1 {
+            errors.append("--overwrite-output specified \(overwriteOutputIndices.count) times; only one allowed")
         }
-        self.cliOutputURL = parsedOutputURL
+        var parsedResultsOutput: CliResultsOutput? = nil
+        if let path = takeValue(for: "--output") {
+            do {
+                parsedResultsOutput = try CliResultsOutput.preflight(
+                    url: URL(fileURLWithPath: (path as NSString).expandingTildeInPath),
+                    overwriteAuthorized: !overwriteOutputIndices.isEmpty)
+            } catch {
+                errors.append(error.localizedDescription)
+            }
+        } else if !overwriteOutputIndices.isEmpty {
+            errors.append("--overwrite-output needs --output")
+        }
+        self.cliResultsOutput = parsedResultsOutput
 
         // `--model <path>` — opponent weights for `--playchess`. (Under
         // `--uci` this flag is consumed by the UCI pre-flight above and
@@ -413,7 +426,12 @@ struct DrewsChessMachineApp: App {
               --parameters <file>             JSON file of hyperparameter overrides (partial files allowed;
                                               only keys matching a known field are applied).
               --output <file>                 Write the JSON snapshot to <file> on training_time_limit expiry.
-                                              Without this flag, the snapshot goes to stdout.
+                                              Without this flag, the snapshot goes to stdout. Checked at launch:
+                                              its folder must exist and be writable, and an existing <file>
+                                              is refused (also for --replay-corpus and --train-vs-uci).
+              --overwrite-output              Replace an existing --output file (only that file: if it is
+                                              replaced or another appears during the run, it is left alone
+                                              and the results go to <name>-2.<ext>, …, with an alarm).
               --training-time-limit <seconds> Seconds of Play-and-Train before the JSON snapshot is written
                                               and the process exits. Overrides any value in --parameters.
                                               Only honored under --train.
@@ -494,7 +512,11 @@ struct DrewsChessMachineApp: App {
                                               --start-model's model ID at the start model's own step (the rolling file
                                               of the state being continued). Any other existing file -- e.g. from an
                                               earlier run of the same command, which saved under its own model ID, or
-                                              an earlier checkpoint of the same line -- refuses the run.
+                                              an earlier checkpoint of the same line -- refuses the run. Its name,
+                                              and with --enumerate-checkpoints every step file's name, must leave
+                                              room for the save's staging copy (a too-long name refuses the run).
+                                              A save that fails for another reason is a warning once; the same
+                                              save failing again at its next attempt stops the run.
               --overwrite-out-model           Use an --out-model the check above would refuse, replacing the file
                                               there (still never the --start-model, never a non-regular file).
               --enumerate-checkpoints         Also keep a copy of every save as <stem>-replay-step<N>.safetensors
@@ -510,7 +532,10 @@ struct DrewsChessMachineApp: App {
                                               environment variable MTL_CAPTURE_ENABLED=1. The trace stores every
                                               GPU buffer the step touches: one batch-4096 step of a 512-channel-
                                               policy model passed 220 GB before filling the disk. Use a small
-                                              model and batch size, and check free space first.
+                                              model and batch size, and check free space first. Checked at launch:
+                                              n within --training-step-limit, the trace's folder writable, nothing
+                                              at the trace path. If the capture cannot start at step n, the run
+                                              stops there, saves, and fails; a run that ends before step n warns.
               --policy-tail-precision fp32_from_pre_bn|mixed_final_projection
                                               (with --replay-corpus or --analyze-numerics) Where the policy head
                                               switches to fp32. Default mixed_final_projection: the pre-block and
@@ -632,8 +657,8 @@ struct DrewsChessMachineApp: App {
         if let cfg = cliConfig {
             SessionLogger.shared.log("[APP] --parameters overrides: \(cfg.summaryString())")
         }
-        if let outURL = cliOutputURL {
-            SessionLogger.shared.log("[APP] --output destination: \(outURL.path)")
+        if let output = cliResultsOutput {
+            SessionLogger.shared.log("[APP] --output destination: \(output.url.path)\(output.replacing == nil ? "" : " (replacing the existing file: --overwrite-output)")")
         }
 
         // Sweep away `.tmp` staging debris from a save that was
@@ -654,7 +679,7 @@ struct DrewsChessMachineApp: App {
                 playChessModelPath: playChessModelPath,
                 trainStartModelPath: trainStartModelPath,
                 cliConfig: cliConfig,
-                cliOutputURL: cliOutputURL,
+                cliResultsOutput: cliResultsOutput,
                 showTrainingGraphs: showTrainingGraphs,
                 chartCollectionEnabled: chartCollectionEnabled,
                 showPolicyChannelsPanel: showPolicyChannelsPanel
@@ -1062,6 +1087,7 @@ struct DrewsChessMachineApp: App {
         // pre-flight handler is static and never reaches that instance, so it
         // has to read the flag itself.
         var outputPath: String? = nil
+        var overwriteOutput = false
         var presetName: String? = nil
         var startShard: Int? = nil
         var startGameIndex: Int? = nil
@@ -1123,6 +1149,8 @@ struct DrewsChessMachineApp: App {
                 outModelPath = requireValue(arg, nextValue); i += 2
             case "--output":
                 outputPath = requireValue(arg, nextValue); i += 2
+            case "--overwrite-output":
+                overwriteOutput = true; i += 1   // boolean flag, no value
             case "--preset":
                 presetName = requireValue(arg, nextValue); i += 2
             case "--start-shard":
@@ -1236,7 +1264,7 @@ struct DrewsChessMachineApp: App {
             overwriteOutModel: overwriteOutModel,
             enumerateCheckpoints: enumerateCheckpoints,
             runModelID: runModelID,
-            outputURL: outputPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) },
+            output: resolveResultsOutputOrExit(path: outputPath, overwriteAuthorized: overwriteOutput),
             gpuCapture: gpuCaptureStep.flatMap { captureStep in
                 gpuCaptureOutPath.map { path in
                     CorpusReplayConfig.GPUCapture(
@@ -1268,6 +1296,7 @@ struct DrewsChessMachineApp: App {
         // See the corpus handler: this static pre-flight must parse `--output`
         // itself.
         var outputPath: String? = nil
+        var overwriteOutput = false
         var presetName: String? = nil
         var parametersPath: String? = nil
         var stepLimit: Int? = nil
@@ -1311,6 +1340,8 @@ struct DrewsChessMachineApp: App {
                 outModelPath = requireValue(arg, nextValue); i += 2
             case "--output":
                 outputPath = requireValue(arg, nextValue); i += 2
+            case "--overwrite-output":
+                overwriteOutput = true; i += 1   // boolean flag, no value
             case "--preset":
                 presetName = requireValue(arg, nextValue); i += 2
             case "--parameters":
@@ -1435,9 +1466,32 @@ struct DrewsChessMachineApp: App {
             maxPliesPerGame: maxPliesPerGame,
             evalSyncEverySteps: evalSyncEverySteps,
             runModelID: runModelID,
-            outputURL: outputPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+            output: resolveResultsOutputOrExit(path: outputPath, overwriteAuthorized: overwriteOutput)
         )
         TrainVsUciRunner.runAndExit(config: config, params: params)
+    }
+
+    /// The `--output` destination of a headless run, checked before the run
+    /// starts (`CliResultsOutput.preflight`); nil when no `--output` was given.
+    /// A refusal, or `--overwrite-output` without `--output`, prints the reason
+    /// and exits 2. Used by `--replay-corpus` and `--train-vs-uci`; GUI
+    /// `--train` applies the same check through its own error collection.
+    static func resolveResultsOutputOrExit(path: String?, overwriteAuthorized: Bool) -> CliResultsOutput? {
+        guard let path else {
+            if overwriteAuthorized {
+                FileHandle.standardError.write(Data("error: --overwrite-output needs --output\n".utf8))
+                Darwin.exit(2)
+            }
+            return nil
+        }
+        do {
+            return try CliResultsOutput.preflight(
+                url: URL(fileURLWithPath: (path as NSString).expandingTildeInPath),
+                overwriteAuthorized: overwriteAuthorized)
+        } catch {
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+            Darwin.exit(2)
+        }
     }
 
     // MARK: - Corpus validation pre-flight (--validate-corpus)

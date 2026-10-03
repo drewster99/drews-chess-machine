@@ -65,6 +65,15 @@ no-ops `stop` / `ponderhit`.
 - `position startpos [moves …]` and `position fen <6 fields> [moves …]`. The full
   move history is threaded so history/repetition input planes are populated (the
   net plays from the same representation it trained on).
+  - **The GUI decides draws.** DCM applies the whole move list without its own
+    draw rules, so a game continued past an unclaimed threefold repetition or the
+    fifty-move mark (as Lichess and claim-based bridges allow) is followed exactly.
+    The list stops only where no move exists (after checkmate or stalemate).
+  - **A list that cannot be applied is rejected as a whole** (unknown token, bad
+    FEN, illegal move, a move after mate). DCM answers `info string position
+    rejected: …` at once, and every `go` until the next valid `position` or
+    `ucinewgame` replies `bestmove 0000` with an `info string` naming the
+    rejection — never a move for a position the GUI is not in.
 
 ## `go` — single forward pass, **ignores all limits**
 

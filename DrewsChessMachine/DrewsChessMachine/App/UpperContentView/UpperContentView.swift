@@ -61,7 +61,7 @@ struct UpperContentView: View {
     /// arena/stats/probe events are captured into it, and the
     /// `training_time_limit` deadline task writes + exits. Nil
     /// when the flag wasn't passed.
-    let cliOutputURL: URL?
+    let cliResultsOutput: CliResultsOutput?
 
     /// Explicit initializer over the five injected (no-default) properties
     /// (`chartCoordinator` is declared further down with the chart wiring).
@@ -79,7 +79,7 @@ struct UpperContentView: View {
         playChessModelPath: String?,
         trainStartModelPath: String?,
         cliConfig: CliTrainingConfig?,
-        cliOutputURL: URL?,
+        cliResultsOutput: CliResultsOutput?,
         chartCoordinator: ChartCoordinator
     ) {
         self.commandHub = commandHub
@@ -90,7 +90,7 @@ struct UpperContentView: View {
         self.playChessModelPath = playChessModelPath
         self.trainStartModelPath = trainStartModelPath
         self.cliConfig = cliConfig
-        self.cliOutputURL = cliOutputURL
+        self.cliResultsOutput = cliResultsOutput
         self.chartCoordinator = chartCoordinator
     }
 
@@ -110,7 +110,7 @@ struct UpperContentView: View {
 
     /// Live recorder for `--output` runs. Moved to SessionController in
     /// Stage 4h — forwarding proxy. (Allocated at the start of startRealTraining
-    /// when cliOutputURL is set, appended to by the stats/arena/probe paths
+    /// when cliResultsOutput is set, appended to by the stats/arena/probe paths
     /// while the session is active, nil in normal interactive runs — each
     /// capture site guards on `!= nil`.)
     private var cliRecorder: CliTrainingRecorder? {
@@ -1776,7 +1776,7 @@ struct UpperContentView: View {
         session.gameWatcherProvider = { gameWatcher }
         session.onResumeFinished = { autoResume.markResumeFinished() }
         session.cliConfig = cliConfig
-        session.cliOutputURL = cliOutputURL
+        session.cliResultsOutput = cliResultsOutput
         session.autoTrainOnLaunch = autoTrainOnLaunch
         session.checkpoint = checkpoint
         session.chartCoordinator = chartCoordinator

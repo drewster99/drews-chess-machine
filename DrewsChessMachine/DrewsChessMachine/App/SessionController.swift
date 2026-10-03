@@ -325,9 +325,10 @@ final class SessionController {
     /// Read by `startRealTraining`'s headless path. Set in `handleBodyOnAppear`.
     var cliConfig: CliTrainingConfig?
 
-    /// The launch-time `--output` JSON URL (`nil` outside `--output` runs). When
-    /// non-nil, `startRealTraining` allocates `cliRecorder`. Set in `handleBodyOnAppear`.
-    var cliOutputURL: URL?
+    /// The launch-time `--output` JSON destination, checked at launch (`nil`
+    /// outside `--output` runs). When non-nil, `startRealTraining` allocates
+    /// `cliRecorder`. Set in `handleBodyOnAppear`.
+    var cliResultsOutput: CliResultsOutput?
 
     /// The checkpoint controller, so a successful build can reset `lastSavedAt`
     /// (a freshly-built network has never been saved). Weak — the view keeps
@@ -658,7 +659,7 @@ final class SessionController {
     var candidateProbeCount: Int = 0
 
     /// Live recorder for `--output` runs. Allocated at the start of
-    /// `startRealTraining` when `cliOutputURL` is set, appended to by the
+    /// `startRealTraining` when `cliResultsOutput` is set, appended to by the
     /// stats/arena/probe paths, `nil` in normal interactive runs.
     var cliRecorder: CliTrainingRecorder?
 
