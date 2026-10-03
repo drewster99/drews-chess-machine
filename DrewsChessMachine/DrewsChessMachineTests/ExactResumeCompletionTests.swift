@@ -237,6 +237,13 @@ final class ExactResumeCompletionTests: XCTestCase {
         XCTAssertEqual(recorded.opponentGameIndices, [3, 4])
     }
 
+    /// The GUI status bar notes a not-exact resume with the same gap list the
+    /// log carries, and says nothing for an exact one.
+    func testTheStatusBarNoteListsTheGapsOfANotExactResume() {
+        XCTAssertNil(ResumeExactness(gaps: []).statusBarNote)
+        XCTAssertEqual(ResumeExactness(gaps: [.clocks, .buffer]).statusBarNote, "resumed not exact: buffer, clocks")
+    }
+
     /// Train-vs-UCI: a resume continues each opponent instance's game index
     /// (and with it the trainer's colour) only into the same pool size;
     /// otherwise there is nothing to continue and every instance starts at 0.

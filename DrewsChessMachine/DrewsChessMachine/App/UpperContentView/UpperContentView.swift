@@ -1069,14 +1069,19 @@ struct UpperContentView: View {
     /// save / resume activity *in this app session* so the user can
     /// see at a glance whether the trainer's current state has been
     /// written anywhere since the most recent load.
+    /// While the running segment began with a resume that was not exact,
+    /// its gaps follow (`ResumeExactness.statusBarNote`).
     private var lastSavedDisplayString: String {
+        let saveText: String
         if let when = checkpoint.lastSavedAt {
-            return "Last saved: \(when.formatted(date: .abbreviated, time: .shortened))"
+            saveText = "Last saved: \(when.formatted(date: .abbreviated, time: .shortened))"
+        } else if let resumedAt = checkpoint.lastResumedAt {
+            saveText = "Resumed \(resumedAt.formatted(date: .abbreviated, time: .shortened))"
+        } else {
+            saveText = "Last saved: Never"
         }
-        if let resumedAt = checkpoint.lastResumedAt {
-            return "Resumed \(resumedAt.formatted(date: .abbreviated, time: .shortened))"
-        }
-        return "Last saved: Never"
+        guard let note = checkpoint.runResumeExactness?.statusBarNote else { return saveText }
+        return saveText + " · " + note
     }
 
     private var currentOverlay: ChessBoardView.Overlay {

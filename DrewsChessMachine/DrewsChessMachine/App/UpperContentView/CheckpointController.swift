@@ -278,6 +278,12 @@ final class CheckpointController {
     /// from a fresh-build-never-saved session.
     var lastResumedAt: Date?
 
+    /// The resume verdict of the running lineage segment, when that segment
+    /// began by resuming a session; nil for a segment that began fresh or as
+    /// a branch. Shown in the status bar while not exact (D-1: a GUI resume
+    /// is reported, never refused).
+    var runResumeExactness: ResumeExactness?
+
     /// Wall-clock at which the current session started — used to derive the
     /// elapsed-training counter for back-dating on resume.
     var currentSessionStart: Date?

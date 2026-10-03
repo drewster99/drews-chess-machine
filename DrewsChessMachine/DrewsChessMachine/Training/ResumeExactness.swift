@@ -131,6 +131,12 @@ struct ResumeExactness: Equatable, Sendable {
         isExact ? "[RESUME] EXACT" : "[RESUME] NOT EXACT: " + Self.tokenList(tokens)
     }
 
+    /// The GUI status bar's note for a running segment that began with this
+    /// resume: nil for an exact one, `resumed not exact: <gaps>` otherwise.
+    var statusBarNote: String? {
+        isExact ? nil : "resumed not exact: " + Self.tokenList(tokens)
+    }
+
     /// The refusal a `--resume-exact` gets when `accepted` does not name every
     /// gap (decision D-7), or nil when the resume may proceed.
     func refusal(accepting accepted: Set<ResumeGap>) -> String? {

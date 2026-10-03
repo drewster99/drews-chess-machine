@@ -100,7 +100,9 @@ extension SessionController {
                 let gaps = Self.guiResumeGaps(
                     resumed: resumed, runningPolicyTailPrecision: trainer.policyTailPrecision,
                     runningBuild: .current, runningDevice: .current)
-                SessionLogger.shared.log(ResumeExactness.resume(of: resumed.trainerFile.lineageParent, gaps: gaps).logLine)
+                let exactness = ResumeExactness.resume(of: resumed.trainerFile.lineageParent, gaps: gaps)
+                SessionLogger.shared.log(exactness.logLine)
+                checkpoint?.runResumeExactness = exactness
                 // A session written before lineage still recorded its
                 // elapsed time; that is its one usable total.
                 let legacyTotals: LineageTracker.LegacySessionTotals?
@@ -116,6 +118,9 @@ extension SessionController {
             }
         }
         if let start {
+            if case .resume = start {} else {
+                checkpoint?.runResumeExactness = nil
+            }
             lineageTracker = try LineageTracker(
                 start: start, pathKind: .gui, argv: CommandLine.arguments,
                 startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)
