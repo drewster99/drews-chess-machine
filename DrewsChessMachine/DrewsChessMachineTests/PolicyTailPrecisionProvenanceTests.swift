@@ -57,9 +57,10 @@ final class PolicyTailPrecisionProvenanceTests: XCTestCase {
     func testNetworksAndTrainersAreBuiltWithTheProcessValue() throws {
         let network = try ChessMPSNetwork(.randomWeights)
         XCTAssertEqual(network.network.policyTailPrecision, Precision.process)
-        let trainer = try ChessTrainer()
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1))
         XCTAssertEqual(trainer.policyTailPrecision, Precision.process)
         let viaHyperparameters = try ChessTrainer(
+            dropoutStream: DCMRandom(seed: 1),
             hyperparameters: TrainerHyperparameters(TrainingParameters.shared.snapshot()),
             arch: .current
         )
@@ -70,7 +71,7 @@ final class PolicyTailPrecisionProvenanceTests: XCTestCase {
 
     func testTrainerFileMetadataRoundTripsThePrecision() async throws {
         let arch = NetworkArchitecture.current
-        let trainer = try ChessTrainer(arch: arch, policyTailPrecision: .float32FromPreBatchNorm)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: arch, policyTailPrecision: .float32FromPreBatchNorm)
         let snapshot = try await trainer.exportResumeSnapshot()
         let metadata = ModelCheckpointMetadata.trainerFile(
             creator: "test",

@@ -126,7 +126,7 @@ final class HeadNumericsTailTests: XCTestCase {
     func testTrainingGraphGivesTheHeadsSharedDirectionZeroGradient() async throws {
         try requireMetal()
         let architecture = arch(.float32)
-        let trainer = try ChessTrainer(momentumCoeff: 0, lrWarmupSteps: 0, arch: architecture)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0, lrWarmupSteps: 0, arch: architecture)
         let timing = try await trainer.trainStep(batchSize: 32)
         XCTAssertTrue(timing.hasDiagnostics, "the synthetic-data step always computes diagnostics")
         XCTAssertTrue(timing.policyLogitMean.isFinite, "policy mean logit must be measured")
@@ -156,7 +156,7 @@ final class HeadNumericsTailTests: XCTestCase {
     func testScalarTanhValueHeadIsNotCentered() async throws {
         try requireMetal()
         let architecture = arch(.float32, value: .scalarTanh)
-        let trainer = try ChessTrainer(momentumCoeff: 0, lrWarmupSteps: 0, arch: architecture)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0, lrWarmupSteps: 0, arch: architecture)
         _ = try await trainer.trainStep(batchSize: 32)
         let exported = try await velocities(after: trainer, architecture: architecture)
         // Centering a single logit subtracts it from itself: the loss would

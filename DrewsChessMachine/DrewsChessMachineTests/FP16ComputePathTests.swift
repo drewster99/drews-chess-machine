@@ -130,7 +130,7 @@ final class FP16ComputePathTests: XCTestCase {
     private func fp16TrainSweep(batch: Int, steps: Int,
                                 file: StaticString = #filePath, line: UInt = #line) async throws {
         try requireMetal()
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: fp16Arch(),
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: fp16Arch(),
                                        executableOptimizationLevel: .level1)
         for s in 0..<steps {
             let t = try await trainer.trainStep(batchSize: batch)
@@ -177,7 +177,7 @@ final class FP16ComputePathTests: XCTestCase {
     private func fp16EntropyFiniteSweep(batch: Int, steps: Int,
                                         file: StaticString = #filePath, line: UInt = #line) async throws {
         try requireMetal()
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: fp16Arch(),
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: fp16Arch(),
                                        executableOptimizationLevel: .level1)
         for s in 0..<steps {
             let t = try await trainer.trainStep(batchSize: batch)

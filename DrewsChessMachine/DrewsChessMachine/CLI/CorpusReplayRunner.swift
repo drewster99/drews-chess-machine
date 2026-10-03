@@ -1148,6 +1148,7 @@ enum CorpusReplayRunner {
         // the stats / KL-probe intervals. With both cycle flags off the cycle
         // is inert and the static LR and momentum apply, exactly as in the GUI.
         let trainer = try ChessTrainer(
+            dropoutStream: RunMasterSeed.systemDrawn(context: "replay").generator(.dropout),
             hyperparameters: trainerHyperparameters, arch: arch, policyTailPrecision: config.policyTailPrecision)
         emit(ChessNetwork.PolicyTailPrecision.processLogLine)
         // A requested GPU capture must be possible before any buffer fill or

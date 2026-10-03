@@ -116,6 +116,7 @@ final class LRCycleWarmupOffsetTests: XCTestCase {
 
         // No √batch scaling so the effective LR is cycle LR × warmup only.
         let trainer = try ChessTrainer(
+            dropoutStream: DCMRandom(seed: 1),
             learningRate: 0.01,
             momentumCoeff: 0.5,
             sqrtBatchScalingForLR: false,

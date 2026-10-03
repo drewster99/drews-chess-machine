@@ -583,7 +583,7 @@ final class LayerHealthTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("Metal not available") }
         for dtype in [ComputeDataType.float32, .bFloat16] {
             let arch = tinyArch(dtype: dtype)
-            let trainer = try ChessTrainer(momentumCoeff: 0.9, lrWarmupSteps: 0, arch: arch)
+            let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0.9, lrWarmupSteps: 0, arch: arch)
             // The synthetic-data `trainStep(batchSize:)` deliberately does not
             // advance `completedTrainSteps` (only real-data steps count, so
             // random-label smoke steps can't consume LR warmup); the readback
