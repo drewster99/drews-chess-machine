@@ -866,11 +866,39 @@ final class ReplayBuffer: @unchecked Sendable {
         /// live `ReplayBuffer`).
         @MainActor public static func fromCurrentParameters() -> SamplingConstraints {
             let p = TrainingParameters.shared
+            return fromParameters(
+                maxPliesFromAnyOneGame: p.maxPliesFromAnyOneGame,
+                maxDrawPercentPerBatch: p.maxDrawPercentPerBatch,
+                targetSampledGameLengthPlies: p.targetSampledGameLengthPlies,
+                stratifyByMaterial: p.replayBufferStratifyByMaterial)
+        }
+
+        /// Build from a parameter snapshot — the off-main training paths
+        /// (corpus replay, train-vs-UCI), which take one snapshot at run
+        /// start.
+        public init(_ parameters: TrainingParametersSnapshot) {
+            self = Self.fromParameters(
+                maxPliesFromAnyOneGame: parameters.maxPliesFromAnyOneGame,
+                maxDrawPercentPerBatch: parameters.maxDrawPercentPerBatch,
+                targetSampledGameLengthPlies: parameters.targetSampledGameLengthPlies,
+                stratifyByMaterial: parameters.replayBufferStratifyByMaterial)
+        }
+
+        /// The one rule turning the four sampling parameters into
+        /// constraints, shared by every training path — self-play, corpus
+        /// replay and train-vs-UCI all sample under exactly what the
+        /// parameters say.
+        static func fromParameters(
+            maxPliesFromAnyOneGame: Int,
+            maxDrawPercentPerBatch: Int,
+            targetSampledGameLengthPlies: Int,
+            stratifyByMaterial: Bool
+        ) -> SamplingConstraints {
             // V1: balanced target across the 4 active buckets when the
             // toggle is on. Custom weights are future work — see the
             // `ReplayBufferStratifyByMaterial` parameter description.
             let bucketWeights: [Float]?
-            if p.replayBufferStratifyByMaterial {
+            if stratifyByMaterial {
                 let bucketCount = ReplayBufferAnalyzer.materialBuckets.count
                 // The 5th bucket (23–30 non-pawns) is structurally
                 // unreachable, so its weight stays 0. The remaining
@@ -884,11 +912,22 @@ final class ReplayBuffer: @unchecked Sendable {
                 bucketWeights = nil
             }
             return SamplingConstraints(
-                maxPerGame: p.maxPliesFromAnyOneGame,
-                maxDrawPercent: p.maxDrawPercentPerBatch,
-                targetMeanGameLengthPlies: p.targetSampledGameLengthPlies,
+                maxPerGame: maxPliesFromAnyOneGame,
+                maxDrawPercent: maxDrawPercentPerBatch,
+                targetMeanGameLengthPlies: targetSampledGameLengthPlies,
                 materialBucketWeights: bucketWeights
             )
+        }
+
+        /// The constraints as `[REPLAY-HPARAMS]` / `[VS-UCI-HPARAMS]` print
+        /// them, with whether a batch of `batchSize` takes the constrained
+        /// path (`applied=on`) or the uniform one (`applied=off`, every
+        /// constraint inactive for that batch size).
+        func logFields(batchSize: Int) -> String {
+            " sampling=(maxPerGame=\(maxPerGame) maxDrawPct=\(maxDrawPercent)"
+                + " targetLen=\(targetMeanGameLengthPlies)"
+                + " stratify=\(materialBucketWeights == nil ? "off" : "on")"
+                + " applied=\(isNoOp(forBatchSize: batchSize) ? "off" : "on"))"
         }
 
         /// True when this is equivalent to the legacy uniform sampler for

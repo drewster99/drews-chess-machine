@@ -2371,6 +2371,15 @@ Finding while building it: corpus replay never calls
 `max_draw_percent_per_batch`, material stratification and the length tilt are
 GUI-only. Not a resume bug; noted for the owner.
 
+Resolved 2026-10-03 (owner decision: apply them). Corpus replay and
+train-vs-UCI set the constraints from their parameter snapshot at run start,
+through the same builder the GUI uses
+(`ReplayBuffer.SamplingConstraints.fromParameters`). The harness gained
+`testAResumeUnderSamplingConstraintsEndsWhereTheUninterruptedRunEnds` (declared
+defaults; every constraint binding; stratification) and
+`testReplaySamplesUnderTheRunsPerGameCap`, so the fixture note above about
+stratification and the length tilt no longer applies.
+
 **P13 — Config D removal** (D-10, issue #9; before P9). Delete the
 `--bf16-cast-in-forward` flag parsing (`App/DrewsChessMachineApp.swift:264-273`),
 the `SessionController` wiring (`App/SessionController.swift:944-956`), the

@@ -249,6 +249,7 @@ enum TrainVsUciRunner {
 
         for line in runSeed.parameterNotes { emit(line) }
         recorder?.setRunRandomSeed(runSeed)
+        recorder?.setSamplingConstraints(p.samplingConstraints, batchSize: p.trainingBatchSize)
         emit("[VS-UCI-ARCH] (\(startModelFile == nil ? "default preset" : "start-model")) \(arch.architectureSummary)")
 
         // Rolling trainer-model output file (mirrors CorpusReplayRunner),
@@ -355,11 +356,13 @@ enum TrainVsUciRunner {
             )
             + " complementCE=\(hp.useSignedAdvantageComplementCE ? "on" : "off")"
             + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
-            + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)")
+            + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)"
+            + p.samplingConstraints.logFields(batchSize: p.trainingBatchSize))
         let buffer = ReplayBuffer(
             capacity: p.replayBufferCapacity,
             inputEncoding: evalNet.inputEncoding,
             sampler: runSeed.streams.generator(.sampler))
+        buffer.setSamplingConstraints(p.samplingConstraints)
         if let resumedStreams {
             buffer.restoreSamplerState(resumedStreams.samplerState)
             emit("[RESUME] rng: sampler=restored")

@@ -9,6 +9,15 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-03 CDT — Corpus replay and train-vs-UCI sample under the sampling constraints
+
+- **Every training path samples the same way.** Corpus replay and train-vs-UCI now set the replay buffer's batch-composition constraints — `max_plies_from_any_one_game`, `max_draw_percent_per_batch`, `target_sampled_game_length_plies`, `replay_buffer_stratify_by_material` — from their parameter snapshot at run start. Before this, only the GUI applied them; both CLI paths drew every batch uniformly, while their lineage records listed the parameters as if they had applied.
+- **One rule.** `ReplayBuffer.SamplingConstraints.fromParameters` builds the constraints for all three paths: the GUI through `fromCurrentParameters()`, the CLI paths through `SamplingConstraints(_ snapshot:)` (carried on `ReplayParams.samplingConstraints`).
+- **Visible.** `[REPLAY-HPARAMS]` / `[VS-UCI-HPARAMS]` end with `sampling=(maxPerGame= maxDrawPct= targetLen= stratify= applied=)`; `results.json` gains a top-level `sampling_constraints` object (all three paths, as set at run start); the `[BATCH-STATS]` lines of the CLI paths now show the constraints in force instead of the uniform sampler's.
+- **The fed batches change.** The declared defaults are not the uniform sampler (a per-game cap of 10 and a length target of 999), so replay and train-vs-UCI runs on this build draw different batches from earlier builds even at default settings. Runs on either side are not exactly comparable; see `experiments/README.md`.
+- **Exact resume.** Constraint-dependent sampling resumes exactly: `ResumeEquivalenceTests` now covers the declared defaults, every constraint binding at once, and material stratification.
+- Tests: `SamplingConstraintsBuilderTests` (5); `ResumeEquivalenceTests.testReplaySamplesUnderTheRunsPerGameCap` (failed before this change: replay ignored the cap) and `testAResumeUnderSamplingConstraintsEndsWhereTheUninterruptedRunEnds`.
+
 ## 2026-10-03 CDT — Resume-equivalence harness (`334de627`, `acf16048`)
 
 - `ResumeEquivalenceTests` (the exact-resume correctness gate, determinism plan C6/P12) runs the real corpus-replay loop in-process over a synthetic corpus: N+M steps straight through versus N steps, a save and `--resume-exact` for M more. The final files match bit for bit — every tensor, the sampler and dropout stream positions, the dropout Philox state, the feed position and the cumulative totals — and the resumed segment records an exact resume. Also: a resume early in the second epoch (the refeed crosses the wrap), probes on versus off, and a branch from the same save as a negative control. Ungated, about half a minute.

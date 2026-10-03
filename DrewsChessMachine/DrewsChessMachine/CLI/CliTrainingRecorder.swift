@@ -38,6 +38,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
         var runKind: RunKind?
         /// The run's master seed, set once at run start.
         var runRandomSeed: RunRandomSeed?
+        /// The sampling constraints in force at run start.
+        var samplingConstraints: BatchStatsSnapshot.SamplingConstraintsSnapshot?
         /// The lineage of the run's latest save; the last one set is the
         /// run's final lineage.
         var finalLineage: ResultsLineage?
@@ -64,6 +66,16 @@ final class CliTrainingRecorder: @unchecked Sendable {
     /// to `setRunKind(_:)`.
     func setRunRandomSeed(_ seed: RunRandomSeed) {
         lock.withLock { $0.runRandomSeed = seed }
+    }
+
+    /// Record the batch-composition constraints the run's replay buffer
+    /// samples under, as set at run start, and whether a batch of
+    /// `batchSize` takes the constrained path. Call next to
+    /// `setRunRandomSeed(_:)`. A GUI run's constraints are live-tunable; a
+    /// later change shows in the per-batch `batch_stats` records.
+    func setSamplingConstraints(_ constraints: ReplayBuffer.SamplingConstraints, batchSize: Int) {
+        let snapshot = BatchStatsSnapshot.SamplingConstraintsSnapshot(constraints, batchSize: batchSize)
+        lock.withLock { $0.samplingConstraints = snapshot }
     }
 
     /// Record how the run ended. Safe to call from any thread — the
@@ -142,6 +154,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
                 randomSeed: state.runRandomSeed.map { String($0.masterSeed) },
                 randomSeedMode: state.runRandomSeed.map { $0.effectiveMode.logToken },
                 rngStreamDerivation: state.runRandomSeed.map { _ in DCMRandomStreams.derivationVersion },
+                samplingConstraints: state.samplingConstraints,
                 lineage: state.finalLineage
             )
         }
@@ -371,6 +384,10 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let randomSeed: String?
         let randomSeedMode: String?
         let rngStreamDerivation: String?
+        /// The batch-composition constraints the run's replay buffer sampled
+        /// under, as set at run start (`setSamplingConstraints`); nil, and
+        /// left out, for a path that set none.
+        let samplingConstraints: BatchStatsSnapshot.SamplingConstraintsSnapshot?
         /// The lineage of the run's last save (`setFinalLineage`); nil, and
         /// left out, for a run that recorded none.
         let lineage: ResultsLineage?
@@ -391,6 +408,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case randomSeed = "random_seed"
             case randomSeedMode = "random_seed_mode"
             case rngStreamDerivation = "rng_stream_derivation"
+            case samplingConstraints = "sampling_constraints"
             case lineage
         }
     }
@@ -543,6 +561,25 @@ final class CliTrainingRecorder: @unchecked Sendable {
                 case maxDrawPct = "max_draw_pct"
                 case targetLength = "target_length"
                 case stratifyByMaterial = "stratify_by_material"
+            }
+
+            init(applied: Bool, maxPerGame: Int, maxDrawPct: Int, targetLength: Int, stratifyByMaterial: Bool) {
+                self.applied = applied
+                self.maxPerGame = maxPerGame
+                self.maxDrawPct = maxDrawPct
+                self.targetLength = targetLength
+                self.stratifyByMaterial = stratifyByMaterial
+            }
+
+            /// `constraints` as a batch of `batchSize` samples under them:
+            /// `applied` is whether that batch takes the constrained path.
+            init(_ constraints: ReplayBuffer.SamplingConstraints, batchSize: Int) {
+                self.init(
+                    applied: !constraints.isNoOp(forBatchSize: batchSize),
+                    maxPerGame: constraints.maxPerGame,
+                    maxDrawPct: constraints.maxDrawPercent,
+                    targetLength: constraints.targetMeanGameLengthPlies,
+                    stratifyByMaterial: constraints.materialBucketWeights != nil)
             }
         }
         let step: Int

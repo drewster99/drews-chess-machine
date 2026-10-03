@@ -282,7 +282,7 @@ Number of self-play positions accumulated before the trainer starts pulling mini
 
 ### max_plies_from_any_one_game
 
-Cap on how many plies may be drawn from any single self-play game within one training batch. Decorrelates the minibatch by forcing it to span many distinct games rather than letting one long marathon dominate. At the default (10), the cap is essentially always active for long games at typical batch sizes (e.g. 4096); near the range max (400), the cap rarely binds.
+Cap on how many plies may be drawn from any single game (self-play, corpus or engine game) within one training batch. Decorrelates the minibatch by forcing it to span many distinct games rather than letting one long marathon dominate. At the default (10), the cap is essentially always active for long games at typical batch sizes (e.g. 4096); near the range max (400), the cap rarely binds.
 
 **Type:** Int · **Range:** 1..400 · **Default:** 10 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 

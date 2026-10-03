@@ -759,6 +759,8 @@ extension SessionController {
             // a self-play record from one written before the key existed.
             r.setRunKind(.selfPlay)
             r.setRunRandomSeed(runSeed)
+            r.setSamplingConstraints(.fromCurrentParameters(),
+                                     batchSize: TrainingParameters.shared.trainingBatchSize)
             recorder = r
             cliRecorder = r
         } else {
