@@ -32,9 +32,10 @@ selfplay_registry.json `logs`):
 
 Run:  python3 selfplay.py
 """
-import os, re, csv, json, bisect
+import os, re, csv, json, bisect, argparse
 from _schema import FIELDS  # single source of the CSV column order (shared with replay.py)
-from _atomic_write import atomic_write_open  # crash-safe replace of data/<run>.csv
+# Crash-safe, compare-and-swap, no-silent-shrink replace of data/<run>.csv.
+from _guarded_csv import replace_rows, selfplay_row_key, snapshot_of
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOGDIR = os.path.expanduser("~/Library/Logs/DrewsChessMachine")
@@ -135,7 +136,9 @@ def iso_of(log, hms, prev_hms, day_offset):
     return f"{base.isoformat()}T{hms[0]:02d}:{hms[1]:02d}:{hms[2]:02d}", hms
 
 
-def build_run(key, cfg):
+def build_run(key, cfg, allow_shrink=False):
+    csv_file = os.path.join(DATA, f"{key}.csv")
+    snapshot = snapshot_of(csv_file)
     rows = {}  # cum_step -> row dict (last-writer-wins over resume rewinds)
     launch_offset = 0.0     # summed prior-launch training seconds
     step_base = 0           # added to raw steps= to keep cum_step monotonic
@@ -152,7 +155,12 @@ def build_run(key, cfg):
     for seg_i, log in enumerate(cfg["logs"]):
         path = os.path.join(LOGDIR, log)
         if not os.path.exists(path):
-            continue
+            # A missing launch would not only drop its rows: every later launch's
+            # step base and elapsed offset are derived from the ones before it.
+            raise FileNotFoundError(
+                f"{key}: log {log} (launch {seg_i}) is not in {LOGDIR}; a rebuild without it "
+                f"would drop its rows and shift every later launch. Restore the log, or mark "
+                f'the run "rebuild": false in selfplay_registry.json to leave its CSV as it is')
         kept_to = kept_to_by_log.get(log)  # last raw step of this launch on the kept chain
         seg_max_elapsed = 0.0
         prev_hms = None
@@ -366,21 +374,23 @@ def build_run(key, cfg):
                 row["note"] = src["note"]
         out.append(row)
     out.sort(key=lambda r: r["cum_step"])
-    p = os.path.join(DATA, f"{key}.csv")
-    with atomic_write_open(p, newline="") as f:
-        w = csv.DictWriter(f, fieldnames=FIELDS)
-        w.writeheader()
-        for r in out:
-            w.writerow(r)
+    replace_rows(csv_file, out, FIELDS, snapshot, selfplay_row_key, allow_shrink=allow_shrink)
     return out, resets, foreign
 
 
 def main():
+    ap = argparse.ArgumentParser(description="Rebuild data/<run>.csv for every self-play run.")
+    ap.add_argument("--allow-shrink", action="store_true",
+                    help="allow a rebuild to drop rows / blank values a CSV holds (each one is printed first)")
+    args = ap.parse_args()
     reg = json.load(open(os.path.join(HERE, "selfplay_registry.json")))
     os.makedirs(DATA, exist_ok=True)
     print(f"{'run':6} {'rows':>5} {'step0':>7} {'stepN':>8} {'hrs':>6} {'pElo':>6} {'resets':>6} {'foreign':>7}")
     for key, cfg in reg["runs"].items():
-        out, resets, foreign = build_run(key, cfg)
+        if cfg.get("rebuild") is False:
+            print(f"{key:6}  not rebuilt: the registry marks it \"rebuild\": false (its logs are gone); CSV left as it is")
+            continue
+        out, resets, foreign = build_run(key, cfg, args.allow_shrink)
         if not out:
             print(f"{key:6}  (no data)")
             continue

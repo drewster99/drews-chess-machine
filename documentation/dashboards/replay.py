@@ -30,7 +30,10 @@ Idempotent: track/migrate never duplicate a cum_step already present.
 import os, re, sys, csv, json, glob, struct, math, bisect, argparse, collections, itertools, datetime
 import numpy as np
 from _schema import FIELDS  # single source of the CSV column order (shared with selfplay.py)
-from _atomic_write import atomic_write_open  # crash-safe replace of the CSVs + registry.json
+# Crash-safe (_atomic_write), compare-and-swap, no-silent-shrink replace of the CSVs and
+# registry.json.
+from _guarded_csv import (read_rows, read_text, replace_rows, replace_text_if_unchanged,
+                          replay_row_key, snapshot_of)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
 import dcm_arch  # noqa: E402  each checkpoint's ReZero cap, read from its own metadata
@@ -464,18 +467,22 @@ def csv_path(run):
     return os.path.join(DATA, f"{run}.csv")
 
 def read_csv(run):
-    p = csv_path(run)
-    if not os.path.exists(p):
-        return []
-    with open(p) as f:
-        return list(csv.DictReader(f))
+    """A run's rows, for reading only (a writer uses read_csv_for_update)."""
+    rows, _, _ = read_rows(csv_path(run))
+    return rows
 
-def write_csv(run, rows):
+def read_csv_for_update(run):
+    """(rows, Snapshot): the snapshot lets write_csv refuse if another writer replaced
+    the file in between."""
+    rows, _, snapshot = read_rows(csv_path(run))
+    return rows, snapshot
+
+def write_csv(run, rows, snapshot, allowed_blank_columns=frozenset(), allow_shrink=False):
+    """Replace a run's CSV with `rows`, refusing (see _guarded_csv) if it changed since
+    `snapshot` was taken or if a row would disappear or a filled cell turn blank."""
     rows = sorted(rows, key=lambda r: int(r["cum_step"]))
-    with atomic_write_open(csv_path(run), newline="") as f:
-        w = csv.DictWriter(f, fieldnames=FIELDS); w.writeheader()
-        for r in rows:
-            w.writerow({k: r.get(k, "") for k in FIELDS})
+    replace_rows(csv_path(run), rows, FIELDS, snapshot, replay_row_key,
+                 allowed_blank_columns=allowed_blank_columns, allow_shrink=allow_shrink)
 
 def has_step(rows, cum):
     return any(int(r["cum_step"]) == cum for r in rows)
@@ -592,8 +599,9 @@ def discover_enum_stems(cfg, run=None, verbose=True):
                 ids.add(m.get("model_id")); steps.append(int(m["training_step"]))
                 if m.get("created_at_unix"):
                     times.append(int(m["created_at_unix"]))
-            except (OSError, ValueError, KeyError, struct.error):
-                pass
+            except (OSError, ValueError, KeyError, struct.error) as error:
+                print(f"  [warn] {os.path.basename(p)}: header unreadable ({error}); "
+                      f"not used to place stem {stem}", file=sys.stderr)
         if len(ids) > 1:
             refused.append((stem, "spans %d model_ids %s" % (len(ids), sorted(ids))))
             continue
@@ -690,7 +698,7 @@ def track(run):
         print(f"{run}: out-model not found ({cfg['out_model']})"); return
     meta = meta_step_of(src)
     base = cfg["segments"][-1]["cumstep_base"]; cum = base + meta
-    rows = read_csv(run)
+    rows, snapshot = read_csv_for_update(run)
     if has_step(rows, cum):
         print(f"{run}: cum_step {cum} already tracked (meta {meta}) — no-op"); return
     cum, frozen = freeze(run, cfg, meta)
@@ -709,7 +717,7 @@ def track(run):
                pLogit_mean=round(pr.get("pLogit_mean"), 3) if pr.get("pLogit_mean") else "",
                pLogit_peak=pr.get("pLogit_peak", ""),
                frozen_file=os.path.basename(frozen), note="")
-    rows.append(row); write_csv(run, rows)
+    rows.append(row); write_csv(run, rows, snapshot)
     eh = f"{elapsed/3600:.2f}h" if isinstance(elapsed, (int, float)) else "n/a (log gone)"
     print(f"{run}: tracked cum_step {cum} (meta {meta}) pElo={row['pElo']} "
           f"elapsed={elapsed}s ({eh}) seg={si}")
@@ -766,7 +774,7 @@ def probe_backfill(run, verbose=True):
       • legacy      <...>-step<cum>-frozen.safetensors  — cum-named tracker snapshots
         (pre-enumeration runs, and this run's earlier segments)."""
     cfg = REG["runs"][run]
-    rows = read_csv(run)
+    rows, snapshot = read_csv_for_update(run)
     by = {int(r["cum_step"]): r for r in rows}
     st = SegTime(cfg["segments"], run)
     filled = 0
@@ -798,7 +806,7 @@ def probe_backfill(run, verbose=True):
 
     if filled:
         rows.sort(key=lambda r: int(r["cum_step"]))
-        write_csv(run, rows)
+        write_csv(run, rows, snapshot)
     if verbose:
         print(f"probe-backfilled {filled}")
     return filled
@@ -819,7 +827,7 @@ def recompute_cum_steps(run, verbose=True):
     row. `frozen_file` is left alone: it is the name of a file on disk, and a
     legacy cum-named snapshot keeps the name it was saved under."""
     cfg = REG["runs"][run]
-    rows = read_csv(run)
+    rows, snapshot = read_csv_for_update(run)
     moved = 0
     for r in rows:
         seg, meta = str(r.get("segment", "")), str(r.get("meta_step", ""))
@@ -836,7 +844,7 @@ def recompute_cum_steps(run, verbose=True):
         raise ValueError(f"{run}: re-derived cum_steps collide at {dup[:10]} "
                          f"({len(dup)} total); fix the segments' cumstep_base")
     if moved:
-        write_csv(run, rows)
+        write_csv(run, rows, snapshot)
     if verbose:
         print(f"{run}: re-derived cum_step on {moved} row(s)")
     return moved
@@ -860,7 +868,7 @@ def recompute_internals(run, verbose=True):
         print(f"{run}: no segment declares a model_id; nothing to recompute")
         return 0
     ck = _ckpt_index([MODELS])
-    rows = read_csv(run)
+    rows, snapshot = read_csv_for_update(run)
     redone = blanked = 0
     for r in rows:
         seg = str(r.get("segment", ""))
@@ -873,7 +881,7 @@ def recompute_internals(run, verbose=True):
         elif any(r.get(k) not in ("", None) for k in ("bn1Mean", "sae2", "eff_alpha")):
             r.update(bn1Mean="", sae2="", eff_alpha="")
             blanked += 1
-    write_csv(run, rows)
+    write_csv(run, rows, snapshot, allowed_blank_columns=frozenset({"bn1Mean", "sae2", "eff_alpha"}))
     if verbose:
         print(f"{run}: internals re-derived on {redone} row(s), blanked on {blanked} "
               f"(checkpoint gone); caps read from each checkpoint")
@@ -886,7 +894,7 @@ def recompute_elapsed(run, verbose=True):
     after the clamp lands — otherwise old rows keep their wall-clock (sleep-inflated)
     elapsed while new rows are clamped, and the by-time axis mixes the two."""
     cfg = REG["runs"][run]
-    rows = read_csv(run)
+    rows, snapshot = read_csv_for_update(run)
     if not rows:
         if verbose:
             print(f"{run}: no rows")
@@ -916,7 +924,7 @@ def recompute_elapsed(run, verbose=True):
             r["wall_sec"] = wl
             changed += 1
     if changed:
-        write_csv(run, rows)
+        write_csv(run, rows, snapshot)
     if verbose:
         print(f"{run}: recomputed elapsed on {changed} row(s)")
     return changed
@@ -930,7 +938,7 @@ def _kv(line, key):
 
 V5_DOC = os.path.join(HERE, "..", "v5-layernorm-output.md")
 
-def migrate_v5():
+def migrate_v5(allow_shrink=False):
     """v5's FIRST THREE segments live in the markdown table (per-subrun step), not
     loop_state. cum_step = subrun_step + offset. Elapsed left blank unless segment
     logs are present.
@@ -971,7 +979,7 @@ def migrate_v5():
             pLogit_mean=pl[0], pLogit_peak=(pl[1] if len(pl) > 1 else ""),
             frozen_file=os.path.basename(frozen), note=name))
     doc_segs = set(seg_for_name.values())
-    existing = read_csv("v5")
+    existing, snapshot = read_csv_for_update("v5")
     kept = [r for r in existing
             if str(r.get("segment", "")).isdigit() and int(r["segment"]) not in doc_segs]
 
@@ -991,7 +999,7 @@ def migrate_v5():
                 r[col] = old[col]
                 restored += 1
 
-    write_csv("v5", rows + kept)
+    write_csv("v5", rows + kept, snapshot, allow_shrink=allow_shrink)
     print(f"migrate v5: {len(rows)} doc rows rebuilt ({restored} field(s) preserved from the "
           f"existing CSV), {len(kept)} imported rows preserved -> {csv_path('v5')}")
 
@@ -1006,6 +1014,7 @@ def _ckpt_index(dirs):
     `v5-cont-replay-step1000.safetensors`. Only the header's `model_id` (minted per
     segment) plus `training_step` names a checkpoint uniquely."""
     out = {}
+    unreadable = []
     for d in dirs:
         for p in sorted(glob.glob(os.path.join(os.path.expanduser(d), "*.safetensors"))):
             try:
@@ -1015,8 +1024,13 @@ def _ckpt_index(dirs):
                 mid, ts = m.get("model_id"), m.get("training_step")
                 if mid and ts is not None:
                     out.setdefault((mid, int(ts)), p)
-            except (OSError, ValueError, KeyError, struct.error):
-                continue                     # unreadable file: absent, not fatal
+            except (OSError, ValueError, KeyError, struct.error) as error:
+                unreadable.append((p, error))   # absent from the index, and reported below
+    if unreadable:
+        print(f"[warn] {len(unreadable)} checkpoint header(s) unreadable, left out of the "
+              f"(model_id, training_step) index:", file=sys.stderr)
+        for p, error in unreadable[:10]:
+            print(f"  {os.path.basename(p)}: {error}", file=sys.stderr)
     return out
 
 
@@ -1045,21 +1059,29 @@ def import_probes(run, jsonl, segment, ckpt_dirs=(), verbose=True):
     st = SegTime(cfg["segments"], run)
     ck = _ckpt_index(ckpt_dirs) if ckpt_dirs else {}
 
-    rows = read_csv(run)
+    rows, snapshot = read_csv_for_update(run)
     by = {int(r["cum_step"]): r for r in rows}
-    added = skipped = rejected = 0
+    added = skipped = rejected = unnamed = 0
     internals_failed = []
 
-    for line in open(os.path.expanduser(jsonl)):
-        line = line.strip()
+    with open(os.path.expanduser(jsonl)) as fh:
+        raw_lines = fh.readlines()
+    for number, raw in enumerate(raw_lines, 1):
+        line = raw.strip()
         if not line.startswith("{"):
             continue
         try:
             d = json.loads(line)
-        except ValueError:
-            continue
+        except ValueError as error:
+            if number == len(raw_lines) and not raw.endswith("\n"):
+                print(f"  {jsonl}:{number}: unterminated last line (an append in flight); skipped",
+                      file=sys.stderr)
+                continue
+            raise ValueError(f"{jsonl}:{number}: not valid JSON ({error})") from error
         m = re.search(r"step(\d+)", os.path.basename(d.get("model", "")))
         if not m:
+            unnamed += 1
+            print(f"  {jsonl}:{number}: no step<N> in its model name; skipped", file=sys.stderr)
             continue
         meta = int(m.group(1))
         # Provenance gate. Three outcomes, deliberately distinct:
@@ -1120,16 +1142,18 @@ def import_probes(run, jsonl, segment, ckpt_dirs=(), verbose=True):
 
     if added:
         rows.sort(key=lambda r: int(r["cum_step"]))
-        write_csv(run, rows)
+        write_csv(run, rows, snapshot)
     if verbose:
         print(f"{run} seg {segment} ({sg.get('label','')}): +{added} rows, "
-              f"{skipped} already present, {rejected} rejected -> {csv_path(run)}")
+              f"{skipped} already present, {rejected} rejected, {unnamed} without a step in the "
+              f"model name, {len(internals_failed)} with unreadable internals -> {csv_path(run)}")
     return added
 
 
-def migrate(run, loop_state=None):
+def migrate(run, loop_state=None, allow_shrink=False):
     if run == "v5" or REG["runs"][run].get("source") == "v5doc":
-        return migrate_v5()
+        return migrate_v5(allow_shrink)
+    snapshot = snapshot_of(csv_path(run))
     cfg = REG["runs"][run]
     tag = {"mini2b": "MINI", "coxw": "COXW", "ykkk": "YKKK", "t97x": "T97X"}[run]
     ls = loop_state or LOOP_STATE
@@ -1166,7 +1190,7 @@ def migrate(run, loop_state=None):
             pLogit_mean=pl.group(1) if pl else "", pLogit_peak=pl.group(2) if pl else "",
             frozen_file=os.path.basename(frozen),
             note="FINAL" if "FINAL" in line else ("log-backfill" if not _kv(line, "pElo") else "")))
-    write_csv(run, rows)
+    write_csv(run, rows, snapshot, allow_shrink=allow_shrink)
     print(f"migrate {run}: {len(rows)} rows -> {csv_path(run)} "
           f"(elapsed {rows[0]['elapsed_train_sec']}..{rows[-1]['elapsed_train_sec']}s)")
 
@@ -1384,6 +1408,8 @@ if __name__ == "__main__":
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("track"); p.add_argument("run")
     p = sub.add_parser("migrate"); p.add_argument("run"); p.add_argument("--loop-state")
+    p.add_argument("--allow-shrink", action="store_true",
+                   help="allow the rebuild to drop rows / blank values the CSV holds (printed first)")
     p = sub.add_parser("recompute"); p.add_argument("run", nargs="?", default="__all__")
     p = sub.add_parser("recompute-internals"); p.add_argument("run")
     p = sub.add_parser("discover-stems")
@@ -1402,7 +1428,7 @@ if __name__ == "__main__":
     if a.cmd == "track":
         track(a.run)
     elif a.cmd == "migrate":
-        migrate(a.run, a.loop_state)
+        migrate(a.run, a.loop_state, a.allow_shrink)
     elif a.cmd == "recompute":
         targets = list(REG["runs"]) if a.run == "__all__" else [a.run]
         for r in targets:
@@ -1430,12 +1456,14 @@ if __name__ == "__main__":
             else:
                 print("  nothing to add")
         if a.write and proposed:
-            reg = json.load(open(os.path.join(ROOT, "registry.json")))
+            registry_path = os.path.join(ROOT, "registry.json")
+            registry_text, registry_snapshot = read_text(registry_path)
+            reg = json.loads(registry_text)
             for r, new in proposed.items():
                 for i, st in new.items():
                     reg["runs"][r]["segments"][i]["enum_stem"] = st
-            with atomic_write_open(os.path.join(ROOT, "registry.json")) as fh:
-                json.dump(reg, fh, indent=2, ensure_ascii=False)
+            replace_text_if_unchanged(registry_path, json.dumps(reg, indent=2, ensure_ascii=False),
+                                      registry_snapshot)
             print(f"\nwrote {sum(len(v) for v in proposed.values())} enum_stem value(s) to registry.json")
         elif proposed:
             print("\n(proposal only — re-run with --write to apply)")

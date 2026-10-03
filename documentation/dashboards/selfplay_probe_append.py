@@ -32,7 +32,8 @@ Usage:  python3 selfplay_probe_append.py <run> [--segment N] [--spacing 250]
         (segment defaults to the LAST entry in the run's `logs` list)
 """
 import os, re, io, csv, sys, json, argparse
-from _atomic_write import atomic_write_open  # crash-safe replace of selfplay_probe/<run>.csv
+# Crash-safe, compare-and-swap replace of selfplay_probe/<run>.csv that may only extend it.
+from _guarded_csv import read_text, replace_text_if_unchanged, snapshot_of
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOGDIR = os.path.expanduser("~/Library/Logs/DrewsChessMachine")
@@ -65,10 +66,10 @@ def main():
     kept_to = cfg.get("log_kept_to", {}).get(logs[seg])
 
     path = os.path.join(HERE, "selfplay_probe", f"{a.run}.csv")
-    existing_text = ""
     if os.path.exists(path):
-        with open(path, newline="") as existing:
-            existing_text = existing.read()
+        existing_text, snapshot = read_text(path)
+    else:
+        existing_text, snapshot = "", snapshot_of(path)
     rows = list(csv.DictReader(io.StringIO(existing_text, newline="")))
     last = max((int(r["step"]) for r in rows if r.get("segment") == str(seg)), default=-1)
 
@@ -92,13 +93,14 @@ def main():
     # Rewrite only when there is something to add (or the file does not exist
     # yet / is empty and needs its header), so an idle tick leaves the file alone.
     if new_rows or not existing_text:
-        with atomic_write_open(path, newline="") as fh:
-            fh.write(existing_text)
-            w = csv.DictWriter(fh, fieldnames=FIELDS)
-            if not existing_text:
-                w.writeheader()
-            for row in new_rows:
-                w.writerow(row)
+        buffer = io.StringIO(newline="")
+        buffer.write(existing_text)
+        w = csv.DictWriter(buffer, fieldnames=FIELDS)
+        if not existing_text:
+            w.writeheader()
+        for row in new_rows:
+            w.writerow(row)
+        replace_text_if_unchanged(path, buffer.getvalue(), snapshot, must_extend=True)
     print(f"{a.run} seg{seg} ({logs[seg]}): +{len(new_rows)} marks, now through step {last}")
 
 
