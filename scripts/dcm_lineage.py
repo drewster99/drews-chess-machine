@@ -145,25 +145,33 @@ def lineage_of(metadata, source):
         record = json.loads(text)
     except (TypeError, ValueError) as error:
         raise LineageError(f"{source}: {METADATA_KEY} is not JSON ({error})") from None
+    return validated_record(record, source)
+
+
+def validated_record(record, source, field=METADATA_KEY):
+    """`record` (a decoded lineage record) when it has every field the app
+    requires at the supported schema; raises `LineageError` otherwise. Shared
+    by model files (`lineage_of`, field `dcm_lineage`) and session.json (field
+    `lineage`); `field` names where the record was read, for the message."""
     if not isinstance(record, dict):
-        raise LineageError(f"{source}: {METADATA_KEY} is not a JSON object")
+        raise LineageError(f"{source}: {field} is not a JSON object")
     for section, keys in _REQUIRED.items():
         holder = record if section == "" else record.get(section)
         if not isinstance(holder, dict):
-            raise LineageError(f"{source}: {METADATA_KEY}.{section} is missing or not an object")
+            raise LineageError(f"{source}: {field}.{section} is missing or not an object")
         for key in keys:
             if key not in holder:
                 where = f"{section}.{key}" if section else key
-                raise LineageError(f"{source}: {METADATA_KEY} has no {where}")
+                raise LineageError(f"{source}: {field} has no {where}")
     if record["schema"] != SUPPORTED_SCHEMA:
-        raise LineageError(f"{source}: {METADATA_KEY} schema {record['schema']} is not the supported "
+        raise LineageError(f"{source}: {field} schema {record['schema']} is not the supported "
                            f"schema {SUPPORTED_SCHEMA}")
     if not isinstance(record["segments"], list):
-        raise LineageError(f"{source}: {METADATA_KEY}.segments is not a list")
+        raise LineageError(f"{source}: {field}.segments is not a list")
     for position, summary in enumerate(record["segments"]):
         for key in _REQUIRED_SEGMENT_SUMMARY:
             if key not in summary:
-                raise LineageError(f"{source}: {METADATA_KEY}.segments[{position}] has no {key}")
+                raise LineageError(f"{source}: {field}.segments[{position}] has no {key}")
     return record
 
 
