@@ -91,6 +91,24 @@ final class SamplingConstraintsBuilderTests: XCTestCase {
                        " sampling=(maxPerGame=400 maxDrawPct=100 targetLen=0 stratify=off applied=off)")
     }
 
+    /// A declared-defaults snapshot ignores the live settings, applies its
+    /// overrides, and refuses an override outside its declared range or for
+    /// an unknown parameter.
+    func testADeclaredDefaultsSnapshotIgnoresTheLiveSettings() throws {
+        setSampling(maxPerGame: 3, maxDrawPercent: 40, targetLength: 50, stratify: true)
+        let pinned = try TrainingParametersSnapshot.declaredDefaults(overriding: [
+            MaxDrawPercentPerBatch.id: MaxDrawPercentPerBatch.encode(70),
+        ])
+        XCTAssertEqual(pinned.maxPliesFromAnyOneGame, MaxPliesFromAnyOneGame.declaredDefault)
+        XCTAssertEqual(pinned.targetSampledGameLengthPlies, TargetSampledGameLengthPlies.declaredDefault)
+        XCTAssertEqual(pinned.replayBufferStratifyByMaterial, ReplayBufferStratifyByMaterial.declaredDefault)
+        XCTAssertEqual(pinned.maxDrawPercentPerBatch, 70)
+        XCTAssertThrowsError(try TrainingParametersSnapshot.declaredDefaults(overriding: [
+            MaxDrawPercentPerBatch.id: MaxDrawPercentPerBatch.encode(101),
+        ]))
+        XCTAssertThrowsError(try TrainingParametersSnapshot.declaredDefaults(overriding: ["no_such_parameter": .int(1)]))
+    }
+
     /// `results.json` carries the run's constraints, and leaves the key out
     /// for a run that set none.
     func testResultsRecordTheRunsSamplingConstraints() throws {
