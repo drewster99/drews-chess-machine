@@ -1666,6 +1666,75 @@ a real launch; a `results.json` from a short replay run carries `lineage`.
 `selfplay.py`, `vsuci.py`; pytest fixtures. Validation: on existing v4 data,
 output identical to today (no regressions); on synthetic v5 headers, expected registry.
 
+**Done (`d493e9cb`, `fb3f4016`, 2026-10-03).** As built, against P6's as-built record
+(format **v7**, `dcm_lineage`):
+- **`scripts/dcm_lineage.py`** — the one Python reader of the record. Format version is
+  read as `ArchitectureFormat` reads it (absent = 3); a file before v7 is
+  `Unrecorded(format v<N>)`; a v7+ file without a record, with a record that is not
+  JSON, of another schema, or missing a key the derivation reads, is refused; a v6 file
+  carrying a record is refused (no writer of v6 produced one). The flat mirror keys are
+  never read. `derive_runs` groups files by `lineage_run_id` and segment and derives the
+  registry fields `lineage_run_id`, `segment_id`, `model_id`, `date`, `cumstep_base`
+  (`segment_start_trainer_step − run origin`), `games_base` (`cum_games −
+  segment_games`), `elapsed_base_sec` (`cum_train_step_sec − segment_train_step_sec`),
+  `wall_base_sec` and `device` ("M4 Pro", "M5 (VM)" — the hand-entered form). A total the
+  record holds as null stays absent and is listed as unrecorded. Files of one segment that
+  disagree on index, model ID or bases are refused (time bases agree within a 1e-9
+  relative rounding tolerance, since each file computes them by subtraction). A segment
+  whose files are gone is derived from a later record's `segments` history (its model ID
+  stays unrecorded: summaries do not carry it). Constants mirror the Swift ones and a test
+  reads the Swift source to keep them equal.
+- **`ckpt_inventory.py`** — each entry gains `lineage` (run, segment, start, exact,
+  cumulative steps / games / train-step seconds, corpus position, path kind) or
+  `"unrecorded (format vN)"`; a refused file is an `error` entry. On the 4056 real
+  checkpoints the output is otherwise identical to before (all are v3–v6).
+- **`replay.py derive-registry [--models-dir] [--write]`** and **`vsuci.py
+  --derive-registry DIR [--write]`** — reconcile (`_lineage_registry.plan`, pure) the
+  lineage runs written by that path with the registry: a run matches by
+  `lineage_run_id`, else by a segment `model_id`; a segment by `segment_id`, else
+  `model_id`. Fill-only: a field the registry holds is "same" or a reported
+  **conflict**, never overwritten; `--write` is refused outright when anything conflicts
+  or any file is refused. The step axis: when the lineage run's segment 0 is the registry
+  run's first segment and it did not continue unrecorded history, its trainer clock is
+  the registry axis; otherwise the registry's own `cumstep_base` for the segment matching
+  segment 0 is the anchor; with neither, `cumstep_base` stays unrecorded.
+- **`selfplay.py --lineage-table DIR`** — read-only segment table of the GUI session files
+  (`*.dcmsession/*.safetensors`); that registry is keyed by session logs and holds no
+  per-segment bases to fill.
+- **Tracker rows.** A registry segment with a `segment_id` has its checkpoints found by
+  that id in their headers (`lineage_checkpoints`), not an `enum_stem` glob, and
+  `discover-stems` proposes no stem for it (the `enum_stem` field is then unneeded). Rows
+  from a file with a record get `games_fed` = the record's `cum_games` (measured) and a
+  new CSV column `train_step_sec` = `cum_train_step_sec` (measured step time — no clamp
+  needed; `elapsed_train_sec` stays beside it for older rows). A record that names a
+  different segment, a different segment-local step, or disagrees with the segment's
+  `games_base` refuses the row.
+- **Tests** (`documentation/dashboards/tests/test_lineage.py`, stdlib unittest, 25 new):
+  three synthetic v7 segments (fresh + two exact resumes, enumerated files every 500
+  steps) → the expected registry segments; bases + segment totals reproduce every file's
+  cumulative values; history-only segments; null totals stay unrecorded; v3/v6
+  unrecorded; six refusal cases; segment disagreement; reconciliation fill / same /
+  conflict / anchor / no-anchor / double match; the command's proposal-only, write,
+  idempotent rewrite, conflict refusal and path-kind filter on a temp registry; the
+  tracker cells and header enumeration on a temp `DCM_DASH_ROOT`; inventory columns. All
+  53 dashboard tests pass.
+- **Validation on real data (read-only).** `derive-registry` (with `DCM_DASH_ROOT` on a
+  scratch copy) and `vsuci.py --derive-registry` over the real Models folder: 4056 files,
+  all unrecorded, nothing changed, exit 0; `selfplay.py --lineage-table` over Sessions:
+  32 files, all unrecorded; `discover-stems` output byte-identical to the previous code.
+  No real v7 file exists yet (the running experiments use builds before P6), so the
+  derivation on real v7 headers is still owed — first real run: `replay.py
+  derive-registry` once a v7 corpus-replay run has saved checkpoints.
+- **Deviations.** (1) Registry entries are never *created*: a lineage run or segment with
+  no registry counterpart is printed as a proposal, because a registry run needs a label,
+  color and session log no file states (filling those would be a silent default). (2)
+  Plotting `train_step_sec` beside `elapsed_train_sec` in `master.py` is not done; the
+  column is recorded. (3) Schema extension: the shared CSV schema gains the
+  `train_step_sec` column (blank on every existing row), so the next rewrite of an
+  existing CSV adds an empty column — values are unchanged. (4) The rewrite of the
+  registry uses the file's existing format (`indent=2`, no trailing newline), checked to
+  round-trip byte for byte.
+
 **P12 — Harness** (C6). `DrewsChessMachineTests/ResumeEquivalenceTests.swift`,
 `scripts/resume_equivalence.sh`, `test_tiny` preset + corpus fixture.
 Validation criterion for the whole plan: corpus replay N+M vs N|resume|M gives
