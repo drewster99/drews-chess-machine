@@ -153,7 +153,7 @@ enum TrainVsUciRunner {
             r.setRunRandomSeed(config.runRandomSeed)
             return r
         }()
-        for line in config.runRandomSeed.logLines { emit(line) }
+        for line in config.runRandomSeed.parameterNotes { emit(line) }
         let runStart = CFAbsoluteTimeGetCurrent()
         guard !config.opponents.isEmpty else { throw TrainVsUciError.noOpponents }
 
@@ -353,6 +353,10 @@ enum TrainVsUciRunner {
         let lineageTracker = try LineageTracker(
             start: lineageStart, pathKind: .vsuci, argv: CommandLine.arguments,
             startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)
+        emit(RunProvenanceLine.line(
+            record: try lineageTracker.startRecord(at: Date(), trainerCompletedSteps: trainer.completedTrainSteps,
+                                                   parameters: p.lineageParameters),
+            seed: config.runRandomSeed))
 
         // Build the opponent pool: one UCIArbiter per instance.
         var opponents: [TrainVsUciDriver.Opponent] = []
@@ -428,6 +432,7 @@ enum TrainVsUciRunner {
                     at: outModelURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try rollingWriter.write(encoded)
                 rollingSaveFailures.recordSuccess()
+                recorder?.recordSave(of: lineage, savedAt: outModelURL, log: emit)
                 emit("[VS-UCI] saved trainer model (\(reason)) step=\(step) trainerStep=\(snapshot.schedule.completedTrainSteps) -> \(outModelURL.lastPathComponent)")
                 // Full layer health of the state just written — see
                 // CorpusReplayRunner's save. Never throws.
@@ -648,7 +653,10 @@ enum TrainVsUciRunner {
                         // nil: this path never reads the replay-ratio target,
                         // so emitting it would be a fresh false claim rather
                         // than a recovered one.
-                        replayRatioTarget: nil
+                        replayRatioTarget: nil,
+                        lineageTotals: lineageTracker.totals(
+                            trainerCompletedSteps: trainer.completedTrainSteps,
+                            segmentGames: slots.reduce(0) { $0 + $1.gamesCompleted })
                     ))
                 }
                 if step % autosaveEvery == 0 {

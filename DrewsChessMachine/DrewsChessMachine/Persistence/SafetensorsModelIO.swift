@@ -361,9 +361,11 @@ enum SafetensorsModelIO {
         case (nil, .some):
             throw IOError.malformedInitRecord("\(Key.initScheme) without \(Key.initSeed)")
         }
+        let fileLineage = try lineage(fromMetadata: md, formatVersion: architectureFormat.formatVersion)
         let provenance = ModelCheckpointFile.SafetensorsProvenance(
             contentSHA256: md[SafetensorsFile.contentHashKey],
-            lineage: try lineage(fromMetadata: md, formatVersion: architectureFormat.formatVersion)
+            lineage: fileLineage,
+            derivationHistory: try LineageTracker.ParentFile.derivationHistory(lineage: fileLineage, metadata: md)
         )
         let metadata = ModelCheckpointMetadata(
             creator: md[Key.creator] ?? "",
@@ -418,11 +420,13 @@ enum SafetensorsModelIO {
         guard let modelID = md[Key.modelID] else {
             throw IOError.missingModelID(source: url.lastPathComponent)
         }
+        let fileLineage = try lineage(fromMetadata: md, formatVersion: version)
         return LineageTracker.ParentFile(
             modelID: modelID,
             contentSHA256: md[SafetensorsFile.contentHashKey],
             trainerCompletedSteps: try trainerClock(fromMetadata: md, source: url.lastPathComponent),
-            lineage: try lineage(fromMetadata: md, formatVersion: version)
+            lineage: fileLineage,
+            derivationHistory: try LineageTracker.ParentFile.derivationHistory(lineage: fileLineage, metadata: md)
         )
     }
 

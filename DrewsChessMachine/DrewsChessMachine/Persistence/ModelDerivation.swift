@@ -245,6 +245,8 @@ enum ModelDerivation {
         let record: DerivationRecord
         /// The full `derivation_history` written to the file.
         let history: [DerivationRecord]
+        /// The derived file's lineage record.
+        let lineage: LineageRecord
         /// Every rewrite applied, in order, for logging.
         let rewrites: [(operation: String, tensorName: String, summary: String)]
         /// The source's embedded-architecture decode (for legacy logging).
@@ -333,8 +335,17 @@ enum ModelDerivation {
             try requireUntrainedSource(sourceMetadata, sourceName: sourceName)
         }
 
-        // Lineage.
-        let priorHistory = try decodeHistory(sourceMetadata[derivationHistoryKey])
+        // Lineage. The source as a parent carries its derivation history
+        // (its lineage record's, or the flat key a file before lineage
+        // states); this derivation appends one step to it.
+        let sourceLineage = try SafetensorsModelIO.lineage(
+            fromMetadata: sourceMetadata, formatVersion: sourceDecoded.architectureFormat.formatVersion)
+        let sourceParent = LineageTracker.ParentFile(
+            modelID: parentModelID,
+            contentSHA256: sourceMetadata[SafetensorsFile.contentHashKey],
+            trainerCompletedSteps: try SafetensorsModelIO.trainerClock(fromMetadata: sourceMetadata, source: sourceName),
+            lineage: sourceLineage,
+            derivationHistory: try LineageTracker.ParentFile.derivationHistory(lineage: sourceLineage, metadata: sourceMetadata))
         let record = DerivationRecord(
             modelID: newModelID,
             parentModelID: parentModelID,
@@ -344,7 +355,6 @@ enum ModelDerivation {
             createdAtUnix: createdAtUnix,
             build: build,
             operations: operationRecords)
-        let history = priorHistory + [record]
 
         var metadata = sourceMetadata.filter { !rewrittenMetadataKeys.contains($0.key) }
         metadata[SafetensorsModelIO.Key.formatVersion] = SafetensorsModelIO.formatVersion
@@ -354,20 +364,14 @@ enum ModelDerivation {
         metadata[SafetensorsModelIO.Key.parentModelID] = parentModelID
         metadata[SafetensorsModelIO.Key.notes] = notes(for: record)
         metadata[SafetensorsModelIO.Key.architecture] = String(decoding: try JSONEncoder().encode(target), as: UTF8.self)
-        let historyEncoder = JSONEncoder()
-        historyEncoder.outputFormatting = [.sortedKeys]
-        metadata[derivationHistoryKey] = String(decoding: try historyEncoder.encode(history), as: UTF8.self)
         // The derived model's lineage: a new run whose weights carry the
         // source's history (totals continue from the source's record, or
-        // stay unrecorded for a source written before lineage).
-        let sourceParent = LineageTracker.ParentFile(
-            modelID: parentModelID,
-            contentSHA256: sourceMetadata[SafetensorsFile.contentHashKey],
-            trainerCompletedSteps: try SafetensorsModelIO.trainerClock(fromMetadata: sourceMetadata, source: sourceName),
-            lineage: try SafetensorsModelIO.lineage(
-                fromMetadata: sourceMetadata, formatVersion: sourceDecoded.architectureFormat.formatVersion))
+        // stay unrecorded for a source written before lineage). Its
+        // derivation history — the source's plus this step — is written
+        // by the record, with the flat `derivation_history` key as its
+        // mirror.
         let lineage = LineageTracker.untrainedCopyRecord(
-            source: sourceParent, pathKind: .derive, argv: invocationArguments,
+            source: sourceParent, derivation: record, pathKind: .derive, argv: invocationArguments,
             at: Date(timeIntervalSince1970: TimeInterval(createdAtUnix)))
         for (key, value) in try lineage.metadataEntries() { metadata[key] = value }
 
@@ -391,7 +395,8 @@ enum ModelDerivation {
             sourceArchitecture: source,
             targetArchitecture: target,
             record: record,
-            history: history,
+            history: lineage.derivationHistory,
+            lineage: lineage,
             rewrites: appliedRewrites,
             sourceArchitectureFormat: sourceDecoded.architectureFormat)
     }

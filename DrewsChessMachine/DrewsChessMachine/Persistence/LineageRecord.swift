@@ -59,6 +59,13 @@ struct LineageRecord: Codable, Equatable, Sendable {
     /// Earlier segments of this run, oldest first; the segment that wrote
     /// this file is described by `run`, `steps`, `fed` and `time`.
     let segments: [SegmentSummary]
+    /// Every `--derive-model` step the weights went through, oldest first,
+    /// carried verbatim by every later save of the line — training saves
+    /// continue a history, they never append to it; only a derive does.
+    /// Empty when the line records no derivation; a line that continues a
+    /// history earlier files did not record says so with
+    /// `run.continuesUnrecordedHistory`.
+    let derivationHistory: [ModelDerivation.DerivationRecord]
 
     // MARK: Run
 
@@ -621,11 +628,12 @@ struct LineageRecord: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case schema, run, parent, steps, fed, time, parameters, build, invocation, device, rng, segments
+        case derivationHistory = "derivation_history"
     }
 
     init(schema: Int, run: Run, parent: Parent?, steps: Steps, fed: Fed, time: Time,
          parameters: Parameters?, build: Build, invocation: Invocation, device: Device,
-         rng: RNG, segments: [SegmentSummary]) {
+         rng: RNG, segments: [SegmentSummary], derivationHistory: [ModelDerivation.DerivationRecord]) {
         self.schema = schema
         self.run = run
         self.parent = parent
@@ -638,6 +646,7 @@ struct LineageRecord: Codable, Equatable, Sendable {
         self.device = device
         self.rng = rng
         self.segments = segments
+        self.derivationHistory = derivationHistory
     }
 
     init(from decoder: Decoder) throws {
@@ -659,6 +668,7 @@ struct LineageRecord: Codable, Equatable, Sendable {
         device = try c.decode(Device.self, forKey: .device)
         rng = try c.decode(RNG.self, forKey: .rng)
         segments = try c.decode([SegmentSummary].self, forKey: .segments)
+        derivationHistory = try c.decode([ModelDerivation.DerivationRecord].self, forKey: .derivationHistory)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -675,6 +685,7 @@ struct LineageRecord: Codable, Equatable, Sendable {
         try c.encode(device, forKey: .device)
         try c.encode(rng, forKey: .rng)
         try c.encode(segments, forKey: .segments)
+        try c.encode(derivationHistory, forKey: .derivationHistory)
     }
 
     // MARK: Safetensors carriage
@@ -683,6 +694,8 @@ struct LineageRecord: Codable, Equatable, Sendable {
     static let metadataKey = "dcm_lineage"
 
     /// Flat mirror keys, derived at write time and never read back.
+    /// `derivation_history` is written only when the history is non-empty,
+    /// the convention files before lineage used for it.
     enum MirrorKey {
         static let lineageRunID = "lineage_run_id"
         static let segmentIndex = "lineage_segment_index"
@@ -690,7 +703,8 @@ struct LineageRecord: Codable, Equatable, Sendable {
         static let cumGamesFed = "cum_games_fed"
         static let cumTrainStepSec = "cum_train_step_sec"
         static let gitDirty = "git_dirty"
-        static let all = [lineageRunID, segmentIndex, cumTrainerStep, cumGamesFed, cumTrainStepSec, gitDirty]
+        static let derivationHistory = ModelDerivation.derivationHistoryKey
+        static let all = [lineageRunID, segmentIndex, cumTrainerStep, cumGamesFed, cumTrainStepSec, gitDirty, derivationHistory]
         /// Written for a total no predecessor recorded.
         static let unrecorded = "unrecorded"
     }
@@ -710,7 +724,7 @@ struct LineageRecord: Codable, Equatable, Sendable {
     /// The `__metadata__` entries for this record: the JSON value plus its
     /// flat mirrors.
     func metadataEntries() throws -> [String: String] {
-        [
+        var entries: [String: String] = [
             Self.metadataKey: try jsonText(),
             MirrorKey.lineageRunID: run.lineageRunID,
             MirrorKey.segmentIndex: String(run.segmentIndex),
@@ -719,6 +733,18 @@ struct LineageRecord: Codable, Equatable, Sendable {
             MirrorKey.cumTrainStepSec: time.cumTrainStepSec.map { String($0) } ?? MirrorKey.unrecorded,
             MirrorKey.gitDirty: build.gitDirty ? "true" : "false",
         ]
+        if !derivationHistory.isEmpty {
+            entries[MirrorKey.derivationHistory] = try Self.derivationHistoryJSON(derivationHistory)
+        }
+        return entries
+    }
+
+    /// A derivation history as the compact, sorted-key JSON array a file
+    /// stores (the same text `--derive-model` has always written).
+    static func derivationHistoryJSON(_ history: [ModelDerivation.DerivationRecord]) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(history), as: UTF8.self)
     }
 
     /// What a file says about its lineage.

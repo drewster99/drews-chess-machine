@@ -293,7 +293,7 @@ extension SessionController {
         if continueMode, let existingSeed = runRandomSeed, let existingSerials = selfPlayGameSerials {
             runSeed = existingSeed
             gameSerials = existingSerials
-            SessionLogger.shared.log("[RUN] continuing seed=\(runSeed.masterSeed) (next self-play game serial \(gameSerials.nextSerial), arenas started \(arenasStartedThisRun))")
+            SessionLogger.shared.log("[RUN-SEED] continuing seed=\(runSeed.masterSeed) (next self-play game serial \(gameSerials.nextSerial), arenas started \(arenasStartedThisRun))")
         } else {
             let p = TrainingParameters.shared
             runSeed = RunRandomSeed.resolve(
@@ -306,7 +306,7 @@ extension SessionController {
             runRandomSeed = runSeed
             selfPlayGameSerials = gameSerials
             arenasStartedThisRun = 0
-            for line in runSeed.logLines { SessionLogger.shared.log(line) }
+            for line in runSeed.parameterNotes { SessionLogger.shared.log(line) }
         }
         let buffer: ReplayBuffer
         if continueMode, let existing = replayBuffer {
@@ -2020,6 +2020,21 @@ extension SessionController {
                         // used, so the JSON and the log stay perfectly
                         // consistent. No-op when `recorder == nil`.
                         if let recorder {
+                            // The run's lineage as of this tick: the row's
+                            // totals, and the record results.json reports
+                            // (the last tick's is the run's final lineage).
+                            let lineageNow: (totals: LineageTracker.Totals, record: LineageRecord)?
+                            do {
+                                lineageNow = try await MainActor.run {
+                                    try self.lineageForResults(trainerCompletedSteps: completedSteps)
+                                }
+                            } catch {
+                                SessionLogger.shared.log("[RESULTS] lineage for results.json unavailable at step \(completedSteps): \(error.localizedDescription); this row records no lineage totals")
+                                lineageNow = nil
+                            }
+                            if let lineageNow {
+                                recorder.setFinalLineage(lineageNow.record, checkpointSHA256: nil)
+                            }
                             let entry = CliTrainingRecorder.StatsLine(
                                 elapsedSec: elapsedTarget,
                                 steps: trainingSnap.stats.steps,
@@ -2155,7 +2170,10 @@ extension SessionController {
                                 policyLabelSmoothingEpsilon: Double(policySmoothingConfig.policyLabelSmoothingEpsilon),
                                 policyLabelSmoothingMode: policySmoothingConfig.policyLabelSmoothingMode.logToken,
                                 policyLabelSmoothingPerMove: Double(policySmoothingConfig.policyLabelSmoothingPerMove),
-                                policyLabelSmoothingPerMoveCap: Double(policySmoothingConfig.policyLabelSmoothingPerMoveCap)
+                                policyLabelSmoothingPerMoveCap: Double(policySmoothingConfig.policyLabelSmoothingPerMoveCap),
+                                cumTrainerStep: lineageNow?.totals.cumTrainerStep,
+                                cumTrainStepSec: lineageNow?.totals.cumTrainStepSec,
+                                cumGames: lineageNow?.totals.cumGames
                             )
                             recorder.appendStats(entry)
                         }

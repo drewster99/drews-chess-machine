@@ -560,9 +560,19 @@ extension SessionController {
                 SessionLogger.shared.log("[LINEAGE] promoted champion's lineage not recorded: \(error.localizedDescription)")
                 championLineage = .unrecorded(formatVersion: ArchitectureFormat.currentVersion)
             }
+            let championDerivationHistory: [ModelDerivation.DerivationRecord]
+            switch championLineage {
+            case .recorded(let record):
+                championDerivationHistory = record.derivationHistory
+            case .unrecorded:
+                // The run's record could not be built (logged above), so
+                // no history is carried with the promoted weights.
+                championDerivationHistory = []
+            }
             championLineageSource = LineageTracker.ParentFile(
                 modelID: championIDStr, contentSHA256: nil,
-                trainerCompletedSteps: trainerSnapshotCompletedSteps, lineage: championLineage)
+                trainerCompletedSteps: trainerSnapshotCompletedSteps, lineage: championLineage,
+                derivationHistory: championDerivationHistory)
             SessionLogger.shared.log(
                 "[STATS] post-promote  steps=\(trainingStats?.steps ?? 0) champion=\(championIDStr) trainer=\(trainerIDStr)"
             )
