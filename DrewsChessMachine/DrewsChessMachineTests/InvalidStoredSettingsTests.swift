@@ -18,21 +18,11 @@ import XCTest
 
 final class InvalidStoredSettingsTests: XCTestCase {
 
-    private var suiteName = ""
     private var defaults = UserDefaults()
 
     override func setUpWithError() throws {
         try super.setUpWithError()
-        suiteName = "InvalidStoredSettingsTests-\(UUID().uuidString)"
-        guard let suite = UserDefaults(suiteName: suiteName) else {
-            throw XCTSkip("could not create a private UserDefaults suite")
-        }
-        defaults = suite
-    }
-
-    override func tearDownWithError() throws {
-        defaults.removePersistentDomain(forName: suiteName)
-        try super.tearDownWithError()
+        defaults = try makeTemporaryDefaults()
     }
 
     // MARK: - Stored preferences

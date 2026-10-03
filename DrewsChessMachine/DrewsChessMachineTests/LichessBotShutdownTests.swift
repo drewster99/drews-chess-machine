@@ -61,8 +61,7 @@ final class LichessBotShutdownTests: XCTestCase {
     /// A controller with its own defaults suite and data folder (both
     /// removed after the test) and the given transport and stored token.
     private func makeController(root: URL, transport: any LichessBotTransport, token: String?) throws -> LichessBotController {
-        let suite = "LichessBotShutdownTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = try makeTemporaryDefaults()
         try LichessBotSettingsStore.save(LichessBotSettings.testBaseline(), to: defaults)
         let controller = LichessBotController(
             modelProvider: LichessBotFakeModelProvider(snapshot: nil),
@@ -75,7 +74,6 @@ final class LichessBotShutdownTests: XCTestCase {
         )
         addTeardownBlock { @MainActor in
             await controller.shutdown(reason: "test teardown")
-            defaults.removePersistentDomain(forName: suite)
             self.removeIfPresent(root)
         }
         return controller

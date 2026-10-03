@@ -51,8 +51,7 @@ final class LichessBotOnlineBotsRaceTests: XCTestCase {
         lichess.onlineBotsNDJSON.value = #"{"id":"fitbot","username":"FitBot","title":"BOT","perfs":{"blitz":{"games":50,"rating":1600,"rd":60,"prog":0}}}"# + "\n"
         let held = LichessBotOnlineBotsHeldLichess(lichess: lichess)
 
-        let suite = "LichessBotOnlineBotsRaceTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = try makeTemporaryDefaults()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotOnlineBotsRaceTests-\(UUID().uuidString)", isDirectory: true)
         var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
@@ -81,7 +80,6 @@ final class LichessBotOnlineBotsRaceTests: XCTestCase {
             // Writes the stopped runtime already queued land; anything later
             // is refused, so nothing races the removal of its folder.
             await controller.shutdown(reason: "test teardown")
-            defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
                     try FileManager.default.removeItem(at: root)

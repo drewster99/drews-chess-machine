@@ -149,8 +149,7 @@ final class LichessBotChallengeQueueControllerTests: XCTestCase {
         finishedGameHold: Duration = LichessBotController.finishedGameHold,
         configure: (inout LichessBotSettings) -> Void
     ) async throws -> LichessBotController {
-        let suite = "LichessBotChallengeQueueControllerTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = try makeTemporaryDefaults()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotChallengeQueueControllerTests-\(UUID().uuidString)", isDirectory: true)
         var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
@@ -177,7 +176,6 @@ final class LichessBotChallengeQueueControllerTests: XCTestCase {
             // session's journal line) is refused, so nothing races the
             // removal of its folder.
             await controller.shutdown(reason: "test teardown")
-            defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
                     try FileManager.default.removeItem(at: root)

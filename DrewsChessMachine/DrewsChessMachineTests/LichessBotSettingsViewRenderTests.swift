@@ -37,12 +37,13 @@ final class LichessBotSettingsViewRenderTests: XCTestCase {
     }
 
     /// A controller isolated from the app's real settings, bot data,
-    /// Keychain and network: the defaults suite named `suite` and a
-    /// temporary data folder, both removed after the test. `storedToken` is
+    /// Keychain and network: the defaults suite `suite`, opened afresh as a
+    /// later launch would open it, and a temporary data folder, both removed
+    /// after the test. `storedToken` is
     /// what the controller finds "in the Keychain" — nil for none; the fake
     /// Lichess verifies `LichessBotFakeLichess.token` as a BOT account's.
-    private func makeController(suite: String, storedToken: String?) throws -> LichessBotController {
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    private func makeController(suite: TemporaryDefaultsSuite, storedToken: String?) throws -> LichessBotController {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite.suiteName))
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotSettingsViewRenderTests-\(UUID().uuidString)", isDirectory: true)
         try LichessBotSettingsStore.save(LichessBotSettings.testBaseline(), to: defaults)
         let controller = LichessBotController(
@@ -58,7 +59,6 @@ final class LichessBotSettingsViewRenderTests: XCTestCase {
             // Shutting down writes the protocol events already queued and
             // refuses later ones, so nothing races the folder's removal.
             await controller.shutdown(reason: "test teardown")
-            defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
                     try FileManager.default.removeItem(at: root)
@@ -70,14 +70,10 @@ final class LichessBotSettingsViewRenderTests: XCTestCase {
         return controller
     }
 
-    private func newSuiteName() -> String {
-        "LichessBotSettingsViewRenderTests-\(UUID().uuidString)"
-    }
-
     /// Every tab, while the token check has not run: the view opens on the
     /// remembered tab.
     func testEveryTabRenders() throws {
-        let controller = try makeController(suite: newSuiteName(), storedToken: nil)
+        let controller = try makeController(suite: try makeTemporaryDefaultsSuite(), storedToken: nil)
         for tab in LichessBotSettingsTab.allCases {
             controller.rememberedSettingsTab = tab
             XCTAssertEqual(LichessBotSettingsTab.opening(tokenState: controller.tokenState, remembered: controller.rememberedSettingsTab), tab)
@@ -91,7 +87,7 @@ final class LichessBotSettingsViewRenderTests: XCTestCase {
     }
 
     func testAccountTabRendersWithNoToken() async throws {
-        let controller = try makeController(suite: newSuiteName(), storedToken: nil)
+        let controller = try makeController(suite: try makeTemporaryDefaultsSuite(), storedToken: nil)
         controller.rememberedSettingsTab = .games
         await controller.refreshTokenState()
         XCTAssertEqual(controller.tokenState, LichessBotController.TokenState.none)
@@ -105,7 +101,7 @@ final class LichessBotSettingsViewRenderTests: XCTestCase {
     }
 
     func testAccountTabRendersWithAVerifiedBotToken() async throws {
-        let controller = try makeController(suite: newSuiteName(), storedToken: LichessBotFakeLichess.token)
+        let controller = try makeController(suite: try makeTemporaryDefaultsSuite(), storedToken: LichessBotFakeLichess.token)
         controller.rememberedSettingsTab = .account
         await controller.refreshTokenState()
         guard case .saved = controller.tokenState else {
@@ -123,7 +119,7 @@ final class LichessBotSettingsViewRenderTests: XCTestCase {
     }
 
     func testRememberedTabPersistsInTheControllersDefaults() throws {
-        let suite = newSuiteName()
+        let suite = try makeTemporaryDefaultsSuite()
         let first = try makeController(suite: suite, storedToken: nil)
         XCTAssertEqual(first.rememberedSettingsTab, .games, "with nothing remembered, Settings opens on Games")
         first.rememberedSettingsTab = .chat
@@ -132,9 +128,8 @@ final class LichessBotSettingsViewRenderTests: XCTestCase {
     }
 
     func testRememberedTabThatNoLongerExistsIsIgnored() throws {
-        let suite = newSuiteName()
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defaults.set("tournaments", forKey: "lichessBot.settings.tab")
+        let suite = try makeTemporaryDefaultsSuite()
+        suite.defaults.set("tournaments", forKey: "lichessBot.settings.tab")
         let controller = try makeController(suite: suite, storedToken: nil)
         XCTAssertEqual(controller.rememberedSettingsTab, .games)
     }

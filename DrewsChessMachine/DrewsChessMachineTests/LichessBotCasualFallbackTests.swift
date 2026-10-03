@@ -42,8 +42,7 @@ final class LichessBotCasualFallbackTests: XCTestCase {
         lichess: LichessBotFakeLichess,
         configure: (inout LichessBotSettings) -> Void
     ) async throws -> LichessBotController {
-        let suite = "LichessBotCasualFallbackTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = try makeTemporaryDefaults()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotCasualFallbackTests-\(UUID().uuidString)", isDirectory: true)
         var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
@@ -73,7 +72,6 @@ final class LichessBotCasualFallbackTests: XCTestCase {
             // Writes the stopped runtime already queued land; anything later
             // is refused, so nothing races the removal of its folder.
             await controller.shutdown(reason: "test teardown")
-            defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
                     try FileManager.default.removeItem(at: root)
@@ -246,18 +244,11 @@ final class LichessBotCasualFallbackTests: XCTestCase {
 
     // MARK: - Settings
 
-    private func makeDefaults() throws -> UserDefaults {
-        let suite = "LichessBotCasualFallbackTests-settings-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
-        return defaults
-    }
-
     /// Settings saved before `fallBackToCasual` existed still load, keep
     /// every saved value, and get the field off — the behavior they were
     /// saved under — reported as filled from the defaults.
     func testSettingsSavedBeforeTheFieldLoadWithItOff() throws {
-        let defaults = try makeDefaults()
+        let defaults = try makeTemporaryDefaults()
         var settings = LichessBotSettings()
         settings.matchmaking.rated = true
         settings.matchmaking.maxChallengesPerHour = 7
@@ -280,7 +271,7 @@ final class LichessBotCasualFallbackTests: XCTestCase {
     }
 
     func testFallBackToCasualRoundTrips() throws {
-        let defaults = try makeDefaults()
+        let defaults = try makeTemporaryDefaults()
         var settings = LichessBotSettings()
         settings.matchmaking.fallBackToCasual = true
         try LichessBotSettingsStore.save(settings, to: defaults)

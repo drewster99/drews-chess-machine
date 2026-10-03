@@ -702,15 +702,8 @@ final class LichessBotDataLayerTests: XCTestCase {
 
     // MARK: - Settings store (plan §12.1)
 
-    private func makeDefaults() throws -> UserDefaults {
-        let suite = "LichessBotDataLayerTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
-        return defaults
-    }
-
     func testSettingsStoreRoundTripsAndStartsFromDefaults() throws {
-        let defaults = try makeDefaults()
+        let defaults = try makeTemporaryDefaults()
         XCTAssertEqual(try LichessBotSettingsStore.load(from: defaults), LichessBotSettings())
         var settings = LichessBotSettings()
         settings.challenge.maxConcurrentGames = 3
@@ -720,7 +713,7 @@ final class LichessBotDataLayerTests: XCTestCase {
     }
 
     func testUnreadableSettingsAreAnErrorNotDefaults() throws {
-        let defaults = try makeDefaults()
+        let defaults = try makeTemporaryDefaults()
         defaults.set(Data("garbage".utf8), forKey: LichessBotSettingsStore.defaultsKey)
         XCTAssertThrowsError(try LichessBotSettingsStore.load(from: defaults)) { error in
             guard case .unreadable? = error as? LichessBotSettingsStoreError else {
@@ -732,7 +725,7 @@ final class LichessBotDataLayerTests: XCTestCase {
     }
 
     func testInvalidSettingsAreNotSaved() throws {
-        let defaults = try makeDefaults()
+        let defaults = try makeTemporaryDefaults()
         var settings = LichessBotSettings()
         settings.challenge.allowedSpeeds = []
         XCTAssertThrowsError(try LichessBotSettingsStore.save(settings, to: defaults))

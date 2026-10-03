@@ -16,13 +16,6 @@ import XCTest
 
 final class LichessBotSettingsStoreTests: XCTestCase {
 
-    private func makeDefaults() throws -> UserDefaults {
-        let suite = "LichessBotSettingsStoreTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
-        return defaults
-    }
-
     /// `settings` encoded as a JSON object, edited by `edit`, stored as the
     /// saved blob.
     private func store(
@@ -35,7 +28,7 @@ final class LichessBotSettingsStoreTests: XCTestCase {
     }
 
     func testCompleteSaveLoadsWithNothingFilled() throws {
-        let defaults = try makeDefaults()
+        let defaults = try makeTemporaryDefaults()
         var settings = LichessBotSettings()
         settings.challenge.maxConcurrentGames = 3
         try LichessBotSettingsStore.save(settings, to: defaults)
@@ -48,7 +41,7 @@ final class LichessBotSettingsStoreTests: XCTestCase {
     /// A save from before `alerts` existed (the c5542b8 break) keeps every
     /// saved value and gets today's `alerts` defaults.
     func testSaveMissingAWholeSectionKeepsEverythingElse() throws {
-        let defaults = try makeDefaults()
+        let defaults = try makeTemporaryDefaults()
         var settings = LichessBotSettings()
         settings.challenge.maxConcurrentGames = 7
         settings.play.temperatureStart = 0.3
@@ -64,7 +57,7 @@ final class LichessBotSettingsStoreTests: XCTestCase {
     }
 
     func testSaveMissingANestedFieldFillsOnlyThatField() throws {
-        let defaults = try makeDefaults()
+        let defaults = try makeTemporaryDefaults()
         var settings = LichessBotSettings()
         settings.challenge.maxConcurrentGames = 4
         settings.challenge.maximumOpponentRating = 1800
@@ -83,7 +76,7 @@ final class LichessBotSettingsStoreTests: XCTestCase {
     /// `model.filePath` is optional with a non-nil default. A save that left
     /// it out (the operator cleared it) must load as nil, not as the default.
     func testAbsentOptionalStaysNil() throws {
-        let defaults = try makeDefaults()
+        let defaults = try makeTemporaryDefaults()
         var settings = LichessBotSettings()
         settings.model.source = .champion
         settings.model.filePath = nil
@@ -98,7 +91,7 @@ final class LichessBotSettingsStoreTests: XCTestCase {
     /// An optional whose default is nil, saved with a value, keeps the value
     /// and is not reported as an unknown key.
     func testSavedOptionalWithNilDefaultIsKept() throws {
-        let defaults = try makeDefaults()
+        let defaults = try makeTemporaryDefaults()
         var settings = LichessBotSettings()
         settings.alerts.botChallengeSoundName = "Ping"
         try LichessBotSettingsStore.save(settings, to: defaults)
@@ -113,7 +106,7 @@ final class LichessBotSettingsStoreTests: XCTestCase {
     /// fields later. Simulated by emptying `matchmaking` in the save: every
     /// one of its fields is filled from the defaults.
     func testEmptySavedSectionStillMerges() throws {
-        let defaults = try makeDefaults()
+        let defaults = try makeTemporaryDefaults()
         try store(LichessBotSettings(), in: defaults) { $0["matchmaking"] = [String: Any]() }
         let result = try LichessBotSettingsStore.loadReporting(from: defaults)
         XCTAssertEqual(result.settings, LichessBotSettings())
@@ -122,7 +115,7 @@ final class LichessBotSettingsStoreTests: XCTestCase {
     }
 
     func testSavedFieldTheTypeNoLongerHasIsIgnoredAndReported() throws {
-        let defaults = try makeDefaults()
+        let defaults = try makeTemporaryDefaults()
         try store(LichessBotSettings(), in: defaults) { object in
             var challenge = try XCTUnwrap(object["challenge"] as? [String: Any])
             challenge["retiredSetting"] = 95
@@ -138,7 +131,7 @@ final class LichessBotSettingsStoreTests: XCTestCase {
     /// Only missing fields are filled; a present value of the wrong type is
     /// still an unreadable error.
     func testWrongTypedValueIsStillUnreadable() throws {
-        let defaults = try makeDefaults()
+        let defaults = try makeTemporaryDefaults()
         try store(LichessBotSettings(), in: defaults) { object in
             var challenge = try XCTUnwrap(object["challenge"] as? [String: Any])
             challenge["maxConcurrentGames"] = "twelve"

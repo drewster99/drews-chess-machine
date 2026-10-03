@@ -24,8 +24,7 @@ final class LichessBotPollObservationTests: XCTestCase {
         modelProvider: LichessBotFakeModelProvider,
         finishedGameHold: Duration
     ) async throws -> LichessBotController {
-        let suite = "LichessBotPollObservationTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = try makeTemporaryDefaults()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotPollObservationTests-\(UUID().uuidString)", isDirectory: true)
         var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
@@ -46,7 +45,6 @@ final class LichessBotPollObservationTests: XCTestCase {
         addTeardownBlock { @MainActor in
             controller.abandonAndStop()
             await controller.shutdown(reason: "test teardown")
-            defaults.removePersistentDomain(forName: suite)
             if FileManager.default.fileExists(atPath: root.path) {
                 do {
                     try FileManager.default.removeItem(at: root)

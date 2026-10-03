@@ -83,11 +83,7 @@ final class RunSeedParameterTests: XCTestCase {
     /// a stored setting, the settings field — the same as `--init-seed`
     /// always refused it. `-0` names no number a writer would produce.
     func test_signedSeedTextIsRefusedEverywhere() throws {
-        let suiteName = "RunSeedParameterTests-\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suiteName) else {
-            throw XCTSkip("could not create a private UserDefaults suite")
-        }
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = try makeTemporaryDefaults()
         for text in ["+5", "-0", "+0"] {
             XCTAssertThrowsError(try RunRandomSeed.parseCommandLineSeed(text), "--seed '\(text)'")
             XCTAssertThrowsError(try ParameterValue(jsonValue: text, id: RandomSeed.id), "parameters file '\(text)'")
