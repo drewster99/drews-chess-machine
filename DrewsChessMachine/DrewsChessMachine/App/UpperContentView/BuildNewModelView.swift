@@ -59,6 +59,11 @@ struct BuildNewModelView: View {
 
     var body: some View {
         @Bindable var model = model
+        // Each rebuilds the architecture from every field, so they are read
+        // once per redraw here and handed to the rows, not asked again by
+        // every row.
+        let nonStandard = model.nonStandardInitOptions
+        let groupsWithSkipProjection = model.groupsWithSkipProjection
         VStack(spacing: 0) {
             Text("New Network")
                 .font(.title2.weight(.semibold))
@@ -87,8 +92,9 @@ struct BuildNewModelView: View {
                         intField("Stem kernel size (odd)", $model.stemConvKernelSize)
                         enumPicker("Tower-level activation", $model.activationFunction, ActivationFunction.allCases)
                         LabeledContent("Total blocks") {
-                            Text("\(model.blockGroups.reduce(0) { $0 + $1.count })")
+                            Text(model.totalBlocks?.formatted(.number) ?? "invalid")
                                 .monospacedDigit()
+                                .foregroundStyle(model.totalBlocks == nil ? AnyShapeStyle(.orange) : AnyShapeStyle(.primary))
                         }
                     }
 
@@ -98,7 +104,12 @@ struct BuildNewModelView: View {
                     // button states.
                     ForEach(Array(model.blockGroupDrafts.enumerated()), id: \.element.id) { entry in
                         Section {
-                            BlockGroupFieldsView(model: model, draft: entry.element)
+                            BlockGroupFieldsView(
+                                model: model,
+                                draft: entry.element,
+                                nonStandardInitOptions: nonStandard,
+                                groupsWithSkipProjection: groupsWithSkipProjection
+                            )
                         } header: {
                             BlockGroupHeaderView(model: model, draft: entry.element, position: entry.offset)
                         }
@@ -121,7 +132,7 @@ struct BuildNewModelView: View {
                             intField("Policy pre-conv channels (K)", $model.policyPreConvChannels)
                         }
                         InitOptionRow(
-                            isNonStandard: model.nonStandardInitOptions.contains(.policyHeadFinalInit),
+                            isNonStandard: nonStandard.contains(.policyHeadFinalInit),
                             stepZeroEffect: InitOptionField.policyHeadFinalInit.stepZeroEffect
                         ) {
                             enumPicker("Final layer init", $model.policyHeadFinalInit, HeadFinalInit.allCases)
@@ -133,7 +144,7 @@ struct BuildNewModelView: View {
                         intField("Value conv channels", $model.valueHeadConvChannels)
                         intField("Value hidden units", $model.valueHeadHiddenUnits)
                         InitOptionRow(
-                            isNonStandard: model.nonStandardInitOptions.contains(.valueHeadFinalInit),
+                            isNonStandard: nonStandard.contains(.valueHeadFinalInit),
                             stepZeroEffect: InitOptionField.valueHeadFinalInit.stepZeroEffect
                         ) {
                             enumPicker("Final layer init", $model.valueHeadFinalInit, HeadFinalInit.allCases)
@@ -141,9 +152,9 @@ struct BuildNewModelView: View {
                         // A scalar head has no draw class; the field stays
                         // reachable there only to fix a value validate() refuses.
                         if model.valueHeadStyle == .wdlSoftmax
-                            || model.nonStandardInitOptions.contains(.valueHeadDrawPrior) {
+                            || nonStandard.contains(.valueHeadDrawPrior) {
                             InitOptionRow(
-                                isNonStandard: model.nonStandardInitOptions.contains(.valueHeadDrawPrior),
+                                isNonStandard: nonStandard.contains(.valueHeadDrawPrior),
                                 stepZeroEffect: InitOptionField.valueHeadDrawPrior.stepZeroEffect
                             ) {
                                 floatField("Initial draw probability", $model.valueHeadDrawPrior)
@@ -264,6 +275,14 @@ struct BuildNewModelView: View {
                         .foregroundStyle(.secondary)
                 }
                 .font(.callout)
+                // Guidance, never a limit: every size that fits in memory
+                // builds; anything past the recommended size is flagged.
+                if let guidance = model.sizeGuidance {
+                    Text(guidance.readout)
+                        .font(.callout)
+                        .foregroundStyle(guidance.verdict == .withinRecommendedSize
+                                         ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                }
                 Text(model.summary)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
@@ -407,6 +426,10 @@ private struct BlockGroupHeaderView: View {
 private struct BlockGroupFieldsView: View {
     let model: BuildNewModelModel
     @Bindable var draft: BlockGroupDraft
+    /// Read once per redraw by the screen and handed to every row (see
+    /// `BlockGroupInitOptionsView`).
+    let nonStandardInitOptions: Set<InitOptionField>
+    let groupsWithSkipProjection: Set<Int>
 
     var body: some View {
         intField("Blocks (count)", $draft.group.count)
@@ -453,16 +476,21 @@ private struct BlockGroupFieldsView: View {
                 // deep towers where the stream *mean* accumulates). Offer a
                 // one-click snap to each, setting both the init and the cap.
                 // Warn only when a depth-scaled value matches neither (see
-                // `rezeroDepthScaleMismatch`).
-                Button(String(format: "1/√%d=%.3f", model.totalBlocks, model.recommendedRezeroAlphaInit)) {
+                // `rezeroDepthScaleMismatch`). While a block count is
+                // invalid there is no depth: both buttons stay in place,
+                // disabled, with the formula alone as their label.
+                let totalBlocks = model.totalBlocks
+                Button(totalBlocks.map { "1/√\($0)=\(String(format: "%.3f", model.recommendedRezeroAlphaInit))" } ?? "1/√N") {
                     model.applyRecommendedRezero(model.recommendedRezeroAlphaInit, to: draft)
                 }
                 .controlSize(.small)
+                .disabled(totalBlocks == nil)
                 .help("Default ReZero init: 1/√(total blocks), variance-preserving. Sets both the α init and the cap.")
-                Button(String(format: "1/%d=%.3f", model.totalBlocks, model.recommendedRezeroAlphaInit1OverN)) {
+                Button(totalBlocks.map { "1/\($0)=\(String(format: "%.3f", model.recommendedRezeroAlphaInit1OverN))" } ?? "1/N") {
                     model.applyRecommendedRezero(model.recommendedRezeroAlphaInit1OverN, to: draft)
                 }
                 .controlSize(.small)
+                .disabled(totalBlocks == nil)
                 .help("DeepNorm-style init: 1/(total blocks). Gentler; preferable for very deep towers. Sets both the α init and the cap.")
                 if model.rezeroDepthScaleMismatch(for: draft.group) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -474,7 +502,12 @@ private struct BlockGroupFieldsView: View {
                 .help("Asymptote C of the forward soft bound C·tanh(α/C): the effective branch scale never exceeds C. Must be > 0. Set independently of the α init.")
         }
         floatField("Dropout multiplier", $draft.group.dropoutMultiplier)
-        BlockGroupInitOptionsView(model: model, draft: draft)
+        BlockGroupInitOptionsView(
+            model: model,
+            draft: draft,
+            nonStandard: nonStandardInitOptions,
+            groupsWithSkipProjection: groupsWithSkipProjection
+        )
     }
 }
 
@@ -482,15 +515,23 @@ private struct BlockGroupFieldsView: View {
 /// exists (an SE block, a post-activation branch, a width-transition skip
 /// projection) and also wherever it holds a non-standard value, so a value
 /// `validate()` refuses after the layer was switched off can be fixed here.
+///
+/// `nonStandard` and `groupsWithSkipProjection` come from the screen, which
+/// computes each once per redraw: asking the model from every row rebuilt
+/// the architecture once per row per question. Where the skip projections
+/// are is worked out per group (`NetworkArchitecture.groupsWithSkipProjection`),
+/// never by expanding the tower, so a block count the user is still typing —
+/// negative, or near `Int.max` — draws without trapping.
 private struct BlockGroupInitOptionsView: View {
     let model: BuildNewModelModel
     @Bindable var draft: BlockGroupDraft
+    let nonStandard: Set<InitOptionField>
+    let groupsWithSkipProjection: Set<Int>
 
     var body: some View {
         // A removed group's row is drawn once more after its draft has left
         // the model; it has no position then and shows nothing.
         if let groupIndex = model.positionInTower(of: draft) {
-            let nonStandard = model.nonStandardInitOptions
             if draft.group.seStyle != .none || nonStandard.contains(.seGammaBiasInit(group: groupIndex)) {
                 InitOptionRow(
                     isNonStandard: nonStandard.contains(.seGammaBiasInit(group: groupIndex)),
@@ -507,7 +548,7 @@ private struct BlockGroupInitOptionsView: View {
                     enumPicker("Branch output init", $draft.group.branchOutputInit, BranchOutputInit.allCases)
                 }
             }
-            if model.groupHasSkipProjection(at: groupIndex) || nonStandard.contains(.skipProjectionInit(group: groupIndex)) {
+            if groupsWithSkipProjection.contains(groupIndex) || nonStandard.contains(.skipProjectionInit(group: groupIndex)) {
                 InitOptionRow(
                     isNonStandard: nonStandard.contains(.skipProjectionInit(group: groupIndex)),
                     stepZeroEffect: InitOptionField.skipProjectionInit(group: groupIndex).stepZeroEffect

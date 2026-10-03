@@ -226,6 +226,11 @@ the result).
 - A target tensor that a source tensor would fill by name but with a different shape is
   refused rather than silently re-initialized; drop it explicitly with `name=` to
   initialize the target's instead.
+- The target's size is checked like a new model's (`ModelSizeGuidance`): an
+  `[ARCH] size guidance` line is logged before the build, and a target whose training state
+  cannot fit in this Mac's physical memory is refused (exit 97). Every other size is
+  allowed. The in-place operations never change a tensor's shape, so they only log the
+  line.
 
 `--graft-map` is a comma-separated list:
 

@@ -1090,6 +1090,19 @@ final class SessionController {
             onRefuseMenuAction("A network is already built. Load Model or Load Session to replace its weights.")
             return
         }
+        // Size guidance for this Mac (`ModelSizeGuidance`), logged for every
+        // build. The one size refused is a training state larger than
+        // physical memory; the Build New Model screen refuses it first, so
+        // this is the backstop for any other caller.
+        do {
+            try buildArchitecture.validate()
+            let sizeGuidance = ModelSizeGuidance.forThisMac(parameterCount: buildArchitecture.parameterCount)
+            SessionLogger.shared.log(sizeGuidance.logLine(event: "Build Network"))
+            try sizeGuidance.requireTrainingStateFitsInPhysicalMemory()
+        } catch {
+            onRefuseMenuAction("This architecture can't be built: \(error)")
+            return
+        }
         isBuilding = true
         networkStatus = ""
         // Drop the trainer (it owns graph state we're about to invalidate by

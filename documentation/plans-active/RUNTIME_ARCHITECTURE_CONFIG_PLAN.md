@@ -23,6 +23,17 @@ requirement"):**
   done — `NetworkArchitecture.validate()` is structural only, and the New Network screen
   shows estimated F32 weight bytes, not memory against the device budget. Either add it or
   drop the requirement.
+  *Resolved 2026-10-03 (review fixes, owner decision 1), differently from the plan:* no
+  caps on block count, channels or kernel size, and `validate()` stays device-independent.
+  It refuses only what cannot exist — a non-positive count, and a total block count or
+  parameter count that overflows `Int` (computed group by group with overflow-checked
+  arithmetic, never by expanding the tower). The device check is `ModelSizeGuidance`: a
+  parameter-count recommendation scaled to physical memory (reference 64 GB: up to 15M
+  recommended, batch 4096 up to 20M, smaller power-of-two batches down to 512 by
+  `20M × √(4096 / batch)`, "likely too large" beyond), shown in the New Network readout and
+  logged as an `[ARCH] size guidance` line by `--new-model`, `--derive-model` and GUI builds;
+  the one refusal is a training state (`parameterCount × 16` bytes) larger than physical
+  memory.
 - **Delete the dead `ArchitectureConfig.loadDefaultIfPresent()`**
   (`Persistence/ArchitectureConfig.swift:44`) — §10 says the well-known
   `architecture.json` loader is removed; nothing calls it any more, but the function is
@@ -634,7 +645,9 @@ SwiftUI `View` struct in its own file under `App/UpperContentView/`, backed by a
   **Save as Preset…** (writes a `.json` to the Presets folder), **Reset to preset**.
   *(As built: no Reset-to-preset button — re-selecting the preset repopulates the fields.
   The live readout shows estimated F32 weight bytes, not memory against the device
-  budget.)*
+  budget. Since 2026-10-03 it also shows `ModelSizeGuidance`'s parameter-count guidance
+  for this Mac's physical memory, and Build is disabled for a model whose training state
+  cannot fit in it.)*
 - **Conventions:** one `View` per file; `@Observable` model with per-field bindings +
   validation (mirrors `TrainingSettingsPopoverModel`); monospaced padded digits;
   light/dark; aligned columns; keyboard/accessibility per the house UI rules.
