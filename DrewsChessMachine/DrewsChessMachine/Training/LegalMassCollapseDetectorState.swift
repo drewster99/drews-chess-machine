@@ -87,6 +87,22 @@ final class LegalMassCollapseDetectorBox: @unchecked Sendable {
         }
     }
 
+    /// The probe's training-start gate and grace reading in one: nil — the
+    /// countdown not started, or stopped — while the trainer has taken no
+    /// step beyond `stepsAtRunStart`, the step count this run started from
+    /// (a resumed session's count; 0 for a fresh run, and for a continue
+    /// after Stop, whose anchor carries on); otherwise the grace seconds
+    /// used at `now`, anchoring the countdown on the first such probe. A
+    /// resumed run starts above 0 steps, so comparing against 0 would charge
+    /// the post-resume buffer refill against the grace period.
+    func graceElapsed(trainingSteps: Int, stepsAtRunStart: Int, at now: Date) -> TimeInterval? {
+        guard trainingSteps > stepsAtRunStart else {
+            noteNoTrainingStepsYet()
+            return nil
+        }
+        return graceElapsed(observingTrainingAt: now)
+    }
+
     /// Append one probe's legal mass and keep the newest `capacity` readings;
     /// returns the window, oldest first.
     func append(legalMass: Double, capacity: Int) -> [Double] {

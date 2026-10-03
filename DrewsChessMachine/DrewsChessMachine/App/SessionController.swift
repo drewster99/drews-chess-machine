@@ -352,10 +352,6 @@ final class SessionController {
     /// auto-build) because rebuilding invalidates the trainer's graph state.
     var onClearTrainingDisplay: () -> Void = { }
 
-    /// Drops the trainer (it owns graph state invalidated by a rebuild). Wired
-    /// to `{ trainer = nil }` on the view until the trainer migrates here.
-    var onDropTrainer: () -> Void = { }
-
     /// Returns the live `GameWatcher` (the on-board game state). Stays `@State`
     /// on `UpperContentView` (SwiftUI reconstruction semantics) — `startRealTraining`
     /// reads it through this to pass into the self-play driver / child tasks.
@@ -996,9 +992,13 @@ final class SessionController {
             // The trainer forks champion weights, so its net must match the
             // champion's architecture.
             let trainerArch = network?.network.arch ?? .current
-            // Initialized from a drawn seed: every Play-and-Train start
-            // replaces these weights (a reset + load), but the trainer exists
-            // from here on, so it holds real weights until then.
+            // Initialized from a drawn seed. A trainer is built only when
+            // none exists — at first use, or after a champion build or
+            // rebuild dropped it, which also cleared the replay buffer and
+            // with it the keep-trainer start modes — so the next
+            // Play-and-Train start resets and loads these weights; the
+            // trainer exists from here on, so it holds real weights until
+            // then.
             //
             // Every Play-and-Train run replaces this stream with its own
             // seed's `dropout` stream when it starts (`beginDropoutStream`);
@@ -1106,11 +1106,9 @@ final class SessionController {
         isBuilding = true
         networkStatus = ""
         // Drop the trainer (it owns graph state we're about to invalidate by
-        // rebuilding) and wipe all training/sweep display state.
-        onDropTrainer()
-        // The dropped trainer's lineage segment ends with it.
-        lineageTracker = nil
-        lineageFedCarry = LineageFedCarry()
+        // rebuilding), ending its lineage segment, and wipe all
+        // training/sweep display state.
+        dropTrainerEndingLineageSegment()
         onClearTrainingDisplay()
 
         Task {
@@ -1163,7 +1161,7 @@ final class SessionController {
         // (resuming / loading a model of another arch) — (re)build to match.
         isBuilding = true
         networkStatus = ""
-        onDropTrainer()
+        dropTrainerEndingLineageSegment()
         onClearTrainingDisplay()
         SessionLogger.shared.log("[BUILD] Auto-build before load (\(targetArch.architectureSummary))")
         // Every caller loads weights into the champion right after, so the
@@ -1189,6 +1187,20 @@ final class SessionController {
             isBuilding = false
             return .failure(error)
         }
+    }
+
+    /// Drop the trainer, which owns graph state a champion rebuild
+    /// invalidates. The trainer's lineage segment ends with the trainer: a
+    /// later save must not attribute another trainer's (or the champion's)
+    /// weights to it. So the segment's tracker and fed counts go too, and
+    /// the run's resume verdict, which described that segment. The one
+    /// place a trainer is dropped, so the two rebuild paths (Build Network
+    /// and the auto-build before a load) cannot disagree.
+    func dropTrainerEndingLineageSegment() {
+        trainer = nil
+        lineageTracker = nil
+        lineageFedCarry = LineageFedCarry()
+        checkpoint?.runResumeExactness = nil
     }
 
     /// The actual network construction. Runs on a detached `.userInitiated`

@@ -30,6 +30,26 @@ extension SessionController {
     /// see `TrainingStartMode` for the four cases.
     func startRealTraining(mode: TrainingStartMode = .freshOrFromLoadedSession) {
         SessionLogger.shared.log("[BUTTON] Play and Train")
+        // A run that does not continue the stopped one starts from the
+        // user's settings: values an earlier resume held for its run only
+        // (pre-feature values, out-of-range session values) are put back
+        // first. A resume below holds its own again. Continue after Stop is
+        // the same run and keeps them.
+        if mode != .continueAfterStop {
+            do {
+                let released = try TrainingParameters.shared.releaseRunHolds()
+                if !released.isEmpty {
+                    let values = released.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.displayText)" }
+                    SessionLogger.shared.log("[PARAM] values held for the previous resumed run released for this run: "
+                        + values.joined(separator: " "))
+                }
+            } catch {
+                let message = "Play and Train not started: could not restore the settings an earlier resumed run held for itself (\(error.localizedDescription))"
+                SessionLogger.shared.log("[PARAM] \(message)")
+                checkpoint?.setCheckpointStatus(message, kind: .error)
+                return
+            }
+        }
         // Begin a new training segment for cumulative wall-time
         // tracking. Closed via `closeActiveTrainingSegment` on Stop or
         // at save time. Don't try to open one if the previous Stop
@@ -43,14 +63,6 @@ extension SessionController {
             UpperContentView.absoluteMaxSelfPlayWorkers >= 1,
             "absoluteMaxSelfPlayWorkers must be >= 1; got \(UpperContentView.absoluteMaxSelfPlayWorkers)"
         )
-        // Snap the live N into the [1, absoluteMaxSelfPlayWorkers] range
-        // before doing anything else. The Stepper enforces this
-        // for user input but `TrainingParameters.shared.selfPlayConcurrency` is centrally managed
-        // so the value could in principle be edited elsewhere.
-        let initialWorkerCount = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, TrainingParameters.shared.selfPlayConcurrency))
-        if initialWorkerCount != TrainingParameters.shared.selfPlayConcurrency {
-            TrainingParameters.shared.selfPlayConcurrency = initialWorkerCount
-        }
         guard let trainer = ensureTrainer(), let network else { return }
         let gameWatcher = gameWatcherProvider()
         onResetBoardDisplay()
@@ -93,182 +105,15 @@ extension SessionController {
         if !continueMode {
             if let rs = resumeState {
                 // Every saved training parameter goes through one resolver
-                // (`TrainingParameterResolution`, driven by each key's
-                // declared `absentValue`): a value the session carried is
-                // restored; a key the session predates gets its declared
-                // pre-feature value, held for this run only; an operational
-                // knob keeps the live setting; a training parameter with no
-                // recorded value keeps the live setting and is reported NOT
-                // EXACT. Each decision logs one `[RESUME-DIFF]` line. The
-                // trainer is then configured from the resulting settings
-                // through the same `TrainerHyperparameters` path a fresh start
-                // uses. The trainer's completed-step clock is restored later,
-                // with its weights and velocity, by `restoreExactly` (after
+                // (`SessionParameterResume.applyGuiSession`). The trainer is
+                // then configured from the resulting settings through the
+                // same `TrainerHyperparameters` path a fresh start uses. The
+                // trainer's completed-step clock is restored later, with its
+                // weights and velocity, by `restoreExactly` (after
                 // `resetNetwork(initialization:)`, which zeroes it).
                 let p = TrainingParameters.shared
                 let resume = SessionParameterResume(parameters: p, log: { SessionLogger.shared.log($0) })
-                resume.restore(LearningRate.self, savedFloat: rs.learningRate, into: \.learningRate)
-                resume.restore(EntropyBonus.self, savedFloat: rs.entropyRegularizationCoeff, into: \.entropyBonus)
-                resume.restore(DrawPenalty.self, savedFloat: rs.drawPenalty, into: \.drawPenalty)
-                resume.restore(WeightDecay.self, savedFloat: rs.weightDecayCoeff, into: \.weightDecay)
-                resume.restore(DropoutRate.self, savedFloat: rs.dropoutRate, into: \.dropoutRate)
-                resume.restore(GradClipMaxNorm.self, savedFloat: rs.gradClipMaxNorm, into: \.gradClipMaxNorm)
-                resume.restore(PolicyLossWeight.self, savedFloat: rs.policyLossWeight, into: \.policyLossWeight)
-                resume.restore(ValueLossWeight.self, savedFloat: rs.valueLossWeight, into: \.valueLossWeight)
-                resume.restore(MomentumCoeff.self, savedFloat: rs.momentumCoeff, into: \.momentumCoeff)
-                resume.restore(IllegalMassWeight.self, savedFloat: rs.illegalMassPenaltyWeight, into: \.illegalMassWeight)
-                resume.restore(PolicyLabelSmoothingEpsilon.self, savedFloat: rs.policyLabelSmoothingEpsilon, into: \.policyLabelSmoothingEpsilon)
-                restorePolicyLabelSmoothingSet(from: rs, using: resume)
-                resume.restore(ValueLabelSmoothingEpsilon.self, savedFloat: rs.valueLabelSmoothingEpsilon, into: \.valueLabelSmoothingEpsilon)
-                resume.restore(BatchStatsInterval.self, saved: rs.batchStatsInterval, into: \.batchStatsInterval)
-                resume.restore(KLProbeInterval.self, saved: rs.klProbeInterval, into: \.klProbeInterval)
-                restoreArenaPromotionCriterion(from: rs, using: resume)
-                // The session's own interval is restored even when it lies
-                // outside today's declared range (`restoreFromSession` warns).
-                // The one value that cannot be restored is a non-positive
-                // one: it feeds `PeriodicSaveController(interval:)`, whose
-                // precondition is `interval > 0`, and the app has never
-                // written one — only a corrupt or hand-edited session can
-                // carry it, and the user reviewed it at load and accepted the
-                // current interval in its place.
-                if let pai = rs.periodicAutosaveIntervalSec, pai <= 0 {
-                    resume.logReplacedAtLoad(
-                        PeriodicAutosaveIntervalSec.self,
-                        savedDescription: "\(pai)",
-                        currentDescription: "\(p.periodicAutosaveIntervalSec)",
-                        why: "is unusable (must be > 0)"
-                    )
-                } else {
-                    resume.restore(PeriodicAutosaveIntervalSec.self, saved: rs.periodicAutosaveIntervalSec, into: \.periodicAutosaveIntervalSec)
-                }
-                // Zero means unlimited.
-                resume.restore(MaxPeriodicAutosavesKept.self, saved: rs.maxPeriodicAutosavesKept, into: \.maxPeriodicAutosavesKept)
-                // The setting only; `CheckpointPaths.automaticSavePruningForcedOff`
-                // can still hold pruning off whatever is restored here. The
-                // effective state is logged once the session is armed.
-                resume.restore(AutomaticSavePruningEnabled.self, saved: rs.automaticSavePruningEnabled, into: \.automaticSavePruningEnabled)
-                resume.restore(SessionSaveIncludeReplayBuffer.self, saved: rs.sessionSaveIncludeReplayBuffer, into: \.sessionSaveIncludeReplayBuffer)
-                if let cid = rs.recordingCorpusID {
-                    SessionLogger.shared.log(
-                        "[RESUME-PARAM] recording_corpus_id: prior run recorded into corpus \(cid) (informational; this run starts a fresh corpus when recording is on)"
-                    )
-                }
-                // `recordingCorpusID` above is provenance only; the *intent to
-                // record* lives in this boolean, which is read once at self-play
-                // start (below). A transient `--parameters record_self_play_games=true`
-                // run does not persist to UserDefaults (suppressPersistence), so
-                // without restoring it here a resume would silently drop recording
-                // back to the singleton's default. Restoring re-enables recording
-                // (into a fresh corpus, matching the line above).
-                resume.restore(RecordSelfPlayGames.self, saved: rs.recordSelfPlayGames, into: \.recordSelfPlayGames)
-                // LR/momentum cycling and its decay envelope, key by key. The
-                // cycle and the envelope are each saved as a whole or not at
-                // all; a session without them predates the feature, so the
-                // enabled flags, the decay horizon and momentum following
-                // resolve to their declared pre-feature values (off) while the
-                // inert numbers keep the live settings for the popover. The
-                // cycle's phase is a pure function of `trainingSteps`, already
-                // restored above, so the schedule continues exactly where it
-                // left off.
-                let cycle = rs.lrMomentumCycle
-                resume.restore(LRCycleEnabled.self, saved: cycle?.lrEnabled, into: \.lrCycleEnabled)
-                resume.restore(LRCyclePeriodSteps.self, saved: cycle?.lrPeriodSteps, into: \.lrCyclePeriodSteps)
-                resume.restore(LRCycleCount.self, saved: cycle?.lrCount, into: \.lrCycleCount)
-                resume.restore(LRCycleMin.self, saved: cycle?.lrMin, into: \.lrCycleMin)
-                resume.restore(LRCycleMax.self, saved: cycle?.lrMax, into: \.lrCycleMax)
-                resume.restore(LRCycleInvert.self, saved: cycle?.lrInvert, into: \.lrCycleInvert)
-                resume.restore(MomentumCycleEnabled.self, saved: cycle?.momentumEnabled, into: \.momentumCycleEnabled)
-                resume.restore(MomentumCyclePeriodSteps.self, saved: cycle?.momentumPeriodSteps, into: \.momentumCyclePeriodSteps)
-                resume.restore(MomentumCycleCount.self, saved: cycle?.momentumCount, into: \.momentumCycleCount)
-                resume.restore(MomentumCycleMin.self, saved: cycle?.momentumMin, into: \.momentumCycleMin)
-                resume.restore(MomentumCycleMax.self, saved: cycle?.momentumMax, into: \.momentumCycleMax)
-                resume.restore(MomentumCycleInvert.self, saved: cycle?.momentumInvert, into: \.momentumCycleInvert)
-                let envelope = rs.lrMomentumCycleEnvelope
-                resume.restore(LRCyclePeakEnd.self, saved: envelope?.lrPeakEnd, into: \.lrCyclePeakEnd)
-                resume.restore(LRCycleTroughEnd.self, saved: envelope?.lrTroughEnd, into: \.lrCycleTroughEnd)
-                resume.restore(LRCycleDecayHorizonSteps.self, saved: envelope?.decayHorizonSteps, into: \.lrCycleDecayHorizonSteps)
-                resume.restore(MomentumFollowsLRCycle.self, saved: envelope?.momentumFollowsLRCycle, into: \.momentumFollowsLRCycle)
-                resume.restore(MomentumFollowStartLow.self, saved: envelope?.momentumFollowStartLow, into: \.momentumFollowStartLow)
-                resume.restore(MomentumFollowStartHigh.self, saved: envelope?.momentumFollowStartHigh, into: \.momentumFollowStartHigh)
-                resume.restore(MomentumFollowEndLow.self, saved: envelope?.momentumFollowEndLow, into: \.momentumFollowEndLow)
-                resume.restore(MomentumFollowEndHigh.self, saved: envelope?.momentumFollowEndHigh, into: \.momentumFollowEndHigh)
-                // Composition-aware replay-buffer sampler constraints. These
-                // don't shadow on the trainer — the sampler reads them
-                // straight off `TrainingParameters.shared` each
-                // `sample(count:)` call (see ReplayBuffer.swift).
-                resume.restore(MaxPliesFromAnyOneGame.self, saved: rs.maxPliesFromAnyOneGame, into: \.maxPliesFromAnyOneGame)
-                resume.restore(TargetSampledGameLengthPlies.self, saved: rs.targetSampledGameLengthPlies, into: \.targetSampledGameLengthPlies)
-                resume.restore(MaxDrawPercentPerBatch.self, saved: rs.maxDrawPercentPerBatch, into: \.maxDrawPercentPerBatch)
-                resume.restore(ReplayBufferStratifyByMaterial.self, saved: rs.replayBufferStratifyByMaterial, into: \.replayBufferStratifyByMaterial)
-                resume.restore(SelfPlayDrawKeepFraction.self, saved: rs.selfPlayDrawKeepFraction, into: \.selfPlayDrawKeepFraction)
-                resume.restore(SelfPlayMaxPliesPerGame.self, saved: rs.maxPliesPerGame, into: \.selfPlayMaxPliesPerGame)
-                resume.restore(DrawWatchPDrawThreshold.self, saved: rs.drawWatchPDrawThreshold, into: \.drawWatchPDrawThreshold)
-                resume.restore(DrawWatchTerminateGames.self, saved: rs.drawWatchTerminateGames, into: \.drawWatchTerminateGames)
-                resume.restore(DrawWatchStreakLength.self, saved: rs.drawWatchStreakLength, into: \.drawWatchStreakLength)
-                resume.restore(SqrtBatchScalingLR.self, saved: rs.sqrtBatchScalingForLR, into: \.sqrtBatchScalingLR)
-                resume.restore(SignedAdvantageComplementCE.self, saved: rs.signedAdvantageComplementCE, into: \.signedAdvantageComplementCE)
-                resume.restore(LRWarmupSteps.self, saved: rs.lrWarmupSteps, into: \.lrWarmupSteps)
-                // Run-management knobs that once lived only in app settings.
-                resume.restore(ReplayBufferMinPositionsBeforeTraining.self, saved: rs.replayBufferMinPositionsBeforeTraining, into: \.replayBufferMinPositionsBeforeTraining)
-                resume.restore(ArenaAutoIntervalSec.self, saved: rs.arenaAutoIntervalSec, into: \.arenaAutoIntervalSec)
-                resume.restore(ArenaConcurrency.self, saved: rs.arenaConcurrency, into: \.arenaConcurrency)
-                resume.restore(CandidateProbeIntervalSec.self, saved: rs.candidateProbeIntervalSec, into: \.candidateProbeIntervalSec)
-                resume.restore(LegalMassCollapseThreshold.self, saved: rs.legalMassCollapseThreshold, into: \.legalMassCollapseThreshold)
-                resume.restore(LegalMassCollapseGraceSeconds.self, saved: rs.legalMassCollapseGraceSeconds, into: \.legalMassCollapseGraceSeconds)
-                resume.restore(LegalMassCollapseNoImprovementProbes.self, saved: rs.legalMassCollapseNoImprovementProbes, into: \.legalMassCollapseNoImprovementProbes)
-                // Sampling schedules: always present in a session.
-                resume.restore(SelfPlayStartTau.self, savedFloat: rs.selfPlayTau.startTau, into: \.selfPlayStartTau)
-                resume.restore(SelfPlayTargetTau.self, savedFloat: rs.selfPlayTau.floorTau, into: \.selfPlayTargetTau)
-                resume.restore(SelfPlayTauDecayPerPly.self, savedFloat: rs.selfPlayTau.decayPerPly, into: \.selfPlayTauDecayPerPly)
-                resume.restore(ArenaStartTau.self, savedFloat: rs.arenaTau.startTau, into: \.arenaStartTau)
-                resume.restore(ArenaTargetTau.self, savedFloat: rs.arenaTau.floorTau, into: \.arenaTargetTau)
-                resume.restore(ArenaTauDecayPerPly.self, savedFloat: rs.arenaTau.decayPerPly, into: \.arenaTauDecayPerPly)
-                // Saved-but-not-applied trio: persisted for the resume
-                // sheet, but the resumed run deliberately reads the LIVE
-                // TrainingParameters values for these. Surface the saved
-                // value alongside the one actually used so a
-                // batch/threshold/games divergence between save and
-                // resume is never silent. (Via sqrt-batch LR scaling, a
-                // batch-size divergence also shifts the effective
-                // learning rate.)
-                func logResumeUsesCurrent<T: Equatable>(_ id: String, saved: T, current: T) {
-                    let marker = saved == current ? "matches" : "DIFFERS from"
-                    SessionLogger.shared.log(
-                        "[RESUME-PARAM] \(id): saved=\(saved) \(marker) current=\(current) — resume uses current (saved value is informational)"
-                    )
-                }
-                logResumeUsesCurrent("batch_size", saved: rs.batchSize, current: p.trainingBatchSize)
-                logResumeUsesCurrent("promote_threshold", saved: rs.promoteThreshold, current: p.arenaPromoteThreshold)
-                logResumeUsesCurrent("arena_games", saved: rs.arenaGames, current: p.arenaGamesPerTournament)
-                // The run's master seed is lineage state that no session
-                // records yet: it must travel with the game serials and arena
-                // index it seeds (restoring the seed alone would replay the
-                // run's first game streams), and those land with the lineage
-                // record (determinism plan P6). Every resume therefore
-                // resolves the seed as a session saved before seeding existed:
-                // the mode is held at unseeded for this run, so a fresh seed is
-                // drawn and logged on the [RUN] line, and the seed is NOT EXACT.
-                resume.restore(
-                    RandomSeedModeParameter.self,
-                    saved: nil,
-                    current: p.randomSeedMode.rawValue,
-                    describe: { RandomSeedMode(persistedRawValue: $0).logToken },
-                    write: { rawValue, source in
-                        let mode = RandomSeedMode(persistedRawValue: rawValue)
-                        switch source {
-                        case .session:
-                            p.randomSeedMode = mode
-                        case .preFeature:
-                            p.holdForThisRun { p.randomSeedMode = mode }
-                        case .currentSetting, .notExact:
-                            break
-                        }
-                    }
-                )
-                resume.restore(RandomSeed.self, saved: nil, into: \.randomSeed)
-                if let notExact = resume.notExactSummary() {
-                    SessionLogger.shared.log(notExact)
-                }
+                resume.applyGuiSession(rs, acceptedReplacements: pendingLoadedSessionAcceptedReplacements)
                 TrainerHyperparameters(p.snapshot()).apply(to: trainer)
             } else {
                 // Fresh start: every trainer-level parameter from the live
@@ -281,10 +126,19 @@ extension SessionController {
             }
             trainingStats = initialTrainingStats
         }
+        // Snap the live N into the [1, absoluteMaxSelfPlayWorkers] range,
+        // after a resume restored the session's worker count, so the run's
+        // worker-count box and board mode start from the count it runs
+        // with. The Stepper enforces this for user input but
+        // `TrainingParameters.shared.selfPlayConcurrency` is centrally
+        // managed so the value could in principle be edited elsewhere.
+        let initialWorkerCount = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, TrainingParameters.shared.selfPlayConcurrency))
+        if initialWorkerCount != TrainingParameters.shared.selfPlayConcurrency {
+            TrainingParameters.shared.selfPlayConcurrency = initialWorkerCount
+        }
         // The run's master seed. A continue after Stop goes on with the same
         // run, so it keeps the seed and the game serials; anything else starts
-        // a run and resolves it here — after the resume above, which decides
-        // the seed mode a resumed session runs with.
+        // a run and resolves it here.
         let runSeed: RunRandomSeed
         let gameSerials: GameSerialCounter
         // A resumed session whose record carries the run's streams continues
@@ -308,8 +162,23 @@ extension SessionController {
             SessionLogger.shared.log("[RESUME] rng: run seed, game serials (next \(nextSerial)) and arena count (\(arenasStarted)) continue the saved run")
         } else {
             let p = TrainingParameters.shared
+            // A resumed session whose run is not continued (it predates the
+            // recorded streams, `--seed` names another seed, or its streams
+            // were named under another derivation) runs on a drawn seed, as
+            // a session saved before seeding did: the configured seed would
+            // replay a different run's first game streams under this run's
+            // name. `--seed` still wins inside `resolve`. The resume reports
+            // `rng_sampler` / `serials` NOT EXACT.
+            let resumingWithoutItsRun = resumeState != nil && !continueMode
+            if resumingWithoutItsRun {
+                if let commandLineSeed {
+                    SessionLogger.shared.log("[RESUME] rng: the saved run's seed is not continued; --seed \(commandLineSeed) seeds this run")
+                } else {
+                    SessionLogger.shared.log("[RESUME] rng: the saved run's seed is not continued; a seed is drawn for this run")
+                }
+            }
             runSeed = RunRandomSeed.resolve(
-                mode: p.randomSeedMode,
+                mode: resumingWithoutItsRun ? .unseeded : p.randomSeedMode,
                 configuredSeed: p.randomSeed,
                 commandLineSeed: commandLineSeed,
                 drawSeed: RunRandomSeed.systemDrawnSeed
@@ -488,67 +357,16 @@ extension SessionController {
                 emittedThreefoldRepetitionDraws: rs.emittedThreefoldRepetitionDraws,
                 emittedInsufficientMaterialDraws: rs.emittedInsufficientMaterialDraws
             )
-            // Run-throughput knobs. Previously applied with no audit
-            // line at all; every branch now logs so nothing on this
-            // path changes a setting silently.
-            if let workerCount = resumeState?.selfPlayWorkerCount {
-                let clamped = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, workerCount))
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] self_play_workers: \(TrainingParameters.shared.selfPlayConcurrency) -> \(clamped) (from session)"
-                )
-                TrainingParameters.shared.restoreFromSession(SelfPlayConcurrency.self, clamped, into: \.selfPlayConcurrency)
-            }
-            if let delay = rs.stepDelayMs {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] training_step_delay_ms: \(TrainingParameters.shared.trainingStepDelayMs) -> \(delay) (from session)"
-                )
-                TrainingParameters.shared.restoreFromSession(TrainingStepDelayMs.self, delay, into: \.trainingStepDelayMs)
-            } else {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] training_step_delay_ms: saved=nil applied=\(TrainingParameters.shared.trainingStepDelayMs) (no saved value; using current setting)"
-                )
-            }
-            if let spDelay = rs.selfPlayDelayMs {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] self_play_delay_ms: \(TrainingParameters.shared.selfPlayDelayMs) -> \(spDelay) (from session)"
-                )
-                TrainingParameters.shared.restoreFromSession(SelfPlayDelayMs.self, spDelay, into: \.selfPlayDelayMs)
-            } else {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] self_play_delay_ms: saved=nil applied=\(TrainingParameters.shared.selfPlayDelayMs) (no saved value; using current setting)"
-                )
-            }
+            // The run-throughput knobs (workers, the two delays, the
+            // replay-ratio target and auto-adjust) were restored with the
+            // other parameters (`SessionParameterResume.applyGuiSession`).
+            // The replay-ratio controller's last computed delay is
+            // controller state, not a parameter.
             if let autoDelay = rs.lastAutoComputedDelayMs {
                 SessionLogger.shared.log(
                     "[RESUME-PARAM] last_auto_computed_delay_ms: \(lastAutoComputedDelayMs) -> \(autoDelay) (from session)"
                 )
                 lastAutoComputedDelayMs = autoDelay
-            }
-            // Replay-ratio pair: these previously fell back to
-            // hard-coded values matching long-stale defaults, silently
-            // clobbering the user's current setting whenever the field
-            // was absent. nil now leaves the current setting in place
-            // (these are v1 schema fields, so nil should never occur in
-            // practice — the log line is the tripwire if it ever does).
-            if let target = rs.replayRatioTarget {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] replay_ratio_target: \(TrainingParameters.shared.replayRatioTarget) -> \(target) (from session)"
-                )
-                TrainingParameters.shared.restoreFromSession(ReplayRatioTarget.self, target, into: \.replayRatioTarget)
-            } else {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] replay_ratio_target: saved=nil applied=\(TrainingParameters.shared.replayRatioTarget) (no saved value; using current setting)"
-                )
-            }
-            if let autoAdjust = rs.replayRatioAutoAdjust {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] replay_ratio_auto_adjust: \(TrainingParameters.shared.replayRatioAutoAdjust) -> \(autoAdjust) (from session)"
-                )
-                TrainingParameters.shared.restoreFromSession(ReplayRatioAutoAdjust.self, autoAdjust, into: \.replayRatioAutoAdjust)
-            } else {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] replay_ratio_auto_adjust: saved=nil applied=\(TrainingParameters.shared.replayRatioAutoAdjust) (no saved value; using current setting)"
-                )
             }
         } else {
             // Fresh session — no resumed steps to subtract.
@@ -746,10 +564,6 @@ extension SessionController {
         } else if let resumed = pendingLoadedSession {
             checkpoint?.currentSessionID = resumed.state.sessionID
             checkpoint?.currentSessionStart = Date().addingTimeInterval(-resumed.state.elapsedTrainingSec)
-            TrainingParameters.shared.restoreFromSession(LearningRate.self, savedFloat: resumed.state.learningRate, into: \.learningRate)
-            if let entropyCoeff = resumed.state.entropyRegularizationCoeff {
-                TrainingParameters.shared.restoreFromSession(EntropyBonus.self, savedFloat: entropyCoeff, into: \.entropyBonus)
-            }
         } else {
             checkpoint?.currentSessionID = ModelIDMinter.mint().value
             checkpoint?.currentSessionStart = Date()
@@ -862,6 +676,21 @@ extension SessionController {
         let sessionMinBufferBeforeTraining = TrainingParameters.shared.replayBufferMinPositionsBeforeTraining
         let sessionTournamentGames = TrainingParameters.shared.arenaGamesPerTournament
         let sessionPromoteThreshold = TrainingParameters.shared.arenaPromoteThreshold
+        // The saved run's streams this run continues (nil when it drew a new
+        // seed): the one source for the dropout-stream restore below and for
+        // the resume's rng_sampler / serials verdict.
+        let continuedRunStreams = resumedRunStreams
+        // The training-stats step count this run starts from, which the
+        // legal-mass grace gate must see the trainer pass: a resumed
+        // session's count (the stats box was seeded with it); 0 for a fresh
+        // start, and for a continue after Stop, whose grace anchor carries
+        // on.
+        let graceStepBaseline: Int
+        if !continueMode, let resumeState {
+            graceStepBaseline = resumeState.trainingSteps
+        } else {
+            graceStepBaseline = 0
+        }
 
         realTrainingTask = Task(priority: .high) {
             [trainer, network, buffer, box, tBox, pStatsBox, spDiversityTracker,
@@ -1110,10 +939,10 @@ extension SessionController {
                     } else {
                         restoredSavedPhilox = false
                     }
-                    if let resumedRunStreams {
+                    if let continuedRunStreams {
                         // The saved Philox state is restored with the trainer
                         // state; the stream continues from its saved position.
-                        try await trainer.restoreDropoutStreamState(resumedRunStreams.dropoutStreamState)
+                        try await trainer.restoreDropoutStreamState(continuedRunStreams.dropoutStreamState)
                         SessionLogger.shared.log("[RESUME] rng: dropout stream=restored")
                     } else if restoredSavedPhilox {
                         // The masks continue the saved Philox state; reseeding
@@ -1179,24 +1008,25 @@ extension SessionController {
             // restore's counter reset. The restore runs on a
             // detached I/O task so ~GB-scale reads don't block the
             // cooperative hop cadence.
+            // Whether the session's buffer file is in the run's buffer: the
+            // resume's buffer verdict (`guiResumeGaps`).
+            var replayBufferRestored = false
             if let bufferURL = resumedBufferURL {
-                let resumedState: SessionCheckpointState? = await MainActor.run {
-                    pendingLoadedSession?.state
+                // The file's lifetime position count must be the one
+                // session.json recorded, checked before the restore touches
+                // the buffer: a mismatch means a file-pairing error or
+                // residual corruption that happened to SHA-match, and the
+                // buffer stays empty rather than holding another save's
+                // positions.
+                let expectedTotalPositionsAdded: Int? = await MainActor.run {
+                    pendingLoadedSession?.state.replayBufferTotalPositionsAdded
                 }
                 do {
                     try await Task.detached(priority: .userInitiated) {
-                        [buffer, bufferURL] in
-                        try buffer.restore(from: bufferURL)
+                        [buffer, bufferURL, expectedTotalPositionsAdded] in
+                        try buffer.restore(from: bufferURL, expectedTotalPositionsAdded: expectedTotalPositionsAdded)
                     }.value
-                    // Cross-check lifetime counter against session.json.
-                    // Mismatch here indicates file-pairing error or
-                    // residual corruption that happened to SHA-match.
-                    if let resumedState {
-                        try CheckpointManager.verifyReplayBufferMatchesSession(
-                            buffer: buffer,
-                            state: resumedState
-                        )
-                    }
+                    replayBufferRestored = true
                     let snap = buffer.stateSnapshot()
                     SessionLogger.shared.log(
                         "[CHECKPOINT] Restored replay buffer: stored=\(snap.storedCount)/\(snap.capacity) totalAdded=\(snap.totalPositionsAdded) writeIndex=\(snap.writeIndex)"
@@ -1219,18 +1049,6 @@ extension SessionController {
                 }
             }
 
-            // Trainer ID — branched by `mode`, matching the
-            // trainer-weights logic above:
-            //
-            // - `.freshOrFromLoadedSession`: inherit from the
-            //   loaded session's trainer file if present, else
-            //   mint a new generation off the champion.
-            // - `.newSessionResetTrainerFromChampion`: mint a new
-            //   generation off the current champion (trainer
-            //   weights were just forked from champion).
-            // - `.continueAfterStop` and `.newSessionKeepTrainer`:
-            //   keep the trainer's existing ID — its weights
-            //   weren't touched, so the lineage is continuous.
             // The process's behavior fingerprint for this trainer's numerics:
             // every trainer-state save records it, and a resume under another
             // build or OS compares against it (cached per process).
@@ -1241,55 +1059,16 @@ extension SessionController {
             } catch {
                 fingerprintResult = .failure(error)
             }
+            let bufferRestoredIntoRun = replayBufferRestored
             let lineageStart: Result<LineageTracker, Error> = await MainActor.run {
                 SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
-                switch mode {
-                case .continueAfterStop, .newSessionKeepTrainer:
-                    break
-                case .newSessionResetTrainerFromChampion:
-                    trainer.identifier = ModelIDMinter.mintTrainerGeneration(
-                        from: network.identifier ?? ModelIDMinter.mint()
-                    )
-                case .freshOrFromLoadedSession:
-                    if let resumed = pendingLoadedSession {
-                        // A GUI resume never refuses (determinism plan D-1);
-                        // what it could not restore — the policy-tail
-                        // precision included — is named on the one
-                        // `[RESUME]` line `beginLineageSegment` logs.
-                        trainer.identifier = ModelID(value: resumed.trainerFile.modelID)
-                    } else {
-                        trainer.identifier = ModelIDMinter.mintTrainerGeneration(
-                            from: network.identifier ?? ModelIDMinter.mint()
-                        )
-                    }
-                }
                 // The lineage segment every save of this run takes its
                 // record from — begun (or continued) now that the trainer
                 // holds its starting state and the stats box exists.
-                let segmentResult: Result<LineageTracker, Error>
-                do {
-                    let fingerprint = try fingerprintResult.get()
-                    SessionLogger.shared.log("[RUN] behavior fingerprint recipe=\(fingerprint.recipe) sha256=\(fingerprint.sha256)")
-                    runBehaviorFingerprint = fingerprint
-                    try beginLineageSegment(mode: mode, trainer: trainer, resumed: pendingLoadedSession,
-                                            behaviorFingerprint: fingerprint)
-                    if let tracker = lineageTracker {
-                        segmentResult = .success(tracker)
-                    } else {
-                        segmentResult = .failure(LineageSegmentError.noSegment("Play and Train"))
-                    }
-                } catch {
-                    segmentResult = .failure(error)
-                }
-                // Consume the pending load — from here on, the
-                // running session owns the restored state.
-                pendingLoadedSession = nil
-                pendingLoadedSessionAcceptedReplacements = []
-                // A training segment has started, so clear the
-                // "champion replaced since last training" flag
-                // (the Start dialog's annotation is resolved).
-                championLoadedSinceLastTrainingSegment = false
-                return segmentResult
+                return beginRunLineage(
+                    mode: mode, trainer: trainer, championIdentifier: network.identifier,
+                    continuedRunStreams: continuedRunStreams, replayBufferRestored: bufferRestoredIntoRun,
+                    fingerprintResult: fingerprintResult)
             }
             let segmentLineage: LineageTracker
             switch lineageStart {
@@ -2533,18 +2312,18 @@ extension SessionController {
                             return
                         }
                         if Task.isCancelled { return }
-                        // Training-start gate. If no SGD steps have
-                        // landed yet, reset the anchor and skip — the
-                        // network is still at random init so no
-                        // learning-progress signal exists. Once steps
-                        // > 0, stamp the anchor on the first qualifying
-                        // iteration and measure grace from there.
+                        // Training-start gate. Until this run has taken an
+                        // SGD step of its own (beyond the step count it
+                        // started from — a resumed session's count),
+                        // reset the anchor and skip: the buffer is still
+                        // filling and no learning-progress signal exists.
+                        // The first qualifying probe stamps the anchor and
+                        // grace is measured from there.
                         let trainingSteps = await box.snapshot().stats.steps
-                        guard trainingSteps > 0 else {
-                            collapseDetector.noteNoTrainingStepsYet()
+                        guard let trainingElapsed = collapseDetector.graceElapsed(
+                            trainingSteps: trainingSteps, stepsAtRunStart: graceStepBaseline, at: Date()) else {
                             continue
                         }
-                        let trainingElapsed = collapseDetector.graceElapsed(observingTrainingAt: Date())
                         if trainingElapsed < gracePeriodSec { continue }
                         // Session-elapsed for snapshot-write / log
                         // consistency with the timer task, which also
@@ -2814,158 +2593,4 @@ extension SessionController {
             )
         }
     }
-
-
-    // MARK: - Policy label-smoothing set restore
-
-    /// Writes a resumed session's policy label-smoothing mode, per-move δ and
-    /// per-move cap back onto `TrainingParameters.shared`.
-    ///
-    /// The three travel as a set. A session missing all three predates the
-    /// per-move form and factually trained with fixed-total smoothing, so the
-    /// mode resolves to its declared pre-feature value (held for this run)
-    /// and δ and the cap — inert under fixed-total — keep the live settings.
-    /// A partial set or an unknown mode only reaches here after the user
-    /// reviewed it at load time and accepted the current settings in its
-    /// place (`invalidSavedSettings`).
-    func restorePolicyLabelSmoothingSet(from rs: SessionCheckpointState, using resume: SessionParameterResume) {
-        let p = resume.parameters
-        if pendingLoadedSessionAcceptedReplacements.contains(SessionCheckpointState.SavedSettingID.policyLabelSmoothing) {
-            resume.logReplacedAtLoad(
-                PolicyLabelSmoothingModeParameter.self,
-                savedDescription: rs.policyLabelSmoothingMode ?? "absent",
-                currentDescription: p.policyLabelSmoothingMode.logToken,
-                why: "set (mode, per-move δ, cap) is unusable"
-            )
-            resume.logReplacedAtLoad(
-                PolicyLabelSmoothingPerMove.self,
-                savedDescription: rs.policyLabelSmoothingPerMove.map { "\($0)" } ?? "absent",
-                currentDescription: "\(p.policyLabelSmoothingPerMove)",
-                why: "set (mode, per-move δ, cap) is unusable"
-            )
-            resume.logReplacedAtLoad(
-                PolicyLabelSmoothingPerMoveCap.self,
-                savedDescription: rs.policyLabelSmoothingPerMoveCap.map { "\($0)" } ?? "absent",
-                currentDescription: "\(p.policyLabelSmoothingPerMoveCap)",
-                why: "set (mode, per-move δ, cap) is unusable"
-            )
-            return
-        }
-        let savedModeRawValue: Int?
-        if let token = rs.policyLabelSmoothingMode {
-            guard rs.policyLabelSmoothingPerMove != nil, rs.policyLabelSmoothingPerMoveCap != nil else {
-                preconditionFailure("session load reviews a partial policy label-smoothing set before resume")
-            }
-            guard let savedMode = PolicyLabelSmoothingMode(logToken: token) else {
-                preconditionFailure("session load reviews an unknown policy_label_smoothing_mode before resume; got \(token)")
-            }
-            savedModeRawValue = savedMode.rawValue
-        } else {
-            guard rs.policyLabelSmoothingPerMove == nil, rs.policyLabelSmoothingPerMoveCap == nil else {
-                preconditionFailure("session load reviews a partial policy label-smoothing set before resume")
-            }
-            savedModeRawValue = nil
-        }
-        resume.restore(
-            PolicyLabelSmoothingModeParameter.self,
-            saved: savedModeRawValue,
-            current: p.policyLabelSmoothingMode.rawValue,
-            describe: { PolicyLabelSmoothingMode(persistedRawValue: $0).logToken },
-            write: { rawValue, source in
-                let mode = PolicyLabelSmoothingMode(persistedRawValue: rawValue)
-                switch source {
-                case .session:
-                    p.policyLabelSmoothingMode = mode
-                case .preFeature:
-                    p.holdForThisRun { p.policyLabelSmoothingMode = mode }
-                case .currentSetting, .notExact:
-                    break
-                }
-            }
-        )
-        resume.restore(PolicyLabelSmoothingPerMove.self, savedFloat: rs.policyLabelSmoothingPerMove, into: \.policyLabelSmoothingPerMove)
-        resume.restore(PolicyLabelSmoothingPerMoveCap.self, savedFloat: rs.policyLabelSmoothingPerMoveCap, into: \.policyLabelSmoothingPerMoveCap)
-    }
-
-    // MARK: - Arena promotion criterion restore
-
-    /// Writes a resumed session's arena promotion criterion and SPRT
-    /// hypotheses back onto `TrainingParameters.shared`.
-    ///
-    /// The seven values are restored as a **set**, resolved once by
-    /// `SessionCheckpointState.savedArenaPromotionSet` — the same resolution
-    /// the load-time review (`invalidSavedSettings`) applies — and an
-    /// incomplete set is never part-applied. A session that stored
-    /// `criterion = sprt` but is missing (say) `elo1` would otherwise resume
-    /// running a sequential test against whatever hypotheses happen to be in
-    /// `UserDefaults` today — a different experiment under the same
-    /// session's name; hypotheses saved without a criterion would install a
-    /// test nobody validated, which the next SPRT arena would refuse. Such a
-    /// set, an unrecognised criterion token (a forward-versioned or
-    /// hand-edited file), or hypotheses that fail validation reach here only
-    /// after the user reviewed them at load and accepted the current
-    /// settings in their place.
-    ///
-    /// A session with none of the seven predates the criterion: the
-    /// criterion resolves to its declared pre-feature value (score
-    /// threshold, held for this run) and the SPRT hypotheses — inert under
-    /// score threshold — keep the live settings.
-    func restoreArenaPromotionCriterion(from rs: SessionCheckpointState, using resume: SessionParameterResume) {
-        let p = resume.parameters
-        if pendingLoadedSessionAcceptedReplacements.contains(SessionCheckpointState.SavedSettingID.arenaPromotionCriterion) {
-            resume.logReplacedAtLoad(
-                ArenaPromotionCriterionParameter.self,
-                savedDescription: rs.arenaPromotionCriterion.map { "\"\($0)\"" } ?? "absent",
-                currentDescription: "\(p.arenaPromotionCriterion.logToken) with today's hypotheses",
-                why: "set (criterion and SPRT hypotheses) is unusable"
-            )
-            return
-        }
-        let describeCriterion: (Int) -> String = { ArenaPromotionCriterion(persistedRawValue: $0).logToken }
-        let writeCriterion: (Int, TrainingParameterResolution.Source) -> Void = { rawValue, source in
-            let criterion = ArenaPromotionCriterion(persistedRawValue: rawValue)
-            switch source {
-            case .session:
-                p.arenaPromotionCriterion = criterion
-            case .preFeature:
-                p.holdForThisRun { p.arenaPromotionCriterion = criterion }
-            case .currentSetting, .notExact:
-                break
-            }
-        }
-
-        switch rs.savedArenaPromotionSet {
-        case .absent:
-            resume.restore(
-                ArenaPromotionCriterionParameter.self,
-                saved: nil,
-                current: p.arenaPromotionCriterion.rawValue,
-                describe: describeCriterion,
-                write: writeCriterion
-            )
-            resume.restore(ArenaSPRTElo0.self, saved: nil, into: \.arenaSPRTElo0)
-            resume.restore(ArenaSPRTElo1.self, saved: nil, into: \.arenaSPRTElo1)
-            resume.restore(ArenaSPRTAlpha.self, saved: nil, into: \.arenaSPRTAlpha)
-            resume.restore(ArenaSPRTBeta.self, saved: nil, into: \.arenaSPRTBeta)
-            resume.restore(ArenaSPRTMinGames.self, saved: nil, into: \.arenaSPRTMinGames)
-            resume.restore(ArenaSPRTMaxGames.self, saved: nil, into: \.arenaSPRTMaxGames)
-        case .valid(let criterion, let sprt):
-            resume.restore(
-                ArenaPromotionCriterionParameter.self,
-                saved: criterion.rawValue,
-                current: p.arenaPromotionCriterion.rawValue,
-                describe: describeCriterion,
-                write: writeCriterion
-            )
-            resume.restore(ArenaSPRTElo0.self, saved: sprt.elo0, into: \.arenaSPRTElo0)
-            resume.restore(ArenaSPRTElo1.self, saved: sprt.elo1, into: \.arenaSPRTElo1)
-            resume.restore(ArenaSPRTAlpha.self, saved: sprt.alpha, into: \.arenaSPRTAlpha)
-            resume.restore(ArenaSPRTBeta.self, saved: sprt.beta, into: \.arenaSPRTBeta)
-            resume.restore(ArenaSPRTMinGames.self, saved: sprt.minGames, into: \.arenaSPRTMinGames)
-            resume.restore(ArenaSPRTMaxGames.self, saved: sprt.maxGames, into: \.arenaSPRTMaxGames)
-        case .invalid(let problem):
-            preconditionFailure("session load reviews an unusable arena promotion set before resume; got: \(problem)")
-        }
-    }
-
 }

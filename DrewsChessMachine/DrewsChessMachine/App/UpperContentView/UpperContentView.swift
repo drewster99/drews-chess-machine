@@ -1812,13 +1812,12 @@ struct UpperContentView: View {
         checkpoint.trainingBoxSnapshotProvider = { trainingBox?.snapshot() }
         // Wire the build flow's view-facing hooks. SessionController owns the
         // build path now but still reaches the busy gate / refuse alert /
-        // clear-training-display / trainer-drop / last-saved-at marker through
-        // these until that state migrates too.
+        // clear-training-display / last-saved-at marker through these until
+        // that state migrates too.
         session.isBusyProvider = { isBusy }
         session.busyReasonProvider = { busyReasonMessage() }
         session.onRefuseMenuAction = { refuseMenuAction($0) }
         session.onClearTrainingDisplay = { clearTrainingDisplay() }
-        session.onDropTrainer = { trainer = nil }
         session.onResetBoardDisplay = {
             inferenceResult = nil
             gameWatcher.resetAll()

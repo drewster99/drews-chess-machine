@@ -28,9 +28,11 @@ extension SessionController {
     /// (the confirmation dialog) has already confirmed; we re-check
     /// the same preconditions here because a stray keyboard-shortcut
     /// / URL-scheme invocation could reach `promoteTrainerNow()`
-    /// without the menu disable having gated it.
+    /// without the menu disable having gated it. `sessionsDirectory` is
+    /// where the post-promotion autosave goes: the canonical `Sessions/`
+    /// folder in the app, a temporary folder in tests.
     @MainActor
-    func promoteTrainerNow() {
+    func promoteTrainerNow(sessionsDirectory: URL = CheckpointPaths.sessionsDir) {
         // Belt-and-suspenders guards.
         guard realTraining,
               let champion = network,
@@ -56,7 +58,13 @@ extension SessionController {
         // promotion (see sampling-parameters.md). `oldChampionID` is
         // recorded on the history entry so the lineage stays traceable.
         let oldChampionID = champion.identifier
-        let newChampionID = trainer.identifier ?? ModelIDMinter.mint()
+        // The promoted champion is the trainer's weights, so it takes the
+        // trainer's ID; minting one here would give the champion an
+        // identity no trainer generation ever had.
+        guard let newChampionID = trainer.identifier else {
+            onRefuseMenuAction("The trainer has no model ID, so its weights cannot be promoted.")
+            return
+        }
 
         let trainerNet = trainer.network
         // Mark a checkpoint-affecting operation in flight up front
@@ -131,9 +139,28 @@ extension SessionController {
                 return
             }
 
-            // 3) Re-stamp identities and resume both gates.
+            // 3) Re-stamp identities, record where the champion's new
+            //    weights came from — the trainer's, at its clock now, under
+            //    the pause — and resume both gates.
             champion.identifier = newChampionID
             trainer.identifier = ModelIDMinter.mintTrainerGeneration(from: newChampionID)
+            let promotedAtStep = trainer.completedTrainSteps
+            let promotionRecord: Result<LineageRecord, Error>
+            do {
+                promotionRecord = .success(try lineageRecordForSave(
+                    at: Date(), trainerCompletedSteps: promotedAtStep,
+                    dropoutPhiloxState: nil, dropoutStreamState: nil))
+            } catch {
+                promotionRecord = .failure(error)
+            }
+            recordPromotedChampionOrigin(championID: newChampionID, trainerCompletedSteps: promotedAtStep,
+                                         record: promotionRecord)
+            // Reset game-play stats so the display reflects only the new
+            // champion's self-play, mirroring arena promotion; the lineage
+            // segment banks what the box counted in the same step. Done
+            // under the pause, so the reset lines up with the champion
+            // change.
+            resetSelfPlayGameStatsForNewChampion()
             trainingGate.resume()
             selfPlayGate.resume()
 
@@ -181,10 +208,6 @@ extension SessionController {
                 ))
             }
 
-            // Reset game-play stats so the display reflects only the
-            // new champion's self-play, mirroring arena promotion.
-            parallelWorkerStatsBox?.resetGameStats()
-
             let championIDStr = newChampionID.description
             let oldChampionIDStr = oldChampionID?.description ?? "?"
             let trainerIDStr = trainer.identifier?.description ?? "?"
@@ -208,7 +231,8 @@ extension SessionController {
                     selfPlayGate: selfPlayGate,
                     trainingGate: trainingGate,
                     trigger: .manualPromote,
-                    includeReplayBuffer: TrainingParameters.shared.sessionSaveIncludeReplayBuffer
+                    includeReplayBuffer: TrainingParameters.shared.sessionSaveIncludeReplayBuffer,
+                    sessionsDirectory: sessionsDirectory
                 )
             } else {
                 checkpoint?.checkpointSaveInFlight = false

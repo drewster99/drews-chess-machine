@@ -48,6 +48,24 @@ final class LineageTracker: @unchecked Sendable {
             }
         }
 
+        /// A trainer this process holds but never tracked (a model was
+        /// loaded since its history began) as the parent of a run that
+        /// keeps training it: no file states it, so it has no content hash,
+        /// an unrecorded lineage and no derivation history. Its model ID is
+        /// written into every later record, so a trainer without one is
+        /// refused rather than recorded under a placeholder.
+        static func untrackedTrainer(identifier: ModelID?, completedSteps: Int) throws -> ParentFile {
+            guard let identifier else {
+                throw TrackerError.noModelID(what: "the kept trainer")
+            }
+            return ParentFile(
+                modelID: identifier.description,
+                contentSHA256: nil,
+                trainerCompletedSteps: completedSteps,
+                lineage: .unrecorded(formatVersion: ArchitectureFormat.currentVersion),
+                derivationHistory: [])
+        }
+
         /// The parent as recorded in a child's record.
         var recordParent: LineageRecord.Parent {
             LineageRecord.Parent(
@@ -87,6 +105,7 @@ final class LineageTracker: @unchecked Sendable {
     enum TrackerError: Error, CustomStringConvertible {
         case legacyTotalsWithRecordedLineage(parentModelID: String)
         case negativeSegmentCount(what: String, value: Int)
+        case noModelID(what: String)
 
         var description: String {
             switch self {
@@ -94,6 +113,8 @@ final class LineageTracker: @unchecked Sendable {
                 return "lineage: parent \(id) carries a lineage record, so legacy session totals must not be supplied"
             case .negativeSegmentCount(let what, let value):
                 return "lineage: segment \(what) is negative (\(value))"
+            case .noModelID(let what):
+                return "lineage: \(what) has no model ID"
             }
         }
     }
@@ -328,7 +349,7 @@ final class LineageTracker: @unchecked Sendable {
     /// `--derive-model`'s output, or a GUI save of a loaded model before any
     /// training: a new run whose weights carry the source's history, so the
     /// totals continue from the source's record (or stay unrecorded when the
-    /// source predates lineage). `derivation` is the derive step that made
+    /// source predates lineage, step total included). `derivation` is the derive step that made
     /// the copy, appended to the source's derivation history; nil for a copy
     /// no derivation made.
     static func untrainedCopyRecord(source: ParentFile, derivation: ModelDerivation.DerivationRecord?,
@@ -338,15 +359,15 @@ final class LineageTracker: @unchecked Sendable {
         if let derivation {
             derivationHistory.append(derivation)
         }
-        // The source's own record is the total when it has one; a source
-        // written before lineage still states its trainer clock (or the
-        // step its weights were taken at), which is that total too.
-        let sourceStepTotal: Int?
-        if let sourceRecord {
-            sourceStepTotal = sourceRecord.steps.cumTrainerStep
-        } else {
-            sourceStepTotal = source.trainerCompletedSteps
-        }
+        // Only the source's own record states the line's step total. A
+        // source written before lineage states a trainer clock (or the step
+        // its weights were taken at), but a resumed segment of that era
+        // restarted its clock, so that number can be segment-local: it is
+        // kept as the parent's stated step (`parent.trainer_completed_steps`)
+        // and the total stays unrecorded. (A legacy trainer-state resume
+        // differs on purpose: it continues that very clock, so the clock is
+        // its total.)
+        let sourceStepTotal = sourceRecord?.steps.cumTrainerStep
         return LineageRecord(
             schema: LineageRecord.currentSchema,
             run: LineageRecord.Run(

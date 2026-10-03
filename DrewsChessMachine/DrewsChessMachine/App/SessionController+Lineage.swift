@@ -54,6 +54,21 @@ extension SessionController {
         }
     }
 
+    /// The `training_step` a champion model file states: the trainer step
+    /// the champion's weights were taken at, from where they came — the
+    /// step their source file (or promotion) stated, nil when it stated
+    /// none, and 0 for weights built in this process. Never the trainer's
+    /// step: the champion holds weights from an earlier point than the
+    /// trainer whenever they differ, and a model file that claims the
+    /// trainer's step would be read as trained when its weights are fresh.
+    static func championFileTrainingStep(origin: ChampionOrigin?) throws -> Int? {
+        switch origin {
+        case .built: return 0
+        case .file(let source): return source.trainerCompletedSteps
+        case nil: throw LineageSegmentError.noChampionOrigin
+        }
+    }
+
     /// A run from the champion's weights: fresh when the champion was built
     /// in this process, a branch from the file it was loaded from otherwise.
     private func championLineageStart() throws -> LineageTracker.Start {
@@ -64,10 +79,102 @@ extension SessionController {
         }
     }
 
+    /// The lineage part of a Play-and-Train start, run on the main actor
+    /// once the trainer holds its starting state: stamp the trainer's ID for
+    /// `mode`, record the run's behavior fingerprint, begin (or continue) the
+    /// lineage segment, and — only when all of that succeeded — consume the
+    /// pending loaded session, which the running session now owns.
+    ///
+    /// Trainer ID by mode, matching how the start set the trainer's weights:
+    /// - `.freshOrFromLoadedSession`: the loaded session's trainer file's ID
+    ///   when resuming one, else a new generation off the champion;
+    /// - `.newSessionResetTrainerFromChampion`: a new generation off the
+    ///   champion (the trainer was just forked from it);
+    /// - `.continueAfterStop`, `.newSessionKeepTrainer`: kept — its weights
+    ///   were not touched, so the lineage is continuous.
+    ///
+    /// A failure leaves things as the next start can use them. A loaded
+    /// session stays pending, so the next start redoes the whole resume from
+    /// it (consuming it here would have left the restored trainer to a
+    /// "Continue" that re-records the run as unrecorded history). A kept
+    /// trainer's segment is put back as it was, since a failed `[RUN]`
+    /// record must not replace or reset it. A trainer this start already
+    /// reset leaves no segment behind: the old one no longer describes it.
+    func beginRunLineage(mode: TrainingStartMode, trainer: ChessTrainer, championIdentifier: ModelID?,
+                         continuedRunStreams: LineageRecord.RunStreams?, replayBufferRestored: Bool,
+                         fingerprintResult: Result<BehaviorFingerprint.Record, Error>) -> Result<LineageTracker, Error> {
+        let previousTracker = lineageTracker
+        let previousCarry = lineageFedCarry
+        let previousExactness = checkpoint?.runResumeExactness
+        do {
+            switch mode {
+            case .continueAfterStop, .newSessionKeepTrainer:
+                break
+            case .newSessionResetTrainerFromChampion:
+                trainer.identifier = ModelIDMinter.mintTrainerGeneration(from: try Self.requiredChampionID(championIdentifier))
+            case .freshOrFromLoadedSession:
+                if let resumed = pendingLoadedSession {
+                    // A GUI resume never refuses (determinism plan D-1);
+                    // what it could not restore — the policy-tail precision
+                    // included — is named on the one `[RESUME]` line
+                    // `beginLineageSegment` logs.
+                    trainer.identifier = ModelID(value: resumed.trainerFile.modelID)
+                } else {
+                    trainer.identifier = ModelIDMinter.mintTrainerGeneration(from: try Self.requiredChampionID(championIdentifier))
+                }
+            }
+            let fingerprint = try fingerprintResult.get()
+            SessionLogger.shared.log("[RUN] behavior fingerprint recipe=\(fingerprint.recipe) sha256=\(fingerprint.sha256)")
+            runBehaviorFingerprint = fingerprint
+            try beginLineageSegment(mode: mode, trainer: trainer, resumed: pendingLoadedSession,
+                                    continuedRunStreams: continuedRunStreams,
+                                    replayBufferRestored: replayBufferRestored,
+                                    behaviorFingerprint: fingerprint)
+            guard let tracker = lineageTracker else {
+                throw LineageSegmentError.noSegment("Play and Train")
+            }
+            // Consume the pending load — from here on, the running session
+            // owns the restored state.
+            pendingLoadedSession = nil
+            pendingLoadedSessionAcceptedReplacements = []
+            // A training segment has started, so clear the "champion
+            // replaced since last training" flag (the Start dialog's
+            // annotation is resolved).
+            championLoadedSinceLastTrainingSegment = false
+            return .success(tracker)
+        } catch {
+            switch mode {
+            case .continueAfterStop, .newSessionKeepTrainer:
+                lineageTracker = previousTracker
+                lineageFedCarry = previousCarry
+                checkpoint?.runResumeExactness = previousExactness
+            case .freshOrFromLoadedSession, .newSessionResetTrainerFromChampion:
+                lineageTracker = nil
+                lineageFedCarry = LineageFedCarry()
+                checkpoint?.runResumeExactness = nil
+            }
+            return .failure(error)
+        }
+    }
+
+    /// The champion's ID, which a trainer generation is minted from; a
+    /// champion without one is an error, never a freshly minted stand-in.
+    private static func requiredChampionID(_ identifier: ModelID?) throws -> ModelID {
+        guard let identifier else {
+            throw LineageTracker.TrackerError.noModelID(what: "the champion")
+        }
+        return identifier
+    }
+
     /// Begin (or continue) the lineage segment for a Play-and-Train start.
     /// Call once the trainer holds its starting state and the run's stats
-    /// box exists; `resumed` is the loaded session being resumed, if any.
+    /// box exists; `resumed` is the loaded session being resumed, if any,
+    /// with what the resume restored: `continuedRunStreams` (the saved run's
+    /// streams it continues, nil when it drew a new seed) and
+    /// `replayBufferRestored` (`guiResumeGaps`). Both are ignored when
+    /// `resumed` is nil.
     func beginLineageSegment(mode: TrainingStartMode, trainer: ChessTrainer, resumed: LoadedSession?,
+                             continuedRunStreams: LineageRecord.RunStreams?, replayBufferRestored: Bool,
                              behaviorFingerprint: BehaviorFingerprint.Record) throws {
         let counts = parallelWorkerStatsBox?.snapshot()
         let start: LineageTracker.Start?
@@ -81,16 +188,12 @@ extension SessionController {
                 // (a model was loaded since): its weights continue, with the
                 // history before them unrecorded.
                 SessionLogger.shared.log("[LINEAGE] continuing a trainer with no tracked lineage: a new run begins, earlier history unrecorded")
+                // No file states this trainer's history: none is carried,
+                // and `continues_unrecorded_history` says the run's earlier
+                // history is unrecorded.
                 start = .resume(
-                    parent: LineageTracker.ParentFile(
-                        modelID: trainer.identifier?.description ?? "unknown",
-                        contentSHA256: nil,
-                        trainerCompletedSteps: trainer.completedTrainSteps,
-                        lineage: .unrecorded(formatVersion: ArchitectureFormat.currentVersion),
-                        // No file states this trainer's history: none is
-                        // carried, and `continues_unrecorded_history` says
-                        // the run's earlier history is unrecorded.
-                        derivationHistory: []),
+                    parent: try LineageTracker.ParentFile.untrackedTrainer(
+                        identifier: trainer.identifier, completedSteps: trainer.completedTrainSteps),
                     gaps: [.rngSampler, .serials, .buffer, .clocks],
                     legacyTotals: nil)
             }
@@ -99,7 +202,9 @@ extension SessionController {
         case .freshOrFromLoadedSession:
             if let resumed {
                 let gaps = Self.guiResumeGaps(
-                    resumed: resumed, runningPolicyTailPrecision: trainer.policyTailPrecision,
+                    resumed: resumed, continuedRunStreams: continuedRunStreams,
+                    replayBufferRestored: replayBufferRestored,
+                    runningPolicyTailPrecision: trainer.policyTailPrecision,
                     runningBuild: .current, runningDevice: .current, runningFingerprint: behaviorFingerprint)
                 let exactness = ResumeExactness.resume(of: resumed.trainerFile.lineageParent, gaps: gaps)
                 SessionLogger.shared.log(exactness.logLine)
@@ -153,7 +258,18 @@ extension SessionController {
     /// resumed reset it. The arena clock is restored when the session
     /// recorded it. A session whose trainer file predates lineage also lacks
     /// `lineage`, which `ResumeExactness.resume(of:gaps:)` adds.
+    ///
+    /// The run's streams and the replay buffer are judged by what the
+    /// resume actually restored, which the caller knows and passes in — not
+    /// by what the session file contains: `continuedRunStreams` is the
+    /// streams the run continues (nil when it drew a new seed, because the
+    /// file has none, `--seed` named another seed, or they were named under
+    /// another derivation), and `replayBufferRestored` whether the buffer
+    /// file was restored into the run's buffer (false when the session has
+    /// none or its restore failed).
     static func guiResumeGaps(resumed: LoadedSession,
+                              continuedRunStreams: LineageRecord.RunStreams?,
+                              replayBufferRestored: Bool,
                               runningPolicyTailPrecision: ChessNetwork.PolicyTailPrecision,
                               runningBuild: LineageRecord.Build,
                               runningDevice: LineageRecord.Device,
@@ -166,10 +282,10 @@ extension SessionController {
         gaps += ResumeGap.dropoutGaps(restoring: DropoutRNGResumeState(lineage: lineage))
         gaps += PolicyTailPrecisionResume.gaps(
             saved: resumed.trainerFile.metadata.trainerPolicyTailPrecision, running: runningPolicyTailPrecision)
-        if resumed.replayBufferURL == nil {
+        if !replayBufferRestored {
             gaps.append(.buffer)
         }
-        if resumableRunStreams(of: resumed) == nil {
+        if continuedRunStreams == nil {
             gaps += [.rngSampler, .serials]
         }
         if let record = lineage?.record {
@@ -195,7 +311,8 @@ extension SessionController {
     /// The saved run's seed for a GUI resume, or nil — logged — when it
     /// cannot be continued (a `--seed` naming another seed, or streams named
     /// under another derivation); the resume then runs on a newly resolved
-    /// seed and reports `rng_sampler` / `serials` NOT EXACT.
+    /// seed, passes no continued streams to `beginLineageSegment`, and
+    /// reports `rng_sampler` / `serials` NOT EXACT.
     static func inheritedRunSeed(streams: LineageRecord.RunStreams, commandLineSeed: UInt64?) -> RunRandomSeed? {
         do {
             return try RunRandomSeed.inherited(
@@ -218,12 +335,21 @@ extension SessionController {
         lineageFedCarry.baselinePositions = nil
     }
 
-    /// Start counting on the live stats box from its current counts (after
-    /// `foldLineageFedCounts()` banked what it counted before a reset).
-    func rebaselineLineageFedCounts() {
-        let counts = parallelWorkerStatsBox?.snapshot()
-        lineageFedCarry.baselineGames = counts?.emittedGames
-        lineageFedCarry.baselinePositions = counts?.emittedPositions
+    /// Reset the self-play game stats for a new champion (both promotion
+    /// paths), banking what the lineage segment counted on the box in the
+    /// same lock acquisition as the reset, so no game recorded around the
+    /// reset is lost from the segment's fed totals, and counting on from
+    /// zero. A nil baseline means no segment is counting on this box, so the
+    /// carry is left as it is — not a fallback: there is nothing to bank.
+    func resetSelfPlayGameStatsForNewChampion() {
+        guard let box = parallelWorkerStatsBox else { return }
+        let discarded = box.resetGameStatsReturningEmittedCounts()
+        guard let baselineGames = lineageFedCarry.baselineGames,
+              let baselinePositions = lineageFedCarry.baselinePositions else { return }
+        lineageFedCarry.games += discarded.games - baselineGames
+        lineageFedCarry.positions += discarded.positions - baselinePositions
+        lineageFedCarry.baselineGames = 0
+        lineageFedCarry.baselinePositions = 0
     }
 
     /// The record for a save of the running segment's state, with the
@@ -289,26 +415,68 @@ extension SessionController {
             opponentGameIndices: nil)
     }
 
-    /// The record for a model-only save of the champion (Save Champion):
-    /// the running segment's state when one exists; otherwise the
-    /// champion's own origin — a fresh mint, or an untrained copy of the
-    /// file it was loaded from.
-    func lineageRecordForChampionSave(at date: Date) throws -> LineageRecord {
-        if lineageTracker != nil, let trainer {
-            // A champion-only save carries no trainer state, so no dropout
-            // state either.
-            return try lineageRecordForSave(at: date, trainerCompletedSteps: trainer.completedTrainSteps,
-                                            dropoutPhiloxState: nil, dropoutStreamState: nil)
-        }
-        switch championOrigin {
-        case .file(let source):
-            return LineageTracker.untrainedCopyRecord(source: source, derivation: nil, pathKind: .gui,
-                                                      argv: CommandLine.arguments, at: date)
+    /// The lineage record of a champion model file — Save Champion, and the
+    /// champion file of every session save — from where the champion's
+    /// weights came, never from the trainer's run at the save: the champion
+    /// holds weights from an earlier point (its build, its load, the last
+    /// promotion) whenever training has moved on, so the run's record would
+    /// claim steps, games and time those weights never saw.
+    ///
+    /// - built here: a fresh mint record of its initialization;
+    /// - from a file or a promotion whose record exists: that record as it
+    ///   is (the weights are exactly the ones it describes, so a save does
+    ///   not start a new run), without trainer state, which a model file
+    ///   does not carry;
+    /// - from a file written before lineage: an untrained copy of it, whose
+    ///   totals stay unrecorded;
+    /// - no recorded origin: an error, never a guess.
+    static func championFileLineageRecord(origin: ChampionOrigin?, at date: Date) throws -> LineageRecord {
+        switch origin {
         case .built(let initialization):
             return try LineageTracker.mintRecord(pathKind: .gui, argv: CommandLine.arguments,
                                                  initialization: initialization, at: date)
+        case .file(let source):
+            switch source.lineage {
+            case .recorded(let record):
+                return record.withoutTrainerState()
+            case .unrecorded:
+                return LineageTracker.untrainedCopyRecord(source: source, derivation: nil, pathKind: .gui,
+                                                          argv: CommandLine.arguments, at: date)
+            }
         case nil:
             throw LineageSegmentError.noChampionOrigin
+        }
+    }
+
+    /// Record where a promoted champion's weights came from — the trainer's
+    /// weights at `trainerCompletedSteps`, described by the run's `record`
+    /// at that point — as the champion's origin, used by every later
+    /// champion file and by a run that branches from the champion. Shared
+    /// by arena promotion and Promote Trainee Now.
+    ///
+    /// The record is kept without trainer state (a champion file carries
+    /// none, and a branch draws fresh random state). When the record could
+    /// not be built, or the champion has no model ID, the origin is cleared
+    /// and logged: a later save or branch then fails loudly instead of
+    /// describing the promoted weights by the previous champion's origin or
+    /// as unrecorded history.
+    func recordPromotedChampionOrigin(championID: ModelID?, trainerCompletedSteps: Int,
+                                      record: Result<LineageRecord, Error>) {
+        guard let championID else {
+            SessionLogger.shared.log("[LINEAGE] promoted champion has no model ID: its origin is cleared, so a later save or branch from it fails")
+            championOrigin = nil
+            return
+        }
+        switch record {
+        case .success(let record):
+            let champion = record.withoutTrainerState()
+            championOrigin = .file(LineageTracker.ParentFile(
+                modelID: championID.description, contentSHA256: nil,
+                trainerCompletedSteps: trainerCompletedSteps, lineage: .recorded(champion),
+                derivationHistory: champion.derivationHistory))
+        case .failure(let error):
+            SessionLogger.shared.log("[LINEAGE] promoted champion's lineage could not be recorded (\(error.localizedDescription)): its origin is cleared, so a later save or branch from it fails")
+            championOrigin = nil
         }
     }
 }

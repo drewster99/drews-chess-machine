@@ -22,19 +22,22 @@ import Foundation
 
 /// One piece of training state a resume did not restore.
 enum ResumeGap: String, CaseIterable, Sendable {
-    /// The run's streams (master seed, sampler, per-game serials) are not in
-    /// the checkpoint, so the resumed run draws from a different seed.
+    /// The run's streams (master seed, sampler, per-game serials) are not
+    /// continued — not in the checkpoint, or (GUI) in it but not usable
+    /// (`--seed` names another seed, or another stream derivation) — so the
+    /// resumed run draws from a different seed.
     case rngSampler = "rng_sampler"
     /// The training graph's dropout Philox state is not the saved one.
     case dropoutState = "dropout_state"
     /// Corpus replay: the feed phase restarts instead of continuing.
     case feedCarry = "feed_carry"
     /// GUI / train-vs-UCI: the replay buffer was not saved with the
-    /// checkpoint, so training refills from new games.
+    /// checkpoint, or (GUI) its restore failed, so training refills from
+    /// new games.
     case buffer
     /// GUI / train-vs-UCI: the per-game stream serials (and, in the GUI, the
-    /// arena count) were not recorded, so later games reuse streams the
-    /// saved run already drew from.
+    /// arena count) were not recorded or not continued, so later games
+    /// reuse streams the saved run already drew from.
     case serials
     /// GUI: the arena-trigger and periodic-save clocks restart.
     case clocks

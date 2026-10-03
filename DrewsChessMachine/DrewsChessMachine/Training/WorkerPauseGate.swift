@@ -104,3 +104,34 @@ final class WorkerPauseGate: @unchecked Sendable {
         lock.withLock { $0.requested = false }
     }
 }
+
+/// One coordinator's pause of a `WorkerPauseGate`, released at most once.
+///
+/// The gate is not counted: one `resume()` releases the worker whoever
+/// asked for the pause. A coordinator whose release can be reached from
+/// more than one place — a session save that lets self-play go as soon as
+/// the replay buffer is written, and again on every way the save can end —
+/// must not resume twice, because the second call could release a pause
+/// another coordinator requested in between. `release()` resumes the gate
+/// on its first call only. Lock: the `held` flag, held for one read-and-set.
+final class WorkerPauseGateHold: @unchecked Sendable {
+    private let gate: WorkerPauseGate
+    private let held = OSAllocatedUnfairLock(initialState: true)
+
+    /// A hold on `gate`, which the caller has already paused.
+    init(_ gate: WorkerPauseGate) {
+        self.gate = gate
+    }
+
+    /// Resume the gate, the first time only.
+    func release() {
+        let wasHeld = held.withLock { isHeld -> Bool in
+            let wasHeld = isHeld
+            isHeld = false
+            return wasHeld
+        }
+        if wasHeld {
+            gate.resume()
+        }
+    }
+}

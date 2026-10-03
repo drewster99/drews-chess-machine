@@ -2807,6 +2807,9 @@ final class ReplayBuffer: @unchecked Sendable {
         case sizeMismatch(expected: Int64, got: Int64)
         case hashMismatch
         case upperBoundExceeded(field: String, value: Int64, max: Int64)
+        /// The file's lifetime position count is not the one its session
+        /// recorded: the file belongs to another save.
+        case totalPositionsAddedMismatch(expected: Int, file: Int64)
         case writeFailed(Error)
         case readFailed(Error)
         /// Something other than a regular file is at the write destination.
@@ -2834,6 +2837,8 @@ final class ReplayBuffer: @unchecked Sendable {
                 return "Replay buffer integrity check failed: SHA-256 trailer does not match file contents"
             case .upperBoundExceeded(let field, let value, let max):
                 return "Replay buffer header field '\(field)' value \(value) exceeds sanity cap \(max) — file is malformed or corrupted"
+            case .totalPositionsAddedMismatch(let expected, let file):
+                return "Replay buffer file does not belong to this session: session.json says totalPositionsAdded \(expected), the file says \(file); nothing was restored"
             case .writeFailed(let err): return "Replay buffer write failed: \(err)"
             case .readFailed(let err): return "Replay buffer read failed: \(err)"
             case .destinationNotAFile(let path, let kind):
@@ -3281,6 +3286,19 @@ final class ReplayBuffer: @unchecked Sendable {
     /// re-seeking to the header end, and reading the nine column
     /// sections into the ring storage).
     func restore(from url: URL) throws {
+        try restore(from: url, expectedTotalPositionsAdded: nil)
+    }
+
+    /// `restore(from:)` that also requires the file's lifetime position
+    /// count (`totalPositionsAdded`) to be `expectedTotalPositionsAdded`,
+    /// checked from the header with the other checks, before any state is
+    /// mutated (`totalPositionsAddedMismatch`). A session resume passes its
+    /// session.json's count: the count is an effectively unique fingerprint
+    /// of the buffer a session wrote, so a mismatch means the file belongs
+    /// to another save, and the buffer must stay as it was rather than hold
+    /// another session's positions. nil skips the check (a session.json
+    /// written before it recorded the count).
+    func restore(from url: URL, expectedTotalPositionsAdded: Int?) throws {
         let handle: FileHandle
         do {
             handle = try FileHandle(forReadingFrom: url)
@@ -3330,6 +3348,9 @@ final class ReplayBuffer: @unchecked Sendable {
         }
         let ttlFile: Int64 = headerData.withUnsafeBytes {
             $0.loadUnaligned(fromByteOffset: 48, as: Int64.self)
+        }
+        if let expectedTotalPositionsAdded, ttlFile != Int64(expectedTotalPositionsAdded) {
+            throw PersistenceError.totalPositionsAddedMismatch(expected: expectedTotalPositionsAdded, file: ttlFile)
         }
 
         guard Int(fpbFile) == self.floatsPerBoard else {

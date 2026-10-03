@@ -79,7 +79,9 @@ final class GuiResumeGapsTests: XCTestCase {
     private func gaps(_ resumed: LoadedSession,
                       running: ChessNetwork.PolicyTailPrecision? = nil) -> [String] {
         let gaps = SessionController.guiResumeGaps(
-            resumed: resumed, runningPolicyTailPrecision: running ?? savedPrecision,
+            resumed: resumed, continuedRunStreams: SessionController.resumableRunStreams(of: resumed),
+            replayBufferRestored: resumed.replayBufferURL != nil,
+            runningPolicyTailPrecision: running ?? savedPrecision,
             runningBuild: .current, runningDevice: .current, runningFingerprint: Self.fingerprint)
         return ResumeExactness.resume(of: resumed.trainerFile.lineageParent, gaps: gaps).tokens
     }

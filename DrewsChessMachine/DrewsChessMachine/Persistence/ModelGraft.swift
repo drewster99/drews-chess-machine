@@ -24,13 +24,17 @@
 //  variables only — no forward pass, no training.
 //
 //  Trained sources. The in-place derive operations refuse a trained source
-//  because their output keeps the source's `training_step` while some of its
-//  weights were reset. A graft's output keeps NO `training_step` and lists
-//  every tensor it initialized, so it claims nothing its weights do not
-//  have; a trained source is therefore allowed — it is the point. The
+//  because their output keeps the source's `training_step` and lineage while
+//  some of its weights were reset. A graft's output keeps NO `training_step`
+//  and lists every tensor it initialized, so it claims nothing its weights do
+//  not have; a trained source is therefore allowed — it is the point. The
 //  source's step is recorded in the derivation record
 //  (`source_training_step`), and the lineage continues the source's totals
-//  (the copied weights carry that history) as a new derived run.
+//  (the copied weights carry that history) as a new derived run. That record
+//  and lineage are also what keep a graft of a trained source trained in a
+//  later derive's eyes: the in-place operations refuse a source whose
+//  lineage or derivation history shows training, not only one whose
+//  `training_step` does (`ModelDerivation.requireUntrainedSource`).
 //
 //  Guardrails: the source must be a plain model file that the full loader
 //  accepts; the target must validate; a `--graft-map` entry must name a real
@@ -164,6 +168,10 @@ extension ModelDerivation {
 
     /// The derivation-record operation name of a graft.
     static let graftOperationName = "graft"
+    /// The graft record's argument stating the source file's
+    /// `training_step` — the output carries none of its own, so this is
+    /// where a later derive learns the grafted weights were trained.
+    static let graftSourceTrainingStepArgument = "source_training_step"
     /// `per_tensor_init` value of an initialized tensor the builder sets to
     /// a fixed value (biases, BN, ReZero α, priors) rather than drawing.
     static let builderConstantInit = "builder_constant"
@@ -340,7 +348,7 @@ extension ModelDerivation {
         ]
         if !map.entries.isEmpty { arguments["graft_map"] = map.recordedText }
         if let step = sourceMetadata[SafetensorsModelIO.Key.trainingStep] {
-            arguments["source_training_step"] = step
+            arguments[graftSourceTrainingStepArgument] = step
         }
         var operation = OperationRecord(
             operation: graftOperationName, arguments: arguments,

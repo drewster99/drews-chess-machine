@@ -1192,7 +1192,10 @@ enum CheckpointManager {
     /// Verify a freshly-restored replay buffer's lifetime counter
     /// matches what `session.json` said it should be. Used at session
     /// load time as a defense-in-depth cross-check after the buffer's
-    /// own SHA and size guards have already succeeded.
+    /// own SHA and size guards have already succeeded. It runs after the
+    /// restore has filled the buffer; the GUI resume instead checks the
+    /// same count before the restore mutates anything
+    /// (`ReplayBuffer.restore(from:expectedTotalPositionsAdded:)`).
     ///
     /// Only `totalPositionsAdded` is checked, not `storedCount` or
     /// `capacity` — those two intentionally diverge when loading a
@@ -1352,6 +1355,22 @@ enum CheckpointManager {
     /// directory — it is provably this call's own — and a successful
     /// rename hands it over.
     ///
+    /// `lineage` is the run's record at this save, written into the
+    /// trainer file and session.json. `championLineage` is the record of
+    /// the weights the champion file holds, which are not the trainer's
+    /// whenever training has moved on since the champion was built, loaded
+    /// or promoted (`SessionController.championFileLineageRecord`); it
+    /// carries no trainer state. A writer whose champion is the trainer's
+    /// weights at the save passes the run's record without its trainer
+    /// state.
+    ///
+    /// `onReplayBufferWritten` runs as soon as the replay buffer file is
+    /// written (and before the save's verification re-reads it), for a
+    /// caller that holds self-play paused so the written buffer is the one
+    /// its record describes and can let self-play go as early as possible;
+    /// it does not run when the save writes no buffer or fails before the
+    /// write completes.
+    ///
     /// `sessionsDirectory` is the canonical `Sessions/` folder in the
     /// app; tests pass a temporary folder.
     static func saveSession(
@@ -1365,15 +1384,17 @@ enum CheckpointManager {
         trainerCreatedAtUnix: Int64,
         state stateWithoutLineage: SessionCheckpointState,
         lineage: LineageRecord,
+        championLineage: LineageRecord,
         architecture: NetworkArchitecture = .current,
         replayBuffer: ReplayBuffer? = nil,
         chartSnapshot: ChartCoordinatorSnapshot? = nil,
         trigger: String,
         at date: Date = Date(),
-        sessionsDirectory: URL = CheckpointPaths.sessionsDir
+        sessionsDirectory: URL = CheckpointPaths.sessionsDir,
+        onReplayBufferWritten: (@Sendable () -> Void)? = nil
     ) async throws -> URL {
-        // The session's champion file, trainer file and session.json all
-        // carry the one lineage record of this save.
+        // The trainer file and session.json carry the run's record; the
+        // champion file carries its own weights' record.
         let state = stateWithoutLineage.withLineage(lineage)
         try CheckpointPaths.ensureDirectory(sessionsDirectory)
 
@@ -1434,7 +1455,7 @@ enum CheckpointManager {
             weights: championWeights,
             architecture: architecture,
             includesVelocity: false,
-            lineage: lineage
+            lineage: championLineage
         )
 
         // Trainer file = base weights (trainables + BN running stats) followed by
@@ -1510,6 +1531,7 @@ enum CheckpointManager {
             } catch {
                 throw CheckpointManagerError.writeFailed(bufferTmpURL, error)
             }
+            onReplayBufferWritten?()
         }
 
         // Optional chart-data dump. Two plain-JSON files

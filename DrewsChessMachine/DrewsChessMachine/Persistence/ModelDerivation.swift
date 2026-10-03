@@ -25,11 +25,15 @@
 //      * the source must be a plain model file (no optimizer velocity, no
 //        trainer schedule — exact-resume state is meaningless once weights
 //        are re-initialized);
-//      * an operation that rewrites tensors needs an untrained source: a
-//        recorded `training_step` above zero is refused, because the
-//        rewrite would reset learned weights while the derived file still
-//        claims the source's training step and lineage (a malformed
-//        recorded step is refused too, never read as "absent").
+//      * an operation that rewrites tensors needs an untrained source,
+//        because the rewrite would reset learned weights while the derived
+//        file still claims the source's training step and lineage. Any
+//        positive evidence of training refuses: a recorded `training_step`
+//        above zero, a lineage step total above zero, a lineage parent that
+//        stated a positive trainer step, or an earlier graft's positive
+//        `source_training_step` (a malformed recorded step is refused too,
+//        never read as "absent"). A file written before lineage that was
+//        trained but states none of these cannot be told from a fresh one.
 //        Operations that rewrite no tensor stay allowed on a trained source;
 //      * the target architecture must validate and must have exactly the
 //        source's tensor plan (names AND shapes) — a shape-changing request
@@ -164,7 +168,8 @@ enum ModelDerivation {
         case unreadableDerivationHistory(detail: String)
         case outputFailedVerification(detail: String)
         case sourceIsTrained(source: String, trainingStep: Int)
-        case malformedSourceTrainingStep(source: String, value: String)
+        case sourceIsTrainedByLineage(source: String, evidence: String)
+        case malformedSourceTrainingStep(source: String, key: String, value: String)
 
         var description: String {
             switch self {
@@ -197,8 +202,12 @@ enum ModelDerivation {
                 return "\(source) records training_step \(trainingStep); a derive operation that rewrites tensors "
                     + "would reset learned weights while the derived file kept that training step and lineage — "
                     + "derive tensor-rewriting variants from a fresh (untrained) net"
-            case .malformedSourceTrainingStep(let source, let value):
-                return "\(source) records training_step '\(value)', which is not a non-negative integer; "
+            case .sourceIsTrainedByLineage(let source, let evidence):
+                return "\(source) holds trained weights (\(evidence)) although it records no positive training_step; "
+                    + "a derive operation that rewrites tensors would reset learned weights while the derived file "
+                    + "kept that lineage — derive tensor-rewriting variants from a fresh (untrained) net"
+            case .malformedSourceTrainingStep(let source, let key, let value):
+                return "\(source) records \(key) '\(value)', which is not a non-negative integer; "
                     + "refusing to rewrite tensors without knowing whether the source is trained"
             }
         }
@@ -364,9 +373,6 @@ enum ModelDerivation {
                 rewrittenTensors: rewrites.map(\.tensorName)))
             stepSource = stepTarget
         }
-        if !appliedRewrites.isEmpty {
-            try requireUntrainedSource(sourceMetadata, sourceName: sourceName)
-        }
 
         // Lineage. The source as a parent carries its derivation history
         // (its lineage record's, or the flat key a file before lineage
@@ -379,6 +385,10 @@ enum ModelDerivation {
             trainerCompletedSteps: try SafetensorsModelIO.trainerClock(fromMetadata: sourceMetadata, source: sourceName),
             lineage: sourceLineage,
             derivationHistory: try LineageTracker.ParentFile.derivationHistory(lineage: sourceLineage, metadata: sourceMetadata))
+        if !appliedRewrites.isEmpty {
+            try requireUntrainedSource(sourceMetadata, lineage: sourceLineage,
+                                       derivationHistory: sourceParent.derivationHistory, sourceName: sourceName)
+        }
         let record = DerivationRecord(
             modelID: newModelID,
             parentModelID: parentModelID,
@@ -473,17 +483,59 @@ enum ModelDerivation {
         return parentModelID
     }
 
-    /// Refuse a tensor rewrite on a trained source: one whose raw
-    /// `training_step` metadata is a positive integer. Read raw rather than
-    /// through the model loader so a malformed value is an error here, never
-    /// mistaken for "no step recorded". An absent value or 0 is a fresh net.
-    static func requireUntrainedSource(_ sourceMetadata: [String: String], sourceName: String) throws {
-        guard let recorded = sourceMetadata[SafetensorsModelIO.Key.trainingStep] else { return }
-        guard let trainingStep = Int(recorded), trainingStep >= 0 else {
-            throw DeriveError.malformedSourceTrainingStep(source: sourceName, value: recorded)
+    /// Refuse a tensor rewrite on a trained source. Any one piece of
+    /// positive evidence of training refuses:
+    /// - the raw `training_step` metadata is a positive integer (read raw so
+    ///   a malformed value is an error, never mistaken for "no step");
+    /// - the lineage record's step total (`cum_trainer_step`) is positive;
+    /// - the record's parent stated a positive trainer step — the weights
+    ///   descend from a trained file even when this file's own total is
+    ///   unrecorded (a graft or champion copy of a file written before
+    ///   lineage);
+    /// - an earlier graft in the derivation history records a positive
+    ///   `source_training_step` — a graft writes no `training_step`, and an
+    ///   architecture-only derive after it keeps none either.
+    ///
+    /// A graft and a champion copy carry no `training_step` of their own,
+    /// which is why the raw key alone is not enough. One gap remains: a file
+    /// written before lineage that was trained but states no
+    /// `training_step` and no derivation history carries no evidence at all,
+    /// and is read as untrained.
+    static func requireUntrainedSource(_ sourceMetadata: [String: String], lineage: LineageRecord.Presence,
+                                       derivationHistory: [DerivationRecord], sourceName: String) throws {
+        if let recorded = sourceMetadata[SafetensorsModelIO.Key.trainingStep] {
+            guard let trainingStep = Int(recorded), trainingStep >= 0 else {
+                throw DeriveError.malformedSourceTrainingStep(
+                    source: sourceName, key: SafetensorsModelIO.Key.trainingStep, value: recorded)
+            }
+            if trainingStep > 0 {
+                throw DeriveError.sourceIsTrained(source: sourceName, trainingStep: trainingStep)
+            }
         }
-        if trainingStep > 0 {
-            throw DeriveError.sourceIsTrained(source: sourceName, trainingStep: trainingStep)
+        if let record = lineage.record {
+            if let total = record.steps.cumTrainerStep, total > 0 {
+                throw DeriveError.sourceIsTrainedByLineage(
+                    source: sourceName, evidence: "its lineage records cum_trainer_step \(total)")
+            }
+            if let parent = record.parent, let parentStep = parent.trainerCompletedSteps, parentStep > 0 {
+                throw DeriveError.sourceIsTrainedByLineage(
+                    source: sourceName,
+                    evidence: "its lineage parent \(parent.modelID) stated trainer step \(parentStep)")
+            }
+        }
+        for derivation in derivationHistory {
+            for operation in derivation.operations {
+                guard let recorded = operation.arguments[graftSourceTrainingStepArgument] else { continue }
+                guard let step = Int(recorded), step >= 0 else {
+                    throw DeriveError.malformedSourceTrainingStep(
+                        source: sourceName, key: graftSourceTrainingStepArgument, value: recorded)
+                }
+                if step > 0 {
+                    throw DeriveError.sourceIsTrainedByLineage(
+                        source: sourceName,
+                        evidence: "its derivation history grafts from \(derivation.parentModelID) at source_training_step \(step)")
+                }
+            }
         }
     }
 
@@ -915,8 +967,8 @@ enum RezeroDeriveSupport {
 /// "Nothing to derive" is judged on the field: a request whose value every
 /// selected group already states is refused, even if the file's α tensors
 /// hold something else. A trained source never reaches the rewrite at all:
-/// `ModelDerivation.derive` refuses any tensor rewrite on a source whose
-/// recorded `training_step` is above zero.
+/// `ModelDerivation.derive` refuses any tensor rewrite on a source that
+/// shows training (`ModelDerivation.requireUntrainedSource`).
 struct SetRezeroAlphaInitDeriveOperation: DeriveOperation {
     let value: Float
     /// 0-based block-group indices, or nil for every group with ReZero.

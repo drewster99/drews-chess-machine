@@ -71,7 +71,7 @@ enum SafetensorsModelIO {
             case .malformedLineage(let detail):
                 return "safetensors model: \(LineageRecord.metadataKey) does not decode (\(detail))"
             case .missingModelID(let source):
-                return "safetensors model \(source): no model_id in __metadata__"
+                return "safetensors model \(source): no model_id (or an empty one) in __metadata__"
             case .malformedTrainingStep(let raw, let source):
                 return "safetensors model \(source): training_step '\(raw)' is not an integer"
             case .lineageStepDisagreesWithTrainerClock(let lineageStep, let trainerClock):
@@ -343,14 +343,14 @@ enum SafetensorsModelIO {
         )
         let metadata = ModelCheckpointMetadata(
             creator: md[Key.creator] ?? "",
-            trainingStep: md[Key.trainingStep].flatMap { Int($0) },
+            trainingStep: try trainingStep(fromMetadata: md, source: source),
             parentModelID: md[Key.parentModelID] ?? "",
             notes: md[Key.notes] ?? "",
             trainerSchedule: trainerSchedule,
             trainerPolicyTailPrecision: trainerPolicyTailPrecision
         )
         let file = ModelCheckpointFile(
-            modelID: md[Key.modelID] ?? "",
+            modelID: try requiredModelID(fromMetadata: md, source: source),
             createdAtUnix: md[Key.createdAt].flatMap { Int64($0) } ?? 0,
             metadata: metadata,
             weights: weights,
@@ -396,9 +396,7 @@ enum SafetensorsModelIO {
     static func readParentFile(fromMetadata md: [String: String], source: String) throws -> LineageTracker.ParentFile {
         let version = try ArchitectureFormat.safetensorsFormatVersion(
             metadataValue: md[Key.formatVersion], source: source)
-        guard let modelID = md[Key.modelID] else {
-            throw IOError.missingModelID(source: source)
-        }
+        let modelID = try requiredModelID(fromMetadata: md, source: source)
         let fileLineage = try lineage(fromMetadata: md, formatVersion: version)
         return LineageTracker.ParentFile(
             modelID: modelID,
@@ -414,14 +412,40 @@ enum SafetensorsModelIO {
     /// when it states neither. A value that is present but not an integer
     /// is an error, never read as absent.
     static func trainerClock(fromMetadata md: [String: String], source: String) throws -> Int? {
-        if let schedule = try TrainerScheduleState.decode(fromMetadata: md) {
+        trainerClock(schedule: try TrainerScheduleState.decode(fromMetadata: md),
+                     trainingStep: try trainingStep(fromMetadata: md, source: source))
+    }
+
+    /// The one rule for a file's trainer clock, from its decoded schedule
+    /// and `training_step`: the schedule's completed steps on a
+    /// trainer-state file, else the step a plain file's weights were taken
+    /// at. Shared by the header read above and a decoded file's
+    /// `ModelCheckpointFile.lineageParent`.
+    static func trainerClock(schedule: TrainerScheduleState?, trainingStep: Int?) -> Int? {
+        if let schedule {
             return schedule.completedTrainSteps
         }
+        return trainingStep
+    }
+
+    /// A file's `training_step`, nil when it states none. A value that is
+    /// present but not an integer is an error, never read as absent.
+    static func trainingStep(fromMetadata md: [String: String], source: String) throws -> Int? {
         guard let raw = md[Key.trainingStep] else { return nil }
         guard let value = Int(raw) else {
             throw IOError.malformedTrainingStep(raw, source: source)
         }
         return value
+    }
+
+    /// A file's `model_id`. A file without one (or with an empty one) has
+    /// no identity to record as anyone's parent or to load a network
+    /// under, so it is refused rather than read as an empty ID.
+    static func requiredModelID(fromMetadata md: [String: String], source: String) throws -> String {
+        guard let modelID = md[Key.modelID], !modelID.isEmpty else {
+            throw IOError.missingModelID(source: source)
+        }
+        return modelID
     }
 
     // MARK: - Resume provenance

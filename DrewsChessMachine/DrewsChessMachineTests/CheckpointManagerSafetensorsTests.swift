@@ -92,7 +92,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
             championMetadata: cMeta, championCreatedAtUnix: 1_700_000_000,
             trainerWeights: trainerWeights, trainerID: "20260420-2-efgh",
             trainerMetadata: tMeta, trainerCreatedAtUnix: 1_700_000_001,
-            state: state, lineage: try LineageRecord.forTests(trainerCompletedSteps: tMeta.trainerSchedule.map(\.completedTrainSteps), corpus: nil), trigger: "unittest"
+            state: state, lineage: try LineageRecord.forTests(trainerCompletedSteps: tMeta.trainerSchedule.map(\.completedTrainSteps), corpus: nil), championLineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil), trigger: "unittest"
         )
         defer {
             do { try FileManager.default.removeItem(at: dir) }
@@ -204,7 +204,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
             championMetadata: meta, championCreatedAtUnix: 1_780_000_000,
             trainerWeights: trainerWeights, trainerID: "20260420-9-ndtt",
             trainerMetadata: meta, trainerCreatedAtUnix: 1_780_000_001,
-            state: state, lineage: try LineageRecord.forTests(trainerCompletedSteps: meta.trainerSchedule.map(\.completedTrainSteps), corpus: nil), architecture: arch, trigger: "unittest-nd"
+            state: state, lineage: try LineageRecord.forTests(trainerCompletedSteps: meta.trainerSchedule.map(\.completedTrainSteps), corpus: nil), championLineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil), architecture: arch, trigger: "unittest-nd"
         )
         defer { do { try FileManager.default.removeItem(at: dir) } catch {} }
 
@@ -318,7 +318,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
             trainerID: legacyLoaded.trainerFile.modelID,
             trainerMetadata: legacyLoaded.trainerFile.metadata,
             trainerCreatedAtUnix: legacyLoaded.trainerFile.createdAtUnix,
-            state: legacyLoaded.state, lineage: try LineageRecord.forTests(trainerCompletedSteps: legacyLoaded.trainerFile.metadata.trainerSchedule.map(\.completedTrainSteps), corpus: nil), trigger: "unittest-migrate"
+            state: legacyLoaded.state, lineage: try LineageRecord.forTests(trainerCompletedSteps: legacyLoaded.trainerFile.metadata.trainerSchedule.map(\.completedTrainSteps), corpus: nil), championLineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil), trigger: "unittest-migrate"
         )
         defer { do { try FileManager.default.removeItem(at: newDir) } catch {} }
 

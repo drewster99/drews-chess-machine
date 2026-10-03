@@ -770,7 +770,7 @@ final class CheckpointHousekeepingTests: XCTestCase {
                 trainerID: "\(sessionA)-1",
                 trainerMetadata: testMetadata,
                 trainerCreatedAtUnix: 1_790_000_000,
-                state: state, lineage: try LineageRecord.forTests(trainerCompletedSteps: testMetadata.trainerSchedule.map(\.completedTrainSteps), corpus: nil),
+                state: state, lineage: try LineageRecord.forTests(trainerCompletedSteps: testMetadata.trainerSchedule.map(\.completedTrainSteps), corpus: nil), championLineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil),
                 trigger: "manual",
                 at: fixedSaveDate,
                 sessionsDirectory: sessionsDir
@@ -797,7 +797,7 @@ final class CheckpointHousekeepingTests: XCTestCase {
                 trainerID: "\(sessionA)-1",
                 trainerMetadata: testMetadata,
                 trainerCreatedAtUnix: 1_790_000_000,
-                state: state, lineage: try LineageRecord.forTests(trainerCompletedSteps: testMetadata.trainerSchedule.map(\.completedTrainSteps), corpus: nil),
+                state: state, lineage: try LineageRecord.forTests(trainerCompletedSteps: testMetadata.trainerSchedule.map(\.completedTrainSteps), corpus: nil), championLineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil),
                 trigger: "manual",
                 at: fixedSaveDate,
                 sessionsDirectory: sessionsDir

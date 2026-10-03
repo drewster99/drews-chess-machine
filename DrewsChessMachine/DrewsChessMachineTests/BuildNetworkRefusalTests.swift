@@ -18,17 +18,21 @@ import XCTest
 @MainActor
 final class BuildNetworkRefusalTests: XCTestCase {
 
-    /// A controller whose refusals and trainer drops are recorded.
+    /// A controller whose refusals and display clears are recorded.
     private final class Recorder {
         var refusals: [String] = []
-        var trainerDrops = 0
         var displayClears = 0
     }
+
+    /// Fed counts planted on the controller before a build. Dropping the
+    /// trainer (`dropTrainerEndingLineageSegment`) resets them, so finding
+    /// them unchanged afterwards shows the trainer was not dropped.
+    private let plantedFedCarry = SessionController.LineageFedCarry(games: 7, positions: 11)
 
     private func controller(recordingInto recorder: Recorder) -> SessionController {
         let controller = SessionController()
         controller.onRefuseMenuAction = { recorder.refusals.append($0) }
-        controller.onDropTrainer = { recorder.trainerDrops += 1 }
+        controller.lineageFedCarry = plantedFedCarry
         controller.onClearTrainingDisplay = { recorder.displayClears += 1 }
         return controller
     }
@@ -37,7 +41,7 @@ final class BuildNetworkRefusalTests: XCTestCase {
                                        file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(recorder.refusals.count, 1, file: file, line: line)
         XCTAssertFalse(controller.isBuilding, file: file, line: line)
-        XCTAssertEqual(recorder.trainerDrops, 0, file: file, line: line)
+        XCTAssertEqual(controller.lineageFedCarry, plantedFedCarry, file: file, line: line)
         XCTAssertEqual(recorder.displayClears, 0, file: file, line: line)
     }
 
