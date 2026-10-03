@@ -161,6 +161,20 @@ mismatch; the GUI follows decision D-1 (never refuses; reports NOT EXACT).
   delete crash / wrong-group write. Owner approved rewriting the three tests that used the
   old internals.
 - `--derive-model` refuses to rewrite tensors of a source with `training_step` > 0.
+- Done as planned. Decisions: the Build screen's per-group activation and output-norm
+  controls bind through computed properties on `BlockGroupDraft` (the activation one calls
+  the shared rule); the editor's add/duplicate/remove/move act on drafts by identity and
+  trap on a draft that is not in the model (only on-screen rows can call them, and the end
+  buttons are disabled). `--derive-model` reads `training_step` raw from the source
+  metadata, refusing a value that is not a non-negative integer as well as one above zero;
+  the check runs only when an operation actually rewrote a tensor, so cap, activation and SE
+  activation edits still work on a champion. The three owner-approved Build-screen tests
+  were rewritten to the new behavior (`testBuildScreenActivationEditAppliesTheSharedRule`,
+  `testBuildScreenRezeroInitAndCapAreIndependent`, `testBuildScreenDepthWarningIgnoresAZeroInit`).
+  The SwiftUI crash itself (a binding retained past a row's removal) cannot be driven from
+  XCTest; `BuildNewModelDraftTests` pins that a removed draft is detached. A manual check —
+  focus a field in a middle group, delete the group, confirm its neighbours are unchanged —
+  is still to be done with the app.
 
 ### C2. Probe CLI output safety — [ ]
 Outputs may never be a probed checkpoint or each other (shared same-file check in

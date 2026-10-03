@@ -25,6 +25,12 @@
 //      * the source must be a plain model file (no optimizer velocity, no
 //        trainer schedule — exact-resume state is meaningless once weights
 //        are re-initialized);
+//      * an operation that rewrites tensors needs an untrained source: a
+//        recorded `training_step` above zero is refused, because the
+//        rewrite would reset learned weights while the derived file still
+//        claims the source's training step and lineage (a malformed
+//        recorded step is refused too, never read as "absent").
+//        Operations that rewrite no tensor stay allowed on a trained source;
 //      * the target architecture must validate and must have exactly the
 //        source's tensor plan (names AND shapes) — a shape-changing request
 //        is refused before anything is written;
@@ -149,6 +155,8 @@ enum ModelDerivation {
         case rewriteOutsideDeclaredRanges(name: String, elementIndex: Int)
         case unreadableDerivationHistory(detail: String)
         case outputFailedVerification(detail: String)
+        case sourceIsTrained(source: String, trainingStep: Int)
+        case malformedSourceTrainingStep(source: String, value: String)
 
         var description: String {
             switch self {
@@ -177,6 +185,13 @@ enum ModelDerivation {
                 return "source \(ModelDerivation.derivationHistoryKey) is unreadable: \(detail)"
             case .outputFailedVerification(let detail):
                 return "the derived file failed to load back: \(detail)"
+            case .sourceIsTrained(let source, let trainingStep):
+                return "\(source) records training_step \(trainingStep); a derive operation that rewrites tensors "
+                    + "would reset learned weights while the derived file kept that training step and lineage — "
+                    + "derive tensor-rewriting variants from a fresh (untrained) net"
+            case .malformedSourceTrainingStep(let source, let value):
+                return "\(source) records training_step '\(value)', which is not a non-negative integer; "
+                    + "refusing to rewrite tensors without knowing whether the source is trained"
             }
         }
     }
@@ -312,6 +327,9 @@ enum ModelDerivation {
                 rewrittenTensors: rewrites.map(\.tensorName)))
             stepSource = stepTarget
         }
+        if !appliedRewrites.isEmpty {
+            try requireUntrainedSource(sourceMetadata, sourceName: sourceName)
+        }
 
         // Lineage.
         let priorHistory = try decodeHistory(sourceMetadata[derivationHistoryKey])
@@ -382,6 +400,20 @@ enum ModelDerivation {
         }
         return "derived from \(record.parentModelID) (\(record.sourceFile), sha256 \(record.sourceSHA256)): "
             + operations.joined(separator: "; ")
+    }
+
+    /// Refuse a tensor rewrite on a trained source: one whose raw
+    /// `training_step` metadata is a positive integer. Read raw rather than
+    /// through the model loader so a malformed value is an error here, never
+    /// mistaken for "no step recorded". An absent value or 0 is a fresh net.
+    static func requireUntrainedSource(_ sourceMetadata: [String: String], sourceName: String) throws {
+        guard let recorded = sourceMetadata[SafetensorsModelIO.Key.trainingStep] else { return }
+        guard let trainingStep = Int(recorded), trainingStep >= 0 else {
+            throw DeriveError.malformedSourceTrainingStep(source: sourceName, value: recorded)
+        }
+        if trainingStep > 0 {
+            throw DeriveError.sourceIsTrained(source: sourceName, trainingStep: trainingStep)
+        }
     }
 
     /// Refuse unless `target` has exactly `source`'s tensor names and shapes.
@@ -559,7 +591,10 @@ struct SetSEBetaInitDeriveOperation: DeriveOperation {
 /// everywhere" are both one derive away (the latter = both flags; the
 /// catalog order applies this operation first). On an SE-less group the
 /// field has no effect and `validate()` requires it to equal the group's
-/// activation, so there it is updated alongside.
+/// activation, so there it is updated alongside. That rule lives in
+/// `BlockGroup.setActivationFunction`, which the Build-New-Model screen
+/// applies too, so the same activation edit gives the same architecture
+/// whichever way it is made.
 struct SetActivationDeriveOperation: DeriveOperation {
     let value: ActivationFunction
 
@@ -601,10 +636,7 @@ struct SetActivationDeriveOperation: DeriveOperation {
         var edited = architecture
         edited.activationFunction = value
         for index in edited.blockGroups.indices {
-            edited.blockGroups[index].activationFunction = value
-            if edited.blockGroups[index].seStyle == .none {
-                edited.blockGroups[index].seActivation = value
-            }
+            edited.blockGroups[index].setActivationFunction(value)
         }
         return edited
     }
@@ -775,8 +807,9 @@ enum RezeroDeriveSupport {
 ///
 /// "Nothing to derive" is judged on the field: a request whose value every
 /// selected group already states is refused, even if the file's α tensors
-/// hold something else (a trained net's α never equals its init). Resetting
-/// a trained net's α to its unchanged init is not a supported derivation.
+/// hold something else. A trained source never reaches the rewrite at all:
+/// `ModelDerivation.derive` refuses any tensor rewrite on a source whose
+/// recorded `training_step` is above zero.
 struct SetRezeroAlphaInitDeriveOperation: DeriveOperation {
     let value: Float
     /// 0-based block-group indices, or nil for every group with ReZero.

@@ -82,21 +82,21 @@ struct BuildNewModelView: View {
                         }
                     }
 
-                    // Iterate by stable group identity (not array index), so a
-                    // reorder/remove re-associates rows by identity rather than
-                    // by position. `i` is recomputed each body build from the
-                    // current arrays, so it is never stale for the bindings.
-                    ForEach(Array(zip(model.groupIDs, model.blockGroups.indices)), id: \.0) { (_, i) in
+                    // Rows are keyed and bound by draft identity (see
+                    // `BlockGroupDraft`); the enumerated position is used only
+                    // for the header's display number and its end-of-list
+                    // button states.
+                    ForEach(Array(model.blockGroupDrafts.enumerated()), id: \.element.id) { entry in
                         Section {
-                            groupFields(i)
+                            BlockGroupFieldsView(model: model, draft: entry.element)
                         } header: {
-                            groupHeader(i)
+                            BlockGroupHeaderView(model: model, draft: entry.element, position: entry.offset)
                         }
                     }
 
                     Section {
                         Button {
-                            model.duplicateGroup(at: model.blockGroups.count - 1)
+                            model.appendCopyOfLastGroup()
                         } label: {
                             Label("Add group", systemImage: "plus")
                         }
@@ -177,149 +177,6 @@ struct BuildNewModelView: View {
                 Text("A preset named \"\(pending.name)\" is already saved. Replacing it overwrites its saved architecture and label.")
             }
         )
-    }
-
-    // MARK: Block-group editor
-
-    @ViewBuilder
-    private func groupHeader(_ i: Int) -> some View {
-        HStack(spacing: 6) {
-            Text("Group \(i + 1)")
-            Spacer()
-            Button {
-                model.moveGroup(at: i, offset: -1)
-            } label: {
-                Image(systemName: "chevron.up")
-            }
-            .disabled(i == 0)
-            .help("Move this group one step toward the input")
-            Button {
-                model.moveGroup(at: i, offset: 1)
-            } label: {
-                Image(systemName: "chevron.down")
-            }
-            .disabled(i == model.blockGroups.count - 1)
-            .help("Move this group one step toward the heads")
-            Button {
-                model.duplicateGroup(at: i)
-            } label: {
-                Image(systemName: "plus.square.on.square")
-            }
-            .help("Insert a copy of this group below it")
-            Button {
-                model.removeGroup(at: i)
-            } label: {
-                Image(systemName: "trash")
-            }
-            .disabled(model.blockGroups.count == 1)
-            .help("Remove this group")
-        }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
-    }
-
-    @ViewBuilder
-    private func groupFields(_ i: Int) -> some View {
-        @Bindable var model = model
-        // Bounds guard. When a group is removed (or reordered), SwiftUI can
-        // re-evaluate the *disappearing* row's body — and any binding the row's
-        // controls still hold — one more time with its now-stale `i`, after
-        // `blockGroups` has already shrunk. Every `blockGroups[i]` access below
-        // (the `if seStyle`/`if useRezero` reads and the field bindings) would
-        // then subscript out of range and trap (this crashed the app on a group
-        // delete via the Output-norm Picker's selection binding). Gating the
-        // whole field set on `indices.contains(i)` makes the stale re-eval
-        // render empty instead of trapping; valid rows are unaffected.
-        if model.blockGroups.indices.contains(i) {
-            intField("Blocks (count)", $model.blockGroups[i].count)
-            intField("Channels", $model.blockGroups[i].channels)
-            intField("Conv 1 kernel size (odd)", $model.blockGroups[i].conv1KernelSize)
-            intField("Conv 2 kernel size (odd)", $model.blockGroups[i].conv2KernelSize)
-            enumPicker("SE style", $model.blockGroups[i].seStyle, SEStyle.allCases)
-            if model.blockGroups[i].seStyle != .none {
-                intField("SE reduction ratio", $model.blockGroups[i].seReductionRatio)
-            }
-            // Only scale_and_bias has a β half. Hidden for the other styles;
-            // a non-glorot value left behind by switching style away is
-            // surfaced by validate() rather than silently reset.
-            if model.blockGroups[i].seStyle == .scaleAndBias {
-                enumPicker("SE β init", $model.blockGroups[i].seBetaInit, SEBetaInit.allCases)
-            }
-            // Routed through the model so the SE activation can follow the
-            // group's activation (see `setBlockActivation`). The get/set
-            // re-check the index for the same disappearing-row reason as the
-            // Output norm binding below; the getter's tower-level value is
-            // only ever shown by a row that is being removed.
-            enumPicker("Activation", Binding(
-                get: { model.blockGroups.indices.contains(i) ? model.blockGroups[i].activationFunction : model.activationFunction },
-                set: { model.setBlockActivation($0, forGroupAt: i) }
-            ), ActivationFunction.allCases)
-            // The SE FC1's own activation (issue #2). Always present so the
-            // row layout never shifts; disabled on an SE-less group, where it
-            // has no effect — unless it disagrees with the group's activation
-            // (left behind by switching SE off), in which case validate()
-            // reports it and the picker stays enabled so it can be fixed here.
-            enumPicker("SE activation", $model.blockGroups[i].seActivation, ActivationFunction.allCases)
-                .disabled(model.blockGroups[i].seStyle == .none
-                          && model.blockGroups[i].seActivation == model.blockGroups[i].activationFunction)
-                .help("Activation after the SE bottleneck FC1 (C → C/r). Follows the group's activation until set to something else; leaky_relu here keeps FC1 units from dying at almost no cost.")
-            enumPicker("Activation style", $model.blockGroups[i].activationStyle, BlockActivationStyle.allCases)
-            enumPicker("Skip merge", $model.blockGroups[i].skipMerge, BlockSkipMerge.allCases)
-            // Optional output normalization (Optional in the model so old configs
-            // decode as nil); map nil <-> .none for the non-optional picker. The
-            // get/set re-check the index — this binding is retained by the Picker
-            // and can fire during the disappearing-row update even past the outer
-            // guard, so it must be self-defending.
-            enumPicker("Output norm", Binding(
-                get: { model.blockGroups.indices.contains(i) ? (model.blockGroups[i].outputNorm ?? .none) : .none },
-                set: { if model.blockGroups.indices.contains(i) { model.blockGroups[i].outputNorm = $0 } }
-            ), BlockOutputNorm.allCases)
-            Toggle("Use ReZero", isOn: $model.blockGroups[i].useRezero)
-            if model.blockGroups[i].useRezero {
-                // The α init and cap are seeded from the loaded preset and do NOT
-                // auto-track the TOTAL block count, so a deep net built off a
-                // shallow preset silently keeps the shallow values. Flag the
-                // mismatch and offer a one-click snap rather than silently
-                // overwriting a deliberately-set value.
-                HStack {
-                    // Routed through the model so the cap can follow the init
-                    // (see `setRezeroAlphaInit`). The get/set re-check the index
-                    // for the same disappearing-row reason as the Output norm
-                    // binding above; the getter's 0 is only ever shown by a row
-                    // that is being removed.
-                    floatField("ReZero α init", Binding(
-                        get: { model.blockGroups.indices.contains(i) ? model.blockGroups[i].rezeroAlphaInit : 0 },
-                        set: { model.setRezeroAlphaInit($0, forGroupAt: i) }
-                    ))
-                    .help("Starting value of each block's trainable ReZero α. 0 is the ReZero paper's init: every branch starts off and α learns from step 1.")
-                    // Two depth-appropriate values are blessed: 1/√N (default,
-                    // variance-preserving) and 1/N (DeepNorm-style, gentler — for
-                    // deep towers where the stream *mean* accumulates). Offer a
-                    // one-click snap to each, setting both the init and the cap
-                    // (the cap-equals-init arrangement they were derived for).
-                    // Warn only when a depth-scaled value matches neither (see
-                    // `rezeroDepthScaleMismatch`).
-                    Button(String(format: "1/√%d=%.3f", model.totalBlocks, model.recommendedRezeroAlphaInit)) {
-                        model.applyRecommendedRezero(model.recommendedRezeroAlphaInit, toGroupAt: i)
-                    }
-                    .controlSize(.small)
-                    .help("Default ReZero init: 1/√(total blocks), variance-preserving. Sets both the α init and the cap.")
-                    Button(String(format: "1/%d=%.3f", model.totalBlocks, model.recommendedRezeroAlphaInit1OverN)) {
-                        model.applyRecommendedRezero(model.recommendedRezeroAlphaInit1OverN, toGroupAt: i)
-                    }
-                    .controlSize(.small)
-                    .help("DeepNorm-style init: 1/(total blocks). Gentler; preferable for very deep towers. Sets both the α init and the cap.")
-                    if model.rezeroDepthScaleMismatch(at: i) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                            .help("The ReZero cap (or a non-zero α init) matches neither 1/√N nor 1/N for this depth — likely a stale value from a shallower preset.")
-                    }
-                }
-                floatField("ReZero cap", $model.blockGroups[i].rezeroAlphaCap)
-                    .help("Asymptote C of the forward soft bound C·tanh(α/C): the effective branch scale never exceeds C. Must be > 0. Follows the α init until set to something else.")
-            }
-            floatField("Dropout multiplier", $model.blockGroups[i].dropoutMultiplier)
-        }
     }
 
     // MARK: Diagram pane (live-updating, renders the draft)
@@ -453,24 +310,152 @@ struct BuildNewModelView: View {
         )
     }
 
-    @ViewBuilder
-    private func enumPicker<E: CaseIterable & Hashable & RawRepresentable>(
-        _ title: String, _ binding: Binding<E>, _ cases: [E]
-    ) -> some View where E.RawValue == String {
-        Picker(title, selection: binding) {
-            ForEach(cases, id: \.self) { Text($0.rawValue).tag($0) }
+}
+
+// MARK: - Block-group rows
+
+/// The header of one block group's section: its display number plus the
+/// move / duplicate / remove buttons, all acting on the group's draft by
+/// identity. `position` is the group's place in the tower when this header
+/// was built, used only for the number shown and to disable the moves at the
+/// ends.
+private struct BlockGroupHeaderView: View {
+    let model: BuildNewModelModel
+    let draft: BlockGroupDraft
+    let position: Int
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("Group \(position + 1)")
+            Spacer()
+            Button {
+                model.moveGroup(draft, offset: -1)
+            } label: {
+                Image(systemName: "chevron.up")
+            }
+            .disabled(position == 0)
+            .help("Move this group one step toward the input")
+            Button {
+                model.moveGroup(draft, offset: 1)
+            } label: {
+                Image(systemName: "chevron.down")
+            }
+            .disabled(position == model.blockGroupDrafts.count - 1)
+            .help("Move this group one step toward the heads")
+            Button {
+                model.duplicateGroup(draft)
+            } label: {
+                Image(systemName: "plus.square.on.square")
+            }
+            .help("Insert a copy of this group below it")
+            Button {
+                model.removeGroup(draft)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .disabled(model.blockGroupDrafts.count == 1)
+            .help("Remove this group")
         }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
     }
+}
 
-    @ViewBuilder
-    private func intField(_ title: String, _ binding: Binding<Int>) -> some View {
-        TextField(title, value: binding, format: .number)
-            .monospacedDigit()
-    }
+/// Every editable field of one block group, bound through the group's draft
+/// (see `BlockGroupDraft`), so a binding SwiftUI retains past this row's
+/// removal can only reach the detached draft.
+private struct BlockGroupFieldsView: View {
+    let model: BuildNewModelModel
+    @Bindable var draft: BlockGroupDraft
 
-    @ViewBuilder
-    private func floatField(_ title: String, _ binding: Binding<Float>) -> some View {
-        TextField(title, value: binding, format: .number)
-            .monospacedDigit()
+    var body: some View {
+        intField("Blocks (count)", $draft.group.count)
+        intField("Channels", $draft.group.channels)
+        intField("Conv 1 kernel size (odd)", $draft.group.conv1KernelSize)
+        intField("Conv 2 kernel size (odd)", $draft.group.conv2KernelSize)
+        enumPicker("SE style", $draft.group.seStyle, SEStyle.allCases)
+        if draft.group.seStyle != .none {
+            intField("SE reduction ratio", $draft.group.seReductionRatio)
+        }
+        // Only scale_and_bias has a β half. Hidden for the other styles;
+        // a non-glorot value left behind by switching style away is
+        // surfaced by validate() rather than silently reset.
+        if draft.group.seStyle == .scaleAndBias {
+            enumPicker("SE β init", $draft.group.seBetaInit, SEBetaInit.allCases)
+        }
+        // Through the draft, so an SE-less group's SE activation moves with
+        // it (`BlockGroup.setActivationFunction`).
+        enumPicker("Activation", $draft.activationFunction, ActivationFunction.allCases)
+        // The SE FC1's own activation (issue #2). Always present so the
+        // row layout never shifts; disabled on an SE-less group, where it
+        // has no effect — unless it disagrees with the group's activation
+        // (left behind by switching SE off), in which case validate()
+        // reports it and the picker stays enabled so it can be fixed here.
+        enumPicker("SE activation", $draft.group.seActivation, ActivationFunction.allCases)
+            .disabled(draft.group.seStyle == .none
+                      && draft.group.seActivation == draft.group.activationFunction)
+            .help("Activation after the SE bottleneck FC1 (C → C/r), set independently of the group's activation (on a group without SE it has no effect and follows the group's activation). leaky_relu here keeps FC1 units from dying at almost no cost.")
+        enumPicker("Activation style", $draft.group.activationStyle, BlockActivationStyle.allCases)
+        enumPicker("Skip merge", $draft.group.skipMerge, BlockSkipMerge.allCases)
+        enumPicker("Output norm", $draft.outputNorm, BlockOutputNorm.allCases)
+        Toggle("Use ReZero", isOn: $draft.group.useRezero)
+        if draft.group.useRezero {
+            // The α init and cap are seeded from the loaded preset and do NOT
+            // auto-track the TOTAL block count, so a deep net built off a
+            // shallow preset silently keeps the shallow values. Flag the
+            // mismatch and offer a one-click snap rather than silently
+            // overwriting a deliberately-set value.
+            HStack {
+                floatField("ReZero α init", $draft.group.rezeroAlphaInit)
+                    .help("Starting value of each block's trainable ReZero α, set independently of the cap. 0 is the ReZero paper's init: every branch starts off and α learns from step 1.")
+                // Two depth-appropriate values are blessed: 1/√N (default,
+                // variance-preserving) and 1/N (DeepNorm-style, gentler — for
+                // deep towers where the stream *mean* accumulates). Offer a
+                // one-click snap to each, setting both the init and the cap.
+                // Warn only when a depth-scaled value matches neither (see
+                // `rezeroDepthScaleMismatch`).
+                Button(String(format: "1/√%d=%.3f", model.totalBlocks, model.recommendedRezeroAlphaInit)) {
+                    model.applyRecommendedRezero(model.recommendedRezeroAlphaInit, to: draft)
+                }
+                .controlSize(.small)
+                .help("Default ReZero init: 1/√(total blocks), variance-preserving. Sets both the α init and the cap.")
+                Button(String(format: "1/%d=%.3f", model.totalBlocks, model.recommendedRezeroAlphaInit1OverN)) {
+                    model.applyRecommendedRezero(model.recommendedRezeroAlphaInit1OverN, to: draft)
+                }
+                .controlSize(.small)
+                .help("DeepNorm-style init: 1/(total blocks). Gentler; preferable for very deep towers. Sets both the α init and the cap.")
+                if model.rezeroDepthScaleMismatch(for: draft.group) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .help("The ReZero cap (or a non-zero α init) matches neither 1/√N nor 1/N for this depth — likely a stale value from a shallower preset.")
+                }
+            }
+            floatField("ReZero cap", $draft.group.rezeroAlphaCap)
+                .help("Asymptote C of the forward soft bound C·tanh(α/C): the effective branch scale never exceeds C. Must be > 0. Set independently of the α init.")
+        }
+        floatField("Dropout multiplier", $draft.group.dropoutMultiplier)
     }
+}
+
+// MARK: - Field helpers (shared by every view in this file)
+
+@MainActor @ViewBuilder
+private func enumPicker<E: CaseIterable & Hashable & RawRepresentable>(
+    _ title: String, _ binding: Binding<E>, _ cases: [E]
+) -> some View where E.RawValue == String {
+    Picker(title, selection: binding) {
+        ForEach(cases, id: \.self) { Text($0.rawValue).tag($0) }
+    }
+}
+
+@MainActor @ViewBuilder
+private func intField(_ title: String, _ binding: Binding<Int>) -> some View {
+    TextField(title, value: binding, format: .number)
+        .monospacedDigit()
+}
+
+@MainActor @ViewBuilder
+private func floatField(_ title: String, _ binding: Binding<Float>) -> some View {
+    TextField(title, value: binding, format: .number)
+        .monospacedDigit()
 }

@@ -258,9 +258,9 @@ never exceeds `C`.
 How to get one:
 
 - **Build New Model:** each ReZero group has a "ReZero α init" and a "ReZero cap"
-  field. The cap follows the init while the two are equal and the new init is
-  positive (so presets behave as before); typing `0` into the init leaves the cap
-  where it was. The `1/√N` and `1/N` buttons set both. The orange warning flags a
+  field, and they are independent: editing one never moves the other (the same
+  rule `--derive-model` follows), so typing `0` into the init leaves the cap where
+  it was. The `1/√N` and `1/N` buttons set both. The orange warning flags a
   cap — or a non-zero init — that matches neither recommendation; a zero init is
   never flagged.
 - **From an existing fresh net** (`--derive-model`, see `deriving-models.md`):

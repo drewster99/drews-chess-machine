@@ -548,27 +548,52 @@ final class SEActivationTests: XCTestCase {
 
     // MARK: - Build screen
 
+    /// The Build screen applies the shared rule (`BlockGroup.setActivationFunction`):
+    /// a group with an SE block keeps its SE activation when its main-path
+    /// activation changes; an SE-less group's SE activation moves with it.
     @MainActor
-    func testBuildScreenSEActivationFollowsTheGroupUntilChosen() {
+    func testBuildScreenActivationEditAppliesTheSharedRule() {
         let model = BuildNewModelModel(NamedArchitecture(
             label: "test", architecture: Self.twoGroupArchitecture(group0SE: .relu, group1SE: .relu)))
-        // Untouched: follows the group's activation.
-        model.setBlockActivation(.silu, forGroupAt: 0)
-        XCTAssertEqual(model.blockGroups[0].activationFunction, .silu)
-        XCTAssertEqual(model.blockGroups[0].seActivation, .silu)
-        // Chosen on purpose: stays when the group's activation changes.
-        model.blockGroups[0].seActivation = .leakyRelu
-        model.setBlockActivation(.relu, forGroupAt: 0)
-        XCTAssertEqual(model.blockGroups[0].activationFunction, .relu)
-        XCTAssertEqual(model.blockGroups[0].seActivation, .leakyRelu)
+        let first = model.blockGroupDrafts[0]
+        let second = model.blockGroupDrafts[1]
+        // A group with an SE block: the SE activation stays put.
+        first.activationFunction = .silu
+        XCTAssertEqual(first.group.activationFunction, .silu)
+        XCTAssertEqual(first.group.seActivation, .relu)
+        // Set on its own, it stays through later activation changes too.
+        first.group.seActivation = .leakyRelu
+        first.activationFunction = .relu
+        XCTAssertEqual(first.group.activationFunction, .relu)
+        XCTAssertEqual(first.group.seActivation, .leakyRelu)
         XCTAssertTrue(model.isValid)
         XCTAssertTrue(model.summary.contains("(fc1 leaky_relu)"), model.summary)
-        // An SE-less group stays valid through activation changes.
-        model.blockGroups[1].seStyle = .none
-        model.setBlockActivation(.gelu, forGroupAt: 1)
-        XCTAssertEqual(model.blockGroups[1].seActivation, .gelu)
+        // An SE-less group's SE activation moves with it, keeping it valid.
+        second.group.seStyle = .none
+        second.activationFunction = .gelu
+        XCTAssertEqual(second.group.seActivation, .gelu)
         XCTAssertTrue(model.isValid, model.validationError ?? "")
         // The other group is untouched throughout.
-        XCTAssertEqual(model.blockGroups[0].seActivation, .leakyRelu)
+        XCTAssertEqual(first.group.seActivation, .leakyRelu)
+    }
+
+    /// The same activation edit made on the Build screen and through
+    /// `--derive-model --set-activation` yields the same architecture, for a
+    /// group with an SE block and an SE-less one alike.
+    @MainActor
+    func testBuildScreenAndDeriveApplyTheSameActivationRule() throws {
+        var source = Self.twoGroupArchitecture(group0SE: .relu, group1SE: .relu)
+        source.blockGroups[1].seStyle = .none
+        try source.validate()
+        let derived = try SetActivationDeriveOperation(value: .leakyRelu).apply(to: source)
+
+        let model = BuildNewModelModel(NamedArchitecture(label: "test", architecture: source))
+        model.activationFunction = .leakyRelu
+        for draft in model.blockGroupDrafts {
+            draft.activationFunction = .leakyRelu
+        }
+        XCTAssertEqual(model.architecture, derived)
+        XCTAssertEqual(derived.blockGroups[0].seActivation, .relu)
+        XCTAssertEqual(derived.blockGroups[1].seActivation, .leakyRelu)
     }
 }

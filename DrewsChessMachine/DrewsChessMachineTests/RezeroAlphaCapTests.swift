@@ -615,47 +615,64 @@ final class RezeroAlphaCapTests: XCTestCase {
 
     // MARK: - Build screen
 
+    /// On the Build screen the α init and the cap are independent: editing
+    /// one never moves the other. Only the labelled recommendation buttons
+    /// set both.
     @MainActor
-    func testBuildScreenCapFollowsTheInitUntilChosen() {
+    func testBuildScreenRezeroInitAndCapAreIndependent() {
         let model = BuildNewModelModel(NamedArchitecture(label: "test", architecture: Self.twoGroupArchitecture()))
-        // Untouched (cap == init): a positive init carries the cap along.
-        model.setRezeroAlphaInit(0.3, forGroupAt: 0)
-        XCTAssertEqual(model.blockGroups[0].rezeroAlphaInit, 0.3)
-        XCTAssertEqual(model.blockGroups[0].rezeroAlphaCap, 0.3)
-        // A zero init never drags the cap to zero.
-        model.setRezeroAlphaInit(0, forGroupAt: 0)
-        XCTAssertEqual(model.blockGroups[0].rezeroAlphaInit, 0)
-        XCTAssertEqual(model.blockGroups[0].rezeroAlphaCap, 0.3)
+        let first = model.blockGroupDrafts[0]
+        let second = model.blockGroupDrafts[1]
+        // A legacy-shaped group (cap == init): a new init leaves the cap.
+        first.group.rezeroAlphaInit = 0.3
+        XCTAssertEqual(first.group.rezeroAlphaInit, 0.3)
+        XCTAssertEqual(first.group.rezeroAlphaCap, 0.5)
+        // A zero init leaves it too, and the group stays valid.
+        first.group.rezeroAlphaInit = 0
+        XCTAssertEqual(first.group.rezeroAlphaCap, 0.5)
         XCTAssertTrue(model.isValid, model.validationError ?? "")
-        // Chosen on purpose (cap != init): stays when the init changes.
-        model.blockGroups[0].rezeroAlphaCap = 1
-        model.setRezeroAlphaInit(0.2, forGroupAt: 0)
-        XCTAssertEqual(model.blockGroups[0].rezeroAlphaCap, 1)
+        // A new cap leaves the init.
+        first.group.rezeroAlphaCap = 1
+        XCTAssertEqual(first.group.rezeroAlphaInit, 0)
         // The recommendation buttons set both.
-        model.applyRecommendedRezero(model.recommendedRezeroAlphaInit, toGroupAt: 0)
-        XCTAssertEqual(model.blockGroups[0].rezeroAlphaInit, model.recommendedRezeroAlphaInit)
-        XCTAssertEqual(model.blockGroups[0].rezeroAlphaCap, model.recommendedRezeroAlphaInit)
+        model.applyRecommendedRezero(model.recommendedRezeroAlphaInit, to: first)
+        XCTAssertEqual(first.group.rezeroAlphaInit, model.recommendedRezeroAlphaInit)
+        XCTAssertEqual(first.group.rezeroAlphaCap, model.recommendedRezeroAlphaInit)
         // The other group is untouched throughout.
-        XCTAssertEqual(model.blockGroups[1].rezeroAlphaInit, 0.25)
-        XCTAssertEqual(model.blockGroups[1].rezeroAlphaCap, 0.25)
+        XCTAssertEqual(second.group.rezeroAlphaInit, 0.25)
+        XCTAssertEqual(second.group.rezeroAlphaCap, 0.25)
     }
 
     @MainActor
     func testBuildScreenDepthWarningIgnoresAZeroInit() {
         let model = BuildNewModelModel(NamedArchitecture(label: "test", architecture: Self.twoGroupArchitecture()))
+        let first = model.blockGroupDrafts[0]
         // 3 blocks: the recommendations are 1/√3 and 1/3.
-        model.applyRecommendedRezero(model.recommendedRezeroAlphaInit, toGroupAt: 0)
-        XCTAssertFalse(model.rezeroDepthScaleMismatch(at: 0))
+        model.applyRecommendedRezero(model.recommendedRezeroAlphaInit, to: first)
+        XCTAssertFalse(model.rezeroDepthScaleMismatch(for: first.group))
         // Zero init with a depth-appropriate cap: no warning.
-        model.setRezeroAlphaInit(0, forGroupAt: 0)
-        XCTAssertFalse(model.rezeroDepthScaleMismatch(at: 0))
+        first.group.rezeroAlphaInit = 0
+        XCTAssertFalse(model.rezeroDepthScaleMismatch(for: first.group))
         // A cap that matches neither recommendation is flagged, zero init or not.
-        model.blockGroups[0].rezeroAlphaCap = 1
-        XCTAssertTrue(model.rezeroDepthScaleMismatch(at: 0))
+        first.group.rezeroAlphaCap = 1
+        XCTAssertTrue(model.rezeroDepthScaleMismatch(for: first.group))
         // A stale non-zero init is flagged even under a good cap.
-        model.applyRecommendedRezero(model.recommendedRezeroAlphaInit1OverN, toGroupAt: 0)
-        XCTAssertFalse(model.rezeroDepthScaleMismatch(at: 0))
-        model.blockGroups[0].rezeroAlphaInit = 0.9
-        XCTAssertTrue(model.rezeroDepthScaleMismatch(at: 0))
+        model.applyRecommendedRezero(model.recommendedRezeroAlphaInit1OverN, to: first)
+        XCTAssertFalse(model.rezeroDepthScaleMismatch(for: first.group))
+        first.group.rezeroAlphaInit = 0.9
+        XCTAssertTrue(model.rezeroDepthScaleMismatch(for: first.group))
+    }
+
+    /// The same α-init edit on the Build screen and through
+    /// `--derive-model --set-rezero-alpha-init` yields the same architecture:
+    /// the cap stays where it was on both paths.
+    @MainActor
+    func testBuildScreenAndDeriveTreatTheInitAlike() throws {
+        let source = Self.twoGroupArchitecture()
+        let derived = try SetRezeroAlphaInitDeriveOperation(value: 0.2, groupIndices: [0]).apply(to: source)
+        let model = BuildNewModelModel(NamedArchitecture(label: "test", architecture: source))
+        model.blockGroupDrafts[0].group.rezeroAlphaInit = 0.2
+        XCTAssertEqual(model.architecture, derived)
+        XCTAssertEqual(derived.blockGroups[0].rezeroAlphaCap, 0.5)
     }
 }

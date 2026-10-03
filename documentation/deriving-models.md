@@ -20,7 +20,13 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
 - `--from`: the source model. It must be a model file (a fresh net or a champion), not a
   trainer-state file. Files with `opt.*.velocity` tensors or `trainer_*` schedule
   metadata are refused, because re-initialized weights would not match the saved
-  optimizer state.
+  optimizer state. An operation that rewrites tensors (`--set-se-beta-init`,
+  `--set-rezero-alpha-init`) also needs an untrained source: a recorded
+  `training_step` above zero is refused, because the rewrite would reset learned
+  weights while the new file kept the source's training step and lineage, and a
+  `training_step` that is not a non-negative integer is refused as well. Operations
+  that change no tensor (`--set-activation`, `--set-se-activation`,
+  `--set-rezero-alpha-cap`) work on a champion too.
 - `--out`: the destination. It must end in `.safetensors`, must not exist, and must
   differ from `--from`. Nothing is ever overwritten.
 - `--group <index>`: a 0-based block-group index (repeatable). It narrows operations that
@@ -61,8 +67,8 @@ net that was never built. `0` is the ReZero paper's init: every residual branch 
 off and α learns from step 1 (see `rezero-alpha-clamp.md`). The cap is left alone; a
 legacy group's cap is its old init, so `--set-rezero-alpha-init 0` alone gives a zero
 start under the old bound. A request whose value every selected group already states is
-refused even when the file's α tensors differ from it (a trained net's α never equals its
-init), so resetting a trained net's α to its unchanged init is not supported.
+refused even when the file's α tensors differ from it; a trained source is refused before
+that point (see `--from` above).
 
 `--set-rezero-alpha-cap` sets `rezero_alpha_cap`, the asymptote `C` of the forward soft
 bound `C·tanh(α/C)`, on groups with ReZero (all, or those named by `--group`). No tensor

@@ -25,16 +25,11 @@ final class BuildNewModelModel {
     var labelOverride: String = ""
     var inputEncoding: InputEncoding
     /// The tower, edited group-by-group (ARCHITECTURE_EXPANSION_PLAN.md
-    /// Feature 2 Phase B). Full fidelity: a loaded mixed tower round-trips
-    /// through the editor without collapsing.
-    var blockGroups: [BlockGroup]
-    /// Stable per-group identities for the editor's `ForEach`, kept strictly
-    /// parallel to `blockGroups` through every mutation below. Never persisted
-    /// and not part of the architecture — `BlockGroup` stays a pure value type
-    /// (Codable/Hashable equality must not depend on identity). Using these as
-    /// the row id avoids index-as-identity, so reordering/removing a group
-    /// re-associates rows correctly instead of by position.
-    private(set) var groupIDs: [UUID]
+    /// Feature 2 Phase B), one identity-addressed draft per group (see
+    /// `BlockGroupDraft` for why rows are never addressed by index). Full
+    /// fidelity: a loaded mixed tower round-trips through the editor without
+    /// collapsing. Changed only through the group methods below.
+    private(set) var blockGroupDrafts: [BlockGroupDraft]
     var stemConvKernelSize: Int
     var activationFunction: ActivationFunction
     var policyHeadStyle: PolicyHeadStyle
@@ -69,8 +64,7 @@ final class BuildNewModelModel {
         let a = named.architecture
         self.labelOverride = ""
         self.inputEncoding = a.inputEncoding
-        self.blockGroups = a.blockGroups
-        self.groupIDs = a.blockGroups.map { _ in UUID() }
+        self.blockGroupDrafts = a.blockGroups.map(BlockGroupDraft.init)
         self.stemConvKernelSize = a.stemConvKernelSize
         self.activationFunction = a.activationFunction
         self.policyHeadStyle = a.policyHeadStyle
@@ -99,8 +93,7 @@ final class BuildNewModelModel {
         let a = named.architecture
         labelOverride = ""
         inputEncoding = a.inputEncoding
-        blockGroups = a.blockGroups
-        groupIDs = a.blockGroups.map { _ in UUID() }
+        blockGroupDrafts = a.blockGroups.map(BlockGroupDraft.init)
         stemConvKernelSize = a.stemConvKernelSize
         activationFunction = a.activationFunction
         policyHeadStyle = a.policyHeadStyle
@@ -137,84 +130,67 @@ final class BuildNewModelModel {
         )
     }
 
-    // MARK: Group activation
+    // MARK: Groups (the editor's add/duplicate/remove/reorder)
 
-    /// Set group `index`'s main-path activation. The group's SE FC1
-    /// activation follows it when the two were equal beforehand — the SE
-    /// activation's default is "same as the group", so a user who never
-    /// touched it keeps that — and stays put when the user chose a different
-    /// one on purpose (e.g. ReLU blocks with a leaky-ReLU FC1).
-    ///
-    /// The follow is also what keeps an SE-less group valid: `validate()`
-    /// requires its SE activation to equal its activation, and the editor
-    /// disables the SE-activation picker on such a group, so without the
-    /// follow every activation change on an SE-less group would produce a
-    /// validation error the user could not fix in place.
-    func setBlockActivation(_ activation: ActivationFunction, forGroupAt index: Int) {
-        guard blockGroups.indices.contains(index) else { return }
-        let seActivationFollowsGroup = blockGroups[index].seActivation == blockGroups[index].activationFunction
-        blockGroups[index].activationFunction = activation
-        if seActivationFollowsGroup {
-            blockGroups[index].seActivation = activation
-        }
-    }
-
-    // MARK: Group ReZero
-
-    /// Set group `index`'s ReZero α init. The cap follows it when the two
-    /// were equal beforehand and the new init is positive — the arrangement
-    /// every preset and every model before the explicit cap has (cap = init),
-    /// so a user who never touched the cap keeps exactly today's behavior —
-    /// and stays put when the user set a different cap on purpose.
-    ///
-    /// A new init of 0 never drags the cap along: zero is the ReZero-paper
-    /// init, whose whole point is a branch that starts off while the cap keeps
-    /// bounding where α can grow to; a cap of 0 would also fail validation
-    /// (the forward divides by it). So typing 0 into the init of a legacy
-    /// group leaves its cap at the old init — a valid zero-init group.
-    func setRezeroAlphaInit(_ alphaInit: Float, forGroupAt index: Int) {
-        guard blockGroups.indices.contains(index) else { return }
-        let capFollowsInit = blockGroups[index].rezeroAlphaCap == blockGroups[index].rezeroAlphaInit
-        blockGroups[index].rezeroAlphaInit = alphaInit
-        if capFollowsInit, alphaInit > 0 {
-            blockGroups[index].rezeroAlphaCap = alphaInit
-        }
-    }
-
-    /// Apply one of the depth-appropriate recommendations (`1/√N`, `1/N`) to
-    /// group `index`: both the init and the cap become `value`, which is the
-    /// cap-equals-init arrangement those recommendations were derived for
-    /// (see `rezeroTanhCeilingMultiple`).
-    func applyRecommendedRezero(_ value: Float, toGroupAt index: Int) {
-        guard blockGroups.indices.contains(index) else { return }
-        blockGroups[index].rezeroAlphaInit = value
-        blockGroups[index].rezeroAlphaCap = value
-    }
-
-    // MARK: Group manipulation (the editor's add/duplicate/remove/reorder)
+    /// The tower's groups as values, in order — what `architecture` builds
+    /// from. Edits go through the drafts, never through this copy.
+    var blockGroups: [BlockGroup] { blockGroupDrafts.map(\.group) }
 
     /// Total blocks across all groups (clamped ≥1 for ratios mid-edit).
     var totalBlocks: Int { max(1, blockGroups.reduce(0) { $0 + max(0, $1.count) }) }
 
-    func duplicateGroup(at index: Int) {
-        guard blockGroups.indices.contains(index) else { return }
-        blockGroups.insert(blockGroups[index], at: index + 1)
-        groupIDs.insert(UUID(), at: index + 1)
+    /// Position of `draft` in the tower. Every caller is a control of a row
+    /// that is on screen, so a draft that is not in the model is a defect,
+    /// never a stale row to skip quietly.
+    private func position(of draft: BlockGroupDraft) -> Int {
+        guard let index = blockGroupDrafts.firstIndex(where: { $0 === draft }) else {
+            preconditionFailure("BuildNewModelModel: block-group draft is not in this model")
+        }
+        return index
     }
 
-    func removeGroup(at index: Int) {
-        guard blockGroups.indices.contains(index), blockGroups.count > 1 else { return }
-        blockGroups.remove(at: index)
-        groupIDs.remove(at: index)
+    /// Insert a copy of `draft`'s group directly after it.
+    func duplicateGroup(_ draft: BlockGroupDraft) {
+        let index = position(of: draft)
+        blockGroupDrafts.insert(BlockGroupDraft(draft.group), at: index + 1)
     }
 
-    /// Move a group one slot toward the input (-1) or the heads (+1).
-    func moveGroup(at index: Int, offset: Int) {
+    /// Append a copy of the last group (the editor's "Add group").
+    func appendCopyOfLastGroup() {
+        guard let last = blockGroupDrafts.last else {
+            preconditionFailure("BuildNewModelModel: a tower always has at least one block group")
+        }
+        blockGroupDrafts.append(BlockGroupDraft(last.group))
+    }
+
+    /// Remove `draft`'s group. The editor disables removing the only group,
+    /// so being asked to is a defect.
+    func removeGroup(_ draft: BlockGroupDraft) {
+        precondition(blockGroupDrafts.count > 1, "BuildNewModelModel: the only block group cannot be removed")
+        blockGroupDrafts.remove(at: position(of: draft))
+    }
+
+    /// Move `draft`'s group one slot toward the input (-1) or the heads (+1).
+    /// The editor disables the move at either end, so a move past it is a
+    /// defect.
+    func moveGroup(_ draft: BlockGroupDraft, offset: Int) {
+        let index = position(of: draft)
         let target = index + offset
-        guard blockGroups.indices.contains(index),
-              blockGroups.indices.contains(target) else { return }
-        blockGroups.swapAt(index, target)
-        groupIDs.swapAt(index, target)
+        precondition(blockGroupDrafts.indices.contains(target),
+                     "BuildNewModelModel: block group \(index) cannot move by \(offset)")
+        blockGroupDrafts.swapAt(index, target)
+    }
+
+    // MARK: Group ReZero
+
+    /// Apply one of the depth-appropriate recommendations (`1/√N`, `1/N`) to
+    /// `draft`'s group: an explicit, labelled action that sets both the α
+    /// init and the cap to `value`. The init and the cap are otherwise
+    /// independent — editing one never moves the other — so this is the one
+    /// place both change together.
+    func applyRecommendedRezero(_ value: Float, to draft: BlockGroupDraft) {
+        draft.group.rezeroAlphaInit = value
+        draft.group.rezeroAlphaCap = value
     }
 
     /// The depth-appropriate ReZero α init for the current TOTAL block count
@@ -238,7 +214,7 @@ final class BuildNewModelModel {
         1.0 / Float(totalBlocks)
     }
 
-    /// True when the group at `index` has ReZero enabled and a depth-scaled
+    /// True when `g` has ReZero enabled and a depth-scaled
     /// ReZero value that matches NEITHER depth-appropriate value (`1/√N` nor
     /// `1/N`) — i.e. likely a stale value carried from a shallower preset.
     /// Tolerance absorbs float round-trip noise (stored values like
@@ -251,10 +227,8 @@ final class BuildNewModelModel {
     /// every depth, so it is never flagged; a non-zero init is the starting
     /// branch scale and is held to the same recommendation as the cap. For
     /// every group whose cap equals its init (all presets and every model
-    /// before the explicit cap) this is exactly the old init-only check.
-    func rezeroDepthScaleMismatch(at index: Int) -> Bool {
-        guard blockGroups.indices.contains(index) else { return false }
-        let g = blockGroups[index]
+    /// before the explicit cap) this reduces to a check of the init alone.
+    func rezeroDepthScaleMismatch(for g: BlockGroup) -> Bool {
         guard g.useRezero else { return false }
         func matchesNeither(_ value: Float) -> Bool {
             abs(value - recommendedRezeroAlphaInit) > 1e-4

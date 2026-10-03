@@ -494,6 +494,21 @@ struct BlockGroup: Codable, Hashable, Sendable {
         Float(Double(alphaInit) * NetworkArchitecture.rezeroTanhCeilingMultiple)
     }
 
+    /// Set the group's main-path activation. On a group without an SE block
+    /// `seActivation` moves with it: there it is dead configuration (no FC1
+    /// to apply it to) and `validate()` requires the two equal, so two
+    /// architectures that build the same graph stay equal. On a group with an
+    /// SE block `seActivation` is left alone — it changes only when set on its
+    /// own. The single rule the Build-New-Model screen and
+    /// `--derive-model --set-activation` both apply, so the same edit made
+    /// either way yields the same architecture.
+    mutating func setActivationFunction(_ activation: ActivationFunction) {
+        activationFunction = activation
+        if seStyle == .none {
+            seActivation = activation
+        }
+    }
+
     enum CodingKeys: String, CodingKey {
         case count
         case channels
