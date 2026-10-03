@@ -152,7 +152,8 @@ extension NumericsAudit {
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     continuation.resume(returning: try ChessNetwork(
-                        arch: arch, bnMode: .inference, policyTailPrecision: policyTailPrecision, analysisTaps: true))
+                        arch: arch, bnMode: .inference, initialization: .overwrittenByLoad,
+                        policyTailPrecision: policyTailPrecision, analysisTaps: true))
                 } catch {
                     continuation.resume(throwing: error)
                 }

@@ -962,9 +962,13 @@ final class SessionController {
             if bf16CastInForward {
                 SessionLogger.shared.log("[APP] --bf16-cast-in-forward: trainer using config D (fp32 weight storage, bf16 cast-in-forward)")
             }
+            // Initialized from a drawn seed: every Play-and-Train start
+            // replaces these weights (a reset + load), but the trainer exists
+            // from here on, so it holds real weights until then.
             let t = try ChessTrainer(
                 hyperparameters: hyperparameters,
                 arch: trainerArch,
+                initialization: .drawnSeed(),
                 bf16CastInForward: bf16CastInForward
             )
             trainer = t
@@ -1022,8 +1026,23 @@ final class SessionController {
     /// topology.
     var buildArchitecture: NetworkArchitecture = .newModelDefault
 
+    /// The init seed the Build-New-Model screen entered for the next build,
+    /// or nil for a seed drawn at the build. Used by one build, then cleared,
+    /// so a later Build draws a fresh seed unless one is entered again.
+    var buildInitSeed: UInt64?
+
     func buildNetwork() {
-        SessionLogger.shared.log("[BUTTON] Build Network (\(buildArchitecture.architectureSummary))")
+        let initSeed: UInt64
+        let initSeedSource: String
+        if let entered = buildInitSeed {
+            initSeed = entered
+            initSeedSource = "entered"
+        } else {
+            initSeed = WeightInitialization.drawnInitSeed()
+            initSeedSource = "drawn"
+        }
+        buildInitSeed = nil
+        SessionLogger.shared.log("[BUTTON] Build Network (\(buildArchitecture.architectureSummary)) init_seed=\(initSeed) (\(initSeedSource)) init_scheme=\(WeightInitScheme.current)")
         if isBusyProvider() {
             onRefuseMenuAction(busyReasonProvider())
             return
@@ -1045,7 +1064,7 @@ final class SessionController {
         let arch = buildArchitecture
         Task {
             let result = await Task.detached(priority: .userInitiated) {
-                Self.performBuild(arch: arch)
+                Self.performBuild(arch: arch, mode: .seededRandomWeights(initSeed: initSeed))
             }.value
 
             switch result {
@@ -1058,12 +1077,14 @@ final class SessionController {
                 networkStatus = """
                     Network built in \(String(format: "%.1f", net.buildTimeMs)) ms
                     ID: \(idStr)
+                    Init seed: \(initSeed) (\(initSeedSource), \(WeightInitScheme.current))
                     Architecture: \(net.network.arch.architectureSummary)
                     """
                 SessionLogger.shared.logArchitecture(
                     event: "built champion \(idStr)",
                     arch: net.network.arch
                 )
+                SessionLogger.shared.log("[BUILD] champion \(idStr) built in \(String(format: "%.1f", net.buildTimeMs)) ms init_seed=\(initSeed) init_scheme=\(WeightInitScheme.current)")
                 checkpoint?.lastSavedAt = nil
                 checkpoint?.lastResumedAt = nil
             case .failure(let error):
@@ -1093,8 +1114,10 @@ final class SessionController {
         onDropTrainer()
         onClearTrainingDisplay()
         SessionLogger.shared.log("[BUILD] Auto-build before load (\(targetArch.architectureSummary))")
+        // Every caller loads weights into the champion right after, so the
+        // build draws nothing and the network refuses use until that load.
         let result = await Task.detached(priority: .userInitiated) {
-            Self.performBuild(arch: targetArch)
+            Self.performBuild(arch: targetArch, mode: .weightsToBeLoaded)
         }.value
         switch result {
         case .success(let net):
@@ -1116,7 +1139,7 @@ final class SessionController {
     /// The actual network construction. Runs on a detached `.userInitiated`
     /// task at the call sites (MPSGraph build is long synchronous work), so
     /// this is `nonisolated`.
-    nonisolated static func performBuild(arch: NetworkArchitecture = .current) -> Result<ChessMPSNetwork, Error> {
-        Result { try ChessMPSNetwork(.randomWeights, arch: arch) }
+    nonisolated static func performBuild(arch: NetworkArchitecture, mode: NetworkInitMode) -> Result<ChessMPSNetwork, Error> {
+        Result { try ChessMPSNetwork(mode, arch: arch) }
     }
 }

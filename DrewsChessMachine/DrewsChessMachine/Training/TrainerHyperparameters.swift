@@ -150,6 +150,7 @@ extension ChessTrainer {
     convenience init(
         hyperparameters: TrainerHyperparameters,
         arch: NetworkArchitecture,
+        initialization: WeightInitialization = .drawnSeed(),
         bf16CastInForward: Bool = false,
         policyTailPrecision: ChessNetwork.PolicyTailPrecision = .process
     ) throws {
@@ -172,6 +173,7 @@ extension ChessTrainer {
             sqrtBatchScalingForLR: hyperparameters.sqrtBatchScalingForLR,
             lrWarmupSteps: hyperparameters.lrWarmupSteps,
             arch: arch,
+            initialization: initialization,
             bf16CastInForward: bf16CastInForward,
             policyTailPrecision: policyTailPrecision
         )

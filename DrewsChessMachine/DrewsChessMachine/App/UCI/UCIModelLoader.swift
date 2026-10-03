@@ -188,7 +188,7 @@ enum UCIModelLoader {
     /// Champion-file weights are exactly that length already, so the
     /// prefix is a no-op for them.
     private static func buildAndLoad(weights: [[Float]], arch: NetworkArchitecture) async throws -> ChessMPSNetwork {
-        let network = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let network = try ChessMPSNetwork(.weightsToBeLoaded, arch: arch)
         let baseCount = network.network.trainableVariables.count
             + network.network.bnRunningStatsVariables.count
         guard weights.count >= baseCount else {

@@ -1991,7 +1991,7 @@ enum CheckpointManager {
         //    loadWeights → graph state is caught end-to-end.
         let scratch: ChessMPSNetwork
         do {
-            scratch = try ChessMPSNetwork(.randomWeights, arch: architecture)
+            scratch = try ChessMPSNetwork(.weightsToBeLoaded, arch: architecture)
             scratch.network.commandQueue.label = "verifyModelFile scratch"
         } catch {
             throw CheckpointManagerError.verificationScratchBuildFailed(error)

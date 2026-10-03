@@ -114,7 +114,7 @@ enum NumericsAuditCLI {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    let network = try ChessNetwork(arch: arch, bnMode: .inference)
+                    let network = try ChessNetwork(arch: arch, bnMode: .inference, initialization: .overwrittenByLoad)
                     continuation.resume(returning: (network.trainableVariables + network.bnRunningStatsVariables).map { $0.operation.name })
                 } catch {
                     continuation.resume(throwing: error)

@@ -7,9 +7,11 @@
 //  `--start-model` across multiple runs (e.g. clean A/B comparisons where every
 //  run must begin from byte-identical weights).
 //
-//  Cost profile mirrors `--probe-model`: one network build (`.randomWeights`,
-//  which includes a one-shot BN warmup forward) + a weight export + a file
-//  write. Forward-only, so it coexists with a running training job the same way
+//  Cost profile mirrors `--probe-model`: one network build (a seeded fresh
+//  network, which includes a one-shot BN warmup forward) + a weight export + a
+//  file write. The init seed (`--init-seed`, or drawn) and its scheme are
+//  logged and written into the file, so the same seed re-mints the same
+//  tensors. Forward-only, so it coexists with a running training job the same way
 //  a probe does (it does NOT open a second training command stream).
 //
 
@@ -25,7 +27,8 @@ enum NewModelCLI {
     /// preset/file via `ArchitecturePresetStore`). `modelID` is minted by the
     /// caller on the main actor (the minter is main-actor isolated; this
     /// routine runs its GPU work off-actor).
-    static func runAndExit(architecture arch: NetworkArchitecture, name: String, outPath: String?, modelID: String) -> Never {
+    static func runAndExit(architecture arch: NetworkArchitecture, name: String, outPath: String?, modelID: String,
+                           enteredInitSeed: UInt64?) -> Never {
         SessionLogger.shared.start()
 
         // Defensive re-validation (the caller already validated via the store).
@@ -66,17 +69,31 @@ enum NewModelCLI {
             Darwin.exit(72)
         }
 
+        let initSeed: UInt64
+        let initSeedSource: String
+        if let enteredInitSeed {
+            initSeed = enteredInitSeed
+            initSeedSource = "entered"
+        } else {
+            initSeed = WeightInitialization.drawnInitSeed()
+            initSeedSource = "drawn"
+        }
+        let initLine = "init_seed=\(initSeed) (\(initSeedSource)) init_scheme=\(WeightInitScheme.current)"
         FileHandle.standardError.write(Data(
-            "[NEW-MODEL] minting \(name) (v\(arch.architectureVersionLabel), \(arch.parameterCount) params) id=\(modelID)\n".utf8
+            "[NEW-MODEL] minting \(name) (v\(arch.architectureVersionLabel), \(arch.parameterCount) params) id=\(modelID) \(initLine)\n".utf8
         ))
+        SessionLogger.shared.log("[NEW-MODEL] minting \(name) id=\(modelID) \(initLine)")
 
         do {
             // Build with random weights (includes the BN warmup forward) and
             // export the persistent tensors, off the main actor.
-            let weights = try syncWait { () async throws -> [[Float]] in
-                let net = try ChessMPSNetwork(.randomWeights, arch: arch)
-                return try await net.network.exportWeights()
+            let (weights, buildTimeMs) = try syncWait { () async throws -> ([[Float]], Double) in
+                let net = try ChessMPSNetwork(.seededRandomWeights(initSeed: initSeed), arch: arch)
+                return (try await net.network.exportWeights(), net.buildTimeMs)
             }
+            let builtLine = "[NEW-MODEL] built \(name) in \(String(format: "%.1f", buildTimeMs)) ms"
+            FileHandle.standardError.write(Data((builtLine + "\n").utf8))
+            SessionLogger.shared.log(builtLine)
             // Sanity: the exported tensor count must equal the plan — the same
             // index-aligned contract the loaders rely on.
             let planCount = arch.weightTensorPlan().count
@@ -92,7 +109,8 @@ enum NewModelCLI {
                 trainingStep: nil,
                 parentModelID: "",
                 notes: "fresh \(name) net (untrained), arch v\(arch.architectureVersionLabel), "
-                    + "BN warm-up under policy tail precision \(ChessNetwork.PolicyTailPrecision.process.rawValue)"
+                    + "BN warm-up under policy tail precision \(ChessNetwork.PolicyTailPrecision.process.rawValue)",
+                initRecord: ModelInitRecord(initSeed: initSeed, scheme: WeightInitScheme.current)
             )
             let encoded = try SafetensorsModelIO.encode(
                 modelID: modelID,

@@ -283,7 +283,7 @@ extension SessionController {
         guard let trainer else { return nil }
         do {
             let weights = try await trainer.network.exportWeights()
-            let probe = try ChessMPSNetwork(.randomWeights, arch: trainer.arch)
+            let probe = try ChessMPSNetwork(.weightsToBeLoaded, arch: trainer.arch)
             try await probe.loadWeights(weights)
             // Inherit the trainer's id so logs / JSON record exactly
             // whose weights are being probed — same pattern as

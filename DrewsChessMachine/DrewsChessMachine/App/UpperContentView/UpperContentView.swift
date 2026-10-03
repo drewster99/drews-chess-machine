@@ -1221,8 +1221,9 @@ struct UpperContentView: View {
         .sheet(isPresented: $showBuildNewModelSheet) {
             BuildNewModelView(
                 initial: NamedArchitecture(label: "Custom", architecture: .newModelDefault),
-                onBuild: { arch in
-                    session.buildArchitecture = arch
+                onBuild: { request in
+                    session.buildArchitecture = request.architecture
+                    session.buildInitSeed = request.enteredInitSeed
                     showBuildNewModelSheet = false
                     session.buildNetwork()
                 },

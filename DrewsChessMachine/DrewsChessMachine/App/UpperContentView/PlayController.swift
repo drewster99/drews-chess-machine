@@ -997,7 +997,7 @@ final class PlayController {
     private nonisolated static func buildBareInferenceNetwork(
         arch: NetworkArchitecture
     ) async throws -> ChessMPSNetwork {
-        try await InferenceNetworkFactory.build(arch: arch)
+        try await InferenceNetworkFactory.buildAwaitingLoad(arch: arch)
     }
 
     /// Compact human-readable form of a `RawGameResult` for the session log.

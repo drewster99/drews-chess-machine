@@ -472,7 +472,7 @@ enum ProbeModelCLI {
     /// per battery, plus per-position records when `includePositions`.
     private static func probeOne(weightFileURL: URL, set: ProbeSet, includePositions: Bool) async throws -> ProbeOutcome {
         let file = try CheckpointManager.loadModelFile(at: weightFileURL)
-        let network = try ChessMPSNetwork(.randomWeights, arch: file.architecture)
+        let network = try ChessMPSNetwork(.weightsToBeLoaded, arch: file.architecture)
         // Trainer files carry optimizer velocity after the base block;
         // inference needs only the leading trainables + BN running stats
         // (same prefix rule as UCIModelLoader.buildAndLoad).

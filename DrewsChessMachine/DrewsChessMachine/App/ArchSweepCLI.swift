@@ -112,7 +112,7 @@ enum ArchSweepCLI {
             emit(["event": "build_begin", "blocks": n, "params": arch.parameterCount])
             do {
                 let t0 = CFAbsoluteTimeGetCurrent()
-                let trainer = try ChessTrainer(arch: arch)
+                let trainer = try ChessTrainer(arch: arch, initialization: .drawnSeed())
                 let buildMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
                 emit(["event": "build", "blocks": n, "params": arch.parameterCount, "buildMs": buildMs])
 

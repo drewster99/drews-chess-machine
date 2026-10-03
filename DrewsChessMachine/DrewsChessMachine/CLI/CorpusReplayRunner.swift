@@ -1133,14 +1133,29 @@ enum CorpusReplayRunner {
         let startGlobalIndex = cumGames[startShardCursor] + startWithinShardSkip
 
         emit("[REPLAY] building network + trainer (encoding=\(arch.inputEncoding.rawValue))")
-        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        // With a start model, both networks receive its weights below and draw
+        // nothing; without one, both start from the same drawn init seed,
+        // logged so the run can be reproduced.
+        let netMode: NetworkInitMode
+        let trainerInitialization: WeightInitialization
+        if startModelFile != nil {
+            netMode = .weightsToBeLoaded
+            trainerInitialization = .overwrittenByLoad
+        } else {
+            let initSeed = WeightInitialization.drawnInitSeed()
+            emit("[REPLAY] fresh nets init_seed=\(initSeed) init_scheme=\(WeightInitScheme.current)")
+            netMode = .seededRandomWeights(initSeed: initSeed)
+            trainerInitialization = .seeded(initSeed: initSeed)
+        }
+        let net = try ChessMPSNetwork(netMode, arch: arch)
         // Configured through `TrainerHyperparameters` — the same path the GUI
         // session uses — so this trainer gets every trainer-level parameter,
         // including the LR/momentum cycle and its decay envelope, dropout, and
         // the stats / KL-probe intervals. With both cycle flags off the cycle
         // is inert and the static LR and momentum apply, exactly as in the GUI.
         let trainer = try ChessTrainer(
-            hyperparameters: trainerHyperparameters, arch: arch, policyTailPrecision: config.policyTailPrecision)
+            hyperparameters: trainerHyperparameters, arch: arch, initialization: trainerInitialization,
+            policyTailPrecision: config.policyTailPrecision)
         emit(ChessNetwork.PolicyTailPrecision.processLogLine)
         // A requested GPU capture must be possible before any buffer fill or
         // training is spent on the run (the capture itself starts at its step).

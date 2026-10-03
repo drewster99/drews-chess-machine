@@ -9,6 +9,16 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-02 CDT — Seeded per-tensor weight initialization (determinism plan P5)
+
+- **Every random weight is a function of `(init seed, tensor name)`.** `WeightInitScheme` (`dcm-init-1`) draws each conv / FC weight from its own stream, `init/<safetensors name>` under the model's init seed, through `DCMRandom.nextStandardNormalPair` — Box–Muller on a fixed grid with our own `log` / `cos` (`DCMNormalMath`, plain IEEE `+ − × ÷ √` only) instead of vForce / libm, so a seed gives bit-identical weights on every chip and OS. Values are drawn row-major in the on-disk layout and scaled in fp32 (He / Glorot from the tensor's own fans); bf16 storage holds their rounding. Two architectures that share a tensor (same name and shape) get the same values for it; adding a block changes nothing that already existed.
+- **The graph builder initializes by plan name and is checked against the plan** (`TensorInitializer`): every name must be in `weightTensorPlan()` with the same shape, none twice, and every conv / FC weight must be covered.
+- **Networks that receive loaded weights draw nothing** (`WeightInitialization.overwrittenByLoad`, `ChessMPSNetwork(.weightsToBeLoaded)`): model and session loads, inference mirrors, arena / probe networks, UCI, the checkpoint verifier, the BN-calibration sibling, and trainers about to load. Such a network refuses to evaluate, export, compute statistics or train until `loadWeights` has run (`ChessNetworkError.weightsNotLoaded`), so a missing load is an error instead of silently random weights.
+- **Fresh mints are reproducible and record their seed.** `--new-model --init-seed <u64>` (or a drawn seed) mints the same tensors on every machine; the seed and scheme are logged and written as `init_seed` / `init_scheme` safetensors metadata. Build New Model has an optional **Init seed** field (empty = drawn, shown in the status and the `[BUTTON]` log line). The BN-calibration warmup game is walked from the mint's `init.bn_calibration` stream. Fresh corpus-replay and train-vs-UCI runs (no start model) log their drawn seed.
+- **`--derive-model --set-se-beta-init glorot`** re-draws β with the same per-tensor stream under `--init-seed` (or a drawn seed), recorded in `derivation_history`.
+- `scripts/init_reproducibility.sh` mints a fixed set of seeds × presets and prints tensor-data hashes for comparing machines.
+- Tests: `DCMNormalMathTests` (exhaustive over every grid input), `InitSchemeGoldenTests` (goldens from an independent Python implementation), `WeightInitializationTests`, `InitSeedRecordingTests`.
+
 ## 2026-10-02 CDT — Headless runs check their outputs before training
 
 - **`--output` never silently replaces an earlier run's results.** GUI `--train`, `--replay-corpus` and `--train-vs-uci` check the destination at launch (`CliResultsOutput.preflight`): the folder must exist and be writable, a folder or link at the path is refused, and an existing file is refused unless the new `--overwrite-output` flag is passed — and then only that very file is replaced. If something appears at, or replaces, the destination during the run, it is left untouched and the results go to `<name>-2.<ext>` (…) with an `[ALARM]`. `CliTrainingRecorder.writeJSON(to:)` is now a regular-file-only replace through `FileSafety`.

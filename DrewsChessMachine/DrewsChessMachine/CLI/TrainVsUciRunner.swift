@@ -241,7 +241,8 @@ enum TrainVsUciRunner {
         // avoids concurrent eval/train GPU access to one network and the
         // ChessNetwork/ChessMPSNetwork type mismatch (trainer.network is a
         // ChessNetwork; the driver + ActiveGame need a ChessMPSNetwork).
-        let evalNet = try ChessMPSNetwork(.randomWeights, arch: arch)
+        // Always loaded below — from the start model, or from the trainer.
+        let evalNet = try ChessMPSNetwork(.weightsToBeLoaded, arch: arch)
         // Configured through `TrainerHyperparameters` — the same path the GUI
         // session and corpus replay use — so every trainer-level parameter
         // lands, including the LR/momentum cycle, dropout and the stats /
@@ -256,7 +257,13 @@ enum TrainVsUciRunner {
             resumedHyperparameters = p.trainer.adoptingSchedule(resumeSnapshot.schedule)
         }
         let hp = resumedHyperparameters
-        let trainer = try ChessTrainer(hyperparameters: hp, arch: arch)
+        // A start model's weights replace the trainer's; a fresh run starts
+        // from a drawn init seed, logged so the run can be reproduced.
+        let trainerInitialization: WeightInitialization = startModelFile != nil ? .overwrittenByLoad : .drawnSeed()
+        if let initSeed = trainerInitialization.initSeed {
+            emit("[VS-UCI] fresh trainer init_seed=\(initSeed) init_scheme=\(WeightInitScheme.current)")
+        }
+        let trainer = try ChessTrainer(hyperparameters: hp, arch: arch, initialization: trainerInitialization)
         emit(ChessNetwork.PolicyTailPrecision.processLogLine)
         // Field for field with `[REPLAY-HPARAMS]` so the two CLI paths can be
         // diffed directly.

@@ -17,7 +17,7 @@ import SwiftUI
 struct BuildNewModelView: View {
 
     @State private var model: BuildNewModelModel
-    private let onBuild: (NetworkArchitecture) -> Void
+    private let onBuild: (BuildNewModelRequest) -> Void
     private let onCancel: () -> Void
 
     @State private var saveStatus: String?
@@ -39,7 +39,7 @@ struct BuildNewModelView: View {
 
     init(
         initial: NamedArchitecture,
-        onBuild: @escaping (NetworkArchitecture) -> Void,
+        onBuild: @escaping (BuildNewModelRequest) -> Void,
         onCancel: @escaping () -> Void
     ) {
         _model = State(initialValue: BuildNewModelModel(initial))
@@ -140,6 +140,10 @@ struct BuildNewModelView: View {
 
                     Section("Name") {
                         TextField("Label", text: $model.labelOverride, prompt: Text(model.label))
+                    }
+
+                    Section("Initialization") {
+                        BuildInitSeedField(model: model)
                     }
                 }
                 .formStyle(.grouped)
@@ -262,9 +266,11 @@ struct BuildNewModelView: View {
 
             Spacer()
             Button("Cancel", role: .cancel) { onCancel() }
-            Button("Build") { onBuild(model.architecture) }
+            Button("Build") {
+                if let request = model.buildRequest { onBuild(request) }
+            }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!model.isValid)
+                .disabled(model.buildRequest == nil)
         }
         .padding()
     }

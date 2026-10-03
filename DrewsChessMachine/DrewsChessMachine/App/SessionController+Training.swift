@@ -1278,7 +1278,7 @@ extension SessionController {
             if needsCandidateBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights, arch: champArch)
+                        try ChessMPSNetwork(.weightsToBeLoaded, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining candidate Inference"
                     await MainActor.run {
@@ -1298,7 +1298,7 @@ extension SessionController {
             if needsProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights, arch: champArch)
+                        try ChessMPSNetwork(.weightsToBeLoaded, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining probe Inference"
                     await MainActor.run {
@@ -1319,7 +1319,7 @@ extension SessionController {
             if needsArenaChampionBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights, arch: champArch)
+                        try ChessMPSNetwork(.weightsToBeLoaded, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining arena champion"
                     await MainActor.run {
@@ -1347,7 +1347,7 @@ extension SessionController {
             if needsLichessProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights, arch: champArch)
+                        try ChessMPSNetwork(.weightsToBeLoaded, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining lichess probe Inference"
                     await MainActor.run {
@@ -1374,7 +1374,7 @@ extension SessionController {
             if needsTacticalProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights, arch: champArch)
+                        try ChessMPSNetwork(.weightsToBeLoaded, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining tactical probe Inference"
                     await MainActor.run {
@@ -1426,7 +1426,8 @@ extension SessionController {
                 case .continueAfterStop, .newSessionKeepTrainer:
                     break
                 case .freshOrFromLoadedSession:
-                    try await trainer.resetNetwork()
+                    // Both branches below load the trainer's weights.
+                    try await trainer.resetNetwork(initialization: .overwrittenByLoad)
                     if let trainerWeights = resumedTrainerWeights, let rs = resumeState {
                         // Session resume: the exact trainer state, through
                         // the same `restoreExactly` the CLI runners'
@@ -1468,7 +1469,7 @@ extension SessionController {
                         }
                     }
                 case .newSessionResetTrainerFromChampion:
-                    try await trainer.resetNetwork()
+                    try await trainer.resetNetwork(initialization: .overwrittenByLoad)
                     try await Task.detached(priority: .userInitiated) {
                         // User explicitly asked to discard trainer state
                         // and re-fork from champion. Velocity goes back

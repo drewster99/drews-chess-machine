@@ -2051,6 +2051,7 @@ final class ChessTrainer: @unchecked Sendable {
         sqrtBatchScalingForLR: Bool = SqrtBatchScalingLR.declaredDefault,
         lrWarmupSteps: Int = LRWarmupSteps.declaredDefault,
         arch: NetworkArchitecture = .current,
+        initialization: WeightInitialization = .drawnSeed(),
         executableOptimizationLevel: MPSGraphOptimization = .level1,
         splitWorkingWeightSync: Bool = true,
         bf16CastInForward: Bool = false,
@@ -2082,7 +2083,8 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyTailPrecision = policyTailPrecision
         self.disableAutoLayoutConversion = disableAutoLayoutConversion
         self.reducedPrecisionFastMathRaw = reducedPrecisionFastMathRaw
-        let net = try ChessNetwork(arch: arch, bnMode: .training, bf16CastInForward: bf16CastInForward,
+        let net = try ChessNetwork(arch: arch, bnMode: .training, initialization: initialization,
+                                   bf16CastInForward: bf16CastInForward,
                                    policyTailPrecision: policyTailPrecision,
                                    disableAutoLayoutConversion: disableAutoLayoutConversion,
                                    reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
@@ -2304,20 +2306,29 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
-    /// Tear down the current training-mode network and build a fresh one.
-    /// Used at the start of a sweep so each run starts from random weights
-    /// rather than whatever the previous run left behind. Throws if the
-    /// underlying ChessNetwork init fails (Metal/device problems) or if
-    /// gradient lookup fails for any trainable variable.
+    /// Tear down the current training-mode network and build a fresh one
+    /// from a freshly drawn init seed. Used at the start of a sweep so each
+    /// run starts from random weights rather than whatever the previous run
+    /// left behind. Throws if the underlying ChessNetwork init fails
+    /// (Metal/device problems) or if gradient lookup fails for any trainable
+    /// variable.
     func resetNetwork() async throws {
+        try await resetNetwork(initialization: .drawnSeed())
+    }
+
+    /// Tear down the current training-mode network and build a fresh one
+    /// initialized as `initialization` says — `overwrittenByLoad` when the
+    /// caller loads trainer weights right after.
+    func resetNetwork(initialization: WeightInitialization) async throws {
         noteWeightsReplaced()
         try await enqueue {
-            try self.internalResetNetwork()
+            try self.internalResetNetwork(initialization: initialization)
         }
     }
 
-    private func internalResetNetwork() throws {
-        let net = try ChessNetwork(arch: arch, bnMode: .training, bf16CastInForward: bf16CastInForward,
+    private func internalResetNetwork(initialization: WeightInitialization) throws {
+        let net = try ChessNetwork(arch: arch, bnMode: .training, initialization: initialization,
+                                   bf16CastInForward: bf16CastInForward,
                                    policyTailPrecision: policyTailPrecision,
                                    disableAutoLayoutConversion: disableAutoLayoutConversion,
                                    reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
@@ -4476,6 +4487,7 @@ final class ChessTrainer: @unchecked Sendable {
     }
 
     private func internalTrainStep(batchSize: Int, queueWaitMs: Double = 0) throws -> TrainStepTiming {
+        try network.requireLoadedWeights("trainStep")
         let totalStart = CFAbsoluteTimeGetCurrent()
 
         // --- Data prep: synthesize random boards, moves, outcomes ---
@@ -4618,6 +4630,7 @@ final class ChessTrainer: @unchecked Sendable {
             let sampledBatchDrawFraction: Double
         }
         let phase1: Phase1? = try await enqueue { [batchSize] in
+            try self.network.requireLoadedWeights("trainStep")
             let phase1Start = CFAbsoluteTimeGetCurrent()
             self.ensureReplayBatchCapacity(batchSize)
             guard

@@ -448,13 +448,41 @@ enum ModelDerivation {
 /// Sets `se_beta_init` on `scale_and_bias` block groups and re-initializes
 /// the β half of each affected block's SE FC2 to match: `zero` writes exact
 /// zeros to the β weight rows and β bias; `glorot` re-draws the β weight rows
-/// from the same Glorot-normal distribution the graph builder uses and zeroes
-/// the β bias (the builder's bias init). The γ half, and every other tensor,
-/// is untouched.
+/// and zeroes the β bias (the builder's bias init). The γ half, and every
+/// other tensor, is untouched.
+///
+/// The `glorot` draw is the graph builder's own: the tensor's
+/// `init/<name>` stream under `initSeed` (`WeightInitScheme`), so a derive
+/// with a recorded seed is reproducible, and its β rows are exactly the β
+/// rows a fresh mint with that init seed would have. The seed and scheme are
+/// written into the derivation record.
 struct SetSEBetaInitDeriveOperation: DeriveOperation {
     let value: SEBetaInit
     /// 0-based block-group indices, or nil for every `scale_and_bias` group.
     let groupIndices: [Int]?
+    /// The init seed of a `glorot` re-draw.
+    let initSeed: UInt64
+
+    /// The operation with an explicit init seed (`--init-seed`).
+    init(value: SEBetaInit, groupIndices: [Int]?, initSeed: UInt64) {
+        self.value = value
+        self.groupIndices = groupIndices
+        self.initSeed = initSeed
+    }
+
+    /// The operation with an init seed drawn for it — the seed is still
+    /// recorded, so the derive can be reproduced with `--init-seed`.
+    init(value: SEBetaInit, groupIndices: [Int]?) {
+        self.init(value: value, groupIndices: groupIndices, initSeed: WeightInitialization.drawnInitSeed())
+    }
+
+    /// This operation re-drawing under `seed` instead.
+    func withInitSeed(_ seed: UInt64) -> SetSEBetaInitDeriveOperation {
+        SetSEBetaInitDeriveOperation(value: value, groupIndices: groupIndices, initSeed: seed)
+    }
+
+    /// Whether this operation draws weights (so an init seed applies to it).
+    var drawsWeights: Bool { value == .glorot }
 
     static let kind = DeriveOperationKind(
         name: "set-se-beta-init",
@@ -462,8 +490,8 @@ struct SetSEBetaInitDeriveOperation: DeriveOperation {
         valueSyntax: SEBetaInit.allCases.map(\.rawValue).joined(separator: "|"),
         summary: "Set se_beta_init on scale_and_bias block groups (all of them, or those named by --group) "
             + "and re-initialize the β half of each affected block's SE FC2 to match: zero = exact zeros, "
-            + "glorot = a fresh Glorot-normal draw (β bias zero). The γ half and every other tensor are "
-            + "copied bit-exact.",
+            + "glorot = a fresh Glorot-normal draw (β bias zero) from --init-seed (or a drawn seed, recorded). "
+            + "The γ half and every other tensor are copied bit-exact.",
         changedArchitectureFields: ["block_groups[].se_beta_init"],
         rewrittenTensorsDescription: "blocks.<i>.se_scalebias.fc2.weight rows C..2C-1 and "
             + "blocks.<i>.se_scalebias.fc2.bias C..2C-1, for every block i of an affected group",
@@ -486,7 +514,12 @@ struct SetSEBetaInitDeriveOperation: DeriveOperation {
         } else {
             groups = "all scale_and_bias"
         }
-        return ["value": value.rawValue, "groups": groups]
+        var arguments = ["value": value.rawValue, "groups": groups]
+        if drawsWeights {
+            arguments["init_seed"] = String(initSeed)
+            arguments["init_scheme"] = WeightInitScheme.current
+        }
+        return arguments
     }
 
     /// The group indices this operation targets in `architecture`.
@@ -551,10 +584,13 @@ struct SetSEBetaInitDeriveOperation: DeriveOperation {
                         summary: "β rows \(channels)..<\(2 * channels) zeroed",
                         rewrite: { data in for index in weightRange { data[index] = 0 } }))
                 case .glorot:
-                    // Same distribution as `ChessNetwork.applySE`: a Glorot
-                    // draw for the native [r, 2C] matrix, whose β columns are
-                    // copied into the on-disk [2C, r] β rows.
-                    let fresh = ChessNetwork.glorotInitFloatsFCInOut(shape: [reduced, 2 * channels])
+                    // The builder's own draw for this tensor (native [r, 2C]),
+                    // whose β columns are copied into the on-disk [2C, r] β rows.
+                    guard let weightIndex = planIndexByName[weightName] else {
+                        throw ModelDerivation.DeriveError.missingTensor(name: weightName)
+                    }
+                    let fresh = try WeightInitScheme.nativeValues(
+                        initSeed: initSeed, spec: plan[weightIndex], distribution: .glorotNormal)
                     rewrites.append(DeriveTensorRewrite(
                         tensorName: weightName, rewrittenElementRanges: [weightRange],
                         summary: "β rows \(channels)..<\(2 * channels) re-drawn Glorot-normal",

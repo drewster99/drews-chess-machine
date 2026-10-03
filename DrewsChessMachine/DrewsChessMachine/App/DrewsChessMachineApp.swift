@@ -1978,8 +1978,11 @@ struct DrewsChessMachineApp: App {
 
     // MARK: - Fresh-net mint pre-flight (--new-model)
 
-    /// `--new-model --architecture <name|preset.json|path> [--out-model <path>]`:
-    /// build an untrained net and write it to safetensors, then exit. No
+    /// `--new-model --architecture <name|preset.json|path> [--out-model <path>]
+    /// [--init-seed <u64>]`: build an untrained net and write it to
+    /// safetensors, then exit. `--init-seed` reproduces a mint exactly (the
+    /// same seed and architecture give the same tensors); without it a seed
+    /// is drawn, logged and recorded in the file. No
     /// training. `--architecture` accepts a built-in preset name, a user-saved
     /// preset (a `Presets/<name>.json` written by the Build-New-Model screen,
     /// with or without the `.json` suffix), or a path to any `NamedArchitecture`
@@ -1991,8 +1994,9 @@ struct DrewsChessMachineApp: App {
         guard rawArgs.contains(flag) else { return }
         let archFlag = "--architecture"
         let outFlag = "--out-model"
+        let initSeedFlag = "--init-seed"
 
-        let allowedFlags: Set<String> = [flag, archFlag, outFlag, ChessNetwork.PolicyTailPrecision.flag]
+        let allowedFlags: Set<String> = [flag, archFlag, outFlag, initSeedFlag, ChessNetwork.PolicyTailPrecision.flag]
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
             FileHandle.standardError.write(Data(
                 "error: \(flag) does not accept '\(bad)'\n".utf8
@@ -2037,9 +2041,20 @@ struct DrewsChessMachineApp: App {
 
         // Mint on the main actor (the minter is main-actor isolated); the build
         // runs off-actor inside runAndExit.
+        let enteredInitSeed: UInt64?
+        if let seedText = value(after: initSeedFlag) {
+            guard let seed = UInt64(seedText, radix: 10), !seedText.hasPrefix("+") else {
+                fail("error: \(flag) \(initSeedFlag) '\(seedText)' is not a decimal UInt64", 78)
+            }
+            enteredInitSeed = seed
+        } else {
+            enteredInitSeed = nil
+        }
+
         let modelID = MainActor.assumeIsolated { ModelIDMinter.mint().value }
         NewModelCLI.runAndExit(architecture: named.architecture, name: sourceName,
-                               outPath: value(after: outFlag), modelID: modelID)
+                               outPath: value(after: outFlag), modelID: modelID,
+                               enteredInitSeed: enteredInitSeed)
     }
 
     // MARK: - Replay-buffer analyzer pre-flight (--analyze-replay-buffer)
