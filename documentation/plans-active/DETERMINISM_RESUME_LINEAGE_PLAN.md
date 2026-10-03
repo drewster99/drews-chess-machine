@@ -1783,6 +1783,20 @@ Deviations and decisions:
 - **Not run:** the real-model validation (a trained 5-block → 6-block graft that infers and
   trains one step) — needs a run outside the test suite.
 
+*Real-model validation (2026-10-03, build 2299 / `91fa768e`, owner-approved graft from a trained
+source).* Source: the trained 5-block v5 model `20260713-v5cont-resume-replay-step270000`
+(`20260714-1-h7vI`, training step 270,000; pElo 1782.9, NLL 1.8913 on `--probe-set wide`).
+Target: the same architecture with six blocks. `--graft-to` copied 110 tensors bit-exact and
+initialized the 17 tensors of block 5 under `--init-seed 20261003`; nothing dropped. The grafted
+model (`20261003-18-AkMs`, 10,066,517 parameters) loads, probes (pElo 940.9, NLL 3.6374) and
+trains: three corpus-replay steps ran clean (step-1 loss 3.4887, gNorm 1.922, `rejected=0`) and
+saved. A second graft with the new block's ReZero α initialized to 0 (cap 0.447) probed at pElo
+1080.7, NLL 3.2630 — not function-preserving, because this architecture applies a LayerNorm after
+every residual add (`out:layer_norm`), and a fresh LayerNorm is not the identity even when the
+branch contributes nothing. A function-preserving deepening of an `out:layer_norm` tower would
+need the new block's output norm initialized to undo the normalization, which no init rule does
+today.
+
 **P9 — Exact-resume completion** (C1 #3–#20, #23–#33; D-5…D-8). Files:
 `Training/ReplayBuffer.swift` (slot-source SoA column; age-order refill API that
 starts at slot 0 and sets `writeIndex`; D-5 per-bucket age-ordered FIFO with
