@@ -378,6 +378,21 @@ actor LichessBotSessionManager {
         }
     }
 
+    /// Resign one game in progress (a per-game choice in the finishing
+    /// sheet). A game whose session has already ended is reported as an
+    /// anomaly: there is nothing left to resign.
+    func resign(gameID: String) async {
+        guard let session = sessions[gameID] else {
+            onEvent(.anomaly("resign skipped for \(gameID): its session has already ended"))
+            return
+        }
+        do {
+            try await session.resignNow()
+        } catch {
+            onEvent(.anomaly("resign failed for \(gameID): \(error.localizedDescription)"))
+        }
+    }
+
     // MARK: - Running
 
     /// Hold the event stream until cancelled, the gate closes, or a

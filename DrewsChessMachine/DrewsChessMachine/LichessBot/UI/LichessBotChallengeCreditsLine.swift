@@ -10,11 +10,10 @@ import SwiftUI
 /// - **Challenges, last 24 h** — accepted, declined and refused counts, each
 ///   number directly before its own word, then the acceptance rate.
 ///
-/// The earlier single line ("credits N/M 24 h N/M min accepted N …") put
-/// every number between two labels with equal padding on both sides, so it
-/// was unclear which label a number belonged to, and "credits" was never
-/// explained on screen. Digits stay monospaced so the values don't jitter as
-/// the timer redraws them.
+/// Every count is padded with figure spaces to the width of its budget, so
+/// the words after a number hold their place as the number grows. Words
+/// within one item are joined by no-break spaces, so a narrow Overview wraps
+/// a line only between items, never inside one.
 struct LichessBotChallengeCreditsLine: View {
     let controller: LichessBotController
 
@@ -32,20 +31,51 @@ struct LichessBotChallengeCreditsLine: View {
             .font(.callout)
             .monospacedDigit()
             .foregroundStyle(.secondary)
-            .lineLimit(1)
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private static func lines(log: LichessBotChallengeOutcomeLog?, now: Date) -> (credits: String, outcomes: String) {
+    /// U+2007 FIGURE SPACE: as wide as a digit under `.monospacedDigit()`,
+    /// and a no-break space.
+    static let figureSpace = "\u{2007}"
+    /// U+00A0 NO-BREAK SPACE, between the words of one item.
+    static let noBreakSpace = "\u{00A0}"
+
+    /// `value` right-aligned with figure spaces to the digit count of
+    /// `widest`; a value wider than `widest` is shown in full.
+    static func padded(_ value: Int, toWidthOf widest: Int) -> String {
+        let text = String(value)
+        return String(repeating: figureSpace, count: max(0, String(widest).count - text.count)) + text
+    }
+
+    /// `words` joined with no-break spaces.
+    private static func item(_ words: String...) -> String {
+        words.joined(separator: noBreakSpace)
+    }
+
+    static func lines(log: LichessBotChallengeOutcomeLog?, now: Date) -> (credits: String, outcomes: String) {
         guard let log else { return ("Challenge outcomes not loaded", "") }
         let summary = log.summary(now: now)
-        let rate = summary.acceptanceRate.map { String(format: "%.0f%%", $0 * 100) } ?? "–"
-        let credits = "Challenge credits used:  \(summary.creditsLastDay) of \(LichessBotChallengeCredits.perDay) in 24 h"
-            + "  ·  \(summary.creditsLastMinute) of \(LichessBotChallengeCredits.perMinute) in the last minute"
-        let outcomes = "Challenges, last 24 h:  \(summary.accepted) accepted"
-            + "  ·  \(summary.declined) declined"
-            + "  ·  \(summary.refused) refused"
-            + "  ·  \(rate) acceptance"
+        let perDay = LichessBotChallengeCredits.perDay
+        let perMinute = LichessBotChallengeCredits.perMinute
+        // Answered challenges are bounded by those charged in the day, so
+        // the day's budget is the widest any count can be.
+        let rate: String
+        if let acceptanceRate = summary.acceptanceRate {
+            rate = padded(Int((acceptanceRate * 100).rounded()), toWidthOf: 100) + "%"
+        } else {
+            rate = String(repeating: figureSpace, count: String(100).count - 1) + "–" + figureSpace
+        }
+        let separator = "  ·  "
+        let credits = "Challenge credits used: "
+            + item(padded(summary.creditsLastDay, toWidthOf: perDay), "of", String(perDay), "in", "24", "h")
+            + separator
+            + item(padded(summary.creditsLastMinute, toWidthOf: perMinute), "of", String(perMinute), "in", "the", "last", "minute")
+        let outcomes = "Challenges, last 24 h: "
+            + item(padded(summary.accepted, toWidthOf: perDay), "accepted")
+            + separator + item(padded(summary.declined, toWidthOf: perDay), "declined")
+            + separator + item(padded(summary.refused, toWidthOf: perDay), "refused")
+            + separator + item(rate, "acceptance")
         return (credits, outcomes)
     }
 }
