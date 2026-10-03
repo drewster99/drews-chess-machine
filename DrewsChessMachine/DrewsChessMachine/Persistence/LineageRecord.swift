@@ -339,6 +339,9 @@ struct LineageRecord: Codable, Equatable, Sendable {
                 case .bool(let x): dictionary[id] = x
                 case .int(let x): dictionary[id] = x
                 case .double(let x): dictionary[id] = x
+                // A decimal string, as parameters.json writes it, so a seed
+                // above 2^53 survives JSON number parsing.
+                case .uint64(let x): dictionary[id] = String(x)
                 }
             }
             let data = try JSONSerialization.data(withJSONObject: dictionary, options: [.sortedKeys])
