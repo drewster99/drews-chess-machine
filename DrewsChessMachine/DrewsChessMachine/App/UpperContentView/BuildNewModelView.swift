@@ -110,12 +110,35 @@ struct BuildNewModelView: View {
                         if model.policyHeadStyle != .simpleConv {
                             intField("Policy pre-conv channels (K)", $model.policyPreConvChannels)
                         }
+                        InitOptionRow(
+                            isNonStandard: model.nonStandardInitOptions.contains(.policyHeadFinalInit),
+                            stepZeroEffect: InitOptionField.policyHeadFinalInit.stepZeroEffect
+                        ) {
+                            enumPicker("Final layer init", $model.policyHeadFinalInit, HeadFinalInit.allCases)
+                        }
                     }
 
                     Section("Value head") {
                         enumPicker("Value style", $model.valueHeadStyle, ValueHeadStyle.allCases)
                         intField("Value conv channels", $model.valueHeadConvChannels)
                         intField("Value hidden units", $model.valueHeadHiddenUnits)
+                        InitOptionRow(
+                            isNonStandard: model.nonStandardInitOptions.contains(.valueHeadFinalInit),
+                            stepZeroEffect: InitOptionField.valueHeadFinalInit.stepZeroEffect
+                        ) {
+                            enumPicker("Final layer init", $model.valueHeadFinalInit, HeadFinalInit.allCases)
+                        }
+                        // A scalar head has no draw class; the field stays
+                        // reachable there only to fix a value validate() refuses.
+                        if model.valueHeadStyle == .wdlSoftmax
+                            || model.nonStandardInitOptions.contains(.valueHeadDrawPrior) {
+                            InitOptionRow(
+                                isNonStandard: model.nonStandardInitOptions.contains(.valueHeadDrawPrior),
+                                stepZeroEffect: InitOptionField.valueHeadDrawPrior.stepZeroEffect
+                            ) {
+                                floatField("Initial draw probability", $model.valueHeadDrawPrior)
+                            }
+                        }
                     }
 
                     Section("Feature skip") {
@@ -144,6 +167,7 @@ struct BuildNewModelView: View {
 
                     Section("Initialization") {
                         BuildInitSeedField(model: model)
+                        InitSetButtonsView(model: model)
                     }
                 }
                 .formStyle(.grouped)
@@ -440,6 +464,45 @@ private struct BlockGroupFieldsView: View {
                 .help("Asymptote C of the forward soft bound C·tanh(α/C): the effective branch scale never exceeds C. Must be > 0. Set independently of the α init.")
         }
         floatField("Dropout multiplier", $draft.group.dropoutMultiplier)
+        BlockGroupInitOptionsView(model: model, draft: draft)
+    }
+}
+
+/// The init-neutral options of one block group. Each appears where its layer
+/// exists (an SE block, a post-activation branch, a width-transition skip
+/// projection) and also wherever it holds a non-standard value, so a value
+/// `validate()` refuses after the layer was switched off can be fixed here.
+private struct BlockGroupInitOptionsView: View {
+    let model: BuildNewModelModel
+    @Bindable var draft: BlockGroupDraft
+
+    var body: some View {
+        let groupIndex = model.groupIndex(of: draft)
+        let nonStandard = model.nonStandardInitOptions
+        if draft.group.seStyle != .none || nonStandard.contains(.seGammaBiasInit(group: groupIndex)) {
+            InitOptionRow(
+                isNonStandard: nonStandard.contains(.seGammaBiasInit(group: groupIndex)),
+                stepZeroEffect: InitOptionField.seGammaBiasInit(group: groupIndex).stepZeroEffect
+            ) {
+                floatField("SE γ bias init", $draft.group.seGammaBiasInit)
+            }
+        }
+        if draft.group.activationStyle == .post || nonStandard.contains(.branchOutputInit(group: groupIndex)) {
+            InitOptionRow(
+                isNonStandard: nonStandard.contains(.branchOutputInit(group: groupIndex)),
+                stepZeroEffect: InitOptionField.branchOutputInit(group: groupIndex).stepZeroEffect
+            ) {
+                enumPicker("Branch output init", $draft.group.branchOutputInit, BranchOutputInit.allCases)
+            }
+        }
+        if model.groupHasSkipProjection(draft) || nonStandard.contains(.skipProjectionInit(group: groupIndex)) {
+            InitOptionRow(
+                isNonStandard: nonStandard.contains(.skipProjectionInit(group: groupIndex)),
+                stepZeroEffect: InitOptionField.skipProjectionInit(group: groupIndex).stepZeroEffect
+            ) {
+                enumPicker("Skip projection init", $draft.group.skipProjectionInit, SkipProjectionInit.allCases)
+            }
+        }
     }
 }
 

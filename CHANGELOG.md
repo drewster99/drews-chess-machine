@@ -9,6 +9,32 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-03 CDT — Init-neutral options, architecture format v8 (`67f5ef09`, `0ad20466`)
+
+- **Six new architecture fields** (determinism plan P7; B2, B2.1; D-4). Each one starts a part of the network as a no-op:
+  - Per block group:
+    - `se_gamma_bias_init`: the SE gate bias. Standard 0; neutral `ln 9`, a gate of 0.9.
+    - `branch_output_init`: `standard` | `zero_last_bn_gamma`. Zero γ on the BN after the last conv; post-activation groups only.
+    - `skip_projection_init`: `he` | `identity_like`. Only on groups with a width-transition projection.
+  - On the heads:
+    - `policy_head_final_init` and `value_head_final_init`: `he` | `zero`. A zero policy final gives a uniform policy at step 0; a zero value final gives the head's prior.
+    - `value_head_draw_prior`: standard 0.75, the `[0, ln 6, 0]` bias every model had before this field; W/D/L heads only.
+- **Format v8 requires these fields.** An older file resolves each one to its standard value and logs it once as `[ARCH] legacy …`; so does a file in the pre-block-groups uniform-tower form, whatever version its carrier states. A v8 file that lacks one fails to load. `validate()` refuses an option on a layer that does not exist.
+- **Existing models build bit-identically.** At the standard values every summary is byte-identical to before. A summary line and the diagram show only the options that are not standard.
+- **Build New Model.**
+  - Each option has a field, shown where its layer exists.
+  - A field that differs from the standard init gets an accent tint and a ◆ glyph, plus a tooltip giving its step-0 effect.
+  - **Neutral init** and **Standard init** buttons apply the two sets. Both call `NetworkArchitecture.withNeutralInit` / `withStandardInit`, the only definition of either set. Neutral leaves the draw prior alone; Standard resets it.
+  - The diagram marks non-standard options the same way.
+- **`--derive-model` operations.** `--set-neutral-init all`, plus one `--set-<option>` per option.
+  - Each rewrites only its option's tensors, with the graph builder's own values.
+  - A move back to `he` re-draws the weights from the tensor's `init/<name>` stream.
+  - `--init-seed` now applies to every operation that draws weights (`InitSeedableDeriveOperation`).
+- **Graft onto a non-standard target.** A graft onto a target with an identity-like projection or a zeroed head final no longer refuses with "no recorded draw". `per_tensor_init` records those tensors as `identity_like` / `zero`.
+- Tests: `InitNeutralOptionsTests` (21). Two test literals changed and need owner approval:
+  - `LineageRecordTests` pins the current format version (7 → 8);
+  - `SEBetaInitTests.testOperationCatalogDrivesTheCLI` pins the derive flag list (seven flags added).
+
 ## 2026-10-03 CDT — Corpus replay and train-vs-UCI sample under the sampling constraints
 
 - **Every training path samples the same way.** Corpus replay and train-vs-UCI now set the replay buffer's batch-composition constraints — `max_plies_from_any_one_game`, `max_draw_percent_per_batch`, `target_sampled_game_length_plies`, `replay_buffer_stratify_by_material` — from their parameter snapshot at run start. Before this, only the GUI applied them; both CLI paths drew every batch uniformly, while their lineage records listed the parameters as if they had applied.

@@ -170,9 +170,9 @@ enum DeriveModelCLI {
             }
             var anyDraws = false
             operations = operations.map { operation in
-                guard let seBeta = operation as? SetSEBetaInitDeriveOperation, seBeta.drawsWeights else { return operation }
+                guard let seedable = operation as? any InitSeedableDeriveOperation, seedable.drawsWeights else { return operation }
                 anyDraws = true
-                return seBeta.withInitSeed(seed)
+                return seedable.withInitSeed(seed)
             }
             if !anyDraws {
                 fail("\(initSeedFlag) was given but no requested operation draws weights", 94)

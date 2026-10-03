@@ -23,7 +23,7 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
   trainer-state file. Files with `opt.*.velocity` tensors or `trainer_*` schedule
   metadata are refused, because re-initialized weights would not match the saved
   optimizer state. An operation that rewrites tensors (`--set-se-beta-init`,
-  `--set-rezero-alpha-init`) also needs an untrained source: a recorded
+  `--set-rezero-alpha-init`, and every init-option operation) also needs an untrained source: a recorded
   `training_step` above zero is refused, because the rewrite would reset learned
   weights while the new file kept the source's training step and lineage, and a
   `training_step` that is not a non-negative integer is refused as well. Operations
@@ -33,8 +33,9 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
   differ from `--from`. Nothing is ever overwritten.
 - `--group <index>`: a 0-based block-group index (repeatable). It narrows operations that
   accept it. Without it, an operation applies to every group it can apply to.
-- `--init-seed <u64>`: the init seed of an operation that draws weights
-  (`--set-se-beta-init glorot`). Without it a seed is drawn. Either way the seed and the
+- `--init-seed <u64>`: the init seed of every operation that draws weights
+  (`--set-se-beta-init glorot`, and `he` for `--set-skip-projection-init`,
+  `--set-policy-head-final-init` and `--set-value-head-final-init`). Without it a seed is drawn. Either way the seed and the
   init scheme (`dcm-init-1`) are written into that operation's `derivation_history`
   record, so the derive can be repeated exactly. Given with no weight-drawing operation,
   it is refused.
@@ -50,6 +51,13 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
 | `--set-se-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | `block_groups[].se_activation` on groups with an SE block | none (activations have no parameters) |
 | `--set-rezero-alpha-init` | a number `>= 0` | `block_groups[].rezero_alpha_init` on groups with ReZero | `blocks.<i>.rezero_alpha` (the one-element α tensor) of every block in an affected group, set to exactly the value |
 | `--set-rezero-alpha-cap` | a number `> 0` | `block_groups[].rezero_alpha_cap` on groups with ReZero | none (the cap has no parameters) |
+| `--set-neutral-init` | `all` | the Neutral init set (below) on every block group and head; not the draw prior | the tensors of every option the set changes |
+| `--set-se-gamma-bias-init` | a finite number | `block_groups[].se_gamma_bias_init` on groups with an SE block | γ half of each affected block's SE FC2 bias (`blocks.<i>.se_attenuate.fc2.bias`, or `blocks.<i>.se_scalebias.fc2.bias` 0..C−1), set to the value |
+| `--set-branch-output-init` | `standard` \| `zero_last_bn_gamma` | `block_groups[].branch_output_init` on post-activation groups | `blocks.<i>.bn2.weight` of every block in an affected group: 0 for `zero_last_bn_gamma`, 1 for `standard` |
+| `--set-skip-projection-init` | `he` \| `identity_like` | `block_groups[].skip_projection_init` on groups that change width | each affected `blocks.<i>.skip_proj.weight`: the identity-like constant, or a He draw |
+| `--set-policy-head-final-init` | `he` \| `zero` | `policy_head_final_init` | `policy.conv.weight` (`simple_conv`, `intermediate_conv`) or `policy.fc.weight` (`fc_bottleneck`): zeros, or a He draw |
+| `--set-value-head-final-init` | `he` \| `zero` | `value_head_final_init` | `value.wdl_fc2.weight` (or `value.scalar_fc2.weight`): zeros, or a He draw; the bias is untouched |
+| `--set-value-head-draw-prior` | a probability in (0, 1) | `value_head_draw_prior` (W/D/L head only) | `value.wdl_fc2.bias`, set to `[0, ln(2p/(1−p)), 0]` |
 
 `zero` writes exact zeros to the β weights and bias. `glorot` re-draws the β weights
 with the graph builder's own seeded per-tensor draw (the tensor's `init/<name>` stream
@@ -83,9 +91,48 @@ bound `C·tanh(α/C)`, on groups with ReZero (all, or those named by `--group`).
 changes. Both ReZero operations refuse a group named by `--group` that has no ReZero, and
 the derived architecture must validate (cap finite and `> 0`, init finite and `>= 0`).
 
+### Init-neutral options
+
+The last seven operations set the init-neutral options (determinism plan B2.1, decision
+D-4). Each starts a part of the network as a no-op, or as close to one as its layer
+allows, so an ablation can ask what that part contributes when it starts from nothing.
+Each writes exactly the values a fresh build of the target architecture has, from the
+same functions the graph builder uses (`WeightInitScheme`, `ChessNetwork`), so a
+derived tensor matches a fresh mint of the target.
+
+- `se_gamma_bias_init` (standard `0`, gate σ(0) = 0.5 at step 0): the bias of the SE
+  gate's pre-sigmoid half. The neutral value is `ln 9`, a gate of 0.9.
+- `branch_output_init: zero_last_bn_gamma` (post-activation groups only): the BN after
+  each block's last conv starts with γ = 0, so the residual branch adds nothing at step 0
+  and the block passes its skip through. Pre-activation groups refuse it.
+- `skip_projection_init: identity_like` (groups that change width only): the 1×1
+  projection maps input channel i to output channel i with weight 1 and is 0 elsewhere,
+  so the first `min(in, out)` channels pass through unchanged.
+- `policy_head_final_init: zero`: the policy's final projection is zero, so every
+  logit is its bias and the policy is uniform over legal moves at step 0.
+- `value_head_final_init: zero`: the value head's final FC weight is zero, so its
+  softmax is its bias prior at step 0.
+- `value_head_draw_prior` (standard `0.75`, the bias `[0, ln 6, 0]` every model had
+  before the option): the W/D/L head's draw probability at step 0. A scalar head has no
+  draw class and requires the standard value.
+
+A zero head final passes no gradient back into the trunk on the first step
+(∂L/∂features = Wᵀ·∂L/∂logits = 0), so the first step moves only the head finals; a
+zeroed last-BN γ starts moving on the second.
+
+`--set-neutral-init all` applies the Build New Model screen's **Neutral init**
+(`NetworkArchitecture.withNeutralInit`): each option above takes its neutral value
+wherever its layer exists. The draw prior is not part of the set and is left as it is.
+Every neutral value is a constant, so it draws nothing. A He re-draw (moving an option
+back to `he`) uses the tensor's own `init/<name>` stream under the init seed.
+
+### Order
+
 Operations run in the order listed above, so `--set-activation X --set-se-activation Y`
 gives activation X with an FC1 activation of Y, and passing the same value to both gives
-that activation everywhere. The SE gate (sigmoid) and the value output (softmax or tanh)
+that activation everywhere. `--set-neutral-init` runs before the per-option operations,
+so `--set-neutral-init all --set-value-head-final-init he` is the neutral set with the
+value head's final layer re-drawn. The SE gate (sigmoid) and the value output (softmax or tanh)
 are structural and don't change.
 
 ## Examples
@@ -111,6 +158,13 @@ DrewsChessMachine --derive-model --from fresh.safetensors --set-activation leaky
 DrewsChessMachine --derive-model --from fresh.safetensors --set-rezero-alpha-init 0 \
     --set-rezero-alpha-cap 1 --out fresh-rz0-cap1.safetensors
 
+# The neutral-init twin of a fresh net (constants only, no seed needed):
+DrewsChessMachine --derive-model --from fresh.safetensors --set-neutral-init all --out fresh-neutral.safetensors
+
+# Only the heads zeroed, with an initial draw probability of 0.5:
+DrewsChessMachine --derive-model --from fresh.safetensors --set-policy-head-final-init zero \
+    --set-value-head-final-init zero --set-value-head-draw-prior 0.5 --out fresh-heads0.safetensors
+
 # Use the derived net as a fixed starting point:
 DrewsChessMachine --replay-corpus <corpus> --start-model fresh-beta0.safetensors --parameters parameters.json ...
 ```
@@ -128,7 +182,8 @@ DrewsChessMachine --replay-corpus <corpus> --start-model fresh-beta0.safetensors
 - `dcm_format_version` = the current version (`ArchitectureFormat.currentVersion`), and the target architecture. A legacy
   source (format v5 or older) is read under the legacy rules (`se_beta_init` → `glorot`
   before v4, `se_activation` → the group's activation before v5, `rezero_alpha_cap` →
-  the group's `rezero_alpha_init` before v6); the derived file states every field.
+  the group's `rezero_alpha_init` before v6, every init-neutral option → its standard value
+  before v8); the derived file states every field.
 - Every other `__metadata__` key of the source is copied verbatim. This includes
   `training_step`, the value-head centering marker, and any `replay_*` provenance.
 
@@ -141,8 +196,10 @@ DrewsChessMachine --replay-corpus <corpus> --start-model fresh-beta0.safetensors
   to be bit-identical to the source.
 - A request that changes nothing is refused. So is a group out of range, a group whose SE
   style has no β half (`--set-se-beta-init`), a group without an SE block
-  (`--set-se-activation`), or a group without ReZero (`--set-rezero-alpha-init`,
-  `--set-rezero-alpha-cap`).
+  (`--set-se-activation`, `--set-se-gamma-bias-init`), a group without ReZero
+  (`--set-rezero-alpha-init`, `--set-rezero-alpha-cap`), a group that is not
+  post-activation (`--set-branch-output-init`), a group that does not change width
+  (`--set-skip-projection-init`), or a draw prior on a scalar value head.
 - The output is decoded back through the normal loader before it is written.
 
 ## Grafting onto another architecture (`--graft-to`)
@@ -195,8 +252,10 @@ source has one. Its `derivation_history` record has operation `graft`, arguments
 `graft_map`, `init_seed_origin`, `bn_running_stats` and `source_training_step`,
 `changed_architecture_fields` = `["*"]`, `rewritten_tensors` = the initialized tensors, and
 `copied_tensors` (renames shown as `old -> new`), `dropped_tensors`, `init_seed`,
-`init_rule_version` and `per_tensor_init` (each initialized tensor's draw — `he_normal`,
-`glorot_normal`, `glorot_normal_zero_beta` — or `builder_constant`). The records of the
+`init_rule_version` and `per_tensor_init` (each initialized conv / FC weight's draw —
+`he_normal`, `glorot_normal`, `glorot_normal_zero_beta` — or its init option's constant —
+`identity_like`, `zero` — and `builder_constant` for every other tensor). A target with
+non-standard init options gives the tensors the graft initializes those options' values. The records of the
 in-place operations carry none of these graft fields.
 
 ```

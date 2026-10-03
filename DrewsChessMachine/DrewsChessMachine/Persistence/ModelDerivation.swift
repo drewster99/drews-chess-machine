@@ -118,6 +118,13 @@ enum ModelDerivation {
         SetSEActivationDeriveOperation.kind,
         SetRezeroAlphaInitDeriveOperation.kind,
         SetRezeroAlphaCapDeriveOperation.kind,
+        SetNeutralInitDeriveOperation.kind,
+        SetSEGammaBiasInitDeriveOperation.kind,
+        SetBranchOutputInitDeriveOperation.kind,
+        SetSkipProjectionInitDeriveOperation.kind,
+        SetPolicyHeadFinalInitDeriveOperation.kind,
+        SetValueHeadFinalInitDeriveOperation.kind,
+        SetValueHeadDrawPriorDeriveOperation.kind,
     ]
 
     /// The kind whose `flag` is `flag`, if any.

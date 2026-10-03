@@ -111,12 +111,21 @@ struct ArchitectureDiagramView: View {
                         line("\(arch.policyHeadInputChannels) → K=\(arch.policyPreConvChannels)")
                     }
                     line("→ \(arch.policySize) logits")
+                    if arch.policyHeadFinalInit != .he {
+                        nonStandardInitLine(" init: final \(arch.policyHeadFinalInit.rawValue)")
+                    }
                     paramsLine(segs.policy)
                 }
                 cell(width: 175, emphasized: false) {
                     line("value · \(arch.valueHeadStyle.rawValue)", bold: true)
                     line("\(arch.valueHeadInputChannels) → \(arch.valueHeadConvChannels)ch → FC\(arch.valueHeadHiddenUnits)")
                     line("→ \(arch.valueHeadClasses) \(arch.valueHeadClasses == 3 ? "(W/D/L)" : "(scalar)")")
+                    if arch.valueHeadFinalInit != .he {
+                        nonStandardInitLine(" init: final \(arch.valueHeadFinalInit.rawValue)")
+                    }
+                    if arch.valueHeadDrawPrior != NetworkArchitecture.standardValueHeadDrawPrior {
+                        nonStandardInitLine(" init: draw p \(String(format: "%.3g", arch.valueHeadDrawPrior))")
+                    }
                     paramsLine(segs.value)
                 }
             }
@@ -143,8 +152,25 @@ struct ArchitectureDiagramView: View {
                 line("out: \(g.resolvedOutputNorm.rawValue)")
             }
             line("drop×\(String(format: "%g", g.dropoutMultiplier))")
+            let initMarker = NetworkArchitecture.groupInitMarker(g)
+            if !initMarker.isEmpty {
+                nonStandardInitLine(initMarker)
+            }
             paramsLine(params)
         }
+    }
+
+    /// A non-standard init-option line: accent-colored AND led by the same
+    /// diamond glyph the editor marks those fields with, so the highlight
+    /// never rests on color alone.
+    @ViewBuilder
+    private func nonStandardInitLine(_ marker: String) -> some View {
+        Text("◆\(marker)")
+            .font(.system(.caption2, design: .monospaced).weight(.semibold))
+            .foregroundStyle(Color.accentColor)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .help("Differs from the standard init")
     }
 
     private func seLabel(_ g: BlockGroup) -> String {

@@ -54,6 +54,11 @@ final class BuildNewModelModel {
     var valueHeadStyle: ValueHeadStyle
     var valueHeadConvChannels: Int
     var valueHeadHiddenUnits: Int
+    /// The head init-neutral options (`NetworkArchitecture.policyHeadFinalInit`,
+    /// `valueHeadFinalInit`, `valueHeadDrawPrior`).
+    var policyHeadFinalInit: HeadFinalInit
+    var valueHeadFinalInit: HeadFinalInit
+    var valueHeadDrawPrior: Float
     var computeDataType: ComputeDataType
     /// Feature skip (optional long concat skip). `featureSkipSource == .none`
     /// disables the whole feature. All destinations (policy/value heads, final
@@ -94,6 +99,9 @@ final class BuildNewModelModel {
         self.valueHeadStyle = a.valueHeadStyle
         self.valueHeadConvChannels = a.valueHeadConvChannels
         self.valueHeadHiddenUnits = a.valueHeadHiddenUnits
+        self.policyHeadFinalInit = a.policyHeadFinalInit
+        self.valueHeadFinalInit = a.valueHeadFinalInit
+        self.valueHeadDrawPrior = a.valueHeadDrawPrior
         self.computeDataType = a.computeDataType
         self.featureSkipSource = a.featureSkipSource
         self.featureSkipFusion = a.featureSkipFusion
@@ -123,6 +131,9 @@ final class BuildNewModelModel {
         valueHeadStyle = a.valueHeadStyle
         valueHeadConvChannels = a.valueHeadConvChannels
         valueHeadHiddenUnits = a.valueHeadHiddenUnits
+        policyHeadFinalInit = a.policyHeadFinalInit
+        valueHeadFinalInit = a.valueHeadFinalInit
+        valueHeadDrawPrior = a.valueHeadDrawPrior
         computeDataType = a.computeDataType
         featureSkipSource = a.featureSkipSource
         featureSkipFusion = a.featureSkipFusion
@@ -143,6 +154,9 @@ final class BuildNewModelModel {
             valueHeadStyle: valueHeadStyle,
             valueHeadConvChannels: valueHeadConvChannels,
             valueHeadHiddenUnits: valueHeadHiddenUnits,
+            policyHeadFinalInit: policyHeadFinalInit,
+            valueHeadFinalInit: valueHeadFinalInit,
+            valueHeadDrawPrior: valueHeadDrawPrior,
             computeDataType: computeDataType,
             featureSkipSource: featureSkipSource,
             featureSkipFusion: featureSkipFusion,
@@ -201,6 +215,58 @@ final class BuildNewModelModel {
         precondition(blockGroupDrafts.indices.contains(target),
                      "BuildNewModelModel: block group \(index) cannot move by \(offset)")
         blockGroupDrafts.swapAt(index, target)
+    }
+
+    // MARK: Init-neutral options
+
+    /// The "Neutral init" button: every option that has a layer to act on
+    /// starts that path as a no-op (`NetworkArchitecture.withNeutralInit`, the
+    /// same function `--derive-model --set-neutral-init` applies). The draw
+    /// prior is left as it is.
+    func applyNeutralInit() {
+        SessionLogger.shared.log("[BUTTON] Build New Model: Neutral init")
+        applyInitOptions(of: architecture.withNeutralInit())
+    }
+
+    /// The "Standard init" button: every option, the draw prior included, back
+    /// to the value every model was built with before the options existed
+    /// (`NetworkArchitecture.withStandardInit`).
+    func applyStandardInit() {
+        SessionLogger.shared.log("[BUTTON] Build New Model: Standard init")
+        applyInitOptions(of: architecture.withStandardInit())
+    }
+
+    /// Copies only the init options of `edited` (the current architecture
+    /// with one of the sets applied) into the fields, through the existing
+    /// drafts so every row keeps its identity.
+    private func applyInitOptions(of edited: NetworkArchitecture) {
+        precondition(edited.blockGroups.count == blockGroupDrafts.count,
+                     "BuildNewModelModel: an init set changed the number of block groups")
+        for (draft, group) in zip(blockGroupDrafts, edited.blockGroups) {
+            draft.group.seGammaBiasInit = group.seGammaBiasInit
+            draft.group.branchOutputInit = group.branchOutputInit
+            draft.group.skipProjectionInit = group.skipProjectionInit
+        }
+        policyHeadFinalInit = edited.policyHeadFinalInit
+        valueHeadFinalInit = edited.valueHeadFinalInit
+        valueHeadDrawPrior = edited.valueHeadDrawPrior
+    }
+
+    /// The options that differ from the standard init, for the editor's and
+    /// the diagram's highlight (always compared with the standard value).
+    var nonStandardInitOptions: Set<InitOptionField> {
+        Set(architecture.nonStandardInitOptions)
+    }
+
+    /// Whether `draft`'s group has a skip projection, where its
+    /// `skipProjectionInit` takes effect (the field is shown only there).
+    func groupHasSkipProjection(_ draft: BlockGroupDraft) -> Bool {
+        architecture.groupHasSkipProjection(position(of: draft))
+    }
+
+    /// `draft`'s group's position, for the init-option highlight.
+    func groupIndex(of draft: BlockGroupDraft) -> Int {
+        position(of: draft)
     }
 
     // MARK: Group ReZero

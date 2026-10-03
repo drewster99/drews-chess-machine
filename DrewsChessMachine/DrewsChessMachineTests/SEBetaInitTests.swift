@@ -607,7 +607,7 @@ final class SEBetaInitTests: XCTestCase {
     }
 
     func testOperationCatalogDrivesTheCLI() {
-        XCTAssertEqual(ModelDerivation.operationKinds.map(\.flag), ["--set-se-beta-init", "--set-activation", "--set-se-activation", "--set-rezero-alpha-init", "--set-rezero-alpha-cap"])
+        XCTAssertEqual(ModelDerivation.operationKinds.map(\.flag), ["--set-se-beta-init", "--set-activation", "--set-se-activation", "--set-rezero-alpha-init", "--set-rezero-alpha-cap", "--set-neutral-init", "--set-se-gamma-bias-init", "--set-branch-output-init", "--set-skip-projection-init", "--set-policy-head-final-init", "--set-value-head-final-init", "--set-value-head-draw-prior"])
         XCTAssertEqual(Set(ModelDerivation.operationKinds.map(\.name)).count, ModelDerivation.operationKinds.count)
         let help = DeriveModelCLI.helpText
         for kind in ModelDerivation.operationKinds {
