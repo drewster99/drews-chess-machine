@@ -22,7 +22,8 @@ final class LichessBotReviewFixTests: XCTestCase {
             settingsProvider: { frozen },
             observer: observer,
             time: time,
-            onTurnStatus: { _, _ in }
+            onTurnStatus: { _, _ in },
+            carryover: .newGame
         )
     }
 

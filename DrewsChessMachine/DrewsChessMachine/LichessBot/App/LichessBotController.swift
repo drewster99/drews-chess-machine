@@ -821,6 +821,36 @@ final class LichessBotController {
     /// and say so: lines fetched for a filed game could not be kept.
     private var gamesFiledBeforeTheirChatFetches: Set<String> = []
 
+    // MARK: - Games left from the last run
+
+    /// Games whose journal an earlier run left in `InProgress/` (it stopped
+    /// with them running, or before filing them), found at launch while the
+    /// bot is offline. Any still live on Lichess runs on DCM's clock until
+    /// the bot goes online and resumes it; the status chip says so.
+    private(set) var leftoverGamesFromLastRun: [String] = []
+    private var leftoverJournalsChecked = false
+
+    /// Look once, at launch, for journals an earlier run left, and say so
+    /// (status chip, alarm, session log). Called from the main window's
+    /// status chip, which exists only in a GUI run: the controller itself is
+    /// also created for command-line runs, which must not report this.
+    func noteLeftoverJournalsAtLaunch() async {
+        guard !leftoverJournalsChecked else { return }
+        leftoverJournalsChecked = true
+        guard runtime == nil else { return }
+        let store = LichessBotRecordStore(directory: dataDirectory, journalQueue: journalQueue, indexQueue: fileQueue, ourAccountID: accountID)
+        let leftovers: [String]
+        do {
+            leftovers = try await store.inProgressGameIDs()
+        } catch {
+            raiseAlarm("Checking for games left from the last run failed: \(Self.safeDescription(error))")
+            return
+        }
+        guard runtime == nil, !leftovers.isEmpty else { return }
+        leftoverGamesFromLastRun = leftovers
+        raiseAlarm("The last run left \(leftovers.count) game(s) not filed (\(leftovers.joined(separator: ", "))). Any still live on Lichess is running on DCM's clock: go online to resume it.")
+    }
+
     /// Whether this game's filing waits for its post-game chat: the
     /// reconciler leaves it alone until `fileAfterPostGameChat` hands it over.
     private func isAwaitingPostGameChat(_ gameID: String) -> Bool {
@@ -2316,6 +2346,8 @@ final class LichessBotController {
         }
         self.account = account
         tokenState = .saved(info)
+        // Going online resumes (or files) whatever the last run left.
+        leftoverGamesFromLastRun = []
 
         let settingsBox = SyncBox(settings)
         self.settingsBox = settingsBox
@@ -2430,7 +2462,18 @@ final class LichessBotController {
     /// Seed today's game counts from the records and leftover journals, so
     /// the daily limits (including the bot-pair stop short of Lichess's cap)
     /// survive going offline, relaunching or crashing (plan §7).
+    /// Also tells the manager which games have a journal left from before
+    /// this runtime: their `gameStart`s (replayed by Lichess on connect)
+    /// resume them rather than start them.
     private func seedDailyCounts(manager: LichessBotSessionManager, store: LichessBotRecordStore) async {
+        let leftovers: [String: Date]
+        do {
+            leftovers = try await store.inProgressJournalCreationDates()
+        } catch {
+            raiseAlarm("Listing the journals left from before going online failed: \(Self.safeDescription(error)); games still live on Lichess show as new games and daily limits count from now")
+            return
+        }
+        await manager.setResumableGames(leftovers)
         do {
             let file = try await store.loadIndex()
             index = file
@@ -2441,10 +2484,9 @@ final class LichessBotController {
                     opponents[row.gameID] = opponentID
                 }
             }
-            let leftovers = try await store.inProgressJournalCreationDates()
-                .filter { Calendar.current.isDateInToday($0.value) }
-                .map(\.key)
-            await manager.seedDailyCounts(gameIDs: today.map(\.gameID) + leftovers, opponentByGame: opponents)
+            let todaysLeftovers = leftovers.filter { Calendar.current.isDateInToday($0.value) }.map(\.key)
+            let earlierLeftovers = Set(leftovers.filter { !Calendar.current.isDateInToday($0.value) }.map(\.key))
+            await manager.seedDailyCounts(gameIDs: today.map(\.gameID) + todaysLeftovers, opponentByGame: opponents, earlierDayGameIDs: earlierLeftovers)
         } catch {
             raiseAlarm("Seeding today's game counts failed: \(Self.safeDescription(error)); daily limits count from now")
         }
@@ -2764,7 +2806,7 @@ final class LichessBotController {
             }
         case .challengeResponseFailed(let challengeID, let error):
             protocolLog.record(.anomaly, "challenge response failed: \(error)", fields: ["challenge": challengeID])
-        case .gameSessionStarted(let gameID, let generation):
+        case .gameSessionStarted(let gameID, let generation, let resumedJournalStartedAt):
             if let pending = pendingChallenges.first(where: { $0.id == gameID }) {
                 // The accepted challenge's game can start before the
                 // manager was told about the challenge.
@@ -2778,11 +2820,17 @@ final class LichessBotController {
             activeGameIDs.insert(gameID)
             // Counted from here as a game in progress, not as starting.
             acceptedAwaitingStartIDs.remove(gameID)
-            listStartedGame(gameID)
+            listStartedGame(gameID, resumedJournalStartedAt: resumedJournalStartedAt)
             updateAutoFollow()
             self.generation = generation
-            protocolLog.record(.game, "game started", gameID: gameID, fields: ["model": generation.modelID, "generation": "\(generation.generationID)"])
-            SessionLogger.shared.log("[LICHESS-BOT] game \(gameID) started with \(generation.sourceKind.rawValue) \(generation.modelID)")
+            if let resumedJournalStartedAt {
+                let since = resumedJournalStartedAt.formatted(date: .abbreviated, time: .standard)
+                protocolLog.record(.game, "game resumed", gameID: gameID, fields: ["model": generation.modelID, "generation": "\(generation.generationID)", "journal_since": since])
+                SessionLogger.shared.log("[LICHESS-BOT] game \(gameID) resumed (journal since \(since)) with \(generation.sourceKind.rawValue) \(generation.modelID)")
+            } else {
+                protocolLog.record(.game, "game started", gameID: gameID, fields: ["model": generation.modelID, "generation": "\(generation.generationID)"])
+                SessionLogger.shared.log("[LICHESS-BOT] game \(gameID) started with \(generation.sourceKind.rawValue) \(generation.modelID)")
+            }
         case .gameSessionEnded(let gameID):
             activeGameIDs.remove(gameID)
             if let game = games.first(where: { $0.id == gameID }) {
@@ -3051,14 +3099,45 @@ final class LichessBotController {
 
     /// List a game whose session just started: a new game, or one listed
     /// from before going offline, which is followed again. The same object
-    /// is kept, since a pop-out window may hold it.
-    private func listStartedGame(_ gameID: String) {
+    /// is kept wherever it still exists — listed, or dismissed or pruned
+    /// but still held by a pop-out window — so that window keeps updating.
+    /// A resumed game keeps the time its journal was started; the list
+    /// stays in start order (oldest first), since resumed games can come
+    /// back in any order.
+    private func listStartedGame(_ gameID: String, resumedJournalStartedAt: Date?) {
         if let existing = listedGame(gameID) {
             existing.resumeFollowing()
             return
         }
-        games.append(LichessBotLiveGame(id: gameID, startedAt: Date(), ourAccountID: accountID))
+        let game: LichessBotLiveGame
+        if let retained = retainedLiveGames[gameID]?.game {
+            game = retained
+            game.resumeFollowing()
+        } else {
+            let startedAt: Date
+            if let resumedJournalStartedAt {
+                startedAt = resumedJournalStartedAt
+            } else {
+                // A new game starts now.
+                startedAt = Date()
+            }
+            game = LichessBotLiveGame(id: gameID, startedAt: startedAt, ourAccountID: accountID)
+            retainedLiveGames = retainedLiveGames.filter { $0.value.game != nil }
+            retainedLiveGames[gameID] = WeakLiveGame(game: game)
+        }
+        let position = games.firstIndex { $0.startedAt > game.startedAt } ?? games.endIndex
+        games.insert(game, at: position)
     }
+
+    /// A live game, held weakly: a game window (or the list) keeps it alive.
+    private struct WeakLiveGame {
+        weak var game: LichessBotLiveGame?
+    }
+
+    /// Every live game this launch created, held weakly, by id: a game
+    /// dismissed or pruned while a pop-out window still shows it is listed
+    /// again as that same object when its session resumes.
+    @ObservationIgnored private var retainedLiveGames: [String: WeakLiveGame] = [:]
 
     private func raiseAlarm(_ rawText: String) {
         let text = LichessBotRedaction.redact(rawText)

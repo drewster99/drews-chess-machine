@@ -149,7 +149,8 @@ actor LichessBotGameSession {
         observer: any LichessBotGameObserver,
         time: any LichessBotTimeSource,
         onTurnStatus: @escaping @Sendable (String, LichessBotTurnStatus) async -> Void,
-        pacing: @escaping @Sendable () async -> LichessBotMovePacingSnapshot = { LichessBotMovePacingSnapshot() }
+        pacing: @escaping @Sendable () async -> LichessBotMovePacingSnapshot = { LichessBotMovePacingSnapshot() },
+        carryover: LichessBotGameSessionCarryover
     ) {
         self.gameID = gameID
         self.ourAccountID = ourAccountID
@@ -161,6 +162,7 @@ actor LichessBotGameSession {
         self.time = time
         self.onTurnStatus = onTurnStatus
         self.pacing = pacing
+        self.greeted = carryover.greeted
     }
 
     var isFinished: Bool {

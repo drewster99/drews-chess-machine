@@ -356,7 +356,8 @@ final class LichessBotDataLayerTests: XCTestCase {
             settingsProvider: { frozen },
             observer: LichessBotGameObserverFanOut(observers: [writer, recorder]),
             time: LichessBotManualTime(),
-            onTurnStatus: { _, _ in }
+            onTurnStatus: { _, _ in },
+            carryover: .newGame
         )
         await session.run()
         XCTAssertEqual(writeFailures.value, [])
