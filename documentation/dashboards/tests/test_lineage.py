@@ -384,6 +384,68 @@ class DeriveRegistryCommandTests(unittest.TestCase):
         self.assertTrue(lines[0].startswith(f"scanned {len(self.paths)} file(s): 0 with a vsuci lineage record"))
 
 
+class SessionFolderTests(unittest.TestCase):
+    """Train-vs-UCI and GUI runs save .dcmsession folders, each holding a
+    trainer.safetensors and a champion.safetensors: the scanners read them beside
+    top-level step files, and name each one by its folder."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        # Two vs-UCI session saves of segment 0, then top-level step files of segment 1.
+        for local, stamp in ((500, "20261003-010000"), (1000, "20261003-020000")):
+            record = record_for(0, local)
+            record["invocation"]["path_kind"] = "vsuci"
+            folder = os.path.join(self.dir, f"{stamp}-20261003-1-AAAA-vsuci-periodic.dcmsession")
+            os.mkdir(folder)
+            for name in ("trainer.safetensors", "champion.safetensors"):
+                write_v7(folder, name, record, SEGMENTS[0][1], local)
+        for local in (500, 1000):
+            record = record_for(1, local)
+            record["invocation"]["path_kind"] = "vsuci"
+            write_v7(self.dir, f"seg-b-vsuci-step{local}.safetensors", record, SEGMENTS[1][1], local)
+        # Neither is read: a folder that is not a session, and a staging folder.
+        os.mkdir(os.path.join(self.dir, "notes"))
+        write_v7(os.path.join(self.dir, "notes"), "stray.safetensors", record_for(0, 500), SEGMENTS[0][1], 500)
+        staging = os.path.join(self.dir, "20261003-030000-20261003-1-AAAA-vsuci-final.dcmsession.tmp")
+        os.mkdir(staging)
+        write_v7(staging, "trainer.safetensors", record_for(0, 1000), SEGMENTS[0][1], 1000)
+
+    def test_model_paths_cover_top_level_files_and_session_folders_only(self):
+        names = [dcm_lineage.display_name(p) for p in dcm_lineage.model_paths(self.dir)]
+        self.assertEqual(names, [
+            "20261003-010000-20261003-1-AAAA-vsuci-periodic.dcmsession/champion.safetensors",
+            "20261003-010000-20261003-1-AAAA-vsuci-periodic.dcmsession/trainer.safetensors",
+            "20261003-020000-20261003-1-AAAA-vsuci-periodic.dcmsession/champion.safetensors",
+            "20261003-020000-20261003-1-AAAA-vsuci-periodic.dcmsession/trainer.safetensors",
+            "seg-b-vsuci-step1000.safetensors",
+            "seg-b-vsuci-step500.safetensors",
+        ])
+
+    def test_session_files_derive_segments_named_by_their_folder(self):
+        recorded, unrecorded, errors = dcm_lineage.scan(self.dir)
+        self.assertEqual((len(recorded), unrecorded, errors), (6, {}, {}))
+        table = dcm_lineage.segment_table(dcm_lineage.derive_runs(recorded))
+        segments = table["run-1"]["segments"]
+        self.assertEqual([s["segment_id"] for s in segments], ["seg-a", "seg-b"])
+        self.assertIn("20261003-020000-20261003-1-AAAA-vsuci-periodic.dcmsession/trainer.safetensors",
+                      segments[0]["files"])
+        self.assertEqual(segments[1]["cumstep_base"], 1000)
+
+    def test_derive_registry_reads_session_folders_for_vsuci(self):
+        registry = os.path.join(tempfile.mkdtemp(), "vsuci_registry.json")
+        with open(registry, "w") as handle:
+            handle.write(json.dumps(registry_with([{"log": "a.txt", "model_id": "20261003-1-AAAA", "cumstep_base": 0},
+                                                   {"log": "b.txt", "model_id": "20261003-2-BBBB"}]), indent=2))
+        lines = []
+        status = _lineage_registry.derive_registry(registry, dcm_lineage.model_paths(self.dir), "vsuci", True,
+                                                   out=lines.append)
+        self.assertEqual(status, 0, lines)
+        with open(registry) as handle:
+            written = json.load(handle)["runs"]["r"]["segments"]
+        self.assertEqual([s["segment_id"] for s in written], ["seg-a", "seg-b"])
+        self.assertEqual([s["cumstep_base"] for s in written], [0, 1000])
+
+
 class TrackerCellTests(unittest.TestCase):
     """replay.py's lineage cells and header-identified checkpoints, on a temporary registry."""
 
