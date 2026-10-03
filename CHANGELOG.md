@@ -9,7 +9,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-10-02 CDT — A resume continues the run's random streams and says exactly what it did not restore (`dc74df3b`, `d962a239`, `dc2a0a40`)
+## 2026-10-02 CDT — A resume continues the run's random streams and says exactly what it did not restore (`dc74df3b`, `d962a239`, `dc2a0a40`, `9b2f575f`)
 
 - **One verdict per resume** (determinism plan P9). Every resume logs `[RESUME] EXACT` or `[RESUME] NOT EXACT: <tokens>`. The tokens are `rng_sampler`, `dropout_state`, `feed_carry`, `buffer`, `serials`, `clocks`, `params`, `lineage`, `build`, `os` and `policy_tail`, and the new segment records them as its `not_exact_items`.
 - **`--resume-exact` now refuses an inexact resume** (corpus replay and train-vs-UCI) unless `--accept-inexact <comma list>` names every gap.
@@ -24,7 +24,7 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
   A resume continues them: `[RUN] seed=… mode=resumed(<origin>)`. A `--seed` naming a different seed is refused.
 - **GUI resume no longer reseeds the dropout generator** over the restored Philox state.
-- **GUI resume restores the arena clock.** `session.json` records `arena_seconds_since_last_arena`, so the next automatic arena comes due when it would have in the saved run.
+- **GUI resume restores the arena clock.** `session.json` records `arena_seconds_since_last_arena`, so the next automatic arena comes due when it would have in the saved run. A `-promote` save records 0, because its arena has just finished.
 - **Corpus replay resume:**
   - It resumes the feed phase exactly. `fed.corpus` records `feed_ahead_positions` and `feed_per_step`.
   - It verifies the corpus: `fed.corpus.shard_sha256` holds each shard's sealed SHA-256, and a mismatch always refuses.

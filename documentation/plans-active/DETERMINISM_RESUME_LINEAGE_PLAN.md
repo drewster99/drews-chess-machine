@@ -1655,7 +1655,7 @@ the default settings has no `replay_buffer.bin` and its save log line says
 writes and restores the buffer; `sample()` µs per batch not slower than the A2.2
 baseline.
 
-**Partly done (2026-10-02; `dc74df3b`, `d962a239`, `dc2a0a40`).** As built:
+**Partly done (2026-10-02; `dc74df3b`, `d962a239`, `dc2a0a40`, `9b2f575f`).** As built:
 
 - **D-5 bucket FIFO (`dc74df3b`).** `MaterialBucketSlots` now keeps each
   bucket as an `AgeOrderedSlotQueue`: an array with a moving head, where
@@ -1750,6 +1750,12 @@ baseline.
     (`ArenaTriggerBox.secondsSinceLastArena(now:)`). Resume starts the
     trigger box that far back, so the next automatic arena comes due when it
     would have in the saved run; a session without it is a `clocks` gap.
+  - The post-promotion save is written inside the arena, before the trigger
+    box records the end, so it records the clock as 0 (`ArenaClockAtSave`).
+    Otherwise every `-promote` resume would start an arena at once.
+  - D-6 needs no discard path in the GUI: manual, periodic and SIGUSR2 saves
+    are refused while an arena runs (a periodic deadline is deferred past
+    it), so no save interrupts one.
   - The periodic-save clock needs nothing saved: the save being resumed reset
     it.
 - **Deviation: no buffer format v9.** No slot-source column was added. Refill
@@ -1757,7 +1763,7 @@ baseline.
   stored order irrelevant.
 - **Tests.**
   - New: `ReplayBufferResumeEquivalenceTests` (3) and
-    `ExactResumeCompletionTests` (15), which cover:
+    `ExactResumeCompletionTests` (16), which cover:
     - the feed phase matching the uninterrupted run (the pre-P9 restart falls
       behind);
     - exactness ordering, line and refusal;
@@ -1766,7 +1772,8 @@ baseline.
     - a run-streams round trip with a seed above 2^53;
     - a schema-1 refusal;
     - seed inheritance, conflict and derivation mismatch;
-    - the arena-clock session round trip;
+    - the arena-clock session round trip, and the post-promotion save's
+      clock of 0;
     - the resume record's gaps.
   - `ExactResumeCompletionTests` was compile-red first (new API).
   - Existing tests got the approved mechanical edits for the new `rng:` and
@@ -1782,7 +1789,6 @@ baseline.
   - D-8 buffer save policy: the `session_save_include_replay_buffer`
     parameter, the manual-save sheet checkbox, `--save-replay-buffer`,
     train-vs-UCI session-folder checkpoints, and the `buffer=omitted` log.
-  - D-6 discard-and-rerun of an arena interrupted by a save.
   - C1 #10: train-vs-UCI per-opponent and per-color counters.
   - C1 #11: the dropped in-flight games line.
   - #12 / #18 / #20: ratio-controller, diversity-tracker and alarm state.
