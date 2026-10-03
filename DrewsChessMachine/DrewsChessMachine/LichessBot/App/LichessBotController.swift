@@ -165,6 +165,10 @@ final class LichessBotController {
     /// Challenge POSTs under way, counted against the concurrent-game limit.
     /// (The per-opponent limit counts them in the manager, as reservations.)
     private var challengeSendsInFlight = 0
+    /// Withdrawals of our unanswered challenges under way, by challenge id.
+    /// Each removes its own entry when its request ends; shutdown waits for
+    /// the rest.
+    @ObservationIgnored private var challengeWithdrawals: [String: (token: UUID, task: Task<Void, Never>)] = [:]
     /// Games started today per opponent id, mirrored from the manager by the
     /// poll loop (the Challenge sheet warns past the daily per-opponent limit).
     private(set) var gamesTodayByOpponent: [String: Int] = [:]
@@ -296,6 +300,13 @@ final class LichessBotController {
     /// How long the single view stays on a followed game after it ends.
     static let finishedGameHold: Duration = .seconds(8)
     private let finishedGameHoldDuration: Duration
+    /// The longest shutdown waits for challenge sends in flight and for the
+    /// withdrawals of our unanswered challenges: one urgent request's idle
+    /// timeout, so a single stalled withdrawal times out on its own first.
+    static let challengeWithdrawalShutdownLimit: Duration = .seconds(LichessBotRequestTimeouts.urgentIdle)
+    private let challengeWithdrawalShutdownLimit: Duration
+    /// How often shutdown checks whether challenge sends are still in flight.
+    private static let outstandingChallengeTrafficPollInterval: Duration = .milliseconds(50)
     /// The clock the live grid's order and tile phases are computed at.
     /// It advances only when a finished game's position hold or result
     /// highlight ends, so each change is one observable step the grid
@@ -381,8 +392,10 @@ final class LichessBotController {
         defaults: UserDefaults = .standard,
         dataDirectory: LichessBotDataDirectory = .standard,
         services: LichessBotControllerServices = .live,
-        finishedGameHold: Duration = LichessBotController.finishedGameHold
+        finishedGameHold: Duration = LichessBotController.finishedGameHold,
+        challengeWithdrawalShutdownLimit: Duration = LichessBotController.challengeWithdrawalShutdownLimit
     ) {
+        self.challengeWithdrawalShutdownLimit = challengeWithdrawalShutdownLimit
         self.modelProvider = modelProvider
         self.defaults = defaults
         self.dataDirectory = dataDirectory
@@ -894,16 +907,33 @@ final class LichessBotController {
             // to be filed are filed by the drain (the reconciler stops with
             // the runtime), within the filing time limit.
             await drain()
-            // Then withdraw our unanswered challenges: one accepted while the
-            // bot finishes would start a game nobody plays. If the drain
-            // already stopped the runtime, teardown withdrew them.
-            for pending in pendingChallenges where self.runtime?.manager === manager {
-                await cancelChallenge(id: pending.id)
-            }
+            await withdrawPendingChallengesAfterDrain(manager: manager)
             return
         }
         // Stopping the runtime withdraws our unanswered challenges.
         stopRuntime(reason: "operator went offline")
+    }
+
+    /// After a drain, withdraw our unanswered challenges: one accepted while
+    /// the bot finishes its games would start a game nobody plays. Going
+    /// offline and quitting with games in progress both drain and then call
+    /// this. If the drain already stopped the runtime, teardown withdrew
+    /// them.
+    private func withdrawPendingChallengesAfterDrain(manager: LichessBotSessionManager) async {
+        for pending in pendingChallenges where self.runtime?.manager === manager {
+            await cancelChallenge(id: pending.id)
+        }
+    }
+
+    /// Resign the chosen games in progress (the finishing sheet's per-game
+    /// choices); the others play on. A game that ended meanwhile is logged
+    /// and skipped.
+    func resign(gameIDs: [String]) async {
+        guard let runtime else { return }
+        protocolLog.record(.lifecycle, "resigning \(gameIDs.count) chosen game(s): \(gameIDs.joined(separator: ", "))")
+        for gameID in gameIDs {
+            await runtime.manager.resign(gameID: gameID)
+        }
     }
 
     /// Resign every game in progress (the sheet's **Abort**, and Resign all).
@@ -936,7 +966,7 @@ final class LichessBotController {
     /// `applicationShouldTerminate`: quit at once when the bot holds no
     /// games; otherwise drain, show the sheet, and quit when the games end.
     func applicationShouldTerminate() -> NSApplication.TerminateReply {
-        guard runtime != nil else { return .terminateNow }
+        guard let runtime else { return .terminateNow }
         clearChallengeQueue(reason: "app quit")
         if !hasGamesInPlay {
             // Reply once the queued journal and protocol-log writes (the
@@ -951,8 +981,10 @@ final class LichessBotController {
         // The "Finishing games" sheet lives in the bot window: bring it up,
         // or quitting would seem to do nothing.
         LichessBotWindowLauncher.openWindow(controller: self)
+        let manager = runtime.manager
         Task {
             await drain()
+            await withdrawPendingChallengesAfterDrain(manager: manager)
         }
         return .terminateLater
     }
@@ -1024,6 +1056,7 @@ final class LichessBotController {
     private func performShutdown(reason: String) async {
         protocolLog.record(.lifecycle, "shutting down: \(reason)")
         stopRuntime(reason: reason)
+        await awaitOutstandingChallengeTraffic()
         cancelAutoFollowHold()
         gridClockTask?.cancel()
         gridClockTask = nil
@@ -1032,6 +1065,52 @@ final class LichessBotController {
         await journalQueue.close(reason: "the bot shut down: \(reason)")
         await fileQueue.close(reason: "the bot shut down: \(reason)")
         SessionLogger.shared.log("[LICHESS-BOT] shut down: \(reason)")
+    }
+
+    /// Wait, within `challengeWithdrawalShutdownLimit`, for challenge sends
+    /// still in flight and then for the withdrawals of our unanswered
+    /// challenges, so they reach Lichess (and the protocol log) before the
+    /// queues close and the process exits. A send in flight when the runtime
+    /// stopped withdraws what it created, so sends are waited for first. A
+    /// withdrawal still unanswered at the limit is cancelled and logged:
+    /// that challenge may still stand.
+    private func awaitOutstandingChallengeTraffic() async {
+        let deadline = ContinuousClock.now + challengeWithdrawalShutdownLimit
+        while challengeSendsInFlight > 0, ContinuousClock.now < deadline {
+            do {
+                try await Task.sleep(for: Self.outstandingChallengeTrafficPollInterval)
+            } catch is CancellationError {
+                protocolLog.record(.anomaly, "shutdown stopped waiting for \(challengeSendsInFlight) challenge send(s): the wait was cancelled")
+                return
+            } catch {
+                protocolLog.record(.anomaly, "shutdown stopped waiting for challenge sends: \(Self.safeDescription(error))")
+                return
+            }
+        }
+        if challengeSendsInFlight > 0 {
+            protocolLog.record(.anomaly, "\(challengeSendsInFlight) challenge send(s) still in flight at shutdown; a challenge one creates may stand")
+        }
+        let withdrawals = challengeWithdrawals.values.map(\.task)
+        guard !withdrawals.isEmpty else { return }
+        let remaining = deadline - ContinuousClock.now
+        let log = protocolLog
+        let deadlineTask = Task {
+            do {
+                try await Task.sleep(for: max(remaining, .zero))
+            } catch is CancellationError {
+                // Every withdrawal finished first.
+                return
+            } catch {
+                log.record(.anomaly, "the shutdown's withdrawal deadline failed: \(LichessBotRedaction.redact(error.localizedDescription))")
+            }
+            for withdrawal in withdrawals {
+                withdrawal.cancel()
+            }
+        }
+        for withdrawal in withdrawals {
+            await withdrawal.value
+        }
+        deadlineTask.cancel()
     }
 
     // MARK: - Challenges (plan §7.1)
@@ -1501,16 +1580,27 @@ final class LichessBotController {
     }
 
     /// Withdraw a challenge on Lichess without waiting; a failure is logged.
+    /// The withdrawal is tracked until its request ends, so shutdown can
+    /// wait for it.
     private func withdraw(challengeID: String, client: LichessBotAPIClient) {
         let log = protocolLog
-        Task {
+        let token = UUID()
+        let task = Task {
             do {
                 try await client.cancelChallenge(id: challengeID)
                 log.record(.challenge, "withdrew challenge \(challengeID) on going offline")
+            } catch is CancellationError {
+                log.record(.anomaly, "withdrawal of challenge \(challengeID) abandoned: the bot shut down before Lichess answered; the challenge may still stand")
             } catch {
-                log.record(.anomaly, "withdrawing challenge \(challengeID) failed: \(LichessBotRedaction.redact(error.localizedDescription))")
+                log.record(.anomaly, "withdrawing challenge \(challengeID) failed: \(Self.safeDescription(error))")
+            }
+            // Only this withdrawal's own entry: a later withdrawal of the
+            // same id replaced it and removes itself.
+            if self.challengeWithdrawals[challengeID]?.token == token {
+                self.challengeWithdrawals[challengeID] = nil
             }
         }
+        challengeWithdrawals[challengeID] = (token: token, task: task)
     }
 
     // MARK: - Slots
