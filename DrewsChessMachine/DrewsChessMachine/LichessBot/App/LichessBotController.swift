@@ -2375,6 +2375,9 @@ final class LichessBotController {
             pacingProvider: { [weak self] gameID in
                 // No controller means the app is quitting: no pacing.
                 await self?.pacingSnapshot(for: gameID) ?? LichessBotMovePacingSnapshot()
+            },
+            journalReader: { gameID in
+                try await recordStore.resumedJournal(gameID: gameID)
             }
         )
         let reconciler = LichessBotReconciler(
@@ -2806,7 +2809,7 @@ final class LichessBotController {
             }
         case .challengeResponseFailed(let challengeID, let error):
             protocolLog.record(.anomaly, "challenge response failed: \(error)", fields: ["challenge": challengeID])
-        case .gameSessionStarted(let gameID, let generation, let resumedJournalStartedAt):
+        case .gameSessionStarted(let gameID, let generation, let origin):
             if let pending = pendingChallenges.first(where: { $0.id == gameID }) {
                 // The accepted challenge's game can start before the
                 // manager was told about the challenge.
@@ -2820,16 +2823,24 @@ final class LichessBotController {
             activeGameIDs.insert(gameID)
             // Counted from here as a game in progress, not as starting.
             acceptedAwaitingStartIDs.remove(gameID)
-            listStartedGame(gameID, resumedJournalStartedAt: resumedJournalStartedAt)
+            listStartedGame(gameID, origin: origin)
             updateAutoFollow()
             self.generation = generation
-            if let resumedJournalStartedAt {
-                let since = resumedJournalStartedAt.formatted(date: .abbreviated, time: .standard)
-                protocolLog.record(.game, "game resumed", gameID: gameID, fields: ["model": generation.modelID, "generation": "\(generation.generationID)", "journal_since": since])
-                SessionLogger.shared.log("[LICHESS-BOT] game \(gameID) resumed (journal since \(since)) with \(generation.sourceKind.rawValue) \(generation.modelID)")
-            } else {
-                protocolLog.record(.game, "game started", gameID: gameID, fields: ["model": generation.modelID, "generation": "\(generation.generationID)"])
-                SessionLogger.shared.log("[LICHESS-BOT] game \(gameID) started with \(generation.sourceKind.rawValue) \(generation.modelID)")
+            let modelFields = ["model": generation.modelID, "generation": "\(generation.generationID)"]
+            let model = "\(generation.sourceKind.rawValue) \(generation.modelID)"
+            switch origin {
+            case .new:
+                protocolLog.record(.game, "game started", gameID: gameID, fields: modelFields)
+                SessionLogger.shared.log("[LICHESS-BOT] game \(gameID) started with \(model)")
+            case .resumed(let journal):
+                let since = journal.firstJournaledAt.formatted(date: .abbreviated, time: .standard)
+                protocolLog.record(.game, "game resumed", gameID: gameID, fields: modelFields.merging(["journal_since": since, "journal_entries": "\(journal.items.count)"]) { current, _ in current })
+                SessionLogger.shared.log("[LICHESS-BOT] game \(gameID) resumed (journal since \(since), \(journal.items.count) entries) with \(model)")
+            case .resumedWithUnreadableJournal(let journalStartedAt, let reason):
+                let since = journalStartedAt.formatted(date: .abbreviated, time: .standard)
+                protocolLog.record(.game, "game resumed", gameID: gameID, fields: modelFields.merging(["journal_since": since, "history": "unavailable: \(reason)"]) { current, _ in current })
+                SessionLogger.shared.log("[LICHESS-BOT] game \(gameID) resumed (journal since \(since)) with \(model)")
+                raiseAlarm("Game \(gameID) was resumed without its history: \(reason). Takebacks, command replies, greeting and goodbye are off for it, since there is no telling what was already done.")
             }
         case .gameSessionEnded(let gameID):
             activeGameIDs.remove(gameID)
@@ -3104,24 +3115,28 @@ final class LichessBotController {
     /// A resumed game keeps the time its journal was started; the list
     /// stays in start order (oldest first), since resumed games can come
     /// back in any order.
-    private func listStartedGame(_ gameID: String, resumedJournalStartedAt: Date?) {
+    private func listStartedGame(_ gameID: String, origin: LichessBotSessionOrigin) {
         if let existing = listedGame(gameID) {
             existing.resumeFollowing()
             return
         }
         let game: LichessBotLiveGame
         if let retained = retainedLiveGames[gameID]?.game {
+            // It already holds the game's history from this launch.
             game = retained
             game.resumeFollowing()
         } else {
-            let startedAt: Date
-            if let resumedJournalStartedAt {
-                startedAt = resumedJournalStartedAt
-            } else {
-                // A new game starts now.
-                startedAt = Date()
+            switch origin {
+            case .new:
+                game = LichessBotLiveGame(id: gameID, startedAt: Date(), ourAccountID: accountID)
+            case .resumed(let journal):
+                game = LichessBotLiveGame(id: gameID, startedAt: journal.firstJournaledAt, ourAccountID: accountID)
+                // Before it is listed, so no view redraws entry by entry.
+                game.replay(journal)
+            case .resumedWithUnreadableJournal(let journalStartedAt, let reason):
+                game = LichessBotLiveGame(id: gameID, startedAt: journalStartedAt, ourAccountID: accountID)
+                game.apply(.anomaly("resumed without its earlier history: \(reason)"))
             }
-            game = LichessBotLiveGame(id: gameID, startedAt: startedAt, ourAccountID: accountID)
             retainedLiveGames = retainedLiveGames.filter { $0.value.game != nil }
             retainedLiveGames[gameID] = WeakLiveGame(game: game)
         }

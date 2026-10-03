@@ -22,11 +22,10 @@ enum LichessBotManagerEvent: Sendable {
     case challengeArrived(challengeID: String, challengerID: String, challengerTitle: String?)
     case challengeDecision(challengeID: String, challengerID: String, decision: LichessBotChallengeDecision)
     case challengeResponseFailed(challengeID: String, error: String)
-    /// A session started for a game. `resumedJournalStartedAt` is set when
-    /// the game has a journal from before this runtime (a relaunch, or going
-    /// offline and back): the game is resumed, not new, and that is when its
-    /// journal was started.
-    case gameSessionStarted(gameID: String, generation: LichessBotGenerationInfo, resumedJournalStartedAt: Date?)
+    /// A session started for a game: a new one, or one resumed from a
+    /// journal left by an earlier runtime (a relaunch, or going offline and
+    /// back).
+    case gameSessionStarted(gameID: String, generation: LichessBotGenerationInfo, origin: LichessBotSessionOrigin)
     case gameSessionEnded(gameID: String)
     case anomaly(String)
     /// An event-stream line exactly as received (plan §14.3a transcript).
@@ -140,6 +139,9 @@ actor LichessBotSessionManager {
     private let onEvent: @Sendable (LichessBotManagerEvent) -> Void
     /// Each game's operator move pacing (plan §14.3c), by game id.
     private let pacingProvider: @Sendable (String) async -> LichessBotMovePacingSnapshot
+    /// Reads and prepares a game's journal from `InProgress/` (on the
+    /// journal queue), to resume a game an earlier runtime left.
+    private let journalReader: @Sendable (String) async throws -> LichessBotResumedJournal
 
     /// Online (true) or Draining (false) — the operator's choice, or "one
     /// game" once its game started.
@@ -202,7 +204,8 @@ actor LichessBotSessionManager {
         settingsProvider: @escaping @Sendable () async -> LichessBotSettings,
         gameObserver: any LichessBotGameObserver,
         onEvent: @escaping @Sendable (LichessBotManagerEvent) -> Void,
-        pacingProvider: @escaping @Sendable (String) async -> LichessBotMovePacingSnapshot = { _ in LichessBotMovePacingSnapshot() }
+        pacingProvider: @escaping @Sendable (String) async -> LichessBotMovePacingSnapshot = { _ in LichessBotMovePacingSnapshot() },
+        journalReader: @escaping @Sendable (String) async throws -> LichessBotResumedJournal
     ) {
         self.accountAPI = accountAPI
         self.gameAPI = gameAPI
@@ -214,6 +217,7 @@ actor LichessBotSessionManager {
         self.gameObserver = gameObserver
         self.onEvent = onEvent
         self.pacingProvider = pacingProvider
+        self.journalReader = journalReader
     }
 
     // MARK: - Controls
@@ -718,9 +722,17 @@ actor LichessBotSessionManager {
             return
         }
         countGame(info)
-        // Taken once: a later session for the same game in this runtime (its
-        // first ended) is a resume this runtime started, already listed.
-        let resumedJournalStartedAt = resumableGames.removeValue(forKey: gameID)
+        let origin = await sessionOrigin(gameID: gameID)
+        let carryover: LichessBotGameSessionCarryover
+        switch origin {
+        case .new:
+            carryover = .newGame
+        case .resumed(let journal):
+            carryover = journal.carryover
+        case .resumedWithUnreadableJournal(_, let reason):
+            carryover = .unknownHistory
+            onEvent(.anomaly("game \(gameID) resumed without its history: \(reason)"))
+        }
 
         let slots = self.slots
         let settingsProvider = self.settingsProvider
@@ -741,13 +753,13 @@ actor LichessBotSessionManager {
                 await self?.updateTurnStatus(gameID: gameID, status: status)
             },
             pacing: { await pacingProvider(gameID) },
-            carryover: resumedJournalStartedAt == nil ? .newGame : .resumedGame
+            carryover: carryover
         )
         sessions[gameID] = session
-        onEvent(.gameSessionStarted(gameID: gameID, generation: generation.info, resumedJournalStartedAt: resumedJournalStartedAt))
+        onEvent(.gameSessionStarted(gameID: gameID, generation: generation.info, origin: origin))
         // "Play one game" is for a new game: a resumed one was already
         // playing before it was asked for.
-        if oneGameMode, resumedJournalStartedAt == nil {
+        if oneGameMode, case .new = origin {
             oneGameMode = false
             acceptingNewGames = false
             onEvent(.oneGameStarted(gameID: gameID))
@@ -755,6 +767,24 @@ actor LichessBotSessionManager {
         sessionTasks[gameID] = Task { [weak self] in
             await session.run()
             await self?.sessionEnded(gameID: gameID)
+        }
+    }
+
+    /// Whether this session starts the game or resumes it, from the journals
+    /// left at go-online. Taken once: a later session for the same game in
+    /// this runtime resumes one this runtime already listed. The journal is
+    /// read and its stream lines decoded by `journalReader`, on the journal
+    /// queue, before the live view replays it.
+    private func sessionOrigin(gameID: String) async -> LichessBotSessionOrigin {
+        guard let journalStartedAt = resumableGames.removeValue(forKey: gameID) else {
+            return .new
+        }
+        do {
+            return .resumed(try await journalReader(gameID))
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return .resumedWithUnreadableJournal(journalStartedAt: journalStartedAt, reason: "its journal left InProgress/ before it could be read")
+        } catch {
+            return .resumedWithUnreadableJournal(journalStartedAt: journalStartedAt, reason: "its journal can't be used: \(error.localizedDescription)")
         }
     }
 

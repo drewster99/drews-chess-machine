@@ -30,7 +30,8 @@ final class LichessBotMultipleChallengesTests: XCTestCase {
             time: time,
             settingsProvider: { frozen },
             gameObserver: LichessBotRecordingGameObserver(),
-            onEvent: { event in events.modify { $0.append(event) } }
+            onEvent: { event in events.modify { $0.append(event) } },
+            journalReader: LichessBotTestJournalReaders.none
         )
         let run = Task { await manager.run() }
         try await waitUntil("the stream opens") { await account.opens == 1 }
@@ -77,7 +78,8 @@ final class LichessBotMultipleChallengesTests: XCTestCase {
             time: time,
             settingsProvider: { frozen },
             gameObserver: LichessBotRecordingGameObserver(),
-            onEvent: { event in events.modify { $0.append(event) } }
+            onEvent: { event in events.modify { $0.append(event) } },
+            journalReader: LichessBotTestJournalReaders.none
         )
         let run = Task { await manager.run() }
         try await waitUntil("the stream opens") { await account.opens == 1 }

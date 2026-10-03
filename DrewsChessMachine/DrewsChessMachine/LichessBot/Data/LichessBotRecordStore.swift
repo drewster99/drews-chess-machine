@@ -133,6 +133,18 @@ final class LichessBotRecordStore: Sendable {
         return .missing
     }
 
+    /// A leftover journal, checked and prepared for resuming its game
+    /// (`LichessBotResumedJournal.make`), on the journal queue: reading and
+    /// decoding a long game's journal is real work, kept off the cooperative
+    /// pool and the main actor.
+    func resumedJournal(gameID: String) async throws -> LichessBotResumedJournal {
+        let url = try directory.validatedInProgressJournalURL(gameID: gameID)
+        let ourAccountID = self.ourAccountID
+        return try await journalQueue.run {
+            try LichessBotResumedJournal.make(gameID: gameID, journal: try LichessBotJournal.read(url), ourAccountID: ourAccountID)
+        }
+    }
+
     /// The journal's own finished status, if it recorded one.
     func journalFinishedStatus(gameID: String) async throws -> String? {
         let journal = try await readJournal(gameID: gameID)

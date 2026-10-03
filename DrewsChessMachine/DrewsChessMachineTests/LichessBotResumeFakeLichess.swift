@@ -23,6 +23,19 @@ final class LichessBotResumeFakeLichess: LichessBotTransport, @unchecked Sendabl
     /// Games whose export says DCM (black) won by resignation with no moves;
     /// any other export is a 404.
     let resignedExports = SyncBox<Set<String>>([])
+    /// NDJSON body of `GET /api/bot/online`.
+    let onlineBotsNDJSON = SyncBox<String>("")
+    /// Challenges Lichess refuses, by lowercased username: the 400's error
+    /// text. Any other challenge is created.
+    let challengeRefusals = SyncBox<[String: String]>([:])
+    /// Usernames challenged (created or refused), in order.
+    let challengedNames = SyncBox<[String]>([])
+    /// The `perfs` object of `GET /api/account`.
+    let accountPerfsJSON: String
+
+    init(accountPerfsJSON: String = "{}") {
+        self.accountPerfsJSON = accountPerfsJSON
+    }
     private let eventContinuation = SyncBox<LichessBotChunkStream.Continuation?>(nil)
     private let gameContinuations = SyncBox<[String: LichessBotChunkStream.Continuation]>([:])
 
@@ -105,14 +118,30 @@ final class LichessBotResumeFakeLichess: LichessBotTransport, @unchecked Sendabl
         case ("POST", "/api/token/test"):
             return (200, #"{"\#(Self.token)":{"userId":"\#(Self.botID)","scopes":"bot:play,challenge:write","expires":null}}"#)
         case ("GET", "/api/account"):
-            return (200, #"{"id":"\#(Self.botID)","username":"DrewsChessMachine","title":"BOT","perfs":{}}"#)
+            return (200, #"{"id":"\#(Self.botID)","username":"DrewsChessMachine","title":"BOT","perfs":\#(accountPerfsJSON)}"#)
+        case ("GET", "/api/users/status"):
+            let query = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: true) }?.queryItems
+            let ids = query?.first { $0.name == "ids" }?.value?.split(separator: ",").map(String.init) ?? []
+            let entries = ids.map { #"{"id":"\#($0.lowercased())","name":"\#($0)","title":"BOT","online":true}"# }
+            return (200, "[" + entries.joined(separator: ",") + "]")
+        case ("GET", "/api/bot/online"):
+            return (200, onlineBotsNDJSON.value)
         default:
             break
+        }
+        let segments = path.split(separator: "/").map(String.init)
+        if method == "POST", segments.count == 3, segments[0] == "api", segments[1] == "challenge" {
+            let username = segments[2]
+            challengedNames.modify { $0.append(username) }
+            if let refusal = challengeRefusals.value[username.lowercased()] {
+                return (400, #"{"error":"\#(refusal)"}"#)
+            }
+            let id = "c" + username.lowercased()
+            return (200, #"{"id":"\#(id)","status":"created","challenger":{"id":"\#(Self.botID)","name":"DrewsChessMachine","rating":1500},"destUser":{"id":"\#(username.lowercased())","name":"\#(username)","rating":1500},"variant":{"key":"standard"},"rated":false,"speed":"blitz","timeControl":{"type":"clock","limit":300,"increment":3},"color":"random","direction":"out"}"#)
         }
         if method == "POST" {
             return (200, #"{"ok":true}"#)
         }
-        let segments = path.split(separator: "/").map(String.init)
         if segments.count == 5, segments[0] == "api", segments[1] == "bot", segments[2] == "game", segments[4] == "chat" {
             let gameID = segments[3]
             let answer = chatFetchResponses.mutate { responses -> String in
@@ -136,5 +165,14 @@ final class LichessBotResumeFakeLichess: LichessBotTransport, @unchecked Sendabl
     /// White (the opponent) resigns `c<opponent>` before any move.
     func opponentResigns(_ opponent: String) {
         sendGameLine("c\(opponent)", #"{"type":"gameState","moves":"","wtime":180000,"btime":180000,"winc":2000,"binc":2000,"status":"resign","winner":"black"}"#)
+    }
+}
+
+/// Journal readers for session managers in tests.
+enum LichessBotTestJournalReaders {
+    /// For a manager given no leftover journals: it must never read one.
+    static let none: @Sendable (String) async throws -> LichessBotResumedJournal = { gameID in
+        XCTFail("no journal was left for \(gameID); the manager must not read one")
+        throw CocoaError(.fileReadNoSuchFile)
     }
 }

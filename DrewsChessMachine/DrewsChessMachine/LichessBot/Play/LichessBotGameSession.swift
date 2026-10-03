@@ -56,6 +56,7 @@ actor LichessBotGameSession {
     private var readings: [LichessBotValueReading] = []
     private var takebacksAccepted = 0
     private var greeted = false
+    private var farewellSent = false
     private var commandBudget = LichessBotChatCommandBudget()
     /// Our clock as of the latest `gameState`, for the command budget's
     /// low-clock rule.
@@ -163,6 +164,10 @@ actor LichessBotGameSession {
         self.onTurnStatus = onTurnStatus
         self.pacing = pacing
         self.greeted = carryover.greeted
+        self.farewellSent = carryover.farewellSent
+        self.takebacksAccepted = carryover.takebacksAccepted
+        self.readings = carryover.readings
+        self.commandBudget = LichessBotChatCommandBudget(repliesSent: carryover.commandRepliesQueued)
     }
 
     var isFinished: Bool {
@@ -471,10 +476,17 @@ actor LichessBotGameSession {
                     }
                 }
             }
-            if case .rebuilt = sync, let posted = lastPostedPly, posted >= tracker.ply {
-                // A takeback removed a ply we had moved at (E30).
-                lastPostedPly = nil
+            if case .rebuilt = sync {
+                // A takeback went back to `tracker.ply`: readings for plies
+                // no longer on the board stop counting toward a streak. The
+                // journal fold applies the same rule
+                // (`LichessBotGameSessionCarryover.fold`), so a resumed
+                // session's streaks match this one's.
                 readings.removeAll { $0.ply >= tracker.ply }
+                if let posted = lastPostedPly, posted >= tracker.ply {
+                    // It removed a ply we had moved at (E30).
+                    lastPostedPly = nil
+                }
             }
         }
 
@@ -523,7 +535,7 @@ actor LichessBotGameSession {
             do {
                 try await api.respondToTakeback(gameID: gameID, accept: true)
                 takebacksAccepted += 1
-                await observer.gameEvent(gameID: gameID, .action("accepted takeback"))
+                await observer.gameEvent(gameID: gameID, .takebackAccepted)
                 return
             } catch let error where Self.endsTheStreamLoop(error) {
                 throw error
@@ -608,7 +620,7 @@ actor LichessBotGameSession {
             await observer.gameEvent(gameID: gameID, .anomaly("discarded a decision for ply \(ply): the position moved on while deciding"))
             return
         }
-        let reading = LichessBotValueReading(ply: ply, win: decision.win, draw: decision.draw, loss: decision.loss)
+        let reading = LichessBotValueReading(ply: ply, decision: decision)
         // One reading per ply: a ply decided again (after a resync or a
         // rejected move) replaces its earlier reading, so a streak counts our
         // moves, not our decisions.
@@ -1015,7 +1027,8 @@ actor LichessBotGameSession {
         await stopCommandReplies(reason: "the game ended")
         await observer.gameEvent(gameID: gameID, .finished(status: status, winner: winner, localDrawCondition: tracker?.engine.drawCondition))
         await onTurnStatus(gameID, LichessBotTurnStatus(awaitingOurMove: false, ourClock: nil))
-        if status.known != .aborted && status.known != .noStart {
+        if status.known != .aborted && status.known != .noStart && !farewellSent {
+            farewellSent = true
             await sendChat(settings.chat.goodbyeEnabled ? settings.chat.goodbyeTemplate : nil, origin: .goodbye, settings: settings)
         }
     }
@@ -1038,7 +1051,7 @@ actor LichessBotGameSession {
             await observer.gameEvent(gameID: gameID, .action("not answering !\(command.rawValue) from \(line.username): \(reason)"))
             return
         case .reply:
-            break
+            await observer.gameEvent(gameID: gameID, .commandReplyQueued(command: command, username: line.username, room: room))
         }
         let info = playingMoveSource.info
         let context = LichessBotChatCommandContext(

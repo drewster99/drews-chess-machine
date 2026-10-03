@@ -140,6 +140,16 @@ struct LichessBotChatCommandBudget: Sendable, Equatable {
     private(set) var repliesSent = 0
     private(set) var lastReplyAt: Duration?
 
+    /// A game's budget at its start.
+    init() {}
+
+    /// A resumed game's budget: `repliesSent` already spent by earlier
+    /// sessions of the game (counted from its journal). The cooldown starts
+    /// over: the last reply was at least a relaunch ago.
+    init(repliesSent: Int) {
+        self.repliesSent = repliesSent
+    }
+
     /// Whether to answer a command now; records the reply when it says yes.
     mutating func decide(now: Duration, ourClockMilliseconds: Int?) -> Decision {
         if repliesSent >= Self.maximumRepliesPerGame {

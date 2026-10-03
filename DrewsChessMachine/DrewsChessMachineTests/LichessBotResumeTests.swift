@@ -222,6 +222,59 @@ final class LichessBotResumeTests: XCTestCase {
         XCTAssertEqual(second.leftoverGamesFromLastRun, [], "going online resumes or files them")
     }
 
+    /// The move DCM posted in `gameID`, from the fake's POST paths.
+    private func postedMove(_ lichess: LichessBotResumeFakeLichess, _ gameID: String) throws -> String {
+        let prefix = "/api/bot/game/\(gameID)/move/"
+        let path = try XCTUnwrap(lichess.postedPaths.value.first { $0.hasPrefix(prefix) }, "no move posted in \(gameID)")
+        return String(path.dropFirst(prefix.count))
+    }
+
+    func testAResumedGameShowsItsEarlierDecisionsAndChat() async throws {
+        let installation = try makeInstallation { $0.chat.greetingEnabled = true }
+        let lichess = LichessBotResumeFakeLichess()
+        lichess.movesByGame.modify { $0["cbob"] = "e2e4" }
+        let model = try await LichessBotFakeModelProvider.randomChampion()
+        let first = try await launch(installation, lichess: lichess, modelProvider: model)
+        try await startAndWait("bob", on: first, lichess: lichess, installation: installation)
+        try await waitUntil("DCM plays its first move") { lichess.postCount(containing: "/api/bot/game/cbob/move/") > 0 }
+        lichess.sendGameLine("cbob", #"{"type":"chatLine","room":"player","username":"bob","text":"hello there"}"#)
+        try await waitUntil("bob's chat is shown") { first.games.first?.chat.contains { $0.text == "hello there" } == true }
+        try await Task.sleep(for: .milliseconds(300))
+        let ourMove = try postedMove(lichess, "cbob")
+        await stop(first)
+
+        lichess.movesByGame.modify { $0["cbob"] = "e2e4 \(ourMove)" }
+        let second = try await launch(installation, lichess: lichess, modelProvider: model)
+        lichess.startGame(against: "bob")
+        try await waitUntil("cbob is listed again") { second.games.count == 1 }
+        try await waitUntil("cbob's game stream is open again") { lichess.gameStreamIsOpen("cbob") }
+        try await Task.sleep(for: .milliseconds(300))
+        let game = try XCTUnwrap(second.games.first)
+        XCTAssertNotNil(game.decisions[1], "DCM's decision at ply 1, made before the relaunch, is shown")
+        XCTAssertTrue(game.chat.contains { $0.username == "bob" && $0.text == "hello there" }, "\(game.chat)")
+        XCTAssertTrue(game.chat.contains { $0.origin == .greeting }, "\(game.chat)")
+    }
+
+    func testTheTakebackAllowanceIsNotRenewedByAResume() async throws {
+        let installation = try makeInstallation { $0.play.maxTakebacksAcceptedPerGame = 1 }
+        let lichess = LichessBotResumeFakeLichess()
+        lichess.movesByGame.modify { $0["cbob"] = "e2e4" }
+        lichess.opponentProposesTakeback.modify { $0.insert("cbob") }
+        let model = try await LichessBotFakeModelProvider.randomChampion()
+        let first = try await launch(installation, lichess: lichess, modelProvider: model)
+        try await startAndWait("bob", on: first, lichess: lichess, installation: installation)
+        try await waitUntil("the takeback is accepted") { lichess.postCount(containing: "/api/bot/game/cbob/takeback/yes") == 1 }
+        try await Task.sleep(for: .milliseconds(300))
+        await stop(first)
+
+        // The opponent proposes another takeback after the relaunch.
+        let second = try await launch(installation, lichess: lichess, modelProvider: model)
+        lichess.startGame(against: "bob")
+        try await waitUntil("cbob is listed again") { second.games.count == 1 }
+        try await waitUntil("DCM plays on in the resumed game") { lichess.postCount(containing: "/api/bot/game/cbob/move/") > 0 }
+        XCTAssertEqual(lichess.postCount(containing: "/api/bot/game/cbob/takeback/yes"), 1, "the game's one takeback was spent before the relaunch")
+    }
+
     func testAResumedGameIsNotGreetedAgain() async throws {
         let installation = try makeInstallation { $0.chat.greetingEnabled = true }
         let lichess = LichessBotResumeFakeLichess()
