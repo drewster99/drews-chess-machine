@@ -63,6 +63,10 @@ struct TrainVsUciConfig: Sendable {
     /// Destination for the run's `results.json` (`--output`, checked before
     /// the run by `CliResultsOutput.preflight`), or nil for no JSON.
     var output: CliResultsOutput?
+    /// The run's master seed (`RunRandomSeed.resolve`, at launch): the
+    /// replay buffer's `sampler` stream and each game's `vsuci.game.<serial>`
+    /// stream derive from it.
+    var runRandomSeed: RunRandomSeed
 }
 
 enum TrainVsUciError: LocalizedError {
@@ -146,8 +150,10 @@ enum TrainVsUciRunner {
             let r = CliTrainingRecorder()
             r.setSessionID(config.runModelID)
             r.setRunKind(.trainVsUci)
+            r.setRunRandomSeed(config.runRandomSeed)
             return r
         }()
+        for line in config.runRandomSeed.logLines { emit(line) }
         let runStart = CFAbsoluteTimeGetCurrent()
         guard !config.opponents.isEmpty else { throw TrainVsUciError.noOpponents }
 
@@ -241,7 +247,9 @@ enum TrainVsUciRunner {
         // avoids concurrent eval/train GPU access to one network and the
         // ChessNetwork/ChessMPSNetwork type mismatch (trainer.network is a
         // ChessNetwork; the driver + ActiveGame need a ChessMPSNetwork).
-        let evalNet = try ChessMPSNetwork(.randomWeights, arch: arch)
+        // Its weights are always replaced before play: from --start-model, or
+        // from the trainer's fresh initialization (see below).
+        let evalNet = try ChessMPSNetwork(.overwrittenByLoad, arch: arch)
         // Configured through `TrainerHyperparameters` — the same path the GUI
         // session and corpus replay use — so every trainer-level parameter
         // lands, including the LR/momentum cycle, dropout and the stats /
@@ -253,11 +261,14 @@ enum TrainVsUciRunner {
             for line in p.trainer.scheduleDifferences(from: resumeSnapshot.schedule) {
                 emit("[VS-UCI-RESUME] WARNING \(line)")
             }
+            // See `[REPLAY-RESUME] NOT EXACT: rng` in CorpusReplayRunner.
+            emit("[VS-UCI-RESUME] NOT EXACT: rng — the checkpoint records no run seed, sampler state or game serial; "
+                + "this segment draws from seed \(config.runRandomSeed.masterSeed)")
             resumedHyperparameters = p.trainer.adoptingSchedule(resumeSnapshot.schedule)
         }
         let hp = resumedHyperparameters
         let trainer = try ChessTrainer(
-            dropoutStream: RunMasterSeed.systemDrawn(context: "train-vs-uci").generator(.dropout),
+            dropoutStream: config.runRandomSeed.streams.generator(.dropout),
             hyperparameters: hp, arch: arch
         )
         emit(ChessNetwork.PolicyTailPrecision.processLogLine)
@@ -277,7 +288,10 @@ enum TrainVsUciRunner {
             + " complementCE=\(hp.useSignedAdvantageComplementCE ? "on" : "off")"
             + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
             + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)")
-        let buffer = ReplayBuffer(capacity: p.replayBufferCapacity, inputEncoding: evalNet.inputEncoding)
+        let buffer = ReplayBuffer(
+            capacity: p.replayBufferCapacity,
+            inputEncoding: evalNet.inputEncoding,
+            sampler: config.runRandomSeed.streams.generator(.sampler))
 
         // Number of base tensors (trainables + BN running stats) — the prefix
         // both the trainer's masters/working copy and evalNet's inference net
@@ -355,7 +369,9 @@ enum TrainVsUciRunner {
             // engine's default (`Temperature=0` → `.argmax`). Game variety must
             // come from start positions, not temperature (see `.argmax` doc).
             schedule: .argmax,
-            maxPliesPerGame: config.maxPliesPerGame)
+            maxPliesPerGame: config.maxPliesPerGame,
+            randomStreams: config.runRandomSeed.streams,
+            gameSerials: GameSerialCounter(firstSerial: 0))
 
         // Consecutive-failure tracking per kind of save — see
         // `TrainerSaveFailureStreak` and `CorpusReplayRunner.reportSaveFailure`.

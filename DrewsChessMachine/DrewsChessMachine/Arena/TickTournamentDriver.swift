@@ -96,7 +96,14 @@ final class TickTournamentDriver: @unchecked Sendable {
 
     // MARK: - Public API
 
+    /// `randomStreams` and `arenaIndex` name each game's stream:
+    /// `arena.<arenaIndex>.game.<gameIndex>`, where `gameIndex` is the
+    /// tournament's own game numbering (which also fixes the colors), so a
+    /// game's draws do not depend on concurrency, slot or task order.
+    /// `arenaIndex` is the run's count of arenas started before this one.
     func run(
+        randomStreams: DCMRandomStreams,
+        arenaIndex: Int,
         candidateNetwork: ChessMPSNetwork,
         championNetwork: ChessMPSNetwork,
         arenaSchedule: SamplingSchedule,
@@ -231,14 +238,16 @@ final class TickTournamentDriver: @unchecked Sendable {
             let (wNet, bNet) = candIsWhite
                 ? (candidateNetwork, championNetwork)
                 : (championNetwork, candidateNetwork)
+            let gameRandom = randomStreams.generator(.arenaGame(arenaIndex: arenaIndex, gameIndex: i))
             let g = ActiveGame(
                 workerId: UInt16(truncatingIfNeeded: i),
                 whiteNetwork: wNet,
                 blackNetwork: bNet,
                 capPlies: arenaCapPlies,
-                schedule: arenaSchedule
+                schedule: arenaSchedule,
+                random: gameRandom
             )
-            g.resetForNewGame(maxPliesCap: arenaCapPlies, schedule: arenaSchedule)
+            g.resetForNewGame(maxPliesCap: arenaCapPlies, schedule: arenaSchedule, random: gameRandom)
             games.append(g)
             gameIndices.append(i)
             aIsWhiteForSlot.append(candIsWhite)
@@ -368,7 +377,11 @@ final class TickTournamentDriver: @unchecked Sendable {
                         : (championNetwork, candidateNetwork)
                     let g = games[i]
                     g.replaceNetworkRefs(white: wNet, black: bNet)
-                    g.resetForNewGame(maxPliesCap: arenaCapPlies, schedule: arenaSchedule)
+                    g.resetForNewGame(
+                        maxPliesCap: arenaCapPlies,
+                        schedule: arenaSchedule,
+                        random: randomStreams.generator(.arenaGame(arenaIndex: arenaIndex, gameIndex: nextIdx))
+                    )
                     gameIndices[i] = nextIdx
                     aIsWhiteForSlot[i] = candIsWhiteNext
                     // Clear the slot's candidate-value buffer for the
@@ -655,12 +668,11 @@ final class TickTournamentDriver: @unchecked Sendable {
                         )
 
                         let gameTotalPly = g.totalPliesPlayed
-                        let result = MoveSampler.sampleMove(
+                        let result = g.sampleMove(
                             logits: policySliceBuf,
                             legalMoves: legalMoves,
                             currentPlayer: sideToMove,
                             ply: gameTotalPly,
-                            schedule: g.schedule,
                             probsScratch: probsSliceBuf,
                             etaScratch: etaSliceBuf
                         )

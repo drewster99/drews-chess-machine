@@ -46,6 +46,11 @@ struct UpperContentView: View {
     /// random network. Nil ⇒ the classic fresh-build auto-train path.
     let trainStartModelPath: String?
 
+    /// Forwarded `--seed <n>` value for `--train`: handed to the session as
+    /// `SessionController.commandLineSeed`, the master seed of every run this
+    /// process starts. Nil ⇒ the seed settings decide.
+    let trainCommandLineSeed: UInt64?
+
     /// Parsed `--parameters <file>` JSON. Applied to the relevant
     /// `@AppStorage` / `@State` fields right before
     /// `buildNetwork()` fires inside the auto-train sequence, so
@@ -78,6 +83,7 @@ struct UpperContentView: View {
         autoPlayChessOnLaunch: Bool,
         playChessModelPath: String?,
         trainStartModelPath: String?,
+        trainCommandLineSeed: UInt64?,
         cliConfig: CliTrainingConfig?,
         cliResultsOutput: CliResultsOutput?,
         chartCoordinator: ChartCoordinator
@@ -89,6 +95,7 @@ struct UpperContentView: View {
         self.autoPlayChessOnLaunch = autoPlayChessOnLaunch
         self.playChessModelPath = playChessModelPath
         self.trainStartModelPath = trainStartModelPath
+        self.trainCommandLineSeed = trainCommandLineSeed
         self.cliConfig = cliConfig
         self.cliResultsOutput = cliResultsOutput
         self.chartCoordinator = chartCoordinator
@@ -2015,6 +2022,9 @@ struct UpperContentView: View {
     @MainActor
     private func runAutoTrainLaunchSequence() {
         SessionLogger.shared.log("[APP] --train: starting auto-train launch sequence")
+        // Set here, not in `handleBodyOnAppear`: this sequence can start
+        // before the window appears, and `--seed` exists only with --train.
+        session.commandLineSeed = trainCommandLineSeed
         // Defensive state checks. These should always pass on a
         // fresh launch (no network built yet, nothing running),
         // but if somehow another flow already kicked things off
@@ -2239,11 +2249,7 @@ struct UpperContentView: View {
     }
 
     private func formatParameterValue(_ v: ParameterValue) -> String {
-        switch v {
-        case .bool(let x): "\(x)"
-        case .int(let x): "\(x)"
-        case .double(let x): "\(x)"
-        }
+        v.displayText
     }
 
     /// File-menu entry point for "Resume training from autosave". Re-reads the
@@ -3783,7 +3789,8 @@ extension UpperContentView {
                     ?? ReplayBuffer.bytesPerPosition(floatsPerBoard: ReplayBuffer.defaultFloatsPerBoard),
                 bufferComposition: session.bufferComposition,
                 lastSamplingResult: session.lastSamplingResult,
-                parallelStats: session.parallelStats
+                parallelStats: session.parallelStats,
+                currentRunSeed: session.runRandomSeed
             )
         }
     }

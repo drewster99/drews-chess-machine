@@ -86,6 +86,11 @@ struct TrainingSettingsPopover: View {
     /// in the current Play-and-Train session.
     let parallelStats: ParallelWorkerStatsBox.Snapshot?
 
+    /// The current run's master seed, shown on the Sessions tab with Copy
+    /// and Use buttons. `nil` before the first Play-and-Train start of this
+    /// launch.
+    let currentRunSeed: RunRandomSeed?
+
     // MARK: - Tab selection
 
     /// Local tab selection. Resets to `.optimizer` each time the
@@ -160,6 +165,7 @@ struct TrainingSettingsPopover: View {
     private var sessionsHasError: Bool {
         model.periodicAutosaveIntervalError
             || model.maxPeriodicAutosavesKeptError
+            || model.randomSeedError
     }
 
     private var anyTabHasError: Bool {
@@ -367,9 +373,14 @@ struct TrainingSettingsPopover: View {
                     maxPeriodicAutosavesKeptText: $model.maxPeriodicAutosavesKeptText,
                     automaticSavePruningEnabled: $model.automaticSavePruningEnabledValue,
                     klProbeIntervalText: $model.klProbeIntervalText,
+                    randomSeedMode: $model.randomSeedModeValue,
+                    randomSeedText: $model.randomSeedText,
                     periodicAutosaveIntervalError: model.periodicAutosaveIntervalError,
                     maxPeriodicAutosavesKeptError: model.maxPeriodicAutosavesKeptError,
-                    klProbeIntervalError: model.klProbeIntervalError
+                    klProbeIntervalError: model.klProbeIntervalError,
+                    randomSeedError: model.randomSeedError,
+                    currentRunSeed: currentRunSeed,
+                    onUseRunSeed: { model.useRunSeed($0) }
                 )
             }
             }
@@ -1228,9 +1239,14 @@ private struct SessionsTab: View {
     @Binding var maxPeriodicAutosavesKeptText: String
     @Binding var automaticSavePruningEnabled: Bool
     @Binding var klProbeIntervalText: String
+    @Binding var randomSeedMode: RandomSeedMode
+    @Binding var randomSeedText: String
     let periodicAutosaveIntervalError: Bool
     let maxPeriodicAutosavesKeptError: Bool
     let klProbeIntervalError: Bool
+    let randomSeedError: Bool
+    let currentRunSeed: RunRandomSeed?
+    let onUseRunSeed: (RunRandomSeed) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1317,6 +1333,16 @@ private struct SessionsTab: View {
 
             Divider()
 
+            RunSeedSection(
+                randomSeedMode: $randomSeedMode,
+                randomSeedText: $randomSeedText,
+                randomSeedError: randomSeedError,
+                currentRunSeed: currentRunSeed,
+                onUseRunSeed: onUseRunSeed
+            )
+
+            Divider()
+
             Text("The periodic autosave writes a full session checkpoint on this cadence while Play-and-Train runs; an interval change takes effect mid-session. Pruning is off by default, and the kept count applies only when it is on. When on, the kept count covers periodic and post-promotion autosaves together, across every session, and the oldest beyond it are deleted after each new one is written. The save just written, the resume target, manual saves, and SIGUSR2 saves are never pruned. 0 keeps every autosave (no pruning).")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
@@ -1352,6 +1378,83 @@ private struct SessionsTab: View {
         let trimmed = maxPeriodicAutosavesKeptText.trimmingCharacters(in: .whitespaces)
         if let n = Int(trimmed), n == 0 { return "0 = keep all" }
         return ""
+    }
+}
+
+/// The Sessions tab's run-seed section: the seed mode, the configured seed
+/// (in effect only in "Use this seed" mode), and the current run's seed with
+/// Copy and Use. Rows align with `PopoverRow`'s label column. The seed field
+/// is wider than `PopoverRow`'s so a full UInt64 fits, and has no stepper.
+/// The current-run row keeps its place in the view tree before any run: its
+/// buttons are disabled and the value reads "—".
+private struct RunSeedSection: View {
+    @Binding var randomSeedMode: RandomSeedMode
+    @Binding var randomSeedText: String
+    let randomSeedError: Bool
+    let currentRunSeed: RunRandomSeed?
+    let onUseRunSeed: (RunRandomSeed) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Run seed")
+                .font(.subheadline.weight(.semibold))
+            HStack(spacing: 8) {
+                Text("Seed:")
+                    .frame(width: 160, alignment: .trailing)
+                Picker("Seed mode", selection: $randomSeedMode) {
+                    ForEach(RandomSeedMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                Text("Configured seed:")
+                    .frame(width: 160, alignment: .trailing)
+                ParameterTextField(
+                    placeholder: RandomSeed.declaredDefaultText,
+                    text: $randomSeedText,
+                    width: 190
+                ) { _ in /* no-op: Save handler does parse + apply */ }
+                    .font(.system(.body, design: .monospaced))
+                    .disabled(randomSeedMode != .seeded)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.red, lineWidth: randomSeedError ? 2 : 0)
+                    )
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                Text("This run's seed:")
+                    .frame(width: 160, alignment: .trailing)
+                Text(currentRunSeed.map { String($0.masterSeed) } ?? "—")
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(width: 190, alignment: .leading)
+                Button("Copy") {
+                    guard let currentRunSeed else { return }
+                    let pasteboard = NSPasteboard.general
+                    pasteboard.clearContents()
+                    pasteboard.setString(String(currentRunSeed.masterSeed), forType: .string)
+                }
+                .disabled(currentRunSeed == nil)
+                .help("Copy this run's seed, for --seed or a parameters file.")
+                Button("Use") {
+                    guard let currentRunSeed else { return }
+                    onUseRunSeed(currentRunSeed)
+                }
+                .disabled(currentRunSeed == nil)
+                .help("Set \"Use this seed\" with this run's seed, so the next run repeats it. Takes effect on Save.")
+                Spacer()
+            }
+            Text("A Play-and-Train run derives its replay sampling and every self-play and arena game's moves and noise from one seed, logged on its [RUN] line. \"Draw a seed\" picks a new one at each run start; \"Use this seed\" starts every run from the configured seed; --seed on the command line overrides both. A change applies when the next run starts; continuing after Stop keeps the run's seed. Resuming a saved session draws a new seed, because sessions do not record one yet.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 

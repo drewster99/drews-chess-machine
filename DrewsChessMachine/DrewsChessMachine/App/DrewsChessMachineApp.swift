@@ -81,6 +81,11 @@ struct DrewsChessMachineApp: App {
     /// random init. Nil ⇒ the classic fresh-build auto-train path.
     private let trainStartModelPath: String?
 
+    /// Value of `--seed <n>` when `--train` is present: the master seed of
+    /// every run this process starts, overriding `random_seed_mode` and
+    /// `random_seed` (see `RunRandomSeed.resolve`). Nil ⇒ the settings decide.
+    private let trainCommandLineSeed: UInt64?
+
     init() {
         let lichessBotProvider = LichessBotSessionModelProvider()
         _lichessBotProvider = State(initialValue: lichessBotProvider)
@@ -210,7 +215,7 @@ struct DrewsChessMachineApp: App {
 
         // Known flags.
         let booleanFlags: Set<String> = ["--train", "--playchess", "--overwrite-output"]
-        let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit", "--training-step-limit", "--start-model", "--model"]
+        let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit", "--training-step-limit", "--start-model", "--model", "--seed"]
 
         // Indices of rawArgs that were consumed by a known flag.
         // Anything NOT in this set after parsing is unknown and
@@ -396,6 +401,21 @@ struct DrewsChessMachineApp: App {
             errors.append("--start-model is only valid alongside --train")
         }
 
+        // `--seed <n>` — with --train, the master seed of the runs this
+        // process starts (overrides random_seed_mode / random_seed).
+        var parsedTrainCommandLineSeed: UInt64? = nil
+        if let raw = takeValue(for: "--seed") {
+            do {
+                parsedTrainCommandLineSeed = try RunRandomSeed.parseCommandLineSeed(raw)
+            } catch {
+                errors.append(error.localizedDescription)
+            }
+            if trainIndices.isEmpty {
+                errors.append("--seed is only valid alongside --train, --replay-corpus or --train-vs-uci")
+            }
+        }
+        self.trainCommandLineSeed = parsedTrainCommandLineSeed
+
         // Unknown-argument scan. Anything that wasn't consumed
         // by a known flag above is rejected — including stray
         // positional args, typos like `--out` instead of
@@ -446,6 +466,10 @@ struct DrewsChessMachineApp: App {
               --start-model <path>            Load this saved model (.safetensors / .dcmmodel) as the starting
                                               champion instead of a fresh random init; the trainer forks from
                                               it. For controlled A/B runs from one identical starting net.
+              --seed <n>                      Master seed (a whole number, 0 to 2^64-1) for every run this process
+                                              starts; overrides random_seed_mode and random_seed. Also accepted by
+                                              --replay-corpus and --train-vs-uci. Every run logs its seed on its
+                                              [RUN] line, so an unseeded run can be repeated by passing it here.
 
             Opponent selection (with --playchess):
               --model <path>                  .safetensors or .dcmmodel weights to play against. Without it,
@@ -658,6 +682,9 @@ struct DrewsChessMachineApp: App {
         if !chartsEnabledAtLaunch {
             SessionLogger.shared.log("[APP] chart data collection: DISABLED (View > Collect Chart Data)")
         }
+        if let seed = trainCommandLineSeed {
+            SessionLogger.shared.log("[APP] --seed=\(seed) (overrides random_seed_mode and random_seed for every run this process starts)")
+        }
         if let override = trainingTimeLimitCliOverride {
             SessionLogger.shared.log("[APP] --training-time-limit=\(override)s (overrides any value in --parameters)")
         }
@@ -685,6 +712,7 @@ struct DrewsChessMachineApp: App {
                 autoPlayChessOnLaunch: autoPlayChessOnLaunch,
                 playChessModelPath: playChessModelPath,
                 trainStartModelPath: trainStartModelPath,
+                trainCommandLineSeed: trainCommandLineSeed,
                 cliConfig: cliConfig,
                 cliResultsOutput: cliResultsOutput,
                 showTrainingGraphs: showTrainingGraphs,
@@ -1109,6 +1137,7 @@ struct DrewsChessMachineApp: App {
         var overwriteOutModel = false
         var gpuCaptureStep: Int? = nil
         var gpuCaptureOutPath: String? = nil
+        var commandLineSeed: UInt64? = nil
 
         // Strict validation: a recognized flag with a missing or unparseable
         // value is a HARD error, never a silent default. A mistyped
@@ -1182,6 +1211,12 @@ struct DrewsChessMachineApp: App {
             case ChessNetwork.PolicyTailPrecision.flag:
                 // Validated at launch; the process value is read below.
                 _ = requireValue(arg, nextValue); i += 2
+            case "--seed":
+                guard commandLineSeed == nil else {
+                    FileHandle.standardError.write(Data("error: --seed specified more than once\n".utf8))
+                    Darwin.exit(2)
+                }
+                commandLineSeed = parseCommandLineSeedOrExit(requireValue(arg, nextValue)); i += 2
             default:
                 FileHandle.standardError.write(Data("error: unexpected argument '\(arg)' (with --replay-corpus)\n".utf8))
                 Darwin.exit(2)
@@ -1249,6 +1284,7 @@ struct DrewsChessMachineApp: App {
                 Darwin.exit(2)
             }
         }
+        let runRandomSeed = resolveRunRandomSeed(commandLineSeed: commandLineSeed)
 
         // Mint the run's saved-model ModelID here on the main thread — the
         // minter is main-actor isolated and the replay loop runs off-actor.
@@ -1284,9 +1320,38 @@ struct DrewsChessMachineApp: App {
                         outputURL: URL(fileURLWithPath: (path as NSString).expandingTildeInPath))
                 }
             },
-            policyTailPrecision: ChessNetwork.PolicyTailPrecision.process
+            policyTailPrecision: ChessNetwork.PolicyTailPrecision.process,
+            runRandomSeed: runRandomSeed
         )
         CorpusReplayRunner.runAndExit(config: config, params: params)
+    }
+
+    // MARK: - Run seed (--seed)
+
+    /// Parse a `--seed` value or exit with a usage error.
+    static func parseCommandLineSeedOrExit(_ text: String) -> UInt64 {
+        do {
+            return try RunRandomSeed.parseCommandLineSeed(text)
+        } catch {
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+            Darwin.exit(2)
+        }
+    }
+
+    /// Resolve a headless run's master seed from the (already applied)
+    /// settings and `--seed`, on the main thread. The runner logs its
+    /// `logLines` once its log is open. The one resolution both headless
+    /// training runners use.
+    static func resolveRunRandomSeed(commandLineSeed: UInt64?) -> RunRandomSeed {
+        MainActor.assumeIsolated {
+            let snapshot = TrainingParameters.shared.snapshot()
+            return RunRandomSeed.resolve(
+                mode: snapshot.randomSeedMode,
+                configuredSeed: snapshot.randomSeed,
+                commandLineSeed: commandLineSeed,
+                drawSeed: RunRandomSeed.systemDrawnSeed
+            )
+        }
     }
 
     // MARK: - Train-vs-UCI pre-flight (--train-vs-uci)
@@ -1318,6 +1383,7 @@ struct DrewsChessMachineApp: App {
         var resumeExact = false
         var maxPliesPerGame = 400
         var evalSyncEverySteps = 10
+        var commandLineSeed: UInt64? = nil
 
         func requireValue(_ flag: String, _ v: String?) -> String {
             guard let v else {
@@ -1380,6 +1446,12 @@ struct DrewsChessMachineApp: App {
             case ChessNetwork.PolicyTailPrecision.flag:
                 // Validated at launch; read through `PolicyTailPrecision.process`.
                 _ = requireValue(arg, nextValue); i += 2
+            case "--seed":
+                guard commandLineSeed == nil else {
+                    FileHandle.standardError.write(Data("error: --seed specified more than once\n".utf8))
+                    Darwin.exit(2)
+                }
+                commandLineSeed = parseCommandLineSeedOrExit(requireValue(arg, nextValue)); i += 2
             default:
                 FileHandle.standardError.write(Data("error: unexpected argument '\(arg)' (with --train-vs-uci)\n".utf8))
                 Darwin.exit(2)
@@ -1470,6 +1542,7 @@ struct DrewsChessMachineApp: App {
                 Darwin.exit(2)
             }
         }
+        let runRandomSeed = resolveRunRandomSeed(commandLineSeed: commandLineSeed)
 
         let runModelID = MainActor.assumeIsolated { ModelIDMinter.mint().value }
 
@@ -1486,7 +1559,8 @@ struct DrewsChessMachineApp: App {
             maxPliesPerGame: maxPliesPerGame,
             evalSyncEverySteps: evalSyncEverySteps,
             runModelID: runModelID,
-            output: resolveResultsOutputOrExit(path: outputPath, overwriteAuthorized: overwriteOutput)
+            output: resolveResultsOutputOrExit(path: outputPath, overwriteAuthorized: overwriteOutput),
+            runRandomSeed: runRandomSeed
         )
         TrainVsUciRunner.runAndExit(config: config, params: params)
     }
@@ -2112,7 +2186,8 @@ struct DrewsChessMachineApp: App {
         do {
             let cap = try ReplayBuffer.peekCapacity(at: bufferURL)
             let fpb = try ReplayBuffer.peekFloatsPerBoard(at: bufferURL)
-            let b = ReplayBuffer(capacity: cap, floatsPerBoard: fpb)
+            // Restored and analyzed, never sampled.
+            let b = ReplayBuffer(capacity: cap, floatsPerBoard: fpb, sampler: DCMRandom.seededFromSystem())
             try b.restore(from: bufferURL)
             buffer = b
         } catch {

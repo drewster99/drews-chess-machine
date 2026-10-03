@@ -212,7 +212,7 @@ final class SEActivationTests: XCTestCase {
         let arch = Self.twoGroupArchitecture(group0Activation: .silu, group0SE: .silu, group1SE: .relu)
         let legacy = try rewritingHeader(try encodedModel(arch), version: "4", stripField: true)
         let decodedArch = try SafetensorsModelIO.decode(legacy, valueHead: .asStored, source: "old.safetensors").architecture
-        let weights = try await ChessMPSNetwork(.randomWeights, arch: arch).network.exportWeights()
+        let weights = try await ChessMPSNetwork(.randomWeights(initSeed: 1), arch: arch).network.exportWeights()
         let inCode = try await forward(arch, weights)
         let fromFile = try await forward(decodedArch, weights)
         XCTAssertEqual(inCode.map(\.bitPattern), fromFile.map(\.bitPattern))
@@ -344,7 +344,7 @@ final class SEActivationTests: XCTestCase {
 
     /// Policy logits followed by the value scalar for the starting position.
     private func forward(_ arch: NetworkArchitecture, _ weights: [[Float]]) async throws -> [Float] {
-        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 2), arch: arch)
         try await net.network.loadWeights(weights)
         let board = BoardEncoder.encode(.starting, encoding: arch.inputEncoding)
         let box = SyncBox<[Float]>([])
@@ -371,7 +371,7 @@ final class SEActivationTests: XCTestCase {
         leakyEverywhere.blockGroups[1].activationFunction = .leakyRelu
         for arch in [reluEverywhere, leakyFC1Only, leakyEverywhere] { try arch.validate() }
 
-        let weights = try await ChessMPSNetwork(.randomWeights, arch: reluEverywhere).network.exportWeights()
+        let weights = try await ChessMPSNetwork(.randomWeights(initSeed: 3), arch: reluEverywhere).network.exportWeights()
         let relu = try await forward(reluEverywhere, weights)
         let fc1 = try await forward(leakyFC1Only, weights)
         let everywhere = try await forward(leakyEverywhere, weights)
@@ -392,7 +392,7 @@ final class SEActivationTests: XCTestCase {
         try requireMetal()
         let reluArch = Self.twoGroupArchitecture(group0SE: .relu, group1SE: .relu)
         let leakyArch = Self.twoGroupArchitecture(group0SE: .leakyRelu, group1SE: .leakyRelu)
-        var weights = try await ChessMPSNetwork(.randomWeights, arch: reluArch).network.exportWeights()
+        var weights = try await ChessMPSNetwork(.randomWeights(initSeed: 4), arch: reluArch).network.exportWeights()
         let plan = reluArch.weightTensorPlan()
         var biased = 0
         for (index, spec) in plan.enumerated() where spec.name.hasSuffix(".fc1.bias") && spec.name.contains(".se_") {

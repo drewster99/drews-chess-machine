@@ -17,7 +17,7 @@ import XCTest
 final class CheckpointManagerSafetensorsTests: XCTestCase {
 
     func testSaveModelWritesSafetensorsAndRoundTrips() async throws {
-        let net = try ChessMPSNetwork(.randomWeights)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 1))
         let weights = try await net.network.exportWeights()
         XCTAssertEqual(weights.count, NetworkArchitecture.current.weightTensorPlan().count)
 
@@ -71,7 +71,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
     /// Full session round-trip through the real saveSession/loadSession path,
     /// exercising the trainer file's optimizer-velocity tensors end to end.
     func testSaveSessionTrainerVelocityRoundTrips() async throws {
-        let net = try ChessMPSNetwork(.randomWeights)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 2))
         let base = try await net.network.exportWeights()
 
         // Synthesize velocity: one tensor per trainable (trainable order),
@@ -126,7 +126,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
         arch.blockGroups[0].channels = 64
         try arch.validate()
 
-        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 3), arch: arch)
         XCTAssertEqual(net.network.arch.towerOutputChannels, 64)
 
         let weights = try await net.network.exportWeights()
@@ -151,7 +151,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
         let arch = NetworkArchitecture.preset(.v4_8block_3x3) // 8 blocks 3x3 — not the default
         try arch.validate()
 
-        let champion = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let champion = try ChessMPSNetwork(.randomWeights(initSeed: 4), arch: arch)
         let championWeights = try await champion.network.exportWeights()
         XCTAssertEqual(championWeights.count, arch.weightTensorPlan().count) // 145 for 8-block
 
@@ -188,7 +188,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
     func testNonDefaultArchSessionRoundTrips() async throws {
         let arch = NetworkArchitecture.preset(.v4_8block_3x3)
         try arch.validate()
-        let champion = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let champion = try ChessMPSNetwork(.randomWeights(initSeed: 5), arch: arch)
         let base = try await champion.network.exportWeights()
         let trainables = arch.weightTensorPlan().filter { $0.kind != .bnRunningStat }
         let velocity: [[Float]] = trainables.enumerated().map { (j, spec) in
@@ -229,7 +229,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
     /// Validates the "lazy convert on re-save" promise — a model can move
     /// between the old and new containers without losing a bit.
     func testCrossFormatRoundTripBothDirections() async throws {
-        let net = try ChessMPSNetwork(.randomWeights)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 6))
         let w0 = try await net.network.exportWeights()
         let meta = ModelCheckpointMetadata(creator: "manual", trainingStep: 7,
                                            parentModelID: "", notes: "xfmt")
@@ -277,7 +277,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
     /// real saveSession (which now writes safetensors), reload, and confirm the
     /// champion AND trainer (incl. optimizer velocity) survive bit-exact.
     func testLegacySessionLoadsAndReSavesAsSafetensorsBitExact() async throws {
-        let net = try ChessMPSNetwork(.randomWeights)
+        let net = try ChessMPSNetwork(.randomWeights(initSeed: 7))
         let base = try await net.network.exportWeights()
         let trainables = NetworkArchitecture.current.weightTensorPlan().filter { $0.kind != .bnRunningStat }
         let velocity: [[Float]] = trainables.enumerated().map { (j, spec) in

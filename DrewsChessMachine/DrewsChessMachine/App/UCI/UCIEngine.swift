@@ -127,6 +127,10 @@ enum UCIEngine {
         /// Current Temperature option value. Flat tau = value / 100,
         /// floored at 0.01; `0` (the default) ⇒ tau 0.01 ≈ argmax.
         var temperatureSpin: Int = temperatureDefault
+        /// The move-sampling stream for this engine process. Interactive play
+        /// is not part of any reproducible run, so it is seeded from the
+        /// system; a GUI wanting identical moves uses Temperature 0.
+        var moveRandom: DCMRandom = DCMRandom.seededFromSystem()
 
         /// Install a freshly-loaded model, replacing any current one.
         mutating func apply(_ loaded: UCIModelLoader.Loaded) {
@@ -414,7 +418,8 @@ enum UCIEngine {
             legal: legal,
             currentPlayer: state.currentPlayer,
             ply: engine.moveHistory.count,
-            schedule: session.schedule
+            schedule: session.schedule,
+            rng: &session.moveRandom
         )
 
         // UCI `info` line gives cutechess engine logs a per-ply
@@ -435,7 +440,8 @@ enum UCIEngine {
         legal: [ChessMove],
         currentPlayer: PieceColor,
         ply: Int,
-        schedule: SamplingSchedule
+        schedule: SamplingSchedule,
+        rng: inout DCMRandom
     ) -> MoveSampler.Result {
         let logits = UnsafeBufferPointer(start: policyPtr, count: policySize)
         var probsScratch = [Float](repeating: 0, count: MoveSampler.scratchCapacity)
@@ -449,7 +455,8 @@ enum UCIEngine {
                     ply: ply,
                     schedule: schedule,
                     probsScratch: probs,
-                    etaScratch: eta
+                    etaScratch: eta,
+                    rng: &rng
                 )
             }
         }

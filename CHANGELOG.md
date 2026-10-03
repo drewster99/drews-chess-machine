@@ -9,6 +9,14 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-02 CDT — Every training draw comes from a stream of the run's seed (`86ddc626`, `9f97426a`, `26f4d112`)
+
+- **A run has one master seed.** New parameters `random_seed_mode` (0 = draw a seed at run start, the default; 1 = use `random_seed`) and `random_seed` (a `UInt64`, written to JSON as a decimal string so large seeds survive), on the settings popover's Sessions tab ("Run seed", with this run's seed, Copy and Use). `--seed <n>` overrides both for GUI `--train`, `--replay-corpus` and `--train-vs-uci`. Every run logs `[RUN] seed=… mode=… derivation=v1` and records the seed in `results.json`, so any run — including an unseeded one — can be repeated.
+- **Every training-relevant draw is seeded from it** (determinism plan P3): replay-buffer sampling (every path), each self-play, arena and train-vs-UCI game's moves, Dirichlet noise and draw-keep decision (one stream per game, so a game's moves do not depend on how many run beside it), dropout masks, the BN-calibration walk of a fresh network, and the entropy-by-bucket probe's subsample. Interactive play, UCI and the Lichess bot stay system-seeded, explicitly.
+- **Session resume does not restore the seed yet** — it draws a new one and says so; the seed will be saved with the game serials it seeds (plan P6/P9). A Stop + continue keeps the run's seed.
+- **Parameters files:** one JSON value parser for `parameters.json`, `--parameters` and stored settings; it no longer risks reading a JSON 0/1 as a Bool, or wrapping an unsigned number above `Int.max`.
+- Tests: `RunSeedParameterTests`, `SeededStreamDeterminismTests`, `LegalMoveOrderPinTests` (legal-move order pinned for 20 positions — seeded sampling depends on it), `DropoutRunStreamTests`, macro `test_uint64Parameter_withRange`; existing test call sites now pass explicit seeds; `test_registry_size` 82 → 84.
+
 ## 2026-10-02 CDT — File lineage: every model file says where its weights came from (architecture format v7)
 
 - **`dcm_lineage`** (determinism plan Part D, phase P6). Every model file written by corpus replay, train-vs-UCI, a GUI session save, Save Champion, `--new-model` or `--derive-model` carries one `LineageRecord` as JSON under `__metadata__["dcm_lineage"]`, with flat mirrors (`lineage_run_id`, `lineage_segment_index`, `cum_trainer_step`, `cum_games_fed`, `cum_train_step_sec`, `git_dirty`) derived from it. `session.json` (format version 2) embeds the same record.

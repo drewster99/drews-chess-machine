@@ -250,6 +250,17 @@ extension SessionController {
         let recordsBox = TournamentRecordsBox()
         let stats: TournamentStats
 
+        // The arena's game streams (`arena.<index>.game.<g>`) derive from
+        // the run's seed. Arenas are started only by the Play-and-Train
+        // task, which resolves the seed before it launches anything.
+        guard let runSeed = runRandomSeed else {
+            preconditionFailure("arena started with no run seed; Play-and-Train resolves it before any arena")
+        }
+        let arenaIndex = arenasStartedThisRun
+        arenasStartedThisRun += 1
+        let arenaStreams = runSeed.streams
+        SessionLogger.shared.log("[ARENA] game streams: arena index \(arenaIndex), run seed \(runSeed.masterSeed)")
+
         // Tick-based arena driver — ticks K games in lockstep against
         // the candidate and champion networks directly, two batched
         // `evaluateBatched` calls per tick (one per network). K
@@ -259,9 +270,11 @@ extension SessionController {
         do {
             stats = try await withTaskCancellationHandler {
                 try await Task.detached(priority: .userInitiated) {
-                    [tBox, cancelBox, overrideBox, arenaDiversity, arenaScheduleSnapshot, liveK, recordsBox, sprtConfig, progressTotalGames] in
+                    [tBox, cancelBox, overrideBox, arenaDiversity, arenaScheduleSnapshot, liveK, recordsBox, sprtConfig, progressTotalGames, arenaStreams, arenaIndex] in
                     let driver = TickTournamentDriver()
                     return try await driver.run(
+                        randomStreams: arenaStreams,
+                        arenaIndex: arenaIndex,
                         candidateNetwork: candidateInference,
                         championNetwork: arenaChampion,
                         arenaSchedule: arenaScheduleSnapshot,

@@ -42,6 +42,16 @@ import Foundation
 /// softmax was essentially uniform — i.e. the sampler was picking
 /// at random, not acting on a network opinion). The flag is computed
 /// pre-Dirichlet so Dirichlet noise doesn't mask a flat-policy signal.
+///
+/// Every random draw comes from the caller's `rng`, in a fixed order (the
+/// Dirichlet draws for the legal moves in `legalMoves` order, then the one
+/// inverse-CDF draw), so a game's moves are a function of its stream, its
+/// positions and the network's outputs. Self-play, arena and train-vs-UCI
+/// pass the game's own named stream; interactive paths pass a generator
+/// seeded from the system for that session. The normal draws inside the
+/// Gamma sampler still use the platform `logf`/`cosf`, whose last-bit
+/// results can differ between OS builds; replacing them with the
+/// restricted-domain functions is part of the per-tensor init work.
 enum MoveSampler {
 
     /// Upper bound on the number of legal moves in any chess position.
@@ -74,7 +84,8 @@ enum MoveSampler {
         ply: Int,
         schedule: SamplingSchedule,
         probsScratch: UnsafeMutableBufferPointer<Float>,
-        etaScratch: UnsafeMutableBufferPointer<Float>
+        etaScratch: UnsafeMutableBufferPointer<Float>,
+        rng: inout DCMRandom
     ) -> Result {
         let n = legalMoves.count
         precondition(n > 0, "MoveSampler.sampleMove: legalMoves must be non-empty")
@@ -158,7 +169,8 @@ enum MoveSampler {
                 into: probsScratch,
                 legalCount: n,
                 config: noise,
-                etaScratch: etaScratch
+                etaScratch: etaScratch,
+                rng: &rng
             )
         }
 
@@ -166,7 +178,7 @@ enum MoveSampler {
         // On match: recompute the chosen move's policy index
         // (one PolicyEncoding call vs. caching n of them up front —
         // see the gather-loop comment above).
-        let r = Float.random(in: 0..<1)
+        let r = rng.nextUnitFloat()
         var cumulative: Float = 0
         for i in 0..<n {
             cumulative += probsBase[i]
@@ -204,7 +216,8 @@ enum MoveSampler {
         into probs: UnsafeMutableBufferPointer<Float>,
         legalCount n: Int,
         config: DirichletNoiseConfig,
-        etaScratch: UnsafeMutableBufferPointer<Float>
+        etaScratch: UnsafeMutableBufferPointer<Float>,
+        rng: inout DCMRandom
     ) {
         guard let probsBase = probs.baseAddress, let etaBase = etaScratch.baseAddress else {
             preconditionFailure("MoveSampler.mixDirichletNoise: baseAddress is nil")
@@ -217,7 +230,7 @@ enum MoveSampler {
         // shape AlphaZero relies on.
         var gammaSum: Float = 0
         for i in 0..<n {
-            let g = sampleGamma(alpha: config.alpha)
+            let g = sampleGamma(alpha: config.alpha, rng: &rng)
             etaBase[i] = g
             gammaSum += g
         }
@@ -236,20 +249,20 @@ enum MoveSampler {
     /// trick: draw `G ~ Gamma(α+1, 1)` and return `G * U^(1/α)` where
     /// `U ~ Uniform(0, 1)`.
     @inline(__always)
-    private static func sampleGamma(alpha: Float) -> Float {
+    static func sampleGamma(alpha: Float, rng: inout DCMRandom) -> Float {
         if alpha < 1 {
-            let g = sampleGammaAtLeastOne(alpha: alpha + 1)
+            let g = sampleGammaAtLeastOne(alpha: alpha + 1, rng: &rng)
             // U must be strictly positive so U^(1/α) is finite.
-            let u = max(Float.random(in: 0..<1), .leastNormalMagnitude)
+            let u = max(rng.nextUnitFloat(), .leastNormalMagnitude)
             return g * powf(u, 1 / alpha)
         }
-        return sampleGammaAtLeastOne(alpha: alpha)
+        return sampleGammaAtLeastOne(alpha: alpha, rng: &rng)
     }
 
     /// Direct Marsaglia–Tsang (2000) algorithm for `α >= 1`. Average
     /// rejection rate is well below 5 % across α in [1, 10], so the
     /// inner `while true` typically exits on its first iteration.
-    private static func sampleGammaAtLeastOne(alpha: Float) -> Float {
+    private static func sampleGammaAtLeastOne(alpha: Float, rng: inout DCMRandom) -> Float {
         let d: Float = alpha - 1.0 / 3.0
         let c: Float = 1 / sqrtf(9 * d)
         while true {
@@ -258,11 +271,11 @@ enum MoveSampler {
             var x: Float = 0
             var v: Float = 0
             repeat {
-                x = sampleStandardNormal()
+                x = sampleStandardNormal(rng: &rng)
                 v = 1 + c * x
             } while v <= 0
             v = v * v * v
-            let u = Float.random(in: 0..<1)
+            let u = rng.nextUnitFloat()
             // Squeeze test (cheap acceptance): handles ~98 % of draws
             // without touching log.
             let xx = x * x
@@ -283,9 +296,9 @@ enum MoveSampler {
     /// the wasted draw is negligible. `u1` is clamped away from zero so
     /// `log(u1)` is finite.
     @inline(__always)
-    private static func sampleStandardNormal() -> Float {
-        let u1 = max(Float.random(in: 0..<1), .leastNormalMagnitude)
-        let u2 = Float.random(in: 0..<1)
+    private static func sampleStandardNormal(rng: inout DCMRandom) -> Float {
+        let u1 = max(rng.nextUnitFloat(), .leastNormalMagnitude)
+        let u2 = rng.nextUnitFloat()
         return sqrtf(-2 * logf(u1)) * cosf(2 * .pi * u2)
     }
 }

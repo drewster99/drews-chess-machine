@@ -101,7 +101,7 @@ final class LichessBotFakeModelProvider: LichessBotModelProvider, @unchecked Sen
     }
 
     static func randomChampion() async throws -> LichessBotFakeModelProvider {
-        let network = try ChessMPSNetwork(.randomWeights)
+        let network = try ChessMPSNetwork(.randomWeights(initSeed: 1))
         let weights = try await network.exportWeights()
         return LichessBotFakeModelProvider(snapshot: LichessBotWeightsSnapshot(
             weights: weights,

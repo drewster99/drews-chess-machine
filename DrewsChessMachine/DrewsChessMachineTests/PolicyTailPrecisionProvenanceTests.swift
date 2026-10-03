@@ -55,7 +55,7 @@ final class PolicyTailPrecisionProvenanceTests: XCTestCase {
 
     @MainActor
     func testNetworksAndTrainersAreBuiltWithTheProcessValue() throws {
-        let network = try ChessMPSNetwork(.randomWeights)
+        let network = try ChessMPSNetwork(.randomWeights(initSeed: 1))
         XCTAssertEqual(network.network.policyTailPrecision, Precision.process)
         let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1))
         XCTAssertEqual(trainer.policyTailPrecision, Precision.process)

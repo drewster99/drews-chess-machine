@@ -280,6 +280,11 @@ final class MPSChessPlayer: ChessPlayer {
     /// branch on every player init.
     private var dirichletScratch: [Float]
 
+    /// This player's move-sampling stream. Interactive play (Play Game,
+    /// human vs network) is not part of any reproducible run, so the stream
+    /// is seeded from the system when the player is created.
+    private var random: DCMRandom
+
     /// Create a player backed by a `MoveEvaluationSource`. For Play
     /// Game / Human-vs-Network the source is a `DirectMoveEvaluationSource`
     /// wrapping a `ChessMPSNetwork` (possibly wrapped in
@@ -312,6 +317,7 @@ final class MPSChessPlayer: ChessPlayer {
         self.tauOverride = tauOverride
         self.sampleScratch = [Float](repeating: 0, count: Self.sampleScratchCapacity)
         self.dirichletScratch = [Float](repeating: 0, count: Self.sampleScratchCapacity)
+        self.random = DCMRandom.seededFromSystem()
 
         let pPtr = UnsafeMutablePointer<Float>.allocate(capacity: Self.policyScratchCount)
         pPtr.initialize(repeating: 0, count: Self.policyScratchCount)
@@ -433,7 +439,8 @@ final class MPSChessPlayer: ChessPlayer {
                     ply: 2 * gamePliesRecorded + (isWhite ? 0 : 1),
                     schedule: effectiveSchedule(),
                     probsScratch: probs,
-                    etaScratch: eta
+                    etaScratch: eta,
+                    rng: &random
                 )
             }
         }

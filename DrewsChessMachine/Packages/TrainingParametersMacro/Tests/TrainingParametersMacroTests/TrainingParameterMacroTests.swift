@@ -395,4 +395,58 @@ final class TrainingParameterMacroTests: XCTestCase {
             macros: macros
         )
     }
+
+    /// A `UInt64(<literal>)` default selects the full-range unsigned kind
+    /// (a random seed), with its own range and decode.
+    func test_uint64Parameter_withRange() {
+        assertMacroExpansion(
+            """
+            @TrainingParameter(
+                name: "Random Seed",
+                description: "Master seed.",
+                default: UInt64(0),
+                range: 0...UInt64.max,
+                category: "Reproducibility",
+                id: "random_seed",
+                absentValue: .refuseExact
+            )
+            public enum RandomSeed: TrainingParameterKey {}
+            """,
+            expandedSource: """
+            public enum RandomSeed: TrainingParameterKey {
+
+                public static let id: String = "random_seed"
+
+                public static let definition: TrainingParameterDefinition = TrainingParameterDefinition(
+                    id: id,
+                    name: "Random Seed",
+                    description: "Master seed.",
+                    type: .uint64,
+                    defaultValue: .uint64(UInt64(0)),
+                    uint64Range: NumericRange(min: 0, max: UInt64.max),
+                    category: "Reproducibility",
+                    liveTunable: false
+                )
+
+                public static func encode(_ value: UInt64) -> ParameterValue {
+                    .uint64(value)
+                }
+
+                public static func decode(_ value: ParameterValue) throws -> UInt64 {
+                    switch value {
+                    case .uint64(let x):
+                        return x
+                    case .int(let x) where x >= 0:
+                        return UInt64(x)
+                    default:
+                        throw TrainingConfigError.wrongType(id: id)
+                    }
+                }
+
+                public static let absentValue: TrainingParameterAbsence<UInt64> = .refuseExact
+            }
+            """,
+            macros: macros
+        )
+    }
 }

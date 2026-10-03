@@ -66,7 +66,9 @@ final class CorpusReplayFeeder {
             // +2 headroom so the per-side staging cap can never be exhausted
             // by an off-by-one (a `recordPly` overflow is a fatalError).
             capPlies: game.moves.count + 2,
-            schedule: schedule
+            schedule: schedule,
+            // A recorded game's moves come from the record; it never draws.
+            random: DCMRandom.seededFromSystem()
         )
         gameCounter = gameCounter &+ 1
 

@@ -33,3 +33,10 @@ extension TrainingParameterKey where Value == Int {
         String(declaredDefault)
     }
 }
+
+extension TrainingParameterKey where Value == UInt64 {
+    /// The declared default as the plain decimal text the row writes back.
+    static var declaredDefaultText: String {
+        String(declaredDefault)
+    }
+}

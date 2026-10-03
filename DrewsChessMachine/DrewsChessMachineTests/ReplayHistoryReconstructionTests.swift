@@ -156,7 +156,7 @@ final class ReplayHistoryReconstructionTests: XCTestCase {
         let workerId: UInt16 = 7
         let gameIndex: UInt32 = 1
         // Capacity comfortably larger than the game so nothing is evicted.
-        let buffer = ReplayBuffer(capacity: 1024, inputEncoding: .full10ply200)
+        let buffer = ReplayBuffer(capacity: 1024, inputEncoding: .full10ply200, sampler: DCMRandom(seed: 1))
         appendGame(captured, to: buffer, whiteOutcome: 1.0,
                    workerId: workerId, gameIndex: gameIndex)
 
@@ -210,7 +210,7 @@ final class ReplayHistoryReconstructionTests: XCTestCase {
 
         let workerId: UInt16 = 3
         let gameIndex: UInt32 = 9
-        let buffer = ReplayBuffer(capacity: 256, inputEncoding: .full10ply200)
+        let buffer = ReplayBuffer(capacity: 256, inputEncoding: .full10ply200, sampler: DCMRandom(seed: 2))
         appendGame(captured, to: buffer, whiteOutcome: 0.0,
                    workerId: workerId, gameIndex: gameIndex)
 
@@ -255,7 +255,7 @@ final class ReplayHistoryReconstructionTests: XCTestCase {
         let suffix = Array(captured[4...])
         let workerId: UInt16 = 11
         let gameIndex: UInt32 = 2
-        let buffer = ReplayBuffer(capacity: 512, inputEncoding: .full10ply200)
+        let buffer = ReplayBuffer(capacity: 512, inputEncoding: .full10ply200, sampler: DCMRandom(seed: 3))
         appendGame(suffix, to: buffer, whiteOutcome: 1.0,
                    workerId: workerId, gameIndex: gameIndex)
 
@@ -300,7 +300,7 @@ final class ReplayHistoryReconstructionTests: XCTestCase {
 
         let workerId: UInt16 = 5
         let gameIndex: UInt32 = 1
-        let buffer = ReplayBuffer(capacity: 256, inputEncoding: .basic30)
+        let buffer = ReplayBuffer(capacity: 256, inputEncoding: .basic30, sampler: DCMRandom(seed: 4))
         XCTAssertEqual(buffer.floatsPerBoard, BoardEncoder.tensorLength(for: .basic30))
         XCTAssertEqual(buffer.reconstructedStride, buffer.floatsPerBoard,
             "single-frame encoding must not decouple stored/reconstructed stride")

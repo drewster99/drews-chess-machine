@@ -239,11 +239,7 @@ final class CheckpointController {
             let snap = TrainingParameters.shared.snapshot().rawValueMap()
             var dict: [String: Any] = [:]
             for (id, raw) in snap {
-                switch raw {
-                case .bool(let x): dict[id] = x
-                case .int(let x): dict[id] = x
-                case .double(let x): dict[id] = x
-                }
+                dict[id] = raw.jsonValue
             }
             let data = try JSONSerialization.data(
                 withJSONObject: dict,

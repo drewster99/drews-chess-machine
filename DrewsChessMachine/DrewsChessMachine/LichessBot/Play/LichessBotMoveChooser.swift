@@ -129,6 +129,9 @@ enum LichessBotMoveChooser {
             probs.deallocate()
             eta.deallocate()
         }
+        // Online play is not part of any reproducible run: each move's draws
+        // come from a generator seeded from the system.
+        var random = DCMRandom.seededFromSystem()
         return logits.withUnsafeBufferPointer { logitsBuffer in
             MoveSampler.sampleMove(
                 logits: logitsBuffer,
@@ -137,7 +140,8 @@ enum LichessBotMoveChooser {
                 ply: request.ply,
                 schedule: schedule,
                 probsScratch: probs,
-                etaScratch: eta
+                etaScratch: eta,
+                rng: &random
             )
         }
     }

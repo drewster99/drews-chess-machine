@@ -46,6 +46,11 @@ extension SessionController {
         // Snapshot training-progress context on the main actor before
         // the detached heavy walk; stamped onto the result below.
         let exportMetadata = currentAnalysisExportMetadata()
+        let entropySample = ReplayBufferAnalyzer.entropyProbeRandom(
+            runSeed: runRandomSeed,
+            trainerStep: trainingBox?.snapshot().stats.steps
+        )
+        SessionLogger.shared.log("[ANALYSIS] replay-buffer entropy probe positions: \(entropySample.description)")
 
         Task.detached(priority: .utility) {
             defer { Task { @MainActor in self.endAnalysis() } }
@@ -66,13 +71,15 @@ extension SessionController {
                         buffer: buf,
                         network: probe.network,
                         modelLabel: modelLabel,
-                        entropyModelLabel: probe.label
+                        entropyModelLabel: probe.label,
+                        sampleRandom: entropySample.random
                     )
                 } else if let net = netForEntropy {
                     result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
                         buffer: buf,
                         network: net,
-                        modelLabel: modelLabel
+                        modelLabel: modelLabel,
+                        sampleRandom: entropySample.random
                     )
                 } else {
                     result = ReplayBufferAnalyzer.run(

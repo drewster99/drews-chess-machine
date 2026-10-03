@@ -25,7 +25,7 @@ final class BatchedSelfPlayDriverTests: XCTestCase {
 
     private static var sharedNetwork: ChessMPSNetwork = {
         do {
-            return try ChessMPSNetwork(.randomWeights)
+            return try ChessMPSNetwork(.randomWeights(initSeed: 1))
         } catch {
             fatalError("BatchedSelfPlayDriverTests: ChessMPSNetwork(.randomWeights) failed: \(error)")
         }
@@ -39,7 +39,7 @@ final class BatchedSelfPlayDriverTests: XCTestCase {
         var arch = NetworkArchitecture.current
         arch.valueHeadStyle = .scalarTanh
         do {
-            return try ChessMPSNetwork(.randomWeights, arch: arch)
+            return try ChessMPSNetwork(.randomWeights(initSeed: 3), arch: arch)
         } catch {
             fatalError("BatchedSelfPlayDriverTests: scalar-tanh ChessMPSNetwork(.randomWeights) failed: \(error)")
         }
@@ -65,7 +65,9 @@ final class BatchedSelfPlayDriverTests: XCTestCase {
             pauseGate: pauseGate,
             gameWatcher: nil,
             scheduleBox: scheduleBox,
-            replayRatioController: nil
+            replayRatioController: nil,
+            randomStreams: DCMRandomStreams(masterSeed: 1),
+            gameSerials: GameSerialCounter(firstSerial: 0)
         )
         return (driver, countBox, pauseGate)
     }
@@ -73,7 +75,7 @@ final class BatchedSelfPlayDriverTests: XCTestCase {
     // MARK: - Smoke: driver runs and produces positions
 
     func test_drivesK2_producesPositionsInReplayBuffer() async {
-        let buffer = ReplayBuffer(capacity: 100_000)
+        let buffer = ReplayBuffer(capacity: 100_000, sampler: DCMRandom(seed: 1))
         let (driver, _, _) = makeDriver(initialK: 2, buffer: buffer)
         let task = Task(priority: .high) {
             await driver.run()
@@ -108,7 +110,7 @@ final class BatchedSelfPlayDriverTests: XCTestCase {
     /// produces a finished game's positions without tripping (the over-read is
     /// also caught here under Address Sanitizer / guard-malloc).
     func test_scalarTanhChampion_selfPlaysWithoutOverReadingDrawWatch() async {
-        let buffer = ReplayBuffer(capacity: 100_000)
+        let buffer = ReplayBuffer(capacity: 100_000, sampler: DCMRandom(seed: 2))
         let (driver, _, _) = makeDriver(
             initialK: 2, buffer: buffer, network: Self.scalarTanhNetwork)
         let task = Task(priority: .high) {
@@ -132,7 +134,7 @@ final class BatchedSelfPlayDriverTests: XCTestCase {
     // MARK: - Live K change paths
 
     func test_growFromZero_thenShrinkToZero_noCrash() async {
-        let buffer = ReplayBuffer(capacity: 100_000)
+        let buffer = ReplayBuffer(capacity: 100_000, sampler: DCMRandom(seed: 3))
         let (driver, countBox, _) = makeDriver(initialK: 0, buffer: buffer)
         let task = Task(priority: .high) {
             await driver.run()
@@ -155,7 +157,7 @@ final class BatchedSelfPlayDriverTests: XCTestCase {
     // MARK: - Arena pause / resume
 
     func test_pauseAndResume_idleDuringPause() async {
-        let buffer = ReplayBuffer(capacity: 100_000)
+        let buffer = ReplayBuffer(capacity: 100_000, sampler: DCMRandom(seed: 4))
         let (driver, _, pauseGate) = makeDriver(initialK: 2, buffer: buffer)
         let task = Task(priority: .high) {
             await driver.run()

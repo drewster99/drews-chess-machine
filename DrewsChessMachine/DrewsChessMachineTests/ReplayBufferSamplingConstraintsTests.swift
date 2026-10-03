@@ -109,7 +109,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
     private func makeMixedBuffer(
         capacity: Int, nDrawGames: Int, drawLen: Int, nDecGames: Int, decLen: Int
     ) -> ReplayBuffer {
-        let buf = ReplayBuffer(capacity: capacity)
+        let buf = ReplayBuffer(capacity: capacity, sampler: DCMRandom(seed: 1))
         var gi: UInt32 = 0
         for _ in 0..<nDrawGames { appendGame(to: buf, length: drawLen, outcome: 0, workerId: 0, gameIndex: gi); gi += 1 }
         for k in 0..<nDecGames { appendGame(to: buf, length: decLen, outcome: k % 2 == 0 ? 1 : -1, workerId: 1, gameIndex: gi); gi += 1 }
@@ -166,7 +166,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
         // 512 games of 2 plies each = 1024 positions, all from distinct
         // games. The game count must be >= the batch size so the cap is
         // satisfiable even at maxPerGame=1 (cap * gameCount >= batch).
-        let buf = ReplayBuffer(capacity: 10_000)
+        let buf = ReplayBuffer(capacity: 10_000, sampler: DCMRandom(seed: 2))
         for gi in 0..<512 { appendGame(to: buf, length: 2, outcome: gi % 2 == 0 ? 1 : -1, workerId: 0, gameIndex: UInt32(gi)) }
         XCTAssertEqual(buf.count, 1024)
         for cap in [1, 4, 16, 64] {
@@ -185,7 +185,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
         // Drawn games with a broad length spread (so there's something for
         // the tilt to bite on), all in one outcome class so the test
         // exercises the length tilt in isolation (no draw cap).
-        let buf = ReplayBuffer(capacity: 2_000_000)
+        let buf = ReplayBuffer(capacity: 2_000_000, sampler: DCMRandom(seed: 3))
         var gi: UInt32 = 0
         for len in [50, 100, 200, 400, 800] {
             for _ in 0..<20 { appendGame(to: buf, length: len, outcome: 0, workerId: 0, gameIndex: gi); gi += 1 }
@@ -230,7 +230,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
         let buf = makeMixedBuffer(capacity: 5_000, nDrawGames: 30, drawLen: 50, nDecGames: 60, decLen: 33)
         let before = buf.compositionSnapshot()
         try buf.write(to: tempFile)
-        let restored = ReplayBuffer(capacity: 5_000)
+        let restored = ReplayBuffer(capacity: 5_000, sampler: DCMRandom(seed: 4))
         try restored.restore(from: tempFile)
         let after = restored.compositionSnapshot()
         XCTAssertEqual(before, after)
@@ -245,7 +245,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
     }
 
     func testUnderFillReturnsFalse() {
-        let buf = ReplayBuffer(capacity: 10_000)
+        let buf = ReplayBuffer(capacity: 10_000, sampler: DCMRandom(seed: 5))
         appendGame(to: buf, length: 10, outcome: 0, workerId: 0, gameIndex: 0)
         // Even unconstrained, asking for more than is held returns false.
         let b = drawBatch(buf, count: 100)
@@ -409,7 +409,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
     /// orientation context).
     func testSamplingResultLengthTargetFeasible() {
         // Lengths 50, 100, 200, 400. Shortest = 50.
-        let buf = ReplayBuffer(capacity: 1_000_000)
+        let buf = ReplayBuffer(capacity: 1_000_000, sampler: DCMRandom(seed: 6))
         var gi: UInt32 = 0
         for len in [50, 100, 200, 400] {
             for _ in 0..<20 { appendGame(to: buf, length: len, outcome: 0, workerId: 0, gameIndex: gi); gi += 1 }
@@ -434,7 +434,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
     /// buffer's length distribution or relax the target.
     func testSamplingResultLengthTargetInfeasibleBelowShortest() {
         // Shortest resident length = 50; target 30 is unreachable.
-        let buf = ReplayBuffer(capacity: 1_000_000)
+        let buf = ReplayBuffer(capacity: 1_000_000, sampler: DCMRandom(seed: 7))
         var gi: UInt32 = 0
         for len in [50, 100, 200, 400] {
             for _ in 0..<20 { appendGame(to: buf, length: len, outcome: 0, workerId: 0, gameIndex: gi); gi += 1 }
@@ -459,7 +459,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
     /// infeasible whenever any longer game is present (equality only
     /// reachable at β = ∞).
     func testSamplingResultLengthTargetInfeasibleAtShortest() {
-        let buf = ReplayBuffer(capacity: 1_000_000)
+        let buf = ReplayBuffer(capacity: 1_000_000, sampler: DCMRandom(seed: 8))
         var gi: UInt32 = 0
         for len in [50, 100, 200] {
             for _ in 0..<10 { appendGame(to: buf, length: len, outcome: 0, workerId: 0, gameIndex: gi); gi += 1 }
@@ -545,7 +545,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
         // the per-position incrementing path during restore (one slot at
         // a time, count=1, so the "is this a new resident game?" branch
         // fires exactly once per game on rebuild).
-        let buf = ReplayBuffer(capacity: 10_000)
+        let buf = ReplayBuffer(capacity: 10_000, sampler: DCMRandom(seed: 9))
         var gi: UInt32 = 0
         for _ in 0..<3 { appendGame(to: buf, length: 40, outcome: 0, workerId: 0, gameIndex: gi); gi += 1 }
         for _ in 0..<2 { appendGame(to: buf, length: 30, outcome: 1, workerId: 0, gameIndex: gi); gi += 1 }
@@ -559,7 +559,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
         // Persistence round-trip: rebuilt from the per-slot loop in
         // `restore`, which exercises the per-position increment path.
         try buf.write(to: tempFile)
-        let restored = ReplayBuffer(capacity: 10_000)
+        let restored = ReplayBuffer(capacity: 10_000, sampler: DCMRandom(seed: 10))
         try restored.restore(from: tempFile)
         let snap2 = restored.compositionSnapshot()
         XCTAssertEqual(snap2, snap1, "decisive-game count must round-trip")
@@ -567,7 +567,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
 
         // FIFO eviction: fill past capacity and confirm the decisive
         // count tracks resident-set turnover correctly.
-        let small = ReplayBuffer(capacity: 240)
+        let small = ReplayBuffer(capacity: 240, sampler: DCMRandom(seed: 11))
         var gi2: UInt32 = 100
         // Slot ranges (capacity=240, ring starts at slot 0):
         //   gi=100 (draw 40):    slots 0-39
@@ -624,7 +624,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
         // 500 decisive positions, 16,000 draw positions ⇒ 97.0% draws.
         // With K=2: decisiveReachable = 2·10 = 20 (well below 500);
         //          drawReachable     = 2·200 = 400 (well below 16,000).
-        let buf = ReplayBuffer(capacity: 50_000)
+        let buf = ReplayBuffer(capacity: 50_000, sampler: DCMRandom(seed: 12))
         var gi: UInt32 = 0
         for k in 0..<10 {
             appendGame(to: buf, length: 50, outcome: k % 2 == 0 ? 1 : -1, workerId: 0, gameIndex: gi)
@@ -702,7 +702,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
         // case (decisive-heavy buffer) no longer degrades — it just
         // samples at the natural rate — which is why the scenario is
         // inverted here vs. the pre-true-ceiling test.
-        let buf = ReplayBuffer(capacity: 50_000)
+        let buf = ReplayBuffer(capacity: 50_000, sampler: DCMRandom(seed: 13))
         var gi: UInt32 = 0
         for _ in 0..<100 {
             appendGame(to: buf, length: 40, outcome: 0, workerId: 0, gameIndex: gi)

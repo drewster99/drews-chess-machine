@@ -512,3 +512,17 @@ Turns on the automatic-save retention pool: after each successful periodic or po
 
 **Type:** Bool · **Range:** — · **Default:** false · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
+## Reproducibility
+
+### random_seed_mode
+
+Where a run's master seed comes from: 0 = unseeded (a seed is drawn at run start), 1 = seeded (Random Seed is used). Either way the run uses the seeded random streams and logs its seed on the [RUN] line, so an unseeded run can be replayed by giving its logged seed back (seeded mode, or --seed on the command line, which overrides both settings).
+
+**Type:** Int · **Range:** 0..1 · **Default:** 0
+
+### random_seed
+
+The master seed used when Random Seed Mode = 1 (seeded); ignored, and logged as ignored, when unseeded. A whole number from 0 to 18446744073709551615, written in parameters.json as a decimal string (JSON numbers are doubles in many readers, which would drop the low bits of a large seed). Every random stream of the run — replay-buffer draws, each game's moves, probe subsets — derives from it by name, so the same seed on the same build, device and data reproduces the same draws.
+
+**Type:** UInt64 (written as a decimal string) · **Range:** 0..18446744073709551615 · **Default:** "0"
+

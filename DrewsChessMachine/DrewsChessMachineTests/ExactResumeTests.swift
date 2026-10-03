@@ -149,7 +149,7 @@ final class ExactResumeTests: XCTestCase {
             ply += 1
             filled += 1
         }
-        let buffer = ReplayBuffer(capacity: replayPositions, inputEncoding: encoding)
+        let buffer = ReplayBuffer(capacity: replayPositions, inputEncoding: encoding, sampler: DCMRandom(seed: 1))
         boards.withUnsafeBufferPointer { b in
         moves.withUnsafeBufferPointer { m in
         plies.withUnsafeBufferPointer { p in

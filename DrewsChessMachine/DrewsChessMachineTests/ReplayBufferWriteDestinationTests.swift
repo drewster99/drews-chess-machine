@@ -34,7 +34,7 @@ final class ReplayBufferWriteDestinationTests: XCTestCase {
         let keep = folder.appendingPathComponent("keep.txt")
         try Data("keep".utf8).write(to: keep)
 
-        XCTAssertThrowsError(try ReplayBuffer(capacity: 10).write(to: folder)) { error in
+        XCTAssertThrowsError(try ReplayBuffer(capacity: 10, sampler: DCMRandom(seed: 1)).write(to: folder)) { error in
             guard case .destinationNotAFile? = error as? ReplayBuffer.PersistenceError else {
                 return XCTFail("expected destinationNotAFile, got \(error)")
             }
@@ -48,7 +48,7 @@ final class ReplayBufferWriteDestinationTests: XCTestCase {
         let link = root.appendingPathComponent("replay_buffer.bin")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
 
-        XCTAssertThrowsError(try ReplayBuffer(capacity: 10).write(to: link))
+        XCTAssertThrowsError(try ReplayBuffer(capacity: 10, sampler: DCMRandom(seed: 2)).write(to: link))
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link.path), target.path)
         XCTAssertEqual(try Data(contentsOf: target), Data("target".utf8))
     }
@@ -57,7 +57,7 @@ final class ReplayBufferWriteDestinationTests: XCTestCase {
         let url = root.appendingPathComponent("replay_buffer.bin")
         try Data("stale".utf8).write(to: url)
         let identityBefore = try FileSafety.existingItem(at: url)?.identity
-        XCTAssertThrowsError(try ReplayBuffer(capacity: 10).write(to: url)) { error in
+        XCTAssertThrowsError(try ReplayBuffer(capacity: 10, sampler: DCMRandom(seed: 3)).write(to: url)) { error in
             guard case .destinationExists(let path)? = error as? ReplayBuffer.PersistenceError else {
                 return XCTFail("expected destinationExists, got \(error)")
             }
@@ -69,9 +69,9 @@ final class ReplayBufferWriteDestinationTests: XCTestCase {
 
     func testAnExistingValidBufferFileIsRefusedToo() throws {
         let url = root.appendingPathComponent("replay_buffer.bin")
-        _ = try ReplayBuffer(capacity: 10).write(to: url)
+        _ = try ReplayBuffer(capacity: 10, sampler: DCMRandom(seed: 4)).write(to: url)
         let before = try Data(contentsOf: url)
-        XCTAssertThrowsError(try ReplayBuffer(capacity: 10).write(to: url)) { error in
+        XCTAssertThrowsError(try ReplayBuffer(capacity: 10, sampler: DCMRandom(seed: 5)).write(to: url)) { error in
             guard case .destinationExists? = error as? ReplayBuffer.PersistenceError else {
                 return XCTFail("expected destinationExists, got \(error)")
             }
@@ -81,7 +81,7 @@ final class ReplayBufferWriteDestinationTests: XCTestCase {
 
     func testANewDestinationIsCreated() throws {
         let url = root.appendingPathComponent("replay_buffer.bin")
-        _ = try ReplayBuffer(capacity: 10).write(to: url)
-        XCTAssertNoThrow(try ReplayBuffer(capacity: 10).restore(from: url))
+        _ = try ReplayBuffer(capacity: 10, sampler: DCMRandom(seed: 6)).write(to: url)
+        XCTAssertNoThrow(try ReplayBuffer(capacity: 10, sampler: DCMRandom(seed: 7)).restore(from: url))
     }
 }

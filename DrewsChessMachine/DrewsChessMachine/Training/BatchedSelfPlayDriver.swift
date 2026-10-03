@@ -110,6 +110,14 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
     /// is tee'd into the corpus. nil ⇒ recording off (a cheap nil check).
     let corpusRecorder: CorpusRecorder?
 
+    /// The run's named streams. Each game draws from
+    /// `selfplay.game.<serial>`, with serials from `gameSerials` handed out in
+    /// slot order on the driver task (grow path and game-end pass), never in
+    /// the parallel sample pass — so a game's moves do not depend on K, on
+    /// its slot, or on task completion order.
+    let randomStreams: DCMRandomStreams
+    let gameSerials: GameSerialCounter
+
     // MARK: - Private state (driver-task-owned, no lock needed)
 
     private var games: [ActiveGame] = []
@@ -173,8 +181,12 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         scheduleBox: SamplingScheduleBox,
         replayRatioController: ReplayRatioController? = nil,
         drawWatchTracker: DrawWatchTracker? = nil,
-        corpusRecorder: CorpusRecorder? = nil
+        corpusRecorder: CorpusRecorder? = nil,
+        randomStreams: DCMRandomStreams,
+        gameSerials: GameSerialCounter
     ) {
+        self.randomStreams = randomStreams
+        self.gameSerials = gameSerials
         self.network = network
         self.buffer = buffer
         self.statsBox = statsBox
@@ -256,18 +268,22 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 let cap = liveParamsBox.value.maxPlies
                 let liveSchedule = scheduleBox.selfPlay
                 while games.count < targetK {
+                    let gameRandom = nextGameRandom()
                     let g = ActiveGame(
                         workerId: nextWorkerId,
                         whiteNetwork: network,
                         blackNetwork: network,
                         capPlies: cap,
-                        schedule: liveSchedule
+                        schedule: liveSchedule,
+                        random: gameRandom
                     )
                     nextWorkerId &+= 1
                     // resetForNewGame bumps `intraWorkerGameIndex` from
                     // 0 → 1 so the first game on a fresh slot stamps as
                     // game #1 (the design — see `ActiveGame` docstring).
-                    g.resetForNewGame(maxPliesCap: cap, schedule: liveSchedule)
+                    // It starts the same game `init` set up, so it gets
+                    // the same stream.
+                    g.resetForNewGame(maxPliesCap: cap, schedule: liveSchedule, random: gameRandom)
                     games.append(g)
                 }
                 // Live-display: the watcher's session-wide active-play
@@ -307,6 +323,12 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
 
         SessionLogger.shared.log("[SP-TICK] driver exiting")
         games.removeAll(keepingCapacity: true)
+    }
+
+    /// The stream of the next game to start. Called only on the driver task,
+    /// in slot order (see `randomStreams`).
+    private func nextGameRandom() -> DCMRandom {
+        randomStreams.generator(.selfPlayGame(serial: gameSerials.next()))
     }
 
     // MARK: - Per-tick body
@@ -547,12 +569,11 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                         // expressed in game-total ply terms.
                         let gameTotalPly = g.totalPliesPlayed
 
-                        let result = MoveSampler.sampleMove(
+                        let result = g.sampleMove(
                             logits: policySliceBuf,
                             legalMoves: legalMoves,
                             currentPlayer: sideToMove,
                             ply: gameTotalPly,
-                            schedule: g.schedule,
                             probsScratch: probsSliceBuf,
                             etaScratch: etaSliceBuf
                         )
@@ -697,7 +718,10 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 }
                 let kept: Bool
                 if isDraw && drawKeepFraction < 1.0 {
-                    kept = Double.random(in: 0..<1) < drawKeepFraction
+                    // From the finished game's own stream, so the decision
+                    // does not depend on how many other games ended in
+                    // the same tick.
+                    kept = g.nextUnitDouble() < drawKeepFraction
                 } else {
                     kept = true
                 }
@@ -780,7 +804,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             // and the freshly-read cap. Schedule is read once per
             // game-end (per slot) so live UI edits propagate at the
             // same cadence as the legacy driver.
-            g.resetForNewGame(maxPliesCap: nextMaxPlies, schedule: scheduleBox.selfPlay)
+            g.resetForNewGame(maxPliesCap: nextMaxPlies, schedule: scheduleBox.selfPlay, random: nextGameRandom())
 
             // Reset live-display game-start marker for the K==1 path
             // so the next game in the single watched slot is fresh.

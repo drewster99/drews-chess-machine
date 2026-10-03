@@ -39,10 +39,10 @@ final class ReplayBufferTests: XCTestCase {
     // MARK: - Round-trip
 
     func testEmptyBufferWriteRead() throws {
-        let buffer = ReplayBuffer(capacity: 100)
+        let buffer = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 1))
         try buffer.write(to: tempFile)
 
-        let restored = ReplayBuffer(capacity: 100)
+        let restored = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 2))
         try restored.restore(from: tempFile)
 
         XCTAssertEqual(restored.count, 0, "Restored buffer should have no positions")
@@ -50,7 +50,7 @@ final class ReplayBufferTests: XCTestCase {
     }
 
     func testSinglePositionWriteRead() throws {
-        let buffer = ReplayBuffer(capacity: 100)
+        let buffer = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 3))
 
         // Append a single fake position with deterministic content.
         let boardFloats = makeFakeBoard(seed: 42)
@@ -92,7 +92,7 @@ final class ReplayBufferTests: XCTestCase {
 
         try buffer.write(to: tempFile)
 
-        let restored = ReplayBuffer(capacity: 100)
+        let restored = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 4))
         try restored.restore(from: tempFile)
 
         XCTAssertEqual(restored.count, 1)
@@ -148,7 +148,7 @@ final class ReplayBufferTests: XCTestCase {
 
         try header.write(to: tempFile)
 
-        let restored = ReplayBuffer(capacity: 100)
+        let restored = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 5))
         XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
             guard case ReplayBuffer.PersistenceError.unsupportedVersion(let v) = error else {
                 XCTFail("Expected unsupportedVersion(2), got \(error)")
@@ -165,7 +165,7 @@ final class ReplayBufferTests: XCTestCase {
         data.replaceSubrange(0..<8, with: bogus)
         try data.write(to: tempFile)
 
-        let restored = ReplayBuffer(capacity: 100)
+        let restored = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 6))
         XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
             guard case ReplayBuffer.PersistenceError.badMagic = error else {
                 XCTFail("Expected badMagic, got \(error)")
@@ -179,7 +179,7 @@ final class ReplayBufferTests: XCTestCase {
         let short = Data(count: 16)
         try short.write(to: tempFile)
 
-        let restored = ReplayBuffer(capacity: 100)
+        let restored = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 7))
         XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
             guard case ReplayBuffer.PersistenceError.truncatedHeader = error else {
                 XCTFail("Expected truncatedHeader, got \(error)")
@@ -214,7 +214,7 @@ final class ReplayBufferTests: XCTestCase {
 
         try header.write(to: tempFile)
 
-        let restored = ReplayBuffer(capacity: 100)
+        let restored = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 8))
         XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
             guard case ReplayBuffer.PersistenceError.unsupportedVersion(let v) = error else {
                 XCTFail("Expected unsupportedVersion(3), got \(error)")
@@ -245,7 +245,7 @@ final class ReplayBufferTests: XCTestCase {
         withUnsafeBytes(of: &totalAdded) { header.append(contentsOf: $0) }
         try header.write(to: tempFile)
 
-        let restored = ReplayBuffer(capacity: 100)
+        let restored = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 9))
         XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
             guard case ReplayBuffer.PersistenceError.unsupportedVersion(let v) = error else {
                 XCTFail("Expected unsupportedVersion(4), got \(error)")
@@ -276,7 +276,7 @@ final class ReplayBufferTests: XCTestCase {
         withUnsafeBytes(of: &totalAdded) { header.append(contentsOf: $0) }
         try header.write(to: tempFile)
 
-        let restored = ReplayBuffer(capacity: 100)
+        let restored = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 10))
         XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
             guard case ReplayBuffer.PersistenceError.unsupportedVersion(let v) = error else {
                 XCTFail("Expected unsupportedVersion(5), got \(error)")
@@ -294,7 +294,7 @@ final class ReplayBufferTests: XCTestCase {
         // and before the 32-byte trailer). Decode must throw
         // hashMismatch — the SHA-256 trailer is the first line of
         // defense against any unnoticed corruption.
-        let buffer = ReplayBuffer(capacity: 10)
+        let buffer = ReplayBuffer(capacity: 10, sampler: DCMRandom(seed: 11))
         try appendOnePosition(to: buffer, seed: 7)
         try buffer.write(to: tempFile)
 
@@ -306,7 +306,7 @@ final class ReplayBufferTests: XCTestCase {
         bytes[tamperOffset] ^= 0x01
         try bytes.write(to: tempFile)
 
-        let restored = ReplayBuffer(capacity: 10)
+        let restored = ReplayBuffer(capacity: 10, sampler: DCMRandom(seed: 12))
         XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
             guard case ReplayBuffer.PersistenceError.hashMismatch = error else {
                 XCTFail("Expected hashMismatch, got \(error)")
@@ -319,7 +319,7 @@ final class ReplayBufferTests: XCTestCase {
         // Truncate a valid file by one byte. The size-equality
         // check runs before the SHA pass, so the error must be
         // sizeMismatch (not hashMismatch).
-        let buffer = ReplayBuffer(capacity: 10)
+        let buffer = ReplayBuffer(capacity: 10, sampler: DCMRandom(seed: 13))
         try appendOnePosition(to: buffer, seed: 11)
         try buffer.write(to: tempFile)
 
@@ -327,7 +327,7 @@ final class ReplayBufferTests: XCTestCase {
         let truncated = original.prefix(original.count - 1)
         try truncated.write(to: tempFile)
 
-        let restored = ReplayBuffer(capacity: 10)
+        let restored = ReplayBuffer(capacity: 10, sampler: DCMRandom(seed: 14))
         XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
             guard case ReplayBuffer.PersistenceError.sizeMismatch = error else {
                 XCTFail("Expected sizeMismatch, got \(error)")
@@ -340,7 +340,7 @@ final class ReplayBufferTests: XCTestCase {
         // Append a single byte past the valid end. The SHA trailer
         // is still at its correct offset, but the file is now one
         // byte too long — strict `==` size check must reject.
-        let buffer = ReplayBuffer(capacity: 10)
+        let buffer = ReplayBuffer(capacity: 10, sampler: DCMRandom(seed: 15))
         try appendOnePosition(to: buffer, seed: 13)
         try buffer.write(to: tempFile)
 
@@ -348,7 +348,7 @@ final class ReplayBufferTests: XCTestCase {
         bytes.append(0xFF)
         try bytes.write(to: tempFile)
 
-        let restored = ReplayBuffer(capacity: 10)
+        let restored = ReplayBuffer(capacity: 10, sampler: DCMRandom(seed: 16))
         XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
             guard case ReplayBuffer.PersistenceError.sizeMismatch = error else {
                 XCTFail("Expected sizeMismatch, got \(error)")
@@ -381,7 +381,7 @@ final class ReplayBufferTests: XCTestCase {
         withUnsafeBytes(of: &totalAdded) { header.append(contentsOf: $0) }
         try header.write(to: tempFile)
 
-        let restored = ReplayBuffer(capacity: 100)
+        let restored = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 17))
         XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
             guard case ReplayBuffer.PersistenceError.unsupportedVersion(let v) = error else {
                 XCTFail("Expected unsupportedVersion(6), got \(error)")
@@ -418,7 +418,7 @@ final class ReplayBufferTests: XCTestCase {
         // SHA pass, so this rejects at the cap check regardless.
         try header.write(to: tempFile)
 
-        let restored = ReplayBuffer(capacity: 100)
+        let restored = ReplayBuffer(capacity: 100, sampler: DCMRandom(seed: 18))
         XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
             guard case ReplayBuffer.PersistenceError.upperBoundExceeded(let field, _, _) = error else {
                 XCTFail("Expected upperBoundExceeded, got \(error)")
