@@ -1,8 +1,8 @@
 # 2026-10-02 — Label smoothing arm D: value label smoothing ε 0.013 → 0 (`value_label_smoothing_epsilon`)
 
-**Status:** queued — launched automatically by the experiment chain once the
-leaky-FC1 and no-ReZero runs finish (see `experiments/QUEUE.md`). Arms C and D
-run together, sharing the GPU.
+**Status:** queued — the local queue script launches it when a training slot frees,
+after zero-init ReZero (see `experiments/QUEUE.md`); it shares the GPU with whichever
+runs are still training then.
 
 ## Question
 
