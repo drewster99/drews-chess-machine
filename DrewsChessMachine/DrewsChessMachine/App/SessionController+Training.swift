@@ -1025,6 +1025,13 @@ extension SessionController {
                         try await trainer.loadBaseWeightsResetVelocity(championWeights)
                     }.value
                 }
+                // The trainer outlives runs, so a new run (anything but a
+                // continue after Stop, which keeps its run and its masks)
+                // starts the dropout masks from its own seed's stream.
+                if mode != .continueAfterStop {
+                    try await trainer.beginDropoutStream(runSeed.streams.generator(.dropout))
+                    SessionLogger.shared.log("[RUN] dropout masks: stream dropout of run seed \(runSeed.masterSeed)")
+                }
             } catch {
                 box.recordError("Reset failed: \(error.localizedDescription)")
                 await MainActor.run {

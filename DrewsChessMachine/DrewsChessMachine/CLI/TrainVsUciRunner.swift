@@ -268,7 +268,7 @@ enum TrainVsUciRunner {
         }
         let hp = resumedHyperparameters
         let trainer = try ChessTrainer(
-            dropoutStream: RunMasterSeed.systemDrawn(context: "train-vs-uci").generator(.dropout),
+            dropoutStream: config.runRandomSeed.streams.generator(.dropout),
             hyperparameters: hp, arch: arch
         )
         emit(ChessNetwork.PolicyTailPrecision.processLogLine)

@@ -5971,6 +5971,20 @@ final class ChessTrainer: @unchecked Sendable {
         try await enqueue { try self.writeDropoutStateOnQueue(state) }
     }
 
+    /// Begin a run's dropout mask sequence: `stream` (the run's `dropout`
+    /// stream) replaces the trainer's, and its first draw seeds the graph's
+    /// Philox state, exactly as a newly built trainer seeds itself. The GUI's
+    /// trainer outlives runs — it is built once and reused by every
+    /// Play-and-Train run of the launch — so each run start calls this; the
+    /// headless runners build their trainer with the run's stream instead.
+    /// Caller pauses training first.
+    func beginDropoutStream(_ stream: DCMRandom) async throws {
+        try await enqueue {
+            self.dropoutStream = stream
+            try self.runDropoutSeedOnQueue()
+        }
+    }
+
     /// Suspend until every unit of work already enqueued on `executionQueue` has
     /// finished. The queue is serial and FIFO, so a block appended here cannot
     /// begin until everything submitted before it has completed — which is

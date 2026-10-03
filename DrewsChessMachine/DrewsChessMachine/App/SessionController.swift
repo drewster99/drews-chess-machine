@@ -975,8 +975,12 @@ final class SessionController {
             // The trainer forks champion weights, so its net must match the
             // champion's architecture.
             let trainerArch = network?.network.arch ?? .current
+            // Every Play-and-Train run replaces this stream with its own
+            // seed's `dropout` stream when it starts (`beginDropoutStream`);
+            // the system-seeded one only drives steps taken outside a run
+            // (the demo trainer, the batch-size sweep), which no run records.
             let t = try ChessTrainer(
-                dropoutStream: RunMasterSeed.systemDrawn(context: "trainer").generator(.dropout),
+                dropoutStream: DCMRandom.seededFromSystem(),
                 hyperparameters: hyperparameters,
                 arch: trainerArch
             )
