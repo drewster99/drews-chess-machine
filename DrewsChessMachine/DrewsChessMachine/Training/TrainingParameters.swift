@@ -1643,9 +1643,11 @@ public final class TrainingParameters {
     public var randomSeed: UInt64 { didSet { if !Self.commitAssignment(RandomSeed.self, value: randomSeed) { randomSeed = oldValue } } }
 
     /// Stored preferences found unusable at launch (wrong type or outside the
-    /// declared range). The app runs on each one's declared default meanwhile;
-    /// the settings list shows them until the user resets each one
-    /// (`resetInvalidStoredSetting(id:)`).
+    /// declared range). The app starts on each one's declared default (a
+    /// `--parameters` file or a resumed session may then set its own); the
+    /// settings list shows them until the user resets each one
+    /// (`resetInvalidStoredSetting(id:)`), which repairs only the stored
+    /// entry and leaves the value in effect alone.
     public private(set) var invalidStoredSettings: [InvalidStoredSetting]
 
     private init() {
@@ -2167,9 +2169,13 @@ public final class TrainingParameters {
         FileHandle.standardError.write(Data((line + "\n").utf8))
     }
 
-    /// Reset one unusable stored value (from `invalidStoredSettings`) to the
-    /// declared default the app is already using, writing it to
-    /// `UserDefaults` — the user's explicit choice from the settings list.
+    /// Reset one unusable stored value (from `invalidStoredSettings`): the
+    /// user's explicit choice from the settings list. It repairs the stored
+    /// entry only (`repairStoredValue`) and never assigns the live value: by
+    /// the time the user clicks, this run may be on a `--parameters` value or
+    /// a resumed session's value, and a reset of what is saved must not
+    /// replace what is running. A stored entry that has meanwhile been
+    /// replaced by a usable value is left alone.
     public func resetInvalidStoredSetting(id: String) throws {
         guard invalidStoredSettings.contains(where: { $0.id == id }) else {
             throw TrainingConfigError.unknownParameter(id: id)
@@ -2177,10 +2183,54 @@ public final class TrainingParameters {
         guard let key = Self.allKeys.first(where: { $0.id == id }) else {
             throw TrainingConfigError.unknownParameter(id: id)
         }
-        try applyOne(id: id, raw: key.definition.defaultValue)
+        let repair = Self.repairStoredValue(key, in: .standard)
         invalidStoredSettings.removeAll { $0.id == id }
         Self.invalidStoredValuesFound.modify { $0[id] = nil }
-        SessionLogger.shared.log("[PARAM-INVALID] \(id): reset to \(key.definition.defaultValue.displayText) by the user")
+        switch repair {
+        case .replacedWithDeclaredDefault(let raw):
+            SessionLogger.shared.log(
+                "[PARAM-INVALID] \(id): stored value reset to \(raw.displayText) by the user (the current run's value is unchanged)"
+            )
+        case .alreadyUsable:
+            SessionLogger.shared.log(
+                "[PARAM-INVALID] \(id): stored value was already replaced by a usable one; nothing reset"
+            )
+        }
+    }
+
+    /// What `repairStoredValue` did with one stored entry.
+    enum StoredValueRepair: Equatable, Sendable {
+        /// The entry was still unusable; it now holds the declared default.
+        case replacedWithDeclaredDefault(ParameterValue)
+        /// The entry was not unusable any more (a valid value replaced it
+        /// since launch, or it was removed), so it was left as it is.
+        case alreadyUsable
+    }
+
+    /// Replace `key`'s stored entry in `defaults` with the declared default
+    /// if — and only if — it is still unusable (`inspectStored`). Touches
+    /// nothing but that one entry: no live value, no other key.
+    nonisolated static func repairStoredValue<K: TrainingParameterKey>(
+        _ key: K.Type,
+        in defaults: UserDefaults
+    ) -> StoredValueRepair {
+        guard case .invalid = inspectStored(K.self, in: defaults) else { return .alreadyUsable }
+        let raw = K.definition.defaultValue
+        store(raw, forKey: K.id, in: defaults)
+        return .replacedWithDeclaredDefault(raw)
+    }
+
+    /// Write `raw` under `id` in the stored form `inspectStored` reads back:
+    /// the one place a parameter's `UserDefaults` entry is written.
+    nonisolated static func store(_ raw: ParameterValue, forKey id: String, in defaults: UserDefaults) {
+        switch raw {
+        case .bool(let x): defaults.set(x, forKey: id)
+        case .int(let x): defaults.set(x, forKey: id)
+        case .double(let x): defaults.set(x, forKey: id)
+        // A decimal string, like every other serialization of a UInt64
+        // parameter: a property-list integer is signed 64-bit.
+        case .uint64(let x): defaults.set(String(x), forKey: id)
+        }
     }
 
     /// When true, the `didSet` persisters skip writing to `UserDefaults`.
@@ -2331,15 +2381,7 @@ public final class TrainingParameters {
             return false
         }
         if suppressPersistence { return true }
-        let defaults = UserDefaults.standard
-        switch raw {
-        case .bool(let x): defaults.set(x, forKey: K.id)
-        case .int(let x): defaults.set(x, forKey: K.id)
-        case .double(let x): defaults.set(x, forKey: K.id)
-        // A decimal string, like every other serialization of a UInt64
-        // parameter: a property-list integer is signed 64-bit.
-        case .uint64(let x): defaults.set(String(x), forKey: K.id)
-        }
+        store(raw, forKey: K.id, in: .standard)
         return true
     }
 
