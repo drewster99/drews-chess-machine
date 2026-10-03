@@ -353,6 +353,7 @@ Inference graphs have no dropout scaffolding, so nothing changes for them.
   - **Domain guaranteed by construction:** `u1 = (k+1)/2²⁴ ∈ (0,1]` (never 0, never denormal, NaN or infinite) and angle `2π·k/2²⁴ ∈ [0,2π)`, with `k` from `next() >> 40`. No other caller can pass other inputs, so no general-purpose range reduction or special-case handling is needed. (This replaces today's clamp of `u1` to `leastNormalMagnitude`.)
   - **FMA:** Swift does not contract `a * b + c` into a fused multiply-add on its own, so the explicit operation order is stable across builds; the golden bits catch any change.
   - **Validation:** (1) exhaustive test over all 2²⁴ inputs of each function against a `Double` reference, asserting a stated max-ULP bound (A2.4); (2) golden output bits for fixed seeds (A2.4, B1.1); (3) **re-benchmark on completion** against vForce and Swift libm and report the numbers. Prototype (2026-09-30, 8.45M values, `swiftc -O`, M4 Pro): vForce 10.4–13.9 ms, Swift libm 31.5 ms, draft polynomial 10.6 ms. Init runs once per mint, so speed is not a deciding factor.
+  - **Re-benchmark of the finished transform (P5, 2026-10-02):** same harness shape, 8,445,748 values including the xoshiro draws, `swiftc -O`, best of several runs, on the M4 Pro while other builds and test runs were loading it (load average ≈ 4.4), so the absolute numbers are inflated against the idle prototype; the ratios are the useful part. `DCMRandom.nextStandardNormalPair`: 45.6 ms (earlier run 55.6); vForce Box–Muller: 33.6 ms (39.0); Swift libm (`Double`): 60.7 ms (74.8). Ours is ≈ 1.35× vForce and ≈ 0.75× libm. A re-run on an idle machine is still worth doing if the absolute figure ever matters.
   - **Not a concern — bf16 narrowing:** bf16 training keeps fp32 master weights (fp32 master + bf16 working copy; config D, issue #9, also stored fp32 and is removed anyway under D-10), so init always produces fp32 values, and the one CPU narrowing (`float32ToBFloat16Bits`, `ChessNetwork.swift:3572`) is a fixed round-to-nearest-even rule pinned by B1.1's goldens.
 - **Self-play/GUI concurrency** (§0) — not numeric, but the dominant source of trajectory divergence.
 
@@ -1220,6 +1221,99 @@ script run by the owner on both machines, all tensor-data hashes equal;
 Build New Model with an entered init seed mints tensor data identical to
 `--derive-model`/CLI mints with the same seed, and an empty field logs the drawn
 seed.
+
+**Done (`3b601c50`, 2026-10-02).** As built:
+- `Utils/DCMNormalMath.swift`: `logOfGridUniform(k)` = `ln((k+1)/2²⁴)` by a
+  power-of-two split, mantissa folded into (√½, √2], and an odd `atanh` series in
+  Horner form; `cosSinOfGridAngle(k)` = exact quadrant and octant reduction on the
+  grid, then Taylor `sin`/`cos` on [0, π/4]; `standardNormalPair(radiusIndex:angleIndex:)`
+  rounds `r·cos`, `r·sin` to `Float`. `DCMRandom.nextStandardNormalPair()` takes two
+  `next() >> 40` draws, always exactly two. No vForce, no libm anywhere on the path.
+- `Network/WeightInitialization.swift`: `WeightInitialization` (`.seeded(initSeed:)`,
+  `.overwrittenByLoad`, `drawnSeed()`); `WeightInitScheme` (`current = "dcm-init-1"`,
+  `tensorSeed` = `DCMRandomStreams.childSeed(parent: initSeed, name: "init/" + name)`,
+  `bnCalibrationSeed` = the `init.bn_calibration` child, `standardNormals`, fans from the
+  tensor's own stored shape, He / Glorot std in fp32, `nativeValues` = draw row-major in
+  the stored layout, scale, then `SafetensorsModelIO.fromTorchLayout`, and
+  `seFC2NativeValues` = the whole Glorot draw with the zero-β native columns zeroed);
+  `TensorInitializer` checks every builder request against `weightTensorPlan()` (name
+  present, same native shape, at most once) and, after the build, that every conv /
+  linear plan tensor was drawn.
+- `ChessNetwork`: every random weight site goes through the initializer by plan name;
+  `.overwrittenByLoad` fills zeros and the network refuses `evaluate`, batched
+  evaluate, value distribution, value baseline, analysis taps, `exportWeights`,
+  `computeBatchStats` and `trainStep` with `ChessNetworkError.weightsNotLoaded` until
+  `loadWeights` runs. The old vForce helpers are gone; the two static helpers
+  `PolicyHeadCorrectnessTests` calls (`heInitData`, `glorotInitDataFCInOut`) draw
+  through the same transform from a system-drawn seed.
+- `ChessMPSNetwork`: `NetworkInitMode` gains `.seededRandomWeights(initSeed:)` and
+  `.weightsToBeLoaded`; the BN-calibration warmup game is walked with
+  `nextBounded(legalMoves.count)` from the mint's `init.bn_calibration` stream, and its
+  sibling network is built `.overwrittenByLoad`.
+- Load paths pass `.weightsToBeLoaded` / `.overwrittenByLoad`: the session's
+  persistent networks, model/session load, probe, Run All Analyses, numerics audit,
+  UCI loader, checkpoint verification scratch, the train-vs-UCI eval net, the
+  live-trainer mirror (`InferenceNetworkFactory.buildAwaitingLoad`), and corpus-replay /
+  train-vs-UCI trainers started from a model. Fresh corpus-replay and train-vs-UCI
+  trainers draw a seed and log it (`[REPLAY] fresh nets init_seed=`,
+  `[VS-UCI] fresh trainer init_seed=`).
+- Mints: `--new-model [--init-seed <u64>]` and Build New Model's optional
+  **Init seed** field (empty = drawn; the Build button is disabled on an invalid
+  entry) both build `.seededRandomWeights(initSeed:)` — the same code path, so the
+  same seed gives the same tensors. The seed and scheme are logged (`[NEW-MODEL] …
+  init_seed=… (entered|drawn) init_scheme=dcm-init-1`, `[BUTTON] Build Network …
+  init_seed=…`) together with the build time (`[NEW-MODEL] built … in … ms`,
+  `[BUILD] champion … built in … ms`).
+- `--derive-model --set-se-beta-init glorot [--init-seed <u64>]` re-draws β with the
+  tensor's own `init/<name>` stream (the β rows equal a fresh mint's under that seed)
+  and records `init_seed` / `init_scheme` in the operation's `derivation_history`
+  arguments; `--init-seed` with no weight-drawing operation is refused.
+- `scripts/init_reproducibility.sh <binary> <scratch>` mints seeds 1, 2, 42, 1234,
+  99999, 2⁶⁴−1, 7777777, 31337 × `v4_5block_7x7` and `nt8y_3x3stem` and prints, per
+  mint, the SHA-256 of the trainable tensors and of the BN running statistics
+  (`scripts/safetensors_tensor_hash.py`, tensor data only).
+- Tests (all new; written before the implementation, red only because the API did
+  not exist yet — compile-red): `DCMNormalMathTests` (7: exhaustive `log` and
+  `cos`/`sin` over all 2²⁴ inputs — measured worst ≤ 4 ULP relative and ≤ 8 ULP
+  absolute respectively; quadrant boundaries exact; each normal within 1 `Float` ULP of
+  Foundation's; golden pairs; two draws per pair; moments), `InitSchemeGoldenTests` (8:
+  tensor seeds, BN-calibration seed, conv / FC / zero-β SE fc2 goldens in fp32 and bf16
+  with full-tensor SHA-256, odd count, non-random kinds refused, per-role std),
+  `WeightInitializationTests` (12: same seed bit-identical, builder equals the scheme by
+  plan name, shared tensors identical across architectures, bf16 = round(fp32), every
+  preset builds seeded, the load gate, seeded mints reproducible including BN
+  calibration, plan-check errors), `InitSeedRecordingTests` (7: metadata round trip and
+  malformed records, legacy writer refuses a seed, seeded β re-draw equals the mint,
+  Build-screen seed entry). Every golden came from an independent Python
+  implementation of the scheme, not from the Swift code. Related existing classes (51
+  classes, 466 tests) pass; the only failures in that run were
+  `ChessNetworkValueDistributionTests`' two tests, which evaluate an
+  `InferenceNetworkFactory.build(arch:)` network without loading — that entry point
+  stays `.randomWeights` and the mirror got its own `buildAwaitingLoad`; re-run green.
+- Build time (Debug build, loaded machine, `--new-model` via the script):
+  `v4_5block_7x7` 4.2–5.0 s, `nt8y_3x3stem` 0.7–1.2 s after the first (3.5 s). The
+  draw itself is ≈ 12 ms slower than vForce over 8.45M values (A5 re-benchmark),
+  negligible against graph construction, so the ≤ 2× bound holds; no pre-P5 timing
+  of the same binary was taken.
+- Same-machine run of the script on the M4 Pro (macOS 27.2 beta): all 16 mints
+  produced their hashes; the cross-machine comparison (M5 VM) is still owner-run.
+- Deviations: (1) The init seed lives in flat `init_seed` / `init_scheme`
+  safetensors metadata keys (`ModelInitRecord`), written by `--new-model` only, since
+  `dcm_lineage` does not exist until P6 — P6 should fold them into
+  `dcm_lineage.rng`. A GUI-built champion's seed is logged and shown, not yet stored in
+  its saves. The legacy `.dcmmodel` writer refuses a record. (2) The B1.1 golden "WDL
+  fc2 bias" is not pinned here: biases are constants, not draws; the pinned tensors are
+  a conv, an FC, a zero-β SE fc2 and an odd-count tensor. (3) `DCMNormalMath` is an
+  internal type rather than private to `DCMRandom`, so the exhaustive tests can call
+  it. (4) `InferenceNetworkFactory.build(arch:)` keeps drawing random weights (an
+  existing test uses it that way); the live-trainer mirror uses the new
+  `buildAwaitingLoad(arch:)`. (5) `ChessNetwork`, `ChessTrainer` and the
+  `TrainerHyperparameters` convenience init still default `initialization` to
+  `.drawnSeed()`, because removing the default changes ~90 existing test call sites
+  that P4 also edits; production sites all pass it explicitly. The owner's rule (no
+  default; tests pass explicit values) is to be applied after this branch is merged
+  with P4. (6) `SetSEBetaInitDeriveOperation.init(value:groupIndices:)` draws a seed
+  (existing tests use that form); the CLI path always records the seed it used.
 
 **P6 — Format v5 + `LineageRecord`.** Files: `Persistence/LineageRecord.swift`,
 `Persistence/LineageTracker.swift`, `Network/ArchitectureFormat.swift` (v5),
