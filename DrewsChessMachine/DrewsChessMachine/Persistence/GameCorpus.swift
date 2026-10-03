@@ -95,6 +95,12 @@ enum OpenShardRecovery: Equatable, Sendable {
     /// The shard held no complete game: it was deleted (its header plus
     /// `discardedTailBytes` of torn tail).
     case removedEmpty(openShard: URL, discardedTailBytes: Int)
+    /// A writer still holds the shard's lock — a recording or import is
+    /// appending to it. Nothing was read, changed or removed.
+    case inUseByLiveWriter(openShard: URL)
+    /// The shard was listed but gone by the time recovery opened it — most
+    /// likely its writer sealed or discarded it in between. Nothing changed.
+    case vanishedBeforeRecovery(openShard: URL)
 
     /// One line describing the outcome, for logs and reports.
     var summary: String {
@@ -106,6 +112,12 @@ enum OpenShardRecovery: Equatable, Sendable {
         case let .removedEmpty(openShard, discardedTailBytes):
             return "\(openShard.lastPathComponent): removed — it held no complete game (header plus "
                 + "\(discardedTailBytes) byte(s) of incomplete tail)"
+        case let .inUseByLiveWriter(openShard):
+            return "\(openShard.lastPathComponent): not recovered — a recording or import still holds it open "
+                + "(its lock is held); left untouched"
+        case let .vanishedBeforeRecovery(openShard):
+            return "\(openShard.lastPathComponent): not recovered — it was gone when recovery opened it "
+                + "(most likely its writer sealed it just then)"
         }
     }
 }
@@ -193,16 +205,15 @@ final class GameCorpus {
     /// sealed (or deleted when it holds no game), leaving the corpus consistent
     /// with only sealed shards.
     ///
-    /// That recovery modifies the corpus, and it cannot tell a crash leftover
-    /// from a shard another process is still appending to — run against a
-    /// corpus that is being recorded or imported into, it truncates and seals
-    /// the writer's live shard out from under it. So only the process that
-    /// owns the corpus as its single writer may call this. Anything that only
-    /// reads a corpus (corpus replay, inspection) uses `openReadOnly`, which
-    /// never changes a byte on disk. No app path opens an existing corpus for
-    /// writing today; the explicit, operator-invoked recovery of crash
-    /// leftovers is `--validate-corpus <dir> --fix` (`CorpusValidator`), which
-    /// shares `recoverOpenShard(at:)` with this.
+    /// A shard a live writer holds is never recovered (`recoverOpenShard`
+    /// checks its lock): opening a corpus that another process is recording
+    /// or importing into throws `.invalidState`, untouched, since two writers
+    /// on one corpus would each mint shard numbers the other does not know.
+    /// Anything that only reads a corpus (corpus replay, inspection) uses
+    /// `openReadOnly`, which never changes a byte on disk. No app path opens
+    /// an existing corpus for writing today; the explicit, operator-invoked
+    /// recovery of crash leftovers is `--validate-corpus <dir> --fix`
+    /// (`CorpusValidator`), which shares `recoverOpenShard(at:)` with this.
     static func open(directory: URL,
                      shardSoftLimitBytes: Int = defaultShardSoftLimitBytes) throws -> GameCorpus {
         let metaURL = directory.appendingPathComponent(metadataFilename)
@@ -306,8 +317,10 @@ final class GameCorpus {
             metadata.sources[i].pliesAdded = (metadata.sources[i].pliesAdded ?? 0) + plyCount
         }
         if writer.byteCount >= shardSoftLimitBytes {
-            _ = try writer.seal(sealUnix: Int64(Date().timeIntervalSince1970))
+            // Cleared first: a writer is unusable once `seal` has run, even
+            // when it throws, so a later append must not reach it.
             currentWriter = nil
+            _ = try writer.seal(sealUnix: Int64(Date().timeIntervalSince1970))
             try openNewShard()
         }
     }
@@ -316,12 +329,12 @@ final class GameCorpus {
     /// the source complete in `corpus.json`.
     func finishSource() throws {
         if let writer = currentWriter {
+            currentWriter = nil
             if writer.gameCount > 0 {
                 _ = try writer.seal(sealUnix: Int64(Date().timeIntervalSince1970))
             } else {
                 try writer.discardEmpty()
             }
-            currentWriter = nil
         }
         if !metadata.sources.isEmpty {
             metadata.sources[metadata.sources.count - 1].complete = true
@@ -446,7 +459,14 @@ final class GameCorpus {
         let fm = FileManager.default
         let entries = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         for openURL in Self.openShardURLs(among: entries) {
-            try Self.recoverOpenShard(at: openURL)
+            switch try Self.recoverOpenShard(at: openURL) {
+            case .sealed, .removedEmpty:
+                continue
+            case .inUseByLiveWriter, .vanishedBeforeRecovery:
+                throw GameCorpusError.invalidState(
+                    "\(openURL.lastPathComponent) belongs to a writer still running on this corpus; "
+                        + "a corpus has one writer at a time")
+            }
         }
     }
 
@@ -455,26 +475,55 @@ final class GameCorpus {
     /// holds no complete game, delete it. Logs the outcome as
     /// `[CORPUS-RECOVERY]` and returns it.
     ///
-    /// This rewrites the shard, and nothing distinguishes a crash leftover
-    /// from the live shard of a recording or import still appending to it:
-    /// run against a corpus that is being written, it truncates and seals that
-    /// writer's shard out from under it. Callers — `GameCorpus.open` and
-    /// `CorpusValidator`'s `fix` pass — must only run it when nothing is
-    /// writing to the corpus. Only a regular file is ever recovered; anything
-    /// else with a `.open` name is refused, untouched.
+    /// A live writer's shard looks exactly like a crash leftover on disk, so
+    /// the difference is the shard's lock: every `ShardWriter` holds it from
+    /// creation until the shard is sealed, discarded or closed, and the kernel
+    /// releases it when the writer's process ends, however it ends. Recovery
+    /// takes the lock without waiting before reading a byte, and does all of
+    /// its reading, truncating and sealing through that locked handle; a held
+    /// lock returns `.inUseByLiveWriter` with nothing touched. Writers from
+    /// builds that predate the lock take none, so their live shards are not
+    /// protected. Only a regular file is ever recovered; anything else with a
+    /// `.open` name is refused, untouched.
     @discardableResult
     static func recoverOpenShard(at openURL: URL) throws -> OpenShardRecovery {
         guard let item = try FileSafety.existingItem(at: openURL) else {
-            throw GameCorpusError.ioFailed("recover \(openURL.lastPathComponent): it no longer exists")
+            return .vanishedBeforeRecovery(openShard: openURL)
         }
         guard item.kind == .regularFile else {
             throw FileSafetyError.notARegularFile(path: openURL.path, kind: item.kind)
         }
-        let scan = try GameCorpusShardIO.scanOpenShard(at: openURL)
-        let writer = try ShardWriter(resumingAt: openURL,
-                                     validByteCount: scan.validByteCount,
-                                     gameCount: scan.gameCount,
-                                     plyCount: scan.plyCount)
+        let handle: FileHandle
+        let identity: FileSafety.FileIdentity
+        switch try FileSafety.openExistingRegularFileWithExclusiveLock(at: openURL) {
+        case .heldByAnotherOpenFile:
+            let recovery = OpenShardRecovery.inUseByLiveWriter(openShard: openURL)
+            SessionLogger.shared.log("[CORPUS-RECOVERY] \(recovery.summary)")
+            return recovery
+        case .gone:
+            return .vanishedBeforeRecovery(openShard: openURL)
+        case let .locked(lockedHandle, lockedIdentity):
+            handle = lockedHandle
+            identity = lockedIdentity
+        }
+        let contents: Data
+        do {
+            guard let read = try handle.readToEnd() else {
+                // Nothing to read: an empty file, shorter than any header.
+                throw GameCorpusError.truncatedHeader
+            }
+            contents = read
+        } catch let error as GameCorpusError {
+            throw error
+        } catch {
+            throw GameCorpusError.ioFailed("read \(openURL.lastPathComponent): \(error.localizedDescription)")
+        }
+        let scan = try GameCorpusShardIO.scanOpenShard(contents: contents)
+        let writer = try ShardWriter(recoveringLockedShardAt: openURL,
+                                     handle: handle,
+                                     identity: identity,
+                                     contents: contents,
+                                     scan: scan)
         let discardedTailBytes = scan.fileSize - scan.validByteCount
         let recovery: OpenShardRecovery
         if scan.gameCount > 0 {

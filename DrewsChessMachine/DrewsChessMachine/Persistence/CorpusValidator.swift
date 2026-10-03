@@ -69,13 +69,20 @@ struct CorpusValidationReport: Sendable {
 ///   recovered, through the same code `GameCorpus.open` uses
 ///   (`GameCorpus.recoverOpenShard`): each is truncated to its last complete
 ///   game and sealed, or deleted when it holds no complete game, and each
-///   outcome is logged and reported. Like that recovery, a `fix` run must only
-///   be made when nothing is writing to the corpus. Without `fix` they are
-///   only reported, byte-for-byte untouched.
+///   outcome is logged and reported. A shard whose writer is still running —
+///   its lock is held, by this process or another — is not touched: it is
+///   reported `open-shard-in-use`, unresolved, for a later `fix` run. Without
+///   `fix` every `.open` shard is only reported, byte-for-byte untouched.
 /// - **Stale `corpus.json` counts** (e.g. `gamesAdded: 0`) even though the
 ///   sealed shards are intact — re-derivable, so `fix: true` recomputes the
 ///   per-source counts from the shard trailers (after any `.open` recovery,
-///   so recovered games are counted) and rewrites `corpus.json`.
+///   so recovered games are counted) and rewrites `corpus.json`. Not while a
+///   writer is active: its counts are the authority and it rewrites
+///   `corpus.json` when it finishes, so the repair is skipped and reported
+///   (`counts-not-repaired-writer-active`). A writer between shards (the
+///   instant after a rotation's seal) holds no `.open` shard and is not
+///   seen; that window is microseconds and costs at most a count the writer
+///   overwrites when it finishes.
 ///
 /// **Sealed shard bytes are never modified** — a genuine data problem (bad
 /// SHA/CRC, missing shards, corpus-ID mismatch) is reported as an `error`,
@@ -91,8 +98,8 @@ enum CorpusValidator {
     ///     bytes). When `false`, only the fixed-size front header and trailer of
     ///     each shard are read (fast, counts-only, no body integrity).
     ///   - fix: when `true`, repair the fixable findings: recover every `.open`
-    ///     shard (seal it at its last complete game, or delete it when it holds
-    ///     none — only safe when nothing is writing to the corpus), then
+    ///     shard no writer holds (seal it at its last complete game, or delete
+    ///     it when it holds none), then — unless a writer is still active —
     ///     rewrite per-source `gamesAdded`/`pliesAdded` from the shard trailers
     ///     and persist `corpus.json`. Never modifies a sealed shard.
     /// - Returns: a structured report. Throws when `corpus.json` itself cannot
@@ -141,15 +148,35 @@ enum CorpusValidator {
         // and counted below like any other.
         let openShards = GameCorpus.openShardURLs(among: entries)
         let openShardSeverity: CorpusValidationSeverity = metadata.state == "sealed" ? .error : .warning
+        // Set when `fix` finds a writer still working on this corpus. Its
+        // in-memory counts are then the authority over `corpus.json`, which it
+        // rewrites when it finishes, so the count repair below is skipped.
+        var writerActive = false
         if !openShards.isEmpty {
             if fix {
                 for openURL in openShards {
                     do {
                         let recovery = try GameCorpus.recoverOpenShard(at: openURL)
-                        findings.append(CorpusValidationFinding(
-                            severity: openShardSeverity, code: "open-shard-present",
-                            message: "recovered unsealed shard \(recovery.summary)",
-                            fixable: true, fixed: true))
+                        switch recovery {
+                        case .sealed, .removedEmpty:
+                            findings.append(CorpusValidationFinding(
+                                severity: openShardSeverity, code: "open-shard-present",
+                                message: "recovered unsealed shard \(recovery.summary)",
+                                fixable: true, fixed: true))
+                        case .inUseByLiveWriter:
+                            writerActive = true
+                            findings.append(CorpusValidationFinding(
+                                severity: openShardSeverity, code: "open-shard-in-use",
+                                message: "\(recovery.summary); rerun --fix after that recording or import finishes "
+                                    + "(it seals the shard itself when it finishes normally)",
+                                fixable: true, fixed: false))
+                        case .vanishedBeforeRecovery:
+                            writerActive = true
+                            findings.append(CorpusValidationFinding(
+                                severity: .info, code: "open-shard-vanished",
+                                message: recovery.summary,
+                                fixable: false))
+                        }
                     } catch {
                         SessionLogger.shared.log(
                             "[CORPUS-RECOVERY] \(openURL.lastPathComponent): NOT recovered — \(error.localizedDescription)")
@@ -259,8 +286,11 @@ enum CorpusValidator {
             }
         }
 
-        // Per-source count reconciliation — the fixable class.
+        // Per-source count reconciliation — the fixable class, repaired only
+        // when no writer is active (see `writerActive`).
+        let repairCounts = fix && !writerActive
         var fixedAny = false
+        var countMismatchLeftForWriter = false
         for i in metadata.sources.indices {
             let sid = metadata.sources[i].sourceID
             guard let actual = perSource[sid] else {
@@ -277,7 +307,8 @@ enum CorpusValidator {
                     severity: .warning, code: "source-game-count",
                     message: "source \(sid): corpus.json gamesAdded=\(metadata.sources[i].gamesAdded.map(String.init) ?? "nil") but shards hold \(actual.games)",
                     fixable: true)
-                if fix { metadata.sources[i].gamesAdded = actual.games; f.fixed = true; fixedAny = true }
+                if repairCounts { metadata.sources[i].gamesAdded = actual.games; f.fixed = true; fixedAny = true }
+                if fix && !repairCounts { countMismatchLeftForWriter = true }
                 findings.append(f)
             }
             if metadata.sources[i].pliesAdded != actual.plies {
@@ -285,9 +316,17 @@ enum CorpusValidator {
                     severity: .warning, code: "source-ply-count",
                     message: "source \(sid): corpus.json pliesAdded=\(metadata.sources[i].pliesAdded.map(String.init) ?? "nil") but shards hold \(actual.plies)",
                     fixable: true)
-                if fix { metadata.sources[i].pliesAdded = actual.plies; f.fixed = true; fixedAny = true }
+                if repairCounts { metadata.sources[i].pliesAdded = actual.plies; f.fixed = true; fixedAny = true }
+                if fix && !repairCounts { countMismatchLeftForWriter = true }
                 findings.append(f)
             }
+        }
+        if countMismatchLeftForWriter {
+            findings.append(CorpusValidationFinding(
+                severity: .warning, code: "counts-not-repaired-writer-active",
+                message: "corpus.json counts were not repaired: a recording or import is still writing to this corpus "
+                    + "and rewrites corpus.json from its own counts when it finishes; rerun --fix after it has",
+                fixable: false))
         }
 
         if metadata.state == "sealed" {

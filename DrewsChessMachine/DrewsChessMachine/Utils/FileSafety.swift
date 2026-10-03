@@ -214,6 +214,58 @@ enum FileSafety {
         return FileIdentity(device: info.st_dev, inode: info.st_ino)
     }
 
+    // MARK: - Comparing paths
+
+    /// True when `first` and `second` may name one file — the one check for
+    /// "these two paths must not be the same file" (two outputs of one run,
+    /// or an output and an input it would destroy).
+    ///
+    /// They may when their paths, with symbolic links resolved (in every
+    /// component that exists — a missing tail is kept as written,
+    /// `pathForComparison`) and `.`/`..` removed, are equal ignoring case, or
+    /// when both exist and resolve to the
+    /// same device and inode. Case is ignored because APFS and HFS+ volumes are
+    /// case-insensitive by default; on a case-sensitive volume that refuses two
+    /// genuinely different files whose names differ only in case, which costs
+    /// a caller nothing but a rename. The identity check catches what no path
+    /// comparison can: hard links, and links resolved differently than above.
+    ///
+    /// A path check, so it shares the check-then-act window of the type's
+    /// other path checks: a file linked into place between this call and the
+    /// caller's open is not seen. Callers that open both paths compare the
+    /// open descriptors' identities as well.
+    static func mayNameTheSameFile(_ first: URL, _ second: URL) throws -> Bool {
+        let firstPath = try pathForComparison(first)
+        let secondPath = try pathForComparison(second)
+        if firstPath.compare(secondPath, options: [.caseInsensitive]) == .orderedSame { return true }
+        guard let firstIdentity = try resolvedIdentity(at: first),
+              let secondIdentity = try resolvedIdentity(at: second) else {
+            return false
+        }
+        return firstIdentity == secondIdentity
+    }
+
+    /// `url` with `.`/`..` removed and every symbolic link resolved in the
+    /// part of the path that exists. `resolvingSymlinksInPath()` resolves
+    /// nothing at all when the final item does not exist, so a file not yet
+    /// created inside a linked folder would keep the link's spelling; here the
+    /// deepest existing ancestor is resolved and the missing tail re-appended.
+    private static func pathForComparison(_ url: URL) throws -> String {
+        var existingAncestor = url.standardizedFileURL
+        var missingTail: [String] = []
+        while try existingItem(at: existingAncestor) == nil {
+            let parent = existingAncestor.deletingLastPathComponent()
+            guard parent.path != existingAncestor.path else { break }
+            missingTail.insert(existingAncestor.lastPathComponent, at: 0)
+            existingAncestor = parent
+        }
+        var resolved = existingAncestor.resolvingSymlinksInPath()
+        for component in missingTail {
+            resolved.appendPathComponent(component)
+        }
+        return resolved.standardizedFileURL.path
+    }
+
     // MARK: - Creating
 
     /// Create `url` as a new, empty regular file and return a handle open for
@@ -221,7 +273,14 @@ enum FileSafety {
     /// naming what is there — when anything at all already exists at `url`;
     /// that item is never opened, truncated or followed.
     static func createNewFile(at url: URL) throws -> NewFile {
-        let descriptor = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, newFileMode)
+        try createNewFile(at: url, additionalOpenFlags: 0)
+    }
+
+    /// `createNewFile`, with extra `open` flags (a lock request).
+    private static func createNewFile(at url: URL, additionalOpenFlags: Int32) throws -> NewFile {
+        let descriptor = Darwin.open(url.path,
+                                     O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | additionalOpenFlags,
+                                     newFileMode)
         guard descriptor >= 0 else {
             let code = errno
             throw failureForExclusiveCreate(at: url, errnoValue: code, call: "open")
@@ -299,6 +358,39 @@ enum FileSafety {
         }
     }
 
+    /// A file opened for writing by `openForWritingReportingCreation`.
+    struct OpenedForWriting {
+        let handle: FileHandle
+        /// The open file's identity, read from the open descriptor.
+        let identity: FileIdentity
+        /// True only when this call's exclusive create made the file, so the
+        /// caller may remove it (by `identity`) if it abandons the write.
+        /// False when an existing regular file was opened and emptied.
+        let createdByThisCall: Bool
+    }
+
+    /// `openForWriting`, reporting whether the file is new — for a caller
+    /// that opens several outputs and must undo exactly what it created when
+    /// a later one is refused. The file is first created exclusively; only
+    /// when that finds an existing regular file and `policy` is `.truncate`
+    /// is that file opened and emptied (anything else there is refused, as in
+    /// `openForWriting`). Should the existing file vanish between the two
+    /// steps, the truncating open creates it and it is still reported as not
+    /// created here — the direction that leaves a file rather than deletes one.
+    static func openForWritingReportingCreation(at url: URL,
+                                                existingRegularFile policy: ExistingRegularFilePolicy) throws -> OpenedForWriting {
+        do {
+            let created = try createNewFile(at: url)
+            return OpenedForWriting(handle: created.handle, identity: created.identity, createdByThisCall: true)
+        } catch FileSafetyError.alreadyExists(let path, let kind) {
+            guard policy == .truncate else { throw FileSafetyError.alreadyExists(path: path, kind: kind) }
+            guard kind == .regularFile else { throw FileSafetyError.notARegularFile(path: path, kind: kind) }
+            let handle = try openForWriting(at: url, existingRegularFile: .truncate)
+            let identity = try self.identity(ofOpenFileDescriptor: handle.fileDescriptor, path: url.path)
+            return OpenedForWriting(handle: handle, identity: identity, createdByThisCall: false)
+        }
+    }
+
     /// Exclusively create `<stem>.<pathExtension>` in `directory`, or — when
     /// that name is taken by anything at all — `<stem>-2.<pathExtension>`,
     /// `<stem>-3.<pathExtension>`, … up to `<stem>-<maxAttempts>`. Existing
@@ -323,6 +415,107 @@ enum FileSafety {
         }
         throw FileSafetyError.noFreeNumericSuffix(
             directory: directory.path, stem: stem, pathExtension: pathExtension, maxAttempts: maxAttempts)
+    }
+
+    // MARK: - Exclusively locked files (a writer's file that others must leave alone)
+
+    /// What `openExistingRegularFileWithExclusiveLock` found.
+    enum ExistingFileLockAttempt {
+        /// The lock was free and is now held by `handle` (open read-write)
+        /// for as long as the handle stays open; `identity` is the file's.
+        case locked(handle: FileHandle, identity: FileIdentity)
+        /// Another open file holds the lock — in this process or another.
+        /// Nothing was opened or changed.
+        case heldByAnotherOpenFile
+        /// Nothing is at the path.
+        case gone
+    }
+
+    /// `createNewFile`, also taking an exclusive lock on the new file
+    /// (`O_EXLOCK`), held until the returned handle is closed — explicitly,
+    /// by its release, or by the kernel when the process exits however it
+    /// exits. It marks the file as in use by a live writer:
+    /// `openExistingRegularFileWithExclusiveLock` elsewhere finds it held.
+    ///
+    /// The lock is BSD `flock`-style: it belongs to this one open file, so
+    /// opening and closing the same file elsewhere in this process (a
+    /// whole-file read, say) leaves it in place. That is why it is not an
+    /// `fcntl` lock, which any close of the file by this process would drop.
+    ///
+    /// `open` creates the file and then takes the lock, so another process
+    /// can open the new, empty file in between; this call waits for the lock
+    /// in that case (no `O_NONBLOCK`) rather than failing, and the other side
+    /// sees an empty file, which no recovery treats as a shard. A volume that
+    /// cannot lock (some network mounts) fails the call with the system's
+    /// error — there is no unlocked fallback — and can leave the new empty
+    /// file behind, which this does not remove (its identity is unknown).
+    static func createNewFileHoldingExclusiveLock(at url: URL) throws -> NewFile {
+        try createNewFile(at: url, additionalOpenFlags: O_EXLOCK)
+    }
+
+    /// Open the existing regular file at `url` read-write and take its
+    /// exclusive lock without waiting — the counterpart to
+    /// `createNewFileHoldingExclusiveLock` for a caller that may change the
+    /// file only when no writer holds it. Returns `.heldByAnotherOpenFile`
+    /// when the lock is taken, `.gone` when nothing is at `url`. A symbolic
+    /// link, directory or other non-regular item is refused
+    /// (`.notARegularFile`); so is a file replaced at `url` while it was
+    /// being opened (`.fileChangedSinceWritten`). A volume that cannot lock
+    /// is an error (`.systemCallFailed`), never treated as unlocked.
+    static func openExistingRegularFileWithExclusiveLock(at url: URL) throws -> ExistingFileLockAttempt {
+        let descriptor = Darwin.open(url.path, O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | O_EXLOCK)
+        guard descriptor >= 0 else {
+            let code = errno
+            switch code {
+            case EAGAIN:
+                // EWOULDBLOCK, the same value: the lock is held.
+                return .heldByAnotherOpenFile
+            case ENOENT:
+                return .gone
+            case ELOOP:
+                throw FileSafetyError.notARegularFile(path: url.path, kind: .symbolicLink)
+            case EISDIR:
+                throw FileSafetyError.notARegularFile(path: url.path, kind: .directory)
+            default:
+                // A FIFO or device cannot take the lock (ENOTSUP) before its
+                // type can be checked on a descriptor, so name what is there
+                // when it is not a regular file; otherwise the failure is the
+                // system's own (on a regular file, ENOTSUP means the volume
+                // cannot lock).
+                if let existing = existingItemForDiagnosis(at: url), existing.kind != .regularFile {
+                    throw FileSafetyError.notARegularFile(path: url.path, kind: existing.kind)
+                }
+                throw FileSafetyError.systemCallFailed(path: url.path, call: "open", errnoValue: code)
+            }
+        }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else {
+            let code = errno
+            closeDescriptorAfterFailure(descriptor, path: url.path)
+            throw FileSafetyError.systemCallFailed(path: url.path, call: "fstat", errnoValue: code)
+        }
+        // `O_NONBLOCK` lets the open succeed on a FIFO with no writer, so the
+        // type is checked on the descriptor before the file is ever used.
+        let kind = ItemKind(mode: info.st_mode)
+        guard kind == .regularFile else {
+            closeDescriptorAfterFailure(descriptor, path: url.path)
+            throw FileSafetyError.notARegularFile(path: url.path, kind: kind)
+        }
+        let identity = FileIdentity(device: info.st_dev, inode: info.st_ino)
+        let atPath: ExistingItem?
+        do {
+            atPath = try existingItem(at: url)
+        } catch {
+            closeDescriptorAfterFailure(descriptor, path: url.path)
+            throw error
+        }
+        guard let atPath, atPath.identity == identity else {
+            closeDescriptorAfterFailure(descriptor, path: url.path)
+            throw FileSafetyError.fileChangedSinceWritten(path: url.path)
+        }
+        // O_NONBLOCK stays set: it has no effect on reads or writes of a
+        // regular file.
+        return .locked(handle: FileHandle(fileDescriptor: descriptor, closeOnDealloc: true), identity: identity)
     }
 
     // MARK: - Writing whole files

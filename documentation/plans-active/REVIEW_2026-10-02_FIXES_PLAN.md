@@ -176,17 +176,75 @@ mismatch; the GUI follows decision D-1 (never refuses; reports NOT EXACT).
   focus a field in a middle group, delete the group, confirm its neighbours are unchanged —
   is still to be done with the app.
 
-### C2. Probe CLI output safety — [ ]
+### C2. Probe CLI output safety — [x]
 Outputs may never be a probed checkpoint or each other (shared same-file check in
 `FileSafety`); nothing is created until both outputs are validated; write failures and
 non-finite values end the run with distinct exit codes; failed checkpoints in a sweep give a
 non-zero exit; empty session logs are no longer created per probe.
 
-### C3. `--validate-corpus --fix` vs a live writer — [ ]
+As built:
+- `FileSafety.mayNameTheSameFile` replaces `ParametersFileWriter.mayNameTheSameFile` and
+  `TrainerOutputFileGuard.isSameFile`. It compares paths ignoring case after resolving links in
+  the existing part of the path (`resolvingSymlinksInPath()` resolves nothing when the leaf
+  does not exist — found by the new test, so the deepest existing ancestor is resolved and the
+  missing tail re-appended), then device+inode. Behavior changes, both toward refusing: the
+  replay out-model guard now also refuses a case variant of the start model, and
+  `--create-parameters-file` sees through a symbolic link.
+- `FileSafety.openForWritingReportingCreation` reports whether the open created the file, so
+  a refused second output removes only a first output this run created.
+- `ProbeModelCLI.openOutputs`: every check before any open, then a descriptor-identity
+  backstop. `encodeLine` checks for non-finite numbers and `isValidJSONObject` first —
+  `JSONSerialization` raises `NSInvalidArgumentException` (uncatchable in Swift) on NaN or
+  infinity, confirmed by the red run. Exit 68: a summary line could not be encoded or written.
+  Exit 69: the sweep finished but at least one checkpoint failed (listed on stderr); a failed
+  checkpoint writes nothing to the positions file. `--arch-sweep-out` write failures now end
+  that sweep (exit 56) and its lines go through the same encoder.
+- Tests: `ProbeModelCLIOutputTests`, `ProbeModelCLINonFiniteTests`, `FileSafetySameFileTests`
+  (red before the fix: 20 + 1 + 2 failures; green after, unmodified).
+- Empty logs (separate commit): `SessionLogger` creates its file on the first line written,
+  under the name `start()`'s time gives it, so a run that never logs leaves no file;
+  `activeLogPath` is nil until then; a line after `shutdown()` creates nothing. The logger
+  gained `init(location:)` so tests use a temporary folder (`SessionLoggerLazyFileTests`,
+  red before: 2 tests). Verified end to end: a refused `--probe-model` run left the count of
+  `dcm_log_*` files unchanged.
+
+### C3. `--validate-corpus --fix` vs a live writer — [x]
 Shard writers hold a per-file exclusive lock (`O_EXLOCK`) for the shard's lifetime; `--fix`
 skips any locked shard and does not repair counts while a writer is live. Owner: approve only
 with proof the locking works — tests cover a live writer mid-record, a header-only shard after
 rotation, `corpus.json` untouched, a cross-process holder, and recovery once the holder exits.
+
+As built:
+- `FileSafety.createNewFileHoldingExclusiveLock` (separate function, no defaulted parameter)
+  and `FileSafety.openExistingRegularFileWithExclusiveLock` (`.locked` / `.heldByAnotherOpenFile`
+  / `.gone`; descriptor type and path identity checked; a volume that cannot lock is an error,
+  never "unlocked"). Found while testing: `O_EXLOCK` on a FIFO fails with `ENOTSUP` before the
+  type check, so an open failure now names a non-regular item as such.
+- `ShardWriter` creates its shard locked; recovery reads, truncates and seals through the
+  locked handle (`init(recoveringLockedShardAt:…)` replaces `init(resumingAt:…)`); `seal()`
+  renames and `discardEmpty()` removes *before* closing, so a shard is never `.open` and
+  unlocked while its writer is alive; a close failing after a successful seal is reported as
+  such. `GameCorpus.append`/`finishSource` drop the writer before sealing, so a failed seal
+  never leaves a writer that would append after its trailer.
+- `OpenShardRecovery.inUseByLiveWriter` / `.vanishedBeforeRecovery`; `GameCorpus.open`
+  refuses a corpus with a live writer. The validator reports `open-shard-in-use` (unresolved)
+  and, when counts disagree while a writer is active, `counts-not-repaired-writer-active`
+  (a warning) instead of rewriting `corpus.json`.
+- Decisions: per-shard lock only (no corpus-level lock file — the microsecond gap between a
+  rotation's seal and the next shard's create can let a count repair through, which the
+  writer's own `corpus.json` write at finish overwrites); no unlocked fallback on volumes that
+  cannot lock; no age-based rule for writers on builds without the lock (they are unprotected,
+  stated in the docs).
+- Proof (`CorpusValidatorLiveWriterTests`, `FileSafetyExclusiveLockTests`): red before the fix
+  — the live mid-record shard was sealed under its writer and the writer's own seal then failed
+  `ENOENT`; the live header-only shard after a rotation was deleted; `corpus.json` was
+  rewritten; `GameCorpus.open` did not refuse; the lock was free. Green after: the live shard
+  is byte-identical after `--fix` and the writer then seals all its games with a valid SHA; the
+  lock is held from a second open in the same process and still held after a separate
+  whole-file read of the shard (a `flock`-style lock, not dropped like an `fcntl` lock); a
+  `/usr/bin/perl` helper holding `flock(LOCK_EX)` makes `--fix` skip the shard, and once the
+  helper exits the lock is free and `--fix` recovers the shard; a shard closed without sealing
+  is unlocked and recovered.
 
 ### C4. Replay runner pre-flight — [ ]
 Rolling and enumerated output names checked against the staging name limit before training;

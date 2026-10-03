@@ -493,21 +493,6 @@ enum TrainerOutputFileGuard {
         return .continuesLineage
     }
 
-    /// True when `first` and `second` name the same file: equal after
-    /// resolving symbolic links, or — when both exist — the same device and
-    /// inode (catching hard links and case variants on a case-insensitive
-    /// volume).
-    static func isSameFile(_ first: URL, _ second: URL) throws -> Bool {
-        let firstPath = first.resolvingSymlinksInPath().standardizedFileURL.path
-        let secondPath = second.resolvingSymlinksInPath().standardizedFileURL.path
-        if firstPath == secondPath { return true }
-        guard let firstIdentity = try FileSafety.resolvedIdentity(at: first),
-              let secondIdentity = try FileSafety.resolvedIdentity(at: second) else {
-            return false
-        }
-        return firstIdentity == secondIdentity
-    }
-
     /// Decide how the run treats its rolling output file, or refuse:
     /// (a) never the start model itself; (b) never anything but a regular
     /// file; (c) never a name shaped like a step-enumerated checkpoint
@@ -526,7 +511,7 @@ enum TrainerOutputFileGuard {
                                    startModelURL: URL?,
                                    startModel: TrainerModelFileIdentity?,
                                    overwriteAuthorized: Bool) throws -> RollingOutputPlan {
-        if let startModelURL, try isSameFile(outModelURL, startModelURL) {
+        if let startModelURL, try FileSafety.mayNameTheSameFile(outModelURL, startModelURL) {
             throw TrainerOutputFileError.outModelIsStartModel(path: outModelURL.path)
         }
         if !overwriteAuthorized,
@@ -934,7 +919,7 @@ enum CorpusReplayRunner {
                     + "unsealed .open shard(s) (\(names)) — their games are NOT replayed. Each is either the live "
                     + "shard of a recording/import still writing into this corpus, or a crash leftover; replay "
                     + "reads sealed shards only and never modifies a corpus, so it neither reads nor recovers them. "
-                    + "Once nothing is writing to this corpus, `--validate-corpus <dir> --fix` recovers a crash leftover."
+                    + "`--validate-corpus <dir> --fix` recovers a crash leftover and leaves a live writer's shard alone."
                 emit(warning)
                 FileHandle.standardError.write(Data((warning + "\n").utf8))
             }

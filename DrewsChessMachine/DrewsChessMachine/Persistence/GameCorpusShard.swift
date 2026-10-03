@@ -198,7 +198,18 @@ enum GameCorpusShardFormat {
 /// serial async queue). Maintains a streaming SHA-256 over the bytes written
 /// so sealing is a finalize + trailer append with no re-read on the happy
 /// path. The streaming hasher is rebuilt by reading the file only on the rare
-/// crash-recovery resume path.
+/// crash-recovery path.
+///
+/// The writer holds an exclusive lock on its `.open` file from the moment it
+/// creates it (or, on recovery, takes it) until the file is sealed, discarded
+/// or closed (`FileSafety.createNewFileHoldingExclusiveLock`). The lock is
+/// how `GameCorpus.recoverOpenShard` tells a live writer's shard from a crash
+/// leftover: the kernel drops it when the writer's process ends, however it
+/// ends, so a leftover is never locked and a live shard always is. To keep
+/// that true to the end, `seal` renames and `discardEmpty` removes the file
+/// *before* closing it — closing first would leave a moment in which the
+/// shard is unlocked but still `.open`, and a recovery in that moment would
+/// take the trailer for a torn record and race the writer's rename.
 final class ShardWriter {
     /// The `….open` URL being appended to.
     let openURL: URL
@@ -212,16 +223,16 @@ final class ShardWriter {
     private(set) var gameCount: Int
     private(set) var plyCount: Int
 
-    /// Create a fresh open shard: writes the 256-byte front header. The file
-    /// is created exclusively — an existing item at `openURL` (another
-    /// writer's open shard, debris, anything) is a hard error, never
-    /// replaced.
+    /// Create a fresh open shard, holding its lock: writes the front header.
+    /// The file is created exclusively — an existing item at `openURL`
+    /// (another writer's open shard, debris, anything) is a hard error,
+    /// never replaced.
     init(creatingAt openURL: URL,
          header: GameCorpusShardFormat.FrontHeader) throws {
         let headerData = try GameCorpusShardFormat.encodeFrontHeader(header)
         let created: FileSafety.NewFile
         do {
-            created = try FileSafety.createNewFile(at: openURL)
+            created = try FileSafety.createNewFileHoldingExclusiveLock(at: openURL)
         } catch {
             throw GameCorpusError.ioFailed("create \(openURL.lastPathComponent): \(error.localizedDescription)")
         }
@@ -229,11 +240,12 @@ final class ShardWriter {
             try created.handle.write(contentsOf: headerData)
         } catch {
             // The file is ours (just created exclusively); remove exactly it
-            // so a half-written header never looks like a shard.
+            // so a half-written header never looks like a shard — while it is
+            // still open and locked, like every removal of a live shard.
             let writeError = error
             do {
-                try created.handle.close()
                 _ = try FileSafety.removeOwnedItem(at: openURL, identity: created.identity)
+                try created.handle.close()
             } catch {
                 throw GameCorpusError.ioFailed(
                     "write header \(openURL.lastPathComponent): \(writeError.localizedDescription); cleanup failed: \(error.localizedDescription)")
@@ -251,26 +263,33 @@ final class ShardWriter {
         self.plyCount = 0
     }
 
-    /// Reopen an existing open shard, truncate it to a recovered valid extent,
-    /// and continue appending. Rebuilds the streaming hasher from the truncated
-    /// bytes.
-    init(resumingAt openURL: URL,
-         validByteCount: Int,
-         gameCount: Int,
-         plyCount: Int) throws {
-        let h = try FileHandle(forWritingTo: openURL)
-        try h.truncate(atOffset: UInt64(validByteCount))
-        let existing = try Data(contentsOf: openURL)
+    /// Take over a leftover open shard for recovery: `handle` is the shard
+    /// open read-write with its lock already held
+    /// (`FileSafety.openExistingRegularFileWithExclusiveLock`), `contents`
+    /// the bytes read through it, and `scan` their scan. The file is cut to
+    /// the scan's last complete record on that same locked handle — never
+    /// reopened by path — and the streaming hasher is rebuilt from the kept
+    /// bytes, so the shard can then be sealed or discarded.
+    init(recoveringLockedShardAt openURL: URL,
+         handle: FileHandle,
+         identity: FileSafety.FileIdentity,
+         contents: Data,
+         scan: GameCorpusShardIO.OpenShardScan) throws {
+        do {
+            try handle.truncate(atOffset: UInt64(scan.validByteCount))
+            _ = try handle.seekToEnd()
+        } catch {
+            throw GameCorpusError.ioFailed("truncate \(openURL.lastPathComponent) to its last complete game: \(error.localizedDescription)")
+        }
         var hasher = SHA256()
-        hasher.update(data: existing)
-        _ = try h.seekToEnd()
+        hasher.update(data: contents.prefix(scan.validByteCount))
         self.openURL = openURL
-        self.handle = h
-        self.identity = try FileSafety.identity(ofOpenFileDescriptor: h.fileDescriptor, path: openURL.path)
+        self.handle = handle
+        self.identity = identity
         self.hasher = hasher
-        self.byteCount = validByteCount
-        self.gameCount = gameCount
-        self.plyCount = plyCount
+        self.byteCount = scan.validByteCount
+        self.gameCount = scan.gameCount
+        self.plyCount = scan.plyCount
     }
 
     func append(_ game: GameRecord) throws {
@@ -293,10 +312,12 @@ final class ShardWriter {
         self.plyCount += plyCount
     }
 
-    /// Finalize the SHA, append the 64-byte trailer, flush once, close, and
-    /// atomically rename `….open` → final. The rename refuses (and the shard
-    /// stays `….open`) when anything already has the final name, so sealing
-    /// never replaces an existing sealed shard. Returns the sealed file URL.
+    /// Finalize the SHA, append the 64-byte trailer, flush once, atomically
+    /// rename `….open` → final, and only then close (and so unlock) the file.
+    /// The rename refuses (and the shard stays `….open`) when anything
+    /// already has the final name, so sealing never replaces an existing
+    /// sealed shard. The writer is unusable after this call, whether it
+    /// returns or throws. Returns the sealed file URL.
     @discardableResult
     func seal(sealUnix: Int64) throws -> URL {
         let digest = Data(hasher.finalize())
@@ -309,33 +330,62 @@ final class ShardWriter {
         do {
             try handle.write(contentsOf: w.data)
             try handle.synchronize()
-            try handle.close()
         } catch {
-            throw GameCorpusError.ioFailed("seal write: \(error.localizedDescription)")
+            throw closeAfterFailure(GameCorpusError.ioFailed("seal write: \(error.localizedDescription)"))
         }
         let finalURL = openURL.deletingPathExtension()
         do {
             try FileSafety.renameWithoutReplacing(from: openURL, to: finalURL)
         } catch {
-            throw GameCorpusError.ioFailed("seal rename: \(error.localizedDescription)")
+            throw closeAfterFailure(GameCorpusError.ioFailed("seal rename: \(error.localizedDescription)"))
+        }
+        do {
+            try handle.close()
+        } catch {
+            // The shard is sealed and published; only releasing the
+            // descriptor failed. Said as such, so no caller retries a seal.
+            throw GameCorpusError.ioFailed(
+                "\(openURL.lastPathComponent) was sealed as \(finalURL.lastPathComponent), but closing it failed: \(error.localizedDescription)")
         }
         return finalURL
     }
 
-    /// Close and delete an open shard that holds no games (header only).
+    /// Delete an open shard that holds no games (header only), then close it.
     /// Removes only the file this writer has open (checked by identity);
     /// anything else now at `openURL`, or nothing at all, is an error rather
-    /// than something to delete or ignore.
+    /// than something to delete or ignore. The file is removed while still
+    /// open and locked, so it is never an unlocked `.open` shard. The writer
+    /// is unusable after this call, whether it returns or throws.
     func discardEmpty() throws {
-        try handle.close()
         let removal: FileSafety.OwnedItemRemoval
         do {
             removal = try FileSafety.removeOwnedItem(at: openURL, identity: identity)
         } catch {
-            throw GameCorpusError.ioFailed("remove empty shard \(openURL.lastPathComponent): \(error.localizedDescription)")
+            throw closeAfterFailure(
+                GameCorpusError.ioFailed("remove empty shard \(openURL.lastPathComponent): \(error.localizedDescription)"))
         }
         guard removal == .removed else {
-            throw GameCorpusError.ioFailed("remove empty shard \(openURL.lastPathComponent): it was already gone")
+            throw closeAfterFailure(
+                GameCorpusError.ioFailed("remove empty shard \(openURL.lastPathComponent): it was already gone"))
+        }
+        do {
+            try handle.close()
+        } catch {
+            throw GameCorpusError.ioFailed(
+                "\(openURL.lastPathComponent) was removed, but closing it failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Close the handle after a failed seal or discard and return `failure`
+    /// to throw — with a failed close added to it, since the original
+    /// failure is what the caller must see.
+    private func closeAfterFailure(_ failure: GameCorpusError) -> GameCorpusError {
+        do {
+            try handle.close()
+            return failure
+        } catch {
+            return GameCorpusError.ioFailed(
+                "\(failure.localizedDescription); closing \(openURL.lastPathComponent) afterwards also failed: \(error.localizedDescription)")
         }
     }
 
@@ -483,7 +533,12 @@ enum GameCorpusShardIO {
         let data: Data
         do { data = try Data(contentsOf: url) }
         catch { throw GameCorpusError.ioFailed("read \(url.lastPathComponent): \(error.localizedDescription)") }
+        return try scanOpenShard(contents: data)
+    }
 
+    /// `scanOpenShard(at:)` over bytes already read — by recovery, through
+    /// the locked handle it will truncate.
+    static func scanOpenShard(contents data: Data) throws -> OpenShardScan {
         let frontSize = GameCorpusShardFormat.frontHeaderSize
         guard data.count >= frontSize else { throw GameCorpusError.truncatedHeader }
         let base = data.startIndex

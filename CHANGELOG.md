@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-02 CDT — File safety: probe outputs, empty logs, corpus shard locks (`b608969`, `78abe35d`, `6bee483a`)
+
+- `--probe-model` (`b608969`): `--probe-out` / `--probe-positions-out` may never name a probed checkpoint or each other, even with `--probe-out-overwrite`. Before, `--probe-model x --probe-out x --probe-out-overwrite` emptied the checkpoint before reading it. Both outputs are checked before either is created; a refusal removes only an output this run created. A failed or unencodable `--probe-out` write ends the run (exit 68). A checkpoint whose results hold NaN or infinity is reported as a failed checkpoint instead of aborting the process (`JSONSerialization` raises an uncatchable exception on them). A sweep with failed checkpoints exits 69 after finishing. `--arch-sweep-out` write failures end the sweep (exit 56).
+- `FileSafety.mayNameTheSameFile` is now the one same-file check, replacing the copies in `ParametersFileWriter` and the replay out-model guard. The guard now also refuses a case variant of `--start-model`.
+- Session logs (`78abe35d`): the `dcm_log_*.txt` file is created by the first line written, so a CLI run that never logs (a `--probe-model` of a current-format checkpoint) no longer leaves an empty log.
+- Corpora (`6bee483a`): every shard writer holds an exclusive `O_EXLOCK` lock on its `.open` shard until it seals or closes it. `--validate-corpus --fix` skips a locked shard (`open-shard-in-use`) and leaves `corpus.json` alone while a writer is active. Before, `--fix` truncated and sealed a live writer's shard, or deleted a header-only live shard right after a rotation, losing every later game. `GameCorpus.open` refuses a corpus with a live writer. Writers from earlier builds take no lock and are not protected: do not run `--fix` on a corpus an older build is recording into.
+
 ## 2026-09-30 CDT — SE zero-β init option, architecture format v4, `--derive-model` (#7) (`8926221`)
 
 - New per-block-group `se_beta_init` (`glorot` | `zero`, `BlockGroup.seBetaInit`). With `zero`, the β half of a `scale_and_bias` SE FC2 (weight columns C..2C−1 and bias C..2C−1) is built as exact zeros, so at step 0 the block's SE computes `sigmoid(γ)·x`. The γ half keeps Glorot, and β still gets gradient. `validate()` rejects non-`glorot` values on other SE styles. It appears in the Build New Model per-group editor (shown only for scale+bias), in the summary and diagram (`SE+/4 β0`, and only for zero-β groups, so existing summaries are byte-identical), and in presets. `NetworkWeightAnalyzer`'s expected init L2 accounts for it.

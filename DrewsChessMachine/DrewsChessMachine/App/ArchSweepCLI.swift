@@ -56,9 +56,9 @@ enum ArchSweepCLI {
     /// Run the sweep and exit. `outPath` is opened before the first trainer
     /// is built: it must not exist, or — with `replaceExistingOut` — must be a
     /// regular file, which is emptied. A directory, symbolic link or other
-    /// non-regular item there is always refused. Failing to open it ends the
-    /// process with a non-zero exit, so a sweep never runs with its JSONL
-    /// output silently going nowhere.
+    /// non-regular item there is always refused. Failing to open it, or later
+    /// to encode or write a line to it, ends the process with a non-zero exit,
+    /// so a sweep never runs on with its JSONL output silently going nowhere.
     static func runAndExit(blocks: [Int], steps: Int, batch: Int, outPath: String, replaceExistingOut: Bool) -> Never {
         let expandedOut = (outPath as NSString).expandingTildeInPath
         SessionLogger.shared.start()
@@ -88,17 +88,16 @@ enum ArchSweepCLI {
 
         func emit(_ obj: [String: Any]) {
             print(obj.map { "\($0)=\($1)" }.sorted().joined(separator: " "))
-            // Surface a write/encode failure to stderr rather than silently
-            // dropping the JSONL line (`try?` would hide a vanished record).
+            // A line that cannot be encoded or written ends the sweep: going
+            // on would leave the JSONL file silently missing records.
             do {
-                let data = try JSONSerialization.data(withJSONObject: obj)
-                try handle.write(contentsOf: data)
-                try handle.write(contentsOf: Data("\n".utf8))
-                try handle.synchronize()
+                try ProbeModelCLI.appendLine(try ProbeModelCLI.encodeLine(obj), to: handle)
             } catch {
                 FileHandle.standardError.write(Data(
-                    "error: write to --arch-sweep-out failed: \(error.localizedDescription)\n".utf8
+                    "error: write to --arch-sweep-out failed: \(error.localizedDescription); the file may end in a partial line\n".utf8
                 ))
+                SessionLogger.shared.shutdown()
+                Darwin.exit(56)
             }
         }
 
