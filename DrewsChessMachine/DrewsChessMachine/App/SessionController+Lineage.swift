@@ -96,16 +96,12 @@ extension SessionController {
                 // (a model was loaded since): its weights continue, with the
                 // history before them unrecorded.
                 SessionLogger.shared.log("[LINEAGE] continuing a trainer with no tracked lineage: a new run begins, earlier history unrecorded")
+                // No file states this trainer's history: none is carried,
+                // and `continues_unrecorded_history` says the run's earlier
+                // history is unrecorded.
                 start = .resume(
-                    parent: LineageTracker.ParentFile(
-                        modelID: trainer.identifier?.description ?? "unknown",
-                        contentSHA256: nil,
-                        trainerCompletedSteps: trainer.completedTrainSteps,
-                        lineage: .unrecorded(formatVersion: ArchitectureFormat.currentVersion),
-                        // No file states this trainer's history: none is
-                        // carried, and `continues_unrecorded_history` says
-                        // the run's earlier history is unrecorded.
-                        derivationHistory: []),
+                    parent: try LineageTracker.ParentFile.untrackedTrainer(
+                        identifier: trainer.identifier, completedSteps: trainer.completedTrainSteps),
                     gaps: [.rngSampler, .serials, .buffer, .clocks],
                     legacyTotals: nil)
             }

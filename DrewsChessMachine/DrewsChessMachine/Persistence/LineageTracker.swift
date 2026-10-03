@@ -48,6 +48,24 @@ final class LineageTracker: @unchecked Sendable {
             }
         }
 
+        /// A trainer this process holds but never tracked (a model was
+        /// loaded since its history began) as the parent of a run that
+        /// keeps training it: no file states it, so it has no content hash,
+        /// an unrecorded lineage and no derivation history. Its model ID is
+        /// written into every later record, so a trainer without one is
+        /// refused rather than recorded under a placeholder.
+        static func untrackedTrainer(identifier: ModelID?, completedSteps: Int) throws -> ParentFile {
+            guard let identifier else {
+                throw TrackerError.noModelID(what: "the kept trainer")
+            }
+            return ParentFile(
+                modelID: identifier.description,
+                contentSHA256: nil,
+                trainerCompletedSteps: completedSteps,
+                lineage: .unrecorded(formatVersion: ArchitectureFormat.currentVersion),
+                derivationHistory: [])
+        }
+
         /// The parent as recorded in a child's record.
         var recordParent: LineageRecord.Parent {
             LineageRecord.Parent(
@@ -87,6 +105,7 @@ final class LineageTracker: @unchecked Sendable {
     enum TrackerError: Error, CustomStringConvertible {
         case legacyTotalsWithRecordedLineage(parentModelID: String)
         case negativeSegmentCount(what: String, value: Int)
+        case noModelID(what: String)
 
         var description: String {
             switch self {
@@ -94,6 +113,8 @@ final class LineageTracker: @unchecked Sendable {
                 return "lineage: parent \(id) carries a lineage record, so legacy session totals must not be supplied"
             case .negativeSegmentCount(let what, let value):
                 return "lineage: segment \(what) is negative (\(value))"
+            case .noModelID(let what):
+                return "lineage: \(what) has no model ID to record as a parent"
             }
         }
     }

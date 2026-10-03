@@ -40,7 +40,10 @@ extension SessionController {
             onRefuseMenuAction("Build or load a model first.")
             return
         }
-        let championID = champion.identifier?.description ?? "unknown"
+        guard let championID = champion.identifier?.description else {
+            onRefuseMenuAction("The champion has no model ID, so it cannot be saved as a model file.")
+            return
+        }
         // Snapshot the active self-play gate up front. If there
         // is no active session, we can safely export directly —
         // nobody is racing against us.
@@ -319,10 +322,21 @@ extension SessionController {
         includeReplayBuffer: Bool,
         onComplete: (@MainActor @Sendable (Bool) -> Void)? = nil
     ) {
-        let championID = champion.identifier?.description ?? "unknown"
-        let trainerID = trainer.identifier?.description ?? "unknown"
         let diskTag = trigger.diskTag
         let uiSuffix = trigger.uiSuffix
+        // Both files are written under these IDs and the trainer file names
+        // the champion as its parent; a network without an identity is a
+        // failed save, never a file under a placeholder ID.
+        guard let championID = champion.identifier?.description,
+              let trainerID = trainer.identifier?.description else {
+            checkpoint?.checkpointSaveInFlight = false
+            periodicSaveInFlight = false
+            let message = "Save failed: the champion or the trainer has no model ID"
+            checkpoint?.setCheckpointStatus("\(message)\(uiSuffix)", kind: .error)
+            SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(message)")
+            onComplete?(false)
+            return
+        }
         checkpoint?.checkpointSaveInFlight = true
         checkpoint?.setCheckpointStatus("Saving session\(uiSuffix)…", kind: .progress)
         checkpoint?.startSlowSaveWatchdog(label: "session save\(uiSuffix)")

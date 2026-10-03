@@ -56,7 +56,13 @@ extension SessionController {
         // promotion (see sampling-parameters.md). `oldChampionID` is
         // recorded on the history entry so the lineage stays traceable.
         let oldChampionID = champion.identifier
-        let newChampionID = trainer.identifier ?? ModelIDMinter.mint()
+        // The promoted champion is the trainer's weights, so it takes the
+        // trainer's ID; minting one here would give the champion an
+        // identity no trainer generation ever had.
+        guard let newChampionID = trainer.identifier else {
+            onRefuseMenuAction("The trainer has no model ID, so its weights cannot be promoted.")
+            return
+        }
 
         let trainerNet = trainer.network
         // Mark a checkpoint-affecting operation in flight up front

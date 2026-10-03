@@ -570,10 +570,15 @@ extension SessionController {
                 // no history is carried with the promoted weights.
                 championDerivationHistory = []
             }
-            championOrigin = .file(LineageTracker.ParentFile(
-                modelID: championIDStr, contentSHA256: nil,
-                trainerCompletedSteps: trainerSnapshotCompletedSteps, lineage: championLineage,
-                derivationHistory: championDerivationHistory))
+            if let promotedChampionID = champion.identifier {
+                championOrigin = .file(LineageTracker.ParentFile(
+                    modelID: promotedChampionID.description, contentSHA256: nil,
+                    trainerCompletedSteps: trainerSnapshotCompletedSteps, lineage: championLineage,
+                    derivationHistory: championDerivationHistory))
+            } else {
+                SessionLogger.shared.log("[LINEAGE] promoted champion has no model ID: its origin is cleared, so a later save or branch from it fails")
+                championOrigin = nil
+            }
             SessionLogger.shared.log(
                 "[STATS] post-promote  steps=\(trainingStats?.steps ?? 0) champion=\(championIDStr) trainer=\(trainerIDStr)"
             )
@@ -601,8 +606,13 @@ extension SessionController {
         // post-promotion save already covered the window, the
         // next periodic tick runs a full 4 hours later from now.
         if promoted && Self.autosaveSessionsOnPromote && !promotedChampionWeights.isEmpty {
-            let championID = champion.identifier?.description ?? "unknown"
-            let trainerID = trainer.identifier?.description ?? "unknown"
+            guard let championID = champion.identifier?.description,
+                  let trainerID = trainer.identifier?.description else {
+                let message = "Post-promotion save failed: the champion or the trainer has no model ID"
+                checkpoint?.setCheckpointStatus(message, kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] \(message)")
+                return
+            }
             let includeReplayBuffer = TrainingParameters.shared.sessionSaveIncludeReplayBuffer
             let sessionState = buildCurrentSessionState(
                 championID: championID,
