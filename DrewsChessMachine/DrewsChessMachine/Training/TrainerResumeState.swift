@@ -205,10 +205,32 @@ enum DropoutRNGResumeState: Sendable, Equatable {
     /// sequence exactly.
     case philox(DropoutPhiloxState)
     /// The source carries no dropout RNG state — every checkpoint file written
-    /// before the lineage record stores it. The resumed run's masks continue
-    /// from its own dropout seed instead, which is not the saved run's
-    /// sequence once dropout is on.
+    /// before the lineage record stored it (`rng.dropout_philox_state`). The
+    /// resumed run's masks continue from its own dropout seed instead, which
+    /// is not the saved run's sequence once dropout is on.
     case notInCheckpoint
+
+    /// The state a checkpoint file's lineage record carries, or
+    /// `.notInCheckpoint` for a file without one (written before lineage)
+    /// or whose record holds none.
+    init(lineage: LineageRecord.Presence?) {
+        if let state = lineage?.record?.rng.dropoutPhiloxState {
+            self = .philox(state)
+        } else {
+            self = .notInCheckpoint
+        }
+    }
+
+    /// The Philox state to record with a save of this snapshot, nil when it
+    /// has none.
+    var philoxState: DropoutPhiloxState? {
+        switch self {
+        case .philox(let state):
+            return state
+        case .notInCheckpoint:
+            return nil
+        }
+    }
 }
 
 enum TrainerResumeError: Error, CustomStringConvertible, LocalizedError {
@@ -242,7 +264,8 @@ extension TrainerResumeSnapshot {
         guard missing.isEmpty, let schedule = file.metadata.trainerSchedule else {
             throw TrainerResumeError.notExactlyResumable(file: fileName, missing: missing)
         }
-        self.init(trainerWeights: file.weights, schedule: schedule, dropoutRNG: .notInCheckpoint)
+        self.init(trainerWeights: file.weights, schedule: schedule,
+                  dropoutRNG: DropoutRNGResumeState(lineage: file.safetensorsProvenance?.lineage))
     }
 }
 

@@ -33,6 +33,7 @@ final class PruneUnreadableResumePointerTests: XCTestCase {
         let jsonText = """
         {
           "formatVersion": \(SessionCheckpointState.currentFormatVersion),
+          "lineage": \(LineageRecord.sessionTestFixtureJSON),
           "sessionID": "\(sessionID)",
           "savedAtUnix": 1700000000,
           "sessionStartUnix": 1699996400,

@@ -124,10 +124,10 @@ final class TrainerHyperparametersTests: XCTestCase {
 
     /// The CLI runners' parameter bundle must carry exactly what the GUI
     /// resolves — it used to hold its own hand-picked subset.
-    func test_replayParams_carryTheSameTrainerConfigurationAsTheGUIPath() {
+    func test_replayParams_carryTheSameTrainerConfigurationAsTheGUIPath() throws {
         configureActiveCycle()
         let snapshot = TrainingParameters.shared.snapshot()
-        XCTAssertEqual(ReplayParams(snapshot).trainer, TrainerHyperparameters(snapshot))
+        XCTAssertEqual(try ReplayParams(snapshot).trainer, TrainerHyperparameters(snapshot))
     }
 
     // MARK: - Applied to a trainer
@@ -185,7 +185,7 @@ final class TrainerHyperparametersTests: XCTestCase {
         p.klProbeInterval = 100
         let snapshot = p.snapshot()
 
-        let cliTrainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: ReplayParams(snapshot).trainer, arch: .current)
+        let cliTrainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: try ReplayParams(snapshot).trainer, arch: .current)
         let guiTrainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: .current)
         TrainerHyperparameters(snapshot).apply(to: guiTrainer)
 

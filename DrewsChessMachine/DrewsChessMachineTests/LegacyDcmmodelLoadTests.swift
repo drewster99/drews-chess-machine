@@ -112,7 +112,8 @@ final class LegacyDcmmodelLoadTests: XCTestCase {
                 metadata: file.metadata,
                 weights: file.weights,
                 architecture: file.architecture,
-                includesVelocity: includesVelocity)
+                includesVelocity: includesVelocity,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: file.metadata.trainerSchedule.map(\.completedTrainSteps), corpus: nil))
             let reloaded = try SafetensorsModelIO.decode(bytes)
             XCTAssertEqual(reloaded.architecture, file.architecture,
                            "\(url.lastPathComponent): architecture changed across formats")

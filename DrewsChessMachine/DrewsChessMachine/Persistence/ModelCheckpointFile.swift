@@ -313,6 +313,18 @@ struct ModelCheckpointFile {
     /// architecture is a compiled-in preset, not decoded JSON) and for a
     /// file built in memory to be encoded.
     let architectureFormat: ArchitectureFormat.DecodeFormat?
+    /// What a safetensors file states about where its weights came from.
+    /// Set by the safetensors decoder only; nil for a legacy `.dcmmodel`
+    /// and for a file built in memory to be encoded.
+    let safetensorsProvenance: SafetensorsProvenance?
+
+    /// A safetensors file's own identity and history, as decoded.
+    struct SafetensorsProvenance: Equatable, Sendable {
+        /// `__metadata__["content_sha256"]`, which the decode verified;
+        /// nil only for a file written by a tool that did not stamp it.
+        let contentSHA256: String?
+        let lineage: LineageRecord.Presence
+    }
 
     /// Memberwise init with `formatVersion` defaulted to the current
     /// write version, so call sites that build a file for ENCODING
@@ -326,7 +338,8 @@ struct ModelCheckpointFile {
         architecture: NetworkArchitecture = .current,
         formatVersion: UInt32 = ModelCheckpointFile.formatVersion,
         valueHeadCentering: ValueHeadCentering? = nil,
-        architectureFormat: ArchitectureFormat.DecodeFormat? = nil
+        architectureFormat: ArchitectureFormat.DecodeFormat? = nil,
+        safetensorsProvenance: SafetensorsProvenance? = nil
     ) {
         self.modelID = modelID
         self.createdAtUnix = createdAtUnix
@@ -336,6 +349,31 @@ struct ModelCheckpointFile {
         self.formatVersion = formatVersion
         self.valueHeadCentering = valueHeadCentering
         self.architectureFormat = architectureFormat
+        self.safetensorsProvenance = safetensorsProvenance
+    }
+
+    /// This file as the parent of a segment that trains from it, for a file
+    /// decoded from safetensors. A legacy `.dcmmodel` states neither a
+    /// content hash nor a lineage, so its lineage is unrecorded at the
+    /// legacy format.
+    var lineageParent: LineageTracker.ParentFile {
+        // Same rule as `SafetensorsModelIO.trainerClock(fromMetadata:source:)`:
+        // a trainer-state file's clock, else the step a plain file's weights
+        // were taken at.
+        let trainerClock: Int?
+        if let schedule = metadata.trainerSchedule {
+            trainerClock = schedule.completedTrainSteps
+        } else {
+            trainerClock = metadata.trainingStep
+        }
+        guard let provenance = safetensorsProvenance else {
+            return LineageTracker.ParentFile(
+                modelID: modelID, contentSHA256: nil, trainerCompletedSteps: trainerClock,
+                lineage: .unrecorded(formatVersion: ArchitectureFormat.unversionedLegacyVersion))
+        }
+        return LineageTracker.ParentFile(
+            modelID: modelID, contentSHA256: provenance.contentSHA256,
+            trainerCompletedSteps: trainerClock, lineage: provenance.lineage)
     }
 
     /// Count of the model's own tensors (trainables + BN running stats) —

@@ -245,7 +245,8 @@ final class ValueHeadRecenteringTests: XCTestCase {
                 creator: "test", trainingStep: 42, parentModelID: "", notes: "value-head recentering"),
             weights: weights,
             architecture: architecture,
-            includesVelocity: includesVelocity
+            includesVelocity: includesVelocity,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil)
         )
     }
 

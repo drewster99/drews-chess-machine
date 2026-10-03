@@ -30,7 +30,8 @@ final class DeriveTrainedSourceTests: XCTestCase {
         let meta = ModelCheckpointMetadata(creator: "test", trainingStep: trainingStep, parentModelID: "", notes: "fixture")
         return try SafetensorsModelIO.encode(
             modelID: "20261002-1-TRND", createdAtUnix: 1_790_000_000, metadata: meta, weights: weights,
-            architecture: arch, includesVelocity: false)
+            architecture: arch, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: meta.trainerSchedule.map(\.completedTrainSteps), corpus: nil))
     }
 
     /// `data` with its raw `training_step` metadata value replaced.
@@ -45,7 +46,7 @@ final class DeriveTrainedSourceTests: XCTestCase {
     private func derive(_ data: Data, _ operations: [any DeriveOperation]) throws -> ModelDerivation.Result {
         try ModelDerivation.derive(
             sourceData: data, sourceName: "source.safetensors", operations: operations,
-            newModelID: "20261002-2-DRVD", createdAtUnix: 1_790_000_100, build: "test")
+            newModelID: "20261002-2-DRVD", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"])
     }
 
     private func assertRefusedAsTrained(_ data: Data, _ operation: any DeriveOperation,

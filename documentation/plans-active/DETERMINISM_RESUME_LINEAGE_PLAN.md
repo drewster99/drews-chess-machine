@@ -1421,6 +1421,94 @@ Validation: a real 200-step replay run and a GUI session each write v5 files
 whose `dcm_lineage` decodes and whose flat mirrors equal the struct; E4 legacy
 fixtures all pass.
 
+**Done (`8c53f718`, merge of P4 `a34a3a41`, dropout state `d862d8d5`,
+2026-10-02).** As built:
+- **Version.** The plan's "format v5" is **v7**: v5 and v6 were taken by
+  `se_activation` and `rezero_alpha_cap` before this phase.
+  `ArchitectureFormat.currentVersion` 6 → 7 with
+  `lineageRequiredFromVersion = 7` and no new architecture field. A v7 file
+  without `dcm_lineage` is a load error. Older files load as before, their
+  lineage `.unrecorded(formatVersion:)`. `session.json` goes to format v2 with
+  the same record embedded (`lineage`, required from v2; v1 still decodes).
+- **`Persistence/LineageRecord.swift`.** The D2 record:
+  - run, parent, steps, fed (+ `corpus`), time, parameters (snapshot + SHA-256,
+    verified on decode), build, invocation (argv redacted), device, rng and
+    segments.
+  - Every key is required on decode, and absent values are explicit JSON null.
+  - The flat mirrors are derived on write and never read.
+- **`Persistence/LineageTracker.swift`.** The single builder, one per segment
+  per path:
+  - Start kinds: `.fresh`, `.branch(parent:)`,
+    `.resume(parent:notExactItems:legacyTotals:)`.
+  - Totals are the parent record's totals plus this segment's.
+  - Step time is measured per trainer step (`recordTrainingStep(totalMs:)`).
+  - `mintRecord` / `untrainedCopyRecord` cover `--new-model`, `--derive-model`
+    and Save Champion of a loaded model.
+- **Writers.** Corpus replay, train-vs-UCI, GUI session saves (manual,
+  periodic, post-promotion), Save Champion, `--new-model` and `--derive-model`.
+  - On a trainer-state file, `cum_trainer_step` must equal
+    `trainer_completed_steps`; `SafetensorsModelIO.encode` refuses otherwise.
+  - Corpus replay writes its position into `fed.corpus` and no longer writes
+    `replay_*` / `built_by_*`. `--resume-exact` reads the record, and the
+    legacy keys for files before v7 (`replayResumePoint(at:)`).
+- **GUI fed counts.** These are the stats box's emitted counters, folded into
+  a carry and rebaselined whenever the box is reset (promotion), replaced (new
+  session) or torn down (Stop). That makes one segment total however many
+  boxes it lived through.
+- **Dropout state (P4 → disk).** `rng.dropout_philox_state` is written from
+  the trainer snapshot of every trainer-state save. It is null for records with
+  no trainer state behind them (mint, derive, champion-only save).
+  - `TrainerResumeSnapshot(checkpoint:)` and the GUI session resume restore it
+    (`DropoutRNGResumeState(lineage:)`).
+  - `dropout_state` is a not-exact item only when the parent holds none
+    (`NotExactItem.resumeGaps`).
+  - A promotion now also rewinds the trainer's dropout state to the arena-start
+    capture, with its weights, velocity and clock. This keeps the live trainer
+    and the `-promote` save identical.
+- **Owner requirement (continuous time and steps).** It is pinned by
+  `LineageRecordTests`:
+  - A three-segment exact-resume chain: run ID stable, `segment_index` +1,
+    `parent.content_sha256` equal to the parent file's, and every total equal to
+    the uninterrupted sum. A branch mints a new run.
+  - Resumes from a legacy file and from a legacy GUI session: totals null, wall
+    time from `elapsedTrainingSec`, and `continues_unrecorded_history`.
+- **Tests.**
+  - New: `LineageRecordTests` (19), plus
+    `DropoutRNGStateTests.testDropoutStateSurvivesATrainerFileAndContinuesOnResume`.
+  - Edited sites: every test that writes a model file or a current-version
+    session now passes a lineage record (`LineageTestSupport`). Assertions are
+    unchanged.
+  - Red: compile-only (new API). The first run of the edited suite had 34
+    failures, all current-version session fixtures without `lineage`; the
+    fixtures were then given one.
+  - Green before the P4 merge: the rerun of the failing classes passed 92/92.
+    After the merge and the dropout work: 69/69 across `LineageRecordTests`,
+    `DropoutRNGStateTests`, `ExactResumeTests`, `CheckpointManager*`,
+    `SessionCheckpointSchemaExpansionTests` and `TrainerHyperparametersTests`.
+    The other 19 classes whose call sites were edited passed 216 tests, with 1
+    skip and 0 failures. The full suite was not run.
+- **Deviations and what was left for later phases:**
+  1. P7's B2 init-neutral fields need their own format bump (v8), since v7 is
+     lineage alone.
+  2. `session.json` v2 keeps its explicit parameter fields, because P2's resume
+     reads them; the lineage parameter snapshot is provenance only.
+  3. `parameters.trainer_hyperparameters` is omitted (derivable from the
+     snapshot).
+  4. `derivation_history` carry-forward, the `[RUN]` line and the
+     `results.json` lineage (D4/D5/B4) are left to P10.
+  5. `fed.corpus` lacks `oldest_resident`, `feed_carry` and `shard_sha256`
+     (P9).
+  6. `rng` holds `seed_mode: unseeded` plus the dropout state. The master seed,
+     stream derivation and sampler state are P3/P9's, and `RNG` is their marked
+     integration point.
+  7. `not_exact_items` tokens are provisional until P9's `ResumeGap`.
+  8. Resuming a file before v7 starts a new run at `segment_index` 0.
+  9. A session's champion file carries the run's record at save time, the same
+     record as its trainer file.
+  10. `ckpt_inventory.py` reads the `replay_*` keys, which v7 files lack (P11).
+- **Validation still owed.** The real 200-step replay run and the GUI session
+  writing v7 files were not run here: no app runs were made from this worktree.
+
 **P7 — Init-neutral options** (B2, B2.1; D-4): `se_gamma_bias_init`,
 `branch_output_init`, `skip_projection_init`, `policy_head_final_init`,
 `value_head_final_init`, `value_head_draw_prior`; ReZero `> 0` validation.

@@ -80,6 +80,7 @@ final class CheckpointHousekeepingTests: XCTestCase {
         let jsonText = """
         {
           "formatVersion": \(SessionCheckpointState.currentFormatVersion),
+          "lineage": \(LineageRecord.sessionTestFixtureJSON),
           "sessionID": "\(sessionID)",
           "savedAtUnix": 1700000000,
           "sessionStartUnix": 1699996400,
@@ -715,7 +716,7 @@ final class CheckpointHousekeepingTests: XCTestCase {
                 modelID: sessionA,
                 createdAtUnix: 1_790_000_000,
                 metadata: testMetadata,
-                trigger: "manual",
+                lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil), trigger: "manual",
                 at: fixedSaveDate,
                 modelsDirectory: modelsDir
             )
@@ -736,7 +737,7 @@ final class CheckpointHousekeepingTests: XCTestCase {
                 modelID: sessionA,
                 createdAtUnix: 1_790_000_000,
                 metadata: testMetadata,
-                trigger: "manual",
+                lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil), trigger: "manual",
                 at: fixedSaveDate,
                 modelsDirectory: modelsDir
             )
@@ -769,7 +770,7 @@ final class CheckpointHousekeepingTests: XCTestCase {
                 trainerID: "\(sessionA)-1",
                 trainerMetadata: testMetadata,
                 trainerCreatedAtUnix: 1_790_000_000,
-                state: state,
+                state: state, lineage: try LineageRecord.forTests(trainerCompletedSteps: testMetadata.trainerSchedule.map(\.completedTrainSteps), corpus: nil),
                 trigger: "manual",
                 at: fixedSaveDate,
                 sessionsDirectory: sessionsDir
@@ -796,7 +797,7 @@ final class CheckpointHousekeepingTests: XCTestCase {
                 trainerID: "\(sessionA)-1",
                 trainerMetadata: testMetadata,
                 trainerCreatedAtUnix: 1_790_000_000,
-                state: state,
+                state: state, lineage: try LineageRecord.forTests(trainerCompletedSteps: testMetadata.trainerSchedule.map(\.completedTrainSteps), corpus: nil),
                 trigger: "manual",
                 at: fixedSaveDate,
                 sessionsDirectory: sessionsDir

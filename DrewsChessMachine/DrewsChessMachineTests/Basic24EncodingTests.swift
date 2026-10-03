@@ -186,7 +186,8 @@ final class Basic24EncodingTests: XCTestCase {
             let data = try SafetensorsModelIO.encode(
                 modelID: "20261002-1-ENC\(encoding.planeCount)", createdAtUnix: 1_790_000_000,
                 metadata: ModelCheckpointMetadata(creator: "test", trainingStep: nil, parentModelID: "", notes: ""),
-                weights: weights, architecture: arch, includesVelocity: false)
+                weights: weights, architecture: arch, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil))
             let decoded = try SafetensorsModelIO.decode(data, valueHead: .asStored, source: "fixture")
             XCTAssertEqual(decoded.architecture, arch)
             XCTAssertEqual(decoded.architecture.inputEncoding, encoding)

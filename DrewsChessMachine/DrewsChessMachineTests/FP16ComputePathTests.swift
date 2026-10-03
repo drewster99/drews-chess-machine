@@ -215,7 +215,7 @@ final class FP16ComputePathTests: XCTestCase {
             createdAtUnix: 1_780_000_001,
             metadata: meta,
             architecture: arch,
-            trigger: "unittest"
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil), trigger: "unittest"
         )
         defer {
             do { try FileManager.default.removeItem(at: url) }

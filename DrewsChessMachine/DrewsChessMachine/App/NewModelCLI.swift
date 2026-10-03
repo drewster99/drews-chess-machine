@@ -94,13 +94,15 @@ enum NewModelCLI {
                 notes: "fresh \(name) net (untrained), arch v\(arch.architectureVersionLabel), "
                     + "BN warm-up under policy tail precision \(ChessNetwork.PolicyTailPrecision.process.rawValue)"
             )
+            let mintDate = Date()
             let encoded = try SafetensorsModelIO.encode(
                 modelID: modelID,
-                createdAtUnix: Int64(Date().timeIntervalSince1970),
+                createdAtUnix: Int64(mintDate.timeIntervalSince1970),
                 metadata: metadata,
                 weights: weights,
                 architecture: arch,
-                includesVelocity: false
+                includesVelocity: false,
+                lineage: try LineageTracker.mintRecord(pathKind: .newModel, argv: CommandLine.arguments, at: mintDate)
             )
             try FileManager.default.createDirectory(
                 at: outURL.deletingLastPathComponent(),

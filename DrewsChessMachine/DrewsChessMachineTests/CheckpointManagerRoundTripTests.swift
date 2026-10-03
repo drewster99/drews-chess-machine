@@ -62,6 +62,7 @@ final class CheckpointManagerRoundTripTests: XCTestCase {
         let jsonText = """
         {
           "formatVersion": \(formatVersion),
+          "lineage": \(LineageRecord.sessionTestFixtureJSON),
           "sessionID": "\(sessionID)",
           "savedAtUnix": 1700000000,
           "sessionStartUnix": 1699996400,
