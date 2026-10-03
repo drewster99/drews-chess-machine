@@ -570,10 +570,10 @@ extension SessionController {
                 // no history is carried with the promoted weights.
                 championDerivationHistory = []
             }
-            championLineageSource = LineageTracker.ParentFile(
+            championOrigin = .file(LineageTracker.ParentFile(
                 modelID: championIDStr, contentSHA256: nil,
                 trainerCompletedSteps: trainerSnapshotCompletedSteps, lineage: championLineage,
-                derivationHistory: championDerivationHistory)
+                derivationHistory: championDerivationHistory))
             SessionLogger.shared.log(
                 "[STATS] post-promote  steps=\(trainingStats?.steps ?? 0) champion=\(championIDStr) trainer=\(trainerIDStr)"
             )

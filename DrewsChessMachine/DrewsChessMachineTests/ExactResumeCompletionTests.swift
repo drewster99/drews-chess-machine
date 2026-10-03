@@ -155,6 +155,42 @@ final class ExactResumeCompletionTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(LineageRecord.RunStreams.self, from: data), original)
     }
 
+    /// A fresh run records the init seed and scheme its weights were drawn
+    /// with (`rng.init_seed` / `init_scheme`), every record of the run
+    /// carries them, an exact resume keeps them, and a branch — weights from
+    /// another file — records none.
+    func testTheRunsInitSeedIsRecordedCarriedAndOnlyOnAFreshRun() throws {
+        let initialization = ModelInitRecord(initSeed: 18_446_744_073_709_551_557, scheme: WeightInitScheme.current)
+        let start = Date(timeIntervalSince1970: 1_790_000_000)
+        let fresh = try LineageTracker(start: .fresh(initialization: initialization), pathKind: .replay, argv: ["dcm"],
+                                       startedAt: start, segmentStartTrainerStep: 0)
+        let freshRecord = try fresh.record(at: start, trainerCompletedSteps: 3, segmentLocalStep: 3, segmentGames: 0,
+                                           segmentPositions: 0, corpus: nil, parameters: nil,
+                                           rng: .withoutRunStreams(dropoutPhiloxState: nil))
+        XCTAssertEqual(freshRecord.rng.initialization, initialization)
+        let text = try freshRecord.jsonText()
+        XCTAssertTrue(text.contains("\"init_seed\":\"18446744073709551557\""), text)
+        XCTAssertTrue(text.contains("\"init_scheme\":\"\(WeightInitScheme.current)\""), text)
+        XCTAssertEqual(try LineageRecord.decode(jsonText: text), freshRecord)
+
+        let parent = LineageTracker.ParentFile(modelID: "20261003-3-PRNT", contentSHA256: "ef", trainerCompletedSteps: 3,
+                                               lineage: .recorded(freshRecord), derivationHistory: [])
+        let resumed = try LineageTracker(start: .resume(parent: parent, gaps: [], legacyTotals: nil), pathKind: .replay,
+                                         argv: ["dcm"], startedAt: start, segmentStartTrainerStep: 3)
+        XCTAssertEqual(try resumed.startRecord(at: start, trainerCompletedSteps: 3, parameters: nil).rng.initialization,
+                       initialization)
+        let branch = try LineageTracker(start: .branch(parent: parent), pathKind: .replay, argv: ["dcm"],
+                                        startedAt: start, segmentStartTrainerStep: 0)
+        XCTAssertNil(try branch.startRecord(at: start, trainerCompletedSteps: 0, parameters: nil).rng.initialization)
+        let minted = try LineageTracker.mintRecord(pathKind: .newModel, argv: ["dcm"], initialization: initialization, at: start)
+        XCTAssertEqual(minted.rng.initialization, initialization)
+
+        // A seed without its scheme is refused.
+        let unpaired = text.replacingOccurrences(of: "\"init_scheme\":\"\(WeightInitScheme.current)\"", with: "\"init_scheme\":null")
+        XCTAssertNotEqual(unpaired, text)
+        XCTAssertThrowsError(try LineageRecord.decode(jsonText: unpaired))
+    }
+
     func testARecordAtAnEarlierSchemaIsRefused() throws {
         let record = try LineageRecord.forTests(trainerCompletedSteps: 1, corpus: nil)
         let text = try record.jsonText()

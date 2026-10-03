@@ -71,8 +71,8 @@ final class LineageTracker: @unchecked Sendable {
 
     /// How the segment begins.
     enum Start: Sendable {
-        /// Weights initialized by this run.
-        case fresh
+        /// Weights initialized by this run, drawn under `initialization`.
+        case fresh(initialization: ModelInitRecord)
         /// Train from `parent`'s weights with a fresh trainer clock: a new
         /// run that records its parent.
         case branch(parent: ParentFile)
@@ -105,6 +105,10 @@ final class LineageTracker: @unchecked Sendable {
                       notExactItems: [String], continuesUnrecordedHistory: Bool)
     private let parent: LineageRecord.Parent?
     private let segments: [LineageRecord.SegmentSummary]
+    /// How the run's starting weights were drawn, recorded in every record
+    /// (`rng.init_seed` / `init_scheme`); nil for a run that started from a
+    /// file's weights.
+    private let initialization: ModelInitRecord?
     /// Carried verbatim into every record of the segment (determinism plan
     /// B4): the parent's history on a branch or resume, none on a fresh run.
     private let derivationHistory: [ModelDerivation.DerivationRecord]
@@ -134,14 +138,16 @@ final class LineageTracker: @unchecked Sendable {
         self.segmentStartTrainerStep = segmentStartTrainerStep
         let segmentID = UUID().uuidString
         switch start {
-        case .fresh:
+        case .fresh(let freshInitialization):
             run = (UUID().uuidString, 0, segmentID, .fresh, false, [], false)
+            initialization = freshInitialization
             parent = nil
             segments = []
             derivationHistory = []
             baseGames = 0; basePositions = 0; baseTrainStepSec = 0; baseWallSec = 0
         case .branch(let file):
             run = (UUID().uuidString, 0, segmentID, .branch, false, [], false)
+            initialization = nil
             parent = file.recordParent
             segments = []
             derivationHistory = file.derivationHistory
@@ -150,6 +156,8 @@ final class LineageTracker: @unchecked Sendable {
             parent = file.recordParent
             derivationHistory = file.derivationHistory
             let exactness = ResumeExactness.resume(of: file, gaps: gaps)
+            // The same run continues, drawn from the same starting weights.
+            initialization = file.lineage.record?.rng.initialization
             switch file.lineage {
             case .recorded(let record):
                 guard legacyTotals == nil else {
@@ -246,7 +254,7 @@ final class LineageTracker: @unchecked Sendable {
             build: .current,
             invocation: LineageRecord.Invocation(argv: argv, pathKind: pathKind),
             device: .current,
-            rng: rng,
+            rng: rng.withInitialization(initialization),
             segments: segments,
             derivationHistory: derivationHistory
         )
@@ -293,10 +301,11 @@ final class LineageTracker: @unchecked Sendable {
 
     // MARK: Records outside training
 
-    /// The record of a model minted by this process with fresh weights
-    /// (`--new-model`, Build Network), never trained.
-    static func mintRecord(pathKind: LineageRecord.PathKind, argv: [String], at date: Date) throws -> LineageRecord {
-        let tracker = try LineageTracker(start: .fresh, pathKind: pathKind, argv: argv,
+    /// The record of a model minted by this process with fresh weights drawn
+    /// under `initialization` (`--new-model`, Build Network), never trained.
+    static func mintRecord(pathKind: LineageRecord.PathKind, argv: [String], initialization: ModelInitRecord,
+                           at date: Date) throws -> LineageRecord {
+        let tracker = try LineageTracker(start: .fresh(initialization: initialization), pathKind: pathKind, argv: argv,
                                          startedAt: date, segmentStartTrainerStep: nil)
         return try tracker.record(at: date, trainerCompletedSteps: 0, segmentLocalStep: 0,
                                   segmentGames: 0, segmentPositions: 0, corpus: nil, parameters: nil,

@@ -1245,17 +1245,28 @@ enum CorpusReplayRunner {
         // replace both networks' right below, so they draw nothing; otherwise
         // the run builds a fresh model whose init seed derives from the run
         // seed, so `--seed` reproduces its initialization.
+        //
+        // The segment's lineage follows from the same choice: a fresh run
+        // drawn under that init seed, a new branch from the start model, or
+        // the start model's run continued. Every save carries the record, so
+        // totals (trainer steps, games and positions fed, measured step time)
+        // continue across resumes without hand-entered bases.
         let netInitMode: NetworkInitMode
         let trainerInitialization: WeightInitialization
-        if startModelFile != nil {
+        let lineageStart: LineageTracker.Start
+        if let file = startModelFile {
             netInitMode = .overwrittenByLoad
             trainerInitialization = .overwrittenByLoad
+            lineageStart = resumeSnapshot != nil
+                ? .resume(parent: file.lineageParent, gaps: resumeGaps, legacyTotals: nil)
+                : .branch(parent: file.lineageParent)
         } else {
             let initSeed = runSeed.streams.freshModelInitSeed
             emit("[REPLAY] fresh model init_seed=\(initSeed) init_scheme=\(WeightInitScheme.current) "
                 + "(from run seed \(runSeed.masterSeed))")
             netInitMode = .randomWeights(initSeed: initSeed)
             trainerInitialization = .seeded(initSeed: initSeed)
+            lineageStart = .fresh(initialization: ModelInitRecord(initSeed: initSeed, scheme: WeightInitScheme.current))
         }
         let net = try ChessMPSNetwork(netInitMode, arch: arch)
         // Configured through `TrainerHyperparameters` — the same path the GUI
@@ -1334,18 +1345,6 @@ enum CorpusReplayRunner {
         emit("[REPLAY-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(trainer.lrMomentumCycle)) "
             + LRMomentumCycleLogFormat.scheduleOrigin(of: trainer, launch: launch))
 
-        // This segment's lineage: a fresh run, a new branch from the start
-        // model, or the start model's run continued. Every save carries the
-        // record, so totals (trainer steps, games and positions fed, measured
-        // step time) continue across resumes without hand-entered bases.
-        let lineageStart: LineageTracker.Start
-        if let file = startModelFile, resumeSnapshot != nil {
-            lineageStart = .resume(parent: file.lineageParent, gaps: resumeGaps, legacyTotals: nil)
-        } else if let file = startModelFile {
-            lineageStart = .branch(parent: file.lineageParent)
-        } else {
-            lineageStart = .fresh
-        }
         let lineageTracker = try LineageTracker(
             start: lineageStart, pathKind: .replay, argv: CommandLine.arguments,
             startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)

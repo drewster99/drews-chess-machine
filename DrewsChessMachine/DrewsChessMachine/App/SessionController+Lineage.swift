@@ -27,9 +27,20 @@ extension SessionController {
         var baselinePositions: Int?
     }
 
+    /// Where the champion's current weights came from.
+    enum ChampionOrigin: Sendable {
+        /// Built in this process from fresh weights drawn under
+        /// `initialization`.
+        case built(initialization: ModelInitRecord)
+        /// Loaded from a file (or promoted with a run's record): the lineage
+        /// parent a run from the champion branches from.
+        case file(LineageTracker.ParentFile)
+    }
+
     enum LineageSegmentError: LocalizedError {
         case noSegment(String)
         case noRunSeed
+        case noChampionOrigin
 
         var errorDescription: String? {
             switch self {
@@ -37,17 +48,20 @@ extension SessionController {
                 return "No lineage segment is running for \(what)."
             case .noRunSeed:
                 return "The run's master seed was not resolved before its lineage segment began."
+            case .noChampionOrigin:
+                return "The champion's weights have no recorded origin (built here or loaded from a file)."
             }
         }
     }
 
-    /// Where the champion's weights came from, as a parent for a branch:
-    /// nil when the champion was built fresh in this process.
-    private var championLineageStart: LineageTracker.Start {
-        if let source = championLineageSource {
-            return .branch(parent: source)
+    /// A run from the champion's weights: fresh when the champion was built
+    /// in this process, a branch from the file it was loaded from otherwise.
+    private func championLineageStart() throws -> LineageTracker.Start {
+        switch championOrigin {
+        case .built(let initialization): return .fresh(initialization: initialization)
+        case .file(let source): return .branch(parent: source)
+        case nil: throw LineageSegmentError.noChampionOrigin
         }
-        return .fresh
     }
 
     /// Begin (or continue) the lineage segment for a Play-and-Train start.
@@ -80,7 +94,7 @@ extension SessionController {
                     legacyTotals: nil)
             }
         case .newSessionResetTrainerFromChampion:
-            start = championLineageStart
+            start = try championLineageStart()
         case .freshOrFromLoadedSession:
             if let resumed {
                 let gaps = Self.guiResumeGaps(
@@ -98,7 +112,7 @@ extension SessionController {
                 start = .resume(parent: resumed.trainerFile.lineageParent,
                                 gaps: gaps, legacyTotals: legacyTotals)
             } else {
-                start = championLineageStart
+                start = try championLineageStart()
             }
         }
         if let start {
@@ -263,10 +277,15 @@ extension SessionController {
             return try lineageRecordForSave(at: date, trainerCompletedSteps: trainer.completedTrainSteps,
                                             dropoutPhiloxState: nil, dropoutStreamState: nil)
         }
-        if let source = championLineageSource {
+        switch championOrigin {
+        case .file(let source):
             return LineageTracker.untrainedCopyRecord(source: source, derivation: nil, pathKind: .gui,
                                                       argv: CommandLine.arguments, at: date)
+        case .built(let initialization):
+            return try LineageTracker.mintRecord(pathKind: .gui, argv: CommandLine.arguments,
+                                                 initialization: initialization, at: date)
+        case nil:
+            throw LineageSegmentError.noChampionOrigin
         }
-        return try LineageTracker.mintRecord(pathKind: .gui, argv: CommandLine.arguments, at: date)
     }
 }

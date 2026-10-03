@@ -693,7 +693,7 @@ extension SessionController {
             case .success:
                 champion.identifier = ModelID(value: file.modelID)
                 // A branch from this champion records the file as its parent.
-                championLineageSource = file.lineageParent
+                championOrigin = .file(file.lineageParent)
                 networkStatus = "Loaded model \(file.modelID)\nFrom: \(url.lastPathComponent)"
                 checkpoint?.setCheckpointStatus("Loaded \(file.modelID)", kind: .success)
                 SessionLogger.shared.log("[CHECKPOINT] Loaded model: \(url.lastPathComponent) → \(file.modelID)")
@@ -874,7 +874,7 @@ extension SessionController {
             case .success:
                 champion.identifier = ModelID(value: loaded.championFile.modelID)
                 // A branch from this champion records its file as the parent.
-                championLineageSource = loaded.championFile.lineageParent
+                championOrigin = .file(loaded.championFile.lineageParent)
                 pendingLoadedSession = loaded
                 pendingLoadedSessionAcceptedReplacements = Set(findings.map(\.id))
                 networkStatus = """

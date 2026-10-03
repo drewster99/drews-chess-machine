@@ -51,7 +51,7 @@ def summary_of(index, spec, cum_end):
             "exact_resume": index > 0, "build": BUILD, "device": device}
 
 
-def record_for(index, local_step, run_id="run-1", null_totals=False, specs=SEGMENTS, schema=1):
+def record_for(index, local_step, run_id="run-1", null_totals=False, specs=SEGMENTS, schema=2):
     """The record segment `index` writes after `local_step` steps of its own."""
     seg_id, model_id, start, steps, games, positions, train_s, wall_s, started, device = specs[index]
     fraction = local_step / steps
@@ -85,7 +85,7 @@ def record_for(index, local_step, run_id="run-1", null_totals=False, specs=SEGME
         "parameters": None, "build": BUILD,
         "invocation": {"argv": ["DrewsChessMachine", "--replay-corpus", "x"], "path_kind": "replay"},
         "device": device,
-        "rng": {"seed_mode": "unseeded", "dropout_philox_state": None},
+        "rng": {"dropout_philox_state": None, "streams": None, "init_seed": None, "init_scheme": None},
         "segments": history,
     }
 
@@ -215,7 +215,7 @@ class LineageReadTests(unittest.TestCase):
 
     def test_refusals(self):
         write_header(os.path.join(self.dir, "missing.safetensors"), {"dcm_format_version": "7", "model_id": "m"})
-        bad_schema = record_for(0, 500, schema=2)
+        bad_schema = record_for(0, 500, schema=3)
         write_v7(self.dir, "schema.safetensors", bad_schema, "m", 500)
         no_key = record_for(0, 500)
         del no_key["time"]["cum_wall_sec"]

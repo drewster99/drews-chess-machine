@@ -174,7 +174,7 @@ final class DropoutRNGStateTests: XCTestCase {
         let carried = try XCTUnwrap(snapshot.dropoutRNG.philoxState)
 
         let start = Date(timeIntervalSince1970: 1_790_000_000)
-        let tracker = try LineageTracker(start: .fresh, pathKind: .replay, argv: ["dcm"],
+        let tracker = try LineageTracker(start: .fresh(initialization: .forTests), pathKind: .replay, argv: ["dcm"],
                                          startedAt: start, segmentStartTrainerStep: snapshot.schedule.completedTrainSteps)
         let lineage = try tracker.record(
             at: start.addingTimeInterval(10), trainerCompletedSteps: snapshot.schedule.completedTrainSteps,

@@ -104,13 +104,14 @@ enum NewModelCLI {
                 Darwin.exit(73)
             }
 
+            let initialization = ModelInitRecord(initSeed: initSeed, scheme: WeightInitScheme.current)
             let metadata = ModelCheckpointMetadata(
                 creator: "new-model",
                 trainingStep: nil,
                 parentModelID: "",
                 notes: "fresh \(name) net (untrained), arch v\(arch.architectureVersionLabel), "
                     + "BN warm-up under policy tail precision \(ChessNetwork.PolicyTailPrecision.process.rawValue)",
-                initRecord: ModelInitRecord(initSeed: initSeed, scheme: WeightInitScheme.current)
+                initRecord: initialization
             )
             let mintDate = Date()
             let encoded = try SafetensorsModelIO.encode(
@@ -120,7 +121,8 @@ enum NewModelCLI {
                 weights: weights,
                 architecture: arch,
                 includesVelocity: false,
-                lineage: try LineageTracker.mintRecord(pathKind: .newModel, argv: CommandLine.arguments, at: mintDate)
+                lineage: try LineageTracker.mintRecord(pathKind: .newModel, argv: CommandLine.arguments,
+                                                       initialization: initialization, at: mintDate)
             )
             try FileManager.default.createDirectory(
                 at: outURL.deletingLastPathComponent(),

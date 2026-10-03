@@ -179,9 +179,9 @@ final class SessionController {
     @ObservationIgnored var lineageTracker: LineageTracker?
     /// Fed counts the lineage segment carried across stats boxes.
     @ObservationIgnored var lineageFedCarry = LineageFedCarry()
-    /// The file the champion's weights were loaded from, as a lineage
-    /// parent; nil when the champion was built fresh in this process.
-    @ObservationIgnored var championLineageSource: LineageTracker.ParentFile?
+    /// Where the champion's current weights came from; nil when there is no
+    /// champion, or its weights are still awaiting a load.
+    @ObservationIgnored var championOrigin: ChampionOrigin?
 
     /// Rolling-window game-diversity tracker for self-play. Fed by every
     /// self-play worker at game end; snapshot polled by the heartbeat for
@@ -1101,8 +1101,9 @@ final class SessionController {
             case .success(let net):
                 net.identifier = ModelIDMinter.mint()
                 network = net
-                // Weights initialized here: a run from this champion is fresh.
-                championLineageSource = nil
+                // Weights initialized here: a run from this champion is fresh,
+                // drawn under this init seed.
+                championOrigin = .built(initialization: ModelInitRecord(initSeed: initSeed, scheme: WeightInitScheme.current))
                 net.network.commandQueue.label = "champion (self-play)"
                 runner = ChessRunner(network: net)
                 let idStr = net.identifier?.description ?? "?"
@@ -1155,6 +1156,9 @@ final class SessionController {
         case .success(let net):
             net.identifier = ModelIDMinter.mint()
             network = net
+            // Its weights come from the load that follows, which records
+            // their origin.
+            championOrigin = nil
             net.network.commandQueue.label = "champion (self-play)"
             runner = ChessRunner(network: net)
             isBuilding = false

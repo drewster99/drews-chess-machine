@@ -45,7 +45,7 @@ LINEAGE_REQUIRED_FROM_VERSION = 7
 # dcm_format_version is.
 UNVERSIONED_LEGACY_VERSION = 3
 # LineageRecord.currentSchema.
-SUPPORTED_SCHEMA = 1
+SUPPORTED_SCHEMA = 2
 # LineageRecord.metadataKey.
 METADATA_KEY = "dcm_lineage"
 FORMAT_VERSION_KEY = "dcm_format_version"

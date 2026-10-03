@@ -302,14 +302,23 @@ enum TrainVsUciRunner {
         // A start model's weights replace the trainer's; a fresh run starts
         // from an init seed derived from the run seed, so `--seed`
         // reproduces its initialization.
+        //
+        // This segment's lineage follows from the same choice — see
+        // CorpusReplayRunner. A vs-UCI resume starts from a fresh buffer, so
+        // it is not exact in that either.
         let trainerInitialization: WeightInitialization
-        if startModelFile != nil {
+        let lineageStart: LineageTracker.Start
+        if let file = startModelFile {
             trainerInitialization = .overwrittenByLoad
+            lineageStart = resumeSnapshot != nil
+                ? .resume(parent: file.lineageParent, gaps: resumeGaps, legacyTotals: nil)
+                : .branch(parent: file.lineageParent)
         } else {
             let initSeed = runSeed.streams.freshModelInitSeed
             emit("[VS-UCI] fresh trainer init_seed=\(initSeed) init_scheme=\(WeightInitScheme.current) "
                 + "(from run seed \(runSeed.masterSeed))")
             trainerInitialization = .seeded(initSeed: initSeed)
+            lineageStart = .fresh(initialization: ModelInitRecord(initSeed: initSeed, scheme: WeightInitScheme.current))
         }
         let trainer = try ChessTrainer(
             dropoutStream: runSeed.streams.generator(.dropout),
@@ -376,16 +385,6 @@ enum TrainVsUciRunner {
         emit("[VS-UCI-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(trainer.lrMomentumCycle)) "
             + LRMomentumCycleLogFormat.scheduleOrigin(of: trainer, launch: launch))
 
-        // This segment's lineage — see CorpusReplayRunner. A vs-UCI resume
-        // starts from a fresh buffer, so it is not exact in that either.
-        let lineageStart: LineageTracker.Start
-        if let file = startModelFile, resumeSnapshot != nil {
-            lineageStart = .resume(parent: file.lineageParent, gaps: resumeGaps, legacyTotals: nil)
-        } else if let file = startModelFile {
-            lineageStart = .branch(parent: file.lineageParent)
-        } else {
-            lineageStart = .fresh
-        }
         let lineageTracker = try LineageTracker(
             start: lineageStart, pathKind: .vsuci, argv: CommandLine.arguments,
             startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)

@@ -1,6 +1,11 @@
 import Foundation
 @testable import DrewsChessMachine
 
+extension ModelInitRecord {
+    /// The init seed and scheme of a fresh run a test starts.
+    static let forTests = ModelInitRecord(initSeed: 1, scheme: WeightInitScheme.current)
+}
+
 extension LineageRecord {
     /// A lineage record for a file a test writes: a fresh run's record with
     /// `trainerCompletedSteps` as its step total (a trainer-state file's
@@ -8,7 +13,7 @@ extension LineageRecord {
     static func forTests(trainerCompletedSteps: Int?, corpus: CorpusPosition?) throws -> LineageRecord {
         let start = Date(timeIntervalSince1970: 1_790_000_000)
         let tracker = try LineageTracker(
-            start: .fresh, pathKind: .replay, argv: ["DrewsChessMachine", "--test"],
+            start: .fresh(initialization: .forTests), pathKind: .replay, argv: ["DrewsChessMachine", "--test"],
             startedAt: start, segmentStartTrainerStep: 0)
         return try tracker.record(
             at: start.addingTimeInterval(60),

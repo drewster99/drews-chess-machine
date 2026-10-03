@@ -505,27 +505,74 @@ struct LineageRecord: Codable, Equatable, Sendable {
         /// The run's master seed and every stream position a resume
         /// continues; null for a record with no training run behind it.
         let streams: RunStreams?
+        /// The init seed and scheme this run drew its starting weights with
+        /// (`init_seed` / `init_scheme`, determinism plan B1.1): set on a run
+        /// that started from fresh weights — a mint, or a training run with
+        /// no start model — and carried by every later record of the run,
+        /// across exact resumes. Null for a run that started from another
+        /// file's weights (a branch, a derive or an untrained copy), whose
+        /// own record says how they were drawn, and for a run continuing a
+        /// file written before this field.
+        let initialization: ModelInitRecord?
 
         enum CodingKeys: String, CodingKey {
             case dropoutPhiloxState = "dropout_philox_state"
             case streams
+            case initSeed = "init_seed"
+            case initScheme = "init_scheme"
         }
 
+        /// The random state a save captures. `initialization` is the run's,
+        /// which `LineageTracker` fills in (`withInitialization`).
         init(dropoutPhiloxState: DropoutPhiloxState?, streams: RunStreams?) {
+            self.init(dropoutPhiloxState: dropoutPhiloxState, streams: streams, initialization: nil)
+        }
+
+        private init(dropoutPhiloxState: DropoutPhiloxState?, streams: RunStreams?,
+                     initialization: ModelInitRecord?) {
             self.dropoutPhiloxState = dropoutPhiloxState
             self.streams = streams
+            self.initialization = initialization
+        }
+
+        /// This state with the run's init seed and scheme.
+        func withInitialization(_ initialization: ModelInitRecord?) -> RNG {
+            RNG(dropoutPhiloxState: dropoutPhiloxState, streams: streams, initialization: initialization)
         }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             dropoutPhiloxState = try c.decode(DropoutPhiloxState?.self, forKey: .dropoutPhiloxState)
             streams = try c.decode(RunStreams?.self, forKey: .streams)
+            let seedText = try c.decode(String?.self, forKey: .initSeed)
+            let scheme = try c.decode(String?.self, forKey: .initScheme)
+            switch (seedText, scheme) {
+            case (nil, nil):
+                initialization = nil
+            case let (seedText?, scheme?):
+                guard !seedText.hasPrefix("+"), let seed = UInt64(seedText, radix: 10) else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .initSeed, in: c, debugDescription: "init_seed '\(seedText)' is not a decimal UInt64")
+                }
+                guard !scheme.isEmpty else {
+                    throw DecodingError.dataCorruptedError(forKey: .initScheme, in: c, debugDescription: "init_scheme is empty")
+                }
+                initialization = ModelInitRecord(initSeed: seed, scheme: scheme)
+            case (.some, nil):
+                throw DecodingError.dataCorruptedError(forKey: .initScheme, in: c, debugDescription: "init_seed without init_scheme")
+            case (nil, .some):
+                throw DecodingError.dataCorruptedError(forKey: .initSeed, in: c, debugDescription: "init_scheme without init_seed")
+            }
         }
 
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             try c.encode(dropoutPhiloxState, forKey: .dropoutPhiloxState)
             try c.encode(streams, forKey: .streams)
+            // A decimal string: a UInt64 above 2^53 does not survive a JSON
+            // number in every reader.
+            try c.encode(initialization.map { String($0.initSeed) }, forKey: .initSeed)
+            try c.encode(initialization?.scheme, forKey: .initScheme)
         }
 
         /// A record with no training run behind it (a mint, a derive, a

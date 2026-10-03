@@ -48,7 +48,7 @@ final class LineageRecordTests: XCTestCase {
     // MARK: - The record
 
     func testRecordJSONRoundTripsAndWritesUnrecordedTotalsAsExplicitNulls() throws {
-        let tracker = try LineageTracker(start: .fresh, pathKind: .replay, argv: ["dcm"],
+        let tracker = try LineageTracker(start: .fresh(initialization: .forTests), pathKind: .replay, argv: ["dcm"],
                                          startedAt: Date(timeIntervalSince1970: 1_000), segmentStartTrainerStep: 0)
         tracker.recordTrainingStep(totalMs: 1500)
         let record = try tracker.record(at: Date(timeIntervalSince1970: 1_100), trainerCompletedSteps: 1,
@@ -137,7 +137,7 @@ final class LineageRecordTests: XCTestCase {
     func testDropoutPhiloxStateTravelsThroughTheFileAndDecidesTheResumeGap() throws {
         let state = try DropoutPhiloxState(words: [1, 2, 3, 4, 5, 6, -7])
         let start = Date(timeIntervalSince1970: 1_000)
-        let tracker = try LineageTracker(start: .fresh, pathKind: .replay, argv: ["dcm"],
+        let tracker = try LineageTracker(start: .fresh(initialization: .forTests), pathKind: .replay, argv: ["dcm"],
                                          startedAt: start, segmentStartTrainerStep: 0)
         let withState = try tracker.record(at: start.addingTimeInterval(5), trainerCompletedSteps: 12, segmentLocalStep: 12,
                                            segmentGames: 1, segmentPositions: 50, corpus: nil, parameters: nil,
@@ -222,7 +222,7 @@ final class LineageRecordTests: XCTestCase {
         let t0 = Date(timeIntervalSince1970: 2_000_000)
 
         // Segment 0: fresh, 100 steps of 0.5 s each, 40 games / 2,600 plies.
-        let s0 = try LineageTracker(start: .fresh, pathKind: .replay, argv: ["dcm"], startedAt: t0, segmentStartTrainerStep: 0)
+        let s0 = try LineageTracker(start: .fresh(initialization: .forTests), pathKind: .replay, argv: ["dcm"], startedAt: t0, segmentStartTrainerStep: 0)
         for _ in 0..<100 { s0.recordTrainingStep(totalMs: 500) }
         let r0 = try s0.record(at: t0.addingTimeInterval(80), trainerCompletedSteps: 100, segmentLocalStep: 100,
                                segmentGames: 40, segmentPositions: 2_600, corpus: nil, parameters: try parameters(), rng: .withoutRunStreams(dropoutPhiloxState: nil))
@@ -355,7 +355,7 @@ final class LineageRecordTests: XCTestCase {
     }
 
     func testMintRecordIsAFreshUntrainedRun() throws {
-        let record = try LineageTracker.mintRecord(pathKind: .newModel, argv: ["dcm", "--new-model"], at: Date(timeIntervalSince1970: 50))
+        let record = try LineageTracker.mintRecord(pathKind: .newModel, argv: ["dcm", "--new-model"], initialization: .forTests, at: Date(timeIntervalSince1970: 50))
         XCTAssertEqual(record.run.start, .fresh)
         XCTAssertNil(record.parent)
         XCTAssertEqual(record.steps.cumTrainerStep, 0)
