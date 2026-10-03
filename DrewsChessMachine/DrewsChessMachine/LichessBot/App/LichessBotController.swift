@@ -381,13 +381,15 @@ final class LichessBotController {
         defaults: UserDefaults = .standard,
         dataDirectory: LichessBotDataDirectory = .standard,
         services: LichessBotControllerServices = .live,
-        finishedGameHold: Duration = LichessBotController.finishedGameHold
+        finishedGameHold: Duration = LichessBotController.finishedGameHold,
+        postGameChatFetchDelays: [Duration] = LichessBotController.postGameChatFetchDelays
     ) {
         self.modelProvider = modelProvider
         self.defaults = defaults
         self.dataDirectory = dataDirectory
         self.services = services
         self.finishedGameHoldDuration = finishedGameHold
+        self.postGameChatFetchSchedule = postGameChatFetchDelays
         let fileQueue = self.fileQueue
         self.protocolLog = LichessBotProtocolLog(directory: dataDirectory, fileQueue: fileQueue) { error in
             SessionLogger.shared.log("[ALARM] LICHESS-BOT protocol log write failed: \(error.localizedDescription)")
@@ -802,13 +804,22 @@ final class LichessBotController {
     /// right after the final state, so chat after that (an opponent's "gg")
     /// arrives only through `GET /api/bot/game/{id}/chat`.
     static let postGameChatFetchDelays: [Duration] = [.seconds(60), .seconds(300)]
+    /// This controller's fetch delays: `postGameChatFetchDelays`, or a
+    /// shorter schedule a test passes in.
+    private let postGameChatFetchSchedule: [Duration]
 
-    /// Finished games whose filing waits for the first post-game chat
-    /// fetch. A drain (including going offline) files them at once; a quit
-    /// or a failure stops the reconciler with the runtime, so their journals
-    /// are left to `recoverLeftoverJournals` the next time the bot goes
-    /// online.
+    /// Finished games whose filing waits for their last post-game chat
+    /// fetch, so everything fetched reaches the record (a filed journal
+    /// takes no more lines). A drain (including going offline) files them
+    /// at once instead; a quit or a failure stops the reconciler with the
+    /// runtime, so their journals are left to `recoverLeftoverJournals` the
+    /// next time the bot goes online.
     private var gamesAwaitingPostGameChat: Set<String> = []
+
+    /// Finished games handed to filing before their chat fetches ran (a
+    /// drain doesn't wait for them). Their remaining fetches are skipped,
+    /// and say so: lines fetched for a filed game could not be kept.
+    private var gamesFiledBeforeTheirChatFetches: Set<String> = []
 
     /// Whether this game's filing waits for its post-game chat: the
     /// reconciler leaves it alone until `fileAfterPostGameChat` hands it over.
@@ -818,7 +829,8 @@ final class LichessBotController {
 
     private func schedulePostGameChatFetches(_ gameID: String) {
         let generationAtStart = runtimeGeneration
-        for (index, delay) in Self.postGameChatFetchDelays.enumerated() {
+        let lastIndex = postGameChatFetchSchedule.count - 1
+        for (index, delay) in postGameChatFetchSchedule.enumerated() {
             Task {
                 do {
                     try await Task.sleep(for: delay)
@@ -827,14 +839,14 @@ final class LichessBotController {
                 }
                 guard runtimeGeneration == generationAtStart else { return }
                 await fetchPostGameChat(gameID)
-                if index == 0 {
+                if index == lastIndex {
                     fileAfterPostGameChat(gameID)
                 }
             }
         }
     }
 
-    /// Queue a game for filing now that its first post-game chat fetch is
+    /// Queue a game for filing now that its last post-game chat fetch is
     /// done (whether it found anything or failed).
     private func fileAfterPostGameChat(_ gameID: String) {
         guard gamesAwaitingPostGameChat.remove(gameID) != nil, let reconciler = runtime?.reconciler else { return }
@@ -844,6 +856,10 @@ final class LichessBotController {
     }
 
     private func fetchPostGameChat(_ gameID: String) async {
+        if gamesFiledBeforeTheirChatFetches.contains(gameID) {
+            protocolLog.record(.game, "post-game chat not fetched: the game was filed without waiting for it while the bot went offline", gameID: gameID)
+            return
+        }
         guard let runtime, let game = games.first(where: { $0.id == gameID }) else {
             protocolLog.record(.game, "post-game chat not fetched: the game is no longer listed or the bot is offline", gameID: gameID)
             return
@@ -873,6 +889,7 @@ final class LichessBotController {
         let reconciler = runtime.reconciler
         let waiting = gamesAwaitingPostGameChat
         gamesAwaitingPostGameChat = []
+        gamesFiledBeforeTheirChatFetches.formUnion(waiting)
         for gameID in waiting {
             await reconciler.enqueue(gameID: gameID)
         }
@@ -2494,6 +2511,7 @@ final class LichessBotController {
         // The ids belong to this runtime's reconciler; a later drain must not
         // enqueue games that recovery has since filed.
         gamesAwaitingPostGameChat = []
+        gamesFiledBeforeTheirChatFetches = []
         // Likewise the reconciler's view of what is unreconciled: the next
         // runtime's recovery derives it afresh from the journals left.
         unreconciledGameIDs = []
@@ -2695,12 +2713,13 @@ final class LichessBotController {
                 if drainRequested || finishing != nil {
                     // Going offline or quitting: file once the last
                     // request (the goodbye) has landed.
+                    gamesFiledBeforeTheirChatFetches.insert(gameID)
                     Task {
                         await reconciler.enqueue(gameID: gameID, after: .seconds(5))
                     }
                 } else {
-                    // File after the first post-game chat fetch, so the
-                    // record includes an opponent's "gg".
+                    // File after the last post-game chat fetch, so the
+                    // record includes everything said after the game.
                     gamesAwaitingPostGameChat.insert(gameID)
                 }
             }
