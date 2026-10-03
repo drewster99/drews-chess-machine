@@ -2,8 +2,11 @@ import Foundation
 
 /// Severity of a single corpus-validation finding.
 enum CorpusValidationSeverity: String, Sendable {
-    /// A data/integrity problem — the corpus is not trustworthy as-is. Never
-    /// auto-fixed (fixing would mean fabricating or discarding game data).
+    /// A data/integrity problem — the corpus is not trustworthy as-is.
+    /// `--fix` never changes a sealed shard's bytes; the one error it repairs
+    /// is an unsealed `.open` shard in a corpus marked sealed, recovered by
+    /// sealing its complete games and dropping only an incomplete final
+    /// record (or removing a shard that holds no complete game).
     case error
     /// A metadata inconsistency or oddity — usually derivable from the shards
     /// and therefore auto-fixable.
@@ -80,9 +83,13 @@ struct CorpusValidationReport: Sendable {
 ///   writer is active: its counts are the authority and it rewrites
 ///   `corpus.json` when it finishes, so the repair is skipped and reported
 ///   (`counts-not-repaired-writer-active`). A writer between shards (the
-///   instant after a rotation's seal) holds no `.open` shard and is not
-///   seen; that window is microseconds and costs at most a count the writer
-///   overwrites when it finishes.
+///   instant after a rotation's seal), or one whose new shard exists but is
+///   not yet locked, is not seen as active; so the repair replaces
+///   `corpus.json` only if it is still the file the validator read
+///   (`GameCorpus.persistMetadata(_:to:replacingOnly:)`). A writer that
+///   finished its source in between has rewritten it, and its counts and
+///   completion stand: the repair is dropped and reported
+///   (`counts-not-repaired-metadata-changed`).
 ///
 /// **Sealed shard bytes are never modified** — a genuine data problem (bad
 /// SHA/CRC, missing shards, corpus-ID mismatch) is reported as an `error`,
@@ -112,6 +119,9 @@ enum CorpusValidator {
     static func validate(directory: URL,
                          verifyIntegrity: Bool = true,
                          fix: Bool = false) throws -> CorpusValidationReport {
+        // Which corpus.json the metadata is read from, taken first: the
+        // count repair may replace only that file.
+        let metadataIdentityAtRead = try GameCorpus.metadataIdentity(directory: directory)
         var metadata = try GameCorpus.loadMetadata(directory: directory)
         var findings: [CorpusValidationFinding] = []
 
@@ -339,7 +349,34 @@ enum CorpusValidator {
         }
 
         if fix && fixedAny {
-            try GameCorpus.persistMetadata(metadata, to: directory)
+            // No identity means corpus.json appeared between the identity
+            // read and the metadata read: changed, like a mismatch.
+            let persisted: Bool
+            if let metadataIdentityAtRead {
+                do {
+                    try GameCorpus.persistMetadata(metadata, to: directory, replacingOnly: metadataIdentityAtRead)
+                    persisted = true
+                } catch GameCorpusError.metadataChangedSinceRead {
+                    persisted = false
+                }
+            } else {
+                persisted = false
+            }
+            if !persisted {
+                // Something rewrote corpus.json after it was read here — a
+                // writer finishing its source, which this pass could not see
+                // as active. Its file stands; the count repairs above were
+                // not written.
+                for i in findings.indices
+                where findings[i].fixed && (findings[i].code == "source-game-count" || findings[i].code == "source-ply-count") {
+                    findings[i].fixed = false
+                }
+                findings.append(CorpusValidationFinding(
+                    severity: .warning, code: "counts-not-repaired-metadata-changed",
+                    message: "corpus.json counts were not repaired: corpus.json changed after this pass read it "
+                        + "(most likely a recording or import finished its source and rewrote it); rerun --fix",
+                    fixable: false))
+            }
         }
 
         return CorpusValidationReport(

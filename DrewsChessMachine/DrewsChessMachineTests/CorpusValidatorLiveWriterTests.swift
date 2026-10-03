@@ -76,6 +76,39 @@ final class CorpusValidatorLiveWriterTests: XCTestCase {
         return false
     }
 
+    // MARK: - The count repair never replaces a corpus.json it did not read
+
+    /// A writer can finish its source between the validator's read of
+    /// `corpus.json` and its count repair — unseen as active when its new
+    /// shard was not yet locked, or between shards. The repair replaces
+    /// `corpus.json` only while it is still the file that was read, so the
+    /// writer's own counts and completion are never overwritten by a stale
+    /// copy.
+    func testMetadataRepairReplacesOnlyTheCorpusJsonItRead() throws {
+        let corpus = try GameCorpus.create(name: "live", comment: nil, parentDirectory: root)
+        let directory = corpus.directory
+        let metadataURL = directory.appendingPathComponent(GameCorpus.metadataFilename)
+        let identityAtRead = try XCTUnwrap(try GameCorpus.metadataIdentity(directory: directory))
+        var stale = try GameCorpus.loadMetadata(directory: directory)
+
+        try corpus.beginSource(kind: "selfPlay")
+        let writersBytes = try Data(contentsOf: metadataURL)
+        stale.comment = "a repair from the stale read"
+        XCTAssertThrowsError(try GameCorpus.persistMetadata(stale, to: directory, replacingOnly: identityAtRead)) { error in
+            guard case GameCorpusError.metadataChangedSinceRead? = error as? GameCorpusError else {
+                return XCTFail("a corpus.json rewritten since it was read must be refused, got \(error)")
+            }
+        }
+        XCTAssertEqual(try Data(contentsOf: metadataURL), writersBytes, "the writer's corpus.json stands")
+
+        let identityNow = try XCTUnwrap(try GameCorpus.metadataIdentity(directory: directory))
+        var fresh = try GameCorpus.loadMetadata(directory: directory)
+        fresh.comment = "a repair from a fresh read"
+        try GameCorpus.persistMetadata(fresh, to: directory, replacingOnly: identityNow)
+        XCTAssertEqual(try GameCorpus.loadMetadata(directory: directory).comment, "a repair from a fresh read")
+        try corpus.finishSource()
+    }
+
     // MARK: - A live writer's shard is never recovered
 
     func testFixLeavesALiveWritersMidRecordShardUntouched() throws {
