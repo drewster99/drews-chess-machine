@@ -24,6 +24,31 @@ Is ε = 0.1 more policy smoothing than needed now that the shared offset can't d
   NLL / top-1 by legal-move count bucket and policy entropy, `pLogitAbsMax`; for D
   value loss and W/D/L calibration.
 
+## Seed 2 continues past 33,000 (owner, 2026-10-03)
+
+Seed 2 keeps training after its 33,000-step limit, resumed "as close to identically as
+possible". A watcher (session scratch `c2continue.sh`) waits for the build-2275 run to save
+step 33,000 and end, then resumes `20261002-label-smoothing-C-seed2-replay-step33000` with
+`--resume-exact` on build 2320 (`DCM-2320-1ab52554`, the first frozen build with
+`--resume-exact`) and no step limit.
+
+- **Carried over exactly:** fp32 master weights, momentum velocity, the trainer step clock,
+  the LR/momentum cycle and its decay envelope, and the corpus position. A dry run from the
+  19,000-step checkpoint matched the original run's lr and momentum at 19,050 and 19,100
+  and resumed at corpus game 2,453,067, the original's position at 19,000.
+- **Not exact** (build 2275 wrote no lineage record): `rng_sampler`, `dropout_state`,
+  `feed_carry`, `params`, `lineage`, `policy_tail`, accepted with `--accept-inexact`. The
+  sampler and feed carry start fresh; dropout is 0, so its stream has no effect;
+  `--parameters` and `--policy-tail-precision fp32_from_pre_bn` are passed as before.
+- **Sampling:** build 2275's corpus replay ignored the batch-composition parameters and drew
+  uniformly; build 2320 applies them. `parameters-seed2-continue.json` is `parameters.json`
+  with `max_plies_from_any_one_game` 10 → 400 (its declared maximum; it cannot bind at
+  batch 4096) and `target_sampled_game_length_plies` 999 → 0 (no length tilt), the nearest
+  the declarations allow to the uniform draw.
+- **Names:** the resumed run starts lineage segment 0 and counts its own steps, so it writes
+  `20261002-label-smoothing-C-seed2-cont-replay-step<N>` (real step 33,000 + N), probed
+  into `probes-seed2-cont.jsonl`.
+
 ## Charts
 
 Every compared run, from the same columns as `table.py`; regenerate with
