@@ -1089,10 +1089,27 @@ final class LichessBotController {
 
     // MARK: - Quit (plan §13)
 
-    /// `applicationShouldTerminate`: quit at once when the bot holds no
-    /// games; otherwise drain, show the sheet, and quit when the games end.
+    /// `applicationShouldTerminate`: with games in play, drain, show the
+    /// sheet, and quit when the games end; otherwise stop the runtime (if
+    /// one is up) and quit once the bot has shut down. Only a launch that
+    /// never used the bot quits at once.
     func applicationShouldTerminate() -> NSApplication.TerminateReply {
-        guard let runtime else { return .terminateNow }
+        guard let runtime else {
+            // Offline. Going offline (or an error) started withdrawing our
+            // unanswered challenges, and a challenge left standing can be
+            // accepted into a game nobody plays; protocol-log, player-notes
+            // and outcome-log writes may still be queued. The shutdown
+            // waits for all of them. A launch that never went online or
+            // loaded the bot's notes has none of that, and quits at once
+            // rather than have the shutdown's own protocol-log line create
+            // the data folder of someone who never used the bot.
+            guard runtimeGeneration > 0 || playerNotes != nil || challengeOutcomeLog != nil else {
+                return .terminateNow
+            }
+            quitReplyPending = true
+            completeQuitIfPending(quit: true)
+            return .terminateLater
+        }
         clearChallengeQueue(reason: "app quit")
         if !hasGamesInPlay {
             // Reply once the queued journal and protocol-log writes (the

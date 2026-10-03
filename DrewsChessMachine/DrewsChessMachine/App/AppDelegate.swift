@@ -17,6 +17,9 @@ import Foundation
 ///   case `applicationShouldTerminate` was bypassed (e.g. SIGTERM).
 /// - With Lichess games in progress, quitting drains the bot first and
 ///   quits when the last game ends (plan §13), via `.terminateLater`.
+///   Without games, a launch that used the bot still answers
+///   `.terminateLater` and quits once the bot has shut down (its challenge
+///   withdrawals and queued writes done).
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The app-level Lichess bot, set when the main window appears.
     weak var lichessBotController: LichessBotController?
