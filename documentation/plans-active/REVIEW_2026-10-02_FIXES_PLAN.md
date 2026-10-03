@@ -40,7 +40,7 @@ by write-then-rename, never edited in place.
 
 ## A. Lichess bot
 
-### A1. Resumed games are treated as new games — [ ]
+### A1. Resumed games are treated as new games — [x] phase 1 4cdfea87, phase 2 5e65f49a
 Symptom (owner-reported): after a relaunch with games in progress, going online resumes
 them, but the log says "started", the start time is the relaunch time (wrong list order and
 follow target), earlier decisions / chat / transcript are empty, "Play one game" is consumed
@@ -61,8 +61,27 @@ against the opponent's daily limit. Owner: do both phases; edit tests as appropr
   scripted fake transport): start time and order, decisions and chat restored, one greeting,
   takeback limit honored across the relaunch, one-game mode intact, same object in
   same-launch resume, per-opponent count.
+- As built (decisions made during implementation):
+  - The resumed flag is the session origin carried on `.gameSessionStarted`
+    (`new` / `resumed(journal)` / `resumedWithUnreadableJournal`), not a Bool: the journal
+    the manager read is what the live view replays, so there is one read.
+  - The journal is read, checked (header, game id, schema version, our game) and its stream
+    lines decoded on the journal queue (`LichessBotRecordStore.resumedJournal`), never on the
+    cooperative pool or the main actor.
+  - A resumed game's start time is its journal's first entry (OD1).
+  - A journal that can't be used resumes the game with `unknownHistory`: no greeting,
+    goodbye, takeback or command reply (there's no telling what was already done), plus an
+    alarm. The streaks start empty; they only ever delay a resignation or draw offer.
+  - Leftovers from an earlier day are never counted today (OD7); "Play one game" waits for
+    resumed games to end before its own game (OD5).
+  - The manager's journal reader and the session's carryover are required init parameters
+    (no defaults); the nine manager and five session constructions in tests pass them.
+  - The launch notice comes from the main window's status chip (`.task`), so command-line
+    runs, which also create the controller, never raise it.
+  - One relaunch test's protocol-log helper was corrected after its first run: launches
+    share the day's protocol file, so it now reads only the second launch's entries.
 
-### A2. Double filing → false quarantine, lost post-game chat — [ ]
+### A2. Double filing → false quarantine, lost post-game chat — [x] 1e33193e
 Owner: "fix it so that can't happen".
 - Filing is idempotent: the reconciler checks the game's filing state (journal in progress /
   filed / filed-but-unreadable / missing) before exporting; an already-filed game is a no-op.
@@ -73,6 +92,12 @@ Owner: "fix it so that can't happen".
   journal and no record is reported without an export; a game taken by an owner during its
   export is not filed; end-to-end controller test (game ends right after going online, chat
   is in the record, nothing quarantined).
+- As built: a game with neither journal nor record is reported as `.nothingToFile` (its own
+  alarm wording) and dropped, never exported; a record that doesn't decode is quarantined
+  with that reason. The reconciler's owner check holds the controller strongly (no made-up
+  answer for a missing controller); teardown breaks the cycle. The unreconciled list is
+  cleared on teardown. The end-to-end controller case is covered by the post-game chat
+  filing test (A6), which files a game that ended right after going online.
 
 ### A3. Main-thread load in the bot screens — [ ]
 - The once-a-second prune assigns `games` only when something is removed (an in-place
@@ -97,16 +122,22 @@ each game with enough detail to decide per game.
 
 ### A5. Other bot items — [ ]
 - Bot-limit refusal kept in memory even when player notes failed to load; status line names
-  the limit and its end time.
+  the limit and its end time. — [x] 9aa9b8ce. As built: the controller's `botLimitUntil` is
+  the live source (loaded from the notes, updated on every refusal; the notes stay the saved
+  copy); matchmaking, the challenge queue and the Challenge sheet's online lists read it.
 - A settings-store trap in a throwing function becomes a thrown error.
 - Settings window uses a standard `TabView` (owner: "just have tabs be tabs").
 
-### A6. Post-game chat is never dropped — [ ]
+### A6. Post-game chat is never dropped — [x] 99c1e7a1
 The game stream closes at the finish, so chat sent after it (the opponent's "Good game!")
 only arrives through the explicit chat fetch — confirmed in a filed journal, where the
 opponent's "Good game!" exists only as a `chatFetched` entry. Today the record is filed after
 the first fetch, and the second fetch's lines are discarded by the filed-journal guard. The
 game is filed only after its last chat fetch; nothing fetched is ever discarded.
+As built: a drain (going offline, quitting) still files finished games at once; their later
+fetches are skipped with a protocol-log line rather than fetched and dropped. The fetch
+schedule is an init parameter defaulting to the production schedule (like
+`finishedGameHold`), so a test can shorten it.
 
 Not changed (owner): finished-game retention stays as is; a casual resend is sent right away.
 
