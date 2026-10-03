@@ -9,6 +9,12 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-02 CDT — Behavior fingerprint trains the checkpoint's own architecture (`662c1506`)
+
+- **Fingerprint recipe 2.** The training part builds the checkpoint's own architecture (block groups, SE, ReZero, activations, heads, encoding, compute type) from a fixed init seed and hashes one dropout SGD step's losses, weights and velocity. Before, it used a fixed tiny network, so a change in a block type that network lacked went undetected.
+  - Recipe-1 fingerprints never match recipe 2.
+  - Cost on the default preset (8.45M parameters): about 2.3–2.5 s, once per process per architecture.
+
 ## 2026-10-02 CDT — A rebuild is a resume gap only when it changes what the run computes (`d0189244`, `10a7fe54`)
 
 - **Behavior fingerprint.** Every trainer-state save records `rng.behavior_fingerprint` (recipe 1): the SHA-256 of a fixed micro-computation covering board encoding, seeded replay-buffer draws (uniform, stratified, length-tilted), Dirichlet-noised move sampling, MPSGraph's dropout Philox derivation, and one dropout SGD step of a fixed tiny network with the checkpoint's numerics, hashed bit for bit. A resume under another build or OS recomputes it (about 0.45 s, once per process):

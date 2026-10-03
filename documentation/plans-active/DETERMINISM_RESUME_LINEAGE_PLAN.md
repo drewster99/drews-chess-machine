@@ -2087,12 +2087,47 @@ baseline.
       the checkpoint's own architecture. The recipe uses a fixed tiny
       network with the checkpoint's numerics, so an op that only a larger
       or different block recipe uses is not exercised.
+      *Superseded by recipe 2 (`662c1506`) — see below.*
   - **Merged main `ca777ae9` (`921d77ee`)**, which fixed the
     `SessionResumeSummaryTests` fixture.
   - **Tests (final tree).** 44 related classes: 376 tests, 0 failures.
   - **Still awaiting the owner:** folding P5's flat `init_seed` /
     `init_scheme` keys (and `InitSeedRecordingTests`) into the record, and
     train-vs-UCI session folders with `--save-replay-buffer`.
+- **Fourth pass (2026-10-02): fingerprint recipe 2 (`662c1506`).**
+  Coordinator decision, per the owner's intent that a rebuild is a gap only
+  if it prevents an exact resume.
+  - The training part now builds the checkpoint's **own** architecture —
+    block groups, SE, ReZero, activations, heads, input encoding and compute
+    data type — from the recipe's fixed init seed, never the trained
+    weights. It runs one dropout SGD step (the step includes the
+    value-baseline forward pass) on a batch from the recipe buffer, and
+    hashes the losses plus the exported weights and velocity.
+  - The buffer is filled the way `ActiveGame` flushes a game: stored frames,
+    newest ply first. History encodings therefore rebuild their stacks from
+    it.
+  - The sampler, encoding, Dirichlet move-sampling and Philox parts are
+    unchanged.
+  - `recipe` moves 1 → 2. A recipe-1 fingerprint never matches, so a file
+    saved under it resumes with a `build` / `os` gap if either changed.
+  - `Settings` is now (architecture, policy-tail precision). The
+    architecture's serialized form is not hashed — only what it computes —
+    so a new Codable field cannot read as a behavior change.
+  - **Cost on the default preset (8,445,748 parameters): 2.3–2.5 s.** The
+    first run, before the float arrays were hashed in one update each, took
+    3.7–7.4 s; the bulk update gives the same digest. It is computed once per
+    process per (architecture, policy-tail precision) and cached, so Play
+    and Train, corpus replay and train-vs-UCI pay it once at run start.
+  - The same 8.45M-preset digest came out of two separate test processes on
+    different builds.
+  - New tests:
+    - an SE-reduction-ratio-only change gives a different fingerprint;
+    - a history-encoding (`full10ply200`) fingerprint repeats;
+    - a recipe-1 fingerprint is a `build` gap.
+
+    The numerics tests now vary the architecture's compute type and input
+    encoding. All 9 `BehaviorFingerprintTests` pass, as do the lineage and
+    resume classes (68 tests across 6 classes).
 
 **P10 — Provenance + carry-forward.** `[RUN]` formatter (`Logging/`), recorder
 fields, B4 fix. Tests: derive → train → save keeps `derivation_history`; `[RUN]`
