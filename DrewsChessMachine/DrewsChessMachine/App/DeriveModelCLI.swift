@@ -33,7 +33,6 @@ enum DeriveModelCLI {
     static let initSeedFlag = "--init-seed"
     static let graftToFlag = "--graft-to"
     static let graftMapFlag = "--graft-map"
-    static let helpFlag = "--help"
 
     /// `--derive-model --help` text, generated from the operation catalog.
     static var helpText: String {
@@ -85,7 +84,9 @@ enum DeriveModelCLI {
 
     /// Inspects `rawArgs` for `--derive-model`; if present, parses, runs, and
     /// exits (never returns). Must be called on the main thread (it mints the
-    /// ModelID, which is main-actor isolated).
+    /// ModelID, which is main-actor isolated). `--derive-model --help` (or
+    /// `-h`) never gets here: `CommandLineHelp.handleIfRequested` runs first
+    /// at launch and prints `helpText` for it.
     static func handleIfPresent(rawArgs: [String]) {
         guard rawArgs.contains(flag) else { return }
 
@@ -94,16 +95,11 @@ enum DeriveModelCLI {
             Darwin.exit(code)
         }
 
-        if rawArgs.contains(helpFlag) {
-            print(helpText)
-            Darwin.exit(0)
-        }
-
         let operationFlags = Set(ModelDerivation.operationKinds.map(\.flag))
         let allowedFlags: Set<String> = Set([flag, fromFlag, outFlag, groupFlag, initSeedFlag, graftToFlag, graftMapFlag])
             .union(operationFlags)
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
-            fail("does not accept '\(bad)' (see \(flag) \(helpFlag))", 90)
+            fail("does not accept '\(bad)' (see \(flag) \(CommandLineHelp.longFlag))", 90)
         }
 
         /// Every value following an occurrence of `f`.
@@ -162,7 +158,7 @@ enum DeriveModelCLI {
             }
         }
         guard !operations.isEmpty else {
-            fail("no operation requested; available: \(ModelDerivation.operationKinds.map(\.flag).joined(separator: ", ")) (see \(flag) \(helpFlag))", 94)
+            fail("no operation requested; available: \(ModelDerivation.operationKinds.map(\.flag).joined(separator: ", ")) (see \(flag) \(CommandLineHelp.longFlag))", 94)
         }
         if let seedText = single(initSeedFlag) {
             guard let seed = UInt64(strictDecimal: seedText) else {
