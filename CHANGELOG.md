@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-03 01:55 CDT — Segment-indexed step-file names; legal-mass-collapse detector persisted (`fc8eb2fa`, `132d9e70`)
+
+- **Step files carry the segment index** (`fc8eb2fa`, determinism plan C1 #26). An exact resume of a recorded run writes `<stem>-replay-seg<k>-step<N>` (`-vsuci-seg<k>-step<N>`, or `<stem>-seg<k>-step<N>` for a stem without a tag marker), `k` its lineage segment index, so a resumed segment can keep its `--out-model` stem. Segment 0, a fresh run, a branch and a resume of an unrecorded file write no marker, so every existing name is unchanged. `LineageTracker.segmentIndex(exactResumeOf:)` is the one rule, shared by the lineage record and `EnumeratedCheckpointNaming`; `TrainerOutputFileGuard` refuses only reachable step files at the run's own segment index.
+- **`experiments/probe_loop.sh` `PROBE_SEGMENT`** selects a resumed segment's `-replay-seg<k>-step<N>` files (default 0, the old names). Probe loops already running keep their behavior. The tracker finds a lineage-recorded segment's files by `segment_id` in their headers; the `enum_stem` / `discover-stems` globs remain for runs before lineage.
+- **The legal-mass-collapse detector survives a save** (`132d9e70`, C1 #20). Its probe window and grace progress move from closure state in the training task to `LegalMassCollapseDetectorBox`, held by `SessionController` like the diversity tracker. Session saves record `legal_mass_collapse_detector` `{legal_mass_window, grace_elapsed_sec}`; a resume restores it and logs `[RESUME] legal-mass collapse detector: …` (or that it starts fresh when the session did not record it). Grace is carried as time used and re-anchored at the first observed SGD step, so buffer refill spends none. Older sessions decode without the field.
+- Tests: `SegmentIndexedCheckpointNamingTests` (5), `LegalMassCollapseDetectorStateTests` (4); existing call sites pass `segmentIndex: 0`.
+
 ## 2026-10-03 CDT — Last-save rule shared by both CLI runners; sessions_summary.py fixed (`e6254573`, `4a04d17b`)
 
 - **A failed final or abort save fails corpus replay** (`e6254573`), as it already did train-vs-UCI: the last save is the run's only record of its end state and has no next attempt. Both runners call `TrainerSaveFailureStreak.requireLastSaveSucceeded` (throws `LastSaveFailedError`); train-vs-UCI's own error case is gone. No `results.json` is written. Tests: `FinalTrainerSaveFailureTests` (the real replay loop writing into a read-only folder; both cases exited cleanly before), `TrainerSaveFailureStreakTests`.

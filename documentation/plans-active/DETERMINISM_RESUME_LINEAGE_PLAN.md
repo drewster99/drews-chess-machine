@@ -2194,11 +2194,15 @@ baseline.
     are already refused (`TrainerOutputFileGuard`). The name change touches
     `EnumeratedCheckpointNaming` and P11's `discover-stems`, so it should be
     coordinated with the tracker.
+    *Done (2026-10-03, `fc8eb2fa`) — see the sixth pass.*
   - #20's legal-mass-collapse detector window and grace anchor (closure
     state in the training task) are not persisted. A resume restarts its
     grace period.
+    *Done (2026-10-03, `132d9e70`) — see the sixth pass.*
   - `sample()` µs versus A2.2; the C6 step-7 end-to-end run and the GUI
     validation runs (owner-run).
+    *Still remaining after the sixth pass: each needs a GPU-idle machine or
+    the owner.*
 - **Third pass (2026-10-02): owner decisions.**
   - **Removed (`10a7fe54`, owner-approved).**
     `PolicyTailPrecisionResume.exactResumeDecision` and `guiNotExactLine` are
@@ -2316,6 +2320,63 @@ baseline.
   - New tests: a recipe-2 fingerprint is a `build` gap; changing the per-game
     cap, the draw cap or the length target of the recipe's binding set changes
     the sampler-draw digest (`BehaviorFingerprint.samplerDrawsDigest`).
+- **Sixth pass (2026-10-03): #26 and the legal-mass-collapse detector.**
+  - **#26: segment-indexed step names (`fc8eb2fa`).**
+    - An exact resume of a recorded run writes
+      `<stem>-replay-seg<k>-step<N>` (`-vsuci-seg<k>-…`, or
+      `<stem>-seg<k>-step<N>` for a stem with no tag marker), `k` its lineage
+      segment index. Segment 0 writes no marker, so every existing name and
+      every running probe loop is unchanged.
+    - `LineageTracker.segmentIndex(exactResumeOf:)` is the one rule: 0 for a
+      fresh run, a branch, or a resume of a file without a lineage record;
+      the parent's index + 1 for an exact resume of a recorded file. Both
+      CLI runners compute it in pre-flight from the start file, before any
+      training, and the lineage record uses the same function.
+    - `EnumeratedCheckpointNaming` takes the index. A stem's parser accepts
+      only its own segment's files (`seg1` never matches `seg10`, `seg01`
+      or `seg0`). The any-stem parser tries both readings of a `-seg<k>`
+      suffix — part of the stem, or the marker — and keeps a reading only
+      when rebuilding the name gives the same string.
+    - `TrainerOutputFileGuard` therefore refuses reachable step files at the
+      run's own segment index; another segment's files under the same stem
+      no longer block it. Its message and the `--help` text say so.
+    - Tracker (P11): a lineage-recorded segment's files are found by
+      `segment_id` in their headers over every `.safetensors` file, so the
+      new names need no tracker change. `enum_stem` and `discover-stems`
+      (`-replay-step*` globs) stay for runs before lineage; `replay.py`'s
+      `enum_specs` docstring says so.
+    - `experiments/probe_loop.sh`: `PROBE_SEGMENT` (default 0, validated as a
+      non-negative integer without leading zeros) selects
+      `<stem>-replay-seg<k>-step<N>`. A loop already running keeps the old
+      behavior. `probe_record.py` takes the step from the caller, so it is
+      unchanged.
+    - `CLAUDE.md` run-tracking section updated.
+  - **Legal-mass-collapse detector state (`132d9e70`, #20).**
+    - The probe window and grace progress move from closure state in the
+      training task to `LegalMassCollapseDetectorBox`, owned by
+      `SessionController` with the diversity tracker's lifetime: Stop and
+      continue keeps it, a new session or a resume replaces it.
+    - Session saves record `legal_mass_collapse_detector`
+      `{legal_mass_window, grace_elapsed_sec}` (optional, so older sessions
+      decode without it). A resume restores it and logs `[RESUME] legal-mass
+      collapse detector: N probe(s) restored, grace used Xs`, or that it
+      starts fresh when the session did not record it.
+    - Grace is stored as the time already used. On resume the anchor is
+      set at the first observed SGD step to `now − used`, so buffer refill
+      spends none of it. A restored window longer than the current
+      capacity is trimmed to the newest readings at the next probe.
+  - **Tests.** New `SegmentIndexedCheckpointNamingTests` (5) and
+    `LegalMassCollapseDetectorStateTests` (4). `TrainerOutputFileGuardTests`,
+    `TrainVsUciSessionTests` and `ReplayRunnerPreflightTests` call sites pass
+    `segmentIndex: 0` (a new required argument); no expectation changed.
+    Twelve related classes: 128 tests, 0 failures; dashboard Python tests:
+    66, OK. The new tests use API added by these commits, so before them
+    they fail to compile rather than fail an assertion.
+  - **Still remaining (owner or a GPU-idle machine):** `sample()` µs versus
+    A2.2 in a Release build; the C6 step-7 end-to-end run
+    (`scripts/resume_equivalence.sh`); the GUI validation runs and
+    screenshots; an end-to-end corpus-replay resume that writes
+    `-replay-seg1-step*` files, probed with `PROBE_SEGMENT=1`.
 
 **P10 — Provenance + carry-forward.** `[RUN]` formatter (`Logging/`), recorder
 fields, B4 fix. Tests: derive → train → save keeps `derivation_history`; `[RUN]`
