@@ -19,25 +19,20 @@ enum ChessMPSNetworkError: LocalizedError {
 
 /// How to initialize the network weights.
 enum NetworkInitMode {
-    /// He-initialized random weights — untrained network. `initSeed` is the
-    /// model's init seed: the parent of its initialization streams, starting
-    /// with the batch-norm calibration walk
-    /// (`DCMRandomStreams.batchNormCalibrationGenerator(initSeed:)`). A
-    /// network whose weights and batch-norm statistics are replaced by a
-    /// load right after it is built (a load container) passes
-    /// `RunRandomSeed.systemDrawnSeed()`: nothing of its initialization
-    /// survives.
+    /// An untrained network from the init seed `initSeed`: every random
+    /// weight drawn by `WeightInitScheme`, and the batch-norm running
+    /// statistics calibrated on a warmup walk from the seed's own stream
+    /// (`DCMRandomStreams.batchNormCalibrationGenerator(initSeed:)`). The
+    /// same seed gives the same network on every machine.
     case randomWeights(initSeed: UInt64)
 
     /// A container whose weights and batch-norm statistics are replaced by a
     /// load before first use (inference mirrors, arena and probe networks,
-    /// checkpoint verification, a run continuing from a model file). Nothing
-    /// of its initialization survives the load, so it is built from a
-    /// system-drawn init seed. (Per-tensor initialization will make this a
-    /// mode that skips initialization altogether.)
-    static var overwrittenByLoad: NetworkInitMode {
-        .randomWeights(initSeed: RunRandomSeed.systemDrawnSeed())
-    }
+    /// checkpoint verification, a run continuing from a model file): no
+    /// random draw, no calibration, and the network refuses to evaluate
+    /// until `loadWeights` has run.
+    case overwrittenByLoad
+
     /// Load a previously serialized MPSGraphExecutable package.
     case package(URL)
 }
@@ -65,6 +60,10 @@ final class ChessMPSNetwork: @unchecked Sendable {
 
     /// Time taken to build the graph and initialize weights, in milliseconds.
     let buildTimeMs: Double
+
+    /// How the weights were initialized: the init seed of a fresh network,
+    /// or `overwrittenByLoad` for one built to receive loaded weights.
+    var initialization: WeightInitialization { network.initialization }
 
     /// Optional stable identity assigned externally by the UI layer.
     /// See `ModelID` and `sampling-parameters.md` for the mint /
@@ -95,27 +94,25 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// batched forward, ~10s of ms; happens exactly once per fresh
     /// random-init network.
     ///
-    /// `.package` (not yet implemented) would skip warmup — a loaded
-    /// package already carries trained running stats. Sites that
-    /// build a `.randomWeights` container and immediately call
-    /// `loadWeights(_:)` on it (candidate inference network, arena
-    /// snapshot, checkpoint verification scratch) pay the warmup cost
-    /// even though the loaded weights overwrite it; the cost is
-    /// negligible and the alternative — multiple init modes one of
-    /// which is silently broken until `loadWeights` is called — is
-    /// the kind of footgun this engine has spent debugging effort on
-    /// before.
+    /// `.overwrittenByLoad` skips both the random draw and the warmup — a
+    /// loaded file carries trained running stats. It is for sites that load
+    /// right after building (candidate inference network, arena snapshot,
+    /// checkpoint verification scratch). The footgun such a mode used to be —
+    /// a network that silently evaluates garbage until loaded — is closed by
+    /// the network itself: it refuses to evaluate, export or compute
+    /// statistics until `loadWeights` has run.
+    ///
+    /// `.package` (not yet implemented) would skip warmup too.
     init(_ mode: NetworkInitMode, arch: NetworkArchitecture = .current) throws {
         let start = CFAbsoluteTimeGetCurrent()
 
         switch mode {
         case .randomWeights(let initSeed):
-            let net = try ChessNetwork(arch: arch)
-            net.commandQueue.label = "ChessMPSNetwork.net(init)"
-            try Self.calibrateBNRunningStats(
-                into: net,
-                random: DCMRandomStreams.batchNormCalibrationGenerator(initSeed: initSeed)
-            )
+            network = try Self.calibratedFreshNetwork(arch: arch, initSeed: initSeed)
+
+        case .overwrittenByLoad:
+            let net = try ChessNetwork(arch: arch, initialization: .overwrittenByLoad)
+            net.commandQueue.label = "ChessMPSNetwork.net(load)"
             network = net
 
         case .package:
@@ -128,6 +125,16 @@ final class ChessMPSNetwork: @unchecked Sendable {
         }
 
         buildTimeMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+    }
+
+    /// A freshly initialized inference network with its BN running
+    /// statistics calibrated from a warmup game walked under the same init
+    /// seed.
+    private static func calibratedFreshNetwork(arch: NetworkArchitecture, initSeed: UInt64) throws -> ChessNetwork {
+        let net = try ChessNetwork(arch: arch, initialization: .seeded(initSeed: initSeed))
+        net.commandQueue.label = "ChessMPSNetwork.net(init)"
+        try calibrateBNRunningStats(into: net, random: DCMRandomStreams.batchNormCalibrationGenerator(initSeed: initSeed))
+        return net
     }
 
     /// Number of plies in the BN warmup batch. ~64 plies × 64 spatial
@@ -201,12 +208,12 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// non-async `init(_:)` so the network is fully calibrated by the
     /// time it's handed back to the caller.
     private static func calibrateBNRunningStats(into inference: ChessNetwork, random: DCMRandom) throws {
-        // Build a parallel training-mode network. Its trainable weights
-        // are independently He-init at first; we copy `inference`'s in
-        // so the batch stats reflect the inference network's actual
-        // weight realization (different random seed → different
-        // activation distribution → different needed running stats).
-        let trainingNet = try ChessNetwork(arch: inference.arch, bnMode: .training)
+        // Build a parallel training-mode network that receives
+        // `inference`'s weights, so the batch stats reflect the inference
+        // network's actual weight realization (different weights →
+        // different activation distribution → different needed running
+        // stats). It is loaded before any use, so it draws nothing itself.
+        let trainingNet = try ChessNetwork(arch: inference.arch, bnMode: .training, initialization: .overwrittenByLoad)
         trainingNet.commandQueue.label = "calibrateBNRunningStats trainingNet"
         var walkRandom = random
         let boards = warmupBatch(encoding: inference.arch.inputEncoding, random: &walkRandom)

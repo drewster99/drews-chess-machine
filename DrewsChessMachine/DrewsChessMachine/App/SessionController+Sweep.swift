@@ -44,7 +44,7 @@ extension SessionController {
             // and small batches don't inherit overfit weights from prior
             // continuous-training runs.
             do {
-                try await trainer.resetNetwork()
+                try await trainer.resetNetwork(initialization: .drawnSeed())
             } catch {
                 await MainActor.run {
                     trainingError = "Reset failed: \(error.localizedDescription)"

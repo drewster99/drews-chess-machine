@@ -25,6 +25,7 @@ enum DeriveModelCLI {
     static let fromFlag = "--from"
     static let outFlag = "--out"
     static let groupFlag = "--group"
+    static let initSeedFlag = "--init-seed"
     static let helpFlag = "--help"
 
     /// `--derive-model --help` text, generated from the operation catalog.
@@ -42,6 +43,8 @@ enum DeriveModelCLI {
             "  \(outFlag) <path>       destination; must end in .safetensors and must not exist",
             "  \(groupFlag) <index>    0-based block group an operation applies to (repeatable);",
             "                   omitted = every group the operation applies to",
+            "  \(initSeedFlag) <u64>   init seed for operations that draw weights (decimal UInt64);",
+            "                   omitted = a drawn seed; either way it is recorded in derivation_history",
             "",
             "operations:",
         ]
@@ -71,7 +74,7 @@ enum DeriveModelCLI {
         }
 
         let operationFlags = Set(ModelDerivation.operationKinds.map(\.flag))
-        let allowedFlags: Set<String> = Set([flag, fromFlag, outFlag, groupFlag]).union(operationFlags)
+        let allowedFlags: Set<String> = Set([flag, fromFlag, outFlag, groupFlag, initSeedFlag]).union(operationFlags)
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
             fail("does not accept '\(bad)' (see \(flag) \(helpFlag))", 90)
         }
@@ -120,6 +123,20 @@ enum DeriveModelCLI {
         guard !operations.isEmpty else {
             fail("no operation requested; available: \(ModelDerivation.operationKinds.map(\.flag).joined(separator: ", ")) (see \(flag) \(helpFlag))", 94)
         }
+        if let seedText = single(initSeedFlag) {
+            guard let seed = UInt64(seedText, radix: 10), !seedText.hasPrefix("+") else {
+                fail("\(initSeedFlag) '\(seedText)' is not a decimal UInt64", 93)
+            }
+            var anyDraws = false
+            operations = operations.map { operation in
+                guard let seBeta = operation as? SetSEBetaInitDeriveOperation, seBeta.drawsWeights else { return operation }
+                anyDraws = true
+                return seBeta.withInitSeed(seed)
+            }
+            if !anyDraws {
+                fail("\(initSeedFlag) was given but no requested operation draws weights", 94)
+            }
+        }
         if !groupIndices.isEmpty, !anyOperationTakesGroups {
             fail("\(groupFlag) was given but no requested operation accepts it", 94)
         }
@@ -163,6 +180,7 @@ enum DeriveModelCLI {
             fail("\(error)", 97)
         }
         result.sourceArchitectureFormat.logLegacyResolutions()
+        SessionLogger.shared.log(RunProvenanceLine.line(record: result.lineage, seed: nil))
 
         do {
             try FileManager.default.createDirectory(at: outURL.deletingLastPathComponent(), withIntermediateDirectories: true)

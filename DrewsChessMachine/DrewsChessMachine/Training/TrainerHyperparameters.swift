@@ -151,6 +151,7 @@ extension ChessTrainer {
         dropoutStream: DCMRandom,
         hyperparameters: TrainerHyperparameters,
         arch: NetworkArchitecture,
+        initialization: WeightInitialization,
         policyTailPrecision: ChessNetwork.PolicyTailPrecision = .process
     ) throws {
         try self.init(
@@ -173,6 +174,7 @@ extension ChessTrainer {
             sqrtBatchScalingForLR: hyperparameters.sqrtBatchScalingForLR,
             lrWarmupSteps: hyperparameters.lrWarmupSteps,
             arch: arch,
+            initialization: initialization,
             policyTailPrecision: policyTailPrecision
         )
         hyperparameters.apply(to: self)

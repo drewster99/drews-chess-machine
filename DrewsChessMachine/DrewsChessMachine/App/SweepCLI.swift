@@ -41,7 +41,8 @@ enum SweepCLI {
                 // no resetNetwork / model load is needed.
                 let trainer = try ChessTrainer(
                     // A throughput benchmark: no run, so no run seed.
-                    dropoutStream: DCMRandom.seededFromSystem()
+                    dropoutStream: DCMRandom.seededFromSystem(),
+                    initialization: .drawnSeed()
                 )
                 // Honour the KL-probe cadence here too. The trainer's own
                 // property default would otherwise silently win on this path

@@ -115,7 +115,8 @@ enum ArchSweepCLI {
                 let trainer = try ChessTrainer(
                     // A build/step-time benchmark: no run, so no run seed.
                     dropoutStream: DCMRandom.seededFromSystem(),
-                    arch: arch
+                    arch: arch,
+                    initialization: .drawnSeed()
                 )
                 let buildMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
                 emit(["event": "build", "blocks": n, "params": arch.parameterCount, "buildMs": buildMs])

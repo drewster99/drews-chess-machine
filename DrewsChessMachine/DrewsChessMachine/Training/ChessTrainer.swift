@@ -1783,7 +1783,7 @@ final class ChessTrainer: @unchecked Sendable {
     /// Pre-allocated scalar ND array for the learning-rate feed.
     /// Written with the current `learningRate` on each step so
     /// the value can change between steps without rebuilding the
-    /// graph. Recreated in `resetNetwork()` alongside the feed
+    /// graph. Recreated in `resetNetwork(initialization:)` alongside the feed
     /// cache so the new graph's placeholder maps to a fresh
     /// tensor-data wrapper.
     private var lrNDArray: MPSNDArray
@@ -2060,6 +2060,7 @@ final class ChessTrainer: @unchecked Sendable {
         sqrtBatchScalingForLR: Bool = SqrtBatchScalingLR.declaredDefault,
         lrWarmupSteps: Int = LRWarmupSteps.declaredDefault,
         arch: NetworkArchitecture = .current,
+        initialization: WeightInitialization,
         executableOptimizationLevel: MPSGraphOptimization = .level1,
         splitWorkingWeightSync: Bool = true,
         policyTailPrecision: ChessNetwork.PolicyTailPrecision = .process,
@@ -2090,7 +2091,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyTailPrecision = policyTailPrecision
         self.disableAutoLayoutConversion = disableAutoLayoutConversion
         self.reducedPrecisionFastMathRaw = reducedPrecisionFastMathRaw
-        let net = try ChessNetwork(arch: arch, bnMode: .training,
+        let net = try ChessNetwork(arch: arch, bnMode: .training, initialization: initialization,
                                    policyTailPrecision: policyTailPrecision,
                                    disableAutoLayoutConversion: disableAutoLayoutConversion,
                                    reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
@@ -2311,20 +2312,22 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
-    /// Tear down the current training-mode network and build a fresh one.
-    /// Used at the start of a sweep so each run starts from random weights
-    /// rather than whatever the previous run left behind. Throws if the
-    /// underlying ChessNetwork init fails (Metal/device problems) or if
-    /// gradient lookup fails for any trainable variable.
-    func resetNetwork() async throws {
+    /// Tear down the current training-mode network and build a fresh one
+    /// initialized as `initialization` says: a drawn or given init seed (the
+    /// start of a sweep, so each run starts from fresh weights rather than
+    /// whatever the previous run left behind), or `overwrittenByLoad` when the
+    /// caller loads trainer weights right after. Throws if the underlying
+    /// ChessNetwork init fails (Metal/device problems) or if gradient lookup
+    /// fails for any trainable variable.
+    func resetNetwork(initialization: WeightInitialization) async throws {
         noteWeightsReplaced()
         try await enqueue {
-            try self.internalResetNetwork()
+            try self.internalResetNetwork(initialization: initialization)
         }
     }
 
-    private func internalResetNetwork() throws {
-        let net = try ChessNetwork(arch: arch, bnMode: .training,
+    private func internalResetNetwork(initialization: WeightInitialization) throws {
+        let net = try ChessNetwork(arch: arch, bnMode: .training, initialization: initialization,
                                    policyTailPrecision: policyTailPrecision,
                                    disableAutoLayoutConversion: disableAutoLayoutConversion,
                                    reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
@@ -4476,6 +4479,7 @@ final class ChessTrainer: @unchecked Sendable {
     }
 
     private func internalTrainStep(batchSize: Int, queueWaitMs: Double = 0) throws -> TrainStepTiming {
+        try network.requireLoadedWeights("trainStep")
         let totalStart = CFAbsoluteTimeGetCurrent()
         let stepIndex = syntheticTrainStepCount
         syntheticTrainStepCount += 1
@@ -4621,6 +4625,7 @@ final class ChessTrainer: @unchecked Sendable {
             let sampledBatchDrawFraction: Double
         }
         let phase1: Phase1? = try await enqueue { [batchSize] in
+            try self.network.requireLoadedWeights("trainStep")
             let phase1Start = CFAbsoluteTimeGetCurrent()
             self.ensureReplayBatchCapacity(batchSize)
             guard
@@ -6273,7 +6278,7 @@ final class ChessTrainer: @unchecked Sendable {
     /// lazily on first use. The three ND arrays are sized exactly for
     /// this batch size; the wrappers and the feeds dict are built
     /// once per size and kept for the trainer's lifetime (or until
-    /// `resetNetwork()` clears the cache).
+    /// `resetNetwork(initialization:)` clears the cache).
     private func feedsForBatch(_ batchSize: Int) -> BatchFeeds {
         if let existing = feedCache[batchSize] {
             return existing
@@ -7314,7 +7319,7 @@ final class ChessTrainer: @unchecked Sendable {
     /// `cancelled` from the UI to stop a sweep early — checked between steps.
     ///
     /// The trainer's network is **not** reset by this method. Callers that
-    /// want fresh weights should call `resetNetwork()` first. Loss across a
+    /// want fresh weights should call `resetNetwork(initialization:)` first. Loss across a
     /// long sweep will drift downward as SGD overfits the random inputs;
     /// that's harmless for timing purposes.
     func runSweep(
@@ -7468,7 +7473,7 @@ final class ChessTrainer: @unchecked Sendable {
         // `loadWeights` into an inference network. Reset back to fresh
         // random weights + factory BN stats (zero mean, unit var) so the
         // trainer is in a clean state for whatever runs next.
-        try await self.resetNetwork()
+        try await self.resetNetwork(initialization: .drawnSeed())
 
         return results
     }

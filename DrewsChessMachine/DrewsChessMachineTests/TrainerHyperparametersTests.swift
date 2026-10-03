@@ -137,7 +137,8 @@ final class TrainerHyperparametersTests: XCTestCase {
         let trainer = try ChessTrainer(
             dropoutStream: DCMRandom(seed: 1),
             hyperparameters: TrainerHyperparameters(TrainingParameters.shared.snapshot()),
-            arch: .current
+            arch: .current,
+            initialization: .seeded(initSeed: 1)
         )
         // Non-inverted cosine: trough at the period boundary, peak at the
         // midpoint — for both channels.
@@ -157,7 +158,8 @@ final class TrainerHyperparametersTests: XCTestCase {
         let trainer = try ChessTrainer(
             dropoutStream: DCMRandom(seed: 1),
             hyperparameters: TrainerHyperparameters(TrainingParameters.shared.snapshot()),
-            arch: .current
+            arch: .current,
+            initialization: .seeded(initSeed: 1)
         )
         for step in [0, 1, 250, 500, 999, 12_345] {
             XCTAssertEqual(trainer.effectiveLearningRate(forBatchSize: 4096, completedSteps: step), Float(0.002), "step \(step)")
@@ -185,8 +187,8 @@ final class TrainerHyperparametersTests: XCTestCase {
         p.klProbeInterval = 100
         let snapshot = p.snapshot()
 
-        let cliTrainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: try ReplayParams(snapshot).trainer, arch: .current)
-        let guiTrainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: .current)
+        let cliTrainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: try ReplayParams(snapshot).trainer, arch: .current, initialization: .seeded(initSeed: 1))
+        let guiTrainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: .current, initialization: .seeded(initSeed: 2))
         TrainerHyperparameters(snapshot).apply(to: guiTrainer)
 
         XCTAssertEqual(

@@ -23,6 +23,9 @@ enum ChessNetworkError: LocalizedError {
     /// (out-of-memory, timeout, kernel fault). Surfaced instead of consuming
     /// garbage result tensors.
     case gpuCommandFailed(stage: String, status: MTLCommandBufferStatus, error: String?)
+    /// The network was built `overwrittenByLoad` and asked to evaluate,
+    /// export or train before `loadWeights` gave it real weights.
+    case weightsNotLoaded(operation: String)
 
     var errorDescription: String? {
         switch self {
@@ -46,6 +49,8 @@ enum ChessNetworkError: LocalizedError {
             return "Inference input size mismatch: expected \(expected) floats, got \(got)"
         case .gpuCommandFailed(let stage, let status, let error):
             return "GPU command buffer failed during \(stage): status=\(status), error=\(error ?? "none")."
+        case .weightsNotLoaded(let operation):
+            return "\(operation) on a network built to receive loaded weights, before any weights were loaded"
         }
     }
 }
@@ -141,7 +146,7 @@ final class ChessNetwork: @unchecked Sendable {
     /// global static — it is per-architecture (`arch.computeDataType`,
     /// mapped to an `MPSDataType` by `mpsDataType(for:)`). The conversion
     /// core (`makeWeightData` Float32 → dtype, the two `readFloats`
-    /// overloads dtype → Float32, `heInitData*`, `onesData`/`zerosData`,
+    /// overloads dtype → Float32, the init-data builders, `onesData`/`zerosData`,
     /// `writeFloats`, `decodeWeightData`, `bytesPerWeightElement`,
     /// `weightRelativeEpsilon`) all take an explicit `dataType:` so a net
     /// built fp32 and a net built bf16 can coexist; on-disk weights always
@@ -525,6 +530,24 @@ final class ChessNetwork: @unchecked Sendable {
     /// `dataType` for now — per-model precision is a later phase.
     let arch: NetworkArchitecture
 
+    /// How this network's random-init tensors got their first values: a
+    /// seeded draw (the init seed is readable here, for logging and
+    /// recording), or none at all because loaded weights replace them.
+    let initialization: WeightInitialization
+
+    /// True while an `overwrittenByLoad` network has not yet received
+    /// weights. Read and cleared only on `executionQueue` (the gate check and
+    /// `loadWeights` both run there), so the order of a load and a use is the
+    /// queue's order; the lock makes the flag safe to read from tests.
+    private let awaitingWeightLoad: SyncBox<Bool>
+
+    /// Throws unless the network holds real weights — refuses evaluating,
+    /// exporting, training or computing statistics from the zero-filled
+    /// variables of an `overwrittenByLoad` network that was never loaded.
+    func requireLoadedWeights(_ operation: String) throws {
+        if awaitingWeightLoad.value { throw ChessNetworkError.weightsNotLoaded(operation: operation) }
+    }
+
     /// Where the policy head's fp32 tail begins (see `PolicyTailPrecision`).
     let policyTailPrecision: PolicyTailPrecision
 
@@ -560,6 +583,7 @@ final class ChessNetwork: @unchecked Sendable {
     /// `policyTailPrecision` defaults to the process's value
     /// (`PolicyTailPrecision.process`).
     init(arch: NetworkArchitecture = .current, bnMode: BNMode = .inference,
+         initialization: WeightInitialization,
          policyTailPrecision: PolicyTailPrecision = .process,
          disableAutoLayoutConversion: Bool = false,
          reducedPrecisionFastMathRaw: UInt? = nil,
@@ -580,6 +604,8 @@ final class ChessNetwork: @unchecked Sendable {
         let g = MPSGraph()
         graph = g
         self.arch = arch
+        self.initialization = initialization
+        self.awaitingWeightLoad = SyncBox(initialization == .overwrittenByLoad)
         self.policyTailPrecision = policyTailPrecision
         // macOS 27 / Xcode 27 b1 made automatic NCHW->NHWC layout conversion for
         // GPU convolutions the default (`MPSGraphCompilationDescriptor.convertLayoutToNHWC`
@@ -610,6 +636,10 @@ final class ChessNetwork: @unchecked Sendable {
         // Numerics-audit taps: nil (the production default) records nothing and
         // adds no graph nodes, so every production graph is unchanged.
         let taps: AnalysisTapRecorder? = analysisTaps ? AnalysisTapRecorder() : nil
+
+        // Hands every conv / FC weight its initial values by plan name and
+        // checks the build covers the plan exactly (see `TensorInitializer`).
+        let initializer = TensorInitializer(initialization: initialization, architecture: arch)
 
 
         // Input: [batch, inputPlanes, 8, 8]. The placeholder is fp32 — the
@@ -651,8 +681,10 @@ final class ChessNetwork: @unchecked Sendable {
 
         let stemOutC = arch.stemOutputChannels
         let stemWeights = g.variable(
-            with: Self.heInitDataConvOIHW(
-                shape: [stemOutC, arch.inputPlanes, arch.stemConvKernelSize, arch.stemConvKernelSize],
+            with: try initializer.weightData(
+                "stem.conv.weight",
+                nativeShape: [stemOutC, arch.inputPlanes, arch.stemConvKernelSize, arch.stemConvKernelSize],
+                distribution: .heNormal,
                 dataType: computeDType
             ),
             shape: [
@@ -800,6 +832,7 @@ final class ChessNetwork: @unchecked Sendable {
                 bnMode: bnMode,
                 taps: taps,
                 variableDataType: computeDType,
+                initializer: initializer,
                 dropoutRate: dropoutRatePh,
                 dropoutMaskShape: dropoutMaskShapes[spec.channels],
                 dropoutRngState: &dropoutState,
@@ -871,7 +904,9 @@ final class ChessNetwork: @unchecked Sendable {
             let fusionInC = arch.featureSkipCompressInputChannels
             let towerC = arch.towerOutputChannels
             let fusionConvW = g.variable(
-                with: Self.heInitDataConvOIHW(shape: [towerC, fusionInC, 1, 1], dataType: computeDType),
+                with: try initializer.weightData(
+                    "feature_skip.conv.weight", nativeShape: [towerC, fusionInC, 1, 1],
+                    distribution: .heNormal, dataType: computeDType),
                 shape: [NSNumber(value: towerC), NSNumber(value: fusionInC), 1, 1],
                 dataType: computeDType, name: "feature_skip_conv_weights")
             trainables.append(fusionConvW)
@@ -899,10 +934,11 @@ final class ChessNetwork: @unchecked Sendable {
 
         // --- Policy head ---
 
-        let policy = Self.policyHead(
+        let policy = try Self.policyHead(
             graph: g, arch: arch, input: policyHeadInput, inputChannels: arch.policyHeadInputChannels,
             descriptor: conv1x1, bnMode: bnMode, taps: taps, tailPrecision: policyTailPrecision,
             variableDataType: computeDType,
+            initializer: initializer,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
@@ -915,10 +951,11 @@ final class ChessNetwork: @unchecked Sendable {
 
         // --- Value head ---
 
-        let valueHeadOut = Self.valueHead(
+        let valueHeadOut = try Self.valueHead(
             graph: g, arch: arch, input: valueHeadInput, inputChannels: arch.valueHeadInputChannels,
             descriptor: conv1x1, bnMode: bnMode, taps: taps,
             variableDataType: computeDType,
+            initializer: initializer,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
@@ -967,6 +1004,9 @@ final class ChessNetwork: @unchecked Sendable {
         try Self.validateAgainstPlan(
             trainables: trainables, runningStats: runningStats, arch: arch
         )
+        // And every conv / FC weight got its initial values under its plan
+        // name, which is what the per-tensor init seeds are keyed on.
+        try initializer.verifyEveryRandomTensorInitialized()
         bnBatchMeanTensors = batchMeans
         bnBatchVarTensors = batchVars
 
@@ -1153,6 +1193,7 @@ final class ChessNetwork: @unchecked Sendable {
             _ readValueDistribution: () throws -> (win: Float, draw: Float, loss: Float)
         ) throws -> Void
     ) throws {
+        try requireLoadedWeights("evaluate")
         let expected = 1 * arch.inputPlanes * Self.boardSize * Self.boardSize
         guard board.count == expected else {
             throw ChessNetworkError.boardSizeMismatch(expected: expected, got: board.count)
@@ -1275,6 +1316,7 @@ final class ChessNetwork: @unchecked Sendable {
     }
 
     private func internalEvaluateValueDistribution(board: [Float]) throws -> (win: Float, draw: Float, loss: Float) {
+        try requireLoadedWeights("evaluateValueDistribution")
         let expected = 1 * arch.inputPlanes * Self.boardSize * Self.boardSize
         guard board.count == expected else {
             throw ChessNetworkError.boardSizeMismatch(expected: expected, got: board.count)
@@ -1404,6 +1446,7 @@ final class ChessNetwork: @unchecked Sendable {
             UnsafeBufferPointer<Float>
         ) -> Void
     ) throws {
+        try requireLoadedWeights("evaluateBatched")
         // Validation runs synchronously on `executionQueue` after the
         // [Float] has been pinned via `withUnsafeBufferPointer`. `count`
         // and `batchBoards.count` are stable for the rest of the body
@@ -1610,6 +1653,7 @@ final class ChessNetwork: @unchecked Sendable {
         count: Int,
         consume: (MPSGraphTensorData) -> Void
     ) throws {
+        try requireLoadedWeights("computeValueBaseline")
         guard count >= 1 else {
             throw ChessNetworkError.boardSizeMismatch(expected: arch.inputPlanes * Self.boardSize * Self.boardSize, got: 0)
         }
@@ -1822,6 +1866,7 @@ final class ChessNetwork: @unchecked Sendable {
     }
 
     private func internalExportWeights() throws -> [[Float]] {
+        try requireLoadedWeights("exportWeights")
         let allVars = trainableVariables + bnRunningStatsVariables
 
         // Serialize this variable read against the trainer's concurrent SGD
@@ -1927,6 +1972,7 @@ final class ChessNetwork: @unchecked Sendable {
                 targetOperations: weightLoadAssignOps
             )
         }
+        awaitingWeightLoad.value = false
     }
 
     // MARK: - BN Warmup
@@ -1960,6 +2006,7 @@ final class ChessNetwork: @unchecked Sendable {
         boards: [Float],
         count: Int
     ) throws -> (means: [[Float]], vars: [[Float]]) {
+        try requireLoadedWeights("computeBatchStats")
         guard !bnBatchMeanTensors.isEmpty else {
             throw ChessNetworkError.outputMissing(
                 "computeBatchStats: bnBatchMeanTensors is empty — this method requires bnMode = .training"
@@ -2031,6 +2078,7 @@ final class ChessNetwork: @unchecked Sendable {
     }
 
     private func internalEvaluateAnalysisTaps(boards: [Float], count: Int) throws -> [AnalysisTapValues] {
+        try requireLoadedWeights("evaluateAnalysisTaps")
         guard !analysisTapReadbacks.isEmpty else {
             throw ChessNetworkError.outputMissing("evaluateAnalysisTaps: this network was built without analysis taps")
         }
@@ -2588,6 +2636,7 @@ final class ChessNetwork: @unchecked Sendable {
         bnMode: BNMode,
         taps: AnalysisTapRecorder?,
         variableDataType: MPSDataType,
+        initializer: TensorInitializer,
         dropoutRate: MPSGraphTensor?,
         dropoutMaskShape: MPSGraphTensor?,
         dropoutRngState: inout MPSGraphTensor?,
@@ -2599,6 +2648,9 @@ final class ChessNetwork: @unchecked Sendable {
         batchVars: inout [MPSGraphTensor]
     ) throws -> MPSGraphTensor {
         let prefix = "block\(blockIndex)"
+        // The block's tensors in `weightTensorPlan()` (and on disk) — the names
+        // the per-tensor init seeds are keyed on.
+        let planPrefix = "blocks.\(blockIndex)"
         // `inC` is the previous expanded block's width (stem output for block
         // 0); `outC` is this block's own. They differ exactly at a width
         // transition, where conv1 carries the remap on the branch and the
@@ -2698,10 +2750,13 @@ final class ChessNetwork: @unchecked Sendable {
         // Bias-free, He-init conv weight (caller appends to `trainables`).
         // Fan-in derives from the tensor's OWN shape (inCh × k²), never from
         // tower-level fields — per-block widths make any global assumption
-        // wrong, not just stale.
-        func makeConvWeight(_ name: String, _ k: Int, _ inCh: Int, _ outCh: Int) -> MPSGraphTensor {
+        // wrong, not just stale. `name` is the graph variable's stem,
+        // `planName` the tensor's plan (safetensors) name.
+        func makeConvWeight(_ name: String, planName: String, _ k: Int, _ inCh: Int, _ outCh: Int) throws -> MPSGraphTensor {
             graph.variable(
-                with: heInitDataConvOIHW(shape: [outCh, inCh, k, k], dataType: variableDataType),
+                with: try initializer.weightData(
+                    planName, nativeShape: [outCh, inCh, k, k],
+                    distribution: .heNormal, dataType: variableDataType),
                 shape: [NSNumber(value: outCh), NSNumber(value: inCh), NSNumber(value: k), NSNumber(value: k)],
                 dataType: variableDataType,
                 name: "\(name)_weights"
@@ -2729,7 +2784,7 @@ final class ChessNetwork: @unchecked Sendable {
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
             h = activation(graph, h, spec.activationFunction, name: "\(prefix)_act1")
             skipProjInput = h
-            let conv1W = makeConvWeight("\(prefix)_conv1", spec.conv1KernelSize, inC, outC)
+            let conv1W = try makeConvWeight("\(prefix)_conv1", planName: "\(planPrefix).conv1.weight", spec.conv1KernelSize, inC, outC)
             trainables.append(conv1W); shouldDecay.append(true)
             h = graph.convolution2D(h, weights: conv1W, descriptor: conv1Desc, name: "\(prefix)_conv1")
             h = batchNorm(graph: graph, input: h, channels: outC, name: "\(prefix)_bn2", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
@@ -2738,11 +2793,11 @@ final class ChessNetwork: @unchecked Sendable {
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
             h = activation(graph, h, spec.activationFunction, name: "\(prefix)_act2")
             h = try applyChannelDropout(h)
-            let conv2W = makeConvWeight("\(prefix)_conv2", spec.conv2KernelSize, outC, outC)
+            let conv2W = try makeConvWeight("\(prefix)_conv2", planName: "\(planPrefix).conv2.weight", spec.conv2KernelSize, outC, outC)
             trainables.append(conv2W); shouldDecay.append(true)
             z = graph.convolution2D(h, weights: conv2W, descriptor: conv2Desc, name: "\(prefix)_conv2")
         case .post:
-            let conv1W = makeConvWeight("\(prefix)_conv1", spec.conv1KernelSize, inC, outC)
+            let conv1W = try makeConvWeight("\(prefix)_conv1", planName: "\(planPrefix).conv1.weight", spec.conv1KernelSize, inC, outC)
             trainables.append(conv1W); shouldDecay.append(true)
             var h = graph.convolution2D(input, weights: conv1W, descriptor: conv1Desc, name: "\(prefix)_conv1")
             h = batchNorm(graph: graph, input: h, channels: outC, name: "\(prefix)_bn1", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
@@ -2751,7 +2806,7 @@ final class ChessNetwork: @unchecked Sendable {
                 runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
             h = activation(graph, h, spec.activationFunction, name: "\(prefix)_act1")
             h = try applyChannelDropout(h)
-            let conv2W = makeConvWeight("\(prefix)_conv2", spec.conv2KernelSize, outC, outC)
+            let conv2W = try makeConvWeight("\(prefix)_conv2", planName: "\(planPrefix).conv2.weight", spec.conv2KernelSize, outC, outC)
             trainables.append(conv2W); shouldDecay.append(true)
             h = graph.convolution2D(h, weights: conv2W, descriptor: conv2Desc, name: "\(prefix)_conv2")
             z = batchNorm(graph: graph, input: h, channels: outC, name: "\(prefix)_bn2", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
@@ -2766,8 +2821,9 @@ final class ChessNetwork: @unchecked Sendable {
         dropoutRngState = dropoutStateLocal
 
         // SE channel attention (style-dependent; identity when .none).
-        let seOut = applySE(graph: graph, arch: arch, spec: spec, z: z, prefix: prefix,
+        let seOut = try applySE(graph: graph, arch: arch, spec: spec, z: z, prefix: prefix, planPrefix: planPrefix,
             variableDataType: variableDataType,
+            initializer: initializer,
             trainables: &trainables, shouldDecay: &shouldDecay)
 
         // ReZero branch scalar (optional), init `rezeroAlphaInit`, no weight decay.
@@ -2836,7 +2892,7 @@ final class ChessNetwork: @unchecked Sendable {
         var skipSource = input
         var skipProjWeight: MPSGraphTensor? = nil
         if inC != outC {
-            let projW = makeConvWeight("\(prefix)_skip_proj", 1, inC, outC)
+            let projW = try makeConvWeight("\(prefix)_skip_proj", planName: "\(planPrefix).skip_proj.weight", 1, inC, outC)
             skipProjWeight = projW
             let projDesc = try makeConvDescriptor(kernelSize: 1)
             skipSource = graph.convolution2D(
@@ -2879,13 +2935,19 @@ final class ChessNetwork: @unchecked Sendable {
     /// `scaleAndBias`: FC2->2C, `sigmoid(gamma)*x + beta`.
     private static func applySE(
         graph: MPSGraph, arch: NetworkArchitecture, spec: BlockGroup, z: MPSGraphTensor, prefix: String,
+        planPrefix: String,
         variableDataType: MPSDataType,
+        initializer: TensorInitializer,
         trainables: inout [MPSGraphTensor], shouldDecay: inout [Bool]
-    ) -> MPSGraphTensor {
+    ) throws -> MPSGraphTensor {
         guard spec.seStyle != .none else { return z }
         let channels = spec.channels
         let seReduced = channels / spec.seReductionRatio
         let seExpand = spec.seStyle == .scaleAndBias ? 2 * channels : channels
+        // Mirrors `weightTensorPlan()`'s per-style module name.
+        let sePlanPrefix = spec.seStyle == .scaleAndBias
+            ? "\(planPrefix).se_scalebias"
+            : "\(planPrefix).se_attenuate"
 
         // Squeeze: global average pool over [H, W] -> [B, C, 1, 1] -> [B, C].
         var s = graph.mean(of: z, axes: [2, 3], name: "\(prefix)_se_squeeze")
@@ -2895,7 +2957,9 @@ final class ChessNetwork: @unchecked Sendable {
         // (`seActivation`, which may differ from the main path's — a leaky
         // FC1 keeps a gradient through units ReLU would leave dead).
         let fc1 = graph.variable(
-            with: heInitDataFCInOut(shape: [channels, seReduced], dataType: variableDataType),
+            with: try initializer.weightData(
+                "\(sePlanPrefix).fc1.weight", nativeShape: [channels, seReduced],
+                distribution: .heNormal, dataType: variableDataType),
             shape: [NSNumber(value: channels), NSNumber(value: seReduced)],
             dataType: variableDataType, name: "\(prefix)_se_fc1_weights")
         let fc1b = graph.variable(
@@ -2911,24 +2975,13 @@ final class ChessNetwork: @unchecked Sendable {
         // Excite FC2: C/r -> seExpand (Glorot, feeds the sigmoid gate). A
         // zero-β group draws the same Glorot matrix and then zeroes its β
         // columns, so the γ half is initialized exactly as a Glorot-β group's
-        // is and only the additive half starts at "do nothing". The FC2 bias
-        // is zero for both halves in every case.
-        let fc2InitData: Data
-        switch spec.seBetaInit {
-        case .glorot:
-            fc2InitData = glorotInitDataFCInOut(shape: [seReduced, seExpand], dataType: variableDataType)
-        case .zero:
-            precondition(
-                spec.seStyle == .scaleAndBias,
-                "se_beta_init zero on a \(spec.seStyle.rawValue) SE block (validate() rejects this)")
-            var fc2Floats = glorotInitFloatsFCInOut(shape: [seReduced, seExpand])
-            for betaRange in SEScaleAndBiasBetaHalf.nativeWeightRanges(reducedChannels: seReduced, channels: channels) {
-                for index in betaRange { fc2Floats[index] = 0 }
-            }
-            fc2InitData = makeWeightData(fc2Floats, dataType: variableDataType)
-        }
+        // is and only the additive half starts at "do nothing"
+        // (`WeightInitScheme.seFC2NativeValues`). The FC2 bias is zero for both
+        // halves in every case.
         let fc2 = graph.variable(
-            with: fc2InitData,
+            with: try initializer.seFC2Data(
+                "\(sePlanPrefix).fc2.weight", nativeShape: [seReduced, seExpand],
+                group: spec, dataType: variableDataType),
             shape: [NSNumber(value: seReduced), NSNumber(value: seExpand)],
             dataType: variableDataType, name: "\(prefix)_se_fc2_weights")
         let fc2b = graph.variable(
@@ -2989,13 +3042,14 @@ final class ChessNetwork: @unchecked Sendable {
         taps: AnalysisTapRecorder?,
         tailPrecision: PolicyTailPrecision,
         variableDataType: MPSDataType,
+        initializer: TensorInitializer,
         trainables: inout [MPSGraphTensor],
         shouldDecay: inout [Bool],
         runningStats: inout [MPSGraphTensor],
         runningStatsAssignOps: inout [MPSGraphOperation],
         batchMeans: inout [MPSGraphTensor],
         batchVars: inout [MPSGraphTensor]
-    ) -> (output: MPSGraphTensor, finalWeights: MPSGraphTensor) {
+    ) throws -> (output: MPSGraphTensor, finalWeights: MPSGraphTensor) {
         // The first conv's input width. Equals `arch.towerOutputChannels` normally;
         // wider when a routed `concatDirect` feature skip feeds this head. The caller
         // passes `arch.policyHeadInputChannels` so paramCount/weightTensorPlan/builder
@@ -3014,7 +3068,9 @@ final class ChessNetwork: @unchecked Sendable {
             // the fp32 tail is the final conv alone: its input, weights and bias
             // are widened and everything from the conv on runs in fp32.
             let convW = graph.variable(
-                with: heInitDataConvOIHW(shape: [pc, channels, 1, 1], dataType: variableDataType),
+                with: try initializer.weightData(
+                    "policy.conv.weight", nativeShape: [pc, channels, 1, 1],
+                    distribution: .heNormal, dataType: variableDataType),
                 shape: [NSNumber(value: pc), NSNumber(value: channels), 1, 1],
                 dataType: variableDataType, name: "policy_conv_weights")
             let convBias = graph.variable(
@@ -3046,7 +3102,9 @@ final class ChessNetwork: @unchecked Sendable {
             // final conv's large shared row, a per-square error softmax does not
             // cancel; normalizing in fp32 removes most of it.
             let preConvW = graph.variable(
-                with: heInitDataConvOIHW(shape: [pK, channels, 1, 1], dataType: variableDataType),
+                with: try initializer.weightData(
+                    "policy.pre_conv.weight", nativeShape: [pK, channels, 1, 1],
+                    distribution: .heNormal, dataType: variableDataType),
                 shape: [NSNumber(value: pK), NSNumber(value: channels), 1, 1],
                 dataType: variableDataType, name: "policy_pre_conv_weights")
             trainables.append(preConvW); shouldDecay.append(true)
@@ -3068,7 +3126,9 @@ final class ChessNetwork: @unchecked Sendable {
             x = activation(graph, x, arch, name: "policy_pre_act")
             taps?.record("policy_pre_act", x)
             let convW = graph.variable(
-                with: heInitDataConvOIHW(shape: [pc, pK, 1, 1], dataType: variableDataType),
+                with: try initializer.weightData(
+                    "policy.conv.weight", nativeShape: [pc, pK, 1, 1],
+                    distribution: .heNormal, dataType: variableDataType),
                 shape: [NSNumber(value: pc), NSNumber(value: pK), 1, 1],
                 dataType: variableDataType, name: "policy_conv_weights")
             let convBias = graph.variable(
@@ -3094,7 +3154,9 @@ final class ChessNetwork: @unchecked Sendable {
             // 1x1 conv channels -> K -> BN -> act -> flatten(K*64) -> FC(K*64 -> 4864) (+bias).
             // Same fp32 tail boundary as `intermediateConv`: the pre-BN normalize.
             let preConvW = graph.variable(
-                with: heInitDataConvOIHW(shape: [pK, channels, 1, 1], dataType: variableDataType),
+                with: try initializer.weightData(
+                    "policy.pre_conv.weight", nativeShape: [pK, channels, 1, 1],
+                    distribution: .heNormal, dataType: variableDataType),
                 shape: [NSNumber(value: pK), NSNumber(value: channels), 1, 1],
                 dataType: variableDataType, name: "policy_pre_conv_weights")
             trainables.append(preConvW); shouldDecay.append(true)
@@ -3118,7 +3180,9 @@ final class ChessNetwork: @unchecked Sendable {
             let flatSize = pK * Self.boardSize * Self.boardSize
             x = graph.reshape(x, shape: [-1, NSNumber(value: flatSize)], name: "policy_flatten_pre")
             let fcW = graph.variable(
-                with: heInitDataFCInOut(shape: [flatSize, Self.policySize], dataType: variableDataType),
+                with: try initializer.weightData(
+                    "policy.fc.weight", nativeShape: [flatSize, Self.policySize],
+                    distribution: .heNormal, dataType: variableDataType),
                 shape: [NSNumber(value: flatSize), NSNumber(value: Self.policySize)],
                 dataType: variableDataType, name: "policy_fc_weights")
             let fcBias = graph.variable(
@@ -3283,13 +3347,14 @@ final class ChessNetwork: @unchecked Sendable {
         bnMode: BNMode,
         taps: AnalysisTapRecorder?,
         variableDataType: MPSDataType,
+        initializer: TensorInitializer,
         trainables: inout [MPSGraphTensor],
         shouldDecay: inout [Bool],
         runningStats: inout [MPSGraphTensor],
         runningStatsAssignOps: inout [MPSGraphOperation],
         batchMeans: inout [MPSGraphTensor],
         batchVars: inout [MPSGraphTensor]
-    ) -> (scalar: MPSGraphTensor, logits: MPSGraphTensor, probs: MPSGraphTensor) {
+    ) throws -> (scalar: MPSGraphTensor, logits: MPSGraphTensor, probs: MPSGraphTensor) {
         // 1x1 conv: compress the trunk to `valueHeadConvChannels` scoring maps. The
         // input width equals `arch.towerOutputChannels` normally; wider when a routed
         // `concatDirect` feature skip feeds this head (caller passes
@@ -3297,7 +3362,9 @@ final class ChessNetwork: @unchecked Sendable {
         let convChannels = arch.valueHeadConvChannels
         let towerOut = inputChannels
         let convW = graph.variable(
-            with: heInitDataConvOIHW(shape: [convChannels, towerOut, 1, 1], dataType: variableDataType),
+            with: try initializer.weightData(
+                "value.conv.weight", nativeShape: [convChannels, towerOut, 1, 1],
+                distribution: .heNormal, dataType: variableDataType),
             shape: [NSNumber(value: convChannels), NSNumber(value: towerOut), 1, 1],
             dataType: variableDataType,
             name: "value_conv_weights"
@@ -3326,7 +3393,9 @@ final class ChessNetwork: @unchecked Sendable {
         // FC1: flattenSize -> valueHeadHiddenUnits
         let hidden = arch.valueHeadHiddenUnits
         let fc1W = graph.variable(
-            with: heInitDataFCInOut(shape: [flattenSize, hidden], dataType: variableDataType),
+            with: try initializer.weightData(
+                "value.fc1.weight", nativeShape: [flattenSize, hidden],
+                distribution: .heNormal, dataType: variableDataType),
             shape: [NSNumber(value: flattenSize), NSNumber(value: hidden)],
             dataType: variableDataType,
             name: "value_fc1_weights"
@@ -3349,8 +3418,11 @@ final class ChessNetwork: @unchecked Sendable {
         // FC2: hidden -> valueHeadClasses (3 = W/D/L logits, or 1 = scalar pre-tanh).
         let classes = arch.valueHeadClasses
         let fc2Name = arch.valueHeadStyle == .wdlSoftmax ? "value_wdl_fc2" : "value_scalar_fc2"
+        let fc2PlanName = arch.valueHeadStyle == .wdlSoftmax ? "value.wdl_fc2.weight" : "value.scalar_fc2.weight"
         let fc2W = graph.variable(
-            with: heInitDataFCInOut(shape: [hidden, classes], dataType: variableDataType),
+            with: try initializer.weightData(
+                fc2PlanName, nativeShape: [hidden, classes],
+                distribution: .heNormal, dataType: variableDataType),
             shape: [NSNumber(value: hidden), NSNumber(value: classes)],
             dataType: variableDataType,
             name: "\(fc2Name)_weights"
@@ -3412,141 +3484,37 @@ final class ChessNetwork: @unchecked Sendable {
 
     // MARK: - Data Helpers
 
-    /// He initialization: random normal with std = sqrt(2 / fanIn).
+    /// He-normal values (`std = √(2 / fanIn)`) for a tensor of `shape`,
+    /// from a freshly drawn seed, for checking the init distributions.
+    /// Network builds never call this: they draw every tensor by plan name
+    /// through `TensorInitializer`. It shares their one transform
+    /// (`WeightInitScheme.standardNormals`, i.e. `DCMNormalMath`), so its
+    /// statistics are the builds' statistics.
     ///
-    /// `fanIn` must be supplied by the caller because it depends on the
-    /// weight layout, which differs per layer kind. For OIHW conv weights
-    /// `[outC, inC, kH, kW]`, fan_in = inC*kH*kW. For FC weights stored as
-    /// `[in, out]` (the layout this codebase uses with
-    /// `matrixMultiplication(primary: x, secondary: W)`), fan_in = in,
-    /// i.e. the first dimension — the opposite of the conv case. A
-    /// previous implementation that always used `shape.dropFirst()` was
-    /// silently 8× too generous for the then-scalar `value_fc2` ([64, 1])
-    /// and 5.7× too stingy for the prior FC policy head's `policy_fc`
-    /// ([128, 4096]) — both shapes are historical (the value head is now
-    /// W/D/L and the FC policy head became a 1×1 conv), but the fan_in fix
-    /// remains correct for the value head's current FC layers.
-    ///
-    /// Implementation note: this used to be a per-element scalar Box-Muller
-    /// loop. With ~2.9M weights to initialize, that dominated build time. The
-    /// vectorized version below uses Accelerate (vDSP/vForce) on bulk arrays
-    /// of uniform random Floats, which is roughly an order of magnitude
-    /// faster on Apple silicon.
+    /// `fanIn` depends on the weight layout: for an OIHW conv
+    /// `[outC, inC, kH, kW]` it is `inC·kH·kW`; for an FC stored `[in, out]`
+    /// (the layout `matrixMultiplication(primary: x, secondary: W)` uses) it
+    /// is `in`, the first dimension — the opposite of the conv case.
     static func heInitData(shape: [Int], fanIn: Int, dataType: MPSDataType) -> Data {
         precondition(fanIn > 0, "He init: fanIn must be > 0 (got \(fanIn))")
-        let std = sqrt(2.0 / Float(fanIn))
-        let count = shape.reduce(1, *)
-        let values = heInitFloats(count: count, std: std)
-        return makeWeightData(values, dataType: dataType)
+        let std = (2.0 / Float(fanIn)).squareRoot()
+        return makeWeightData(freshScaledNormals(count: shape.reduce(1, *), std: std), dataType: dataType)
     }
 
-    /// He init for an OIHW conv weight tensor `[outC, inC, kH, kW]`.
-    /// Computes fan_in as inC * kH * kW.
-    static func heInitDataConvOIHW(shape: [Int], dataType: MPSDataType) -> Data {
-        precondition(shape.count == 4, "Conv OIHW shape must be 4D (got \(shape))")
-        let fanIn = shape[1] * shape[2] * shape[3]
-        return heInitData(shape: shape, fanIn: fanIn, dataType: dataType)
-    }
-
-    /// He init for an FC weight tensor stored as `[in, out]` to match
-    /// `matrixMultiplication(primary: x, secondary: W)` where x has
-    /// shape `[batch, in]`. Computes fan_in as the first dimension.
-    static func heInitDataFCInOut(shape: [Int], dataType: MPSDataType) -> Data {
-        precondition(shape.count == 2, "FC [in, out] shape must be 2D (got \(shape))")
-        return heInitData(shape: shape, fanIn: shape[0], dataType: dataType)
-    }
-
-    /// Glorot (Xavier) normal init for an FC weight stored as `[in, out]`:
-    /// random normal with `std = sqrt(2 / (fan_in + fan_out))`. Used for
-    /// the SE FC2 weight, whose output feeds the sigmoid gate — Glorot
-    /// targets the activation variance a symmetric saturating nonlinearity
-    /// wants, unlike He (which compensates for ReLU's half-rectification).
+    /// Glorot-normal values (`std = √(2 / (fan_in + fan_out))`) for an FC
+    /// weight stored `[in, out]`, from a freshly drawn seed — the
+    /// distribution-check counterpart of `heInitData` (see there).
     static func glorotInitDataFCInOut(shape: [Int], dataType: MPSDataType) -> Data {
-        makeWeightData(glorotInitFloatsFCInOut(shape: shape), dataType: dataType)
-    }
-
-    /// The Float32 values behind `glorotInitDataFCInOut`, for callers that
-    /// edit the matrix before it becomes weight data (the zero-β SE init,
-    /// the `--derive-model` Glorot re-draw).
-    static func glorotInitFloatsFCInOut(shape: [Int]) -> [Float] {
         precondition(shape.count == 2, "FC [in, out] shape must be 2D (got \(shape))")
-        let std = sqrt(2.0 / Float(shape[0] + shape[1]))
-        let count = shape.reduce(1, *)
-        return heInitFloats(count: count, std: std)
+        let std = (2.0 / Float(shape[0] + shape[1])).squareRoot()
+        return makeWeightData(freshScaledNormals(count: shape.reduce(1, *), std: std), dataType: dataType)
     }
 
-    /// Vectorized He initialization producing `count` random normals with
-    /// standard deviation `std`. Box-Muller form:
-    ///   z = std * sqrt(-2 * ln(u1)) * cos(2π * u2)
-    /// where u1, u2 are independent uniforms.
-    private static func heInitFloats(count: Int, std: Float) -> [Float] {
-        // Box-Muller produces values in pairs; we generate `count` outputs
-        // using `count` u1 + `count` u2 (one z per pair of uniforms).
-        var u1 = [Float](repeating: 0, count: count)
-        var u2 = [Float](repeating: 0, count: count)
-
-        // Bulk-fill with uniform Floats in [0, 1). arc4random_buf gives us
-        // uniformly distributed UInt32s; divide by 2^32 for [0, 1).
-        u1.withUnsafeMutableBufferPointer { buf in
-            buf.baseAddress.map { fillUniform01(buf: $0, count: count) }
-        }
-        u2.withUnsafeMutableBufferPointer { buf in
-            buf.baseAddress.map { fillUniform01(buf: $0, count: count) }
-        }
-
-        // Clamp u1 into [leastNormalMagnitude, 1.0] so the next-step
-        // `vvlogf(u1)` is finite.
-        //
-        // The hazard we're defending against is `arc4random_buf` returning
-        // exactly 0 (a legitimate UInt32 outcome at ~1-in-4-billion), which
-        // would feed `vvlogf` a +0 and produce -inf, then `sqrt(-2 * -inf)`
-        // → +inf, propagating an inf weight into the network. The lo bound
-        // pulls those zeros up to the smallest representable normal float
-        // (~1.18e-38), giving `log(lo) ≈ -87`, then `sqrt(2*87) ≈ 13.2`,
-        // scaled by std to a finite weight. The hi bound is defensive —
-        // our uniform draw is in [0, 1) so it never trips, but feeding
-        // something > 1 to log would give a positive value and skew
-        // Box-Muller's distribution.
-        var lo: Float = .leastNormalMagnitude
-        var hi: Float = 1.0
-        vDSP_vclip(u1, 1, &lo, &hi, &u1, 1, vDSP_Length(count))
-
-        // u1 = ln(u1)  →  u1 = -2 * u1  →  u1 = sqrt(u1)
-        var n = Int32(count)
-        vvlogf(&u1, u1, &n)
-        var negTwo: Float = -2
-        vDSP_vsmul(u1, 1, &negTwo, &u1, 1, vDSP_Length(count))
-        vvsqrtf(&u1, u1, &n)
-
-        // u2 = cos(2π * u2)
-        var twoPi: Float = 2 * .pi
-        vDSP_vsmul(u2, 1, &twoPi, &u2, 1, vDSP_Length(count))
-        vvcosf(&u2, u2, &n)
-
-        // z = u1 * u2
-        var z = [Float](repeating: 0, count: count)
-        vDSP_vmul(u1, 1, u2, 1, &z, 1, vDSP_Length(count))
-
-        // Scale by std
-        var stdVar = std
-        vDSP_vsmul(z, 1, &stdVar, &z, 1, vDSP_Length(count))
-        return z
-    }
-
-    /// Fill a Float buffer with uniformly distributed values in [0, 1).
-    private static func fillUniform01(buf: UnsafeMutablePointer<Float>, count: Int) {
-        // Generate UInt32s straight into a temporary buffer, then convert to
-        // Float. 2^-32 maps the full UInt32 range to [0, 1).
-        var raw = [UInt32](repeating: 0, count: count)
-        raw.withUnsafeMutableBytes { rawBytes in
-            if let base = rawBytes.baseAddress {
-                arc4random_buf(base, rawBytes.count)
-            }
-        }
-        let scale: Float = Float(1.0 / 4294967296.0) // 2^-32
-        for i in 0..<count {
-            buf[i] = Float(raw[i]) * scale
-        }
+    private static func freshScaledNormals(count: Int, std: Float) -> [Float] {
+        var system = SystemRandomNumberGenerator()
+        var values = WeightInitScheme.standardNormals(seed: system.next(), count: count)
+        for index in values.indices { values[index] = std * values[index] }
+        return values
     }
 
     static func onesData(count: Int, dataType: MPSDataType) -> Data {

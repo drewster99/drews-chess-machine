@@ -32,7 +32,7 @@ selfplay_registry.json `logs`):
 
 Run:  python3 selfplay.py
 """
-import os, re, csv, json, bisect, argparse
+import os, re, sys, csv, json, bisect, argparse
 from _schema import FIELDS  # single source of the CSV column order (shared with replay.py)
 # Crash-safe, compare-and-swap, no-silent-shrink replace of data/<run>.csv.
 from _guarded_csv import replace_rows, selfplay_row_key, snapshot_of
@@ -378,11 +378,46 @@ def build_run(key, cfg, allow_shrink=False):
     return out, resets, foreign
 
 
+def print_lineage_table(sessions_dir):
+    """Print the segment table the GUI session files' lineage records state.
+
+    Read-only: the self-play registry is keyed by session logs and holds no
+    per-segment bases, so there is nothing in it to fill; this shows the measured
+    bases (steps, games, trainer-step and wall seconds) each Play-and-Train
+    segment carried, for files written at format v7 and later. Returns the exit
+    status: 1 when a file is refused or unreadable, else 0."""
+    sys.path.insert(0, os.path.join(HERE, "..", "..", "scripts"))
+    import dcm_lineage
+    paths = []
+    for folder in sorted(os.listdir(sessions_dir)):
+        full = os.path.join(sessions_dir, folder)
+        if folder.endswith(".dcmsession") and os.path.isdir(full):
+            paths += [os.path.join(full, n) for n in sorted(os.listdir(full)) if n.endswith(".safetensors")]
+    recorded, unrecorded, errors = dcm_lineage.scan_files(paths)
+    recorded = [f for f in recorded if f.record["invocation"]["path_kind"] == "gui"]
+    print(f"scanned {len(paths)} session file(s): {len(recorded)} with a GUI lineage record, "
+          f"{len(unrecorded)} written before lineage records (unrecorded), {len(errors)} refused or unreadable")
+    for path, message in sorted(errors.items()):
+        print(f"  REFUSED {path}: {message}")
+    try:
+        table = dcm_lineage.segment_table(dcm_lineage.derive_runs(recorded))
+    except dcm_lineage.LineageError as error:
+        print(f"refused: {error}")
+        return 1
+    print(json.dumps(table, indent=1, sort_keys=True))
+    return 1 if errors else 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="Rebuild data/<run>.csv for every self-play run.")
     ap.add_argument("--allow-shrink", action="store_true",
                     help="allow a rebuild to drop rows / blank values a CSV holds (each one is printed first)")
+    ap.add_argument("--lineage-table", metavar="SESSIONS_DIR",
+                    help="instead of rebuilding: print (read-only) the segment table the lineage records "
+                         "(format v7+) of the GUI session files under SESSIONS_DIR/*.dcmsession/ state")
     args = ap.parse_args()
+    if args.lineage_table:
+        sys.exit(print_lineage_table(os.path.expanduser(args.lineage_table)))
     reg = json.load(open(os.path.join(HERE, "selfplay_registry.json")))
     os.makedirs(DATA, exist_ok=True)
     print(f"{'run':6} {'rows':>5} {'step0':>7} {'stepN':>8} {'hrs':>6} {'pElo':>6} {'resets':>6} {'foreign':>7}")

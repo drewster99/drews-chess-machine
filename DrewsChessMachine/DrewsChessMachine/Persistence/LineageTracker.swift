@@ -28,6 +28,25 @@ final class LineageTracker: @unchecked Sendable {
         let contentSHA256: String?
         let trainerCompletedSteps: Int?
         let lineage: LineageRecord.Presence
+        /// The derivations the file's weights went through
+        /// (`derivationHistory(lineage:metadata:)`), which a child carries
+        /// on verbatim.
+        let derivationHistory: [ModelDerivation.DerivationRecord]
+
+        /// A file's derivation history: its lineage record's when it has
+        /// one; for a file written before lineage, the `derivation_history`
+        /// key it states (`--derive-model` wrote it), or none when it states
+        /// none. A key that is present but unreadable is an error, never
+        /// read as "not derived".
+        static func derivationHistory(lineage: LineageRecord.Presence,
+                                      metadata: [String: String]) throws -> [ModelDerivation.DerivationRecord] {
+            switch lineage {
+            case .recorded(let record):
+                return record.derivationHistory
+            case .unrecorded:
+                return try ModelDerivation.decodeHistory(metadata[ModelDerivation.derivationHistoryKey])
+            }
+        }
 
         /// The parent as recorded in a child's record.
         var recordParent: LineageRecord.Parent {
@@ -86,6 +105,9 @@ final class LineageTracker: @unchecked Sendable {
                       notExactItems: [String], continuesUnrecordedHistory: Bool)
     private let parent: LineageRecord.Parent?
     private let segments: [LineageRecord.SegmentSummary]
+    /// Carried verbatim into every record of the segment (determinism plan
+    /// B4): the parent's history on a branch or resume, none on a fresh run.
+    private let derivationHistory: [ModelDerivation.DerivationRecord]
     private let startedAt: Date
     /// The trainer clock when the segment began; nil for a writer with no
     /// trainer.
@@ -116,14 +138,17 @@ final class LineageTracker: @unchecked Sendable {
             run = (UUID().uuidString, 0, segmentID, .fresh, false, [], false)
             parent = nil
             segments = []
+            derivationHistory = []
             baseGames = 0; basePositions = 0; baseTrainStepSec = 0; baseWallSec = 0
         case .branch(let file):
             run = (UUID().uuidString, 0, segmentID, .branch, false, [], false)
             parent = file.recordParent
             segments = []
+            derivationHistory = file.derivationHistory
             baseGames = 0; basePositions = 0; baseTrainStepSec = 0; baseWallSec = 0
         case .resume(let file, let gaps, let legacyTotals):
             parent = file.recordParent
+            derivationHistory = file.derivationHistory
             switch file.lineage {
             case .recorded(let record):
                 guard legacyTotals == nil else {
@@ -223,8 +248,48 @@ final class LineageTracker: @unchecked Sendable {
             invocation: LineageRecord.Invocation(argv: argv, pathKind: pathKind),
             device: .current,
             rng: rng,
-            segments: segments
+            segments: segments,
+            derivationHistory: derivationHistory
         )
+    }
+
+    /// The record of the segment as it starts, before it trains or feeds
+    /// anything: what the `[RUN]` line reports.
+    func startRecord(at date: Date, trainerCompletedSteps: Int?,
+                     parameters: LineageRecord.Parameters?) throws -> LineageRecord {
+        try record(at: date, trainerCompletedSteps: trainerCompletedSteps, segmentLocalStep: 0,
+                   segmentGames: 0, segmentPositions: 0, corpus: nil, parameters: parameters,
+                   rng: .withoutRunStreams(dropoutPhiloxState: nil))
+    }
+
+    /// The run's totals now, for a `results.json` row: the trainer clock,
+    /// measured trainer-step time and games fed, each continuing the
+    /// totals the segment started from (nil where no predecessor recorded
+    /// one).
+    struct Totals: Equatable, Sendable {
+        let cumTrainerStep: Int?
+        let cumTrainStepSec: Double?
+        let cumGames: Int?
+
+        init(cumTrainerStep: Int?, cumTrainStepSec: Double?, cumGames: Int?) {
+            self.cumTrainerStep = cumTrainerStep
+            self.cumTrainStepSec = cumTrainStepSec
+            self.cumGames = cumGames
+        }
+
+        /// The totals a record states.
+        init(of record: LineageRecord) {
+            self.init(cumTrainerStep: record.steps.cumTrainerStep,
+                      cumTrainStepSec: record.time.cumTrainStepSec,
+                      cumGames: record.fed.cumGames)
+        }
+    }
+
+    /// `Totals` with `segmentGames` fed by this segment so far.
+    func totals(trainerCompletedSteps: Int?, segmentGames: Int) -> Totals {
+        Totals(cumTrainerStep: trainerCompletedSteps,
+               cumTrainStepSec: baseTrainStepSec.map { $0 + segmentTrainStepSec.value },
+               cumGames: baseGames.map { $0 + segmentGames })
     }
 
     // MARK: Records outside training
@@ -243,9 +308,16 @@ final class LineageTracker: @unchecked Sendable {
     /// `--derive-model`'s output, or a GUI save of a loaded model before any
     /// training: a new run whose weights carry the source's history, so the
     /// totals continue from the source's record (or stay unrecorded when the
-    /// source predates lineage).
-    static func untrainedCopyRecord(source: ParentFile, pathKind: LineageRecord.PathKind, argv: [String], at date: Date) -> LineageRecord {
+    /// source predates lineage). `derivation` is the derive step that made
+    /// the copy, appended to the source's derivation history; nil for a copy
+    /// no derivation made.
+    static func untrainedCopyRecord(source: ParentFile, derivation: ModelDerivation.DerivationRecord?,
+                                    pathKind: LineageRecord.PathKind, argv: [String], at date: Date) -> LineageRecord {
         let sourceRecord = source.lineage.record
+        var derivationHistory = source.derivationHistory
+        if let derivation {
+            derivationHistory.append(derivation)
+        }
         // The source's own record is the total when it has one; a source
         // written before lineage still states its trainer clock (or the
         // step its weights were taken at), which is that total too.
@@ -294,7 +366,8 @@ final class LineageTracker: @unchecked Sendable {
             // The copy has no trainer behind it: there is no dropout state
             // to continue.
             rng: .withoutRunStreams(dropoutPhiloxState: nil),
-            segments: []
+            segments: [],
+            derivationHistory: derivationHistory
         )
     }
 }

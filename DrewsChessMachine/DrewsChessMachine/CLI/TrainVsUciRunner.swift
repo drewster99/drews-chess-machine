@@ -232,7 +232,7 @@ enum TrainVsUciRunner {
             }
         }
 
-        for line in runSeed.logLines { emit(line) }
+        for line in runSeed.parameterNotes { emit(line) }
         recorder?.setRunRandomSeed(runSeed)
         emit("[VS-UCI-ARCH] (\(startModelFile == nil ? "default preset" : "start-model")) \(arch.architectureSummary)")
 
@@ -299,9 +299,21 @@ enum TrainVsUciRunner {
             resumedHyperparameters = p.trainer.adoptingSchedule(resumeSnapshot.schedule)
         }
         let hp = resumedHyperparameters
+        // A start model's weights replace the trainer's; a fresh run starts
+        // from an init seed derived from the run seed, so `--seed`
+        // reproduces its initialization.
+        let trainerInitialization: WeightInitialization
+        if startModelFile != nil {
+            trainerInitialization = .overwrittenByLoad
+        } else {
+            let initSeed = runSeed.streams.freshModelInitSeed
+            emit("[VS-UCI] fresh trainer init_seed=\(initSeed) init_scheme=\(WeightInitScheme.current) "
+                + "(from run seed \(runSeed.masterSeed))")
+            trainerInitialization = .seeded(initSeed: initSeed)
+        }
         let trainer = try ChessTrainer(
             dropoutStream: runSeed.streams.generator(.dropout),
-            hyperparameters: hp, arch: arch
+            hyperparameters: hp, arch: arch, initialization: trainerInitialization
         )
         emit(ChessNetwork.PolicyTailPrecision.processLogLine)
         // Field for field with `[REPLAY-HPARAMS]` so the two CLI paths can be
@@ -377,6 +389,10 @@ enum TrainVsUciRunner {
         let lineageTracker = try LineageTracker(
             start: lineageStart, pathKind: .vsuci, argv: CommandLine.arguments,
             startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)
+        emit(RunProvenanceLine.line(
+            record: try lineageTracker.startRecord(at: Date(), trainerCompletedSteps: trainer.completedTrainSteps,
+                                                   parameters: p.lineageParameters),
+            seed: runSeed))
 
         // Build the opponent pool: one UCIArbiter per instance.
         var opponents: [TrainVsUciDriver.Opponent] = []
@@ -459,6 +475,7 @@ enum TrainVsUciRunner {
                     at: outModelURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try rollingWriter.write(encoded)
                 rollingSaveFailures.recordSuccess()
+                recorder?.recordSave(of: lineage, savedAt: outModelURL, log: emit)
                 emit("[VS-UCI] saved trainer model (\(reason)) step=\(step) trainerStep=\(snapshot.schedule.completedTrainSteps) -> \(outModelURL.lastPathComponent)")
                 // Full layer health of the state just written — see
                 // CorpusReplayRunner's save. Never throws.
@@ -679,7 +696,10 @@ enum TrainVsUciRunner {
                         // nil: this path never reads the replay-ratio target,
                         // so emitting it would be a fresh false claim rather
                         // than a recovered one.
-                        replayRatioTarget: nil
+                        replayRatioTarget: nil,
+                        lineageTotals: lineageTracker.totals(
+                            trainerCompletedSteps: trainer.completedTrainSteps,
+                            segmentGames: slots.reduce(0) { $0 + $1.gamesCompleted })
                     ))
                 }
                 if step % autosaveEvery == 0 {

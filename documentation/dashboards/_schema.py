@@ -38,4 +38,12 @@ FIELDS = ["cum_step", "meta_step", "segment", "elapsed_train_sec", "wallclock_is
           #                Two builds can score one checkpoint differently, so values
           #                from different builds are not directly comparable. Blank on
           #                rows written before it was recorded, and on rows without pElo.
-          "probe_build"]
+          "probe_build",
+          # --- appended 2026-10-02 (lineage records, architecture format v7) -----
+          #   train_step_sec  cumulative MEASURED trainer-step seconds behind the
+          #                   checkpoint, from its lineage record. Idle, pauses and
+          #                   sleep are excluded by construction, so it needs no
+          #                   clamp; elapsed_train_sec (log-derived, sleep-clamped)
+          #                   stays beside it for rows that predate records. Blank on
+          #                   files without a record and where the record holds null.
+          "train_step_sec"]

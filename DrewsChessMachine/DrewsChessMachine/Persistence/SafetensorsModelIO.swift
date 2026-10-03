@@ -35,6 +35,9 @@ enum SafetensorsModelIO {
         case trainerScheduleWithoutVelocity
         /// `trainer_policy_tail_precision` holds a value no precision spells.
         case malformedTrainerPolicyTailPrecision(String)
+        /// `init_seed` / `init_scheme` present without the other, or an
+        /// `init_seed` that is not a decimal UInt64.
+        case malformedInitRecord(String)
         /// A file at a format version that requires `dcm_lineage` has none.
         case missingLineage(formatVersion: Int)
         /// `dcm_lineage` is present but does not decode.
@@ -65,6 +68,8 @@ enum SafetensorsModelIO {
             case .malformedTrainerPolicyTailPrecision(let raw):
                 let allowed = ChessNetwork.PolicyTailPrecision.allCases.map(\.rawValue).joined(separator: ", ")
                 return "safetensors model: trainer_policy_tail_precision is '\(raw)', expected one of \(allowed)"
+            case .malformedInitRecord(let detail):
+                return "safetensors model: init seed metadata is malformed (\(detail))"
             case .missingLineage(let version):
                 return "safetensors model: format version \(version) requires a \(LineageRecord.metadataKey) record "
                     + "in __metadata__ (required from version \(ArchitectureFormat.lineageRequiredFromVersion)), and this file has none"
@@ -92,6 +97,8 @@ enum SafetensorsModelIO {
         static let notes = "notes"
         static let architecture = "architecture"
         static let trainerPolicyTailPrecision = "trainer_policy_tail_precision"
+        static let initSeed = "init_seed"
+        static let initScheme = "init_scheme"
     }
 
     /// Ordered tensor names for `architecture`: the base plan, plus, for a
@@ -165,6 +172,10 @@ enum SafetensorsModelIO {
         }
         if let precision = metadata.trainerPolicyTailPrecision {
             md[Key.trainerPolicyTailPrecision] = precision.rawValue
+        }
+        if let initRecord = metadata.initRecord {
+            md[Key.initSeed] = String(initRecord.initSeed)
+            md[Key.initScheme] = initRecord.scheme
         }
         // Every save marks the value head centered, so a file is recentered
         // at most once in its life and every new file round-trips bit-exactly
@@ -335,9 +346,26 @@ enum SafetensorsModelIO {
         } else {
             trainerPolicyTailPrecision = nil
         }
+        let initRecord: ModelInitRecord?
+        switch (md[Key.initSeed], md[Key.initScheme]) {
+        case (nil, nil):
+            initRecord = nil
+        case let (seedText?, scheme?):
+            guard let seed = UInt64(seedText, radix: 10), !seedText.hasPrefix("+") else {
+                throw IOError.malformedInitRecord("\(Key.initSeed) '\(seedText)' is not a decimal UInt64")
+            }
+            guard !scheme.isEmpty else { throw IOError.malformedInitRecord("\(Key.initScheme) is empty") }
+            initRecord = ModelInitRecord(initSeed: seed, scheme: scheme)
+        case (.some, nil):
+            throw IOError.malformedInitRecord("\(Key.initSeed) without \(Key.initScheme)")
+        case (nil, .some):
+            throw IOError.malformedInitRecord("\(Key.initScheme) without \(Key.initSeed)")
+        }
+        let fileLineage = try lineage(fromMetadata: md, formatVersion: architectureFormat.formatVersion)
         let provenance = ModelCheckpointFile.SafetensorsProvenance(
             contentSHA256: md[SafetensorsFile.contentHashKey],
-            lineage: try lineage(fromMetadata: md, formatVersion: architectureFormat.formatVersion)
+            lineage: fileLineage,
+            derivationHistory: try LineageTracker.ParentFile.derivationHistory(lineage: fileLineage, metadata: md)
         )
         let metadata = ModelCheckpointMetadata(
             creator: md[Key.creator] ?? "",
@@ -345,7 +373,8 @@ enum SafetensorsModelIO {
             parentModelID: md[Key.parentModelID] ?? "",
             notes: md[Key.notes] ?? "",
             trainerSchedule: trainerSchedule,
-            trainerPolicyTailPrecision: trainerPolicyTailPrecision
+            trainerPolicyTailPrecision: trainerPolicyTailPrecision,
+            initRecord: initRecord
         )
         let file = ModelCheckpointFile(
             modelID: md[Key.modelID] ?? "",
@@ -391,11 +420,13 @@ enum SafetensorsModelIO {
         guard let modelID = md[Key.modelID] else {
             throw IOError.missingModelID(source: url.lastPathComponent)
         }
+        let fileLineage = try lineage(fromMetadata: md, formatVersion: version)
         return LineageTracker.ParentFile(
             modelID: modelID,
             contentSHA256: md[SafetensorsFile.contentHashKey],
             trainerCompletedSteps: try trainerClock(fromMetadata: md, source: url.lastPathComponent),
-            lineage: try lineage(fromMetadata: md, formatVersion: version)
+            lineage: fileLineage,
+            derivationHistory: try LineageTracker.ParentFile.derivationHistory(lineage: fileLineage, metadata: md)
         )
     }
 
@@ -540,8 +571,9 @@ enum SafetensorsModelIO {
         }
     }
 
-    /// PyTorch layout -> native engine flat order (for loading into the graph).
-    private static func fromTorchLayout(kind: WeightKind, nativeShape: [Int], torchData: [Float]) -> [Float] {
+    /// PyTorch layout -> native engine flat order (for loading into the graph,
+    /// and for weight initialization, which draws in the on-disk order).
+    static func fromTorchLayout(kind: WeightKind, nativeShape: [Int], torchData: [Float]) -> [Float] {
         switch kind {
         case .linear:
             // torch [out, in] -> native [in, out]

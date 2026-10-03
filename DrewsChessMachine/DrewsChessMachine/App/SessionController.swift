@@ -984,6 +984,10 @@ final class SessionController {
             // The trainer forks champion weights, so its net must match the
             // champion's architecture.
             let trainerArch = network?.network.arch ?? .current
+            // Initialized from a drawn seed: every Play-and-Train start
+            // replaces these weights (a reset + load), but the trainer exists
+            // from here on, so it holds real weights until then.
+            //
             // Every Play-and-Train run replaces this stream with its own
             // seed's `dropout` stream when it starts (`beginDropoutStream`);
             // the system-seeded one only drives steps taken outside a run
@@ -991,7 +995,8 @@ final class SessionController {
             let t = try ChessTrainer(
                 dropoutStream: DCMRandom.seededFromSystem(),
                 hyperparameters: hyperparameters,
-                arch: trainerArch
+                arch: trainerArch,
+                initialization: .drawnSeed()
             )
             trainer = t
             SessionLogger.shared.logArchitecture(
@@ -1048,8 +1053,23 @@ final class SessionController {
     /// topology.
     var buildArchitecture: NetworkArchitecture = .newModelDefault
 
+    /// The init seed the Build-New-Model screen entered for the next build,
+    /// or nil for a seed drawn at the build. Used by one build, then cleared,
+    /// so a later Build draws a fresh seed unless one is entered again.
+    var buildInitSeed: UInt64?
+
     func buildNetwork() {
-        SessionLogger.shared.log("[BUTTON] Build Network (\(buildArchitecture.architectureSummary))")
+        let initSeed: UInt64
+        let initSeedSource: String
+        if let entered = buildInitSeed {
+            initSeed = entered
+            initSeedSource = "entered"
+        } else {
+            initSeed = WeightInitialization.drawnInitSeed()
+            initSeedSource = "drawn"
+        }
+        buildInitSeed = nil
+        SessionLogger.shared.log("[BUTTON] Build Network (\(buildArchitecture.architectureSummary)) init_seed=\(initSeed) (\(initSeedSource)) init_scheme=\(WeightInitScheme.current)")
         if isBusyProvider() {
             onRefuseMenuAction(busyReasonProvider())
             return
@@ -1072,11 +1092,6 @@ final class SessionController {
         // a CLI arch flag); default is `.newModelDefault`. The old well-known
         // `architecture.json` auto-load was removed per plan §10.
         let arch = buildArchitecture
-        // A fresh model: its init seed is drawn and logged, so the build's
-        // initialization (today the batch-norm calibration walk) can be
-        // reproduced from the log.
-        let initSeed = RunRandomSeed.systemDrawnSeed()
-        SessionLogger.shared.log("[BUILD] init seed=\(initSeed) (drawn)")
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 Self.performBuild(arch: arch, initMode: .randomWeights(initSeed: initSeed))
@@ -1094,12 +1109,14 @@ final class SessionController {
                 networkStatus = """
                     Network built in \(String(format: "%.1f", net.buildTimeMs)) ms
                     ID: \(idStr)
+                    Init seed: \(initSeed) (\(initSeedSource), \(WeightInitScheme.current))
                     Architecture: \(net.network.arch.architectureSummary)
                     """
                 SessionLogger.shared.logArchitecture(
                     event: "built champion \(idStr)",
                     arch: net.network.arch
                 )
+                SessionLogger.shared.log("[BUILD] champion \(idStr) built in \(String(format: "%.1f", net.buildTimeMs)) ms init_seed=\(initSeed) init_scheme=\(WeightInitScheme.current)")
                 checkpoint?.lastSavedAt = nil
                 checkpoint?.lastResumedAt = nil
             case .failure(let error):
@@ -1129,7 +1146,8 @@ final class SessionController {
         onDropTrainer()
         onClearTrainingDisplay()
         SessionLogger.shared.log("[BUILD] Auto-build before load (\(targetArch.architectureSummary))")
-        // The caller loads a model into this network right away.
+        // Every caller loads weights into the champion right after, so the
+        // build draws nothing and the network refuses use until that load.
         let result = await Task.detached(priority: .userInitiated) {
             Self.performBuild(arch: targetArch, initMode: .overwrittenByLoad)
         }.value

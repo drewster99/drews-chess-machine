@@ -41,11 +41,11 @@ final class DropoutRunStreamTests: XCTestCase {
         try requireMetal()
         let runStreams = DCMRandomStreams(masterSeed: 77)
 
-        let built = try ChessTrainer(dropoutStream: runStreams.generator(.dropout), arch: archWithDropout())
+        let built = try ChessTrainer(dropoutStream: runStreams.generator(.dropout), arch: archWithDropout(), initialization: .seeded(initSeed: 1))
         built.dropoutRate = 0.2
         let expected = try await built.captureDropoutState()
 
-        let reused = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: archWithDropout())
+        let reused = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: archWithDropout(), initialization: .seeded(initSeed: 2))
         reused.dropoutRate = 0.2
         _ = try await reused.trainStep(batchSize: 8)
         _ = try await reused.trainStep(batchSize: 8)
@@ -65,7 +65,7 @@ final class DropoutRunStreamTests: XCTestCase {
 
     func testDifferentRunSeedsStartDifferentMasks() async throws {
         try requireMetal()
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: archWithDropout())
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: archWithDropout(), initialization: .seeded(initSeed: 1))
         try await trainer.beginDropoutStream(DCMRandomStreams(masterSeed: 5).generator(.dropout))
         let first = try await trainer.captureDropoutState()
         try await trainer.beginDropoutStream(DCMRandomStreams(masterSeed: 6).generator(.dropout))

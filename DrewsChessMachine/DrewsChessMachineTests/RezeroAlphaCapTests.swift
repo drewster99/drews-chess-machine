@@ -437,7 +437,7 @@ final class RezeroAlphaCapTests: XCTestCase {
             arch.blockGroups[index].rezeroAlphaCap = 1
         }
         try arch.validate()
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), learningRate: 1e-2, lrWarmupSteps: 0, arch: arch)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), learningRate: 1e-2, lrWarmupSteps: 0, arch: arch, initialization: .seeded(initSeed: 1))
         let plan = arch.weightTensorPlan()
         let alphaIndices = plan.indices.filter { plan[$0].name.hasSuffix(".rezero_alpha") }
         XCTAssertEqual(alphaIndices.count, arch.numBlocks)

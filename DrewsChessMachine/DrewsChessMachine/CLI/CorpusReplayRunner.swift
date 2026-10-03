@@ -1237,20 +1237,25 @@ enum CorpusReplayRunner {
                 Darwin.exit(2)
             }
         }
-        for line in runSeed.logLines { emit(line) }
+        for line in runSeed.parameterNotes { emit(line) }
         recorder?.setRunRandomSeed(runSeed)
 
         emit("[REPLAY] building network + trainer (encoding=\(arch.inputEncoding.rawValue))")
         // With --start-model the file's weights and batch-norm statistics
-        // replace the network's right below; otherwise the run builds a fresh
-        // model whose init seed derives from the run seed.
+        // replace both networks' right below, so they draw nothing; otherwise
+        // the run builds a fresh model whose init seed derives from the run
+        // seed, so `--seed` reproduces its initialization.
         let netInitMode: NetworkInitMode
+        let trainerInitialization: WeightInitialization
         if startModelFile != nil {
             netInitMode = .overwrittenByLoad
+            trainerInitialization = .overwrittenByLoad
         } else {
             let initSeed = runSeed.streams.freshModelInitSeed
-            emit("[REPLAY] fresh model init seed=\(initSeed) (from run seed \(runSeed.masterSeed))")
+            emit("[REPLAY] fresh model init_seed=\(initSeed) init_scheme=\(WeightInitScheme.current) "
+                + "(from run seed \(runSeed.masterSeed))")
             netInitMode = .randomWeights(initSeed: initSeed)
+            trainerInitialization = .seeded(initSeed: initSeed)
         }
         let net = try ChessMPSNetwork(netInitMode, arch: arch)
         // Configured through `TrainerHyperparameters` — the same path the GUI
@@ -1260,7 +1265,8 @@ enum CorpusReplayRunner {
         // is inert and the static LR and momentum apply, exactly as in the GUI.
         let trainer = try ChessTrainer(
             dropoutStream: runSeed.streams.generator(.dropout),
-            hyperparameters: trainerHyperparameters, arch: arch, policyTailPrecision: config.policyTailPrecision)
+            hyperparameters: trainerHyperparameters, arch: arch, initialization: trainerInitialization,
+            policyTailPrecision: config.policyTailPrecision)
         emit(ChessNetwork.PolicyTailPrecision.processLogLine)
         // A requested GPU capture must be possible before any buffer fill or
         // training is spent on the run (the capture itself starts at its step).
@@ -1343,6 +1349,10 @@ enum CorpusReplayRunner {
         let lineageTracker = try LineageTracker(
             start: lineageStart, pathKind: .replay, argv: CommandLine.arguments,
             startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)
+        emit(RunProvenanceLine.line(
+            record: try lineageTracker.startRecord(at: Date(), trainerCompletedSteps: trainer.completedTrainSteps,
+                                                   parameters: p.lineageParameters),
+            seed: runSeed))
 
         // Export the trainer's complete state and overwrite the rolling
         // output file. Failure handling splits on cause (see reportSaveFailure):
@@ -1427,6 +1437,7 @@ enum CorpusReplayRunner {
                 )
                 try rollingWriter.write(encoded)
                 rollingSaveFailures.recordSuccess()
+                recorder?.recordSave(of: lineage, savedAt: outModelURL, log: emit)
                 emit("[REPLAY] saved trainer model (\(reason)) step=\(step) trainerStep=\(snapshot.schedule.completedTrainSteps) nextGame=\(nextGameIndex) shard=\(shard) epoch=\(epoch) -> \(outModelURL.lastPathComponent)")
                 // Full layer health of exactly the state just written, from the
                 // tensors already exported for it (no extra GPU read). Never
@@ -1775,7 +1786,10 @@ enum CorpusReplayRunner {
                     pliesCapDropped: nil,
                     maxPliesPerGame: nil,
                     // A real knob here: `perStepFeed = batchSize / target`.
-                    replayRatioTarget: p.replayRatioTarget
+                    replayRatioTarget: p.replayRatioTarget,
+                    lineageTotals: lineageTracker.totals(
+                        trainerCompletedSteps: observedSteps,
+                        segmentGames: feedTally.games - reconstructionFed.games)
                 ))
             }
             // Periodic autosave (overwrites the rolling output file). A disk-full

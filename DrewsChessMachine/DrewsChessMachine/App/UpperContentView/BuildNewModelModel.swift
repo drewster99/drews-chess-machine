@@ -14,6 +14,23 @@
 import Foundation
 import Observation
 
+/// What the Build button hands the host: the architecture to build and the
+/// init seed the user entered, or nil when the seed is to be drawn at the
+/// build (and then shown and logged).
+struct BuildNewModelRequest: Equatable {
+    let architecture: NetworkArchitecture
+    let enteredInitSeed: UInt64?
+}
+
+/// The Init seed field's reading.
+enum BuildInitSeedEntry: Equatable {
+    /// Empty: a seed is drawn at the build.
+    case drawnAtBuild
+    case entered(UInt64)
+    /// Not a decimal UInt64; Build is disabled.
+    case invalid(String)
+}
+
 @MainActor
 @Observable
 final class BuildNewModelModel {
@@ -51,6 +68,11 @@ final class BuildNewModelModel {
     /// Name to save the current config under (Save-as-Preset). Defaults from the
     /// label, sanitized to a filename-safe slug.
     var saveAsName: String = ""
+
+    /// The optional init seed (decimal UInt64): the same seed and
+    /// architecture mint the same weights here, in `--new-model --init-seed`
+    /// and on every machine. Not part of the architecture or a preset.
+    var initSeedText: String = ""
 
     /// Cached preset list (built-ins + user-saved). Scanned once at init (and
     /// after a Save-as-Preset via `refreshPresets()`) rather than on every
@@ -246,6 +268,30 @@ final class BuildNewModelModel {
     }
 
     var isValid: Bool { validationError == nil }
+
+    /// The Init seed field, read.
+    var initSeedEntry: BuildInitSeedEntry {
+        let text = initSeedText.trimmingCharacters(in: .whitespaces)
+        if text.isEmpty { return .drawnAtBuild }
+        guard let seed = UInt64(text, radix: 10), !text.hasPrefix("+") else {
+            return .invalid("Init seed must be a whole number from 0 to \(UInt64.max)")
+        }
+        return .entered(seed)
+    }
+
+    /// The Build request, or nil while the architecture or the init seed is
+    /// invalid (Build is disabled then).
+    var buildRequest: BuildNewModelRequest? {
+        guard isValid else { return nil }
+        switch initSeedEntry {
+        case .drawnAtBuild:
+            return BuildNewModelRequest(architecture: architecture, enteredInitSeed: nil)
+        case let .entered(seed):
+            return BuildNewModelRequest(architecture: architecture, enteredInitSeed: seed)
+        case .invalid:
+            return nil
+        }
+    }
 
     /// Live parameter count (0 when invalid — the readout shows the error then).
     var parameterCount: Int { isValid ? architecture.parameterCount : 0 }

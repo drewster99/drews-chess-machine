@@ -59,6 +59,8 @@ enum UCIEngine {
         if let path = SessionLogger.shared.activeLogPath {
             SessionLogger.shared.log("[UCI] session log: \(path)")
         }
+        SessionLogger.shared.log(RunProvenanceLine.line(pathLabel: "uci", build: .current, device: .current,
+                                                        argv: CommandLine.arguments))
         SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
 
         var session = Session()

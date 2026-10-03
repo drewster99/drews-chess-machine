@@ -9,7 +9,12 @@ therefore competed for the same names — four different files have been called
 ones as they climbed. A filename identifies nothing.
 
 The authoritative identity is the safetensors `__metadata__` header:
-`model_id` (minted per segment) plus `training_step` (segment-local). Together
+`model_id` (minted per segment) plus `training_step` (segment-local). Files at
+architecture format v7 and later also carry a lineage record (`dcm_lineage`,
+read through scripts/dcm_lineage.py), which names the run and segment outright
+and carries the corpus position that format no longer writes as `replay_*`
+keys; each entry's `lineage` is that record's summary, or "unrecorded (format
+vN)" for an older file. Together
 they name a checkpoint uniquely across the whole lineage. This module reads only
 that header -- an 8-byte length prefix plus the JSON that follows -- so it never
 loads a 33 MB tensor payload just to ask which run a file belongs to.
@@ -27,6 +32,9 @@ returns in seconds.
 """
 import os, sys, json, glob, struct, hashlib, argparse, datetime
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+import dcm_lineage  # noqa: E402  the file's lineage record, read the way the app reads it
+
 # Header fields worth carrying forward. `replay_next_game_index` and `replay_epoch`
 # are what distinguish an honest resume point from one whose corpus position was
 # never actually reached (see the v5 run-4 quarantine).
@@ -40,6 +48,29 @@ def read_metadata(path):
     with open(path, "rb") as f:
         n = struct.unpack("<Q", f.read(8))[0]
         return json.loads(f.read(n)).get("__metadata__", {})
+
+
+def lineage_summary(meta, source):
+    """The fields of a file's lineage record worth an inventory column: run,
+    segment, cumulative totals and the corpus position. "unrecorded (format vN)"
+    for a file written before records existed. Raises dcm_lineage.LineageError
+    where the app would refuse the file."""
+    record = dcm_lineage.lineage_of(meta, source)
+    if isinstance(record, dcm_lineage.Unrecorded):
+        return f"unrecorded (format v{record.format_version})"
+    corpus = record["fed"]["corpus"]
+    return dict(lineage_run_id=record["run"]["lineage_run_id"],
+                segment_index=record["run"]["segment_index"],
+                segment_id=record["run"]["segment_id"],
+                start=record["run"]["start"],
+                exact_resume=record["run"]["exact_resume"],
+                cum_trainer_step=record["steps"]["cum_trainer_step"],
+                segment_local_step=record["steps"]["segment_local_step"],
+                cum_games=record["fed"]["cum_games"],
+                cum_train_step_sec=record["time"]["cum_train_step_sec"],
+                corpus=None if corpus is None else dict(corpus_id=corpus["corpus_id"], epoch=corpus["epoch"],
+                                                        next_game_index=corpus["next_game_index"]),
+                path_kind=record["invocation"]["path_kind"])
 
 
 def file_sha256(path, chunk=1 << 22):
@@ -67,6 +98,12 @@ def scan(dirs, want_sha):
             for k in KEEP:
                 if k in meta:
                     e[k] = meta[k]
+            try:
+                e["lineage"] = lineage_summary(meta, os.path.basename(path))
+            except dcm_lineage.LineageError as err:
+                # A file the app would refuse is a finding, recorded like a
+                # truncated one rather than dropped.
+                e["error"] = str(err)
             if want_sha:
                 e["sha256"] = file_sha256(path)
             entries.append(e)

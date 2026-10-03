@@ -120,7 +120,8 @@ final class LRCycleWarmupOffsetTests: XCTestCase {
             learningRate: 0.01,
             momentumCoeff: 0.5,
             sqrtBatchScalingForLR: false,
-            lrWarmupSteps: warmupSteps
+            lrWarmupSteps: warmupSteps,
+            initialization: .seeded(initSeed: 1)
         )
         let cycle = invertedCycle()
         trainer.lrMomentumCycle = cycle

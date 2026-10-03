@@ -287,7 +287,10 @@ final class CliTrainingRecorderTests: XCTestCase {
             momentumCycleActive: false,
             buildNumber: 42,
             trainerID: "T1",
-            championID: "C1"
+            championID: "C1",
+            cumTrainerStep: nil,
+            cumTrainStepSec: nil,
+            cumGames: nil
         )
     }
 

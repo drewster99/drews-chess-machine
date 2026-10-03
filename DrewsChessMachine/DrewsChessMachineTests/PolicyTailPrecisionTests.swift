@@ -48,8 +48,8 @@ final class PolicyTailPrecisionTests: XCTestCase {
     private func policiesForBothPrecisions(
         _ architecture: NetworkArchitecture
     ) async throws -> (shipped: [Float], mixed: [Float]) {
-        let shippedNet = try ChessNetwork(arch: architecture, policyTailPrecision: .float32FromPreBatchNorm)
-        let mixedNet = try ChessNetwork(arch: architecture, policyTailPrecision: .mixedFinalProjection)
+        let shippedNet = try ChessNetwork(arch: architecture, initialization: .seeded(initSeed: 1), policyTailPrecision: .float32FromPreBatchNorm)
+        let mixedNet = try ChessNetwork(arch: architecture, initialization: .seeded(initSeed: 2), policyTailPrecision: .mixedFinalProjection)
         try await mixedNet.loadWeights(try await shippedNet.exportWeights())
         return (try await startingPolicy(shippedNet), try await startingPolicy(mixedNet))
     }
@@ -60,7 +60,7 @@ final class PolicyTailPrecisionTests: XCTestCase {
             for style in PolicyHeadStyle.allCases {
                 for bnMode in [BNMode.inference, .training] {
                     let net = try ChessNetwork(
-                        arch: arch(dtype, policy: style), bnMode: bnMode, policyTailPrecision: .mixedFinalProjection)
+                        arch: arch(dtype, policy: style), bnMode: bnMode, initialization: .seeded(initSeed: 1), policyTailPrecision: .mixedFinalProjection)
                     let label = "\(dtype) \(style.rawValue) \(bnMode)"
                     XCTAssertEqual(net.policyTailPrecision, .mixedFinalProjection, label)
                     XCTAssertEqual(net.policyOutput.dataType, .float32, "\(label): policyOutput")
@@ -93,9 +93,11 @@ final class PolicyTailPrecisionTests: XCTestCase {
         try requireMetal()
         for style in PolicyHeadStyle.allCases where style != .simpleConv {
             let shipped = try ChessNetwork(
-                arch: arch(.bFloat16, policy: style), policyTailPrecision: .float32FromPreBatchNorm, analysisTaps: true)
+                arch: arch(.bFloat16, policy: style),
+                initialization: .seeded(initSeed: 1), policyTailPrecision: .float32FromPreBatchNorm, analysisTaps: true)
             let mixed = try ChessNetwork(
-                arch: arch(.bFloat16, policy: style), policyTailPrecision: .mixedFinalProjection, analysisTaps: true)
+                arch: arch(.bFloat16, policy: style),
+                initialization: .seeded(initSeed: 2), policyTailPrecision: .mixedFinalProjection, analysisTaps: true)
             XCTAssertEqual(try policyPreActivationDataType(shipped), .float32, style.rawValue)
             XCTAssertEqual(try policyPreActivationDataType(mixed), .bFloat16, style.rawValue)
         }
@@ -118,7 +120,7 @@ final class PolicyTailPrecisionTests: XCTestCase {
 
     func testTrainerStepsWithMixedFinalProjection() async throws {
         try requireMetal()
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: arch(.bFloat16), policyTailPrecision: .mixedFinalProjection)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: arch(.bFloat16), initialization: .seeded(initSeed: 1), policyTailPrecision: .mixedFinalProjection)
         XCTAssertEqual(trainer.network.policyTailPrecision, .mixedFinalProjection)
         let timing = try await trainer.trainStep(batchSize: 32)
         XCTAssertTrue(timing.loss.isFinite, "loss must be finite")

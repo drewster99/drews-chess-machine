@@ -13,7 +13,7 @@ next to a training job.
 
 ```
 DrewsChessMachine --derive-model --from <model.safetensors> <operation> <value> \
-    [--group <index>]... --out <new.safetensors>
+    [--group <index>]... [--init-seed <u64>] --out <new.safetensors>
 DrewsChessMachine --derive-model --help      # lists every operation this build supports
 ```
 
@@ -31,6 +31,11 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
   differ from `--from`. Nothing is ever overwritten.
 - `--group <index>`: a 0-based block-group index (repeatable). It narrows operations that
   accept it. Without it, an operation applies to every group it can apply to.
+- `--init-seed <u64>`: the init seed of an operation that draws weights
+  (`--set-se-beta-init glorot`). Without it a seed is drawn. Either way the seed and the
+  init scheme (`dcm-init-1`) are written into that operation's `derivation_history`
+  record, so the derive can be repeated exactly. Given with no weight-drawing operation,
+  it is refused.
 - The new file's path is printed on stdout. The rewritten tensors are listed on stderr
   and in the session log as `[DERIVE]` lines.
 
@@ -45,8 +50,9 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
 | `--set-rezero-alpha-cap` | a number `> 0` | `block_groups[].rezero_alpha_cap` on groups with ReZero | none (the cap has no parameters) |
 
 `zero` writes exact zeros to the β weights and bias. `glorot` re-draws the β weights
-from the same Glorot-normal distribution the graph builder uses, and zeroes the β bias.
-The γ half is never touched.
+with the graph builder's own seeded per-tensor draw (the tensor's `init/<name>` stream
+under the init seed, `WeightInitScheme`) and zeroes the β bias, so the β rows are exactly
+those a fresh mint with that init seed has. The γ half is never touched.
 
 `--set-activation` changes the main activation at every site at once: stem, tower end,
 both heads, and each block group's main path and `activation_gated` merge. It doesn't

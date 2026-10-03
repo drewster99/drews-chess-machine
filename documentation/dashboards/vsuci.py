@@ -169,7 +169,21 @@ def main():
     ap = argparse.ArgumentParser(description="Rebuild data/<run>.csv for every train-vs-UCI run.")
     ap.add_argument("--allow-shrink", action="store_true",
                     help="allow a rebuild to drop rows / blank values a CSV holds (each one is printed first)")
+    ap.add_argument("--derive-registry", metavar="MODELS_DIR",
+                    help="instead of rebuilding: derive segment bases from the lineage records (format v7+) "
+                         "of the train-vs-UCI files in MODELS_DIR and diff them against vsuci_registry.json")
+    ap.add_argument("--write", action="store_true",
+                    help="with --derive-registry: fill the derived values the registry lacks "
+                         "(refused if anything conflicts)")
     args = ap.parse_args()
+    if args.write and not args.derive_registry:
+        ap.error("--write applies only to --derive-registry")
+    if args.derive_registry:
+        from _lineage_registry import derive_registry
+        models_dir = os.path.expanduser(args.derive_registry)
+        paths = [os.path.join(models_dir, n) for n in sorted(os.listdir(models_dir))
+                 if n.endswith(".safetensors") and os.path.isfile(os.path.join(models_dir, n))]
+        sys.exit(derive_registry(os.path.join(HERE, "vsuci_registry.json"), paths, "vsuci", args.write))
     for key, cfg in REG["runs"].items():
         snapshot = snapshot_of(os.path.join(DATA, f"{key}.csv"))
         rows = build(key, cfg)

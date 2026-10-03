@@ -254,7 +254,7 @@ final class ExactResumeCompletionTests: XCTestCase {
     func testAResumesRecordNamesItsGapsAndAnExactOneNamesNone() throws {
         let parentRecord = try LineageRecord.forTests(trainerCompletedSteps: 10, corpus: nil)
         let parent = LineageTracker.ParentFile(modelID: "20261003-1-PRNT", contentSHA256: "ab", trainerCompletedSteps: 10,
-                                               lineage: .recorded(parentRecord))
+                                               lineage: .recorded(parentRecord), derivationHistory: [])
         let start = Date(timeIntervalSince1970: 1_790_000_000)
         let inexact = try LineageTracker(start: .resume(parent: parent, gaps: [.buffer, .os], legacyTotals: nil),
                                          pathKind: .vsuci, argv: ["dcm"], startedAt: start, segmentStartTrainerStep: 10)

@@ -353,6 +353,7 @@ Inference graphs have no dropout scaffolding, so nothing changes for them.
   - **Domain guaranteed by construction:** `u1 = (k+1)/2²⁴ ∈ (0,1]` (never 0, never denormal, NaN or infinite) and angle `2π·k/2²⁴ ∈ [0,2π)`, with `k` from `next() >> 40`. No other caller can pass other inputs, so no general-purpose range reduction or special-case handling is needed. (This replaces today's clamp of `u1` to `leastNormalMagnitude`.)
   - **FMA:** Swift does not contract `a * b + c` into a fused multiply-add on its own, so the explicit operation order is stable across builds; the golden bits catch any change.
   - **Validation:** (1) exhaustive test over all 2²⁴ inputs of each function against a `Double` reference, asserting a stated max-ULP bound (A2.4); (2) golden output bits for fixed seeds (A2.4, B1.1); (3) **re-benchmark on completion** against vForce and Swift libm and report the numbers. Prototype (2026-09-30, 8.45M values, `swiftc -O`, M4 Pro): vForce 10.4–13.9 ms, Swift libm 31.5 ms, draft polynomial 10.6 ms. Init runs once per mint, so speed is not a deciding factor.
+  - **Re-benchmark of the finished transform (P5, 2026-10-02):** same harness shape, 8,445,748 values including the xoshiro draws, `swiftc -O`, best of several runs, on the M4 Pro while other builds and test runs were loading it (load average ≈ 4.4), so the absolute numbers are inflated against the idle prototype; the ratios are the useful part. `DCMRandom.nextStandardNormalPair`: 45.6 ms (earlier run 55.6); vForce Box–Muller: 33.6 ms (39.0); Swift libm (`Double`): 60.7 ms (74.8). Ours is ≈ 1.35× vForce and ≈ 0.75× libm. A re-run on an idle machine is still worth doing if the absolute figure ever matters.
   - **Not a concern — bf16 narrowing:** bf16 training keeps fp32 master weights (fp32 master + bf16 working copy; config D, issue #9, also stored fp32 and is removed anyway under D-10), so init always produces fp32 values, and the one CPU narrowing (`float32ToBFloat16Bits`, `ChessNetwork.swift:3572`) is a fixed round-to-nearest-even rule pinned by B1.1's goldens.
 - **Self-play/GUI concurrency** (§0) — not numeric, but the dominant source of trajectory divergence.
 
@@ -1491,6 +1492,126 @@ Build New Model with an entered init seed mints tensor data identical to
 `--derive-model`/CLI mints with the same seed, and an empty field logs the drawn
 seed.
 
+**Done (`3b601c50`, 2026-10-02).** As built:
+- `Utils/DCMNormalMath.swift`: `logOfGridUniform(k)` = `ln((k+1)/2²⁴)` by a
+  power-of-two split, mantissa folded into (√½, √2], and an odd `atanh` series in
+  Horner form; `cosSinOfGridAngle(k)` = exact quadrant and octant reduction on the
+  grid, then Taylor `sin`/`cos` on [0, π/4]; `standardNormalPair(radiusIndex:angleIndex:)`
+  rounds `r·cos`, `r·sin` to `Float`. `DCMRandom.nextStandardNormalPair()` takes two
+  `next() >> 40` draws, always exactly two. No vForce, no libm anywhere on the path.
+- `Network/WeightInitialization.swift`: `WeightInitialization` (`.seeded(initSeed:)`,
+  `.overwrittenByLoad`, `drawnSeed()`); `WeightInitScheme` (`current = "dcm-init-1"`,
+  `tensorSeed` = `DCMRandomStreams.childSeed(parent: initSeed, name: "init/" + name)`,
+  `bnCalibrationSeed` = the `init.bn_calibration` child, `standardNormals`, fans from the
+  tensor's own stored shape, He / Glorot std in fp32, `nativeValues` = draw row-major in
+  the stored layout, scale, then `SafetensorsModelIO.fromTorchLayout`, and
+  `seFC2NativeValues` = the whole Glorot draw with the zero-β native columns zeroed);
+  `TensorInitializer` checks every builder request against `weightTensorPlan()` (name
+  present, same native shape, at most once) and, after the build, that every conv /
+  linear plan tensor was drawn.
+- `ChessNetwork`: every random weight site goes through the initializer by plan name;
+  `.overwrittenByLoad` fills zeros and the network refuses `evaluate`, batched
+  evaluate, value distribution, value baseline, analysis taps, `exportWeights`,
+  `computeBatchStats` and `trainStep` with `ChessNetworkError.weightsNotLoaded` until
+  `loadWeights` runs. The old vForce helpers are gone; the two static helpers
+  `PolicyHeadCorrectnessTests` calls (`heInitData`, `glorotInitDataFCInOut`) draw
+  through the same transform from a system-drawn seed.
+- `ChessMPSNetwork`: `NetworkInitMode` gains `.seededRandomWeights(initSeed:)` and
+  `.weightsToBeLoaded`; the BN-calibration warmup game is walked with
+  `nextBounded(legalMoves.count)` from the mint's `init.bn_calibration` stream, and its
+  sibling network is built `.overwrittenByLoad`.
+- Load paths pass `.weightsToBeLoaded` / `.overwrittenByLoad`: the session's
+  persistent networks, model/session load, probe, Run All Analyses, numerics audit,
+  UCI loader, checkpoint verification scratch, the train-vs-UCI eval net, the
+  live-trainer mirror (`InferenceNetworkFactory.buildAwaitingLoad`), and corpus-replay /
+  train-vs-UCI trainers started from a model. Fresh corpus-replay and train-vs-UCI
+  trainers draw a seed and log it (`[REPLAY] fresh nets init_seed=`,
+  `[VS-UCI] fresh trainer init_seed=`).
+- Mints: `--new-model [--init-seed <u64>]` and Build New Model's optional
+  **Init seed** field (empty = drawn; the Build button is disabled on an invalid
+  entry) both build `.seededRandomWeights(initSeed:)` — the same code path, so the
+  same seed gives the same tensors. The seed and scheme are logged (`[NEW-MODEL] …
+  init_seed=… (entered|drawn) init_scheme=dcm-init-1`, `[BUTTON] Build Network …
+  init_seed=…`) together with the build time (`[NEW-MODEL] built … in … ms`,
+  `[BUILD] champion … built in … ms`).
+- `--derive-model --set-se-beta-init glorot [--init-seed <u64>]` re-draws β with the
+  tensor's own `init/<name>` stream (the β rows equal a fresh mint's under that seed)
+  and records `init_seed` / `init_scheme` in the operation's `derivation_history`
+  arguments; `--init-seed` with no weight-drawing operation is refused.
+- `scripts/init_reproducibility.sh <binary> <scratch>` mints seeds 1, 2, 42, 1234,
+  99999, 2⁶⁴−1, 7777777, 31337 × `v4_5block_7x7` and `nt8y_3x3stem` and prints, per
+  mint, the SHA-256 of the trainable tensors and of the BN running statistics
+  (`scripts/safetensors_tensor_hash.py`, tensor data only).
+- Tests (all new; written before the implementation, red only because the API did
+  not exist yet — compile-red): `DCMNormalMathTests` (7: exhaustive `log` and
+  `cos`/`sin` over all 2²⁴ inputs — measured worst ≤ 4 ULP relative and ≤ 8 ULP
+  absolute respectively; quadrant boundaries exact; each normal within 1 `Float` ULP of
+  Foundation's; golden pairs; two draws per pair; moments), `InitSchemeGoldenTests` (8:
+  tensor seeds, BN-calibration seed, conv / FC / zero-β SE fc2 goldens in fp32 and bf16
+  with full-tensor SHA-256, odd count, non-random kinds refused, per-role std),
+  `WeightInitializationTests` (12: same seed bit-identical, builder equals the scheme by
+  plan name, shared tensors identical across architectures, bf16 = round(fp32), every
+  preset builds seeded, the load gate, seeded mints reproducible including BN
+  calibration, plan-check errors), `InitSeedRecordingTests` (7: metadata round trip and
+  malformed records, legacy writer refuses a seed, seeded β re-draw equals the mint,
+  Build-screen seed entry). Every golden came from an independent Python
+  implementation of the scheme, not from the Swift code. Related existing classes (51
+  classes, 466 tests) pass; the only failures in that run were
+  `ChessNetworkValueDistributionTests`' two tests, which evaluate an
+  `InferenceNetworkFactory.build(arch:)` network without loading — that entry point
+  stays `.randomWeights` and the mirror got its own `buildAwaitingLoad`; re-run green.
+- Build time (Debug build, loaded machine, `--new-model` via the script):
+  `v4_5block_7x7` 4.2–5.0 s, `nt8y_3x3stem` 0.7–1.2 s after the first (3.5 s). The
+  draw itself is ≈ 12 ms slower than vForce over 8.45M values (A5 re-benchmark),
+  negligible against graph construction, so the ≤ 2× bound holds; no pre-P5 timing
+  of the same binary was taken.
+- Same-machine run of the script on the M4 Pro (macOS 27.2 beta): all 16 mints
+  produced their hashes; the cross-machine comparison (M5 VM) is still owner-run.
+- Deviations: (1) The init seed lives in flat `init_seed` / `init_scheme`
+  safetensors metadata keys (`ModelInitRecord`), written by `--new-model` only, since
+  `dcm_lineage` does not exist until P6 — P6 should fold them into
+  `dcm_lineage.rng`. A GUI-built champion's seed is logged and shown, not yet stored in
+  its saves. The legacy `.dcmmodel` writer refuses a record. (2) The B1.1 golden "WDL
+  fc2 bias" is not pinned here: biases are constants, not draws; the pinned tensors are
+  a conv, an FC, a zero-β SE fc2 and an odd-count tensor. (3) `DCMNormalMath` is an
+  internal type rather than private to `DCMRandom`, so the exhaustive tests can call
+  it. (4) `InferenceNetworkFactory.build(arch:)` keeps drawing random weights (an
+  existing test uses it that way); the live-trainer mirror uses the new
+  `buildAwaitingLoad(arch:)`. (5) `initialization` has no default on `ChessNetwork`, `ChessTrainer`
+  or the `TrainerHyperparameters` convenience init, and `resetNetwork()` without an
+  argument is gone (owner rule: no silent defaults). It landed after the merge with
+  P2/P4/P13 so it did not collide with P4's edits to the same test lines: every test
+  construction passes `.seeded(initSeed: N)` — `N` counting the constructions within
+  its function, so networks built side by side stay distinct, and the
+  training-vs-inference BN diagnostic varies it per trial; production sweeps pass
+  `.drawnSeed()`. (6) `SetSEBetaInitDeriveOperation.init(value:groupIndices:)` draws a seed
+  (existing tests use that form); the CLI path always records the seed it used.
+- **Merged with P3 and P6 (`20d5062d`).** P3 had wired the BN-calibration walk to a
+  model init seed on its own, so the two were made one:
+  - `NetworkInitMode` is `.randomWeights(initSeed:)` (P3's case, now also the seeded
+    per-tensor draw; the names `.seededRandomWeights` / `.weightsToBeLoaded` above
+    are gone) and `.overwrittenByLoad`, now a real case that draws nothing and gates
+    use until a load — P3's static of that name built from a system-drawn seed,
+    which its doc said per-tensor initialization would replace.
+  - The walk uses P3's `DCMRandomStreams.batchNormCalibrationGenerator(initSeed:)` and
+    `warmupBatch(encoding:random:)`; the derivation (`init.bn_calibration` under the
+    init seed) was the same in both, so `WeightInitScheme.bnCalibrationSeed` was
+    removed and its golden now pins the generator.
+  - A fresh corpus-replay or train-vs-UCI model takes P3's
+    `freshModelInitSeed` (`childSeed(master, "init")`) instead of a drawn seed, so
+    `--seed` reproduces its weights too; logged `init_seed=… init_scheme=… (from run
+    seed …)`. `WeightInitialization.drawnInitSeed()` draws through
+    `RunRandomSeed.systemDrawnSeed()`, the one system seed draw.
+  - P3's own init-seed draws in Build Network and `--new-model` were dropped:
+    each mint has the one seed (entered or drawn) that P5 logs and records.
+  - **Where the init seed is recorded.** D2 puts it in `dcm_lineage.rng.init_seed` /
+    `init_scheme`, but P6's `rng` block has no such slot (it holds `seed_mode` and the
+    dropout state, marked as P3/P9's integration point), and every record key is
+    required on decode, so adding one changes the v7 record. That change is left to the
+    phase that completes `rng` (P9/P10); until then the flat `init_seed` /
+    `init_scheme` keys of a `--new-model` file are the record, written next to its
+    `dcm_lineage`.
+
 **P6 — Format v5 + `LineageRecord`.** Files: `Persistence/LineageRecord.swift`,
 `Persistence/LineageTracker.swift`, `Network/ArchitectureFormat.swift` (v5),
 `Persistence/SafetensorsModelIO.swift`, `Persistence/SessionCheckpointFile.swift`
@@ -1808,9 +1929,146 @@ Validation: each run path (GUI, `--train`, `--train-from-corpus`,
 `--train-vs-uci`, `--derive-model`, `--uci`) prints one `[RUN]` line at start in
 a real launch; a `results.json` from a short replay run carries `lineage`.
 
+**Done (`e438d326`, 2026-10-02).** As built:
+- **`[RUN]` (D4).** `Logging/RunProvenanceLine.swift` is the one formatter.
+  `line(record:seed:)` serves every path with a lineage segment: GUI
+  Play-and-Train / `--train` (logged at the end of `beginLineageSegment`, so
+  once per start, including a continue after Stop, with that segment's totals
+  so far), corpus replay and train-vs-UCI (right after their `LineageTracker`
+  exists, from the new `LineageTracker.startRecord`), and `--derive-model`
+  (from the derived file's record, now on `ModelDerivation.Result.lineage`).
+  `line(pathLabel:build:device:argv:)` serves `--uci`, which has no segment
+  (`run=none`, no totals). Fields: path, run ID, segment index, origin
+  (`fresh` / `branch from` / `exact resume of` / `derived from <model_id>
+  sha=<12>`, or `resume of …, not exact: <items>`), build/git/dirty,
+  device/VM/OS, seed fields, `params_sha=<12>`, `cum_step` / `cum_games` /
+  `cum_train_sec`, quoted redacted argv. Absent values print `none`; totals no
+  predecessor recorded print `unrecorded`.
+- **Reconciled with P3.** P3's seed-only `[RUN] seed=… mode=… derivation=v1`
+  line is no longer logged by any path; its fields are
+  `RunRandomSeed.provenanceFields`, embedded in the one `[RUN]` line. Paths log
+  `RunRandomSeed.parameterNotes` (the `[PARAM]` notes) first. `logLine` /
+  `logLines` keep their exact text (pinned by `RunSeedParameterTests`). A
+  continue after Stop's `continuing seed=…` line is retagged `[RUN-SEED]` so
+  each start has one `[RUN]` line.
+- **`results.json` (D5).** `CliTrainingRecorder.ResultsLineage`, a top-level
+  `lineage`, encodes the record's schema, run, parent, steps, fed, time,
+  parameters, build, invocation, device and rng (not `segments` or
+  `derivation_history`), plus `checkpoint_sha256`. The CLI runners set it at
+  every successful rolling save (`recordSave(of:savedAt:log:)`, reading the
+  file's `content_sha256` back from its header), so the last save, normally the
+  final one, wins. GUI `--train` writes no final model file, so it records the
+  record at each stats tick (`lineageForResults`) with a null hash. Stats rows
+  gain `cum_trainer_step` / `cum_train_step_sec` / `cum_games`
+  (`LineageTracker.Totals`). They are required `StatsLine` arguments, and an
+  unrecorded total is left out of the row like every other unmeasured value in
+  `results.json`.
+- **B4.** `LineageRecord.derivationHistory` is a new field, required on
+  decode. `LineageTracker.ParentFile.derivationHistory` holds the parent's
+  history, resolved by one rule (`derivationHistory(lineage:metadata:)`): the
+  record's history; for a file before lineage, the flat key it states, or none;
+  an unreadable key is an error. The tracker carries it into every record of a
+  branch or resume segment. `untrainedCopyRecord(source:derivation:…)` appends
+  the derive step (derive) or nothing (Save Champion of a loaded model).
+  `--derive-model` reads the source's history through the same rule and no
+  longer writes the flat key itself. The record writes it as a mirror (only
+  when non-empty), so tools and `SEBetaInitTests` that read the flat key see
+  the same text as before.
+- **Tests.** New `LineageProvenanceTests` (8): derive → branch-train → save →
+  exact resume → derive again keeps one growing history, and the trained
+  file's flat key equals the derived file's. Also covered: the flat key of a
+  pre-lineage file (present / absent / unreadable); a record without
+  `derivation_history` refused; every `[RUN]` field, including unrecorded and
+  absent values and the `--uci` form; `results.json` lineage and per-row
+  totals.
+  - Red: compile-only (new API; `red.log`).
+  - Green: 8/8. The related classes passed 150 + 108 tests, 0 failures:
+    LineageRecord, CliTrainingRecorder (both), RunSeedParameter, SEBetaInit,
+    RezeroAlphaCap, SEActivation, DeriveTrainedSource,
+    CheckpointManagerSafetensors, CheckpointManagerRoundTrip, ExactResume,
+    SessionCheckpointSchemaExpansion, DropoutRNGState, CorpusReplayFeeder,
+    CorpusReplayFailLoud, ReplayRunnerPreflight, CliResultsOutput,
+    TrainerOutputFileGuard, UCIPosition, PolicyTailPrecisionProvenance,
+    SessionParameterResume, BuildNewModelDraft.
+  - Edited call sites (new required arguments, assertions unchanged):
+    `LineageRecordTests`, `LineageTestSupport`, `CliTrainingRecorderTests`,
+    `CliTrainingRecorderUnmeasuredStatsTests`.
+- **Not done here.** The plan's validation needs real launches of each path
+  and a `results.json` from a short replay run; this phase ran no app or CLI
+  launches. The full suite was not run.
+
 **P11 — Tracker.** `documentation/dashboards/replay.py`, `ckpt_inventory.py`,
 `selfplay.py`, `vsuci.py`; pytest fixtures. Validation: on existing v4 data,
 output identical to today (no regressions); on synthetic v5 headers, expected registry.
+
+**Done (`d493e9cb`, `fb3f4016`, 2026-10-03).** As built, against P6's as-built record
+(format **v7**, `dcm_lineage`):
+- **`scripts/dcm_lineage.py`** — the one Python reader of the record. Format version is
+  read as `ArchitectureFormat` reads it (absent = 3); a file before v7 is
+  `Unrecorded(format v<N>)`; a v7+ file without a record, with a record that is not
+  JSON, of another schema, or missing a key the derivation reads, is refused; a v6 file
+  carrying a record is refused (no writer of v6 produced one). The flat mirror keys are
+  never read. `derive_runs` groups files by `lineage_run_id` and segment and derives the
+  registry fields `lineage_run_id`, `segment_id`, `model_id`, `date`, `cumstep_base`
+  (`segment_start_trainer_step − run origin`), `games_base` (`cum_games −
+  segment_games`), `elapsed_base_sec` (`cum_train_step_sec − segment_train_step_sec`),
+  `wall_base_sec` and `device` ("M4 Pro", "M5 (VM)" — the hand-entered form). A total the
+  record holds as null stays absent and is listed as unrecorded. Files of one segment that
+  disagree on index, model ID or bases are refused (time bases agree within a 1e-9
+  relative rounding tolerance, since each file computes them by subtraction). A segment
+  whose files are gone is derived from a later record's `segments` history (its model ID
+  stays unrecorded: summaries do not carry it). Constants mirror the Swift ones and a test
+  reads the Swift source to keep them equal.
+- **`ckpt_inventory.py`** — each entry gains `lineage` (run, segment, start, exact,
+  cumulative steps / games / train-step seconds, corpus position, path kind) or
+  `"unrecorded (format vN)"`; a refused file is an `error` entry. On the 4056 real
+  checkpoints the output is otherwise identical to before (all are v3–v6).
+- **`replay.py derive-registry [--models-dir] [--write]`** and **`vsuci.py
+  --derive-registry DIR [--write]`** — reconcile (`_lineage_registry.plan`, pure) the
+  lineage runs written by that path with the registry: a run matches by
+  `lineage_run_id`, else by a segment `model_id`; a segment by `segment_id`, else
+  `model_id`. Fill-only: a field the registry holds is "same" or a reported
+  **conflict**, never overwritten; `--write` is refused outright when anything conflicts
+  or any file is refused. The step axis: when the lineage run's segment 0 is the registry
+  run's first segment and it did not continue unrecorded history, its trainer clock is
+  the registry axis; otherwise the registry's own `cumstep_base` for the segment matching
+  segment 0 is the anchor; with neither, `cumstep_base` stays unrecorded.
+- **`selfplay.py --lineage-table DIR`** — read-only segment table of the GUI session files
+  (`*.dcmsession/*.safetensors`); that registry is keyed by session logs and holds no
+  per-segment bases to fill.
+- **Tracker rows.** A registry segment with a `segment_id` has its checkpoints found by
+  that id in their headers (`lineage_checkpoints`), not an `enum_stem` glob, and
+  `discover-stems` proposes no stem for it (the `enum_stem` field is then unneeded). Rows
+  from a file with a record get `games_fed` = the record's `cum_games` (measured) and a
+  new CSV column `train_step_sec` = `cum_train_step_sec` (measured step time — no clamp
+  needed; `elapsed_train_sec` stays beside it for older rows). A record that names a
+  different segment, a different segment-local step, or disagrees with the segment's
+  `games_base` refuses the row.
+- **Tests** (`documentation/dashboards/tests/test_lineage.py`, stdlib unittest, 25 new):
+  three synthetic v7 segments (fresh + two exact resumes, enumerated files every 500
+  steps) → the expected registry segments; bases + segment totals reproduce every file's
+  cumulative values; history-only segments; null totals stay unrecorded; v3/v6
+  unrecorded; six refusal cases; segment disagreement; reconciliation fill / same /
+  conflict / anchor / no-anchor / double match; the command's proposal-only, write,
+  idempotent rewrite, conflict refusal and path-kind filter on a temp registry; the
+  tracker cells and header enumeration on a temp `DCM_DASH_ROOT`; inventory columns. All
+  53 dashboard tests pass.
+- **Validation on real data (read-only).** `derive-registry` (with `DCM_DASH_ROOT` on a
+  scratch copy) and `vsuci.py --derive-registry` over the real Models folder: 4056 files,
+  all unrecorded, nothing changed, exit 0; `selfplay.py --lineage-table` over Sessions:
+  32 files, all unrecorded; `discover-stems` output byte-identical to the previous code.
+  No real v7 file exists yet (the running experiments use builds before P6), so the
+  derivation on real v7 headers is still owed — first real run: `replay.py
+  derive-registry` once a v7 corpus-replay run has saved checkpoints.
+- **Deviations.** (1) Registry entries are never *created*: a lineage run or segment with
+  no registry counterpart is printed as a proposal, because a registry run needs a label,
+  color and session log no file states (filling those would be a silent default). (2)
+  Plotting `train_step_sec` beside `elapsed_train_sec` in `master.py` is not done; the
+  column is recorded. (3) Schema extension: the shared CSV schema gains the
+  `train_step_sec` column (blank on every existing row), so the next rewrite of an
+  existing CSV adds an empty column — values are unchanged. (4) The rewrite of the
+  registry uses the file's existing format (`indent=2`, no trailing newline), checked to
+  round-trip byte for byte.
 
 **P12 — Harness** (C6). `DrewsChessMachineTests/ResumeEquivalenceTests.swift`,
 `scripts/resume_equivalence.sh`, `test_tiny` preset + corpus fixture.

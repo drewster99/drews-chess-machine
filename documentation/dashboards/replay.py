@@ -37,7 +37,9 @@ from _guarded_csv import (read_rows, read_text, replace_rows, replace_text_if_un
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
 import dcm_arch  # noqa: E402  each checkpoint's ReZero cap, read from its own metadata
+import dcm_lineage  # noqa: E402  a checkpoint's lineage record (format v7+), read as the app reads it
 from dcm_probe_build import probe_build_id  # noqa: E402  which build made each pElo
+from _lineage_registry import derive_registry  # noqa: E402  registry bases from the lineage records
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Config/data/output root. Defaults to the script dir, but can be pointed at a
@@ -543,17 +545,80 @@ def enum_specs(cfg):
       2. otherwise, the LAST segment falls back to the run-level `enum_glob`
 
     With no `enum_stem` anywhere this returns exactly what the old single-glob code
-    used, so runs that do not opt in are bit-for-bit unaffected."""
+    used, so runs that do not opt in are bit-for-bit unaffected.
+
+    A segment carrying a `segment_id` (filled by `derive-registry` from the files'
+    lineage records) is not listed here: its checkpoints are found by that id in
+    their headers (`lineage_checkpoints`), not by name."""
     segs = cfg.get("segments", [])
     run_glob = enum_glob(cfg)
     specs = []
     for si, sg in enumerate(segs):
+        if sg.get("segment_id"):
+            continue
         stem = sg.get("enum_stem")
         if stem:
             specs.append((si, f"{stem}-replay-step*.safetensors"))
         elif run_glob and si == len(segs) - 1:
             specs.append((si, run_glob))
     return specs
+
+_LINEAGE_SCAN = None
+
+def _lineage_scan():
+    """`dcm_lineage.scan(MODELS)`, read once per process: (recorded, unrecorded, errors)."""
+    global _LINEAGE_SCAN
+    if _LINEAGE_SCAN is None:
+        _LINEAGE_SCAN = dcm_lineage.scan(MODELS)
+    return _LINEAGE_SCAN
+
+def lineage_checkpoints(cfg):
+    """[(segment_index, path, segment_local_step)] for every segment carrying a
+    `segment_id`: the files whose lineage record names that segment — identity
+    from the header, never the filename. A file whose `training_step` disagrees
+    with its record's `segment_local_step` is a contradiction and raises."""
+    wanted = {sg["segment_id"]: si for si, sg in enumerate(cfg.get("segments", [])) if sg.get("segment_id")}
+    if not wanted:
+        return []
+    recorded, _, _ = _lineage_scan()
+    out = []
+    for f in recorded:
+        si = wanted.get(f.record["run"]["segment_id"])
+        if si is None:
+            continue
+        local = f.record["steps"]["segment_local_step"]
+        if int(f.metadata["training_step"]) != local:
+            raise dcm_lineage.LineageError(f"{f.name}: training_step {f.metadata['training_step']} but its "
+                                           f"lineage record's segment_local_step is {local}")
+        out.append((si, f.path, local))
+    return sorted(out, key=lambda t: (t[0], t[2]))
+
+def lineage_cells(path, sg, meta):
+    """CSV cells a checkpoint's lineage record measures: `games_fed` (the run's
+    cumulative games) and `train_step_sec` (cumulative measured trainer-step
+    seconds). {} for a file written before lineage records; a total the record
+    holds as null gives a blank cell, never a filled one.
+
+    The record must agree with the registry row it is filed under: same segment
+    (when the registry segment names one), same segment-local step, and — when
+    the registry segment holds `games_base` — that base plus the segment's own
+    games must equal the record's cumulative games."""
+    facts = dcm_lineage.checkpoint_facts(path)
+    if facts is None:
+        return {}
+    name = os.path.basename(path)
+    if sg.get("segment_id") and sg["segment_id"] != facts["segment_id"]:
+        raise dcm_lineage.LineageError(f"{name}: lineage segment {facts['segment_id']}, but this row's "
+                                       f"registry segment is {sg['segment_id']}")
+    if facts["segment_local_step"] != meta:
+        raise dcm_lineage.LineageError(f"{name}: lineage segment_local_step {facts['segment_local_step']}, "
+                                       f"row meta_step {meta}")
+    if facts["cum_games"] is not None and "games_base" in sg and \
+            sg["games_base"] + facts["segment_games"] != facts["cum_games"]:
+        raise dcm_lineage.LineageError(f"{name}: registry games_base {sg['games_base']} + segment games "
+                                       f"{facts['segment_games']} != the record's cum_games {facts['cum_games']}")
+    return dict(games_fed="" if facts["cum_games"] is None else facts["cum_games"],
+                train_step_sec="" if facts["cum_train_step_sec"] is None else round(facts["cum_train_step_sec"], 3))
 
 _RESUME_SUFFIX = re.compile(r"^(?:run|original|resume\d*)$")
 
@@ -733,7 +798,8 @@ def track(run):
     st = SegTime(cfg["segments"], run); elapsed, clock, m2, si = st.elapsed_and_clock(cum)
     met = _metrics_at(cfg["segments"][si]["log"], meta)
     lm = round(1 - met["pIllM"], 4) if "pIllM" in met else ""
-    row = dict(cum_step=cum, meta_step=meta, segment=si, elapsed_train_sec=elapsed,
+    measured = lineage_cells(frozen, cfg["segments"][si], meta)
+    row = dict(cum_step=cum, meta_step=meta, segment=si, elapsed_train_sec=elapsed, **measured,
                wallclock_iso=clock, ms_per_step=met.get("ms", ""),
                pElo=round(pr.get("pElo"), 2) if pr.get("pElo") else "",
                nll=round(pr.get("nll"), 4) if pr.get("nll") else "",
@@ -771,6 +837,7 @@ def _backfill_one(cfg, st, rows, by, cum, path, name, verbose, failures, segment
     cells = internals_cells(path)
     elapsed, clock, meta, si = st.elapsed_and_clock(cum, segment)
     met = _metrics_at(cfg["segments"][si]["log"], meta)
+    measured = lineage_cells(path, cfg["segments"][si], meta)
     non_finite = pr["pElo"] is None
     pf = dict(pElo="" if non_finite else round(pr["pElo"], 2),
               nll=round(pr.get("nll"), 4) if pr.get("nll") else "",
@@ -781,9 +848,12 @@ def _backfill_one(cfg, st, rows, by, cum, path, name, verbose, failures, segment
         r.update(pf)
         if r.get("elapsed_train_sec") in ("", None):
             r["elapsed_train_sec"] = elapsed
+        for key, value in measured.items():
+            if r.get(key) in ("", None):
+                r[key] = value
     else:
         lm = round(1 - met["pIllM"], 4) if "pIllM" in met else ""
-        r = dict(cum_step=cum, meta_step=meta, segment=si, elapsed_train_sec=elapsed,
+        r = dict(cum_step=cum, meta_step=meta, segment=si, elapsed_train_sec=elapsed, **measured,
                  wallclock_iso=clock, ms_per_step=met.get("ms", ""),
                  loss=met.get("loss", ""), pLoss=met.get("pLoss", ""), vLoss=met.get("vLoss", ""),
                  legalMass=lm, pIllM=met.get("pIllM", ""), gNorm=met.get("gNorm", ""),
@@ -829,6 +899,12 @@ def probe_backfill(run, verbose=True):
             except ValueError:
                 continue
             filled += _backfill_one(cfg, st, rows, by, ebase + n, f, name, verbose, failures, segment=si)
+
+    # (a') checkpoints of segments identified by lineage `segment_id`, found by
+    # their headers; the segment-local step comes from the record.
+    for si, f, n in lineage_checkpoints(cfg):
+        ebase = cfg["segments"][si]["cumstep_base"]
+        filled += _backfill_one(cfg, st, rows, by, ebase + n, f, os.path.basename(f), verbose, failures, segment=si)
 
     # (b) legacy cum-named -frozen snapshots
     prefix, suffix = cfg["frozen_glob"].split("*")   # "...-step" , "-frozen.safetensors"
@@ -1463,6 +1539,12 @@ if __name__ == "__main__":
     p.add_argument("--ckpt-dir", action="append", default=[],
                    help="directory of .safetensors to source bn1Mean/sae2/eff_alpha from "
                         "(matched by model_id+training_step, never by filename); repeatable")
+    p = sub.add_parser("derive-registry",
+                       help="derive segment bases from the model files' lineage records "
+                            "(format v7+) and diff them against registry.json")
+    p.add_argument("--models-dir", help="folder of .safetensors to scan (default: the registry's models_dir)")
+    p.add_argument("--write", action="store_true",
+                   help="fill the derived values the registry lacks (refused if anything conflicts)")
     sub.add_parser("render")
     a = ap.parse_args()
     if a.cmd == "track":
@@ -1485,6 +1567,11 @@ if __name__ == "__main__":
                 continue
             print(f"{r}:")
             found = discover_enum_stems(cfg, r)
+            lineage_identified = {i for i, s in enumerate(cfg["segments"]) if s.get("segment_id")}
+            if lineage_identified & set(found):
+                print(f"  (segments {sorted(lineage_identified & set(found))} are identified by their lineage "
+                      f"segment_id; no enum_stem proposed for them)")
+            found = {i: st for i, st in found.items() if i not in lineage_identified}
             have = {i: s.get("enum_stem") for i, s in enumerate(cfg["segments"]) if s.get("enum_stem")}
             new = {i: st for i, st in found.items() if have.get(i) != st}
             if have:
@@ -1509,5 +1596,10 @@ if __name__ == "__main__":
             print("\n(proposal only — re-run with --write to apply)")
     elif a.cmd == "import-probes":
         import_probes(a.run, a.jsonl, a.segment, a.ckpt_dir)
+    elif a.cmd == "derive-registry":
+        models_dir = os.path.expanduser(a.models_dir) if a.models_dir else MODELS
+        paths = [os.path.join(models_dir, n) for n in sorted(os.listdir(models_dir))
+                 if n.endswith(".safetensors") and os.path.isfile(os.path.join(models_dir, n))]
+        sys.exit(derive_registry(os.path.join(ROOT, "registry.json"), paths, "replay", a.write))
     elif a.cmd == "render":
         render()

@@ -112,8 +112,10 @@ struct RunRandomSeed: Sendable, Equatable {
         }
     }
 
-    /// The `[RUN]` line every path logs at run start.
-    var logLine: String {
+    /// The seed's fields of the `[RUN]` provenance line
+    /// (`RunProvenanceLine`): the master seed, how it was chosen, and the
+    /// stream-derivation version.
+    var provenanceFields: String {
         let modeText: String
         switch origin {
         case .configured: modeText = "seeded"
@@ -121,7 +123,7 @@ struct RunRandomSeed: Sendable, Equatable {
         case .drawn: modeText = "unseeded(drawn)"
         case .inherited(let firstSegment): modeText = "resumed(\(firstSegment.rawValue))"
         }
-        return "[RUN] seed=\(masterSeed) mode=\(modeText) derivation=\(DCMRandomStreams.derivationVersion)"
+        return "seed=\(masterSeed) mode=\(modeText) derivation=\(DCMRandomStreams.derivationVersion)"
     }
 
     /// The record of this run's streams at a save: the seed plus the stream
@@ -156,20 +158,28 @@ struct RunRandomSeed: Sendable, Equatable {
                              configuredSeed: configuredSeed)
     }
 
-    /// Every line a path logs at run start: what happened to the configured
-    /// seed when it was not used, then the `[RUN]` line.
-    var logLines: [String] {
+    /// The seed on its own as a `[RUN]` line. A training path does not log
+    /// it: it logs `parameterNotes`, then the full provenance line, which
+    /// carries the same fields.
+    var logLine: String { "[RUN] " + provenanceFields }
+
+    /// What happened to the configured seed when it was not used, logged by
+    /// every path before its `[RUN]` line.
+    var parameterNotes: [String] {
         switch origin {
         case .configured:
-            return [logLine]
+            return []
         case .commandLine:
-            return ["[PARAM] random_seed from --seed: \(masterSeed) (overrides random_seed_mode and random_seed=\(configuredSeed) for this process)", logLine]
+            return ["[PARAM] random_seed from --seed: \(masterSeed) (overrides random_seed_mode and random_seed=\(configuredSeed) for this process)"]
         case .drawn:
-            return ["[PARAM] random_seed=\(configuredSeed) ignored: random_seed_mode=unseeded draws the run seed", logLine]
+            return ["[PARAM] random_seed=\(configuredSeed) ignored: random_seed_mode=unseeded draws the run seed"]
         case .inherited:
-            return ["[PARAM] random_seed_mode and random_seed=\(configuredSeed) not used: an exact resume keeps the run's seed", logLine]
+            return ["[PARAM] random_seed_mode and random_seed=\(configuredSeed) not used: an exact resume keeps the run's seed"]
         }
     }
+
+    /// `parameterNotes` followed by the seed's own `logLine`.
+    var logLines: [String] { parameterNotes + [logLine] }
 
     /// Decide the run's master seed. A command-line seed wins over the
     /// settings; otherwise `seeded` uses the configured seed and `unseeded`

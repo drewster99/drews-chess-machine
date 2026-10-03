@@ -32,7 +32,7 @@ final class DropoutRNGStateTests: XCTestCase {
     }
 
     private func makeTrainer(dropoutSeed: UInt64) throws -> ChessTrainer {
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: dropoutSeed), arch: archWithDropout())
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: dropoutSeed), arch: archWithDropout(), initialization: .seeded(initSeed: 1))
         trainer.dropoutRate = 0.2
         return trainer
     }

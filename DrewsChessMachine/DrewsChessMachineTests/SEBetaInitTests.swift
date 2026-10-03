@@ -231,7 +231,7 @@ final class SEBetaInitTests: XCTestCase {
     func testOneTrainingStepMakesBetaWeightsNonzero() async throws {
         try requireMetal()
         let arch = Self.twoGroupArchitecture(group0: .zero, group1: .zero)
-        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), learningRate: 1e-2, lrWarmupSteps: 0, arch: arch)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), learningRate: 1e-2, lrWarmupSteps: 0, arch: arch, initialization: .seeded(initSeed: 1))
         let before = try await trainer.network.exportWeights()
         for block in 0..<arch.numBlocks {
             XCTAssertTrue(try seHalves(before, block: block, arch: arch).betaWeight.allSatisfy { $0 == 0 })
