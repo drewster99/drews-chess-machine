@@ -9,6 +9,18 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-03 CDT — Train-vs-UCI saves session folders (`943f69e4`, `7a8dce34`, `841afe91`)
+
+- **Session folders replace the rolling file.** `--train-vs-uci` saves `.dcmsession` folders through the GUI's `CheckpointManager.saveSession`, each a new folder tagged `vsuci-periodic` (`periodic_autosave_interval_sec`), `vsuci-final` or `vsuci-abort`, in `--out-session-dir` (default `Sessions/`). `trainer.safetensors` is the complete trainer state; `champion.safetensors` is the play network synced from the trainer; `session.json` carries lineage `path_kind` `vsuci`. The `[VS-UCI] session saves: …` launch line states folder, cadence and buffer choice.
+- **`--save-replay-buffer`** includes `replay_buffer.bin` (D-8; omitted by default). An exact resume from such a session restores the buffer; any other exact resume needs `--accept-inexact buffer`.
+- **`--start-model`** takes a model file or a session folder. **`--out-model` / `--overwrite-out-model` are refused** with `--train-vs-uci`; a rolling file from an earlier build is still accepted as a model file.
+- **Step files unchanged:** `--enumerate-checkpoints` writes `<stem>-vsuci-step<N>`; new `--checkpoint-stem` names the stem.
+- The GUI refuses to load a train-vs-UCI session; the tags keep them out of the retention pool; the CLI never moves `LastSessionPointer`.
+- Disk full inside a session save is recognized (it was missed when wrapped in `CheckpointManagerError` / `ReplayBuffer.PersistenceError`). A failed final or abort session save fails the run.
+- **Fix: `session.json` dropped the LR cycle's decay envelope on decode** (`943f69e4`), so `saveSession`'s round-trip check failed every save made under a decaying envelope — the parameter defaults since the envelope landed. Decode now re-attaches the saved envelope.
+- Tools: `dcm_lineage.model_paths` / `display_name` read session folders; `vsuci.py --derive-registry` takes several folders (e.g. `Models/` and `Sessions/`); `selfplay.py` uses the shared scan. Docs: `UCI.md` "Output: session folders", `CLAUDE.md`, ROADMAP note, autotrain skill.
+- Tests: `TrainVsUciSessionTests` (8), `SessionCycleEnvelopeRoundTripTests` (2), dashboard `SessionFolderTests` (3).
+
 ## 2026-10-03 CDT — Resume-equivalence harness (`334de627`, `acf16048`)
 
 - `ResumeEquivalenceTests` (the exact-resume correctness gate, determinism plan C6/P12) runs the real corpus-replay loop in-process over a synthetic corpus: N+M steps straight through versus N steps, a save and `--resume-exact` for M more. The final files match bit for bit — every tensor, the sampler and dropout stream positions, the dropout Philox state, the feed position and the cumulative totals — and the resumed segment records an exact resume. Also: a resume early in the second epoch (the refeed crosses the wrap), probes on versus off, and a branch from the same save as a negative control. Ungated, about half a minute.
