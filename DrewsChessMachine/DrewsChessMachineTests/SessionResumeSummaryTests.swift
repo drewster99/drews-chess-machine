@@ -191,6 +191,7 @@ final class SessionResumeSummaryTests: XCTestCase {
           "selfPlayWorkerCount": 4,
           "championID": "CHAMP",
           "trainerID": "TRAIN",
+          "lineage": \(LineageRecord.sessionTestFixtureJSON),
           "arenaHistory": \(arenaHistoryJSON)
           \(extraFields)
         }
