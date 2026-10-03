@@ -1303,11 +1303,21 @@ final class LichessBotController {
             }
             // Another load finished first; its notes may have changed since.
             guard playerNotes == nil else { return }
-            notes.pruneExpiredLimits(now: Date())
+            let now = Date()
+            notes.pruneExpiredLimits(now: now)
+            let limitsInFile = notes.botLimitUntil
+            // A refusal recorded while the notes weren't loaded was kept only
+            // in `botLimitUntil`. Merge both ways, the later end winning, so
+            // from here the notes and the live limits hold the same limits —
+            // the Favorites tab reads the notes — and save the notes when
+            // that added a limit, or it would be lost at the next launch.
+            notes.botLimitUntil.merge(botLimitUntil) { max($0, $1) }
+            notes.pruneExpiredLimits(now: now)
+            botLimitUntil = notes.botLimitUntil
             playerNotes = notes
-            // A refusal recorded before the notes loaded stays: the later of
-            // the two ends wins.
-            botLimitUntil.merge(notes.botLimitUntil) { max($0, $1) }
+            if notes.botLimitUntil != limitsInFile {
+                savePlayerNotes(notes)
+            }
         } catch {
             raiseAlarm("Loading favorites failed (\(url.lastPathComponent)): \(error.localizedDescription)")
         }
@@ -1410,6 +1420,8 @@ final class LichessBotController {
     /// challenge queue, the Challenge sheet). Loaded from the player notes,
     /// where refusals are also saved, but kept here even when the notes
     /// couldn't be loaded, so a refused bot is never asked again too early.
+    /// Once the notes load they hold the same limits as this map: loading
+    /// merges both ways and saves what the notes gained.
     private(set) var botLimitUntil: [String: Date] = [:]
 
     /// When `userID`'s bot-vs-bot limit ends, if that is still ahead of `now`.
@@ -1437,7 +1449,7 @@ final class LichessBotController {
         protocolLog.record(.challenge, "\(refusal.userID) is at its bot-game limit (\(refusal.gamesPlayed)) until \(refusal.until.formatted(date: .abbreviated, time: .standard))")
         botLimitUntil[refusal.userID] = refusal.until
         guard var notes = playerNotes else {
-            protocolLog.record(.anomaly, "player notes aren't loaded: \(refusal.userID)'s bot-game limit is kept for this launch only")
+            protocolLog.record(.anomaly, "player notes aren't loaded: \(refusal.userID)'s bot-game limit is kept in memory, and saved with the notes if they load later this launch")
             return
         }
         notes.botLimitUntil[refusal.userID] = refusal.until
