@@ -783,7 +783,7 @@ public enum ReplayBufferMinPositionsBeforeTraining: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Max Plies From Any 1 Game",
-    description: "Cap on how many plies may be drawn from any single self-play game within one training batch. Decorrelates the minibatch by forcing it to span many distinct games rather than letting one long marathon dominate. At the default (10), the cap is essentially always active for long games at typical batch sizes (e.g. 4096); near the range max (400), the cap rarely binds.",
+    description: "Cap on how many plies may be drawn from any single game (self-play, corpus or engine game) within one training batch. Decorrelates the minibatch by forcing it to span many distinct games rather than letting one long marathon dominate. At the default (10), the cap is essentially always active for long games at typical batch sizes (e.g. 4096); near the range max (400), the cap rarely binds.",
     default: 10,
     range: 1...400,
     category: "Replay Buffer",

@@ -35,6 +35,9 @@ struct ReplayParams: Sendable {
     var replayBufferCapacity: Int
     var replayRatioTarget: Double
     var replayBufferMinPositionsBeforeTraining: Int
+    /// The batch-composition constraints the replay buffer samples under,
+    /// built by the same rule the GUI's self-play buffer uses.
+    var samplingConstraints: ReplayBuffer.SamplingConstraints
     /// The complete parameter set, as every lineage record of the run
     /// carries it.
     var lineageParameters: LineageRecord.Parameters
@@ -46,6 +49,7 @@ struct ReplayParams: Sendable {
         replayBufferCapacity = parameters.replayBufferCapacity
         replayRatioTarget = parameters.replayRatioTarget
         replayBufferMinPositionsBeforeTraining = parameters.replayBufferMinPositionsBeforeTraining
+        samplingConstraints = ReplayBuffer.SamplingConstraints(parameters)
     }
 }
 
@@ -944,6 +948,7 @@ enum CorpusReplayRunner {
             + " complementCE=\(hp.useSignedAdvantageComplementCE ? "on" : "off")"
             + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
             + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)"
+            + p.samplingConstraints.logFields(batchSize: p.trainingBatchSize)
         emit(hparamsLine)
         // Rolling trainer-model output file. The same file is overwritten by
         // the periodic autosave and by the final save on exit/abort, so it
@@ -1248,6 +1253,7 @@ enum CorpusReplayRunner {
         }
         for line in runSeed.parameterNotes { emit(line) }
         recorder?.setRunRandomSeed(runSeed)
+        recorder?.setSamplingConstraints(p.samplingConstraints, batchSize: p.trainingBatchSize)
 
         emit("[REPLAY] building network + trainer (encoding=\(arch.inputEncoding.rawValue))")
         // With --start-model the file's weights and batch-norm statistics
@@ -1300,6 +1306,9 @@ enum CorpusReplayRunner {
             capacity: p.replayBufferCapacity,
             inputEncoding: net.inputEncoding,
             sampler: runSeed.streams.generator(.sampler))
+        // Replay samples under the same constraints the parameters give a
+        // self-play run; a replay run takes one snapshot of them at start.
+        buffer.setSamplingConstraints(p.samplingConstraints)
         if let resumedStreams {
             // The sampler continues from where the saved run's next batch
             // would have drawn; the refeed below only appends, never draws.
