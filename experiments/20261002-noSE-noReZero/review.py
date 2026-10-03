@@ -25,11 +25,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import dcm_arch  # noqa: E402  each checkpoint's ReZero cap, read from its own metadata
 
 MODELS = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/Models")
+# (label, session log, out-model stem, trained model_id): a checkpoint is used only
+# when its header carries this model_id at the requested training_step.
 RUNS = [
-    ("ReZero s1", "dcm_log_20260929-150743.txt", "20260929-test_SE_none"),
-    ("no ReZero s1", "dcm_log_20261002-011124.txt", "20261002-bench_v5s3_noSE_noReZero"),
-    ("no ReZero s2", "dcm_log_20261002-035513.txt", "20261002-bench_v5s3_noSE_noReZero-seed2"),
-    ("ReZero s2", "dcm_log_20260930-104117.txt", "20260929-test_SE_none-seed2"),
+    ("ReZero s1", "dcm_log_20260929-150743.txt", "20260929-test_SE_none", "20260929-24-834D"),
+    ("no ReZero s1", "dcm_log_20261002-011124.txt", "20261002-bench_v5s3_noSE_noReZero", "20261002-2-5tKN"),
+    ("no ReZero s2", "dcm_log_20261002-035513.txt", "20261002-bench_v5s3_noSE_noReZero-seed2", "20261002-4-T79u"),
+    ("ReZero s2", "dcm_log_20260930-104117.txt", "20260929-test_SE_none-seed2", "20260930-6-LkS6"),
 ]
 METRICS = ["loss", "pLoss", "vLoss", "pEnt", "gNorm"]
 
@@ -73,15 +75,20 @@ def read_tensors(path, wanted):
         return metadata, out
 
 
-def branch_scale(stem, step):
+def branch_scale(stem, step, expected_model_id):
     path = os.path.join(MODELS, f"{stem}-replay-step{step}.safetensors")
     if not os.path.exists(path):
         return None
     blocks = dcm_arch.rezero_blocks_of_file(path)
     wanted = [f"blocks.{b.index}.{t}" for b in blocks for t in ("conv2.weight", "rezero_alpha")]
     metadata, tensors = read_tensors(path, wanted)
-    if int(metadata.get("training_step", -1)) != step:
-        raise SystemExit(f"{path}: metadata training_step {metadata.get('training_step')} != {step}")
+    for key in ("model_id", "training_step"):
+        if key not in metadata:
+            raise SystemExit(f"{path}: header has no {key}")
+    if metadata["model_id"] != expected_model_id:
+        raise SystemExit(f"{path}: header model_id {metadata['model_id']} != expected {expected_model_id}")
+    if int(metadata["training_step"]) != step:
+        raise SystemExit(f"{path}: header training_step {metadata['training_step']} != {step}")
     rows = []
     for block in blocks:
         norm = float(np.linalg.norm(tensors[f"blocks.{block.index}.conv2.weight"]))
@@ -96,8 +103,13 @@ def branch_scale(stem, step):
 
 def tally(step):
     a = table.csv_points("se_none")
-    b = table.probe_points("probes.jsonl")
-    diffs = [b[s][0] - a[s][0] for s in range(1000, step + 1, 1000) if s in a and s in b]
+    label, file_name, model_id = table.PROBE_ARMS[0]
+    b = table.probe_points(file_name, model_id, label)
+    steps = [s for s in range(1000, step + 1, 1000) if s in a and s in b]
+    non_finite = [s for s in steps if b[s][0] is None]
+    if non_finite:
+        raise SystemExit(f"{label}: non-finite pElo at step(s) {non_finite}; no sign test over them")
+    diffs = [b[s][0] - a[s][0] for s in steps]
     ahead = sum(d > 0 for d in diffs)
     behind = sum(d < 0 for d in diffs)
     n = ahead + behind
@@ -108,9 +120,9 @@ def tally(step):
 def main():
     step = int(sys.argv[1])
     print(f"=== review at step {step} ===")
-    for label, log_name, stem in RUNS:
+    for label, log_name, stem, model_id in RUNS:
         means = log_means(log_name, step)
-        scale = branch_scale(stem, step)
+        scale = branch_scale(stem, step, model_id)
         if means is None and scale is None:
             continue
         print(f"\n[{label}]")

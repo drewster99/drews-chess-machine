@@ -2,8 +2,10 @@
 # Probe every enumerated leaky-FC1 checkpoint (every 1000 steps) with --probe-set wide,
 # appending one JSON line per checkpoint to probes.jsonl. Exits when the run ends and
 # every checkpoint is probed.
+# Kept as it ran for this experiment (binary path moved to the durable frozen copy);
+# new runs use experiments/probe_loop.sh, which checks checkpoint identity.
 E=${0:A:h}
-BIN=/private/tmp/claude-501/-Users-andrew-cursor-drews-chess-machine/844f7374-7702-404b-9d25-5c985cb68170/scratchpad/DCM-de0f22b.app/Contents/MacOS/DrewsChessMachine
+BIN="$HOME/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2275-de0f22b.app/Contents/MacOS/DrewsChessMachine"
 M="$HOME/Library/Application Support/DrewsChessMachine/Models"
 OUT=$E/probes.jsonl; touch $OUT
 while true; do
