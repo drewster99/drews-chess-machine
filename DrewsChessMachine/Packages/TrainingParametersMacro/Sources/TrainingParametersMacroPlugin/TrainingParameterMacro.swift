@@ -92,7 +92,14 @@ public struct TrainingParameterMacro: MemberMacro {
         }
         """
 
-        return [idDecl, definitionDecl, encodeDecl, decodeDecl]
+        var members = [idDecl, definitionDecl, encodeDecl, decodeDecl]
+        if let absentValueExpr = args.absentValueExpr {
+            let absentValueDecl: DeclSyntax = """
+            public static let absentValue: TrainingParameterAbsence<\(raw: swiftTypeName)> = \(raw: absentValueExpr)
+            """
+            members.append(absentValueDecl)
+        }
+        return members
     }
 }
 
@@ -106,6 +113,7 @@ private struct ParsedArgs {
     var liveTunableExpr: String
     var id: String?
     var valueKind: ValueKind
+    var absentValueExpr: String?
 }
 
 private enum ValueKind {
@@ -171,7 +179,8 @@ private func parseArguments(_ node: AttributeSyntax) throws -> ParsedArgs {
         defaultExpr: defaultExpr.description,
         liveTunableExpr: liveTunableExpr,
         id: idLiteral,
-        valueKind: kind
+        valueKind: kind,
+        absentValueExpr: byLabel["absentValue"].map { $0.description }
     )
 }
 
