@@ -208,6 +208,21 @@ any legal game, in training or at inference. A new input encoding omits them (24
 existing models keep their 30-plane encoding, since their stem weights expect it. Plane 19
 stays: after B1 it fires (rarely) in training and already fires at inference. Tracked in
 GitHub issue #10.
+- Done. Decisions: the encoding is `basic24` (`InputEncoding.basic24`), planes 0–19 as
+  `basic20`/`basic30`, planes 20–23 = repetition 4, 6, 8, 10 plies ago, with one source for
+  that list (`InputEncoding.possibleRepetitionPlyDistances`) used by the plane groups, the
+  encoder and the channel names. No architecture format bump: the version gates fields, and
+  an older build already refuses a file naming an encoding it does not know (enum decode
+  error). New models default to it through `NetworkArchitecture.newModelDefault` — the
+  current preset with the 24-plane input — which the Build-New-Model sheet opens to and the
+  session's Build Network uses; presets keep `basic30`, so every existing model and preset is
+  unchanged (`ArchitecturePresetStore.currentNamed` had no other user and was removed). The
+  replay buffer, trainer, inference and model files are encoding-generic and need no change
+  (tests cover the 24-plane stride, the trainer graph, evaluation and the file round trip).
+  `Basic24EncodingTests` also proves, over real games including 4-, 6-, 8- and 10-ply
+  cycles, that `basic30`'s six dropped planes never fire and that `basic24` carries exactly
+  the other planes. Still to do outside this branch: a note on GitHub issue #10, and
+  `documentation/chess-engine-design.md`'s plane table if it should list `basic24`.
 
 ## D. Experiment and dashboard tooling
 

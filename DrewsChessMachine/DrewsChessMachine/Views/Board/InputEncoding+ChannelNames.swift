@@ -51,6 +51,11 @@ extension InputEncoding {
             return Array(base30.prefix(20))
         case .basic30:
             return base30
+        case .basic24:
+            // basic20's names, then the basic30 name of each kept repetition
+            // plane (basic30 plane 19 + distance).
+            return Array(base30.prefix(20))
+                + InputEncoding.possibleRepetitionPlyDistances.map { base30[19 + $0] }
         case .full10ply200, .full10Ply10Reps210:
             let frameBlock = Array(base30.prefix(20))   // the basic20 sub-block
             var out: [String] = []

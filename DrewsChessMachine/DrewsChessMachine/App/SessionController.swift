@@ -1004,10 +1004,11 @@ final class SessionController {
     /// disable conditions for keyboard-shortcut / URL-scheme invocations under
     /// a race. On success, mints a fresh `ModelID`, wires the new network +
     /// runner, fills `networkStatus`, and clears the last-saved-at marker.
-    /// Architecture the next Build uses. Defaults to the current champion
-    /// architecture; set from the architecture config (architecture.json /
-    /// the build UI) to construct a different topology.
-    var buildArchitecture: NetworkArchitecture = .current
+    /// Architecture the next Build uses. Starts at the new-model default
+    /// (`NetworkArchitecture.newModelDefault`); set from the architecture
+    /// config (architecture.json / the build UI) to construct a different
+    /// topology.
+    var buildArchitecture: NetworkArchitecture = .newModelDefault
 
     func buildNetwork() {
         SessionLogger.shared.log("[BUTTON] Build Network (\(buildArchitecture.architectureSummary))")
@@ -1027,7 +1028,7 @@ final class SessionController {
         onClearTrainingDisplay()
 
         // `buildArchitecture` is set by the Build-New-Model screen (or, headless,
-        // a CLI arch flag); default is `.current`. The old well-known
+        // a CLI arch flag); default is `.newModelDefault`. The old well-known
         // `architecture.json` auto-load was removed per plan §10.
         let arch = buildArchitecture
         Task {

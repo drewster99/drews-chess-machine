@@ -42,6 +42,14 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
     case basic20
     /// 30 planes: `basic20` (planes 0–19) + 10 temporal-repetition history planes.
     case basic30
+    /// 24 planes: `basic20` (planes 0–19) + the four temporal-repetition
+    /// planes that can fire — the position 4, 6, 8 and 10 plies ago is a
+    /// strict duplicate (`possibleRepetitionPlyDistances`), in that order.
+    /// It is `basic30` without planes 20, 21, 22, 24, 26 and 28: an odd ply
+    /// distance puts the other side to move, and a position cannot recur
+    /// after two plies (each side has moved a piece), so those six planes are
+    /// zero in every legal game and carry nothing (GitHub issue #10).
+    case basic24
     /// 200 planes: the 20-plane `basic20` block stacked 10× for plies N, N-1,
     /// … N-9 — every frame rendered from the ply-N mover's perspective. No
     /// marker planes; absent (pre-game-start) frames stay all-zero. History
@@ -75,6 +83,11 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
             return base + [
                 PlaneGroup(20...29, "temporal-repetition history: plane 20+i = position i+1 plies ago is a strict duplicate")
             ]
+        case .basic24:
+            return base + InputEncoding.possibleRepetitionPlyDistances.enumerated().map { offset, distance in
+                PlaneGroup((20 + offset)...(20 + offset),
+                           "temporal repetition: position \(distance) plies ago is a strict duplicate")
+            }
         case .full10ply200:
             // 10 stacked basic20 frames (current + 9 prior), all from the
             // ply-N mover's perspective. Frame 0 = ply N; frame f = ply N-f.
@@ -99,6 +112,14 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
         }
     }
 
+    /// The ply distances, within the ten-ply temporal-repetition window, at
+    /// which the current position can be a strict duplicate of an earlier
+    /// one: even (the same side to move) and at least four (after two plies
+    /// each side has moved a piece, so the position cannot have recurred).
+    /// `basic24` keeps exactly these planes, in this order; the single source
+    /// for its layout, its encoder branch and its channel names.
+    static let possibleRepetitionPlyDistances = [4, 6, 8, 10]
+
     /// Number of 8x8 planes — derived from `planeGroups`, never duplicated.
     var planeCount: Int { (planeGroups.last?.range.upperBound ?? -1) + 1 }
 
@@ -106,7 +127,7 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
     /// frame encodings; 10 for `full10ply200`.
     var historyFrameCount: Int {
         switch self {
-        case .basic20, .basic30: return 1
+        case .basic20, .basic30, .basic24: return 1
         case .full10ply200, .full10Ply10Reps210: return 10
         }
     }
@@ -118,6 +139,7 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
         switch self {
         case .basic20: return 20
         case .basic30: return 30
+        case .basic24: return 24
         case .full10ply200, .full10Ply10Reps210: return 20
         }
     }
@@ -132,7 +154,7 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
     /// Invariant (asserted in tests): `historyFrameCount × planesPerFrame + tailPlaneCount == planeCount`.
     var tailPlaneCount: Int {
         switch self {
-        case .basic20, .basic30, .full10ply200: return 0
+        case .basic20, .basic30, .basic24, .full10ply200: return 0
         case .full10Ply10Reps210: return 10
         }
     }
@@ -1910,6 +1932,18 @@ extension NetworkArchitecture {
 
     /// The architecture the current build defaults to.
     static var current: NetworkArchitecture { preset(.current) }
+
+    /// What a newly built model starts from (the Build-New-Model screen and
+    /// the session's Build Network): the current preset with the `basic24`
+    /// input, which drops the six repetition planes that can never fire.
+    /// Presets keep their own encoding, so every existing model and every
+    /// preset still describes exactly what it was trained with; only new
+    /// builds move to the smaller input.
+    static var newModelDefault: NetworkArchitecture {
+        var architecture = current
+        architecture.inputEncoding = .basic24
+        return architecture
+    }
 
     /// Legacy `.dcmmodel` archHash (the old FNV value stored at byte offset 12:
     /// six shape scalars for v3 files, plus the architecture version for v4)

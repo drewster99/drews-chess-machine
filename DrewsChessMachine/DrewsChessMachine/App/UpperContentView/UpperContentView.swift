@@ -1217,7 +1217,7 @@ struct UpperContentView: View {
         }
         .sheet(isPresented: $showBuildNewModelSheet) {
             BuildNewModelView(
-                initial: ArchitecturePresetStore.currentNamed,
+                initial: NamedArchitecture(label: "Custom", architecture: .newModelDefault),
                 onBuild: { arch in
                     session.buildArchitecture = arch
                     showBuildNewModelSheet = false

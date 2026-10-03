@@ -243,6 +243,11 @@ struct GameState: Sendable {
 ///   planes 23, 25, 27 and 29 (4, 6, 8, 10 plies ago) can ever be 1: an odd
 ///   ply distance puts the other side to move, and a 2-ply return is
 ///   impossible. Planes 20, 21, 22, 24, 26 and 28 are always 0 (issue #10).
+///
+/// `basic24` is the same layout without those six always-zero planes: planes
+/// 0-19 as above, then planes 20-23 = repetition 4, 6, 8 and 10 plies ago
+/// (`InputEncoding.possibleRepetitionPlyDistances`), so its plane `20 + k`
+/// equals `basic30`'s plane `19 + possibleRepetitionPlyDistances[k]`.
 enum BoardEncoder {
 
     /// Number of floats one encoded position occupies for `encoding`:
@@ -301,10 +306,13 @@ enum BoardEncoder {
         switch encoding {
         case .basic20:
             writeBasicBlock(current, perspective: persp, planeBase: 0,
-                            includeTemporalRepetition: false, base: base)
+                            temporalRepetition: .none, base: base)
         case .basic30:
             writeBasicBlock(current, perspective: persp, planeBase: 0,
-                            includeTemporalRepetition: true, base: base)
+                            temporalRepetition: .everyPlyDistance, base: base)
+        case .basic24:
+            writeBasicBlock(current, perspective: persp, planeBase: 0,
+                            temporalRepetition: .possiblePlyDistancesOnly, base: base)
         case .full10ply200:
             // Frame 0 = current (ply N); frame f = history[f-1] = ply N-f
             // when available. All share `persp`. Absent frames stay zero
@@ -313,12 +321,12 @@ enum BoardEncoder {
             // repetition block.
             let stride = encoding.planesPerFrame
             writeBasicBlock(current, perspective: persp, planeBase: 0,
-                            includeTemporalRepetition: false, base: base)
+                            temporalRepetition: .none, base: base)
             let available = min(history.count, encoding.historyFrameCount - 1)
             for f in 0..<available {
                 writeBasicBlock(history[f], perspective: persp,
                                 planeBase: (f + 1) * stride,
-                                includeTemporalRepetition: false, base: base)
+                                temporalRepetition: .none, base: base)
             }
         case .full10Ply10Reps210:
             // Same 10-frame basic20 stack as full10ply200 (mirrored, not
@@ -330,12 +338,12 @@ enum BoardEncoder {
             // stored priors in `ReplayBuffer.appendRepetitionTail`.
             let stride = encoding.planesPerFrame
             writeBasicBlock(current, perspective: persp, planeBase: 0,
-                            includeTemporalRepetition: false, base: base)
+                            temporalRepetition: .none, base: base)
             let available = min(history.count, encoding.historyFrameCount - 1)
             for f in 0..<available {
                 writeBasicBlock(history[f], perspective: persp,
                                 planeBase: (f + 1) * stride,
-                                includeTemporalRepetition: false, base: base)
+                                temporalRepetition: .none, base: base)
             }
             let repBase = encoding.historyFrameCount * encoding.planesPerFrame
             let recentMask = current.recentRepetitionMask
@@ -347,9 +355,21 @@ enum BoardEncoder {
         }
     }
 
-    /// Write one 20-plane `basic20` block — optionally plus the 10
-    /// temporal-repetition planes (20–29) for basic30 — starting at
-    /// `planeBase`, oriented to `perspective`.
+    /// Which temporal-repetition planes follow a frame's 20-plane `basic20`
+    /// block.
+    private enum TemporalRepetitionPlanes {
+        /// None (`basic20`, and every history-stacking frame).
+        case none
+        /// One plane per ply distance in the window (`basic30`).
+        case everyPlyDistance
+        /// One plane per distance at which a repetition is possible
+        /// (`basic24`, `InputEncoding.possibleRepetitionPlyDistances`).
+        case possiblePlyDistancesOnly
+    }
+
+    /// Write one 20-plane `basic20` block — plus the temporal-repetition
+    /// planes `temporalRepetition` names — starting at `planeBase`, oriented
+    /// to `perspective`.
     ///
     /// Piece placement (mine 0–5 / opponent's 6–11), the vertical flip,
     /// castling assignment, and en-passant orientation are all keyed to
@@ -361,7 +381,7 @@ enum BoardEncoder {
         _ state: GameState,
         perspective: PieceColor,
         planeBase: Int,
-        includeTemporalRepetition: Bool,
+        temporalRepetition: TemporalRepetitionPlanes,
         base: UnsafeMutablePointer<Float>
     ) {
         let flip = perspective == .black
@@ -426,16 +446,25 @@ enum BoardEncoder {
         fillPlane(base, plane: planeBase + 18, value: repCount >= 1 ? 1.0 : 0.0)
         fillPlane(base, plane: planeBase + 19, value: repCount >= 2 ? 1.0 : 0.0)
 
-        // Planes [+20 … +29]: temporal-repetition history (basic30 only).
-        // Plane +20+i is all-1 iff bit i of recentRepetitionMask is set
-        // (the position i+1 plies ago is a PositionKey duplicate of this
-        // frame). Skip-if-zero — the leading clear already zeroed the region.
-        if includeTemporalRepetition {
-            let recentMask = state.recentRepetitionMask
-            if recentMask != 0 {
-                for i in 0..<10 where (recentMask >> i) & 1 == 1 {
-                    fillPlane(base, plane: planeBase + 20 + i)
-                }
+        // Planes from [+20]: temporal-repetition history. Bit i of
+        // recentRepetitionMask is set when the position i+1 plies ago is a
+        // PositionKey duplicate of this frame. basic30 writes one plane per
+        // bit (+20+i); basic24 writes one plane per possible distance, in
+        // `possibleRepetitionPlyDistances` order. Skip-if-zero — the leading
+        // clear already zeroed the region.
+        let recentMask = state.recentRepetitionMask
+        guard recentMask != 0 else { return }
+        switch temporalRepetition {
+        case .none:
+            break
+        case .everyPlyDistance:
+            for i in 0..<10 where (recentMask >> i) & 1 == 1 {
+                fillPlane(base, plane: planeBase + 20 + i)
+            }
+        case .possiblePlyDistancesOnly:
+            for (offset, distance) in InputEncoding.possibleRepetitionPlyDistances.enumerated()
+            where (recentMask >> (distance - 1)) & 1 == 1 {
+                fillPlane(base, plane: planeBase + 20 + offset)
             }
         }
     }

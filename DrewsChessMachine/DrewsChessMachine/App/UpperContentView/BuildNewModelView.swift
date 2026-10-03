@@ -38,7 +38,7 @@ struct BuildNewModelView: View {
     @State private var isReplacePresetAlertPresented = false
 
     init(
-        initial: NamedArchitecture = NamedArchitecture(label: "Custom", architecture: .current),
+        initial: NamedArchitecture,
         onBuild: @escaping (NetworkArchitecture) -> Void,
         onCancel: @escaping () -> Void
     ) {
