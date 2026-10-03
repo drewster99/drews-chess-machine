@@ -680,6 +680,10 @@ extension SessionController {
         let sessionMinBufferBeforeTraining = TrainingParameters.shared.replayBufferMinPositionsBeforeTraining
         let sessionTournamentGames = TrainingParameters.shared.arenaGamesPerTournament
         let sessionPromoteThreshold = TrainingParameters.shared.arenaPromoteThreshold
+        // The saved run's streams this run continues (nil when it drew a new
+        // seed): the one source for the dropout-stream restore below and for
+        // the resume's rng_sampler / serials verdict.
+        let continuedRunStreams = resumedRunStreams
 
         realTrainingTask = Task(priority: .high) {
             [trainer, network, buffer, box, tBox, pStatsBox, spDiversityTracker,
@@ -928,10 +932,10 @@ extension SessionController {
                     } else {
                         restoredSavedPhilox = false
                     }
-                    if let resumedRunStreams {
+                    if let continuedRunStreams {
                         // The saved Philox state is restored with the trainer
                         // state; the stream continues from its saved position.
-                        try await trainer.restoreDropoutStreamState(resumedRunStreams.dropoutStreamState)
+                        try await trainer.restoreDropoutStreamState(continuedRunStreams.dropoutStreamState)
                         SessionLogger.shared.log("[RESUME] rng: dropout stream=restored")
                     } else if restoredSavedPhilox {
                         // The masks continue the saved Philox state; reseeding
@@ -997,24 +1001,25 @@ extension SessionController {
             // restore's counter reset. The restore runs on a
             // detached I/O task so ~GB-scale reads don't block the
             // cooperative hop cadence.
+            // Whether the session's buffer file is in the run's buffer: the
+            // resume's buffer verdict (`guiResumeGaps`).
+            var replayBufferRestored = false
             if let bufferURL = resumedBufferURL {
-                let resumedState: SessionCheckpointState? = await MainActor.run {
-                    pendingLoadedSession?.state
+                // The file's lifetime position count must be the one
+                // session.json recorded, checked before the restore touches
+                // the buffer: a mismatch means a file-pairing error or
+                // residual corruption that happened to SHA-match, and the
+                // buffer stays empty rather than holding another save's
+                // positions.
+                let expectedTotalPositionsAdded: Int? = await MainActor.run {
+                    pendingLoadedSession?.state.replayBufferTotalPositionsAdded
                 }
                 do {
                     try await Task.detached(priority: .userInitiated) {
-                        [buffer, bufferURL] in
-                        try buffer.restore(from: bufferURL)
+                        [buffer, bufferURL, expectedTotalPositionsAdded] in
+                        try buffer.restore(from: bufferURL, expectedTotalPositionsAdded: expectedTotalPositionsAdded)
                     }.value
-                    // Cross-check lifetime counter against session.json.
-                    // Mismatch here indicates file-pairing error or
-                    // residual corruption that happened to SHA-match.
-                    if let resumedState {
-                        try CheckpointManager.verifyReplayBufferMatchesSession(
-                            buffer: buffer,
-                            state: resumedState
-                        )
-                    }
+                    replayBufferRestored = true
                     let snap = buffer.stateSnapshot()
                     SessionLogger.shared.log(
                         "[CHECKPOINT] Restored replay buffer: stored=\(snap.storedCount)/\(snap.capacity) totalAdded=\(snap.totalPositionsAdded) writeIndex=\(snap.writeIndex)"
@@ -1059,6 +1064,7 @@ extension SessionController {
             } catch {
                 fingerprintResult = .failure(error)
             }
+            let bufferRestoredIntoRun = replayBufferRestored
             let lineageStart: Result<LineageTracker, Error> = await MainActor.run {
                 SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
                 switch mode {
@@ -1090,6 +1096,8 @@ extension SessionController {
                     SessionLogger.shared.log("[RUN] behavior fingerprint recipe=\(fingerprint.recipe) sha256=\(fingerprint.sha256)")
                     runBehaviorFingerprint = fingerprint
                     try beginLineageSegment(mode: mode, trainer: trainer, resumed: pendingLoadedSession,
+                                            continuedRunStreams: continuedRunStreams,
+                                            replayBufferRestored: bufferRestoredIntoRun,
                                             behaviorFingerprint: fingerprint)
                     if let tracker = lineageTracker {
                         segmentResult = .success(tracker)

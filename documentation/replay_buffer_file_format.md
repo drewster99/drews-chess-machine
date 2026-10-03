@@ -548,14 +548,20 @@ deletes it only if the path still holds that very item.
 
 ### Session-load cross-check
 
+A GUI session resume calls
+`restore(from:expectedTotalPositionsAdded:)` with
+`state.replayBufferTotalPositionsAdded` from `session.json`: the file
+header's `totalPositionsAdded` must equal it, checked with the other
+header checks before anything is mutated (throws
+`PersistenceError.totalPositionsAddedMismatch`), so a mismatched file
+leaves the buffer empty and the resume reports `buffer` NOT EXACT.
 `CheckpointManager.verifyReplayBufferMatchesSession(buffer:state:)`
-runs after a successful `restore(from:)` at session load time. It
-compares `buffer.stateSnapshot().totalPositionsAdded` against
-`state.replayBufferTotalPositionsAdded` from `session.json`. A
-mismatch (throws `CheckpointManagerError.sessionReplayMismatch`)
-indicates a file-pairing error — replay buffer from one save paired
-with `session.json` from another — or residual corruption that
-happened to SHA-match.
+makes the same comparison after a successful `restore(from:)` (a
+train-vs-UCI session start uses it). A mismatch (throws
+`CheckpointManagerError.sessionReplayMismatch`) indicates a
+file-pairing error — replay buffer from one save paired with
+`session.json` from another — or residual corruption that happened to
+SHA-match.
 
 Only the lifetime counter is cross-checked, not `storedCount` or
 `capacity`. Those two intentionally diverge when loading a larger

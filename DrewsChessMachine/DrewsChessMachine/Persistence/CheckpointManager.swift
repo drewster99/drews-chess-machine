@@ -1192,7 +1192,10 @@ enum CheckpointManager {
     /// Verify a freshly-restored replay buffer's lifetime counter
     /// matches what `session.json` said it should be. Used at session
     /// load time as a defense-in-depth cross-check after the buffer's
-    /// own SHA and size guards have already succeeded.
+    /// own SHA and size guards have already succeeded. It runs after the
+    /// restore has filled the buffer; the GUI resume instead checks the
+    /// same count before the restore mutates anything
+    /// (`ReplayBuffer.restore(from:expectedTotalPositionsAdded:)`).
     ///
     /// Only `totalPositionsAdded` is checked, not `storedCount` or
     /// `capacity` — those two intentionally diverge when loading a

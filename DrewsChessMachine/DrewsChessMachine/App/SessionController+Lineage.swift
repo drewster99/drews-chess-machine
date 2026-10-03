@@ -81,8 +81,13 @@ extension SessionController {
 
     /// Begin (or continue) the lineage segment for a Play-and-Train start.
     /// Call once the trainer holds its starting state and the run's stats
-    /// box exists; `resumed` is the loaded session being resumed, if any.
+    /// box exists; `resumed` is the loaded session being resumed, if any,
+    /// with what the resume restored: `continuedRunStreams` (the saved run's
+    /// streams it continues, nil when it drew a new seed) and
+    /// `replayBufferRestored` (`guiResumeGaps`). Both are ignored when
+    /// `resumed` is nil.
     func beginLineageSegment(mode: TrainingStartMode, trainer: ChessTrainer, resumed: LoadedSession?,
+                             continuedRunStreams: LineageRecord.RunStreams?, replayBufferRestored: Bool,
                              behaviorFingerprint: BehaviorFingerprint.Record) throws {
         let counts = parallelWorkerStatsBox?.snapshot()
         let start: LineageTracker.Start?
@@ -110,7 +115,9 @@ extension SessionController {
         case .freshOrFromLoadedSession:
             if let resumed {
                 let gaps = Self.guiResumeGaps(
-                    resumed: resumed, runningPolicyTailPrecision: trainer.policyTailPrecision,
+                    resumed: resumed, continuedRunStreams: continuedRunStreams,
+                    replayBufferRestored: replayBufferRestored,
+                    runningPolicyTailPrecision: trainer.policyTailPrecision,
                     runningBuild: .current, runningDevice: .current, runningFingerprint: behaviorFingerprint)
                 let exactness = ResumeExactness.resume(of: resumed.trainerFile.lineageParent, gaps: gaps)
                 SessionLogger.shared.log(exactness.logLine)
@@ -164,7 +171,18 @@ extension SessionController {
     /// resumed reset it. The arena clock is restored when the session
     /// recorded it. A session whose trainer file predates lineage also lacks
     /// `lineage`, which `ResumeExactness.resume(of:gaps:)` adds.
+    ///
+    /// The run's streams and the replay buffer are judged by what the
+    /// resume actually restored, which the caller knows and passes in — not
+    /// by what the session file contains: `continuedRunStreams` is the
+    /// streams the run continues (nil when it drew a new seed, because the
+    /// file has none, `--seed` named another seed, or they were named under
+    /// another derivation), and `replayBufferRestored` whether the buffer
+    /// file was restored into the run's buffer (false when the session has
+    /// none or its restore failed).
     static func guiResumeGaps(resumed: LoadedSession,
+                              continuedRunStreams: LineageRecord.RunStreams?,
+                              replayBufferRestored: Bool,
                               runningPolicyTailPrecision: ChessNetwork.PolicyTailPrecision,
                               runningBuild: LineageRecord.Build,
                               runningDevice: LineageRecord.Device,
@@ -177,10 +195,10 @@ extension SessionController {
         gaps += ResumeGap.dropoutGaps(restoring: DropoutRNGResumeState(lineage: lineage))
         gaps += PolicyTailPrecisionResume.gaps(
             saved: resumed.trainerFile.metadata.trainerPolicyTailPrecision, running: runningPolicyTailPrecision)
-        if resumed.replayBufferURL == nil {
+        if !replayBufferRestored {
             gaps.append(.buffer)
         }
-        if resumableRunStreams(of: resumed) == nil {
+        if continuedRunStreams == nil {
             gaps += [.rngSampler, .serials]
         }
         if let record = lineage?.record {
@@ -206,7 +224,8 @@ extension SessionController {
     /// The saved run's seed for a GUI resume, or nil — logged — when it
     /// cannot be continued (a `--seed` naming another seed, or streams named
     /// under another derivation); the resume then runs on a newly resolved
-    /// seed and reports `rng_sampler` / `serials` NOT EXACT.
+    /// seed, passes no continued streams to `beginLineageSegment`, and
+    /// reports `rng_sampler` / `serials` NOT EXACT.
     static func inheritedRunSeed(streams: LineageRecord.RunStreams, commandLineSeed: UInt64?) -> RunRandomSeed? {
         do {
             return try RunRandomSeed.inherited(
