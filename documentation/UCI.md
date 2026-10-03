@@ -209,7 +209,8 @@ still an ordinary model file for `--start-model`.
 **Step checkpoints.** With `--enumerate-checkpoints`, the trainer file is also
 written every 1000 steps (and at the end, when the last step is not a multiple of
 1000) as `<stem>-vsuci-step<N>.safetensors`. The stem is `--checkpoint-stem`
-(a path without an extension, which must not itself be named like a step file);
+(a path, which may contain dots but must not end in a model or session extension —
+`.safetensors`, `.dcmmodel`, `.dcmsession` — nor itself be named like a step file);
 otherwise the `--start-model` file's own stem, next to it (the names earlier runs
 produced); otherwise — a fresh run or a session start — the run's model ID in
 `Models/`. Step files are never overwritten: step numbers restart in every run, so
