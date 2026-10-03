@@ -177,5 +177,4 @@ CSS='<style>.grid{stroke:#E6E9E5}.yl,.xl,.bl{fill:#5E6770;font:11px monospace}.y
 for name,c in (('chart-pelo-30k.svg',c1),('chart-nll-30k.svg',c2)):
     open(f'{EXP}/{name}','w').write(c.replace('<svg ','<svg xmlns="http://www.w3.org/2000/svg" ',1).replace('aria-label',CSS.join(['aria-label',''])[:0]+'aria-label',1).replace('">','">'+CSS,1))
 open(f'{EXP}/report-30k.html','w').write('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+HTML)
-open('/private/tmp/claude-501/-Users-andrew-cursor-drews-chess-machine/844f7374-7702-404b-9d25-5c985cb68170/scratchpad/sereport/se-style-report.html','w').write(HTML)
 print("ok",len(S))
