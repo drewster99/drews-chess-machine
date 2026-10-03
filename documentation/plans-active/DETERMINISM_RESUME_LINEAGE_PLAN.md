@@ -2401,8 +2401,30 @@ baseline.
     edits keep the strict lookup), with `BuildNewModelGroupRemovalRenderTests`,
     which traps before the fix and passes after; the GUI repro (remove the
     middle of three groups) no longer crashes.
-  - **C6 step 7 (`scripts/resume_equivalence.sh`) and the segment-indexed
-    resume run** are running; results to follow here.
+  - **C6 step 7 (`scripts/resume_equivalence.sh`) — every stream and feed
+    field equal; the weights are not bit-equal, and on this GPU they cannot
+    be.** Release build 2303, corpus `20260624-192615-w3aA5b`, the label
+    smoothing C parameters, seed 12345, N = M = 150. The resumed segment
+    logged `[RESUME] EXACT` (sampler and dropout streams restored), and the
+    comparison found only `content_sha256` different: stream positions, the
+    feed position and the cumulative totals all matched. Two fresh runs of
+    the same configuration, with no resume, already differ:
+
+    | Run | loss @150 | loss @200 | loss @300 |
+    |---|---|---|---|
+    | uninterrupted | 4.9882 | 4.6435 | 4.2787 |
+    | first segment / fresh 150 / fresh 151 / fresh 200 | 4.9886 / 4.9867 / 4.9868 / 4.9891 | — / — / — / 4.6206 | |
+    | resumed at 150 (twice) | | 4.6020 / 4.6048 | 4.3078 |
+
+    Fresh runs agree within 0.002 at step 150 and drift 0.023 apart by step
+    200 as the learning rate ramps up; the resumed runs sit inside that
+    spread, and two resumes from the same file agree within 0.003. The
+    weights of two fresh 150-step runs already differ in 99% of values
+    (median relative L2 0.025), so a training step is not bit-reproducible
+    here (A5), with three other training processes sharing the GPU. A
+    bit-exact run of this check needs an idle machine and, if MPSGraph is
+    deterministic there, would then be expected to match.
+  - **The segment-indexed resume run** is running; result to follow here.
 
 **P10 — Provenance + carry-forward.** `[RUN]` formatter (`Logging/`), recorder
 fields, B4 fix. Tests: derive → train → save keeps `derivation_history`; `[RUN]`
