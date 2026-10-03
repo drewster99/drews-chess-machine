@@ -1382,6 +1382,20 @@ public struct TrainingParametersSnapshot: Sendable {
     public func rawValueMap() -> [String: ParameterValue] {
         values
     }
+
+    /// Every parameter at its declared default with `overrides` applied —
+    /// a snapshot that does not depend on anyone's saved settings, for
+    /// computations that must be reproducible (the resume-equivalence
+    /// harness). Each override is validated against its declaration; an
+    /// unknown id or out-of-range value throws.
+    public nonisolated static func declaredDefaults(
+        overriding overrides: [String: ParameterValue]
+    ) throws -> TrainingParametersSnapshot {
+        try TrainingParameters.validate(overrides)
+        var values = Dictionary(uniqueKeysWithValues: TrainingParameters.allDefinitions.map { ($0.id, $0.defaultValue) })
+        for (id, value) in overrides { values[id] = value }
+        return TrainingParametersSnapshot(values: values)
+    }
 }
 
 // Typed accessors on the snapshot — keep parallel with the stored properties on TrainingParameters.

@@ -17,9 +17,10 @@
 //  1. Board encoding: a fixed game — castling, an en-passant capture and a
 //     threefold-repetition shuffle — encoded position by position, with its
 //     history, under the checkpoint's input encoding.
-//  2. Seeded draws: replay-buffer batches from a buffer of those positions
-//     under uniform, material-stratified and length-tilted constraints, from
-//     the run streams' `sampler` stream (so the stream derivation is
+//  2. Seeded draws: replay-buffer batches from a buffer of games of
+//     different lengths cut from that game, under uniform, material-
+//     stratified and length-tilted constraints and under the per-game cap
+//     and the draw cap, from the run streams' `sampler` stream (so the stream derivation is
 //     covered); move choices with Dirichlet noise from a self-play game
 //     stream; and the dropout Philox state MPSGraph derives from a seed.
 //  3. Training: the checkpoint's own architecture — its block groups,
@@ -53,8 +54,12 @@ import Metal
 enum BehaviorFingerprint {
 
     /// The recipe version. Bump it whenever the micro-computation changes;
-    /// fingerprints of different recipes never compare equal.
-    static let recipe = 2
+    /// fingerprints of different recipes never compare equal. The current
+    /// recipe runs the per-game cap, the draw cap and a binding length tilt
+    /// over games of different lengths, which the previous one did not:
+    /// from it on, corpus replay and train-vs-UCI sample under those
+    /// constraints, which builds of the previous recipe did not.
+    static let recipe = 3
 
     /// A computed fingerprint, as a lineage record stores it
     /// (`rng.behavior_fingerprint`).
@@ -116,6 +121,10 @@ enum BehaviorFingerprint {
     private static let initSeed: UInt64 = 0x0DC3_F1A6_E7B1_0002
     private static let philoxSeed = 0x5EED
     private static let gameOutcomes: [Float] = [1, 0, -1, 1]
+    /// The plies of each recipe-buffer game, by outcome: openings of the
+    /// recipe game, of different lengths so the length tilt has something to
+    /// down-weight.
+    private static let recipeGamePlies = [19, 11, 15, 7]
     private static let batchSize = 16
     private static let drawsPerConstraint = 3
     private static let movesSampled = 64
@@ -179,55 +188,17 @@ enum BehaviorFingerprint {
         hasher.update(data: Data(header.utf8))
         let arch = settings.architecture
         let encoding = arch.inputEncoding
-        // The replay buffer stores one mover-relative frame per ply (the
-        // start of the full encoding) and rebuilds a history stack at sample
-        // time — the layout `ActiveGame` writes.
-        let storedFrameFloats = encoding.planesPerFrame * ChessNetwork.boardSize * ChessNetwork.boardSize
         let runStreams = Streams.streams(masterSeed: masterSeed)
 
         // 1. Board encoding under the checkpoint's encoding; each position's
         //    stored frame goes to the buffer.
-        let engine = ChessGameEngine()
-        var bufferGame: [(board: [Float], policyIndex: Int32, materialCount: UInt8)] = []
-        for uci in recipeGame {
-            let encoded = BoardEncoder.encode(engine.state, history: engine.recentStates, encoding: encoding)
+        let bufferGame = try replayRecipeGame(encoding: encoding) { encoded in
             append(encoded, to: &hasher)
-            let mover = engine.state.currentPlayer
-            guard let move = ChessMove.parseUCI(uci, legal: engine.currentLegalMoves) else {
-                throw FingerprintError.recipeMoveIllegal(uci)
-            }
-            var materialCount = 0
-            for case let piece? in engine.state.board where piece.type != .pawn { materialCount += 1 }
-            bufferGame.append((
-                board: Array(encoded.prefix(storedFrameFloats)),
-                policyIndex: Int32(PolicyEncoding.policyIndex(move, currentPlayer: mover)),
-                materialCount: UInt8(materialCount)))
-            do {
-                try engine.applyMoveAndAdvance(move)
-            } catch {
-                throw FingerprintError.recipeMoveIllegal(uci)
-            }
         }
-        append(BoardEncoder.encode(engine.state, history: engine.recentStates, encoding: encoding), to: &hasher)
 
         // 2. Seeded draws: replay-buffer batches under each constraint kind.
-        let buffer = ReplayBuffer(capacity: 128, inputEncoding: encoding,
-                                  sampler: runStreams.generator(.sampler))
-        for (gameIndex, outcome) in gameOutcomes.enumerated() {
-            appendGame(bufferGame, outcome: outcome, gameIndex: gameIndex, to: buffer)
-        }
-        let constraints: [ReplayBuffer.SamplingConstraints] = [
-            .unconstrained, stratifiedConstraints(),
-            ReplayBuffer.SamplingConstraints(maxPerGame: .max, maxDrawPercent: 100,
-                                             targetMeanGameLengthPlies: 10, materialBucketWeights: nil),
-        ]
-        for constraint in constraints {
-            buffer.setSamplingConstraints(constraint)
-            for _ in 0..<drawsPerConstraint {
-                try appendDraw(from: buffer, encoding: encoding, to: &hasher)
-            }
-        }
-        buffer.setSamplingConstraints(.unconstrained)
+        let buffer = recipeBuffer(bufferGame, encoding: encoding, runStreams: runStreams)
+        try appendConstrainedDraws(from: buffer, constraints: samplerConstraints, encoding: encoding, to: &hasher)
 
         //    Move choices with Dirichlet noise.
         let legalMoves = MoveGenerator.legalMoves(for: .starting)
@@ -293,6 +264,106 @@ enum BehaviorFingerprint {
         trainer.klProbeInterval = 0
         trainer.lrMomentumCycle = .disabled
         return (hasher, buffer, trainer)
+    }
+
+    /// The constraints the recipe's sampler draws run under, in order.
+    static let samplerConstraints: [ReplayBuffer.SamplingConstraints] = [
+        .unconstrained, stratifiedConstraints(),
+        ReplayBuffer.SamplingConstraints(maxPerGame: .max, maxDrawPercent: 100,
+                                         targetMeanGameLengthPlies: 10, materialBucketWeights: nil),
+        // The constrained path at the sampling parameters' declared values
+        // when this recipe was written (recipe constants, deliberately not
+        // read from the declarations): a per-game cap below the batch size,
+        // no draw cap, a length target above every recipe game.
+        ReplayBuffer.SamplingConstraints(maxPerGame: 10, maxDrawPercent: 100,
+                                         targetMeanGameLengthPlies: 999, materialBucketWeights: nil),
+        // Every cap binding at once, still fillable from the recipe buffer: a
+        // per-game cap the recipe games together just cover, a draw cap below
+        // the buffer's draw share, and a length target below the buffer's
+        // position-weighted mean game length.
+        ReplayBuffer.SamplingConstraints(maxPerGame: 5, maxDrawPercent: 15,
+                                         targetMeanGameLengthPlies: 12, materialBucketWeights: nil),
+    ]
+
+    /// Play the recipe game under `encoding`, handing each encoded position
+    /// (and the final one) to `eachEncoding`, and return its plies as the
+    /// replay buffer stores them: one mover-relative frame per ply (the start
+    /// of the full encoding), from which the buffer rebuilds a history stack
+    /// at sample time — the layout `ActiveGame` writes.
+    private static func replayRecipeGame(
+        encoding: InputEncoding, eachEncoding: (([Float]) -> Void)
+    ) throws -> [(board: [Float], policyIndex: Int32, materialCount: UInt8)] {
+        let storedFrameFloats = encoding.planesPerFrame * ChessNetwork.boardSize * ChessNetwork.boardSize
+        let engine = ChessGameEngine()
+        var bufferGame: [(board: [Float], policyIndex: Int32, materialCount: UInt8)] = []
+        for uci in recipeGame {
+            let encoded = BoardEncoder.encode(engine.state, history: engine.recentStates, encoding: encoding)
+            eachEncoding(encoded)
+            let mover = engine.state.currentPlayer
+            guard let move = ChessMove.parseUCI(uci, legal: engine.currentLegalMoves) else {
+                throw FingerprintError.recipeMoveIllegal(uci)
+            }
+            var materialCount = 0
+            for case let piece? in engine.state.board where piece.type != .pawn { materialCount += 1 }
+            bufferGame.append((
+                board: Array(encoded.prefix(storedFrameFloats)),
+                policyIndex: Int32(PolicyEncoding.policyIndex(move, currentPlayer: mover)),
+                materialCount: UInt8(materialCount)))
+            do {
+                try engine.applyMoveAndAdvance(move)
+            } catch {
+                throw FingerprintError.recipeMoveIllegal(uci)
+            }
+        }
+        eachEncoding(BoardEncoder.encode(engine.state, history: engine.recentStates, encoding: encoding))
+        return bufferGame
+    }
+
+    /// The recipe buffer: one game per recipe outcome, each the opening
+    /// `recipeGamePlies[i]` plies of the recipe game — games of different
+    /// lengths, so the length tilt has long games to down-weight — sampled
+    /// from the run streams' `sampler` stream.
+    private static func recipeBuffer(
+        _ bufferGame: [(board: [Float], policyIndex: Int32, materialCount: UInt8)],
+        encoding: InputEncoding, runStreams: some FingerprintStreams
+    ) -> ReplayBuffer {
+        precondition(recipeGamePlies.count == gameOutcomes.count && recipeGamePlies.allSatisfy { $0 <= bufferGame.count },
+                     "each recipe outcome has a game no longer than the recipe game")
+        let buffer = ReplayBuffer(capacity: 128, inputEncoding: encoding,
+                                  sampler: runStreams.generator(.sampler))
+        for (gameIndex, outcome) in gameOutcomes.enumerated() {
+            appendGame(Array(bufferGame.prefix(recipeGamePlies[gameIndex])), outcome: outcome,
+                       gameIndex: gameIndex, to: buffer)
+        }
+        return buffer
+    }
+
+    /// The sampler draws under each of `constraints` in turn, appended to
+    /// `hasher`; the buffer is left unconstrained for the training step.
+    private static func appendConstrainedDraws(
+        from buffer: ReplayBuffer, constraints: [ReplayBuffer.SamplingConstraints],
+        encoding: InputEncoding, to hasher: inout SHA256
+    ) throws {
+        for constraint in constraints {
+            buffer.setSamplingConstraints(constraint)
+            for _ in 0..<drawsPerConstraint {
+                try appendDraw(from: buffer, encoding: encoding, to: &hasher)
+            }
+        }
+        buffer.setSamplingConstraints(.unconstrained)
+    }
+
+    /// The digest of the recipe's sampler draws alone, under `constraints`,
+    /// for the basic encoding and the standard stream derivation — what a
+    /// change in how the sampler applies a constraint changes.
+    static func samplerDrawsDigest(constraints: [ReplayBuffer.SamplingConstraints]) throws -> String {
+        let encoding = InputEncoding.basic30
+        let bufferGame = try replayRecipeGame(encoding: encoding) { _ in }
+        let buffer = recipeBuffer(bufferGame, encoding: encoding,
+                                  runStreams: DCMRandomStreams.streams(masterSeed: masterSeed))
+        var hasher = SHA256()
+        try appendConstrainedDraws(from: buffer, constraints: constraints, encoding: encoding, to: &hasher)
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private static func stratifiedConstraints() -> ReplayBuffer.SamplingConstraints {

@@ -99,11 +99,49 @@ final class BehaviorFingerprintTests: XCTestCase {
     /// A recipe-1 fingerprint (the fixed tiny network) never matches one of
     /// this recipe, so a file saved under it resumes with a `build` gap.
     func testARecipeOneFingerprintIsAGapUnderTheCurrentRecipe() throws {
-        XCTAssertEqual(BehaviorFingerprint.recipe, 2)
+        XCTAssertEqual(BehaviorFingerprint.recipe, 3)
         let running = BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "ab12")
         let saved = try record(fingerprint: BehaviorFingerprint.Record(recipe: 1, sha256: "ab12"))
         XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: saved, runningBuild: laterBuild(than: saved.build),
                                                  runningDevice: saved.device, runningFingerprint: running).gaps, [.build])
+    }
+
+    /// A recipe-2 fingerprint was written by a build whose corpus replay and
+    /// train-vs-UCI sampled every batch uniformly, so under recipe 3 a file
+    /// carrying one resumes with a `build` gap, even with an equal hash.
+    func testARecipeTwoFingerprintIsAGapUnderTheCurrentRecipe() throws {
+        let running = BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "ab12")
+        let saved = try record(fingerprint: BehaviorFingerprint.Record(recipe: 2, sha256: "ab12"))
+        XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: saved, runningBuild: laterBuild(than: saved.build),
+                                                 runningDevice: saved.device, runningFingerprint: running).gaps, [.build])
+    }
+
+    /// The recipe's sampler draws cover the per-game cap, the draw cap and
+    /// the length tilt: a change in how any of them shapes a batch changes
+    /// the digest. Each variant replaces one recipe constraint with one the
+    /// sampler applies differently.
+    func testASamplingConstraintChangeChangesTheSamplerDraws() throws {
+        let recipe = BehaviorFingerprint.samplerConstraints
+        let base = try BehaviorFingerprint.samplerDrawsDigest(constraints: recipe)
+        XCTAssertEqual(try BehaviorFingerprint.samplerDrawsDigest(constraints: recipe), base, "the draws repeat")
+        let binding = try XCTUnwrap(recipe.last)
+        XCTAssertLessThan(binding.maxPerGame, Int.max, "the recipe's last constraint caps games")
+        let variants: [(String, ReplayBuffer.SamplingConstraints)] = [
+            ("per-game cap", ReplayBuffer.SamplingConstraints(
+                maxPerGame: binding.maxPerGame + 1, maxDrawPercent: binding.maxDrawPercent,
+                targetMeanGameLengthPlies: binding.targetMeanGameLengthPlies, materialBucketWeights: nil)),
+            ("draw cap", ReplayBuffer.SamplingConstraints(
+                maxPerGame: binding.maxPerGame, maxDrawPercent: 0,
+                targetMeanGameLengthPlies: binding.targetMeanGameLengthPlies, materialBucketWeights: nil)),
+            ("length tilt", ReplayBuffer.SamplingConstraints(
+                maxPerGame: binding.maxPerGame, maxDrawPercent: binding.maxDrawPercent,
+                targetMeanGameLengthPlies: 0, materialBucketWeights: nil)),
+        ]
+        for (what, variant) in variants {
+            let changed = Array(recipe.dropLast()) + [variant]
+            XCTAssertNotEqual(try BehaviorFingerprint.samplerDrawsDigest(constraints: changed), base,
+                              "a different \(what) must change the recipe's sampler draws")
+        }
     }
 
     // MARK: - The resume decision

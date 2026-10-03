@@ -2251,6 +2251,28 @@ baseline.
     The numerics tests now vary the architecture's compute type and input
     encoding. All 9 `BehaviorFingerprintTests` pass, as do the lineage and
     resume classes (68 tests across 6 classes).
+- **Fifth pass (2026-10-03): fingerprint recipe 3.** Coordinator decision
+  under the owner's "check all edge cases": from this build on, corpus replay
+  and train-vs-UCI sample under the replay buffer's sampling constraints (see
+  the P12 resolution note), which recipe 2 neither exercised nor could tell
+  apart — a recipe-2 file resumed on this build would have counted as exact
+  while its batches now differ.
+  - The sampler draws add two constraint sets: the parameters' values as of
+    recipe 3 (per-game cap 10, no draw cap, length target 999 — recipe
+    constants, not read from the declarations) and every cap binding at once
+    (per-game cap 5, draw cap 15%, length target 12, still fillable from the
+    recipe buffer). Recipe 2 never ran the per-game cap or the draw cap.
+  - The recipe buffer's four games are now openings of the recipe game of
+    19, 11, 15 and 7 plies. Recipe 2 used four copies of the whole game, so
+    every resident game had the same length and its length-tilted draws were
+    identical to untilted ones — the tilt was never really exercised (found
+    by the new sampler-draw test).
+  - `recipe` moves 2 → 3, so a recipe-2 fingerprint is a `build` / `os` gap.
+    The constant pin in `testARecipeOneFingerprintIsAGapUnderTheCurrentRecipe`
+    moves to 3 (a test edit, reported to the owner).
+  - New tests: a recipe-2 fingerprint is a `build` gap; changing the per-game
+    cap, the draw cap or the length target of the recipe's binding set changes
+    the sampler-draw digest (`BehaviorFingerprint.samplerDrawsDigest`).
 
 **P10 — Provenance + carry-forward.** `[RUN]` formatter (`Logging/`), recorder
 fields, B4 fix. Tests: derive → train → save keeps `derivation_history`; `[RUN]`
@@ -2461,7 +2483,14 @@ through the same builder the GUI uses
 `testAResumeUnderSamplingConstraintsEndsWhereTheUninterruptedRunEnds` (declared
 defaults; every constraint binding; stratification) and
 `testReplaySamplesUnderTheRunsPerGameCap`, so the fixture note above about
-stratification and the length tilt no longer applies.
+stratification and the length tilt no longer applies. The behavior
+fingerprint moved to recipe 3 for the same change (P9 fifth pass).
+
+The harness no longer reads anyone's saved settings: `replayParams` builds
+from `TrainingParametersSnapshot.declaredDefaults(overriding:)` — every
+parameter at its declared default plus the test's sampling values — before
+pinning its own knobs, so its runs do not depend on the machine's
+`UserDefaults`.
 
 **P13 — Config D removal** (D-10, issue #9; before P9). Delete the
 `--bf16-cast-in-forward` flag parsing (`App/DrewsChessMachineApp.swift:264-273`),

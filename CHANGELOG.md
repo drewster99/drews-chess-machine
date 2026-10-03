@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-03 CDT — Behavior fingerprint recipe 3; resume harness independent of saved settings
+
+- **Recipe 3.** The fingerprint's sampler draws add the per-game cap, the draw cap and the length tilt — at the parameters' values as of this recipe and with every cap binding — which recipe 2 never ran. Corpus replay and train-vs-UCI now sample under those constraints, so a file fingerprinted under recipe 2 resumes with a `build` gap instead of counting as exact.
+- **`TrainingParametersSnapshot.declaredDefaults(overriding:)`.** A snapshot of every parameter at its declared default plus validated overrides, independent of saved settings.
+- **`ResumeEquivalenceTests`** builds its run parameters from it (declared defaults plus each test's sampling values), no longer from the machine's saved settings. Every assertion is unchanged.
+- Tests: `BehaviorFingerprintTests` — a recipe-2 fingerprint is a gap; a per-game-cap, draw-cap or length-target change alters the sampler draws; the recipe pin moves to 3. `SamplingConstraintsBuilderTests` — the declared-defaults snapshot ignores live settings and refuses bad overrides.
+
 ## 2026-10-03 CDT — Init-neutral options, architecture format v8 (`67f5ef09`, `0ad20466`)
 
 - **Six new architecture fields** (determinism plan P7; B2, B2.1; D-4). Each one starts a part of the network as a no-op:
