@@ -18,7 +18,9 @@ a new row onto. So the existing bytes are copied verbatim into a temp file, the
 new rows are written after them, and the result replaces the original atomically
 (see _atomic_write.py). The prefix is copied as text read with newline="" and
 written with newline="", so the existing rows keep their exact bytes, CRLF row
-terminators included.
+terminators included. A file this script cannot extend that way — a torn last line
+left by an older writer, the three-column header written before the `segment` column,
+a row with a missing or empty field — is refused and left as it is (`existing_rows`).
 
 The `segment` column is the index of the log within the run's registry `logs`
 list. It is REQUIRED for correctness, not decoration: a lineage that restarted
@@ -39,6 +41,36 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 LOGDIR = os.path.expanduser("~/Library/Logs/DrewsChessMachine")
 LINE = re.compile(r"\[TACTICAL-LICHESS\] tick set=wide step=(\d+) .*?NLL=([\d.]+) pElo=(-?\d+) model=(\S+)")
 FIELDS = ["step", "pElo", "nll", "segment"]
+
+
+def existing_rows(path, text):
+    """The rows of the CSV text at `path`, refusing (sys.exit) one this script cannot
+    extend correctly. New rows are written straight after the existing bytes, so:
+
+    - a last line without a terminator (a torn append by an older writer, or a hand
+      edit) would have the first new row glued onto it;
+    - a header other than FIELDS — the three-column form written before the `segment`
+      column existed — would put four-column rows under a three-column header;
+    - a row with a missing or empty field cannot be placed (its step and segment are
+      what the next append scans forward from).
+
+    Each is refused rather than repaired: the CSV is a source of truth, and the fix
+    is a deliberate edit by hand."""
+    if not text:
+        return []
+    if not text.endswith("\n"):
+        sys.exit(f"{path}: the last line has no line terminator (a torn append or a hand edit); "
+                 f"repair it by hand before appending")
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    if reader.fieldnames != FIELDS:
+        sys.exit(f"{path}: header {reader.fieldnames} is not {FIELDS}; rows appended under it would not "
+                 f"line up with its columns. Rewrite it in the {len(FIELDS)}-column form by hand first")
+    rows = list(reader)
+    for line, row in enumerate(rows, 2):
+        if None in row or any(row[field] in (None, "") for field in FIELDS):
+            sys.exit(f"{path}: row {line} has a missing, empty or extra field ({row}); repair it by hand "
+                     f"before appending")
+    return rows
 
 
 def main():
@@ -70,8 +102,8 @@ def main():
         existing_text, snapshot = read_text(path)
     else:
         existing_text, snapshot = "", snapshot_of(path)
-    rows = list(csv.DictReader(io.StringIO(existing_text, newline="")))
-    last = max((int(r["step"]) for r in rows if r.get("segment") == str(seg)), default=-1)
+    rows = existing_rows(path, existing_text)
+    last = max((int(r["step"]) for r in rows if r["segment"] == str(seg)), default=-1)
 
     new_rows = []
     for line in open(log, errors="replace"):
