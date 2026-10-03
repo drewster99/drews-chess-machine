@@ -27,13 +27,21 @@ struct LichessBotControllerFeed: LichessBotGameObserver {
 }
 
 /// Where the controller gets its connection to Lichess and the stored
-/// token. The app uses `live`; tests substitute a scripted transport and a
-/// fixed token so a whole runtime runs without the network or the Keychain.
+/// token, and how it answers a quit it deferred. The app uses `live`; tests
+/// substitute a scripted transport, a fixed token and a recorded quit reply
+/// so a whole runtime — and a quit — runs without the network, the Keychain
+/// or terminating the test host.
 struct LichessBotControllerServices: Sendable {
     let makeTransport: @Sendable () -> any LichessBotTransport
     /// The stored token for a Lichess account id, or nil if none is stored.
     /// Called on the file queue (Keychain calls block).
     let readToken: @Sendable (_ accountID: String) throws -> String?
+    /// Answers an `applicationShouldTerminate` the controller deferred with
+    /// `.terminateLater`: true lets the app quit, false cancels the quit.
+    /// The app answers AppKit; only a test that quits needs its own.
+    var replyToTerminate: @MainActor @Sendable (_ shouldTerminate: Bool) -> Void = { shouldTerminate in
+        NSApp.reply(toApplicationShouldTerminate: shouldTerminate)
+    }
 
     static let live = LichessBotControllerServices(
         makeTransport: { LichessBotURLSessionTransport() },
@@ -1046,15 +1054,16 @@ final class LichessBotController {
         guard quitReplyPending else { return }
         quitReplyPending = false
         guard quit else {
-            NSApp.reply(toApplicationShouldTerminate: false)
+            services.replyToTerminate(false)
             return
         }
         // Let journal and protocol-log writes already queued reach the files
         // before the process exits; anything later is refused and logged
         // rather than racing the exit.
+        let replyToTerminate = services.replyToTerminate
         Task { @MainActor in
             await shutdown(reason: "app quit")
-            NSApp.reply(toApplicationShouldTerminate: true)
+            replyToTerminate(true)
         }
     }
 
