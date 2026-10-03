@@ -125,7 +125,7 @@ DrewsChessMachine --replay-corpus <corpus> --start-model fresh-beta0.safetensors
   `created_at_unix`, `build`, and `operations`. Each operation records its name,
   arguments, the architecture fields it changes, and the tensors it rewrote. A chain of
   derivations can therefore be traced from the newest file alone.
-- `dcm_format_version` = the current version (6), and the target architecture. A legacy
+- `dcm_format_version` = the current version (`ArchitectureFormat.currentVersion`), and the target architecture. A legacy
   source (format v5 or older) is read under the legacy rules (`se_beta_init` → `glorot`
   before v4, `se_activation` → the group's activation before v5, `rezero_alpha_cap` →
   the group's `rezero_alpha_init` before v6); the derived file states every field.
