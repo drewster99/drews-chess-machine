@@ -327,6 +327,10 @@ enum TrainVsUciRunner {
             schedule: .argmax,
             maxPliesPerGame: config.maxPliesPerGame)
 
+        // Consecutive-failure tracking per kind of save — see
+        // `TrainerSaveFailureStreak` and `CorpusReplayRunner.reportSaveFailure`.
+        var rollingSaveFailures = TrainerSaveFailureStreak(what: "trainer-model save")
+        var enumeratedSaveFailures = TrainerSaveFailureStreak(what: "enumerated checkpoint save")
         func saveTrainerModel(step: Int, reason: String) async throws {
             let encoded: Data
             do {
@@ -352,6 +356,7 @@ enum TrainVsUciRunner {
                 try FileManager.default.createDirectory(
                     at: outModelURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try rollingWriter.write(encoded)
+                rollingSaveFailures.recordSuccess()
                 emit("[VS-UCI] saved trainer model (\(reason)) step=\(step) trainerStep=\(snapshot.schedule.completedTrainSteps) -> \(outModelURL.lastPathComponent)")
                 // Full layer health of the state just written — see
                 // CorpusReplayRunner's save. Never throws.
@@ -370,11 +375,13 @@ enum TrainVsUciRunner {
                 throw ownershipRefusal
             } catch {
                 try CorpusReplayRunner.reportSaveFailure(error, step: step, what: "trainer-model save (\(reason))")
+                try rollingSaveFailures.recordFailure(step: step)
                 return
             }
             if let enumeratedWriter {
                 do {
                     let written = try enumeratedWriter.write(encoded, step: step)
+                    enumeratedSaveFailures.recordSuccess()
                     let note = written.outcome == .replacedThisRunsEarlierSave
                         ? " (replaced this run's own earlier save of step \(step))"
                         : ""
@@ -385,6 +392,7 @@ enum TrainVsUciRunner {
                     throw ownershipRefusal
                 } catch {
                     try CorpusReplayRunner.reportSaveFailure(error, step: step, what: "enumerated checkpoint")
+                    try enumeratedSaveFailures.recordFailure(step: step)
                 }
             }
         }

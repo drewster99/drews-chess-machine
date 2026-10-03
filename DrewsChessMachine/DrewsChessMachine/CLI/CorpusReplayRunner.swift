@@ -128,14 +128,56 @@ struct CorpusReplayConfig: Sendable {
     var policyTailPrecision: ChessNetwork.PolicyTailPrecision = .default
 }
 
+/// Consecutive failures of one kind of trainer save (the rolling file, or the
+/// step-enumerated copies), shared by corpus replay and train-vs-UCI. One
+/// failure is tolerated — a transient error on an external volume should not
+/// end a long run — but the next attempt failing too halts the run: from then
+/// on it would train with nothing being kept. A success resets the count.
+struct TrainerSaveFailureStreak {
+    /// What is being saved, for the halt message.
+    let what: String
+    /// Consecutive failures after which the run halts.
+    static let haltThreshold = 2
+    private(set) var consecutiveFailures = 0
+
+    init(what: String) {
+        self.what = what
+    }
+
+    mutating func recordSuccess() {
+        consecutiveFailures = 0
+    }
+
+    /// Count a failure at `step`; throws once the streak reaches the threshold.
+    mutating func recordFailure(step: Int) throws {
+        consecutiveFailures += 1
+        if consecutiveFailures >= Self.haltThreshold {
+            throw CorpusReplayError.repeatedSaveFailures(count: consecutiveFailures, lastStep: step, what: what)
+        }
+    }
+}
+
 enum CorpusReplayError: LocalizedError {
     case noGames
     case startModelTooSmall(have: Int, need: Int)
     case diskFullDuringSave(step: Int, what: String)
     case gpuCaptureUnavailable
     case gpuCaptureFailed(String)
+    /// The requested capture step is past the run's step limit.
+    case gpuCaptureStepUnreachable(step: Int, stepLimit: Int)
+    /// The trace's folder is missing, not a folder, or not writable.
+    case gpuCaptureFolderUnusable(path: String, reason: String)
+    /// The same kind of save failed on consecutive attempts; see
+    /// `TrainerSaveFailureStreak`.
+    case repeatedSaveFailures(count: Int, lastStep: Int, what: String)
     var errorDescription: String? {
         switch self {
+        case let .gpuCaptureStepUnreachable(step, stepLimit):
+            return "--gpu-capture-step \(step) is past the run's step limit \(stepLimit); the capture could never happen"
+        case let .gpuCaptureFolderUnusable(path, reason):
+            return "GPU trace folder \(path) \(reason)"
+        case let .repeatedSaveFailures(count, lastStep, what):
+            return "\(what) failed \(count) times in a row (last at step \(lastStep)) — halting rather than training on with nothing saved"
         case .gpuCaptureUnavailable:
             return "GPU trace capture is not available in this process — launch with MTL_CAPTURE_ENABLED=1 in the environment"
         case let .gpuCaptureFailed(detail):
@@ -627,6 +669,36 @@ enum CorpusReplayRunner {
         var epochs: Int
     }
 
+    /// Check a GPU capture request against everything that can be known
+    /// before training: its step is within the run's step limit (when there is
+    /// one — an epoch- or corpus-bound run is checked at its end instead),
+    /// nothing exists at the trace path (a dangling symbolic link counts), and
+    /// the trace's folder exists, is a folder (following links: `/tmp` is one)
+    /// and is writable. Capture availability in this process is a separate
+    /// check (`MTLCaptureManager.supportsDestination`). The one place these
+    /// rules live: the pre-flight and the capture start both call it.
+    static func validateGPUCaptureRequest(_ capture: CorpusReplayConfig.GPUCapture, stepLimit: Int?) throws {
+        if let stepLimit, capture.step > stepLimit {
+            throw CorpusReplayError.gpuCaptureStepUnreachable(step: capture.step, stepLimit: stepLimit)
+        }
+        // The folder first: under a missing folder or a file, inspecting the
+        // trace path itself fails with a system error instead of the reason.
+        let folder = capture.outputURL.deletingLastPathComponent()
+        var isFolder: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isFolder) else {
+            throw CorpusReplayError.gpuCaptureFolderUnusable(path: folder.path, reason: "does not exist")
+        }
+        guard isFolder.boolValue else {
+            throw CorpusReplayError.gpuCaptureFolderUnusable(path: folder.path, reason: "is not a folder")
+        }
+        guard FileManager.default.isWritableFile(atPath: folder.path) else {
+            throw CorpusReplayError.gpuCaptureFolderUnusable(path: folder.path, reason: "is not writable")
+        }
+        if try FileSafety.existingItem(at: capture.outputURL) != nil {
+            throw CorpusReplayError.gpuCaptureFailed("\(capture.outputURL.path) already exists")
+        }
+    }
+
     /// Start capturing every command buffer `device` runs into an Xcode GPU
     /// trace document at `capture.outputURL`. Throws instead of training on
     /// without the capture the operator asked for.
@@ -635,9 +707,9 @@ enum CorpusReplayRunner {
         guard manager.supportsDestination(.gpuTraceDocument) else {
             throw CorpusReplayError.gpuCaptureUnavailable
         }
-        guard !FileManager.default.fileExists(atPath: capture.outputURL.path) else {
-            throw CorpusReplayError.gpuCaptureFailed("\(capture.outputURL.path) already exists")
-        }
+        // Rechecked now: the folder or path may have changed since the
+        // pre-flight. The step is this one, so its limit is not in question.
+        try validateGPUCaptureRequest(capture, stepLimit: nil)
         let descriptor = MTLCaptureDescriptor()
         descriptor.captureObject = device
         descriptor.destination = .gpuTraceDocument
@@ -696,10 +768,12 @@ enum CorpusReplayRunner {
     /// good checkpoint, so once space is freed the run resumes cleanly from there
     /// losing only the steps since the last autosave.
     ///
-    /// Any OTHER write failure (e.g. a read-only `--out-model` volume) stays
-    /// non-fatal: it is logged as a WARNING and the caller continues, preserving
-    /// the original contract that a convenience autosave which simply cannot write
-    /// to its derived path must not tear down an otherwise-healthy run.
+    /// Any OTHER write failure (e.g. a transient error on an external volume)
+    /// is logged here as a WARNING and the caller continues — but only once in
+    /// a row: callers also record each failure on a `TrainerSaveFailureStreak`,
+    /// which halts the run when the same kind of save fails again at the next
+    /// attempt. A run that cannot save at all (a read-only `--out-model`
+    /// volume) would otherwise train for hours and keep nothing.
     static func reportSaveFailure(_ error: Error, step: Int, what: String) throws {
         if isOutOfSpace(error) {
             let msg = "[ALARM] [REPLAY] DISK FULL writing \(what) at step \(step): "
@@ -1078,11 +1152,9 @@ enum CorpusReplayRunner {
         // A requested GPU capture must be possible before any buffer fill or
         // training is spent on the run (the capture itself starts at its step).
         if let capture = config.gpuCapture {
+            try validateGPUCaptureRequest(capture, stepLimit: config.stepLimit)
             guard MTLCaptureManager.shared().supportsDestination(.gpuTraceDocument) else {
                 throw CorpusReplayError.gpuCaptureUnavailable
-            }
-            guard !FileManager.default.fileExists(atPath: capture.outputURL.path) else {
-                throw CorpusReplayError.gpuCaptureFailed("\(capture.outputURL.path) already exists")
             }
         }
         let buffer = ReplayBuffer(capacity: p.replayBufferCapacity, inputEncoding: net.inputEncoding)
@@ -1134,10 +1206,10 @@ enum CorpusReplayRunner {
         // output file. Failure handling splits on cause (see reportSaveFailure):
         // a disk-full (ENOSPC) failure is FATAL — it alarms and throws so the run
         // halts rather than training on into a window where nothing persists; any
-        // other failure (e.g. a read-only --out-model volume) stays a non-fatal
-        // WARNING so a convenience autosave that simply cannot write to its
-        // derived path does not tear down an otherwise-healthy run. Pass
-        // --out-model to a writable location if the derived path can't be written.
+        // other failure is a WARNING the first time, and halts the run when the
+        // same kind of save fails again at its next attempt
+        // (`TrainerSaveFailureStreak`) — a run that cannot save at all must not
+        // train on keeping nothing.
         // Resume info is passed in (not captured): the corpus index / stream
         // cursor are resolved AFTER this nested func, so the call sites — which
         // run inside the SGD loop where those are in scope — supply them. The
@@ -1145,6 +1217,8 @@ enum CorpusReplayRunner {
         // Phase 1; the exact-reconstruction resume reads them later). `built_by_*`
         // pins which encoder/feeder build wrote them, so a byte-exact resume can
         // refuse a build whose encoding may differ.
+        var rollingSaveFailures = TrainerSaveFailureStreak(what: "trainer-model save")
+        var enumeratedSaveFailures = TrainerSaveFailureStreak(what: "enumerated checkpoint save")
         func saveTrainerModel(step: Int, reason: String,
                               nextGameIndex: Int, shard: Int, epoch: Int, populatedPlies: Int,
                               corpusID: String, corpusPath: String) async throws {
@@ -1194,6 +1268,7 @@ enum CorpusReplayRunner {
                     withIntermediateDirectories: true
                 )
                 try rollingWriter.write(encoded)
+                rollingSaveFailures.recordSuccess()
                 emit("[REPLAY] saved trainer model (\(reason)) step=\(step) trainerStep=\(snapshot.schedule.completedTrainSteps) nextGame=\(nextGameIndex) shard=\(shard) epoch=\(epoch) -> \(outModelURL.lastPathComponent)")
                 // Full layer health of exactly the state just written, from the
                 // tensors already exported for it (no extra GPU read). Never
@@ -1214,8 +1289,10 @@ enum CorpusReplayRunner {
                 // would overwrite something this run did not write.
                 throw ownershipRefusal
             } catch {
-                // Throws on disk-full (halt); returns on any other failure (non-fatal).
+                // Throws on disk-full (halt), and on the second failure in a
+                // row; otherwise returns (non-fatal).
                 try Self.reportSaveFailure(error, step: step, what: "trainer-model save (\(reason))")
+                try rollingSaveFailures.recordFailure(step: step)
                 return
             }
 
@@ -1229,6 +1306,7 @@ enum CorpusReplayRunner {
             if let enumeratedWriter {
                 do {
                     let written = try enumeratedWriter.write(encoded, step: step)
+                    enumeratedSaveFailures.recordSuccess()
                     let note = written.outcome == .replacedThisRunsEarlierSave
                         ? " (replaced this run's own earlier save of step \(step))"
                         : ""
@@ -1239,6 +1317,7 @@ enum CorpusReplayRunner {
                     throw ownershipRefusal
                 } catch {
                     try Self.reportSaveFailure(error, step: step, what: "enumerated checkpoint")
+                    try enumeratedSaveFailures.recordFailure(step: step)
                 }
             }
         }
@@ -1380,6 +1459,10 @@ enum CorpusReplayRunner {
         var step = 0
         let logEvery = 50
         var aborted = false
+        // `--gpu-capture-step` bookkeeping: whether the capture started, and
+        // the error if it could not.
+        var gpuCaptureStarted = false
+        var gpuCaptureFailure: Error? = nil
         while true {
             // Ctrl-C: stop cleanly before starting another step so the
             // post-loop save captures a complete, non-mid-step state.
@@ -1402,7 +1485,21 @@ enum CorpusReplayRunner {
             // the whole step. Stopped on every exit path.
             let captureThisStep = config.gpuCapture.flatMap { $0.step == step + 1 ? $0 : nil }
             if let captureThisStep {
-                try beginGPUCapture(captureThisStep, device: trainer.network.commandQueue.device)
+                do {
+                    try beginGPUCapture(captureThisStep, device: trainer.network.commandQueue.device)
+                    gpuCaptureStarted = true
+                } catch {
+                    // The capture fails before this step trains, so the
+                    // trainer holds a complete state: stop here, let the final
+                    // save below keep everything since the last autosave, and
+                    // fail the run after it.
+                    gpuCaptureFailure = error
+                    let msg = "[ALARM] [REPLAY] GPU trace capture for step \(captureThisStep.step) could not start: "
+                        + "\(error.localizedDescription). Stopping before that step; the final save follows, then the run fails."
+                    FileHandle.standardError.write(Data((msg + "\n").utf8))
+                    SessionLogger.shared.log(msg)
+                    break
+                }
             }
             let stepTiming: TrainStepTiming?
             do {
@@ -1503,15 +1600,33 @@ enum CorpusReplayRunner {
             }
         }
 
+        // A requested capture that the run ended before reaching (an abort,
+        // the corpus or epoch budget, the trainer stopping) is reported; it is
+        // not an error, since ending early is often deliberate.
+        if let capture = config.gpuCapture, !gpuCaptureStarted, gpuCaptureFailure == nil {
+            let msg = "[REPLAY] WARNING: GPU trace capture step \(capture.step) was never reached — the run ended "
+                + "at step \(step); no trace was written to \(capture.outputURL.path)"
+            FileHandle.standardError.write(Data((msg + "\n").utf8))
+            SessionLogger.shared.log(msg)
+        }
+
         // Final save on any clean exit path — step/epoch limit, corpus
-        // exhaustion, or Ctrl-C abort. A thrown error skips this (it propagates
-        // out of runReplay before we get here): the network state after a hard
-        // failure isn't worth persisting over the last good autosave.
+        // exhaustion, Ctrl-C abort, or a GPU capture that could not start
+        // (the trainer is untouched by that failure). A thrown error skips
+        // this (it propagates out of runReplay before we get here): the
+        // network state after a hard failure isn't worth persisting over the
+        // last good autosave.
         let finalResume = resumePoint()
-        try await saveTrainerModel(step: step, reason: aborted ? "abort" : "final",
+        let finalReason = gpuCaptureFailure != nil ? "capture-failed" : (aborted ? "abort" : "final")
+        try await saveTrainerModel(step: step, reason: finalReason,
             nextGameIndex: finalResume.nextGame, shard: finalResume.shard,
             epoch: finalResume.epoch, populatedPlies: buffer.count,
             corpusID: resumeCorpusID, corpusPath: resumeCorpusPath)
+        // The run asked for a capture it did not get: fail it, after the save.
+        // No results.json — a failed run does not claim a clean record.
+        if let gpuCaptureFailure {
+            throw gpuCaptureFailure
+        }
 
         // `results.json` last, after the final model save — a run that dies
         // saving weights should not also claim a clean results record.

@@ -96,6 +96,101 @@ final class ReplayRunnerPreflightTests: XCTestCase {
         }
     }
 
+    // MARK: GPU capture request
+
+    private func capture(step: Int, at url: URL) -> CorpusReplayConfig.GPUCapture {
+        CorpusReplayConfig.GPUCapture(step: step, outputURL: url)
+    }
+
+    func testCaptureStepPastTheStepLimitIsRefused() {
+        let trace = root.appendingPathComponent("step.gputrace")
+        XCTAssertThrowsError(try CorpusReplayRunner.validateGPUCaptureRequest(capture(step: 5000, at: trace), stepLimit: 1000)) { error in
+            guard case .gpuCaptureStepUnreachable(5000, 1000)? = error as? CorpusReplayError else {
+                return XCTFail("expected gpuCaptureStepUnreachable, got \(error)")
+            }
+        }
+        XCTAssertNoThrow(try CorpusReplayRunner.validateGPUCaptureRequest(capture(step: 1000, at: trace), stepLimit: 1000))
+        XCTAssertNoThrow(try CorpusReplayRunner.validateGPUCaptureRequest(capture(step: 5000, at: trace), stepLimit: nil))
+    }
+
+    func testCaptureIntoAMissingFolderIsRefused() {
+        let trace = root.appendingPathComponent("missing/step.gputrace")
+        XCTAssertThrowsError(try CorpusReplayRunner.validateGPUCaptureRequest(capture(step: 1, at: trace), stepLimit: nil)) { error in
+            guard case .gpuCaptureFolderUnusable? = error as? CorpusReplayError else {
+                return XCTFail("expected gpuCaptureFolderUnusable, got \(error)")
+            }
+        }
+    }
+
+    func testCaptureUnderARegularFileIsRefused() throws {
+        let file = root.appendingPathComponent("plain-file")
+        try Data("x".utf8).write(to: file)
+        XCTAssertThrowsError(try CorpusReplayRunner.validateGPUCaptureRequest(
+            capture(step: 1, at: file.appendingPathComponent("step.gputrace")), stepLimit: nil)) { error in
+            guard case .gpuCaptureFolderUnusable? = error as? CorpusReplayError else {
+                return XCTFail("expected gpuCaptureFolderUnusable, got \(error)")
+            }
+        }
+    }
+
+    func testCaptureIntoAReadOnlyFolderIsRefused() throws {
+        let folder = root.appendingPathComponent("read-only", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: folder.path)
+        defer {
+            do {
+                try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path)
+            } catch {
+                XCTFail("restoring permissions on \(folder.path) failed: \(error)")
+            }
+        }
+        XCTAssertThrowsError(try CorpusReplayRunner.validateGPUCaptureRequest(
+            capture(step: 1, at: folder.appendingPathComponent("step.gputrace")), stepLimit: nil)) { error in
+            guard case .gpuCaptureFolderUnusable? = error as? CorpusReplayError else {
+                return XCTFail("expected gpuCaptureFolderUnusable, got \(error)")
+            }
+        }
+    }
+
+    func testCaptureThroughASymlinkedFolderIsAccepted() throws {
+        let real = root.appendingPathComponent("real", isDirectory: true)
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: false)
+        let link = root.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        XCTAssertNoThrow(try CorpusReplayRunner.validateGPUCaptureRequest(
+            capture(step: 1, at: link.appendingPathComponent("step.gputrace")), stepLimit: nil))
+    }
+
+    func testADanglingSymlinkAtTheTracePathCountsAsExisting() throws {
+        let trace = root.appendingPathComponent("step.gputrace")
+        try FileManager.default.createSymbolicLink(at: trace, withDestinationURL: root.appendingPathComponent("nowhere"))
+        XCTAssertThrowsError(try CorpusReplayRunner.validateGPUCaptureRequest(capture(step: 1, at: trace), stepLimit: nil)) { error in
+            guard case .gpuCaptureFailed? = error as? CorpusReplayError else {
+                return XCTFail("expected gpuCaptureFailed (already exists), got \(error)")
+            }
+        }
+    }
+
+    // MARK: Save-failure streak
+
+    func testOneSaveFailureIsToleratedAndTheSecondInARowHalts() throws {
+        var streak = TrainerSaveFailureStreak(what: "trainer-model save")
+        XCTAssertNoThrow(try streak.recordFailure(step: 1000))
+        XCTAssertThrowsError(try streak.recordFailure(step: 2000)) { error in
+            guard case .repeatedSaveFailures(2, 2000, "trainer-model save")? = error as? CorpusReplayError else {
+                return XCTFail("expected repeatedSaveFailures, got \(error)")
+            }
+        }
+    }
+
+    func testASuccessBetweenFailuresResetsTheStreak() throws {
+        var streak = TrainerSaveFailureStreak(what: "enumerated checkpoint save")
+        try streak.recordFailure(step: 1000)
+        streak.recordSuccess()
+        XCTAssertNoThrow(try streak.recordFailure(step: 3000))
+        XCTAssertEqual(streak.consecutiveFailures, 1)
+    }
+
     // MARK: FileSafety.requireStageableDestination
 
     func testStageableDestinationLimits() throws {
