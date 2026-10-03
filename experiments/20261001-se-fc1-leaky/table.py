@@ -19,7 +19,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 import probe_record  # noqa: E402
-from table_common import BASELINE_LOG, buffer_plies_per_game, csv_points  # noqa: E402
+from table_common import (BASELINE_LOG, buffer_plies_per_game, csv_points, csv_probe_builds,  # noqa: E402
+                          print_probe_builds)
 
 LEAKY_LOG = "dcm_log_20261001-151822.txt"
 LEAKY_MODEL_ID = "20261001-43-NbWz"
@@ -49,6 +50,9 @@ def main():
         row += [probe_record.pelo_cell(points, step) for _, points in arms]
         row += [f"{points[step][1]:.4f}" if step in points else "" for _, points in arms]
         print("| " + " | ".join(row) + " |")
+    builds = [(label, csv_probe_builds(run)) for label, run in SE_ARMS]
+    print_probe_builds([builds[0], ("leaky FC1 scale+bias", probe_record.probe_builds(
+        os.path.join(HERE, "probes.jsonl")))] + builds[1:])
 
 
 if __name__ == "__main__":

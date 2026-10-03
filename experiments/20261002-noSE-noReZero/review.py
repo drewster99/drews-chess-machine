@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """No-ReZero vs ReZero review at one training step (no SE in any arm).
 
-Usage: review.py <step>
+Usage: review.py <step> [--allow-mixed-builds]
 
 For each run that reached <step>:
   - mean training metrics over the [REPLAY] lines in the 500 steps up to <step>;
@@ -9,7 +9,10 @@ For each run that reached <step>:
     (effective ReZero alpha x ||conv2||; alpha is 1 without ReZero), from the
     enumerated checkpoint at <step>, identified by its safetensors metadata;
   - pElo tallies, no-ReZero seed 1 vs ReZero seed 1, over every 1k step both reached.
+    The two arms' probe builds must be one recorded build; a comparison across builds
+    (or with unrecorded ones) needs --allow-mixed-builds and is labelled as such.
 """
+import argparse
 import json
 import math
 import os
@@ -23,6 +26,7 @@ import table
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
 import dcm_arch  # noqa: E402  each checkpoint's ReZero cap, read from its own metadata
+from dcm_probe_build import UNRECORDED  # noqa: E402
 
 MODELS = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/Models")
 # (label, session log, out-model stem, trained model_id): a checkpoint is used only
@@ -101,10 +105,15 @@ def branch_scale(stem, step, expected_model_id):
     return metadata.get("model_id"), rows
 
 
-def tally(step):
+def tally(step, allow_mixed_builds):
     a = table.csv_points("se_none")
     label, file_name, model_id = table.PROBE_ARMS[0]
     b = table.probe_points(file_name, model_id, label)
+    builds = table.csv_probe_builds("se_none") | table.probe_record.probe_builds(os.path.join(table.HERE, file_name))
+    mixed = len(builds) != 1 or UNRECORDED in builds
+    if mixed and not allow_mixed_builds:
+        raise SystemExit(f"the two arms' pElo come from probe builds {sorted(builds)}; a difference between "
+                         f"them includes any offset between builds. Rerun with --allow-mixed-builds to tally anyway.")
     steps = [s for s in range(1000, step + 1, 1000) if s in a and s in b]
     non_finite = [s for s in steps if b[s][0] is None]
     if non_finite:
@@ -114,11 +123,15 @@ def tally(step):
     behind = sum(d < 0 for d in diffs)
     n = ahead + behind
     p = min(1.0, 2 * sum(math.comb(n, k) for k in range(min(ahead, behind) + 1)) / 2 ** n) if n else float("nan")
-    return len(diffs), ahead, behind, p, sum(diffs) / len(diffs)
+    return len(diffs), ahead, behind, p, sum(diffs) / len(diffs), (sorted(builds) if mixed else None)
 
 
 def main():
-    step = int(sys.argv[1])
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("step", type=int)
+    parser.add_argument("--allow-mixed-builds", action="store_true")
+    args = parser.parse_args()
+    step = args.step
     print(f"=== review at step {step} ===")
     for label, log_name, stem, model_id in RUNS:
         means = log_means(log_name, step)
@@ -133,9 +146,11 @@ def main():
             model_id, rows = scale
             print(f"  {model_id}: ||conv2|| / eff alpha / branch scale per block: " +
                   " | ".join(f"{n:.2f} / {e:.3f} / {s:.2f}" for n, e, s in rows))
-    count, ahead, behind, p, mean = tally(step)
+    count, ahead, behind, p, mean, mixed_builds = tally(step, args.allow_mixed_builds)
     print(f"\nno ReZero s1 vs ReZero s1, pElo 1k-{step // 1000}k: {count} checkpoints, ahead {ahead}, "
-          f"behind {behind}, tied {count - ahead - behind}, sign test p {p:.3f}, mean difference {mean:+.1f}")
+          f"behind {behind}, tied {count - ahead - behind}, sign test p {p:.3f}, mean difference {mean:+.1f}"
+          + (f"\n  CROSS-BUILD (probe builds {', '.join(mixed_builds)}): differences include any offset "
+             f"between builds" if mixed_builds else ""))
 
 
 if __name__ == "__main__":

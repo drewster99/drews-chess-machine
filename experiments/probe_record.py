@@ -3,7 +3,7 @@
 
 Usage (probe_loop.sh pipes the probe's stdout in):
 
-    probe_record.py <checkpoint.safetensors> <step from the file name> <probes.jsonl>
+    probe_record.py <checkpoint.safetensors> <step from the file name> <probes.jsonl> <probe build>
 
 The record's identity comes from the checkpoint's safetensors `__metadata__`
 (`model_id`, `training_step`), never from the file name: the step in the name must
@@ -11,14 +11,15 @@ equal the header's `training_step`, the probe's `modelID` must equal the header'
 `model_id`, and every record already in <probes.jsonl> must carry that same
 `model_id` (one probes file = one run; a resumed segment mints a new model_id and
 needs its own file). On success it prints one JSON line, `"step"` first, for the
-caller to append. Nothing is written here.
+caller to append, carrying `probe_build` (scripts/dcm_probe_build.py) so measurements
+from different builds are never mistaken for comparable ones. Nothing is written here.
 
-Exit status:
-  0  record printed
-  2  usage error
-  3  the probe failed (an error event, or not exactly one summary line) -- retryable
-  4  identity mismatch (header vs file name vs probe) -- not retryable
-  5  <probes.jsonl> already holds a different model_id -- not retryable
+Exit status (the constants below; probe_loop.sh relies on them):
+  success            record printed
+  usage error        wrong arguments
+  EXIT_PROBE_FAILED  the probe failed (an error event, or not exactly one summary line) -- retryable
+  EXIT_IDENTITY      identity mismatch (header vs file name vs probe) -- not retryable
+  EXIT_OTHER_RUN     <probes.jsonl> already holds a different model_id -- not retryable
 
 A summary without `pElo` is the probe reporting a non-finite value (it omits the
 key then); that is a valid measurement, recorded as `"pElo": null`, not a failure.
@@ -32,6 +33,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 import dcm_arch  # noqa: E402
+from dcm_probe_build import UNRECORDED  # noqa: E402
 
 EXIT_PROBE_FAILED = 3
 EXIT_IDENTITY = 4
@@ -62,7 +64,7 @@ def existing_model_ids(probes_path):
     return ids
 
 
-def build_record(checkpoint_path, expected_step, probe_stdout, probes_path):
+def build_record(checkpoint_path, expected_step, probe_stdout, probes_path, probe_build):
     """(exit status, record or message) for one probe of one checkpoint."""
     events = []
     for line in probe_stdout.splitlines():
@@ -97,6 +99,7 @@ def build_record(checkpoint_path, expected_step, probe_stdout, probes_path):
     record = {"step": expected_step, "training_step": training_step, "model_id": model_id}
     if "parent_model_id" in metadata:
         record["parent_model_id"] = metadata["parent_model_id"]
+    record["probe_build"] = probe_build
     record.update(summary)
     if "pElo" not in summary:
         record["pElo"] = None
@@ -138,6 +141,17 @@ def load_probe_points(path, expected_model_id):
 NOT_STARTED = None  # an arm's model_id before its run has started
 
 
+def probe_builds(path):
+    """The probe builds a probes file's records came from (UNRECORDED for records
+    written before builds were recorded)."""
+    builds = set()
+    with open(path) as handle:
+        for line in handle:
+            if line.strip() and line.endswith("\n"):
+                builds.add(json.loads(line).get("probe_build", UNRECORDED))
+    return builds
+
+
 def arm_points(path, model_id, label):
     """`load_probe_points` for a table arm, or None for an arm declared NOT_STARTED.
 
@@ -162,11 +176,11 @@ def pelo_cell(points, step):
 
 
 def main():
-    if len(sys.argv) != 4:
+    if len(sys.argv) != 5:
         print(__doc__.split("\n\n")[1], file=sys.stderr)
         return 2
-    checkpoint_path, step_text, probes_path = sys.argv[1:]
-    status, result = build_record(checkpoint_path, int(step_text), sys.stdin.read(), probes_path)
+    checkpoint_path, step_text, probes_path, probe_build = sys.argv[1:]
+    status, result = build_record(checkpoint_path, int(step_text), sys.stdin.read(), probes_path, probe_build)
     if status:
         print(result, file=sys.stderr)
         return status

@@ -18,7 +18,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 import probe_record  # noqa: E402
-from table_common import BASELINE_LOG, LOGS, buffer_plies_per_game, csv_points  # noqa: E402
+from table_common import (BASELINE_LOG, LOGS, buffer_plies_per_game, csv_points, csv_probe_builds,  # noqa: E402
+                          print_probe_builds)
 
 NO_REZERO_LOG = "dcm_log_20261002-011124.txt"
 
@@ -36,11 +37,15 @@ def probe_points(file_name, model_id, label):
 
 def main():
     probed = {label: probe_points(f, m, label) for label, f, m in PROBE_ARMS}
+    files = {label: os.path.join(HERE, f) for label, f, _ in PROBE_ARMS}
     arms = [("no SE + ReZero s1", csv_points("se_none"))]
     arms += [(label, probed[label]) for label, _, _ in PROBE_ARMS[:2]]
     arms += [("no SE + ReZero s2", csv_points("se_none2"))]
     if probed[PROBE_ARMS[2][0]] is not None:
         arms.append((PROBE_ARMS[2][0], probed[PROBE_ARMS[2][0]]))
+    builds = [("no SE + ReZero s1", csv_probe_builds("se_none"))]
+    builds += [(label, probe_record.probe_builds(files[label])) for label, points in probed.items() if points is not None]
+    builds += [("no SE + ReZero s2", csv_probe_builds("se_none2"))]
     not_started = [label for label, points in probed.items() if points is None]
     plies = buffer_plies_per_game(BASELINE_LOG)
     for step, value in buffer_plies_per_game(NO_REZERO_LOG).items():
@@ -55,6 +60,7 @@ def main():
         row += [probe_record.pelo_cell(p, step) for _, p in arms]
         row += [f"{p[step][1]:.4f}" if step in p else "" for _, p in arms]
         print("| " + " | ".join(row) + " |")
+    print_probe_builds(builds)
     if not_started:
         print(f"\nNot started: {', '.join(not_started)}.")
 

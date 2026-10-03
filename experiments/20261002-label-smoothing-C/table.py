@@ -16,7 +16,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 import probe_record  # noqa: E402
-from table_common import BASELINE_LOG, buffer_plies_per_game, csv_points  # noqa: E402
+from table_common import (BASELINE_LOG, buffer_plies_per_game, csv_points, csv_probe_builds,  # noqa: E402
+                          print_probe_builds)
 
 # (label, probes file, model_id); NOT_STARTED until the run's first checkpoint exists.
 PROBE_ARMS = [
@@ -28,6 +29,7 @@ PROBE_ARMS = [
 
 def main():
     arms = [("baseline ε 0.1 / 0.013", csv_points("se_sb"))]
+    builds = [("baseline ε 0.1 / 0.013", csv_probe_builds("se_sb"))]
     not_started = []
     for label, path, model_id in PROBE_ARMS:
         points = probe_record.arm_points(path, model_id, label)
@@ -35,6 +37,7 @@ def main():
             not_started.append(label)
         else:
             arms.append((label, points))
+            builds.append((label, probe_record.probe_builds(path)))
     plies = buffer_plies_per_game(BASELINE_LOG)
     last = max(max(p) for _, p in arms if p)
     header = ["step", "buffer plies/game"] + [f"pElo {l}" for l, _ in arms] + [f"NLL {l}" for l, _ in arms]
@@ -45,6 +48,7 @@ def main():
         row += [probe_record.pelo_cell(p, step) for _, p in arms]
         row += [f"{p[step][1]:.4f}" if step in p else "" for _, p in arms]
         print("| " + " | ".join(row) + " |")
+    print_probe_builds(builds)
     if not_started:
         print(f"\nNot started: {', '.join(not_started)}.")
 

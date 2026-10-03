@@ -94,28 +94,29 @@ class ProbeRecordTests(unittest.TestCase):
         return json.dumps(base) + "\n"
 
     def test_good_probe_becomes_a_record_with_identity(self):
-        status, record = probe_record.build_record(self.checkpoint, 2000, "[LOG] x\n" + self.summary(), self.probes)
+        status, record = probe_record.build_record(self.checkpoint, 2000, "[LOG] x\n" + self.summary(), self.probes, "Test.app@sha256:000000000000")
         self.assertEqual(status, 0)
         self.assertEqual(list(record)[:4], ["step", "training_step", "model_id", "parent_model_id"])
         self.assertEqual((record["step"], record["model_id"], record["pElo"]), (2000, "M1", 1200.5))
+        self.assertEqual(record["probe_build"], "Test.app@sha256:000000000000")
 
     def test_error_event_and_missing_summary_are_retryable_failures(self):
         error = json.dumps({"event": "error", "error": "boom"}) + "\n"
-        self.assertEqual(probe_record.build_record(self.checkpoint, 2000, error, self.probes)[0], 3)
-        self.assertEqual(probe_record.build_record(self.checkpoint, 2000, "", self.probes)[0], 3)
+        self.assertEqual(probe_record.build_record(self.checkpoint, 2000, error, self.probes, "Test.app@sha256:000000000000")[0], 3)
+        self.assertEqual(probe_record.build_record(self.checkpoint, 2000, "", self.probes, "Test.app@sha256:000000000000")[0], 3)
 
     def test_identity_mismatches_are_refused(self):
-        self.assertEqual(probe_record.build_record(self.checkpoint, 3000, self.summary(), self.probes)[0], 4)
-        self.assertEqual(probe_record.build_record(self.checkpoint, 2000, self.summary(modelID="X"), self.probes)[0], 4)
+        self.assertEqual(probe_record.build_record(self.checkpoint, 3000, self.summary(), self.probes, "Test.app@sha256:000000000000")[0], 4)
+        self.assertEqual(probe_record.build_record(self.checkpoint, 2000, self.summary(modelID="X"), self.probes, "Test.app@sha256:000000000000")[0], 4)
 
     def test_probes_file_from_another_run_is_refused(self):
         with open(self.probes, "w") as handle:
             handle.write(json.dumps({"step": 1000, "modelID": "OTHER", "pElo": 1, "nll": 2}) + "\n")
-        self.assertEqual(probe_record.build_record(self.checkpoint, 2000, self.summary(), self.probes)[0], 5)
+        self.assertEqual(probe_record.build_record(self.checkpoint, 2000, self.summary(), self.probes, "Test.app@sha256:000000000000")[0], 5)
 
     def test_non_finite_pelo_is_recorded_as_null(self):
         text = json.dumps({"modelID": "M1", "nll": 2.4, "set": "wide"}) + "\n"
-        status, record = probe_record.build_record(self.checkpoint, 2000, text, self.probes)
+        status, record = probe_record.build_record(self.checkpoint, 2000, text, self.probes, "Test.app@sha256:000000000000")
         self.assertEqual((status, record["pElo"]), (0, None))
 
     def test_load_probe_points_refusals(self):

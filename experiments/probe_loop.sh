@@ -30,6 +30,8 @@ STEM=${1:-}; OUT=${2:-}; LIMIT=${3:-}
 [ -n "$STEM" ] && [ -n "$OUT" ] || { echo "usage: $0 [--once] <stem> <probes.jsonl> [step limit]" >&2; exit 2; }
 BIN="${PROBE_BIN:-$HOME/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2275-de0f22b.app/Contents/MacOS/DrewsChessMachine}"
 [ -x "$BIN" ] || { echo "probe binary not executable: $BIN" >&2; exit 2; }
+# Every record names the build that measured it (scripts/dcm_probe_build.py).
+BUILD=$(python3 "$HERE/../scripts/dcm_probe_build.py" "$BIN") || { echo "cannot identify the probe build of $BIN" >&2; exit 2; }
 M="$HOME/Library/Application Support/DrewsChessMachine/Models"
 ROLLING="$M/$STEM-replay-latest.safetensors"
 START_WAIT=${PROBE_START_WAIT_SEC:-600}
@@ -79,11 +81,11 @@ while true; do
     grep -q "\"step\":$s," "$OUT" && continue
     [ "${attempts[$s]:-0}" -ge "$MAX_ATTEMPTS" ] && continue
     raw=$("$BIN" --probe-model "$f" --probe-set wide 2>>"$ERRDIR/step$s.stderr"); rc=$?
-    rec=$(print -r -- "$raw" | python3 "$HERE/probe_record.py" "$f" "$s" "$OUT" 2>>"$ERRDIR/step$s.err"); prc=$?
+    rec=$(print -r -- "$raw" | python3 "$HERE/probe_record.py" "$f" "$s" "$OUT" "$BUILD" 2>>"$ERRDIR/step$s.err"); prc=$?
     if [ $prc -eq 0 ]; then
       print -r -- "$rec" >> "$OUT"
       echo "probed $s"
-    elif [ $prc -eq 4 ] || [ $prc -eq 5 ]; then
+    elif [ $prc -eq 4 ] || [ $prc -eq 5 ]; then   # probe_record.py EXIT_IDENTITY / EXIT_OTHER_RUN
       echo "identity check failed at step $s (see $ERRDIR/step$s.err); stopping" >&2
       exit 4
     else

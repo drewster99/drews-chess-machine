@@ -31,4 +31,11 @@ FIELDS = ["cum_step", "meta_step", "segment", "elapsed_train_sec", "wallclock_is
           #
           # Appended rather than inserted so existing CSVs keep parsing: write_csv
           # fills missing keys with "" and every reader uses csv.DictReader.
-          "wall_sec", "games_fed"]
+          "wall_sec", "games_fed",
+          # --- appended 2026-10-02 ------------------------------------------------
+          #   probe_build  the app build that measured pElo / nll on this row
+          #                (scripts/dcm_probe_build.py: bundle name + executable hash).
+          #                Two builds can score one checkpoint differently, so values
+          #                from different builds are not directly comparable. Blank on
+          #                rows written before it was recorded, and on rows without pElo.
+          "probe_build"]

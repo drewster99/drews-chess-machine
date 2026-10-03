@@ -37,6 +37,7 @@ from _guarded_csv import (read_rows, read_text, replace_rows, replace_text_if_un
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
 import dcm_arch  # noqa: E402  each checkpoint's ReZero cap, read from its own metadata
+from dcm_probe_build import probe_build_id  # noqa: E402  which build made each pElo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Config/data/output root. Defaults to the script dir, but can be pointed at a
@@ -128,21 +129,46 @@ def internals_cells(path):
                 eff_alpha="" if effs is None else ";".join(f"{e:.4f}" for e in effs))
 
 # ---------- probe ----------
+# A wide probe normally finishes in seconds; this bound only exists so one hung probe
+# cannot hold a tick (and with it the cron lock) forever. The child is killed when it
+# runs out; the checkpoint is untouched and is retried on a later tick.
+PROBE_TIMEOUT_SECONDS = 300
+NON_FINITE_PELO_NOTE = "probe: pElo non-finite"
+
+
+class ProbeFailure(RuntimeError):
+    """A probe that produced no measurement (timed out, failed, or reported an error)."""
+
+
 def probe(path):
+    """The wide-probe summary for one checkpoint; raises ProbeFailure instead of
+    returning nothing. A summary without pElo is a measurement of a non-finite value
+    (the probe omits the key then) and comes back as pElo None."""
     import subprocess
     if not BIN:
         raise RuntimeError(
             "no DrewsChessMachine Release binary found under DerivedData "
             "(build the app in Xcode, or set DCM_BIN). Probing requires it.")
-    out = subprocess.run([BIN, "--probe-model", path, "--probe-set", "wide"],
-                         capture_output=True, text=True).stdout
-    m = re.search(r"\{.*\}", out, re.S)
-    if not m:
-        return {}
-    d = json.loads(m.group(0))
+    try:
+        completed = subprocess.run([BIN, "--probe-model", path, "--probe-set", "wide"],
+                                   capture_output=True, text=True, timeout=PROBE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        raise ProbeFailure(f"probe of {path} exceeded {PROBE_TIMEOUT_SECONDS}s and was killed") from error
+    if completed.returncode != 0:
+        raise ProbeFailure(f"probe of {path} exited {completed.returncode}: {completed.stderr[-2000:]}")
+    events = [json.loads(line) for line in completed.stdout.splitlines() if line.strip().startswith("{")]
+    errors = [e for e in events if e.get("event") == "error"]
+    if errors:
+        raise ProbeFailure(f"probe of {path} reported: {errors[0].get('error')}")
+    summaries = [e for e in events if "set" in e and "event" not in e]
+    if len(summaries) != 1:
+        raise ProbeFailure(f"probe of {path} printed {len(summaries)} summary line(s), expected one; "
+                           f"stderr tail: {completed.stderr[-2000:]}")
+    d = summaries[0]
     return dict(pElo=d.get("pElo"), nll=d.get("nll"),
                 pLogit_mean=d.get("policy_logit_abs_max"),
-                pLogit_peak=d.get("policy_logit_abs_max_peak"))
+                pLogit_peak=d.get("policy_logit_abs_max_peak"),
+                probe_build=probe_build_id(BIN))
 
 # ---------- log parsing ----------
 _TS = re.compile(r"^(\d\d):(\d\d):(\d\d)\.(\d+)\s+\[REPLAY\] step=(\d+)\b")
@@ -716,14 +742,16 @@ def track(run):
                gNorm=met.get("gNorm", ""), **cells,
                pLogit_mean=round(pr.get("pLogit_mean"), 3) if pr.get("pLogit_mean") else "",
                pLogit_peak=pr.get("pLogit_peak", ""),
-               frozen_file=os.path.basename(frozen), note="")
+               probe_build=pr["probe_build"],
+               frozen_file=os.path.basename(frozen),
+               note=NON_FINITE_PELO_NOTE if pr["pElo"] is None else "")
     rows.append(row); write_csv(run, rows, snapshot)
     eh = f"{elapsed/3600:.2f}h" if isinstance(elapsed, (int, float)) else "n/a (log gone)"
     print(f"{run}: tracked cum_step {cum} (meta {meta}) pElo={row['pElo']} "
           f"elapsed={elapsed}s ({eh}) seg={si}")
 
 
-def _backfill_one(cfg, st, rows, by, cum, path, name, verbose, segment=None):
+def _backfill_one(cfg, st, rows, by, cum, path, name, verbose, failures, segment=None):
     """Probe `path` and fill/create the CSV row for `cum` if it lacks pElo.
     Returns 1 if a row was filled/created, else 0. Shared by both the enumerated
     -replay-step scan and the legacy -frozen scan so they stay bit-identical.
@@ -732,19 +760,23 @@ def _backfill_one(cfg, st, rows, by, cum, path, name, verbose, segment=None):
     file came from; without it `seg_for` has to guess from cum and mis-attributes any
     mark sitting exactly on a segment boundary."""
     r = by.get(cum)
-    if r and r.get("pElo") not in ("", None):
-        return 0                                     # already has pElo
-    pr = probe(path)
-    if not pr.get("pElo"):
+    if r and (r.get("pElo") not in ("", None) or NON_FINITE_PELO_NOTE in (r.get("note") or "")):
+        return 0                                     # already measured
+    try:
+        pr = probe(path)
+    except ProbeFailure as error:
+        failures.append((name, str(error)))
+        print(f"  probe-backfill cum {cum}: FAILED ({error})", file=sys.stderr)
         return 0
     cells = internals_cells(path)
     elapsed, clock, meta, si = st.elapsed_and_clock(cum, segment)
     met = _metrics_at(cfg["segments"][si]["log"], meta)
-    pf = dict(pElo=round(pr["pElo"], 2),
+    non_finite = pr["pElo"] is None
+    pf = dict(pElo="" if non_finite else round(pr["pElo"], 2),
               nll=round(pr.get("nll"), 4) if pr.get("nll") else "",
               **cells,
               pLogit_mean=round(pr.get("pLogit_mean"), 3) if pr.get("pLogit_mean") else "",
-              pLogit_peak=pr.get("pLogit_peak", ""), frozen_file=name)
+              pLogit_peak=pr.get("pLogit_peak", ""), probe_build=pr["probe_build"], frozen_file=name)
     if r:
         r.update(pf)
         if r.get("elapsed_train_sec") in ("", None):
@@ -757,8 +789,11 @@ def _backfill_one(cfg, st, rows, by, cum, path, name, verbose, segment=None):
                  legalMass=lm, pIllM=met.get("pIllM", ""), gNorm=met.get("gNorm", ""),
                  note="probe-backfill", **pf)
         rows.append(r); by[cum] = r
+    if non_finite:
+        r["note"] = "; ".join(x for x in (r.get("note"), NON_FINITE_PELO_NOTE) if x)
     if verbose:
-        print(f"  probe-backfill cum {cum}: pElo {pr['pElo']:.0f}")
+        shown = "non-finite" if non_finite else f"{pr['pElo']:.0f}"
+        print(f"  probe-backfill cum {cum}: pElo {shown}")
     return 1
 
 
@@ -778,6 +813,7 @@ def probe_backfill(run, verbose=True):
     by = {int(r["cum_step"]): r for r in rows}
     st = SegTime(cfg["segments"], run)
     filled = 0
+    failures = []
 
     # (a) enumerated app-side checkpoints. One glob PER SEGMENT: the step in an
     # enumerated filename is segment-local, so it only becomes a cumulative step
@@ -792,7 +828,7 @@ def probe_backfill(run, verbose=True):
                 n = int(name[len(eprefix):len(name) - len(esuffix)])
             except ValueError:
                 continue
-            filled += _backfill_one(cfg, st, rows, by, ebase + n, f, name, verbose, segment=si)
+            filled += _backfill_one(cfg, st, rows, by, ebase + n, f, name, verbose, failures, segment=si)
 
     # (b) legacy cum-named -frozen snapshots
     prefix, suffix = cfg["frozen_glob"].split("*")   # "...-step" , "-frozen.safetensors"
@@ -802,13 +838,16 @@ def probe_backfill(run, verbose=True):
             cum = int(name[len(prefix):len(name) - len(suffix)])
         except ValueError:
             continue
-        filled += _backfill_one(cfg, st, rows, by, cum, f, name, verbose)
+        filled += _backfill_one(cfg, st, rows, by, cum, f, name, verbose, failures)
 
     if filled:
         rows.sort(key=lambda r: int(r["cum_step"]))
         write_csv(run, rows, snapshot)
     if verbose:
         print(f"probe-backfilled {filled}")
+    if failures:
+        raise ProbeFailure(f"{run}: {len(failures)} checkpoint(s) could not be probed (rows that "
+                           f"were probed are saved): " + "; ".join(n for n, _ in failures[:10]))
     return filled
 
 def recompute_cum_steps(run, verbose=True):
@@ -1122,6 +1161,7 @@ def import_probes(run, jsonl, segment, ckpt_dirs=(), verbose=True):
                    pLogit_mean=d.get("policy_logit_abs_max", ""),
                    pLogit_peak=d.get("policy_logit_abs_max_peak", ""),
                    games_fed=(games_base + g) if (games_base is not None and g is not None) else "",
+                   probe_build=d.get("probe_build", ""),
                    frozen_file=os.path.basename(d.get("model", "")),
                    note=("recovered:" + d.get("recovered_note", "reconstructed, not measured")
                          if recovered else f"import:{os.path.basename(jsonl)}"))

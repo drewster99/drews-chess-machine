@@ -4,6 +4,10 @@ import bisect
 import csv
 import os
 import re
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
+from dcm_probe_build import UNRECORDED  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "..", "documentation", "dashboards", "data")
@@ -25,14 +29,35 @@ def csv_points(run):
     return points
 
 
+def csv_probe_builds(run):
+    """The probe builds behind a dashboard CSV's pElo values (UNRECORDED for rows written
+    before the tracker recorded them)."""
+    builds = set()
+    with open(os.path.join(DATA, f"{run}.csv")) as handle:
+        for row in csv.DictReader(handle):
+            if row.get("pElo"):
+                builds.add(row.get("probe_build") or UNRECORDED)
+    return builds
+
+
+def print_probe_builds(arms_builds):
+    """After a table: which builds produced each pElo column, and a warning when the
+    columns do not share one recorded build (a difference between them then includes
+    any offset between builds)."""
+    print("\nProbe builds: " + "; ".join(f"{label}: {', '.join(sorted(builds))}" for label, builds in arms_builds))
+    distinct = set().union(*(builds for _, builds in arms_builds)) if arms_builds else set()
+    if len(distinct) > 1 or UNRECORDED in distinct:
+        print("Columns are not all from one recorded probe build; a pElo difference between columns "
+              "includes any offset between builds.")
+
+
 def buffer_plies_per_game(log_name):
     """{step: average plies per game in the replay buffer} at every 1000-step mark.
 
     At a mark where `plies` positions have been fed, the buffer holds the last BUFFER
     of them, so its average game length is BUFFER / (games fed since the feed stood at
-    plies - BUFFER). `[REPLAY]` lines arrive every 50 steps (about 420k plies apart), so
-    the games count at that boundary is interpolated linearly between the two lines that
-    bracket it. A mark whose boundary falls before the first logged line has no value."""
+    plies - BUFFER). `[REPLAY]` lines are many plies apart, so the games count at that
+    boundary is interpolated linearly between the two lines that bracket it. A mark whose boundary falls before the first logged line has no value."""
     feed = []
     pattern = re.compile(r"\[REPLAY\] step=(\d+) .* plies=(\d+) games=(\d+)")
     for line in open(os.path.join(LOGS, log_name), errors="replace"):
