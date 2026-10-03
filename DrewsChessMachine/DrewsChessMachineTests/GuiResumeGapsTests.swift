@@ -33,7 +33,7 @@ final class GuiResumeGapsTests: XCTestCase {
         let seed = RunRandomSeed.resolve(mode: .seeded, configuredSeed: 7, commandLineSeed: nil, drawSeed: { 0 })
         let streams = seed.runStreams(samplerState: seed.streams.generator(.sampler),
                                       dropoutStreamState: seed.streams.generator(.dropout),
-                                      nextGameSerial: 12, arenasStarted: 3)
+                                      nextGameSerial: 12, arenasStarted: 3, opponentGameIndices: nil)
         let record = try tracker.record(
             at: start.addingTimeInterval(60), trainerCompletedSteps: 4, segmentLocalStep: 4,
             segmentGames: 2, segmentPositions: 120, corpus: nil,

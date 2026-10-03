@@ -613,6 +613,12 @@ struct LineageRecord: Codable, Equatable, Sendable {
         /// Arenas the run has started, naming the next arena's game streams;
         /// null outside the GUI.
         let arenasStarted: Int?
+        /// Train-vs-UCI: each opponent instance's game index (in the run's
+        /// opponent order) — the game in progress at the save, whose index
+        /// sets which colour the trainer plays. A resume starts each
+        /// instance's next game at this index, so the colour alternation
+        /// continues. Null outside train-vs-UCI.
+        let opponentGameIndices: [Int]?
 
         enum CodingKeys: String, CodingKey {
             case masterSeed = "master_seed"
@@ -622,10 +628,11 @@ struct LineageRecord: Codable, Equatable, Sendable {
             case dropoutStreamState = "dropout_stream_state"
             case nextGameSerial = "next_game_serial"
             case arenasStarted = "arenas_started"
+            case opponentGameIndices = "opponent_game_indices"
         }
 
         init(masterSeed: UInt64, seedOrigin: SeedOrigin, streamDerivation: String, samplerState: DCMRandom,
-             dropoutStreamState: DCMRandom, nextGameSerial: Int?, arenasStarted: Int?) {
+             dropoutStreamState: DCMRandom, nextGameSerial: Int?, arenasStarted: Int?, opponentGameIndices: [Int]?) {
             self.masterSeed = masterSeed
             self.seedOrigin = seedOrigin
             self.streamDerivation = streamDerivation
@@ -633,6 +640,7 @@ struct LineageRecord: Codable, Equatable, Sendable {
             self.dropoutStreamState = dropoutStreamState
             self.nextGameSerial = nextGameSerial
             self.arenasStarted = arenasStarted
+            self.opponentGameIndices = opponentGameIndices
         }
 
         init(from decoder: Decoder) throws {
@@ -650,6 +658,7 @@ struct LineageRecord: Codable, Equatable, Sendable {
             dropoutStreamState = try c.decode(DCMRandom.self, forKey: .dropoutStreamState)
             nextGameSerial = try c.decode(Int?.self, forKey: .nextGameSerial)
             arenasStarted = try c.decode(Int?.self, forKey: .arenasStarted)
+            opponentGameIndices = try c.decode([Int]?.self, forKey: .opponentGameIndices)
         }
 
         func encode(to encoder: Encoder) throws {
@@ -661,6 +670,7 @@ struct LineageRecord: Codable, Equatable, Sendable {
             try c.encode(dropoutStreamState, forKey: .dropoutStreamState)
             try c.encode(nextGameSerial, forKey: .nextGameSerial)
             try c.encode(arenasStarted, forKey: .arenasStarted)
+            try c.encode(opponentGameIndices, forKey: .opponentGameIndices)
         }
     }
 

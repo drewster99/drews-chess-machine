@@ -144,7 +144,7 @@ final class ExactResumeCompletionTests: XCTestCase {
         return LineageRecord.RunStreams(
             masterSeed: seed, seedOrigin: .drawn, streamDerivation: DCMRandomStreams.derivationVersion,
             samplerState: sampler, dropoutStreamState: DCMRandom(seed: 12),
-            nextGameSerial: serial, arenasStarted: arenas)
+            nextGameSerial: serial, arenasStarted: arenas, opponentGameIndices: [5, 0, 2])
     }
 
     func testRunStreamsRoundTripIncludingASeedAboveTwoToThe53() throws {
@@ -216,7 +216,7 @@ final class ExactResumeCompletionTests: XCTestCase {
         let saved = LineageRecord.RunStreams(
             masterSeed: 1, seedOrigin: .configured, streamDerivation: DCMRandomStreams.derivationVersion + "-other",
             samplerState: DCMRandom(seed: 1), dropoutStreamState: DCMRandom(seed: 2),
-            nextGameSerial: nil, arenasStarted: nil)
+            nextGameSerial: nil, arenasStarted: nil, opponentGameIndices: nil)
         XCTAssertThrowsError(try RunRandomSeed.inherited(from: saved, configuredSeed: 0, commandLineSeed: nil))
     }
 
@@ -227,13 +227,26 @@ final class ExactResumeCompletionTests: XCTestCase {
         let sampler = DCMRandom(seed: 3)
         let dropout = DCMRandom(seed: 4)
         let recorded = seed.runStreams(samplerState: sampler, dropoutStreamState: dropout,
-                                       nextGameSerial: 9, arenasStarted: 2)
+                                       nextGameSerial: 9, arenasStarted: 2, opponentGameIndices: [3, 4])
         XCTAssertEqual(recorded.masterSeed, 42)
         XCTAssertEqual(recorded.seedOrigin, .configured)
         XCTAssertEqual(recorded.samplerState, sampler)
         XCTAssertEqual(recorded.dropoutStreamState, dropout)
         XCTAssertEqual(recorded.nextGameSerial, 9)
         XCTAssertEqual(recorded.arenasStarted, 2)
+        XCTAssertEqual(recorded.opponentGameIndices, [3, 4])
+    }
+
+    /// Train-vs-UCI: a resume continues each opponent instance's game index
+    /// (and with it the trainer's colour) only into the same pool size;
+    /// otherwise there is nothing to continue and every instance starts at 0.
+    func testOpponentGameIndicesContinueOnlyIntoTheSamePool() throws {
+        XCTAssertEqual(TrainVsUciDriver.continuedGameIndices(saved: [7, 3], instanceCount: 2), [7, 3])
+        XCTAssertNil(TrainVsUciDriver.continuedGameIndices(saved: [7, 3], instanceCount: 3))
+        XCTAssertNil(TrainVsUciDriver.continuedGameIndices(saved: nil, instanceCount: 2))
+        let original = streams(seed: 5, serial: 40, arenas: nil)
+        let decoded = try JSONDecoder().decode(LineageRecord.RunStreams.self, from: JSONEncoder().encode(original))
+        XCTAssertEqual(decoded.opponentGameIndices, [5, 0, 2])
     }
 
     // MARK: - GUI arena clock

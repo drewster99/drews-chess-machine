@@ -200,6 +200,17 @@ enum TrainVsUciRunner {
                             Darwin.exit(2)
                         }
                         resumedStreams = streams
+                        // Each opponent instance's game index sets the
+                        // trainer's colour; it continues only into the same
+                        // opponent pool.
+                        let instanceCount = config.opponents.reduce(0) { $0 + max(1, $1.count) }
+                        if TrainVsUciDriver.continuedGameIndices(saved: streams.opponentGameIndices,
+                                                                 instanceCount: instanceCount) == nil {
+                            emit("[RESUME] opponents: the checkpoint records "
+                                + (streams.opponentGameIndices.map { "\($0.count) opponent game indices" } ?? "no opponent game indices")
+                                + ", this run has \(instanceCount) opponent instances — each starts at game 0")
+                            resumeGaps.append(.serials)
+                        }
                     } else {
                         resumeGaps += [.rngSampler, .serials]
                     }
@@ -415,6 +426,19 @@ enum TrainVsUciRunner {
         // Game serials continue the saved run's on an exact resume, so later
         // games draw from streams that run never used.
         let gameSerials = GameSerialCounter(firstSerial: resumedStreams?.nextGameSerial ?? 0)
+        // Each instance's next game continues the saved run's index, so the
+        // trainer's colour alternation carries on. The games in progress at
+        // the save are not in the checkpoint: each instance starts a new
+        // game at that index, with a new serial.
+        let startingGameIndices: [Int]
+        if let saved = TrainVsUciDriver.continuedGameIndices(saved: resumedStreams?.opponentGameIndices,
+                                                             instanceCount: opponents.count) {
+            startingGameIndices = saved
+            emit("[RESUME] opponents: the \(saved.count) games in progress at the save are not continued; "
+                + "new games start at indices \(saved)")
+        } else {
+            startingGameIndices = Array(repeating: 0, count: opponents.count)
+        }
         let driver = TrainVsUciDriver(
             network: evalNet,
             buffer: buffer,
@@ -425,7 +449,8 @@ enum TrainVsUciRunner {
             schedule: .argmax,
             maxPliesPerGame: config.maxPliesPerGame,
             randomStreams: runSeed.streams,
-            gameSerials: gameSerials)
+            gameSerials: gameSerials,
+            startingGameIndices: startingGameIndices)
 
         // Consecutive-failure tracking per kind of save — see
         // `TrainerSaveFailureStreak` and `CorpusReplayRunner.reportSaveFailure`.
@@ -441,7 +466,8 @@ enum TrainVsUciRunner {
                 let streams = runSeed.runStreams(
                     samplerState: buffer.samplerState(),
                     dropoutStreamState: try await trainer.dropoutStreamState(),
-                    nextGameSerial: gameSerials.nextSerial, arenasStarted: nil)
+                    nextGameSerial: gameSerials.nextSerial, arenasStarted: nil,
+                    opponentGameIndices: driver.currentGameIndices())
                 let weights = snapshot.trainerWeights
                 let metadata = ModelCheckpointMetadata.trainerFile(
                     creator: "train-vs-uci",

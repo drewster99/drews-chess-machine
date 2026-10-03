@@ -111,6 +111,11 @@ final class TrainVsUciDriver: @unchecked Sendable {
     /// task — hence lock-protected.
     private let statsBox: SyncBox<[SlotStats]>
 
+    /// Each slot's current game index (slot order = opponent order), kept
+    /// on the driver task as games start and read by the save path on
+    /// another task (`currentGameIndices()`).
+    private let gameIndexBox: SyncBox<[Int]>
+
     // MARK: - Driver-task-owned state
 
     private var slots: [Slot] = []
@@ -125,8 +130,12 @@ final class TrainVsUciDriver: @unchecked Sendable {
         schedule: SamplingSchedule,
         maxPliesPerGame: Int,
         randomStreams: DCMRandomStreams,
-        gameSerials: GameSerialCounter
+        gameSerials: GameSerialCounter,
+        startingGameIndices: [Int]
     ) {
+        precondition(startingGameIndices.count == opponents.count,
+                     "one starting game index per opponent instance")
+        self.gameIndexBox = SyncBox(startingGameIndices)
         self.randomStreams = randomStreams
         self.gameSerials = gameSerials
         self.network = network
@@ -142,6 +151,23 @@ final class TrainVsUciDriver: @unchecked Sendable {
     /// Snapshot of per-slot stats for the periodic `[VS-UCI-STATS]` line.
     func statsSnapshot() -> [SlotStats] {
         statsBox.value
+    }
+
+    /// Each opponent instance's current game index, in opponent order: the
+    /// game in progress, whose index sets the trainer's colour. A save
+    /// records it (`RunStreams.opponentGameIndices`) so a resume continues
+    /// the colour alternation.
+    func currentGameIndices() -> [Int] {
+        gameIndexBox.value
+    }
+
+    /// The saved per-instance game indices a resume continues: `saved` when
+    /// it names one index per opponent instance of this run, nil when there
+    /// is none or the pool changed — every instance then starts at game 0,
+    /// and the resume reports `serials` NOT EXACT.
+    static func continuedGameIndices(saved: [Int]?, instanceCount: Int) -> [Int]? {
+        guard let saved, saved.count == instanceCount else { return nil }
+        return saved
     }
 
     // MARK: - Run loop
@@ -494,8 +520,8 @@ final class TrainVsUciDriver: @unchecked Sendable {
     // MARK: - Game lifecycle
 
     private func beginFirstGame(_ slot: Slot) {
-        slot.gameIndex = 0
-        slot.trainerColor = trainerColor(forGameIndex: 0)
+        slot.gameIndex = gameIndexBox.value[slot.index]
+        slot.trainerColor = trainerColor(forGameIndex: slot.gameIndex)
         slot.game.resetForNewGame(maxPliesCap: maxPliesPerGame, schedule: schedule, random: nextGameRandom())
         slot.phase = .idle
     }
@@ -545,6 +571,7 @@ final class TrainVsUciDriver: @unchecked Sendable {
     /// (async) before the game plays — so the slot waits in `.preparing`.
     private func recycleSlot(_ slot: Slot) {
         slot.gameIndex += 1
+        publishGameIndex(slot)
         slot.trainerColor = trainerColor(forGameIndex: slot.gameIndex)
         slot.game.resetForNewGame(maxPliesCap: maxPliesPerGame, schedule: schedule, random: nextGameRandom())
         slot.phase = .preparing
@@ -567,6 +594,7 @@ final class TrainVsUciDriver: @unchecked Sendable {
     /// (`recycleSlot` on prepareFailed, or a fresh reset here otherwise).
     private func recoverEngine(_ slot: Slot) {
         slot.gameIndex += 1
+        publishGameIndex(slot)
         slot.trainerColor = trainerColor(forGameIndex: slot.gameIndex)
         slot.game.resetForNewGame(maxPliesCap: maxPliesPerGame, schedule: schedule, random: nextGameRandom())
         slot.phase = .preparing
@@ -590,6 +618,12 @@ final class TrainVsUciDriver: @unchecked Sendable {
     }
 
     // MARK: - Helpers
+
+    private func publishGameIndex(_ slot: Slot) {
+        let stableIndex = slot.index
+        let gameIndex = slot.gameIndex
+        gameIndexBox.modify { $0[stableIndex] = gameIndex }
+    }
 
     /// Even game index → trainer plays White; odd → Black. Alternating
     /// colour per game keeps the outcome labels unbiased.

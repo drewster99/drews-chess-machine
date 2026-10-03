@@ -1394,7 +1394,7 @@ enum CorpusReplayRunner {
                 let streams = runSeed.runStreams(
                     samplerState: buffer.samplerState(),
                     dropoutStreamState: try await trainer.dropoutStreamState(),
-                    nextGameSerial: nil, arenasStarted: nil)
+                    nextGameSerial: nil, arenasStarted: nil, opponentGameIndices: nil)
                 let weights = snapshot.trainerWeights
                 let metadata = ModelCheckpointMetadata.trainerFile(
                     creator: "replay",

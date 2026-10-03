@@ -263,7 +263,8 @@ extension SessionController {
             samplerState: buffer.samplerState(),
             dropoutStreamState: dropoutStreamState,
             nextGameSerial: serials.nextSerial,
-            arenasStarted: arenasStartedThisRun)
+            arenasStarted: arenasStartedThisRun,
+            opponentGameIndices: nil)
     }
 
     /// The record for a model-only save of the champion (Save Champion):

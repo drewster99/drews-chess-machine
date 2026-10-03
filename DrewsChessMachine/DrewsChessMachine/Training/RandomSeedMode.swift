@@ -129,7 +129,7 @@ struct RunRandomSeed: Sendable, Equatable {
     /// The record of this run's streams at a save: the seed plus the stream
     /// positions the caller read in the save's consistent cut.
     func runStreams(samplerState: DCMRandom, dropoutStreamState: DCMRandom,
-                    nextGameSerial: Int?, arenasStarted: Int?) -> LineageRecord.RunStreams {
+                    nextGameSerial: Int?, arenasStarted: Int?, opponentGameIndices: [Int]?) -> LineageRecord.RunStreams {
         LineageRecord.RunStreams(
             masterSeed: masterSeed,
             seedOrigin: recordedOrigin,
@@ -137,7 +137,8 @@ struct RunRandomSeed: Sendable, Equatable {
             samplerState: samplerState,
             dropoutStreamState: dropoutStreamState,
             nextGameSerial: nextGameSerial,
-            arenasStarted: arenasStarted)
+            arenasStarted: arenasStarted,
+            opponentGameIndices: opponentGameIndices)
     }
 
     /// The seed of the run an exact resume continues. A `--seed` naming a
