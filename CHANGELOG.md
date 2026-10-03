@@ -9,6 +9,14 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-02 CDT — Corpus replay no longer drops games played past an unclaimed draw
+
+- `CorpusReplayFeeder` replayed each recorded game through DCM's own draw adjudication. A game the players continued past an unclaimed threefold repetition (legal on Lichess) made the next move throw, and the whole game was discarded with no log line or count. Measured on the corpora: 0.045% of `w3aA5b` games (0.070% of plies) and 0.32% of elite games (0.34% of plies), all at a threefold, about 72–87% of them draws.
+- The feeder now replays with `.serverAuthoritative` adjudication: the recorded game is the authority on how it ends, and its recorded result remains the only source of value targets. A game is still rejected for an illegal move or any move after checkmate or stalemate — now reported per game as `[REPLAY-ERR] epoch=E game=G rejected at ply N: <error>`, never dropped silently.
+- `feed` returns a typed `CorpusReplayFeedOutcome`; one `CorpusReplayFeedTally` counts every consumed game at all three feed sites. `rejected=` / `skipped=` follow `games=` on the pre-fill, step and done lines (`games=` still counts every consumed game, so the `games_fed` axis keeps its meaning).
+- The fed stream differs from earlier builds (see `experiments/README.md`). Plane 19 ("occurred twice before") now fires — rarely — in corpus-replay samples; docs updated (`BoardEncoder`, CLAUDE.md, issue #10).
+- Tests: new `CorpusReplayFeederTests` (a game past an unclaimed threefold is fed whole with exactly one plane-19 position and the recorded result's signs; a game with no draw condition feeds byte-identical positions to an adjudicating replay; post-mate and illegal games are rejected; outcome and tally).
+
 ## 2026-09-30 CDT — SE zero-β init option, architecture format v4, `--derive-model` (#7) (`8926221`)
 
 - New per-block-group `se_beta_init` (`glorot` | `zero`, `BlockGroup.seBetaInit`). With `zero`, the β half of a `scale_and_bias` SE FC2 (weight columns C..2C−1 and bias C..2C−1) is built as exact zeros, so at step 0 the block's SE computes `sigmoid(γ)·x`. The γ half keeps Glorot, and β still gets gradient. `validate()` rejects non-`glorot` values on other SE styles. It appears in the Build New Model per-group editor (shown only for scale+bias), in the summary and diagram (`SE+/4 β0`, and only for zero-β groups, so existing summaries are byte-identical), and in presets. `NetworkWeightAnalyzer`'s expected init L2 accounts for it.

@@ -58,7 +58,9 @@ enum ChessGameAdjudication: Sendable, Equatable {
     /// stalemate, the fifty-move rule, threefold repetition and insufficient
     /// material. Self-play, arena and human play all use this.
     case automatic
-    /// An external authority (the Lichess server) decides draws. The engine
+    /// An external authority decides draws: the Lichess server, the chess GUI
+    /// driving `--uci`, or — in corpus replay — the recorded game itself,
+    /// whose players may have played on past an unclaimed draw. The engine
     /// ends the game only when the side to move has no legal move
     /// (checkmate or stalemate), because then there is literally no move to
     /// make. Draw conditions never end the game locally, so the engine can

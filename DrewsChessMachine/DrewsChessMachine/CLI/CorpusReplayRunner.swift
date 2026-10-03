@@ -604,7 +604,12 @@ enum CorpusReplayRunner {
     struct Result: Sendable {
         var steps: Int
         var positionsFed: Int
+        /// Games consumed from the corpus, whatever happened to each.
         var gamesFed: Int
+        /// Consumed games whose move list could not be replayed.
+        var gamesRejected: Int
+        /// Consumed games skipped as empty or FEN-setup.
+        var gamesSkipped: Int
         var epochs: Int
     }
 
@@ -742,7 +747,7 @@ enum CorpusReplayRunner {
             SessionLogger.shared.shutdown()
             Darwin.exit(33)
         }
-        let summary = "[REPLAY] done: steps=\(result.steps) positionsFed=\(result.positionsFed) gamesFed=\(result.gamesFed) epochs=\(result.epochs)"
+        let summary = "[REPLAY] done: steps=\(result.steps) positionsFed=\(result.positionsFed) gamesFed=\(result.gamesFed) rejected=\(result.gamesRejected) skipped=\(result.gamesSkipped) epochs=\(result.epochs)"
         emit(summary)
         SessionLogger.shared.shutdown()
         Darwin.exit(0)
@@ -1315,9 +1320,17 @@ enum CorpusReplayRunner {
             return (nextGameWithinEpoch, locate(nextGameWithinEpoch).shard, epochsCompleted)
         }
 
-        var positionsFed = 0
-        var gamesFed = 0
+        var feedTally = CorpusReplayFeedTally()
         var corpusExhausted = false
+
+        // Feed one game and count it. A game whose moves cannot be replayed is
+        // reported on its own line — never dropped silently — with its
+        // within-epoch index (the game nextGame() just returned).
+        func feedAndCount(_ game: GameRecord) {
+            if let rejection = feedTally.record(feeder.feed(game)) {
+                emit("[REPLAY-ERR] epoch=\(epochsCompleted) game=\(nextGameWithinEpoch - 1) \(rejection)")
+            }
+        }
 
         // Pre-fill — or, for --resume-exact, RECONSTRUCT: refeed games up to the
         // saved next_game_index so the fixed-capacity ring ends holding exactly
@@ -1328,19 +1341,17 @@ enum CorpusReplayRunner {
         if let until = reconstructUntil {
             while nextGameWithinEpoch < until {
                 guard let g = nextGame() else { corpusExhausted = true; break }
-                positionsFed += feeder.feed(g)
-                gamesFed += 1
+                feedAndCount(g)
             }
-            SessionLogger.shared.log("[REPLAY] --resume-exact: buffer reconstructed bufCount=\(buffer.count)/\(p.replayBufferCapacity) (refed \(gamesFed) games / \(positionsFed) plies); resuming at game \(nextGameWithinEpoch) epoch \(epochsCompleted)")
+            SessionLogger.shared.log("[REPLAY] --resume-exact: buffer reconstructed bufCount=\(buffer.count)/\(p.replayBufferCapacity) (refed \(feedTally.games) games / \(feedTally.positions) plies;\(feedTally.countsSuffix)); resuming at game \(nextGameWithinEpoch) epoch \(epochsCompleted)")
         } else {
             while buffer.count < minPrefill {
                 guard let g = nextGame() else { corpusExhausted = true; break }
-                positionsFed += feeder.feed(g)
-                gamesFed += 1
+                feedAndCount(g)
             }
         }
-        let prefillPositions = positionsFed
-        emit("[REPLAY] pre-filled: bufCount=\(buffer.count) positionsFed=\(positionsFed) gamesFed=\(gamesFed)")
+        let prefillPositions = feedTally.positions
+        emit("[REPLAY] pre-filled: bufCount=\(buffer.count) positionsFed=\(feedTally.positions) gamesFed=\(feedTally.games)\(feedTally.countsSuffix)")
 
         // Format a possibly-not-measured diagnostic. The trainer only computes
         // the diagnostic bundle (entropy, value W/D/L, played-move prob, illegal
@@ -1365,10 +1376,9 @@ enum CorpusReplayRunner {
             }
             if let sl = stepLimit, step >= sl { break }
             let targetFed = prefillPositions + step * perStepFeed
-            while positionsFed < targetFed && !corpusExhausted {
+            while feedTally.positions < targetFed && !corpusExhausted {
                 guard let g = nextGame() else { corpusExhausted = true; break }
-                positionsFed += feeder.feed(g)
-                gamesFed += 1
+                feedAndCount(g)
             }
             if corpusExhausted && epochLimit != nil { break }
 
@@ -1414,7 +1424,7 @@ enum CorpusReplayRunner {
                     + " pW=\(dg(timing.valueProbWin, 2)) pD=\(dg(timing.valueProbDraw, 2)) pL=\(dg(timing.valueProbLoss, 2)) vAbs=\(dg(timing.valueAbsMean, 3))"
                     + " pLogitMean=\(dg(timing.policyLogitMean, 4)) vLogitMean=\(dg(timing.valueLogitMean, 4))"
                     + String(format: " gNorm=%.3f lr=%.3g ms=%.1f", timing.gradGlobalNorm, liveLR, timing.totalMs)
-                    + " buf=\(buffer.count) plies=\(positionsFed) games=\(gamesFed) epoch=\(epochsCompleted)"
+                    + " buf=\(buffer.count) plies=\(feedTally.positions) games=\(feedTally.games)\(feedTally.countsSuffix) epoch=\(epochsCompleted)"
                     + String(format: " mom=%.4f", liveMomentum)
                     + (cycleValues.learningRate != nil ? " lrCyc" + LRMomentumCycleLogFormat.envelopeBounds(cycleValues) : "")
                     + " trainerStep=\(observedSteps)"
@@ -1429,7 +1439,7 @@ enum CorpusReplayRunner {
                 recorder?.appendStats(CliTrainingRecorder.StatsLine(
                     elapsedSec: CFAbsoluteTimeGetCurrent() - runStart,
                     steps: step,
-                    positionsFed: positionsFed,
+                    positionsFed: feedTally.positions,
                     bufferCount: buffer.count,
                     bufferCapacity: p.replayBufferCapacity,
                     policyLoss: Double(timing.policyLoss),
@@ -1459,7 +1469,7 @@ enum CorpusReplayRunner {
                     buildNumber: BuildInfo.buildNumber,
                     trainerID: config.runModelID,
                     // Corpus replay feeds every ply it reads, so produced == fed.
-                    positionsProduced: positionsFed,
+                    positionsProduced: feedTally.positions,
                     gamesPlayed: nil,
                     pliesCapDropped: nil,
                     maxPliesPerGame: nil,
@@ -1513,7 +1523,9 @@ enum CorpusReplayRunner {
             }
         }
 
-        return Result(steps: step, positionsFed: positionsFed, gamesFed: gamesFed, epochs: epochsCompleted)
+        return Result(steps: step, positionsFed: feedTally.positions, gamesFed: feedTally.games,
+                      gamesRejected: feedTally.rejected, gamesSkipped: feedTally.skipped,
+                      epochs: epochsCompleted)
     }
 
     // MARK: - async→sync bridge (mirrors SweepCLI.syncWait)

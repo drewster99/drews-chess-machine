@@ -23,6 +23,7 @@ Conventions used in the rows:
   - Replay-era values (July onward) are on the current probe's scale.
   - Don't compare across the two. Each write-up says which scale it uses.
 - **"wide"** means the 4,435-puzzle probe set.
+- **Corpus replay's fed stream changed on 2026-10-02.** Builds from the one that added `[REPLAY-ERR]` lines and `rejected=` / `skipped=` on the `[REPLAY]` lines onward replay a recorded game past a draw the players did not claim (an unclaimed threefold, in practice); earlier builds silently discarded every such game whole. The difference is about 0.07% of fed plies on `w3aA5b` and about 0.34% on the elite corpus. Runs on either side of the change are not exactly comparable, and a `--resume-exact` across it is not exact.
 - **Identity** comes from the safetensors `__metadata__`, never from filenames.
 
 | date | experiment | question | status | reproducible | key learnings |
