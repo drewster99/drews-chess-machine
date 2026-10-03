@@ -242,12 +242,12 @@ struct LichessBotChallengeSheet: View {
     private var listRows: [LichessBotBotRow] {
         switch source {
         case .onlineBots:
-            return LichessBotBotList.onlineRows(bots: controller.onlineBots, notes: controller.playerNotes, now: Date(), records: controller.recordsByOpponent, statuses: controller.playerStatuses)
+            return LichessBotBotList.onlineRows(bots: controller.onlineBots, notes: controller.playerNotesWithLiveBotLimits, now: Date(), records: controller.recordsByOpponent, statuses: controller.playerStatuses)
         case .favorites:
             return LichessBotBotList.favoriteRows(notes: controller.playerNotes, bots: controller.onlineBots, statuses: controller.playerStatuses, now: Date(), records: controller.recordsByOpponent)
         case .onlinePlayers:
             // Not loaded yet (or failed, with the error shown): no rows.
-            return LichessBotBotList.onlineRows(bots: controller.onlinePlayers?.users ?? [], notes: controller.playerNotes, now: Date(), records: controller.recordsByOpponent, statuses: controller.playerStatuses)
+            return LichessBotBotList.onlineRows(bots: controller.onlinePlayers?.users ?? [], notes: controller.playerNotesWithLiveBotLimits, now: Date(), records: controller.recordsByOpponent, statuses: controller.playerStatuses)
         case .leaderboard, .history, .username:
             return []
         }

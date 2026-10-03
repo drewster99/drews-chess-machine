@@ -1143,6 +1143,9 @@ final class LichessBotController {
             }
             notes.pruneExpiredLimits(now: Date())
             playerNotes = notes
+            // A refusal recorded before the notes loaded stays: the later of
+            // the two ends wins.
+            botLimitUntil.merge(notes.botLimitUntil) { max($0, $1) }
         } catch {
             raiseAlarm("Loading favorites failed (\(url.lastPathComponent)): \(error.localizedDescription)")
         }
@@ -1236,9 +1239,41 @@ final class LichessBotController {
         savePlayerNotes(notes)
     }
 
+    /// Each bot's bot-vs-bot daily limit end, from Lichess's own refusals,
+    /// by lowercased id: what the running bot consults (matchmaking, the
+    /// challenge queue, the Challenge sheet). Loaded from the player notes,
+    /// where refusals are also saved, but kept here even when the notes
+    /// couldn't be loaded, so a refused bot is never asked again too early.
+    private(set) var botLimitUntil: [String: Date] = [:]
+
+    /// When `userID`'s bot-vs-bot limit ends, if that is still ahead of `now`.
+    func botLimitEnds(_ userID: String, now: Date) -> Date? {
+        guard let until = botLimitUntil[userID.lowercased()], until > now else { return nil }
+        return until
+    }
+
+    /// The player notes as the bot lists and matchmaking read them: with the
+    /// live bot limits. Unloaded notes (an unreadable file) are known to
+    /// hold no favorites or cool-downs — what an absent notes value told
+    /// those readers before — while the limits still count.
+    var playerNotesWithLiveBotLimits: LichessBotPlayerNotes {
+        var notes: LichessBotPlayerNotes
+        if let playerNotes {
+            notes = playerNotes
+        } else {
+            notes = LichessBotPlayerNotes()
+        }
+        notes.botLimitUntil = botLimitUntil
+        return notes
+    }
+
     private func recordBotLimit(_ refusal: LichessBotBotLimitRefusal.Parsed) {
         protocolLog.record(.challenge, "\(refusal.userID) is at its bot-game limit (\(refusal.gamesPlayed)) until \(refusal.until.formatted(date: .abbreviated, time: .standard))")
-        guard var notes = playerNotes else { return }
+        botLimitUntil[refusal.userID] = refusal.until
+        guard var notes = playerNotes else {
+            protocolLog.record(.anomaly, "player notes aren't loaded: \(refusal.userID)'s bot-game limit is kept for this launch only")
+            return
+        }
         notes.botLimitUntil[refusal.userID] = refusal.until
         playerNotes = notes
         savePlayerNotes(notes)
@@ -1715,7 +1750,7 @@ final class LichessBotController {
             guard current() else { return }
             let blocked = outgoingSendBlockedReason ?? Self.gateBlockedReason(phase)
             guard case .send(let entry) = challengeQueue.nextStep(sendingBlockedReason: blocked, freeSlots: freeChallengeSlots) else { return }
-            if let until = playerNotes?.limitUntil(entry.userID, now: Date()) {
+            if let until = botLimitEnds(entry.userID, now: Date()) {
                 let reason = "at its bot-game limit until \(until.formatted(date: .omitted, time: .shortened))"
                 challengeQueue.skip(entry.id, reason: reason)
                 protocolLog.record(.challenge, "challenge queue: skipped \(entry.username): \(reason)")
@@ -2004,6 +2039,9 @@ final class LichessBotController {
             reachedLichess = !(error is LichessBotControllerError) && !(error is LichessBotGateError) && !(error is CancellationError)
             if error is LichessBotGateError || error is CancellationError {
                 outcome = .stopped(text)
+            } else if case LichessBotAPIError.http(_, let message?) = error, let refusal = LichessBotBotLimitRefusal.parse(message) {
+                // `sendChallenge` recorded the limit; say plainly what it is.
+                outcome = .failed("\(username) is at Lichess's bot-vs-bot daily limit until \(refusal.until.formatted(date: .omitted, time: .shortened))")
             } else {
                 outcome = .failed("\(username): \(text)")
             }
@@ -2067,7 +2105,7 @@ final class LichessBotController {
             ourAccountID: accountID,
             blockedUserIDs: Set(settings.challenge.blockedUserIDs.map { $0.lowercased() }),
             engagedUserIDs: engaged,
-            notes: playerNotes,
+            notes: playerNotesWithLiveBotLimits,
             gamesTodayByOpponent: gamesTodayByOpponent,
             maxGamesPerOpponentPerDay: settings.challenge.maxGamesPerOpponentPerDay,
             now: now
