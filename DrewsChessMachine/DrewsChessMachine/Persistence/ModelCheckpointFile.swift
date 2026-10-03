@@ -368,15 +368,8 @@ struct ModelCheckpointFile {
     /// content hash nor a lineage, so its lineage is unrecorded at the
     /// legacy format.
     var lineageParent: LineageTracker.ParentFile {
-        // Same rule as `SafetensorsModelIO.trainerClock(fromMetadata:source:)`:
-        // a trainer-state file's clock, else the step a plain file's weights
-        // were taken at.
-        let trainerClock: Int?
-        if let schedule = metadata.trainerSchedule {
-            trainerClock = schedule.completedTrainSteps
-        } else {
-            trainerClock = metadata.trainingStep
-        }
+        let trainerClock = SafetensorsModelIO.trainerClock(
+            schedule: metadata.trainerSchedule, trainingStep: metadata.trainingStep)
         guard let provenance = safetensorsProvenance else {
             // `.dcmmodel` predates `--derive-model`, so it states no
             // derivation history.
