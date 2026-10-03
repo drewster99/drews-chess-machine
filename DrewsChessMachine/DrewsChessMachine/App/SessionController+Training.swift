@@ -684,6 +684,17 @@ extension SessionController {
         // seed): the one source for the dropout-stream restore below and for
         // the resume's rng_sampler / serials verdict.
         let continuedRunStreams = resumedRunStreams
+        // The training-stats step count this run starts from, which the
+        // legal-mass grace gate must see the trainer pass: a resumed
+        // session's count (the stats box was seeded with it); 0 for a fresh
+        // start, and for a continue after Stop, whose grace anchor carries
+        // on.
+        let graceStepBaseline: Int
+        if !continueMode, let resumeState {
+            graceStepBaseline = resumeState.trainingSteps
+        } else {
+            graceStepBaseline = 0
+        }
 
         realTrainingTask = Task(priority: .high) {
             [trainer, network, buffer, box, tBox, pStatsBox, spDiversityTracker,
@@ -2429,18 +2440,18 @@ extension SessionController {
                             return
                         }
                         if Task.isCancelled { return }
-                        // Training-start gate. If no SGD steps have
-                        // landed yet, reset the anchor and skip — the
-                        // network is still at random init so no
-                        // learning-progress signal exists. Once steps
-                        // > 0, stamp the anchor on the first qualifying
-                        // iteration and measure grace from there.
+                        // Training-start gate. Until this run has taken an
+                        // SGD step of its own (beyond the step count it
+                        // started from — a resumed session's count),
+                        // reset the anchor and skip: the buffer is still
+                        // filling and no learning-progress signal exists.
+                        // The first qualifying probe stamps the anchor and
+                        // grace is measured from there.
                         let trainingSteps = await box.snapshot().stats.steps
-                        guard trainingSteps > 0 else {
-                            collapseDetector.noteNoTrainingStepsYet()
+                        guard let trainingElapsed = collapseDetector.graceElapsed(
+                            trainingSteps: trainingSteps, stepsAtRunStart: graceStepBaseline, at: Date()) else {
                             continue
                         }
-                        let trainingElapsed = collapseDetector.graceElapsed(observingTrainingAt: Date())
                         if trainingElapsed < gracePeriodSec { continue }
                         // Session-elapsed for snapshot-write / log
                         // consistency with the timer task, which also
