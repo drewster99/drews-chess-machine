@@ -598,6 +598,9 @@ struct UpperContentView: View {
     /// Presents `InvalidStoredSettingsSheet`; set on appear when
     /// `TrainingParameters` found unusable stored values at launch.
     @State private var showInvalidStoredSettingsSheet: Bool = false
+    /// True while the launch auto-resume prompt is held back until the
+    /// invalid-settings sheet closes (`presentAutoResumePromptHeldForInvalidSettings`).
+    @State private var autoResumePromptWaitingForInvalidSettingsSheet: Bool = false
     // Sampling cadence (`chartCoordinator.progressRateLastFetch`,
     // `chartCoordinator.progressRateNextId`, `chartCoordinator.trainingChartNextId`,
     // `chartCoordinator.prevChartTotalGpuMs`), chart navigation (`chartCoordinator.scrollX`,
@@ -1222,6 +1225,8 @@ struct UpperContentView: View {
                     onResume: { autoResume.performResume() },
                     loadAsFloat32: $autoResume.loadAsFloat32
                 )
+                // The countdown runs only while the prompt is visible.
+                .onAppear { autoResume.sheetDidAppear() }
             }
         }
         .sheet(isPresented: $showArenaHistorySheet) {
@@ -1263,8 +1268,10 @@ struct UpperContentView: View {
             )
         }
         // Stored preferences found unusable at launch; opened from
-        // `handleBodyOnAppear` when there are any.
-        .sheet(isPresented: $showInvalidStoredSettingsSheet) {
+        // `handleBodyOnAppear` when there are any. The auto-resume prompt
+        // waits for it to close (`onDismiss`): only one sheet shows at a
+        // time, so the two must never be up together.
+        .sheet(isPresented: $showInvalidStoredSettingsSheet, onDismiss: presentAutoResumePromptHeldForInvalidSettings) {
             InvalidStoredSettingsSheet(
                 trainingParams: trainingParams,
                 onClose: { showInvalidStoredSettingsSheet = false }
@@ -1855,8 +1862,26 @@ struct UpperContentView: View {
                 runAutoPlayChessLaunchSequence()
             }
         } else if !autoTrainOnLaunch {
-            autoResume.maybePresentSheet(isTrainingActive: realTraining)
+            // One sheet at a time: with the invalid-settings sheet up, the
+            // prompt is held until it closes, so neither sheet hides the
+            // other and the user settles the stored values before choosing
+            // whether to resume.
+            if showInvalidStoredSettingsSheet {
+                autoResumePromptWaitingForInvalidSettingsSheet = true
+                SessionLogger.shared.log("[RESUME] Auto-resume prompt waits for the invalid-settings sheet to close")
+            } else {
+                autoResume.maybePresentSheet(isTrainingActive: realTraining)
+            }
         }
+    }
+
+    /// The invalid-settings sheet closed: show the auto-resume prompt it was
+    /// holding back, if any (`handleBodyOnAppear`).
+    @MainActor
+    private func presentAutoResumePromptHeldForInvalidSettings() {
+        guard autoResumePromptWaitingForInvalidSettingsSheet else { return }
+        autoResumePromptWaitingForInvalidSettingsSheet = false
+        autoResume.maybePresentSheet(isTrainingActive: realTraining)
     }
 
     // The heartbeat (processSnapshotTimerTick / __processSnapshotTimerTick /
