@@ -328,7 +328,7 @@ final class LineageTracker: @unchecked Sendable {
     /// `--derive-model`'s output, or a GUI save of a loaded model before any
     /// training: a new run whose weights carry the source's history, so the
     /// totals continue from the source's record (or stay unrecorded when the
-    /// source predates lineage). `derivation` is the derive step that made
+    /// source predates lineage, step total included). `derivation` is the derive step that made
     /// the copy, appended to the source's derivation history; nil for a copy
     /// no derivation made.
     static func untrainedCopyRecord(source: ParentFile, derivation: ModelDerivation.DerivationRecord?,
@@ -338,15 +338,15 @@ final class LineageTracker: @unchecked Sendable {
         if let derivation {
             derivationHistory.append(derivation)
         }
-        // The source's own record is the total when it has one; a source
-        // written before lineage still states its trainer clock (or the
-        // step its weights were taken at), which is that total too.
-        let sourceStepTotal: Int?
-        if let sourceRecord {
-            sourceStepTotal = sourceRecord.steps.cumTrainerStep
-        } else {
-            sourceStepTotal = source.trainerCompletedSteps
-        }
+        // Only the source's own record states the line's step total. A
+        // source written before lineage states a trainer clock (or the step
+        // its weights were taken at), but a resumed segment of that era
+        // restarted its clock, so that number can be segment-local: it is
+        // kept as the parent's stated step (`parent.trainer_completed_steps`)
+        // and the total stays unrecorded. (A legacy trainer-state resume
+        // differs on purpose: it continues that very clock, so the clock is
+        // its total.)
+        let sourceStepTotal = sourceRecord?.steps.cumTrainerStep
         return LineageRecord(
             schema: LineageRecord.currentSchema,
             run: LineageRecord.Run(

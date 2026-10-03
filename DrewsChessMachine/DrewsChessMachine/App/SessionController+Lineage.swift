@@ -54,6 +54,21 @@ extension SessionController {
         }
     }
 
+    /// The `training_step` a champion model file states: the trainer step
+    /// the champion's weights were taken at, from where they came — the
+    /// step their source file (or promotion) stated, nil when it stated
+    /// none, and 0 for weights built in this process. Never the trainer's
+    /// step: the champion holds weights from an earlier point than the
+    /// trainer whenever they differ, and a model file that claims the
+    /// trainer's step would be read as trained when its weights are fresh.
+    static func championFileTrainingStep(origin: ChampionOrigin?) throws -> Int? {
+        switch origin {
+        case .built: return 0
+        case .file(let source): return source.trainerCompletedSteps
+        case nil: throw LineageSegmentError.noChampionOrigin
+        }
+    }
+
     /// A run from the champion's weights: fresh when the champion was built
     /// in this process, a branch from the file it was loaded from otherwise.
     private func championLineageStart() throws -> LineageTracker.Start {

@@ -83,18 +83,19 @@ extension SessionController {
                 return
             }
 
-            let metadata = ModelCheckpointMetadata(
-                creator: "manual",
-                trainingStep: trainingStats?.steps,
-                parentModelID: "",
-                notes: "Manual Save Champion export"
-            )
             let saveDate = Date()
             let createdAtUnix = Int64(saveDate.timeIntervalSince1970)
             let championArch = champion.network.arch
             let lineage: LineageRecord
+            let metadata: ModelCheckpointMetadata
             do {
                 lineage = try lineageRecordForChampionSave(at: saveDate)
+                metadata = ModelCheckpointMetadata(
+                    creator: "manual",
+                    trainingStep: try Self.championFileTrainingStep(origin: championOrigin),
+                    parentModelID: "",
+                    notes: "Manual Save Champion export"
+                )
             } catch {
                 checkpoint?.cancelSlowSaveWatchdog()
                 checkpoint?.checkpointSaveInFlight = false

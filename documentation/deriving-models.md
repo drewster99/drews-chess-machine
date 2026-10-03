@@ -23,10 +23,17 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
   trainer-state file. Files with `opt.*.velocity` tensors or `trainer_*` schedule
   metadata are refused, because re-initialized weights would not match the saved
   optimizer state. An operation that rewrites tensors (`--set-se-beta-init`,
-  `--set-rezero-alpha-init`, and every init-option operation) also needs an untrained source: a recorded
-  `training_step` above zero is refused, because the rewrite would reset learned
-  weights while the new file kept the source's training step and lineage, and a
-  `training_step` that is not a non-negative integer is refused as well. Operations
+  `--set-rezero-alpha-init`, and every init-option operation) also needs an untrained source,
+  because the rewrite would reset learned weights while the new file kept the source's
+  training step and lineage. Any positive evidence of training refuses the source: a
+  recorded `training_step` above zero; a lineage record whose `cum_trainer_step` is above
+  zero; a lineage parent that stated a trainer step above zero (a graft or champion copy
+  of a file written before lineage, whose own total is unrecorded); or a `graft` in the
+  derivation history whose `source_training_step` is above zero (a graft writes no
+  `training_step`, and an architecture-only derive after it keeps none). A
+  `training_step` or `source_training_step` that is not a non-negative integer is refused
+  as well. One case cannot be detected: a file written before lineage that was trained
+  but states no `training_step` and no derivation history reads as untrained. Operations
   that change no tensor (`--set-activation`, `--set-se-activation`,
   `--set-rezero-alpha-cap`) work on a champion too.
 - `--out`: the destination. It must end in `.safetensors`, must not exist, and must
@@ -243,7 +250,11 @@ by two entries is refused.
 warm-starting a larger tower from a trained one is its purpose. Its output claims no
 `training_step` of its own (the source's is recorded as `source_training_step` in the
 derivation record), and it lists every tensor it initialized, so it claims nothing its
-weights do not have. Its lineage continues the source's totals as a new derived run.
+weights do not have. Its lineage continues the source's totals as a new derived run (a
+source written before lineage leaves the totals unrecorded; its stated step is kept as the
+record's parent step). Because of that record and lineage, a later tensor-rewriting derive
+of the grafted file — or of any file derived from it — still sees the trained source and
+refuses (see `--from` above).
 
 **What the grafted file records.** A graft writes its own metadata rather than copying the
 source's: `model_id`, `parent_model_id`, `creator` = `derive-model`, `notes`, the target
