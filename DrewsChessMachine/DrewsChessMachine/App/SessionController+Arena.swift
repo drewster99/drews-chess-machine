@@ -540,12 +540,7 @@ extension SessionController {
         // may not fire for up to an hour at this point in the
         // schedule).
         if promoted {
-            // The reset below zeroes the box's emitted counters, so the
-            // lineage segment banks what it counted first and recounts from
-            // the reset.
-            foldLineageFedCounts()
-            parallelWorkerStatsBox?.resetGameStats()
-            rebaselineLineageFedCounts()
+            resetSelfPlayGameStatsForNewChampion()
             let trainerIDStr = trainer.identifier?.description ?? "?"
             let championIDStr = champion.identifier?.description ?? "?"
             // The champion now holds weights this run trained: every later
@@ -731,7 +726,8 @@ extension SessionController {
                         // retention pool with periodic autosaves.
                         self.scheduleAutomaticSaveRetentionSweep(
                             afterSaving: url,
-                            diskTag: SessionSaveTrigger.promotionDiskTag
+                            diskTag: SessionSaveTrigger.promotionDiskTag,
+                            in: CheckpointPaths.sessionsDir
                         )
                     case .failure(let error):
                         self.checkpoint?.setCheckpointStatus(

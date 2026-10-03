@@ -229,12 +229,21 @@ extension SessionController {
         lineageFedCarry.baselinePositions = nil
     }
 
-    /// Start counting on the live stats box from its current counts (after
-    /// `foldLineageFedCounts()` banked what it counted before a reset).
-    func rebaselineLineageFedCounts() {
-        let counts = parallelWorkerStatsBox?.snapshot()
-        lineageFedCarry.baselineGames = counts?.emittedGames
-        lineageFedCarry.baselinePositions = counts?.emittedPositions
+    /// Reset the self-play game stats for a new champion (both promotion
+    /// paths), banking what the lineage segment counted on the box in the
+    /// same lock acquisition as the reset, so no game recorded around the
+    /// reset is lost from the segment's fed totals, and counting on from
+    /// zero. A nil baseline means no segment is counting on this box, so the
+    /// carry is left as it is — not a fallback: there is nothing to bank.
+    func resetSelfPlayGameStatsForNewChampion() {
+        guard let box = parallelWorkerStatsBox else { return }
+        let discarded = box.resetGameStatsReturningEmittedCounts()
+        guard let baselineGames = lineageFedCarry.baselineGames,
+              let baselinePositions = lineageFedCarry.baselinePositions else { return }
+        lineageFedCarry.games += discarded.games - baselineGames
+        lineageFedCarry.positions += discarded.positions - baselinePositions
+        lineageFedCarry.baselineGames = 0
+        lineageFedCarry.baselinePositions = 0
     }
 
     /// The record for a save of the running segment's state, with the

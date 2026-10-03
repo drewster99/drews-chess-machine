@@ -291,11 +291,20 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     }
 
     /// Reset game-play counters so post-promotion stats reflect
-    /// only the newly-promoted champion's self-play performance.
+    /// only the newly-promoted champion's self-play performance, and
+    /// return the emitted game and position counts the reset discarded.
     /// Training step count and sessionStart are NOT reset so
     /// training-rate display stays continuous.
-    func resetGameStats() {
+    ///
+    /// The counts are read in the same lock acquisition as the reset: a
+    /// lineage segment banks them (`resetSelfPlayGameStatsForNewChampion`),
+    /// and a game recorded between a separate read and the reset would be
+    /// lost from the segment's fed totals. There is deliberately no reset
+    /// that does not return them, so nothing can zero the counters without
+    /// the caller seeing what it zeroed.
+    func resetGameStatsReturningEmittedCounts() -> (games: Int, positions: Int) {
         lock.withLock {
+            let discarded = (games: self._emittedGames, positions: self._emittedPositions)
             self._totalGames = 0
             self._totalMoves = 0
             self._totalGameWallMs = 0
@@ -323,6 +332,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
             self._recentEmittedGames.removeAll()
             self._recentEmittedGamesHead = 0
             self._recentEmittedGamesRunningPositions = 0
+            return discarded
         }
     }
 

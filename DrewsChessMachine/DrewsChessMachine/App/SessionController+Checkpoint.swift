@@ -316,7 +316,10 @@ extension SessionController {
     /// file can reach it.) `includeReplayBuffer` decides whether the save
     /// writes the replay buffer (determinism plan D-8): the Save Session
     /// sheet's choice for a manual save, `session_save_include_replay_buffer`
-    /// for every other trigger.
+    /// for every other trigger. `sessionsDirectory` is the canonical
+    /// `Sessions/` folder in the app; tests pass a temporary folder, and
+    /// the retention sweep a save starts looks only in the folder it wrote
+    /// to.
     func saveSessionInternal(
         champion: ChessMPSNetwork,
         trainer: ChessTrainer,
@@ -324,6 +327,7 @@ extension SessionController {
         trainingGate: WorkerPauseGate,
         trigger: SessionSaveTrigger,
         includeReplayBuffer: Bool,
+        sessionsDirectory: URL = CheckpointPaths.sessionsDir,
         onComplete: (@MainActor @Sendable (Bool) -> Void)? = nil
     ) {
         let diskTag = trigger.diskTag
@@ -521,7 +525,8 @@ extension SessionController {
                         architecture: sessionArch,
                         replayBuffer: bufferForSave,
                         chartSnapshot: chartSnapshotForSave,
-                        trigger: diskTag
+                        trigger: diskTag,
+                        sessionsDirectory: sessionsDirectory
                     )
                     return .success(url)
                 } catch {
@@ -556,7 +561,7 @@ extension SessionController {
                 // Periodic and Promote Trainee Now saves are in the
                 // automatic-save retention pool; manual and SIGUSR2 saves
                 // are not, and the helper decides that from the disk tag.
-                scheduleAutomaticSaveRetentionSweep(afterSaving: url, diskTag: diskTag)
+                scheduleAutomaticSaveRetentionSweep(afterSaving: url, diskTag: diskTag, in: sessionsDirectory)
             case .failure(let error):
                 checkpoint?.setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(error.localizedDescription)")
@@ -620,7 +625,7 @@ extension SessionController {
     /// sweep itself is file-system work, so it runs detached at utility
     /// priority; it reports everything through the session log and does
     /// not throw, so nothing is lost by not awaiting it.
-    func scheduleAutomaticSaveRetentionSweep(afterSaving url: URL, diskTag: String) {
+    func scheduleAutomaticSaveRetentionSweep(afterSaving url: URL, diskTag: String, in sessionsDirectory: URL) {
         guard CheckpointPaths.AutomaticSaveKind(diskTag: diskTag) != nil else { return }
         let current = currentAutomaticSavePruningDecision()
         guard case .prune(let keep) = current.decision else {
@@ -630,7 +635,7 @@ extension SessionController {
             return
         }
         Task.detached(priority: .utility) {
-            CheckpointPaths.pruneAutomaticSaves(keeping: keep, protecting: url)
+            CheckpointPaths.pruneAutomaticSaves(keeping: keep, protecting: url, in: sessionsDirectory)
         }
     }
 

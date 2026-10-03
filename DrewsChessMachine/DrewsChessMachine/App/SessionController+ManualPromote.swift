@@ -28,9 +28,11 @@ extension SessionController {
     /// (the confirmation dialog) has already confirmed; we re-check
     /// the same preconditions here because a stray keyboard-shortcut
     /// / URL-scheme invocation could reach `promoteTrainerNow()`
-    /// without the menu disable having gated it.
+    /// without the menu disable having gated it. `sessionsDirectory` is
+    /// where the post-promotion autosave goes: the canonical `Sessions/`
+    /// folder in the app, a temporary folder in tests.
     @MainActor
-    func promoteTrainerNow() {
+    func promoteTrainerNow(sessionsDirectory: URL = CheckpointPaths.sessionsDir) {
         // Belt-and-suspenders guards.
         guard realTraining,
               let champion = network,
@@ -153,6 +155,12 @@ extension SessionController {
             }
             recordPromotedChampionOrigin(championID: newChampionID, trainerCompletedSteps: promotedAtStep,
                                          record: promotionRecord)
+            // Reset game-play stats so the display reflects only the new
+            // champion's self-play, mirroring arena promotion; the lineage
+            // segment banks what the box counted in the same step. Done
+            // under the pause, so the reset lines up with the champion
+            // change.
+            resetSelfPlayGameStatsForNewChampion()
             trainingGate.resume()
             selfPlayGate.resume()
 
@@ -200,10 +208,6 @@ extension SessionController {
                 ))
             }
 
-            // Reset game-play stats so the display reflects only the
-            // new champion's self-play, mirroring arena promotion.
-            parallelWorkerStatsBox?.resetGameStats()
-
             let championIDStr = newChampionID.description
             let oldChampionIDStr = oldChampionID?.description ?? "?"
             let trainerIDStr = trainer.identifier?.description ?? "?"
@@ -227,7 +231,8 @@ extension SessionController {
                     selfPlayGate: selfPlayGate,
                     trainingGate: trainingGate,
                     trigger: .manualPromote,
-                    includeReplayBuffer: TrainingParameters.shared.sessionSaveIncludeReplayBuffer
+                    includeReplayBuffer: TrainingParameters.shared.sessionSaveIncludeReplayBuffer,
+                    sessionsDirectory: sessionsDirectory
                 )
             } else {
                 checkpoint?.checkpointSaveInFlight = false
