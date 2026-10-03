@@ -1,10 +1,10 @@
 # v5 corpus-replay monitor — HANDOFF / resume runbook
 
 _Last updated: 2026-07-28, just before a planned shutdown. Written so a fresh
-Claude session can resume the monitoring loop after reboot._
+session can resume the monitoring loop after reboot._
 
 Everything the monitor needs lives in **`~/Downloads/v5-continue-bundle/monitor/`**
-(this dir — it is NOT under /tmp, so it survives reboot). The Claude scratchpad
+(this dir — it is NOT under /tmp, so it survives reboot). The scratch folder
 under /tmp is wiped on reboot; nothing important is there.
 
 ---
@@ -277,7 +277,7 @@ number, and pick the offset branch above accordingly.
 ## 6. Re-establishing the monitor loop after reboot
 
 The `/loop` Monitor task (id was `b7hbohilt`) is session-bound and will NOT survive
-reboot. To resume: start a fresh Claude session in this repo and either re-issue
+reboot. To resume: start a fresh session in this repo and either re-issue
 the `/loop` with a Monitor watching for new `v5-cont-replay-step*.safetensors`
 files (or a checkpoint log line), or drive it manually per §4. The standing loop
 spec is in §1.

@@ -53,6 +53,13 @@ n = 4,435); training metrics are the `[REPLAY]` line at step 5,000 of each log.
 
 - pElo by 1k (C − baseline, dashboard values): +127.8, +53.0, +13.0, +58.6, +15.0.
   Ahead at 5 of 5, same initial weights and game feed order; NLL lower at 5 of 5.
+- **Cross-build note (added 2026-10-02).** The by-1k pElo differences in this README
+  subtract the baseline's *dashboard* values (`se_sb.csv`, probed by an earlier build
+  with the fp32 policy-head tail) from C's `probes.jsonl` values (build 2275, mixed
+  tail). On the same checkpoint the two builds differ by about 2.6 pElo (`se_sb` 10k:
+  1275.3 in the CSV, 1277.9 on build 2275) and by at most 0.0002 NLL, so a by-1k pElo
+  difference within about 3 of zero cannot be called either way. The same-binary
+  reviews below (5k, 10k, 13k, 15k) and every NLL comparison are unaffected.
 - Every probe measure moves the same way: top-1 +32, top-5 +27, probability on the
   correct move +0.0054, mean rank −0.17.
 - Sharper policy, as expected from a sharper target: training entropy 0.03 nats lower
@@ -79,6 +86,8 @@ Same method as the 5k review (same probe binary for both; one `[REPLAY]` line ea
 
 - Tally 1k–10k: pElo ahead at 9 of 10 (behind only at 9k, by 3.1), NLL lower at
   10 of 10. NLL gap by 1k from 4k: 0.053, 0.035, 0.028, 0.039, 0.066, 0.019, 0.041.
+  The pElo tally is cross-build (see the 5k note): 6k (+3.1) and 9k (−3.1) are
+  within the ≈2.6-pElo build offset, so C is ahead by more than it at 8 of 10.
 - Top-1 +35 and probability on the correct move +0.0088 — both larger than at 5k;
   top-5 is now level (+3), so the gain is in ranking the right move first rather
   than in getting it into the top five.
@@ -148,7 +157,10 @@ Both checkpoints probed with Release build 2285 (`df25a56` code) with
   little higher (0.1348 vs 0.1293) because it is *more* under-confident in the lowest
   bucket (p < 0.1: accuracy 0.208 at mean p 0.082), not because it is over-confident;
   confident errors 6 vs 7, logits unchanged.
-- **Tally 1k–15k:** NLL lower at 15 of 15, pElo ahead at 13 of 15.
+- **Tally 1k–15k:** NLL lower at 15 of 15, pElo ahead at 13 of 15. The pElo tally is
+  cross-build (see the 5k note): 6k (+3.1), 9k (−3.1) and 11k (−1.0) are within the
+  ≈2.6-pElo build offset, so C is ahead by more than it at 12 of 15; the NLL tally
+  (smallest gap 0.0169) is unaffected.
 - Same caveat as before: this is one training run of each; C seed 2 is queued.
 
 ## Seed 2 (queued)
@@ -156,6 +168,7 @@ Both checkpoints probed with Release build 2285 (`df25a56` code) with
 Starts from the SE experiment's scale+bias **seed-2** fresh net
 (`20260929-test_SE_scale+bias-seed2-fresh.safetensors`), so its first 7,282 steps pair
 with the baseline's seed 2 (`se_sb2`) the way seed 1 pairs with `se_sb`. Out stem
-`20261002-label-smoothing-C-seed2`, probes `probes-seed2.jsonl`. Launched by
-`chain3.sh` when no-ReZero seed 2 ends (~2026-10-03 00:00).
+`20261002-label-smoothing-C-seed2`, probes `probes-seed2.jsonl`. Launched by the
+local queue script when a training slot frees, after zero-init ReZero and label
+smoothing D (`experiments/QUEUE.md`).
 

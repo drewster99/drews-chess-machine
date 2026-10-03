@@ -7,11 +7,9 @@ import replay
 
 def active_run():
     """Detect which registered run is currently training by matching the live
-    replay-corpus process's --out-model against each run's out_model."""
-    try:
-        ps = subprocess.check_output(["ps", "-Ao", "args="], text=True)
-    except Exception:
-        return None
+    replay-corpus process's --out-model against each run's out_model. A failing `ps`
+    raises: "could not look" is not the same answer as "no run is training"."""
+    ps = subprocess.check_output(["ps", "-Ao", "args="], text=True)
     for line in ps.splitlines():
         if "replay-corpus" in line and "--out-model" in line:
             for r, cfg in replay.REG["runs"].items():
@@ -37,7 +35,7 @@ replay.probe_backfill(run)
 seg = cfg["segments"][-1]; base = seg["cumstep_base"]
 out = os.path.join(replay.MODELS, cfg["out_model"])
 st = replay.SegTime(cfg["segments"], run)
-rows = replay.read_csv(run); filled = 0
+rows, snapshot = replay.read_csv_for_update(run); filled = 0
 if os.path.exists(out):
     cur = replay.meta_step_of(out)
     for meta in range(1000, cur, 1000):
@@ -56,7 +54,7 @@ if os.path.exists(out):
             pLogit_mean="", pLogit_peak="", frozen_file="", note="log-backfill (fast-net)"))
         filled += 1
     if filled:
-        replay.write_csv(run, rows)
+        replay.write_csv(run, rows, snapshot)
 print(f"backfilled {filled}")
 
 # 3. render dashboard (silence its per-run stdout dump; we only want this run's table)

@@ -30,7 +30,14 @@ Idempotent: track/migrate never duplicate a cum_step already present.
 import os, re, sys, csv, json, glob, struct, math, bisect, argparse, collections, itertools, datetime
 import numpy as np
 from _schema import FIELDS  # single source of the CSV column order (shared with selfplay.py)
-from _atomic_write import atomic_write_open  # crash-safe replace of the CSVs + registry.json
+# Crash-safe (_atomic_write), compare-and-swap, no-silent-shrink replace of the CSVs and
+# registry.json.
+from _guarded_csv import (read_rows, read_text, replace_rows, replace_text_if_unchanged,
+                          replay_row_key, snapshot_of)
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+import dcm_arch  # noqa: E402  each checkpoint's ReZero cap, read from its own metadata
+from dcm_probe_build import probe_build_id  # noqa: E402  which build made each pElo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Config/data/output root. Defaults to the script dir, but can be pointed at a
@@ -90,32 +97,78 @@ def meta_step_of(path):
         n = struct.unpack("<Q", f.read(8))[0]
         return int(json.loads(f.read(n))["__metadata__"]["training_step"])
 
-def internals(path, cap):
+def internals(path):
+    """bn1Mean, Σαeff² and the per-block effective ReZero α of one checkpoint.
+
+    Each block's cap comes from the file's own architecture metadata (`dcm_arch`:
+    `rezero_alpha_cap`, or `rezero_alpha_init` × 1.0 for files older than format
+    v6), never from the registry, so a derived or zero-init model is read with the
+    cap it actually trains under. A model whose blocks use no ReZero has no α to
+    report: Σαeff² and the α list come back None (written as blank cells). A tower
+    mixing ReZero and non-ReZero blocks has no single Σαeff² and is refused."""
+    blocks = dcm_arch.rezero_blocks_of_file(path)
     W = _st_load(path, want=lambda k: k == "blocks.0.bn1.running_mean" or k.endswith(".rezero_alpha"))
     bn1 = float(abs(W["blocks.0.bn1.running_mean"]).max())
-    nblk = len({k.split(".")[1] for k in W if k.startswith("blocks.")})
+    users = {b.use_rezero for b in blocks}
+    if users == {False}:
+        return bn1, None, None
+    if users != {True}:
+        raise ValueError(f"{path}: some blocks use ReZero and some do not; Σαeff² is undefined")
     effs, tot = [], 0.0
-    for b in range(nblk):
-        a = float(W[f"blocks.{b}.rezero_alpha"][0]); e = cap * math.tanh(a / cap)
+    for block in blocks:
+        e = block.effective(float(W[f"blocks.{block.index}.rezero_alpha"][0]))
         effs.append(e); tot += e * e
     return bn1, tot, effs
 
+
+def internals_cells(path):
+    """The three CSV cells `internals` feeds: bn1Mean, sae2, eff_alpha."""
+    bn1, sae2, effs = internals(path)
+    return dict(bn1Mean=round(bn1, 4),
+                sae2="" if sae2 is None else round(sae2, 4),
+                eff_alpha="" if effs is None else ";".join(f"{e:.4f}" for e in effs))
+
 # ---------- probe ----------
+# A wide probe normally finishes in seconds; this bound only exists so one hung probe
+# cannot hold a tick (and with it the cron lock) forever. The child is killed when it
+# runs out; the checkpoint is untouched and is retried on a later tick.
+PROBE_TIMEOUT_SECONDS = 300
+NON_FINITE_PELO_NOTE = "probe: pElo non-finite"
+
+
+class ProbeFailure(RuntimeError):
+    """A probe that produced no measurement (timed out, failed, or reported an error)."""
+
+
 def probe(path):
+    """The wide-probe summary for one checkpoint; raises ProbeFailure instead of
+    returning nothing. A summary without pElo is a measurement of a non-finite value
+    (the probe omits the key then) and comes back as pElo None."""
     import subprocess
     if not BIN:
         raise RuntimeError(
             "no DrewsChessMachine Release binary found under DerivedData "
             "(build the app in Xcode, or set DCM_BIN). Probing requires it.")
-    out = subprocess.run([BIN, "--probe-model", path, "--probe-set", "wide"],
-                         capture_output=True, text=True).stdout
-    m = re.search(r"\{.*\}", out, re.S)
-    if not m:
-        return {}
-    d = json.loads(m.group(0))
+    try:
+        completed = subprocess.run([BIN, "--probe-model", path, "--probe-set", "wide"],
+                                   capture_output=True, text=True, timeout=PROBE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        raise ProbeFailure(f"probe of {path} exceeded {PROBE_TIMEOUT_SECONDS}s and was killed") from error
+    if completed.returncode != 0:
+        raise ProbeFailure(f"probe of {path} exited {completed.returncode}: {completed.stderr[-2000:]}")
+    events = [json.loads(line) for line in completed.stdout.splitlines() if line.strip().startswith("{")]
+    errors = [e for e in events if e.get("event") == "error"]
+    if errors:
+        raise ProbeFailure(f"probe of {path} reported: {errors[0].get('error')}")
+    summaries = [e for e in events if "set" in e and "event" not in e]
+    if len(summaries) != 1:
+        raise ProbeFailure(f"probe of {path} printed {len(summaries)} summary line(s), expected one; "
+                           f"stderr tail: {completed.stderr[-2000:]}")
+    d = summaries[0]
     return dict(pElo=d.get("pElo"), nll=d.get("nll"),
                 pLogit_mean=d.get("policy_logit_abs_max"),
-                pLogit_peak=d.get("policy_logit_abs_max_peak"))
+                pLogit_peak=d.get("policy_logit_abs_max_peak"),
+                probe_build=probe_build_id(BIN))
 
 # ---------- log parsing ----------
 _TS = re.compile(r"^(\d\d):(\d\d):(\d\d)\.(\d+)\s+\[REPLAY\] step=(\d+)\b")
@@ -440,18 +493,22 @@ def csv_path(run):
     return os.path.join(DATA, f"{run}.csv")
 
 def read_csv(run):
-    p = csv_path(run)
-    if not os.path.exists(p):
-        return []
-    with open(p) as f:
-        return list(csv.DictReader(f))
+    """A run's rows, for reading only (a writer uses read_csv_for_update)."""
+    rows, _, _ = read_rows(csv_path(run))
+    return rows
 
-def write_csv(run, rows):
+def read_csv_for_update(run):
+    """(rows, Snapshot): the snapshot lets write_csv refuse if another writer replaced
+    the file in between."""
+    rows, _, snapshot = read_rows(csv_path(run))
+    return rows, snapshot
+
+def write_csv(run, rows, snapshot, allowed_blank_columns=frozenset(), allow_shrink=False):
+    """Replace a run's CSV with `rows`, refusing (see _guarded_csv) if it changed since
+    `snapshot` was taken or if a row would disappear or a filled cell turn blank."""
     rows = sorted(rows, key=lambda r: int(r["cum_step"]))
-    with atomic_write_open(csv_path(run), newline="") as f:
-        w = csv.DictWriter(f, fieldnames=FIELDS); w.writeheader()
-        for r in rows:
-            w.writerow({k: r.get(k, "") for k in FIELDS})
+    replace_rows(csv_path(run), rows, FIELDS, snapshot, replay_row_key,
+                 allowed_blank_columns=allowed_blank_columns, allow_shrink=allow_shrink)
 
 def has_step(rows, cum):
     return any(int(r["cum_step"]) == cum for r in rows)
@@ -568,8 +625,9 @@ def discover_enum_stems(cfg, run=None, verbose=True):
                 ids.add(m.get("model_id")); steps.append(int(m["training_step"]))
                 if m.get("created_at_unix"):
                     times.append(int(m["created_at_unix"]))
-            except (OSError, ValueError, KeyError, struct.error):
-                pass
+            except (OSError, ValueError, KeyError, struct.error) as error:
+                print(f"  [warn] {os.path.basename(p)}: header unreadable ({error}); "
+                      f"not used to place stem {stem}", file=sys.stderr)
         if len(ids) > 1:
             refused.append((stem, "spans %d model_ids %s" % (len(ids), sorted(ids))))
             continue
@@ -666,12 +724,12 @@ def track(run):
         print(f"{run}: out-model not found ({cfg['out_model']})"); return
     meta = meta_step_of(src)
     base = cfg["segments"][-1]["cumstep_base"]; cum = base + meta
-    rows = read_csv(run)
+    rows, snapshot = read_csv_for_update(run)
     if has_step(rows, cum):
         print(f"{run}: cum_step {cum} already tracked (meta {meta}) — no-op"); return
     cum, frozen = freeze(run, cfg, meta)
     pr = probe(frozen)
-    bn1, sae2, effs = internals(frozen, cfg["rezero_cap"])
+    cells = internals_cells(frozen)
     st = SegTime(cfg["segments"], run); elapsed, clock, m2, si = st.elapsed_and_clock(cum)
     met = _metrics_at(cfg["segments"][si]["log"], meta)
     lm = round(1 - met["pIllM"], 4) if "pIllM" in met else ""
@@ -681,18 +739,19 @@ def track(run):
                nll=round(pr.get("nll"), 4) if pr.get("nll") else "",
                loss=met.get("loss", ""), pLoss=met.get("pLoss", ""), vLoss=met.get("vLoss", ""),
                legalMass=lm, pIllM=met.get("pIllM", ""),
-               bn1Mean=round(bn1, 4), gNorm=met.get("gNorm", ""),
-               sae2=round(sae2, 4), eff_alpha=";".join(f"{e:.4f}" for e in effs),
+               gNorm=met.get("gNorm", ""), **cells,
                pLogit_mean=round(pr.get("pLogit_mean"), 3) if pr.get("pLogit_mean") else "",
                pLogit_peak=pr.get("pLogit_peak", ""),
-               frozen_file=os.path.basename(frozen), note="")
-    rows.append(row); write_csv(run, rows)
+               probe_build=pr["probe_build"],
+               frozen_file=os.path.basename(frozen),
+               note=NON_FINITE_PELO_NOTE if pr["pElo"] is None else "")
+    rows.append(row); write_csv(run, rows, snapshot)
     eh = f"{elapsed/3600:.2f}h" if isinstance(elapsed, (int, float)) else "n/a (log gone)"
     print(f"{run}: tracked cum_step {cum} (meta {meta}) pElo={row['pElo']} "
           f"elapsed={elapsed}s ({eh}) seg={si}")
 
 
-def _backfill_one(cfg, st, rows, by, cum, path, name, verbose, segment=None):
+def _backfill_one(cfg, st, rows, by, cum, path, name, verbose, failures, segment=None):
     """Probe `path` and fill/create the CSV row for `cum` if it lacks pElo.
     Returns 1 if a row was filled/created, else 0. Shared by both the enumerated
     -replay-step scan and the legacy -frozen scan so they stay bit-identical.
@@ -701,20 +760,23 @@ def _backfill_one(cfg, st, rows, by, cum, path, name, verbose, segment=None):
     file came from; without it `seg_for` has to guess from cum and mis-attributes any
     mark sitting exactly on a segment boundary."""
     r = by.get(cum)
-    if r and r.get("pElo") not in ("", None):
-        return 0                                     # already has pElo
-    pr = probe(path)
-    if not pr.get("pElo"):
+    if r and (r.get("pElo") not in ("", None) or NON_FINITE_PELO_NOTE in (r.get("note") or "")):
+        return 0                                     # already measured
+    try:
+        pr = probe(path)
+    except ProbeFailure as error:
+        failures.append((name, str(error)))
+        print(f"  probe-backfill cum {cum}: FAILED ({error})", file=sys.stderr)
         return 0
-    bn1, sae2, effs = internals(path, cfg["rezero_cap"])
+    cells = internals_cells(path)
     elapsed, clock, meta, si = st.elapsed_and_clock(cum, segment)
     met = _metrics_at(cfg["segments"][si]["log"], meta)
-    pf = dict(pElo=round(pr["pElo"], 2),
+    non_finite = pr["pElo"] is None
+    pf = dict(pElo="" if non_finite else round(pr["pElo"], 2),
               nll=round(pr.get("nll"), 4) if pr.get("nll") else "",
-              bn1Mean=round(bn1, 4), sae2=round(sae2, 4),
-              eff_alpha=";".join(f"{e:.4f}" for e in effs),
+              **cells,
               pLogit_mean=round(pr.get("pLogit_mean"), 3) if pr.get("pLogit_mean") else "",
-              pLogit_peak=pr.get("pLogit_peak", ""), frozen_file=name)
+              pLogit_peak=pr.get("pLogit_peak", ""), probe_build=pr["probe_build"], frozen_file=name)
     if r:
         r.update(pf)
         if r.get("elapsed_train_sec") in ("", None):
@@ -727,8 +789,11 @@ def _backfill_one(cfg, st, rows, by, cum, path, name, verbose, segment=None):
                  legalMass=lm, pIllM=met.get("pIllM", ""), gNorm=met.get("gNorm", ""),
                  note="probe-backfill", **pf)
         rows.append(r); by[cum] = r
+    if non_finite:
+        r["note"] = "; ".join(x for x in (r.get("note"), NON_FINITE_PELO_NOTE) if x)
     if verbose:
-        print(f"  probe-backfill cum {cum}: pElo {pr['pElo']:.0f}")
+        shown = "non-finite" if non_finite else f"{pr['pElo']:.0f}"
+        print(f"  probe-backfill cum {cum}: pElo {shown}")
     return 1
 
 
@@ -744,10 +809,11 @@ def probe_backfill(run, verbose=True):
       • legacy      <...>-step<cum>-frozen.safetensors  — cum-named tracker snapshots
         (pre-enumeration runs, and this run's earlier segments)."""
     cfg = REG["runs"][run]
-    rows = read_csv(run)
+    rows, snapshot = read_csv_for_update(run)
     by = {int(r["cum_step"]): r for r in rows}
     st = SegTime(cfg["segments"], run)
     filled = 0
+    failures = []
 
     # (a) enumerated app-side checkpoints. One glob PER SEGMENT: the step in an
     # enumerated filename is segment-local, so it only becomes a cumulative step
@@ -762,7 +828,7 @@ def probe_backfill(run, verbose=True):
                 n = int(name[len(eprefix):len(name) - len(esuffix)])
             except ValueError:
                 continue
-            filled += _backfill_one(cfg, st, rows, by, ebase + n, f, name, verbose, segment=si)
+            filled += _backfill_one(cfg, st, rows, by, ebase + n, f, name, verbose, failures, segment=si)
 
     # (b) legacy cum-named -frozen snapshots
     prefix, suffix = cfg["frozen_glob"].split("*")   # "...-step" , "-frozen.safetensors"
@@ -772,13 +838,16 @@ def probe_backfill(run, verbose=True):
             cum = int(name[len(prefix):len(name) - len(suffix)])
         except ValueError:
             continue
-        filled += _backfill_one(cfg, st, rows, by, cum, f, name, verbose)
+        filled += _backfill_one(cfg, st, rows, by, cum, f, name, verbose, failures)
 
     if filled:
         rows.sort(key=lambda r: int(r["cum_step"]))
-        write_csv(run, rows)
+        write_csv(run, rows, snapshot)
     if verbose:
         print(f"probe-backfilled {filled}")
+    if failures:
+        raise ProbeFailure(f"{run}: {len(failures)} checkpoint(s) could not be probed (rows that "
+                           f"were probed are saved): " + "; ".join(n for n, _ in failures[:10]))
     return filled
 
 def recompute_cum_steps(run, verbose=True):
@@ -797,7 +866,7 @@ def recompute_cum_steps(run, verbose=True):
     row. `frozen_file` is left alone: it is the name of a file on disk, and a
     legacy cum-named snapshot keeps the name it was saved under."""
     cfg = REG["runs"][run]
-    rows = read_csv(run)
+    rows, snapshot = read_csv_for_update(run)
     moved = 0
     for r in rows:
         seg, meta = str(r.get("segment", "")), str(r.get("meta_step", ""))
@@ -814,7 +883,7 @@ def recompute_cum_steps(run, verbose=True):
         raise ValueError(f"{run}: re-derived cum_steps collide at {dup[:10]} "
                          f"({len(dup)} total); fix the segments' cumstep_base")
     if moved:
-        write_csv(run, rows)
+        write_csv(run, rows, snapshot)
     if verbose:
         print(f"{run}: re-derived cum_step on {moved} row(s)")
     return moved
@@ -823,9 +892,10 @@ def recompute_cum_steps(run, verbose=True):
 def recompute_internals(run, verbose=True):
     """Re-derive bn1Mean / sae2 / eff_alpha from the checkpoints themselves.
 
-    eff_alpha and sae2 depend on the registry's `rezero_cap` (eff = cap·tanh(α/cap)),
-    so a row written while the cap was recorded wrongly carries wrong values. This
-    rereads the weights with the current cap. Only segments that declare a
+    eff_alpha and sae2 depend on each block's ReZero cap (eff = cap·tanh(α/cap)),
+    which `internals` reads from the checkpoint's own metadata. Rows written while
+    the cap came from a hand-entered registry value carry that value's error; this
+    rereads the weights and their caps. Only segments that declare a
     `model_id` take part: a checkpoint is found by (model_id, training_step) in its
     header, never by filename, because segment-local step numbering makes names
     repeat across segments. A row in such a segment whose checkpoint no longer
@@ -837,7 +907,7 @@ def recompute_internals(run, verbose=True):
         print(f"{run}: no segment declares a model_id; nothing to recompute")
         return 0
     ck = _ckpt_index([MODELS])
-    rows = read_csv(run)
+    rows, snapshot = read_csv_for_update(run)
     redone = blanked = 0
     for r in rows:
         seg = str(r.get("segment", ""))
@@ -845,17 +915,15 @@ def recompute_internals(run, verbose=True):
             continue
         p = ck.get((segs_with_id[int(seg)], int(r["meta_step"])))
         if p:
-            bn1, sae2, effs = internals(p, cfg["rezero_cap"])
-            r.update(bn1Mean=round(bn1, 4), sae2=round(sae2, 4),
-                     eff_alpha=";".join(f"{e:.4f}" for e in effs))
+            r.update(internals_cells(p))
             redone += 1
         elif any(r.get(k) not in ("", None) for k in ("bn1Mean", "sae2", "eff_alpha")):
             r.update(bn1Mean="", sae2="", eff_alpha="")
             blanked += 1
-    write_csv(run, rows)
+    write_csv(run, rows, snapshot, allowed_blank_columns=frozenset({"bn1Mean", "sae2", "eff_alpha"}))
     if verbose:
         print(f"{run}: internals re-derived on {redone} row(s), blanked on {blanked} "
-              f"(checkpoint gone), cap {cfg['rezero_cap']}")
+              f"(checkpoint gone); caps read from each checkpoint")
     return redone
 
 
@@ -865,7 +933,7 @@ def recompute_elapsed(run, verbose=True):
     after the clamp lands — otherwise old rows keep their wall-clock (sleep-inflated)
     elapsed while new rows are clamped, and the by-time axis mixes the two."""
     cfg = REG["runs"][run]
-    rows = read_csv(run)
+    rows, snapshot = read_csv_for_update(run)
     if not rows:
         if verbose:
             print(f"{run}: no rows")
@@ -895,7 +963,7 @@ def recompute_elapsed(run, verbose=True):
             r["wall_sec"] = wl
             changed += 1
     if changed:
-        write_csv(run, rows)
+        write_csv(run, rows, snapshot)
     if verbose:
         print(f"{run}: recomputed elapsed on {changed} row(s)")
     return changed
@@ -909,7 +977,7 @@ def _kv(line, key):
 
 V5_DOC = os.path.join(HERE, "..", "v5-layernorm-output.md")
 
-def migrate_v5():
+def migrate_v5(allow_shrink=False):
     """v5's FIRST THREE segments live in the markdown table (per-subrun step), not
     loop_state. cum_step = subrun_step + offset. Elapsed left blank unless segment
     logs are present.
@@ -950,7 +1018,7 @@ def migrate_v5():
             pLogit_mean=pl[0], pLogit_peak=(pl[1] if len(pl) > 1 else ""),
             frozen_file=os.path.basename(frozen), note=name))
     doc_segs = set(seg_for_name.values())
-    existing = read_csv("v5")
+    existing, snapshot = read_csv_for_update("v5")
     kept = [r for r in existing
             if str(r.get("segment", "")).isdigit() and int(r["segment"]) not in doc_segs]
 
@@ -970,7 +1038,7 @@ def migrate_v5():
                 r[col] = old[col]
                 restored += 1
 
-    write_csv("v5", rows + kept)
+    write_csv("v5", rows + kept, snapshot, allow_shrink=allow_shrink)
     print(f"migrate v5: {len(rows)} doc rows rebuilt ({restored} field(s) preserved from the "
           f"existing CSV), {len(kept)} imported rows preserved -> {csv_path('v5')}")
 
@@ -985,6 +1053,7 @@ def _ckpt_index(dirs):
     `v5-cont-replay-step1000.safetensors`. Only the header's `model_id` (minted per
     segment) plus `training_step` names a checkpoint uniquely."""
     out = {}
+    unreadable = []
     for d in dirs:
         for p in sorted(glob.glob(os.path.join(os.path.expanduser(d), "*.safetensors"))):
             try:
@@ -994,8 +1063,13 @@ def _ckpt_index(dirs):
                 mid, ts = m.get("model_id"), m.get("training_step")
                 if mid and ts is not None:
                     out.setdefault((mid, int(ts)), p)
-            except (OSError, ValueError, KeyError, struct.error):
-                continue                     # unreadable file: absent, not fatal
+            except (OSError, ValueError, KeyError, struct.error) as error:
+                unreadable.append((p, error))   # absent from the index, and reported below
+    if unreadable:
+        print(f"[warn] {len(unreadable)} checkpoint header(s) unreadable, left out of the "
+              f"(model_id, training_step) index:", file=sys.stderr)
+        for p, error in unreadable[:10]:
+            print(f"  {os.path.basename(p)}: {error}", file=sys.stderr)
     return out
 
 
@@ -1024,20 +1098,29 @@ def import_probes(run, jsonl, segment, ckpt_dirs=(), verbose=True):
     st = SegTime(cfg["segments"], run)
     ck = _ckpt_index(ckpt_dirs) if ckpt_dirs else {}
 
-    rows = read_csv(run)
+    rows, snapshot = read_csv_for_update(run)
     by = {int(r["cum_step"]): r for r in rows}
-    added = skipped = rejected = 0
+    added = skipped = rejected = unnamed = 0
+    internals_failed = []
 
-    for line in open(os.path.expanduser(jsonl)):
-        line = line.strip()
+    with open(os.path.expanduser(jsonl)) as fh:
+        raw_lines = fh.readlines()
+    for number, raw in enumerate(raw_lines, 1):
+        line = raw.strip()
         if not line.startswith("{"):
             continue
         try:
             d = json.loads(line)
-        except ValueError:
-            continue
+        except ValueError as error:
+            if number == len(raw_lines) and not raw.endswith("\n"):
+                print(f"  {jsonl}:{number}: unterminated last line (an append in flight); skipped",
+                      file=sys.stderr)
+                continue
+            raise ValueError(f"{jsonl}:{number}: not valid JSON ({error})") from error
         m = re.search(r"step(\d+)", os.path.basename(d.get("model", "")))
         if not m:
+            unnamed += 1
+            print(f"  {jsonl}:{number}: no step<N> in its model name; skipped", file=sys.stderr)
             continue
         meta = int(m.group(1))
         # Provenance gate. Three outcomes, deliberately distinct:
@@ -1078,6 +1161,7 @@ def import_probes(run, jsonl, segment, ckpt_dirs=(), verbose=True):
                    pLogit_mean=d.get("policy_logit_abs_max", ""),
                    pLogit_peak=d.get("policy_logit_abs_max_peak", ""),
                    games_fed=(games_base + g) if (games_base is not None and g is not None) else "",
+                   probe_build=d.get("probe_build", ""),
                    frozen_file=os.path.basename(d.get("model", "")),
                    note=("recovered:" + d.get("recovered_note", "reconstructed, not measured")
                          if recovered else f"import:{os.path.basename(jsonl)}"))
@@ -1088,26 +1172,28 @@ def import_probes(run, jsonl, segment, ckpt_dirs=(), verbose=True):
         p = ck.get((d.get("modelID"), meta))
         if p:
             try:
-                bn1, sae2, effs = internals(p, cfg["rezero_cap"])
-                row.update(bn1Mean=round(bn1, 4), sae2=round(sae2, 4),
-                           eff_alpha=";".join(f"{e:.4f}" for e in effs))
-            except (OSError, KeyError, ValueError):
-                pass
+                row.update(internals_cells(p))
+            except (OSError, KeyError, ValueError) as error:
+                internals_failed.append((p, error))
+                print(f"  WARNING step{meta}: internals of {p} unreadable ({error}); "
+                      f"bn1Mean/sae2/eff_alpha left blank", file=sys.stderr)
 
         rows.append(row); by[cum] = row; added += 1
 
     if added:
         rows.sort(key=lambda r: int(r["cum_step"]))
-        write_csv(run, rows)
+        write_csv(run, rows, snapshot)
     if verbose:
         print(f"{run} seg {segment} ({sg.get('label','')}): +{added} rows, "
-              f"{skipped} already present, {rejected} rejected -> {csv_path(run)}")
+              f"{skipped} already present, {rejected} rejected, {unnamed} without a step in the "
+              f"model name, {len(internals_failed)} with unreadable internals -> {csv_path(run)}")
     return added
 
 
-def migrate(run, loop_state=None):
+def migrate(run, loop_state=None, allow_shrink=False):
     if run == "v5" or REG["runs"][run].get("source") == "v5doc":
-        return migrate_v5()
+        return migrate_v5(allow_shrink)
+    snapshot = snapshot_of(csv_path(run))
     cfg = REG["runs"][run]
     tag = {"mini2b": "MINI", "coxw": "COXW", "ykkk": "YKKK", "t97x": "T97X"}[run]
     ls = loop_state or LOOP_STATE
@@ -1144,7 +1230,7 @@ def migrate(run, loop_state=None):
             pLogit_mean=pl.group(1) if pl else "", pLogit_peak=pl.group(2) if pl else "",
             frozen_file=os.path.basename(frozen),
             note="FINAL" if "FINAL" in line else ("log-backfill" if not _kv(line, "pElo") else "")))
-    write_csv(run, rows)
+    write_csv(run, rows, snapshot, allow_shrink=allow_shrink)
     print(f"migrate {run}: {len(rows)} rows -> {csv_path(run)} "
           f"(elapsed {rows[0]['elapsed_train_sec']}..{rows[-1]['elapsed_train_sec']}s)")
 
@@ -1362,6 +1448,8 @@ if __name__ == "__main__":
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("track"); p.add_argument("run")
     p = sub.add_parser("migrate"); p.add_argument("run"); p.add_argument("--loop-state")
+    p.add_argument("--allow-shrink", action="store_true",
+                   help="allow the rebuild to drop rows / blank values the CSV holds (printed first)")
     p = sub.add_parser("recompute"); p.add_argument("run", nargs="?", default="__all__")
     p = sub.add_parser("recompute-internals"); p.add_argument("run")
     p = sub.add_parser("discover-stems")
@@ -1380,7 +1468,7 @@ if __name__ == "__main__":
     if a.cmd == "track":
         track(a.run)
     elif a.cmd == "migrate":
-        migrate(a.run, a.loop_state)
+        migrate(a.run, a.loop_state, a.allow_shrink)
     elif a.cmd == "recompute":
         targets = list(REG["runs"]) if a.run == "__all__" else [a.run]
         for r in targets:
@@ -1408,12 +1496,14 @@ if __name__ == "__main__":
             else:
                 print("  nothing to add")
         if a.write and proposed:
-            reg = json.load(open(os.path.join(ROOT, "registry.json")))
+            registry_path = os.path.join(ROOT, "registry.json")
+            registry_text, registry_snapshot = read_text(registry_path)
+            reg = json.loads(registry_text)
             for r, new in proposed.items():
                 for i, st in new.items():
                     reg["runs"][r]["segments"][i]["enum_stem"] = st
-            with atomic_write_open(os.path.join(ROOT, "registry.json")) as fh:
-                json.dump(reg, fh, indent=2, ensure_ascii=False)
+            replace_text_if_unchanged(registry_path, json.dumps(reg, indent=2, ensure_ascii=False),
+                                      registry_snapshot)
             print(f"\nwrote {sum(len(v) for v in proposed.values())} enum_stem value(s) to registry.json")
         elif proposed:
             print("\n(proposal only — re-run with --write to apply)")

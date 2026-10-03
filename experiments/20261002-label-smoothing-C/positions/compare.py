@@ -104,14 +104,24 @@ def main():
         if rows_a[i]["name"] != rows_b[i]["name"]:
             raise SystemExit(f"index {i}: names differ ({rows_a[i]['name']!r} vs {rows_b[i]['name']!r})")
 
-    def column(rows, key, default=None):
-        return np.array([rows[i].get(key, default) for i in indices], dtype=float)
+    def required(rows, key, label):
+        """Every position's value for `key`; a position missing it (an errored probe, or an
+        expected move the probe found illegal) stops the comparison instead of becoming a
+        made-up zero or NaN."""
+        missing = [i for i in indices if key not in rows[i]]
+        if missing:
+            raise SystemExit(f"{label}: {len(missing)} position(s) lack {key!r} "
+                             f"(first indices {missing[:10]}); cannot compare them")
+        return [rows[i][key] for i in indices]
 
-    nll_a, nll_b = column(rows_a, "nll"), column(rows_b, "nll")
-    conf_a, conf_b = column(rows_a, "top1Prob", 0.0), column(rows_b, "top1Prob", 0.0)
-    correct_a = np.array([rows_a[i].get("expectedRank") == 1 for i in indices])
-    correct_b = np.array([rows_b[i].get("expectedRank") == 1 for i in indices])
-    entropy_a, entropy_b = column(rows_a, "entropyNats"), column(rows_b, "entropyNats")
+    def column(rows, key, label):
+        return np.array(required(rows, key, label), dtype=float)
+
+    nll_a, nll_b = column(rows_a, "nll", args.label_a), column(rows_b, "nll", args.label_b)
+    conf_a, conf_b = column(rows_a, "top1Prob", args.label_a), column(rows_b, "top1Prob", args.label_b)
+    correct_a = np.array([rank == 1 for rank in required(rows_a, "expectedRank", args.label_a)])
+    correct_b = np.array([rank == 1 for rank in required(rows_b, "expectedRank", args.label_b)])
+    entropy_a, entropy_b = column(rows_a, "entropyNats", args.label_a), column(rows_b, "entropyNats", args.label_b)
     legal = np.array([rows_a[i]["legalCount"] for i in indices])
 
     n = len(indices)

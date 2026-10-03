@@ -292,14 +292,19 @@ def bn_tables(units, latest, s2_step):
 def rezero_table(units):
     x = units[units.site.str.endswith("rezero_alpha")]
     rows = []
+    blocks_by_run = {}
     for (run, step), g in x.groupby(["run", "step"]):
+        if run not in blocks_by_run:
+            blocks_by_run[run] = L.run_rezero_blocks(run)
         row = {"run": RUN_LABEL[run], "step": step}
         for _, r in g.iterrows():
-            b = int(re.match(r"blocks\.(\d)", r.site).group(1))
+            b = int(re.match(r"blocks\.(\d+)", r.site).group(1))
             raw = r.value
+            block = blocks_by_run[run][b]
             row[f"b{b} raw"] = raw
-            row[f"b{b} eff"] = L.rezero_effective(raw, 0.4472136)
-            row[f"b{b} d(eff)/d(raw)"] = 1.0 / math.cosh(raw / 0.4472136) ** 2
+            row[f"b{b} cap"] = block.alpha_cap
+            row[f"b{b} eff"] = block.effective(raw)
+            row[f"b{b} d(eff)/d(raw)"] = block.effective_derivative(raw)
         rows.append(row)
     return pd.DataFrame(rows).sort_values(["run", "step"])
 
@@ -527,7 +532,9 @@ def main():
           "LayerNorm rows: gamma/beta of the per-position LN at each block output (no running stats, no activation).\n\n" +
           md_table(bn) + "\n\n## Hottest (largest E[x^2]) channel per BN input\n\n" + md_table(hot))
     write("rezero.md", "# ReZero alpha by step\n\n" + header +
-          "\n`eff` = C tanh(raw/C), C = alpha init = 0.4472136. `d(eff)/d(raw)` = sech^2(raw/C): the gradient "
+          "\n`eff` = C tanh(raw/C), C = the block's ReZero cap from the run's checkpoint metadata "
+          "(`rezero_alpha_cap`; files older than format v6: `rezero_alpha_init` x 1.0). "
+          "`d(eff)/d(raw)` = sech^2(raw/C): the gradient "
           "attenuation at the current raw value.\n\n" + md_table(rezero_table(units), "{:.5f}"))
     pers, n = persistence_table(units)
     pers.to_csv(os.path.join(R, "persistent_low_velocity.csv"), index=False)

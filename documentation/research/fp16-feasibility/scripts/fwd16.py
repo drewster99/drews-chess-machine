@@ -17,7 +17,9 @@ sum_k |x_k| |w_k| (+|bias|): an upper bound on the magnitude of ANY partial sum
 in ANY accumulation order, which is what decides whether an fp16 accumulator
 could overflow inside the reduction even when the final output is in range.
 """
-import numpy as np, json, struct, math, os
+import numpy as np, json, struct, math, os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '..', 'scripts'))
+import dcm_arch as _dcm_arch
 
 # Position set built by ../../bf16-head-offset/scripts/posset.py (900 corpus
 # positions from shard 45 of corpus w3aA5b + every position of the first 4
@@ -198,25 +200,13 @@ def forward_batched(T, arch, X, R=frozenset(), q=ident, bs=128, keep=('pl_raw', 
 def softmax(z):
     e = np.exp(z - z.max(-1, keepdims=True)); return e / e.sum(-1, keepdims=True)
 
-def norm_arch(s):
-    a = json.loads(s) if isinstance(s, str) else dict(s)
-    if 'block_groups' not in a:
-        a['block_groups'] = [dict(count=a['num_blocks'], channels=a['channels'], conv1_kernel_size=a['block_conv1_kernel_size'],
-            conv2_kernel_size=a['block_conv2_kernel_size'], se_style=a['block_se_style'], se_reduction_ratio=a['block_se_reduction_ratio'],
-            use_rezero=a['block_use_rezero'], rezero_alpha_init=a['rezero_alpha_init'], activation_function=a['activation_function'],
-            activation_style=a['block_activation_style'], skip_merge=a['block_skip_merge'], dropout_multiplier=1)]
-    # `se_beta_init` (format v4+) only changes the random init; the stored
-    # weights already carry it, so the forward ignores it. Legacy files omit it.
-    # `se_activation` (format v5+) is the SE FC1 activation; files written
-    # before it existed used the group's own activation there, which is what a
-    # missing value resolves to (the Swift loader's legacy rule).
-    # `rezero_alpha_cap` (format v6+) is the asymptote C of the ReZero bound
-    # C*tanh(alpha/C); before it existed C was rezero_alpha_init * 1.0
-    # (NetworkArchitecture.rezeroTanhCeilingMultiple), the Swift loader's
-    # legacy rule.
-    for g in a['block_groups']:
-        g.setdefault('se_beta_init', 'glorot')
-        g.setdefault('se_activation', g['activation_function'])
-        g.setdefault('rezero_alpha_cap', g['rezero_alpha_init'] * 1.0)
-    a.setdefault('feature_skip_source', 'none')
-    return a
+def norm_arch(s, format_version=None):
+    """The block-groups architecture for a model file, from `scripts/dcm_arch.py`
+    (the single source of the version-gated rules). Pass the file's
+    `dcm_format_version` (or use `norm_arch_md`) so a current-format file missing a
+    field raises the way the app's loader does; without it, a missing field takes
+    the legacy value (e.g. `rezero_alpha_cap` = `rezero_alpha_init` x 1.0)."""
+    return _dcm_arch.norm_arch(s, format_version)
+
+def norm_arch_md(md):
+    return _dcm_arch.norm_arch_md(md)

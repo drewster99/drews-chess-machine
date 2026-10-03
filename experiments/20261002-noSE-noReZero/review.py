@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """No-ReZero vs ReZero review at one training step (no SE in any arm).
 
-Usage: review.py <step>
+Usage: review.py <step> [--allow-mixed-builds]
 
 For each run that reached <step>:
   - mean training metrics over the [REPLAY] lines in the 500 steps up to <step>;
@@ -9,7 +9,10 @@ For each run that reached <step>:
     (effective ReZero alpha x ||conv2||; alpha is 1 without ReZero), from the
     enumerated checkpoint at <step>, identified by its safetensors metadata;
   - pElo tallies, no-ReZero seed 1 vs ReZero seed 1, over every 1k step both reached.
+    The two arms' probe builds must be one recorded build; a comparison across builds
+    (or with unrecorded ones) needs --allow-mixed-builds and is labelled as such.
 """
+import argparse
 import json
 import math
 import os
@@ -21,13 +24,18 @@ import numpy as np
 
 import table
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+import dcm_arch  # noqa: E402  each checkpoint's ReZero cap, read from its own metadata
+from dcm_probe_build import UNRECORDED  # noqa: E402
+
 MODELS = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/Models")
-REZERO_CAP = 0.4472136  # bench_v5s3 rezero_alpha_init x rezeroTanhCeilingMultiple (1.0)
+# (label, session log, out-model stem, trained model_id): a checkpoint is used only
+# when its header carries this model_id at the requested training_step.
 RUNS = [
-    ("ReZero s1", "dcm_log_20260929-150743.txt", "20260929-test_SE_none"),
-    ("no ReZero s1", "dcm_log_20261002-011124.txt", "20261002-bench_v5s3_noSE_noReZero"),
-    ("no ReZero s2", "dcm_log_20261002-035513.txt", "20261002-bench_v5s3_noSE_noReZero-seed2"),
-    ("ReZero s2", "dcm_log_20260930-104117.txt", "20260929-test_SE_none-seed2"),
+    ("ReZero s1", "dcm_log_20260929-150743.txt", "20260929-test_SE_none", "20260929-24-834D"),
+    ("no ReZero s1", "dcm_log_20261002-011124.txt", "20261002-bench_v5s3_noSE_noReZero", "20261002-2-5tKN"),
+    ("no ReZero s2", "dcm_log_20261002-035513.txt", "20261002-bench_v5s3_noSE_noReZero-seed2", "20261002-4-T79u"),
+    ("ReZero s2", "dcm_log_20260930-104117.txt", "20260929-test_SE_none-seed2", "20260930-6-LkS6"),
 ]
 METRICS = ["loss", "pLoss", "vLoss", "pEnt", "gNorm"]
 
@@ -71,40 +79,63 @@ def read_tensors(path, wanted):
         return metadata, out
 
 
-def branch_scale(stem, step):
+def branch_scale(stem, step, expected_model_id):
     path = os.path.join(MODELS, f"{stem}-replay-step{step}.safetensors")
     if not os.path.exists(path):
         return None
-    wanted = [f"blocks.{b}.{t}" for b in range(3) for t in ("conv2.weight", "rezero_alpha")]
+    blocks = dcm_arch.rezero_blocks_of_file(path)
+    wanted = [f"blocks.{b.index}.{t}" for b in blocks for t in ("conv2.weight", "rezero_alpha")]
     metadata, tensors = read_tensors(path, wanted)
-    if int(metadata.get("training_step", -1)) != step:
-        raise SystemExit(f"{path}: metadata training_step {metadata.get('training_step')} != {step}")
+    for key in ("model_id", "training_step"):
+        if key not in metadata:
+            raise SystemExit(f"{path}: header has no {key}")
+    if metadata["model_id"] != expected_model_id:
+        raise SystemExit(f"{path}: header model_id {metadata['model_id']} != expected {expected_model_id}")
+    if int(metadata["training_step"]) != step:
+        raise SystemExit(f"{path}: header training_step {metadata['training_step']} != {step}")
     rows = []
-    for b in range(3):
-        norm = float(np.linalg.norm(tensors[f"blocks.{b}.conv2.weight"]))
-        alpha = tensors.get(f"blocks.{b}.rezero_alpha")
-        effective = 1.0 if alpha is None else REZERO_CAP * math.tanh(float(alpha[0]) / REZERO_CAP)
+    for block in blocks:
+        norm = float(np.linalg.norm(tensors[f"blocks.{block.index}.conv2.weight"]))
+        alpha = tensors.get(f"blocks.{block.index}.rezero_alpha")
+        if (alpha is not None) != block.use_rezero:
+            raise SystemExit(f"{path}: block {block.index} use_rezero={block.use_rezero} "
+                             f"disagrees with the tensors present")
+        effective = 1.0 if alpha is None else block.effective(float(alpha[0]))
         rows.append((norm, effective, effective * norm))
     return metadata.get("model_id"), rows
 
 
-def tally(step):
+def tally(step, allow_mixed_builds):
     a = table.csv_points("se_none")
-    b = table.probe_points("probes.jsonl")
-    diffs = [b[s][0] - a[s][0] for s in range(1000, step + 1, 1000) if s in a and s in b]
+    label, file_name, model_id = table.PROBE_ARMS[0]
+    b = table.probe_points(file_name, model_id, label)
+    builds = table.csv_probe_builds("se_none") | table.probe_record.probe_builds(os.path.join(table.HERE, file_name))
+    mixed = len(builds) != 1 or UNRECORDED in builds
+    if mixed and not allow_mixed_builds:
+        raise SystemExit(f"the two arms' pElo come from probe builds {sorted(builds)}; a difference between "
+                         f"them includes any offset between builds. Rerun with --allow-mixed-builds to tally anyway.")
+    steps = [s for s in range(1000, step + 1, 1000) if s in a and s in b]
+    non_finite = [s for s in steps if b[s][0] is None]
+    if non_finite:
+        raise SystemExit(f"{label}: non-finite pElo at step(s) {non_finite}; no sign test over them")
+    diffs = [b[s][0] - a[s][0] for s in steps]
     ahead = sum(d > 0 for d in diffs)
     behind = sum(d < 0 for d in diffs)
     n = ahead + behind
     p = min(1.0, 2 * sum(math.comb(n, k) for k in range(min(ahead, behind) + 1)) / 2 ** n) if n else float("nan")
-    return len(diffs), ahead, behind, p, sum(diffs) / len(diffs)
+    return len(diffs), ahead, behind, p, sum(diffs) / len(diffs), (sorted(builds) if mixed else None)
 
 
 def main():
-    step = int(sys.argv[1])
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("step", type=int)
+    parser.add_argument("--allow-mixed-builds", action="store_true")
+    args = parser.parse_args()
+    step = args.step
     print(f"=== review at step {step} ===")
-    for label, log_name, stem in RUNS:
+    for label, log_name, stem, model_id in RUNS:
         means = log_means(log_name, step)
-        scale = branch_scale(stem, step)
+        scale = branch_scale(stem, step, model_id)
         if means is None and scale is None:
             continue
         print(f"\n[{label}]")
@@ -115,9 +146,11 @@ def main():
             model_id, rows = scale
             print(f"  {model_id}: ||conv2|| / eff alpha / branch scale per block: " +
                   " | ".join(f"{n:.2f} / {e:.3f} / {s:.2f}" for n, e, s in rows))
-    count, ahead, behind, p, mean = tally(step)
+    count, ahead, behind, p, mean, mixed_builds = tally(step, args.allow_mixed_builds)
     print(f"\nno ReZero s1 vs ReZero s1, pElo 1k-{step // 1000}k: {count} checkpoints, ahead {ahead}, "
-          f"behind {behind}, tied {count - ahead - behind}, sign test p {p:.3f}, mean difference {mean:+.1f}")
+          f"behind {behind}, tied {count - ahead - behind}, sign test p {p:.3f}, mean difference {mean:+.1f}"
+          + (f"\n  CROSS-BUILD (probe builds {', '.join(mixed_builds)}): differences include any offset "
+             f"between builds" if mixed_builds else ""))
 
 
 if __name__ == "__main__":

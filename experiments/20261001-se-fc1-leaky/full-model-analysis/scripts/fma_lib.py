@@ -37,10 +37,15 @@ import os
 import re
 import struct
 
+import sys
+
 import numpy as np
 
-MODELS_DIR = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/Models")
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "..", "scripts"))
+import dcm_arch  # noqa: E402  the single source of the version-gated architecture rules
+
+MODELS_DIR = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/Models")
 RESULTS_DIR = os.path.abspath(os.path.join(HERE, "..", "results"))
 
 # run key -> (description, filename stem shared by the fresh net and its enumerated checkpoints)
@@ -114,7 +119,10 @@ class Checkpoint:
         self.metadata, header, data_start = read_header(path)
         self.model_id = self.metadata["model_id"]
         self.training_step = int(self.metadata.get("training_step", "0"))
-        self.architecture = json.loads(self.metadata["architecture"])
+        # Version-gated: fields a file's format predates resolve the way the app
+        # resolves them, and a v6+ file without `rezero_alpha_cap` is refused.
+        self.architecture = dcm_arch.norm_arch_md(self.metadata)
+        self.rezero_blocks = dcm_arch.rezero_blocks(self.metadata)
         self.tensors = {}
         self.f32 = {}
         with open(path, "rb") as handle:
@@ -240,6 +248,11 @@ def bf16_grid_fraction(values32):
     return float(np.mean((bits & 0xFFFF) == 0))
 
 
-def rezero_effective(raw, init):
-    ceiling = init  # rezeroTanhCeilingMultiple = 1.0
-    return ceiling * math.tanh(raw / ceiling)
+def run_rezero_blocks(run):
+    """Per-block ReZero settings (init, cap) of a run, read from its fresh net's
+    metadata. Every checkpoint of a run shares one architecture, so the fresh net
+    speaks for all of them."""
+    found, _, _ = discover(run)
+    if 0 not in found:
+        raise FileNotFoundError(f"{run}: no fresh net to read the architecture from")
+    return dcm_arch.rezero_blocks_of_file(found[0])

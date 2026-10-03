@@ -50,7 +50,7 @@ seg = cfg["segments"][-1]
 base = seg["cumstep_base"]
 out = os.path.join(replay.MODELS, cfg["out_model"])
 st = replay.SegTime(cfg["segments"], RUN)
-rows = replay.read_csv(RUN)
+rows, snapshot = replay.read_csv_for_update(RUN)
 filled = 0
 if os.path.exists(out):
     cur = replay.meta_step_of(out)
@@ -72,7 +72,7 @@ if os.path.exists(out):
             frozen_file="", note="log-backfill"))
         filled += 1
     if filled:
-        replay.write_csv(RUN, rows)
+        replay.write_csv(RUN, rows, snapshot)
 
 # 2b. record detection — any newly-probed mark that strictly beats the prior
 # all-time best pElo (max) or nll (min) is a record. Append to ALERTS (a Monitor

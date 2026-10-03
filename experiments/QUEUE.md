@@ -12,9 +12,11 @@ conversation.
 | 2026-10-02 01:11 | no SE, no ReZero (`20261002-noSE-noReZero/`), to 33k | `dcm_log_20261002-011124.txt` | ~2026-10-02 16:00 |
 | 2026-10-02 03:55 | no SE, no ReZero **seed 2** (same folder), to 33k | `dcm_log_20261002-035513.txt` | later than seed 1 (three runs share the GPU) |
 
-Chain (`chain2.sh`, scratchpad): label smoothing C launches when leaky-FC1 ends, D
-when no-ReZero seed 1 ends (each with `experiments/probe_loop.sh`); the mixed-tail
-timing runs when every replay run has ended.
+Queue script (a local script, not in the repo; `chain4.sh` since 2026-10-02 17:58):
+whenever fewer than three replay runs are training it launches the next ready item —
+zero-init ReZero once its format-v6 build is frozen, then label smoothing D, then C
+seed 2 — each with `experiments/probe_loop.sh`; the mixed-tail timing runs when every
+replay run has ended.
 
 ## Next (in order)
 
@@ -25,12 +27,14 @@ timing runs when every replay run has ended.
    2026-10-02 03:35 alongside the Lichess shutdown fix: 1701 passed, 0 failed, 1 skipped.
 3. ~~**Label smoothing C:** policy ε 0.1 → 0.03 (`plans-active/POLICY_LABEL_SMOOTHING_EXPERIMENTS.md`).
    Launches automatically when leaky-FC1 ends.~~ Launched 2026-10-02 06:14.
-4. **Label smoothing D:** value ε 0.013 → 0. Launches automatically when no-ReZero
-   seed 1 ends.
-5. **Label smoothing C seed 2** — from the scale+bias seed-2 fresh net; launches
-   when no-ReZero seed 2 ends (`chain3.sh`).
-6. **Label smoothing B:** per-move policy smoothing (needs code).
-7. ~~Second no-ReZero seed if the ReZero result is close.~~ Launched 2026-10-02 03:55.
+4. **Zero-init ReZero** (`20261002-rezero-zero-init/`) — first in the queue; launches
+   when a slot frees once its build is frozen.
+5. **Label smoothing D:** value ε 0.013 → 0. Launches when a slot frees (queue order).
+6. **Label smoothing C seed 2** — from the scale+bias seed-2 fresh net; launches when
+   a slot frees (queue order).
+7. **Label smoothing B:** per-move policy smoothing (code in place; its complement
+   target is being fixed first — `plans-active/REVIEW_2026-10-02_FIXES_PLAN.md` B2).
+8. ~~Second no-ReZero seed if the ReZero result is close.~~ Launched 2026-10-02 03:55.
 
 ## Finished
 
@@ -83,4 +87,7 @@ timing runs when every replay run has ended.
   `--probe-positions-out` change (shared NLL definition + per-position records).
   Same trade as at 01:28: the runs' step times in that window are not speed data;
   training math is unaffected.
-
+- **2026-10-02 17:58 — chain3 replaced by chain4** so zero-init ReZero (owner: "sooner
+  rather than later") takes the first free slot, ahead of D and C seed 2, as soon as
+  its format-v6 build is frozen; if no build is ready when a slot frees, the slot goes
+  to D instead of waiting.

@@ -14,13 +14,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import glob
 import os
 import re
 import sys
 from pathlib import Path
 
-LOG_GLOB = os.path.expanduser('~/Library/Logs/DrewsChessMachine/dcm_log_*.txt')
+from dcm_session_logs import latest_session_log
+
 
 LINE_RE = re.compile(
     r'\[ARENA\] #(\d+) kv .*step=(\d+) games=(\d+) w=(\d+) d=(\d+) l=(\d+) '
@@ -30,8 +30,7 @@ LINE_RE = re.compile(
 
 
 def latest_log() -> Path | None:
-    paths = sorted(glob.glob(LOG_GLOB))
-    return Path(paths[-1]) if paths else None
+    return latest_session_log()
 
 
 def parse(log: Path) -> list[dict]:

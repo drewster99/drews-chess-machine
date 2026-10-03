@@ -21,9 +21,10 @@ the by-time axis is continuous across a warm restart and excludes the stop gap.
 The build is a full idempotent rebuild each run (the run is small), so re-running
 after new autosaves/probes just extends the CSV.
 """
-import os, re, json, csv, sys
+import os, re, json, sys, argparse
 from _schema import FIELDS
-from _atomic_write import atomic_write_open  # crash-safe replace of data/<run>.csv
+# Crash-safe, compare-and-swap, no-silent-shrink replace of data/<run>.csv.
+from _guarded_csv import replace_rows, replay_row_key, snapshot_of
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REG = json.load(open(os.path.join(HERE, "vsuci_registry.json")))
@@ -104,16 +105,26 @@ def nearest_at(per_step, meta):
 
 
 def load_probes(path):
-    """cum_step -> {pElo, nll} from the live-probe JSONL."""
-    out = {}
+    """cum_step -> {pElo, nll} from the live-probe JSONL.
+
+    The file is the only record of these probes, so it must exist and every line must
+    parse; the one exception is an unterminated last line (an append still in flight),
+    which is reported and skipped."""
     if not os.path.exists(path):
-        sys.stderr.write(f"WARNING: pelo_jsonl missing: {path}\n")
-        return out
-    for line in open(path):
+        raise FileNotFoundError(f"pelo_jsonl missing: {path}; a rebuild without it would blank every pElo/NLL")
+    out = {}
+    with open(path) as fh:
+        lines = fh.readlines()
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
         try:
             d = json.loads(line)
-        except ValueError:
-            continue
+        except ValueError as error:
+            if number == len(lines) and not line.endswith("\n"):
+                sys.stderr.write(f"{path}:{number}: unterminated last line (an append in flight); skipped\n")
+                continue
+            raise ValueError(f"{path}:{number}: not valid JSON ({error})") from error
         out[int(d["step"])] = {"pElo": d.get("pElo"), "nll": d.get("nll")}
     return out
 
@@ -147,21 +158,22 @@ def build(key, cfg):
     return rows
 
 
-def write_csv(key, rows):
+def write_csv(key, rows, snapshot, allow_shrink):
     os.makedirs(DATA, exist_ok=True)
     p = os.path.join(DATA, f"{key}.csv")
-    with atomic_write_open(p, newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=FIELDS)
-        w.writeheader()
-        for r in rows:
-            w.writerow(r)
+    replace_rows(p, rows, FIELDS, snapshot, replay_row_key, allow_shrink=allow_shrink)
     return p
 
 
 def main():
+    ap = argparse.ArgumentParser(description="Rebuild data/<run>.csv for every train-vs-UCI run.")
+    ap.add_argument("--allow-shrink", action="store_true",
+                    help="allow a rebuild to drop rows / blank values a CSV holds (each one is printed first)")
+    args = ap.parse_args()
     for key, cfg in REG["runs"].items():
+        snapshot = snapshot_of(os.path.join(DATA, f"{key}.csv"))
         rows = build(key, cfg)
-        p = write_csv(key, rows)
+        p = write_csv(key, rows, snapshot, args.allow_shrink)
         peak = max((float(r["pElo"]) for r in rows if r["pElo"]), default=0.0)
         last = rows[-1] if rows else {}
         print(f"{key}: {len(rows)} marks -> {os.path.relpath(p, HERE)} · "

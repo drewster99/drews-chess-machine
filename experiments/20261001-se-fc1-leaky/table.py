@@ -3,70 +3,33 @@
 
 pElo / NLL for the SE arms come from the dashboard CSVs (their enumerated
 checkpoints probed with `--probe-set wide`); the leaky-FC1 arm's come from
-probes.jsonl (written by probe_loop.sh, same probe set). A cell is blank where
+probes.jsonl (written by probe_loop.sh, same probe set), read through
+`probe_record.load_probe_points` with the run's model_id. A cell is blank where
 a run never reached that step.
 
 Buffer plies/game is the average game length in the 500k-position replay
-buffer at that step: 500,000 / (games fed since the buffer's oldest position
-was fed), from the ReLU scale+bias run's [REPLAY] lines (complete to 33k). All
-arms replay the same corpus in the same order with the same feed per step, so
-it is the same for every arm; the script stops if the leaky run's log
-disagrees where both exist.
+buffer at that step (`table_common.buffer_plies_per_game`), from the ReLU
+scale+bias run's [REPLAY] lines (complete to 33k). All arms replay the same
+corpus in the same order with the same feed per step, so it is the same for
+every arm; the script stops if the leaky run's log disagrees where both exist.
 """
-import csv
-import json
 import os
-import re
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(HERE, "..", "..", "documentation", "dashboards", "data")
-LOGS = os.path.expanduser("~/Library/Logs/DrewsChessMachine")
-BUFFER = 500_000
-BASELINE_LOG = "dcm_log_20260929-150727.txt"
+sys.path.insert(0, os.path.join(HERE, ".."))
+import probe_record  # noqa: E402
+from table_common import (BASELINE_LOG, buffer_plies_per_game, csv_points, csv_probe_builds,  # noqa: E402
+                          print_probe_builds)
+
 LEAKY_LOG = "dcm_log_20261001-151822.txt"
+LEAKY_MODEL_ID = "20261001-43-NbWz"
 
 SE_ARMS = [("ReLU scale+bias", "se_sb"), ("ReLU attenuate-only", "se_att"), ("ReLU no SE", "se_none")]
 
 
-def csv_points(run):
-    points = {}
-    with open(os.path.join(DATA, f"{run}.csv")) as handle:
-        for row in csv.DictReader(handle):
-            if row.get("pElo"):
-                points[int(float(row["cum_step"]))] = (float(row["pElo"]), float(row["nll"]))
-    return points
-
-
 def leaky_points():
-    points = {}
-    path = os.path.join(HERE, "probes.jsonl")
-    if os.path.exists(path):
-        for line in open(path):
-            record = json.loads(line)
-            points[record["step"]] = (record["pElo"], record["nll"])
-    return points
-
-
-def buffer_plies_per_game(log_name):
-    feed = []
-    pattern = re.compile(r"\[REPLAY\] step=(\d+) .* plies=(\d+) games=(\d+)")
-    for line in open(os.path.join(LOGS, log_name), errors="replace"):
-        match = pattern.search(line)
-        if match:
-            feed.append(tuple(int(x) for x in match.groups()))
-    result = {}
-    for step, plies, games in feed:
-        if step % 1000 or plies < BUFFER:
-            continue
-        older = [f for f in feed if f[1] <= plies - BUFFER]
-        if older:
-            _, old_plies, old_games = older[-1]
-            result[step] = (plies - old_plies) / (games - old_games)
-    return result
-
-
-def cell(points, step, index, fmt):
-    return fmt.format(points[step][index]) if step in points else ""
+    return probe_record.load_probe_points(os.path.join(HERE, "probes.jsonl"), LEAKY_MODEL_ID)
 
 
 def main():
@@ -84,9 +47,12 @@ def main():
     print("|" + "---:|" * len(header))
     for step in range(1000, last + 1, 1000):
         row = [f"{step:,}", f"{plies[step]:.1f}" if step in plies else ""]
-        row += [cell(points, step, 0, "{:.1f}") for _, points in arms]
-        row += [cell(points, step, 1, "{:.4f}") for _, points in arms]
+        row += [probe_record.pelo_cell(points, step) for _, points in arms]
+        row += [f"{points[step][1]:.4f}" if step in points else "" for _, points in arms]
         print("| " + " | ".join(row) + " |")
+    builds = [(label, csv_probe_builds(run)) for label, run in SE_ARMS]
+    print_probe_builds([builds[0], ("leaky FC1 scale+bias", probe_record.probe_builds(
+        os.path.join(HERE, "probes.jsonl")))] + builds[1:])
 
 
 if __name__ == "__main__":
