@@ -9,6 +9,19 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-03 CDT — The init seed lives only in the lineage record
+
+- A model's init seed and scheme are recorded only as `dcm_lineage.rng.init_seed` /
+  `init_scheme`. The flat `init_seed` / `init_scheme` safetensors keys `--new-model`
+  wrote alongside the record are gone, from every writer and reader;
+  `ModelCheckpointMetadata` no longer carries an init record, and a malformed seed is
+  reported as a malformed lineage record. No model or session file on the training Mac
+  carried the flat keys, so nothing reads them.
+- The legacy `.dcmmodel` writer refuses a file that carries a lineage record, since that
+  layout would drop it (and the init seed in it).
+- `scripts/resume_equivalence_compare.py` also compares `rng.init_seed` / `init_scheme`.
+- Tests: `InitSeedRecordingTests` now asserts the seed through the lineage record.
+
 ## 2026-10-03 CDT — Resume-equivalence harness (`334de627`, `acf16048`)
 
 - `ResumeEquivalenceTests` (the exact-resume correctness gate, determinism plan C6/P12) runs the real corpus-replay loop in-process over a synthetic corpus: N+M steps straight through versus N steps, a save and `--resume-exact` for M more. The final files match bit for bit — every tensor, the sampler and dropout stream positions, the dropout Philox state, the feed position and the cumulative totals — and the resumed segment records an exact resume. Also: a resume early in the second epoch (the refeed crosses the wrap), probes on versus off, and a branch from the same save as a negative control. Ungated, about half a minute.

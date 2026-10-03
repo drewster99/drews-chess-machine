@@ -96,11 +96,6 @@ struct ModelCheckpointMetadata: Codable, Equatable {
     /// trainer files (whose setting is unrecorded, not guessable from the
     /// build stamp). Safetensors only, like `trainerSchedule`.
     let trainerPolicyTailPrecision: ChessNetwork.PolicyTailPrecision?
-    /// The init seed and scheme of a fresh mint (`--new-model`) — present on
-    /// files written straight from a seeded build, nil everywhere else
-    /// (trained files, files written before init seeds existed). Safetensors
-    /// only, like `trainerSchedule`.
-    let initRecord: ModelInitRecord?
 
     private enum CodingKeys: String, CodingKey {
         case creator, trainingStep, parentModelID, notes
@@ -112,8 +107,7 @@ struct ModelCheckpointMetadata: Codable, Equatable {
         parentModelID: String,
         notes: String,
         trainerSchedule: TrainerScheduleState? = nil,
-        trainerPolicyTailPrecision: ChessNetwork.PolicyTailPrecision? = nil,
-        initRecord: ModelInitRecord? = nil
+        trainerPolicyTailPrecision: ChessNetwork.PolicyTailPrecision? = nil
     ) {
         self.creator = creator
         self.trainingStep = trainingStep
@@ -121,7 +115,6 @@ struct ModelCheckpointMetadata: Codable, Equatable {
         self.notes = notes
         self.trainerSchedule = trainerSchedule
         self.trainerPolicyTailPrecision = trainerPolicyTailPrecision
-        self.initRecord = initRecord
     }
 
     /// Metadata for a trainer-state file: every trainer-file writer (corpus
@@ -154,7 +147,6 @@ struct ModelCheckpointMetadata: Codable, Equatable {
         notes = try container.decode(String.self, forKey: .notes)
         trainerSchedule = nil
         trainerPolicyTailPrecision = nil
-        initRecord = nil
     }
 }
 
@@ -423,9 +415,12 @@ struct ModelCheckpointFile {
                 "the legacy .dcmmodel format cannot carry trainer schedule state; save as .safetensors"
             )
         }
-        if metadata.initRecord != nil {
+        // A lineage record (run totals, derivation history, init seed) has no
+        // place in the positional .dcmmodel layout; writing one would drop it
+        // without a trace.
+        if safetensorsProvenance?.lineage.record != nil {
             throw ModelCheckpointError.encodingFailed(
-                "the legacy .dcmmodel format cannot carry an init seed; save as .safetensors"
+                "the legacy .dcmmodel format cannot carry a lineage record; save as .safetensors"
             )
         }
         // The .dcmmodel reader is positional and embeds no config — it can only
