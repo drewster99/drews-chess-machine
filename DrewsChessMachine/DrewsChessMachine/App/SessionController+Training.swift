@@ -252,56 +252,64 @@ extension SessionController {
                 }
                 trainer.policyLabelSmoothingEpsilon = resolvedSmoothing
                 TrainingParameters.shared.restoreFromSession(PolicyLabelSmoothingEpsilon.self, savedFloat: resolvedSmoothing, into: \.policyLabelSmoothingEpsilon)
-                // saved=nil means the session predates the per-move form, so
-                // it factually trained with fixed-total smoothing — reproduce
-                // that rather than inherit the live mode. A token no mode
-                // spells can only come from a hand-edited or corrupt file; the
-                // current mode is kept and the line says so, not guessed.
-                if let token = rs.policyLabelSmoothingMode {
-                    if let savedMode = PolicyLabelSmoothingMode(logToken: token) {
-                        let resolvedMode = SessionCheckpointState.resolvedPolicyLabelSmoothingMode(saved: savedMode)
-                        SessionLogger.shared.log(
-                            "[RESUME-PARAM] policy_label_smoothing_mode: \(TrainingParameters.shared.policyLabelSmoothingMode.logToken) -> \(resolvedMode.logToken) (from session)"
-                        )
-                        trainer.policyLabelSmoothingMode = resolvedMode
-                        TrainingParameters.shared.policyLabelSmoothingMode = resolvedMode
-                    } else {
-                        trainer.policyLabelSmoothingMode = TrainingParameters.shared.policyLabelSmoothingMode
-                        SessionLogger.shared.log(
-                            "[RESUME-PARAM] policy_label_smoothing_mode: saved=\"\(token)\" is not a known mode; "
-                            + "keeping \(TrainingParameters.shared.policyLabelSmoothingMode.logToken) (not guessed)"
-                        )
-                    }
-                } else {
-                    let resolvedMode = SessionCheckpointState.resolvedPolicyLabelSmoothingMode(saved: nil)
+                // The mode, δ and cap travel as a set. A session missing all
+                // three predates the per-move form and factually trained with
+                // fixed-total smoothing, so that is reproduced rather than the
+                // live mode inherited. A partial set or an unknown mode only
+                // reaches here after the user reviewed it at load time and
+                // accepted the current settings in its place
+                // (`invalidSavedSettings`).
+                if pendingLoadedSessionAcceptedReplacements.contains(SessionCheckpointState.SavedSettingID.policyLabelSmoothing) {
+                    let p = TrainingParameters.shared
+                    trainer.policyLabelSmoothingMode = p.policyLabelSmoothingMode
+                    trainer.policyLabelSmoothingPerMove = Float(p.policyLabelSmoothingPerMove)
+                    trainer.policyLabelSmoothingPerMoveCap = Float(p.policyLabelSmoothingPerMoveCap)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] policy_label_smoothing_mode: saved=nil applied=\(resolvedMode.logToken) (session predates the feature; fixed-total smoothing preserved)"
+                        "[RESUME-PARAM] policy_label_smoothing: saved mode=\(rs.policyLabelSmoothingMode ?? "nil") "
+                            + "per_move=\(rs.policyLabelSmoothingPerMove.map { "\($0)" } ?? "nil") "
+                            + "per_move_cap=\(rs.policyLabelSmoothingPerMoveCap.map { "\($0)" } ?? "nil") is unusable; "
+                            + "replaced with the current mode=\(p.policyLabelSmoothingMode.logToken) "
+                            + "per_move=\(p.policyLabelSmoothingPerMove) per_move_cap=\(p.policyLabelSmoothingPerMoveCap) "
+                            + "(accepted by the user at load)"
                     )
-                    trainer.policyLabelSmoothingMode = resolvedMode
-                    TrainingParameters.shared.policyLabelSmoothingMode = resolvedMode
-                }
-                if let perMove = rs.policyLabelSmoothingPerMove {
+                } else if let token = rs.policyLabelSmoothingMode,
+                          let perMove = rs.policyLabelSmoothingPerMove,
+                          let perMoveCap = rs.policyLabelSmoothingPerMoveCap {
+                    guard let savedMode = PolicyLabelSmoothingMode(logToken: token) else {
+                        preconditionFailure("session load reviews an unknown policy_label_smoothing_mode before resume; got \(token)")
+                    }
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] policy_label_smoothing_mode: \(TrainingParameters.shared.policyLabelSmoothingMode.logToken) -> \(savedMode.logToken) (from session)"
+                    )
+                    trainer.policyLabelSmoothingMode = savedMode
+                    TrainingParameters.shared.policyLabelSmoothingMode = savedMode
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] policy_label_smoothing_per_move: \(TrainingParameters.shared.policyLabelSmoothingPerMove) -> \(perMove) (from session)"
                     )
                     trainer.policyLabelSmoothingPerMove = perMove
                     TrainingParameters.shared.restoreFromSession(PolicyLabelSmoothingPerMove.self, savedFloat: perMove, into: \.policyLabelSmoothingPerMove)
-                } else {
-                    trainer.policyLabelSmoothingPerMove = Float(TrainingParameters.shared.policyLabelSmoothingPerMove)
-                    SessionLogger.shared.log(
-                        "[RESUME-PARAM] policy_label_smoothing_per_move: saved=nil applied=\(TrainingParameters.shared.policyLabelSmoothingPerMove) (defaulted)"
-                    )
-                }
-                if let perMoveCap = rs.policyLabelSmoothingPerMoveCap {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] policy_label_smoothing_per_move_cap: \(TrainingParameters.shared.policyLabelSmoothingPerMoveCap) -> \(perMoveCap) (from session)"
                     )
                     trainer.policyLabelSmoothingPerMoveCap = perMoveCap
                     TrainingParameters.shared.restoreFromSession(PolicyLabelSmoothingPerMoveCap.self, savedFloat: perMoveCap, into: \.policyLabelSmoothingPerMoveCap)
                 } else {
+                    guard rs.policyLabelSmoothingMode == nil,
+                          rs.policyLabelSmoothingPerMove == nil,
+                          rs.policyLabelSmoothingPerMoveCap == nil else {
+                        preconditionFailure("session load reviews a partial policy label-smoothing set before resume")
+                    }
+                    let resolvedMode = SessionCheckpointState.resolvedPolicyLabelSmoothingMode(saved: nil)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] policy_label_smoothing_mode: saved=nil applied=\(resolvedMode.logToken) (session predates the feature; fixed-total smoothing preserved)"
+                    )
+                    trainer.policyLabelSmoothingMode = resolvedMode
+                    TrainingParameters.shared.policyLabelSmoothingMode = resolvedMode
+                    trainer.policyLabelSmoothingPerMove = Float(TrainingParameters.shared.policyLabelSmoothingPerMove)
                     trainer.policyLabelSmoothingPerMoveCap = Float(TrainingParameters.shared.policyLabelSmoothingPerMoveCap)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] policy_label_smoothing_per_move_cap: saved=nil applied=\(TrainingParameters.shared.policyLabelSmoothingPerMoveCap) (defaulted)"
+                        "[RESUME-PARAM] policy_label_smoothing_per_move / _cap: saved=nil applied=\(TrainingParameters.shared.policyLabelSmoothingPerMove) / "
+                            + "\(TrainingParameters.shared.policyLabelSmoothingPerMoveCap) (session predates the feature; inert under fixed-total)"
                     )
                 }
                 let resolvedValueSmoothing = SessionCheckpointState.resolvedValueLabelSmoothingEpsilon(saved: rs.valueLabelSmoothingEpsilon)
@@ -357,7 +365,8 @@ extension SessionController {
                         TrainingParameters.shared.restoreFromSession(PeriodicAutosaveIntervalSec.self, pai, into: \.periodicAutosaveIntervalSec)
                     } else {
                         SessionLogger.shared.log(
-                            "[RESUME-PARAM] ERROR periodic_autosave_interval_sec: saved=\(pai) is not a usable interval (must be > 0; the session file is corrupt or hand-edited) — kept current \(TrainingParameters.shared.periodicAutosaveIntervalSec)"
+                            "[RESUME-PARAM] periodic_autosave_interval_sec: saved=\(pai) is unusable (must be > 0); "
+                                + "replaced with the current \(TrainingParameters.shared.periodicAutosaveIntervalSec) (accepted by the user at load)"
                         )
                     }
                 } else {
@@ -1604,6 +1613,7 @@ extension SessionController {
                 // Consume the pending load — from here on, the
                 // running session owns the restored state.
                 pendingLoadedSession = nil
+                pendingLoadedSessionAcceptedReplacements = []
                 // A training segment has started, so clear the
                 // "champion replaced since last training" flag
                 // (the Start dialog's annotation is resolved).
@@ -3219,7 +3229,7 @@ extension SessionController {
         guard let criterion = ArenaPromotionCriterion.allCases.first(where: { $0.logToken == token }) else {
             SessionLogger.shared.log(
                 "[RESUME-PARAM] arena_promotion_criterion: saved=\"\(token)\" is not a known criterion; "
-                + "keeping \(p.arenaPromotionCriterion.logToken) (not guessed)"
+                + "replaced with the current \(p.arenaPromotionCriterion.logToken) (accepted by the user at load)"
             )
             return
         }
@@ -3232,8 +3242,8 @@ extension SessionController {
               let maxGames = rs.arenaSPRTMaxGames else {
             SessionLogger.shared.log(
                 "[RESUME-PARAM] arena_promotion_criterion: saved=\(token) but the SPRT block is incomplete; "
-                + "keeping \(p.arenaPromotionCriterion.logToken) and today's hypotheses rather than "
-                + "running a half-restored test"
+                + "replaced with the current \(p.arenaPromotionCriterion.logToken) and today's hypotheses "
+                + "(accepted by the user at load)"
             )
             return
         }
@@ -3249,7 +3259,8 @@ extension SessionController {
         } catch {
             SessionLogger.shared.log(
                 "[RESUME-PARAM] arena_promotion_criterion: saved SPRT block is invalid (\(error)); "
-                + "keeping \(p.arenaPromotionCriterion.logToken) and today's hypotheses"
+                + "replaced with the current \(p.arenaPromotionCriterion.logToken) and today's hypotheses "
+                + "(accepted by the user at load)"
             )
             return
         }

@@ -962,3 +962,107 @@ enum SessionCheckpointLayout {
         return (stateData, championData, trainerData)
     }
 }
+
+// MARK: - Saved settings that cannot be resumed as found
+
+extension SessionCheckpointState {
+    /// Stable ids for the saved-setting groups `invalidSavedSettings(current:)`
+    /// checks; the resume block names the same ids when it applies a
+    /// replacement the user accepted.
+    enum SavedSettingID {
+        static let policyLabelSmoothing = "policy_label_smoothing"
+        static let arenaPromotionCriterion = "arena_promotion_criterion"
+        static let periodicAutosaveInterval = "periodic_autosave_interval_sec"
+    }
+
+    /// The saved settings a resume cannot use as found — a hand-edited,
+    /// corrupt, or partially written `session.json` — each with the current
+    /// setting offered in its place. Empty for every session the app wrote
+    /// itself. A load with findings stops for the user to review them; a
+    /// replacement is applied only when the user accepts it.
+    func invalidSavedSettings(current: TrainingParametersSnapshot) -> [InvalidStoredSetting] {
+        var findings: [InvalidStoredSetting] = []
+
+        // Policy label smoothing: the mode, δ and cap are saved together or
+        // not at all (a pre-feature session has none and resumes fixed-total).
+        let smoothingFields: [(String, String?)] = [
+            ("mode", policyLabelSmoothingMode),
+            ("per_move", policyLabelSmoothingPerMove.map { "\($0)" }),
+            ("per_move_cap", policyLabelSmoothingPerMoveCap.map { "\($0)" }),
+        ]
+        let presentSmoothingCount = smoothingFields.filter { $0.1 != nil }.count
+        let currentSmoothing = "mode \(current.policyLabelSmoothingMode.logToken), "
+            + "per_move \(current.value(for: PolicyLabelSmoothingPerMove.self)), "
+            + "per_move_cap \(current.value(for: PolicyLabelSmoothingPerMoveCap.self))"
+        let foundSmoothing = smoothingFields.map { "\($0.0)=\($0.1 ?? "missing")" }.joined(separator: ", ")
+        if presentSmoothingCount > 0 && presentSmoothingCount < smoothingFields.count {
+            findings.append(InvalidStoredSetting(
+                id: SavedSettingID.policyLabelSmoothing,
+                name: "Policy label smoothing (mode, per-move δ, cap)",
+                found: foundSmoothing,
+                problem: "only part of the set is saved; a session saves all three or none",
+                replacement: currentSmoothing
+            ))
+        } else if let token = policyLabelSmoothingMode, PolicyLabelSmoothingMode(logToken: token) == nil {
+            findings.append(InvalidStoredSetting(
+                id: SavedSettingID.policyLabelSmoothing,
+                name: "Policy label smoothing (mode, per-move δ, cap)",
+                found: foundSmoothing,
+                problem: "mode \"\(token)\" is not a known mode (fixed_total or per_move)",
+                replacement: currentSmoothing
+            ))
+        }
+
+        // Arena promotion criterion and its SPRT hypotheses — the same checks
+        // `restoreArenaPromotionCriterion` applies, made before the resume.
+        if let token = arenaPromotionCriterion {
+            let currentArena = "\(current.arenaPromotionCriterion.logToken), SPRT "
+                + "elo0 \(current.arenaSPRTElo0) elo1 \(current.arenaSPRTElo1) "
+                + "alpha \(current.arenaSPRTAlpha) beta \(current.arenaSPRTBeta) "
+                + "games \(current.arenaSPRTMinGames)…\(current.arenaSPRTMaxGames)"
+            let sprtFields: [(String, String?)] = [
+                ("elo0", arenaSPRTElo0.map { "\($0)" }), ("elo1", arenaSPRTElo1.map { "\($0)" }),
+                ("alpha", arenaSPRTAlpha.map { "\($0)" }), ("beta", arenaSPRTBeta.map { "\($0)" }),
+                ("min_games", arenaSPRTMinGames.map { "\($0)" }), ("max_games", arenaSPRTMaxGames.map { "\($0)" }),
+            ]
+            let foundArena = "\(token); " + sprtFields.map { "\($0.0)=\($0.1 ?? "missing")" }.joined(separator: ", ")
+            var problem: String? = nil
+            if !ArenaPromotionCriterion.allCases.contains(where: { $0.logToken == token }) {
+                problem = "\"\(token)\" is not a known promotion criterion"
+            } else if let elo0 = arenaSPRTElo0, let elo1 = arenaSPRTElo1, let alpha = arenaSPRTAlpha,
+                      let beta = arenaSPRTBeta, let minGames = arenaSPRTMinGames, let maxGames = arenaSPRTMaxGames {
+                do {
+                    _ = try ArenaSPRT.SPRTConfig(
+                        elo0: elo0, elo1: elo1, alpha: alpha, beta: beta, minGames: minGames, maxGames: maxGames
+                    )
+                } catch {
+                    problem = "the saved SPRT hypotheses are not a valid test (\(error))"
+                }
+            } else {
+                problem = "the SPRT hypotheses are only partly saved"
+            }
+            if let problem {
+                findings.append(InvalidStoredSetting(
+                    id: SavedSettingID.arenaPromotionCriterion,
+                    name: "Arena promotion criterion",
+                    found: foundArena,
+                    problem: problem,
+                    replacement: currentArena
+                ))
+            }
+        }
+
+        // Periodic autosave interval: a non-positive interval cannot drive the
+        // periodic save timer.
+        if let interval = periodicAutosaveIntervalSec, !(interval > 0) {
+            findings.append(InvalidStoredSetting(
+                id: SavedSettingID.periodicAutosaveInterval,
+                name: "Periodic autosave interval",
+                found: "\(interval) s",
+                problem: "an interval must be greater than zero",
+                replacement: "\(current.periodicAutosaveIntervalSec) s"
+            ))
+        }
+        return findings
+    }
+}

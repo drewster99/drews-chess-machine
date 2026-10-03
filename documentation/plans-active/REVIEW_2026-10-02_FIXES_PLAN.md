@@ -127,7 +127,7 @@ threefold was discarded whole, silently (w3aA5b 0.045% of games, elite 0.32%).
   positions under both modes; post-mate and illegal moves are still rejected; UCI position
   test past a threefold.
 
-### B2. Per-move label smoothing: the complement target could favor the played move — [ ]
+### B2. Per-move label smoothing: the complement target could favor the played move — [x] (730023ea)
 - The played move's floor in the "this move was bad" target becomes the same per-alternative
   mass the positive target uses, `min(δ, cap/(n−1))`, so it never exceeds any other legal
   move. Owner approved updating the test that pinned the old floor.
@@ -137,20 +137,46 @@ threefold was discarded whole, silently (w3aA5b 0.045% of games, elite 0.32%).
 - Validation: never-favors-the-played-move sweep over the declared ranges; floor equals the
   positive per-alternative mass; decode refuses unknown / partial sets; Save leaves unedited
   values bit-identical.
+- *As built:* the complement floor and the popover Save change landed as planned (red before
+  the fix: the never-favors sweep failed at δ 0.005 from 212 legal moves and at every larger
+  δ past 1/n; the popover tests failed on δ 1/300, cap 1/3 and the arena τ / SPRT fields). The
+  `session.json` refusal moved into C5 instead of a decode error: an unknown or partial
+  smoothing set stops the load for the user to review, per the owner's C5 rule, rather than
+  failing it outright. `documentation/parameters.md` regenerated (it lacked the three
+  per-move parameters).
 
-### B3. Settings rounding on resume — [ ]
+### B3. Settings rounding on resume — [x] (1514079f)
 Sixteen resume sites converted saved Float values with `Double(float)` and persisted noise
 (`0.1000000014901161`). One helper converts through the shortest round-trip text.
+- *As built:* `TrainingParameters.restoreFromSession(_:savedFloat:into:)` over
+  `doubleFromSavedFloat(_:)`; the τ-only local helper folded into it. Also corrected the
+  `SessionCheckpointState` field comments that claimed absent values fall through to the live
+  setting (each resolves to its pre-feature value).
 
-### B4. Trainer defaults — [ ]
+### B4. Trainer defaults — [~] (6045ce4e, partial)
 `ChessTrainer.init` defaults come from the declared parameter defaults (five had drifted:
 draw penalty, momentum, value smoothing, weight decay, grad clip).
+- *As built (partial):* every default that already matched its declaration now reads it (LR,
+  entropy, loss weights, illegal-mass weight, policy smoothing ε / mode / δ / cap, complement
+  CE, √batch LR). **Not changed, needs an owner decision:** six defaults that differ from their
+  declarations — draw penalty 0.1 vs 0, weight decay 1e-4 vs 3e-4, grad clip 30 vs 15, value
+  smoothing 0 vs 0.013, momentum 0 vs 0.9, LR warmup 100 vs 1000 (warmup was missed in the
+  review's list). Aligning them changes what existing tests that build a bare `ChessTrainer`
+  exercise (e.g. `MomentumOptimizerTests`, `RuntimeArchReachTests`, `PolicyHeadCorrectnessTests`
+  run at momentum 0 today), so they were left as they are.
 
-### B5. Policy-head precision is recorded — [ ]
+### B5. Policy-head precision is recorded — [x] (4582aca0)
 One resolver for `--policy-tail-precision` (replacing two parsers); the per-process value is
 logged at launch / session start / CLI start, saved in trainer checkpoint metadata,
 `results.json` and probe output. Replay and train-vs-UCI exact resumes refuse a recorded
 mismatch; the GUI follows decision D-1 (never refuses; reports NOT EXACT).
+- *As built:* `ChessNetwork.PolicyTailPrecision.resolve` / `.process`; every network and
+  trainer defaults to `.process` (no new parameter on `ChessMPSNetwork` — `ChessNetwork`'s
+  default carries it, including the BN-calibration sibling); the flag is accepted in every mode
+  (GUI, replay, train-vs-UCI, UCI, probe, sweeps, new-model, audit) and checked once at launch.
+  Trainer files record `trainer_policy_tail_precision` via `ModelCheckpointMetadata.trainerFile`
+  (not part of the all-or-nothing `trainer_*` schedule keys). `PolicyTailPrecisionResume` holds
+  the resume decisions; `policy_tail` added to the determinism plan's not-exact items.
 
 ## C. Model tools
 
@@ -180,13 +206,23 @@ GPU capture request validated up front, and a capture that fails to start stops 
 its final save; negative training steps in headers are refused; a corrupt resume pointer
 aborts the pruning sweep; CLI `--output` refuses an existing file unless `--overwrite-output`.
 
-### C5. Invalid stored settings are shown, never silently replaced — [ ]
+### C5. Invalid stored settings are shown, never silently replaced — [x] (see commit)
 Owner: "anytime settings are loaded that seem corrupted or invalid we should show something in
 UI to tell the user what was seen and allow them to 'reset' it to a valid value." Covers
 training parameters read from `UserDefaults`, values restored from a session (e.g. an unknown
 arena promotion criterion or label-smoothing mode), and Lichess bot settings. Each invalid
 value is logged and listed in the UI with what was found and a per-value Reset; nothing is
 replaced without the user choosing it.
+- *As built:* stored preferences — `TrainingParameters.inspectStored` replaces the `try?`
+  chain; an unusable entry is logged `[PARAM-INVALID]` (and to stderr for CLI runs), the app
+  runs on the declared default meanwhile, the stored value is left untouched, and
+  `InvalidStoredSettingsSheet` lists each one at launch with Reset / Reset All. Session values —
+  `SessionCheckpointState.invalidSavedSettings(current:)` checks the smoothing set (unknown
+  mode, partial set), the arena promotion criterion (unknown, incomplete or invalid SPRT block)
+  and the autosave interval (≤ 0); a load with findings stops before anything is built and
+  `SessionSettingsReviewSheet` shows each value found, why, and the current setting offered in
+  its place, with "Resume with Replacements" or "Don't Resume". The session file is never
+  changed. Lichess bot settings keep their existing unreadable + reset flow.
 
 ### C6. Board encoding without the always-zero repetition planes — [ ]
 Planes 20, 21, 22, 24, 26 and 28 (repetition 1, 2, 3, 5, 7, 9 plies ago) can never be 1 in

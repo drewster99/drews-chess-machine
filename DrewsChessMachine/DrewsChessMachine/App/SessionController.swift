@@ -630,6 +630,17 @@ final class SessionController {
     /// from it, then clears it.
     var pendingLoadedSession: LoadedSession?
 
+    /// Ids (`SessionCheckpointState.SavedSettingID`) of the saved settings in
+    /// `pendingLoadedSession` the user agreed to replace with the current
+    /// settings, after a load stopped to show them. The resume block applies
+    /// those replacements; every other saved value is restored as saved.
+    var pendingLoadedSessionAcceptedReplacements: Set<String> = []
+
+    /// A session load stopped because some of its saved settings cannot be
+    /// used as found. Presented as a sheet listing each one; the user either
+    /// resumes with the offered replacements or does not resume.
+    var sessionSettingsReview: SessionSettingsReview?
+
     // MARK: - Candidate-test probe state + CLI recorder (Stage 4h)
 
     /// Which board the Play-and-Train view shows: `.gameRun` (the live self-play
