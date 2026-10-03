@@ -114,11 +114,41 @@ U5 `f273b890`, U3 `748afe20`, U4 `fbf2a4f1`. CLAUDE.md and CHANGELOG updated aft
   computation cannot trap); U5's four new corpus-replay resume refusals exit 33
   (`CorpusReplayError`), not 2.
 - **Open:**
-  - Manual checks not yet run: Build New Model with −1, `Int.max` and a 30M-parameter tower;
-    the launch-sheet order with a planted invalid stored value; one GUI session save and resume
-    showing a consistent cut; a `--train --training-step-limit` run ending with
-    `[APP] --train: exiting process (termination_reason=step_limit_reached)`; the new `--help`
-    text.
+  - Manual checks (2026-10-03 14:55–15:06 CDT, Debug build of `fbf2a4f1`, real settings
+    domain backed up first and restored after; only the model-ID counter moved): all passed.
+    - Build New Model: a group count of −1 shows "blockGroups[0].count must be positive (got
+      -1)", Total blocks "invalid", Build disabled; `Int.max` shows "the parameter count
+      overflows Int"; a 30,851,626-parameter tower (5 × 248 ch, 7×7) shows "Too large for batch
+      4096 on this Mac (up to 20.0M with 64 GB of memory); fits at batch 1024 (up to 40.0M) and
+      below" with Build enabled; no crash. A GUI build logs `[ARCH] size guidance (Build
+      Network): … batch512_max=56568542 verdict=within_recommended`.
+    - Launch order: with `lr_warmup_steps` planted as 7.9 and a resume pointer present, the
+      invalid-settings sheet opens first ("stored as a real number, not a whole number"),
+      `[RESUME] Auto-resume prompt waits for the invalid-settings sheet to close` is logged,
+      Reset rewrites only the stored entry (`… the current run's value is unchanged`), and the
+      resume prompt appears after Close with its countdown starting then (29 s showing).
+    - GUI save and resume: a Save Session with the buffer included paused self-play
+      (`dropped 180 in-flight games`) and wrote buffer, `replayBufferTotalPositionsAdded` and
+      lineage fed counts that agree (709,074 positions, 2,362 games); the resume logged
+      `[RESUME] EXACT`, continued the seed, game serials (next 3234) and arena count, restored
+      sampler, dropout state and buffer, and started the trainer clock at 22.
+    - `--train --training-step-limit 5`: exit 0, `results.json` written, and the session log ends
+      `[APP] --train: exiting process (termination_reason=step_limit_reached)`.
+    - `--help` usage text: the new `--epochs`, `--resume-exact` and `--accept-inexact` text (its
+      item list includes `device`).
+  - Found during the manual checks (not changed):
+    - `saveSessionInternal` builds the session state (`buildCurrentSessionState`) and reads the
+      step count before it pauses, so `session.json`'s `trainingSteps`, `selfPlayGames` and
+      `emittedGames` are from before the cut (here 20 steps and 2,340 games against the
+      trainer's 22 and the record's 2,362). The G5 analysis kept this ("carries no stream
+      state"); a resume takes its clocks from the trainer file and the record
+      (`trainer_completed_steps: 22 (from trainer file; session step count 20)`), so only the
+      resumed run's displayed counters start that far behind.
+    - A bare `--help` is not a recognized argument: it prints "unrecognized argument(s):
+      '--help'" before the usage and exits 2.
+    - `~/Library/Preferences` holds 1,398 `<TestClass>-<UUID>.plist` domains left by test
+      suites (`LichessBot*Tests` and others) that create a private defaults suite and never
+      remove it.
   - `TrainVsUciRunner` still restores the replay buffer and then checks
     `totalPositionsAdded` (`verifyReplayBufferMatchesSession`); a mismatch fails the run either
     way, so there is no wrong-state outcome, but the GUI's check-before-restore
