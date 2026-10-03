@@ -110,6 +110,9 @@ struct TrainingSettingsPopover: View {
             || model.policyLossWeightError
             || model.valueLossWeightError
             || model.valueLabelSmoothingError
+            || model.policyLabelSmoothingError
+            || model.policyLabelSmoothingPerMoveError
+            || model.policyLabelSmoothingPerMoveCapError
             || model.drawPenaltyError
             || model.trainingBatchSizeError
     }
@@ -272,6 +275,10 @@ struct TrainingSettingsPopover: View {
                     policyLossWeightText: $model.policyLossWeightText,
                     valueLossWeightText: $model.valueLossWeightText,
                     valueLabelSmoothingText: $model.valueLabelSmoothingText,
+                    policyLabelSmoothingMode: $model.policyLabelSmoothingModeValue,
+                    policyLabelSmoothingText: $model.policyLabelSmoothingText,
+                    policyLabelSmoothingPerMoveText: $model.policyLabelSmoothingPerMoveText,
+                    policyLabelSmoothingPerMoveCapText: $model.policyLabelSmoothingPerMoveCapText,
                     drawPenaltyText: $model.drawPenaltyText,
                     trainingBatchSizeText: $model.trainingBatchSizeText,
                     lrError: model.lrError,
@@ -285,6 +292,9 @@ struct TrainingSettingsPopover: View {
                     policyLossWeightError: model.policyLossWeightError,
                     valueLossWeightError: model.valueLossWeightError,
                     valueLabelSmoothingError: model.valueLabelSmoothingError,
+                    policyLabelSmoothingError: model.policyLabelSmoothingError,
+                    policyLabelSmoothingPerMoveError: model.policyLabelSmoothingPerMoveError,
+                    policyLabelSmoothingPerMoveCapError: model.policyLabelSmoothingPerMoveCapError,
                     drawPenaltyError: model.drawPenaltyError,
                     trainingBatchSizeError: model.trainingBatchSizeError,
                     lrCyclingEnabled: model.lrCycleEnabledValue,
@@ -803,6 +813,10 @@ private struct OptimizerTab: View {
     @Binding var policyLossWeightText: String
     @Binding var valueLossWeightText: String
     @Binding var valueLabelSmoothingText: String
+    @Binding var policyLabelSmoothingMode: PolicyLabelSmoothingMode
+    @Binding var policyLabelSmoothingText: String
+    @Binding var policyLabelSmoothingPerMoveText: String
+    @Binding var policyLabelSmoothingPerMoveCapText: String
     @Binding var drawPenaltyText: String
     @Binding var trainingBatchSizeText: String
 
@@ -817,6 +831,9 @@ private struct OptimizerTab: View {
     let policyLossWeightError: Bool
     let valueLossWeightError: Bool
     let valueLabelSmoothingError: Bool
+    let policyLabelSmoothingError: Bool
+    let policyLabelSmoothingPerMoveError: Bool
+    let policyLabelSmoothingPerMoveCapError: Bool
     let drawPenaltyError: Bool
     let trainingBatchSizeError: Bool
     /// When true, the LR cycle (Cycling tab) is driving the learning rate, so
@@ -1029,6 +1046,88 @@ private struct OptimizerTab: View {
                             in: ValueLossWeight.declaredClosedRange,
                             step: 0.5
                         )
+                    }
+                    // Policy label smoothing: the mode picker, then the
+                    // fields each mode reads. The inactive mode's fields stay
+                    // in place, dimmed and disabled, rather than being
+                    // removed — the same treatment as the Arena popover's
+                    // criterion-dependent fields — so the popover keeps its
+                    // height and a stored value that is not in effect stays
+                    // visibly present-but-inactive.
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            Text("Policy label smoothing:")
+                                .frame(width: 160, alignment: .trailing)
+                            Picker("", selection: $policyLabelSmoothingMode) {
+                                ForEach(PolicyLabelSmoothingMode.allCases) { mode in
+                                    Text(mode.displayName).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .fixedSize()
+                            Spacer()
+                        }
+                        PopoverRow(
+                            label: "ε:",
+                            text: $policyLabelSmoothingText,
+                            error: policyLabelSmoothingError,
+                            placeholder: PolicyLabelSmoothingEpsilon.declaredDefaultText(format: "%.3f"),
+                            hint: "total over legal moves"
+                        ) {
+                            Stepper(
+                                "",
+                                value: PopoverBindings.doubleBinding(
+                                    text: $policyLabelSmoothingText,
+                                    fallback: PolicyLabelSmoothingEpsilon.declaredDefault,
+                                    format: "%.3f"
+                                ),
+                                in: PolicyLabelSmoothingEpsilon.declaredClosedRange,
+                                step: 0.01
+                            )
+                        }
+                        .disabled(policyLabelSmoothingMode != .fixedTotal)
+                        .opacity(policyLabelSmoothingMode == .fixedTotal ? 1 : 0.4)
+                        PopoverRow(
+                            label: "δ:",
+                            text: $policyLabelSmoothingPerMoveText,
+                            error: policyLabelSmoothingPerMoveError,
+                            placeholder: PolicyLabelSmoothingPerMove.declaredDefaultText(format: "%.4f"),
+                            hint: "each non-played legal move"
+                        ) {
+                            Stepper(
+                                "",
+                                value: PopoverBindings.doubleBinding(
+                                    text: $policyLabelSmoothingPerMoveText,
+                                    fallback: PolicyLabelSmoothingPerMove.declaredDefault,
+                                    format: "%.4f"
+                                ),
+                                in: PolicyLabelSmoothingPerMove.declaredClosedRange,
+                                step: 0.0005
+                            )
+                        }
+                        .disabled(policyLabelSmoothingMode != .perMove)
+                        .opacity(policyLabelSmoothingMode == .perMove ? 1 : 0.4)
+                        PopoverRow(
+                            label: "Total cap:",
+                            text: $policyLabelSmoothingPerMoveCapText,
+                            error: policyLabelSmoothingPerMoveCapError,
+                            placeholder: PolicyLabelSmoothingPerMoveCap.declaredDefaultText(format: "%.2f"),
+                            hint: "max of δ·(legal moves − 1)"
+                        ) {
+                            Stepper(
+                                "",
+                                value: PopoverBindings.doubleBinding(
+                                    text: $policyLabelSmoothingPerMoveCapText,
+                                    fallback: PolicyLabelSmoothingPerMoveCap.declaredDefault,
+                                    format: "%.2f"
+                                ),
+                                in: PolicyLabelSmoothingPerMoveCap.declaredClosedRange,
+                                step: 0.05
+                            )
+                        }
+                        .disabled(policyLabelSmoothingMode != .perMove)
+                        .opacity(policyLabelSmoothingMode == .perMove ? 1 : 0.4)
                     }
                     PopoverRow(
                         label: "Value label smoothing:",

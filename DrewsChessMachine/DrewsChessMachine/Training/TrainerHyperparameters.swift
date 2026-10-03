@@ -41,6 +41,13 @@ struct TrainerHyperparameters: Sendable, Equatable {
     var valueLossWeight: Float
     var illegalMassPenaltyWeight: Float
     var policyLabelSmoothingEpsilon: Float
+    /// Which policy-target smoothing form the trainer builds; `epsilon` is
+    /// read only in `.fixedTotal`, the per-move mass and cap only in
+    /// `.perMove`. All three travel together through this struct so no path
+    /// can configure one without the others.
+    var policyLabelSmoothingMode: PolicyLabelSmoothingMode
+    var policyLabelSmoothingPerMove: Float
+    var policyLabelSmoothingPerMoveCap: Float
     var valueLabelSmoothingEpsilon: Float
     var momentumCoeff: Float
     var useSignedAdvantageComplementCE: Bool
@@ -65,6 +72,9 @@ struct TrainerHyperparameters: Sendable, Equatable {
         valueLossWeight = Float(parameters.valueLossWeight)
         illegalMassPenaltyWeight = Float(parameters.illegalMassWeight)
         policyLabelSmoothingEpsilon = Float(parameters.policyLabelSmoothingEpsilon)
+        policyLabelSmoothingMode = parameters.policyLabelSmoothingMode
+        policyLabelSmoothingPerMove = Float(parameters.policyLabelSmoothingPerMove)
+        policyLabelSmoothingPerMoveCap = Float(parameters.policyLabelSmoothingPerMoveCap)
         valueLabelSmoothingEpsilon = Float(parameters.valueLabelSmoothingEpsilon)
         momentumCoeff = Float(parameters.momentumCoeff)
         useSignedAdvantageComplementCE = parameters.signedAdvantageComplementCE
@@ -88,6 +98,9 @@ struct TrainerHyperparameters: Sendable, Equatable {
         valueLossWeight = trainer.valueLossWeight
         illegalMassPenaltyWeight = trainer.illegalMassPenaltyWeight
         policyLabelSmoothingEpsilon = trainer.policyLabelSmoothingEpsilon
+        policyLabelSmoothingMode = trainer.policyLabelSmoothingMode
+        policyLabelSmoothingPerMove = trainer.policyLabelSmoothingPerMove
+        policyLabelSmoothingPerMoveCap = trainer.policyLabelSmoothingPerMoveCap
         valueLabelSmoothingEpsilon = trainer.valueLabelSmoothingEpsilon
         momentumCoeff = trainer.momentumCoeff
         useSignedAdvantageComplementCE = trainer.useSignedAdvantageComplementCE
@@ -113,6 +126,9 @@ struct TrainerHyperparameters: Sendable, Equatable {
         trainer.valueLossWeight = valueLossWeight
         trainer.illegalMassPenaltyWeight = illegalMassPenaltyWeight
         trainer.policyLabelSmoothingEpsilon = policyLabelSmoothingEpsilon
+        trainer.policyLabelSmoothingMode = policyLabelSmoothingMode
+        trainer.policyLabelSmoothingPerMove = policyLabelSmoothingPerMove
+        trainer.policyLabelSmoothingPerMoveCap = policyLabelSmoothingPerMoveCap
         trainer.valueLabelSmoothingEpsilon = valueLabelSmoothingEpsilon
         trainer.momentumCoeff = momentumCoeff
         trainer.useSignedAdvantageComplementCE = useSignedAdvantageComplementCE
@@ -147,6 +163,9 @@ extension ChessTrainer {
             valueLossWeight: hyperparameters.valueLossWeight,
             illegalMassPenaltyWeight: hyperparameters.illegalMassPenaltyWeight,
             policyLabelSmoothingEpsilon: hyperparameters.policyLabelSmoothingEpsilon,
+            policyLabelSmoothingMode: hyperparameters.policyLabelSmoothingMode,
+            policyLabelSmoothingPerMove: hyperparameters.policyLabelSmoothingPerMove,
+            policyLabelSmoothingPerMoveCap: hyperparameters.policyLabelSmoothingPerMoveCap,
             valueLabelSmoothingEpsilon: hyperparameters.valueLabelSmoothingEpsilon,
             momentumCoeff: hyperparameters.momentumCoeff,
             useSignedAdvantageComplementCE: hyperparameters.useSignedAdvantageComplementCE,
@@ -157,6 +176,19 @@ extension ChessTrainer {
             policyTailPrecision: policyTailPrecision
         )
         hyperparameters.apply(to: self)
+    }
+}
+
+extension TrainerHyperparameters {
+    /// The policy-smoothing fields of the hyperparameter log lines; see
+    /// `PolicyLabelSmoothingMode.logFields`.
+    var policyLabelSmoothingLogFields: String {
+        PolicyLabelSmoothingMode.logFields(
+            mode: policyLabelSmoothingMode,
+            epsilon: policyLabelSmoothingEpsilon,
+            perMove: policyLabelSmoothingPerMove,
+            perMoveCap: policyLabelSmoothingPerMoveCap
+        )
     }
 }
 

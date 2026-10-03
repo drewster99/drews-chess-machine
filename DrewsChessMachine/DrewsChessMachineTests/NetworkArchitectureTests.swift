@@ -196,20 +196,22 @@ final class NetworkArchitectureTests: XCTestCase {
     /// `0/0` NaN that poisons the whole tower. The Build-New-Model α field is an
     /// unvalidated TextField, so clearing it or typing 0 reaches here — this is
     /// user-reachable, not just hand-edited JSON.
-    func testValidationRejectsNonPositiveRezeroAlphaInit() {
-        for bad: Float in [0.0, -0.5, .nan, .infinity] {
+    /// Since the explicit cap (format v6) a zero init is legal — it is the
+    /// published ReZero init, and the cap, not the init, is the divisor in the
+    /// forward — so only negative and non-finite inits are rejected.
+    func testValidationRejectsNegativeOrNonFiniteRezeroAlphaInit() {
+        for bad: Float in [-0.5, .nan, .infinity] {
             var a = NetworkArchitecture.current
             a.blockGroups[0].useRezero = true
             a.blockGroups[0].rezeroAlphaInit = bad
             XCTAssertThrowsError(try a.validate(), "rezeroAlphaInit \(bad)")
         }
-        // Pin the exact error for the catastrophic zero case.
-        var z = NetworkArchitecture.current
-        z.blockGroups[0].useRezero = true
-        z.blockGroups[0].rezeroAlphaInit = 0
-        XCTAssertThrowsError(try z.validate()) { error in
+        var n = NetworkArchitecture.current
+        n.blockGroups[0].useRezero = true
+        n.blockGroups[0].rezeroAlphaInit = -0.5
+        XCTAssertThrowsError(try n.validate()) { error in
             XCTAssertEqual(error as? NetworkArchitectureError,
-                           .mustBeFinitePositive(field: "blockGroups[0].rezeroAlphaInit", value: 0))
+                           .mustBeFiniteNonNegative(field: "blockGroups[0].rezeroAlphaInit", value: -0.5))
         }
     }
 

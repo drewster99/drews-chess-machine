@@ -252,12 +252,16 @@ enum TrainVsUciRunner {
         // Field for field with `[REPLAY-HPARAMS]` so the two CLI paths can be
         // diffed directly.
         emit(String(
-            format: "[VS-UCI-HPARAMS] lr=%.6g batch=%ld wd=%.4g momentum=%.3g gradClip=%.3g entropyBonus=%.4g drawPenalty=%.4g policyW=%.3g valueW=%.3g illegalW=%.4g pLabelSmooth=%.4g vLabelSmooth=%.4g dropout=%.4g lrWarmup=%ld bufCap=%ld",
+            format: "[VS-UCI-HPARAMS] lr=%.6g batch=%ld wd=%.4g momentum=%.3g gradClip=%.3g entropyBonus=%.4g drawPenalty=%.4g policyW=%.3g valueW=%.3g illegalW=%.4g ",
             Double(hp.learningRate), p.trainingBatchSize, Double(hp.weightDecayC), Double(hp.momentumCoeff), Double(hp.gradClipMaxNorm),
-            Double(hp.entropyRegularizationCoeff), Double(hp.drawPenalty), Double(hp.policyLossWeight), Double(hp.valueLossWeight), Double(hp.illegalMassPenaltyWeight),
-            Double(hp.policyLabelSmoothingEpsilon), Double(hp.valueLabelSmoothingEpsilon), Double(hp.dropoutRate),
-            hp.lrWarmupSteps, p.replayBufferCapacity
+            Double(hp.entropyRegularizationCoeff), Double(hp.drawPenalty), Double(hp.policyLossWeight), Double(hp.valueLossWeight), Double(hp.illegalMassPenaltyWeight)
         )
+            + hp.policyLabelSmoothingLogFields
+            + String(
+                format: " vLabelSmooth=%.4g dropout=%.4g lrWarmup=%ld bufCap=%ld",
+                Double(hp.valueLabelSmoothingEpsilon), Double(hp.dropoutRate),
+                hp.lrWarmupSteps, p.replayBufferCapacity
+            )
             + " complementCE=\(hp.useSignedAdvantageComplementCE ? "on" : "off")"
             + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
             + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)")

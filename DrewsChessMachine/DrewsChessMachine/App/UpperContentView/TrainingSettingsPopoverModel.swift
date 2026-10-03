@@ -52,6 +52,16 @@ final class TrainingSettingsPopoverModel {
     var policyLossWeightText = "" { didSet { policyLossWeightError = false } }
     var valueLossWeightText = "" { didSet { valueLossWeightError = false } }
     var valueLabelSmoothingText = "" { didSet { valueLabelSmoothingError = false } }
+    /// Pending policy-smoothing mode. Decides which of the three policy
+    /// smoothing fields below are shown as in effect and which `save()`
+    /// validates and commits: ε in fixed-total mode, δ and the cap in
+    /// per-move mode. The fields of the inactive mode are left untouched on
+    /// Save, so an edit made to them before switching modes is discarded
+    /// rather than committed unseen.
+    var policyLabelSmoothingModeValue: PolicyLabelSmoothingMode = .fixedTotal
+    var policyLabelSmoothingText = "" { didSet { policyLabelSmoothingError = false } }
+    var policyLabelSmoothingPerMoveText = "" { didSet { policyLabelSmoothingPerMoveError = false } }
+    var policyLabelSmoothingPerMoveCapText = "" { didSet { policyLabelSmoothingPerMoveCapError = false } }
     var drawPenaltyText = "" { didSet { drawPenaltyError = false } }
     var trainingBatchSizeText = "" { didSet { trainingBatchSizeError = false } }
 
@@ -66,6 +76,9 @@ final class TrainingSettingsPopoverModel {
     private(set) var policyLossWeightError = false
     private(set) var valueLossWeightError = false
     private(set) var valueLabelSmoothingError = false
+    private(set) var policyLabelSmoothingError = false
+    private(set) var policyLabelSmoothingPerMoveError = false
+    private(set) var policyLabelSmoothingPerMoveCapError = false
     private(set) var drawPenaltyError = false
     private(set) var trainingBatchSizeError = false
 
@@ -293,6 +306,10 @@ final class TrainingSettingsPopoverModel {
         policyLossWeightText = String(format: "%.2f", p.policyLossWeight)
         valueLossWeightText = String(format: "%.2f", p.valueLossWeight)
         valueLabelSmoothingText = String(format: "%.3f", p.valueLabelSmoothingEpsilon)
+        policyLabelSmoothingModeValue = p.policyLabelSmoothingMode
+        policyLabelSmoothingText = String(format: "%.3f", p.policyLabelSmoothingEpsilon)
+        policyLabelSmoothingPerMoveText = String(format: "%.4f", p.policyLabelSmoothingPerMove)
+        policyLabelSmoothingPerMoveCapText = String(format: "%.2f", p.policyLabelSmoothingPerMoveCap)
         drawPenaltyText = String(format: "%.3f", p.drawPenalty)
         trainingBatchSizeText = String(p.trainingBatchSize)
         // --- Cycling tab ---
@@ -380,6 +397,9 @@ final class TrainingSettingsPopoverModel {
         policyLossWeightError = false
         valueLossWeightError = false
         valueLabelSmoothingError = false
+        policyLabelSmoothingError = false
+        policyLabelSmoothingPerMoveError = false
+        policyLabelSmoothingPerMoveCapError = false
         drawPenaltyError = false
         trainingBatchSizeError = false
         lrCycleMinError = false
@@ -658,6 +678,16 @@ final class TrainingSettingsPopoverModel {
         if p.drawWatchStreakLength != snapped {
             p.drawWatchStreakLength = snapped
         }
+    }
+
+    /// Write the pending policy-smoothing mode to `p`, logging the change.
+    /// Called by `save()` only after the fields that mode reads validated.
+    private func commitPolicyLabelSmoothingMode(to p: TrainingParameters) {
+        guard policyLabelSmoothingModeValue != p.policyLabelSmoothingMode else { return }
+        SessionLogger.shared.log(
+            "[PARAM] policyLabelSmoothingMode: \(p.policyLabelSmoothingMode.logToken) -> \(policyLabelSmoothingModeValue.logToken)"
+        )
+        p.policyLabelSmoothingMode = policyLabelSmoothingModeValue
     }
 
     // MARK: - Save
@@ -999,6 +1029,55 @@ final class TrainingSettingsPopoverModel {
         } else {
             valueLabelSmoothingError = true
             anyError = true
+        }
+
+        // Policy label smoothing — only the fields the pending mode reads are
+        // validated and written; the inactive mode's fields are left as they
+        // are (see `policyLabelSmoothingModeValue`) and their stale error
+        // flags cleared, so a dimmed field can never hold Save disabled. The
+        // mode itself is committed only once every field it reads has
+        // validated: switching to per-move with a bad δ must not start
+        // training under per-move with the previous δ.
+        switch policyLabelSmoothingModeValue {
+        case .fixedTotal:
+            policyLabelSmoothingPerMoveError = false
+            policyLabelSmoothingPerMoveCapError = false
+            let epsilon = PolicyLabelSmoothingEpsilon.parsedInDeclaredRange(policyLabelSmoothingText)
+            policyLabelSmoothingError = epsilon == nil
+            if let epsilon {
+                if abs(epsilon - p.policyLabelSmoothingEpsilon) > Double.ulpOfOne {
+                    SessionLogger.shared.log(
+                        String(format: "[PARAM] policyLabelSmoothingEpsilon: %.3f -> %.3f", p.policyLabelSmoothingEpsilon, epsilon)
+                    )
+                    p.policyLabelSmoothingEpsilon = epsilon
+                }
+                commitPolicyLabelSmoothingMode(to: p)
+            } else {
+                anyError = true
+            }
+        case .perMove:
+            policyLabelSmoothingError = false
+            let perMove = PolicyLabelSmoothingPerMove.parsedInDeclaredRange(policyLabelSmoothingPerMoveText)
+            let perMoveCap = PolicyLabelSmoothingPerMoveCap.parsedInDeclaredRange(policyLabelSmoothingPerMoveCapText)
+            policyLabelSmoothingPerMoveError = perMove == nil
+            policyLabelSmoothingPerMoveCapError = perMoveCap == nil
+            if let perMove, let perMoveCap {
+                if abs(perMove - p.policyLabelSmoothingPerMove) > Double.ulpOfOne {
+                    SessionLogger.shared.log(
+                        String(format: "[PARAM] policyLabelSmoothingPerMove: %.4f -> %.4f", p.policyLabelSmoothingPerMove, perMove)
+                    )
+                    p.policyLabelSmoothingPerMove = perMove
+                }
+                if abs(perMoveCap - p.policyLabelSmoothingPerMoveCap) > Double.ulpOfOne {
+                    SessionLogger.shared.log(
+                        String(format: "[PARAM] policyLabelSmoothingPerMoveCap: %.2f -> %.2f", p.policyLabelSmoothingPerMoveCap, perMoveCap)
+                    )
+                    p.policyLabelSmoothingPerMoveCap = perMoveCap
+                }
+                commitPolicyLabelSmoothingMode(to: p)
+            } else {
+                anyError = true
+            }
         }
 
         // Draw penalty — Double in the declared range.

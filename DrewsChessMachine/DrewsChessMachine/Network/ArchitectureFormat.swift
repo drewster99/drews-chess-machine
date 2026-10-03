@@ -37,6 +37,10 @@
 //  - v5: block groups must state `se_activation` (issue #2). Older files
 //    resolve it to the group's own `activation_function`, which is the
 //    activation the SE FC1 used before the field existed.
+//  - v6: block groups must state `rezero_alpha_cap`, the asymptote of the
+//    forward ReZero soft bound `C·tanh(α/C)`. Older files resolve it to
+//    `rezero_alpha_init × NetworkArchitecture.rezeroTanhCeilingMultiple`,
+//    which is exactly the C the engine computed before the field existed.
 //
 
 import Foundation
@@ -46,7 +50,7 @@ enum ArchitectureFormat {
     /// The version every writer stamps today. Safetensors write it as the
     /// string `dcm_format_version`; presets and `architecture.json` write it
     /// as the integer `format_version`.
-    static let currentVersion = 5
+    static let currentVersion = 6
 
     /// First version whose block groups must carry `se_beta_init`
     /// (`BlockGroup.seBetaInit`). Files older than this resolve a missing
@@ -61,6 +65,16 @@ enum ArchitectureFormat {
     /// was trained with (ReLU for every model saved before SiLU/GELU/leaky
     /// ReLU existed, and the group's activation for any model that used one).
     static let seActivationRequiredFromVersion = 5
+
+    /// First version whose block groups must carry `rezero_alpha_cap`
+    /// (`BlockGroup.rezeroAlphaCap`). Files older than this resolve a missing
+    /// field to `rezero_alpha_init × NetworkArchitecture.rezeroTanhCeilingMultiple`
+    /// (`BlockGroup.legacyRezeroAlphaCap`) — before the field existed the
+    /// forward's soft-bound asymptote was always derived from the init that
+    /// way, so the resolution rebuilds exactly the graph the file was trained
+    /// with, and the architecture compares (and hashes) equal to what the same
+    /// file decoded to before the field existed.
+    static let rezeroAlphaCapRequiredFromVersion = 6
 
     /// The version reported for a carrier that predates version markers
     /// entirely — a safetensors file with no `dcm_format_version`, or a
@@ -144,6 +158,10 @@ enum ArchitectureFormat {
         /// True when `se_activation` may be absent and resolves to the
         /// group's own `activation_function`.
         var allowsMissingSEActivation: Bool { formatVersion < ArchitectureFormat.seActivationRequiredFromVersion }
+
+        /// True when `rezero_alpha_cap` may be absent and resolves to the
+        /// group's `rezero_alpha_init × rezeroTanhCeilingMultiple`.
+        var allowsMissingRezeroAlphaCap: Bool { formatVersion < ArchitectureFormat.rezeroAlphaCapRequiredFromVersion }
 
         /// The same file, re-stamped with the version a nested carrier
         /// declares (a preset's `format_version`), sharing the log.

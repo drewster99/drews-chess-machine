@@ -110,6 +110,8 @@ enum ModelDerivation {
         SetSEBetaInitDeriveOperation.kind,
         SetActivationDeriveOperation.kind,
         SetSEActivationDeriveOperation.kind,
+        SetRezeroAlphaInitDeriveOperation.kind,
+        SetRezeroAlphaCapDeriveOperation.kind,
     ]
 
     /// The kind whose `flag` is `flag`, if any.
@@ -689,6 +691,203 @@ struct SetSEActivationDeriveOperation: DeriveOperation {
         }
         var edited = architecture
         for index in groups { edited.blockGroups[index].seActivation = value }
+        return edited
+    }
+
+    func tensorRewrites(source: NetworkArchitecture, target: NetworkArchitecture) throws -> [DeriveTensorRewrite] {
+        []
+    }
+}
+
+// MARK: - ReZero operations: shared parsing and group selection
+
+/// What `--set-rezero-alpha-init` and `--set-rezero-alpha-cap` share: parsing
+/// the numeric value and choosing the block groups. Both apply only to groups
+/// with ReZero — on a group without it neither value is read by anything, so
+/// setting one there would be a silent no-op the user almost certainly did
+/// not mean.
+enum RezeroDeriveSupport {
+
+    /// The flag value as a Float. Range checks are not done here: the derived
+    /// architecture goes through `NetworkArchitecture.validate()`, the one
+    /// place that decides what a legal init and cap are, so a value it rejects
+    /// is refused with the same error the Build screen and the loaders show.
+    static func parseValue(_ value: String, operation: String) throws -> Float {
+        guard let parsed = Float(value) else {
+            throw ModelDerivation.DeriveError.operationNotApplicable(
+                operation: operation, detail: "value '\(value)' is not a number")
+        }
+        return parsed
+    }
+
+    /// The group indices an operation targets in `architecture`: the given
+    /// ones (each must exist and have ReZero), or every ReZero group.
+    static func selectedGroups(_ groupIndices: [Int]?, in architecture: NetworkArchitecture, operation: String) throws -> [Int] {
+        if let groupIndices {
+            for index in groupIndices where !architecture.blockGroups.indices.contains(index) {
+                throw ModelDerivation.DeriveError.operationNotApplicable(
+                    operation: operation,
+                    detail: "--group \(index) is out of range (the model has \(architecture.blockGroups.count) block groups, 0-based)")
+            }
+            for index in groupIndices where !architecture.blockGroups[index].useRezero {
+                throw ModelDerivation.DeriveError.operationNotApplicable(
+                    operation: operation,
+                    detail: "block group \(index) has use_rezero false; the ReZero init and cap apply only to a group with ReZero")
+            }
+            return groupIndices
+        }
+        let all = architecture.blockGroups.indices.filter { architecture.blockGroups[$0].useRezero }
+        guard !all.isEmpty else {
+            throw ModelDerivation.DeriveError.operationNotApplicable(
+                operation: operation, detail: "the model has no block group with ReZero (use_rezero true)")
+        }
+        return all
+    }
+
+    /// The `groups` argument recorded in the derivation history.
+    static func recordedGroups(_ groupIndices: [Int]?) -> String {
+        guard let groupIndices else { return "all with ReZero" }
+        return groupIndices.map(String.init).joined(separator: ",")
+    }
+}
+
+// MARK: - Operation: set-rezero-alpha-init
+
+/// Sets `rezero_alpha_init` on block groups with ReZero AND rewrites every
+/// `blocks.<i>.rezero_alpha` tensor of those groups to exactly that value.
+/// The init is a tensor value: the architecture field only says what a
+/// random-weights build starts α at, so changing the field alone would leave
+/// a file whose α tensors still hold the old start and describe a net that
+/// was never built. The motivating case is the zero init (the ReZero paper's):
+/// a fresh net's α tensors set to exactly 0, every other tensor bit-exact, so
+/// "zero-init vs 1/√N" is a paired A/B from one net.
+///
+/// The cap (`rezero_alpha_cap`) is not touched — a legacy group's cap stays
+/// at its old init, which keeps the forward well-defined (the init alone may
+/// be zero; the cap may not). Pair with `--set-rezero-alpha-cap` to change
+/// both.
+///
+/// Optimizer velocity is not handled here because it cannot reach here:
+/// `ModelDerivation.derive` refuses any source carrying optimizer state
+/// (`opt.*` tensors or trainer-schedule metadata). That refusal is the right
+/// answer for α in particular — velocity accumulated toward the old α would
+/// push the reset value back toward it on the first step.
+///
+/// "Nothing to derive" is judged on the field: a request whose value every
+/// selected group already states is refused, even if the file's α tensors
+/// hold something else (a trained net's α never equals its init). Resetting
+/// a trained net's α to its unchanged init is not a supported derivation.
+struct SetRezeroAlphaInitDeriveOperation: DeriveOperation {
+    let value: Float
+    /// 0-based block-group indices, or nil for every group with ReZero.
+    let groupIndices: [Int]?
+
+    static let kind = DeriveOperationKind(
+        name: "set-rezero-alpha-init",
+        flag: "--set-rezero-alpha-init",
+        valueSyntax: "<float >= 0>",
+        summary: "Set rezero_alpha_init on block groups with ReZero (all of them, or those named by --group) and "
+            + "rewrite every block's ReZero alpha tensor in those groups to exactly that value; 0 is the ReZero "
+            + "paper's init (every residual branch starts off). The cap (rezero_alpha_cap) is unchanged — pair "
+            + "with --set-rezero-alpha-cap to set it. Every other tensor is copied bit-exact.",
+        changedArchitectureFields: ["block_groups[].rezero_alpha_init"],
+        rewrittenTensorsDescription: "blocks.<i>.rezero_alpha (the whole one-element tensor), for every block i of an affected group",
+        acceptsGroupSelection: true,
+        make: { value, groupIndices in
+            SetRezeroAlphaInitDeriveOperation(
+                value: try RezeroDeriveSupport.parseValue(value, operation: "set-rezero-alpha-init"),
+                groupIndices: groupIndices)
+        })
+
+    var kindName: String { Self.kind.name }
+
+    var recordedArguments: [String: String] {
+        ["value": "\(value)", "groups": RezeroDeriveSupport.recordedGroups(groupIndices)]
+    }
+
+    func apply(to architecture: NetworkArchitecture) throws -> NetworkArchitecture {
+        let groups = try RezeroDeriveSupport.selectedGroups(groupIndices, in: architecture, operation: kindName)
+        guard groups.contains(where: { architecture.blockGroups[$0].rezeroAlphaInit.bitPattern != value.bitPattern }) else {
+            throw ModelDerivation.DeriveError.operationNotApplicable(
+                operation: kindName,
+                detail: "every selected block group already has rezero_alpha_init \(value); nothing to derive")
+        }
+        var edited = architecture
+        for index in groups { edited.blockGroups[index].rezeroAlphaInit = value }
+        return edited
+    }
+
+    /// One rewrite per block of every selected group — including a selected
+    /// group whose field already held `value`, because its α tensors are
+    /// what the init means and they may differ from the field.
+    func tensorRewrites(source: NetworkArchitecture, target: NetworkArchitecture) throws -> [DeriveTensorRewrite] {
+        let selected = Set(try RezeroDeriveSupport.selectedGroups(groupIndices, in: source, operation: kindName))
+        var planNames: Set<String> = []
+        for spec in target.weightTensorPlan() { planNames.insert(spec.name) }
+
+        let newValue = value
+        var rewrites: [DeriveTensorRewrite] = []
+        var firstBlock = 0
+        for (groupIndex, group) in target.blockGroups.enumerated() {
+            defer { firstBlock += group.count }
+            guard selected.contains(groupIndex) else { continue }
+            for block in firstBlock..<(firstBlock + group.count) {
+                let name = "blocks.\(block).rezero_alpha"
+                guard planNames.contains(name) else { throw ModelDerivation.DeriveError.missingTensor(name: name) }
+                rewrites.append(DeriveTensorRewrite(
+                    tensorName: name, rewrittenElementRanges: [0..<1],
+                    summary: "alpha set to \(newValue)",
+                    rewrite: { data in
+                        for index in data.indices { data[index] = newValue }
+                    }))
+            }
+        }
+        return rewrites
+    }
+}
+
+// MARK: - Operation: set-rezero-alpha-cap
+
+/// Sets `rezero_alpha_cap` — the asymptote C of the forward soft bound
+/// `C·tanh(α/C)` — on block groups with ReZero. The cap is not a parameter:
+/// no tensor is rewritten, and the derived file holds the source's weights
+/// bit-exact, so a cap A/B from one fresh net differs in exactly the bound.
+struct SetRezeroAlphaCapDeriveOperation: DeriveOperation {
+    let value: Float
+    /// 0-based block-group indices, or nil for every group with ReZero.
+    let groupIndices: [Int]?
+
+    static let kind = DeriveOperationKind(
+        name: "set-rezero-alpha-cap",
+        flag: "--set-rezero-alpha-cap",
+        valueSyntax: "<float > 0>",
+        summary: "Set rezero_alpha_cap, the asymptote C of the forward ReZero soft bound C*tanh(alpha/C), on "
+            + "block groups with ReZero (all of them, or those named by --group). The cap has no parameters, "
+            + "so every tensor is copied bit-exact.",
+        changedArchitectureFields: ["block_groups[].rezero_alpha_cap"],
+        rewrittenTensorsDescription: "none",
+        acceptsGroupSelection: true,
+        make: { value, groupIndices in
+            SetRezeroAlphaCapDeriveOperation(
+                value: try RezeroDeriveSupport.parseValue(value, operation: "set-rezero-alpha-cap"),
+                groupIndices: groupIndices)
+        })
+
+    var kindName: String { Self.kind.name }
+
+    var recordedArguments: [String: String] {
+        ["value": "\(value)", "groups": RezeroDeriveSupport.recordedGroups(groupIndices)]
+    }
+
+    func apply(to architecture: NetworkArchitecture) throws -> NetworkArchitecture {
+        let groups = try RezeroDeriveSupport.selectedGroups(groupIndices, in: architecture, operation: kindName)
+        guard groups.contains(where: { architecture.blockGroups[$0].rezeroAlphaCap.bitPattern != value.bitPattern }) else {
+            throw ModelDerivation.DeriveError.operationNotApplicable(
+                operation: kindName,
+                detail: "every selected block group already has rezero_alpha_cap \(value); nothing to derive")
+        }
+        var edited = architecture
+        for index in groups { edited.blockGroups[index].rezeroAlphaCap = value }
         return edited
     }
 

@@ -154,7 +154,7 @@ def forward(T, arch, x, R=frozenset(), q=ident, capture=False):
         else:
             assert g['se_style'] == 'none'
         if g['use_rezero']:
-            Cc = g['rezero_alpha_init'] * 1.0
+            Cc = g['rezero_alpha_cap']
             al = Cc * c(k + 'alpha', np.array(math.tanh(float(T[pre + 'rezero_alpha'].reshape(-1)[0]) / Cc)))
             z = c(k + 'rezero', z * al)
         h = c(k + 'add', h + z)
@@ -210,8 +210,13 @@ def norm_arch(s):
     # `se_activation` (format v5+) is the SE FC1 activation; files written
     # before it existed used the group's own activation there, which is what a
     # missing value resolves to (the Swift loader's legacy rule).
+    # `rezero_alpha_cap` (format v6+) is the asymptote C of the ReZero bound
+    # C*tanh(alpha/C); before it existed C was rezero_alpha_init * 1.0
+    # (NetworkArchitecture.rezeroTanhCeilingMultiple), the Swift loader's
+    # legacy rule.
     for g in a['block_groups']:
         g.setdefault('se_beta_init', 'glorot')
         g.setdefault('se_activation', g['activation_function'])
+        g.setdefault('rezero_alpha_cap', g['rezero_alpha_init'] * 1.0)
     a.setdefault('feature_skip_source', 'none')
     return a

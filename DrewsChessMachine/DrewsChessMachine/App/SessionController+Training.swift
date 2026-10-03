@@ -252,6 +252,58 @@ extension SessionController {
                 }
                 trainer.policyLabelSmoothingEpsilon = resolvedSmoothing
                 TrainingParameters.shared.restoreFromSession(PolicyLabelSmoothingEpsilon.self, Double(resolvedSmoothing), into: \.policyLabelSmoothingEpsilon)
+                // saved=nil means the session predates the per-move form, so
+                // it factually trained with fixed-total smoothing — reproduce
+                // that rather than inherit the live mode. A token no mode
+                // spells can only come from a hand-edited or corrupt file; the
+                // current mode is kept and the line says so, not guessed.
+                if let token = rs.policyLabelSmoothingMode {
+                    if let savedMode = PolicyLabelSmoothingMode(logToken: token) {
+                        let resolvedMode = SessionCheckpointState.resolvedPolicyLabelSmoothingMode(saved: savedMode)
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] policy_label_smoothing_mode: \(TrainingParameters.shared.policyLabelSmoothingMode.logToken) -> \(resolvedMode.logToken) (from session)"
+                        )
+                        trainer.policyLabelSmoothingMode = resolvedMode
+                        TrainingParameters.shared.policyLabelSmoothingMode = resolvedMode
+                    } else {
+                        trainer.policyLabelSmoothingMode = TrainingParameters.shared.policyLabelSmoothingMode
+                        SessionLogger.shared.log(
+                            "[RESUME-PARAM] policy_label_smoothing_mode: saved=\"\(token)\" is not a known mode; "
+                            + "keeping \(TrainingParameters.shared.policyLabelSmoothingMode.logToken) (not guessed)"
+                        )
+                    }
+                } else {
+                    let resolvedMode = SessionCheckpointState.resolvedPolicyLabelSmoothingMode(saved: nil)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] policy_label_smoothing_mode: saved=nil applied=\(resolvedMode.logToken) (session predates the feature; fixed-total smoothing preserved)"
+                    )
+                    trainer.policyLabelSmoothingMode = resolvedMode
+                    TrainingParameters.shared.policyLabelSmoothingMode = resolvedMode
+                }
+                if let perMove = rs.policyLabelSmoothingPerMove {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] policy_label_smoothing_per_move: \(TrainingParameters.shared.policyLabelSmoothingPerMove) -> \(perMove) (from session)"
+                    )
+                    trainer.policyLabelSmoothingPerMove = perMove
+                    TrainingParameters.shared.restoreFromSession(PolicyLabelSmoothingPerMove.self, Double(perMove), into: \.policyLabelSmoothingPerMove)
+                } else {
+                    trainer.policyLabelSmoothingPerMove = Float(TrainingParameters.shared.policyLabelSmoothingPerMove)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] policy_label_smoothing_per_move: saved=nil applied=\(TrainingParameters.shared.policyLabelSmoothingPerMove) (defaulted)"
+                    )
+                }
+                if let perMoveCap = rs.policyLabelSmoothingPerMoveCap {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] policy_label_smoothing_per_move_cap: \(TrainingParameters.shared.policyLabelSmoothingPerMoveCap) -> \(perMoveCap) (from session)"
+                    )
+                    trainer.policyLabelSmoothingPerMoveCap = perMoveCap
+                    TrainingParameters.shared.restoreFromSession(PolicyLabelSmoothingPerMoveCap.self, Double(perMoveCap), into: \.policyLabelSmoothingPerMoveCap)
+                } else {
+                    trainer.policyLabelSmoothingPerMoveCap = Float(TrainingParameters.shared.policyLabelSmoothingPerMoveCap)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] policy_label_smoothing_per_move_cap: saved=nil applied=\(TrainingParameters.shared.policyLabelSmoothingPerMoveCap) (defaulted)"
+                    )
+                }
                 let resolvedValueSmoothing = SessionCheckpointState.resolvedValueLabelSmoothingEpsilon(saved: rs.valueLabelSmoothingEpsilon)
                 if let vlse = rs.valueLabelSmoothingEpsilon {
                     SessionLogger.shared.log(
@@ -1934,7 +1986,7 @@ extension SessionController {
                         let workerN = countBox.count
                         let spSched = scheduleBox.selfPlay
                         let arSched = scheduleBox.arena
-                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, dropRate, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac, maxPliesCap, complementCEOn, cycle) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, dropRate, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac, maxPliesCap, complementCEOn, cycle, policySmoothingConfig) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
@@ -1957,7 +2009,11 @@ extension SessionController {
                                 TrainingParameters.shared.selfPlayDrawKeepFraction,
                                 TrainingParameters.shared.selfPlayMaxPliesPerGame,
                                 trainer.useSignedAdvantageComplementCE,
-                                trainer.lrMomentumCycle
+                                trainer.lrMomentumCycle,
+                                // Read back from the trainer, like every field
+                                // above, so the line shows the smoothing the
+                                // graph is actually being fed.
+                                TrainerHyperparameters(currentlyAppliedTo: trainer)
                             )
                         }
                         // Effective base LR / momentum for THIS step under the
@@ -2113,7 +2169,7 @@ extension SessionController {
                             valueW,
                             momentum,
                             complementCEOn ? "on" : "off"
-                        )
+                        ) + " " + policySmoothingConfig.policyLabelSmoothingLogFields
                         // Average game length: lifetime and rolling-
                         // window (`recentWindow`, currently 1 minute).
                         // `selfPlayPositions` counts every ply played,
@@ -2492,7 +2548,11 @@ extension SessionController {
                                 lrCyclePeak: cycleValues.lrPeak,
                                 lrCycleTrough: cycleValues.lrTrough,
                                 lrCycleDecayHorizonSteps: cycle.envelope.decayHorizonSteps,
-                                momentumFollowsLRCycle: cycle.envelope.momentumFollowsLRCycle
+                                momentumFollowsLRCycle: cycle.envelope.momentumFollowsLRCycle,
+                                policyLabelSmoothingEpsilon: Double(policySmoothingConfig.policyLabelSmoothingEpsilon),
+                                policyLabelSmoothingMode: policySmoothingConfig.policyLabelSmoothingMode.logToken,
+                                policyLabelSmoothingPerMove: Double(policySmoothingConfig.policyLabelSmoothingPerMove),
+                                policyLabelSmoothingPerMoveCap: Double(policySmoothingConfig.policyLabelSmoothingPerMoveCap)
                             )
                             recorder.appendStats(entry)
                         }

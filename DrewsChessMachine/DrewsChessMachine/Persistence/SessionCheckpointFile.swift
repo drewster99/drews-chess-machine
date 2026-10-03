@@ -302,6 +302,24 @@ struct SessionCheckpointState: Codable, Equatable {
     /// term existed; absent → loader falls through to the user's
     /// current `TrainingParameters.shared.policyLabelSmoothingEpsilon`.
     var policyLabelSmoothingEpsilon: Float?
+    /// `PolicyLabelSmoothingMode.logToken` in effect at save time
+    /// (`fixed_total` / `per_move`). Stored as the token, not the raw `Int`,
+    /// so the file stays readable and survives any renumbering. Optional for
+    /// back-compat: a session file lacking it predates the per-move form, so
+    /// resume reproduces fixed-total smoothing
+    /// (`resolvedPolicyLabelSmoothingMode`) rather than inheriting the live
+    /// mode.
+    var policyLabelSmoothingMode: String?
+    /// Per-move policy label-smoothing mass δ in effect at save time
+    /// (`TrainingParameters.shared.policyLabelSmoothingPerMove`). Read only in
+    /// per-move mode. Optional for back-compat; absent → loader falls through
+    /// to the current value (inert, since such a session resolves to
+    /// fixed-total mode).
+    var policyLabelSmoothingPerMove: Float?
+    /// Cap on the per-move total smoothing mass in effect at save time
+    /// (`TrainingParameters.shared.policyLabelSmoothingPerMoveCap`). Optional
+    /// for back-compat; absent → loader falls through to the current value.
+    var policyLabelSmoothingPerMoveCap: Float?
     /// Value-head W/D/L cross-entropy label-smoothing coefficient ε in
     /// effect at save time. ε=0 → hard one-hot on the game result;
     /// ε>0 → `(1−ε)·oneHot(slot) + ε·(⅓,⅓,⅓)`. Optional for back-compat
@@ -400,6 +418,14 @@ struct SessionCheckpointState: Codable, Equatable {
     /// Pre-feature behavior: one-hot policy CE — no label smoothing.
     static func resolvedPolicyLabelSmoothingEpsilon(saved: Float?) -> Float {
         saved ?? 0.0
+    }
+
+    /// Pre-feature behavior: fixed-total policy smoothing, the only form that
+    /// existed before `policy_label_smoothing_mode`. `saved` is the session's
+    /// token already decoded (`PolicyLabelSmoothingMode(logToken:)`); a token
+    /// no mode spells is the caller's to report, not a reason to guess.
+    static func resolvedPolicyLabelSmoothingMode(saved: PolicyLabelSmoothingMode?) -> PolicyLabelSmoothingMode {
+        saved ?? .fixedTotal
     }
 
     /// Pre-feature behavior: hard one-hot W/D/L target — no value-head

@@ -12,7 +12,7 @@ for rel in sys.argv[1:]:
     md, T = load(A + rel); arch = norm_arch(md['architecture']); g = arch['block_groups'][0]
     r = dict(model_id=md['model_id'], training_step=md.get('training_step'))
     if g['use_rezero']:
-        C = g['rezero_alpha_init']; rz = {}
+        C = g['rezero_alpha_cap']; rz = {}
         for i in range(g['count']):
             a = float(T[f'blocks.{i}.rezero_alpha'].reshape(-1)[0]); t = math.tanh(a / C)
             rz[f'b{i}'] = dict(alpha_raw=a, tanh=t, deriv_fp64=1 - t * t, tanh_bf16=float(bf16(t)), deriv_from_bf16=float(1 - bf16(t) ** 2),

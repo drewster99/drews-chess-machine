@@ -70,7 +70,7 @@ if stage == 'stats':
     # weights: rezero alpha, LN gamma/beta, BN params
     W = {}
     for i in range(arch['block_groups'][0]['count']):
-        a = float(T[f'blocks.{i}.rezero_alpha'].reshape(-1)[0]); C = arch['block_groups'][0]['rezero_alpha_init']
+        a = float(T[f'blocks.{i}.rezero_alpha'].reshape(-1)[0]); C = arch['block_groups'][0]['rezero_alpha_cap']
         W[f'b{i}.alpha_raw'] = a; W[f'b{i}.alpha_eff'] = C*np.tanh(a/C)
         W[f'b{i}.ln_gamma_absmax'] = float(np.abs(T[f'blocks.{i}.res_ln.weight']).max()); W[f'b{i}.ln_beta_absmax'] = float(np.abs(T[f'blocks.{i}.res_ln.bias']).max())
     out['_weights'] = W

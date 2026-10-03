@@ -159,6 +159,38 @@ final class BuildNewModelModel {
         }
     }
 
+    // MARK: Group ReZero
+
+    /// Set group `index`'s ReZero α init. The cap follows it when the two
+    /// were equal beforehand and the new init is positive — the arrangement
+    /// every preset and every model before the explicit cap has (cap = init),
+    /// so a user who never touched the cap keeps exactly today's behavior —
+    /// and stays put when the user set a different cap on purpose.
+    ///
+    /// A new init of 0 never drags the cap along: zero is the ReZero-paper
+    /// init, whose whole point is a branch that starts off while the cap keeps
+    /// bounding where α can grow to; a cap of 0 would also fail validation
+    /// (the forward divides by it). So typing 0 into the init of a legacy
+    /// group leaves its cap at the old init — a valid zero-init group.
+    func setRezeroAlphaInit(_ alphaInit: Float, forGroupAt index: Int) {
+        guard blockGroups.indices.contains(index) else { return }
+        let capFollowsInit = blockGroups[index].rezeroAlphaCap == blockGroups[index].rezeroAlphaInit
+        blockGroups[index].rezeroAlphaInit = alphaInit
+        if capFollowsInit, alphaInit > 0 {
+            blockGroups[index].rezeroAlphaCap = alphaInit
+        }
+    }
+
+    /// Apply one of the depth-appropriate recommendations (`1/√N`, `1/N`) to
+    /// group `index`: both the init and the cap become `value`, which is the
+    /// cap-equals-init arrangement those recommendations were derived for
+    /// (see `rezeroTanhCeilingMultiple`).
+    func applyRecommendedRezero(_ value: Float, toGroupAt index: Int) {
+        guard blockGroups.indices.contains(index) else { return }
+        blockGroups[index].rezeroAlphaInit = value
+        blockGroups[index].rezeroAlphaCap = value
+    }
+
     // MARK: Group manipulation (the editor's add/duplicate/remove/reorder)
 
     /// Total blocks across all groups (clamped ≥1 for ratios mid-edit).
@@ -199,25 +231,37 @@ final class BuildNewModelModel {
     /// DeepNorm-style alternative ReZero init (`1/N`): gentler than `1/√N`,
     /// preferable for very deep towers where the residual stream's *mean* (not
     /// just variance) accumulates down the stack. Offered alongside `1/√N`;
-    /// `1/√N` stays the default. The forward tanh soft-bound (asymptote ≈ α₀,
-    /// `rezeroTanhCeilingMultiple` = 1.0) tracks whichever is chosen. See
+    /// `1/√N` stays the default. Applying either sets the forward tanh
+    /// soft-bound's cap to the same value (`applyRecommendedRezero`). See
     /// documentation/rezero-alpha-clamp.md.
     var recommendedRezeroAlphaInit1OverN: Float {
         1.0 / Float(totalBlocks)
     }
 
-    /// True when the group at `index` has ReZero enabled and an α init that
-    /// matches NEITHER depth-appropriate value (`1/√N` nor `1/N`) — i.e. likely
-    /// a stale value carried from a shallower preset. Tolerance absorbs float
-    /// round-trip noise (stored values like 0.447214). Either canonical init is
-    /// valid, so only flag when it's neither.
-    func rezeroAlphaInitMismatch(at index: Int) -> Bool {
+    /// True when the group at `index` has ReZero enabled and a depth-scaled
+    /// ReZero value that matches NEITHER depth-appropriate value (`1/√N` nor
+    /// `1/N`) — i.e. likely a stale value carried from a shallower preset.
+    /// Tolerance absorbs float round-trip noise (stored values like
+    /// 0.447214). Either canonical value is valid, so only flag when it's
+    /// neither.
+    ///
+    /// Which values are depth-scaled: the cap always — it is where effective
+    /// α saturates, so it sets the trained tower's Σα² — and the init only
+    /// when it is non-zero. A zero init is the ReZero-paper init, the same at
+    /// every depth, so it is never flagged; a non-zero init is the starting
+    /// branch scale and is held to the same recommendation as the cap. For
+    /// every group whose cap equals its init (all presets and every model
+    /// before the explicit cap) this is exactly the old init-only check.
+    func rezeroDepthScaleMismatch(at index: Int) -> Bool {
         guard blockGroups.indices.contains(index) else { return false }
         let g = blockGroups[index]
         guard g.useRezero else { return false }
-        let a = g.rezeroAlphaInit
-        return abs(a - recommendedRezeroAlphaInit) > 1e-4
-            && abs(a - recommendedRezeroAlphaInit1OverN) > 1e-4
+        func matchesNeither(_ value: Float) -> Bool {
+            abs(value - recommendedRezeroAlphaInit) > 1e-4
+                && abs(value - recommendedRezeroAlphaInit1OverN) > 1e-4
+        }
+        return matchesNeither(g.rezeroAlphaCap)
+            || (g.rezeroAlphaInit != 0 && matchesNeither(g.rezeroAlphaInit))
     }
 
     /// `nil` when the current fields form a valid architecture; otherwise the

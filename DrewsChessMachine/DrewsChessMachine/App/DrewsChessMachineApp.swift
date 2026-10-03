@@ -454,8 +454,11 @@ struct DrewsChessMachineApp: App {
                                               Write a new model copied bit-exact from --from except the tensors the
                                               operation re-initializes, with a fresh ModelID, parent_model_id and a
                                               derivation_history record; shape-changing requests are refused.
-                                              Operations: --set-se-beta-init glorot|zero (scale_and_bias groups;
-                                              --group <0-based index>, repeatable, narrows it). Full list, with
+                                              Operations: --set-se-beta-init glorot|zero (scale_and_bias groups),
+                                              --set-rezero-alpha-init <float >= 0> (ReZero groups; also sets every
+                                              ReZero alpha tensor of those groups to the value),
+                                              --set-rezero-alpha-cap <float > 0> (ReZero groups; no tensors);
+                                              --group <0-based index>, repeatable, narrows them. Full list, with
                                               what each rewrites: --derive-model --help.
               --show-default-parameters       Print every default training parameter as JSON and exit.
               --create-parameters-file [<path>] [--force]
@@ -554,6 +557,9 @@ struct DrewsChessMachineApp: App {
 
               # Paired copy of a fresh net with a zero-initialized SE beta path (every scale_and_bias group):
               DrewsChessMachine --derive-model --from fresh.safetensors --set-se-beta-init zero --out fresh-beta0.safetensors
+
+              # Paired copy of a fresh net with zero-initialized ReZero (alpha tensors exactly 0) and cap 1.0:
+              DrewsChessMachine --derive-model --from fresh.safetensors --set-rezero-alpha-init 0 --set-rezero-alpha-cap 1 --out fresh-rz0.safetensors
             """
             for err in errors {
                 let line = "DrewsChessMachine: error: \(err)\n"

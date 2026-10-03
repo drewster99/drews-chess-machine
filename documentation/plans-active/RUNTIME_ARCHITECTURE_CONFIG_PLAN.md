@@ -869,3 +869,45 @@ listed in the status block at the top.
   activation (tower level and every group's `activation_function`); it leaves an SE
   group's `se_activation` alone and updates an SE-less group's to keep it valid. Both
   flags together give "the same activation everywhere".
+
+## 19. Architecture format v6: `rezero_alpha_cap` (implemented 2026-10-02)
+
+- **New per-group field** `block_groups[].rezero_alpha_cap` (`BlockGroup.rezeroAlphaCap`):
+  the asymptote `C` of the forward ReZero soft bound `C·tanh(α/C)`. Before it existed `C`
+  was derived as `rezero_alpha_init × NetworkArchitecture.rezeroTanhCeilingMultiple`
+  (multiplier 1.0), which made a zero α init impossible (`C = 0` divides by zero). The
+  motivation is the ReZero paper's zero init with the tanh bound kept. No tensor changes,
+  so the parameter count and tensor plan are unchanged. `BlockGroup.rezeroTanhCeiling`
+  now returns the field and stays the single accessor every consumer reads (graph builder,
+  summary, diagram, numerics audit, layer health).
+- **Validation:** with ReZero on, the cap must be finite and `> 0`
+  (`mustBeFinitePositive`), and `rezero_alpha_init` finite and `>= 0`
+  (`mustBeFiniteNonNegative` — zero is now legal). An init above the cap is allowed. On a
+  group without ReZero neither is checked, as the init never was.
+- **Format version 6** (`ArchitectureFormat.currentVersion`,
+  `ArchitectureFormat.rezeroAlphaCapRequiredFromVersion`). Safetensors write
+  `dcm_format_version` = `"6"`; presets and `architecture.json` write `format_version` 6.
+- **Decoding rules** (same gate pattern as §17/§18):
+  - A file older than v6 resolves a missing cap to `BlockGroup.legacyRezeroAlphaCap` of the
+    group's init — exactly the `C` the engine computed when the file was written — and logs
+    it once per load, e.g.
+    `[ARCH] legacy file (format v3) <file>: block_groups[0].rezero_alpha_cap := 0.4472136 (the group's rezero_alpha_init × 1.0)`.
+    The legacy uniform-tower keys resolve it the same way.
+  - A v6+ file without the field fails with `missingRequiredField`. Encoding always writes
+    the field, on every group.
+- **Identity:** with the multiplier at 1.0 the resolved Float is bit-identical to the init,
+  so a legacy file decodes to a value equal to its preset (same hash, summary, parameter
+  count, tensor plan, legacy `.dcmmodel` archHash) and builds the identical graph
+  (`RezeroAlphaCapTests`). The memberwise inits without a cap argument (every code preset
+  and test) set the cap by the same rule.
+- **Display:** the ReZero clause always shows both numbers, `ReZero(<α₀>·tanh≤<C>)`, so
+  existing summaries are byte-identical; a zero-init group reads e.g. `ReZero(0·tanh≤1)`.
+  `NetworkArchitecture.rezeroDescription` is shared by the summary and the diagram.
+- **Build New Model:** a per-group "ReZero cap" field under "ReZero α init". The cap follows
+  the init while the two are equal and the new init is positive; the `1/√N` / `1/N`
+  buttons set both; the stale-depth warning checks the cap and a non-zero init.
+- **`--derive-model`:** `--set-rezero-alpha-init <v>` sets the field and rewrites every
+  `blocks.<i>.rezero_alpha` tensor of the affected groups to exactly `v`;
+  `--set-rezero-alpha-cap <v>` sets only the field. Both accept `--group` and refuse groups
+  without ReZero. See `documentation/rezero-alpha-clamp.md` ("Explicit cap and the zero
+  init").

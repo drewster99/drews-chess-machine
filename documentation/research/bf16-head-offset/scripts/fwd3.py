@@ -82,7 +82,7 @@ def _forward(TT,arch,x,q,qm,qout):
                 y=conv(y,TT[pre+'conv2.weight'],q,qm); z=bn(y,TT,pre+'bn2',q)
             if g['se_style']!='none': z=se(z,TT,pre,g,q,qm)
             if g['use_rezero']:
-                C=g['rezero_alpha_init']*1.0; al=C*math.tanh(float(TT[pre+'rezero_alpha'].reshape(-1)[0])/C); z=q(z*q(al))
+                C=g['rezero_alpha_cap']; al=C*math.tanh(float(TT[pre+'rezero_alpha'].reshape(-1)[0])/C); z=q(z*q(al))
             skip=h if inC==g['channels'] else conv(a1,TT[pre+'skip_proj.weight'],q,qm)
             h=q(skip+z)
             if g['skip_merge']=='activation_gated': h=act(h,fn,q)

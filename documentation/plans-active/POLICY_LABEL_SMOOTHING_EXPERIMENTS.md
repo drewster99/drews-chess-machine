@@ -1,7 +1,8 @@
 # Policy / value label smoothing — proposed experiments
 
-**Status:** proposal (2026-10-01). Nothing implemented. Queue after the leaky-FC1
-experiment (`experiments/20261001-se-fc1-leaky/`) frees the GPU.
+**Status:** proposal (2026-10-01). Arm B's per-move mode **implemented 2026-10-02, not
+yet run** (see "Implementation notes" below); arms C and D need no code. Queue after the
+leaky-FC1 experiment (`experiments/20261001-se-fc1-leaky/`) frees the GPU.
 
 ## Background: what DCM does today
 
@@ -124,12 +125,58 @@ value loss / W-D-L calibration for D; training loss for all.
 
 ## Implementation notes (for B; C and D need no code)
 
+**Implemented 2026-10-02 — not yet run.** The plan as written, with
+the deviations and decisions noted below.
+
 - New parameter `policy_label_smoothing_mode` (`fixed_total` | `per_move`) and
   `policy_label_smoothing_per_move` (δ) — full parameter checklist (CLAUDE.md),
   session/resume fields, `[REPLAY-HPARAMS]` / `[STATS]` visibility, results.json.
   Old behaviour stays the default until the A/B decides.
+  - *Done.* Three parameters, not two: the cap is its own parameter,
+    `policy_label_smoothing_per_move_cap` (default 0.5, range 0…0.9 — the same ceiling
+    as ε, since at 1.0 a wide position's played move would get no target mass).
+    δ: default 0.0033, range 0…0.05.
+  - The mode is stored as an `Int` (0 = `fixed_total`, 1 = `per_move`) because
+    `ParameterType` has no enum case; it follows `arena_promotion_criterion`
+    (`PolicyLabelSmoothingMode`, pinned to the declared range by test). In
+    `parameters.json` write `"policy_label_smoothing_mode": 1` for arm B. Session files
+    carry the token (`"fixed_total"` / `"per_move"`).
+  - All three are `liveTunable` and **fed** to the graph every step, like ε: the mode is
+    a 1/0 selector placeholder, both target forms are built, and `select` picks one. A
+    mode switch reaches a running trainer on its next step without a graph rebuild.
+  - They travel through `TrainerHyperparameters`, so GUI Play-and-Train, corpus replay
+    and train-vs-UCI all get them from the one shared path.
+  - Visible as `pLabelSmooth=… pLabelSmoothMode=… pLabelSmoothPerMove=…
+    pLabelSmoothPerMoveCap=…` in `[REPLAY-HPARAMS]`, `[VS-UCI-HPARAMS]` and the GUI
+    `[STATS]` line's `reg=(…)` group, and as `policy_label_smoothing_*` fields on every
+    `results.json` stats entry. Resume logs one `[RESUME-PARAM]` line per field; a
+    session saved before the feature resumes in `fixed_total`.
+  - UI: Training settings ▸ Optimizer gets a mode picker with ε, δ and the cap beneath
+    it (policy ε previously had no UI). The fields the current mode does not read stay
+    visible but dimmed and disabled, as the Arena popover does for its
+    criterion-dependent fields.
 - `HeadLossGraph` target builder: branch on the mode for both the positive and the
   complement targets; keep fp32 and the renormalization; apply the total cap.
+  - *Done* (`HeadLossGraph.policyTargets(…labelSmoothing:…)`). Positive target: each
+    non-played legal move gets `per = min(δ, cap/(n − 1))`, the played move
+    `1 − per·(n − 1)` — exactly δ below the cap, the cap shared equally above it, an
+    exact one-hot at n = 1. Computing `per` as a `min` (rather than dividing the capped
+    total back by n − 1) keeps the raw per-move mass exactly δ below the cap.
+  - **Complement-target decision.** The fixed-total complement reuses the positive
+    target's smoothing part (ε over all legal moves), which leaves the played move a
+    floor of ε/|legal|. Reusing the per-move smoothing part literally would put δ only on
+    the *other* legal moves, leave the played move at exactly 0, and make the complement
+    plain uniform(other legal) for every δ — and a 0 target is the unbounded drive
+    (p(played) → 0) smoothing exists to remove. Implemented instead as the role-swapped
+    mirror: the played move (the one legal move outside the complement's target set)
+    gets the per-move floor `min(δ, cap)`; the other legal moves share the rest equally.
+    The negative branch's equilibrium is then p(played) → δ instead of ε/|legal|.
+  - Rows with no legal moves (impossible in practice) are handled the way the
+    fixed-total form handles them: |legal| clamped at 1, so the target is finite.
 - Tests: target sums to exactly 1 for every legal count 1…218; per-move mass equals δ
   below the cap; cap engages above it; complement mirror; fixed-total mode
   bit-identical to today.
+  - *Written* (`DrewsChessMachineTests/PolicyLabelSmoothingModeTests.swift`), plus: a
+    single graph switches forms by feed; illegal cells exactly 0; the parameters'
+    ids/defaults/ranges and `parameters.json` load + apply; the shared trainer path;
+    session-state round trip and absent → nil → `fixed_total`.

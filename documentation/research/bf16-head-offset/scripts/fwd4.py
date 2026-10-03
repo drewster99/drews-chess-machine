@@ -99,7 +99,7 @@ def forward(T, arch, x, R=frozenset(), capture=False, vfc2=None, q=None):
         sig = c(k+'se.sig', 1/(1+np.exp(-s[:, :C])))
         zs = c(k+'se.scaled', z * sig[:, :, None, None])
         zo = c(k+'se.out', zs + s[:, C:][:, :, None, None])
-        Cc = g['rezero_alpha_init']*1.0
+        Cc = g['rezero_alpha_cap']
         al = Cc*c(k+'alpha', np.array(math.tanh(float(T[pre+'rezero_alpha'].reshape(-1)[0])/Cc)))
         br = c(k+'rezero', zo * al)
         h = c(k+'add', h + br)

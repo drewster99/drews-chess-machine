@@ -1,6 +1,6 @@
 # Determinism, Exact Resume, Ablation Init and Lineage — Design Plan
 
-> **Note (2026-10-01):** this plan's format bump is now **v6** — v5 was taken by `se_activation`; see the note under §D2.
+> **Note (2026-10-02):** this plan's format bump is now **v7** — v5 was taken by `se_activation` (2026-10-01) and v6 by `rezero_alpha_cap` (2026-10-02); see the note under §D2.
 
 Status: **PLAN ONLY — nothing here is implemented, except phase P14 (autosave retention
 pool), implemented 2026-10-01 (see P14) — and, by owner decision 2026-10-01, gated behind
@@ -799,12 +799,15 @@ collisions (`bzw3-31`); hyperparameters unrecoverable when logs are lost;
 
 ## D2. Schema (format version 5)
 
-> **Renumbered 2026-10-01:** format version 5 was taken by the per-group
-> `se_activation` field (issue #2; `ArchitectureFormat.currentVersion = 5`). This
-> plan's format bump is therefore **version 6**. Throughout this plan, "format v5",
-> "`dcm_format_version` 5" and "v5 files/writers/readers" in the format-version sense
-> mean the next version after 5 — v6. ("v5" as an architecture / lineage name, e.g.
-> the v5 line, is unrelated and unchanged.)
+> **Renumbered 2026-10-01, and again 2026-10-02:** format version 5 was taken by the
+> per-group `se_activation` field (issue #2), and format version 6 by the per-group
+> `rezero_alpha_cap` field (the explicit ReZero soft-bound cap that makes a zero α
+> init possible; `ArchitectureFormat.currentVersion = 6`). Each was a self-contained
+> architecture-field bump that shipped ahead of this plan, so this plan's format bump
+> is now **version 7**. Throughout this plan, "format v5", "`dcm_format_version` 5"
+> and "v5 files/writers/readers" in the format-version sense mean this plan's bump —
+> v7 — and "pre-v5" means "before this plan's bump" (files of v6 and older). ("v5" as
+> an architecture / lineage name, e.g. the v5 line, is unrelated and unchanged.)
 
 One typed struct `LineageRecord` (`Persistence/LineageRecord.swift`), `Codable`,
 written into `__metadata__` as **one JSON value under `dcm_lineage`** plus a few

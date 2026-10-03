@@ -276,35 +276,47 @@ struct BuildNewModelView: View {
             ), BlockOutputNorm.allCases)
             Toggle("Use ReZero", isOn: $model.blockGroups[i].useRezero)
             if model.blockGroups[i].useRezero {
-                // The α init is seeded from the loaded preset and does NOT
+                // The α init and cap are seeded from the loaded preset and do NOT
                 // auto-track the TOTAL block count, so a deep net built off a
-                // shallow preset silently keeps the shallow α. Flag the mismatch
-                // and offer a one-click snap to 1/√(total blocks) rather than
-                // silently overwriting a deliberately-set value.
+                // shallow preset silently keeps the shallow values. Flag the
+                // mismatch and offer a one-click snap rather than silently
+                // overwriting a deliberately-set value.
                 HStack {
-                    floatField("ReZero α init", $model.blockGroups[i].rezeroAlphaInit)
-                    // Two depth-appropriate inits are blessed: 1/√N (default,
+                    // Routed through the model so the cap can follow the init
+                    // (see `setRezeroAlphaInit`). The get/set re-check the index
+                    // for the same disappearing-row reason as the Output norm
+                    // binding above; the getter's 0 is only ever shown by a row
+                    // that is being removed.
+                    floatField("ReZero α init", Binding(
+                        get: { model.blockGroups.indices.contains(i) ? model.blockGroups[i].rezeroAlphaInit : 0 },
+                        set: { model.setRezeroAlphaInit($0, forGroupAt: i) }
+                    ))
+                    .help("Starting value of each block's trainable ReZero α. 0 is the ReZero paper's init: every branch starts off and α learns from step 1.")
+                    // Two depth-appropriate values are blessed: 1/√N (default,
                     // variance-preserving) and 1/N (DeepNorm-style, gentler — for
                     // deep towers where the stream *mean* accumulates). Offer a
-                    // one-click snap to each; the forward soft-bound is α₀·tanh
-                    // (asymptote ≈ α₀, mult 1.0) either way. Warn only when the init
-                    // matches neither (a stale value carried from a shallower preset).
+                    // one-click snap to each, setting both the init and the cap
+                    // (the cap-equals-init arrangement they were derived for).
+                    // Warn only when a depth-scaled value matches neither (see
+                    // `rezeroDepthScaleMismatch`).
                     Button(String(format: "1/√%d=%.3f", model.totalBlocks, model.recommendedRezeroAlphaInit)) {
-                        model.blockGroups[i].rezeroAlphaInit = model.recommendedRezeroAlphaInit
+                        model.applyRecommendedRezero(model.recommendedRezeroAlphaInit, toGroupAt: i)
                     }
                     .controlSize(.small)
-                    .help("Default ReZero init: 1/√(total blocks), variance-preserving. Forward tanh soft-bound ≈ α₀.")
+                    .help("Default ReZero init: 1/√(total blocks), variance-preserving. Sets both the α init and the cap.")
                     Button(String(format: "1/%d=%.3f", model.totalBlocks, model.recommendedRezeroAlphaInit1OverN)) {
-                        model.blockGroups[i].rezeroAlphaInit = model.recommendedRezeroAlphaInit1OverN
+                        model.applyRecommendedRezero(model.recommendedRezeroAlphaInit1OverN, toGroupAt: i)
                     }
                     .controlSize(.small)
-                    .help("DeepNorm-style init: 1/(total blocks). Gentler; preferable for very deep towers. Forward tanh soft-bound ≈ α₀.")
-                    if model.rezeroAlphaInitMismatch(at: i) {
+                    .help("DeepNorm-style init: 1/(total blocks). Gentler; preferable for very deep towers. Sets both the α init and the cap.")
+                    if model.rezeroDepthScaleMismatch(at: i) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)
-                            .help("ReZero α init matches neither 1/√N nor 1/N for this depth — likely a stale value from a shallower preset.")
+                            .help("The ReZero cap (or a non-zero α init) matches neither 1/√N nor 1/N for this depth — likely a stale value from a shallower preset.")
                     }
                 }
+                floatField("ReZero cap", $model.blockGroups[i].rezeroAlphaCap)
+                    .help("Asymptote C of the forward soft bound C·tanh(α/C): the effective branch scale never exceeds C. Must be > 0. Follows the α init until set to something else.")
             }
             floatField("Dropout multiplier", $model.blockGroups[i].dropoutMultiplier)
         }
@@ -453,10 +465,12 @@ struct BuildNewModelView: View {
     @ViewBuilder
     private func intField(_ title: String, _ binding: Binding<Int>) -> some View {
         TextField(title, value: binding, format: .number)
+            .monospacedDigit()
     }
 
     @ViewBuilder
     private func floatField(_ title: String, _ binding: Binding<Float>) -> some View {
         TextField(title, value: binding, format: .number)
+            .monospacedDigit()
     }
 }

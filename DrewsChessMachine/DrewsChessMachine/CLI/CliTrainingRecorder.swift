@@ -728,6 +728,16 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// Nil on paths with no LR/momentum cycle.
         var lrCycleDecayHorizonSteps: Int? = nil
         var momentumFollowsLRCycle: Bool? = nil
+        /// The policy-target label smoothing in effect this tick: the mode
+        /// (`PolicyLabelSmoothingMode.logToken`), the fixed-total ε, and the
+        /// per-move δ and cap. All four are recorded whatever the mode, so
+        /// arms of a smoothing A/B are distinguishable in `results.json` and
+        /// the inactive values are visible. Nil only on a construction site
+        /// that predates them; every production call site passes them.
+        var policyLabelSmoothingEpsilon: Double? = nil
+        var policyLabelSmoothingMode: String? = nil
+        var policyLabelSmoothingPerMove: Double? = nil
+        var policyLabelSmoothingPerMoveCap: Double? = nil
 
         enum CodingKeys: String, CodingKey {
             case elapsedSec = "elapsed_sec"
@@ -828,6 +838,10 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case lrCycleTrough = "lr_cycle_trough"
             case lrCycleDecayHorizonSteps = "lr_cycle_decay_horizon_steps"
             case momentumFollowsLRCycle = "momentum_follows_lr_cycle"
+            case policyLabelSmoothingEpsilon = "policy_label_smoothing_epsilon"
+            case policyLabelSmoothingMode = "policy_label_smoothing_mode"
+            case policyLabelSmoothingPerMove = "policy_label_smoothing_per_move"
+            case policyLabelSmoothingPerMoveCap = "policy_label_smoothing_per_move_cap"
         }
     }
 
@@ -1178,5 +1192,9 @@ extension CliTrainingRecorder.StatsLine {
         lrCycleTrough = cycleValues.lrTrough
         lrCycleDecayHorizonSteps = hyperparameters.lrMomentumCycle.envelope.decayHorizonSteps
         momentumFollowsLRCycle = hyperparameters.lrMomentumCycle.envelope.momentumFollowsLRCycle
+        policyLabelSmoothingEpsilon = Double(hyperparameters.policyLabelSmoothingEpsilon)
+        policyLabelSmoothingMode = hyperparameters.policyLabelSmoothingMode.logToken
+        policyLabelSmoothingPerMove = Double(hyperparameters.policyLabelSmoothingPerMove)
+        policyLabelSmoothingPerMoveCap = Double(hyperparameters.policyLabelSmoothingPerMoveCap)
     }
 }

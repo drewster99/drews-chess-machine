@@ -1371,7 +1371,28 @@ final class ChessTrainer: @unchecked Sendable {
     /// the negative-advantage branch (`useSignedAdvantageComplementCE`),
     /// so the bounded-below equilibrium holds symmetrically on both
     /// signs of the advantage.
+    ///
+    /// Read only while `policyLabelSmoothingMode == .fixedTotal`.
     var policyLabelSmoothingEpsilon: Float
+
+    /// Which form the policy CE targets take — fixed total ε over all legal
+    /// moves, or a constant mass per non-played legal move (see
+    /// `PolicyLabelSmoothingMode` for why both exist). Fed to the training
+    /// graph each step as a 1/0 scalar placeholder that selects between two
+    /// target tensors built side by side, so it is live-tunable exactly like
+    /// ε: a switch takes effect on the next step, with no graph rebuild.
+    var policyLabelSmoothingMode: PolicyLabelSmoothingMode
+
+    /// Per-move smoothing mass δ: in `.perMove` mode every non-played legal
+    /// move's target, until the total `δ·(n − 1)` reaches
+    /// `policyLabelSmoothingPerMoveCap`. Also the played move's floor in the
+    /// complement target. Fed each step as a scalar placeholder.
+    var policyLabelSmoothingPerMove: Float
+
+    /// Cap on the per-move mode's total smoothing mass; above it the capped
+    /// total is shared equally over the non-played legal moves. Fed each step
+    /// as a scalar placeholder.
+    var policyLabelSmoothingPerMoveCap: Float
 
     /// Label-smoothing coefficient ε for the value-head W/D/L CE
     /// target. Fed to the training graph each step as a scalar
@@ -1661,6 +1682,9 @@ final class ChessTrainer: @unchecked Sendable {
     private var valueLossWeightPlaceholder: MPSGraphTensor  // [] scalar float
     private var illegalMassWeightPlaceholder: MPSGraphTensor // [] scalar float
     private var labelSmoothingEpsilonPlaceholder: MPSGraphTensor // [] scalar float
+    private var policyLabelSmoothingPerMoveSelectorPlaceholder: MPSGraphTensor // [] scalar float (1.0 per move / 0.0 fixed total)
+    private var policyLabelSmoothingPerMovePlaceholder: MPSGraphTensor // [] scalar float
+    private var policyLabelSmoothingPerMoveCapPlaceholder: MPSGraphTensor // [] scalar float
     private var valueLabelSmoothingEpsilonPlaceholder: MPSGraphTensor // [] scalar float
     private var momentumPlaceholder: MPSGraphTensor     // [] scalar float — Polyak μ
     private var complementCEEnablePlaceholder: MPSGraphTensor // [] scalar float (1.0/0.0)
@@ -1783,6 +1807,12 @@ final class ChessTrainer: @unchecked Sendable {
     private var illegalMassWeightTensorData: MPSGraphTensorData
     private var labelSmoothingEpsilonNDArray: MPSNDArray
     private var labelSmoothingEpsilonTensorData: MPSGraphTensorData
+    private var policyLabelSmoothingPerMoveSelectorNDArray: MPSNDArray
+    private var policyLabelSmoothingPerMoveSelectorTensorData: MPSGraphTensorData
+    private var policyLabelSmoothingPerMoveNDArray: MPSNDArray
+    private var policyLabelSmoothingPerMoveTensorData: MPSGraphTensorData
+    private var policyLabelSmoothingPerMoveCapNDArray: MPSNDArray
+    private var policyLabelSmoothingPerMoveCapTensorData: MPSGraphTensorData
     private var valueLabelSmoothingEpsilonNDArray: MPSNDArray
     private var valueLabelSmoothingEpsilonTensorData: MPSGraphTensorData
     private var momentumNDArray: MPSNDArray
@@ -2024,6 +2054,9 @@ final class ChessTrainer: @unchecked Sendable {
         valueLossWeight: Float = ChessTrainer.valueLossWeightDefault,
         illegalMassPenaltyWeight: Float = 1.0,
         policyLabelSmoothingEpsilon: Float = 0.1,
+        policyLabelSmoothingMode: PolicyLabelSmoothingMode = .fixedTotal,
+        policyLabelSmoothingPerMove: Float = 0.0033,
+        policyLabelSmoothingPerMoveCap: Float = 0.5,
         valueLabelSmoothingEpsilon: Float = 0.0,
         momentumCoeff: Float = 0.0,
         useSignedAdvantageComplementCE: Bool = true,
@@ -2046,6 +2079,9 @@ final class ChessTrainer: @unchecked Sendable {
         self.valueLossWeight = valueLossWeight
         self.illegalMassPenaltyWeight = illegalMassPenaltyWeight
         self.policyLabelSmoothingEpsilon = policyLabelSmoothingEpsilon
+        self.policyLabelSmoothingMode = policyLabelSmoothingMode
+        self.policyLabelSmoothingPerMove = policyLabelSmoothingPerMove
+        self.policyLabelSmoothingPerMoveCap = policyLabelSmoothingPerMoveCap
         self.valueLabelSmoothingEpsilon = valueLabelSmoothingEpsilon
         self.momentumCoeff = momentumCoeff
         self.useSignedAdvantageComplementCE = useSignedAdvantageComplementCE
@@ -2079,6 +2115,9 @@ final class ChessTrainer: @unchecked Sendable {
         self.valueLossWeightPlaceholder = built.valueLossWeight
         self.illegalMassWeightPlaceholder = built.illegalMassWeight
         self.labelSmoothingEpsilonPlaceholder = built.labelSmoothingEpsilon
+        self.policyLabelSmoothingPerMoveSelectorPlaceholder = built.policyLabelSmoothingPerMoveSelector
+        self.policyLabelSmoothingPerMovePlaceholder = built.policyLabelSmoothingPerMove
+        self.policyLabelSmoothingPerMoveCapPlaceholder = built.policyLabelSmoothingPerMoveCap
         self.valueLabelSmoothingEpsilonPlaceholder = built.valueLabelSmoothingEpsilon
         self.momentumPlaceholder = built.momentum
         self.complementCEEnablePlaceholder = built.complementCEEnable
@@ -2143,7 +2182,8 @@ final class ChessTrainer: @unchecked Sendable {
         // Scalar ND arrays for the hyperparameter feeds, reused every step.
         // Every scalar hyperparameter placeholder (lr, entropyCoeff,
         // weightDecay, gradClipMaxNorm, the policy/value/illegal loss
-        // weights, the label-smoothing epsilons, momentum,
+        // weights, the label-smoothing epsilons, the per-move policy
+        // smoothing selector / mass / cap, momentum,
         // complementCEEnable) is fp32 in the graph build — the optimizer
         // scalars because the update runs in fp32, the loss-side ones because
         // the loss path runs in the heads' fp32 tail dtype — so every ND array
@@ -2184,6 +2224,18 @@ final class ChessTrainer: @unchecked Sendable {
         labelSmoothingND.label = "labelSmoothingEpsilonND"
         self.labelSmoothingEpsilonNDArray = labelSmoothingND
         self.labelSmoothingEpsilonTensorData = MPSGraphTensorData(labelSmoothingND)
+        let perMoveSelectorND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
+        perMoveSelectorND.label = "policyLabelSmoothingPerMoveSelectorND"
+        self.policyLabelSmoothingPerMoveSelectorNDArray = perMoveSelectorND
+        self.policyLabelSmoothingPerMoveSelectorTensorData = MPSGraphTensorData(perMoveSelectorND)
+        let perMoveND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
+        perMoveND.label = "policyLabelSmoothingPerMoveND"
+        self.policyLabelSmoothingPerMoveNDArray = perMoveND
+        self.policyLabelSmoothingPerMoveTensorData = MPSGraphTensorData(perMoveND)
+        let perMoveCapND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
+        perMoveCapND.label = "policyLabelSmoothingPerMoveCapND"
+        self.policyLabelSmoothingPerMoveCapNDArray = perMoveCapND
+        self.policyLabelSmoothingPerMoveCapTensorData = MPSGraphTensorData(perMoveCapND)
         let valueLabelSmoothingND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         valueLabelSmoothingND.label = "valueLabelSmoothingEpsilonND"
         self.valueLabelSmoothingEpsilonNDArray = valueLabelSmoothingND
@@ -2298,6 +2350,9 @@ final class ChessTrainer: @unchecked Sendable {
         self.valueLossWeightPlaceholder = built.valueLossWeight
         self.illegalMassWeightPlaceholder = built.illegalMassWeight
         self.labelSmoothingEpsilonPlaceholder = built.labelSmoothingEpsilon
+        self.policyLabelSmoothingPerMoveSelectorPlaceholder = built.policyLabelSmoothingPerMoveSelector
+        self.policyLabelSmoothingPerMovePlaceholder = built.policyLabelSmoothingPerMove
+        self.policyLabelSmoothingPerMoveCapPlaceholder = built.policyLabelSmoothingPerMoveCap
         self.valueLabelSmoothingEpsilonPlaceholder = built.valueLabelSmoothingEpsilon
         self.momentumPlaceholder = built.momentum
         self.complementCEEnablePlaceholder = built.complementCEEnable
@@ -2387,6 +2442,15 @@ final class ChessTrainer: @unchecked Sendable {
         self.labelSmoothingEpsilonNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         self.labelSmoothingEpsilonNDArray.label = "trainer.scalar.labelSmoothingEpsilon (reset)"
         self.labelSmoothingEpsilonTensorData = MPSGraphTensorData(labelSmoothingEpsilonNDArray)
+        self.policyLabelSmoothingPerMoveSelectorNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
+        self.policyLabelSmoothingPerMoveSelectorNDArray.label = "trainer.scalar.policyLabelSmoothingPerMoveSelector (reset)"
+        self.policyLabelSmoothingPerMoveSelectorTensorData = MPSGraphTensorData(policyLabelSmoothingPerMoveSelectorNDArray)
+        self.policyLabelSmoothingPerMoveNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
+        self.policyLabelSmoothingPerMoveNDArray.label = "trainer.scalar.policyLabelSmoothingPerMove (reset)"
+        self.policyLabelSmoothingPerMoveTensorData = MPSGraphTensorData(policyLabelSmoothingPerMoveNDArray)
+        self.policyLabelSmoothingPerMoveCapNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
+        self.policyLabelSmoothingPerMoveCapNDArray.label = "trainer.scalar.policyLabelSmoothingPerMoveCap (reset)"
+        self.policyLabelSmoothingPerMoveCapTensorData = MPSGraphTensorData(policyLabelSmoothingPerMoveCapNDArray)
         self.valueLabelSmoothingEpsilonNDArray = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
         self.valueLabelSmoothingEpsilonNDArray.label = "trainer.scalar.valueLabelSmoothingEpsilon (reset)"
         self.valueLabelSmoothingEpsilonTensorData = MPSGraphTensorData(valueLabelSmoothingEpsilonNDArray)
@@ -2488,6 +2552,9 @@ final class ChessTrainer: @unchecked Sendable {
         valueLossWeight: MPSGraphTensor,
         illegalMassWeight: MPSGraphTensor,
         labelSmoothingEpsilon: MPSGraphTensor,
+        policyLabelSmoothingPerMoveSelector: MPSGraphTensor,
+        policyLabelSmoothingPerMove: MPSGraphTensor,
+        policyLabelSmoothingPerMoveCap: MPSGraphTensor,
         valueLabelSmoothingEpsilon: MPSGraphTensor,
         momentum: MPSGraphTensor,
         complementCEEnable: MPSGraphTensor,
@@ -2765,16 +2832,45 @@ final class ChessTrainer: @unchecked Sendable {
             dataType: lossDType,
             name: "policy_label_smoothing_epsilon"
         )
+        // The per-move smoothing form's three scalars, fed the same way and
+        // for the same reason. The mode is a 1/0 selector rather than a
+        // build-time branch so that it stays live-tunable like ε: both target
+        // forms are built and the selector picks one per step. The unused
+        // form costs a handful of elementwise ops over `[batch, policySize]`,
+        // negligible next to the tower, and `select` passes the chosen form
+        // through unchanged, so fixed-total mode trains on the same targets
+        // it did before the per-move form existed.
+        let policyLabelSmoothingPerMoveSelectorTensor = graph.placeholder(
+            shape: [1],
+            dataType: lossDType,
+            name: "policy_label_smoothing_per_move_selector"
+        )
+        let policyLabelSmoothingPerMoveTensor = graph.placeholder(
+            shape: [1],
+            dataType: lossDType,
+            name: "policy_label_smoothing_per_move"
+        )
+        let policyLabelSmoothingPerMoveCapTensor = graph.placeholder(
+            shape: [1],
+            dataType: lossDType,
+            name: "policy_label_smoothing_per_move_cap"
+        )
 
         // Positive and complement targets, fp32 and renormalized to sum to
         // exactly 1; see `HeadLossGraph.policyTargets` for their shape and
-        // equilibria, and for why a single-legal-move position gets zero
-        // complement weight (`complementTargetValid`) instead of a target.
+        // equilibria in both smoothing modes, and for why a single-legal-move
+        // position gets zero complement weight (`complementTargetValid`)
+        // instead of a target.
         let policyTargets = HeadLossGraph.policyTargets(
             graph: graph,
             movePlayed: movePlayed,
             legalMask: legalMask,
-            epsilon: labelSmoothingEpsilonTensor,
+            labelSmoothing: HeadLossGraph.PolicyLabelSmoothingInputs(
+                perMoveSelector: policyLabelSmoothingPerMoveSelectorTensor,
+                epsilon: labelSmoothingEpsilonTensor,
+                perMove: policyLabelSmoothingPerMoveTensor,
+                perMoveCap: policyLabelSmoothingPerMoveCapTensor
+            ),
             policySize: ChessNetwork.policySize
         )
         let oneHot = policyTargets.oneHot
@@ -4217,6 +4313,9 @@ final class ChessTrainer: @unchecked Sendable {
             valueLossWeightTensor,
             illegalMassWeightTensor,
             labelSmoothingEpsilonTensor,
+            policyLabelSmoothingPerMoveSelectorTensor,
+            policyLabelSmoothingPerMoveTensor,
+            policyLabelSmoothingPerMoveCapTensor,
             valueLabelSmoothingEpsilonTensor,
             momentumTensor,
             complementCEEnableTensor,
@@ -5993,6 +6092,9 @@ final class ChessTrainer: @unchecked Sendable {
         writeScalarFeed(valueLossWeightNDArray, value: valueLossWeight)
         writeScalarFeed(illegalMassWeightNDArray, value: illegalMassPenaltyWeight)
         writeScalarFeed(labelSmoothingEpsilonNDArray, value: policyLabelSmoothingEpsilon)
+        writeScalarFeed(policyLabelSmoothingPerMoveSelectorNDArray, value: policyLabelSmoothingMode.graphSelectorValue)
+        writeScalarFeed(policyLabelSmoothingPerMoveNDArray, value: policyLabelSmoothingPerMove)
+        writeScalarFeed(policyLabelSmoothingPerMoveCapNDArray, value: policyLabelSmoothingPerMoveCap)
         writeScalarFeed(valueLabelSmoothingEpsilonNDArray, value: valueLabelSmoothingEpsilon)
         // Momentum: the cycle's linear value when momentum cycling is active,
         // otherwise the static configured coefficient.
@@ -6177,6 +6279,9 @@ final class ChessTrainer: @unchecked Sendable {
             valueLossWeightPlaceholder: valueLossWeightTensorData,
             illegalMassWeightPlaceholder: illegalMassWeightTensorData,
             labelSmoothingEpsilonPlaceholder: labelSmoothingEpsilonTensorData,
+            policyLabelSmoothingPerMoveSelectorPlaceholder: policyLabelSmoothingPerMoveSelectorTensorData,
+            policyLabelSmoothingPerMovePlaceholder: policyLabelSmoothingPerMoveTensorData,
+            policyLabelSmoothingPerMoveCapPlaceholder: policyLabelSmoothingPerMoveCapTensorData,
             valueLabelSmoothingEpsilonPlaceholder: valueLabelSmoothingEpsilonTensorData,
             momentumPlaceholder: momentumTensorData,
             complementCEEnablePlaceholder: complementCEEnableTensorData

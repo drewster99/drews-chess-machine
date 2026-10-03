@@ -93,7 +93,7 @@ def forward(T,arch,x,precision='f64',return_all=False):
         y=conv(y,TT[pre+'conv2.weight'],q)
         assert g['se_style']=='none'
         if g['use_rezero']:
-            C=g['rezero_alpha_init']*1.0; a=C*np.tanh(TT[pre+'rezero_alpha'][0]/C); y=q(y*q(a))
+            C=g['rezero_alpha_cap']; a=C*np.tanh(TT[pre+'rezero_alpha'][0]/C); y=q(y*q(a))
         h=q(h+y)
         if g.get('output_norm')=='layer_norm':
             mu=h.mean(0,keepdims=True); var=h.var(0,keepdims=True)

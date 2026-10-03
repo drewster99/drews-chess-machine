@@ -301,6 +301,45 @@ public enum IllegalMassWeight: TrainingParameterKey {}
 )
 public enum PolicyLabelSmoothingEpsilon: TrainingParameterKey {}
 
+// MARK: Policy label smoothing mode (fixed total vs per move)
+//
+// `Policy Label Smoothing ε` is read only in fixed-total mode; the per-move
+// mass δ and its cap are read only in per-move mode. All three are fed to the
+// training graph every step (like ε), so all are live-tunable and a mode
+// switch takes effect on the next step. See `PolicyLabelSmoothingMode` and
+// `documentation/plans-active/POLICY_LABEL_SMOOTHING_EXPERIMENTS.md`.
+
+@TrainingParameter(
+    name: "Policy Label Smoothing Mode",
+    description: "How the policy CE target spreads its label-smoothing mass over the legal moves: 0 = fixed total (Policy Label Smoothing ε is the total, split evenly over all legal moves, so the mass per alternative shrinks as the number of legal moves grows), 1 = per move (every non-played legal move gets Policy Label Smoothing Per Move δ, so the total grows with the number of legal moves, capped at Policy Label Smoothing Per Move Cap and shared equally above it). Fixed total ignores δ and the cap; per move ignores ε.",
+    default: 0,
+    range: 0...1,
+    category: "Optimizer",
+    id: "policy_label_smoothing_mode",
+    liveTunable: true
+)
+public enum PolicyLabelSmoothingModeParameter: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Policy Label Smoothing Per Move δ",
+    description: "Per-move label-smoothing mass, used only when Policy Label Smoothing Mode = 1 (per move). Every non-played legal move gets δ and the played move gets the rest: target = (1 − δ·(n−1))·one_hot(played) + δ·(other legal moves), n = number of legal moves, so the trained gap between the played move and each alternative is nearly independent of n. The total δ·(n−1) is capped by Policy Label Smoothing Per Move Cap. A position with one legal move gets an exact one-hot. δ=0 = one-hot. Range [0, 0.05].",
+    default: 0.0033,
+    range: 0.0...0.05,
+    category: "Optimizer",
+    liveTunable: true
+)
+public enum PolicyLabelSmoothingPerMove: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Policy Label Smoothing Per Move Cap",
+    description: "Cap on the total per-move smoothing mass δ·(n−1), used only when Policy Label Smoothing Mode = 1 (per move). Wide positions (up to ~218 legal moves) would otherwise give the played move little or no target mass. Above the cap the capped total is shared equally over the non-played legal moves. Also caps the played move's mass in the complement (negative-advantage) target, which is δ. Same ceiling as Policy Label Smoothing ε. Range [0, 0.9].",
+    default: 0.5,
+    range: 0.0...0.9,
+    category: "Optimizer",
+    liveTunable: true
+)
+public enum PolicyLabelSmoothingPerMoveCap: TrainingParameterKey {}
+
 @TrainingParameter(
     name: "Value Label Smoothing ε",
     description: "Label-smoothing coefficient on the value-head W/D/L cross-entropy target. The target is built in-graph as (1−ε)·one_hot(1−z) + ε·(1/3), where 1−z maps the play-time outcome z ∈ {+1,0,−1} to the [win,draw,loss] slot. ε=0 = hard one-hot on the game result. ε>0 gives the value CE a reachable finite-logit equilibrium instead of ±∞, the same way Policy Label Smoothing does for the policy CE. Range [0, 0.5].",
@@ -1140,6 +1179,11 @@ public extension TrainingParametersSnapshot {
     var entropyBonus: Double { value(for: EntropyBonus.self) }
     var illegalMassWeight: Double { value(for: IllegalMassWeight.self) }
     var policyLabelSmoothingEpsilon: Double { value(for: PolicyLabelSmoothingEpsilon.self) }
+    var policyLabelSmoothingMode: PolicyLabelSmoothingMode {
+        PolicyLabelSmoothingMode(persistedRawValue: value(for: PolicyLabelSmoothingModeParameter.self))
+    }
+    var policyLabelSmoothingPerMove: Double { value(for: PolicyLabelSmoothingPerMove.self) }
+    var policyLabelSmoothingPerMoveCap: Double { value(for: PolicyLabelSmoothingPerMoveCap.self) }
     var valueLabelSmoothingEpsilon: Double { value(for: ValueLabelSmoothingEpsilon.self) }
     var gradClipMaxNorm: Double { value(for: GradClipMaxNorm.self) }
     var weightDecay: Double { value(for: WeightDecay.self) }
@@ -1260,6 +1304,18 @@ public final class TrainingParameters {
     public var entropyBonus: Double { didSet { if !Self.commitAssignment(EntropyBonus.self, value: entropyBonus) { entropyBonus = oldValue } } }
     public var illegalMassWeight: Double { didSet { if !Self.commitAssignment(IllegalMassWeight.self, value: illegalMassWeight) { illegalMassWeight = oldValue } } }
     public var policyLabelSmoothingEpsilon: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingEpsilon.self, value: policyLabelSmoothingEpsilon) { policyLabelSmoothingEpsilon = oldValue } } }
+    /// Stored as the enum rather than its raw value so no use site ever sees
+    /// the persisted integer; the `didSet` unwraps it at the persistence
+    /// boundary, which is the only place the raw form is meaningful.
+    public var policyLabelSmoothingMode: PolicyLabelSmoothingMode {
+        didSet {
+            if !Self.commitAssignment(PolicyLabelSmoothingModeParameter.self, value: policyLabelSmoothingMode.rawValue) {
+                policyLabelSmoothingMode = oldValue
+            }
+        }
+    }
+    public var policyLabelSmoothingPerMove: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingPerMove.self, value: policyLabelSmoothingPerMove) { policyLabelSmoothingPerMove = oldValue } } }
+    public var policyLabelSmoothingPerMoveCap: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingPerMoveCap.self, value: policyLabelSmoothingPerMoveCap) { policyLabelSmoothingPerMoveCap = oldValue } } }
     public var valueLabelSmoothingEpsilon: Double { didSet { if !Self.commitAssignment(ValueLabelSmoothingEpsilon.self, value: valueLabelSmoothingEpsilon) { valueLabelSmoothingEpsilon = oldValue } } }
     public var gradClipMaxNorm: Double { didSet { if !Self.commitAssignment(GradClipMaxNorm.self, value: gradClipMaxNorm) { gradClipMaxNorm = oldValue } } }
     public var weightDecay: Double { didSet { if !Self.commitAssignment(WeightDecay.self, value: weightDecay) { weightDecay = oldValue } } }
@@ -1352,6 +1408,11 @@ public final class TrainingParameters {
         self.entropyBonus = Self.read(EntropyBonus.self)
         self.illegalMassWeight = Self.read(IllegalMassWeight.self)
         self.policyLabelSmoothingEpsilon = Self.read(PolicyLabelSmoothingEpsilon.self)
+        self.policyLabelSmoothingMode = PolicyLabelSmoothingMode(
+            persistedRawValue: Self.read(PolicyLabelSmoothingModeParameter.self)
+        )
+        self.policyLabelSmoothingPerMove = Self.read(PolicyLabelSmoothingPerMove.self)
+        self.policyLabelSmoothingPerMoveCap = Self.read(PolicyLabelSmoothingPerMoveCap.self)
         self.valueLabelSmoothingEpsilon = Self.read(ValueLabelSmoothingEpsilon.self)
         self.gradClipMaxNorm = Self.read(GradClipMaxNorm.self)
         self.weightDecay = Self.read(WeightDecay.self)
@@ -1443,6 +1504,9 @@ public final class TrainingParameters {
         v[EntropyBonus.id] = EntropyBonus.encode(entropyBonus)
         v[IllegalMassWeight.id] = IllegalMassWeight.encode(illegalMassWeight)
         v[PolicyLabelSmoothingEpsilon.id] = PolicyLabelSmoothingEpsilon.encode(policyLabelSmoothingEpsilon)
+        v[PolicyLabelSmoothingModeParameter.id] = PolicyLabelSmoothingModeParameter.encode(policyLabelSmoothingMode.rawValue)
+        v[PolicyLabelSmoothingPerMove.id] = PolicyLabelSmoothingPerMove.encode(policyLabelSmoothingPerMove)
+        v[PolicyLabelSmoothingPerMoveCap.id] = PolicyLabelSmoothingPerMoveCap.encode(policyLabelSmoothingPerMoveCap)
         v[ValueLabelSmoothingEpsilon.id] = ValueLabelSmoothingEpsilon.encode(valueLabelSmoothingEpsilon)
         v[GradClipMaxNorm.id] = GradClipMaxNorm.encode(gradClipMaxNorm)
         v[WeightDecay.id] = WeightDecay.encode(weightDecay)
@@ -1559,6 +1623,15 @@ public final class TrainingParameters {
             try IllegalMassWeight.definition.validate(raw); illegalMassWeight = try IllegalMassWeight.decode(raw)
         case PolicyLabelSmoothingEpsilon.id:
             try PolicyLabelSmoothingEpsilon.definition.validate(raw); policyLabelSmoothingEpsilon = try PolicyLabelSmoothingEpsilon.decode(raw)
+        case PolicyLabelSmoothingModeParameter.id:
+            try PolicyLabelSmoothingModeParameter.definition.validate(raw)
+            policyLabelSmoothingMode = PolicyLabelSmoothingMode(
+                persistedRawValue: try PolicyLabelSmoothingModeParameter.decode(raw)
+            )
+        case PolicyLabelSmoothingPerMove.id:
+            try PolicyLabelSmoothingPerMove.definition.validate(raw); policyLabelSmoothingPerMove = try PolicyLabelSmoothingPerMove.decode(raw)
+        case PolicyLabelSmoothingPerMoveCap.id:
+            try PolicyLabelSmoothingPerMoveCap.definition.validate(raw); policyLabelSmoothingPerMoveCap = try PolicyLabelSmoothingPerMoveCap.decode(raw)
         case ValueLabelSmoothingEpsilon.id:
             try ValueLabelSmoothingEpsilon.definition.validate(raw); valueLabelSmoothingEpsilon = try ValueLabelSmoothingEpsilon.decode(raw)
         case GradClipMaxNorm.id:
@@ -1890,6 +1963,9 @@ public final class TrainingParameters {
         EntropyBonus.self,
         IllegalMassWeight.self,
         PolicyLabelSmoothingEpsilon.self,
+        PolicyLabelSmoothingModeParameter.self,
+        PolicyLabelSmoothingPerMove.self,
+        PolicyLabelSmoothingPerMoveCap.self,
         ValueLabelSmoothingEpsilon.self,
         GradClipMaxNorm.self,
         WeightDecay.self,

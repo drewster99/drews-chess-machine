@@ -2616,11 +2616,15 @@ final class ChessNetwork: @unchecked Sendable {
     /// linearly, letting the globally-pooled signal also inject a learned
     /// per-channel offset, not just attenuate. `z` is the raw conv2 output.
     ///
-    /// `α` (`*_res_scale`) is a per-block trainable scalar, init
-    /// `1/√numBlocks`. With L additive branches of ~unit variance the tower
-    /// variance grows ~L; the `1/√L` init holds it ~O(1) while still letting
-    /// every block contribute signal *and* gradient from step 1 (unlike the
-    /// old zero-γ init, whose branch was dead until gradient woke it). It is
+    /// `α` (`*_res_scale`) is a per-block trainable scalar, init the group's
+    /// `rezeroAlphaInit` (the presets use `1/√numBlocks`), applied through
+    /// the soft bound `C·tanh(α/C)` with C = the group's `rezeroAlphaCap`.
+    /// With L additive branches of ~unit variance the tower variance grows
+    /// ~L; the `1/√L` init holds it ~O(1) while still letting every block
+    /// contribute signal *and* gradient from step 1 (unlike the old zero-γ
+    /// init, whose branch was dead until gradient woke it). An init of 0 —
+    /// the ReZero paper's — starts every block as an exact identity instead
+    /// and lets α grow from there (see the comment at the α variable). It is
     /// excluded from weight decay. Reduction ratio = `seReductionRatio`.
     private static func residualBlock(
         graph: MPSGraph,
@@ -2818,6 +2822,16 @@ final class ChessNetwork: @unchecked Sendable {
         // ReZero branch scalar (optional), init `rezeroAlphaInit`, no weight decay.
         // Stored in `weightStorageDataType` (fp32 under D); cast to the compute
         // dtype before it scales the (bf16) branch.
+        //
+        // α₀ = 0 is legal and is the published ReZero init: at α = 0 the
+        // bounded scale C·tanh(0) is exactly 0, so the branch output is zeroed
+        // and the identity path alone carries the signal (the block starts as
+        // an exact identity). Nothing is dead, though: ∂L/∂α = ⟨∂L/∂branch_out,
+        // F(x)⟩ · d(C·tanh(α/C))/dα, and that derivative is 1 − tanh²(α/C) = 1
+        // at α = 0 — the soft bound passes α's gradient through unscaled
+        // there — so α moves on step 1. The branch weights receive gradient
+        // scaled by the effective α, so they are frozen only at step 0 and
+        // start learning as soon as α leaves zero.
         var branch = seOut
         if spec.useRezero {
             let alpha = graph.variable(
@@ -2835,15 +2849,23 @@ final class ChessNetwork: @unchecked Sendable {
             // that is alive everywhere (never a dead zone), near-identity for small
             // α (C·tanh(α/C) ≈ α when α≪C, so it starts at the depth-aware 1/√N
             // init and behaves normally in the healthy range), and asymptotes to C
-            // so α can never enter the runaway regime. C = α₀ = 1/√N
-            // (rezeroTanhCeilingMultiple·α₀, mult 1.0): the raw α still ratchets up
-            // (its gradient is one-way), so effective α saturates AT the cap across
-            // all blocks — pinning the cap at the init makes that saturated state
-            // variance-preserving (Σα² ≈ N·(1/√N)² = 1). C=1.0 failed because
-            // saturating at ~0.95 per block gives Σα² ≈ 4.5 and the stream mean
-            // still exploded (bn1Mean 43→1384 over 1k steps, broke ~step 5800).
-            // Bounding in the forward means a saved α is still bounded on reload,
-            // and the branch keeps full gradient. See documentation/rezero-alpha-clamp.md.
+            // so α can never enter the runaway regime.
+            //
+            // C is explicit per group (`BlockGroup.rezeroAlphaCap`, read through
+            // `rezeroTanhCeiling`). Files older than architecture format v6 carry
+            // no cap and resolve it to α₀ (the old `rezeroTanhCeilingMultiple·α₀`
+            // rule, mult 1.0), so every legacy model builds this exact graph. That
+            // rule's reasoning still holds for a positive init: the raw α ratchets
+            // up (its gradient is one-way), so effective α saturates AT the cap
+            // across all blocks — pinning the cap at α₀ = 1/√N makes that
+            // saturated state variance-preserving (Σα² ≈ N·(1/√N)² = 1). C=1.0
+            // with α₀ = 1/√5 failed because saturating at ~0.95 per block gives
+            // Σα² ≈ 4.5 and the stream mean still exploded (bn1Mean 43→1384 over
+            // 1k steps, broke ~step 5800). Decoupling C from α₀ is what makes the
+            // zero init possible at all (C = α₀ = 0 would divide by zero), and it
+            // lets the cap be chosen on its own. Bounding in the forward means a
+            // saved α is still bounded on reload, and the branch keeps full
+            // gradient. See documentation/rezero-alpha-clamp.md.
             let cConst = graph.constant(spec.rezeroTanhCeiling, dataType: alpha.dataType)
             let alphaBounded = graph.multiplication(
                 cConst,

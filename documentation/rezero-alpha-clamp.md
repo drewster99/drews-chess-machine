@@ -10,12 +10,15 @@ and destroyed inference. The fix is a smooth **forward soft-bound** of `α` thro
 `C·tanh(α/C)`, with `C` the asymptotic ceiling:
 
 ```
-effective_α = C · tanh(α / C)     C = rezeroTanhCeilingMultiple · α₀ = 1/√N
+effective_α = C · tanh(α / C)     C = rezero_alpha_cap (legacy: rezeroTanhCeilingMultiple · α₀ = 1/√N)
 ```
 
-with `C = α₀ = 1/√N` (`rezeroTanhCeilingMultiple · α₀`, multiplier 1.0). For small
-`α` this is near-identity, and it saturates smoothly to `±C` so `α` can never enter
-the runaway regime. Standard for every build (bf16 and fp32).
+`C` is the block group's explicit `rezero_alpha_cap` (architecture format v6 — see
+"Explicit cap and the zero init" below). Every preset, and every model saved before
+the field existed, has `C = α₀ = 1/√N` (`rezeroTanhCeilingMultiple · α₀`, multiplier
+1.0) — the rule this document's runs established. For small `α` this is
+near-identity, and it saturates smoothly to `±C` so `α` can never enter the runaway
+regime. Standard for every build (bf16 and fp32).
 
 **Why `C = 1/√N`, not a bigger constant.** The raw `α` ratchets up regardless of the
 bound (its gradient is one-way — see below), so the *effective* α saturates **at the
@@ -174,8 +177,8 @@ In `ChessNetwork.residualBlock`, soft-bound `α` through `C·tanh(α/C)` in the
 forward before it scales the branch:
 
 ```swift
-// C = α₀ · rezeroTanhCeilingMultiple  (multiplier 1.0 → C = α₀ = 1/√N)
-let cConst = graph.constant(Double(spec.rezeroAlphaInit) * NetworkArchitecture.rezeroTanhCeilingMultiple, dataType: alpha.dataType)
+// C = the group's rezero_alpha_cap (legacy files: α₀ · rezeroTanhCeilingMultiple = α₀ = 1/√N)
+let cConst = graph.constant(spec.rezeroTanhCeiling, dataType: alpha.dataType)
 let alphaBounded = graph.multiplication(
     cConst,
     graph.tanh(with: graph.division(alpha, cConst, name: nil), name: nil),
@@ -213,6 +216,72 @@ Design choices:
   Only a **from-scratch retrain** with the soft-bound produces a healthy model.
 - It does **not** add weight decay to `α`; the tanh soft-bound is the sole
   mechanism. (Adding `α` to the weight-decay set is an alternative — see below.)
+
+## Explicit cap and the zero init (architecture format v6)
+
+Until format v6 the cap was not stored: the forward derived it as
+`C = rezeroTanhCeilingMultiple · α₀`. That tied two different things together —
+where α *starts* and where its effective value *can go* — and made the ReZero
+paper's own init impossible: `α₀ = 0` gives `C = 0`, and `C·tanh(α/C)` is `0/0 = NaN`
+on the first forward, so `validate()` rejected `α₀ = 0` outright.
+
+Format v6 makes the cap its own per-block-group field:
+
+- **`block_groups[].rezero_alpha_cap`** (`BlockGroup.rezeroAlphaCap`) is `C`.
+  `BlockGroup.rezeroTanhCeiling` reads it, and that one accessor is what the graph
+  builder, the architecture summary, the Build screen's diagram, the numerics audit
+  and `[LAYER-HEALTH]` all use — nothing re-derives `C` from `α₀`.
+- **Legacy files keep their exact graph.** A file older than v6 (v5, v4, v3 or
+  unversioned, and the pre-block-groups uniform-tower keys) has no cap; it resolves
+  to `α₀ · rezeroTanhCeilingMultiple` — exactly the old `C` — and the load logs one
+  `[ARCH] legacy file … block_groups[i].rezero_alpha_cap := …` line. Because the
+  multiplier is 1.0 the resolved Float is bit-identical to `α₀`, so the built
+  graph, the architecture value (equality and hash), the summary string and the
+  parameter count are all unchanged. A v6 file without the field is a load error;
+  every writer always writes it.
+- **Validation:** with ReZero on, the cap must be finite and `> 0` (it divides),
+  and `α₀` must be finite and `>= 0` — zero is now legal. `α₀ > C` is allowed (the
+  forward just starts saturated at `C·tanh(α₀/C)`); neither value is checked on a
+  group without ReZero, where nothing reads them.
+
+**The zero init.** With `α₀ = 0` every block starts as an exact identity: the
+bounded scale `C·tanh(0) = 0` zeroes the branch, and the identity path alone carries
+the signal into the heads. Nothing is dead — `α`'s gradient is
+`⟨∂L/∂branch_out, F(x)⟩ · d(C·tanh(α/C))/dα`, and that derivative is
+`1 − tanh²(0) = 1`, so the soft bound passes the gradient through unscaled at the
+start and `α` moves on step 1. The branch weights' gradient is scaled by the
+effective α, so they are frozen only at step 0 and start learning as soon as `α`
+leaves zero. This is the published ReZero arrangement (Bachlechner et al. 2020),
+now with the tanh bound still in place: `α` can grow, but its effective value
+never exceeds `C`.
+
+How to get one:
+
+- **Build New Model:** each ReZero group has a "ReZero α init" and a "ReZero cap"
+  field. The cap follows the init while the two are equal and the new init is
+  positive (so presets behave as before); typing `0` into the init leaves the cap
+  where it was. The `1/√N` and `1/N` buttons set both. The orange warning flags a
+  cap — or a non-zero init — that matches neither recommendation; a zero init is
+  never flagged.
+- **From an existing fresh net** (`--derive-model`, see `deriving-models.md`):
+  `--set-rezero-alpha-init 0` sets the field *and* writes exactly `0` into every
+  `blocks.<i>.rezero_alpha` tensor of the affected groups; `--set-rezero-alpha-cap
+  <C>` sets only the field. Both accept `--group` and refuse groups without ReZero.
+  For example, the zero-init copy of the 3-block no-SE test net with cap 1.0:
+
+  ```
+  DrewsChessMachine --derive-model \
+      --from "$HOME/Library/Application Support/DrewsChessMachine/Models/20260929-test_SE_none-fresh.safetensors" \
+      --set-rezero-alpha-init 0 --set-rezero-alpha-cap 1 \
+      --out "$HOME/Library/Application Support/DrewsChessMachine/Models/20260929-test_SE_none-rz0cap1-fresh.safetensors"
+  ```
+
+What the cap should be with a zero init is an open question this change does not
+answer. The variance argument above (`Σα² = N·C²` once every block saturates, so
+`C = 1/√N`) still describes the saturated end state whatever the start; the
+`C = 1.0` failure was measured with `α₀ = 1/√N` on the 5-block tower, where every
+block raced to the wall. Whether a zero start, or a shallower tower, changes how
+fast or how far effective α travels is what the zero-init runs are for.
 
 ## Background / prior art
 

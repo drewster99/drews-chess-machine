@@ -155,6 +155,18 @@ struct LichessBotMatchmakingSettings: Sendable, Equatable, Codable {
     /// Each send uses one of these, chosen uniformly.
     var timeControls: Set<LichessBotClockChoice> = [.bullet1plus0, .bullet2plus1, .ultraBulletQuarterPlus0, .blitz3plus0, .blitz3plus2, .bullet1plus1, .blitz5plus3, .rapid10plus0, .blitz5plus0]
     var rated = true
+    /// When a bot declines one of matchmaking's rated challenges with
+    /// Lichess's `casual` reason ("please send me a casual challenge
+    /// instead"), send it the same challenge once more, unrated, through
+    /// matchmaking's own send path, and leave the decline cool-down to that
+    /// resend's answer. Off, such a decline is handled like any other: the
+    /// cool-down, plus the manual resend offer. Challenges the operator
+    /// sends are never resent automatically.
+    ///
+    /// Settings saved before this field existed load it as `false`, today's
+    /// default, which is the behavior they were saved under (the store
+    /// fills an absent non-optional field from the defaults).
+    var fallBackToCasual = false
     /// The opponent's rating at the chosen speed must lie within DCM's own
     /// rating at that speed plus these offsets.
     var minimumRatingOffset = -300

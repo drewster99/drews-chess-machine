@@ -138,7 +138,7 @@ struct ArchitectureDiagramView: View {
             line("×\(g.count) · @\(g.channels)ch", bold: true)
             line("conv \(g.conv1KernelSize)×\(g.conv1KernelSize) + \(g.conv2KernelSize)×\(g.conv2KernelSize)")
             line("\(seLabel(g)) · \(g.activationFunction.rawValue)/\(g.activationStyle.rawValue)")
-            line("\(g.skipMerge.rawValue) · \(rezeroLabel(g))")
+            line("\(g.skipMerge.rawValue) · \(NetworkArchitecture.rezeroDescription(g))")
             if g.resolvedOutputNorm != .none {
                 line("out: \(g.resolvedOutputNorm.rawValue)")
             }
@@ -158,10 +158,6 @@ struct ArchitectureDiagramView: View {
         case .attenuateOnly: return "SE/\(g.seReductionRatio)" + markers
         case .scaleAndBias: return "SE+/\(g.seReductionRatio)" + markers
         }
-    }
-
-    private func rezeroLabel(_ g: BlockGroup) -> String {
-        g.useRezero ? "ReZero(\(String(format: "%.3g", g.rezeroAlphaInit))·tanh≤\(String(format: "%.3g", g.rezeroTanhCeiling)))" : "no-ReZero"
     }
 
     /// Marker for the optional feature skip: a single long concat skip carrying

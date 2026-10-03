@@ -411,7 +411,24 @@ struct BlockGroup: Codable, Hashable, Sendable {
     var seStyle: SEStyle
     var seReductionRatio: Int            // consumed only when seStyle != none
     var useRezero: Bool
-    var rezeroAlphaInit: Float           // consumed only when useRezero
+    /// The value every block's trainable ReZero scalar α starts at. Consumed
+    /// only when `useRezero`. Zero is legal and is the published ReZero init
+    /// (Bachlechner et al. 2020): every residual branch starts switched off,
+    /// the identity path carries the signal, and α learns from step 1 (see
+    /// `ChessNetwork.residualBlock`). A positive init such as `1/√N` starts
+    /// every branch contributing instead.
+    var rezeroAlphaInit: Float
+    /// The asymptote `C` of the forward soft bound `C·tanh(α/C)` the trained α
+    /// is applied through: the effective branch scale can approach ±C but
+    /// never exceed it. Consumed only when `useRezero`. Before this field
+    /// existed C was derived from the init (`rezeroAlphaInit ×
+    /// NetworkArchitecture.rezeroTanhCeilingMultiple`), which made a zero
+    /// init impossible — C = 0 divides by zero in the forward. An explicit
+    /// cap decouples the two, so a zero-init group can still carry any
+    /// positive cap. Decoding is format-version gated (`ArchitectureFormat`):
+    /// files before format v6 resolve a missing value to that old derivation
+    /// (`legacyRezeroAlphaCap`); v6+ files must state it.
+    var rezeroAlphaCap: Float
     /// Hidden activation on this group's block main path (and the merge
     /// when `skipMerge == .activationGated`). The SE FC1 has its own
     /// `seActivation`.
@@ -458,11 +475,23 @@ struct BlockGroup: Codable, Hashable, Sendable {
     var resolvedOutputNorm: BlockOutputNorm { outputNorm ?? .none }
 
     /// The ReZero soft-bound asymptote `C` in the forward's `C·tanh(α/C)`:
-    /// `rezeroAlphaInit · NetworkArchitecture.rezeroTanhCeilingMultiple`.
-    /// Meaningful only when `useRezero`. The one formula the graph builder,
-    /// the group summary, the numerics audit and layer health all read.
+    /// the group's explicit `rezeroAlphaCap`. Meaningful only when
+    /// `useRezero`. The one formula the graph builder, the group summary, the
+    /// Build screen's diagram, the numerics audit and layer health all read —
+    /// none of them derives C from the init on its own.
     var rezeroTanhCeiling: Double {
-        Double(rezeroAlphaInit) * NetworkArchitecture.rezeroTanhCeilingMultiple
+        Double(rezeroAlphaCap)
+    }
+
+    /// The cap a group had before `rezeroAlphaCap` existed: the init times
+    /// `NetworkArchitecture.rezeroTanhCeilingMultiple`. The single source of
+    /// that rule, used by the format decoder for files older than v6 and by
+    /// the memberwise inits that predate the field. With the multiple at 1.0
+    /// the product is exactly `alphaInit` (a Float widened to Double, scaled by
+    /// 1, narrowed back), so a legacy-resolved group is bit-identical to what
+    /// the engine computed from the init before.
+    static func legacyRezeroAlphaCap(forAlphaInit alphaInit: Float) -> Float {
+        Float(Double(alphaInit) * NetworkArchitecture.rezeroTanhCeilingMultiple)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -474,6 +503,7 @@ struct BlockGroup: Codable, Hashable, Sendable {
         case seReductionRatio = "se_reduction_ratio"
         case useRezero = "use_rezero"
         case rezeroAlphaInit = "rezero_alpha_init"
+        case rezeroAlphaCap = "rezero_alpha_cap"
         case activationFunction = "activation_function"
         case activationStyle = "activation_style"
         case skipMerge = "skip_merge"
@@ -483,12 +513,58 @@ struct BlockGroup: Codable, Hashable, Sendable {
         case seActivation = "se_activation"
     }
 
-    /// Memberwise init (spelled out because the custom `Codable` below
-    /// suppresses the synthesized one). `outputNorm` and `seBetaInit` keep
-    /// the defaults the synthesized init had: both are the behavior every
-    /// group had before the field existed. `seActivation` is required here;
-    /// the overload below, which omits it, is the "SE FC1 shares the group's
-    /// activation" spelling.
+    /// Full memberwise init (spelled out because the custom `Codable` below
+    /// suppresses the synthesized one): every field, the ReZero cap and the
+    /// SE FC1 activation included. `outputNorm` and `seBetaInit` keep the
+    /// defaults the synthesized init had: both are the behavior every group
+    /// had before the field existed. The overloads below omit the cap (and
+    /// optionally the SE activation) and spell the arrangements that existed
+    /// before those fields did.
+    init(
+        count: Int,
+        channels: Int,
+        conv1KernelSize: Int,
+        conv2KernelSize: Int,
+        seStyle: SEStyle,
+        seReductionRatio: Int,
+        useRezero: Bool,
+        rezeroAlphaInit: Float,
+        rezeroAlphaCap: Float,
+        activationFunction: ActivationFunction,
+        activationStyle: BlockActivationStyle,
+        skipMerge: BlockSkipMerge,
+        dropoutMultiplier: Float,
+        outputNorm: BlockOutputNorm? = nil,
+        seBetaInit: SEBetaInit = .glorot,
+        seActivation: ActivationFunction
+    ) {
+        self.count = count
+        self.channels = channels
+        self.conv1KernelSize = conv1KernelSize
+        self.conv2KernelSize = conv2KernelSize
+        self.seStyle = seStyle
+        self.seReductionRatio = seReductionRatio
+        self.useRezero = useRezero
+        self.rezeroAlphaInit = rezeroAlphaInit
+        self.rezeroAlphaCap = rezeroAlphaCap
+        self.activationFunction = activationFunction
+        self.activationStyle = activationStyle
+        self.skipMerge = skipMerge
+        self.dropoutMultiplier = dropoutMultiplier
+        self.outputNorm = outputNorm
+        self.seBetaInit = seBetaInit
+        self.seActivation = seActivation
+    }
+
+    /// A group whose ReZero cap is derived from its init
+    /// (`legacyRezeroAlphaCap`: `rezeroAlphaInit ×
+    /// NetworkArchitecture.rezeroTanhCeilingMultiple`) — the only arrangement
+    /// that existed before `rezeroAlphaCap` did, so every recipe written
+    /// before it (code presets, tests) keeps its meaning and builds the same
+    /// graph. `seActivation` is required here; the overload below, which also
+    /// omits it, is the "SE FC1 shares the group's activation" spelling. A
+    /// zero-init group needs the full init: its derived cap would be zero,
+    /// which `validate()` rejects.
     init(
         count: Int,
         channels: Int,
@@ -506,26 +582,29 @@ struct BlockGroup: Codable, Hashable, Sendable {
         seBetaInit: SEBetaInit = .glorot,
         seActivation: ActivationFunction
     ) {
-        self.count = count
-        self.channels = channels
-        self.conv1KernelSize = conv1KernelSize
-        self.conv2KernelSize = conv2KernelSize
-        self.seStyle = seStyle
-        self.seReductionRatio = seReductionRatio
-        self.useRezero = useRezero
-        self.rezeroAlphaInit = rezeroAlphaInit
-        self.activationFunction = activationFunction
-        self.activationStyle = activationStyle
-        self.skipMerge = skipMerge
-        self.dropoutMultiplier = dropoutMultiplier
-        self.outputNorm = outputNorm
-        self.seBetaInit = seBetaInit
-        self.seActivation = seActivation
+        self.init(
+            count: count,
+            channels: channels,
+            conv1KernelSize: conv1KernelSize,
+            conv2KernelSize: conv2KernelSize,
+            seStyle: seStyle,
+            seReductionRatio: seReductionRatio,
+            useRezero: useRezero,
+            rezeroAlphaInit: rezeroAlphaInit,
+            rezeroAlphaCap: Self.legacyRezeroAlphaCap(forAlphaInit: rezeroAlphaInit),
+            activationFunction: activationFunction,
+            activationStyle: activationStyle,
+            skipMerge: skipMerge,
+            dropoutMultiplier: dropoutMultiplier,
+            outputNorm: outputNorm,
+            seBetaInit: seBetaInit,
+            seActivation: seActivation)
     }
 
-    /// A group whose SE FC1 uses the group's own `activationFunction` — the
-    /// only arrangement that existed before `seActivation` did, so every
-    /// recipe written before it (code presets, tests) keeps its meaning.
+    /// A group whose SE FC1 uses the group's own `activationFunction` and
+    /// whose ReZero cap is derived from its init — the only arrangement that
+    /// existed before `seActivation` and `rezeroAlphaCap` did, so every recipe
+    /// written before them (code presets, tests) keeps its meaning.
     init(
         count: Int,
         channels: Int,
@@ -568,10 +647,12 @@ struct BlockGroup: Codable, Hashable, Sendable {
 
     /// Decodes one group from a file of `format.formatVersion`. `se_beta_init`
     /// is required from `ArchitectureFormat.seBetaInitRequiredFromVersion`
-    /// (older files resolve it to `.glorot`), and `se_activation` from
+    /// (older files resolve it to `.glorot`), `se_activation` from
     /// `ArchitectureFormat.seActivationRequiredFromVersion` (older files
-    /// resolve it to this group's `activation_function`). Every resolution is
-    /// recorded on `format`'s log.
+    /// resolve it to this group's `activation_function`), and
+    /// `rezero_alpha_cap` from `ArchitectureFormat.rezeroAlphaCapRequiredFromVersion`
+    /// (older files resolve it to `legacyRezeroAlphaCap` of this group's
+    /// `rezero_alpha_init`). Every resolution is recorded on `format`'s log.
     init(from decoder: Decoder, format: ArchitectureFormat.DecodeFormat) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         count = try c.decode(Int.self, forKey: .count)
@@ -614,13 +695,27 @@ struct BlockGroup: Codable, Hashable, Sendable {
                 formatVersion: format.formatVersion,
                 source: format.source)
         }
+        if let stated = try c.decodeIfPresent(Float.self, forKey: .rezeroAlphaCap) {
+            rezeroAlphaCap = stated
+        } else if format.allowsMissingRezeroAlphaCap {
+            rezeroAlphaCap = Self.legacyRezeroAlphaCap(forAlphaInit: rezeroAlphaInit)
+            format.legacyLog.record(
+                "\(ArchitectureFormat.location(of: decoder)).\(CodingKeys.rezeroAlphaCap.rawValue) := \(rezeroAlphaCap) "
+                    + "(the group's \(CodingKeys.rezeroAlphaInit.rawValue) × \(NetworkArchitecture.rezeroTanhCeilingMultiple))")
+        } else {
+            throw ArchitectureFormat.FormatError.missingRequiredField(
+                field: CodingKeys.rezeroAlphaCap.rawValue,
+                location: ArchitectureFormat.location(of: decoder),
+                formatVersion: format.formatVersion,
+                source: format.source)
+        }
     }
 
     /// Writes every field. `output_norm` keeps its pre-existing
     /// write-only-when-set form so older fields encode byte-identically;
-    /// `se_beta_init` and `se_activation` are ALWAYS written (even when they
-    /// equal their legacy resolution), so a current-version file is
-    /// self-describing.
+    /// `se_beta_init`, `se_activation` and `rezero_alpha_cap` are ALWAYS
+    /// written (even when they equal their legacy resolution, and on groups
+    /// without ReZero), so a current-version file is self-describing.
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(count, forKey: .count)
@@ -631,6 +726,7 @@ struct BlockGroup: Codable, Hashable, Sendable {
         try c.encode(seReductionRatio, forKey: .seReductionRatio)
         try c.encode(useRezero, forKey: .useRezero)
         try c.encode(rezeroAlphaInit, forKey: .rezeroAlphaInit)
+        try c.encode(rezeroAlphaCap, forKey: .rezeroAlphaCap)
         try c.encode(activationFunction, forKey: .activationFunction)
         try c.encode(activationStyle, forKey: .activationStyle)
         try c.encode(skipMerge, forKey: .skipMerge)
@@ -697,10 +793,13 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
     case mustBeFiniteNonNegative(field: String, value: Float)
     /// A Float field that must be finite and strictly > 0. Distinct from
     /// `mustBeFiniteNonNegative` because zero is itself the failure mode here:
-    /// `rezeroAlphaInit == 0` makes the ReZero ceiling `C = α_init · multiple`
-    /// zero, so the forward `C · tanh(α / C)` divides by zero (`0/0 → NaN`) and
-    /// poisons the whole tower. Carries the Float directly (never coerced to
-    /// Int) so it can report the NaN/infinite values it also rejects.
+    /// a ReZero cap `rezeroAlphaCap == 0` makes the forward `C · tanh(α / C)`
+    /// divide by zero (`0/0 → NaN` at α = 0, `±∞ · 0` otherwise) and poisons
+    /// the whole tower. (Before the cap was its own field it was derived from
+    /// `rezeroAlphaInit`, so this guarded the init instead and a zero init was
+    /// impossible; the init is now only required to be finite and >= 0.)
+    /// Carries the Float directly (never coerced to Int) so it can report the
+    /// NaN/infinite values it also rejects.
     case mustBeFinitePositive(field: String, value: Float)
     /// `se_beta_init` other than `glorot` on a group whose SE style has no
     /// β half (only `scale_and_bias` does).
@@ -866,6 +965,10 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 seReductionRatio: blockSeReductionRatio,
                 useRezero: blockUseRezero,
                 rezeroAlphaInit: rezeroAlphaInit,
+                // Every historical tower derived its ReZero cap from the init.
+                // A tower with an explicit cap (e.g. a zero init) sets
+                // `rezeroAlphaCap` on the returned value's groups.
+                rezeroAlphaCap: BlockGroup.legacyRezeroAlphaCap(forAlphaInit: rezeroAlphaInit),
                 activationFunction: activationFunction,
                 activationStyle: blockActivationStyle,
                 skipMerge: blockSkipMerge,
@@ -986,6 +1089,8 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             }
             blockGroups = groups
         } else {
+            let legacyAlphaInit = try c.decode(Float.self, forKey: .legacyRezeroAlphaInit)
+            let legacyAlphaCap = BlockGroup.legacyRezeroAlphaCap(forAlphaInit: legacyAlphaInit)
             blockGroups = [BlockGroup(
                 count: try c.decode(Int.self, forKey: .legacyNumBlocks),
                 channels: try c.decode(Int.self, forKey: .legacyChannels),
@@ -994,7 +1099,8 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 seStyle: try c.decode(SEStyle.self, forKey: .legacyBlockSeStyle),
                 seReductionRatio: try c.decode(Int.self, forKey: .legacyBlockSeReductionRatio),
                 useRezero: try c.decode(Bool.self, forKey: .legacyBlockUseRezero),
-                rezeroAlphaInit: try c.decode(Float.self, forKey: .legacyRezeroAlphaInit),
+                rezeroAlphaInit: legacyAlphaInit,
+                rezeroAlphaCap: legacyAlphaCap,
                 activationFunction: activationFunction,
                 activationStyle: try c.decode(BlockActivationStyle.self, forKey: .legacyBlockActivationStyle),
                 skipMerge: try c.decode(BlockSkipMerge.self, forKey: .legacyBlockSkipMerge),
@@ -1003,12 +1109,13 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 seActivation: activationFunction
             )]
             // The uniform-tower keys predate block groups, so no writer of any
-            // version that has `se_beta_init` or `se_activation` emits them:
-            // this form is legacy by construction, whatever version the
-            // carrier states.
+            // version that has `se_beta_init`, `se_activation` or
+            // `rezero_alpha_cap` emits them: this form is legacy by
+            // construction, whatever version the carrier states.
             format.legacyLog.record(
                 "legacy uniform-tower keys: block_groups[0].\(BlockGroup.CodingKeys.seBetaInit.rawValue) := \(SEBetaInit.glorot.rawValue), "
-                    + "block_groups[0].\(BlockGroup.CodingKeys.seActivation.rawValue) := \(activationFunction.rawValue)")
+                    + "block_groups[0].\(BlockGroup.CodingKeys.seActivation.rawValue) := \(activationFunction.rawValue), "
+                    + "block_groups[0].\(BlockGroup.CodingKeys.rezeroAlphaCap.rawValue) := \(legacyAlphaCap)")
         }
     }
 
@@ -1203,12 +1310,6 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 throw NetworkArchitectureError.mustBeFiniteNonNegative(
                     field: "blockGroups[\(gi)].dropoutMultiplier", value: g.dropoutMultiplier)
             }
-            // ReZero ceiling C = rezeroAlphaInit · rezeroTanhCeilingMultiple feeds a
-            // division in the forward `C · tanh(α / C)`. A zero (or NaN/infinite)
-            // init makes C == 0 and produces a 0/0 NaN that propagates through the
-            // entire tower. The Build-New-Model α field is an unvalidated TextField,
-            // so a user clearing it or typing 0 reaches here; guard at the single
-            // chokepoint both the UI build path and JSON decode pass through.
             if g.seStyle != .scaleAndBias, g.seBetaInit != .glorot {
                 throw NetworkArchitectureError.seBetaInitRequiresScaleAndBias(
                     group: gi, seStyle: g.seStyle, seBetaInit: g.seBetaInit)
@@ -1221,9 +1322,30 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 throw NetworkArchitectureError.seActivationRequiresSE(
                     group: gi, seActivation: g.seActivation, activationFunction: g.activationFunction)
             }
+            // ReZero. The cap C feeds a division in the forward `C · tanh(α / C)`:
+            // a zero (or NaN/infinite) cap produces a NaN that propagates
+            // through the entire tower, so it must be finite and > 0. The init
+            // is the starting value of α: finite and >= 0, where 0 is the
+            // published ReZero init (branch off at step 0, learning from step
+            // 1). An init above the cap is allowed — the forward then simply
+            // starts saturated at C·tanh(α₀/C) < α₀, which is a legitimate (if
+            // unusual) choice, and trained raw α routinely exceeds C anyway.
+            // The Build-New-Model fields are unvalidated TextFields, so a user
+            // clearing one or typing 0 reaches here; guard at the single
+            // chokepoint both the UI build path and JSON decode pass through.
+            //
+            // Neither value is constrained on a group without ReZero, matching
+            // how the init has always been treated there: no tensor or graph
+            // node reads them, and the Build screen hides both fields, so a
+            // group switched off keeps whatever the user had without failing
+            // validation for a value they cannot see.
             if g.useRezero {
-                guard g.rezeroAlphaInit.isFinite, g.rezeroAlphaInit > 0 else {
+                guard g.rezeroAlphaCap.isFinite, g.rezeroAlphaCap > 0 else {
                     throw NetworkArchitectureError.mustBeFinitePositive(
+                        field: "blockGroups[\(gi)].rezeroAlphaCap", value: g.rezeroAlphaCap)
+                }
+                guard g.rezeroAlphaInit.isFinite, g.rezeroAlphaInit >= 0 else {
+                    throw NetworkArchitectureError.mustBeFiniteNonNegative(
                         field: "blockGroups[\(gi)].rezeroAlphaInit", value: g.rezeroAlphaInit)
                 }
             }
@@ -1385,19 +1507,28 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             + " . \(computeDataType.rawValue) . \(parameterCount.formatted(.number)) params"
     }
 
-    /// Multiplier on the per-block ReZero init `α₀` giving the asymptotic ceiling
-    /// `C = rezeroTanhCeilingMultiple · α₀` of the soft-bound `C·tanh(α/C)` in the
-    /// forward (see `ChessNetwork.residualBlock`, `documentation/rezero-alpha-clamp.md`).
+    /// Multiplier on the per-block ReZero init `α₀` that gave the asymptotic
+    /// ceiling `C = rezeroTanhCeilingMultiple · α₀` of the soft-bound
+    /// `C·tanh(α/C)` in the forward before the cap became its own per-group
+    /// field (`BlockGroup.rezeroAlphaCap`, format v6; see
+    /// `ChessNetwork.residualBlock`, `documentation/rezero-alpha-clamp.md`).
+    /// It now defines only that legacy rule (`BlockGroup.legacyRezeroAlphaCap`):
+    /// how a file older than v6 resolves its missing cap, and what the
+    /// memberwise inits that predate the field set. It must never change —
+    /// every legacy file's cap, and therefore its graph and identity, is
+    /// computed from it.
+    ///
     /// With multiplier 1.0, `C = α₀ = 1/√N`, so effective α saturates at the
     /// variance-preserving value (Σα² ≈ 1 across N blocks). An absolute `C = 1.0`
-    /// was tried and failed: effective α saturated ~0.95 across all blocks
-    /// (Σα² ≈ 4.5), the residual-stream mean still exploded (bn1Mean 43→1384 over
-    /// 1k steps), and the run broke ~step 5800 — the hard-clamp failure, delayed.
+    /// with `α₀ = 1/√N` was tried on the 5-block 7×7 tower and failed: effective α
+    /// saturated ~0.95 across all blocks (Σα² ≈ 4.5), the residual-stream mean
+    /// still exploded (bn1Mean 43→1384 over 1k steps), and the run broke ~step
+    /// 5800 — the hard-clamp failure, delayed.
     static let rezeroTanhCeilingMultiple: Double = 1.0
 
     /// One group's explicit rendering, e.g.
     /// `5x[7x7+7x7 @128, SE+/4, relu/pre, clean_add, ReZero(0.447·tanh≤0.447), drop*1]`
-    /// — the `tanh≤` value is the forward soft-bound asymptote `α₀ · rezeroTanhCeilingMultiple`.
+    /// — see `rezeroDescription` for the ReZero clause.
     static func groupSummary(_ g: BlockGroup) -> String {
         let seDesc: String
         switch g.seStyle {
@@ -1409,9 +1540,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         // architectures that predate the setting) is byte-identical.
         let seBetaDesc = g.seBetaInit == .zero ? " β0" : ""
         let seActivationDesc = seActivationMarker(g)
-        let rezeroDesc = g.useRezero
-            ? "ReZero(\(String(format: "%.3g", g.rezeroAlphaInit))·tanh≤\(String(format: "%.3g", g.rezeroTanhCeiling)))"
-            : "no-ReZero"
+        let rezeroDesc = rezeroDescription(g)
         // Only render the output-norm clause when present, so v3/v4 group
         // summaries (and their golden-string tests) are byte-identical.
         let outNormDesc = g.resolvedOutputNorm == .none ? "" : ", out:\(g.resolvedOutputNorm.rawValue)"
@@ -1419,6 +1548,19 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             + " @\(g.channels), \(seDesc)\(seBetaDesc)\(seActivationDesc), \(g.activationFunction.rawValue)/\(g.activationStyle.rawValue)"
             + ", \(g.skipMerge.rawValue), \(rezeroDesc)\(outNormDesc)"
             + ", drop*\(String(format: "%g", g.dropoutMultiplier))]"
+    }
+
+    /// The ReZero clause of a group's rendering: `ReZero(<α₀>·tanh≤<cap>)`,
+    /// e.g. `ReZero(0.447·tanh≤0.447)` for a legacy 1/√5 group or
+    /// `ReZero(0·tanh≤1)` for a zero-init group with cap 1, or `no-ReZero`.
+    /// The `tanh≤` value is the forward soft-bound asymptote
+    /// (`BlockGroup.rezeroTanhCeiling`). Always both numbers, so a group whose
+    /// cap equals its init (every architecture that predates the explicit
+    /// cap) renders byte-identically to the pre-field form. Shared by
+    /// `groupSummary` and the Build screen's diagram so the two never drift.
+    static func rezeroDescription(_ g: BlockGroup) -> String {
+        guard g.useRezero else { return "no-ReZero" }
+        return "ReZero(\(String(format: "%.3g", g.rezeroAlphaInit))·tanh≤\(String(format: "%.3g", g.rezeroTanhCeiling)))"
     }
 
     /// The SE-activation clause of a group's rendering, e.g.

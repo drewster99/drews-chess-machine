@@ -89,6 +89,26 @@ final class LichessBotController {
         case quit
     }
 
+    /// Who sent an outgoing challenge. A decline is answered differently
+    /// for each: only a challenge matchmaking picked may be resent as casual
+    /// automatically (`LichessBotMatchmakingSettings.fallBackToCasual`); the
+    /// operator's own challenges only ever get the manual offer, and the
+    /// automatic resend itself is never resent, so a decline can't start a
+    /// loop.
+    enum ChallengeOrigin: Equatable {
+        /// The operator: the Challenge sheet, the challenge queue, or the
+        /// manual Resend as Casual.
+        case manual
+        /// A matchmaking pass, filling slots the way `fillMode` does, picked
+        /// `opponent` from the online-bots list. Both are kept so a casual
+        /// resend is checked against the same slot rule and candidate rules
+        /// as the pass that picked them.
+        case matchmaking(fillMode: LichessBotMatchmakingSettings.FillMode, opponent: LichessBotUserSummary)
+        /// Matchmaking's one automatic casual resend of a declined rated
+        /// challenge.
+        case matchmakingCasualResend
+    }
+
     struct PendingChallenge: Equatable {
         let id: String
         let username: String
@@ -96,6 +116,7 @@ final class LichessBotController {
         /// What was asked for, so a decline can offer the same challenge
         /// adjusted.
         let request: LichessBotOutgoingChallenge
+        let origin: ChallengeOrigin
     }
 
     /// A rated challenge the player declined with Lichess's `casual` reason
@@ -215,8 +236,14 @@ final class LichessBotController {
     /// Matchmaking's send rate (plan §7.3 B). Kept across runtimes: Lichess
     /// counts challenges per account, not per connection.
     private(set) var matchmakingRateLimiter = LichessBotMatchmakingRateLimiter()
-    /// A matchmaking pass is deciding or sending.
+    /// A matchmaking pass, or matchmaking's automatic casual resend, is
+    /// deciding or sending.
     private var matchmakingPassRunning = false
+    /// Lowercased ids of bots whose automatic casual resend is waiting for a
+    /// running matchmaking pass to finish. Counted as engaged by the
+    /// candidate rules, so that pass can't pick the bot meanwhile (it has no
+    /// decline cool-down yet, and no challenge pending).
+    private var casualResendWaitingOpponentIDs: Set<String> = []
     /// The Overview's Fill Open Slots is filling slots.
     private(set) var isFillingOpenSlots = false
     /// What the latest matchmaking pass did, for the Overview.
@@ -230,8 +257,16 @@ final class LichessBotController {
     /// When the online-bots list was last asked for, answered or not, so a
     /// failing fetch isn't retried every poll.
     private var onlineBotsRequestedAt: Date?
-    /// An online-bots fetch is under way.
-    private var onlineBotsRefreshInFlight = false
+    /// The online-bots fetch under way, if any — the one record that a fetch
+    /// is in flight. Everything that wants the list (the Challenge sheet,
+    /// the poll loop's matchmaking refresh, a matchmaking pass) joins this
+    /// fetch rather than starting a second one, and a matchmaking pass that
+    /// finds it under way waits for it. A pass that skipped a fetch in
+    /// flight would decide without a list: the first pass after going Online
+    /// starts on the same poll as the first fetch, so it would always find
+    /// none. Not tied to a runtime: the list outlives going offline, and the
+    /// sheet fetches while offline too.
+    private var onlineBotsRefresh: Task<Void, Never>?
     /// The Live tab's single-game choice; nil means "First in progress".
     /// Remembered across launches (a specific game shows again only while it
     /// is listed).
@@ -272,8 +307,16 @@ final class LichessBotController {
     var showsGrid = false {
         didSet { defaults.set(showsGrid, forKey: Self.showsGridKey) }
     }
+    /// The Settings tab the operator last picked, remembered across
+    /// launches as a convenience. The Settings view records only the
+    /// operator's own picks here; the tab it selects by itself (Account,
+    /// when the token check finds no token) is not remembered.
+    var rememberedSettingsTab: LichessBotSettingsTab = .games {
+        didSet { defaults.set(rememberedSettingsTab.rawValue, forKey: Self.rememberedSettingsTabKey) }
+    }
     private static let focusedGameIDKey = "lichessBot.live.focusedGameID"
     private static let showsGridKey = "lichessBot.live.showsGrid"
+    private static let rememberedSettingsTabKey = "lichessBot.settings.tab"
 
     // MARK: - Configuration
 
@@ -366,6 +409,13 @@ final class LichessBotController {
         settings = loadedSettings
         showsGrid = defaults.bool(forKey: Self.showsGridKey)
         focusedGameID = defaults.string(forKey: Self.focusedGameIDKey)
+        if let savedTab = defaults.string(forKey: Self.rememberedSettingsTabKey) {
+            if let tab = LichessBotSettingsTab(rawValue: savedTab) {
+                rememberedSettingsTab = tab
+            } else {
+                SessionLogger.shared.log("[LICHESS-BOT] settings: ignoring the remembered Settings tab \"\(savedTab)\", which no longer exists; opening on the default tab")
+            }
+        }
         let log = protocolLog
         let sink = gateEventSink
         gate = LichessBotRequestGate(
@@ -986,7 +1036,37 @@ final class LichessBotController {
 
     // MARK: - Challenges (plan §7.1)
 
+    /// Fetch the online-bots list, or join the fetch already under way;
+    /// returns when that fetch has finished, whether or not it succeeded
+    /// (a failure raises an alarm and leaves the previous list).
     func refreshOnlineBots() async {
+        await onlineBotsRefreshTask().value
+    }
+
+    /// The online-bots fetch under way, started now if none is. Never a
+    /// second fetch while one is in flight.
+    ///
+    /// A fetch still in flight when the controller shuts down is left to
+    /// finish, like an opponent-profile fetch: its request record (and any
+    /// failure alarm's log line) reaches only closed queues, which refuse
+    /// it. Cancelling it instead would only turn it into a failure alarm.
+    @discardableResult
+    private func onlineBotsRefreshTask() -> Task<Void, Never> {
+        if let onlineBotsRefresh {
+            return onlineBotsRefresh
+        }
+        let task = Task {
+            await fetchOnlineBots()
+            // Stored below before this body can run (both are on the main
+            // actor, and nothing between them suspends), and nothing else
+            // replaces it while it runs, so this clears this fetch's own entry.
+            onlineBotsRefresh = nil
+        }
+        onlineBotsRefresh = task
+        return task
+    }
+
+    private func fetchOnlineBots() async {
         onlineBotsRequestedAt = Date()
         do {
             let client = try await accountClient()
@@ -1279,10 +1359,18 @@ final class LichessBotController {
         }
     }
 
-    /// Send a challenge. The bot must be online (the game arrives on its
-    /// event stream). Several may be pending, within the concurrent-game
-    /// limit and the per-opponent limit.
+    /// Send the operator's challenge. The bot must be online (the game
+    /// arrives on its event stream). Several may be pending, within the
+    /// concurrent-game limit and the per-opponent limit.
     func sendChallenge(to username: String, request: LichessBotOutgoingChallenge) async throws {
+        try await sendChallenge(to: username, request: request, origin: .manual)
+    }
+
+    /// Send a challenge on behalf of `origin`, which the pending challenge
+    /// keeps so its decline is answered the way its sender calls for. Every
+    /// send — the operator's, the queue's and matchmaking's — goes through
+    /// here, so every check applies to all of them alike.
+    private func sendChallenge(to username: String, request: LichessBotOutgoingChallenge, origin: ChallengeOrigin) async throws {
         guard let runtime, connection == .online else {
             throw LichessBotControllerError.notOnline
         }
@@ -1367,7 +1455,7 @@ final class LichessBotController {
             await manager.releaseOutgoingChallengeReservation(against: opponentID)
             throw error
         }
-        pendingChallenges.append(PendingChallenge(id: created.id, username: username, sentAt: Date(), request: request))
+        pendingChallenges.append(PendingChallenge(id: created.id, username: username, sentAt: Date(), request: request, origin: origin))
         casualResendOffer = nil
         loadOpponentProfile(username)
         lastChallengeOutcome = nil
@@ -1794,8 +1882,11 @@ final class LichessBotController {
             return outcome
         }
         guard current() else { return .stopped("the bot went offline") }
-        if onlineBotsNeedMatchmakingRefresh(now: Date()) {
-            await refreshOnlineBotsForMatchmaking()
+        // A fetch already under way (the poll loop's, the Challenge sheet's)
+        // is waited for, not skipped: deciding before it lands would, right
+        // after going Online, find no list at all.
+        if onlineBotsRefresh != nil || onlineBotsNeedMatchmakingRefresh(now: Date()) {
+            await refreshOnlineBots()
             guard current() else { return .stopped("the bot went offline") }
             if let outcome = await matchmakingPrecheck(fillMode: fillMode) {
                 return outcome
@@ -1803,7 +1894,14 @@ final class LichessBotController {
             guard current() else { return .stopped("the bot went offline") }
         }
         guard onlineBotsFetchedAt != nil else {
-            return .failed("the online-bots list has not loaded")
+            // No fetch has succeeded and none is under way: the last one
+            // failed (its alarm has the error) and the retry interval hasn't
+            // passed.
+            guard let requestedAt = onlineBotsRequestedAt else {
+                return .failed("the online-bots list has never been fetched")
+            }
+            let retryAt = requestedAt.addingTimeInterval(LichessBotMatchmaking.onlineBotsRetryInterval)
+            return .failed("the last online-bots fetch failed (see Alarms); next try at \(retryAt.formatted(date: .omitted, time: .standard))")
         }
         let matchmaking = settings.matchmaking
         let now = Date()
@@ -1822,25 +1920,8 @@ final class LichessBotController {
         let rating = pick.rating
         protocolLog.record(.challenge, "matchmaking pick: \(pick.bot.username) (\(speed.rawValue) \(rating)) at \(pick.clock.rawValue), uniformly from \(pick.candidateCount) candidate(s)\(pick.fromFavorites ? ", favorites first" : ""); rating window \(pick.bounds.description(speed: speed)); excluded: \(LichessBotMatchmaking.describe(pick.exclusions))")
         let request = pick.clock.challenge(rated: matchmaking.rated, color: .random)
-        let attemptAt = Date()
-        let outcome: MatchmakingPassOutcome
-        let reachedLichess: Bool
-        do {
-            try await sendChallenge(to: pick.bot.username, request: request)
-            outcome = .sent(username: pick.bot.username)
-            reachedLichess = true
-        } catch {
-            let text = Self.safeDescription(error)
-            // Errors raised before the challenge is posted (offline, a limit,
-            // the gate) cost no challenge; everything else reached Lichess.
-            reachedLichess = !(error is LichessBotControllerError) && !(error is LichessBotGateError) && !(error is CancellationError)
-            if error is LichessBotGateError || error is CancellationError {
-                outcome = .stopped(text)
-            } else {
-                outcome = .failed("\(pick.bot.username): \(text)")
-            }
-        }
-        matchmakingRateLimiter.recordAttempt(at: attemptAt, reachedLichess: reachedLichess)
+        let outcome = await sendMatchmakingChallenge(
+            to: pick.bot.username, request: request, origin: .matchmaking(fillMode: fillMode, opponent: pick.bot))
         switch outcome {
         case .sent:
             protocolLog.record(.challenge, "matchmaking sent a challenge to \(pick.bot.username)", fields: ["clock": request.clockText, "rated": "\(request.rated)", "window": pick.bounds.description(speed: speed)])
@@ -1851,9 +1932,50 @@ final class LichessBotController {
         return outcome
     }
 
+    /// Send one matchmaking challenge and note the attempt in the rate
+    /// limiter: the one send path for a pass's pick and for the automatic
+    /// casual resend, so both count against the hourly cap and the spacing
+    /// the same way.
+    private func sendMatchmakingChallenge(to username: String, request: LichessBotOutgoingChallenge, origin: ChallengeOrigin) async -> MatchmakingPassOutcome {
+        let attemptAt = Date()
+        let outcome: MatchmakingPassOutcome
+        let reachedLichess: Bool
+        do {
+            try await sendChallenge(to: username, request: request, origin: origin)
+            outcome = .sent(username: username)
+            reachedLichess = true
+        } catch {
+            let text = Self.safeDescription(error)
+            // Errors raised before the challenge is posted (offline, a limit,
+            // the gate) cost no challenge; everything else reached Lichess.
+            reachedLichess = !(error is LichessBotControllerError) && !(error is LichessBotGateError) && !(error is CancellationError)
+            if error is LichessBotGateError || error is CancellationError {
+                outcome = .stopped(text)
+            } else {
+                outcome = .failed("\(username): \(text)")
+            }
+        }
+        matchmakingRateLimiter.recordAttempt(at: attemptAt, reachedLichess: reachedLichess)
+        return outcome
+    }
+
     /// Whether a matchmaking send may happen now, and why not; nil when it
     /// may. Reads the gate's live phase.
     private func matchmakingPrecheck(fillMode: LichessBotMatchmakingSettings.FillMode) async -> MatchmakingPassOutcome? {
+        if let outcome = await matchmakingSendConditionsBlock(fillMode: fillMode) {
+            return outcome
+        }
+        let decision = matchmakingRateLimiter.decision(now: Date(), perHourCap: settings.matchmaking.maxChallengesPerHour, minimumSpacing: LichessBotMatchmaking.minimumSendSpacing)
+        guard decision == .allowed else { return .rateLimited(decision) }
+        return nil
+    }
+
+    /// The part of `matchmakingPrecheck` before the send rate: the pass
+    /// conditions (Online, no 429 hold, the gate open, the challenge scope,
+    /// no Play One Game, the queue empty, under Lichess's daily bot-game
+    /// limit) and an open slot under `fillMode`. Nil when both hold. Reads
+    /// the gate's live phase.
+    private func matchmakingSendConditionsBlock(fillMode: LichessBotMatchmakingSettings.FillMode) async -> MatchmakingPassOutcome? {
         let phase = await gate.snapshot().phase
         let conditions = LichessBotMatchmaking.PassConditions(
             isOnline: runtime != nil && connection == .online,
@@ -1874,14 +1996,12 @@ final class LichessBotController {
             committed: committedGameSlots
         )
         guard slots > 0 else { return .noOpenSlot }
-        let decision = matchmakingRateLimiter.decision(now: Date(), perHourCap: settings.matchmaking.maxChallengesPerHour, minimumSpacing: LichessBotMatchmaking.minimumSendSpacing)
-        guard decision == .allowed else { return .rateLimited(decision) }
         return nil
     }
 
     /// What the candidate rules consult, from the controller's state now.
     private func matchmakingContext(now: Date) -> LichessBotMatchmaking.CandidateContext {
-        var engaged = challengeQueue.activeUserIDs
+        var engaged = challengeQueue.activeUserIDs.union(casualResendWaitingOpponentIDs)
         for pending in pendingChallenges {
             engaged.insert(pending.username.lowercased())
         }
@@ -1901,10 +2021,11 @@ final class LichessBotController {
         )
     }
 
-    /// The online-bots list is older than matchmaking's refresh interval
-    /// (or missing), and no fetch was tried within the retry interval.
+    /// No fetch is under way, the online-bots list is older than
+    /// matchmaking's refresh interval (or missing), and no fetch was tried
+    /// within the retry interval.
     private func onlineBotsNeedMatchmakingRefresh(now: Date) -> Bool {
-        guard !onlineBotsRefreshInFlight else { return false }
+        guard onlineBotsRefresh == nil else { return false }
         if let fetchedAt = onlineBotsFetchedAt, now.timeIntervalSince(fetchedAt) < LichessBotMatchmaking.onlineBotsRefreshInterval {
             return false
         }
@@ -1914,31 +2035,23 @@ final class LichessBotController {
         return true
     }
 
-    /// Refetch the online-bots list for matchmaking (housekeeping priority,
-    /// through the gate like every request).
-    private func refreshOnlineBotsForMatchmaking() async {
-        onlineBotsRefreshInFlight = true
-        defer { onlineBotsRefreshInFlight = false }
-        await refreshOnlineBots()
-    }
-
     /// While matchmaking is on and the bot is Online, keep the online-bots
-    /// list on matchmaking's own cadence (plan §7.3 B).
+    /// list on matchmaking's own cadence (plan §7.3 B). The fetch is
+    /// recorded as under way before this returns, so neither the next poll
+    /// nor a pass started meanwhile starts a second one; the pass waits for
+    /// it.
     private func refreshOnlineBotsForMatchmakingIfDue() {
         guard settings.matchmaking.enabled, runtime != nil, connection == .online,
               onlineBotsNeedMatchmakingRefresh(now: Date()) else { return }
-        // Claimed now, so the next poll doesn't start a second fetch.
-        onlineBotsRefreshInFlight = true
-        Task {
-            await refreshOnlineBots()
-            onlineBotsRefreshInFlight = false
-        }
+        onlineBotsRefreshTask()
     }
 
     /// A player declined one of DCM's challenges: matchmaking leaves them
     /// alone for the configured cool-down (plan §7.3 B). Recorded for every
-    /// decline, including a `casual` decline of a rated challenge, which
-    /// matchmaking never resends on its own.
+    /// decline, including a `casual` decline of a rated challenge — except
+    /// one that matchmaking resends as casual on its own
+    /// (`fallBackToCasual`): that resend's answer decides, and a resend that
+    /// is not sent records it then.
     private func recordDeclineCooldown(_ username: String) {
         let hours = settings.matchmaking.declineCooldownHours
         guard hours > 0 else { return }
@@ -1952,6 +2065,153 @@ final class LichessBotController {
         playerNotes = notes
         savePlayerNotes(notes)
         protocolLog.record(.challenge, "\(userID) declined; matchmaking leaves them alone until \(until.formatted(date: .abbreviated, time: .standard))")
+    }
+
+    // MARK: - Matchmaking's casual resend (fallBackToCasual)
+
+    /// A rated matchmaking challenge declined with Lichess's `casual`
+    /// reason, to be sent again unrated.
+    private struct MatchmakingCasualResend {
+        let username: String
+        /// Lowercased.
+        let opponentID: String
+        /// The bot as the pass that picked it saw it, for the candidate rules.
+        let opponent: LichessBotUserSummary
+        /// The fill mode of the pass that picked it, for the slot rule.
+        let fillMode: LichessBotMatchmakingSettings.FillMode
+        /// The declined challenge with `rated` false: the same clock and the
+        /// same color asked for.
+        let request: LichessBotOutgoingChallenge
+    }
+
+    /// The automatic casual resend that declining `pending` with
+    /// `reasonKey` calls for, or nil when it calls for none: the setting is
+    /// off, the reason isn't exactly `casual`, the challenge wasn't rated,
+    /// or matchmaking didn't pick it. The operator's own challenges keep the
+    /// manual offer, and the resend itself (unrated, and of its own origin)
+    /// never qualifies, so at most one resend follows a rated challenge.
+    private func matchmakingCasualResend(for pending: PendingChallenge, reasonKey: String?) -> MatchmakingCasualResend? {
+        guard settings.matchmaking.fallBackToCasual,
+              reasonKey == LichessBotDeclineReason.casual.rawValue,
+              pending.request.rated,
+              case .matchmaking(let fillMode, let opponent) = pending.origin else { return nil }
+        var request = pending.request
+        request.rated = false
+        return MatchmakingCasualResend(
+            username: pending.username, opponentID: pending.username.lowercased(),
+            opponent: opponent, fillMode: fillMode, request: request)
+    }
+
+    /// Start the casual resend. Called from the decline's handler, which
+    /// records no cool-down for it: the resend's own answer decides that,
+    /// and a resend that can't be sent records it (see
+    /// `fallBackFromMatchmakingCasualResend`).
+    private func startMatchmakingCasualResend(_ resend: MatchmakingCasualResend) {
+        // Until the resend holds the pass flag, a pass already running could
+        // pick this bot: it has no cool-down and nothing pending now.
+        casualResendWaitingOpponentIDs.insert(resend.opponentID)
+        protocolLog.record(.challenge, "matchmaking: \(resend.username) declined rated (casual); resending as casual", fields: ["clock": resend.request.clockText, "color": resend.request.color.rawValue])
+        SessionLogger.shared.log("[LICHESS-BOT] matchmaking: \(resend.username) declined rated (casual); resending as casual")
+        let generation = runtimeGeneration
+        Task {
+            await sendMatchmakingCasualResend(resend, generation: generation)
+        }
+    }
+
+    /// Send the casual resend as a matchmaking send: it waits for a running
+    /// pass, holds the pass flag (so no pass or Fill Open Slots sends
+    /// meanwhile, and the hourly cap can't be overrun by two sends deciding
+    /// at once), checks what a pass checks for this bot, and sends through
+    /// `sendMatchmakingChallenge`, which notes the attempt in the rate
+    /// limiter. Anything that keeps it from being sent falls back to what
+    /// the decline gets with the setting off.
+    private func sendMatchmakingCasualResend(_ resend: MatchmakingCasualResend, generation generationAtStart: Int) async {
+        // Every await can outlive this runtime.
+        func current() -> Bool { runtimeGeneration == generationAtStart }
+        while matchmakingPassRunning, current() {
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+            } catch {
+                fallBackFromMatchmakingCasualResend(resend, reason: "cancelled while waiting for a matchmaking pass to finish", runtimeIsCurrent: current())
+                return
+            }
+        }
+        guard current() else {
+            fallBackFromMatchmakingCasualResend(resend, reason: "the bot went offline", runtimeIsCurrent: false)
+            return
+        }
+        casualResendWaitingOpponentIDs.remove(resend.opponentID)
+        matchmakingPassRunning = true
+        defer {
+            // Teardown clears the flag itself; a stale resend must not clear
+            // the flag a newer runtime's pass set.
+            if current() { matchmakingPassRunning = false }
+        }
+        if let reason = await matchmakingCasualResendBlockedReason(resend) {
+            fallBackFromMatchmakingCasualResend(resend, reason: reason, runtimeIsCurrent: current())
+            return
+        }
+        guard current() else {
+            fallBackFromMatchmakingCasualResend(resend, reason: "the bot went offline", runtimeIsCurrent: false)
+            return
+        }
+        let outcome = await sendMatchmakingChallenge(to: resend.username, request: resend.request, origin: .matchmakingCasualResend)
+        guard case .sent = outcome else {
+            fallBackFromMatchmakingCasualResend(resend, reason: outcome.text, runtimeIsCurrent: current())
+            return
+        }
+        lastChallengeOutcome = "\(resend.username): declined rated (casual); resent as casual"
+        protocolLog.record(.challenge, "matchmaking resent a challenge to \(resend.username) as casual", fields: ["clock": resend.request.clockText, "rated": "\(resend.request.rated)", "color": resend.request.color.rawValue])
+        SessionLogger.shared.log("[LICHESS-BOT] matchmaking challenge resent to \(resend.username) at \(resend.request.clockText) casual, as they asked")
+    }
+
+    /// Why the casual resend may not be sent now, or nil when it may: every
+    /// check a pass makes before its send, applied to this bot — the pass
+    /// conditions (Online, no 429 hold, the gate open, the challenge scope,
+    /// no Play One Game, the queue empty, Lichess's daily bot-game limit),
+    /// an open slot under the picking pass's fill mode, the hourly cap, and
+    /// the candidate rules (the per-opponent daily limit, blocks, the bot
+    /// limit, already engaged, the rating window) — except the spacing
+    /// between sends. The spacing paces how fast matchmaking fills free
+    /// slots and keeps a run of failures from looping quickly; this resend
+    /// answers the bot's own request, once per rated challenge, so waiting
+    /// out the spacing would only delay it. It still counts toward the
+    /// spacing of the next pass, and toward the hourly cap.
+    private func matchmakingCasualResendBlockedReason(_ resend: MatchmakingCasualResend) async -> String? {
+        if let outcome = await matchmakingSendConditionsBlock(fillMode: resend.fillMode) {
+            return outcome.text
+        }
+        let now = Date()
+        let decision = matchmakingRateLimiter.decision(now: now, perHourCap: settings.matchmaking.maxChallengesPerHour, minimumSpacing: LichessBotMatchmaking.minimumSendSpacing)
+        switch decision {
+        case .hourlyCap:
+            return MatchmakingPassOutcome.rateLimited(decision).text
+        case .spacing, .allowed:
+            break
+        }
+        let speed = LichessBotSpeed.forClock(limitSeconds: resend.request.clockLimitSeconds, incrementSeconds: resend.request.clockIncrementSeconds)
+        let bounds = LichessBotMatchmaking.ratingBounds(settings: settings.matchmaking, ourPerfs: account?.perfs, speed: speed)
+        if let exclusion = LichessBotMatchmaking.exclusion(of: resend.opponent, speed: speed, bounds: bounds, context: matchmakingContext(now: now)) {
+            return "\(resend.username) is no longer a candidate: \(exclusion.rawValue)"
+        }
+        return nil
+    }
+
+    /// The casual resend was not sent: answer the decline the way it is
+    /// answered with the setting off — the decline cool-down and the manual
+    /// Resend as Casual offer — and say why in the outcome line and both
+    /// logs. Applied even when the runtime has gone, as the decline's own
+    /// handler would have applied it.
+    private func fallBackFromMatchmakingCasualResend(_ resend: MatchmakingCasualResend, reason: String, runtimeIsCurrent: Bool) {
+        if runtimeIsCurrent {
+            // Otherwise teardown already emptied the set for the next runtime.
+            casualResendWaitingOpponentIDs.remove(resend.opponentID)
+        }
+        protocolLog.record(.challenge, "matchmaking: casual resend to \(resend.username) not sent: \(reason)")
+        SessionLogger.shared.log("[LICHESS-BOT] matchmaking: casual resend to \(resend.username) not sent: \(reason); recording the decline cool-down and offering Resend as Casual")
+        recordDeclineCooldown(resend.username)
+        casualResendOffer = CasualResendOffer(username: resend.username, request: resend.request)
+        lastChallengeOutcome = "\(resend.username): resending as casual failed: \(reason)"
     }
 
     // MARK: - Grid housekeeping
@@ -2204,6 +2464,7 @@ final class LichessBotController {
         // these alone; they are reset here for the next runtime.
         challengeQueuePumpRunning = false
         matchmakingPassRunning = false
+        casualResendWaitingOpponentIDs = []
         isFillingOpenSlots = false
         nextAutomaticMatchmakingPassAt = .distantPast
         lastLoggedAutomaticMatchmakingOutcome = nil
@@ -2518,15 +2779,22 @@ final class LichessBotController {
             case .declined(let reason, let reasonKey):
                 text = "declined" + (reason.map { ": \($0)" } ?? "")
                 resolveChallengeOutcome(challengeID: challengeID, .declined(LichessBotDeclineReasonRecord(reasonKey: reasonKey)))
-                if let pending = pendingChallenges.first(where: { $0.id == challengeID }) {
-                    recordDeclineCooldown(pending.username)
-                }
-                if reasonKey == LichessBotDeclineReason.casual.rawValue,
-                   let pending = pendingChallenges.first(where: { $0.id == challengeID }),
-                   pending.request.rated {
-                    var casual = pending.request
-                    casual.rated = false
-                    casualResendOffer = CasualResendOffer(username: pending.username, request: casual)
+                if let pending = pendingChallenges.first(where: { $0.id == challengeID }),
+                   let resend = matchmakingCasualResend(for: pending, reasonKey: reasonKey) {
+                    // No cool-down and no manual offer yet: the resend's
+                    // outcome decides both.
+                    startMatchmakingCasualResend(resend)
+                } else {
+                    if let pending = pendingChallenges.first(where: { $0.id == challengeID }) {
+                        recordDeclineCooldown(pending.username)
+                    }
+                    if reasonKey == LichessBotDeclineReason.casual.rawValue,
+                       let pending = pendingChallenges.first(where: { $0.id == challengeID }),
+                       pending.request.rated {
+                        var casual = pending.request
+                        casual.rated = false
+                        casualResendOffer = CasualResendOffer(username: pending.username, request: casual)
+                    }
                 }
             case .canceled:
                 text = "canceled"

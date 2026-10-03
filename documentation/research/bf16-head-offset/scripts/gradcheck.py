@@ -57,7 +57,7 @@ for s in range(0, 1024, 256):
     for k in ('b0.se.sig', 'b1.se.sig'):
         v = bf16(a[k]); d = sat.setdefault(k, [0, 0, 0]); d[0] += int((v == 1.0).sum()); d[1] += int((v == 0.0).sum()); d[2] += v.size
 R['se_gate_bf16_exact_1_or_0'] = {k: dict(frac_eq1=v[0]/v[2], frac_eq0=v[1]/v[2]) for k, v in sat.items()}
-C = arch['block_groups'][0]['rezero_alpha_init']
+C = arch['block_groups'][0]['rezero_alpha_cap']
 R['rezero'] = {f'b{i}': dict(alpha_raw=float(T[f'blocks.{i}.rezero_alpha'].reshape(-1)[0]),
     tanh_fp64=math.tanh(float(T[f'blocks.{i}.rezero_alpha'].reshape(-1)[0])/C),
     tanh_bf16=float(bf16(math.tanh(float(T[f'blocks.{i}.rezero_alpha'].reshape(-1)[0])/C))),

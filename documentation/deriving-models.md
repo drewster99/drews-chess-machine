@@ -35,6 +35,8 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
 | `--set-se-beta-init` | `glorot` \| `zero` | `block_groups[].se_beta_init` on `scale_and_bias` groups | β half of each affected block's SE FC2: `blocks.<i>.se_scalebias.fc2.weight` rows C..2C−1 (on-disk `[2C, r]` layout) and `blocks.<i>.se_scalebias.fc2.bias` C..2C−1 |
 | `--set-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | `activation_function` and every `block_groups[].activation_function`; `block_groups[].se_activation` on SE-less groups only | none (activations have no parameters) |
 | `--set-se-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | `block_groups[].se_activation` on groups with an SE block | none (activations have no parameters) |
+| `--set-rezero-alpha-init` | a number `>= 0` | `block_groups[].rezero_alpha_init` on groups with ReZero | `blocks.<i>.rezero_alpha` (the one-element α tensor) of every block in an affected group, set to exactly the value |
+| `--set-rezero-alpha-cap` | a number `> 0` | `block_groups[].rezero_alpha_cap` on groups with ReZero | none (the cap has no parameters) |
 
 `zero` writes exact zeros to the β weights and bias. `glorot` re-draws the β weights
 from the same Glorot-normal distribution the graph builder uses, and zeroes the β bias.
@@ -51,6 +53,21 @@ group's activation, so it changes along with it there.
 by `--group`. A group without an SE block named by `--group` is refused. It exists for the
 issue #2 A/B: ReLU vs leaky ReLU at FC1 only, where dead units were measured, without
 paying for leaky ReLU on every conv.
+
+`--set-rezero-alpha-init` sets the ReZero α init on groups with ReZero (all of them, or
+those named by `--group`) and writes that exact value into every block's α tensor in
+those groups — the init is a tensor value, so changing only the field would describe a
+net that was never built. `0` is the ReZero paper's init: every residual branch starts
+off and α learns from step 1 (see `rezero-alpha-clamp.md`). The cap is left alone; a
+legacy group's cap is its old init, so `--set-rezero-alpha-init 0` alone gives a zero
+start under the old bound. A request whose value every selected group already states is
+refused even when the file's α tensors differ from it (a trained net's α never equals its
+init), so resetting a trained net's α to its unchanged init is not supported.
+
+`--set-rezero-alpha-cap` sets `rezero_alpha_cap`, the asymptote `C` of the forward soft
+bound `C·tanh(α/C)`, on groups with ReZero (all, or those named by `--group`). No tensor
+changes. Both ReZero operations refuse a group named by `--group` that has no ReZero, and
+the derived architecture must validate (cap finite and `> 0`, init finite and `>= 0`).
 
 Operations run in the order listed above, so `--set-activation X --set-se-activation Y`
 gives activation X with an FC1 activation of Y, and passing the same value to both gives
@@ -76,6 +93,10 @@ DrewsChessMachine --derive-model --from fresh.safetensors --set-activation leaky
 DrewsChessMachine --derive-model --from fresh.safetensors --set-activation leaky_relu \
     --set-se-activation leaky_relu --out fresh-leaky.safetensors
 
+# Zero-initialized ReZero (every α tensor exactly 0) with cap 1.0:
+DrewsChessMachine --derive-model --from fresh.safetensors --set-rezero-alpha-init 0 \
+    --set-rezero-alpha-cap 1 --out fresh-rz0-cap1.safetensors
+
 # Use the derived net as a fixed starting point:
 DrewsChessMachine --replay-corpus <corpus> --start-model fresh-beta0.safetensors --parameters parameters.json ...
 ```
@@ -90,9 +111,10 @@ DrewsChessMachine --replay-corpus <corpus> --start-model fresh-beta0.safetensors
   `created_at_unix`, `build`, and `operations`. Each operation records its name,
   arguments, the architecture fields it changes, and the tensors it rewrote. A chain of
   derivations can therefore be traced from the newest file alone.
-- `dcm_format_version` = the current version (5), and the target architecture. A legacy
-  source (format v4 or older) is read under the legacy rules (`se_beta_init` → `glorot`,
-  `se_activation` → the group's activation); the derived file states every field.
+- `dcm_format_version` = the current version (6), and the target architecture. A legacy
+  source (format v5 or older) is read under the legacy rules (`se_beta_init` → `glorot`
+  before v4, `se_activation` → the group's activation before v5, `rezero_alpha_cap` →
+  the group's `rezero_alpha_init` before v6); the derived file states every field.
 - Every other `__metadata__` key of the source is copied verbatim. This includes
   `training_step`, the value-head centering marker, and any `replay_*` provenance.
 
@@ -104,8 +126,9 @@ DrewsChessMachine --replay-corpus <corpus> --start-model fresh-beta0.safetensors
 - After each rewrite, every element outside the operation's declared ranges is checked
   to be bit-identical to the source.
 - A request that changes nothing is refused. So is a group out of range, a group whose SE
-  style has no β half (`--set-se-beta-init`), or a group without an SE block
-  (`--set-se-activation`).
+  style has no β half (`--set-se-beta-init`), a group without an SE block
+  (`--set-se-activation`), or a group without ReZero (`--set-rezero-alpha-init`,
+  `--set-rezero-alpha-cap`).
 - The output is decoded back through the normal loader before it is written.
 
 ## Adding an operation

@@ -1,9 +1,20 @@
 import SwiftUI
 
 /// Challenge credits and outgoing-challenge outcomes over the rolling day,
-/// under matchmaking's status on the Overview: credits spent (at most)
-/// against Lichess's daily and per-minute budgets, then accepted, declined and
-/// refused counts and the acceptance rate.
+/// under matchmaking's status on the Overview, as two labeled lines:
+///
+/// - **Challenge credits used** — Lichess's challenge budget: at most
+///   `perDay` credits per rolling day and `perMinute` per minute, with the
+///   per-challenge cost from `LichessBotChallengeCredits.cost(for:)`. Shown as
+///   "N of M" with the window named, so the two budgets cannot be confused.
+/// - **Challenges, last 24 h** — accepted, declined and refused counts, each
+///   number directly before its own word, then the acceptance rate.
+///
+/// The earlier single line ("credits N/M 24 h N/M min accepted N …") put
+/// every number between two labels with equal padding on both sides, so it
+/// was unclear which label a number belonged to, and "credits" was never
+/// explained on screen. Digits stay monospaced so the values don't jitter as
+/// the timer redraws them.
 struct LichessBotChallengeCreditsLine: View {
     let controller: LichessBotController
 
@@ -11,27 +22,30 @@ struct LichessBotChallengeCreditsLine: View {
         // The rolling windows shrink as records age out, with no state
         // change to redraw them, so they are re-read on a timer.
         TimelineView(.periodic(from: .now, by: 10)) { context in
-            Text(Self.text(log: controller.challengeOutcomeLog, now: context.date))
-                .font(.system(.callout, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .help("Lichess allows \(LichessBotChallengeCredits.perDay) challenge credits per day and \(LichessBotChallengeCredits.perMinute) per minute: a challenge to a bot costs \(LichessBotChallengeCredits.cost(for: .bot)), to a human \(LichessBotChallengeCredits.cost(for: .human)), and nothing to a player who follows DCM, which no API reports, so the counts here are the most it can have been. A refusal for the bot daily game limit or another 400 is charged too; a 429 is not. Acceptance is accepted over answered (accepted, declined or canceled).")
+            let lines = Self.lines(log: controller.challengeOutcomeLog, now: context.date)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(lines.credits)
+                    .help("Lichess's challenge budget: \(LichessBotChallengeCredits.perDay) credits per rolling 24 hours and \(LichessBotChallengeCredits.perMinute) per minute. A challenge to a bot costs \(LichessBotChallengeCredits.cost(for: .bot)) credit, to a human \(LichessBotChallengeCredits.cost(for: .human)), and nothing to a player who follows DCM, which no API reports, so these are the most DCM can have used. A refusal for the bot daily game limit or another 400 is charged too; a 429 is not.")
+                Text(lines.outcomes)
+                    .help("Outgoing challenges over the last 24 hours. Accepted / declined: the opponent's answer. Refused: Lichess rejected the challenge request itself (for example a daily limit). Acceptance: accepted over answered (accepted, declined or canceled).")
+            }
+            .font(.callout)
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
         }
     }
 
-    private static func text(log: LichessBotChallengeOutcomeLog?, now: Date) -> String {
-        guard let log else { return "challenge outcomes not loaded" }
+    private static func lines(log: LichessBotChallengeOutcomeLog?, now: Date) -> (credits: String, outcomes: String) {
+        guard let log else { return ("Challenge outcomes not loaded", "") }
         let summary = log.summary(now: now)
-        let rate = summary.acceptanceRate.map { String(format: "%3.0f%%", $0 * 100) } ?? "  –"
-        return "credits \(pad(summary.creditsLastDay, 3))/\(LichessBotChallengeCredits.perDay) 24 h"
-            + "  \(pad(summary.creditsLastMinute, 2))/\(LichessBotChallengeCredits.perMinute) min"
-            + "  accepted \(pad(summary.accepted, 3))"
-            + "  declined \(pad(summary.declined, 3))"
-            + "  refused \(pad(summary.refused, 3))"
-            + "  acceptance \(rate)"
-    }
-
-    private static func pad(_ value: Int, _ width: Int) -> String {
-        String(format: "%\(width)d", value)
+        let rate = summary.acceptanceRate.map { String(format: "%.0f%%", $0 * 100) } ?? "–"
+        let credits = "Challenge credits used:  \(summary.creditsLastDay) of \(LichessBotChallengeCredits.perDay) in 24 h"
+            + "  ·  \(summary.creditsLastMinute) of \(LichessBotChallengeCredits.perMinute) in the last minute"
+        let outcomes = "Challenges, last 24 h:  \(summary.accepted) accepted"
+            + "  ·  \(summary.declined) declined"
+            + "  ·  \(summary.refused) refused"
+            + "  ·  \(rate) acceptance"
+        return (credits, outcomes)
     }
 }

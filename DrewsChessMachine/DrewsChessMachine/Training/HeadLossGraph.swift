@@ -69,16 +69,103 @@ enum HeadLossGraph {
         /// One-hot at the played move. Also read by the played-move
         /// probability diagnostic.
         let oneHot: MPSGraphTensor
-        /// `(1 − ε)·oneHot + ε·uniform(legal)`, renormalized.
+        /// The positive (non-negative-advantage) target, renormalized.
+        /// Fixed total: `(1 − ε)·oneHot + ε·uniform(legal)`. Per move:
+        /// `(1 − total)·oneHot + (total/(n − 1))·otherLegal`,
+        /// `total = min(δ·(n − 1), cap)`.
         let smoothed: MPSGraphTensor
-        /// `(1 − ε)·uniform(other legal) + ε·uniform(legal)`, renormalized.
+        /// The complement (negative-advantage) target, renormalized. Fixed
+        /// total: `(1 − ε)·uniform(other legal) + ε·uniform(legal)`. Per
+        /// move: `(1 − f)·uniform(other legal) + f·oneHot`, `f = min(δ, cap)`.
         let complement: MPSGraphTensor
         /// `[batch, 1]`: 1 where the position has more than one legal move,
         /// else 0. The weight the complement cross-entropy must carry.
         let complementValid: MPSGraphTensor
     }
 
-    /// Build the label-smoothed positive and complement policy targets.
+    /// The fed scalars that choose and parameterize the policy targets'
+    /// label smoothing, each a `[1]` fp32 tensor fed unrounded. Fed rather
+    /// than baked into the graph so every one of them — the mode included —
+    /// is live-tunable without a graph rebuild.
+    struct PolicyLabelSmoothingInputs {
+        /// 1 selects the per-move targets, 0 the fixed-total targets
+        /// (`PolicyLabelSmoothingMode.graphSelectorValue`).
+        let perMoveSelector: MPSGraphTensor
+        /// Fixed-total ε.
+        let epsilon: MPSGraphTensor
+        /// Per-move mass δ.
+        let perMove: MPSGraphTensor
+        /// Cap on the per-move total.
+        let perMoveCap: MPSGraphTensor
+    }
+
+    /// The pieces both smoothing forms are built from. Built once per graph
+    /// and shared, so the two forms agree exactly on |legal|, on the other
+    /// legal moves, and on which positions carry a complement weight.
+    private struct PolicyTargetBasis {
+        let oneHot: MPSGraphTensor
+        let one: MPSGraphTensor
+        /// `[batch, 1]`: `max(|legal|, 1)`.
+        let legalCountSafe: MPSGraphTensor
+        /// `[batch, 1]`: `max(|legal|, 1) − 1`, the number of other legal
+        /// moves, ≥ 0.
+        let otherLegalCount: MPSGraphTensor
+        /// `[batch, 1]`: `max(|legal| − 1, 1)`, a safe divisor for the other
+        /// legal moves.
+        let otherLegalCountSafe: MPSGraphTensor
+        /// `legalMask − oneHot`: 1 at every legal move except the played one.
+        let otherLegalMask: MPSGraphTensor
+        /// `otherLegalMask / otherLegalCountSafe`: uniform over the other
+        /// legal moves, the main mass of both complement targets.
+        let uniformOverOtherLegal: MPSGraphTensor
+        let complementValid: MPSGraphTensor
+    }
+
+    /// |legal| is clamped at 1 against the impossible zero-legal row
+    /// (terminal positions never reach the buffer, but a divide-by-zero would
+    /// NaN the whole batch).
+    private static func policyTargetBasis(
+        graph: MPSGraph,
+        movePlayed: MPSGraphTensor,
+        legalMask: MPSGraphTensor,
+        policySize: Int
+    ) -> PolicyTargetBasis {
+        let oneHot = graph.oneHot(
+            withIndicesTensor: movePlayed,
+            depth: policySize,
+            axis: 1,
+            dataType: dataType,
+            onValue: 1.0,
+            offValue: 0.0,
+            name: "move_onehot"
+        )
+        let one = graph.constant(1.0, dataType: dataType)
+        let legalCount = graph.reductionSum(with: legalMask, axis: 1, name: "legal_count_per_pos")
+        let legalCountSafe = graph.maximum(legalCount, one, name: "legal_count_safe")
+        let otherLegalCount = graph.subtraction(legalCountSafe, one, name: "legal_count_minus_one")
+        let otherLegalCountSafe = graph.maximum(otherLegalCount, one, name: "other_legal_count_safe")
+        let otherLegalMask = graph.subtraction(legalMask, oneHot, name: "other_legal_mask")
+        // uniform(other legal) = (legalMask − oneHot) / max(|legal| − 1, 1).
+        let uniformOverOtherLegal = graph.division(otherLegalMask, otherLegalCountSafe, name: "uniform_over_other_legal")
+        let complementValid = graph.cast(
+            graph.greaterThan(legalCount, one, name: "complement_target_valid_bool"),
+            to: dataType,
+            name: "complement_target_valid"
+        )
+        return PolicyTargetBasis(
+            oneHot: oneHot,
+            one: one,
+            legalCountSafe: legalCountSafe,
+            otherLegalCount: otherLegalCount,
+            otherLegalCountSafe: otherLegalCountSafe,
+            otherLegalMask: otherLegalMask,
+            uniformOverOtherLegal: uniformOverOtherLegal,
+            complementValid: complementValid
+        )
+    }
+
+    /// Build the fixed-total label-smoothed positive and complement policy
+    /// targets — the form every run used before the per-move form existed.
     ///
     /// - `movePlayed`: `[batch]` int32 policy indices.
     /// - `legalMask`: `[batch, policySize]` fp32, 1 at legal cells.
@@ -98,9 +185,10 @@ enum HeadLossGraph {
     /// "badness", so such a position is flagged by `complementValid = 0` and
     /// must get zero complement weight, rather than a target.
     ///
-    /// |legal| is clamped at 1 against the impossible zero-legal row
-    /// (terminal positions never reach the buffer, but a divide-by-zero would
-    /// NaN the whole batch).
+    /// Training selects between this and the per-move form through
+    /// `policyTargets(graph:movePlayed:legalMask:labelSmoothing:policySize:)`;
+    /// both build the fixed-total form with the same ops, which is what keeps
+    /// fixed-total mode's targets unchanged by the per-move form's arrival.
     static func policyTargets(
         graph: MPSGraph,
         movePlayed: MPSGraphTensor,
@@ -108,27 +196,110 @@ enum HeadLossGraph {
         epsilon: MPSGraphTensor,
         policySize: Int
     ) -> PolicyTargets {
-        let oneHot = graph.oneHot(
-            withIndicesTensor: movePlayed,
-            depth: policySize,
-            axis: 1,
-            dataType: dataType,
-            onValue: 1.0,
-            offValue: 0.0,
-            name: "move_onehot"
+        let basis = policyTargetBasis(
+            graph: graph, movePlayed: movePlayed, legalMask: legalMask, policySize: policySize)
+        let fixedTotal = fixedTotalTargets(graph: graph, basis: basis, legalMask: legalMask, epsilon: epsilon)
+        return PolicyTargets(
+            oneHot: basis.oneHot,
+            smoothed: fixedTotal.smoothed,
+            complement: fixedTotal.complement,
+            complementValid: basis.complementValid
         )
-        let one = graph.constant(1.0, dataType: dataType)
+    }
 
+    /// Build the positive and complement policy targets for whichever
+    /// smoothing mode `labelSmoothing.perMoveSelector` picks this step.
+    ///
+    /// Both forms are built and `select` passes the chosen one through
+    /// unchanged; a build-time branch would make the mode the one smoothing
+    /// knob that needs a graph rebuild to change. Each form is renormalized
+    /// on its own, so both sum to exactly 1 whichever is chosen.
+    ///
+    /// **Per-move positive target.** Every non-played legal move gets
+    /// `per = min(δ, cap/(n − 1))` and the played move the rest,
+    /// `1 − per·(n − 1)`: exactly δ per alternative while the total
+    /// `δ·(n − 1)` is under the cap, and the cap shared equally above it.
+    /// Writing the per-alternative mass as a `min` rather than dividing the
+    /// capped total back by `n − 1` keeps the raw per-alternative mass
+    /// exactly δ below the cap instead of δ rounded through a multiply and a
+    /// divide; renormalization then moves it only by the row sum's fp32
+    /// rounding. With one legal move
+    /// there are no alternatives (`otherLegalMask` is all zero) and the
+    /// played move gets exactly 1 — a one-hot, the right target for a forced
+    /// move. The equilibrium gap played-vs-each-alternative is
+    /// `ln((1 − δ(n − 1))/δ)`, nearly independent of n below the cap.
+    ///
+    /// **Per-move complement target.** The mirror of the positive one, with
+    /// the roles swapped: the target set is now the other legal moves and the
+    /// one legal move outside it is the played move, which gets the per-move
+    /// floor `f = min(δ, cap)` (δ for one alternative, capped like any total);
+    /// the other legal moves share `1 − f` equally. The fixed-total
+    /// complement likewise keeps a floor (`ε/|legal|`) on the played move,
+    /// and that floor is what makes the negative branch's equilibrium
+    /// reachable: without it the complement CE would ask for
+    /// `p(played) → 0`, an infinitely negative logit — the unbounded drive
+    /// label smoothing exists to remove. (Reusing the positive target's
+    /// smoothing part literally, as the fixed-total form does, would put the
+    /// per-move mass only on the other legal moves, leave the played move at
+    /// exactly 0, and make the complement plain `uniform(other legal)`
+    /// whatever δ is.) A single-legal-move position's complement is a
+    /// one-hot on the played move (or all-zero at δ = 0) and carries zero
+    /// weight through `complementValid`, exactly as in fixed-total mode.
+    ///
+    /// Illegal cells are exactly 0 in every target: `oneHot`,
+    /// `otherLegalMask` and `uniform(legal)` are all 0 there.
+    static func policyTargets(
+        graph: MPSGraph,
+        movePlayed: MPSGraphTensor,
+        legalMask: MPSGraphTensor,
+        labelSmoothing: PolicyLabelSmoothingInputs,
+        policySize: Int
+    ) -> PolicyTargets {
+        let basis = policyTargetBasis(
+            graph: graph, movePlayed: movePlayed, legalMask: legalMask, policySize: policySize)
+        let fixedTotal = fixedTotalTargets(
+            graph: graph, basis: basis, legalMask: legalMask, epsilon: labelSmoothing.epsilon)
+        let perMove = perMoveTargets(
+            graph: graph, basis: basis, perMove: labelSmoothing.perMove, perMoveCap: labelSmoothing.perMoveCap)
+        let usePerMove = graph.greaterThan(
+            labelSmoothing.perMoveSelector,
+            graph.constant(0.5, dataType: dataType),
+            name: "policy_label_smoothing_use_per_move"
+        )
+        return PolicyTargets(
+            oneHot: basis.oneHot,
+            smoothed: graph.select(
+                predicate: usePerMove,
+                trueTensor: perMove.smoothed,
+                falseTensor: fixedTotal.smoothed,
+                name: "policy_smoothed_target_selected"
+            ),
+            complement: graph.select(
+                predicate: usePerMove,
+                trueTensor: perMove.complement,
+                falseTensor: fixedTotal.complement,
+                name: "policy_complement_target_selected"
+            ),
+            complementValid: basis.complementValid
+        )
+    }
+
+    /// The fixed-total form's two targets; see
+    /// `policyTargets(graph:movePlayed:legalMask:epsilon:policySize:)`.
+    private static func fixedTotalTargets(
+        graph: MPSGraph,
+        basis: PolicyTargetBasis,
+        legalMask: MPSGraphTensor,
+        epsilon: MPSGraphTensor
+    ) -> (smoothed: MPSGraphTensor, complement: MPSGraphTensor) {
         // uniform(legal) = legalMask / max(|legal|, 1), per position.
-        let legalCount = graph.reductionSum(with: legalMask, axis: 1, name: "legal_count_per_pos")
-        let legalCountSafe = graph.maximum(legalCount, one, name: "legal_count_safe")
-        let uniformOverLegal = graph.division(legalMask, legalCountSafe, name: "uniform_over_legal")
+        let uniformOverLegal = graph.division(legalMask, basis.legalCountSafe, name: "uniform_over_legal")
 
-        let oneMinusEpsilon = graph.subtraction(one, epsilon, name: "label_smoothing_one_minus_eps")
+        let oneMinusEpsilon = graph.subtraction(basis.one, epsilon, name: "label_smoothing_one_minus_eps")
         let smoothingPart = graph.multiplication(uniformOverLegal, epsilon, name: "smoothed_target_uniform_part")
         let smoothed = renormalizedTarget(
             graph.addition(
-                graph.multiplication(oneHot, oneMinusEpsilon, name: "smoothed_target_onehot_part"),
+                graph.multiplication(basis.oneHot, oneMinusEpsilon, name: "smoothed_target_onehot_part"),
                 smoothingPart,
                 name: "policy_smoothed_target_raw"
             ),
@@ -136,34 +307,64 @@ enum HeadLossGraph {
             name: "policy_smoothed_target"
         )
 
-        // uniform(other legal) = (legalMask − oneHot) / max(|legal| − 1, 1).
-        let otherLegalMask = graph.subtraction(legalMask, oneHot, name: "other_legal_mask")
-        let otherLegalCountSafe = graph.maximum(
-            graph.subtraction(legalCountSafe, one, name: "legal_count_minus_one"),
-            one,
-            name: "other_legal_count_safe"
-        )
-        let uniformOverOtherLegal = graph.division(otherLegalMask, otherLegalCountSafe, name: "uniform_over_other_legal")
         let complement = renormalizedTarget(
             graph.addition(
-                graph.multiplication(uniformOverOtherLegal, oneMinusEpsilon, name: "complement_target_main_part"),
+                graph.multiplication(basis.uniformOverOtherLegal, oneMinusEpsilon, name: "complement_target_main_part"),
                 smoothingPart,
                 name: "policy_complement_target_raw"
             ),
             graph: graph,
             name: "policy_complement_target"
         )
-        let complementValid = graph.cast(
-            graph.greaterThan(legalCount, one, name: "complement_target_valid_bool"),
-            to: dataType,
-            name: "complement_target_valid"
+        return (smoothed: smoothed, complement: complement)
+    }
+
+    /// The per-move form's two targets; see
+    /// `policyTargets(graph:movePlayed:legalMask:labelSmoothing:policySize:)`.
+    private static func perMoveTargets(
+        graph: MPSGraph,
+        basis: PolicyTargetBasis,
+        perMove: MPSGraphTensor,
+        perMoveCap: MPSGraphTensor
+    ) -> (smoothed: MPSGraphTensor, complement: MPSGraphTensor) {
+        // per = min(δ, cap / max(n − 1, 1)), `[batch, 1]`.
+        let perAlternative = graph.minimum(
+            perMove,
+            graph.division(perMoveCap, basis.otherLegalCountSafe, name: "per_move_cap_share"),
+            name: "per_move_mass_per_alternative"
         )
-        return PolicyTargets(
-            oneHot: oneHot,
-            smoothed: smoothed,
-            complement: complement,
-            complementValid: complementValid
+        // total = per·(n − 1); 0 when there are no other legal moves.
+        let total = graph.multiplication(perAlternative, basis.otherLegalCount, name: "per_move_total_mass")
+        let smoothed = renormalizedTarget(
+            graph.addition(
+                graph.multiplication(
+                    basis.oneHot,
+                    graph.subtraction(basis.one, total, name: "per_move_played_mass"),
+                    name: "per_move_target_onehot_part"
+                ),
+                graph.multiplication(basis.otherLegalMask, perAlternative, name: "per_move_target_alternatives_part"),
+                name: "policy_per_move_target_raw"
+            ),
+            graph: graph,
+            name: "policy_per_move_target"
         )
+
+        // f = min(δ, cap): the played move's floor in the mirrored target.
+        let playedFloor = graph.minimum(perMove, perMoveCap, name: "per_move_complement_played_floor")
+        let complement = renormalizedTarget(
+            graph.addition(
+                graph.multiplication(
+                    basis.uniformOverOtherLegal,
+                    graph.subtraction(basis.one, playedFloor, name: "per_move_complement_main_mass"),
+                    name: "per_move_complement_main_part"
+                ),
+                graph.multiplication(basis.oneHot, playedFloor, name: "per_move_complement_played_part"),
+                name: "policy_per_move_complement_target_raw"
+            ),
+            graph: graph,
+            name: "policy_per_move_complement_target"
+        )
+        return (smoothed: smoothed, complement: complement)
     }
 
     /// Build the W/D/L value target, `[batch, classes]`:

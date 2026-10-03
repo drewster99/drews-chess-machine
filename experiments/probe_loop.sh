@@ -3,9 +3,11 @@
 # appending one JSON line per checkpoint to the given probes file. Exits once the run
 # has ended and every checkpoint present is probed.
 # Usage: probe_loop.sh <out-model stem> <probes.jsonl> [step limit, default 33000]
+# PROBE_BIN overrides the probe binary (needed for checkpoints a newer architecture
+# format writes, which build 2275 cannot read).
 STEM=$1; OUT=$2; LIMIT=${3:-33000}
 [ -n "$STEM" ] && [ -n "$OUT" ] || { echo "usage: $0 <stem> <probes.jsonl> [limit]" >&2; exit 2; }
-BIN="$HOME/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2275-de0f22b.app/Contents/MacOS/DrewsChessMachine"
+BIN="${PROBE_BIN:-$HOME/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2275-de0f22b.app/Contents/MacOS/DrewsChessMachine}"
 M="$HOME/Library/Application Support/DrewsChessMachine/Models"
 touch $OUT
 while true; do
