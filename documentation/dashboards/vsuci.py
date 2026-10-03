@@ -8,8 +8,12 @@ oracles (both-sides distillation), so it is neither corpus replay nor self-play.
 Two things differ from replay.py and are handled here:
 
   * pElo/nll come from a live-probe JSONL (`pelo_jsonl`), keyed by CUMULATIVE
-    step — vs-UCI keeps only a rolling `-latest` checkpoint (no per-1000-step
-    frozen files to re-probe), so the JSONL is the trajectory's source of truth.
+    step — the registered run kept only a rolling `-latest` checkpoint (no
+    per-1000-step frozen files to re-probe), so the JSONL is the trajectory's
+    source of truth. Current builds save `.dcmsession` folders instead of the
+    rolling file (`…-vsuci-periodic/-final/-abort`, trainer state in
+    `trainer.safetensors`) and, with --enumerate-checkpoints, `-vsuci-step<N>`
+    files; --derive-registry reads both.
   * training-side metrics (loss/pLoss/vLoss/gNorm/ms) are parsed from the
     [VS-UCI] step lines. Those lines carry no legalMass/pIllM/bn1Mean/sae2/
     pLogit, so those columns are left blank (the charts simply skip them).
@@ -169,9 +173,11 @@ def main():
     ap = argparse.ArgumentParser(description="Rebuild data/<run>.csv for every train-vs-UCI run.")
     ap.add_argument("--allow-shrink", action="store_true",
                     help="allow a rebuild to drop rows / blank values a CSV holds (each one is printed first)")
-    ap.add_argument("--derive-registry", metavar="MODELS_DIR",
+    ap.add_argument("--derive-registry", metavar="DIR", nargs="+",
                     help="instead of rebuilding: derive segment bases from the lineage records (format v7+) "
-                         "of the train-vs-UCI files in MODELS_DIR and diff them against vsuci_registry.json")
+                         "of the train-vs-UCI files in each DIR — its .safetensors files (step checkpoints) and "
+                         "its .dcmsession folders (session saves), e.g. Models/ and Sessions/ — and diff them "
+                         "against vsuci_registry.json")
     ap.add_argument("--write", action="store_true",
                     help="with --derive-registry: fill the derived values the registry lacks "
                          "(refused if anything conflicts)")
@@ -180,9 +186,8 @@ def main():
         ap.error("--write applies only to --derive-registry")
     if args.derive_registry:
         from _lineage_registry import derive_registry
-        models_dir = os.path.expanduser(args.derive_registry)
-        paths = [os.path.join(models_dir, n) for n in sorted(os.listdir(models_dir))
-                 if n.endswith(".safetensors") and os.path.isfile(os.path.join(models_dir, n))]
+        import dcm_lineage  # on sys.path once _lineage_registry is imported
+        paths = [p for d in args.derive_registry for p in dcm_lineage.model_paths(os.path.expanduser(d))]
         sys.exit(derive_registry(os.path.join(HERE, "vsuci_registry.json"), paths, "vsuci", args.write))
     for key, cfg in REG["runs"].items():
         snapshot = snapshot_of(os.path.join(DATA, f"{key}.csv"))

@@ -187,7 +187,7 @@ def derive_registry(registry_path, model_paths, path_kind, write, out=print):
     out(f"scanned {len(model_paths)} file(s): {len(recorded)} with a {path_kind} lineage record, "
         f"{len(unrecorded)} written before lineage records (unrecorded), {len(errors)} refused or unreadable")
     for path, message in sorted(errors.items()):
-        out(f"  REFUSED {os.path.basename(path)}: {message}")
+        out(f"  REFUSED {dcm_lineage.display_name(path)}: {message}")
     for name, index, field, _, value in report["fills"]:
         out(f"  + {name} seg {index}: {field} = {_show(value)}")
     for name, index, field, held, value in report["conflicts"]:

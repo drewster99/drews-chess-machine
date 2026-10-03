@@ -388,11 +388,8 @@ def print_lineage_table(sessions_dir):
     status: 1 when a file is refused or unreadable, else 0."""
     sys.path.insert(0, os.path.join(HERE, "..", "..", "scripts"))
     import dcm_lineage
-    paths = []
-    for folder in sorted(os.listdir(sessions_dir)):
-        full = os.path.join(sessions_dir, folder)
-        if folder.endswith(".dcmsession") and os.path.isdir(full):
-            paths += [os.path.join(full, n) for n in sorted(os.listdir(full)) if n.endswith(".safetensors")]
+    paths = [p for p in dcm_lineage.model_paths(sessions_dir)
+             if os.path.basename(os.path.dirname(p)).endswith(dcm_lineage.SESSION_FOLDER_SUFFIX)]
     recorded, unrecorded, errors = dcm_lineage.scan_files(paths)
     recorded = [f for f in recorded if f.record["invocation"]["path_kind"] == "gui"]
     print(f"scanned {len(paths)} session file(s): {len(recorded)} with a GUI lineage record, "

@@ -846,6 +846,16 @@ extension SessionController {
                 return
             }
 
+            // 1a. A session another path wrote (train-vs-UCI) has no self-play
+            //     or arena run to continue here; refuse it by name.
+            if let refusal = loaded.state.guiLoadRefusal {
+                checkpoint?.checkpointSaveInFlight = false
+                checkpoint?.setCheckpointStatus("Load refused: \(refusal)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Load session refused (\(url.lastPathComponent)): \(refusal)")
+                if startAfterLoad { onResumeFinished() }
+                return
+            }
+
             // 1b. Saved settings that cannot be used as found stop the load
             //     until the user reviews them; nothing is replaced silently.
             let findings = loaded.state.invalidSavedSettings(current: TrainingParameters.shared.snapshot())
@@ -1168,21 +1178,7 @@ extension SessionController {
             arenaHistory: history
         )
         .withTrainingSegments(segments)
-        .withArchitecture(
-            ArchitectureMetadata(
-                architectureVersion: resolvedArch.architectureVersionLabel,
-                // Legacy uniform scalars: tower-output width + the first
-                // group's SE ratio (mixed towers are fully described by the
-                // embedded config itself).
-                channels: resolvedArch.towerOutputChannels,
-                numBlocks: resolvedArch.numBlocks,
-                inputPlanes: resolvedArch.inputPlanes,
-                policySize: resolvedArch.policySize,
-                valueHeadClasses: resolvedArch.valueHeadClasses,
-                seReductionRatio: resolvedArch.blockGroups[0].seReductionRatio,
-                parameterCount: resolvedArch.parameterCount
-            )
-        )
+        .withArchitecture(ArchitectureMetadata(describing: resolvedArch))
         .withProbeHistories(
             lichess: lichessProbeHistory.makeSnapshot(),
             wideLichess: lichessProbeWideHistory.makeSnapshot(),

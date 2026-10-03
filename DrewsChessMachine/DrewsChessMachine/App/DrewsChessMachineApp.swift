@@ -534,7 +534,7 @@ struct DrewsChessMachineApp: App {
                                               with --validate-corpus <dir> --fix.
               --out-model <path>              Destination for the rolling trainer-model file (overwritten by this
                                               run's saves); a .safetensors extension is appended if you don't supply
-                                              one. Also used by --train-vs-uci. Checked before training: never the
+                                              one (corpus replay only). Checked before training: never the
                                               --start-model itself, never anything but a regular file, never a name
                                               shaped like an enumerated checkpoint (<stem>-replay-step<N>,
                                               -vsuci-step<N>, -step<N>), and an existing file only when it holds the
@@ -549,8 +549,8 @@ struct DrewsChessMachineApp: App {
               --overwrite-out-model           Use an --out-model the check above would refuse, replacing the file
                                               there (still never the --start-model, never a non-regular file).
               --enumerate-checkpoints         Also keep a copy of every save as <stem>-replay-step<N>.safetensors
-                                              (-vsuci-step<N> under --train-vs-uci; <stem>-step<N> when the stem has
-                                              no -replay-latest/-vsuci-latest marker). Never overwrites: step numbers
+                                              (<stem>-step<N> when the stem has no -replay-latest marker; see
+                                              --train-vs-uci below for its step files). Never overwrites: step numbers
                                               restart in every run, so the run refuses to start when its stem already
                                               has step files it could reach -- give every resumed segment its own
                                               --out-model stem (e.g. <name>-resume2-replay-latest.safetensors).
@@ -596,6 +596,30 @@ struct DrewsChessMachineApp: App {
                                               and reported, and corpus.json is then not rewritten; rerun --fix
                                               after that writer finishes. Add --quick to skip the
                                               SHA/CRC body pass (header/trailer counts only — fast, no integrity check).
+
+            Training against UCI engines (headless, then exits):
+              --train-vs-uci "cmd=<engine>;n=<instances>;go=<limit>;<UCI option>=<value>;…"   (repeatable)
+                                              Play the live trainer against external UCI engines and train on the
+                                              games (see documentation/UCI.md). Takes --parameters,
+                                              --training-step-limit, --training-time-limit, --preset, --seed, --output.
+              --start-model <model file | .dcmsession folder>
+                                              Start from a model file or a session folder's trainer; with
+                                              --resume-exact, continue its exact trainer state and random streams
+                                              (and its replay buffer when the session saved one; otherwise
+                                              --accept-inexact buffer is needed).
+              --out-session-dir <folder>      Where session folders are saved (default: the app's Sessions folder).
+                                              Every save is a new .dcmsession folder, written and verified like the
+                                              GUI's: on the periodic_autosave_interval_sec cadence and at the end
+                                              (…-vsuci-periodic / -vsuci-final / -vsuci-abort). The GUI does not
+                                              load them; resume one with --start-model <folder> --resume-exact.
+              --save-replay-buffer            Include replay_buffer.bin in every session save (several GB), so an
+                                              exact resume restores the buffer instead of refilling it.
+              --enumerate-checkpoints [--checkpoint-stem <path stem>]
+                                              Also write the trainer file every 1000 steps and at the end as
+                                              <stem>-vsuci-step<N>.safetensors (default stem: the --start-model
+                                              file's own, next to it, else the run's model ID in Models/). Never
+                                              overwrites; refuses a stem that already has step files it could reach.
+              (--out-model and --overwrite-out-model do not apply to --train-vs-uci and are refused.)
 
             Self-play recording: set the `record_self_play_games` parameter (e.g. in a --parameters file) to
             record every kept self-play game into a corpus under Corpora/ during a --train run.
@@ -1389,16 +1413,20 @@ struct DrewsChessMachineApp: App {
     /// UCI engines and trains on the games. Repeatable `--train-vs-uci
     /// "cmd=/path/to/stockfish;n=3;go=nodes 1;UCI_Elo=1400"` declares one
     /// opponent kind (cmd = path, n = instance count, go = per-move limit,
-    /// everything else = setoption pairs). Mirrors the --replay-corpus model
-    /// I/O (--start-model, --resume-exact, --out-model, --overwrite-out-model,
-    /// --enumerate-checkpoints, --preset, --parameters, --training-step-limit,
-    /// --training-time-limit).
+    /// everything else = setoption pairs). Saves session folders
+    /// (`TrainVsUciSession`: --out-session-dir, --save-replay-buffer) and,
+    /// with --enumerate-checkpoints [--checkpoint-stem], step files; takes
+    /// --start-model (a model file or a session folder), --resume-exact,
+    /// --accept-inexact, --preset, --parameters, --training-step-limit,
+    /// --training-time-limit.
     private static func handleTrainVsUciIfPresent(rawArgs: [String]) {
         guard rawArgs.contains("--train-vs-uci") else { return }
 
         var opponentSpecStrings: [String] = []
         var startModelPath: String? = nil
-        var outModelPath: String? = nil
+        var outSessionDir: String? = nil
+        var saveReplayBuffer = false
+        var checkpointStem: String? = nil
         // See the corpus handler: this static pre-flight must parse `--output`
         // itself.
         var outputPath: String? = nil
@@ -1408,7 +1436,6 @@ struct DrewsChessMachineApp: App {
         var stepLimit: Int? = nil
         var timeLimitSec: Double? = nil
         var enumerateCheckpoints = false
-        var overwriteOutModel = false
         var resumeExact = false
         var acceptInexact: Set<ResumeGap>? = nil
         var maxPliesPerGame = 400
@@ -1444,8 +1471,20 @@ struct DrewsChessMachineApp: App {
                 opponentSpecStrings.append(requireValue(arg, nextValue)); i += 2
             case "--start-model":
                 startModelPath = requireValue(arg, nextValue); i += 2
-            case "--out-model":
-                outModelPath = requireValue(arg, nextValue); i += 2
+            case "--out-model", "--overwrite-out-model":
+                // Session folders replaced the rolling model file; an old
+                // command line is refused rather than reinterpreted.
+                let message = "error: \(arg) does not apply to --train-vs-uci: it saves session folders "
+                    + "(--out-session-dir, default the app's Sessions folder; --save-replay-buffer to include the buffer). "
+                    + "Step checkpoints: --enumerate-checkpoints [--checkpoint-stem <path stem>]\n"
+                FileHandle.standardError.write(Data(message.utf8))
+                Darwin.exit(2)
+            case "--out-session-dir":
+                outSessionDir = requireValue(arg, nextValue); i += 2
+            case "--save-replay-buffer":
+                saveReplayBuffer = true; i += 1   // boolean flag, no value
+            case "--checkpoint-stem":
+                checkpointStem = requireValue(arg, nextValue); i += 2
             case "--output":
                 outputPath = requireValue(arg, nextValue); i += 2
             case "--overwrite-output":
@@ -1469,8 +1508,6 @@ struct DrewsChessMachineApp: App {
                 evalSyncEverySteps = requireInt(arg, nextValue); i += 2
             case "--enumerate-checkpoints":
                 enumerateCheckpoints = true; i += 1
-            case "--overwrite-out-model":
-                overwriteOutModel = true; i += 1   // boolean flag, no value
             case "--resume-exact":
                 resumeExact = true; i += 1   // boolean flag, no value
             case "--accept-inexact":
@@ -1491,10 +1528,14 @@ struct DrewsChessMachineApp: App {
         }
 
         if resumeExact && startModelPath == nil {
-            FileHandle.standardError.write(Data("error: --resume-exact requires --start-model (a checkpoint carrying exact trainer state)\n".utf8))
+            FileHandle.standardError.write(Data("error: --resume-exact requires --start-model (a session folder or a checkpoint carrying exact trainer state)\n".utf8))
             Darwin.exit(2)
         }
         requireResumeExactForAcceptInexactOrExit(acceptInexact: acceptInexact, resumeExact: resumeExact)
+        if checkpointStem != nil && !enumerateCheckpoints {
+            FileHandle.standardError.write(Data("error: --checkpoint-stem names step checkpoints; it needs --enumerate-checkpoints\n".utf8))
+            Darwin.exit(2)
+        }
 
         // Parse each opponent spec: "cmd=/path;n=3;go=nodes 1;UCI_Elo=1400".
         func parseOpponent(_ s: String) -> TrainVsUciOpponentSpec {
@@ -1587,9 +1628,11 @@ struct DrewsChessMachineApp: App {
             resumeExact: resumeExact,
             acceptInexact: acceptInexact ?? [],
             presetName: presetName,
-            outModelPath: outModelPath,
-            overwriteOutModel: overwriteOutModel,
+            sessionDirectory: outSessionDir.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
+                ?? CheckpointPaths.sessionsDir,
+            saveReplayBuffer: saveReplayBuffer,
             enumerateCheckpoints: enumerateCheckpoints,
+            checkpointStem: checkpointStem,
             maxPliesPerGame: maxPliesPerGame,
             evalSyncEverySteps: evalSyncEverySteps,
             runModelID: runModelID,

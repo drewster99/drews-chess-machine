@@ -241,12 +241,44 @@ class DerivedRun:
         self.continues_unrecorded_history = continues_unrecorded_history
 
 
+# A session folder's name ends with this (CheckpointPaths.makeSessionDirectoryName);
+# its staging folder adds a further extension and is never read.
+SESSION_FOLDER_SUFFIX = ".dcmsession"
+
+
+def display_name(path):
+    """A model file's name as reports show it: the file name, prefixed with its
+    session folder when it sits in one. Every session folder holds a
+    `trainer.safetensors` and a `champion.safetensors`, so the bare name would not
+    say which save a file came from."""
+    folder = os.path.basename(os.path.dirname(path))
+    name = os.path.basename(path)
+    return f"{folder}/{name}" if folder.endswith(SESSION_FOLDER_SUFFIX) else name
+
+
+def model_paths(directory):
+    """Every model file a run saved into `directory`, sorted by path: the
+    `.safetensors` files directly in it (step-enumerated checkpoints, rolling
+    files) and those directly inside each `.dcmsession` folder in it (GUI and
+    train-vs-UCI session saves). Other folders — staging folders included — are
+    not read."""
+    paths = []
+    for name in sorted(os.listdir(directory)):
+        full = os.path.join(directory, name)
+        if name.endswith(".safetensors") and os.path.isfile(full):
+            paths.append(full)
+        elif name.endswith(SESSION_FOLDER_SUFFIX) and os.path.isdir(full):
+            paths += [os.path.join(full, n) for n in sorted(os.listdir(full))
+                      if n.endswith(".safetensors") and os.path.isfile(os.path.join(full, n))]
+    return sorted(paths)
+
+
 class FileLineage:
     """One file's header facts: its model ID, step and lineage record."""
 
     def __init__(self, path, metadata, record):
         self.path = path
-        self.name = os.path.basename(path)
+        self.name = display_name(path)
         self.metadata = metadata
         self.record = record
 
@@ -263,7 +295,7 @@ def scan_files(paths):
     for path in paths:
         try:
             metadata = read_metadata(path)
-            lineage = lineage_of(metadata, os.path.basename(path))
+            lineage = lineage_of(metadata, display_name(path))
         except (OSError, ValueError, struct.error) as error:
             errors[path] = str(error)
             continue
@@ -275,13 +307,10 @@ def scan_files(paths):
 
 
 def scan(directory):
-    """`scan_files` over every .safetensors file directly in `directory`, keyed
-    by file name."""
-    paths = [os.path.join(directory, name) for name in sorted(os.listdir(directory))
-             if name.endswith(".safetensors") and os.path.isfile(os.path.join(directory, name))]
-    recorded, unrecorded, errors = scan_files(paths)
-    return (recorded, {os.path.basename(p): v for p, v in unrecorded.items()},
-            {os.path.basename(p): v for p, v in errors.items()})
+    """`scan_files` over `model_paths(directory)`, keyed by `display_name`."""
+    recorded, unrecorded, errors = scan_files(model_paths(directory))
+    return (recorded, {display_name(p): v for p, v in unrecorded.items()},
+            {display_name(p): v for p, v in errors.items()})
 
 
 def _segment_fields(record, run_origin):
@@ -430,7 +459,7 @@ def checkpoint_facts(path):
     own step clock. Returns None for a file without a record. Values the record
     holds as null are returned as None, never filled."""
     metadata = read_metadata(path)
-    lineage = lineage_of(metadata, os.path.basename(path))
+    lineage = lineage_of(metadata, display_name(path))
     if isinstance(lineage, Unrecorded):
         return None
     return dict(lineage_run_id=lineage["run"]["lineage_run_id"],
@@ -464,7 +493,7 @@ def main():
     import sys
     parser = argparse.ArgumentParser(
         description="Derive each lineage run's segments from the .safetensors headers in a folder "
-                    "(read-only; prints JSON).")
+                    "and in the .dcmsession folders directly inside it (read-only; prints JSON).")
     parser.add_argument("directory")
     args = parser.parse_args()
     recorded, unrecorded, errors = scan(os.path.expanduser(args.directory))

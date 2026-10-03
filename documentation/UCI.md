@@ -130,9 +130,9 @@ decisive games).
 DrewsChessMachine \
   --train-vs-uci "cmd=<path>;n=<count>;go=<limit>;<Option>=<value>;..." \
   [--train-vs-uci "<second opponent pool>"] \
-  [--start-model <path> [--resume-exact] | --preset <name>] \
-  --out-model <path> \
-  [--enumerate-checkpoints] [--parameters <path>] \
+  [--start-model <model file | .dcmsession folder> [--resume-exact] | --preset <name>] \
+  [--out-session-dir <folder>] [--save-replay-buffer] \
+  [--enumerate-checkpoints [--checkpoint-stem <path stem>]] [--parameters <path>] \
   [--training-step-limit N] [--training-time-limit <seconds>] \
   [--max-plies 400] [--eval-sync-steps 10]
 ```
@@ -142,7 +142,7 @@ DrewsChessMachine \
 | scope | where | fields |
 |---|---|---|
 | **per opponent pool** | inside each `--train-vs-uci "…"` (`;`-delimited) | `cmd=` engine path · `n=` instance count · `go=` per-move limit · any other `KEY=VALUE` → `setoption name KEY value VALUE` (`UCI_Elo`, `Skill Level`, `Threads`, `Hash`, …) |
-| **global (whole run)** | top-level flags | `--start-model` (+ `--resume-exact`) / `--preset`, `--out-model`, `--parameters`, `--training-step-limit`, `--training-time-limit`, `--max-plies` (400), `--eval-sync-steps` (10), `--enumerate-checkpoints` |
+| **global (whole run)** | top-level flags | `--start-model` (+ `--resume-exact`) / `--preset`, `--out-session-dir`, `--save-replay-buffer`, `--parameters`, `--training-step-limit`, `--training-time-limit`, `--max-plies` (400), `--eval-sync-steps` (10), `--enumerate-checkpoints` (+ `--checkpoint-stem`) |
 | **hardcoded global** | `UCIArbiter.Configuration` (no flag) | `handshakeTimeout` 10 s, `moveTimeout` 30 s |
 
 `--start-model` alone starts a **new branch**: the file's weights, with a fresh
@@ -152,40 +152,69 @@ training exactly — fp32 master weights, optimizer velocity, the completed-step
 clock, and the warmup length and cycle it trained under are all restored, so
 warmup does not re-run. It needs a checkpoint written with exact trainer state
 (`trainer_*` keys in `__metadata__` plus `opt.*.velocity` tensors); older
-checkpoints are refused. The replay buffer is not persisted, so it refills from
-new games before training resumes.
+checkpoints are refused. `--start-model` takes a model file or a `.dcmsession`
+folder (the session's `trainer.safetensors` is the start). An exact resume from a
+session saved with `--save-replay-buffer` also restores its replay buffer; from a
+model file, or a session saved without the buffer, the buffer refills from new
+games before training resumes and the resume is `NOT EXACT: buffer` (pass
+`--accept-inexact buffer`).
 
 `--train-vs-uci` is **repeatable** — each is an independent pool with its own
 engine, count, `go`, and options. Two pools may point at the *same* binary with
 different settings (e.g. one Stockfish pool at `go=movetime 10`, a second at
 `UCI_Elo=1400`). All `n` instances in a pool are identical.
 
-**Output files.** `--training-time-limit` takes **seconds** (a positive number),
-e.g. `21600` for 6 h — not `6h`. The rolling trainer model is your `--out-model`
-verbatim (`.safetensors` appended if missing); if `--out-model` is omitted it is
-`<start-model-stem>-vsuci-latest.safetensors` (or `<runModelID>-vsuci-latest…`
-with `--preset`). **Both `--start-model` and `--preset` are optional** — with
-neither, training starts from a fresh net at the current default architecture
-(`NetworkArchitecture.current`). With `--enumerate-checkpoints`, each step-N snapshot is derived
-from the rolling file's stem: **if the stem contains `-vsuci-latest`**, that
-substring is replaced with `-vsuci-step<N>`; **otherwise** it is
-`<stem>-step<N>.safetensors`. (So `--out-model foo.safetensors` enumerates as
-`foo-step<N>.safetensors`, while `foo-vsuci-latest.safetensors` enumerates as
-`foo-vsuci-step<N>.safetensors`.)
+**Output: session folders.** `--training-time-limit` takes **seconds** (a positive
+number), e.g. `21600` for 6 h — not `6h`. **Both `--start-model` and `--preset`
+are optional** — with neither, training starts from a fresh net at the current
+default architecture (`NetworkArchitecture.current`).
 
-Neither file silently replaces something the run does not own. Before
-training, the rolling `--out-model` is refused if it is the `--start-model`
-itself or not a regular file, or if its name is shaped like a step-enumerated
-checkpoint (`…-vsuci-step<N>`, `…-replay-step<N>`, `…-step<N>`) whether or not a
-file is there; an existing file there is replaced only when it holds the
-`--start-model`'s `model_id` at the start model's own `training_step` (the
-rolling file of the state being continued) — anything else, including the
-output of an earlier run of the same command (every run saves under its own new
-`model_id`) and an earlier checkpoint of the same line, refuses the run unless
-`--overwrite-out-model` is passed. Enumerated step files are never overwritten: step numbers restart
-in every run, so a run whose stem already holds step files it could reach
-refuses to start — give every resumed segment its own `--out-model` stem
-(e.g. `…-resume2-vsuci-latest.safetensors`).
+A run saves `.dcmsession` folders, written by the same
+`CheckpointManager.saveSession` the GUI uses: exclusive staging, bit-exact model
+verification, a forward-pass round trip, a `session.json` round trip, a
+replay-buffer round trip, `F_FULLFSYNC`, and a publish that never replaces an
+existing folder. Every save is a new folder,
+`<YYYYMMDD-HHMMSS>-<runModelID>-vsuci-<periodic|final|abort>.dcmsession`, in
+`--out-session-dir` (default: the app's `Sessions/` folder):
+
+- `vsuci-periodic` — on the GUI's cadence, the `periodic_autosave_interval_sec`
+  parameter (default 6 h; set it in a `--parameters` file for a shorter crash
+  window); the clock starts at run start and restarts at each successful save.
+- `vsuci-final` — the step or time limit was reached.
+- `vsuci-abort` — Ctrl-C.
+
+Each folder holds `trainer.safetensors` (the complete trainer state — what the
+rolling `--out-model` file held before session folders replaced it),
+`champion.safetensors` (the play network, synced from the trainer at the save),
+`session.json` (lineage `path_kind` `vsuci`) and, only with
+`--save-replay-buffer`, `replay_buffer.bin` (several GB per save). The launch
+line `[VS-UCI] session saves: …` states the folder, the cadence and whether the
+buffer is included, so a run's crash exposure and disk cost are visible up front;
+every save logs `[CHECKPOINT] Saved session (vsuci-…)`. A failed save is logged
+and retried at the next step; two failures in a row stop the run, a full disk
+stops it at once, and a failed final (or abort) save fails the run — nothing else
+holds its end state.
+
+Train-vs-UCI sessions are not GUI sessions: the GUI refuses to load one (naming
+the resume command), they never count toward the GUI's automatic-save retention
+pool (whose members are only `-periodic` / `-promote` folders), and the CLI never
+moves the GUI's "Resume Training" pointer. Resume a run with
+`--train-vs-uci … --start-model <folder> --resume-exact`.
+
+`--out-model` and `--overwrite-out-model` belong to corpus replay; with
+`--train-vs-uci` they are refused (the rolling model file was replaced by session
+folders). A rolling `…-vsuci-latest.safetensors` written by an earlier build is
+still an ordinary model file for `--start-model`.
+
+**Step checkpoints.** With `--enumerate-checkpoints`, the trainer file is also
+written every 1000 steps (and at the end, when the last step is not a multiple of
+1000) as `<stem>-vsuci-step<N>.safetensors`. The stem is `--checkpoint-stem`
+(a path without an extension, which must not itself be named like a step file);
+otherwise the `--start-model` file's own stem, next to it (the names earlier runs
+produced); otherwise — a fresh run or a session start — the run's model ID in
+`Models/`. Step files are never overwritten: step numbers restart in every run, so
+a run whose stem already holds step files it could reach refuses to start — give
+every resumed segment its own `--checkpoint-stem` (e.g. `…-resume2`).
 
 ## Timing model — fixed per-move only, no clock
 

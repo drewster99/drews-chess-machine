@@ -2034,7 +2034,8 @@ baseline.
   - D-8 buffer save policy: the `session_save_include_replay_buffer`
     parameter, the manual-save sheet checkbox, `--save-replay-buffer`,
     train-vs-UCI session-folder checkpoints, and the `buffer=omitted` log.
-    *GUI part done (`ea84fe9d`); train-vs-UCI part remaining — see below.*
+    *GUI part done (`ea84fe9d`); train-vs-UCI part done (`7a8dce34`) — see
+    below.*
   - C1 #10: train-vs-UCI per-opponent and per-color counters. *Done
     (`cbe72cf8`).*
   - C1 #11: the dropped in-flight games line. *Done (`cdf1d7ee`).*
@@ -2147,6 +2148,48 @@ baseline.
     out-model guard, and `documentation/dashboards/vsuci.py`, which reads
     `.safetensors`. It needs a decision on whether the folder replaces the
     rolling `--out-model` file or sits beside it.
+    *Done (2026-10-03, `943f69e4`, `7a8dce34`, `841afe91`). Owner decision:
+    the folder **replaces** the rolling file.*
+    - Saves go through `CheckpointManager.saveSession`, each a new folder
+      tagged `vsuci-periodic` (on `periodic_autosave_interval_sec`, read
+      once at run start), `vsuci-final` or `vsuci-abort`, in
+      `--out-session-dir` (default `Sessions/`). `trainer.safetensors` holds
+      the complete trainer state; `champion.safetensors` is the play
+      network synced from the trainer; `session.json` carries the lineage
+      record (`path_kind` `vsuci`). The CLI applies only
+      `--save-replay-buffer`, not the GUI's
+      `session_save_include_replay_buffer`.
+    - `--start-model` takes a model file or a session folder. An exact
+      resume from a session saved with its buffer restores it (a failed
+      restore stops the run); otherwise `buffer` is a gap. Opponent serials
+      are restored or gapped as before (C1 #10).
+    - `--out-model` / `--overwrite-out-model` are refused with
+      `--train-vs-uci`. A rolling file from an earlier build stays a valid
+      model-file start, so no migration is needed.
+    - Enumerated `-vsuci-step<N>` files are unchanged; `--checkpoint-stem`
+      names the stem (default: the start model's, else the run's model ID
+      in `Models/`). The out-model guard no longer applies to this path;
+      `TrainerOutputFileGuard` still refuses a stem with reachable step
+      files.
+    - The GUI refuses a `vsuci` session; the tags keep these folders out
+      of the retention pool; the CLI never moves `LastSessionPointer`.
+    - Edge cases: an existing destination or staging folder fails that
+      save (`targetAlreadyExists` / `stagingPathAlreadyExists`), counted by
+      the failure streak; disk full stops the run, now also when wrapped in
+      `CheckpointManagerError` / `ReplayBuffer.PersistenceError`; the
+      folder name's staging length is checked before any engine starts; a
+      failed final or abort save fails the run; a second Ctrl-C (force
+      quit) mid-save leaves a staging folder that no later save collides
+      with (a later save's name differs in timestamp, and a new run's in
+      model ID) and that the GUI's orphan sweep removes under its age rule
+      when it is in `Sessions/`.
+    - Found on the way: `session.json` decode dropped the LR cycle's decay
+      envelope, so every session save under a decaying envelope failed its
+      round-trip check (`943f69e4`).
+    - Tools: `dcm_lineage.model_paths` / `display_name`, `vsuci.py
+      --derive-registry DIR…`, `selfplay.py`; docs `UCI.md`, `CLAUDE.md`.
+    - Tests: `TrainVsUciSessionTests`, `SessionCycleEnvelopeRoundTripTests`,
+      dashboard `SessionFolderTests`.
   - #26: segment-indexed enumerated names (`…-seg3-step41000`). Overwrites
     are already refused (`TrainerOutputFileGuard`). The name change touches
     `EnumeratedCheckpointNaming` and P11's `discover-stems`, so it should be

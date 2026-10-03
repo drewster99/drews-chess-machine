@@ -41,8 +41,12 @@ struct ReplayParams: Sendable {
     /// The complete parameter set, as every lineage record of the run
     /// carries it.
     var lineageParameters: LineageRecord.Parameters
+    /// The snapshot every field above was taken from — what a train-vs-UCI
+    /// session's `session.json` records its settings from.
+    let parameters: TrainingParametersSnapshot
 
     init(_ parameters: TrainingParametersSnapshot) throws {
+        self.parameters = parameters
         trainer = TrainerHyperparameters(parameters)
         lineageParameters = try LineageRecord.Parameters(values: parameters.rawValueMap())
         trainingBatchSize = parameters.trainingBatchSize
@@ -749,6 +753,21 @@ enum CorpusReplayRunner {
     static func isOutOfSpace(_ error: Error) -> Bool {
         if case .systemCallFailed(_, _, let errnoValue)? = error as? FileSafetyError, errnoValue == ENOSPC {
             return true
+        }
+        // A session save (train-vs-UCI) wraps the file-system error it hit.
+        if let checkpointError = error as? CheckpointManagerError {
+            switch checkpointError {
+            case .directoryCreationFailed(_, let underlying),
+                 .writeFailed(_, let underlying),
+                 .fsyncFailed(_, let underlying),
+                 .chartFileWriteFailed(_, let underlying):
+                return isOutOfSpace(underlying)
+            default:
+                return false
+            }
+        }
+        if case .writeFailed(let underlying)? = error as? ReplayBuffer.PersistenceError {
+            return isOutOfSpace(underlying)
         }
         let ns = error as NSError
         if ns.domain == NSCocoaErrorDomain, ns.code == CocoaError.Code.fileWriteOutOfSpace.rawValue {
