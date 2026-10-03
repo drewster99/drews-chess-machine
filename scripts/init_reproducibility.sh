@@ -11,7 +11,11 @@
 #
 # Usage: scripts/init_reproducibility.sh <DrewsChessMachine binary> <scratch folder>
 # The scratch folder must not exist yet; it receives the minted files.
-set -eu
+#
+# pipefail: each hash is piped through sed, and a pipeline's status is otherwise
+# sed's, so a file that could not be hashed would only drop its line and the script
+# would still exit 0 — a listing with lines missing that reads as complete.
+set -euo pipefail
 
 BIN=${1:?usage: $0 <DrewsChessMachine binary> <scratch folder>}
 OUT=${2:?usage: $0 <DrewsChessMachine binary> <scratch folder>}

@@ -9,6 +9,7 @@ import csv
 import json
 import os
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -222,6 +223,24 @@ class CsvPointsTests(unittest.TestCase):
     def test_marker_string_has_one_source(self):
         import _schema
         self.assertIs(table_common.NON_FINITE_PELO_NOTE, _schema.NON_FINITE_PELO_NOTE)
+
+
+class InitReproducibilityScriptTests(unittest.TestCase):
+    """scripts/init_reproducibility.sh fails when a minted file cannot be hashed, rather than
+    printing the other lines and exiting 0 (which reads as a complete, comparable listing)."""
+
+    def test_init_reproducibility_fails_when_hashing_fails(self):
+        with tempfile.TemporaryDirectory() as folder:
+            fake = os.path.join(folder, "fake-dcm")
+            with open(fake, "w") as handle:
+                handle.write('#!/bin/zsh\nwhile [ $# -gt 0 ]; do\n'
+                             '  if [ "$1" = "--out-model" ]; then print -r -- "not a safetensors file" > "$2"; fi\n'
+                             '  shift\ndone\n')
+            os.chmod(fake, 0o755)
+            completed = subprocess.run(
+                ["/bin/zsh", os.path.join(REPO, "scripts", "init_reproducibility.sh"), fake,
+                 os.path.join(folder, "minted")], capture_output=True, text=True, timeout=120)
+        self.assertNotEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
 
 class BufferGameLengthTests(unittest.TestCase):
