@@ -1013,9 +1013,26 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
     /// `toFinalBlock` destination. Every other feature-skip option (head
     /// fusion in either mode, concat-direct to the final block) is fully built.
     case featureSkipUnsupported(option: String)
+    /// A count derived from the architecture — the total block count or the
+    /// parameter count (`quantity` says which) — does not fit in an `Int`.
+    /// There is no cap on block count, channels or kernel size; this is the
+    /// one size an architecture cannot have, because nothing could count it.
+    case arithmeticOverflow(quantity: String)
+    /// The architecture's training state does not fit in this Mac's physical
+    /// memory (`ModelSizeGuidance`). Not part of `validate()`, which is
+    /// device-independent: the Build New Model screen, `--new-model`, the
+    /// GUI build and a graft refuse with it before building.
+    case trainingStateExceedsPhysicalMemory(parameterCount: Int, trainingStateBytes: Double, physicalMemoryBytes: UInt64)
 
     var description: String {
         switch self {
+        case .arithmeticOverflow(let quantity):
+            return "\(quantity) overflows Int: the architecture is too large to represent"
+        case .trainingStateExceedsPhysicalMemory(let parameterCount, let trainingStateBytes, let physicalMemoryBytes):
+            return "cannot be trained on this Mac: the training state of \(parameterCount.formatted(.number)) parameters "
+                + "(\(ModelSizeGuidance.trainingBytesPerParameter) bytes each: fp32 working weights, master weights, "
+                + "momentum velocity and gradient) needs \(ModelSizeGuidance.gigabytesText(trainingStateBytes)), "
+                + "more than this Mac's \(ModelSizeGuidance.gigabytesText(Double(physicalMemoryBytes))) of physical memory"
         case .featureSkipNoDestination:
             return "featureSkipSource is enabled but no destination is routed (set at least one of featureSkipToPolicyHead / featureSkipToValueHead)"
         case .featureSkipUnsupported(let option):
@@ -1459,17 +1476,30 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     /// `inC` must be threaded by the builder, `parameterCount`, `weightTensorPlan`, and
     /// the analyzer's `blockSpec`, or those four desync on the final block.
     func blockSkipExtraInputChannels(blockIndex: Int) -> Int {
+        blockIndex == numBlocks - 1 ? finalBlockSkipExtraInputChannels : 0
+    }
+
+    /// `blockSkipExtraInputChannels(blockIndex:)` of the last expanded block —
+    /// the one block the final-block feature skip widens — without counting
+    /// the blocks, for the per-group formulas (`parameterCountBreakdown`,
+    /// `groupsWithSkipProjection`) that never expand the tower.
+    var finalBlockSkipExtraInputChannels: Int {
         guard featureSkipEnabled,
               featureSkipFusion == .concatDirect,
-              featureSkipToFinalBlock,
-              blockIndex == numBlocks - 1 else { return 0 }
+              featureSkipToFinalBlock else { return 0 }
         return featureSkipSourceChannels
     }
 
     /// The tower flattened to one element per block (each returned group has
     /// `count == 1`). The ENGINE'S ONLY VIEW of the tower: graph builders,
-    /// `weightTensorPlan`, `parameterCount`, and the analyzer walk this —
-    /// groups are an authoring/persistence structure, never an engine concept.
+    /// `weightTensorPlan`, and the analyzer walk this — groups are an
+    /// authoring/persistence structure, never an engine concept.
+    ///
+    /// Requires a validated tower shape (`validateTowerShape()`, which
+    /// `validate()` runs first): a negative count traps here, and a huge one
+    /// allocates the whole expansion. Nothing that reads an architecture the
+    /// user is still typing may call it before the shape is known to be
+    /// good; the per-group formulas exist so the Build screen never has to.
     var expandedBlocks: [BlockGroup] {
         blockGroups.flatMap { group -> [BlockGroup] in
             var single = group
@@ -1479,7 +1509,23 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     }
 
     /// Total block count across all groups (derived; no stored copy).
-    var numBlocks: Int { blockGroups.reduce(0) { $0 + $1.count } }
+    /// Requires a validated tower shape: a total that overflows `Int` is a
+    /// defect here, reported by `validateTowerShape()`.
+    var numBlocks: Int {
+        do {
+            return try checkedTotalBlockCount()
+        } catch {
+            preconditionFailure("NetworkArchitecture.numBlocks: \(error) (validateTowerShape() rejects this)")
+        }
+    }
+
+    /// The sum of every group's block count, or `arithmeticOverflow` when it
+    /// does not fit in an `Int`.
+    func checkedTotalBlockCount() throws -> Int {
+        try blockGroups.reduce(0) { total, group in
+            try Self.checkedSum([total, group.count], quantity: "the total block count")
+        }
+    }
 
     /// The stem's output width = the first group's channels.
     var stemOutputChannels: Int {
@@ -1552,11 +1598,17 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
 
     // MARK: Validation (structural only — memory budget is a build-time, device-aware check)
 
+    /// Everything an architecture must satisfy on any machine. Never walks
+    /// the tower block by block: the shape is checked first
+    /// (`validateTowerShape()`), and the one size check — that the parameter
+    /// count fits in an `Int` — runs group by group
+    /// (`checkedParameterCountBreakdown()`), so the Build New Model screen
+    /// can validate whatever the user has typed. Whether the model fits this
+    /// Mac is a separate, build-time question (`ModelSizeGuidance`).
     func validate() throws {
         try requireOdd("stemConvKernelSize", stemConvKernelSize)
-        try requirePositive("blockGroups.count", blockGroups.count)
+        try validateTowerShape()
         for (gi, g) in blockGroups.enumerated() {
-            try requirePositive("blockGroups[\(gi)].count", g.count)
             try requirePositive("blockGroups[\(gi)].channels", g.channels)
             try requireOdd("blockGroups[\(gi)].conv1KernelSize", g.conv1KernelSize)
             try requireOdd("blockGroups[\(gi)].conv2KernelSize", g.conv2KernelSize)
@@ -1631,6 +1683,23 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 throw NetworkArchitectureError.featureSkipUnsupported(option: "compress_conv_bn_relu + to_final_block")
             }
         }
+        // Last: every width, kernel and count it multiplies is now known to
+        // be positive, so the only way it can fail is an overflow.
+        _ = try checkedParameterCountBreakdown()
+    }
+
+    /// The tower's shape, checked without walking it: at least one group,
+    /// every group's block count positive, and a total block count that
+    /// fits in an `Int`. Everything that walks the tower block by block
+    /// (`expandedBlocks`, `numBlocks`, `blockRange(ofGroup:)`,
+    /// `skipProjectionBlockIndices`, `weightTensorPlan`, the graph builders)
+    /// requires it; `validate()` runs it first.
+    func validateTowerShape() throws {
+        try requirePositive("blockGroups.count", blockGroups.count)
+        for (gi, g) in blockGroups.enumerated() {
+            try requirePositive("blockGroups[\(gi)].count", g.count)
+        }
+        _ = try checkedTotalBlockCount()
     }
 
     private func requireOdd(_ field: String, _ v: Int) throws {
@@ -1645,77 +1714,166 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
 
     /// Total persistent-tensor element count (trainable weights + BN running
     /// mean/var). Equals the summed element counts of `weightTensorPlan` (asserted
-    /// in tests). Walks `expandedBlocks`, threading the incoming width — block
-    /// `i`'s conv1 maps `inC → outC`, BN1 is sized `inC`, everything after runs
-    /// at `outC`, and a width transition adds the 1×1 skip projection.
-    var parameterCount: Int {
-        let c0 = stemOutputChannels
+    /// in tests). Requires a validated architecture: `validate()` computes the
+    /// same breakdown with overflow checking and refuses one that overflows.
+    var parameterCount: Int { parameterCountBreakdown.total }
 
-        // Stem: conv (bias-free) + BN.
-        let stem = (inputPlanes * c0 * stemConvKernelSize * stemConvKernelSize) + 4 * c0
+    /// `checkedParameterCountBreakdown()` for a validated architecture.
+    var parameterCountBreakdown: ParameterCountBreakdown {
+        do {
+            return try checkedParameterCountBreakdown()
+        } catch {
+            preconditionFailure("NetworkArchitecture.parameterCountBreakdown: \(error) (validate() rejects this)")
+        }
+    }
 
-        // Tower. `inCEff` folds in the final-block feature skip (`+ source` on the
-        // last block's input under a routed concatDirect skip); it equals `inC`
-        // everywhere else, so non-finalBlock configs are unchanged.
-        var tower = 0
-        var inC = c0
-        for (i, spec) in expandedBlocks.enumerated() {
-            let inCEff = inC + blockSkipExtraInputChannels(blockIndex: i)
+    /// Persistent-tensor element counts by section of the network, the
+    /// sections `weightTensorPlan` names: `stem.*`, the `blocks.*` of each
+    /// group, `tower_final_bn.*`, `feature_skip.*`, `policy.*` and `value.*`.
+    struct ParameterCountBreakdown: Equatable, Sendable {
+        let stem: Int
+        /// One entry per block group, in tower order.
+        let perGroup: [Int]
+        let towerEndBN: Int
+        /// The compress-fusion node; zero unless `featureSkipUsesCompressNode`.
+        let featureSkip: Int
+        let policy: Int
+        let value: Int
+        let total: Int
+    }
+
+    /// The parameter count section by section, computed group by group with
+    /// every product and sum overflow-checked — the one formula behind
+    /// `parameterCount`, `validate()`'s size check and the architecture
+    /// diagram's per-segment counts. A group of `count` identical blocks
+    /// costs its first block (input = the previous group's width), then
+    /// `count − 1` blocks at its own width, with the final-block feature
+    /// skip widening only the tower's last block; so a tower of any depth is
+    /// counted without expanding it.
+    ///
+    /// Requires every width, kernel size, count and SE ratio positive and
+    /// each group's channels divisible by its SE ratio — the checks
+    /// `validate()` makes before calling it. Throws `arithmeticOverflow` when
+    /// a count does not fit in an `Int`.
+    func checkedParameterCountBreakdown() throws -> ParameterCountBreakdown {
+        let quantity = "the parameter count"
+        func product(_ factors: Int...) throws -> Int { try Self.checkedProduct(factors, quantity: quantity) }
+        func sum(_ terms: Int...) throws -> Int { try Self.checkedSum(terms, quantity: quantity) }
+
+        /// One block of `spec` reading `inCEff` channels: block `i`'s conv1
+        /// maps `inC → outC`, BN1 is sized by the block input (pre-act) or the
+        /// conv1 output (post-act), everything after runs at `outC`, and a
+        /// width transition adds the 1×1 skip projection.
+        func blockCount(inputChannels inCEff: Int, spec: BlockGroup) throws -> Int {
             let outC = spec.channels
-            let conv1 = outC * inCEff * spec.conv1KernelSize * spec.conv1KernelSize
-            let conv2 = outC * outC * spec.conv2KernelSize * spec.conv2KernelSize
-            // BN1 normalizes the block input (pre-act) or conv1 output
-            // (post-act) — sized inCEff vs outC accordingly; BN2 is always outC.
-            let bn1 = 4 * (spec.activationStyle == .pre ? inCEff : outC)
-            let bn2 = 4 * outC
+            let conv1 = try product(outC, inCEff, spec.conv1KernelSize, spec.conv1KernelSize)
+            let conv2 = try product(outC, outC, spec.conv2KernelSize, spec.conv2KernelSize)
+            let bn1 = try product(4, spec.activationStyle == .pre ? inCEff : outC)
+            let bn2 = try product(4, outC)
             let seReduced = spec.seStyle == .none ? 0 : outC / spec.seReductionRatio
             let se: Int
             switch spec.seStyle {
-            case .none:          se = 0
-            case .attenuateOnly: se = (outC * seReduced + seReduced) + (seReduced * outC + outC)
-            case .scaleAndBias:  se = (outC * seReduced + seReduced) + (seReduced * 2 * outC + 2 * outC)
+            case .none:
+                se = 0
+            case .attenuateOnly:
+                se = try sum(product(outC, seReduced), seReduced, product(seReduced, outC), outC)
+            case .scaleAndBias:
+                se = try sum(product(outC, seReduced), seReduced, product(seReduced, 2, outC), product(2, outC))
             }
             let rezero = spec.useRezero ? 1 : 0
-            let proj = inCEff != outC ? inCEff * outC : 0
+            let proj = try inCEff != outC ? product(inCEff, outC) : 0
             // Optional output LayerNorm: per-channel γ + β (no running stats).
-            let outNorm = spec.resolvedOutputNorm == .layerNorm ? 2 * outC : 0
-            tower += conv1 + conv2 + bn1 + bn2 + se + rezero + proj + outNorm
+            let outNorm = try spec.resolvedOutputNorm == .layerNorm ? product(2, outC) : 0
+            return try sum(conv1, conv2, bn1, bn2, se, rezero, proj, outNorm)
+        }
+
+        let c0 = stemOutputChannels
+        // Stem: conv (bias-free) + BN.
+        let stem = try sum(product(inputPlanes, c0, stemConvKernelSize, stemConvKernelSize), product(4, c0))
+
+        // Tower. The final-block feature skip (`+ source` on the last block's
+        // input under a routed concatDirect skip) widens only the last block
+        // of the last group.
+        let finalExtra = finalBlockSkipExtraInputChannels
+        var perGroup: [Int] = []
+        perGroup.reserveCapacity(blockGroups.count)
+        var inC = c0
+        for (index, group) in blockGroups.enumerated() {
+            let isLastGroup = index == blockGroups.count - 1
+            let outC = group.channels
+            let firstInput = try sum(inC, isLastGroup && group.count == 1 ? finalExtra : 0)
+            var groupTotal = try blockCount(inputChannels: firstInput, spec: group)
+            if group.count >= 2 {
+                let interior = try product(group.count - 2, blockCount(inputChannels: outC, spec: group))
+                let lastInput = try sum(outC, isLastGroup ? finalExtra : 0)
+                groupTotal = try sum(groupTotal, interior, blockCount(inputChannels: lastInput, spec: group))
+            }
+            perGroup.append(groupTotal)
             inC = outC
         }
 
         let cT = towerOutputChannels
-        let towerEndBN = hasTowerEndBN ? 4 * cT : 0
+        let towerEndBN = try hasTowerEndBN ? product(4, cT) : 0
 
         // Heads. The FIRST conv of each head reads the effective input width — wider
-        // by the feature-skip source under a routed `concatDirect` skip, else `cT`.
-        let cP = policyHeadInputChannels
-        let cVin = valueHeadInputChannels
+        // by the feature-skip source under a routed `concatDirect` skip, else `cT`
+        // (`headInputChannels(routed:)`, restated here with overflow checking).
+        let routedWidening = featureSkipEnabled && featureSkipFusion == .concatDirect ? featureSkipSourceChannels : 0
+        let cP = try sum(cT, featureSkipToPolicyHead ? routedWidening : 0)
+        let cVin = try sum(cT, featureSkipToValueHead ? routedWidening : 0)
 
         // Policy head.
         let pK = policyPreConvChannels
         let policy: Int
         switch policyHeadStyle {
         case .simpleConv:
-            policy = (cP * policyChannels) + policyChannels
+            policy = try sum(product(cP, policyChannels), policyChannels)
         case .intermediateConv:
-            policy = (cP * pK) + 4 * pK + (pK * policyChannels) + policyChannels
+            policy = try sum(product(cP, pK), product(4, pK), product(pK, policyChannels), policyChannels)
         case .fcBottleneck:
-            let flat = pK * boardSize * boardSize
-            policy = (cP * pK) + 4 * pK + (flat * policySize) + policySize
+            let flat = try product(pK, boardSize, boardSize)
+            policy = try sum(product(cP, pK), product(4, pK), product(flat, policySize), policySize)
         }
 
         // Value head.
         let cv = valueHeadConvChannels
         let h = valueHeadHiddenUnits
-        let flatV = boardSize * boardSize * cv
-        let value = (cVin * cv) + 4 * cv + (flatV * h + h) + (h * valueHeadClasses + valueHeadClasses)
+        let flatV = try product(boardSize, boardSize, cv)
+        let value = try sum(product(cVin, cv), product(4, cv), product(flatV, h), h,
+                            product(h, valueHeadClasses), valueHeadClasses)
 
         // Compress fusion node (head-only): 1×1 conv (towerC+source → towerC) + BN.
-        let compressNode = featureSkipUsesCompressNode
-            ? (featureSkipCompressInputChannels * cT + 4 * cT)
+        let featureSkip = try featureSkipUsesCompressNode
+            ? sum(product(sum(cT, featureSkipSourceChannels), cT), product(4, cT))
             : 0
 
-        return stem + tower + towerEndBN + compressNode + policy + value
+        let total = try sum(stem, Self.checkedSum(perGroup, quantity: quantity), towerEndBN, featureSkip, policy, value)
+        return ParameterCountBreakdown(
+            stem: stem, perGroup: perGroup, towerEndBN: towerEndBN,
+            featureSkip: featureSkip, policy: policy, value: value, total: total
+        )
+    }
+
+    /// `terms` added up, or `arithmeticOverflow(quantity:)`.
+    static func checkedSum(_ terms: [Int], quantity: String) throws -> Int {
+        var total = 0
+        for term in terms {
+            let (next, overflow) = total.addingReportingOverflow(term)
+            guard !overflow else { throw NetworkArchitectureError.arithmeticOverflow(quantity: quantity) }
+            total = next
+        }
+        return total
+    }
+
+    /// `factors` multiplied, or `arithmeticOverflow(quantity:)`.
+    static func checkedProduct(_ factors: [Int], quantity: String) throws -> Int {
+        var total = 1
+        for factor in factors {
+            let (next, overflow) = total.multipliedReportingOverflow(by: factor)
+            guard !overflow else { throw NetworkArchitectureError.arithmeticOverflow(quantity: quantity) }
+            total = next
+        }
+        return total
     }
 
     // MARK: Summary (human-readable, computed from the config)
@@ -2010,7 +2168,8 @@ extension NetworkArchitecture {
         return [0, Float(log(2 * probability / (1 - probability))), 0]
     }
 
-    /// The expanded-block index range of block group `group`.
+    /// The expanded-block index range of block group `group`. Requires a
+    /// validated tower shape (`validateTowerShape()`).
     func blockRange(ofGroup group: Int) -> Range<Int> {
         let first = blockGroups[..<group].reduce(0) { $0 + $1.count }
         return first..<(first + blockGroups[group].count)
@@ -2019,6 +2178,8 @@ extension NetworkArchitecture {
     /// The expanded blocks that carry a width-transition skip projection —
     /// exactly the blocks `weightTensorPlan()` gives a `skip_proj.weight`
     /// (input width, feature skip included, differs from the block's width).
+    /// Walks the expanded tower, so it requires a validated tower shape; the
+    /// per-group question is `groupsWithSkipProjection`, which does not.
     var skipProjectionBlockIndices: [Int] {
         var indices: [Int] = []
         var inC = stemOutputChannels
@@ -2031,11 +2192,41 @@ extension NetworkArchitecture {
         return indices
     }
 
+    /// The block groups with at least one skip projection — where a group's
+    /// `skipProjectionInit` takes effect — worked out group by group, never
+    /// by expanding the tower, and defined for any tower the user can type:
+    /// the Build New Model screen reads it on every redraw, and
+    /// `validateInitOptions()` runs before the parameter count is known to
+    /// fit.
+    ///
+    /// The same rule as `skipProjectionBlockIndices` (which it equals on a
+    /// valid tower; pinned in tests): a group's first block reads the
+    /// previous group's width (the stem's, for the first group), every later
+    /// block reads its own group's width, and the final-block feature skip
+    /// widens only the tower's last block. A group whose count is not
+    /// positive has no blocks, so it has no projection and passes the
+    /// incoming width through unchanged.
+    var groupsWithSkipProjection: Set<Int> {
+        guard let lastGroupWithBlocks = blockGroups.lastIndex(where: { $0.count > 0 }) else { return [] }
+        let finalExtra = finalBlockSkipExtraInputChannels
+        var groups: Set<Int> = []
+        var inC = stemOutputChannels
+        for (index, group) in blockGroups.enumerated() where group.count > 0 {
+            let holdsFinalBlock = index == lastGroupWithBlocks
+            let firstInput = inC + (holdsFinalBlock && group.count == 1 ? finalExtra : 0)
+            let lastBlockWidened = holdsFinalBlock && group.count >= 2 && finalExtra != 0
+            if firstInput != group.channels || lastBlockWidened {
+                groups.insert(index)
+            }
+            inC = group.channels
+        }
+        return groups
+    }
+
     /// Whether any block of group `group` has a skip projection — where the
-    /// group's `skipProjectionInit` takes effect.
+    /// group's `skipProjectionInit` takes effect (`groupsWithSkipProjection`).
     func groupHasSkipProjection(_ group: Int) -> Bool {
-        let range = blockRange(ofGroup: group)
-        return skipProjectionBlockIndices.contains { range.contains($0) }
+        groupsWithSkipProjection.contains(group)
     }
 
     /// The Neutral init set (the Build screen's "Neutral init" button and
@@ -2050,13 +2241,14 @@ extension NetworkArchitecture {
     /// so it stays an explicit per-experiment choice.
     func withNeutralInit() -> NetworkArchitecture {
         var edited = self
+        let projectedGroups = groupsWithSkipProjection
         for index in edited.blockGroups.indices {
             let group = edited.blockGroups[index]
             edited.blockGroups[index].seGammaBiasInit = group.seStyle == .none
                 ? BlockGroup.standardSEGammaBiasInit
                 : BlockGroup.neutralSEGammaBiasInit
             edited.blockGroups[index].branchOutputInit = group.activationStyle == .post ? .zeroLastBNGamma : .standard
-            edited.blockGroups[index].skipProjectionInit = groupHasSkipProjection(index) ? .identityLike : .he
+            edited.blockGroups[index].skipProjectionInit = projectedGroups.contains(index) ? .identityLike : .he
         }
         edited.policyHeadFinalInit = .zero
         edited.valueHeadFinalInit = .zero
@@ -2128,6 +2320,7 @@ extension NetworkArchitecture {
     /// finite, and the draw prior must be a probability strictly inside
     /// (0, 1) on a W/D/L head and the standard value on a scalar one.
     func validateInitOptions() throws {
+        let projectedGroups = groupsWithSkipProjection
         for (index, group) in blockGroups.enumerated() {
             guard group.seGammaBiasInit.isFinite else {
                 throw NetworkArchitectureError.mustBeFinite(
@@ -2145,7 +2338,7 @@ extension NetworkArchitecture {
                     value: group.branchOutputInit.rawValue,
                     reason: "a pre-activation block has no BN after its last conv")
             }
-            if !groupHasSkipProjection(index), group.skipProjectionInit != .he {
+            if !projectedGroups.contains(index), group.skipProjectionInit != .he {
                 throw NetworkArchitectureError.initOptionWithoutItsLayer(
                     field: "blockGroups[\(index)].\(BlockGroup.CodingKeys.skipProjectionInit.rawValue)",
                     value: group.skipProjectionInit.rawValue,

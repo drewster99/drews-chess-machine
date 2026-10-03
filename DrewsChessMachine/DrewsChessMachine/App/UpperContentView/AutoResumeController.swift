@@ -3,9 +3,19 @@ import SwiftUI
 /// Owns the launch-time auto-resume flow, lifted out of `UpperContentView`.
 ///
 /// On app launch (`maybePresentSheet`), if a `LastSessionPointer` still names an
-/// on-disk `.dcmsession`, the sheet is shown with a `countdownStartSec`-second
+/// on-disk `.dcmsession`, the sheet is requested with a `countdownStartSec`-second
 /// countdown; if the user neither resumes nor dismisses, the countdown fires
-/// the resume automatically. After dismiss, the File-menu "Resume training from autosave"
+/// the resume automatically.
+///
+/// The countdown starts only when the sheet is actually on screen
+/// (`sheetDidAppear`, from the sheet's `.onAppear`), never when it is
+/// requested: a window shows one sheet at a time, so a sheet asked for while
+/// another is up (the invalid-settings sheet at launch) is not visible, and a
+/// countdown running behind it would resume the session without the prompt
+/// ever having been seen. `UpperContentView` also holds the launch request
+/// until the invalid-settings sheet closes, so the two never compete.
+///
+/// After dismiss, the File-menu "Resume training from autosave"
 /// command (`resumeFromPointer`) covers the same flow for the rest of the
 /// launch. The actual load-and-start chain lives on `UpperContentView`
 /// (`loadSessionFrom(url:startAfterLoad:)`); the controller reaches it through
@@ -70,10 +80,13 @@ final class AutoResumeController {
         inFlight = false
     }
 
-    /// Present the launch-time sheet if a valid last-session pointer is on disk.
-    /// A no-op under XCTest, if no pointer exists, if the target was deleted
-    /// externally, or if training is already active (`isTrainingActive`, the
-    /// live `realTraining` flag — should never trip at launch, but cheap).
+    /// Request the launch-time sheet if a valid last-session pointer is on
+    /// disk (`present(pointer:summary:)`; the countdown waits for
+    /// `sheetDidAppear`). A no-op under XCTest, if no pointer exists, if the
+    /// target was deleted externally, or if training is already active
+    /// (`isTrainingActive`, the live `realTraining` flag — should never trip
+    /// at launch, but cheap). `UpperContentView` calls it only once no other
+    /// launch sheet is up.
     func maybePresentSheet(isTrainingActive: Bool) {
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
             SessionLogger.shared.log("[RESUME] Skipping auto-resume sheet — running under XCTest")
@@ -91,25 +104,48 @@ final class AutoResumeController {
             LastSessionPointer.clear()
             return
         }
-        pointer = p
         // Best-effort peek of the session's metadata file. A peek failure
         // leaves `summary` nil and the sheet falls back to a minimal layout —
         // we never suppress the prompt over a peek failure.
+        let peeked: SessionResumeSummary?
         do {
-            summary = try CheckpointManager.peekSessionMetadata(at: p.directoryURL)
+            peeked = try CheckpointManager.peekSessionMetadata(at: p.directoryURL)
         } catch {
-            summary = nil
+            peeked = nil
             SessionLogger.shared.log(
                 "[RESUME] session.json peek failed for \(p.sessionID): "
                 + "\(error.localizedDescription) — sheet will use minimal layout"
             )
         }
+        present(pointer: p, summary: peeked)
+    }
+
+    /// Ask for the sheet offering `p`, with the countdown reset but not
+    /// running: it starts in `sheetDidAppear`, once the sheet is visible.
+    /// Any countdown task left from an earlier presentation is cancelled and
+    /// cleared first — a sheet closed from outside the controller (SwiftUI
+    /// clearing `sheetShowing`) ends its loop but leaves the finished task
+    /// behind, which would otherwise keep the next presentation's countdown
+    /// from starting.
+    func present(pointer p: LastSessionPointer, summary peeked: SessionResumeSummary?) {
+        countdownTask?.cancel()
+        countdownTask = nil
+        pointer = p
+        summary = peeked
         countdownRemaining = Self.countdownStartSec
         sheetShowing = true
         let savedAgo = max(0, Int(Date().timeIntervalSince1970) - Int(p.savedAtUnix))
         SessionLogger.shared.log(
             "[RESUME] Presenting auto-resume sheet for \(p.sessionID) (\(p.trigger), saved \(savedAgo)s ago)"
         )
+    }
+
+    /// The sheet is on screen (its `.onAppear`): start the countdown. Only
+    /// for a presented sheet whose countdown has not started, so a repeated
+    /// `.onAppear` never restarts or doubles it.
+    func sheetDidAppear() {
+        guard sheetShowing, countdownTask == nil else { return }
+        SessionLogger.shared.log("[RESUME] Auto-resume countdown started (\(countdownRemaining)s)")
         startCountdownTask()
     }
 

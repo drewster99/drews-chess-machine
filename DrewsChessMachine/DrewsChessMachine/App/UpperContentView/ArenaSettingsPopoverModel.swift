@@ -85,33 +85,52 @@ final class ArenaSettingsPopoverModel {
         seedFromParams()
     }
 
-    /// The `Double` edit fields whose seeded text is a rounded rendering of
-    /// the live value. Save compares each against what seeding wrote, so an
-    /// untouched field never writes its rounded text back over a more precise
-    /// value, and an untouched field holding a session value outside today's
-    /// declared range never blocks Save.
-    private static let roundedTextFields: [ReferenceWritableKeyPath<ArenaSettingsPopoverModel, String>] = [
+    /// Every text field `seedFromParams` fills from a live value. Save
+    /// compares each against what seeding wrote and treats a field that
+    /// still reads the same as untouched: it keeps the live value,
+    /// unvalidated and unwritten. So an untouched field never writes a
+    /// rounded rendering back over a more precise value (an interval of a
+    /// fractional number of seconds must not be truncated by the duration
+    /// formatter), and a value nobody edited — a resumed session's value
+    /// outside today's declared range, which `restoreFromSession`
+    /// deliberately holds — never keeps Save from closing.
+    private static let seededTextFields: [ReferenceWritableKeyPath<ArenaSettingsPopoverModel, String>] = [
+        \.gamesText, \.concurrencyText, \.intervalText,
         \.promoteThresholdText, \.tauStartText, \.tauDecayText, \.tauFloorText,
         \.sprtElo0Text, \.sprtElo1Text, \.sprtAlphaText, \.sprtBetaText,
+        \.sprtMinGamesText, \.sprtMaxGamesText,
     ]
 
-    /// Each `roundedTextFields` entry's text as `seedFromParams` wrote it.
-    /// Empty until the first seed, in which case every field is parsed.
+    /// Each `seededTextFields` entry's text as `seedFromParams` wrote it.
+    /// Empty until the first seed, in which case every field counts as
+    /// edited.
     @ObservationIgnored private var seededText: [ReferenceWritableKeyPath<ArenaSettingsPopoverModel, String>: String] = [:]
 
-    /// What Save takes from a rounded `Double` field: the live value itself
-    /// when the field still reads exactly what seeding wrote (nothing was
-    /// edited, so nothing is written), otherwise the parsed text — nil when
-    /// it is not a finite number inside the declared range.
+    /// True when `field` still reads exactly what seeding wrote.
+    private func isUntouched(_ field: ReferenceWritableKeyPath<ArenaSettingsPopoverModel, String>) -> Bool {
+        seededText[field].map { $0 == self[keyPath: field] } ?? false
+    }
+
+    /// What Save takes from a `Double` field: the live value itself when the
+    /// field is untouched (nothing was edited, so nothing is written),
+    /// otherwise the parsed text — nil when it is not a finite number inside
+    /// the declared range.
     private func editedValue<K: TrainingParameterKey>(
         _ key: K.Type,
         _ field: ReferenceWritableKeyPath<ArenaSettingsPopoverModel, String>,
         current: Double
     ) -> Double? where K.Value == Double {
-        if let seeded = seededText[field], seeded == self[keyPath: field] {
-            return current
-        }
-        return K.parsedInDeclaredRange(self[keyPath: field])
+        isUntouched(field) ? current : K.parsedInDeclaredRange(self[keyPath: field])
+    }
+
+    /// `editedValue` for an `Int` field: the live value when untouched,
+    /// otherwise the parsed text if it is inside the declared range.
+    private func editedValue<K: TrainingParameterKey>(
+        _ key: K.Type,
+        _ field: ReferenceWritableKeyPath<ArenaSettingsPopoverModel, String>,
+        current: Int
+    ) -> Int? where K.Value == Int {
+        isUntouched(field) ? current : K.parsedInDeclaredRange(self[keyPath: field])
     }
 
     /// Seed the edit fields from the live `trainingParams` snapshot. Called
@@ -133,7 +152,7 @@ final class ArenaSettingsPopoverModel {
         sprtBetaText = String(format: "%.3f", p.arenaSPRTBeta)
         sprtMinGamesText = String(p.arenaSPRTMinGames)
         sprtMaxGamesText = String(p.arenaSPRTMaxGames)
-        seededText = Dictionary(uniqueKeysWithValues: Self.roundedTextFields.map { ($0, self[keyPath: $0]) })
+        seededText = Dictionary(uniqueKeysWithValues: Self.seededTextFields.map { ($0, self[keyPath: $0]) })
         gamesError = false
         concurrencyError = false
         intervalError = false
@@ -186,7 +205,7 @@ final class ArenaSettingsPopoverModel {
         let p = TrainingParameters.shared
         var anyError = false
 
-        if let g = ArenaGamesPerTournament.parsedInDeclaredRange(gamesText) {
+        if let g = editedValue(ArenaGamesPerTournament.self, \.gamesText, current: p.arenaGamesPerTournament) {
             gamesError = false
             if g != p.arenaGamesPerTournament {
                 p.arenaGamesPerTournament = g
@@ -196,7 +215,16 @@ final class ArenaSettingsPopoverModel {
             anyError = true
         }
 
-        if let c = ArenaConcurrency.parsedInDeclaredRange(concurrencyText), c <= maxConcurrency {
+        // The cap applies only to a typed value; an untouched one is kept.
+        let concurrency: Int?
+        if isUntouched(\.concurrencyText) {
+            concurrency = p.arenaConcurrency
+        } else if let c = ArenaConcurrency.parsedInDeclaredRange(concurrencyText), c <= maxConcurrency {
+            concurrency = c
+        } else {
+            concurrency = nil
+        }
+        if let c = concurrency {
             concurrencyError = false
             if c != p.arenaConcurrency {
                 p.arenaConcurrency = c
@@ -206,7 +234,9 @@ final class ArenaSettingsPopoverModel {
             anyError = true
         }
 
-        if let secs = parseDurationSpec(intervalText), secs.isFinite,
+        if isUntouched(\.intervalText) {
+            intervalError = false
+        } else if let secs = parseDurationSpec(intervalText), secs.isFinite,
            ArenaAutoIntervalSec.isWithinDeclaration(secs) {
             intervalError = false
             if secs != p.arenaAutoIntervalSec {
@@ -342,10 +372,11 @@ final class ArenaSettingsPopoverModel {
 
         func parseInt<K: TrainingParameterKey>(
             _ key: K.Type,
-            _ text: String,
+            _ field: ReferenceWritableKeyPath<ArenaSettingsPopoverModel, String>,
+            current: Int,
             error: (Bool) -> Void
         ) -> Int? where K.Value == Int {
-            guard let v = K.parsedInDeclaredRange(text) else {
+            guard let v = editedValue(K.self, field, current: current) else {
                 error(true)
                 ok = false
                 return nil
@@ -358,8 +389,8 @@ final class ArenaSettingsPopoverModel {
         let elo1 = parseDouble(ArenaSPRTElo1.self, \.sprtElo1Text, current: p.arenaSPRTElo1) { self.sprtElo1Error = $0 }
         let alpha = parseDouble(ArenaSPRTAlpha.self, \.sprtAlphaText, current: p.arenaSPRTAlpha) { self.sprtAlphaError = $0 }
         let beta = parseDouble(ArenaSPRTBeta.self, \.sprtBetaText, current: p.arenaSPRTBeta) { self.sprtBetaError = $0 }
-        let minGames = parseInt(ArenaSPRTMinGames.self, sprtMinGamesText) { self.sprtMinGamesError = $0 }
-        let maxGames = parseInt(ArenaSPRTMaxGames.self, sprtMaxGamesText) { self.sprtMaxGamesError = $0 }
+        let minGames = parseInt(ArenaSPRTMinGames.self, \.sprtMinGamesText, current: p.arenaSPRTMinGames) { self.sprtMinGamesError = $0 }
+        let maxGames = parseInt(ArenaSPRTMaxGames.self, \.sprtMaxGamesText, current: p.arenaSPRTMaxGames) { self.sprtMaxGamesError = $0 }
 
         guard ok,
               let elo0, let elo1, let alpha, let beta, let minGames, let maxGames else {

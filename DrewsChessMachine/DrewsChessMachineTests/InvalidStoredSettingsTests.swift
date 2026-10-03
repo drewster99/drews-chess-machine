@@ -109,6 +109,37 @@ final class InvalidStoredSettingsTests: XCTestCase {
         XCTAssertTrue(finding.problem.contains("not a true/false value"), finding.problem)
     }
 
+    // MARK: - Reset repairs the stored entry only
+    //
+    // The settings list's Reset used to assign the declared default to the
+    // live parameter (and persist it), replacing a value this run had set on
+    // purpose — a `--parameters` file's or a resumed session's — and
+    // overwriting a stored value the user had meanwhile made valid. A reset
+    // now rewrites the stored entry, and only while it is still unusable.
+
+    func testRepairReplacesAStillInvalidStoredValueWithTheDeclaredDefault() {
+        defaults.set("not a number", forKey: LearningRate.id)
+        let repair = TrainingParameters.repairStoredValue(LearningRate.self, in: defaults)
+        XCTAssertEqual(repair, .replacedWithDeclaredDefault(LearningRate.definition.defaultValue))
+        guard case .valid(let value) = TrainingParameters.inspectStored(LearningRate.self, in: defaults) else {
+            return XCTFail("the repaired entry must read back as usable")
+        }
+        XCTAssertEqual(value, LearningRate.declaredDefault)
+    }
+
+    func testRepairLeavesAValidReplacementAlone() {
+        defaults.set(0.002, forKey: LearningRate.id)
+        XCTAssertEqual(TrainingParameters.repairStoredValue(LearningRate.self, in: defaults), .alreadyUsable)
+        XCTAssertEqual(defaults.double(forKey: LearningRate.id), 0.002)
+    }
+
+    func testRepairStoresUInt64AsDecimalString() {
+        defaults.set(42, forKey: RandomSeed.id)
+        XCTAssertEqual(TrainingParameters.repairStoredValue(RandomSeed.self, in: defaults),
+                       .replacedWithDeclaredDefault(RandomSeed.definition.defaultValue))
+        XCTAssertEqual(defaults.string(forKey: RandomSeed.id), String(RandomSeed.declaredDefault))
+    }
+
     // MARK: - Saved session settings
 
     @MainActor

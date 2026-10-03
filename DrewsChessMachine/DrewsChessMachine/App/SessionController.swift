@@ -13,8 +13,8 @@ import SwiftUI
 /// nil-coalesces a lazy build.
 ///
 /// **Deliberately still on the view (for now).** The champion `network` + its
-/// `runner`, `networkStatus`, `isBuilding`, and the `buildNetwork()` /
-/// `ensureChampionBuilt()` flow stay on `UpperContentView` this slice: the
+/// `runner`, `networkStatus`, `isBuilding`, and the `buildNetwork(architecture:enteredInitSeed:)` /
+/// `ensureChampionBuilt(arch:)` flow stay on `UpperContentView` this slice: the
 /// champion-network property is named `network` and referenced ~150 places, and
 /// moving it cleanly wants a property rename first so a mechanical `network` →
 /// `session.network` rewrite can't collide with `network:` argument labels.
@@ -1055,33 +1055,23 @@ final class SessionController {
 
     // MARK: - Build
 
-    /// File > Build Network. Belt-and-suspenders guards mirror the menu's
-    /// disable conditions for keyboard-shortcut / URL-scheme invocations under
-    /// a race. On success, mints a fresh `ModelID`, wires the new network +
-    /// runner, fills `networkStatus`, and clears the last-saved-at marker.
-    /// Architecture the next Build uses. Starts at the new-model default
-    /// (`NetworkArchitecture.newModelDefault`); set from the architecture
-    /// config (architecture.json / the build UI) to construct a different
-    /// topology.
-    var buildArchitecture: NetworkArchitecture = .newModelDefault
-
-    /// The init seed the Build-New-Model screen entered for the next build,
-    /// or nil for a seed drawn at the build. Used by one build, then cleared,
-    /// so a later Build draws a fresh seed unless one is entered again.
-    var buildInitSeed: UInt64?
-
-    func buildNetwork() {
-        let initSeed: UInt64
-        let initSeedSource: String
-        if let entered = buildInitSeed {
-            initSeed = entered
-            initSeedSource = "entered"
-        } else {
-            initSeed = WeightInitialization.drawnInitSeed()
-            initSeedSource = "drawn"
-        }
-        buildInitSeed = nil
-        SessionLogger.shared.log("[BUTTON] Build Network (\(buildArchitecture.architectureSummary)) init_seed=\(initSeed) (\(initSeedSource)) init_scheme=\(WeightInitScheme.current)")
+    /// Build a fresh champion of `architecture` — the Build New Model
+    /// screen's Build (its architecture and entered init seed) and the
+    /// headless `--train` launch (`NetworkArchitecture.newModelDefault`, no
+    /// seed). `enteredInitSeed` nil draws a seed at the build.
+    ///
+    /// The refusals come first, before anything else happens: the busy and
+    /// network-already-built guards (belt-and-suspenders behind the menu's
+    /// disable conditions, for a state change while the Build sheet was
+    /// open — say, an auto-resume firing behind it), then validation and
+    /// the size check. A refused build draws no seed, logs no
+    /// `[BUTTON] Build Network` line and leaves nothing behind. The
+    /// architecture and seed are parameters rather than stored state, so no
+    /// later build can pick up a refused request's values.
+    ///
+    /// On success, mints a fresh `ModelID`, wires the new network + runner,
+    /// fills `networkStatus`, and clears the last-saved-at marker.
+    func buildNetwork(architecture arch: NetworkArchitecture, enteredInitSeed: UInt64?) {
         if isBusyProvider() {
             onRefuseMenuAction(busyReasonProvider())
             return
@@ -1090,6 +1080,29 @@ final class SessionController {
             onRefuseMenuAction("A network is already built. Load Model or Load Session to replace its weights.")
             return
         }
+        // Size guidance for this Mac (`ModelSizeGuidance`), logged for every
+        // build. The one size refused is a training state larger than
+        // physical memory; the Build New Model screen refuses it first, so
+        // this is the backstop for any other caller.
+        do {
+            try arch.validate()
+            let sizeGuidance = ModelSizeGuidance.forThisMac(parameterCount: arch.parameterCount)
+            SessionLogger.shared.log(sizeGuidance.logLine(event: "Build Network"))
+            try sizeGuidance.requireTrainingStateFitsInPhysicalMemory()
+        } catch {
+            onRefuseMenuAction("This architecture can't be built: \(error)")
+            return
+        }
+        let initSeed: UInt64
+        let initSeedSource: String
+        if let enteredInitSeed {
+            initSeed = enteredInitSeed
+            initSeedSource = "entered"
+        } else {
+            initSeed = WeightInitialization.drawnInitSeed()
+            initSeedSource = "drawn"
+        }
+        SessionLogger.shared.log("[BUTTON] Build Network (\(arch.architectureSummary)) init_seed=\(initSeed) (\(initSeedSource)) init_scheme=\(WeightInitScheme.current)")
         isBuilding = true
         networkStatus = ""
         // Drop the trainer (it owns graph state we're about to invalidate by
@@ -1100,10 +1113,6 @@ final class SessionController {
         lineageFedCarry = LineageFedCarry()
         onClearTrainingDisplay()
 
-        // `buildArchitecture` is set by the Build-New-Model screen (or, headless,
-        // a CLI arch flag); default is `.newModelDefault`. The old well-known
-        // `architecture.json` auto-load was removed per plan §10.
-        let arch = buildArchitecture
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 Self.performBuild(arch: arch, initMode: .randomWeights(initSeed: initSeed))
@@ -1141,14 +1150,12 @@ final class SessionController {
         }
     }
 
-    /// Ensure a champion exists at the requested architecture (defaults to
-    /// `buildArchitecture`). If one is already built at that arch, returns it;
-    /// otherwise builds (or rebuilds) one. Load paths pass the loaded file's
-    /// architecture so a non-default / historical model gets a matching graph
-    /// rather than the current build's default. Used so the user doesn't have to
-    /// press Build first before a load.
-    func ensureChampionBuilt(arch requestedArch: NetworkArchitecture? = nil) async -> Result<ChessMPSNetwork, Error> {
-        let targetArch = requestedArch ?? buildArchitecture
+    /// Ensure a champion exists at `targetArch`. If one is already built at
+    /// that arch, returns it; otherwise builds (or rebuilds) one. Load paths
+    /// pass the loaded file's architecture so a non-default / historical
+    /// model gets a matching graph. Used so the user doesn't have to press
+    /// Build first before a load.
+    func ensureChampionBuilt(arch targetArch: NetworkArchitecture) async -> Result<ChessMPSNetwork, Error> {
         if let champion = network, champion.network.arch == targetArch {
             return .success(champion)
         }

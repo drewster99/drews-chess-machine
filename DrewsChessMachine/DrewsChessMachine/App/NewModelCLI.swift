@@ -29,7 +29,10 @@ enum NewModelCLI {
     /// caller has already resolved + validated `arch` (built-in preset or JSON
     /// preset/file via `ArchitecturePresetStore`). `modelID` is minted by the
     /// caller on the main actor (the minter is main-actor isolated; this
-    /// routine runs its GPU work off-actor).
+    /// routine runs its GPU work off-actor). Logs the `[ARCH] size guidance`
+    /// line for this Mac (`ModelSizeGuidance`) and refuses, like a failed
+    /// validation, a model whose training state cannot fit in physical
+    /// memory.
     static func runAndExit(architecture arch: NetworkArchitecture, name: String, outPath: String?, modelID: String,
                            enteredInitSeed: UInt64?) -> Never {
         SessionLogger.shared.start()
@@ -41,6 +44,23 @@ enum NewModelCLI {
             FileHandle.standardError.write(Data(
                 "error: --new-model: architecture '\(name)' failed validation: \(error)\n".utf8
             ))
+            Darwin.exit(71)
+        }
+
+        // Size guidance for this Mac (`ModelSizeGuidance`): logged for every
+        // mint, and the one size refused — a training state larger than
+        // physical memory, which no run here could hold.
+        let sizeGuidance = ModelSizeGuidance.forThisMac(parameterCount: arch.parameterCount)
+        let sizeGuidanceLine = sizeGuidance.logLine(event: "--new-model \(name)")
+        FileHandle.standardError.write(Data((sizeGuidanceLine + "\n").utf8))
+        SessionLogger.shared.log(sizeGuidanceLine)
+        do {
+            try sizeGuidance.requireTrainingStateFitsInPhysicalMemory()
+        } catch {
+            FileHandle.standardError.write(Data(
+                "error: --new-model: architecture '\(name)' \(error)\n".utf8
+            ))
+            SessionLogger.shared.shutdown()
             Darwin.exit(71)
         }
 

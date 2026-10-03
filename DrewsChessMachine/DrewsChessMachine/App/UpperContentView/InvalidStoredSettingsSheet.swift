@@ -1,9 +1,11 @@
 import SwiftUI
 
 /// Stored training preferences found unusable at launch (wrong type, or
-/// outside the parameter's declared range). The app runs on each one's
-/// default meanwhile; the stored value stays as found until the user resets
-/// it here.
+/// outside the parameter's declared range). The app starts on each one's
+/// default; the stored value stays as found until the user resets it here,
+/// and a reset rewrites only the stored value
+/// (`TrainingParameters.resetInvalidStoredSetting`), never the value the
+/// running app is using.
 struct InvalidStoredSettingsSheet: View {
     @Bindable var trainingParams: TrainingParameters
     let onClose: () -> Void
@@ -13,7 +15,7 @@ struct InvalidStoredSettingsSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Some saved settings can't be used")
                 .font(.title3.weight(.semibold))
-            Text("These stored values are the wrong type or outside the range the app accepts. Until you reset one, the app uses the value shown under Reset to. Nothing has been changed on disk.")
+            Text("These saved values are the wrong type or outside the range the app accepts, so the app started with the value shown under Reset to instead. Reset saves that value in place of the unusable one for future launches; it does not change the value this run is using. Nothing is saved until you reset.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

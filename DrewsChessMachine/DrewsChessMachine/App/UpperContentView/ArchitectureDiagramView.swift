@@ -13,50 +13,20 @@ import SwiftUI
 /// markers wherever adjacent widths differ → tower-end BN → policy and value
 /// heads side by side. Box width is proportional to channel count so a WRN
 /// width staircase is visible at a glance; every segment carries its
-/// parameter count, summed from `weightTensorPlan()` (the single source of
-/// truth for tensor shapes), with the grand total at the bottom.
+/// parameter count (`NetworkArchitecture.parameterCountBreakdown`, which
+/// equals the sums of `weightTensorPlan()`, the single source of truth for
+/// tensor shapes), with the grand total at the bottom.
 struct ArchitectureDiagramView: View {
     let architecture: NetworkArchitecture
 
-    /// Per-segment element counts, summed from the weight plan by name
-    /// prefix (`stem.`, `blocks.N.`, `tower_final_bn`, `policy.`, `value.`).
-    private struct Segments {
-        var stem = 0
-        var perGroup: [Int] = []
-        var towerEndBN = 0
-        var featureSkip = 0
-        var policy = 0
-        var value = 0
-        var total = 0
-    }
-
-    private var segments: Segments {
-        var s = Segments()
-        var blockToGroup: [Int] = []
-        for (gi, g) in architecture.blockGroups.enumerated() {
-            blockToGroup.append(contentsOf: Array(repeating: gi, count: g.count))
-        }
-        s.perGroup = Array(repeating: 0, count: architecture.blockGroups.count)
-        for spec in architecture.weightTensorPlan() {
-            s.total += spec.elementCount
-            if spec.name.hasPrefix("stem.") {
-                s.stem += spec.elementCount
-            } else if spec.name.hasPrefix("blocks.") {
-                let digits = spec.name.dropFirst("blocks.".count).prefix(while: \.isNumber)
-                if let b = Int(digits), b < blockToGroup.count {
-                    s.perGroup[blockToGroup[b]] += spec.elementCount
-                }
-            } else if spec.name.hasPrefix("tower_final_bn") {
-                s.towerEndBN += spec.elementCount
-            } else if spec.name.hasPrefix("feature_skip.") {
-                s.featureSkip += spec.elementCount
-            } else if spec.name.hasPrefix("policy.") {
-                s.policy += spec.elementCount
-            } else if spec.name.hasPrefix("value.") {
-                s.value += spec.elementCount
-            }
-        }
-        return s
+    /// Per-segment element counts — the sections the weight plan names
+    /// (`stem.`, each group's `blocks.N.`, `tower_final_bn`, `feature_skip.`,
+    /// `policy.`, `value.`) — from the per-group formula behind
+    /// `parameterCount`, which equals the plan's sums (pinned in tests) and
+    /// never expands the tower, so a deep draft redraws at the cost of its
+    /// group count rather than its block count.
+    private var segments: NetworkArchitecture.ParameterCountBreakdown {
+        architecture.parameterCountBreakdown
     }
 
     /// Channel scale for width-proportional boxes: the widest thing on the
@@ -90,7 +60,7 @@ struct ArchitectureDiagramView: View {
                     transitionMarker(inC: inC, outC: g.channels)
                     connector()
                 }
-                groupCell(g, params: gi < segs.perGroup.count ? segs.perGroup[gi] : 0)
+                groupCell(g, params: segs.perGroup[gi])
             }
             if arch.hasTowerEndBN {
                 connector()

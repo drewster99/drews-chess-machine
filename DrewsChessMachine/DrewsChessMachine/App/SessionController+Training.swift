@@ -211,11 +211,7 @@ extension SessionController {
                 // Run-management knobs that once lived only in app settings.
                 resume.restore(ReplayBufferMinPositionsBeforeTraining.self, saved: rs.replayBufferMinPositionsBeforeTraining, into: \.replayBufferMinPositionsBeforeTraining)
                 resume.restore(ArenaAutoIntervalSec.self, saved: rs.arenaAutoIntervalSec, into: \.arenaAutoIntervalSec)
-                resume.restore(
-                    ArenaConcurrency.self,
-                    saved: rs.arenaConcurrency.map { min(UpperContentView.absoluteMaxArenaConcurrency, $0) },
-                    into: \.arenaConcurrency
-                )
+                resume.restore(ArenaConcurrency.self, saved: rs.arenaConcurrency, into: \.arenaConcurrency)
                 resume.restore(CandidateProbeIntervalSec.self, saved: rs.candidateProbeIntervalSec, into: \.candidateProbeIntervalSec)
                 resume.restore(LegalMassCollapseThreshold.self, saved: rs.legalMassCollapseThreshold, into: \.legalMassCollapseThreshold)
                 resume.restore(LegalMassCollapseGraceSeconds.self, saved: rs.legalMassCollapseGraceSeconds, into: \.legalMassCollapseGraceSeconds)

@@ -57,4 +57,66 @@ final class AutoResumeControllerTests: XCTestCase {
         c.markResumeFinished()
         XCTAssertFalse(c.inFlight)
     }
+
+    // MARK: - The countdown runs only while its sheet is on screen
+    //
+    // At launch the invalid-settings sheet and the auto-resume sheet can both
+    // be asked for. Only one sheet shows at a time, and the countdown used to
+    // start when the auto-resume sheet was requested, so it could reach zero
+    // and resume the session behind the other sheet without the prompt ever
+    // having been seen.
+
+    /// A pointer naming a folder that does not exist: nothing here reads it.
+    private func dummyPointer() -> LastSessionPointer {
+        LastSessionPointer(
+            sessionID: "test-session",
+            directoryPath: NSTemporaryDirectory() + "AutoResumeControllerTests-\(UUID().uuidString).dcmsession",
+            savedAtUnix: Int64(Date().timeIntervalSince1970),
+            trigger: "manual"
+        )
+    }
+
+    func testPresentingDoesNotStartTheCountdown() async throws {
+        let c = AutoResumeController()
+        var resumeCalled = false
+        c.onResume = { _ in resumeCalled = true }
+        c.present(pointer: dummyPointer(), summary: nil)
+        XCTAssertTrue(c.sheetShowing)
+        try await Task.sleep(for: .milliseconds(1500))
+        XCTAssertEqual(c.countdownRemaining, AutoResumeController.countdownStartSec,
+                       "the countdown must wait for the sheet to appear")
+        XCTAssertFalse(resumeCalled)
+        c.dismiss()
+    }
+
+    func testSheetAppearanceStartsTheCountdown() async throws {
+        let c = AutoResumeController()
+        c.present(pointer: dummyPointer(), summary: nil)
+        c.sheetDidAppear()
+        c.sheetDidAppear()  // a repeated `.onAppear` must not start a second countdown
+        try await Task.sleep(for: .milliseconds(2500))
+        let remaining = c.countdownRemaining
+        XCTAssertLessThan(remaining, AutoResumeController.countdownStartSec)
+        XCTAssertGreaterThanOrEqual(remaining, AutoResumeController.countdownStartSec - 3,
+                                    "one countdown ticks once a second")
+        c.dismiss()
+    }
+
+    /// SwiftUI can close the sheet itself (clearing `sheetShowing`), which
+    /// ends the countdown loop without `dismiss()`. Presenting again must
+    /// still get a countdown once the sheet reappears.
+    func testRepresentingAfterAnExternalCloseRestartsTheCountdown() async throws {
+        let c = AutoResumeController()
+        c.present(pointer: dummyPointer(), summary: nil)
+        c.sheetDidAppear()
+        try await Task.sleep(for: .milliseconds(1200))
+        c.sheetShowing = false
+        try await Task.sleep(for: .milliseconds(1200))
+        c.present(pointer: dummyPointer(), summary: nil)
+        XCTAssertEqual(c.countdownRemaining, AutoResumeController.countdownStartSec)
+        c.sheetDidAppear()
+        try await Task.sleep(for: .milliseconds(1500))
+        XCTAssertLessThan(c.countdownRemaining, AutoResumeController.countdownStartSec)
+        c.dismiss()
+    }
 }

@@ -90,6 +90,10 @@ final class BuildNewModelModel {
     /// a disk scan several times per render pass.
     private(set) var availablePresets: [(name: String, named: NamedArchitecture)] = []
 
+    /// This Mac's physical memory, which the size refusal and the size
+    /// guidance scale to (`ModelSizeGuidance`). Fixed for the process.
+    private let physicalMemoryBytes = ProcessInfo.processInfo.physicalMemory
+
     init(_ named: NamedArchitecture = NamedArchitecture(label: "Custom", architecture: .current)) {
         let a = named.architecture
         self.labelOverride = ""
@@ -175,8 +179,36 @@ final class BuildNewModelModel {
     /// from. Edits go through the drafts, never through this copy.
     var blockGroups: [BlockGroup] { blockGroupDrafts.map(\.group) }
 
-    /// Total blocks across all groups (clamped ≥1 for ratios mid-edit).
-    var totalBlocks: Int { max(1, blockGroups.reduce(0) { $0 + max(0, $1.count) }) }
+    /// Why the tower's shape cannot be built (a block count that is not
+    /// positive, or a total that overflows `Int`), or nil when it can.
+    /// Checked without walking the tower (`validateTowerShape()`), so it is
+    /// safe on whatever the user has typed; everything that needs the block
+    /// count reads it only while this is nil.
+    var towerShapeError: String? {
+        do {
+            try architecture.validateTowerShape()
+            return nil
+        } catch {
+            return String(describing: error)
+        }
+    }
+
+    /// Total blocks across all groups, or nil while the tower shape is
+    /// invalid (`towerShapeError`) — there is no meaningful depth to show
+    /// or to scale ReZero by then.
+    var totalBlocks: Int? {
+        towerShapeError == nil ? architecture.numBlocks : nil
+    }
+
+    /// The total block count for the ReZero recommendations, which are read
+    /// only while the tower shape is valid (the editor disables them
+    /// otherwise), so an invalid shape here is a defect.
+    private var totalBlocksForRezero: Int {
+        guard let totalBlocks else {
+            preconditionFailure("BuildNewModelModel: ReZero recommendation read while the tower shape is invalid")
+        }
+        return totalBlocks
+    }
 
     /// Position of `draft` in the tower, or nil once its group has been
     /// removed. SwiftUI evaluates a removed row's views once more after the
@@ -235,7 +267,9 @@ final class BuildNewModelModel {
     /// The "Neutral init" button: every option that has a layer to act on
     /// starts that path as a no-op (`NetworkArchitecture.withNeutralInit`, the
     /// same function `--derive-model --set-neutral-init` applies). The draw
-    /// prior is left as it is.
+    /// prior is left as it is. Safe on a tower whose shape is still invalid:
+    /// where a skip projection is comes from `groupsWithSkipProjection`,
+    /// which never expands the tower.
     func applyNeutralInit() {
         SessionLogger.shared.log("[BUTTON] Build New Model: Neutral init")
         applyInitOptions(of: architecture.withNeutralInit())
@@ -271,10 +305,12 @@ final class BuildNewModelModel {
         Set(architecture.nonStandardInitOptions)
     }
 
-    /// Whether the group at `position` has a skip projection, where its
+    /// The positions of the groups with a skip projection, where a group's
     /// `skipProjectionInit` takes effect (the field is shown only there).
-    func groupHasSkipProjection(at position: Int) -> Bool {
-        architecture.groupHasSkipProjection(position)
+    /// Worked out per group, never by expanding the tower, so the editor can
+    /// read it on every redraw whatever the counts hold.
+    var groupsWithSkipProjection: Set<Int> {
+        architecture.groupsWithSkipProjection
     }
 
     // MARK: Group ReZero
@@ -295,9 +331,10 @@ final class BuildNewModelModel {
     /// ~α², so α = 1/√N → total ~1). Group α fields are seeded from the
     /// loaded preset and do NOT auto-track the block count, so building a
     /// deep net off a shallow preset silently keeps the shallow α — the
-    /// mismatch flag + one-click apply below cover that.
+    /// mismatch flag + one-click apply below cover that. Read only while the
+    /// tower shape is valid (`totalBlocks` is non-nil).
     var recommendedRezeroAlphaInit: Float {
-        1.0 / Float(totalBlocks).squareRoot()
+        1.0 / Float(totalBlocksForRezero).squareRoot()
     }
 
     /// DeepNorm-style alternative ReZero init (`1/N`): gentler than `1/√N`,
@@ -305,9 +342,10 @@ final class BuildNewModelModel {
     /// just variance) accumulates down the stack. Offered alongside `1/√N`;
     /// `1/√N` stays the default. Applying either sets the forward tanh
     /// soft-bound's cap to the same value (`applyRecommendedRezero`). See
-    /// documentation/rezero-alpha-clamp.md.
+    /// documentation/rezero-alpha-clamp.md. Read only while the tower shape
+    /// is valid.
     var recommendedRezeroAlphaInit1OverN: Float {
-        1.0 / Float(totalBlocks)
+        1.0 / Float(totalBlocksForRezero)
     }
 
     /// True when `g` has ReZero enabled and a depth-scaled
@@ -324,8 +362,10 @@ final class BuildNewModelModel {
     /// branch scale and is held to the same recommendation as the cap. For
     /// every group whose cap equals its init (all presets and every model
     /// before the explicit cap) this reduces to a check of the init alone.
+    /// While the tower shape is invalid there is no depth to compare with,
+    /// so nothing is flagged (the shape error is shown instead).
     func rezeroDepthScaleMismatch(for g: BlockGroup) -> Bool {
-        guard g.useRezero else { return false }
+        guard g.useRezero, totalBlocks != nil else { return false }
         func matchesNeither(_ value: Float) -> Bool {
             abs(value - recommendedRezeroAlphaInit) > 1e-4
                 && abs(value - recommendedRezeroAlphaInit1OverN) > 1e-4
@@ -334,14 +374,31 @@ final class BuildNewModelModel {
             || (g.rezeroAlphaInit != 0 && matchesNeither(g.rezeroAlphaInit))
     }
 
-    /// `nil` when the current fields form a valid architecture; otherwise the
-    /// validation error text (Build is disabled while non-nil).
+    /// `nil` when the current fields form an architecture this Mac can
+    /// build and train; otherwise why not (Build is disabled while non-nil):
+    /// a structural error from `validate()`, or a training state larger than
+    /// physical memory (`ModelSizeGuidance`) — the one size refusal. Every
+    /// other size is allowed and annotated by `sizeGuidance`.
     var validationError: String? {
-        do { try architecture.validate(); return nil }
-        catch { return String(describing: error) }
+        let arch = architecture
+        do {
+            try arch.validate()
+            try ModelSizeGuidance(parameterCount: arch.parameterCount, physicalMemoryBytes: physicalMemoryBytes)
+                .requireTrainingStateFitsInPhysicalMemory()
+            return nil
+        } catch {
+            return String(describing: error)
+        }
     }
 
     var isValid: Bool { validationError == nil }
+
+    /// Where the current architecture's parameter count sits on this Mac
+    /// (the readout's guidance line), or nil while it is invalid.
+    var sizeGuidance: ModelSizeGuidance? {
+        guard isValid else { return nil }
+        return ModelSizeGuidance(parameterCount: architecture.parameterCount, physicalMemoryBytes: physicalMemoryBytes)
+    }
 
     /// The Init seed field, read.
     var initSeedEntry: BuildInitSeedEntry {

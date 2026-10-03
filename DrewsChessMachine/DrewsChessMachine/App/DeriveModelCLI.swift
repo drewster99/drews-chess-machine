@@ -246,6 +246,12 @@ enum DeriveModelCLI {
         let summaryLine = "[DERIVE]   architecture: \(result.targetArchitecture.architectureSummary)"
         FileHandle.standardError.write(Data((summaryLine + "\n").utf8))
         SessionLogger.shared.log(summaryLine)
+        // These operations never change a tensor's shape, so the size is the
+        // source's: guidance only, never a refusal.
+        let sizeGuidanceLine = ModelSizeGuidance.forThisMac(parameterCount: result.targetArchitecture.parameterCount)
+            .logLine(event: "--derive-model \(outURL.lastPathComponent)")
+        FileHandle.standardError.write(Data((sizeGuidanceLine + "\n").utf8))
+        SessionLogger.shared.log(sizeGuidanceLine)
 
         // The path on stdout is the deliverable — reuse via --start-model.
         print(outURL.path)
@@ -306,6 +312,20 @@ enum DeriveModelCLI {
             + "init_scheme=\(WeightInitScheme.current)"
         FileHandle.standardError.write(Data((seedLine + "\n").utf8))
         SessionLogger.shared.log(seedLine)
+        // A graft builds the target fresh, so its size is checked here as a
+        // new model's is: guidance logged, and a training state larger than
+        // physical memory refused before the build.
+        let sizeGuidance = ModelSizeGuidance.forThisMac(parameterCount: named.architecture.parameterCount)
+        let sizeGuidanceLine = sizeGuidance.logLine(event: "--derive-model graft onto \(targetLabel)")
+        FileHandle.standardError.write(Data((sizeGuidanceLine + "\n").utf8))
+        SessionLogger.shared.log(sizeGuidanceLine)
+        do {
+            try sizeGuidance.requireTrainingStateFitsInPhysicalMemory()
+        } catch {
+            SessionLogger.shared.log("[DERIVE] graft refused onto \(targetLabel): \(error)")
+            SessionLogger.shared.shutdown()
+            fail("\(graftToFlag) \(targetValue): \(error)", 97)
+        }
 
         let sourceData: Data
         do {
