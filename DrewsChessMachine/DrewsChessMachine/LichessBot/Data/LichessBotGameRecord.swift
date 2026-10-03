@@ -538,6 +538,14 @@ enum LichessBotRecordBuilder {
                 anomalies.append(.init(at: entry.at, text: text))
             case .finished(let status, let winner, let localDrawCondition):
                 finish = Finish(status: status, winner: winner, localDrawCondition: localDrawCondition)
+            case .takebackAccepted:
+                // The same timeline note the journal's earlier free-text
+                // action produced.
+                events.append(.init(at: entry.at, text: "accepted takeback"))
+            case .commandReplyQueued:
+                // The reply itself is a request and a sent chat message,
+                // both journaled on their own.
+                break
             }
         }
 

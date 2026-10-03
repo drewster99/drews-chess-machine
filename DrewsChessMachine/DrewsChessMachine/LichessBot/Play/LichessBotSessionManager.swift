@@ -22,7 +22,10 @@ enum LichessBotManagerEvent: Sendable {
     case challengeArrived(challengeID: String, challengerID: String, challengerTitle: String?)
     case challengeDecision(challengeID: String, challengerID: String, decision: LichessBotChallengeDecision)
     case challengeResponseFailed(challengeID: String, error: String)
-    case gameSessionStarted(gameID: String, generation: LichessBotGenerationInfo)
+    /// A session started for a game: a new one, or one resumed from a
+    /// journal left by an earlier runtime (a relaunch, or going offline and
+    /// back).
+    case gameSessionStarted(gameID: String, generation: LichessBotGenerationInfo, origin: LichessBotSessionOrigin)
     case gameSessionEnded(gameID: String)
     case anomaly(String)
     /// An event-stream line exactly as received (plan §14.3a transcript).
@@ -136,6 +139,9 @@ actor LichessBotSessionManager {
     private let onEvent: @Sendable (LichessBotManagerEvent) -> Void
     /// Each game's operator move pacing (plan §14.3c), by game id.
     private let pacingProvider: @Sendable (String) async -> LichessBotMovePacingSnapshot
+    /// Reads and prepares a game's journal from `InProgress/` (on the
+    /// journal queue), to resume a game an earlier runtime left.
+    private let journalReader: @Sendable (String) async throws -> LichessBotResumedJournal
 
     /// Online (true) or Draining (false) — the operator's choice, or "one
     /// game" once its game started.
@@ -152,6 +158,14 @@ actor LichessBotSessionManager {
     private var gamesToday = 0
     private var gamesTodayByOpponent: [String: Int] = [:]
     private var countedGames: Set<String> = []
+    /// Games counted today whose opponent wasn't known when they were
+    /// counted (a leftover journal seeded at go-online). The first event
+    /// that names the opponent counts them against it.
+    private var countedWithoutOpponent: Set<String> = []
+    /// Games with a journal left from before this runtime, by game id, with
+    /// when that journal was started. A session for one of these resumes the
+    /// game rather than starting it.
+    private var resumableGames: [String: Date] = [:]
     /// Challenges DCM sent that are still unanswered, oldest first, with the
     /// challenged player's lowercased id when known. Several may be pending
     /// at once; each holds a slot, and a place against its opponent, until
@@ -190,7 +204,8 @@ actor LichessBotSessionManager {
         settingsProvider: @escaping @Sendable () async -> LichessBotSettings,
         gameObserver: any LichessBotGameObserver,
         onEvent: @escaping @Sendable (LichessBotManagerEvent) -> Void,
-        pacingProvider: @escaping @Sendable (String) async -> LichessBotMovePacingSnapshot = { _ in LichessBotMovePacingSnapshot() }
+        pacingProvider: @escaping @Sendable (String) async -> LichessBotMovePacingSnapshot = { _ in LichessBotMovePacingSnapshot() },
+        journalReader: @escaping @Sendable (String) async throws -> LichessBotResumedJournal
     ) {
         self.accountAPI = accountAPI
         self.gameAPI = gameAPI
@@ -202,6 +217,7 @@ actor LichessBotSessionManager {
         self.gameObserver = gameObserver
         self.onEvent = onEvent
         self.pacingProvider = pacingProvider
+        self.journalReader = journalReader
     }
 
     // MARK: - Controls
@@ -244,6 +260,13 @@ actor LichessBotSessionManager {
 
     var activeGameIDs: [String] {
         Array(sessions.keys)
+    }
+
+    /// Whether a session plays this game or is being set up for it (its
+    /// model can take a while to build). Either way the game is live and its
+    /// session's end hands it to filing.
+    func hasSession(forGameID gameID: String) -> Bool {
+        sessions[gameID] != nil || startingSessionIDs.contains(gameID)
     }
 
     /// "Play one game" (plan §7.1): accept at most one game at a time, and
@@ -356,15 +379,28 @@ actor LichessBotSessionManager {
 
     /// Seed today's counts from the record store after a relaunch, so the
     /// daily limits (plan §7) survive a restart.
-    func seedDailyCounts(gameIDs: [String], opponentByGame: [String: String]) {
+    /// `earlierDayGameIDs` are games started on an earlier day (a leftover
+    /// journal from before midnight): never counted today, the way a live
+    /// game running past midnight isn't, even when they resume today.
+    func seedDailyCounts(gameIDs: [String], opponentByGame: [String: String], earlierDayGameIDs: Set<String>) {
         rollDayIfNeeded()
+        countedGames.formUnion(earlierDayGameIDs.subtracting(gameIDs))
         for gameID in gameIDs where !countedGames.contains(gameID) {
             countedGames.insert(gameID)
             gamesToday += 1
             if let opponent = opponentByGame[gameID] {
                 gamesTodayByOpponent[opponent.lowercased(), default: 0] += 1
+            } else {
+                countedWithoutOpponent.insert(gameID)
             }
         }
+    }
+
+    /// The games left with a journal from before this runtime, and when
+    /// each journal was started. Set before `run()`, so every replayed
+    /// `gameStart` is matched against it.
+    func setResumableGames(_ games: [String: Date]) {
+        resumableGames = games
     }
 
     /// Resign every game in progress (the operator's Resign all).
@@ -701,6 +737,17 @@ actor LichessBotSessionManager {
             return
         }
         countGame(info)
+        let origin = await sessionOrigin(gameID: gameID)
+        let carryover: LichessBotGameSessionCarryover
+        switch origin {
+        case .new:
+            carryover = .newGame
+        case .resumed(let journal):
+            carryover = journal.carryover
+        case .resumedWithUnreadableJournal(_, let reason):
+            carryover = .unknownHistory
+            onEvent(.anomaly("game \(gameID) resumed without its history: \(reason)"))
+        }
 
         let slots = self.slots
         let settingsProvider = self.settingsProvider
@@ -720,11 +767,14 @@ actor LichessBotSessionManager {
             onTurnStatus: { [weak self] gameID, status in
                 await self?.updateTurnStatus(gameID: gameID, status: status)
             },
-            pacing: { await pacingProvider(gameID) }
+            pacing: { await pacingProvider(gameID) },
+            carryover: carryover
         )
         sessions[gameID] = session
-        onEvent(.gameSessionStarted(gameID: gameID, generation: generation.info))
-        if oneGameMode {
+        onEvent(.gameSessionStarted(gameID: gameID, generation: generation.info, origin: origin))
+        // "Play one game" is for a new game: a resumed one was already
+        // playing before it was asked for.
+        if oneGameMode, case .new = origin {
             oneGameMode = false
             acceptingNewGames = false
             onEvent(.oneGameStarted(gameID: gameID))
@@ -732,6 +782,24 @@ actor LichessBotSessionManager {
         sessionTasks[gameID] = Task { [weak self] in
             await session.run()
             await self?.sessionEnded(gameID: gameID)
+        }
+    }
+
+    /// Whether this session starts the game or resumes it, from the journals
+    /// left at go-online. Taken once: a later session for the same game in
+    /// this runtime resumes one this runtime already listed. The journal is
+    /// read and its stream lines decoded by `journalReader`, on the journal
+    /// queue, before the live view replays it.
+    private func sessionOrigin(gameID: String) async -> LichessBotSessionOrigin {
+        guard let journalStartedAt = resumableGames.removeValue(forKey: gameID) else {
+            return .new
+        }
+        do {
+            return .resumed(try await journalReader(gameID))
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return .resumedWithUnreadableJournal(journalStartedAt: journalStartedAt, reason: "its journal left InProgress/ before it could be read")
+        } catch {
+            return .resumedWithUnreadableJournal(journalStartedAt: journalStartedAt, reason: "its journal can't be used: \(error.localizedDescription)")
         }
     }
 
@@ -746,7 +814,13 @@ actor LichessBotSessionManager {
 
     private func countGame(_ info: LichessBotGameEventInfo) {
         rollDayIfNeeded()
-        guard !countedGames.contains(info.gameId) else { return }
+        guard !countedGames.contains(info.gameId) else {
+            // Counted already, perhaps before its opponent was known.
+            if let opponent = info.opponent?.id, countedWithoutOpponent.remove(info.gameId) != nil {
+                gamesTodayByOpponent[opponent.lowercased(), default: 0] += 1
+            }
+            return
+        }
         countedGames.insert(info.gameId)
         gamesToday += 1
         if let opponent = info.opponent?.id {
@@ -762,6 +836,7 @@ actor LichessBotSessionManager {
         gamesToday = 0
         gamesTodayByOpponent = [:]
         countedGames = countedGames.filter { sessions[$0] != nil }
+        countedWithoutOpponent = countedWithoutOpponent.intersection(countedGames)
     }
 
     // MARK: - Gate eligibility

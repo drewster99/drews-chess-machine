@@ -93,6 +93,14 @@ enum LichessBotGameEvent: Sendable {
     /// engine sees in the final position, if any, recorded beside the
     /// server's status so the two rule sets can be compared (plan E10).
     case finished(status: LichessBotOpenValue<LichessBotGameStatusName>, winner: LichessBotOpenValue<LichessBotColorName>?, localDrawCondition: ChessDrawCondition?)
+    /// DCM accepted the opponent's takeback proposal. Its own event (not an
+    /// `action` text), so a resumed session can count the game's allowance
+    /// from the journal.
+    case takebackAccepted
+    /// DCM decided to answer a chat command: counted against the game's
+    /// reply budget when decided, before the reply goes out, so a resumed
+    /// session counts it the same way.
+    case commandReplyQueued(command: LichessBotChatCommand, username: String, room: LichessBotChatRoom)
 }
 
 /// Receives a game session's events. The game journal and the UI model

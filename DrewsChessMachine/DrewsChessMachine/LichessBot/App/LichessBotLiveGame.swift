@@ -114,14 +114,14 @@ final class LichessBotLiveGame: Identifiable {
     /// A message DCM sent: shown at once, and matched to Lichess's echo if
     /// that already arrived (the echo and the POST's reply can come in
     /// either order), so it is listed once.
-    private func recordSentChat(room: String, text: String, origin: LichessBotChatOrigin) {
+    private func recordSentChat(room: String, text: String, origin: LichessBotChatOrigin, at: Date) {
         if let index = chat.firstIndex(where: { $0.origin == nil && !$0.echoed && $0.room == room && $0.text == text && isFromUs($0) }) {
             let echo = chat[index]
             chat[index] = ChatMessage(id: echo.id, at: echo.at, room: echo.room, username: echo.username, text: echo.text, origin: origin, echoed: true)
             return
         }
         let ourName = (ourColor == .white ? white?.name : black?.name) ?? ourAccountID
-        chat.append(ChatMessage(id: nextChatID, at: Date(), room: room, username: ourName, text: text, origin: origin, echoed: false))
+        chat.append(ChatMessage(id: nextChatID, at: at, room: room, username: ourName, text: text, origin: origin, echoed: false))
         nextChatID += 1
     }
 
@@ -226,11 +226,18 @@ final class LichessBotLiveGame: Identifiable {
 
     // MARK: - Applying events
 
+    /// A live event, as it happens.
     func apply(_ event: LichessBotGameEvent) {
+        apply(event, at: Date())
+    }
+
+    /// An event that happened at `at`: now for a live event, the journal
+    /// entry's time for one replayed from a resumed game's journal.
+    private func apply(_ event: LichessBotGameEvent, at: Date) {
         switch event {
         case .streamOpened(let attempt):
             streamConnections += 1
-            note("stream opened" + (attempt > 0 ? " (reconnect, attempt \(attempt))" : ""), isProblem: attempt > 0)
+            note("stream opened" + (attempt > 0 ? " (reconnect, attempt \(attempt))" : ""), isProblem: attempt > 0, at: at)
         case .streamLine(let data, let receivedAt):
             applyLine(data, at: receivedAt)
         case .keepAlive(let receivedAt):
@@ -241,7 +248,7 @@ final class LichessBotLiveGame: Identifiable {
                 appendTranscript(at: receivedAt, direction: .incoming, title: "keep-alive", detail: "", isProblem: false)
             }
         case .streamEnded(let reason):
-            note("stream ended: \(reason)", isProblem: !isFinished)
+            note("stream ended: \(reason)", isProblem: !isFinished, at: at)
         case .gameInfo(let full, let ourColor):
             self.ourColor = ourColor == .white ? .white : .black
             white = player(full.white)
@@ -261,40 +268,121 @@ final class LichessBotLiveGame: Identifiable {
         case .moveRejected(let ply, let uci, let error):
             anomalies.append("move \(uci) at ply \(ply) rejected: \(error)")
         case .action(let text):
-            note(text, isProblem: false)
+            note(text, isProblem: false, at: at)
         case .moveHeld(let ply, let uci, let san):
             heldMove = HeldMove(ply: ply, uci: uci, san: san)
             releaseRequested = false
-            note("holding \(san) at ply \(ply)", isProblem: false)
+            note("holding \(san) at ply \(ply)", isProblem: false, at: at)
         case .moveReleased(let ply, let reason):
             heldMove = nil
             releaseRequested = false
-            note("released the held move at ply \(ply): \(reason)", isProblem: false)
+            note("released the held move at ply \(ply): \(reason)", isProblem: false, at: at)
         case .chat:
             break
         case .chatSent(let room, let text, let origin):
-            recordSentChat(room: room.rawValue, text: text, origin: origin)
+            recordSentChat(room: room.rawValue, text: text, origin: origin, at: at)
         case .chatFetched(let username, let text):
-            chat.append(ChatMessage(id: nextChatID, at: Date(), room: LichessBotChatRoom.player.rawValue, username: username, text: text, origin: nil, echoed: false))
+            chat.append(ChatMessage(id: nextChatID, at: at, room: LichessBotChatRoom.player.rawValue, username: username, text: text, origin: nil, echoed: false))
             nextChatID += 1
-            note("post-game chat from \(username)", isProblem: false)
+            note("post-game chat from \(username)", isProblem: false, at: at)
         case .anomaly(let text):
             anomalies.append(text)
-            note(text, isProblem: true)
+            note(text, isProblem: true, at: at)
         case .stoppedMoving(let reason):
             anomalies.append("stopped moving: \(reason)")
-            note("stopped moving: \(reason)", isProblem: true)
+            note("stopped moving: \(reason)", isProblem: true, at: at)
         case .tokenRejected(let detail):
             anomalies.append("token rejected: \(detail)")
-            note("token rejected: \(detail)", isProblem: true)
+            note("token rejected: \(detail)", isProblem: true, at: at)
         case .finished(let status, let winner, let localDrawCondition):
             self.status = status.raw
             self.winner = winner?.raw
             self.localDrawCondition = localDrawCondition
             if finishedAt == nil {
-                finishedAt = Date()
+                finishedAt = at
+            }
+        case .takebackAccepted:
+            note("accepted takeback", isProblem: false, at: at)
+        case .commandReplyQueued:
+            // The reply shows as its requests and its sent chat.
+            break
+        }
+    }
+
+    // MARK: - Replaying a resumed game's journal
+
+    /// Rebuild this game's history from the journal an earlier run left, so
+    /// a resumed game shows its earlier moves, DCM's decisions, the chat and
+    /// the transcript instead of starting blank. Called once, before the
+    /// game is listed, so no view watches it happen. Each entry is applied
+    /// the way its live event was, at the entry's own time.
+    func replay(_ journal: LichessBotResumedJournal) {
+        for item in journal.items {
+            let entry = item.entry
+            switch entry.event {
+            case .header(_, _, let build, _, let resumed):
+                if resumed {
+                    note("DCM resumed following this game (build \(build))", isProblem: false, at: entry.at)
+                }
+            case .streamOpened(let attempt):
+                apply(.streamOpened(attempt: attempt), at: entry.at)
+            case .streamLine(let raw):
+                switch item.decodedLine {
+                case .success(let line):
+                    applyDecodedLine(line, raw: raw, at: entry.at)
+                    if case .gameFull(let full) = line, let color = full.color(of: ourAccountID) {
+                        // Live, the session reports the game's facts right
+                        // after this line.
+                        apply(.gameInfo(full, ourColor: color), at: entry.at)
+                    }
+                case .failure(let failure):
+                    appendTranscript(at: entry.at, direction: .incoming, title: "undecodable line", detail: raw + "\n" + failure.description, isProblem: true)
+                case .none:
+                    appendTranscript(at: entry.at, direction: .incoming, title: "line not decoded", detail: raw, isProblem: true)
+                }
+            case .streamLineBytes:
+                appendTranscript(at: entry.at, direction: .incoming, title: "stream line was not UTF-8", detail: "", isProblem: true)
+            case .keepAlive:
+                apply(.keepAlive(receivedAt: entry.at), at: entry.at)
+            case .request(let record):
+                applyRequest(record)
+            case .streamEnded(let reason):
+                apply(.streamEnded(reason: reason), at: entry.at)
+            case .positionSynced, .movePosted:
+                break
+            case .moveDecided(let ply, let decision, let generation):
+                apply(.moveDecided(ply: ply, decision: decision, generation: generation), at: entry.at)
+            case .moveRejected(let ply, let uci, let error):
+                apply(.moveRejected(ply: ply, uci: uci, error: error), at: entry.at)
+            case .action(let text):
+                apply(.action(text), at: entry.at)
+            case .chatSent(let room, let text, let origin):
+                guard let knownOrigin = LichessBotChatOrigin(rawValue: origin) else {
+                    apply(.anomaly("journal: sent chat with unknown origin \"\(origin)\": \(text)"), at: entry.at)
+                    continue
+                }
+                recordSentChat(room: room, text: text, origin: knownOrigin, at: entry.at)
+            case .chatFetched(let username, let text):
+                apply(.chatFetched(username: username, text: text), at: entry.at)
+            case .anomaly(let text):
+                apply(.anomaly(text), at: entry.at)
+            case .finished(let status, let winner, let localDrawCondition):
+                self.status = status
+                self.winner = winner
+                self.localDrawCondition = localDrawCondition
+                if finishedAt == nil {
+                    finishedAt = entry.at
+                }
+            case .takebackAccepted:
+                apply(.takebackAccepted, at: entry.at)
+            case .commandReplyQueued:
+                break
             }
         }
+        if journal.droppedTrailingByteCount > 0 {
+            note("the journal ended in \(journal.droppedTrailingByteCount) bytes of an unfinished line (an interrupted write)", isProblem: true, at: journal.lastJournaledAt)
+        }
+        note("DCM was not following this game from \(journal.lastJournaledAt.formatted(date: .omitted, time: .standard)) until now", isProblem: true, at: Date())
     }
 
     /// The status of a game DCM stopped following before it ended: the only
@@ -311,7 +399,7 @@ final class LichessBotLiveGame: Identifiable {
         // A held move ends with its session.
         heldMove = nil
         releaseRequested = false
-        note("DCM stopped following this game: \(reason)", isProblem: true)
+        note("DCM stopped following this game: \(reason)", isProblem: true, at: Date())
     }
 
     /// A new session for this game started: it was left unfinished (DCM went
@@ -325,7 +413,7 @@ final class LichessBotLiveGame: Identifiable {
         guard finishedAt != nil, status == Self.leftUnfinishedStatus else { return }
         finishedAt = nil
         status = "started"
-        note("DCM is following this game again", isProblem: false)
+        note("DCM is following this game again", isProblem: false, at: Date())
     }
 
     /// A request DCM made for this game.
@@ -366,6 +454,10 @@ final class LichessBotLiveGame: Identifiable {
             appendTranscript(at: at, direction: .incoming, title: "undecodable line", detail: raw, isProblem: true)
             return
         }
+        applyDecodedLine(line, raw: raw, at: at)
+    }
+
+    private func applyDecodedLine(_ line: LichessBotGameStreamLine, raw: String, at: Date) {
         switch line {
         case .gameFull(let full):
             appendTranscript(at: at, direction: .incoming, title: "gameFull · \(full.state.moveTokens.count) plies · \(full.state.status.raw)", detail: raw, isProblem: false)
@@ -433,8 +525,8 @@ final class LichessBotLiveGame: Identifiable {
         }
     }
 
-    private func note(_ text: String, isProblem: Bool) {
-        appendTranscript(at: Date(), direction: .note, title: text, detail: "", isProblem: isProblem)
+    private func note(_ text: String, isProblem: Bool, at: Date) {
+        appendTranscript(at: at, direction: .note, title: text, detail: "", isProblem: isProblem)
     }
 
     private func appendTranscript(at: Date, direction: LichessBotTranscriptEntry.Direction, title: String, detail: String, isProblem: Bool) {

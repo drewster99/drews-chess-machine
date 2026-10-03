@@ -2,7 +2,14 @@ import Foundation
 
 /// One journal line's payload (plan §10.2). This is a persistence schema,
 /// kept separate from the in-memory `LichessBotGameEvent` so the file format
-/// changes only deliberately (with `LichessBotJournal.schemaVersion`).
+/// changes only deliberately.
+///
+/// Cases are added without changing `LichessBotJournal.schemaVersion`, which
+/// is written into every header but checked only when a journal is resumed
+/// (a newer version is refused there). What actually decides compatibility
+/// is the decoder: a build that doesn't know a case can't decode a journal
+/// holding it, so a journal written by a newer build can't be filed by an
+/// older one.
 ///
 /// Raw stream lines are stored as received, as text: they are the game's
 /// primary record, and everything else in a finished record is rebuilt from
@@ -33,6 +40,12 @@ enum LichessBotJournalEvent: Sendable, Codable, Equatable {
     case chatFetched(username: String, text: String)
     case anomaly(String)
     case finished(status: String, winner: String?, localDrawCondition: ChessDrawCondition?)
+    /// DCM accepted the opponent's takeback (see
+    /// `LichessBotGameEvent.takebackAccepted`).
+    case takebackAccepted
+    /// DCM decided to answer a chat command (see
+    /// `LichessBotGameEvent.commandReplyQueued`).
+    case commandReplyQueued(command: String, username: String, room: String)
 }
 
 enum LichessBotJournalSyncKind: String, Sendable, Codable, Equatable {
@@ -100,6 +113,10 @@ enum LichessBotJournal {
             return .anomaly("token rejected: \(detail)")
         case .finished(let status, let winner, let localDrawCondition):
             return .finished(status: status.raw, winner: winner?.raw, localDrawCondition: localDrawCondition)
+        case .takebackAccepted:
+            return .takebackAccepted
+        case .commandReplyQueued(let command, let username, let room):
+            return .commandReplyQueued(command: command.rawValue, username: username, room: room.rawValue)
         }
     }
 

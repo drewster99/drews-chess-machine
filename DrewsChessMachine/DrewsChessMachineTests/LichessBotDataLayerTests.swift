@@ -356,7 +356,8 @@ final class LichessBotDataLayerTests: XCTestCase {
             settingsProvider: { frozen },
             observer: LichessBotGameObserverFanOut(observers: [writer, recorder]),
             time: LichessBotManualTime(),
-            onTurnStatus: { _, _ in }
+            onTurnStatus: { _, _ in },
+            carryover: .newGame
         )
         await session.run()
         XCTAssertEqual(writeFailures.value, [])
@@ -413,7 +414,7 @@ final class LichessBotDataLayerTests: XCTestCase {
             store: makeStore(),
             time: time,
             settingsProvider: { LichessBotSettings.testBaseline() },
-            isGameActive: { active.contains($0) },
+            hasLiveFilingOwner: { active.contains($0) },
             onEvent: { event in events.modify { $0.append(event) } }
         )
     }
@@ -513,6 +514,149 @@ final class LichessBotDataLayerTests: XCTestCase {
         run.cancel()
         await run.value
         XCTAssertEqual(api.calls.value.count, 0)
+    }
+
+    private func quarantineEvents(_ events: SyncBox<[LichessBotReconcilerEvent]>) -> [(gameID: String, reason: String)] {
+        events.value.compactMap { event in
+            if case .quarantined(let gameID, let reason) = event { return (gameID, reason) }
+            return nil
+        }
+    }
+
+    /// A game already filed and handed to the reconciler again (launch
+    /// recovery listing it just before it was filed, or the post-game chat
+    /// wait ending after another path filed it) is recognized as filed: no
+    /// second export, no quarantine alarm for a game that is safely on disk.
+    func testEnqueueingAnAlreadyFiledGameIsNotQuarantined() async throws {
+        try writeJournal(syntheticJournal(gameID: "g1", createdAt: createdAt, tokens: shortGame, finish: ("resign", "white")), gameID: "g1")
+        let time = LichessBotManualTime()
+        let terminal = try exportData(gameID: "g1", createdAt: createdAt, tokens: shortGame, status: "resign", winner: "white")
+        let api = ScriptedExportAPI(time: time, responses: [.success(terminal), .success(terminal)])
+        let events = SyncBox<[LichessBotReconcilerEvent]>([])
+        let reconciler = makeReconciler(api: api, time: time, events: events)
+        await reconciler.enqueue(gameID: "g1")
+        let run = Task { await reconciler.run() }
+        try await waitUntil("the game is finalized", advancing: time) { finalizedCount(events) == 1 }
+        await reconciler.enqueue(gameID: "g1")
+        try await waitUntil("the second enqueue is settled", advancing: time) {
+            let queued = await reconciler.queuedGameIDs
+            let quarantined = await reconciler.quarantinedGameIDs
+            return queued.isEmpty || !quarantined.isEmpty
+        }
+        run.cancel()
+        await run.value
+        XCTAssertEqual(quarantineEvents(events).map(\.gameID), [])
+        let quarantined = await reconciler.quarantinedGameIDs
+        XCTAssertEqual(quarantined, [])
+        XCTAssertEqual(finalizedCount(events), 1)
+        XCTAssertEqual(api.calls.value.count, 1, "a filed game needs no second export")
+        let inProgress = try await makeStore().inProgressGameIDs()
+        XCTAssertEqual(inProgress, [])
+    }
+
+    /// A game with no journal in InProgress/ and no filed record has nothing
+    /// to file: it is reported, never exported (an export alone can't make a
+    /// record), and never alarmed as "won't be retried until the bot next
+    /// goes online" — no later recovery would find it either.
+    func testAGameWithNoJournalAndNoRecordIsReportedWithoutAnExport() async throws {
+        try directory.createDirectories()
+        let time = LichessBotManualTime()
+        let api = ScriptedExportAPI(time: time, responses: [
+            .success(try exportData(gameID: "g9", createdAt: createdAt, tokens: shortGame, status: "resign", winner: "white")),
+        ])
+        let events = SyncBox<[LichessBotReconcilerEvent]>([])
+        let reconciler = makeReconciler(api: api, time: time, events: events)
+        await reconciler.enqueue(gameID: "g9")
+        let run = Task { await reconciler.run() }
+        try await waitUntil("the game is no longer due", advancing: time) { await reconciler.dueGameIDs.isEmpty }
+        run.cancel()
+        await run.value
+        XCTAssertEqual(api.calls.value.count, 0)
+        XCTAssertEqual(finalizedCount(events), 0)
+        XCTAssertEqual(quarantineEvents(events).map(\.gameID), [])
+    }
+
+    /// A record file for the game exists but doesn't decode: the game is
+    /// quarantined with that reason, without an export, rather than treated
+    /// as a game nobody ever filed.
+    func testAGameWhoseFiledRecordDoesNotDecodeIsQuarantinedWithThatReason() async throws {
+        try directory.createDirectories()
+        let created = Date(timeIntervalSince1970: Double(createdAt) / 1000)
+        let folder = directory.gamesMonthDirectory(createdAt: created)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let stem = try LichessBotDataDirectory.validatedFileStem(gameID: "g1", createdAt: created)
+        try Data("not a record".utf8).write(to: folder.appendingPathComponent("\(stem).json", isDirectory: false))
+        let time = LichessBotManualTime()
+        let api = ScriptedExportAPI(time: time, responses: [
+            .success(try exportData(gameID: "g1", createdAt: createdAt, tokens: shortGame, status: "resign", winner: "white")),
+        ])
+        let events = SyncBox<[LichessBotReconcilerEvent]>([])
+        let reconciler = makeReconciler(api: api, time: time, events: events)
+        await reconciler.enqueue(gameID: "g1")
+        let run = Task { await reconciler.run() }
+        try await waitUntil("the game is no longer due", advancing: time) { await reconciler.dueGameIDs.isEmpty }
+        run.cancel()
+        await run.value
+        XCTAssertEqual(api.calls.value.count, 0)
+        let quarantined = quarantineEvents(events)
+        XCTAssertEqual(quarantined.map(\.gameID), ["g1"])
+        XCTAssertTrue(quarantined.first?.reason.contains("doesn't decode") == true, "\(quarantined)")
+    }
+
+    /// An export double that hands the game to a live owner while its export
+    /// is in flight: a resumed game whose session is still starting, or a
+    /// finished game the controller has begun collecting post-game chat for.
+    private final class OwnerTakingExportAPI: LichessBotExportAPI, @unchecked Sendable {
+        let owners: SyncBox<Set<String>>
+        let calls = SyncBox<Int>(0)
+        private let response: Data
+
+        init(owners: SyncBox<Set<String>>, response: Data) {
+            self.owners = owners
+            self.response = response
+        }
+
+        func exportGame(gameID: String) async throws -> Data {
+            calls.modify { $0 += 1 }
+            owners.modify { $0.insert(gameID) }
+            return response
+        }
+    }
+
+    /// A reconciler whose live owners are whatever `owners` holds at each check.
+    private func makeReconciler(api: any LichessBotExportAPI, time: LichessBotManualTime, owners: SyncBox<Set<String>>, events: SyncBox<[LichessBotReconcilerEvent]>) -> LichessBotReconciler {
+        LichessBotReconciler(
+            api: api,
+            store: makeStore(),
+            time: time,
+            settingsProvider: { LichessBotSettings.testBaseline() },
+            hasLiveFilingOwner: { owners.value.contains($0) },
+            onEvent: { event in events.modify { $0.append(event) } }
+        )
+    }
+
+    /// The owner check runs again after the export: a game that gained a live
+    /// owner while its export was in flight is left to that owner (which
+    /// enqueues it when done) instead of being filed under it.
+    func testAGameTakenByAnOwnerDuringItsExportIsNotFiled() async throws {
+        try writeJournal(syntheticJournal(gameID: "g1", createdAt: createdAt, tokens: shortGame, finish: ("resign", "white")), gameID: "g1")
+        let time = LichessBotManualTime()
+        let owners = SyncBox<Set<String>>([])
+        let api = OwnerTakingExportAPI(owners: owners, response: try exportData(gameID: "g1", createdAt: createdAt, tokens: shortGame, status: "resign", winner: "white"))
+        let events = SyncBox<[LichessBotReconcilerEvent]>([])
+        let reconciler = makeReconciler(api: api, time: time, owners: owners, events: events)
+        await reconciler.enqueue(gameID: "g1")
+        let run = Task { await reconciler.run() }
+        try await waitUntil("the attempt is settled", advancing: time) {
+            let queued = await reconciler.queuedGameIDs
+            return queued.isEmpty || finalizedCount(events) > 0
+        }
+        run.cancel()
+        await run.value
+        XCTAssertEqual(api.calls.value, 1)
+        XCTAssertEqual(finalizedCount(events), 0)
+        let inProgress = try await makeStore().inProgressGameIDs()
+        XCTAssertEqual(inProgress, ["g1"], "the owner files it later; its journal stays in InProgress")
     }
 
     // MARK: - Instance lock (plan §6.1 A)
