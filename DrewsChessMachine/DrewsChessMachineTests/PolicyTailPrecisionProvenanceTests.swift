@@ -102,34 +102,16 @@ final class PolicyTailPrecisionProvenanceTests: XCTestCase {
         XCTAssertNil(metadata.trainerPolicyTailPrecision)
     }
 
-    // MARK: - Resume decisions
+    // MARK: - Resume gap
 
-    func testExactResumeRefusesARecordedMismatch() {
-        let decision = PolicyTailPrecisionResume.exactResumeDecision(saved: .float32FromPreBatchNorm, running: .mixedFinalProjection)
-        XCTAssertNotNil(decision.refusal)
-        XCTAssertTrue(decision.refusal?.contains("--policy-tail-precision fp32_from_pre_bn") == true)
-    }
-
-    func testExactResumeWarnsButProceedsWhenUnrecorded() {
-        let decision = PolicyTailPrecisionResume.exactResumeDecision(saved: nil, running: .mixedFinalProjection)
-        XCTAssertNil(decision.refusal)
-        XCTAssertTrue(decision.logLine.contains("WARNING"))
-    }
-
-    func testExactResumeProceedsWhenTheyMatch() {
-        let decision = PolicyTailPrecisionResume.exactResumeDecision(saved: .mixedFinalProjection, running: .mixedFinalProjection)
-        XCTAssertNil(decision.refusal)
-    }
-
-    func testGUIResumeReportsNotExactWithoutRefusing() {
-        XCTAssertNil(PolicyTailPrecisionResume.guiNotExactLine(saved: .mixedFinalProjection, running: .mixedFinalProjection))
-        XCTAssertEqual(
-            PolicyTailPrecisionResume.guiNotExactLine(saved: .float32FromPreBatchNorm, running: .mixedFinalProjection),
-            "[RESUME] NOT EXACT: policy_tail saved=fp32_from_pre_bn running=mixed_final_projection"
-        )
-        XCTAssertEqual(
-            PolicyTailPrecisionResume.guiNotExactLine(saved: nil, running: .mixedFinalProjection),
-            "[RESUME] NOT EXACT: policy_tail saved=unrecorded running=mixed_final_projection"
-        )
+    /// A recorded mismatch, or a checkpoint that predates recording the
+    /// precision, is the `policy_tail` resume gap; a match is none.
+    func testADifferentOrUnrecordedPrecisionIsAPolicyTailGap() {
+        XCTAssertEqual(PolicyTailPrecisionResume.gaps(saved: .mixedFinalProjection, running: .mixedFinalProjection), [])
+        XCTAssertEqual(PolicyTailPrecisionResume.gaps(saved: .float32FromPreBatchNorm, running: .mixedFinalProjection),
+                       [.policyTail])
+        XCTAssertEqual(PolicyTailPrecisionResume.gaps(saved: nil, running: .mixedFinalProjection), [.policyTail])
+        XCTAssertTrue(PolicyTailPrecisionResume.exactResumeLogLine(saved: .float32FromPreBatchNorm, running: .mixedFinalProjection)
+            .contains("\(ChessNetwork.PolicyTailPrecision.flag) fp32_from_pre_bn"))
     }
 }
