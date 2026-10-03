@@ -160,7 +160,8 @@ final class LichessBotPhase5CoreTests: XCTestCase {
             time: time,
             settingsProvider: { frozen },
             gameObserver: LichessBotRecordingGameObserver(),
-            onEvent: { event in events.modify { $0.append(event) } }
+            onEvent: { event in events.modify { $0.append(event) } },
+            journalReader: LichessBotTestJournalReaders.none
         )
         return (manager, account)
     }

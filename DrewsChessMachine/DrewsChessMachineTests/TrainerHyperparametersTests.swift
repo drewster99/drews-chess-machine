@@ -135,6 +135,7 @@ final class TrainerHyperparametersTests: XCTestCase {
     func test_activeCycle_drivesTheTrainersEffectiveLRAndMomentum() throws {
         configureActiveCycle()
         let trainer = try ChessTrainer(
+            dropoutStream: DCMRandom(seed: 1),
             hyperparameters: TrainerHyperparameters(TrainingParameters.shared.snapshot()),
             arch: .current
         )
@@ -154,6 +155,7 @@ final class TrainerHyperparametersTests: XCTestCase {
         TrainingParameters.shared.lrCycleEnabled = false
         TrainingParameters.shared.momentumCycleEnabled = false
         let trainer = try ChessTrainer(
+            dropoutStream: DCMRandom(seed: 1),
             hyperparameters: TrainerHyperparameters(TrainingParameters.shared.snapshot()),
             arch: .current
         )
@@ -183,8 +185,8 @@ final class TrainerHyperparametersTests: XCTestCase {
         p.klProbeInterval = 100
         let snapshot = p.snapshot()
 
-        let cliTrainer = try ChessTrainer(hyperparameters: ReplayParams(snapshot).trainer, arch: .current)
-        let guiTrainer = try ChessTrainer(arch: .current)
+        let cliTrainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: ReplayParams(snapshot).trainer, arch: .current)
+        let guiTrainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: .current)
         TrainerHyperparameters(snapshot).apply(to: guiTrainer)
 
         XCTAssertEqual(

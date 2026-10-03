@@ -21,7 +21,8 @@ final class LichessBotMovePacingTests: XCTestCase {
             observer: observer,
             time: time,
             onTurnStatus: { _, _ in },
-            pacing: { pacing.value }
+            pacing: { pacing.value },
+            carryover: .newGame
         )
     }
 

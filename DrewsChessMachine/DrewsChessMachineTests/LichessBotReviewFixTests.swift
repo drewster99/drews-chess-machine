@@ -22,7 +22,8 @@ final class LichessBotReviewFixTests: XCTestCase {
             settingsProvider: { frozen },
             observer: observer,
             time: time,
-            onTurnStatus: { _, _ in }
+            onTurnStatus: { _, _ in },
+            carryover: .newGame
         )
     }
 
@@ -112,7 +113,8 @@ final class LichessBotReviewFixTests: XCTestCase {
             time: time,
             settingsProvider: { LichessBotSettings.testBaseline() },
             gameObserver: LichessBotRecordingGameObserver(),
-            onEvent: { _ in }
+            onEvent: { _ in },
+            journalReader: LichessBotTestJournalReaders.none
         )
         await manager.setRateLimitHold(true)
         var accepting = await manager.isAcceptingNewGames
@@ -179,7 +181,8 @@ final class LichessBotReviewFixTests: XCTestCase {
             time: time,
             settingsProvider: { LichessBotSettings.testBaseline() },
             gameObserver: LichessBotRecordingGameObserver(),
-            onEvent: { event in events.modify { $0.append(event) } }
+            onEvent: { event in events.modify { $0.append(event) } },
+            journalReader: LichessBotTestJournalReaders.none
         )
         await manager.setOneGameMode(true)
         let run = Task { await manager.run() }
@@ -212,7 +215,8 @@ final class LichessBotReviewFixTests: XCTestCase {
             time: time,
             settingsProvider: { LichessBotSettings.testBaseline() },
             gameObserver: LichessBotRecordingGameObserver(),
-            onEvent: { event in events.modify { $0.append(event) } }
+            onEvent: { event in events.modify { $0.append(event) } },
+            journalReader: LichessBotTestJournalReaders.none
         )
         let run = Task { await manager.run() }
         // The manager reports the stream's end only after it has finished
@@ -246,7 +250,8 @@ final class LichessBotReviewFixTests: XCTestCase {
             time: time,
             settingsProvider: { LichessBotSettings.testBaseline() },
             gameObserver: LichessBotRecordingGameObserver(),
-            onEvent: { event in events.modify { $0.append(event) } }
+            onEvent: { event in events.modify { $0.append(event) } },
+            journalReader: LichessBotTestJournalReaders.none
         )
         let run = Task { await manager.run() }
         try await waitUntil("the stream opens") { await account.opens == 1 }

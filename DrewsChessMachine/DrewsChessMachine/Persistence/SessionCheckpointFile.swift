@@ -378,7 +378,7 @@ struct SessionCheckpointState: Codable, Equatable {
     /// constructing a full checkpoint state; the instance property is
     /// the call-site-facing form.
     static func resolvedSignedAdvantageComplementCE(savedFlag: Bool?) -> Bool {
-        savedFlag ?? false
+        savedFlag ?? TrainingParameterResolution.absentValue(of: SignedAdvantageComplementCE.self)
     }
 
     /// Instance form of `resolvedSignedAdvantageComplementCE(savedFlag:)`.
@@ -395,12 +395,16 @@ struct SessionCheckpointState: Codable, Equatable {
     // The absent-field fallback must therefore reproduce that
     // pre-feature behavior, never the live `TrainingParameters` value
     // (which would silently change the regime of an old run on
-    // resume). Pure statics so the policy is unit-testable
-    // (`SessionResumeParameterFallbackTests`).
+    // resume). Each pre-feature value is declared once, on its key's
+    // `@TrainingParameter(absentValue:)`, and read here through
+    // `TrainingParameterResolution.absentValue(of:)`; the resume path
+    // itself resolves every key through `TrainingParameterResolution`.
+    // These statics stay as a typed view for the session file's own
+    // callers and tests (`SessionResumeParameterFallbackTests`).
 
     /// Pre-feature behavior: plain SGD — no momentum term existed.
     static func resolvedMomentumCoeff(saved: Float?) -> Float {
-        saved ?? 0.0
+        saved ?? Float(TrainingParameterResolution.absentValue(of: MomentumCoeff.self))
     }
 
     /// Pre-feature behavior: no channel dropout. A session predating the
@@ -408,17 +412,17 @@ struct SessionCheckpointState: Codable, Equatable {
     /// inherit the live `TrainingParameters.dropoutRate` (which could
     /// silently inject dropout into an old run).
     static func resolvedDropoutRate(saved: Float?) -> Float {
-        saved ?? 0.0
+        saved ?? Float(TrainingParameterResolution.absentValue(of: DropoutRate.self))
     }
 
     /// Pre-feature behavior: no illegal-mass penalty term in the loss.
     static func resolvedIllegalMassPenaltyWeight(saved: Float?) -> Float {
-        saved ?? 0.0
+        saved ?? Float(TrainingParameterResolution.absentValue(of: IllegalMassWeight.self))
     }
 
     /// Pre-feature behavior: one-hot policy CE — no label smoothing.
     static func resolvedPolicyLabelSmoothingEpsilon(saved: Float?) -> Float {
-        saved ?? 0.0
+        saved ?? Float(TrainingParameterResolution.absentValue(of: PolicyLabelSmoothingEpsilon.self))
     }
 
     /// Pre-feature behavior: fixed-total policy smoothing, the only form that
@@ -426,7 +430,9 @@ struct SessionCheckpointState: Codable, Equatable {
     /// token already decoded (`PolicyLabelSmoothingMode(logToken:)`); a token
     /// no mode spells is the caller's to report, not a reason to guess.
     static func resolvedPolicyLabelSmoothingMode(saved: PolicyLabelSmoothingMode?) -> PolicyLabelSmoothingMode {
-        saved ?? .fixedTotal
+        saved ?? PolicyLabelSmoothingMode(
+            persistedRawValue: TrainingParameterResolution.absentValue(of: PolicyLabelSmoothingModeParameter.self)
+        )
     }
 
     /// Pre-feature behavior: hard one-hot W/D/L target — no value-head
@@ -436,7 +442,7 @@ struct SessionCheckpointState: Codable, Equatable {
     /// silently re-shape an old run's value loss on resume — the same
     /// regression the sibling resolvers exist to prevent).
     static func resolvedValueLabelSmoothingEpsilon(saved: Float?) -> Float {
-        saved ?? 0.0
+        saved ?? Float(TrainingParameterResolution.absentValue(of: ValueLabelSmoothingEpsilon.self))
     }
 
     /// Pre-feature behavior: uncapped per-game batch sampling. The
@@ -447,7 +453,7 @@ struct SessionCheckpointState: Codable, Equatable {
     /// so it tracks any future change to the declared range rather than
     /// drifting from a hardcoded literal.
     static func resolvedMaxPliesFromAnyOneGame(saved: Int?) -> Int {
-        saved ?? MaxPliesFromAnyOneGame.definition.intRange?.max ?? 400
+        saved ?? TrainingParameterResolution.absentValue(of: MaxPliesFromAnyOneGame.self)
     }
 
     /// Pre-feature behavior: no decay envelope and no momentum following.
@@ -461,8 +467,8 @@ struct SessionCheckpointState: Codable, Equatable {
     ) -> LRMomentumCycleEnvelope {
         if let saved { return saved }
         var resolved = current
-        resolved.decayHorizonSteps = 0
-        resolved.momentumFollowsLRCycle = false
+        resolved.decayHorizonSteps = TrainingParameterResolution.absentValue(of: LRCycleDecayHorizonSteps.self)
+        resolved.momentumFollowsLRCycle = TrainingParameterResolution.absentValue(of: MomentumFollowsLRCycle.self)
         return resolved
     }
 
@@ -477,13 +483,13 @@ struct SessionCheckpointState: Codable, Equatable {
     ) -> LRMomentumCycle {
         if let saved { return saved }
         return LRMomentumCycle(
-            lrEnabled: false,
+            lrEnabled: TrainingParameterResolution.absentValue(of: LRCycleEnabled.self),
             lrPeriodSteps: current.lrPeriodSteps,
             lrCount: current.lrCount,
             lrMin: current.lrMin,
             lrMax: current.lrMax,
             lrInvert: current.lrInvert,
-            momentumEnabled: false,
+            momentumEnabled: TrainingParameterResolution.absentValue(of: MomentumCycleEnabled.self),
             momentumPeriodSteps: current.momentumPeriodSteps,
             momentumCount: current.momentumCount,
             momentumMin: current.momentumMin,

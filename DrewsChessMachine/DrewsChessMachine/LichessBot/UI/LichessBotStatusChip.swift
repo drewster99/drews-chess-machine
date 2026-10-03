@@ -47,11 +47,21 @@ struct LichessBotStatusChip: View {
             .disabled(!controller.isRunning)
         }
         .accessibilityLabel("Lichess bot: \(text)")
+        .task {
+            await controller.noteLeftoverJournalsAtLaunch()
+        }
     }
 
     private var text: String {
         let games = controller.activeGameIDs.count
         let base = "Lichess: \(controller.connection.label)"
-        return games > 0 ? "\(base) · \(games) game\(games == 1 ? "" : "s")" : base
+        if games > 0 {
+            return "\(base) · \(games) game\(games == 1 ? "" : "s")"
+        }
+        let leftovers = controller.leftoverGamesFromLastRun.count
+        if leftovers > 0 {
+            return "\(base) · \(leftovers) unfinished from last run"
+        }
+        return base
     }
 }

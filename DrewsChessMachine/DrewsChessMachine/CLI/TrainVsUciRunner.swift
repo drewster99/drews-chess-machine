@@ -263,7 +263,10 @@ enum TrainVsUciRunner {
         if let initSeed = trainerInitialization.initSeed {
             emit("[VS-UCI] fresh trainer init_seed=\(initSeed) init_scheme=\(WeightInitScheme.current)")
         }
-        let trainer = try ChessTrainer(hyperparameters: hp, arch: arch, initialization: trainerInitialization)
+        let trainer = try ChessTrainer(
+            dropoutStream: RunMasterSeed.systemDrawn(context: "train-vs-uci").generator(.dropout),
+            hyperparameters: hp, arch: arch, initialization: trainerInitialization
+        )
         emit(ChessNetwork.PolicyTailPrecision.processLogLine)
         // Field for field with `[REPLAY-HPARAMS]` so the two CLI paths can be
         // diffed directly.

@@ -516,7 +516,8 @@ final class LichessBotGameSessionTests: XCTestCase {
             settingsProvider: { frozen },
             observer: observer,
             time: time,
-            onTurnStatus: { _, status in observer.turnStatuses.modify { $0.append(status) } }
+            onTurnStatus: { _, status in observer.turnStatuses.modify { $0.append(status) } },
+            carryover: .newGame
         )
         return Harness(server: server, source: source, observer: observer, time: time, session: session)
     }

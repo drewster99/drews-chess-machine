@@ -179,7 +179,8 @@ final class LichessBotSessionManagerTests: XCTestCase {
             time: time,
             settingsProvider: { frozen },
             gameObserver: observer,
-            onEvent: { event in events.modify { $0.append(event) } }
+            onEvent: { event in events.modify { $0.append(event) } },
+            journalReader: LichessBotTestJournalReaders.none
         )
         return Harness(account: account, manager: manager, gate: gate, time: time, events: events, observer: observer)
     }

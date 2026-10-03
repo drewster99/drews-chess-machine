@@ -1573,13 +1573,6 @@ final class ChessTrainer: @unchecked Sendable {
     /// `.level0` trainer and check whether the level-1 codegen path is what
     /// turns bf16 multi-step gradients non-finite.
     let executableOptimizationLevel: MPSGraphOptimization
-    /// Experimental "config D" mixed-precision mode (see
-    /// `ChessNetwork.bf16CastInForward`). When true, the trainer builds its
-    /// training-mode network with fp32-stored weights cast to bf16 in the
-    /// forward, and the optimizer runs the plain fp32 path (no masters, no
-    /// working-sync). Threaded to every `ChessNetwork` the trainer builds.
-    /// Default false keeps the canonical bf16-working-var / fp32-master path.
-    let bf16CastInForward: Bool
     /// Where the policy head's fp32 tail begins in every `ChessNetwork` the
     /// trainer builds (see `ChessNetwork.PolicyTailPrecision`).
     let policyTailPrecision: ChessNetwork.PolicyTailPrecision
@@ -1771,6 +1764,21 @@ final class ChessTrainer: @unchecked Sendable {
     /// forward. Each step still advances exactly once; only the ordering
     /// moves, and only on probe steps.
     private var assignOpsWithoutDropoutAdvance: [MPSGraphOperation]
+
+    /// The run's `dropout` random stream. Each time a graph is built (here
+    /// and on a network reset) the next draw seeds the graph's Philox state,
+    /// so the mask sequence is a function of the run's master seed. Touched
+    /// only on `executionQueue` (init's synchronous hop and the reset, which
+    /// runs there), so it needs no lock of its own.
+    private var dropoutStream: DCMRandom
+
+    /// Steps run by the random-data `trainStep(batchSize:)` harness. That path
+    /// never advances `completedTrainSteps` (a sweep must not consume the LR
+    /// warmup), so the KL probe schedule needs a step index of its own there.
+    /// Nothing about it is resumable — it exists only so a sweep's probe
+    /// cadence means the same thing as a real run's. Touched only on
+    /// `executionQueue`.
+    private var syntheticTrainStepCount = 0
 
     /// Pre-allocated scalar ND array for the learning-rate feed.
     /// Written with the current `learningRate` on each step so
@@ -2027,6 +2035,7 @@ final class ChessTrainer: @unchecked Sendable {
     // MARK: Init
 
     init(
+        dropoutStream: DCMRandom,
         // Every production trainer is built through `TrainerHyperparameters`
         // with explicit values; these defaults serve tests and the timing
         // sweeps, and each training-parameter default is read from its
@@ -2054,11 +2063,11 @@ final class ChessTrainer: @unchecked Sendable {
         initialization: WeightInitialization = .drawnSeed(),
         executableOptimizationLevel: MPSGraphOptimization = .level1,
         splitWorkingWeightSync: Bool = true,
-        bf16CastInForward: Bool = false,
         policyTailPrecision: ChessNetwork.PolicyTailPrecision = .process,
         disableAutoLayoutConversion: Bool = false,
         reducedPrecisionFastMathRaw: UInt? = nil
     ) throws {
+        self.dropoutStream = dropoutStream
         self.learningRate = learningRate
         self.entropyRegularizationCoeff = entropyRegularizationCoeff
         self.drawPenalty = drawPenalty
@@ -2079,12 +2088,10 @@ final class ChessTrainer: @unchecked Sendable {
         self.arch = arch
         self.executableOptimizationLevel = executableOptimizationLevel
         self.splitWorkingWeightSync = splitWorkingWeightSync
-        self.bf16CastInForward = bf16CastInForward
         self.policyTailPrecision = policyTailPrecision
         self.disableAutoLayoutConversion = disableAutoLayoutConversion
         self.reducedPrecisionFastMathRaw = reducedPrecisionFastMathRaw
         let net = try ChessNetwork(arch: arch, bnMode: .training, initialization: initialization,
-                                   bf16CastInForward: bf16CastInForward,
                                    policyTailPrecision: policyTailPrecision,
                                    disableAutoLayoutConversion: disableAutoLayoutConversion,
                                    reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
@@ -2162,9 +2169,8 @@ final class ChessTrainer: @unchecked Sendable {
         }
         // Experiment: when the working-weight sync is split out of the fused
         // executable, build the separate `working = cast(master)` assigns here
-        // (no-op / empty unless splitWorkingWeightSync && bf16). Config D has
-        // no working vars and no masters at all, so no working-sync is built.
-        if splitWorkingWeightSync && !bf16CastInForward {
+        // (no-op / empty unless splitWorkingWeightSync && bf16).
+        if splitWorkingWeightSync {
             self.workingSyncOps = Self.buildWorkingSyncOps(
                 net: net, masterVariables: built.masterVariables, arch: arch)
         }
@@ -2250,9 +2256,9 @@ final class ChessTrainer: @unchecked Sendable {
         // init, not from zero. No-op under `.float32`. Not yet on
         // `executionQueue`, so wrap in a sync hop. The dropout RNG state is
         // seeded in the same hop (no-op on graphs without dropout nodes).
-        executionQueue.sync {
+        try executionQueue.sync {
             self.runSyncMastersOnQueue()
-            self.runDropoutSeedOnQueue()
+            try self.runDropoutSeedOnQueue()
         }
     }
 
@@ -2328,7 +2334,6 @@ final class ChessTrainer: @unchecked Sendable {
 
     private func internalResetNetwork(initialization: WeightInitialization) throws {
         let net = try ChessNetwork(arch: arch, bnMode: .training, initialization: initialization,
-                                   bf16CastInForward: bf16CastInForward,
                                    policyTailPrecision: policyTailPrecision,
                                    disableAutoLayoutConversion: disableAutoLayoutConversion,
                                    reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
@@ -2405,9 +2410,8 @@ final class ChessTrainer: @unchecked Sendable {
             self.assignOps.append(advance)
         }
         // Rebuild the split working-sync ops against the fresh network (stale
-        // ops from the previous net must not be reused). Config D has no
-        // working vars / masters, so no working-sync is built.
-        self.workingSyncOps = (splitWorkingWeightSync && !bf16CastInForward)
+        // ops from the previous net must not be reused).
+        self.workingSyncOps = splitWorkingWeightSync
             ? Self.buildWorkingSyncOps(net: net, masterVariables: built.masterVariables, arch: arch)
             : []
         // Rebuild the scalar feeds against the new network's device so the
@@ -2486,7 +2490,7 @@ final class ChessTrainer: @unchecked Sendable {
         // directly. No-op under `.float32`. Re-seed the dropout RNG state
         // for the new graph as well.
         runSyncMastersOnQueue()
-        runDropoutSeedOnQueue()
+        try runDropoutSeedOnQueue()
         // Re-apply the configured dropout rate to the NEW network. The rate
         // lives in a per-network buffer that is built holding 0, while
         // `_dropoutRate` (the value every reader sees) survives the reset — so
@@ -2653,7 +2657,7 @@ final class ChessTrainer: @unchecked Sendable {
         // `widenForReduction` lifts such a tensor to fp32 *before* the reduce
         // so the accumulator is fp32. It keys off the tensor's own dtype, so
         // it is the identity on anything already fp32 (the whole loss path, a
-        // `.float32` build, config D's fp32 variables).
+        // `.float32` build).
         let widenForReduction: (MPSGraphTensor) -> MPSGraphTensor = { t in
             t.dataType == .float32 ? t : graph.cast(t, to: .float32, name: nil)
         }
@@ -4059,13 +4063,7 @@ final class ChessTrainer: @unchecked Sendable {
         // copy is re-derived each step as `cast(master)`. Under `.float32`
         // there is no separate master (working weights are the master) and
         // this collapses to the prior plain path.
-        // Config D (`network.bf16CastActive`): the persistent weight/stat
-        // variables are stored fp32 (the variable IS the master; the forward
-        // casts each to bf16 at point of use). The optimizer therefore runs
-        // exactly the fp32 path — SGD on the fp32 variable directly, fp32
-        // velocity, NO master, NO working-sync — so `useMaster` is forced
-        // off even though `dtype` is bf16.
-        let useMaster = (dtype != .float32) && !network.bf16CastActive
+        let useMaster = dtype != .float32
         // fp32 zero-init bytes for an fp32 variable of `count` elements.
         func fp32Zeros(_ count: Int) -> Data { Data(count: count * MemoryLayout<Float>.size) }
 
@@ -4489,6 +4487,8 @@ final class ChessTrainer: @unchecked Sendable {
     private func internalTrainStep(batchSize: Int, queueWaitMs: Double = 0) throws -> TrainStepTiming {
         try network.requireLoadedWeights("trainStep")
         let totalStart = CFAbsoluteTimeGetCurrent()
+        let stepIndex = syntheticTrainStepCount
+        syntheticTrainStepCount += 1
 
         // --- Data prep: synthesize random boards, moves, outcomes ---
 
@@ -4574,7 +4574,8 @@ final class ChessTrainer: @unchecked Sendable {
                                 batchSize: batchSize,
                                 // Random-data sweep: keep the full readback so
                                 // its measured step matches historical sweeps.
-                                includeDiagnostics: true
+                                includeDiagnostics: true,
+                                klProbeStepIndex: stepIndex
                             )
                         }
                     }
@@ -4925,7 +4926,11 @@ final class ChessTrainer: @unchecked Sendable {
                 // Diagnostic graph reductions on the diagnostics cadence
                 // (== stats steps when batchStatsInterval > 0; a fixed
                 // fallback when it's 0) — see GPU_UTILIZATION_PLAN.md (Phase 1).
-                includeDiagnostics: includeDiagnostics
+                includeDiagnostics: includeDiagnostics,
+                // The step's position in the run, read on this queue before
+                // the increment below: the same index on resume as in the
+                // uninterrupted run.
+                klProbeStepIndex: self._completedTrainSteps.value
             )
 
             // Count a successfully-completed real-data SGD step, for
@@ -5809,10 +5814,10 @@ final class ChessTrainer: @unchecked Sendable {
             }
             let count = try ChessNetwork.elementCount(of: variable)
             // Masters are fp32 regardless of the compute dtype; working
-            // variables live in the network's storage dtype.
+            // variables live in the compute dtype.
             tensors[name] = readsMasters
                 ? ChessNetwork.readFloatsFP32(from: data, count: count)
-                : ChessNetwork.readFloats(from: data, count: count, dataType: network.weightStorageDataType)
+                : ChessNetwork.readFloats(from: data, count: count, dataType: ChessNetwork.mpsDataType(for: network.arch))
         }
         return LayerHealthLiveState(tensors: tensors, completedTrainSteps: _completedTrainSteps.value)
     }
@@ -5900,23 +5905,81 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
-    /// Run the one-time dropout RNG seed assign on the **current** thread
-    /// (caller owns the queue) — `dropout_rng_state <- philoxState(seed)`.
-    /// The state variable is built zero-filled; without this the per-block
-    /// random draws would all start from the degenerate zero state. No-op
-    /// on graphs without dropout scaffolding (inference networks). Same
-    /// dummy-input feed pattern as `runSyncMastersOnQueue`.
-    private func runDropoutSeedOnQueue() {
+    /// Seed the graph's dropout Philox state from the next draw of the run's
+    /// `dropout` stream, on the **current** thread (caller owns the queue). The
+    /// state variable is built zero-filled; without this the per-block random
+    /// draws would all start from the degenerate zero state. No-op on graphs
+    /// without dropout scaffolding (inference networks).
+    private func runDropoutSeedOnQueue() throws {
+        guard network.dropoutRngStateVariable != nil else { return }
+        // `randomPhiloxStateTensor(withSeed:)` takes a non-negative `Int`.
+        let seed = Int(dropoutStream.next() >> 1)
+        let state = try DropoutPhiloxState.derived(
+            fromSeed: seed, device: network.metalDevice, commandQueue: network.commandQueue
+        )
+        try writeDropoutStateOnQueue(state)
+    }
+
+    /// Write `state` into the graph's dropout Philox state variable, on the
+    /// current thread (caller owns the queue). Same dummy-input feed pattern
+    /// as `runSyncMastersOnQueue`, under the network's weight-access lock like
+    /// the KL probe's separate advance.
+    private func writeDropoutStateOnQueue(_ state: DropoutPhiloxState) throws {
         guard let seedOp = network.dropoutRngSeedOp,
-              let stateVar = network.dropoutRngStateVariable else { return }
+              let stateVar = network.dropoutRngStateVariable,
+              let stateFeed = network.dropoutRngStateFeedPlaceholder else {
+            throw DropoutPhiloxStateError.noDropoutScaffolding
+        }
+        network.weightAccessLock.wait()
+        defer { network.weightAccessLock.signal() }
         autoreleasepool {
             _ = network.graph.run(
                 with: network.commandQueue,
-                feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
+                feeds: [
+                    network.inputPlaceholder: network.dummyInferenceInputTensorData,
+                    stateFeed: state.tensorData(device: network.metalDevice)
+                ],
                 targetTensors: [stateVar],
                 targetOperations: [seedOp]
             )
         }
+    }
+
+    /// Read the graph's dropout Philox state, on the current thread (caller
+    /// owns the queue).
+    private func readDropoutStateOnQueue() throws -> DropoutPhiloxState {
+        guard let stateVar = network.dropoutRngStateVariable else {
+            throw DropoutPhiloxStateError.noDropoutScaffolding
+        }
+        network.weightAccessLock.wait()
+        defer { network.weightAccessLock.signal() }
+        let result = autoreleasepool {
+            network.graph.run(
+                with: network.commandQueue,
+                feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
+                targetTensors: [stateVar],
+                targetOperations: nil
+            )
+        }
+        guard let data = result[stateVar] else {
+            throw DropoutPhiloxStateError.missingResult
+        }
+        return try DropoutPhiloxState(reading: data)
+    }
+
+    /// The dropout Philox state the next training step will start from.
+    /// Serialized behind any step in flight on `executionQueue`; for a state
+    /// consistent with saved weights the caller pauses training first, as for
+    /// `exportTrainerWeights()`.
+    func captureDropoutState() async throws -> DropoutPhiloxState {
+        try await enqueue { try self.readDropoutStateOnQueue() }
+    }
+
+    /// Make `state` the dropout Philox state the next training step starts
+    /// from, so the run continues the mask sequence `state` was captured in.
+    /// Caller pauses training first.
+    func restoreDropoutState(_ state: DropoutPhiloxState) async throws {
+        try await enqueue { try self.writeDropoutStateOnQueue(state) }
     }
 
     /// Suspend until every unit of work already enqueued on `executionQueue` has
@@ -6450,20 +6513,17 @@ final class ChessTrainer: @unchecked Sendable {
         return built
     }
 
-    /// Probe-local step counter, incremented once per executed training step.
-    ///
-    /// Deliberately NOT `_completedTrainSteps`: that counter is maintained by
-    /// the session-level training loop and stays at 0 under harnesses that
-    /// call `trainStep` directly (the batch-size sweep is one), which silently
-    /// turns `value % interval == 0` into "every step". Owning the counter
-    /// here makes the interval mean the same thing on every path.
-    ///
-    /// A plain `var`, not a `SyncBox`, matching `trainingExecutables` and
-    /// `feedCache`: it is read-modify-written once per step from
-    /// `runPreparedStep`, which only ever runs on the serial `executionQueue`.
-    /// A lock here would advertise a concurrency guarantee that the
-    /// read-then-write pattern does not actually provide.
-    private var klProbeStepCounter: Int = 0
+    /// Whether the step with 0-based index `stepIndex` runs the KL probe:
+    /// the first step of a fresh run, then every `interval` steps; never when
+    /// `interval` is 0. The index is the step's own position in the run
+    /// (`completedTrainSteps` before it, or the random-data harness's count),
+    /// not a counter of this process, so a resumed run probes on the same
+    /// steps the uninterrupted run would have — and since the probe step
+    /// changes when the dropout advance is issued (never how many), the
+    /// schedule must not depend on when the process started.
+    static func isKLProbeStep(stepIndex: Int, interval: Int) -> Bool {
+        interval > 0 && stepIndex % interval == 0
+    }
 
     /// Walk backward from `targets` through producing operations' input
     /// tensors, returning every leaf tensor with no producing operation
@@ -6591,7 +6651,8 @@ final class ChessTrainer: @unchecked Sendable {
         totalStart: CFAbsoluteTime,
         batchSize: Int,
         vBaselineOverride: MPSGraphTensorData? = nil,
-        includeDiagnostics: Bool
+        includeDiagnostics: Bool,
+        klProbeStepIndex: Int
     ) throws -> TrainStepTiming {
         // The training step is the ONE execution that applies dropout, so it is
         // the one that binds the live rate; every other consumer of this graph
@@ -6669,13 +6730,12 @@ final class ChessTrainer: @unchecked Sendable {
         // block below must agree: the stash runs as a target operation of the
         // training executable, so a step that stashes and a step that probes
         // have to be the same step.
-        let klStepIndex = klProbeStepCounter
-        klProbeStepCounter += 1
+        let klStepIndex = klProbeStepIndex
         // Snapshot once: this is live-tunable, and the executable choice and
         // the probe block below must agree on a single value even if the
         // parameter changes mid-step.
         let klInterval = klProbeInterval
-        let isKLProbeStep = klInterval > 0 && klStepIndex % klInterval == 0
+        let isKLProbeStep = Self.isKLProbeStep(stepIndex: klStepIndex, interval: klInterval)
         // Phase 2: run through a compiled MPSGraphExecutable (cached per
         // batchSize × target set) rather than `graph.run`, which re-derives the
         // execution plan each call. The executable shares the graph's weight

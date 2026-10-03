@@ -78,7 +78,7 @@ final class RuntimeArchReachTests: XCTestCase {
         // The trainer synthesizes its own random boards at arch.inputPlanes ×
         // 64; a basic20 trainer must stage/feed 1280-wide boards into its
         // 1280-wide input placeholder. A stride mismatch would crash here.
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: basic20Arch())
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: basic20Arch())
         let timing = try await trainer.trainStep(batchSize: 8)
         XCTAssertTrue(timing.policyLoss.isFinite, "basic20 policy loss must be finite")
         XCTAssertTrue(timing.valueLoss.isFinite, "basic20 value loss must be finite")
@@ -190,7 +190,7 @@ final class RuntimeArchReachTests: XCTestCase {
         // categorical CE (oneHot depth 3, 3-column valueProbs slices), which
         // is malformed for a 1-logit tanh head. The MSE branch must run and
         // produce a finite loss.
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: scalarTanhArch())
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: scalarTanhArch())
         let timing = try await trainer.trainStep(batchSize: 8)
         XCTAssertTrue(timing.valueLoss.isFinite, "scalar tanh value loss (MSE) must be finite")
         XCTAssertGreaterThanOrEqual(timing.valueLoss, 0, "MSE is non-negative")
@@ -272,7 +272,7 @@ final class RuntimeArchReachTests: XCTestCase {
         // A bf16 trainer must stage/feed bf16 through the master-weights path
         // and produce finite losses; a precision-threading bug (wrong dtype on
         // a buffer or placeholder) would surface as NaN/Inf or a crash here.
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: bf16Arch())
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: bf16Arch())
         let timing = try await trainer.trainStep(batchSize: 8)
         XCTAssertTrue(timing.policyLoss.isFinite, "bf16 policy loss must be finite")
         XCTAssertTrue(timing.valueLoss.isFinite, "bf16 value loss must be finite")
@@ -329,7 +329,7 @@ final class RuntimeArchReachTests: XCTestCase {
         // the training graph (not just inference) to prove it builds and runs.
         var arch = NetworkArchitecture.current
         arch.activationFunction = .gelu
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: arch)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: arch)
         let timing = try await trainer.trainStep(batchSize: 8)
         XCTAssertTrue(timing.policyLoss.isFinite, "gelu policy loss must be finite")
         XCTAssertTrue(timing.valueLoss.isFinite, "gelu value loss must be finite")

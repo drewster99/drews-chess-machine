@@ -373,7 +373,7 @@ final class LichessBotDataLayerHardeningTests: XCTestCase {
         let events = SyncBox<[LichessBotReconcilerEvent]>([])
         let reconciler = LichessBotReconciler(
             api: api, store: makeStore(), time: time, settingsProvider: { LichessBotSettings.testBaseline() },
-            isGameActive: { _ in false }, onEvent: { event in events.modify { $0.append(event) } }
+            hasLiveFilingOwner: { _ in false }, onEvent: { event in events.modify { $0.append(event) } }
         )
         await reconciler.enqueue(gameID: "g1")
         let run = Task { await reconciler.run() }

@@ -569,6 +569,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         // 0.29 and the SE gate sits near 0.5, so branch weights otherwise see
         // only ≈ 0.14× gradient), keeping every gradient comfortably nonzero.
         let trainer = try ChessTrainer(
+            dropoutStream: DCMRandom(seed: 1),
             learningRate: 10.0,
             weightDecayC: 0,
             sqrtBatchScalingForLR: false,
@@ -629,7 +630,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer()
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1))
         // Initial running stats — exportWeights returns trainables
         // followed by running stats.
         let nTrain = trainer.network.trainableVariables.count
@@ -685,7 +686,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer()
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1))
 
         // Run many steps on synthesized random data via the public path.
         // We're not asserting clean monotonic loss decrease (random-data

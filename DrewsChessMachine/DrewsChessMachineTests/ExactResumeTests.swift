@@ -206,7 +206,7 @@ final class ExactResumeTests: XCTestCase {
         resumedTrainerHyperparameters: (TrainerResumeSnapshot) -> TrainerHyperparameters
     ) async throws {
         let original = originalRunHyperparameters()
-        let uninterrupted = try ChessTrainer(hyperparameters: original, arch: .current)
+        let uninterrupted = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: original, arch: .current)
         let buffer = makeReplayBuffer(arch: .current)
         _ = try await train(uninterrupted, steps: stepsBeforeSave, buffer: buffer)
         XCTAssertGreaterThan(uninterrupted.completedTrainSteps, original.lrWarmupSteps, "\(path): save must land past warmup")
@@ -217,7 +217,7 @@ final class ExactResumeTests: XCTestCase {
         XCTAssertEqual(reloaded.schedule, saved.schedule, "\(path): schedule round trip")
         assertBitExact(reloaded.trainerWeights, saved.trainerWeights, "\(path): trainer state round trip")
 
-        let resumed = try ChessTrainer(hyperparameters: resumedTrainerHyperparameters(reloaded), arch: .current)
+        let resumed = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: resumedTrainerHyperparameters(reloaded), arch: .current)
         try await resume(resumed, reloaded)
 
         // Restored state, bit-exact, before any step.
@@ -229,7 +229,7 @@ final class ExactResumeTests: XCTestCase {
         // Warmup does not re-run: the first resumed step is fed the full,
         // un-ramped LR the uninterrupted run is fed — and that differs from
         // what a trainer whose clock restarted would be fed.
-        let restartedClock = try ChessTrainer(hyperparameters: original, arch: .current)
+        let restartedClock = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: original, arch: .current)
         XCTAssertNotEqual(
             restartedClock.effectiveLearningRate(forBatchSize: batchSize),
             uninterrupted.effectiveLearningRate(forBatchSize: batchSize),
@@ -359,7 +359,9 @@ final class ExactResumeTests: XCTestCase {
                 )
                 XCTAssertEqual(resolved.schedule.completedTrainSteps, snapshot.schedule.completedTrainSteps)
                 XCTAssertNotEqual(resolved.schedule.completedTrainSteps, loaded.state.trainingSteps)
-                return TrainerResumeSnapshot(trainerWeights: loaded.trainerFile.weights, schedule: resolved.schedule)
+                return TrainerResumeSnapshot(
+                    trainerWeights: loaded.trainerFile.weights, schedule: resolved.schedule, dropoutRNG: .notInCheckpoint
+                )
             },
             resume: { trainer, snapshot in
                 // The GUI puts the session's warmup and cycle on the trainer

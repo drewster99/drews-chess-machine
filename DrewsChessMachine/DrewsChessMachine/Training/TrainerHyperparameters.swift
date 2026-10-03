@@ -148,13 +148,14 @@ extension ChessTrainer {
     /// the ones the initializer does not take (dropout, the cycle, the stats
     /// and KL-probe intervals), so no caller has to remember which is which.
     convenience init(
+        dropoutStream: DCMRandom,
         hyperparameters: TrainerHyperparameters,
         arch: NetworkArchitecture,
         initialization: WeightInitialization = .drawnSeed(),
-        bf16CastInForward: Bool = false,
         policyTailPrecision: ChessNetwork.PolicyTailPrecision = .process
     ) throws {
         try self.init(
+            dropoutStream: dropoutStream,
             learningRate: hyperparameters.learningRate,
             entropyRegularizationCoeff: hyperparameters.entropyRegularizationCoeff,
             drawPenalty: hyperparameters.drawPenalty,
@@ -174,7 +175,6 @@ extension ChessTrainer {
             lrWarmupSteps: hyperparameters.lrWarmupSteps,
             arch: arch,
             initialization: initialization,
-            bf16CastInForward: bf16CastInForward,
             policyTailPrecision: policyTailPrecision
         )
         hyperparameters.apply(to: self)

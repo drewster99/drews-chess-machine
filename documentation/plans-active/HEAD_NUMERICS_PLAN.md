@@ -79,7 +79,7 @@ Known hot spots, checked by name:
   - Starting at the pre-BN normalize cuts this 7–14×, to KL 2.4–2.9e-4.
   - Source: `documentation/research/fp16-feasibility/`.
 - The weights stay stored in their current dtype. `Models/` checkpoints are bf16-exact, so casting them up loses nothing.
-- **Config D** (`bf16CastInForward`: fp32-stored variables cast to bf16 in the forward pass): the tail skips that cast, so it reads the fp32 variables directly.
+- **Config D** (`bf16CastInForward`: fp32-stored variables cast to bf16 in the forward pass): the tail skips that cast, so it reads the fp32 variables directly. *(Config D was removed on 2026-10-02 — decision D-10, issue #9 — so every variable is now stored in the compute dtype and widened into the tail.)*
 - One builder serves every path: inference, batched self-play, arena, UCI, the bot, probes and the trainer. So this covers them all. See the inventory for the consumers to update.
 
 **1b. Recenter the value head when a checkpoint is decoded** (one exact calculation, no gradual decay, no migration of saved files).

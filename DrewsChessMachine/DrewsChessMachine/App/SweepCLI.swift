@@ -39,7 +39,10 @@ enum SweepCLI {
             rows = try syncWait {
                 // Fresh trainer ⇒ fresh `ChessNetwork` (built in the init), so
                 // no resetNetwork / model load is needed.
-                let trainer = try ChessTrainer(initialization: .drawnSeed())
+                let trainer = try ChessTrainer(
+                    dropoutStream: RunMasterSeed.systemDrawn(context: "sweep").generator(.dropout),
+                    initialization: .drawnSeed()
+                )
                 // Honour the KL-probe cadence here too. The trainer's own
                 // property default would otherwise silently win on this path
                 // (the sweep never goes through `SessionController`, which is

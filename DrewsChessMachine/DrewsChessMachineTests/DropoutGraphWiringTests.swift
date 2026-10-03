@@ -90,7 +90,7 @@ final class DropoutGraphWiringTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(arch: archWithDropout())
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: archWithDropout())
         let live = try XCTUnwrap(trainer.network.dropoutRateLiveNDArray)
         let zero = try XCTUnwrap(trainer.network.dropoutRateZeroTensorData).mpsndarray()
 
@@ -116,7 +116,7 @@ final class DropoutGraphWiringTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(arch: archWithDropout())
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: archWithDropout())
         trainer.dropoutRate = 0.3
         // No wait needed: the setter stores `_dropoutRate` synchronously, and
         // `resetNetwork()` is itself a FIFO barrier on the same queue whose last
@@ -152,7 +152,7 @@ final class DropoutGraphWiringTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer(arch: archWithDropout())
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: archWithDropout())
         XCTAssertNil(trainer.lastStepBoundLiveDropoutRate,
                      "nothing should be recorded before the first step")
 
@@ -184,7 +184,7 @@ final class DropoutGraphWiringTests: XCTestCase {
             throw XCTSkip("Metal not available")
         }
         let arch = archWithDropout()
-        let trainer = try ChessTrainer(arch: arch)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: arch)
         // Fully serialize the baseline so the result buffer has settled before
         // the host reads it (the default path commits without waiting).
         trainer.network.blockingValueBaseline = true

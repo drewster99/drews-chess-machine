@@ -118,7 +118,7 @@ final class PolicyTailPrecisionTests: XCTestCase {
 
     func testTrainerStepsWithMixedFinalProjection() async throws {
         try requireMetal()
-        let trainer = try ChessTrainer(arch: arch(.bFloat16), policyTailPrecision: .mixedFinalProjection)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: arch(.bFloat16), policyTailPrecision: .mixedFinalProjection)
         XCTAssertEqual(trainer.network.policyTailPrecision, .mixedFinalProjection)
         let timing = try await trainer.trainStep(batchSize: 32)
         XCTAssertTrue(timing.loss.isFinite, "loss must be finite")

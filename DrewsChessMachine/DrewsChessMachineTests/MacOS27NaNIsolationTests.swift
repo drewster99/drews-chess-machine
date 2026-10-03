@@ -64,7 +64,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
                        optLevel: MPSGraphOptimization = .level1,
                        file: StaticString = #filePath, line: UInt = #line) async throws {
         try requireMetal()
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: arch(precision),
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: arch(precision),
                                        executableOptimizationLevel: optLevel)
         for s in 0..<steps {
             do {
@@ -112,7 +112,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
     private func sweepNoLayoutConv(_ precision: ComputeDataType, batch: Int, steps: Int,
                                    file: StaticString = #filePath, line: UInt = #line) async throws {
         try requireMetal()
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: arch(precision),
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: arch(precision),
                                        disableAutoLayoutConversion: true)
         for s in 0..<steps {
             do {
@@ -154,7 +154,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
         try requireMetal()
         guard #available(macOS 26.0, *) else { throw XCTSkip("reducedPrecisionFastMath needs macOS 26") }
         // .none (raw 0) forbids all reduced-precision conv shortcuts.
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: arch(precision),
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: arch(precision),
                                        reducedPrecisionFastMathRaw: MPSGraphReducedPrecisionFastMath.none.rawValue)
         for s in 0..<steps {
             do {
@@ -394,7 +394,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
     private func envComboFirstNaNStep(mask: Int, maxSteps: Int) async throws -> Int {
         try requireMetal()
         applyEnvCombo(mask)
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: arch(.bFloat16))
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: arch(.bFloat16))
         for s in 0..<maxSteps {
             do {
                 let t = try await trainer.trainStep(batchSize: 64)
@@ -433,7 +433,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
 
     private func logTrajectory(_ precision: ComputeDataType, batch: Int, steps: Int) async throws {
         try requireMetal()
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: arch(precision))
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: arch(precision))
         SessionLogger.shared.log("[VTRAJ] BEGIN precision=\(precision) batch=\(batch) steps=\(steps)")
         for s in 0..<steps {
             do {
@@ -528,7 +528,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
     private func runRealPathTrajectory(_ precision: ComputeDataType, blocking: Bool, steps: Int) async throws {
         try requireMetal()
         let a = arch(precision)
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: a)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: a)
         trainer.network.blockingValueBaseline = blocking
         let buf = populateReplayBuffer(a, positions: 4096)
         SessionLogger.shared.log("[REALPATH] BEGIN \(precision) blocking=\(blocking) steps=\(steps)")
@@ -560,7 +560,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
 
     func test_valueTrajectory_fp32_lowLR() async throws {
         try requireMetal()
-        let trainer = try ChessTrainer(learningRate: 1e-5, lrWarmupSteps: 0, arch: arch(.float32))
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), learningRate: 1e-5, lrWarmupSteps: 0, arch: arch(.float32))
         SessionLogger.shared.log("[VTRAJ] BEGIN fp32 lowLR=1e-5 batch=64")
         for s in 0..<40 {
             let t = try await trainer.trainStep(batchSize: 64)
@@ -595,7 +595,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
 
     func test_masterVsWorking_bf16_batch64() async throws {
         try requireMetal()
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: arch(.bFloat16))
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: arch(.bFloat16))
         SessionLogger.shared.log("[MVW] BEGIN bf16 batch=64")
         // Pre-step (post-construction, post-seed) coherence: masters were just
         // seeded = cast(working), so these MUST match within bf16 rounding. A gap
@@ -651,96 +651,49 @@ final class MacOS27NaNIsolationTests: XCTestCase {
         SessionLogger.shared.log("[MVW] END")
     }
 
-    // MARK: - Config D: fp32-stored weights, cast-to-bf16-in-forward
-    //
-    // The experimental macOS-27-beta workaround. Same finiteness sweep as
-    // `sweep`, but the trainer is built with `bf16CastInForward: true` over a
-    // bf16 arch — so every weight/BN variable is stored fp32 and cast to bf16
-    // at point of use, while the optimizer runs the plain fp32 path (no bf16
-    // working var, no master, no working-sync). If these stay finite where the
-    // canonical bf16 cells go NaN, config D dodges the divergence.
-
-    /// `sweep` parallel for config D: fresh `bf16CastInForward` trainer over a
-    /// bf16 arch. Same finite-loss / finite-grad assertions over `steps`.
-    private func sweepD(batch: Int, steps: Int,
-                        file: StaticString = #filePath, line: UInt = #line) async throws {
-        try requireMetal()
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: arch(.bFloat16),
-                                       bf16CastInForward: true)
-        for s in 0..<steps {
-            do {
-                let t = try await trainer.trainStep(batchSize: batch)
-                XCTAssertTrue(t.loss.isFinite,
-                    "[configD batch=\(batch)] loss non-finite at step \(s): \(t.loss)",
-                    file: file, line: line)
-                XCTAssertTrue(t.gradGlobalNorm.isFinite,
-                    "[configD batch=\(batch)] gradNorm non-finite at step \(s): \(t.gradGlobalNorm)",
-                    file: file, line: line)
-            } catch {
-                XCTFail("[configD batch=\(batch)] trainStep threw at step \(s): \(error)",
-                        file: file, line: line)
-                return
-            }
-        }
-    }
-
-    func test_D_bf16_batch64_steps30() async throws { try await sweepD(batch: 64, steps: 30) }
-    func test_D_bf16_batch1_steps30()  async throws { try await sweepD(batch: 1,  steps: 30) }
-    // Longer + production-batch (32) D sweeps. The canonical bf16 master path
-    // diverges by step ~5–6 at batch 64; surviving 150 steps here is strong
-    // evidence config D actually dodges the bug at the batch sizes real training
-    // uses (32/64), not just past the onset.
-    func test_D_bf16_batch64_steps150() async throws { try await sweepD(batch: 64, steps: 150) }
-    func test_D_bf16_batch32_steps150() async throws { try await sweepD(batch: 32, steps: 150) }
-
     /// Production-like config: the live TrainingParameters defaults — LR 0.01,
     /// momentum 0.9, value label smoothing 0.013, draw penalty 0, sqrt-batch LR
-    /// scaling on (base 4096) — with a 100-step warmup. `castInForward==true`
-    /// selects config D (bf16 forward, fp32 weight storage); else the named
+    /// scaling on (base 4096) — with a 100-step warmup, on the named
     /// precision's normal path. Still synthetic random data, so this is a
     /// numerical-stability probe (does the bf16 path go NaN), not learning.
-    private func sweepProd(_ precision: ComputeDataType, castInForward: Bool,
+    private func sweepProd(_ precision: ComputeDataType,
                            batch: Int, steps: Int,
                            file: StaticString = #filePath, line: UInt = #line) async throws {
         try requireMetal()
         let trainer = try ChessTrainer(
+            dropoutStream: DCMRandom(seed: 1),
             learningRate: 0.01,
             drawPenalty: 0.0,
             valueLabelSmoothingEpsilon: 0.013,
             momentumCoeff: 0.9,
             lrWarmupSteps: 100,
-            arch: arch(precision),
-            bf16CastInForward: castInForward
+            arch: arch(precision)
         )
         for s in 0..<steps {
             do {
                 let t = try await trainer.trainStep(batchSize: batch)
                 XCTAssertTrue(t.loss.isFinite,
-                    "[prod \(precision) cast=\(castInForward) batch=\(batch)] loss non-finite at step \(s): \(t.loss)",
+                    "[prod \(precision) batch=\(batch)] loss non-finite at step \(s): \(t.loss)",
                     file: file, line: line)
                 XCTAssertTrue(t.gradGlobalNorm.isFinite,
-                    "[prod \(precision) cast=\(castInForward) batch=\(batch)] gradNorm non-finite at step \(s): \(t.gradGlobalNorm)",
+                    "[prod \(precision) batch=\(batch)] gradNorm non-finite at step \(s): \(t.gradGlobalNorm)",
                     file: file, line: line)
             } catch {
-                XCTFail("[prod \(precision) cast=\(castInForward) batch=\(batch)] trainStep threw at step \(s): \(error)",
+                XCTFail("[prod \(precision) batch=\(batch)] trainStep threw at step \(s): \(error)",
                         file: file, line: line)
                 return
             }
         }
     }
 
-    // Config D, production-like config, 1000 steps each.
-    func test_Dprod_bf16_batch64_steps1000() async throws { try await sweepProd(.bFloat16, castInForward: true, batch: 64, steps: 1000) }
-    func test_Dprod_bf16_batch32_steps1000() async throws { try await sweepProd(.bFloat16, castInForward: true, batch: 32, steps: 1000) }
-    func test_Dprod_bf16_batch1_steps1000()  async throws { try await sweepProd(.bFloat16, castInForward: true, batch: 1,  steps: 1000) }
     // fp32 controls at the IDENTICAL config: if these also NaN, a failure is the
-    // random-data + aggressive-LR explosion, not a D/bf16-specific problem.
-    func test_prodControl_fp32_batch64_steps1000() async throws { try await sweepProd(.float32, castInForward: false, batch: 64, steps: 1000) }
-    func test_prodControl_fp32_batch32_steps1000() async throws { try await sweepProd(.float32, castInForward: false, batch: 32, steps: 1000) }
-    func test_prodControl_fp32_batch1_steps1000()  async throws { try await sweepProd(.float32, castInForward: false, batch: 1,  steps: 1000) }
+    // random-data + aggressive-LR explosion, not a bf16-specific problem.
+    func test_prodControl_fp32_batch64_steps1000() async throws { try await sweepProd(.float32, batch: 64, steps: 1000) }
+    func test_prodControl_fp32_batch32_steps1000() async throws { try await sweepProd(.float32, batch: 32, steps: 1000) }
+    func test_prodControl_fp32_batch1_steps1000()  async throws { try await sweepProd(.float32, batch: 1,  steps: 1000) }
     // Canonical bf16 (working-variable master path) at the same config — the
-    // reference that the divergence bug still bites here, so a D pass is meaningful.
-    func test_prodCanonical_bf16_batch64_steps1000() async throws { try await sweepProd(.bFloat16, castInForward: false, batch: 64, steps: 1000) }
+    // reference that the divergence bug still bites here.
+    func test_prodCanonical_bf16_batch64_steps1000() async throws { try await sweepProd(.bFloat16, batch: 64, steps: 1000) }
 
     // MARK: bf16 × optimizationLevel .level0 × {batch 1,64} × {2,4 steps}
     // Theory #4/#5: macOS/Xcode 27 changed the MPSGraph compilation
@@ -774,7 +727,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
     /// 30 steps, default warmup). Asserts loss stays finite and bounded.
     func test_fp32_parallel_lossDecreasesOverManySteps() async throws {
         try requireMetal()
-        let trainer = try ChessTrainer(arch: arch(.float32))
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: arch(.float32))
         for s in 0..<30 {
             let t = try await trainer.trainStep(batchSize: 64)
             XCTAssertTrue(t.loss.isFinite, "fp32 loss non-finite at step \(s): \(t.loss)")
@@ -787,7 +740,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
     /// 3 steps): finite throughout AND at least one BN running stat drifts.
     func test_fp32_parallel_bnRunningStatsDrift() async throws {
         try requireMetal()
-        let trainer = try ChessTrainer(arch: arch(.float32))
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: arch(.float32))
         let nTrain = trainer.network.trainableVariables.count
         let before = try await trainer.network.exportWeights()
         for s in 0..<3 {
@@ -821,9 +774,9 @@ final class MacOS27NaNIsolationTests: XCTestCase {
         try requireMetal()
         let ceiling = Float(log(Double(ChessNetwork.policySize)))   // ≈ 8.49
 
-        let fp32 = try await ChessTrainer(lrWarmupSteps: 0, arch: arch(.float32))
+        let fp32 = try await ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: arch(.float32))
             .trainStep(batchSize: 64)
-        let bf16 = try await ChessTrainer(lrWarmupSteps: 0, arch: arch(.bFloat16))
+        let bf16 = try await ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: arch(.bFloat16))
             .trainStep(batchSize: 64)
 
         for (tag, t) in [("fp32", fp32), ("bf16", bf16)] {
@@ -866,7 +819,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
     //  so three independent trainers each reproduce it; no shared-state needed.)
     private func stepOnceAndExport(
     ) async throws -> (masters: [[Float]], velocity: [[Float]], working: [[Float]]) {
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: arch(.bFloat16))
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: arch(.bFloat16))
         let baseCount = trainer.network.trainableVariables.count
             + trainer.network.bnRunningStatsVariables.count
         _ = try await trainer.trainStep(batchSize: 64)
@@ -916,7 +869,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
     /// ~/Library/Logs/DrewsChessMachine/cast_probe_report.txt.
     func test_bf16_step1_pinpointNonFiniteCasts() async throws {
         try requireMetal()
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: arch(.bFloat16))
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: arch(.bFloat16))
         let trainables = trainer.network.trainableVariables
         let bnStats = trainer.network.bnRunningStatsVariables
         let baseCount = trainables.count + bnStats.count
@@ -1033,7 +986,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
         g.count = 1
         a.blockGroups = [g]
 
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: a)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: a)
         let trainables = trainer.network.trainableVariables
         let bnStats = trainer.network.bnRunningStatsVariables
         _ = try await trainer.trainStep(batchSize: 64)
@@ -1199,6 +1152,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
         a.blockGroups = [g]
 
         let trainer = try ChessTrainer(
+            dropoutStream: DCMRandom(seed: 1),
             learningRate: 0, weightDecayC: 0, momentumCoeff: 0,
             lrWarmupSteps: 0, arch: a)
         let trainables = trainer.network.trainableVariables
@@ -1299,7 +1253,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
             return a
         }
         func worstNonFiniteOver16Steps(split: Bool) async throws -> Int {
-            let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: singleBlockBf16(),
+            let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: singleBlockBf16(),
                                            splitWorkingWeightSync: split)
             var worst = 0
             for _ in 0..<8 {
@@ -1341,7 +1295,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
     // still goes NaN, timing is exonerated and the fault is purely numeric.
     func test_bf16_batch64_steps4_withDelayBetweenSteps() async throws {
         try requireMetal()
-        let trainer = try ChessTrainer(lrWarmupSteps: 0, arch: arch(.bFloat16))
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: arch(.bFloat16))
         for s in 0..<4 {
             let t = try await trainer.trainStep(batchSize: 64)
             XCTAssertTrue(t.loss.isFinite, "bf16+delay loss non-finite at step \(s): \(t.loss)")

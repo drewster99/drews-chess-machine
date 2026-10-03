@@ -19,11 +19,19 @@ enum LichessBotReconcilerEvent: Sendable {
     /// Writing the record failed.
     case finalizeFailed(gameID: String, error: String)
     /// The game can't be filed as things stand: its journal or export can't
-    /// make a record, or Lichess has no export for a game the journal doesn't
-    /// show as aborted. Attempts stop. A journal still in `InProgress/` stays
-    /// there, so the recovery when the bot next goes online tries once more
-    /// (an update may have fixed the cause).
+    /// make a record, a record filed for it doesn't decode, or Lichess has no
+    /// export for a game the journal doesn't show as aborted. Attempts stop.
+    /// A journal still in `InProgress/` stays there, so the recovery when the
+    /// bot next goes online tries once more (an update may have fixed the
+    /// cause).
     case quarantined(gameID: String, reason: String)
+    /// The game was already filed (by another path, or before this enqueue
+    /// landed): nothing was done, and nothing needs doing.
+    case alreadyFiled(gameID: String)
+    /// The game has no journal in `InProgress/` and no record: there is
+    /// nothing to file and nothing any later attempt could file. Dropped
+    /// from the queue.
+    case nothingToFile(gameID: String, reason: String)
     case stopped(reason: String)
 }
 
@@ -37,13 +45,24 @@ enum LichessBotReconcilerEvent: Sendable {
 /// window before the game is marked unreconciled and retried slowly from
 /// then on. A failure no retry can fix (a journal or export that can't make
 /// a record) quarantines the game instead: one alarm, and no more attempts
-/// until the bot next goes online. A game that is still being played by a session is dropped
-/// from the queue; its session's end enqueues it again.
+/// until the bot next goes online.
 ///
-/// Launch recovery enqueues every leftover `InProgress/` journal: a game
-/// still live comes back as a live export (and its `gameStart` restarts
-/// its session), while a game that ended while the app was down is
-/// finalized from its journal plus the export.
+/// **One decider.** The reconciler is the only place that decides whether a
+/// game is filed now. A game with a live filing owner — a session playing
+/// it or still starting, or the controller still collecting its post-game
+/// chat — is dropped from the queue, and that owner enqueues it again when
+/// it is done. The owner is checked before the export and again just before
+/// filing, since the export round trip can outlast a session starting or a
+/// finish being recorded. Filing is idempotent: before any export, the files
+/// say whether the game still has a journal to file; an already-filed game
+/// is reported and dropped, so a game handed over twice (launch recovery
+/// listing it just before another path filed it) is never exported again or
+/// quarantined for a journal that is already filed.
+///
+/// Launch recovery hands every leftover `InProgress/` journal over: a game
+/// still live is left to its session (or comes back as a live export), while
+/// a game that ended while the app was down is finalized from its journal
+/// plus the export.
 actor LichessBotReconciler {
     private enum ItemState {
         /// Inside its retry window.
@@ -73,7 +92,10 @@ actor LichessBotReconciler {
     private let store: LichessBotRecordStore
     private let time: any LichessBotTimeSource
     private let settingsProvider: @Sendable () async -> LichessBotSettings
-    private let isGameActive: @Sendable (String) async -> Bool
+    /// Whether something else still owns the game's filing: a session
+    /// playing it (or starting one), or the controller collecting its
+    /// post-game chat. That owner enqueues the game when it is done.
+    private let hasLiveFilingOwner: @Sendable (String) async -> Bool
     private let onEvent: @Sendable (LichessBotReconcilerEvent) -> Void
 
     private var items: [String: Item] = [:]
@@ -91,14 +113,14 @@ actor LichessBotReconciler {
         store: LichessBotRecordStore,
         time: any LichessBotTimeSource,
         settingsProvider: @escaping @Sendable () async -> LichessBotSettings,
-        isGameActive: @escaping @Sendable (String) async -> Bool,
+        hasLiveFilingOwner: @escaping @Sendable (String) async -> Bool,
         onEvent: @escaping @Sendable (LichessBotReconcilerEvent) -> Void
     ) {
         self.api = api
         self.store = store
         self.time = time
         self.settingsProvider = settingsProvider
-        self.isGameActive = isGameActive
+        self.hasLiveFilingOwner = hasLiveFilingOwner
         self.onEvent = onEvent
     }
 
@@ -184,8 +206,35 @@ actor LichessBotReconciler {
 
     /// One export attempt. Returns a reason when the reconciler must stop.
     private func attempt(_ gameID: String) async -> String? {
-        if await isGameActive(gameID) {
+        if await hasLiveFilingOwner(gameID) {
             items[gameID] = nil
+            return nil
+        }
+        let filingState: LichessBotFilingState
+        do {
+            filingState = try await store.filingState(gameID: gameID)
+        } catch {
+            if Self.isPermanentFilingFailure(error) {
+                quarantine(gameID, reason: "checking the game's files failed: \(error.localizedDescription)")
+            } else {
+                onEvent(.finalizeFailed(gameID: gameID, error: "checking the game's files: \(error.localizedDescription)"))
+                markUnreconciled(gameID, reason: "checking the game's files failed")
+            }
+            return nil
+        }
+        switch filingState {
+        case .journalInProgress:
+            break
+        case .filed:
+            items[gameID] = nil
+            onEvent(.alreadyFiled(gameID: gameID))
+            return nil
+        case .filedButUnreadable(let path, let error):
+            quarantine(gameID, reason: "a record filed for it doesn't decode (\(path): \(error))")
+            return nil
+        case .missing:
+            items[gameID] = nil
+            onEvent(.nothingToFile(gameID: gameID, reason: "it has no journal in InProgress/ and no filed record"))
             return nil
         }
         lastFetchAt = time.now()
@@ -262,6 +311,13 @@ actor LichessBotReconciler {
     }
 
     private func finalize(_ gameID: String, export: LichessBotGameExport?, exportUnavailableReason: String?) async {
+        // The export (or the 404 path's journal read) can outlast a session
+        // starting for the game or the controller recording its finish: a
+        // game that gained an owner meanwhile is left to it.
+        if await hasLiveFilingOwner(gameID) {
+            items[gameID] = nil
+            return
+        }
         do {
             let finalized = try await store.finalize(gameID: gameID, export: export, exportUnavailableReason: exportUnavailableReason)
             items[gameID] = nil
