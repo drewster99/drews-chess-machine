@@ -50,8 +50,12 @@ enum LichessBotReconcilerEvent: Sendable {
 /// **One decider.** The reconciler is the only place that decides whether a
 /// game is filed now. A game with a live filing owner — a session playing
 /// it or still starting, or the controller still collecting its post-game
-/// chat — is dropped from the queue, and that owner enqueues it again when
-/// it is done. The owner is checked before the export and again just before
+/// chat — is dropped from the queue, and is enqueued again when that owner
+/// is done: a session that saw its game finish hands it over through the
+/// journal's finish (the controller files it after the post-game chat
+/// fetches, or at once in a drain), and a session that ended without seeing
+/// a finish (its game stream answered 404) is enqueued by the controller
+/// when the manager reports the session's end. The owner is checked before the export and again just before
 /// filing, since the export round trip can outlast a session starting or a
 /// finish being recorded. Filing is idempotent: before any export, the files
 /// say whether the game still has a journal to file; an already-filed game
@@ -94,7 +98,8 @@ actor LichessBotReconciler {
     private let settingsProvider: @Sendable () async -> LichessBotSettings
     /// Whether something else still owns the game's filing: a session
     /// playing it (or starting one), or the controller collecting its
-    /// post-game chat. That owner enqueues the game when it is done.
+    /// post-game chat. The game is enqueued again when that owner is done
+    /// (see "One decider" above).
     private let hasLiveFilingOwner: @Sendable (String) async -> Bool
     private let onEvent: @Sendable (LichessBotReconcilerEvent) -> Void
 

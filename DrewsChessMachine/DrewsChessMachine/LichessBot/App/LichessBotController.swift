@@ -2982,12 +2982,26 @@ final class LichessBotController {
                 SessionLogger.shared.log("[LICHESS-BOT] game \(gameID) resumed (journal since \(since)) with \(model)")
                 raiseAlarm("Game \(gameID) was resumed without its history: \(reason). Takebacks, command replies, greeting and goodbye are off for it, since there is no telling what was already done.")
             }
-        case .gameSessionEnded(let gameID):
+        case .gameSessionEnded(let gameID, let finished):
             activeGameIDs.remove(gameID)
             if let game = games.first(where: { $0.id == gameID }) {
                 game.markSessionEnded("the game session ended")
             }
             protocolLog.record(.game, "game session ended", gameID: gameID)
+            if !finished, let reconciler = runtime?.reconciler {
+                // The session was the game's filing owner, so the
+                // reconciler left it alone, and with no finish in its
+                // journal nothing else hands it over: without this it
+                // would wait in InProgress/ for the next go-online's launch
+                // recovery. The export settles how it ended (or, for a game
+                // Lichess deleted, ends in the reconciler's alarm). A game
+                // that comes back — a replayed `gameStart` starts a new
+                // session — is left to that session by the owner check.
+                protocolLog.record(.game, "session ended without a finish; handed to filing", gameID: gameID)
+                Task {
+                    await reconciler.enqueue(gameID: gameID)
+                }
+            }
             updateAutoFollow()
             finishIfDrained()
             scheduleChallengeQueuePump()
