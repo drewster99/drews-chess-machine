@@ -9,6 +9,49 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-03 14:07 CDT — Review fixes from the 72-hour code review (`b9eac4fd`, `47cbdc50`, `47f1303e`, `f273b890`, `748afe20`, `fbf2a4f1`)
+
+Every HIGH and MEDIUM item of `documentation/plans-active/REVIEW_2026-10-03_FIXES_PLAN.md`, plus the cheap LOW items in the same code, in six merged units. Each bug's regression test was seen failing before its fix (or, where only a compile failure was possible, the commit says so).
+
+- **Build New Model and settings (U3, `748afe20`).**
+  - Build New Model no longer traps on a negative, `Int.max` or huge block count, or on overflowing channels or kernels. The shape check is computed per group with checked arithmetic and never expands the tower.
+  - Model size is guidance, not limits (owner decision): `ModelSizeGuidance` scales to installed memory (64 GB reference: 15M recommended, 20M at batch 4096, `20M × √(4096 / batch)` down to batch 512, then "likely too large"). Its one refusal is a training state larger than physical memory. Shown in the readout and logged as `[ARCH] size guidance (<event>)` by `--new-model`, `--derive-model` and GUI builds.
+  - The auto-resume countdown starts only when its sheet is visible, and the prompt waits for the invalid-settings sheet.
+  - The invalid-settings sheet's Reset rewrites only the stored value, never the live one.
+  - `self_play_delay_ms` / `training_step_delay_ms` are declared 0…3000 and `arena_concurrency` 1…1024; the app caps are derived from the declarations and the loader and resume clamps are gone.
+  - Popover Save keeps untouched live values (a resumed out-of-range value no longer blocks Save; 90 s no longer becomes 120 s); a typed ratio or delay is applied or flagged, never dropped or clamped.
+  - Build Network takes its architecture and seed as parameters, and its refusals come first.
+- **Session lineage and saves (U4, `fbf2a4f1`).**
+  - `--derive-model` refuses tensor rewrites on any evidence of training (step, lineage `cum_trainer_step`, a parent's stated step, a graft's source step). Copies of pre-lineage files leave `cum_trainer_step` unrecorded.
+  - Safetensors decode refuses a missing or empty `model_id` and a malformed `training_step`; no placeholder model IDs anywhere; Promote Trainee Now refuses instead of minting an ID.
+  - Champion files carry their own weights' lineage, not the trainer's.
+  - Promotions bank fed counts with the stats reset, so Promote Trainee Now on a resumed run no longer breaks every later save.
+  - GUI and promotion saves take one consistent cut (self-play held through the record and the buffer write); an arena waits for an in-flight save.
+  - GUI resume leaves the seed settings alone (a seed it cannot continue is drawn for the run and logged), releases run-only parameter holds at the next new run, restores the throughput settings through the resolver (the parameter block is now `SessionParameterResume.applyGuiSession`), reports `rng_sampler` / `serials` / `buffer` from what it restored, and checks the buffer's `totalPositionsAdded` before restoring it.
+  - Legal-mass grace no longer elapses during the post-resume buffer refill; dropping the trainer ends its lineage segment on both rebuild paths; a failed lineage start keeps the pending session.
+- **Replay, train-vs-UCI, corpus, parsing (U5, `f273b890`).**
+  - Corpus replay `--resume-exact` refuses an epoch budget the run has already used (it trained 0 steps and saved a position behind its parent's), validates the saved position strictly (a legacy file at `next_game_index == total` is refused), fails a refeed that runs out of games, and checks the rebuilt buffer's fill against the saved one. These four refusals exit 33.
+  - Launch refusals in replay and train-vs-UCI throw `CLIRunRefusal` (exit still 2) and drain the log; legacy `replay_*` resume keys are parsed strictly.
+  - Train-vs-UCI follows a symbolic link to a start model and accepts dotted `--checkpoint-stem`s; `RunStreams` counters are range-checked.
+  - Seed text is digits only everywhere (`UInt64(strictDecimal:)`): `--seed +5` / `-0` are errors.
+  - A stored setting of the wrong numeric kind (7.9, `true`, `1`) is reported instead of coerced; the saved arena promotion set is resolved once, and SPRT hypotheses saved without a criterion are a finding.
+  - A failed corpus shard write stops the recording source (`complete: false`, `stoppedReason`); the validator's count repair replaces only the `corpus.json` it read; one shard-trailer codec.
+- **Network, trainer, misc (U6, `47f1303e`).**
+  - Weight loads check GPU completion status before marking a network loaded; a trainer built for loaded weights refuses layer-health, master and velocity reads until its load (a bf16 save could write zero masters).
+  - New `device` resume gap: a different Mac is NOT EXACT unless the behavior fingerprint matches. A guard test pins the fingerprint as stable under concurrent GPU load.
+  - The entropy-by-bucket probe picks positions in age order, not ring order (its values at a step differ once from earlier logs).
+  - `--train` terminations share one exit helper (`AutoTrainTermination`) that drains the session log before `_exit`, and an early stop shares the termination claim.
+  - Test runs no longer sweep the real `Sessions/` / `Models/` folders for orphaned staging; `BinaryByteCount` rounds before choosing the unit (Build New Model's size readout uses it); `--help` documents `--resume-exact` / `--accept-inexact` for corpus replay; seed and sampler doc fixes; `writeJSON(to:)` moved to the test target.
+- **Lichess bot (U2, `47cbdc50`).** A game session that ends without seeing its game finish is filed at once; the launch leftover report no longer raises a false `[ALARM]` for finished-but-unfiled games (chip: "N to file"), alarms an unreadable journal with its reason, and is dropped if going online began meanwhile; going online loads player notes and challenge outcomes without the bot window (each loads once per launch); bot limits recorded before the notes loaded are merged and saved; quitting while offline waits for the bot's shutdown when the bot was used.
+- **Python tools (U1, `b9eac4fd`).**
+  - The dashboard tick no longer freezes on one failing checkpoint: `probe_backfill` saves every row it filled, then raises `BackfillIncomplete` naming what it could not probe or file (was `ProbeFailure`, after losing the pass's rows); unreadable lineage files are reported; `tick.py` always renders and exits 1.
+  - One bounded safetensors header reader (`dcm_arch.read_metadata`); lineage records must carry `run.not_exact_items`; `dcm_lineage.derive_runs` reads GUI sessions (several model IDs per segment, `model_ids`).
+  - Experiment tables show a non-finite dashboard-CSV probe as non-finite, not a gap.
+  - `init_reproducibility.sh` uses pipefail; `probe_loop.sh` refuses a wrong `TRAINER_PID` (exit 3) and never records a probe that exited non-zero.
+  - `selfplay_probe_append.py` refuses a torn last line, the legacy 3-column header (11 of the 14 `selfplay_probe` CSVs have it) or an incomplete row.
+- **Merge notes.** U3's unclamped `arena_concurrency` restore and U5's promotion-set resolver were carried into U4's `applyGuiSession`. `BuildNetworkRefusalTests` (U3) observed trainer drops through `onDropTrainer`, which U4 removed; it now plants fed counts that dropping the trainer resets and checks them unchanged (same expectation).
+- **Docs.** CLAUDE.md: log tags (`[ARCH] size guidance`, `[REPLAY]/[VS-UCI] refused:`, `device` gap), the resume block's new home, run-hold release, declaration-derived caps, seed digits only, GUI resume seed behavior, corpus replay resume refusals and the reworded determinism claim, champion-file lineage, consistent-cut and `AutoTrainTermination` invariants, the `seLowVel` p90 reference, size guidance.
+
 ## 2026-10-03 10:56 CDT — Removing a block group no longer crashes Build New Model (`c9f5b17c`)
 
 - **Fix.** Removing any block group in Build New Model trapped the app in `BuildNewModelModel.position(of:)`. SwiftUI draws a removed group's row once more after its draft has left the model, and the init-options row (P7, `67f5ef09`) looked up its position on every draw through the lookup that treats a missing draft as a defect. The row now reads `positionInTower(of:)`, which is nil for a removed draft, and draws nothing then; move, duplicate and remove keep the strict lookup, since they come from buttons on rows that are on screen.

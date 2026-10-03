@@ -92,3 +92,38 @@ start task skip teardown (G7); a resumable-session `--train` mode (owner questio
   session save and resume with the log showing a consistent cut.
 - CHANGELOG entry per merged unit; CLAUDE.md wording fixes (G9 item 3, G16 training#9,
   G6 "Run seed" sentence, the new size guidance and narrowed ranges).
+
+## Status (2026-10-03 14:40 CDT)
+
+All six units implemented and merged into `main`: U1 `b9eac4fd`, U2 `47cbdc50`, U6 `47f1303e`,
+U5 `f273b890`, U3 `748afe20`, U4 `fbf2a4f1`. CLAUDE.md and CHANGELOG updated after the merges.
+
+- **Full suite on `main` at `fbf2a4f1`** (scheme test plan, slow tests on): 2,318 tests, 0
+  failures, 1 skipped (`LegacyDcmmodelLoadTests.testRealLegacyDcmmodelsResolveBuildAndLoad`,
+  gated by `DCM_RUN_LEGACY_LOAD`).
+- **Python:** `/usr/bin/python3 -m unittest` in `documentation/dashboards/tests` (3.9.6): 94
+  tests OK.
+- **Merge resolutions:** U4 moved the GUI resume's parameter block into
+  `SessionParameterResume.applyGuiSession`; U3's unclamped `arena_concurrency` restore and U5's
+  single-resolver arena promotion set restore were carried into it. U3's
+  `BuildNetworkRefusalTests` observed trainer drops through `onDropTrainer`, which U4 removed; it
+  now plants fed counts that dropping the trainer resets (same expectation).
+- **Deviations recorded by the units:** U3 widened one of its own new regression tests from 8 to
+  16 channels after it went red (at 8 the tower was narrower than the value head's conv width, a
+  setup error the pre-fix crash had hidden); U3 kept Neutral init enabled (the per-group
+  computation cannot trap); U5's four new corpus-replay resume refusals exit 33
+  (`CorpusReplayError`), not 2.
+- **Open:**
+  - Manual checks not yet run: Build New Model with −1, `Int.max` and a 30M-parameter tower;
+    the launch-sheet order with a planted invalid stored value; one GUI session save and resume
+    showing a consistent cut; a `--train --training-step-limit` run ending with
+    `[APP] --train: exiting process (termination_reason=step_limit_reached)`; the new `--help`
+    text.
+  - `TrainVsUciRunner` still restores the replay buffer and then checks
+    `totalPositionsAdded` (`verifyReplayBufferMatchesSession`); a mismatch fails the run either
+    way, so there is no wrong-state outcome, but the GUI's check-before-restore
+    (`restore(from:expectedTotalPositionsAdded:)`) would make it one path.
+  - `CheckpointManagerSafetensorsTests` writes its session folders and models into the real
+    `Sessions/` and `Models/` folders (uniquely named, removed by the test); it should take a
+    temporary folder like the other save tests.
+
