@@ -65,6 +65,48 @@ class ArchitectureTests(unittest.TestCase):
             blocks[0].effective(0.1)
 
 
+class HeaderReadTests(unittest.TestCase):
+    """`dcm_arch.read_metadata` is the one safetensors header reader; a damaged header is an
+    ArchitectureError, never an OverflowError / MemoryError / AttributeError from reading it."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.folder.name, "damaged.safetensors")
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def write_raw(self, data):
+        with open(self.path, "wb") as handle:
+            handle.write(data)
+
+    def test_damaged_header_length_is_refused(self):
+        self.write_raw(struct.pack("<Q", 2 ** 63) + b"{}")
+        with self.assertRaises(dcm_arch.ArchitectureError):
+            dcm_arch.read_metadata(self.path)
+
+    def test_header_length_beyond_the_bound_or_zero_is_refused(self):
+        for length in (dcm_arch.MAX_HEADER_BYTES + 1, 0):
+            self.write_raw(struct.pack("<Q", length) + b"{}")
+            with self.assertRaises(dcm_arch.ArchitectureError):
+                dcm_arch.read_metadata(self.path)
+
+    def test_header_that_is_not_an_object_or_has_no_metadata_object_is_refused(self):
+        for header in (b"[1, 2]", b'{"__metadata__": [1]}', b'{"x": 1}', b"not json", b"\xff\xfe"):
+            self.write_raw(struct.pack("<Q", len(header)) + header)
+            with self.assertRaises(dcm_arch.ArchitectureError, msg=header):
+                dcm_arch.read_metadata(self.path)
+
+    def test_lineage_reader_is_the_same_reader_with_its_own_error_type(self):
+        import dcm_lineage
+        self.assertEqual(dcm_lineage.MAX_HEADER_BYTES, dcm_arch.MAX_HEADER_BYTES)
+        self.write_raw(struct.pack("<Q", 2 ** 63) + b"{}")
+        with self.assertRaises(dcm_lineage.LineageError):
+            dcm_lineage.read_metadata(self.path)
+        write_header(self.path, {"model_id": "M1"})
+        self.assertEqual(dcm_lineage.read_metadata(self.path), dcm_arch.read_metadata(self.path))
+
+
 class SessionLogTests(unittest.TestCase):
     def test_launches_in_one_second_sort_in_launch_order(self):
         names = ["dcm_log_20261002-215333-10.txt", "dcm_log_20261002-215333-2.txt",

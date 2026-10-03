@@ -39,6 +39,10 @@ SE_ACTIVATION_REQUIRED_FROM_VERSION = 5
 REZERO_ALPHA_CAP_REQUIRED_FROM_VERSION = 6
 # NetworkArchitecture.rezeroTanhCeilingMultiple: the frozen legacy cap rule.
 REZERO_TANH_CEILING_MULTIPLE = 1.0
+# A safetensors header larger than this is not a DCM model header (theirs are
+# a few kilobytes); refusing it keeps a damaged length prefix from being read
+# as a request for gigabytes.
+MAX_HEADER_BYTES = 100 * 1024 * 1024
 
 
 class ArchitectureError(ValueError):
@@ -101,19 +105,35 @@ def norm_arch_md(md):
 
 
 def read_metadata(path):
-    """The `__metadata__` dict of a .safetensors file (string values, as stored)."""
+    """The `__metadata__` dict of a .safetensors file (string values, as stored),
+    reading only the header.
+
+    The one header reader of the Python tooling (`dcm_lineage.read_metadata`
+    delegates here). A damaged file is an ArchitectureError: a length prefix of
+    zero or above MAX_HEADER_BYTES, a short read, a header that is not a JSON
+    object, or one without a `__metadata__` object. Without the bound, a damaged
+    prefix is a request to read up to 2^64 bytes, which fails as OverflowError or
+    MemoryError — neither of which a caller catching ValueError expects."""
     with open(path, "rb") as handle:
         prefix = handle.read(8)
         if len(prefix) != 8:
             raise ArchitectureError(f"{path}: shorter than a safetensors header length")
         header_length = struct.unpack("<Q", prefix)[0]
+        if header_length == 0 or header_length > MAX_HEADER_BYTES:
+            raise ArchitectureError(f"{path}: safetensors header length {header_length} is not a model header")
         raw = handle.read(header_length)
         if len(raw) != header_length:
             raise ArchitectureError(f"{path}: header truncated ({len(raw)} of {header_length} bytes)")
-    header = json.loads(raw)
-    if "__metadata__" not in header:
-        raise ArchitectureError(f"{path}: no __metadata__ in the safetensors header")
-    return header["__metadata__"]
+    try:
+        header = json.loads(raw)
+    except ValueError as error:
+        raise ArchitectureError(f"{path}: safetensors header is not JSON ({error})") from None
+    if not isinstance(header, dict):
+        raise ArchitectureError(f"{path}: safetensors header is not a JSON object")
+    metadata = header.get("__metadata__")
+    if not isinstance(metadata, dict):
+        raise ArchitectureError(f"{path}: no __metadata__ object in the safetensors header")
+    return metadata
 
 
 class RezeroBlock:

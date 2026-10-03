@@ -31,12 +31,15 @@ Import from anywhere in the repository with
     sys.path.insert(0, os.path.join(<repo root>, "scripts"))
     import dcm_lineage
 
-No import-time side effects; standard library only.
+No import-time side effects; needs only the standard library and `dcm_arch`
+(beside this file in scripts/), which reads the safetensors header.
 """
 import datetime
 import json
 import os
 import struct
+
+import dcm_arch
 
 # ArchitectureFormat.lineageRequiredFromVersion: the first format whose files
 # must carry a lineage record.
@@ -49,10 +52,9 @@ SUPPORTED_SCHEMA = 2
 # LineageRecord.metadataKey.
 METADATA_KEY = "dcm_lineage"
 FORMAT_VERSION_KEY = "dcm_format_version"
-# A safetensors header larger than this is not a DCM model header (theirs are
-# a few kilobytes); refusing it keeps a damaged length prefix from being read
-# as a request for gigabytes.
-MAX_HEADER_BYTES = 100 * 1024 * 1024
+# The header-size bound of the one header reader (`dcm_arch.read_metadata`),
+# re-exported for callers that build a damaged header against it.
+MAX_HEADER_BYTES = dcm_arch.MAX_HEADER_BYTES
 
 # The registry segment fields this module derives, in the order they are shown.
 DERIVED_SEGMENT_FIELDS = ("lineage_run_id", "segment_id", "model_id", "date", "cumstep_base",
@@ -78,22 +80,12 @@ class Unrecorded:
 
 
 def read_metadata(path):
-    """The `__metadata__` dict of a .safetensors file, reading only the header."""
-    with open(path, "rb") as handle:
-        prefix = handle.read(8)
-        if len(prefix) != 8:
-            raise LineageError(f"{path}: shorter than a safetensors header length")
-        header_length = struct.unpack("<Q", prefix)[0]
-        if header_length == 0 or header_length > MAX_HEADER_BYTES:
-            raise LineageError(f"{path}: safetensors header length {header_length} is not a model header")
-        raw = handle.read(header_length)
-        if len(raw) != header_length:
-            raise LineageError(f"{path}: header truncated ({len(raw)} of {header_length} bytes)")
-    header = json.loads(raw)
-    metadata = header.get("__metadata__")
-    if not isinstance(metadata, dict):
-        raise LineageError(f"{path}: no __metadata__ object in the safetensors header")
-    return metadata
+    """The `__metadata__` dict of a .safetensors file, reading only the header:
+    `dcm_arch.read_metadata`, whose refusals surface here as LineageError."""
+    try:
+        return dcm_arch.read_metadata(path)
+    except dcm_arch.ArchitectureError as error:
+        raise LineageError(str(error)) from error
 
 
 def format_version_of(metadata, source):
