@@ -246,6 +246,13 @@ actor LichessBotSessionManager {
         Array(sessions.keys)
     }
 
+    /// Whether a session plays this game or is being set up for it (its
+    /// model can take a while to build). Either way the game is live and its
+    /// session's end hands it to filing.
+    func hasSession(forGameID gameID: String) -> Bool {
+        sessions[gameID] != nil || startingSessionIDs.contains(gameID)
+    }
+
     /// "Play one game" (plan §7.1): accept at most one game at a time, and
     /// stop accepting once a game starts.
     func setOneGameMode(_ on: Bool) {

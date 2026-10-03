@@ -12,6 +12,20 @@ struct LichessBotFinalizedGame: Sendable, Equatable {
     let indexUpdateFailure: String?
 }
 
+/// Where a game stands with respect to filing, from the files alone.
+enum LichessBotFilingState: Sendable, Equatable {
+    /// Its journal is still in `InProgress/`: filing has work to do.
+    case journalInProgress
+    /// No journal in `InProgress/`, and a readable record is in the index:
+    /// the game is filed.
+    case filed
+    /// No journal in `InProgress/`, and a record file for the game exists
+    /// but doesn't decode.
+    case filedButUnreadable(path: String, error: String)
+    /// No journal in `InProgress/` and no record: there is nothing to file.
+    case missing
+}
+
 /// Finalizes games and answers questions about the records on disk (plan
 /// §10.2). Stateless apart from its configuration: the files are the state.
 /// Journal work runs on the journal queue — the same queue the journal
@@ -90,6 +104,33 @@ final class LichessBotRecordStore: Sendable {
         return try await journalQueue.run {
             try LichessBotJournal.read(url)
         }
+    }
+
+    /// Whether the game still has a journal to file, is filed, or neither.
+    /// The journal check runs on the journal queue behind any append already
+    /// queued, so a journal being created is never missed; the index is
+    /// loaded (rebuilt first when stale), so a record whose index update
+    /// failed still counts as filed.
+    func filingState(gameID: String) async throws -> LichessBotFilingState {
+        let journalURL = try directory.validatedInProgressJournalURL(gameID: gameID)
+        let journalExists = try await journalQueue.run {
+            FileManager.default.fileExists(atPath: journalURL.path)
+        }
+        if journalExists {
+            return .journalInProgress
+        }
+        let index = try await loadIndex()
+        if index.rows.contains(where: { $0.gameID == gameID }) {
+            return .filed
+        }
+        // Record stems end in "-<gameID>", and a game id is letters and
+        // digits only (`LichessBotGameIDPathSafety`), so this names only
+        // this game.
+        let recordSuffix = "-\(gameID).json"
+        if let unreadable = index.unreadableRecords.first(where: { $0.path.hasSuffix(recordSuffix) }) {
+            return .filedButUnreadable(path: unreadable.path, error: unreadable.error)
+        }
+        return .missing
     }
 
     /// The journal's own finished status, if it recorded one.

@@ -810,6 +810,12 @@ final class LichessBotController {
     /// online.
     private var gamesAwaitingPostGameChat: Set<String> = []
 
+    /// Whether this game's filing waits for its post-game chat: the
+    /// reconciler leaves it alone until `fileAfterPostGameChat` hands it over.
+    private func isAwaitingPostGameChat(_ gameID: String) -> Bool {
+        gamesAwaitingPostGameChat.contains(gameID)
+    }
+
     private func schedulePostGameChatFetches(_ gameID: String) {
         let generationAtStart = runtimeGeneration
         for (index, delay) in Self.postGameChatFetchDelays.enumerated() {
@@ -2327,7 +2333,16 @@ final class LichessBotController {
             store: recordStore,
             time: time,
             settingsProvider: settingsProvider,
-            isGameActive: { gameID in await manager.activeGameIDs.contains(gameID) },
+            // `self` is held strongly: a weak reference would need a made-up
+            // answer for a missing controller. Teardown breaks the cycle — it
+            // drops the runtime and cancels the reconciler's task, which
+            // releases this closure.
+            hasLiveFilingOwner: { [self] gameID in
+                if await manager.hasSession(forGameID: gameID) {
+                    return true
+                }
+                return await isAwaitingPostGameChat(gameID)
+            },
             onEvent: { event in continuation.yield(.reconciler(event)) }
         )
         if oneGame {
@@ -2479,6 +2494,9 @@ final class LichessBotController {
         // The ids belong to this runtime's reconciler; a later drain must not
         // enqueue games that recovery has since filed.
         gamesAwaitingPostGameChat = []
+        // Likewise the reconciler's view of what is unreconciled: the next
+        // runtime's recovery derives it afresh from the journals left.
+        unreconciledGameIDs = []
         isFilingRecords = false
         let manager = runtime.manager
         for task in runtime.tasks {
@@ -2591,12 +2609,16 @@ final class LichessBotController {
 
     private func recoverLeftoverJournals(store: LichessBotRecordStore, reconciler: LichessBotReconciler) async {
         do {
-            let leftovers = try await store.inProgressGameIDs().filter { !activeGameIDs.contains($0) }
+            // Every leftover goes to the reconciler, which alone decides:
+            // it leaves a game to its live owner (a session playing or
+            // starting it, or a post-game chat wait) and recognizes one
+            // already filed.
+            let leftovers = try await store.inProgressGameIDs()
             for gameID in leftovers {
                 await reconciler.enqueue(gameID: gameID)
             }
             if !leftovers.isEmpty {
-                protocolLog.record(.game, "launch recovery: \(leftovers.count) leftover journal(s) queued for reconciliation", fields: ["games": leftovers.joined(separator: ",")])
+                protocolLog.record(.game, "launch recovery: \(leftovers.count) leftover journal(s) handed to the reconciler", fields: ["games": leftovers.joined(separator: ",")])
             }
         } catch {
             raiseAlarm("Launch recovery could not list leftover journals: \(error.localizedDescription)")
@@ -2907,6 +2929,13 @@ final class LichessBotController {
                 unreconciledGameIDs.append(gameID)
             }
             raiseAlarm("Game \(gameID) can't be filed and won't be retried until the bot next goes online: \(reason).")
+        case .alreadyFiled(let gameID):
+            runtime?.journal.markFinalized(gameID: gameID)
+            unreconciledGameIDs.removeAll { $0 == gameID }
+            protocolLog.record(.game, "already filed; nothing to do", gameID: gameID)
+        case .nothingToFile(let gameID, let reason):
+            unreconciledGameIDs.removeAll { $0 == gameID }
+            raiseAlarm("Game \(gameID) was handed to filing, but \(reason); nothing was filed.")
         case .stopped(let reason):
             protocolLog.record(.lifecycle, "reconciler stopped: \(reason)")
         }
