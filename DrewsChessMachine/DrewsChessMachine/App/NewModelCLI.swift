@@ -91,7 +91,8 @@ enum NewModelCLI {
                 creator: "new-model",
                 trainingStep: nil,
                 parentModelID: "",
-                notes: "fresh \(name) net (untrained), arch v\(arch.architectureVersionLabel)"
+                notes: "fresh \(name) net (untrained), arch v\(arch.architectureVersionLabel), "
+                    + "BN warm-up under policy tail precision \(ChessNetwork.PolicyTailPrecision.process.rawValue)"
             )
             let encoded = try SafetensorsModelIO.encode(
                 modelID: modelID,

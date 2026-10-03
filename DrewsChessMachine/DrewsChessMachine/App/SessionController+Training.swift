@@ -1575,6 +1575,7 @@ extension SessionController {
             //   keep the trainer's existing ID — its weights
             //   weren't touched, so the lineage is continuous.
             await MainActor.run {
+                SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
                 switch mode {
                 case .continueAfterStop, .newSessionKeepTrainer:
                     break
@@ -1584,6 +1585,15 @@ extension SessionController {
                     )
                 case .freshOrFromLoadedSession:
                     if let resumed = pendingLoadedSession {
+                        // A GUI resume never refuses over the policy-tail
+                        // precision (determinism plan D-1); a mismatch or an
+                        // unrecorded value is reported as NOT EXACT.
+                        if let notExact = PolicyTailPrecisionResume.guiNotExactLine(
+                            saved: resumed.trainerFile.metadata.trainerPolicyTailPrecision,
+                            running: trainer.policyTailPrecision
+                        ) {
+                            SessionLogger.shared.log(notExact)
+                        }
                         trainer.identifier = ModelID(value: resumed.trainerFile.modelID)
                     } else {
                         trainer.identifier = ModelIDMinter.mintTrainerGeneration(

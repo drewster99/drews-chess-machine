@@ -566,16 +566,17 @@ extension SessionController {
             // The trainer was rewound to exactly this state on promotion:
             // arena-start weights and velocity, the clock captured with them,
             // and the schedule it is running.
-            let trainerMetadata = ModelCheckpointMetadata(
+            let trainerMetadata = ModelCheckpointMetadata.trainerFile(
                 creator: "promote",
                 trainingStep: promotionSaveStep,
                 parentModelID: championID,
                 notes: "Trainer lineage at arena-start pause with optimizer velocity",
-                trainerSchedule: TrainerScheduleState(
+                schedule: TrainerScheduleState(
                     completedTrainSteps: promotionSaveTrainerStep,
                     lrWarmupSteps: trainer.lrWarmupSteps,
                     lrMomentumCycle: trainer.lrMomentumCycle
-                )
+                ),
+                policyTailPrecision: trainer.policyTailPrecision
             )
             let createdAtUnix = Int64(Date().timeIntervalSince1970)
             // Copy captured arrays for clean Sendable semantics

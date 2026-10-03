@@ -82,6 +82,12 @@ struct ModelCheckpointMetadata: Codable, Equatable {
     /// the legacy `.dcmmodel` writer refuses a file that carries one rather
     /// than dropping it.
     let trainerSchedule: TrainerScheduleState?
+    /// The policy-head tail arithmetic the trainer that wrote this file ran
+    /// (`ChessNetwork.PolicyTailPrecision`) — present on trainer files written
+    /// since the setting was recorded, nil on plain model files and on older
+    /// trainer files (whose setting is unrecorded, not guessable from the
+    /// build stamp). Safetensors only, like `trainerSchedule`.
+    let trainerPolicyTailPrecision: ChessNetwork.PolicyTailPrecision?
 
     private enum CodingKeys: String, CodingKey {
         case creator, trainingStep, parentModelID, notes
@@ -92,13 +98,37 @@ struct ModelCheckpointMetadata: Codable, Equatable {
         trainingStep: Int?,
         parentModelID: String,
         notes: String,
-        trainerSchedule: TrainerScheduleState? = nil
+        trainerSchedule: TrainerScheduleState? = nil,
+        trainerPolicyTailPrecision: ChessNetwork.PolicyTailPrecision? = nil
     ) {
         self.creator = creator
         self.trainingStep = trainingStep
         self.parentModelID = parentModelID
         self.notes = notes
         self.trainerSchedule = trainerSchedule
+        self.trainerPolicyTailPrecision = trainerPolicyTailPrecision
+    }
+
+    /// Metadata for a trainer-state file: every trainer-file writer (corpus
+    /// replay, train-vs-UCI, session saves, the post-promotion save) builds
+    /// its metadata here, so none can omit the trainer's schedule or the
+    /// policy-tail precision it trained with.
+    static func trainerFile(
+        creator: String,
+        trainingStep: Int?,
+        parentModelID: String,
+        notes: String,
+        schedule: TrainerScheduleState,
+        policyTailPrecision: ChessNetwork.PolicyTailPrecision
+    ) -> ModelCheckpointMetadata {
+        ModelCheckpointMetadata(
+            creator: creator,
+            trainingStep: trainingStep,
+            parentModelID: parentModelID,
+            notes: notes,
+            trainerSchedule: schedule,
+            trainerPolicyTailPrecision: policyTailPrecision
+        )
     }
 
     init(from decoder: Decoder) throws {
@@ -108,6 +138,7 @@ struct ModelCheckpointMetadata: Codable, Equatable {
         parentModelID = try container.decode(String.self, forKey: .parentModelID)
         notes = try container.decode(String.self, forKey: .notes)
         trainerSchedule = nil
+        trainerPolicyTailPrecision = nil
     }
 }
 

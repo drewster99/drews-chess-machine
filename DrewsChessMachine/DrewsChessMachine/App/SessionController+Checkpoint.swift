@@ -394,12 +394,13 @@ extension SessionController {
                 parentModelID: "",
                 notes: "Session checkpoint (\(diskTag))"
             )
-            let trainerMetadata = ModelCheckpointMetadata(
+            let trainerMetadata = ModelCheckpointMetadata.trainerFile(
                 creator: diskTag,
                 trainingStep: trainingStep,
                 parentModelID: championID,
                 notes: "Trainer lineage at session checkpoint (\(diskTag))",
-                trainerSchedule: trainerSnapshot.schedule
+                schedule: trainerSnapshot.schedule,
+                policyTailPrecision: trainer.policyTailPrecision
             )
             let now = Int64(Date().timeIntervalSince1970)
             // Champion and trainer share a topology; the trainer was built to

@@ -125,7 +125,7 @@ struct CorpusReplayConfig: Sendable {
     /// Where the trainer's policy head leaves the compute dtype for fp32
     /// (`--policy-tail-precision`). An A/B knob for the head-numerics cost;
     /// see `ChessNetwork.PolicyTailPrecision`.
-    var policyTailPrecision: ChessNetwork.PolicyTailPrecision = .default
+    var policyTailPrecision: ChessNetwork.PolicyTailPrecision = .process
 }
 
 enum CorpusReplayError: LocalizedError {
@@ -786,6 +786,15 @@ enum CorpusReplayRunner {
                     FileHandle.standardError.write(Data("error: --resume-exact: \(error.localizedDescription)\n".utf8))
                     Darwin.exit(2)
                 }
+                let precisionDecision = PolicyTailPrecisionResume.exactResumeDecision(
+                    saved: file.metadata.trainerPolicyTailPrecision,
+                    running: config.policyTailPrecision
+                )
+                emit(precisionDecision.logLine)
+                if let refusal = precisionDecision.refusal {
+                    FileHandle.standardError.write(Data("error: \(refusal)\n".utf8))
+                    Darwin.exit(2)
+                }
             }
         } else {
             startModelFile = nil
@@ -1055,7 +1064,7 @@ enum CorpusReplayRunner {
         // is inert and the static LR and momentum apply, exactly as in the GUI.
         let trainer = try ChessTrainer(
             hyperparameters: trainerHyperparameters, arch: arch, policyTailPrecision: config.policyTailPrecision)
-        emit("[REPLAY] trainer policy tail precision: \(config.policyTailPrecision.rawValue)")
+        emit(ChessNetwork.PolicyTailPrecision.processLogLine)
         // A requested GPU capture must be possible before any buffer fill or
         // training is spent on the run (the capture itself starts at its step).
         if let capture = config.gpuCapture {
@@ -1144,12 +1153,13 @@ enum CorpusReplayRunner {
                 // step is in flight during the export.
                 let snapshot = try await trainer.exportResumeSnapshot()
                 let weights = snapshot.trainerWeights
-                let metadata = ModelCheckpointMetadata(
+                let metadata = ModelCheckpointMetadata.trainerFile(
                     creator: "replay",
                     trainingStep: step,
                     parentModelID: parentModelID,
                     notes: "corpus replay \(reason) @ step \(step)",
-                    trainerSchedule: snapshot.schedule
+                    schedule: snapshot.schedule,
+                    policyTailPrecision: trainer.policyTailPrecision
                 )
                 let resumeMeta: [String: String] = [
                     "replay_corpus_id": corpusID,

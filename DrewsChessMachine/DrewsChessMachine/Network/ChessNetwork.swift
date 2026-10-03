@@ -595,9 +595,10 @@ final class ChessNetwork: @unchecked Sendable {
     ///
     /// `bf16CastInForward` enables experimental config D (see the stored
     /// property doc); default `false` keeps the graph byte-identical.
-    /// `policyTailPrecision` defaults to `PolicyTailPrecision.default`.
+    /// `policyTailPrecision` defaults to the process's value
+    /// (`PolicyTailPrecision.process`).
     init(arch: NetworkArchitecture = .current, bnMode: BNMode = .inference, bf16CastInForward: Bool = false,
-         policyTailPrecision: PolicyTailPrecision = .default,
+         policyTailPrecision: PolicyTailPrecision = .process,
          disableAutoLayoutConversion: Bool = false,
          reducedPrecisionFastMathRaw: UInt? = nil,
          analysisTaps: Bool = false) throws {
@@ -3222,6 +3223,79 @@ final class ChessNetwork: @unchecked Sendable {
         /// Pre-block and final projection in the compute dtype; the
         /// projection's output, its bias add and everything after are fp32.
         case mixedFinalProjection = "mixed_final_projection"
+
+        /// The command-line flag that chooses the process's value.
+        static let flag = "--policy-tail-precision"
+
+        /// Where the process's value came from.
+        enum Source: String, Sendable {
+            case defaultValue = "default"
+            case flag
+        }
+
+        /// The process's value and its source.
+        struct Resolution: Sendable, Equatable {
+            let value: PolicyTailPrecision
+            let source: Source
+        }
+
+        enum ResolutionError: Error, Equatable, CustomStringConvertible {
+            case missingValue
+            case unknownValue(String)
+            case repeated(count: Int)
+
+            var description: String {
+                switch self {
+                case .missingValue:
+                    return "\(PolicyTailPrecision.flag) requires a value"
+                case .unknownValue(let raw):
+                    let allowed = PolicyTailPrecision.allCases.map(\.rawValue).joined(separator: ", ")
+                    return "\(PolicyTailPrecision.flag) expects one of \(allowed), got '\(raw)'"
+                case .repeated(let count):
+                    return "\(PolicyTailPrecision.flag) given \(count) times; give it at most once"
+                }
+            }
+        }
+
+        /// The one parser of `--policy-tail-precision`: the flag's value, or
+        /// `default` when the flag is absent. Every mode — the GUI, every
+        /// CLI, the numerics audit — resolves it here.
+        static func resolve(arguments: [String]) throws -> Resolution {
+            let positions = arguments.indices.filter { arguments[$0] == flag }
+            guard let position = positions.first else {
+                return Resolution(value: .default, source: .defaultValue)
+            }
+            guard positions.count == 1 else { throw ResolutionError.repeated(count: positions.count) }
+            let valueIndex = position + 1
+            guard valueIndex < arguments.count, !arguments[valueIndex].hasPrefix("--") else {
+                throw ResolutionError.missingValue
+            }
+            let raw = arguments[valueIndex]
+            guard let value = PolicyTailPrecision(rawValue: raw) else { throw ResolutionError.unknownValue(raw) }
+            return Resolution(value: value, source: .flag)
+        }
+
+        /// The value every network and trainer in this process is built
+        /// with unless a caller passes one explicitly — fixed for the life of
+        /// the process, because the app keeps its inference and arena
+        /// networks for the whole launch. `DrewsChessMachineApp.init` resolves
+        /// the same arguments first and exits on a bad flag, so the trap here
+        /// cannot be reached from a launch.
+        static let processResolution: Resolution = {
+            do {
+                return try resolve(arguments: CommandLine.arguments)
+            } catch {
+                preconditionFailure("\(error) — the launch-time check should have refused this")
+            }
+        }()
+
+        /// `processResolution.value`.
+        static var process: PolicyTailPrecision { processResolution.value }
+
+        /// One log line naming the process's value and where it came from.
+        static var processLogLine: String {
+            "[NUMERICS] policy_tail_precision=\(processResolution.value.rawValue) source=\(processResolution.source.rawValue) (affects bf16 / fp16 models only)"
+        }
     }
 
     /// Compute dtype of both heads' tails (see `widenToHeadTail`). Every

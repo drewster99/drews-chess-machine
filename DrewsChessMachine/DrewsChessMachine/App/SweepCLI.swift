@@ -22,6 +22,7 @@ enum SweepCLI {
             "[SWEEP-CLI] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirty) branch=\(BuildInfo.gitBranch)"
         )
 
+        SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
         let sweepSizes = sizes ?? SessionController.sweepSizes
 
         print("Batch Size Sweep (training-mode BN, fresh random weights)")

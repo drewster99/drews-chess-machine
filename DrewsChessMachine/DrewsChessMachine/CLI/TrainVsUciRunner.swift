@@ -168,6 +168,15 @@ enum TrainVsUciRunner {
             emit("[VS-UCI] start-model: \(url.lastPathComponent) modelID=\(file.modelID) encoding=\(arch.inputEncoding.rawValue)")
             if config.resumeExact {
                 resumeSnapshot = try TrainerResumeSnapshot(checkpoint: file, fileName: url.lastPathComponent)
+                let precisionDecision = PolicyTailPrecisionResume.exactResumeDecision(
+                    saved: file.metadata.trainerPolicyTailPrecision,
+                    running: ChessNetwork.PolicyTailPrecision.process
+                )
+                emit(precisionDecision.logLine)
+                if let refusal = precisionDecision.refusal {
+                    FileHandle.standardError.write(Data("error: \(refusal)\n".utf8))
+                    Darwin.exit(2)
+                }
             }
         } else {
             startModelFile = nil
@@ -249,6 +258,7 @@ enum TrainVsUciRunner {
         }
         let hp = resumedHyperparameters
         let trainer = try ChessTrainer(hyperparameters: hp, arch: arch)
+        emit(ChessNetwork.PolicyTailPrecision.processLogLine)
         // Field for field with `[REPLAY-HPARAMS]` so the two CLI paths can be
         // diffed directly.
         emit(String(
@@ -335,12 +345,13 @@ enum TrainVsUciRunner {
                 // The SGD loop awaits each step, so none is in flight here.
                 let snapshot = try await trainer.exportResumeSnapshot()
                 let weights = snapshot.trainerWeights
-                let metadata = ModelCheckpointMetadata(
+                let metadata = ModelCheckpointMetadata.trainerFile(
                     creator: "train-vs-uci",
                     trainingStep: step,
                     parentModelID: parentModelID,
                     notes: "train-vs-uci \(reason) @ step \(step)",
-                    trainerSchedule: snapshot.schedule)
+                    schedule: snapshot.schedule,
+                    policyTailPrecision: trainer.policyTailPrecision)
                 encoded = try SafetensorsModelIO.encode(
                     modelID: config.runModelID,
                     createdAtUnix: Int64(Date().timeIntervalSince1970),

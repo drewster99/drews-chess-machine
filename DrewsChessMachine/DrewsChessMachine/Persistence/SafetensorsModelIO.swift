@@ -33,6 +33,8 @@ enum SafetensorsModelIO {
         /// Trainer schedule metadata (`trainer_*`) without optimizer velocity
         /// tensors, on write or read.
         case trainerScheduleWithoutVelocity
+        /// `trainer_policy_tail_precision` holds a value no precision spells.
+        case malformedTrainerPolicyTailPrecision(String)
 
         var description: String {
             switch self {
@@ -49,6 +51,9 @@ enum SafetensorsModelIO {
             case .trainerScheduleWithoutVelocity:
                 return "safetensors model: trainer schedule metadata (trainer_*) without optimizer velocity "
                     + "tensors — exact-resume state must travel with the velocity it was captured alongside"
+            case .malformedTrainerPolicyTailPrecision(let raw):
+                let allowed = ChessNetwork.PolicyTailPrecision.allCases.map(\.rawValue).joined(separator: ", ")
+                return "safetensors model: trainer_policy_tail_precision is '\(raw)', expected one of \(allowed)"
             }
         }
     }
@@ -63,6 +68,7 @@ enum SafetensorsModelIO {
         static let parentModelID = "parent_model_id"
         static let notes = "notes"
         static let architecture = "architecture"
+        static let trainerPolicyTailPrecision = "trainer_policy_tail_precision"
     }
 
     /// Ordered tensor names for `architecture`: the base plan, plus, for a
@@ -128,6 +134,9 @@ enum SafetensorsModelIO {
             guard includesVelocity else { throw IOError.trainerScheduleWithoutVelocity }
             for (key, value) in try schedule.metadataEntries() { md[key] = value }
         }
+        if let precision = metadata.trainerPolicyTailPrecision {
+            md[Key.trainerPolicyTailPrecision] = precision.rawValue
+        }
         // Every save marks the value head centered, so a file is recentered
         // at most once in its life and every new file round-trips bit-exactly
         // (see `ValueHeadRecentering`).
@@ -143,7 +152,7 @@ enum SafetensorsModelIO {
             let reserved = Set([
                 Key.formatVersion, Key.modelID, Key.createdAt, Key.creator,
                 Key.trainingStep, Key.parentModelID, Key.notes, Key.architecture,
-                ValueHeadRecentering.metadataKey,
+                Key.trainerPolicyTailPrecision, ValueHeadRecentering.metadataKey,
             ] + TrainerScheduleState.MetadataKey.all)
             for (k, v) in rm where !reserved.contains(k) { md[k] = v }
         }
@@ -298,12 +307,22 @@ enum SafetensorsModelIO {
         if trainerSchedule != nil && !hasVelocity {
             throw IOError.trainerScheduleWithoutVelocity
         }
+        let trainerPolicyTailPrecision: ChessNetwork.PolicyTailPrecision?
+        if let raw = md[Key.trainerPolicyTailPrecision] {
+            guard let precision = ChessNetwork.PolicyTailPrecision(rawValue: raw) else {
+                throw IOError.malformedTrainerPolicyTailPrecision(raw)
+            }
+            trainerPolicyTailPrecision = precision
+        } else {
+            trainerPolicyTailPrecision = nil
+        }
         let metadata = ModelCheckpointMetadata(
             creator: md[Key.creator] ?? "",
             trainingStep: md[Key.trainingStep].flatMap { Int($0) },
             parentModelID: md[Key.parentModelID] ?? "",
             notes: md[Key.notes] ?? "",
-            trainerSchedule: trainerSchedule
+            trainerSchedule: trainerSchedule,
+            trainerPolicyTailPrecision: trainerPolicyTailPrecision
         )
         let file = ModelCheckpointFile(
             modelID: md[Key.modelID] ?? "",

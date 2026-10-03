@@ -102,7 +102,11 @@ enum ArchSweepCLI {
             }
         }
 
-        emit(["event": "sweep_start", "blocks": blocks, "steps": steps, "batch": batch])
+        SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
+        emit([
+            "event": "sweep_start", "blocks": blocks, "steps": steps, "batch": batch,
+            "policy_tail_precision": ChessNetwork.PolicyTailPrecision.process.rawValue,
+        ])
 
         for n in blocks {
             let arch = benchArch(blocks: n)

@@ -696,7 +696,16 @@ and records it in the new segment record (D2).
 `rng_sampler`, `dropout_state`, `feed_carry` (replay), `buffer` (GUI/vs-UCI save
 without a buffer, D-8), `serials`, `clocks` (arena/save/ratio controller),
 `params` (no full snapshot — legacy), `lineage` (no `dcm_lineage` — legacy),
-`build`, `os` (C1 #33).
+`build`, `os` (C1 #33), `policy_tail` (the trainer file's
+`trainer_policy_tail_precision` differs from the process's
+`--policy-tail-precision`, or the file predates recording it).
+
+*Interim, until `ResumeGap` lands (review fixes 2026-10-02):* trainer files
+record `trainer_policy_tail_precision`; corpus replay and train-vs-UCI
+`--resume-exact` refuse a recorded mismatch and log a loud warning for an
+unrecorded value (`PolicyTailPrecisionResume`); a GUI resume logs
+`[RESUME] NOT EXACT: policy_tail …` and never refuses. When `ResumeGap` lands,
+`policy_tail` joins it and the unrecorded case follows `--accept-inexact`.
 
 **Per path:**
 - **Corpus replay:** `--resume-exact` refuses on `notExact`. **Decided (D-7):**

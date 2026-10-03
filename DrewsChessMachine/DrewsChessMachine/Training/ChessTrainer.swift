@@ -2068,7 +2068,7 @@ final class ChessTrainer: @unchecked Sendable {
         executableOptimizationLevel: MPSGraphOptimization = .level1,
         splitWorkingWeightSync: Bool = true,
         bf16CastInForward: Bool = false,
-        policyTailPrecision: ChessNetwork.PolicyTailPrecision = .default,
+        policyTailPrecision: ChessNetwork.PolicyTailPrecision = .process,
         disableAutoLayoutConversion: Bool = false,
         reducedPrecisionFastMathRaw: UInt? = nil
     ) throws {
