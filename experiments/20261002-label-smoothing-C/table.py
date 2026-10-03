@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Per-1000-step table for the label-smoothing arms against their shared baseline.
 
-Baseline: the SE experiment's ReLU scale+bias seed 1 (`se_sb`, policy ε 0.1, value
-ε 0.013), from the dashboard CSV. Arm C (policy ε 0.03) and arm D (value ε 0) start
+Baselines: the SE experiment's ReLU scale+bias seed 1 (`se_sb`, policy ε 0.1, value
+ε 0.013) and seed 2 (`se_sb2`, same settings; the comparator for C seed 2), from the
+dashboard CSVs. Arm C (policy ε 0.03) and arm D (value ε 0) start
 from the same fresh net and come from their probes.jsonl (`--probe-set wide`). A
 cell is blank where a run never reached the step.
 
@@ -22,14 +23,16 @@ from table_common import (BASELINE_LOG, buffer_plies_per_game, csv_points, csv_p
 # (label, probes file, model_id); NOT_STARTED until the run's first checkpoint exists.
 PROBE_ARMS = [
     ("C policy ε 0.03", os.path.join(HERE, "probes.jsonl"), "20261002-5-WkQG"),
-    ("C seed 2", os.path.join(HERE, "probes-seed2.jsonl"), probe_record.NOT_STARTED),
+    ("C seed 2", os.path.join(HERE, "probes-seed2.jsonl"), "20261003-22-oLbF"),
     ("D value ε 0", os.path.join(HERE, "..", "20261002-label-smoothing-D", "probes.jsonl"), "20261003-21-yEjN"),
 ]
 
 
 def main():
-    arms = [("baseline ε 0.1 / 0.013", csv_points("se_sb"))]
-    builds = [("baseline ε 0.1 / 0.013", csv_probe_builds("se_sb"))]
+    arms = [("baseline ε 0.1 / 0.013", csv_points("se_sb")),
+            ("baseline seed 2", csv_points("se_sb2"))]
+    builds = [("baseline ε 0.1 / 0.013", csv_probe_builds("se_sb")),
+              ("baseline seed 2", csv_probe_builds("se_sb2"))]
     not_started = []
     for label, path, model_id in PROBE_ARMS:
         points = probe_record.arm_points(path, model_id, label)
