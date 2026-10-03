@@ -24,7 +24,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import glob
 import json
 import os
 import re
@@ -34,11 +33,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dcm_session_logs import LOG_GLOB, latest_session_log
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HIST_PATH = Path(__file__).resolve().parent / '.tick_history.jsonl'
 HIST_CAP = 500
-LOG_GLOB = os.path.expanduser('~/Library/Logs/DrewsChessMachine/dcm_log_*.txt')
 
 # Health-band tables. Tuned for post-mask (legal-only) pEnt per
 # commit 2f95f21; numeric metrics match in-repo thresholds.
@@ -82,8 +82,7 @@ class Tick:
 def latest_log(override: str | None) -> Path | None:
     if override:
         return Path(override)
-    paths = sorted(glob.glob(LOG_GLOB))
-    return Path(paths[-1]) if paths else None
+    return latest_session_log()
 
 
 def find_last_stats(path: Path) -> str | None:

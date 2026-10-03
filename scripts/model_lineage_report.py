@@ -11,14 +11,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import glob
 import os
 import re
 import sys
 from pathlib import Path
 
+from dcm_session_logs import session_logs
 
-LOG_GLOB = os.path.expanduser("~/Library/Logs/DrewsChessMachine/dcm_log_*.txt")
+
 NUM_RE = r"([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
 
 
@@ -36,7 +36,7 @@ def main() -> int:
     parser.add_argument("model_id", help="trainer/candidate/champion/model id to scan for")
     args = parser.parse_args()
 
-    paths = sorted(Path(p) for p in glob.glob(LOG_GLOB))
+    paths = session_logs()
     if not paths:
         print("no logs found", file=sys.stderr)
         return 1

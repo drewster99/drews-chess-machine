@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import glob
 import json
 import math
 import os
@@ -27,11 +26,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from dcm_session_logs import latest_session_log, session_base_date
 
-LOG_GLOB = os.path.expanduser("~/Library/Logs/DrewsChessMachine/dcm_log_*.txt")
+
 NUM_RE = r"([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
 TIME_RE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s+\[(\w[^\]]*)\]\s+(.*)$")
-FILE_TS_RE = re.compile(r"dcm_log_(\d{8})-(\d{6})(?:-\d+)?\.txt$")
 
 
 @dataclass
@@ -82,8 +81,7 @@ class ArenaRecord:
 
 
 def latest_log() -> Path | None:
-    paths = sorted(glob.glob(LOG_GLOB))
-    return Path(paths[-1]) if paths else None
+    return latest_session_log()
 
 
 def parse_float(text: str, key: str) -> float | None:
@@ -109,11 +107,12 @@ def parse_elapsed(text: str) -> int | None:
     return h * 3600 + m_ * 60 + s
 
 
-def parse_session_base_date(path: Path) -> dt.date:
-    m = FILE_TS_RE.search(path.name)
-    if not m:
-        return dt.date.today()
-    return dt.datetime.strptime(m.group(1), "%Y%m%d").date()
+def parse_session_base_date(path: Path, base_date_override: str | None) -> dt.date:
+    """The date the log's first line belongs to: from --base-date when given (a renamed
+    copy), otherwise from the session-log name, which must follow the app's scheme."""
+    if base_date_override is not None:
+        return dt.datetime.strptime(base_date_override, "%Y%m%d").date()
+    return session_base_date(path)
 
 
 def parse_timestamp(base_date: dt.date, previous: dt.datetime | None, line: str) -> tuple[dt.datetime | None, str | None, str | None]:
@@ -253,8 +252,8 @@ def parse_stats_metrics(message: str) -> dict[str, Any]:
     return out
 
 
-def parse_log(path: Path) -> dict[str, Any]:
-    base_date = parse_session_base_date(path)
+def parse_log(path: Path, base_date_override: str | None = None) -> dict[str, Any]:
+    base_date = parse_session_base_date(path, base_date_override)
     current_date = base_date
     previous_dt: dt.datetime | None = None
     stats: list[StatsRecord] = []
@@ -535,6 +534,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--log", help="session log path")
     parser.add_argument("--json", action="store_true", help="emit structured JSON")
+    parser.add_argument("--base-date", metavar="YYYYMMDD",
+                        help="date of the log's first line, for a log not named dcm_log_YYYYMMDD-HHMMSS[-N].txt")
     args = parser.parse_args()
 
     log_path = Path(args.log).expanduser() if args.log else latest_log()
@@ -542,7 +543,7 @@ def main() -> int:
         print("no log found", file=sys.stderr)
         return 1
 
-    report = parse_log(log_path)
+    report = parse_log(log_path, args.base_date)
     if args.json:
         payload = {
             "path": report["path"],
