@@ -1655,6 +1655,146 @@ the default settings has no `replay_buffer.bin` and its save log line says
 writes and restores the buffer; `sample()` µs per batch not slower than the A2.2
 baseline.
 
+**Partly done (2026-10-02; `dc74df3b`, `d962a239`, `dc2a0a40`).** As built:
+
+- **D-5 bucket FIFO (`dc74df3b`).** `MaterialBucketSlots` now keeps each
+  bucket as an `AgeOrderedSlotQueue`: an array with a moving head, where
+  inserts append and evictions pop the oldest. `removeOldest` has a
+  precondition that the evicted slot is the bucket's oldest.
+  - That holds because the ring evicts only at its write index, and refill and
+    restore lay slots down in age order. The check found no other path that
+    removes a slot mid-bucket.
+  - `randomSlot` picks the k-th oldest member, so the pick no longer depends on
+    the stored array order.
+  - The new `ReplayBufferResumeEquivalenceTests` compare an uninterrupted
+    buffer with one refilled in age order whose sampler state was restored.
+    The two must draw identical batches for uniform, stratified and
+    length-tilted constraints.
+    - Red before the change: the stratified case had 120 failures; uniform and
+      tilted passed.
+    - Green after it.
+  - `sample()` µs versus the A2.2 baseline was not measured.
+- **One exactness decision per resume (`d962a239`).** New
+  `Training/ResumeExactness.swift`.
+  - `ResumeGap` holds the final tokens, which replace P6's provisional
+    `not_exact_items`: `rng_sampler`, `dropout_state`, `feed_carry`,
+    `buffer`, `serials`, `clocks`, `params`, `lineage`, `build`, `os`,
+    `policy_tail`.
+  - `ResumeExactness` puts the gaps in that order with no duplicates. It
+    produces the one `[RESUME] EXACT` or `[RESUME] NOT EXACT: <tokens>` line,
+    and the D-7 refusal.
+  - Corpus replay and train-vs-UCI `--resume-exact` now refuse unless
+    `--accept-inexact <comma list>` names every gap. The flag requires
+    `--resume-exact` and rejects unknown or duplicate tokens.
+  - A GUI resume reports the line and never refuses (D-1).
+  - `LineageTracker.Start.resume` takes the gaps, and the segment records them
+    as `not_exact_items`.
+  - The build/OS check compares the parent record's git hash, dirty flag,
+    build number and OS string with the running ones.
+    - A difference is a `build` or `os` gap. It is acceptable with
+      `--accept-inexact build` or `--accept-inexact os`.
+    - Because every rebuild bumps the build number, any rebuild between save
+      and resume needs `build`.
+- **Run streams saved and restored (`d962a239`).** `LineageRecord.schema`
+  moves 1 → 2. The decoder refuses any other schema; only test and dev files
+  held schema 1.
+  - `rng` is now the dropout Philox state plus `streams`, which holds:
+    - `master_seed` (a decimal string) and `seed_origin` (`configured` or
+      `drawn`);
+    - `stream_derivation`;
+    - the replay buffer's `sampler_state`;
+    - the trainer's `dropout_stream_state`;
+    - `next_game_serial` and `arenas_started` (null on corpus replay; vs-UCI
+      writes the serial only).
+  - `seed_mode` and `unseeded` are gone.
+  - A resume inherits the seed: `RandomSeedMode.Origin.inherited`, logged as
+    `mode=resumed(<origin>)`.
+    - A `--seed` naming a different seed is refused.
+    - A different stream derivation is an error.
+    - The run then restores the sampler, the dropout stream and the serials
+      (vs-UCI; GUI also restores the arena index).
+  - A parent without streams is an `rng_sampler` gap (plus `serials` on
+    vs-UCI and GUI).
+  - `ChessTrainer.dropoutStreamState()` / `restoreDropoutStreamState(_:)` run
+    on the trainer queue.
+- **Corpus feed phase and corpus identity (`d962a239`).** New
+  `CLI/CorpusFeedPhase.swift`.
+  - `fed.corpus` gains:
+    - `feed_ahead_positions` (positions fed beyond the current step's target —
+      whole games overshoot it);
+    - `feed_per_step` (K);
+    - `shard_sha256` (each shard's sealed-trailer SHA-256, from the new
+      `GameCorpusShardIO.readSealedTrailer`).
+  - On resume, the feed base is the refed positions minus the saved
+    feed-ahead, so the game feeding each later step is the uninterrupted
+    run's.
+  - A different K is a `params` + `feed_carry` gap.
+  - Any shard hash mismatch is a hard refusal (exit 2) naming the shard. It
+    cannot be accepted.
+- **Cross-epoch buffer reconstruction (`d962a239`).** The refeed window may
+  start in the previous epoch: `reconstructStartEpoch`, with the window
+  wrapping across the epoch boundary. A window longer than one epoch is
+  refused.
+  - **Deviation:** `oldest_resident` is not stored. The window is re-derived
+    from the saved position and the buffer capacity, and the ring trims
+    itself to the last `capacity` plies. Sampling draws logical age-ordered
+    indices, so the physical ring offset does not matter.
+- **GUI resume (`d962a239`, `dc2a0a40`).**
+  - `SessionController.guiResumeGaps` computes the gaps. A session saved with
+    streams continues the seed, the self-play game serials, the arena index,
+    the buffer sampler and the dropout stream.
+  - **Fixed a P3/P6 bug:** GUI resume used to call `beginDropoutStream` after
+    restoring the saved Philox state, which reseeded the generator and
+    overwrote the restored state.
+  - `session.json` gains `arena_seconds_since_last_arena`
+    (`ArenaTriggerBox.secondsSinceLastArena(now:)`). Resume starts the
+    trigger box that far back, so the next automatic arena comes due when it
+    would have in the saved run; a session without it is a `clocks` gap.
+  - The periodic-save clock needs nothing saved: the save being resumed reset
+    it.
+- **Deviation: no buffer format v9.** No slot-source column was added. Refill
+  re-derives sources from the corpus position, and the age-rank pick makes
+  stored order irrelevant.
+- **Tests.**
+  - New: `ReplayBufferResumeEquivalenceTests` (3) and
+    `ExactResumeCompletionTests` (15), which cover:
+    - the feed phase matching the uninterrupted run (the pre-P9 restart falls
+      behind);
+    - exactness ordering, line and refusal;
+    - accept-list parsing;
+    - build/OS and dropout gaps;
+    - a run-streams round trip with a seed above 2^53;
+    - a schema-1 refusal;
+    - seed inheritance, conflict and derivation mismatch;
+    - the arena-clock session round trip;
+    - the resume record's gaps.
+  - `ExactResumeCompletionTests` was compile-red first (new API).
+  - Existing tests got the approved mechanical edits for the new `rng:` and
+    `gaps:` arguments and the `CorpusPosition` fields.
+  - Green: one bundle of 136 tests across 12 classes, all passing (Lineage,
+    ExactResume, DropoutRNGState, DropoutRunStream, RunSeedParameter,
+    PolicyTailPrecisionProvenance, SessionCheckpointSchemaExpansion,
+    CorpusReplayFeeder, CorpusReplayFailLoud, TrainerOutputFileGuard and the
+    two new classes). Also green: 61 tests in the buffer and sampling classes,
+    and 39 after the arena-clock commit.
+  - The full suite was not run.
+- **Not done (remaining P9 work):**
+  - D-8 buffer save policy: the `session_save_include_replay_buffer`
+    parameter, the manual-save sheet checkbox, `--save-replay-buffer`,
+    train-vs-UCI session-folder checkpoints, and the `buffer=omitted` log.
+  - D-6 discard-and-rerun of an arena interrupted by a save.
+  - C1 #10: train-vs-UCI per-opponent and per-color counters.
+  - C1 #11: the dropped in-flight games line.
+  - #12 / #18 / #20: ratio-controller, diversity-tracker and alarm state.
+  - #26: segment-indexed enumerated checkpoint names.
+  - A GUI status-bar "resumed (not exact: …)" message (today it is the log
+    line only).
+  - A unit test of `guiResumeGaps` itself; the parts it composes are tested.
+  - `sample()` µs measurement.
+  - The C6 step-7 end-to-end run and the GUI validation runs.
+  - `PolicyTailPrecisionResume.exactResumeDecision` / `guiNotExactLine` are no
+    longer used by production; they are kept because their tests pin them.
+
 **P10 — Provenance + carry-forward.** `[RUN]` formatter (`Logging/`), recorder
 fields, B4 fix. Tests: derive → train → save keeps `derivation_history`; `[RUN]`
 contains all fields (string test on the formatter).

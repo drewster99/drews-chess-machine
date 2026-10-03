@@ -9,6 +9,29 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-02 CDT — A resume continues the run's random streams and says exactly what it did not restore (`dc74df3b`, `d962a239`, `dc2a0a40`)
+
+- **One verdict per resume** (determinism plan P9). Every resume logs `[RESUME] EXACT` or `[RESUME] NOT EXACT: <tokens>`. The tokens are `rng_sampler`, `dropout_state`, `feed_carry`, `buffer`, `serials`, `clocks`, `params`, `lineage`, `build`, `os` and `policy_tail`, and the new segment records them as its `not_exact_items`.
+- **`--resume-exact` now refuses an inexact resume** (corpus replay and train-vs-UCI) unless `--accept-inexact <comma list>` names every gap.
+  - Train-vs-UCI never saves its buffer, so it always needs `buffer`.
+  - Any rebuild between save and resume needs `build`.
+  - A GUI resume reports the verdict and never refuses.
+- **The run's seed and streams survive a resume.** The lineage record (schema 2; schema-1 records are refused) saves:
+  - the master seed and stream derivation;
+  - the replay buffer's sampler state;
+  - the trainer's dropout-stream position;
+  - the next self-play game serial and the arena count.
+
+  A resume continues them: `[RUN] seed=… mode=resumed(<origin>)`. A `--seed` naming a different seed is refused.
+- **GUI resume no longer reseeds the dropout generator** over the restored Philox state.
+- **GUI resume restores the arena clock.** `session.json` records `arena_seconds_since_last_arena`, so the next automatic arena comes due when it would have in the saved run.
+- **Corpus replay resume:**
+  - It resumes the feed phase exactly. `fed.corpus` records `feed_ahead_positions` and `feed_per_step`.
+  - It verifies the corpus: `fed.corpus.shard_sha256` holds each shard's sealed SHA-256, and a mismatch always refuses.
+  - The buffer refill window may now span the previous epoch.
+- **Replay buffer:** stratified draws pick the k-th oldest resident of the chosen material bucket. Before, the pick depended on swap-remove array order, so a refilled buffer drew differently from the uninterrupted one.
+- **Tests:** `ReplayBufferResumeEquivalenceTests`, `ExactResumeCompletionTests`. Existing lineage and resume tests were updated for the new record fields.
+
 ## 2026-10-02 CDT — Every training draw comes from a stream of the run's seed (`86ddc626`, `9f97426a`, `26f4d112`)
 
 - **A run has one master seed.** New parameters `random_seed_mode` (0 = draw a seed at run start, the default; 1 = use `random_seed`) and `random_seed` (a `UInt64`, written to JSON as a decimal string so large seeds survive), on the settings popover's Sessions tab ("Run seed", with this run's seed, Copy and Use). `--seed <n>` overrides both for GUI `--train`, `--replay-corpus` and `--train-vs-uci`. Every run logs `[RUN] seed=… mode=… derivation=v1` and records the seed in `results.json`, so any run — including an unseeded one — can be repeated.
