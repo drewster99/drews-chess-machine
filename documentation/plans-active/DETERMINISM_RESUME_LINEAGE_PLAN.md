@@ -1280,9 +1280,10 @@ Risk: sampler lock — RNG work moves inside the existing lock; xoshiro is faste
 than `SystemRandomNumberGenerator` (which calls `arc4random_buf`), so hold time
 drops. Measure `sample()` µs before/after with the existing timing taps.
 
-**Partly done (2026-10-02, `efcf3a75` test + `e6a3221e` fix): the parts that change no
-existing test's call shape are in; stream threading and the seed parameters wait on
-two owner decisions (below).** As built:
+**DONE (2026-10-02).** First part (`efcf3a75` test + `e6a3221e` fix) — **the parts that
+change no existing test's call shape**; stream threading and the seed parameters waited
+on two owner decisions (below, now decided) and landed in `86ddc626`, `9f97426a`,
+`26f4d112` (as built at the end of this entry). First part as built:
 - **O16 fixed-key board hash (bug fix; regression test committed first, `efcf3a75`,
   red: 11 failures on the old code).** `ReplayBuffer.hashBoard` is now
   `splitmix64` folded over the board's little-endian 8-byte words from a fixed key
@@ -1307,7 +1308,7 @@ two owner decisions (below).** As built:
 - Tests: `ReplayBufferStableBoardHashTests` (4; three red before the fix),
   `ReplayBufferSamplingOrderTests` (6; new API, so red only by not compiling).
 
-**Not done — owner decisions needed:**
+**Owner decisions (were needed; both decided 2026-10-02 — see the as-built record below):**
 1. **Threading the streams needs existing tests changed.** The sampler stream, the
    per-game self-play / arena / vs-UCI streams and the BN-calibration stream all need a
    generator passed in where none is passed today, and the tests call those APIs
@@ -1328,6 +1329,88 @@ two owner decisions (below).** As built:
 Also deferred with the threading: O12/O13 (pinned `legalMoves` order for fixed FENs,
 which matters once `MoveSampler` draws from a seeded stream) and the `sample()` µs
 re-measure (the draws still come from the system generator).
+
+**Decisions.** (1) Option (a), owner: "no silent default. edit all the sites." Every
+seeded API takes its generator or seed as a required argument, and every existing test
+call site passes a fixed one (mechanical edits, assertions unchanged). (2) The `UInt64`
+value kind was not part of P2, so it landed here.
+
+**As built — stream threading and seed parameters (`86ddc626`; registry-count test
+`9f97426a`; dropout wired to the run seed after merging P4, `26f4d112`):**
+- **Run seed (A3.1/A3.2).** `random_seed_mode` (Int 0…1 ↔ `RandomSeedMode`, default
+  0 = draw a seed; resume declaration `.preFeature(0)`) and `random_seed` (`UInt64`,
+  full range, default 0; resume declaration `.refuseExact`), category
+  "Reproducibility", both not live-tunable; `--seed <n>` on GUI `--train`,
+  `--replay-corpus` and `--train-vs-uci` (duplicate or malformed → usage error).
+  `RunRandomSeed.resolve` (`Training/RandomSeedMode.swift`) is the one resolver for all
+  three paths; each logs `[RUN] seed=<n> mode=seeded|seeded(--seed)|unseeded(drawn)
+  derivation=v1` plus a `[PARAM]` line when the configured seed is overridden or
+  ignored, and `results.json` carries `random_seed` (decimal string),
+  `random_seed_mode`, `rng_stream_derivation`. UI: Sessions tab "Run seed" — mode
+  picker, configured seed (in effect only in "Use this seed"), this run's seed with
+  Copy and Use.
+- **`UInt64` parameter kind.** Macro: `default: UInt64(<literal>)` selects it;
+  `ParameterValue.uint64`, persisted and written to JSON as a decimal string; decode
+  also accepts a non-negative JSON integer. One JSON → `ParameterValue` parser
+  (`ParameterValue(jsonValue:id:)`) now serves `TrainingParameters.load`, the CLI
+  `--parameters` loader and stored settings. Two latent issues it fixed: the old
+  loader tested `as? Bool` first, so a JSON 0/1 could be read as a Bool; and an
+  unsigned `NSNumber` above `Int.max` is no longer read through `intValue` (which would
+  wrap it negative).
+- **Streams wired.** Replay buffer: `sampler` stream owned by the buffer under its lock
+  — every draw (the six uniform `nextBounded` sites, stratified `randomSlot`, tilt
+  acceptance), `samplerState()` / `restoreSamplerState(_:)` for P9. `MoveSampler`:
+  `rng: inout DCMRandom` through the inverse CDF, Dirichlet, Gamma and normal draws.
+  `ActiveGame` owns its game's stream and samples through it; draw-keep draws from it.
+  Self-play: `selfplay.game.<serial>` with serials from `GameSerialCounter`, assigned in
+  the serial grow and game-end passes in slot order, never in the parallel tick.
+  Arena: `arena.<arenaIndex>.game.<g>`, `arenaIndex` counting arenas started in the run.
+  Train-vs-UCI: `vsuci.game.<serial>`. BN calibration: `init.bn_calibration` from the
+  model's init seed (`NetworkInitMode.randomWeights(initSeed:)`; GUI Build and
+  `--new-model` draw and log it; a fresh corpus-replay net uses
+  `childSeed(master, "init")`); load containers use `.overwrittenByLoad`. Entropy
+  probe: `probe.entropy_by_bucket.<trainerStep>` with the stable Fisher–Yates; outside
+  a run it is system-seeded and the log says so. Dropout: P4's
+  `RunMasterSeed.systemDrawn(context:)` integration point is replaced and removed —
+  replay and train-vs-UCI build their trainer with the run's `dropout` stream; the GUI
+  trainer outlives runs, so each new run calls `ChessTrainer.beginDropoutStream` with
+  its stream (a continue after Stop keeps its masks); the two sweeps are benchmarks and
+  use an explicit system-seeded generator.
+- **Deliberately system-seeded (explicit `DCMRandom.seededFromSystem()`):** UCI,
+  human play (`MPSChessPlayer`), the Lichess bot chooser, a corpus-replay
+  feeder's game slots (recorded games never draw), the never-played train-vs-UCI slot
+  placeholder, and buffers that are restored and analyzed but never sampled.
+- **Continue vs. resume.** A Stop + continue keeps the run's seed, game serials and
+  arena count. A session resume records none of them yet, so it holds the mode at
+  unseeded for the run (a fresh seed is drawn and logged) and reports the seed NOT
+  EXACT; CLI `--resume-exact` logs `NOT EXACT: rng`. Persisting the seed alone would
+  replay the run's first game streams, so it waits for the serials and arena index in
+  the lineage record (P6/P9).
+- **O12/O13 verified and pinned.** `legalMoves(for:)` is the pin-based filter over
+  `pseudoLegalMoves`, which scans the board in row/column order into an array — no
+  `Set` or `Dictionary` on the path (the `Set`s in `crosscheckGenerators` are only the
+  `--crosscheck-movegen` diagnostic and never feed the result). `LegalMoveOrderPinTests`
+  pins the ordered UCI list of 20 FENs (SHA-256 prefix each).
+- **Timing re-measure.** In the Debug test build: system `Int.random(in:)` 183 ns per
+  bounded draw vs `DCMRandom.nextBounded` 68 ns (≈0.75 ms vs ≈0.28 ms of draws per
+  4096-sample batch); a full 4096-position `sample()` 5.4 ms, dominated by copying
+  positions. Not slower; the Release-build figures in A2.2 stand.
+- **Deviations.** `--seed` is parsed with the other flags in `DrewsChessMachineApp`
+  rather than in `CliTrainingConfig` (which loads `--parameters` files). The per-game
+  K-independence test drives `MoveSampler` through per-game streams in lockstep
+  (K = 1 vs K = 8) rather than a stubbed `evaluateBatched` in the driver — the
+  drivers take a concrete `ChessMPSNetwork`, and the property under test is that no
+  draw is shared between games. libm `logf`/`cosf` in the Gamma/normal draws remain
+  (P5's restricted-domain math).
+- **Tests.** New: `RunSeedParameterTests` (14), `SeededStreamDeterminismTests` (11),
+  `LegalMoveOrderPinTests` (2), `DropoutRunStreamTests` (2), macro
+  `test_uint64Parameter_withRange`. Red: compile-only (new API) — the first run of
+  the new classes failed only the pin test, whose goldens were then filled from the
+  generator and checked against known perft move counts. Changed: the owner-approved
+  mechanical call-site edits, plus `TrainingParametersTests.test_registry_size` 82 → 84
+  (`9f97426a`). Macro package: 4 expansion tests (`test_boolParameter`,
+  `test_intParameter_withRange`, both acronym tests) fail on `e1026596` too — a
+  `throw` indentation difference with the current swift-syntax, not touched here.
 
 **P4 — Dropout state.** Files: `Network/ChessNetwork.swift` (placeholder assign,
 no baked constant), `Training/ChessTrainer.swift` (`captureDropoutState()`,
