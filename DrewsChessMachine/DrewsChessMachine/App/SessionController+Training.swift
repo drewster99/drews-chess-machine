@@ -649,7 +649,16 @@ extension SessionController {
         let trainingGate = WorkerPauseGate()
         let arenaFlag = ArenaActiveFlag()
         arenaActiveFlag = arenaFlag
-        let triggerBox = ArenaTriggerBox()
+        // A resumed session continues its arena clock, so the next automatic
+        // arena comes due when it would have in the saved run; any other
+        // start begins the clock now.
+        let triggerBox: ArenaTriggerBox
+        if !continueMode, let resumedClock = pendingLoadedSession?.state.arenaSecondsSinceLastArena {
+            triggerBox = ArenaTriggerBox(startTime: Date().addingTimeInterval(-resumedClock))
+            SessionLogger.shared.log(String(format: "[RESUME] arena clock=%.0fs since the last arena (restored)", resumedClock))
+        } else {
+            triggerBox = ArenaTriggerBox(startTime: Date())
+        }
         arenaTriggerBox = triggerBox
         let overrideBox = ArenaOverrideBox()
         arenaOverrideBox = overrideBox

@@ -105,10 +105,15 @@ extension SessionController {
 
     /// What a GUI resume of `resumed` does not restore (determinism plan C3,
     /// D-1: a GUI resume is state-exact at most, so it is reported, never
-    /// refused). The arena-trigger and periodic-save clocks always restart.
+    /// refused). The periodic-save clock needs nothing: the save being
+    /// resumed reset it. The arena clock is restored when the session
+    /// recorded it.
     static func guiResumeGaps(resumed: LoadedSession, trainer: ChessTrainer) -> [ResumeGap] {
         let lineage = resumed.trainerFile.safetensorsProvenance?.lineage
-        var gaps: [ResumeGap] = [.clocks]
+        var gaps: [ResumeGap] = []
+        if resumed.state.arenaSecondsSinceLastArena == nil {
+            gaps.append(.clocks)
+        }
         gaps += ResumeGap.dropoutGaps(restoring: DropoutRNGResumeState(lineage: lineage))
         gaps += PolicyTailPrecisionResume.gaps(
             saved: resumed.trainerFile.metadata.trainerPolicyTailPrecision, running: trainer.policyTailPrecision)

@@ -1118,6 +1118,7 @@ extension SessionController {
             wideLichess: lichessProbeWideHistory.makeSnapshot(),
             tactical: tacticalProbeHistory.makeSnapshot()
         )
+        .withArenaClock(secondsSinceLastArena: arenaTriggerBox?.secondsSinceLastArena(now: now))
     }
 
     // MARK: - Session resume (Stage 4k)

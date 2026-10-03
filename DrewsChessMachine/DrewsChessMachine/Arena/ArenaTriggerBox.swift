@@ -166,4 +166,10 @@ final class ArenaTriggerBox: @unchecked Sendable {
     func resetLastArenaTime(to date: Date) {
         lock.withLock { $0.lastArenaTime = date }
     }
+
+    /// The arena clock: seconds since the last arena ended (or the box's
+    /// start time), as a session save records it for a resume to restore.
+    func secondsSinceLastArena(now: Date) -> Double {
+        lock.withLock { max(0, now.timeIntervalSince($0.lastArenaTime)) }
+    }
 }

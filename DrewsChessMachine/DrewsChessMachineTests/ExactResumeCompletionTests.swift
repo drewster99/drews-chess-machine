@@ -200,6 +200,41 @@ final class ExactResumeCompletionTests: XCTestCase {
         XCTAssertEqual(recorded.arenasStarted, 2)
     }
 
+    // MARK: - GUI arena clock
+
+    private func sessionState() -> SessionCheckpointState {
+        SessionCheckpointState(
+            formatVersion: SessionCheckpointState.currentFormatVersion,
+            sessionID: "test-session", savedAtUnix: 1_700_000_000, sessionStartUnix: 1_699_999_000,
+            elapsedTrainingSec: 1000, trainingSteps: 1234, selfPlayGames: 10, selfPlayMoves: 600,
+            trainingPositionsSeen: 1234 * 4096, batchSize: 4096, learningRate: 5e-5,
+            promoteThreshold: 0.55, arenaGames: 200,
+            selfPlayTau: TauConfigCodable(SamplingSchedule.selfPlay),
+            arenaTau: TauConfigCodable(SamplingSchedule.arena),
+            selfPlayWorkerCount: 4, championID: "champ-id", trainerID: "train-id", arenaHistory: []
+        ).withLineage(LineageRecord.sessionTestFixture)
+    }
+
+    func testTheArenaClockRoundTripsThroughSessionJSON() throws {
+        let original = sessionState().withArenaClock(secondsSinceLastArena: 512.25)
+        let decoded = try SessionCheckpointState.decode(try original.encode())
+        XCTAssertEqual(decoded.arenaSecondsSinceLastArena, 512.25)
+        XCTAssertEqual(decoded, original)
+        let without = try SessionCheckpointState.decode(try sessionState().encode())
+        XCTAssertNil(without.arenaSecondsSinceLastArena)
+    }
+
+    /// A box restored from a saved clock reports that clock (plus the time
+    /// since the restore), so the next automatic arena comes due on the
+    /// saved run's schedule.
+    func testARestoredArenaTriggerBoxContinuesTheSavedClock() {
+        let now = Date()
+        let box = ArenaTriggerBox(startTime: now.addingTimeInterval(-300))
+        XCTAssertEqual(box.secondsSinceLastArena(now: now), 300, accuracy: 1e-6)
+        XCTAssertTrue(box.shouldAutoTrigger(interval: 299))
+        XCTAssertFalse(box.shouldAutoTrigger(interval: 3_600))
+    }
+
     // MARK: - Lineage of a resume
 
     func testAResumesRecordNamesItsGapsAndAnExactOneNamesNone() throws {

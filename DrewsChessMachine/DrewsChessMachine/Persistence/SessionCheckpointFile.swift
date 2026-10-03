@@ -760,6 +760,15 @@ struct SessionCheckpointState: Codable, Equatable {
     /// lineage existed.
     var lineage: LineageRecord?
 
+    /// Seconds since the last arena ended (or the run began) at the save —
+    /// the arena-trigger clock a resume restores, so the next automatic arena
+    /// comes due when it would have in the saved run (determinism plan C1
+    /// #13). A save deferred past an arena's start predates that arena, so a
+    /// resume re-runs it when due (D-6). Nil when no run was training at the
+    /// save, and in sessions saved before the clock was recorded; such a
+    /// resume restarts the clock and reports `clocks` NOT EXACT.
+    var arenaSecondsSinceLastArena: Double?
+
     // MARK: - Training Segments
 
     /// One Play-and-Train run, bounded by start and end wall-clock
@@ -875,6 +884,14 @@ struct SessionCheckpointState: Codable, Equatable {
         copy.lichessProbeHistory = lichess
         copy.lichessProbeWideHistory = wideLichess
         copy.tacticalProbeHistory = tactical
+        return copy
+    }
+
+    /// Return a copy carrying the arena-trigger clock. Same builder-helper
+    /// pattern as `withTrainingSegments`.
+    func withArenaClock(secondsSinceLastArena: Double?) -> SessionCheckpointState {
+        var copy = self
+        copy.arenaSecondsSinceLastArena = secondsSinceLastArena
         return copy
     }
 
