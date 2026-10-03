@@ -144,6 +144,18 @@ U5 `f273b890`, U3 `748afe20`, U4 `fbf2a4f1`. CLAUDE.md and CHANGELOG updated aft
       state"); a resume takes its clocks from the trainer file and the record
       (`trainer_completed_steps: 22 (from trainer file; session step count 20)`), so only the
       resumed run's displayed counters start that far behind.
+      - Fixed afterwards (owner: one consistent cut for the whole save). The counts were read
+        from the heartbeat's published mirror (`trainingStats`, `parallelStats`), not only
+        before the pause, so moving the build alone was not enough:
+        `publishRunCountersAtCut()` republishes both from the live boxes with self-play and
+        training paused, and `saveSessionInternal` builds the session state, the trainer
+        file's `training_step` and the chart snapshot right after it, after the lineage
+        record and before training resumes. The arena's post-promotion save now builds its
+        state the same way at the promotion's cut: training stays paused through
+        `tournamentHistory.append`, and the build follows the append. Promote Trainee Now
+        takes its history entry's step from the box at its own pause. Regression tests:
+        `SessionSaveConsistentCutTests.testASessionSavesCountsDescribeItsCut` and
+        `testPromoteTraineeNowRecordsItsStepAtItsPause`.
     - A bare `--help` is not a recognized argument: it prints "unrecognized argument(s):
       '--help'" before the usage and exits 2.
     - `~/Library/Preferences` holds 1,398 `<TestClass>-<UUID>.plist` domains left by test

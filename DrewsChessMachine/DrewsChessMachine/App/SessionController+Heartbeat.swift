@@ -119,11 +119,8 @@ extension SessionController {
         if let box = trainingBox {
             let snap = await box.snapshot()
             if snap.stats.steps != (trainingStats?.steps ?? -1) {
-                trainingStats = snap.stats
-                lastTrainStep = snap.lastTiming
-                realRollingPolicyLoss = snap.rollingPolicyLoss
-                realRollingValueLoss = snap.rollingValueLoss
-                
+                publishTrainingStats(snap)
+
                 // Periodic memory log to stdout to correlate with performance degradation
                 if snap.stats.steps % 100 == 0 {
                     let appMB = Double(memoryStatsSnap?.appFootprintBytes ?? 0) / 1024 / 1024

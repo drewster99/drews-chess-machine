@@ -335,14 +335,11 @@ extension SessionController {
         // Both files are written under these IDs and the trainer file names
         // the champion as its parent; a network without an identity is a
         // failed save, never a file under a placeholder ID.
-        // The run's step count is what the trainer file's `training_step`
-        // states; a save runs only inside a run, which always has one.
         guard let championID = champion.identifier?.description,
-              let trainerID = trainer.identifier?.description,
-              let trainingStep = trainingStats?.steps else {
+              let trainerID = trainer.identifier?.description else {
             checkpoint?.checkpointSaveInFlight = false
             periodicSaveInFlight = false
-            let message = "Save failed: the champion or the trainer has no model ID, or the run has no step count"
+            let message = "Save failed: \(RunCutError.noModelID.localizedDescription)"
             checkpoint?.setCheckpointStatus("\(message)\(uiSuffix)", kind: .error)
             SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(message)")
             onComplete?(false)
@@ -352,28 +349,12 @@ extension SessionController {
         checkpoint?.setCheckpointStatus("Saving session\(uiSuffix)…", kind: .progress)
         checkpoint?.startSlowSaveWatchdog(label: "session save\(uiSuffix)")
 
-        // Build the state snapshot on the main actor before
-        // jumping to detached work. Capture the replay buffer handle
-        // here too so the detached write path can serialize it
-        // alongside the two network files — `ReplayBuffer` is
-        // `@unchecked Sendable` and serializes access via its own
+        // Capture the replay buffer handle so the detached write path can
+        // serialize it alongside the two network files — `ReplayBuffer`
+        // is `@unchecked Sendable` and serializes access via its own
         // lock, so the buffer can be written from a background task
         // while self-play workers (which only append) are paused.
-        let sessionState = buildCurrentSessionState(
-            championID: championID,
-            trainerID: trainerID,
-            arenaClock: .live,
-            includeReplayBuffer: includeReplayBuffer
-        )
         let bufferForSave = includeReplayBuffer ? replayBuffer : nil
-        // Snapshot the chart-coordinator state on the main actor
-        // BEFORE jumping to detached work — the rings are
-        // `@MainActor`-isolated so the array copies have to happen
-        // here. `buildSnapshot()` returns nil when collection is off
-        // or both rings are empty, in which case the save path skips
-        // writing chart-companion files entirely (matching the
-        // existing `bufferForSave == nil` skip).
-        let chartSnapshotForSave = chartCoordinator?.buildSnapshot()
 
         Task {
             // Fire `onComplete(success)` exactly once on every exit path
@@ -405,8 +386,10 @@ extension SessionController {
             // under both pauses, so a resume that continues those streams
             // continues them from the instant the trainer state was taken.
             // Releasing self-play earlier let new games take serials and
-            // feed the buffer before the record read them. Training is
-            // released once the record is built; self-play once the
+            // feed the buffer before the record read them. The session
+            // state — step and game counts included — is built under both
+            // pauses too, after the record. Training is released once both
+            // are built; self-play once the
             // replay buffer is written when the save includes it (the
             // written buffer must be the one the record describes), right
             // after the record otherwise. Bounded waits, so a session end
@@ -498,6 +481,28 @@ extension SessionController {
             } catch {
                 lineageResult = .failure(error)
             }
+            // The session state, the trainer file's training step and the
+            // chart companion files, still under both pauses: the run's
+            // counters are published from the live boxes and the state is
+            // built from them in one main-actor stretch, so session.json's
+            // step and game counts are the ones the trainer state, the
+            // record and the buffer describe.
+            let sessionStateResult: Result<(state: SessionCheckpointState, trainingStep: Int, chartSnapshot: ChartCoordinatorSnapshot?), Error>
+            do {
+                let trainingStep = try publishRunCountersAtCut()
+                let sessionState = buildCurrentSessionState(
+                    championID: championID,
+                    trainerID: trainerID,
+                    arenaClock: .live,
+                    includeReplayBuffer: includeReplayBuffer
+                )
+                // `buildSnapshot()` returns nil when chart collection is off
+                // or both rings are empty, in which case the save skips the
+                // chart-companion files entirely.
+                sessionStateResult = .success((sessionState, trainingStep, chartCoordinator?.buildSnapshot()))
+            } catch {
+                sessionStateResult = .failure(error)
+            }
             trainingGate.resume()
             if bufferForSave == nil {
                 selfPlayHold.release()
@@ -514,6 +519,20 @@ extension SessionController {
                 clearInFlight()
                 checkpoint?.setCheckpointStatus("Save failed (lineage): \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session failed building its lineage record: \(error.localizedDescription)")
+                return
+            }
+            let sessionState: SessionCheckpointState
+            let trainingStep: Int
+            let chartSnapshotForSave: ChartCoordinatorSnapshot?
+            switch sessionStateResult {
+            case .success(let cut):
+                sessionState = cut.state
+                trainingStep = cut.trainingStep
+                chartSnapshotForSave = cut.chartSnapshot
+            case .failure(let error):
+                clearInFlight()
+                checkpoint?.setCheckpointStatus("Save failed (session state): \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Save session failed building its session state: \(error.localizedDescription)")
                 return
             }
 
@@ -1057,11 +1076,68 @@ extension SessionController {
         return " buffer=included replay=\(snap.storedCount)/\(snap.capacity)"
     }
 
+    /// Why a save or a promotion could not take its cut of the run.
+    enum RunCutError: LocalizedError {
+        case noModelID
+        case noLiveCounters
+
+        var errorDescription: String? {
+            switch self {
+            case .noModelID:
+                return "the champion or the trainer has no model ID"
+            case .noLiveCounters:
+                return "the run has no training stats box or no self-play stats box"
+            }
+        }
+    }
+
+    /// Publish one training-stats-box snapshot as the run's displayed
+    /// training counters. Every field comes from the same snapshot, so the
+    /// step count, the last step's timing and the rolling losses always
+    /// describe one instant, whichever path publishes them (the heartbeat,
+    /// an arena start, a save's cut).
+    func publishTrainingStats(_ snapshot: TrainingLiveStatsBox.Snapshot) {
+        trainingStats = snapshot.stats
+        lastTrainStep = snapshot.lastTiming
+        realRollingPolicyLoss = snapshot.rollingPolicyLoss
+        realRollingValueLoss = snapshot.rollingValueLoss
+    }
+
+    /// Publish the run's counters — `trainingStats` and `parallelStats` —
+    /// as the live boxes hold them now, and return the run's step count.
+    ///
+    /// Those two properties are the heartbeat's mirror of the boxes, so
+    /// between ticks they trail the workers. A save builds session.json
+    /// from them (`buildCurrentSessionState`, and the training-segment
+    /// close it performs), and takes the trainer file's training step from
+    /// them; read as the heartbeat left them, those counts described an
+    /// earlier instant than the trainer state, the lineage record and the
+    /// replay buffer the same save took under its pauses, and a resume
+    /// restored the run's counters from that earlier instant while its
+    /// trainer clock and fed totals came from the cut. Called with
+    /// self-play and training both paused, this makes every count the save
+    /// writes describe the cut.
+    ///
+    /// Both boxes exist for the whole of a Play-and-Train run, which is the
+    /// only time anything saves or promotes, so a missing one is an error
+    /// rather than a count to leave as it was.
+    func publishRunCountersAtCut() throws -> Int {
+        guard let trainingBox, let parallelWorkerStatsBox else {
+            throw RunCutError.noLiveCounters
+        }
+        let training = trainingBox.snapshot()
+        publishTrainingStats(training)
+        parallelStats = parallelWorkerStatsBox.snapshot()
+        return training.stats.steps
+    }
+
     /// Build the Codable snapshot of the current session state (counters,
     /// hyperparameters, arena history, replay-buffer footprint, build info).
-    /// Called at save time with the live state read off the main actor by both
-    /// the manual/periodic save path and `runArenaParallel`'s post-promotion
-    /// save. Closes the active training segment at save time (and re-opens a
+    /// Called at save time, on the main actor, by both the manual/periodic
+    /// save path and `runArenaParallel`'s post-promotion save — each with
+    /// self-play and training paused and the run's counters just published
+    /// (`publishRunCountersAtCut`), so the snapshot describes the save's
+    /// cut. Closes the active training segment at save time (and re-opens a
     /// fresh one if training is still in progress) so the on-disk cumulative
     /// wall-time totals stay correct across mid-training saves.
     /// `arenaClock` says which arena clock the save records;

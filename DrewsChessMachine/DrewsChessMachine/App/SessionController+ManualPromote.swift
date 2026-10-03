@@ -116,6 +116,25 @@ extension SessionController {
                 return
             }
 
+            // 1c) The run's step at the promotion, read from the live
+            //     training stats box under the pause (and published, so
+            //     the displayed counters agree). The heartbeat's last
+            //     published count trails the trainer, so it is not the
+            //     promotion's step. Training stays
+            //     paused until the gates resume below, so this is the step
+            //     the promoted weights were taken at.
+            let promotedAtRunStep: Int
+            do {
+                promotedAtRunStep = try publishRunCountersAtCut()
+            } catch {
+                trainingGate.resume()
+                selfPlayGate.resume()
+                checkpoint?.checkpointSaveInFlight = false
+                checkpoint?.setCheckpointStatus("Promotion aborted: \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[STATS] promote(manual) aborted — \(error.localizedDescription)")
+                return
+            }
+
             // 2) Copy live trainer weights → champion, on a detached
             //    task so the GPU work doesn't sit on the cooperative
             //    pool. All errors surfaced — never swallowed.
@@ -171,7 +190,7 @@ extension SessionController {
             //    treats a 0-game W/D/L as "no data" (score 0, elo nil),
             //    and the history tile renders "—" for the per-side
             //    breakdown — both safe with zero games.
-            let steps = trainingStats?.steps ?? 0
+            let steps = promotedAtRunStep
             let record = TournamentRecord(
                 finishedAtStep: steps,
                 finishedAt: Date(),
