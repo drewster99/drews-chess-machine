@@ -27,13 +27,21 @@ struct LichessBotControllerFeed: LichessBotGameObserver {
 }
 
 /// Where the controller gets its connection to Lichess and the stored
-/// token. The app uses `live`; tests substitute a scripted transport and a
-/// fixed token so a whole runtime runs without the network or the Keychain.
+/// token, and how it answers a quit it deferred. The app uses `live`; tests
+/// substitute a scripted transport, a fixed token and a recorded quit reply
+/// so a whole runtime — and a quit — runs without the network, the Keychain
+/// or terminating the test host.
 struct LichessBotControllerServices: Sendable {
     let makeTransport: @Sendable () -> any LichessBotTransport
     /// The stored token for a Lichess account id, or nil if none is stored.
     /// Called on the file queue (Keychain calls block).
     let readToken: @Sendable (_ accountID: String) throws -> String?
+    /// Answers an `applicationShouldTerminate` the controller deferred with
+    /// `.terminateLater`: true lets the app quit, false cancels the quit.
+    /// The app answers AppKit; only a test that quits needs its own.
+    var replyToTerminate: @MainActor @Sendable (_ shouldTerminate: Bool) -> Void = { shouldTerminate in
+        NSApp.reply(toApplicationShouldTerminate: shouldTerminate)
+    }
 
     static let live = LichessBotControllerServices(
         makeTransport: { LichessBotURLSessionTransport() },
@@ -782,6 +790,16 @@ final class LichessBotController {
         connection = .connecting
         oneGameRequested = oneGame
         drainRequested = false
+        // The running bot consults the player notes (favorites, bot limits,
+        // decline cool-downs) and records into them and the challenge-outcome
+        // log. The bot window loads both when it opens, but the bot can go
+        // online from the status chip without that window ever opening.
+        if playerNotes == nil {
+            await loadPlayerNotes()
+        }
+        if challengeOutcomeLog == nil {
+            await loadChallengeOutcomes()
+        }
         do {
             try await startRuntime(oneGame: oneGame)
             // A shutdown while the runtime started found no runtime to stop.
@@ -836,21 +854,52 @@ final class LichessBotController {
 
     // MARK: - Games left from the last run
 
-    /// Games whose journal an earlier run left in `InProgress/` (it stopped
-    /// with them running, or before filing them), found at launch while the
-    /// bot is offline. Any still live on Lichess runs on DCM's clock until
-    /// the bot goes online and resumes it; the status chip says so.
+    /// Games an earlier run left in `InProgress/` whose journal records no
+    /// finish (it stopped with them running), or whose journal can't be
+    /// read, found at launch while the bot is offline. Any still live on
+    /// Lichess runs on DCM's clock until the bot goes online and resumes
+    /// it; the status chip says so.
     private(set) var leftoverGamesFromLastRun: [String] = []
+    /// Games an earlier run finished but left in `InProgress/`, found at
+    /// launch while the bot is offline. A quit doesn't wait for a finished
+    /// game's post-game chat fetches, so ordinary quits leave these; nothing
+    /// is at stake, and going online files them (launch recovery). The
+    /// status chip counts them apart from the unfinished ones.
+    private(set) var finishedGamesAwaitingFilingFromLastRun: [String] = []
     private var leftoverJournalsChecked = false
 
+    /// Whether the bot is offline (or stopped in Error) — not going online,
+    /// online or draining.
+    private var isOfflineOrError: Bool {
+        switch connection {
+        case .offline, .error:
+            return true
+        case .connecting, .online, .draining:
+            return false
+        }
+    }
+
     /// Look once, at launch, for journals an earlier run left, and say so
-    /// (status chip, alarm, session log). Called from the main window's
-    /// status chip, which exists only in a GUI run: the controller itself is
-    /// also created for command-line runs, which must not report this.
+    /// (status chip, session log, and an alarm for any game that may still
+    /// be live). Called from the main window's status chip, which exists
+    /// only in a GUI run: the controller itself is also created for
+    /// command-line runs, which must not report this.
+    ///
+    /// Each journal is read for the finish it recorded. One that recorded a
+    /// finish is a game the last run finished but hadn't filed yet; one
+    /// with no finish may be running on Lichess on DCM's clock; one that
+    /// can't be read could be either, and its alarm names why.
+    ///
+    /// Going online resumes or files these games itself and clears the
+    /// report, so a report is dropped if going online began before or while
+    /// it was computed: `goOnline` leaves Offline/Error before its first
+    /// suspension, and every runtime start bumps `runtimeGeneration`.
     func noteLeftoverJournalsAtLaunch() async {
         guard !leftoverJournalsChecked else { return }
         leftoverJournalsChecked = true
-        guard runtime == nil else { return }
+        guard isOfflineOrError else { return }
+        let generationAtStart = runtimeGeneration
+        func stillOffline() -> Bool { runtimeGeneration == generationAtStart && isOfflineOrError }
         let store = LichessBotRecordStore(directory: dataDirectory, journalQueue: journalQueue, indexQueue: fileQueue, ourAccountID: accountID)
         let leftovers: [String]
         do {
@@ -859,9 +908,33 @@ final class LichessBotController {
             raiseAlarm("Checking for games left from the last run failed: \(Self.safeDescription(error))")
             return
         }
-        guard runtime == nil, !leftovers.isEmpty else { return }
-        leftoverGamesFromLastRun = leftovers
-        raiseAlarm("The last run left \(leftovers.count) game(s) not filed (\(leftovers.joined(separator: ", "))). Any still live on Lichess is running on DCM's clock: go online to resume it.")
+        guard stillOffline(), !leftovers.isEmpty else { return }
+        var unfinished: [String] = []
+        var finished: [String] = []
+        var unreadable: [(gameID: String, reason: String)] = []
+        for gameID in leftovers {
+            do {
+                if try await store.journalFinishedStatus(gameID: gameID) == nil {
+                    unfinished.append(gameID)
+                } else {
+                    finished.append(gameID)
+                }
+            } catch {
+                unreadable.append((gameID: gameID, reason: Self.safeDescription(error)))
+            }
+            guard stillOffline() else { return }
+        }
+        leftoverGamesFromLastRun = (unfinished + unreadable.map(\.gameID)).sorted()
+        finishedGamesAwaitingFilingFromLastRun = finished
+        if !finished.isEmpty {
+            SessionLogger.shared.log("[LICHESS-BOT] the last run finished \(finished.count) game(s) but didn't file them (\(finished.joined(separator: ", "))); going online files them")
+        }
+        if !unfinished.isEmpty {
+            raiseAlarm("The last run left \(unfinished.count) game(s) not filed with no finish recorded (\(unfinished.joined(separator: ", "))). Any still live on Lichess is running on DCM's clock: go online to resume it.")
+        }
+        for game in unreadable {
+            raiseAlarm("The last run left game \(game.gameID) not filed, and its journal can't be read, so DCM can't tell whether it finished: \(game.reason). If it is still live on Lichess it is running on DCM's clock: go online to resume it.")
+        }
     }
 
     /// Whether this game's filing waits for its post-game chat: the
@@ -1016,10 +1089,27 @@ final class LichessBotController {
 
     // MARK: - Quit (plan §13)
 
-    /// `applicationShouldTerminate`: quit at once when the bot holds no
-    /// games; otherwise drain, show the sheet, and quit when the games end.
+    /// `applicationShouldTerminate`: with games in play, drain, show the
+    /// sheet, and quit when the games end; otherwise stop the runtime (if
+    /// one is up) and quit once the bot has shut down. Only a launch that
+    /// never used the bot quits at once.
     func applicationShouldTerminate() -> NSApplication.TerminateReply {
-        guard let runtime else { return .terminateNow }
+        guard let runtime else {
+            // Offline. Going offline (or an error) started withdrawing our
+            // unanswered challenges, and a challenge left standing can be
+            // accepted into a game nobody plays; protocol-log, player-notes
+            // and outcome-log writes may still be queued. The shutdown
+            // waits for all of them. A launch that never went online or
+            // loaded the bot's notes has none of that, and quits at once
+            // rather than have the shutdown's own protocol-log line create
+            // the data folder of someone who never used the bot.
+            guard runtimeGeneration > 0 || playerNotes != nil || challengeOutcomeLog != nil else {
+                return .terminateNow
+            }
+            quitReplyPending = true
+            completeQuitIfPending(quit: true)
+            return .terminateLater
+        }
         clearChallengeQueue(reason: "app quit")
         if !hasGamesInPlay {
             // Reply once the queued journal and protocol-log writes (the
@@ -1046,15 +1136,16 @@ final class LichessBotController {
         guard quitReplyPending else { return }
         quitReplyPending = false
         guard quit else {
-            NSApp.reply(toApplicationShouldTerminate: false)
+            services.replyToTerminate(false)
             return
         }
         // Let journal and protocol-log writes already queued reach the files
         // before the process exits; anything later is refused and logged
         // rather than racing the exit.
+        let replyToTerminate = services.replyToTerminate
         Task { @MainActor in
             await shutdown(reason: "app quit")
-            NSApp.reply(toApplicationShouldTerminate: true)
+            replyToTerminate(true)
         }
     }
 
@@ -1214,17 +1305,36 @@ final class LichessBotController {
     /// Load favorites and bot limit times from disk. A missing file is an
     /// empty set of notes; an unreadable one raises an alarm and leaves the
     /// notes unloaded (so nothing overwrites the file).
+    ///
+    /// Loaded once: from then on the notes in memory are the truth and each
+    /// change saves them, so reading the file again (the bot window
+    /// reopening, or its load overlapping going online's) could replace a
+    /// change whose save hasn't landed. Unloaded notes are tried again on
+    /// the next call.
     func loadPlayerNotes() async {
+        guard playerNotes == nil else { return }
         let url = dataDirectory.playerNotesURL
         do {
             var notes = try await fileQueue.run {
                 try LichessBotPlayerNotes.load(from: url)
             }
-            notes.pruneExpiredLimits(now: Date())
+            // Another load finished first; its notes may have changed since.
+            guard playerNotes == nil else { return }
+            let now = Date()
+            notes.pruneExpiredLimits(now: now)
+            let limitsInFile = notes.botLimitUntil
+            // A refusal recorded while the notes weren't loaded was kept only
+            // in `botLimitUntil`. Merge both ways, the later end winning, so
+            // from here the notes and the live limits hold the same limits —
+            // the Favorites tab reads the notes — and save the notes when
+            // that added a limit, or it would be lost at the next launch.
+            notes.botLimitUntil.merge(botLimitUntil) { max($0, $1) }
+            notes.pruneExpiredLimits(now: now)
+            botLimitUntil = notes.botLimitUntil
             playerNotes = notes
-            // A refusal recorded before the notes loaded stays: the later of
-            // the two ends wins.
-            botLimitUntil.merge(notes.botLimitUntil) { max($0, $1) }
+            if notes.botLimitUntil != limitsInFile {
+                savePlayerNotes(notes)
+            }
         } catch {
             raiseAlarm("Loading favorites failed (\(url.lastPathComponent)): \(error.localizedDescription)")
         }
@@ -1234,13 +1344,17 @@ final class LichessBotController {
 
     /// Load the outgoing-challenge outcome log. A missing file is an empty
     /// log; an unreadable one raises an alarm and leaves the log unloaded,
-    /// so nothing overwrites the file.
+    /// so nothing overwrites the file. Loaded once, like the player notes
+    /// (`loadPlayerNotes`): the log in memory is the truth from then on.
     func loadChallengeOutcomes() async {
+        guard challengeOutcomeLog == nil else { return }
         let url = dataDirectory.challengeOutcomesURL
         do {
             var log = try await fileQueue.run {
                 try LichessBotChallengeOutcomeLog.load(from: url)
             }
+            // Another load finished first; its log may have changed since.
+            guard challengeOutcomeLog == nil else { return }
             log.prune(now: Date())
             challengeOutcomeLog = log
         } catch {
@@ -1323,6 +1437,8 @@ final class LichessBotController {
     /// challenge queue, the Challenge sheet). Loaded from the player notes,
     /// where refusals are also saved, but kept here even when the notes
     /// couldn't be loaded, so a refused bot is never asked again too early.
+    /// Once the notes load they hold the same limits as this map: loading
+    /// merges both ways and saves what the notes gained.
     private(set) var botLimitUntil: [String: Date] = [:]
 
     /// When `userID`'s bot-vs-bot limit ends, if that is still ahead of `now`.
@@ -1350,7 +1466,7 @@ final class LichessBotController {
         protocolLog.record(.challenge, "\(refusal.userID) is at its bot-game limit (\(refusal.gamesPlayed)) until \(refusal.until.formatted(date: .abbreviated, time: .standard))")
         botLimitUntil[refusal.userID] = refusal.until
         guard var notes = playerNotes else {
-            protocolLog.record(.anomaly, "player notes aren't loaded: \(refusal.userID)'s bot-game limit is kept for this launch only")
+            protocolLog.record(.anomaly, "player notes aren't loaded: \(refusal.userID)'s bot-game limit is kept in memory, and saved with the notes if they load later this launch")
             return
         }
         notes.botLimitUntil[refusal.userID] = refusal.until
@@ -2476,6 +2592,7 @@ final class LichessBotController {
         tokenState = .saved(info)
         // Going online resumes (or files) whatever the last run left.
         leftoverGamesFromLastRun = []
+        finishedGamesAwaitingFilingFromLastRun = []
 
         let settingsBox = SyncBox(settings)
         self.settingsBox = settingsBox
@@ -2973,12 +3090,26 @@ final class LichessBotController {
                 SessionLogger.shared.log("[LICHESS-BOT] game \(gameID) resumed (journal since \(since)) with \(model)")
                 raiseAlarm("Game \(gameID) was resumed without its history: \(reason). Takebacks, command replies, greeting and goodbye are off for it, since there is no telling what was already done.")
             }
-        case .gameSessionEnded(let gameID):
+        case .gameSessionEnded(let gameID, let finished):
             activeGameIDs.remove(gameID)
             if let game = games.first(where: { $0.id == gameID }) {
                 game.markSessionEnded("the game session ended")
             }
             protocolLog.record(.game, "game session ended", gameID: gameID)
+            if !finished, let reconciler = runtime?.reconciler {
+                // The session was the game's filing owner, so the
+                // reconciler left it alone, and with no finish in its
+                // journal nothing else hands it over: without this it
+                // would wait in InProgress/ for the next go-online's launch
+                // recovery. The export settles how it ended (or, for a game
+                // Lichess deleted, ends in the reconciler's alarm). A game
+                // that comes back — a replayed `gameStart` starts a new
+                // session — is left to that session by the owner check.
+                protocolLog.record(.game, "session ended without a finish; handed to filing", gameID: gameID)
+                Task {
+                    await reconciler.enqueue(gameID: gameID)
+                }
+            }
             updateAutoFollow()
             finishIfDrained()
             scheduleChallengeQueuePump()

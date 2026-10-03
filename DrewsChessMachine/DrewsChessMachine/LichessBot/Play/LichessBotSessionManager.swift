@@ -26,7 +26,13 @@ enum LichessBotManagerEvent: Sendable {
     /// journal left by an earlier runtime (a relaunch, or going offline and
     /// back).
     case gameSessionStarted(gameID: String, generation: LichessBotGenerationInfo, origin: LichessBotSessionOrigin)
-    case gameSessionEnded(gameID: String)
+    /// A game's session ended. `finished` is whether the session saw the
+    /// game finish. A finished game reaches filing through its journal's
+    /// finish; one whose session ended without seeing it (Lichess answered
+    /// the reopened game stream with a 404: a game it deleted, most often
+    /// an aborted one) has nothing else to hand it over, so the listener
+    /// does.
+    case gameSessionEnded(gameID: String, finished: Bool)
     case anomaly(String)
     /// An event-stream line exactly as received (plan §14.3a transcript).
     case eventStreamLine(Data, receivedAt: Date)
@@ -781,7 +787,11 @@ actor LichessBotSessionManager {
         }
         sessionTasks[gameID] = Task { [weak self] in
             await session.run()
-            await self?.sessionEnded(gameID: gameID)
+            // The session's own flag, not whether a finish event has been
+            // seen elsewhere: the listener must not depend on the order in
+            // which the journal's finish and this end reach it.
+            let finished = await session.isFinished
+            await self?.sessionEnded(gameID: gameID, finished: finished)
         }
     }
 
@@ -803,13 +813,13 @@ actor LichessBotSessionManager {
         }
     }
 
-    private func sessionEnded(gameID: String) async {
+    private func sessionEnded(gameID: String, finished: Bool) async {
         sessions[gameID] = nil
         sessionTasks[gameID] = nil
         opponentByGame[gameID] = nil
         turnStatus[gameID] = nil
         await applyTurnStatusToGate()
-        onEvent(.gameSessionEnded(gameID: gameID))
+        onEvent(.gameSessionEnded(gameID: gameID, finished: finished))
     }
 
     private func countGame(_ info: LichessBotGameEventInfo) {
