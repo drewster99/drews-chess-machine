@@ -791,6 +791,13 @@ extension SessionController {
         let cliTrainingStepLimit = cliConfig?.trainingStepLimit
         let isAutoTrainRun = autoTrainOnLaunch
         let runStart = Date()
+        // The single-winner claim shared by every path that ends a
+        // `--train` run (see `AutoTrainTermination`): created here, before
+        // the early-stop handler below is registered, so an early stop takes
+        // the same claim as the deadline, step-limit and collapse paths.
+        let autoTrainTermination: AutoTrainTermination? = recorder.map {
+            AutoTrainTermination(recorder: $0, resultsOutput: resultsOutput)
+        }
 
         // Self-play corpus recording. Read once at run start (not
         // live-tunable). When enabled, every kept (post-draw-filter) self-play
@@ -821,8 +828,8 @@ extension SessionController {
         // Register the early-stop flush handler so SIGUSR1 / SIGHUP /
         // applicationShouldTerminate can write `result.json` cleanly
         // before exiting. Cleared in the teardown block. The closure
-        // captures the recorder, resultsOutput, and runStart so the
-        // coordinator doesn't need to know about ContentView's state
+        // captures the run's `AutoTrainTermination` and runStart so the
+        // coordinator doesn't need to know about the session's state
         // shape — it just calls the closure with the termination reason.
 
         // SIGUSR2 "checkpoint + shutdown" handler — registered for EVERY active
@@ -833,31 +840,20 @@ extension SessionController {
             self?.handleSaveSessionFromSignal()
         }
 
-        if let recorder {
+        if let autoTrainTermination {
             EarlyStopCoordinator.shared.earlyStopHandler = { reason in
-                let elapsed = Date().timeIntervalSince(runStart)
-                let destDescription = resultsOutput?.url.path ?? "<stdout>"
-                SessionLogger.shared.log(
-                    "[APP] --train: early-stop on \(reason.rawValue) at elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
-                )
-                recorder.setTerminationReason(reason)
-                let counts = recorder.countsSnapshot()
-                do {
-                    if let resultsOutput {
-                        try recorder.write(to: resultsOutput, totalTrainingSeconds: elapsed)
-                    } else {
-                        try recorder.writeJSONToStdout(totalTrainingSeconds: elapsed)
-                    }
+                // Another path (deadline, step limit, collapse) already
+                // holds the claim and is writing the results; it exits the
+                // process itself.
+                guard autoTrainTermination.claim() else {
                     SessionLogger.shared.log(
-                        "[APP] --train: wrote snapshot to \(destDescription) (arenas=\(counts.arenas), stats=\(counts.stats), probes=\(counts.probes))"
+                        "[APP] --train: early-stop on \(reason.rawValue) left to the termination already writing the results"
                     )
-                } catch {
-                    SessionLogger.shared.log(
-                        "[APP] --train: early-stop snapshot write FAILED for \(destDescription): \(error.localizedDescription)"
-                    )
+                    return
                 }
-                SessionLogger.shared.log("[APP] --train: exiting process after early-stop snapshot")
-                Darwin._exit(0)
+                autoTrainTermination.writeResultsAndExit(
+                    reason: reason, trigger: "early-stop on \(reason.rawValue)",
+                    elapsed: Date().timeIntervalSince(runStart))
             }
         }
 
@@ -874,8 +870,8 @@ extension SessionController {
         realTrainingTask = Task(priority: .high) {
             [trainer, network, buffer, box, tBox, pStatsBox, spDiversityTracker,
              selfPlayGate, trainingGate, arenaFlag, triggerBox, overrideBox, countBox,
-             gameWatcher, ratioController, recorder, resultsOutput, cliTrainingTimeLimitSec,
-             cliTrainingStepLimit,
+             gameWatcher, ratioController, recorder, cliTrainingTimeLimitSec,
+             cliTrainingStepLimit, autoTrainTermination,
              isAutoTrainRun,
              sessionTrainingBatchSize, sessionMinBufferBeforeTraining,
              sessionTournamentGames, sessionPromoteThreshold] in
@@ -2415,51 +2411,21 @@ extension SessionController {
                 // output generation and exit, regardless of
                 // whether `--output <file>` was supplied. When
                 // `--output` is present the JSON snapshot is
-                // written to that file (overwriting); when absent
+                // written to that file (checked before the run; see
+                // `CliResultsOutput`); when absent
                 // the snapshot goes to stdout so the user can
                 // redirect or pipe it. Outside of `--train` mode
                 // (interactive use) the deadline is ignored — the
                 // user is driving the UI and an unexpected
                 // termination would be hostile.
                 //
-                // On wake-up: log the deadline event, emit the
-                // recorder's snapshot to the configured sink, then
-                // call `Darwin._exit(0)`. The crucial detail is
-                // `_exit` vs `exit`: `exit` runs C++ atexit
-                // handlers (including CoreAnalytics' exit barrier)
-                // while the MPS self-play worker is still mid-
-                // `graph.run` on its dedicated serial dispatch
-                // queue — the handler tears down global state
-                // that `MPSGraphOSLog` still reads, producing
-                // EXC_BAD_ACCESS at 0x8 inside the MPSGraph
-                // executable run path. `_exit` terminates the
-                // process immediately without running atexit or
-                // stdio cleanup, which sidesteps the race. It's
-                // safe because:
-                //   - snapshot file writes use `Data.write(atomic:)`
-                //     which fsyncs before rename,
-                //   - stdout writes go through `FileHandle`
-                //     which is an unbuffered syscall (no libc
-                //     stdio buffer to flush),
-                //   - session log writes have already been
-                //     flushed by SessionLogger before this point.
-                // Single-winner guard shared by the three process-terminating
-                // paths (time-limit, step-limit, legal-mass collapse). Each
-                // `Darwin._exit(0)` would normally kill the process before a
-                // second path could also write, but the budgets are polled
-                // independently and two can cross their thresholds within the
-                // same poll window — both would then pass their guards and race
-                // to write the snapshot. The claim makes exactly one path write
-                // and exit; the losers return without touching the file.
-                let terminationClaimed = SyncBox(false)
-                let claimTermination: @Sendable () -> Bool = {
-                    terminationClaimed.mutate { claimed in
-                        if claimed { return false }
-                        claimed = true
-                        return true
-                    }
-                }
-                if isAutoTrainRun, let recorder, let deadlineSec = cliTrainingTimeLimitSec, deadlineSec > 0 {
+                // On wake-up the task takes the run's termination claim
+                // and hands off to `AutoTrainTermination`, which writes the
+                // snapshot, drains the session log and ends the process
+                // (see its doc for why that is `_exit`). The deadline, the
+                // step limit, the collapse detector and an early stop all
+                // share the claim, so exactly one of them writes and exits.
+                if isAutoTrainRun, let autoTrainTermination, let deadlineSec = cliTrainingTimeLimitSec, deadlineSec > 0 {
                     group.addTask(priority: .utility) {
                         do {
                             try await Task.sleep(for: .seconds(deadlineSec))
@@ -2469,30 +2435,10 @@ extension SessionController {
                             return
                         }
                         if Task.isCancelled { return }
-                        guard claimTermination() else { return }
-                        let elapsed = Date().timeIntervalSince(runStart)
-                        let destDescription = resultsOutput?.url.path ?? "<stdout>"
-                        SessionLogger.shared.log(
-                            "[APP] --train: training_time_limit=\(deadlineSec)s reached at elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
-                        )
-                        recorder.setTerminationReason(.timerExpired)
-                        let counts = recorder.countsSnapshot()
-                        do {
-                            if let resultsOutput {
-                                try recorder.write(to: resultsOutput, totalTrainingSeconds: elapsed)
-                            } else {
-                                try recorder.writeJSONToStdout(totalTrainingSeconds: elapsed)
-                            }
-                            SessionLogger.shared.log(
-                                "[APP] --train: wrote snapshot to \(destDescription) (arenas=\(counts.arenas), stats=\(counts.stats), probes=\(counts.probes))"
-                            )
-                        } catch {
-                            SessionLogger.shared.log(
-                                "[APP] --train: snapshot write FAILED for \(destDescription): \(error.localizedDescription)"
-                            )
-                        }
-                        SessionLogger.shared.log("[APP] --train: exiting process after snapshot")
-                        Darwin._exit(0)
+                        guard autoTrainTermination.claim() else { return }
+                        autoTrainTermination.writeResultsAndExit(
+                            reason: .timerExpired, trigger: "training_time_limit=\(deadlineSec)s reached",
+                            elapsed: Date().timeIntervalSince(runStart))
                     }
                 }
 
@@ -2503,8 +2449,8 @@ extension SessionController {
                 // snapshot and exits with `step_limit_reached`. Both
                 // budgets may be armed; whichever claims termination first
                 // writes and exits, the other returns without writing (see
-                // `claimTermination`).
-                if isAutoTrainRun, let recorder, let stepLimit = cliTrainingStepLimit, stepLimit > 0 {
+                // `AutoTrainTermination.claim`).
+                if isAutoTrainRun, let autoTrainTermination, let stepLimit = cliTrainingStepLimit, stepLimit > 0 {
                     group.addTask(priority: .utility) {
                         while !Task.isCancelled {
                             do {
@@ -2514,30 +2460,11 @@ extension SessionController {
                             }
                             let steps = trainer.completedTrainSteps
                             guard steps >= stepLimit else { continue }
-                            guard claimTermination() else { return }
-                            let elapsed = Date().timeIntervalSince(runStart)
-                            let destDescription = resultsOutput?.url.path ?? "<stdout>"
-                            SessionLogger.shared.log(
-                                "[APP] --train: training_step_limit=\(stepLimit) reached at steps=\(steps) elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
-                            )
-                            recorder.setTerminationReason(.stepLimitReached)
-                            let counts = recorder.countsSnapshot()
-                            do {
-                                if let resultsOutput {
-                                    try recorder.write(to: resultsOutput, totalTrainingSeconds: elapsed)
-                                } else {
-                                    try recorder.writeJSONToStdout(totalTrainingSeconds: elapsed)
-                                }
-                                SessionLogger.shared.log(
-                                    "[APP] --train: wrote snapshot to \(destDescription) (arenas=\(counts.arenas), stats=\(counts.stats), probes=\(counts.probes))"
-                                )
-                            } catch {
-                                SessionLogger.shared.log(
-                                    "[APP] --train: snapshot write FAILED for \(destDescription): \(error.localizedDescription)"
-                                )
-                            }
-                            SessionLogger.shared.log("[APP] --train: exiting process after step-limit snapshot")
-                            Darwin._exit(0)
+                            guard autoTrainTermination.claim() else { return }
+                            autoTrainTermination.writeResultsAndExit(
+                                reason: .stepLimitReached,
+                                trigger: "training_step_limit=\(stepLimit) reached at steps=\(steps)",
+                                elapsed: Date().timeIntervalSince(runStart))
                         }
                     }
                 }
@@ -2566,8 +2493,7 @@ extension SessionController {
                 // self-contained and doesn't require plumbing the
                 // timer task's runStart into this closure.
                 let collapseRunStart = Date()
-                let collapseRecorder: CliTrainingRecorder? = (isAutoTrainRun ? recorder : nil)
-                let collapseResultsOutput: CliResultsOutput? = resultsOutput
+                let collapseTermination: AutoTrainTermination? = isAutoTrainRun ? autoTrainTermination : nil
                 // Configuration snapshot taken at task start. All three
                 // are user-tunable via parameters JSON / @AppStorage; we
                 // capture once so the running detector has stable behavior
@@ -2577,7 +2503,7 @@ extension SessionController {
                 let collapseGracePeriodSec = TrainingParameters.shared.legalMassCollapseGraceSeconds
                 let collapseNoImprovementProbeCount = max(1, TrainingParameters.shared.legalMassCollapseNoImprovementProbes)
                 group.addTask(priority: .utility) {
-                    [trainer, buffer, box, probeInferenceForProbes, claimTermination, collapseDetector] in
+                    [trainer, buffer, box, probeInferenceForProbes, collapseTermination, collapseDetector] in
                     let probeIntervalSec: UInt64 = 60
                     let sampleSize = 128
                     let gracePeriodSec: TimeInterval = collapseGracePeriodSec
@@ -2714,29 +2640,10 @@ extension SessionController {
                                     legalMassWindow.count, illegalMassThreshold,
                                     legalMassWindow.first ?? 0, legalMassWindow.last ?? 0)
                             )
-                            if let rec = collapseRecorder, claimTermination() {
-                                let destDescription = collapseResultsOutput?.url.path ?? "<stdout>"
-                                SessionLogger.shared.log(
-                                    "[APP] --train: legal-mass collapse abort at elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
-                                )
-                                rec.setTerminationReason(.legalMassCollapse)
-                                let counts = rec.countsSnapshot()
-                                do {
-                                    if let collapseResultsOutput {
-                                        try rec.write(to: collapseResultsOutput, totalTrainingSeconds: elapsed)
-                                    } else {
-                                        try rec.writeJSONToStdout(totalTrainingSeconds: elapsed)
-                                    }
-                                    SessionLogger.shared.log(
-                                        "[APP] --train: wrote snapshot to \(destDescription) (arenas=\(counts.arenas), stats=\(counts.stats), probes=\(counts.probes))"
-                                    )
-                                } catch {
-                                    SessionLogger.shared.log(
-                                        "[APP] --train: snapshot write FAILED for \(destDescription): \(error.localizedDescription)"
-                                    )
-                                }
-                                SessionLogger.shared.log("[APP] --train: exiting process after collapse-abort snapshot")
-                                Darwin._exit(0)
+                            if let collapseTermination, collapseTermination.claim() {
+                                collapseTermination.writeResultsAndExit(
+                                    reason: .legalMassCollapse, trigger: "legal-mass collapse abort",
+                                    elapsed: elapsed)
                             }
                             // Interactive session: alarm already
                             // raised, loop stays exited so we stop
