@@ -169,6 +169,12 @@ extension SessionParameterResume {
         // effective state is logged once the session is armed.
         restore(AutomaticSavePruningEnabled.self, saved: rs.automaticSavePruningEnabled, into: \.automaticSavePruningEnabled)
         restore(SessionSaveIncludeReplayBuffer.self, saved: rs.sessionSaveIncludeReplayBuffer, into: \.sessionSaveIncludeReplayBuffer)
+        // Run-throughput knobs: operational settings the session ran with.
+        restore(SelfPlayConcurrency.self, saved: rs.selfPlayWorkerCount, into: \.selfPlayConcurrency)
+        restore(TrainingStepDelayMs.self, saved: rs.stepDelayMs, into: \.trainingStepDelayMs)
+        restore(SelfPlayDelayMs.self, saved: rs.selfPlayDelayMs, into: \.selfPlayDelayMs)
+        restore(ReplayRatioTarget.self, saved: rs.replayRatioTarget, into: \.replayRatioTarget)
+        restore(ReplayRatioAutoAdjust.self, saved: rs.replayRatioAutoAdjust, into: \.replayRatioAutoAdjust)
         if let cid = rs.recordingCorpusID {
             log(
                 "[RESUME-PARAM] recording_corpus_id: prior run recorded into corpus \(cid) (informational; this run starts a fresh corpus when recording is on)"

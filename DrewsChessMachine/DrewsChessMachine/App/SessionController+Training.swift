@@ -63,14 +63,6 @@ extension SessionController {
             UpperContentView.absoluteMaxSelfPlayWorkers >= 1,
             "absoluteMaxSelfPlayWorkers must be >= 1; got \(UpperContentView.absoluteMaxSelfPlayWorkers)"
         )
-        // Snap the live N into the [1, absoluteMaxSelfPlayWorkers] range
-        // before doing anything else. The Stepper enforces this
-        // for user input but `TrainingParameters.shared.selfPlayConcurrency` is centrally managed
-        // so the value could in principle be edited elsewhere.
-        let initialWorkerCount = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, TrainingParameters.shared.selfPlayConcurrency))
-        if initialWorkerCount != TrainingParameters.shared.selfPlayConcurrency {
-            TrainingParameters.shared.selfPlayConcurrency = initialWorkerCount
-        }
         guard let trainer = ensureTrainer(), let network else { return }
         let gameWatcher = gameWatcherProvider()
         onResetBoardDisplay()
@@ -133,6 +125,16 @@ extension SessionController {
                 initialTrainingStats.steps = rs.trainingSteps
             }
             trainingStats = initialTrainingStats
+        }
+        // Snap the live N into the [1, absoluteMaxSelfPlayWorkers] range,
+        // after a resume restored the session's worker count, so the run's
+        // worker-count box and board mode start from the count it runs
+        // with. The Stepper enforces this for user input but
+        // `TrainingParameters.shared.selfPlayConcurrency` is centrally
+        // managed so the value could in principle be edited elsewhere.
+        let initialWorkerCount = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, TrainingParameters.shared.selfPlayConcurrency))
+        if initialWorkerCount != TrainingParameters.shared.selfPlayConcurrency {
+            TrainingParameters.shared.selfPlayConcurrency = initialWorkerCount
         }
         // The run's master seed. A continue after Stop goes on with the same
         // run, so it keeps the seed and the game serials; anything else starts
@@ -355,67 +357,16 @@ extension SessionController {
                 emittedThreefoldRepetitionDraws: rs.emittedThreefoldRepetitionDraws,
                 emittedInsufficientMaterialDraws: rs.emittedInsufficientMaterialDraws
             )
-            // Run-throughput knobs. Previously applied with no audit
-            // line at all; every branch now logs so nothing on this
-            // path changes a setting silently.
-            if let workerCount = resumeState?.selfPlayWorkerCount {
-                let clamped = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, workerCount))
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] self_play_workers: \(TrainingParameters.shared.selfPlayConcurrency) -> \(clamped) (from session)"
-                )
-                TrainingParameters.shared.restoreFromSession(SelfPlayConcurrency.self, clamped, into: \.selfPlayConcurrency)
-            }
-            if let delay = rs.stepDelayMs {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] training_step_delay_ms: \(TrainingParameters.shared.trainingStepDelayMs) -> \(delay) (from session)"
-                )
-                TrainingParameters.shared.restoreFromSession(TrainingStepDelayMs.self, delay, into: \.trainingStepDelayMs)
-            } else {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] training_step_delay_ms: saved=nil applied=\(TrainingParameters.shared.trainingStepDelayMs) (no saved value; using current setting)"
-                )
-            }
-            if let spDelay = rs.selfPlayDelayMs {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] self_play_delay_ms: \(TrainingParameters.shared.selfPlayDelayMs) -> \(spDelay) (from session)"
-                )
-                TrainingParameters.shared.restoreFromSession(SelfPlayDelayMs.self, spDelay, into: \.selfPlayDelayMs)
-            } else {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] self_play_delay_ms: saved=nil applied=\(TrainingParameters.shared.selfPlayDelayMs) (no saved value; using current setting)"
-                )
-            }
+            // The run-throughput knobs (workers, the two delays, the
+            // replay-ratio target and auto-adjust) were restored with the
+            // other parameters (`SessionParameterResume.applyGuiSession`).
+            // The replay-ratio controller's last computed delay is
+            // controller state, not a parameter.
             if let autoDelay = rs.lastAutoComputedDelayMs {
                 SessionLogger.shared.log(
                     "[RESUME-PARAM] last_auto_computed_delay_ms: \(lastAutoComputedDelayMs) -> \(autoDelay) (from session)"
                 )
                 lastAutoComputedDelayMs = autoDelay
-            }
-            // Replay-ratio pair: these previously fell back to
-            // hard-coded values matching long-stale defaults, silently
-            // clobbering the user's current setting whenever the field
-            // was absent. nil now leaves the current setting in place
-            // (these are v1 schema fields, so nil should never occur in
-            // practice — the log line is the tripwire if it ever does).
-            if let target = rs.replayRatioTarget {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] replay_ratio_target: \(TrainingParameters.shared.replayRatioTarget) -> \(target) (from session)"
-                )
-                TrainingParameters.shared.restoreFromSession(ReplayRatioTarget.self, target, into: \.replayRatioTarget)
-            } else {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] replay_ratio_target: saved=nil applied=\(TrainingParameters.shared.replayRatioTarget) (no saved value; using current setting)"
-                )
-            }
-            if let autoAdjust = rs.replayRatioAutoAdjust {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] replay_ratio_auto_adjust: \(TrainingParameters.shared.replayRatioAutoAdjust) -> \(autoAdjust) (from session)"
-                )
-                TrainingParameters.shared.restoreFromSession(ReplayRatioAutoAdjust.self, autoAdjust, into: \.replayRatioAutoAdjust)
-            } else {
-                SessionLogger.shared.log(
-                    "[RESUME-PARAM] replay_ratio_auto_adjust: saved=nil applied=\(TrainingParameters.shared.replayRatioAutoAdjust) (no saved value; using current setting)"
-                )
             }
         } else {
             // Fresh session — no resumed steps to subtract.
@@ -613,10 +564,6 @@ extension SessionController {
         } else if let resumed = pendingLoadedSession {
             checkpoint?.currentSessionID = resumed.state.sessionID
             checkpoint?.currentSessionStart = Date().addingTimeInterval(-resumed.state.elapsedTrainingSec)
-            TrainingParameters.shared.restoreFromSession(LearningRate.self, savedFloat: resumed.state.learningRate, into: \.learningRate)
-            if let entropyCoeff = resumed.state.entropyRegularizationCoeff {
-                TrainingParameters.shared.restoreFromSession(EntropyBonus.self, savedFloat: entropyCoeff, into: \.entropyBonus)
-            }
         } else {
             checkpoint?.currentSessionID = ModelIDMinter.mint().value
             checkpoint?.currentSessionStart = Date()

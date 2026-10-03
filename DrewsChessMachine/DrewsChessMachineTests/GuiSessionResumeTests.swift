@@ -85,4 +85,27 @@ final class GuiSessionResumeTests: XCTestCase {
         XCTAssertTrue(diffLines(for: RandomSeed.id).isEmpty)
         XCTAssertTrue(diffLines(for: RandomSeedModeParameter.id).isEmpty)
     }
+
+    func testGuiResumeRestoresRunThroughputKnobsThroughTheResolver() throws {
+        let p = TrainingParameters.shared
+        p.selfPlayConcurrency = 3
+        p.trainingStepDelayMs = 0
+        p.selfPlayDelayMs = 0
+        p.replayRatioTarget = 0.5
+        p.replayRatioAutoAdjust = false
+        let rs = try sessionState(extraFields: """
+          "stepDelayMs": 25, "selfPlayDelayMs": 15, "replayRatioTarget": 0.7, "replayRatioAutoAdjust": true,
+        """)
+        makeResume().applyGuiSession(rs, acceptedReplacements: [])
+
+        XCTAssertEqual(p.selfPlayConcurrency, 6)
+        XCTAssertEqual(p.trainingStepDelayMs, 25)
+        XCTAssertEqual(p.selfPlayDelayMs, 15)
+        XCTAssertEqual(p.replayRatioTarget, 0.7)
+        XCTAssertEqual(p.replayRatioAutoAdjust, true)
+        for id in [SelfPlayConcurrency.id, TrainingStepDelayMs.id, SelfPlayDelayMs.id,
+                   ReplayRatioTarget.id, ReplayRatioAutoAdjust.id] {
+            XCTAssertEqual(diffLines(for: id).count, 1, "one [RESUME-DIFF] line for \(id): \(logLines)")
+        }
+    }
 }
