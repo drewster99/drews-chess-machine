@@ -80,6 +80,11 @@ final class LichessBotForwardingFakeLichess: LichessBotTransport, @unchecked Sen
             forwarding.cancel()
         }
         gameStreamContinuations.modify { $0[gameID] = continuation }
+        // `base` reports the stream open before it is registered here: a
+        // game ended in between must not keep this stream.
+        if goneGames.value.contains(gameID) {
+            endGameStream(gameID)
+        }
         return (chunks, opened.response)
     }
 }

@@ -84,6 +84,8 @@ final class LichessBotSessionEndFilingTests: XCTestCase {
         // Launch recovery would file it only 30 s after go-online; the
         // session's end hands it over well before that.
         try await waitUntil("cbob is filed", timeout: .seconds(10)) { try !recordURLs(in: root).isEmpty }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: LichessBotDataDirectory(root: root).inProgressJournalURL(gameID: "cbob").path), "the journal left InProgress/")
+        // Filing writes the record before it moves the journal out.
+        let journalURL = LichessBotDataDirectory(root: root).inProgressJournalURL(gameID: "cbob")
+        try await waitUntil("cbob's journal has left InProgress/", timeout: .seconds(5)) { !FileManager.default.fileExists(atPath: journalURL.path) }
     }
 }
