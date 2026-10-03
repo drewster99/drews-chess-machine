@@ -590,6 +590,26 @@ extension SessionController {
                 SessionLogger.shared.log("[RESUME] replay-ratio controller: rate windows restart (wall-clock measurements); the step delay starts from the saved last_auto_computed_delay_ms")
             }
         }
+        // The legal-mass-collapse detector's window and grace anchor follow
+        // the same lifetime as the diversity tracker: kept across a
+        // stop-and-continue, continued from a resumed session (C1 #20).
+        let collapseDetector: LegalMassCollapseDetectorBox
+        if continueMode, let existing = legalMassCollapseDetector {
+            collapseDetector = existing
+        } else {
+            collapseDetector = LegalMassCollapseDetectorBox()
+            legalMassCollapseDetector = collapseDetector
+            if let loaded = pendingLoadedSession {
+                if let saved = loaded.state.legalMassCollapseDetector {
+                    collapseDetector.restore(saved)
+                    SessionLogger.shared.log(
+                        "[RESUME] legal-mass collapse detector: \(saved.legalMassWindow.count) probe(s) restored, "
+                        + "grace used \(saved.graceElapsedSec.map { String(format: "%.0fs", $0) } ?? "none (no SGD step observed)")")
+                } else {
+                    SessionLogger.shared.log("[RESUME] legal-mass collapse detector starts fresh: the session did not record it")
+                }
+            }
+        }
         let drawWatch: DrawWatchTracker
         if continueMode, let existing = drawWatchTracker {
             drawWatch = existing
@@ -2557,32 +2577,33 @@ extension SessionController {
                 let collapseGracePeriodSec = TrainingParameters.shared.legalMassCollapseGraceSeconds
                 let collapseNoImprovementProbeCount = max(1, TrainingParameters.shared.legalMassCollapseNoImprovementProbes)
                 group.addTask(priority: .utility) {
-                    [trainer, buffer, box, probeInferenceForProbes, claimTermination] in
+                    [trainer, buffer, box, probeInferenceForProbes, claimTermination, collapseDetector] in
                     let probeIntervalSec: UInt64 = 60
                     let sampleSize = 128
                     let gracePeriodSec: TimeInterval = collapseGracePeriodSec
                     let illegalMassThreshold: Double = collapseIllegalMassThreshold
                     let noImprovementProbeCount = collapseNoImprovementProbeCount
                     // Sliding window of recent legal-mass readings,
-                    // newest at end. Trip condition: window is full,
-                    // every reading's illegalMass is above threshold,
-                    // AND the newest legal_mass is no better than the
-                    // oldest (no upward improvement across the window).
-                    // This catches *stuck* collapse — slow climbs out
-                    // of near-uniform won't fire even if absolute
-                    // legal mass is still below threshold for a while.
-                    var legalMassWindow: [Double] = []
+                    // newest at end (held in `collapseDetector`, which a
+                    // session save records and a resume continues). Trip
+                    // condition: window is full, every reading's
+                    // illegalMass is above threshold, AND the newest
+                    // legal_mass is no better than the oldest (no upward
+                    // improvement across the window). This catches *stuck*
+                    // collapse — slow climbs out of near-uniform won't fire
+                    // even if absolute legal mass is still below threshold
+                    // for a while.
                     var aborted = false
-                    // Anchor for the grace countdown. Lazily set the
-                    // first time we observe at least one completed SGD
-                    // step. The replay buffer has to fill enough for
-                    // training to begin (minutes in practice), and
-                    // before that first step lands, every probe on the
-                    // fresh random-init network will naturally see
-                    // illegalMass ≈ 0.994 — firing the alarm during
-                    // that window is a false positive. Grace is 120 s
-                    // measured from TRAINING start, not session start.
-                    var trainingStartAt: Date? = nil
+                    // The grace countdown is anchored lazily, the first
+                    // time a probe observes at least one completed SGD step.
+                    // The replay buffer has to fill enough for training to
+                    // begin (minutes in practice), and before that first
+                    // step lands, every probe on the fresh random-init
+                    // network will naturally see illegalMass ≈ 0.994 —
+                    // firing the alarm during that window is a false
+                    // positive. Grace is measured from TRAINING start, not
+                    // session start; a resumed session carries the grace it
+                    // had already used.
                     while !Task.isCancelled && !aborted {
                         do {
                             try await Task.sleep(for: .seconds(probeIntervalSec))
@@ -2598,14 +2619,10 @@ extension SessionController {
                         // iteration and measure grace from there.
                         let trainingSteps = await box.snapshot().stats.steps
                         guard trainingSteps > 0 else {
-                            trainingStartAt = nil
+                            collapseDetector.noteNoTrainingStepsYet()
                             continue
                         }
-                        if trainingStartAt == nil {
-                            trainingStartAt = Date()
-                        }
-                        guard let startAt = trainingStartAt else { continue }
-                        let trainingElapsed = Date().timeIntervalSince(startAt)
+                        let trainingElapsed = collapseDetector.graceElapsed(observingTrainingAt: Date())
                         if trainingElapsed < gracePeriodSec { continue }
                         // Session-elapsed for snapshot-write / log
                         // consistency with the timer task, which also
@@ -2634,10 +2651,8 @@ extension SessionController {
                         }
                         guard let snap else { continue }
                         let illegalMass = 1.0 - snap.legalMass
-                        legalMassWindow.append(snap.legalMass)
-                        if legalMassWindow.count > noImprovementProbeCount {
-                            legalMassWindow.removeFirst()
-                        }
+                        let legalMassWindow = collapseDetector.append(
+                            legalMass: snap.legalMass, capacity: noImprovementProbeCount)
                         // Window-full tripwire: we need
                         // `noImprovementProbeCount` samples before
                         // declaring "no improvement"; until then we

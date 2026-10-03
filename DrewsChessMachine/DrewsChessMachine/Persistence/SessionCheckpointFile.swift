@@ -804,6 +804,12 @@ struct SessionCheckpointState: Codable, Equatable {
     /// (determinism plan C1 #20). Nil in sessions saved before it was
     /// recorded.
     var trainingAlarmStreaks: TrainingAlarmController.Streaks?
+    /// The legal-mass-collapse detector's probe window and the grace period
+    /// it had used at save time (`LegalMassCollapseDetectorBox.snapshot`), so
+    /// a resume neither restarts the grace period nor forgets its recent
+    /// probes (determinism plan C1 #20). Nil in sessions saved before it was
+    /// recorded.
+    var legalMassCollapseDetector: LegalMassCollapseDetectorState?
 
     // MARK: - Training Segments
 
@@ -950,6 +956,14 @@ struct SessionCheckpointState: Codable, Equatable {
         var copy = self
         copy.selfPlayDiversityWindow = diversityWindow
         copy.trainingAlarmStreaks = alarmStreaks
+        return copy
+    }
+
+    /// Return a copy carrying the legal-mass-collapse detector's state. Same
+    /// builder-helper pattern as `withTrainingSegments`.
+    func withLegalMassCollapseDetector(_ detector: LegalMassCollapseDetectorState?) -> SessionCheckpointState {
+        var copy = self
+        copy.legalMassCollapseDetector = detector
         return copy
     }
 

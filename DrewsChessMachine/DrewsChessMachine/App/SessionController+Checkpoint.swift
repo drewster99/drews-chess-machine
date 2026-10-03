@@ -1187,6 +1187,7 @@ extension SessionController {
         .withArenaClock(secondsSinceLastArena: secondsSinceLastArena)
         .withRunObservability(diversityWindow: selfPlayDiversityTracker?.windowSequences(),
                               alarmStreaks: trainingAlarm?.streaks)
+        .withLegalMassCollapseDetector(legalMassCollapseDetector?.snapshot(now: Date()))
     }
 
     // MARK: - Session resume (Stage 4k)

@@ -193,6 +193,11 @@ final class SessionController {
     /// Play-and-Train session.
     var selfPlayDiversityTracker: GameDiversityTracker?
 
+    /// The legal-mass-collapse detector's probe window and grace anchor,
+    /// shared by the detector task and session saves so a resume continues
+    /// them. `nil` outside a Play-and-Train session.
+    @ObservationIgnored var legalMassCollapseDetector: LegalMassCollapseDetectorBox?
+
     /// Stealth-mode `pDraw` monitor for self-play games. Fed by the
     /// batched self-play driver inline on every per-ply forward pass;
     /// snapshot polled by the heartbeat for the chart tile. `nil`
