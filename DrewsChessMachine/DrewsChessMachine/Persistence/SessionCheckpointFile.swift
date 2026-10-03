@@ -223,6 +223,25 @@ struct ArchitectureMetadata: Codable, Equatable {
     let parameterCount: Int
 }
 
+extension ArchitectureMetadata {
+    /// The snapshot of `arch` every session writer records: the legacy
+    /// uniform scalars are the tower-output width and the first group's SE
+    /// ratio (a mixed tower is fully described by the architecture each model
+    /// file embeds).
+    init(describing arch: NetworkArchitecture) {
+        self.init(
+            architectureVersion: arch.architectureVersionLabel,
+            channels: arch.towerOutputChannels,
+            numBlocks: arch.numBlocks,
+            inputPlanes: arch.inputPlanes,
+            policySize: arch.policySize,
+            valueHeadClasses: arch.valueHeadClasses,
+            seReductionRatio: arch.blockGroups[0].seReductionRatio,
+            parameterCount: arch.parameterCount
+        )
+    }
+}
+
 // MARK: - Session State
 
 /// Serialized form of a paused training session. Stored at
@@ -830,7 +849,18 @@ struct SessionCheckpointState: Codable, Equatable {
 
     static func decode(_ data: Data) throws -> SessionCheckpointState {
         do {
-            let state = try JSONDecoder().decode(SessionCheckpointState.self, from: data)
+            var state = try JSONDecoder().decode(SessionCheckpointState.self, from: data)
+            // `LRMomentumCycle` leaves its envelope out of its encoded form
+            // and the envelope is stored beside it, so the cycle comes back
+            // with the no-decay envelope. Put the saved one back, as the
+            // trainer's safetensors metadata does, so the decoded cycle is
+            // the one that was saved — `CheckpointManager.saveSession`'s
+            // round-trip check compares the whole struct. A session without
+            // a saved envelope predates it and ran without decay, which is
+            // what the cycle already holds.
+            if let savedEnvelope = state.lrMomentumCycleEnvelope {
+                state.lrMomentumCycle?.envelope = savedEnvelope
+            }
             guard (1...Self.currentFormatVersion).contains(state.formatVersion) else {
                 throw SessionCheckpointError.unsupportedVersion(state.formatVersion)
             }
