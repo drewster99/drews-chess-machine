@@ -1735,6 +1735,64 @@ diagram in light and dark mode showing every changed field highlighted; its
 summary line and preset JSON list the options; a `--set-neutral-init` derive of a
 standard fresh net matches the GUI neutral mint's option values.
 
+*As built (`67f5ef09`, `0ad20466`; 2026-10-03):*
+- **Fields.**
+  - `BlockGroup` gains `seGammaBiasInit` (`se_gamma_bias_init`, Float), `branchOutputInit` (`branch_output_init`: `standard` | `zero_last_bn_gamma`) and `skipProjectionInit` (`skip_projection_init`: `he` | `identity_like`).
+  - `NetworkArchitecture` gains `policyHeadFinalInit`, `valueHeadFinalInit` (`he` | `zero`) and `valueHeadDrawPrior` (Float).
+  - The full `BlockGroup` init and the `NetworkArchitecture` memberwise init take them with no default. The historical convenience inits state the standard values explicitly.
+  - `InitOptionField` names each option, with its JSON key and a step-0 tooltip.
+- **Format v8** (`ArchitectureFormat.initOptionsRequiredFromVersion`).
+  - Every option decodes through one rule, `ArchitectureFormat.decodeInitOption`: the stated value; else the standard value with a legacy-log line, for a file before v8 or in the uniform-tower form; else `missingRequiredField`.
+- **Builder.**
+  - SE FC2 bias: `WeightInitScheme.seFC2BiasValues`.
+  - Last post-activation BN γ: `ChessNetwork.lastBranchBatchNormGamma`.
+  - Skip projection: `TensorInitializer.skipProjectionData`, using `WeightInitScheme.identityLikeProjectionValues` for `identity_like`.
+  - Head finals: `TensorInitializer.headFinalData`.
+  - W/D/L bias: `NetworkArchitecture.wdlBiasPrior`. At p = 0.75 it equals the old `ln 6` literal bit for bit.
+  - Every value comes from these functions; the derive operations call the same ones.
+- **Sets.** `withNeutralInit()` / `withStandardInit()` are the only definition of either set; the Build screen and `--set-neutral-init` call them. `nonStandardInitOptions` drives the highlight and the count.
+- **UI.**
+  - `InitOptionRow` (accent tint + ◆ glyph, both always present and faded, so marking never moves controls; tooltip).
+  - `InitSetButtonsView` (Neutral init / Standard init + "N non-standard").
+  - `BlockGroupInitOptionsView` (a private child View in `BuildNewModelView.swift`).
+  - Head rows in `BuildNewModelView`.
+  - `ArchitectureDiagramView` marks non-standard options with the same glyph.
+  - `[BUTTON] Build New Model: Neutral init` / `Standard init` log lines.
+- **Derive** (`Persistence/InitOptionDerive.swift`).
+  - Seven operations. One function, `InitOptionTensorRewrites.between(source:target:initSeed:)`, computes every rewrite from the option values that differ.
+  - `InitSeedableDeriveOperation` lets `--init-seed` reach every operation that draws (`he` moves for skip projection and head finals, as well as `--set-se-beta-init glorot`).
+  - The catalog runs `--set-neutral-init` before the per-option operations, so a per-option flag overrides the set.
+- **Graft interaction (found after merging P8).** `TensorInitializer.randomTensorRoles` had no entry for a constant conv / FC weight, so a graft onto a neutral target refused. The constant weights are now recorded as `RandomTensorRole.identityLike` / `.zero`. Regression test `testAGraftOntoANeutralTargetInitializesWithTheTargetsOptions` failed with "no recorded draw for 'blocks.1.skip_proj.weight'" before the fix.
+- **Tests.**
+  - `InitNeutralOptionsTests` (21):
+    - presets are standard;
+    - Neutral then Standard restores;
+    - the non-standard set is exact;
+    - legacy decode and its log;
+    - a current file missing an option is an error;
+    - JSON round trip;
+    - forbidden combinations;
+    - the WDL prior bias;
+    - summaries;
+    - GPU: a zero policy final gives a uniform policy; a zero value final outputs the prior; a neutral build changes exactly the option tensors (identity layout, SE bias, zero γ, zero heads, standard prior bias); the zeroed tensors move within two steps;
+    - derive: each `--set-<option>` rewrites exactly its tensors and records itself; derived tensors equal a fresh build's; a He re-draw equals a fresh build under the same seed, with the seed recorded; derive-neutral equals Build-screen neutral; a no-op request is refused;
+    - the graft regression.
+  - Red: compile-only (new API), apart from the graft regression above.
+- **Test edits needing owner approval.** `LineageRecordTests` pins the format version literal, which moves 7 → 8. `SEBetaInitTests.testOperationCatalogDrivesTheCLI` pins the derive flag list, which gains the seven flags.
+- **Deviations and decisions.**
+  1. **Format v8, not v5:** v7 is lineage.
+  2. **No ReZero `> 0` check:** superseded by v6, where `rezero_alpha_init` ≥ 0 is legal (the ReZero-paper zero init) and the cap must be > 0.
+  3. **Neutral SE γ bias = `ln 9`** (gate 0.9), not exactly 1 (an SE gate cannot reach 1).
+  4. **`zero_last_bn_gamma` is refused on pre-activation groups.** A pre-activation block has no BN after its last conv. Its last BN feeds an activation and then conv2, so a zero γ there would send zeros into an activation whose ReLU gradient at 0 is 0, and the branch could stay off.
+  5. **`identity_like` is refused on groups without a projection.**
+  6. **The draw prior is not in the Neutral set:** it is a prior, not a no-op. Standard resets it to 0.75.
+  7. **A scalar value head requires the standard draw prior.**
+  8. **The plan's test "one step makes the zeroed tensor nonzero" is false for the trunk.** Zero head finals pass no gradient into the trunk on step one (∂L/∂features = Wᵀ·∂L/∂logits = 0). The test asserts that the heads move on step one, the zero γs stay zero on step one, and the γs move on step two.
+  9. **Step-0 checks for the SE gate and the zero-γ branch are made on the built tensors**, not on intermediate activations.
+  10. **No `Presets/*.json` in this repo:** built-in presets are Swift values, and `testEveryPresetAlreadyHasTheStandardInit` pins them.
+  11. **`scripts/dcm_arch.py` is unchanged:** the options change no tensor shape.
+- **Not run.** The GUI validation (build a neutral model; screenshot the editor and diagram in light and dark mode) and a CLI derive of a real fresh net. No app runs were made from this worktree.
+
 **P8 — Graft** (B3). Files: `Persistence/ModelDerivation.swift`, `App/DeriveModelCLI.swift`.
 Tests: graft 5-block→6-block copies blocks 0–4 bit-exact, initializes block 5 from
 `init/block5_*` under the recorded seed (reproducible), records copied/dropped/initialized;

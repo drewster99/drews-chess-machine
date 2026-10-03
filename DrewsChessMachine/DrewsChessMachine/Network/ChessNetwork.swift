@@ -2385,6 +2385,19 @@ final class ChessNetwork: @unchecked Sendable {
 
     // MARK: - Layer Builders
 
+    /// The γ every BatchNorm starts at unless an init option says otherwise.
+    static let standardBatchNormGamma: Float = 1
+
+    /// The γ init of the last BN of a branch of `group` (post-activation
+    /// `bn2`): 0 under `branch_output_init: zero_last_bn_gamma`, else the
+    /// standard 1. The single rule the builder reads.
+    static func lastBranchBatchNormGamma(_ group: BlockGroup) -> Float {
+        switch group.branchOutputInit {
+        case .standard: return standardBatchNormGamma
+        case .zeroLastBNGamma: return 0
+        }
+    }
+
     /// Batch normalization. Behavior depends on `bnMode`:
     ///
     /// - `.inference`: uses the stored running statistics
@@ -2404,22 +2417,10 @@ final class ChessNetwork: @unchecked Sendable {
     ///   training-time forward pass. EMA momentum = 0.99 (i.e. tracks
     ///   roughly the last ~100 batches).
     ///
-    /// gamma and beta are appended to `trainables` in both modes.
-    /// Running-stat variables are appended to `runningStats` in both
-    /// modes. Only `.training` appends to `runningStatsAssignOps`.
-    /// The γ every BatchNorm starts at unless an init option says otherwise.
-    static let standardBatchNormGamma: Float = 1
-
-    /// The γ init of the last BN of a branch of `group` (post-activation
-    /// `bn2`): 0 under `branch_output_init: zero_last_bn_gamma`, else the
-    /// standard 1. The single rule the builder reads.
-    static func lastBranchBatchNormGamma(_ group: BlockGroup) -> Float {
-        switch group.branchOutputInit {
-        case .standard: return standardBatchNormGamma
-        case .zeroLastBNGamma: return 0
-        }
-    }
-
+    /// gamma and beta are appended to `trainables` in both modes; γ starts at
+    /// `gammaInitValue`, β at 0. Running-stat variables are appended to
+    /// `runningStats` in both modes. Only `.training` appends to
+    /// `runningStatsAssignOps`.
     private static func batchNorm(
         graph: MPSGraph,
         input: MPSGraphTensor,
