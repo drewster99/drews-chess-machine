@@ -106,10 +106,9 @@ struct CorpusReplayConfig: Sendable {
     /// actor in the pre-flight handler (the `ModelIDMinter` is main-actor
     /// isolated and the replay loop runs off-actor, so it can't mint there).
     var runModelID: String
-    /// Destination for the run's `results.json` (`--output`), or nil for no
-    /// JSON. Previously `--output` was parsed but reached only the self-play
-    /// controller, so passing it here produced nothing at all.
-    var outputURL: URL?
+    /// Destination for the run's `results.json` (`--output`, checked before
+    /// the run by `CliResultsOutput.preflight`), or nil for no JSON.
+    var output: CliResultsOutput?
 
     /// One training step to capture as an Xcode GPU trace (`.gputrace`) for
     /// per-kernel profiling (`--gpu-capture-step` / `--gpu-capture-out`), or
@@ -846,7 +845,7 @@ enum CorpusReplayRunner {
     private static func runReplay(config: CorpusReplayConfig, params p: ReplayParams, abort: ReplayAbortFlag) async throws -> Result {
         // `--output` support. Only allocated when a destination was given, so a
         // run without `--output` carries no per-step recording cost at all.
-        let recorder: CliTrainingRecorder? = config.outputURL == nil ? nil : {
+        let recorder: CliTrainingRecorder? = config.output == nil ? nil : {
             let r = CliTrainingRecorder()
             r.setSessionID(config.runModelID)
             r.setRunKind(.corpusReplay)
@@ -1630,7 +1629,7 @@ enum CorpusReplayRunner {
 
         // `results.json` last, after the final model save — a run that dies
         // saving weights should not also claim a clean results record.
-        if let recorder, let outputURL = config.outputURL {
+        if let recorder, let output = config.output {
             // Ctrl-C maps to `manualStop`; every clean exit here (step limit,
             // epoch limit, corpus exhaustion) reports `stepLimitReached` — the
             // enum has no case distinguishing the latter two, and inventing one
@@ -1642,13 +1641,13 @@ enum CorpusReplayRunner {
             // results write (bad --output path, full volume) must not turn a
             // completed multi-hour run into a nonzero exit.
             do {
-                try recorder.writeJSON(
-                    to: outputURL,
+                let written = try recorder.write(
+                    to: output,
                     totalTrainingSeconds: CFAbsoluteTimeGetCurrent() - runStart
                 )
-                emit("[REPLAY] wrote results: \(outputURL.path) (stats=\(counts.stats))")
+                emit("[REPLAY] wrote results: \(written.path) (stats=\(counts.stats))")
             } catch {
-                emit("[REPLAY] results write FAILED for \(outputURL.path): \(error.localizedDescription)")
+                emit("[REPLAY] results write FAILED for \(output.url.path): \(error.localizedDescription)")
             }
         }
 

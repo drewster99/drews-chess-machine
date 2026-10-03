@@ -35,7 +35,7 @@ struct ContentView: View {
     /// `--train`). Nil ⇒ fresh random build.
     let trainStartModelPath: String?
     let cliConfig: CliTrainingConfig?
-    let cliOutputURL: URL?
+    let cliResultsOutput: CliResultsOutput?
     /// View > Show Training Graphs preference, forwarded from
     /// `DrewsChessMachineApp`'s `@AppStorage`. Gates the lower
     /// chart pane independently of `chartCoordinator.isActive`
@@ -109,7 +109,7 @@ struct ContentView: View {
             playChessModelPath: playChessModelPath,
             trainStartModelPath: trainStartModelPath,
             cliConfig: cliConfig,
-            cliOutputURL: cliOutputURL,
+            cliResultsOutput: cliResultsOutput,
             chartCoordinator: chartCoordinator
         )
         .frame(minHeight: 400, maxHeight: .infinity)
@@ -161,7 +161,7 @@ struct ContentView: View {
         playChessModelPath: nil,
         trainStartModelPath: nil,
         cliConfig: nil,
-        cliOutputURL: nil,
+        cliResultsOutput: nil,
         showTrainingGraphs: true,
         chartCollectionEnabled: true,
         showPolicyChannelsPanel: false

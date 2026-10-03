@@ -1158,7 +1158,7 @@ extension SessionController {
         // wrestling MainActor isolation at each append. Cleared in
         // the teardown block along with the other per-session state.
         let recorder: CliTrainingRecorder?
-        if cliOutputURL != nil || autoTrainOnLaunch {
+        if cliResultsOutput != nil || autoTrainOnLaunch {
             let r = CliTrainingRecorder()
             r.setSessionID(checkpoint?.currentSessionID)
             // Declare the run kind here too, not just on the CLI paths: a
@@ -1170,7 +1170,7 @@ extension SessionController {
         } else {
             recorder = nil
         }
-        let outputURL = cliOutputURL
+        let resultsOutput = cliResultsOutput
         let cliTrainingTimeLimitSec = cliConfig?.trainingTimeLimitSec
         let cliTrainingStepLimit = cliConfig?.trainingStepLimit
         let isAutoTrainRun = autoTrainOnLaunch
@@ -1205,7 +1205,7 @@ extension SessionController {
         // Register the early-stop flush handler so SIGUSR1 / SIGHUP /
         // applicationShouldTerminate can write `result.json` cleanly
         // before exiting. Cleared in the teardown block. The closure
-        // captures the recorder, outputURL, and runStart so the
+        // captures the recorder, resultsOutput, and runStart so the
         // coordinator doesn't need to know about ContentView's state
         // shape — it just calls the closure with the termination reason.
 
@@ -1220,15 +1220,15 @@ extension SessionController {
         if let recorder {
             EarlyStopCoordinator.shared.earlyStopHandler = { reason in
                 let elapsed = Date().timeIntervalSince(runStart)
-                let destDescription = outputURL?.path ?? "<stdout>"
+                let destDescription = resultsOutput?.url.path ?? "<stdout>"
                 SessionLogger.shared.log(
                     "[APP] --train: early-stop on \(reason.rawValue) at elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
                 )
                 recorder.setTerminationReason(reason)
                 let counts = recorder.countsSnapshot()
                 do {
-                    if let url = outputURL {
-                        try recorder.writeJSON(to: url, totalTrainingSeconds: elapsed)
+                    if let resultsOutput {
+                        try recorder.write(to: resultsOutput, totalTrainingSeconds: elapsed)
                     } else {
                         try recorder.writeJSONToStdout(totalTrainingSeconds: elapsed)
                     }
@@ -1258,7 +1258,7 @@ extension SessionController {
         realTrainingTask = Task(priority: .high) {
             [trainer, network, buffer, box, tBox, pStatsBox, spDiversityTracker,
              selfPlayGate, trainingGate, arenaFlag, triggerBox, overrideBox, countBox,
-             gameWatcher, ratioController, recorder, outputURL, cliTrainingTimeLimitSec,
+             gameWatcher, ratioController, recorder, resultsOutput, cliTrainingTimeLimitSec,
              cliTrainingStepLimit,
              isAutoTrainRun,
              sessionTrainingBatchSize, sessionMinBufferBeforeTraining,
@@ -2745,15 +2745,15 @@ extension SessionController {
                         if Task.isCancelled { return }
                         guard claimTermination() else { return }
                         let elapsed = Date().timeIntervalSince(runStart)
-                        let destDescription = outputURL?.path ?? "<stdout>"
+                        let destDescription = resultsOutput?.url.path ?? "<stdout>"
                         SessionLogger.shared.log(
                             "[APP] --train: training_time_limit=\(deadlineSec)s reached at elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
                         )
                         recorder.setTerminationReason(.timerExpired)
                         let counts = recorder.countsSnapshot()
                         do {
-                            if let outputURL {
-                                try recorder.writeJSON(to: outputURL, totalTrainingSeconds: elapsed)
+                            if let resultsOutput {
+                                try recorder.write(to: resultsOutput, totalTrainingSeconds: elapsed)
                             } else {
                                 try recorder.writeJSONToStdout(totalTrainingSeconds: elapsed)
                             }
@@ -2790,15 +2790,15 @@ extension SessionController {
                             guard steps >= stepLimit else { continue }
                             guard claimTermination() else { return }
                             let elapsed = Date().timeIntervalSince(runStart)
-                            let destDescription = outputURL?.path ?? "<stdout>"
+                            let destDescription = resultsOutput?.url.path ?? "<stdout>"
                             SessionLogger.shared.log(
                                 "[APP] --train: training_step_limit=\(stepLimit) reached at steps=\(steps) elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
                             )
                             recorder.setTerminationReason(.stepLimitReached)
                             let counts = recorder.countsSnapshot()
                             do {
-                                if let outputURL {
-                                    try recorder.writeJSON(to: outputURL, totalTrainingSeconds: elapsed)
+                                if let resultsOutput {
+                                    try recorder.write(to: resultsOutput, totalTrainingSeconds: elapsed)
                                 } else {
                                     try recorder.writeJSONToStdout(totalTrainingSeconds: elapsed)
                                 }
@@ -2841,7 +2841,7 @@ extension SessionController {
                 // timer task's runStart into this closure.
                 let collapseRunStart = Date()
                 let collapseRecorder: CliTrainingRecorder? = (isAutoTrainRun ? recorder : nil)
-                let collapseOutputURL: URL? = outputURL
+                let collapseResultsOutput: CliResultsOutput? = resultsOutput
                 // Configuration snapshot taken at task start. All three
                 // are user-tunable via parameters JSON / @AppStorage; we
                 // capture once so the running detector has stable behavior
@@ -2994,15 +2994,15 @@ extension SessionController {
                                     legalMassWindow.first ?? 0, legalMassWindow.last ?? 0)
                             )
                             if let rec = collapseRecorder, claimTermination() {
-                                let destDescription = collapseOutputURL?.path ?? "<stdout>"
+                                let destDescription = collapseResultsOutput?.url.path ?? "<stdout>"
                                 SessionLogger.shared.log(
                                     "[APP] --train: legal-mass collapse abort at elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
                                 )
                                 rec.setTerminationReason(.legalMassCollapse)
                                 let counts = rec.countsSnapshot()
                                 do {
-                                    if let url = collapseOutputURL {
-                                        try rec.writeJSON(to: url, totalTrainingSeconds: elapsed)
+                                    if let collapseResultsOutput {
+                                        try rec.write(to: collapseResultsOutput, totalTrainingSeconds: elapsed)
                                     } else {
                                         try rec.writeJSONToStdout(totalTrainingSeconds: elapsed)
                                     }

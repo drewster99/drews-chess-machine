@@ -113,20 +113,72 @@ final class CliTrainingRecorder: @unchecked Sendable {
         return try encoder.encode(snapshot)
     }
 
-    /// Build the Codable root struct and write it to `url`,
-    /// overwriting any existing file at the same path. `url` must
-    /// name a writable directory; callers resolve tildes and
-    /// relative paths before handing the URL here so error
-    /// messages point at the fully-resolved path.
+    /// Build the Codable root struct and write it to `url`, replacing a
+    /// regular file already there (never a folder or link). An explicit
+    /// replace with no ownership check: runs write their results through
+    /// `write(to:totalTrainingSeconds:)` with a `CliResultsOutput` checked
+    /// before training, which never replaces a file the run was not told
+    /// it may replace.
     func writeJSON(to url: URL, totalTrainingSeconds: Double) throws {
         let data = try encodedJSONData(totalTrainingSeconds: totalTrainingSeconds)
-        // Atomic write so a crash mid-write doesn't leave the
-        // previous version half-overwritten. `.atomic` also
-        // creates the file if it doesn't exist and replaces it
-        // if it does — matching the spec's "filename will be
-        // overwritten if it exists" requirement.
-        try data.write(to: url, options: [.atomic])
+        try FileSafety.replaceRegularFile(data, at: url, expectedIdentity: nil)
     }
+
+    /// Write the results to the destination checked before the run
+    /// (`CliResultsOutput.preflight`) and return where they landed.
+    ///
+    /// A file the pre-flight found is replaced only when `--overwrite-output`
+    /// authorized it, and only if it is still that file. If something has
+    /// appeared at — or replaced the file at — the destination since the
+    /// check, it is left untouched and the results go to a new numbered
+    /// sibling (`<name>-2.<ext>`, …) instead, with an alarm naming both: a
+    /// long run's results are never lost, and nothing the run does not own is
+    /// overwritten.
+    @discardableResult
+    func write(to output: CliResultsOutput, totalTrainingSeconds: Double) throws -> URL {
+        let data = try encodedJSONData(totalTrainingSeconds: totalTrainingSeconds)
+        do {
+            if let replacing = output.replacing {
+                try FileSafety.replaceRegularFile(data, at: output.url, expectedIdentity: replacing)
+            } else {
+                try FileSafety.publishNewFile(data, to: output.url)
+            }
+            return output.url
+        } catch let refusal as FileSafetyError where refusal.isOwnershipRefusal {
+            let sibling = try Self.writeBeside(output.url, data: data)
+            let message = "[ALARM] results: \(output.url.path) changed during the run (\(refusal.localizedDescription)); "
+                + "left it untouched and wrote this run's results to \(sibling.path)"
+            SessionLogger.shared.log(message)
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+            return sibling
+        }
+    }
+
+    /// Write `data` to a new numbered sibling of `url`. A name with no
+    /// extension gets `.json`, since that is what the file holds.
+    private static func writeBeside(_ url: URL, data: Data) throws -> URL {
+        let pathExtension = url.pathExtension.isEmpty ? "json" : url.pathExtension
+        let stem = url.pathExtension.isEmpty ? url.lastPathComponent : url.deletingPathExtension().lastPathComponent
+        let created = try FileSafety.createNewFileWithNumericSuffix(
+            in: url.deletingLastPathComponent(), stem: stem, pathExtension: pathExtension,
+            maxAttempts: resultsSiblingMaxAttempts)
+        do {
+            try created.handle.write(contentsOf: data)
+            try FileSafety.fullSync(fileDescriptor: created.handle.fileDescriptor, path: created.url.path)
+            try created.handle.close()
+        } catch {
+            do {
+                try created.handle.close()
+            } catch let closeError {
+                SessionLogger.shared.log("[APP] results: closing \(created.url.path) after a failed write: \(closeError.localizedDescription)")
+            }
+            throw error
+        }
+        return created.url
+    }
+
+    /// How many numbered sibling names `write(to:)` tries.
+    private static let resultsSiblingMaxAttempts = 100
 
     /// Write the JSON snapshot to stdout, followed by a newline
     /// so the caller's shell prompt doesn't sit at the end of
@@ -1196,5 +1248,62 @@ extension CliTrainingRecorder.StatsLine {
         policyLabelSmoothingMode = hyperparameters.policyLabelSmoothingMode.logToken
         policyLabelSmoothingPerMove = Double(hyperparameters.policyLabelSmoothingPerMove)
         policyLabelSmoothingPerMoveCap = Double(hyperparameters.policyLabelSmoothingPerMoveCap)
+    }
+}
+
+/// Where a CLI run writes its `results.json` (`--output`), checked before the
+/// run starts so a bad destination fails in seconds instead of at the end of a
+/// long run, and an earlier run's results are never silently replaced.
+///
+/// The rules: the folder exists, is a folder and is writable; the name fits a
+/// staged write; a folder, link or special file at the path is always refused;
+/// an existing regular file is refused unless `--overwrite-output` was passed,
+/// and then only that very file may be replaced (`replacing`). Shared by every
+/// `--output` the app accepts (GUI `--train`, `--replay-corpus`,
+/// `--train-vs-uci`).
+struct CliResultsOutput: Sendable, Equatable {
+    let url: URL
+    /// The existing regular file `--overwrite-output` authorized replacing,
+    /// as found by the pre-flight; nil when nothing was at the path.
+    let replacing: FileSafety.FileIdentity?
+
+    static func preflight(url: URL, overwriteAuthorized: Bool) throws -> CliResultsOutput {
+        try FileSafety.requireStageableDestination(url)
+        let folder = url.deletingLastPathComponent()
+        var isFolder: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isFolder) else {
+            throw CliResultsOutputError.folderUnusable(path: folder.path, reason: "does not exist")
+        }
+        guard isFolder.boolValue else {
+            throw CliResultsOutputError.folderUnusable(path: folder.path, reason: "is not a folder")
+        }
+        guard FileManager.default.isWritableFile(atPath: folder.path) else {
+            throw CliResultsOutputError.folderUnusable(path: folder.path, reason: "is not writable")
+        }
+        guard let existing = try FileSafety.existingItem(at: url) else {
+            return CliResultsOutput(url: url, replacing: nil)
+        }
+        guard existing.kind == .regularFile else {
+            throw FileSafetyError.notARegularFile(path: url.path, kind: existing.kind)
+        }
+        guard overwriteAuthorized else {
+            throw CliResultsOutputError.alreadyExists(path: url.path)
+        }
+        return CliResultsOutput(url: url, replacing: existing.identity)
+    }
+}
+
+/// Refusals from `CliResultsOutput.preflight`.
+enum CliResultsOutputError: LocalizedError, Equatable {
+    case folderUnusable(path: String, reason: String)
+    case alreadyExists(path: String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .folderUnusable(path, reason):
+            return "--output folder \(path) \(reason)"
+        case let .alreadyExists(path):
+            return "--output \(path) already exists; refusing to replace it (pass --overwrite-output to replace it, or choose a new name)"
+        }
     }
 }

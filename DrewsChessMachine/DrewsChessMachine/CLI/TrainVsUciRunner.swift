@@ -60,10 +60,9 @@ struct TrainVsUciConfig: Sendable {
     /// from the live trainer. Small = closer to truly-live play.
     var evalSyncEverySteps: Int
     var runModelID: String
-    /// Destination for the run's `results.json` (`--output`), or nil for no
-    /// JSON. Previously `--output` was parsed but reached only the self-play
-    /// controller, so passing it here produced nothing at all.
-    var outputURL: URL?
+    /// Destination for the run's `results.json` (`--output`, checked before
+    /// the run by `CliResultsOutput.preflight`), or nil for no JSON.
+    var output: CliResultsOutput?
 }
 
 enum TrainVsUciError: LocalizedError {
@@ -143,7 +142,7 @@ enum TrainVsUciRunner {
     private static func runTraining(config: TrainVsUciConfig, params p: ReplayParams, abort: TrainVsUciAbortFlag) async throws -> Result {
         // `--output` support. Only allocated when a destination was given, so a
         // run without `--output` carries no per-step recording cost at all.
-        let recorder: CliTrainingRecorder? = config.outputURL == nil ? nil : {
+        let recorder: CliTrainingRecorder? = config.output == nil ? nil : {
             let r = CliTrainingRecorder()
             r.setSessionID(config.runModelID)
             r.setRunKind(.trainVsUci)
@@ -603,7 +602,7 @@ enum TrainVsUciRunner {
 
         // `results.json` last, after the final model save — a run that dies
         // saving weights should not also claim a clean results record.
-        if let recorder, let outputURL = config.outputURL {
+        if let recorder, let output = config.output {
             // Reported from the cause the loop actually exited on, not inferred
             // from which limits were configured: a run with BOTH a step limit
             // and a time limit can exit on either, and inferring would mislabel
@@ -615,13 +614,13 @@ enum TrainVsUciRunner {
             // Logged, not thrown — see CorpusReplayRunner: the trainer model is
             // already saved, so a failed results write must not fail the run.
             do {
-                try recorder.writeJSON(
-                    to: outputURL,
+                let written = try recorder.write(
+                    to: output,
                     totalTrainingSeconds: CFAbsoluteTimeGetCurrent() - runStart
                 )
-                emit("[VS-UCI] wrote results: \(outputURL.path) (stats=\(counts.stats))")
+                emit("[VS-UCI] wrote results: \(written.path) (stats=\(counts.stats))")
             } catch {
-                emit("[VS-UCI] results write FAILED for \(outputURL.path): \(error.localizedDescription)")
+                emit("[VS-UCI] results write FAILED for \(output.url.path): \(error.localizedDescription)")
             }
         }
 

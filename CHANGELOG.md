@@ -9,6 +9,21 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-02 CDT — Headless runs check their outputs before training
+
+- **`--output` never silently replaces an earlier run's results.** GUI `--train`, `--replay-corpus` and `--train-vs-uci` check the destination at launch (`CliResultsOutput.preflight`): the folder must exist and be writable, a folder or link at the path is refused, and an existing file is refused unless the new `--overwrite-output` flag is passed — and then only that very file is replaced. If something appears at, or replaces, the destination during the run, it is left untouched and the results go to `<name>-2.<ext>` (…) with an `[ALARM]`. `CliTrainingRecorder.writeJSON(to:)` is now a regular-file-only replace through `FileSafety`.
+- **Output names must fit a staged save.** `FileSafety.requireStageableDestination`: the rolling `--out-model` name and, with `--enumerate-checkpoints`, the longest step-file name the run could write must leave room for the staging copy's name. Before, a long name passed every check and then every save failed with `ENAMETOOLONG`, as a warning, for the whole run.
+- **Repeated save failures halt.** In corpus replay and train-vs-UCI, a non-disk-full save failure is still a warning the first time, but the same kind of save (rolling file, or enumerated copies) failing again at its next attempt stops the run (`TrainerSaveFailureStreak`).
+- **GPU capture.** `--gpu-capture-step` / `--gpu-capture-out` are validated at launch (step within `--training-step-limit`, writable folder, nothing at the trace path). A capture that cannot start at its step no longer skips the final save: the run stops before that step, saves (`capture-failed`), then fails. A run that ends before the capture step warns.
+- **Damaged headers.** A negative `training_step` in the `--out-model` or `--start-model` header is refused (it could overflow the step arithmetic and trap).
+- **Resume pointer.** An unreadable resume pointer (`LastSessionPointer.stored(in:)` throws) aborts the automatic-save sweep with `[PRUNE-ERR]` instead of pruning with the resume target unprotected. (Pruning is forced off in this build; this protects it once lifted.)
+- Tests: `ReplayRunnerPreflightTests`, `PruneUnreadableResumePointerTests`, `CliResultsOutputTests`.
+
+## 2026-10-02 CDT — UCI engine: the GUI decides draws
+
+- When DCM is the engine (`--uci`), a `position … moves` list is replayed without DCM's own draw rules, so a game continued past an unclaimed threefold or fifty-move point is followed in full. Before, the list stopped at that point and the next `go` answered for that earlier position, where its move could be illegal in the real game.
+- A `position` that cannot be applied (bad token or FEN, illegal move, a move after mate) is rejected whole: `info string position rejected: …` at once, and `bestmove 0000` with an `info string` for every `go` until the next valid `position` or `ucinewgame`. `--train-vs-uci`, where DCM runs the game, keeps its own draw rules. Docs: `documentation/UCI.md`. Tests: `UCIPositionTests`.
+
 ## 2026-10-02 CDT — Corpus replay no longer drops games played past an unclaimed draw
 
 - `CorpusReplayFeeder` replayed each recorded game through DCM's own draw adjudication. A game the players continued past an unclaimed threefold repetition (legal on Lichess) made the next move throw, and the whole game was discarded with no log line or count. Measured on the corpora: 0.045% of `w3aA5b` games (0.070% of plies) and 0.32% of elite games (0.34% of plies), all at a threefold, about 72–87% of them draws.
