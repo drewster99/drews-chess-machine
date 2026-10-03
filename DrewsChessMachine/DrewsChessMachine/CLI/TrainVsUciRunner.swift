@@ -30,34 +30,37 @@ struct TrainVsUciConfig: Sendable {
     var opponents: [TrainVsUciOpponentSpec]
     var stepLimit: Int?
     var timeLimitSec: Double?
+    /// A model file or a `.dcmsession` folder (`TrainVsUciSession.StartSource`).
     var startModelPath: String?
     /// Continue the `--start-model`'s training exactly: restore its complete
     /// trainer state (fp32 masters, optimizer velocity, the completed-step
     /// clock, warmup length and LR/momentum cycle — see
-    /// `TrainerScheduleState`), so warmup does not re-run and the cycle phase
-    /// and decay continue where they stopped. The replay buffer cannot be
-    /// restored — its games were played live and are not persisted — so it
-    /// refills from new games before training resumes. Without this flag,
+    /// `TrainerScheduleState`) and the run's random streams, so warmup does
+    /// not re-run and the cycle phase and decay continue where they stopped.
+    /// A session folder saved with `--save-replay-buffer` also restores the
+    /// replay buffer; any other start refills it from new games before
+    /// training resumes (`NOT EXACT: buffer`). Without this flag,
     /// `--start-model` starts a new branch (fresh clock, zero velocity).
     var resumeExact: Bool
     /// Resume gaps `--resume-exact` may proceed without (`--accept-inexact`,
-    /// determinism plan D-7). The replay buffer is never saved by this path,
-    /// so `buffer` must be named for any exact resume to proceed.
+    /// determinism plan D-7). A start without a saved replay buffer needs
+    /// `buffer` named for an exact resume to proceed.
     var acceptInexact: Set<ResumeGap>
     var presetName: String?
-    /// Explicit destination for the rolling trainer-model file; nil derives
-    /// `<start-model stem>-vsuci-latest.safetensors` next to `--start-model`,
-    /// or `<runModelID>-vsuci-latest.safetensors` in the Models directory. A
-    /// file already there is replaced only under
-    /// `TrainerOutputFileGuard.checkRollingOutput`'s rule (see
-    /// `CorpusReplayConfig.outModelPath`).
-    var outModelPath: String?
-    /// `--overwrite-out-model` — see `CorpusReplayConfig.overwriteOutModel`.
-    var overwriteOutModel: Bool
-    /// `--enumerate-checkpoints`: also write `<stem>-vsuci-step<N>` copies,
-    /// never over a file this run did not write (see
-    /// `CorpusReplayConfig.enumerateCheckpoints`).
+    /// Where the run's session folders are written (`--out-session-dir`; the
+    /// app's `Sessions/` folder by default). Every save is a new folder.
+    var sessionDirectory: URL
+    /// `--save-replay-buffer`: session saves include `replay_buffer.bin`, so an
+    /// exact resume from them restores the buffer (plan D-8). Off by default:
+    /// a save is then far smaller and a resume refills from new games.
+    var saveReplayBuffer: Bool
+    /// `--enumerate-checkpoints`: also write `<stem>-vsuci-step<N>` trainer
+    /// files every 1000 steps and at the end, never over a file this run did
+    /// not write (see `CorpusReplayConfig.enumerateCheckpoints`).
     var enumerateCheckpoints: Bool
+    /// `--checkpoint-stem`: the path stem of those step files
+    /// (`TrainVsUciSession.enumeratedNamingBase`), nil for the default.
+    var checkpointStem: String?
     /// Max total half-moves before a game is dropped without flush.
     var maxPliesPerGame: Int
     /// How often (in trainer steps) to refresh the play network's weights
@@ -77,9 +80,16 @@ enum TrainVsUciError: LocalizedError {
     case noOpponents
     case startModelTooSmall(have: Int, need: Int)
     case noGamesProduced
+    /// The run's last session save failed. With session saves hours apart,
+    /// that save is the only record of the run's end state, so the run fails
+    /// rather than exit as if it had been saved.
+    case finalSessionSaveFailed(step: Int, kind: String)
 
     var errorDescription: String? {
         switch self {
+        case let .finalSessionSaveFailed(step, kind):
+            return "the \(kind) session save at step \(step) failed (see the log above); "
+                + "the run's end state was not saved"
         case .noOpponents:
             return "--train-vs-uci requires at least one opponent engine"
         case let .startModelTooSmall(have, need):
@@ -170,18 +180,41 @@ enum TrainVsUciRunner {
         // resume that records the run's streams (see CorpusReplayRunner).
         var runSeed = config.runRandomSeed
         var resumedStreams: LineageRecord.RunStreams? = nil
-        // This path never saves its replay buffer: every exact resume refills
-        // from new games (decision D-8).
-        var resumeGaps: [ResumeGap] = [.buffer]
-        if let sm = config.startModelPath {
-            let url = URL(fileURLWithPath: (sm as NSString).expandingTildeInPath)
-            let file = try CheckpointManager.loadModelFile(at: url)
+        var resumeGaps: [ResumeGap] = []
+        // What `--start-model` named: a model file, or a session folder whose
+        // trainer file is the start (and whose replay buffer, when saved, an
+        // exact resume restores).
+        let startSource: TrainVsUciSession.StartSource? = try config.startModelPath.map {
+            try TrainVsUciSession.startSource(path: $0)
+        }
+        var startSession: LoadedSession? = nil
+        if let startSource {
+            let file: ModelCheckpointFile
+            let fileName: String
+            switch startSource {
+            case .modelFile(let url):
+                file = try CheckpointManager.loadModelFile(at: url)
+                fileName = url.lastPathComponent
+                emit("[VS-UCI] start-model: \(url.lastPathComponent) modelID=\(file.modelID) encoding=\(file.architecture.inputEncoding.rawValue)")
+            case .session(let url):
+                let loaded = try CheckpointManager.loadSession(at: url)
+                startSession = loaded
+                file = loaded.trainerFile
+                fileName = "\(url.lastPathComponent)/\(SessionCheckpointLayout.trainerFilename)"
+                emit("[VS-UCI] start-model: session \(url.lastPathComponent) trainer modelID=\(file.modelID) "
+                    + "encoding=\(file.architecture.inputEncoding.rawValue) "
+                    + "replayBuffer=\(loaded.replayBufferURL == nil ? "not saved" : "saved")")
+            }
             startModelFile = file
             parentModelID = file.modelID
             arch = file.architecture
-            emit("[VS-UCI] start-model: \(url.lastPathComponent) modelID=\(file.modelID) encoding=\(arch.inputEncoding.rawValue)")
             if config.resumeExact {
-                let snapshot = try TrainerResumeSnapshot(checkpoint: file, fileName: url.lastPathComponent)
+                // Only a session saved with its buffer restores it; every
+                // other exact resume refills from new games (decision D-8).
+                if startSession?.replayBufferURL == nil {
+                    resumeGaps.append(.buffer)
+                }
+                let snapshot = try TrainerResumeSnapshot(checkpoint: file, fileName: fileName)
                 resumeSnapshot = snapshot
                 emit(PolicyTailPrecisionResume.exactResumeLogLine(
                     saved: file.metadata.trainerPolicyTailPrecision, running: ChessNetwork.PolicyTailPrecision.process))
@@ -251,38 +284,30 @@ enum TrainVsUciRunner {
         recorder?.setRunRandomSeed(runSeed)
         emit("[VS-UCI-ARCH] (\(startModelFile == nil ? "default preset" : "start-model")) \(arch.architectureSummary)")
 
-        // Rolling trainer-model output file (mirrors CorpusReplayRunner),
-        // checked before any network is built or engine launched: a file
-        // already there is replaced only when it is the rolling file of the
-        // model line this run continues (or with --overwrite-out-model), and
-        // an enumerated stem must not already hold step files this run could
-        // reach.
-        let outModelURL: URL = {
-            if let explicit = config.outModelPath {
-                let url = URL(fileURLWithPath: (explicit as NSString).expandingTildeInPath)
-                return url.pathExtension.lowercased() == "safetensors" ? url : url.appendingPathExtension("safetensors")
-            }
-            if let sm = config.startModelPath {
-                let smURL = URL(fileURLWithPath: (sm as NSString).expandingTildeInPath)
-                let stem = smURL.deletingPathExtension().lastPathComponent
-                return smURL.deletingLastPathComponent().appendingPathComponent("\(stem)-vsuci-latest.safetensors")
-            }
-            return CheckpointPaths.modelsDir.appendingPathComponent("\(config.runModelID)-vsuci-latest.safetensors")
-        }()
-        // Every save lands on a multiple of this (plus the final save).
+        // Session saves, checked before any network is built or engine
+        // launched: the folder must be usable and a save's name must fit the
+        // staging rename. Each save is a new `.dcmsession` folder written by
+        // the GUI's session writer (see `TrainVsUciSession`).
+        try CheckpointPaths.ensureDirectory(config.sessionDirectory)
+        try FileSafety.requireStageableDestination(config.sessionDirectory.appendingPathComponent(
+            CheckpointPaths.makeSessionDirectoryName(
+                sessionID: config.runModelID, trigger: TrainVsUciSession.SaveKind.periodic.diskTag)))
+        let periodicSessionIntervalSec = p.parameters.periodicAutosaveIntervalSec
+        emit(TrainVsUciSession.launchLine(
+            directory: config.sessionDirectory,
+            periodicIntervalSec: periodicSessionIntervalSec,
+            includesReplayBuffer: config.saveReplayBuffer))
+
+        // Step-enumerated checkpoints (the per-step record probe loops and
+        // dashboards read) land on a multiple of this, plus the final step.
         let autosaveEvery = 1000
-        let rollingPlan = try TrainerOutputFileGuard.checkRollingOutput(
-            outModelURL: outModelURL,
-            startModelURL: config.startModelPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) },
-            startModel: startModelFile.map {
-                TrainerModelFileIdentity(modelID: $0.modelID, trainingStep: $0.metadata.trainingStep)
-            },
-            overwriteAuthorized: config.overwriteOutModel)
-        let rollingWriter = RollingTrainerModelWriter(url: outModelURL, plan: rollingPlan)
-        emit("[VS-UCI] trainer-model output: \(outModelURL.path) (\(rollingPlan.logDescription))")
         let enumeratedWriter: EnumeratedCheckpointWriter?
         if config.enumerateCheckpoints {
-            let naming = EnumeratedCheckpointNaming(rollingOutputURL: outModelURL, runTag: EnumeratedCheckpointNaming.trainVsUciRunTag)
+            let naming = EnumeratedCheckpointNaming(
+                rollingOutputURL: try TrainVsUciSession.enumeratedNamingBase(
+                    checkpointStem: config.checkpointStem, startSource: startSource,
+                    runModelID: config.runModelID),
+                runTag: EnumeratedCheckpointNaming.trainVsUciRunTag)
             try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(naming: naming, stepLimit: config.stepLimit)
             enumeratedWriter = EnumeratedCheckpointWriter(naming: naming)
             emit("[VS-UCI] enumerated checkpoints: \(naming.url(step: autosaveEvery).path) and siblings (never overwritten)")
@@ -360,6 +385,18 @@ enum TrainVsUciRunner {
             capacity: p.replayBufferCapacity,
             inputEncoding: evalNet.inputEncoding,
             sampler: runSeed.streams.generator(.sampler))
+        // An exact resume from a session saved with its buffer continues from
+        // that buffer. A restore that fails stops the run: an exact resume
+        // that silently started from an empty buffer would not be one.
+        if config.resumeExact, let startSession, let bufferURL = startSession.replayBufferURL {
+            try await Task.detached(priority: .userInitiated) { [buffer] in
+                try buffer.restore(from: bufferURL)
+            }.value
+            try CheckpointManager.verifyReplayBufferMatchesSession(buffer: buffer, state: startSession.state)
+            let restored = buffer.stateSnapshot()
+            emit("[RESUME] replay buffer restored: stored=\(restored.storedCount)/\(restored.capacity) "
+                + "totalAdded=\(restored.totalPositionsAdded)")
+        }
         if let resumedStreams {
             buffer.restoreSamplerState(resumedStreams.samplerState)
             emit("[RESUME] rng: sampler=restored")
@@ -456,98 +493,6 @@ enum TrainVsUciRunner {
             gameSerials: gameSerials,
             startingGameIndices: startingGameIndices)
 
-        // Consecutive-failure tracking per kind of save — see
-        // `TrainerSaveFailureStreak` and `CorpusReplayRunner.reportSaveFailure`.
-        var rollingSaveFailures = TrainerSaveFailureStreak(what: "trainer-model save")
-        var enumeratedSaveFailures = TrainerSaveFailureStreak(what: "enumerated checkpoint save")
-        func saveTrainerModel(step: Int, reason: String) async throws {
-            let encoded: Data
-            do {
-                // Complete trainer state, resumable with `--resume-exact`;
-                // `training_step` stays segment-local as in CorpusReplayRunner.
-                // The SGD loop awaits each step, so none is in flight here.
-                let snapshot = try await trainer.exportResumeSnapshot()
-                let streams = runSeed.runStreams(
-                    samplerState: buffer.samplerState(),
-                    dropoutStreamState: try await trainer.dropoutStreamState(),
-                    nextGameSerial: gameSerials.nextSerial, arenasStarted: nil,
-                    opponentGameIndices: driver.currentGameIndices())
-                let weights = snapshot.trainerWeights
-                let metadata = ModelCheckpointMetadata.trainerFile(
-                    creator: "train-vs-uci",
-                    trainingStep: step,
-                    parentModelID: parentModelID,
-                    notes: "train-vs-uci \(reason) @ step \(step)",
-                    schedule: snapshot.schedule,
-                    policyTailPrecision: trainer.policyTailPrecision)
-                // Games and plies the driver flushed into the buffer.
-                let slots = driver.statsSnapshot()
-                let saveDate = Date()
-                let lineage = try lineageTracker.record(
-                    at: saveDate,
-                    trainerCompletedSteps: snapshot.schedule.completedTrainSteps,
-                    segmentLocalStep: step,
-                    segmentGames: slots.reduce(0) { $0 + $1.gamesCompleted },
-                    segmentPositions: slots.reduce(0) { $0 + $1.pliesPlayed },
-                    corpus: nil,
-                    parameters: p.lineageParameters,
-                    rng: LineageRecord.RNG(
-                        dropoutPhiloxState: snapshot.dropoutRNG.philoxState, streams: streams,
-                        behaviorFingerprint: try await BehaviorFingerprint.compute(
-                            for: .init(arch: arch, policyTailPrecision: trainer.policyTailPrecision))))
-                encoded = try SafetensorsModelIO.encode(
-                    modelID: config.runModelID,
-                    createdAtUnix: Int64(saveDate.timeIntervalSince1970),
-                    metadata: metadata,
-                    weights: weights,
-                    architecture: arch,
-                    includesVelocity: true,
-                    lineage: lineage)
-                try FileManager.default.createDirectory(
-                    at: outModelURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try rollingWriter.write(encoded)
-                rollingSaveFailures.recordSuccess()
-                recorder?.recordSave(of: lineage, savedAt: outModelURL, log: emit)
-                emit("[VS-UCI] saved trainer model (\(reason)) step=\(step) trainerStep=\(snapshot.schedule.completedTrainSteps) -> \(outModelURL.lastPathComponent)")
-                // Full layer health of the state just written — see
-                // CorpusReplayRunner's save. Never throws.
-                let health = await LayerHealthLog.checkpoint(
-                    arch: arch, trainerWeights: weights, context: "vsuci-\(reason)",
-                    step: step, trainerStep: snapshot.schedule.completedTrainSteps)
-                for line in health.lines { emit(line) }
-                if let summary = health.summary {
-                    recorder?.appendLayerHealth(CliTrainingRecorder.LayerHealthRecord(
-                        step: step, trainerStep: snapshot.schedule.completedTrainSteps,
-                        context: "vsuci-\(reason)", summary: summary))
-                }
-            } catch let ownershipRefusal as FileSafetyError where ownershipRefusal.isOwnershipRefusal {
-                // The rolling path no longer holds the file this run owns —
-                // halt rather than overwrite something this run did not write.
-                throw ownershipRefusal
-            } catch {
-                try CorpusReplayRunner.reportSaveFailure(error, step: step, what: "trainer-model save (\(reason))")
-                try rollingSaveFailures.recordFailure(step: step)
-                return
-            }
-            if let enumeratedWriter {
-                do {
-                    let written = try enumeratedWriter.write(encoded, step: step)
-                    enumeratedSaveFailures.recordSuccess()
-                    let note = written.outcome == .replacedThisRunsEarlierSave
-                        ? " (replaced this run's own earlier save of step \(step))"
-                        : ""
-                    emit("[VS-UCI] enumerated checkpoint -> \(written.url.lastPathComponent)\(note)")
-                } catch let collision as TrainerOutputFileError {
-                    throw collision
-                } catch let ownershipRefusal as FileSafetyError where ownershipRefusal.isOwnershipRefusal {
-                    throw ownershipRefusal
-                } catch {
-                    try CorpusReplayRunner.reportSaveFailure(error, step: step, what: "enumerated checkpoint")
-                    try enumeratedSaveFailures.recordFailure(step: step)
-                }
-            }
-        }
-
         /// Refresh the play network's weights from the live trainer.
         ///
         /// Runs on the training task while the driver task is calling
@@ -560,6 +505,160 @@ enum TrainVsUciRunner {
         func syncEvalNet() async throws {
             let base = Array((try await trainer.network.exportWeights()).prefix(baseCount))
             try await evalNet.network.loadWeights(base)
+        }
+
+        /// The complete trainer state at one save: weights + velocity, the
+        /// trainer-file metadata, and the lineage record with the run's random
+        /// streams. Resumable with `--resume-exact`; `training_step` stays
+        /// segment-local as in CorpusReplayRunner. The SGD loop awaits each
+        /// step, so none is in flight when one is taken.
+        struct TrainerSave {
+            let snapshot: TrainerResumeSnapshot
+            let metadata: ModelCheckpointMetadata
+            let lineage: LineageRecord
+            let savedAt: Date
+        }
+        func trainerSave(step: Int, reason: String) async throws -> TrainerSave {
+            let snapshot = try await trainer.exportResumeSnapshot()
+            let streams = runSeed.runStreams(
+                samplerState: buffer.samplerState(),
+                dropoutStreamState: try await trainer.dropoutStreamState(),
+                nextGameSerial: gameSerials.nextSerial, arenasStarted: nil,
+                opponentGameIndices: driver.currentGameIndices())
+            let metadata = ModelCheckpointMetadata.trainerFile(
+                creator: "train-vs-uci",
+                trainingStep: step,
+                parentModelID: parentModelID,
+                notes: "train-vs-uci \(reason) @ step \(step)",
+                schedule: snapshot.schedule,
+                policyTailPrecision: trainer.policyTailPrecision)
+            // Games and plies the driver flushed into the buffer.
+            let slots = driver.statsSnapshot()
+            let saveDate = Date()
+            let lineage = try lineageTracker.record(
+                at: saveDate,
+                trainerCompletedSteps: snapshot.schedule.completedTrainSteps,
+                segmentLocalStep: step,
+                segmentGames: slots.reduce(0) { $0 + $1.gamesCompleted },
+                segmentPositions: slots.reduce(0) { $0 + $1.pliesPlayed },
+                corpus: nil,
+                parameters: p.lineageParameters,
+                rng: LineageRecord.RNG(
+                    dropoutPhiloxState: snapshot.dropoutRNG.philoxState, streams: streams,
+                    behaviorFingerprint: try await BehaviorFingerprint.compute(
+                        for: .init(arch: arch, policyTailPrecision: trainer.policyTailPrecision))))
+            return TrainerSave(snapshot: snapshot, metadata: metadata, lineage: lineage, savedAt: saveDate)
+        }
+
+        /// Full layer health of a state just written — see CorpusReplayRunner's
+        /// save. Never throws.
+        func logLayerHealth(_ save: TrainerSave, step: Int, context: String) async {
+            let health = await LayerHealthLog.checkpoint(
+                arch: arch, trainerWeights: save.snapshot.trainerWeights, context: context,
+                step: step, trainerStep: save.snapshot.schedule.completedTrainSteps)
+            for line in health.lines { emit(line) }
+            if let summary = health.summary {
+                recorder?.appendLayerHealth(CliTrainingRecorder.LayerHealthRecord(
+                    step: step, trainerStep: save.snapshot.schedule.completedTrainSteps,
+                    context: context, summary: summary))
+            }
+        }
+
+        // Consecutive-failure tracking per kind of save — see
+        // `TrainerSaveFailureStreak` and `CorpusReplayRunner.reportSaveFailure`.
+        var sessionSaveFailures = TrainerSaveFailureStreak(what: "session save")
+        var enumeratedSaveFailures = TrainerSaveFailureStreak(what: "enumerated checkpoint save")
+        // The periodic session cadence counts from the run start and from
+        // each successful session save.
+        var lastSessionSave = Date()
+
+        /// Write one session folder through the GUI's session writer
+        /// (`CheckpointManager.saveSession`): champion = the play network,
+        /// synced from the trainer at this save; trainer = the complete
+        /// trainer state; `session.json` = the run's settings and counters;
+        /// the replay buffer only with `--save-replay-buffer`. A new folder
+        /// every time. A failure is a warning the first time and stops the
+        /// run when it repeats; disk full stops it at once.
+        func saveSession(step: Int, kind: TrainVsUciSession.SaveKind) async throws {
+            do {
+                try await syncEvalNet()
+                let save = try await trainerSave(step: step, reason: kind.diskTag)
+                let championWeights = Array(save.snapshot.trainerWeights.prefix(baseCount))
+                let createdAt = Int64(save.savedAt.timeIntervalSince1970)
+                let bufferForSave: ReplayBuffer? = config.saveReplayBuffer ? buffer : nil
+                let state = TrainVsUciSession.sessionState(
+                    sessionID: config.runModelID,
+                    savedAt: save.savedAt,
+                    runStart: Date(timeIntervalSinceReferenceDate: runStart),
+                    trainerCompletedSteps: save.snapshot.schedule.completedTrainSteps,
+                    parameters: p.parameters,
+                    hyperparameters: hp,
+                    arch: arch,
+                    bufferSnapshot: bufferForSave?.stateSnapshot())
+                let url = try await CheckpointManager.saveSession(
+                    championWeights: championWeights,
+                    championID: config.runModelID,
+                    championMetadata: ModelCheckpointMetadata(
+                        creator: "train-vs-uci",
+                        trainingStep: step,
+                        parentModelID: parentModelID,
+                        notes: "train-vs-uci session (\(kind.diskTag)): play network synced from the trainer @ step \(step)"),
+                    championCreatedAtUnix: createdAt,
+                    trainerWeights: save.snapshot.trainerWeights,
+                    trainerID: config.runModelID,
+                    trainerMetadata: save.metadata,
+                    trainerCreatedAtUnix: createdAt,
+                    state: state,
+                    lineage: save.lineage,
+                    architecture: arch,
+                    replayBuffer: bufferForSave,
+                    chartSnapshot: nil,
+                    trigger: kind.diskTag,
+                    at: save.savedAt,
+                    sessionsDirectory: config.sessionDirectory)
+                sessionSaveFailures.recordSuccess()
+                lastSessionSave = Date()
+                recorder?.recordSave(of: save.lineage, savedAt: SessionCheckpointLayout.trainerURL(in: url), log: emit)
+                emit("[CHECKPOINT] Saved session (\(kind.diskTag)): \(url.lastPathComponent) "
+                    + "step=\(step) trainerStep=\(save.snapshot.schedule.completedTrainSteps) "
+                    + "build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)"
+                    + SessionController.savedReplayBufferLogFields(writtenBuffer: bufferForSave))
+                await logLayerHealth(save, step: step, context: "vsuci-session-\(kind.rawValue)")
+            } catch {
+                try CorpusReplayRunner.reportSaveFailure(error, step: step, what: "session save (\(kind.diskTag))")
+                try sessionSaveFailures.recordFailure(step: step)
+            }
+        }
+
+        /// Write the step-enumerated checkpoint for `step` (the trainer file
+        /// alone) when `--enumerate-checkpoints` is on.
+        func writeEnumeratedCheckpoint(step: Int, reason: String) async throws {
+            guard let enumeratedWriter else { return }
+            do {
+                let save = try await trainerSave(step: step, reason: reason)
+                let encoded = try SafetensorsModelIO.encode(
+                    modelID: config.runModelID,
+                    createdAtUnix: Int64(save.savedAt.timeIntervalSince1970),
+                    metadata: save.metadata,
+                    weights: save.snapshot.trainerWeights,
+                    architecture: arch,
+                    includesVelocity: true,
+                    lineage: save.lineage)
+                let written = try enumeratedWriter.write(encoded, step: step)
+                enumeratedSaveFailures.recordSuccess()
+                let note = written.outcome == .replacedThisRunsEarlierSave
+                    ? " (replaced this run's own earlier save of step \(step))"
+                    : ""
+                emit("[VS-UCI] enumerated checkpoint -> \(written.url.lastPathComponent)\(note)")
+                await logLayerHealth(save, step: step, context: "vsuci-\(reason)")
+            } catch let collision as TrainerOutputFileError {
+                throw collision
+            } catch let ownershipRefusal as FileSafetyError where ownershipRefusal.isOwnershipRefusal {
+                throw ownershipRefusal
+            } catch {
+                try CorpusReplayRunner.reportSaveFailure(error, step: step, what: "enumerated checkpoint")
+                try enumeratedSaveFailures.recordFailure(step: step)
+            }
         }
 
         let batchSize = max(1, p.trainingBatchSize)
@@ -735,7 +834,11 @@ enum TrainVsUciRunner {
                     ))
                 }
                 if step % autosaveEvery == 0 {
-                    try await saveTrainerModel(step: step, reason: "autosave")
+                    try await writeEnumeratedCheckpoint(step: step, reason: "autosave")
+                }
+                if TrainVsUciSession.periodicSaveIsDue(now: Date(), lastSave: lastSessionSave,
+                                                       intervalSec: periodicSessionIntervalSec) {
+                    try await saveSession(step: step, kind: .periodic)
                 }
             }
         } catch {
@@ -752,9 +855,17 @@ enum TrainVsUciRunner {
         driverTask.cancel()
         _ = await driverTask.value
 
-        // Sync one last time so the saved model reflects the final weights,
-        // then final save.
-        try await saveTrainerModel(step: step, reason: aborted ? "abort" : "final")
+        // The final session (its save syncs the play network first), then the
+        // final step's enumerated checkpoint.
+        let finalKind: TrainVsUciSession.SaveKind = aborted ? .abort : .final
+        try await saveSession(step: step, kind: finalKind)
+        let finalSessionSaved = sessionSaveFailures.consecutiveFailures == 0
+        if step % autosaveEvery != 0 {
+            try await writeEnumeratedCheckpoint(step: step, reason: finalKind.rawValue)
+        }
+        guard finalSessionSaved else {
+            throw TrainVsUciError.finalSessionSaveFailed(step: step, kind: finalKind.diskTag)
+        }
 
         // `results.json` last, after the final model save — a run that dies
         // saving weights should not also claim a clean results record.
