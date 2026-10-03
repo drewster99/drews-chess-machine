@@ -5435,7 +5435,9 @@ final class ChessTrainer: @unchecked Sendable {
     /// Read all trainer state (weights + bn + velocities) into a flat
     /// `[[Float]]` array suitable for `ModelCheckpointFile.weights`.
     /// Caller MUST have paused training (and ideally self-play) before
-    /// calling. See class comment for thread-safety contract.
+    /// calling. See class comment for thread-safety contract. Every part is
+    /// read through a load-gated reader, so a trainer built for loaded
+    /// weights throws `weightsNotLoaded` until its load.
     func exportTrainerWeights() async throws -> [[Float]] {
         // Base portion: under the canonical mixed-precision path emit the
         // fp32 *masters* (full precision — that's the whole point of
@@ -5536,7 +5538,9 @@ final class ChessTrainer: @unchecked Sendable {
     /// the velocity that built the candidate weights, then restored
     /// on promotion via `loadVelocitySnapshot(_:)`. Caller must have
     /// paused training (the readback drives `network.graph.run`
-    /// directly and races against concurrent SGD steps).
+    /// directly and races against concurrent SGD steps). Throws
+    /// `weightsNotLoaded` for a trainer built for loaded weights until its
+    /// load.
     func exportVelocitySnapshot() async throws -> [[Float]] {
         try await readVelocityValues()
     }
@@ -5560,6 +5564,9 @@ final class ChessTrainer: @unchecked Sendable {
         return try await withCheckedThrowingContinuation { continuation in
             executionQueue.async { [self] in
                 do {
+                    // A trainer built for loaded weights holds zero velocity
+                    // until its load; refuse to export it as trained state.
+                    try network.requireLoadedWeights("readVelocityValues")
                     let result: [[Float]] = try autoreleasepool {
                         let results = network.graph.run(
                             with: network.commandQueue,
@@ -5659,6 +5666,10 @@ final class ChessTrainer: @unchecked Sendable {
         return try await withCheckedThrowingContinuation { continuation in
             executionQueue.async { [self] in
                 do {
+                    // A trainer built for loaded weights holds zero masters
+                    // until its load; `exportTrainerWeights` would otherwise
+                    // hand them to a save as the trained weights.
+                    try network.requireLoadedWeights("readMasterValues")
                     let result: [[Float]] = try autoreleasepool {
                         let results = network.graph.run(
                             with: network.commandQueue,
@@ -5768,7 +5779,10 @@ final class ChessTrainer: @unchecked Sendable {
     }
 
     /// Body of `readLayerHealthLiveState`; must run on `executionQueue`.
+    /// Refuses a trainer still waiting for its weight load, whose zero-filled
+    /// variables would read as every channel dead.
     private func internalReadLayerHealthLiveState(names: [String]) throws -> LayerHealthLiveState {
+        try network.requireLoadedWeights("readLayerHealthLiveState")
         let plan = arch.weightTensorPlan()
         let persistent = network.trainableVariables + network.bnRunningStatsVariables
         guard persistent.count == plan.count else {
