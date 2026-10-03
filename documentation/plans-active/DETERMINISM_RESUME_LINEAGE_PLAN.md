@@ -2283,6 +2283,54 @@ Validation criterion for the whole plan: corpus replay N+M vs N|resume|M gives
 identical sampled indices and dropout masks for all M steps, and identical final
 weights when the determinism probe reports `bitExact`.
 
+*As built (2026-10-03, `334de627`, `acf16048`):* **passes, bit-exact.**
+`ResumeEquivalenceTests` runs the real replay loop in-process
+(`CorpusReplayRunner.runReplay` and `ReplayAbortFlag` became internal — the only
+production change, so the loop runs without a process exit) over a synthetic
+corpus the test writes (deterministic pseudo-random legal games, split over
+several shards), from one small fp32 start model, under one configured run
+seed, and compares the uninterrupted and the interrupted run's final files:
+every tensor through `content_sha256` when the probe finds a step
+bit-reproducible (it did on this machine; otherwise per-tensor within the
+probe's relative tolerance), the sampler and dropout stream positions and the
+dropout Philox state (exact in either mode), the feed position (epoch, next
+game, shard, buffer fill, feed phase), the cumulative step/game/position totals,
+and the resumed segment's `exact_resume` with no gaps. Cases, all passing:
+resume inside the first epoch at a KL-probe step; resume early in the second
+epoch, where the refeed window crosses the wrap (C1 #6); KL probe and batch
+stats on versus off draw the same batches and masks and move no weight (C2
+isolation); and a negative control — the same split continued as a new branch —
+that the comparison must and does tell apart. Four cases, about half a minute,
+ungated (it is the correctness gate). `scripts/resume_equivalence.sh` (with
+`resume_equivalence_compare.py`) does the same comparison through the shipped
+binary on a real corpus; validated with `--help`, `--dry-run` and the compare
+logic on stubbed headers only — **the real GPU run is the owner's to do when
+nothing else is training.**
+
+Deviations from the design, and why:
+- **Per-step taps.** No per-step index or mask tap was added to production
+  code. Equal stream positions after the same number of steps from the same seed
+  mean every step drew the same number of values; with the feed position and
+  every tensor also bit-equal, every step drew the same batch and the same mask
+  (a different one anywhere moves the weights). Per-step index equality after a
+  refill is pinned directly by `ReplayBufferResumeEquivalenceTests`.
+- **Fixture.** No `test_tiny` preset was added; the test builds its own
+  architecture (one block, sixteen channels, ReZero, SE, both heads, fp32) and
+  start model. Capacity, batch, dropout, KL-probe cadence and seed follow the
+  design; corpus replay applies no sampling constraints, so stratification and
+  length tilt are not exercised here (the buffer tests cover them).
+- **Refusal variants** (a parameter change; a pre-lineage file) end the process
+  through the runner's exit path, so they are pinned at the decision level by
+  `ExactResumeCompletionTests`, not run in-process. The GUI and train-vs-UCI
+  state round trips (step 6) are covered by the P9 tests
+  (`ExactResumeCompletionTests`, `GuiResumeGapsTests`,
+  `SessionSaveReplayBufferTests`, `RunObservabilityResumeTests`).
+
+Finding while building it: corpus replay never calls
+`ReplayBuffer.setSamplingConstraints`, so its draws are always unconstrained —
+`max_draw_percent_per_batch`, material stratification and the length tilt are
+GUI-only. Not a resume bug; noted for the owner.
+
 **P13 — Config D removal** (D-10, issue #9; before P9). Delete the
 `--bf16-cast-in-forward` flag parsing (`App/DrewsChessMachineApp.swift:264-273`),
 the `SessionController` wiring (`App/SessionController.swift:944-956`), the

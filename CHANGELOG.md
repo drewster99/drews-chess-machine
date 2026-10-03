@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-03 CDT — Resume-equivalence harness (`334de627`, `acf16048`)
+
+- `ResumeEquivalenceTests` (the exact-resume correctness gate, determinism plan C6/P12) runs the real corpus-replay loop in-process over a synthetic corpus: N+M steps straight through versus N steps, a save and `--resume-exact` for M more. The final files match bit for bit — every tensor, the sampler and dropout stream positions, the dropout Philox state, the feed position and the cumulative totals — and the resumed segment records an exact resume. Also: a resume early in the second epoch (the refeed crosses the wrap), probes on versus off, and a branch from the same save as a negative control. Ungated, about half a minute.
+- `CorpusReplayRunner.runReplay` and `ReplayAbortFlag` are internal so the test can run the loop without a process exit.
+- `scripts/resume_equivalence.sh` + `resume_equivalence_compare.py`: the same comparison through the shipped binary on a real corpus (`--dry-run` prints the commands). Trains on the GPU; run it when nothing else is training.
+- Noted: corpus replay never applies the replay buffer's sampling constraints (draw cap, material stratification, length tilt); they are GUI-only.
+
 ## 2026-10-02 CDT — Behavior fingerprint trains the checkpoint's own architecture (`662c1506`)
 
 - **Fingerprint recipe 2.** The training part builds the checkpoint's own architecture (block groups, SE, ReZero, activations, heads, encoding, compute type) from a fixed init seed and hashes one dropout SGD step's losses, weights and velocity. Before, it used a fixed tiny network, so a change in a block type that network lacked went undetected.
