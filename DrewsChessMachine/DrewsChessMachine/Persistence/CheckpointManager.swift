@@ -908,7 +908,9 @@ enum CheckpointPaths {
     /// Logs one `[PRUNE] retention:` summary per sweep, a `[PRUNE]`
     /// line for every kept-for-a-reason folder and every removal (with
     /// its session ID and trigger), and `[PRUNE-ERR]` for a failure,
-    /// which does not abort the sweep. Safe to call off the main actor
+    /// which does not abort the sweep — except an unreadable resume
+    /// pointer, which stops it before anything is listed (its target could
+    /// not be protected). Safe to call off the main actor
     /// — file system and UserDefaults work only.
     static func pruneAutomaticSaves(
         keeping keep: Int,
@@ -919,6 +921,20 @@ enum CheckpointPaths {
         guard keep > 0 else {
             SessionLogger.shared.log(
                 "[PRUNE] retention: cap=\(keep) (unlimited) — nothing pruned after \(justWritten.lastPathComponent)"
+            )
+            return
+        }
+        // The resume pointer's target is protected below. A pointer that is
+        // stored but unreadable must not be taken for "no pointer", which
+        // would leave that target deletable: stop instead. Every session save
+        // rewrites the pointer, so pruning resumes once a save succeeds in
+        // rewriting it.
+        let resumePointer: LastSessionPointer?
+        do {
+            resumePointer = try LastSessionPointer.stored(in: lastSessionPointerDefaults)
+        } catch {
+            SessionLogger.shared.log(
+                "[PRUNE-ERR] retention sweep after \(justWritten.lastPathComponent) aborted, nothing pruned: \(error.localizedDescription); the resume target cannot be protected. Pruning resumes after a session save rewrites the pointer."
             )
             return
         }
@@ -948,7 +964,7 @@ enum CheckpointPaths {
 
         var protectionReasons: [String: [String]] = [:]
         protectionReasons[justWritten.standardizedFileURL.lastPathComponent, default: []].append("the save just written")
-        if let pointer = LastSessionPointer.read(from: lastSessionPointerDefaults) {
+        if let pointer = resumePointer {
             protectionReasons[pointer.directoryURL.standardizedFileURL.lastPathComponent, default: []]
                 .append("the resume pointer's target")
         }

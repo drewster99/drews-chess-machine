@@ -57,27 +57,38 @@ struct LastSessionPointer: Codable, Equatable, Sendable {
 
     // MARK: - Persistence
 
-    /// Read the pointer currently stored in the given defaults,
-    /// or `nil` if none has been set (first launch or the user
-    /// never saved).
-    static func read(from defaults: UserDefaults = .standard) -> LastSessionPointer? {
-        guard let data = defaults.data(forKey: userDefaultsKey) else {
+    /// The pointer stored in `defaults`: nil only when nothing is stored
+    /// under the key. A stored value that is not pointer data, or that does
+    /// not decode, throws — so a caller that must not mistake "unreadable"
+    /// for "none" (the automatic-save sweep, which protects the pointer's
+    /// target) can tell them apart.
+    static func stored(in defaults: UserDefaults) throws -> LastSessionPointer? {
+        guard let object = defaults.object(forKey: userDefaultsKey) else {
             return nil
+        }
+        guard let data = object as? Data else {
+            throw LastSessionPointerError.notData(typeDescription: String(describing: type(of: object)))
         }
         do {
             return try JSONDecoder().decode(LastSessionPointer.self, from: data)
         } catch {
-            // Corrupt pointer — route through SessionLogger (the
-            // singleton is queue-protected and the app starts the
-            // logger before any LastSessionPointer call site runs;
-            // the old `print` line went to stdout, which the app's
-            // log file never captures). Return nil so the caller
-            // falls back to the no-saved-session launch state.
-            // Deliberately do not rewrite / clear the key: a future
-            // build with a different schema might still be able to
-            // read it.
+            throw LastSessionPointerError.undecodable(detail: error.localizedDescription)
+        }
+    }
+
+    /// Read the pointer currently stored in the given defaults,
+    /// or `nil` if none has been set (first launch or the user
+    /// never saved) or the stored value cannot be read.
+    static func read(from defaults: UserDefaults = .standard) -> LastSessionPointer? {
+        do {
+            return try stored(in: defaults)
+        } catch {
+            // Unreadable pointer — logged, and nil so the launch flow
+            // falls back to the no-saved-session state. Deliberately do
+            // not rewrite / clear the key: a future build with a
+            // different schema might still be able to read it.
             SessionLogger.shared.log(
-                "[CHECKPOINT] LastSessionPointer decode failed: \(error.localizedDescription)"
+                "[CHECKPOINT] LastSessionPointer unreadable: \(error.localizedDescription)"
             )
             return nil
         }
@@ -102,5 +113,22 @@ struct LastSessionPointer: Codable, Equatable, Sendable {
     /// deleted the target" cleanup path and for tests.
     static func clear(in defaults: UserDefaults = .standard) {
         defaults.removeObject(forKey: userDefaultsKey)
+    }
+}
+
+/// Why a stored `LastSessionPointer` could not be read.
+enum LastSessionPointerError: LocalizedError, Equatable {
+    /// Something other than encoded pointer data is stored under the key.
+    case notData(typeDescription: String)
+    /// The stored data does not decode as a pointer.
+    case undecodable(detail: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .notData(let typeDescription):
+            return "the stored resume pointer is a \(typeDescription), not encoded pointer data"
+        case .undecodable(let detail):
+            return "the stored resume pointer does not decode: \(detail)"
+        }
     }
 }

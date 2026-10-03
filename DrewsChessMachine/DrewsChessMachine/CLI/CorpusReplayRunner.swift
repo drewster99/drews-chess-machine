@@ -479,6 +479,13 @@ enum TrainerOutputFileGuard {
             return .refused(reason: "it holds \(existing) and the --start-model is \(startModel); without "
                 + "both training steps there is no telling whether replacing it loses training")
         }
+        // No run writes a negative step, so one marks a damaged or hand-edited
+        // header. Refusing it here also keeps the step differences below in
+        // range: two non-negative Ints cannot overflow when subtracted.
+        guard existingStep >= 0, startStep >= 0 else {
+            return .refused(reason: "it holds \(existing) and the --start-model is \(startModel); a negative "
+                + "training step is never written by a run, so one of the two headers is damaged")
+        }
         guard existingStep <= startStep else {
             return .refused(reason: "it holds \(existing), \(existingStep - startStep) steps ahead of the "
                 + "--start-model (step \(startStep)); replacing it would discard training that exists only "
@@ -526,6 +533,9 @@ enum TrainerOutputFileGuard {
                                    startModelURL: URL?,
                                    startModel: TrainerModelFileIdentity?,
                                    overwriteAuthorized: Bool) throws -> RollingOutputPlan {
+        // Every save stages first; a name the staging copy cannot have would
+        // fail every save, hours into the run. Applies even with the flag.
+        try FileSafety.requireStageableDestination(outModelURL)
         if let startModelURL, try isSameFile(outModelURL, startModelURL) {
             throw TrainerOutputFileError.outModelIsStartModel(path: outModelURL.path)
         }
@@ -581,9 +591,13 @@ enum TrainerOutputFileGuard {
         return found.sorted { $0.step < $1.step }
     }
 
-    /// Refuse the run when its stem already has step files it could reach.
+    /// Refuse the run when its stem already has step files it could reach, or
+    /// when a step file it could write has a name too long to stage. Every
+    /// save step is at most the step limit, so the limit's step name is the
+    /// longest; with no limit, any step an `Int` can hold is possible.
     static func requireNoReachableEnumeratedCheckpoints(naming: EnumeratedCheckpointNaming,
                                                         stepLimit: Int?) throws {
+        try FileSafety.requireStageableDestination(naming.url(step: stepLimit.map { max($0, 0) } ?? Int.max))
         let collisions = try reachableEnumeratedCheckpoints(naming: naming, stepLimit: stepLimit)
         guard let first = collisions.first, let last = collisions.last else { return }
         throw TrainerOutputFileError.enumeratedStepsAlreadyPresent(

@@ -695,6 +695,12 @@ enum FileSafetyError: LocalizedError, Equatable {
     /// is the real `errno`; `CorpusReplayRunner.isOutOfSpace` reads it to
     /// classify a disk-full (`ENOSPC`) failure.
     case systemCallFailed(path: String, call: String, errnoValue: Int32)
+    /// A destination a staged write will publish has a name too long for its
+    /// staging sibling (`requireStageableDestination`).
+    case nameTooLongToStage(path: String, nameBytes: Int, limit: Int)
+    /// A destination a staged write will publish has a path too long for its
+    /// staging sibling's full path (`requireStageableDestination`).
+    case pathTooLongToStage(path: String, stagingPathBytes: Int, limit: Int)
 
     /// True for the refusals to touch an item the caller does not own
     /// (`.alreadyExists`, `.notARegularFile`, `.fileChangedSinceWritten`) —
@@ -704,7 +710,7 @@ enum FileSafetyError: LocalizedError, Equatable {
         switch self {
         case .alreadyExists, .notARegularFile, .fileChangedSinceWritten:
             return true
-        case .noFreeNumericSuffix, .systemCallFailed:
+        case .noFreeNumericSuffix, .systemCallFailed, .nameTooLongToStage, .pathTooLongToStage:
             return false
         }
     }
@@ -728,6 +734,43 @@ enum FileSafetyError: LocalizedError, Equatable {
                 return "\(call) failed for \(path): \(POSIXError(code).localizedDescription) (errno \(errnoValue))"
             }
             return "\(call) failed for \(path): errno \(errnoValue)"
+        case .nameTooLongToStage(let path, let nameBytes, let limit):
+            return "\(path): its name is \(nameBytes) bytes, and a file written by staging can have at most "
+                + "\(limit) (its staging copy's name adds \(FileSafety.temporarySiblingNameOverhead) bytes and must fit "
+                + "the \(Int(NAME_MAX))-byte file-name limit); choose a shorter name"
+        case .pathTooLongToStage(let path, let stagingPathBytes, let limit):
+            return "\(path): its staging copy's full path would be \(stagingPathBytes) bytes, over the "
+                + "\(limit)-byte path limit; choose a shorter path"
+        }
+    }
+}
+
+// MARK: - Stageable destinations
+
+extension FileSafety {
+    /// The longest file name, in UTF-8 bytes, that a staged write
+    /// (`publishNewFile`, `replaceRegularFile`) can publish: its staging
+    /// sibling adds `temporarySiblingNameOverhead` bytes and must itself fit
+    /// `NAME_MAX`.
+    static let longestStageableFileNameUTF8Bytes = Int(NAME_MAX) - temporarySiblingNameOverhead
+
+    /// Refuse a destination a staged write could never publish: a name over
+    /// `longestStageableFileNameUTF8Bytes`, or a path whose staging sibling's
+    /// full path would not fit `PATH_MAX` (which counts the terminating NUL).
+    /// A writer that only finds out at save time fails every save with
+    /// `ENAMETOOLONG`, so a long-running writer checks each name it will write
+    /// here, before it starts.
+    static func requireStageableDestination(_ destination: URL) throws {
+        let nameBytes = destination.lastPathComponent.utf8.count
+        guard nameBytes <= longestStageableFileNameUTF8Bytes else {
+            throw FileSafetyError.nameTooLongToStage(
+                path: destination.path, nameBytes: nameBytes, limit: longestStageableFileNameUTF8Bytes)
+        }
+        let stagingPathBytes = destination.path.utf8.count + temporarySiblingNameOverhead
+        let pathLimit = Int(PATH_MAX) - 1
+        guard stagingPathBytes <= pathLimit else {
+            throw FileSafetyError.pathTooLongToStage(
+                path: destination.path, stagingPathBytes: stagingPathBytes, limit: pathLimit)
         }
     }
 }
