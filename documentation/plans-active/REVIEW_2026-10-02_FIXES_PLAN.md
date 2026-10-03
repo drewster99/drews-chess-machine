@@ -74,15 +74,18 @@ Owner: "fix it so that can't happen".
   export is not filed; end-to-end controller test (game ends right after going online, chat
   is in the record, nothing quarantined).
 
-### A3. Main-thread load in the bot screens — [ ]
+### A3. Main-thread load in the bot screens — [x] (69d3c98, 3e99f90)
 - The once-a-second prune assigns `games` only when something is removed (an in-place
   `removeAll` on an `@Observable` property notifies every reader even when nothing changes).
 - The transcript is read inside the transcript view, so keep-alives and request records no
   longer re-render the whole game view; scroll-to-latest only while visible.
 - Validation: observation-tracking test proves no `games` notification across two polls;
   Instruments profile on the Release build (owner runs it).
+- Done: `LichessBotPollObservationTests` failed before the fix (both cases) and passes after.
+  The transcript change has no unit test (it changes which view observes `transcript`); the
+  transcript view's scroll-to-latest uses the panel visibility it already had.
 
-### A4. Quit: drain, clean shutdown, per-game resign choice — [ ]
+### A4. Quit: drain, clean shutdown, per-game resign choice — [x] (607315b8, 87f02f0)
 Owner: quitting must drain and shut down cleanly; offer to resign games in progress, listing
 each game with enough detail to decide per game.
 - Quit sheet lists every game in progress: opponent (name, rating, bot or human), rated or
@@ -94,12 +97,31 @@ each game with enough detail to decide per game.
   separators instead of truncating.
 - Validation: shutdown waits for a held withdrawal; gives up after the limit and logs it;
   sheet content test; credits-line width tests.
+- Done. Decisions made while implementing:
+  - The per-game choice lives in the existing finishing sheet (quit and go-offline), which
+    still drains at once; every game starts at Play on (what draining does anyway), and
+    **Resign Chosen** resigns the games set to Resign. Abort (resign all), Quit Now (abandon)
+    and Cancel stay.
+  - The withdrawal wait limit is `challengeWithdrawalShutdownLimit`, one urgent request's
+    idle timeout; it is an init parameter defaulting to that constant, like
+    `finishedGameHold`, so a test can shorten it.
+  - The material lead is DCM's material minus the opponent's, in pawns; the W/D/L estimate
+    is the one from DCM's latest move; a value not received yet is said in words.
+  - `LichessBotQuitWithdrawalTests.testShutdownWaitsForTheWithdrawalOfAnUnansweredChallenge`
+    and `LichessBotChallengeCreditsLineTests` (offset tests) failed before the fixes; the
+    withdrawal-limit test and the padding-API test use new API, so they could not run before.
 
-### A5. Other bot items — [ ]
+### A5. Other bot items — [~] (5c12989, 57c75afe; bot-limit item in the bot-data group)
 - Bot-limit refusal kept in memory even when player notes failed to load; status line names
   the limit and its end time.
 - A settings-store trap in a throwing function becomes a thrown error.
 - Settings window uses a standard `TabView` (owner: "just have tabs be tabs").
+  - Deviation: SwiftUI's `TabView` crashes when drawn off-screen by `ImageRenderer`, which
+    the existing settings render tests do, so the tabs are the segmented tab bar showing only
+    the selected tab's form (no hidden full-size forms). A tab's own editing state (a
+    half-typed token) no longer survives switching tabs.
+- The settings-store trap: `LichessBotSettingsStoreEncodingTests` crashed the test run before
+  the fix (the trap) and passes after.
 
 ### A6. Post-game chat is never dropped — [ ]
 The game stream closes at the finish, so chat sent after it (the opponent's "Good game!")
