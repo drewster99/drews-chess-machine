@@ -2989,21 +2989,35 @@ extension SessionController {
     /// Writes a resumed session's arena promotion criterion and SPRT
     /// hypotheses back onto `TrainingParameters.shared`.
     ///
-    /// The seven values are restored as a **set**, and an incomplete set is
-    /// never part-applied. A session that stored `criterion = sprt` but is
-    /// missing (say) `elo1` would otherwise resume running a sequential test
-    /// against whatever hypotheses happen to be in `UserDefaults` today — a
-    /// different experiment under the same session's name. Such a set, an
-    /// unrecognised criterion token (a forward-versioned or hand-edited
-    /// file), or hypotheses that fail validation reach here only after the
-    /// user reviewed them at load and accepted the current settings.
+    /// The seven values are restored as a **set**, resolved once by
+    /// `SessionCheckpointState.savedArenaPromotionSet` — the same resolution
+    /// the load-time review (`invalidSavedSettings`) applies — and an
+    /// incomplete set is never part-applied. A session that stored
+    /// `criterion = sprt` but is missing (say) `elo1` would otherwise resume
+    /// running a sequential test against whatever hypotheses happen to be in
+    /// `UserDefaults` today — a different experiment under the same
+    /// session's name; hypotheses saved without a criterion would install a
+    /// test nobody validated, which the next SPRT arena would refuse. Such a
+    /// set, an unrecognised criterion token (a forward-versioned or
+    /// hand-edited file), or hypotheses that fail validation reach here only
+    /// after the user reviewed them at load and accepted the current
+    /// settings in their place.
     ///
-    /// A session without the criterion predates it: the criterion resolves
-    /// to its declared pre-feature value (score threshold, held for this run)
-    /// and the SPRT hypotheses — inert under score threshold — keep the live
-    /// settings.
+    /// A session with none of the seven predates the criterion: the
+    /// criterion resolves to its declared pre-feature value (score
+    /// threshold, held for this run) and the SPRT hypotheses — inert under
+    /// score threshold — keep the live settings.
     func restoreArenaPromotionCriterion(from rs: SessionCheckpointState, using resume: SessionParameterResume) {
         let p = resume.parameters
+        if pendingLoadedSessionAcceptedReplacements.contains(SessionCheckpointState.SavedSettingID.arenaPromotionCriterion) {
+            resume.logReplacedAtLoad(
+                ArenaPromotionCriterionParameter.self,
+                savedDescription: rs.arenaPromotionCriterion.map { "\"\($0)\"" } ?? "absent",
+                currentDescription: "\(p.arenaPromotionCriterion.logToken) with today's hypotheses",
+                why: "set (criterion and SPRT hypotheses) is unusable"
+            )
+            return
+        }
         let describeCriterion: (Int) -> String = { ArenaPromotionCriterion(persistedRawValue: $0).logToken }
         let writeCriterion: (Int, TrainingParameterResolution.Source) -> Void = { rawValue, source in
             let criterion = ArenaPromotionCriterion(persistedRawValue: rawValue)
@@ -3017,7 +3031,8 @@ extension SessionController {
             }
         }
 
-        guard let token = rs.arenaPromotionCriterion else {
+        switch rs.savedArenaPromotionSet {
+        case .absent:
             resume.restore(
                 ArenaPromotionCriterionParameter.self,
                 saved: nil,
@@ -3025,71 +3040,29 @@ extension SessionController {
                 describe: describeCriterion,
                 write: writeCriterion
             )
-            resume.restore(ArenaSPRTElo0.self, saved: rs.arenaSPRTElo0, into: \.arenaSPRTElo0)
-            resume.restore(ArenaSPRTElo1.self, saved: rs.arenaSPRTElo1, into: \.arenaSPRTElo1)
-            resume.restore(ArenaSPRTAlpha.self, saved: rs.arenaSPRTAlpha, into: \.arenaSPRTAlpha)
-            resume.restore(ArenaSPRTBeta.self, saved: rs.arenaSPRTBeta, into: \.arenaSPRTBeta)
-            resume.restore(ArenaSPRTMinGames.self, saved: rs.arenaSPRTMinGames, into: \.arenaSPRTMinGames)
-            resume.restore(ArenaSPRTMaxGames.self, saved: rs.arenaSPRTMaxGames, into: \.arenaSPRTMaxGames)
-            return
-        }
-
-        guard let criterion = ArenaPromotionCriterion.allCases.first(where: { $0.logToken == token }) else {
-            resume.logReplacedAtLoad(
+            resume.restore(ArenaSPRTElo0.self, saved: nil, into: \.arenaSPRTElo0)
+            resume.restore(ArenaSPRTElo1.self, saved: nil, into: \.arenaSPRTElo1)
+            resume.restore(ArenaSPRTAlpha.self, saved: nil, into: \.arenaSPRTAlpha)
+            resume.restore(ArenaSPRTBeta.self, saved: nil, into: \.arenaSPRTBeta)
+            resume.restore(ArenaSPRTMinGames.self, saved: nil, into: \.arenaSPRTMinGames)
+            resume.restore(ArenaSPRTMaxGames.self, saved: nil, into: \.arenaSPRTMaxGames)
+        case .valid(let criterion, let sprt):
+            resume.restore(
                 ArenaPromotionCriterionParameter.self,
-                savedDescription: "\"\(token)\"",
-                currentDescription: p.arenaPromotionCriterion.logToken,
-                why: "is not a known criterion"
+                saved: criterion.rawValue,
+                current: p.arenaPromotionCriterion.rawValue,
+                describe: describeCriterion,
+                write: writeCriterion
             )
-            return
+            resume.restore(ArenaSPRTElo0.self, saved: sprt.elo0, into: \.arenaSPRTElo0)
+            resume.restore(ArenaSPRTElo1.self, saved: sprt.elo1, into: \.arenaSPRTElo1)
+            resume.restore(ArenaSPRTAlpha.self, saved: sprt.alpha, into: \.arenaSPRTAlpha)
+            resume.restore(ArenaSPRTBeta.self, saved: sprt.beta, into: \.arenaSPRTBeta)
+            resume.restore(ArenaSPRTMinGames.self, saved: sprt.minGames, into: \.arenaSPRTMinGames)
+            resume.restore(ArenaSPRTMaxGames.self, saved: sprt.maxGames, into: \.arenaSPRTMaxGames)
+        case .invalid(let problem):
+            preconditionFailure("session load reviews an unusable arena promotion set before resume; got: \(problem)")
         }
-
-        guard let elo0 = rs.arenaSPRTElo0,
-              let elo1 = rs.arenaSPRTElo1,
-              let alpha = rs.arenaSPRTAlpha,
-              let beta = rs.arenaSPRTBeta,
-              let minGames = rs.arenaSPRTMinGames,
-              let maxGames = rs.arenaSPRTMaxGames else {
-            resume.logReplacedAtLoad(
-                ArenaPromotionCriterionParameter.self,
-                savedDescription: token,
-                currentDescription: "\(p.arenaPromotionCriterion.logToken) with today's hypotheses",
-                why: "has an incomplete SPRT block"
-            )
-            return
-        }
-
-        // Validate the restored set the same way a fresh arena start would,
-        // so a hand-edited file cannot install hypotheses that throw later at
-        // the point where an arena is already underway.
-        do {
-            _ = try ArenaSPRT.SPRTConfig(
-                elo0: elo0, elo1: elo1, alpha: alpha, beta: beta,
-                minGames: minGames, maxGames: maxGames
-            )
-        } catch {
-            resume.logReplacedAtLoad(
-                ArenaPromotionCriterionParameter.self,
-                savedDescription: token,
-                currentDescription: "\(p.arenaPromotionCriterion.logToken) with today's hypotheses",
-                why: "has an invalid SPRT block (\(error))"
-            )
-            return
-        }
-
-        resume.restore(
-            ArenaPromotionCriterionParameter.self,
-            saved: criterion.rawValue,
-            current: p.arenaPromotionCriterion.rawValue,
-            describe: describeCriterion,
-            write: writeCriterion
-        )
-        resume.restore(ArenaSPRTElo0.self, saved: elo0, into: \.arenaSPRTElo0)
-        resume.restore(ArenaSPRTElo1.self, saved: elo1, into: \.arenaSPRTElo1)
-        resume.restore(ArenaSPRTAlpha.self, saved: alpha, into: \.arenaSPRTAlpha)
-        resume.restore(ArenaSPRTBeta.self, saved: beta, into: \.arenaSPRTBeta)
-        resume.restore(ArenaSPRTMinGames.self, saved: minGames, into: \.arenaSPRTMinGames)
-        resume.restore(ArenaSPRTMaxGames.self, saved: maxGames, into: \.arenaSPRTMaxGames)
     }
 
 }

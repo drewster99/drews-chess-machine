@@ -2112,23 +2112,44 @@ public final class TrainingParameters {
                 id: K.id, name: definition.name, found: found, problem: problem, replacement: replacement
             ))
         }
+        // A stored number is classified by its own kind — true/false, whole
+        // number or real — through `ParameterValue(jsonValue:id:)`, the same
+        // reader a parameters file goes through, never coerced into the
+        // key's kind: `NSNumber` bridging would read 7.9 as the whole number
+        // 7, `true` as 1, and 1 as `true`, each silently running a setting
+        // nobody stored. A whole number for a real-valued key is accepted,
+        // as it is in a parameters file.
+        func storedKind(_ value: ParameterValue) -> String {
+            switch value {
+            case .bool: return "a true/false value"
+            case .int, .uint64: return "a whole number"
+            case .double: return "a real number"
+            }
+        }
         let raw: ParameterValue
         switch definition.type {
-        case .bool:
-            guard let b = object as? Bool else {
-                return invalid("\(object)", "stored as \(type(of: object)), not a true/false value")
+        case .bool, .int, .double:
+            let expected: String
+            switch definition.type {
+            case .bool: expected = "not a true/false value"
+            case .int: expected = "not a whole number"
+            case .double, .uint64: expected = "not a number"
             }
-            raw = .bool(b)
-        case .int:
-            guard let n = object as? NSNumber else {
-                return invalid("\(object)", "stored as \(type(of: object)), not a whole number")
+            guard let number = object as? NSNumber else {
+                return invalid("\(object)", "stored as \(type(of: object)), \(expected)")
             }
-            raw = .int(n.intValue)
-        case .double:
-            guard let n = object as? NSNumber else {
-                return invalid("\(object)", "stored as \(type(of: object)), not a number")
+            let value: ParameterValue
+            do {
+                value = try ParameterValue(jsonValue: number, id: K.id)
+            } catch {
+                return invalid("\(object)", "\(error)")
             }
-            raw = .double(n.doubleValue)
+            switch (definition.type, value) {
+            case (.bool, .bool), (.int, .int), (.double, .double), (.double, .int):
+                raw = value
+            default:
+                return invalid("\(object)", "stored as \(storedKind(value)), \(expected)")
+            }
         case .uint64:
             guard let text = object as? String else {
                 return invalid("\(object)", "stored as \(type(of: object)), not a decimal string")
