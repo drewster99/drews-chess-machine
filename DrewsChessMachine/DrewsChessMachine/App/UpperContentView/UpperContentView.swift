@@ -53,7 +53,7 @@ struct UpperContentView: View {
 
     /// Parsed `--parameters <file>` JSON. Applied to the relevant
     /// `@AppStorage` / `@State` fields right before
-    /// `buildNetwork()` fires inside the auto-train sequence, so
+    /// `buildNetwork(architecture:enteredInitSeed:)` fires inside the auto-train sequence, so
     /// every downstream path (`ensureTrainer`, the sampling
     /// schedule builders, the worker-count binding) picks the
     /// new values up through its normal channels. Nil outside
@@ -129,8 +129,8 @@ struct UpperContentView: View {
     // are centralized in TrainingParameters.swift.
 
     /// Session-lifecycle controller. Owns the champion `network` / `runner` /
-    /// `networkStatus` / `isBuilding`, the build flow (`buildNetwork()` /
-    /// `ensureChampionBuilt()`), the three life-of-app inference networks
+    /// `networkStatus` / `isBuilding`, the build flow (`buildNetwork(architecture:enteredInitSeed:)` /
+    /// `ensureChampionBuilt(arch:)`), the three life-of-app inference networks
     /// (`candidateInferenceNetwork` / `arenaChampionNetwork` /
     /// `probeInferenceNetwork` + `probeRunner`), the parallel-worker stats and
     /// arena coordination boxes. The training + arena orchestration migrate
@@ -1238,10 +1238,8 @@ struct UpperContentView: View {
             BuildNewModelView(
                 initial: NamedArchitecture(label: "Custom", architecture: .newModelDefault),
                 onBuild: { request in
-                    session.buildArchitecture = request.architecture
-                    session.buildInitSeed = request.enteredInitSeed
                     showBuildNewModelSheet = false
-                    session.buildNetwork()
+                    session.buildNetwork(architecture: request.architecture, enteredInitSeed: request.enteredInitSeed)
                 },
                 onCancel: { showBuildNewModelSheet = false }
             )
@@ -2116,7 +2114,7 @@ struct UpperContentView: View {
             return
         }
 
-        session.buildNetwork()
+        session.buildNetwork(architecture: .newModelDefault, enteredInitSeed: nil)
         Task { @MainActor in
             while isBuilding {
                 do {
@@ -2346,7 +2344,6 @@ struct UpperContentView: View {
     /// because the `@State` storage is keyed by view identity, not
     /// by the struct value).
     private func wireMenuCommandHub() {
-        commandHub.buildNetwork = { session.buildNetwork() }
         commandHub.presentBuildNewModel = { showBuildNewModelSheet = true }
         commandHub.runForwardPass = { runForwardPass() }
         commandHub.playSingleGame = { playSingleGame() }
@@ -2505,9 +2502,9 @@ struct UpperContentView: View {
         return "Another operation is in progress."
     }
 
-    // `ensureChampionBuilt()` and `buildNetwork()` moved to `SessionController`
-    // in Stage 4c — call them as `session.ensureChampionBuilt()` /
-    // `session.buildNetwork()`. The view-facing bits they touch (the busy
+    // `ensureChampionBuilt(arch:)` and `buildNetwork(architecture:enteredInitSeed:)` moved to `SessionController`
+    // in Stage 4c — call them as `session.ensureChampionBuilt(arch:)` /
+    // `session.buildNetwork(architecture:enteredInitSeed:)`. The view-facing bits they touch (the busy
     // gate, the menu-refuse alert, `clearTrainingDisplay()`, dropping the
     // trainer, `checkpoint.lastSavedAt`) are wired into `session` via closures
     // / weak reference in `handleBodyOnAppear`.
