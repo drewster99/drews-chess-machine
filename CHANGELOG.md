@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-02 CDT — A rebuild is a resume gap only when it changes what the run computes (`d0189244`, `10a7fe54`)
+
+- **Behavior fingerprint.** Every trainer-state save records `rng.behavior_fingerprint` (recipe 1): the SHA-256 of a fixed micro-computation covering board encoding, seeded replay-buffer draws (uniform, stratified, length-tilted), Dirichlet-noised move sampling, MPSGraph's dropout Philox derivation, and one dropout SGD step of a fixed tiny network with the checkpoint's numerics, hashed bit for bit. A resume under another build or OS recomputes it (about 0.45 s, once per process):
+  - a match logs `[RESUME] build changed (old → new), behavior fingerprint matches` and is not a gap;
+  - a different fingerprint, a checkpoint without one, or another recipe is the `build` / `os` gap as before.
+- Removed `PolicyTailPrecisionResume.exactResumeDecision` / `guiNotExactLine` and their four tests; the `policy_tail` gap replaced them.
+
 ## 2026-10-02 CDT — Session saves leave the replay buffer out unless asked; resumes carry more of the run (`3998b39b`, `4514ea6a`, `ea84fe9d`, `cdf1d7ee`, `cbe72cf8`, `af9df2cd`, `6192246b`)
 
 - **Replay buffer only when asked (D-8, GUI).** New parameter `session_save_include_replay_buffer` (default off; Sessions tab "Include replay buffer", with the full buffer's size) governs the periodic, post-promotion, Promote Trainee Now and SIGUSR2 saves. File ▸ Save Session opens a sheet whose "Include replay buffer" checkbox starts from it. Every `[CHECKPOINT] Saved session` line ends `buffer=included replay=a/b` or `buffer=omitted`. A resume without a buffer refills from new games and reports `NOT EXACT: buffer`.

@@ -2016,6 +2016,7 @@ baseline.
     made a load error (`missingLineage(formatVersion: 2)`). The failure
     predates P9: P6 did not update this test class. Fixing the fixture needs
     approval to edit the test. The dashboard Python tests pass (53).
+    *Since fixed on main (`ca777ae9`, merged in `921d77ee`).*
 - **Remaining after the second pass:**
   - Train-vs-UCI under D-8: session-folder checkpoints through the shared
     session writer, and `--save-replay-buffer`. This changes the vs-UCI
@@ -2032,6 +2033,66 @@ baseline.
     grace period.
   - `sample()` µs versus A2.2; the C6 step-7 end-to-end run and the GUI
     validation runs (owner-run).
+- **Third pass (2026-10-02): owner decisions.**
+  - **Removed (`10a7fe54`, owner-approved).**
+    `PolicyTailPrecisionResume.exactResumeDecision` and `guiNotExactLine` are
+    deleted, with the four tests that pinned only them:
+    - `testExactResumeRefusesARecordedMismatch`
+    - `testExactResumeWarnsButProceedsWhenUnrecorded`
+    - `testExactResumeProceedsWhenTheyMatch`
+    - `testGUIResumeReportsNotExactWithoutRefusing`
+
+    A new test pins the `policy_tail` gap and the remaining
+    `[RESUME-NUMERICS]` line.
+  - **Behavior fingerprint (`d0189244`), replacing "every rebuild is a
+    `build` gap".** Owner: a rebuild should be a problem only if it prevents
+    resuming exactly.
+    - Every trainer-state save records `rng.behavior_fingerprint`
+      `{recipe, sha256}` (`Training/BehaviorFingerprint.swift`, recipe 1).
+    - The hash is the SHA-256 of a fixed micro-computation:
+      - a fixed game (castling, an en-passant capture, a repetition
+        shuffle) encoded with its history under the checkpoint's input
+        encoding;
+      - replay-buffer batches from those positions under uniform,
+        stratified and length-tilted constraints, drawn from the run
+        streams' `sampler` stream;
+      - Dirichlet-noised `MoveSampler` choices from a self-play game
+        stream;
+      - the dropout Philox state MPSGraph derives from a seed;
+      - one dropout SGD step of a fixed tiny network, with the checkpoint's
+        compute data type and the running policy-tail precision, hashing
+        its losses and exported weights and velocity bit for bit.
+    - The recipe's seeds and hyperparameters are constants of the recipe,
+      not settings or declared defaults.
+    - Cost: computed once per process per (encoding, compute type, tail
+      precision) and cached, about 0.45 s each. The CPU and graph-build
+      work runs on a dispatch queue.
+    - At resume, a build or OS change with a matching fingerprint logs
+      `[RESUME] build changed (old → new), behavior fingerprint matches` and
+      is **not** a gap. A different fingerprint, a checkpoint without one,
+      or one of another recipe stays a `build` / `os` gap.
+    - `ResumeGap.environmentGaps` returns the gaps with the lines to log,
+      for all three paths. The GUI logs `[RUN] behavior fingerprint …` at
+      Play-and-Train start.
+    - Tests (`BehaviorFingerprintTests`):
+      - the same build gives the same fingerprint (also checked across two
+        test processes on two consecutive builds, which produced the same
+        hash);
+      - another stream derivation, bf16 versus fp32, the policy-tail
+        precision and the input encoding each change it;
+      - a matching fingerprint makes a build or OS change no gap;
+      - a different, missing or other-recipe fingerprint is a `build` gap;
+      - the record round-trips.
+    - **Not covered by the fingerprint:** the trainer's full-size graph for
+      the checkpoint's own architecture. The recipe uses a fixed tiny
+      network with the checkpoint's numerics, so an op that only a larger
+      or different block recipe uses is not exercised.
+  - **Merged main `ca777ae9` (`921d77ee`)**, which fixed the
+    `SessionResumeSummaryTests` fixture.
+  - **Tests (final tree).** 44 related classes: 376 tests, 0 failures.
+  - **Still awaiting the owner:** folding P5's flat `init_seed` /
+    `init_scheme` keys (and `InitSeedRecordingTests`) into the record, and
+    train-vs-UCI session folders with `--save-replay-buffer`.
 
 **P10 — Provenance + carry-forward.** `[RUN]` formatter (`Logging/`), recorder
 fields, B4 fix. Tests: derive → train → save keeps `derivation_history`; `[RUN]`
