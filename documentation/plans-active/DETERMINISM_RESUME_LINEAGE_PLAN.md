@@ -2424,7 +2424,15 @@ baseline.
     here (A5), with three other training processes sharing the GPU. A
     bit-exact run of this check needs an idle machine and, if MPSGraph is
     deterministic there, would then be expected to match.
-  - **The segment-indexed resume run** is running; result to follow here.
+  - **Segment-indexed resume run — passed.** Same build, corpus and parameters, seed
+    777, stem `20261003-seg-resume-check`: segment 0 trained 1,000 steps with
+    `--enumerate-checkpoints` and wrote `…-replay-step1000` (lineage segment 0, branch,
+    cum_trainer_step 1000); `--resume-exact` from it under the same stem logged
+    `[RESUME] EXACT` and `[RUN] … seg=1 (exact resume of …)`, trained 1,000 more steps
+    and wrote `…-replay-seg1-step1000` (segment 1, resume, cum_trainer_step 2000, no
+    not-exact items) beside the segment-0 file without touching it.
+    `PROBE_SEGMENT=1 experiments/probe_loop.sh --once` probed the segment-1 file and
+    recorded it (training_step 1000, pElo 1071.8, NLL 2.743).
 
 **P10 — Provenance + carry-forward.** `[RUN]` formatter (`Logging/`), recorder
 fields, B4 fix. Tests: derive → train → save keeps `derivation_history`; `[RUN]`
