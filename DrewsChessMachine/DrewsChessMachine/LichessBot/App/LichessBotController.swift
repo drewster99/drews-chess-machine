@@ -2620,14 +2620,17 @@ final class LichessBotController {
         let now = Date()
         // The followed game stays while its hold keeps it on screen.
         let heldGameID = autoFollowHold?.gameID
-        let countBefore = games.count
-        games.removeAll { game in
-            guard let finishedAt = game.finishedAt, !activeGameIDs.contains(game.id) else { return false }
-            return now.timeIntervalSince(finishedAt) >= retention && game.id != focusedGameID && game.id != heldGameID
+        // Built aside and assigned only when something goes: an in-place
+        // `removeAll` on an observed property tells every view reading
+        // `games` it changed even when it removes nothing, and this runs on
+        // every poll.
+        let kept = games.filter { game in
+            guard let finishedAt = game.finishedAt, !activeGameIDs.contains(game.id) else { return true }
+            return now.timeIntervalSince(finishedAt) < retention || game.id == focusedGameID || game.id == heldGameID
         }
-        if games.count != countBefore {
-            updateAutoFollow()
-        }
+        guard kept.count != games.count else { return }
+        games = kept
+        updateAutoFollow()
     }
 
     // MARK: - Event handling (main actor)
