@@ -6,8 +6,10 @@ Each operation re-initializes only the tensors it declares. Every other tensor i
 copied bit-exact. The main use is a paired copy for an A/B: the same fresh net with
 one init choice flipped, so the two arms differ in that choice and nothing else.
 
-It is a pure file transform: no GPU, no network build, no window. It is safe to run
-next to a training job.
+These operations are a pure file transform: no GPU, no network build, no window. The
+one derive that changes the tensor layout, the [graft](#grafting-onto-another-architecture-graft-to)
+(`--graft-to`), builds the target network once to read its fresh tensors (no forward
+pass, no training). Both are safe to run next to a training job.
 
 ## Usage
 
@@ -142,6 +144,70 @@ DrewsChessMachine --replay-corpus <corpus> --start-model fresh-beta0.safetensors
   (`--set-se-activation`), or a group without ReZero (`--set-rezero-alpha-init`,
   `--set-rezero-alpha-cap`).
 - The output is decoded back through the normal loader before it is written.
+
+## Grafting onto another architecture (`--graft-to`)
+
+```
+DrewsChessMachine --derive-model --from <model.safetensors> --graft-to <preset | arch.json> \
+    [--graft-map <old=new,...>] [--init-seed <u64>] --out <new.safetensors>
+```
+
+A graft makes a model of a **target** architecture (a built-in or saved preset name, or an
+architecture JSON file) from the source model. It is the only derive that may change the
+tensor layout, and it is not combined with the operations above (graft first, then derive
+the result).
+
+- Every target tensor whose name (after `--graft-map`) and on-disk shape match a source
+  tensor is **copied** bit-exact, BN running statistics included.
+- Every other target tensor is **initialized** with the value a fresh mint of the target
+  has under the init seed: drawn conv / FC weights from their `init/<name>` streams
+  (`dcm-init-1`), and the graph builder's constants for biases, BN, ReZero α and the W/D/L
+  prior. A new BN layer keeps the builder's identity running statistics (mean 0, variance 1);
+  the graft does not recalibrate them, and the record says so. `--init-seed` sets the seed;
+  without it one is drawn. Either way it is logged and recorded.
+- Source tensors with no place in the target are **dropped** and listed.
+- A target tensor that a source tensor would fill by name but with a different shape is
+  refused rather than silently re-initialized; drop it explicitly with `name=` to
+  initialize the target's instead.
+
+`--graft-map` is a comma-separated list:
+
+| entry | meaning |
+|---|---|
+| `old=new` | rename one source tensor |
+| `old.=new.` | rename every source tensor starting with `old.` (both sides end in `.`) |
+| `old=` | drop that source tensor |
+
+Every entry must match a source tensor; a renamed tensor must land on a target tensor of
+the same shape; two source tensors may not fill one target tensor; a source tensor matched
+by two entries is refused.
+
+**Trained sources.** Unlike the in-place operations, a graft accepts a trained source:
+warm-starting a larger tower from a trained one is its purpose. Its output claims no
+`training_step` of its own (the source's is recorded as `source_training_step` in the
+derivation record), and it lists every tensor it initialized, so it claims nothing its
+weights do not have. Its lineage continues the source's totals as a new derived run.
+
+**What the grafted file records.** A graft writes its own metadata rather than copying the
+source's: `model_id`, `parent_model_id`, `creator` = `derive-model`, `notes`, the target
+architecture, the lineage record, and the source's value-head centering marker when the
+source has one. Its `derivation_history` record has operation `graft`, arguments `target`,
+`graft_map`, `init_seed_origin`, `bn_running_stats` and `source_training_step`,
+`changed_architecture_fields` = `["*"]`, `rewritten_tensors` = the initialized tensors, and
+`copied_tensors` (renames shown as `old -> new`), `dropped_tensors`, `init_seed`,
+`init_rule_version` and `per_tensor_init` (each initialized tensor's draw — `he_normal`,
+`glorot_normal`, `glorot_normal_zero_beta` — or `builder_constant`). The records of the
+in-place operations carry none of these graft fields.
+
+```
+# A fifth block on a trained four-block net, the new block drawn under seed 7:
+DrewsChessMachine --derive-model --from trained.safetensors --graft-to my_5block_preset \
+    --init-seed 7 --out trained-5block.safetensors
+
+# Insert a new block at index 1 of a three-block net (old blocks 1 and 2 move up):
+DrewsChessMachine --derive-model --from net.safetensors --graft-to my_4block_preset \
+    --graft-map 'blocks.2.=blocks.3.,blocks.1.=blocks.2.' --out net-inserted.safetensors
+```
 
 ## Adding an operation
 

@@ -560,7 +560,7 @@ enum SafetensorsModelIO {
         torchShape(kind: spec.kind, nativeShape: spec.shape)
     }
 
-    private static func toTorchLayout(kind: WeightKind, nativeShape: [Int], data: [Float]) -> (shape: [Int], data: [Float]) {
+    static func toTorchLayout(kind: WeightKind, nativeShape: [Int], data: [Float]) -> (shape: [Int], data: [Float]) {
         let shape = torchShape(kind: kind, nativeShape: nativeShape)
         switch kind {
         case .linear:

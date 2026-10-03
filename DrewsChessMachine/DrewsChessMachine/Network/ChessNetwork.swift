@@ -535,6 +535,10 @@ final class ChessNetwork: @unchecked Sendable {
     /// recording), or none at all because loaded weights replace them.
     let initialization: WeightInitialization
 
+    /// The distribution each conv / FC weight was drawn from in this build,
+    /// by plan name (`TensorInitializer.randomTensorRoles`).
+    let randomTensorRoles: [String: RandomTensorRole]
+
     /// True while an `overwrittenByLoad` network has not yet received
     /// weights. Read and cleared only on `executionQueue` (the gate check and
     /// `loadWeights` both run there), so the order of a load and a use is the
@@ -1007,6 +1011,7 @@ final class ChessNetwork: @unchecked Sendable {
         // And every conv / FC weight got its initial values under its plan
         // name, which is what the per-tensor init seeds are keyed on.
         try initializer.verifyEveryRandomTensorInitialized()
+        randomTensorRoles = initializer.randomTensorRoles
         bnBatchMeanTensors = batchMeans
         bnBatchVarTensors = batchVars
 
