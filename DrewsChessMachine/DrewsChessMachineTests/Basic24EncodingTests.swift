@@ -172,7 +172,7 @@ final class Basic24EncodingTests: XCTestCase {
         let arch = Self.smallArchitecture(.basic24)
         let champion = try ChessMPSNetwork(.randomWeights, arch: arch)
         let weights = try await champion.network.exportWeights()
-        let trainer = try ChessTrainer(arch: arch)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: arch)
         XCTAssertEqual(trainer.arch.inputPlanes, 24)
         try await trainer.network.loadWeights(weights)
     }

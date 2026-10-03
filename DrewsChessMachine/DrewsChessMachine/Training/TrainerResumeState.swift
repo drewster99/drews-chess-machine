@@ -191,10 +191,24 @@ struct TrainerScheduleState: Sendable, Equatable {
 
 /// A trainer's complete resumable state: base weights (the fp32 masters under
 /// mixed precision) followed by the optimizer velocity — the layout
-/// `ChessTrainer.exportTrainerWeights()` produces — plus the schedule.
+/// `ChessTrainer.exportTrainerWeights()` produces — plus the schedule and the
+/// dropout RNG state.
 struct TrainerResumeSnapshot: Sendable {
     var trainerWeights: [[Float]]
     var schedule: TrainerScheduleState
+    var dropoutRNG: DropoutRNGResumeState
+}
+
+/// Where a resume's dropout Philox state comes from.
+enum DropoutRNGResumeState: Sendable, Equatable {
+    /// Read from the saving trainer; restoring it continues that run's mask
+    /// sequence exactly.
+    case philox(DropoutPhiloxState)
+    /// The source carries no dropout RNG state — every checkpoint file written
+    /// before the lineage record stores it. The resumed run's masks continue
+    /// from its own dropout seed instead, which is not the saved run's
+    /// sequence once dropout is on.
+    case notInCheckpoint
 }
 
 enum TrainerResumeError: Error, CustomStringConvertible, LocalizedError {
@@ -228,7 +242,7 @@ extension TrainerResumeSnapshot {
         guard missing.isEmpty, let schedule = file.metadata.trainerSchedule else {
             throw TrainerResumeError.notExactlyResumable(file: fileName, missing: missing)
         }
-        self.init(trainerWeights: file.weights, schedule: schedule)
+        self.init(trainerWeights: file.weights, schedule: schedule, dropoutRNG: .notInCheckpoint)
     }
 }
 
@@ -238,12 +252,18 @@ extension ChessTrainer {
     /// what keeps the clock read here consistent with the exported weights.
     func exportResumeSnapshot() async throws -> TrainerResumeSnapshot {
         let weights = try await exportTrainerWeights()
-        return TrainerResumeSnapshot(trainerWeights: weights, schedule: TrainerScheduleState(currentlyRunningOn: self))
+        let dropoutState = try await captureDropoutState()
+        return TrainerResumeSnapshot(
+            trainerWeights: weights,
+            schedule: TrainerScheduleState(currentlyRunningOn: self),
+            dropoutRNG: .philox(dropoutState)
+        )
     }
 
     /// Restore a trainer to `snapshot` exactly: weights and fp32 masters,
-    /// optimizer velocity, the completed-step clock, the warmup length and
-    /// the LR/momentum cycle. The single restore path for GUI session resume,
+    /// optimizer velocity, the completed-step clock, the warmup length, the
+    /// LR/momentum cycle and — when the snapshot carries it — the dropout
+    /// Philox state. The single restore path for GUI session resume,
     /// corpus-replay `--resume-exact` and train-vs-UCI `--resume-exact`.
     ///
     /// Warmup is not re-run: the warmup multiplier is
@@ -255,6 +275,16 @@ extension ChessTrainer {
         lrWarmupSteps = snapshot.schedule.lrWarmupSteps
         lrMomentumCycle = snapshot.schedule.lrMomentumCycle
         completedTrainSteps = snapshot.schedule.completedTrainSteps
+        switch snapshot.dropoutRNG {
+        case .philox(let state):
+            try await restoreDropoutState(state)
+            SessionLogger.shared.log("[RESUME] rng: dropout=restored")
+        case .notInCheckpoint:
+            SessionLogger.shared.log(
+                "[RESUME] rng: dropout=not restored (the checkpoint predates saved dropout RNG state; "
+                + "masks continue from this run's own dropout seed)"
+            )
+        }
     }
 }
 

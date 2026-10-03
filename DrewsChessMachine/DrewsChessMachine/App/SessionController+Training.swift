@@ -938,7 +938,12 @@ extension SessionController {
                             SessionLogger.shared.log("[RESUME-PARAM] \(line)")
                         }
                         let schedule = resolved.schedule
-                        let snapshot = TrainerResumeSnapshot(trainerWeights: trainerWeights, schedule: schedule)
+                        // A session folder does not store the dropout Philox
+                        // state yet (the lineage record will), so the resumed
+                        // masks start from this run's own dropout seed.
+                        let snapshot = TrainerResumeSnapshot(
+                            trainerWeights: trainerWeights, schedule: schedule, dropoutRNG: .notInCheckpoint
+                        )
                         try await Task.detached(priority: .userInitiated) {
                             try await trainer.restoreExactly(from: snapshot)
                         }.value

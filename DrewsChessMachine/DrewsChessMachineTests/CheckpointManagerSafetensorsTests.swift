@@ -155,7 +155,7 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
         XCTAssertEqual(championWeights.count, arch.weightTensorPlan().count) // 145 for 8-block
 
         // Trainer built to the champion's arch must accept its weights (fork).
-        let trainer = try ChessTrainer(arch: arch)
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), arch: arch)
         XCTAssertEqual(trainer.arch, arch)
         try await trainer.network.loadWeights(championWeights) // would throw if arch mismatched
 

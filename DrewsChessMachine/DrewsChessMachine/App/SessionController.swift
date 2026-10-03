@@ -954,6 +954,7 @@ final class SessionController {
             // champion's architecture.
             let trainerArch = network?.network.arch ?? .current
             let t = try ChessTrainer(
+                dropoutStream: RunMasterSeed.systemDrawn(context: "trainer").generator(.dropout),
                 hyperparameters: hyperparameters,
                 arch: trainerArch
             )

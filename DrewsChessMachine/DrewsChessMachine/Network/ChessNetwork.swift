@@ -243,17 +243,23 @@ final class ChessNetwork: @unchecked Sendable {
     /// concurrently-encoding executions.
     let dropoutRateZeroTensorData: MPSGraphTensorData?
     /// Philox RNG state threaded through the per-block channel-mask draws.
-    /// Variable (persists across executions); seeded once via
+    /// Variable (persists across executions); written through
     /// `dropoutRngSeedOp` and advanced once per training step via
-    /// `dropoutRngAdvanceOp` so every step draws fresh masks. Deliberately
-    /// NOT persisted across save/resume — dropout noise is not part of
-    /// model identity. Forward passes that skip the advance op (e.g.
-    /// diagnostics `evaluate` on the trainer network) re-read the same
-    /// stream position; harmless for noise, exact no-op at rate 0.
+    /// `dropoutRngAdvanceOp` so every step draws fresh masks. The trainer
+    /// writes it from its `dropout` random stream at setup and can read it
+    /// back and write a saved value, so a resumed run continues the same
+    /// mask sequence (`DropoutPhiloxState`). Forward passes that skip the
+    /// advance op (e.g. diagnostics `evaluate` on the trainer network)
+    /// re-read the same stream position; harmless for noise, exact no-op at
+    /// rate 0.
     let dropoutRngStateVariable: MPSGraphTensor?
-    /// One-time seeding assign (`stateVar <- philoxState(seed)`); the
-    /// trainer runs it right after graph construction (and after a network
-    /// reset), mirroring the master-sync pattern.
+    /// `[7]` Int32 value the state assign copies into the state variable. Fed,
+    /// not baked in as a constant, so one compiled graph serves any seed and
+    /// a saved state can be written back.
+    let dropoutRngStateFeedPlaceholder: MPSGraphTensor?
+    /// `stateVar <- dropoutRngStateFeedPlaceholder`; the trainer runs it with
+    /// a seed-derived state right after graph construction (and after a
+    /// network reset), and with a saved state on exact resume.
     let dropoutRngSeedOp: MPSGraphOperation?
     /// Per-step state-advance assign; the trainer appends this to its SGD
     /// `assignOps` so the compiled training executable advances the stream
@@ -701,6 +707,7 @@ final class ChessNetwork: @unchecked Sendable {
         // stem output's shape (batch is dynamic in this graph).
         var dropoutRatePh: MPSGraphTensor?
         var dropoutStateVar: MPSGraphTensor?
+        var dropoutStateFeed: MPSGraphTensor?
         var dropoutSeedOp: MPSGraphOperation?
         var dropoutAdvanceOp: MPSGraphOperation?
         var dropoutMaskShapes: [Int: MPSGraphTensor] = [:]
@@ -728,14 +735,16 @@ final class ChessNetwork: @unchecked Sendable {
             dropoutRateLiveNDA = liveNDA
             dropoutRateLiveTD = MPSGraphTensorData(liveNDA)
             let stateVar = g.variable(
-                with: Data(count: 7 * MemoryLayout<Int32>.size),
-                shape: [7], dataType: .int32, name: "dropout_rng_state"
+                with: Data(count: DropoutPhiloxState.wordCount * MemoryLayout<Int32>.size),
+                shape: [NSNumber(value: DropoutPhiloxState.wordCount)], dataType: .int32, name: "dropout_rng_state"
             )
             dropoutStateVar = stateVar
-            let seeded = g.randomPhiloxStateTensor(
-                withSeed: Int.random(in: 0..<Int.max), name: "dropout_rng_seed"
+            let stateFeed = g.placeholder(
+                shape: [NSNumber(value: DropoutPhiloxState.wordCount)], dataType: .int32,
+                name: "dropout_rng_seed_state"
             )
-            dropoutSeedOp = g.assign(stateVar, tensor: seeded, name: "dropout_rng_seed_assign")
+            dropoutStateFeed = stateFeed
+            dropoutSeedOp = g.assign(stateVar, tensor: stateFeed, name: "dropout_rng_seed_assign")
             dropoutState = stateVar
             // Mask shape [N, C, 1, 1]: the dynamic batch dim is read from the
             // INPUT PLACEHOLDER's shape, never from a tensor downstream of
@@ -817,6 +826,7 @@ final class ChessNetwork: @unchecked Sendable {
         self.dropoutRateLiveNDArray = dropoutRateLiveNDA
         self.dropoutRateLiveTensorData = dropoutRateLiveTD
         self.dropoutRngStateVariable = dropoutStateVar
+        self.dropoutRngStateFeedPlaceholder = dropoutStateFeed
         self.dropoutRngSeedOp = dropoutSeedOp
         self.dropoutRngAdvanceOp = dropoutAdvanceOp
 
