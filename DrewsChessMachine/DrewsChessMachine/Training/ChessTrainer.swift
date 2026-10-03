@@ -1193,35 +1193,6 @@ final class ChessTrainer: @unchecked Sendable {
 
     // MARK: Configuration
 
-    /// Weight-decay coefficient applied per training step. The optimizer here
-    /// is SGD with Polyak momentum (`momentumCoeff` μ, 0 by default) plus
-    /// decoupled (AdamW-style) weight decay: the decay is applied to the
-    /// weights directly rather than folded into the gradient, so μ and
-    /// `weightDecayC` tune independently (raising μ does not amplify decay).
-    /// With μ=0 the velocity term vanishes and the per-step update for
-    /// decay-eligible variables is
-    /// `weight_new = (1 − lr·weightDecayC) · weight − lr · clipped_grad`.
-    /// Decay is applied only to conv and FC weight matrices; BN gamma/beta
-    /// and FC biases are excluded, matching the standard PyTorch / AdamW
-    /// recipe for which params to decay.
-    ///
-    /// The actual value applied by the graph is read from
-    /// `weightDecayC` and fed as a per-step scalar so the user can
-    /// tune it live.
-    static let weightDecayCDefault: Float = 1e-4
-
-    /// Default global L2-norm gradient clipping threshold. If the L2
-    /// norm of the concatenated gradient vector over every trainable
-    /// variable exceeds this value, every gradient is scaled by
-    /// `maxNorm / globalNorm` so the effective step is capped. 30.0 is
-    /// a conservative value that sits well above steady-state norms
-    /// under healthy training but cuts off the single-step blowups.
-    /// Under heavy policy-collapse
-    /// pressure the natural gradient norm can vastly exceed this,
-    /// nullifying effective learning rate — live-tunable to let the
-    /// user widen the valve when that happens.
-    static let gradClipMaxNormDefault: Float = 30.0
-
     /// Fallback cadence (in training steps) for computing the graph diagnostic
     /// reductions when `batchStatsInterval` is 0 ([BATCH-STATS] disabled). The
     /// diagnostics feed the [STATS] line and the entropy / draw-collapse alarms
@@ -1287,6 +1258,17 @@ final class ChessTrainer: @unchecked Sendable {
     /// Live weight-decay coefficient. Fed into the training graph
     /// every step via a scalar placeholder, so edits take effect on
     /// the next step without graph rebuild.
+    ///
+    /// The optimizer is SGD with Polyak momentum (`momentumCoeff` μ) plus
+    /// decoupled (AdamW-style) weight decay: the decay is applied to the
+    /// weights directly rather than folded into the gradient, so μ and
+    /// `weightDecayC` tune independently (raising μ does not amplify decay).
+    /// With μ=0 the velocity term vanishes and the per-step update for
+    /// decay-eligible variables is
+    /// `weight_new = (1 − lr·weightDecayC) · weight − lr · clipped_grad`.
+    /// Decay is applied only to conv and FC weight matrices; BN gamma/beta
+    /// and FC biases are excluded, matching the standard PyTorch / AdamW
+    /// recipe for which params to decay.
     var weightDecayC: Float
     /// Live channel-dropout rate (drop probability, 0 = off). Like the
     /// per-step scalar feeds above, the rate is FED per execution — through the
@@ -1329,7 +1311,11 @@ final class ChessTrainer: @unchecked Sendable {
     var lastStepBoundLiveDropoutRate: Bool? { _lastStepBoundLiveDropoutRate.value }
     private let _lastStepBoundLiveDropoutRate = SyncBox<Bool?>(nil)
     /// Live gradient-clip max norm. Fed via scalar placeholder each
-    /// step.
+    /// step. If the L2 norm of the concatenated gradient vector over every
+    /// trainable variable exceeds it, every gradient is scaled by
+    /// `maxNorm / globalNorm`, capping the effective step against
+    /// single-step blowups; under heavy policy-collapse pressure the natural
+    /// norm can far exceed it, which is why it is live-tunable.
     var gradClipMaxNorm: Float
     /// Live policy-loss coefficient. Multiplied into `policyLoss`
     /// before it joins the (similarly weighted) `valueLoss` term
@@ -2043,13 +2029,13 @@ final class ChessTrainer: @unchecked Sendable {
     init(
         // Every production trainer is built through `TrainerHyperparameters`
         // with explicit values; these defaults serve tests and the timing
-        // sweeps. Where a default matches its declared training parameter it
-        // is read from the declaration, so the two cannot drift apart.
+        // sweeps, and each training-parameter default is read from its
+        // declaration so the two cannot drift apart.
         learningRate: Float = Float(LearningRate.declaredDefault),
         entropyRegularizationCoeff: Float = Float(EntropyBonus.declaredDefault),
-        drawPenalty: Float = 0.1,
-        weightDecayC: Float = ChessTrainer.weightDecayCDefault,
-        gradClipMaxNorm: Float = ChessTrainer.gradClipMaxNormDefault,
+        drawPenalty: Float = Float(DrawPenalty.declaredDefault),
+        weightDecayC: Float = Float(WeightDecay.declaredDefault),
+        gradClipMaxNorm: Float = Float(GradClipMaxNorm.declaredDefault),
         policyLossWeight: Float = ChessTrainer.policyLossWeightDefault,
         valueLossWeight: Float = ChessTrainer.valueLossWeightDefault,
         illegalMassPenaltyWeight: Float = Float(IllegalMassWeight.declaredDefault),
@@ -2059,11 +2045,11 @@ final class ChessTrainer: @unchecked Sendable {
         ),
         policyLabelSmoothingPerMove: Float = Float(PolicyLabelSmoothingPerMove.declaredDefault),
         policyLabelSmoothingPerMoveCap: Float = Float(PolicyLabelSmoothingPerMoveCap.declaredDefault),
-        valueLabelSmoothingEpsilon: Float = 0.0,
-        momentumCoeff: Float = 0.0,
+        valueLabelSmoothingEpsilon: Float = Float(ValueLabelSmoothingEpsilon.declaredDefault),
+        momentumCoeff: Float = Float(MomentumCoeff.declaredDefault),
         useSignedAdvantageComplementCE: Bool = SignedAdvantageComplementCE.declaredDefault,
         sqrtBatchScalingForLR: Bool = SqrtBatchScalingLR.declaredDefault,
-        lrWarmupSteps: Int = 100,
+        lrWarmupSteps: Int = LRWarmupSteps.declaredDefault,
         arch: NetworkArchitecture = .current,
         executableOptimizationLevel: MPSGraphOptimization = .level1,
         splitWorkingWeightSync: Bool = true,
