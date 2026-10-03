@@ -1662,6 +1662,74 @@ Validation: each run path (GUI, `--train`, `--train-from-corpus`,
 `--train-vs-uci`, `--derive-model`, `--uci`) prints one `[RUN]` line at start in
 a real launch; a `results.json` from a short replay run carries `lineage`.
 
+**Done (`e438d326`, 2026-10-02).** As built:
+- **`[RUN]` (D4).** `Logging/RunProvenanceLine.swift` is the one formatter.
+  `line(record:seed:)` serves every path with a lineage segment: GUI
+  Play-and-Train / `--train` (logged at the end of `beginLineageSegment`, so
+  once per start, including a continue after Stop, with that segment's totals
+  so far), corpus replay and train-vs-UCI (right after their `LineageTracker`
+  exists, from the new `LineageTracker.startRecord`), and `--derive-model`
+  (from the derived file's record, now on `ModelDerivation.Result.lineage`).
+  `line(pathLabel:build:device:argv:)` serves `--uci`, which has no segment
+  (`run=none`, no totals). Fields: path, run ID, segment index, origin
+  (`fresh` / `branch from` / `exact resume of` / `derived from <model_id>
+  sha=<12>`, or `resume of …, not exact: <items>`), build/git/dirty,
+  device/VM/OS, seed fields, `params_sha=<12>`, `cum_step` / `cum_games` /
+  `cum_train_sec`, quoted redacted argv. Absent values print `none`; totals no
+  predecessor recorded print `unrecorded`.
+- **Reconciled with P3.** P3's seed-only `[RUN] seed=… mode=… derivation=v1`
+  line is no longer logged by any path; its fields are
+  `RunRandomSeed.provenanceFields`, embedded in the one `[RUN]` line. Paths log
+  `RunRandomSeed.parameterNotes` (the `[PARAM]` notes) first. `logLine` /
+  `logLines` keep their exact text (pinned by `RunSeedParameterTests`). A
+  continue after Stop's `continuing seed=…` line is retagged `[RUN-SEED]` so
+  each start has one `[RUN]` line.
+- **`results.json` (D5).** `CliTrainingRecorder.ResultsLineage`, a top-level
+  `lineage`, encodes the record's schema, run, parent, steps, fed, time,
+  parameters, build, invocation, device and rng (not `segments` or
+  `derivation_history`), plus `checkpoint_sha256`. The CLI runners set it at
+  every successful rolling save (`recordSave(of:savedAt:log:)`, reading the
+  file's `content_sha256` back from its header), so the last save, normally the
+  final one, wins. GUI `--train` writes no final model file, so it records the
+  record at each stats tick (`lineageForResults`) with a null hash. Stats rows
+  gain `cum_trainer_step` / `cum_train_step_sec` / `cum_games`
+  (`LineageTracker.Totals`). They are required `StatsLine` arguments, and an
+  unrecorded total is left out of the row like every other unmeasured value in
+  `results.json`.
+- **B4.** `LineageRecord.derivationHistory` is a new field, required on
+  decode. `LineageTracker.ParentFile.derivationHistory` holds the parent's
+  history, resolved by one rule (`derivationHistory(lineage:metadata:)`): the
+  record's history; for a file before lineage, the flat key it states, or none;
+  an unreadable key is an error. The tracker carries it into every record of a
+  branch or resume segment. `untrainedCopyRecord(source:derivation:…)` appends
+  the derive step (derive) or nothing (Save Champion of a loaded model).
+  `--derive-model` reads the source's history through the same rule and no
+  longer writes the flat key itself. The record writes it as a mirror (only
+  when non-empty), so tools and `SEBetaInitTests` that read the flat key see
+  the same text as before.
+- **Tests.** New `LineageProvenanceTests` (8): derive → branch-train → save →
+  exact resume → derive again keeps one growing history, and the trained
+  file's flat key equals the derived file's. Also covered: the flat key of a
+  pre-lineage file (present / absent / unreadable); a record without
+  `derivation_history` refused; every `[RUN]` field, including unrecorded and
+  absent values and the `--uci` form; `results.json` lineage and per-row
+  totals.
+  - Red: compile-only (new API; `red.log`).
+  - Green: 8/8. The related classes passed 150 + 108 tests, 0 failures:
+    LineageRecord, CliTrainingRecorder (both), RunSeedParameter, SEBetaInit,
+    RezeroAlphaCap, SEActivation, DeriveTrainedSource,
+    CheckpointManagerSafetensors, CheckpointManagerRoundTrip, ExactResume,
+    SessionCheckpointSchemaExpansion, DropoutRNGState, CorpusReplayFeeder,
+    CorpusReplayFailLoud, ReplayRunnerPreflight, CliResultsOutput,
+    TrainerOutputFileGuard, UCIPosition, PolicyTailPrecisionProvenance,
+    SessionParameterResume, BuildNewModelDraft.
+  - Edited call sites (new required arguments, assertions unchanged):
+    `LineageRecordTests`, `LineageTestSupport`, `CliTrainingRecorderTests`,
+    `CliTrainingRecorderUnmeasuredStatsTests`.
+- **Not done here.** The plan's validation needs real launches of each path
+  and a `results.json` from a short replay run; this phase ran no app or CLI
+  launches. The full suite was not run.
+
 **P11 — Tracker.** `documentation/dashboards/replay.py`, `ckpt_inventory.py`,
 `selfplay.py`, `vsuci.py`; pytest fixtures. Validation: on existing v4 data,
 output identical to today (no regressions); on synthetic v5 headers, expected registry.
