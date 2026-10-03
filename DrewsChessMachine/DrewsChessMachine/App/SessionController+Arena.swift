@@ -408,10 +408,11 @@ extension SessionController {
         // Read once: whether the post-promotion save writes the replay
         // buffer, which decides how long self-play stays paused.
         let promotionSaveIncludesReplayBuffer = TrainingParameters.shared.sessionSaveIncludeReplayBuffer
-        // Self-play's promotion pause, released right after the pause
-        // block — or, when the post-promotion save writes the replay
-        // buffer, once that buffer is written, so the written buffer is the
-        // one the save's record describes.
+        // Self-play's promotion pause, released with training's once the
+        // arena is in the history and the post-promotion save's session
+        // state is built — or, when that save writes the replay buffer,
+        // once that buffer is written, so the written buffer is the one the
+        // save's record describes.
         var promotionSelfPlayHold: WorkerPauseGateHold?
         if shouldPromote {
             // Pause both self-play and training, then copy the
@@ -512,12 +513,11 @@ extension SessionController {
                     trainingBox?.recordError("Promotion copy failed: \(error.localizedDescription)")
                 }
             }
-            trainingGate.resume()
+            // Training (and self-play) stay paused through the history
+            // append below: the post-promotion save's session state is
+            // built there, at this cut.
         }
         let promotionSaveWillRun = promoted && Self.autosaveSessionsOnPromote && !promotedChampionWeights.isEmpty
-        if !(promotionSaveWillRun && promotionSaveIncludesReplayBuffer) {
-            promotionSelfPlayHold?.release()
-        }
 
         // Append to history and clear arena state.
         let durationSec = Date().timeIntervalSince(startTime)
@@ -561,6 +561,40 @@ extension SessionController {
         // the (empty) summary so the `[ARENA]` output is unchanged.
         record.extendedSummary = playedGames > 0 ? extendedSummary : nil
         tournamentHistory.append(record)
+        // The post-promotion save's session state, built at the promotion's
+        // cut: both workers are still paused, so the counters published
+        // from the live boxes — the step count the trainer was rewound to,
+        // the game counts the new champion starts from — and everything
+        // else the state reads describe the same instant as the trainer
+        // snapshot and the record built in the pause block, and the arena
+        // history already holds this arena. Building it after the workers
+        // resumed read the heartbeat's last published counters and a
+        // buffer and segment totals that self-play was already advancing.
+        var promotionSaveCut: Result<(championID: String, trainerID: String, trainingStep: Int, state: SessionCheckpointState), Error>?
+        if promotionSaveWillRun {
+            do {
+                guard let championID = champion.identifier?.description,
+                      let trainerID = trainer.identifier?.description else {
+                    throw RunCutError.noModelID
+                }
+                let trainingStep = try publishRunCountersAtCut()
+                let state = buildCurrentSessionState(
+                    championID: championID,
+                    trainerID: trainerID,
+                    arenaClock: .arenaJustFinished,
+                    includeReplayBuffer: promotionSaveIncludesReplayBuffer
+                )
+                promotionSaveCut = .success((championID, trainerID, trainingStep, state))
+            } catch {
+                promotionSaveCut = .failure(error)
+            }
+        }
+        if shouldPromote {
+            trainingGate.resume()
+        }
+        if !(promotionSaveWillRun && promotionSaveIncludesReplayBuffer) {
+            promotionSelfPlayHold?.release()
+        }
         // Mirror into the chart-tile event stream. Compute the
         // elapsed-second start/end against the chart-coordinator's
         // anchor so the band lands on the same X axis as the
@@ -651,21 +685,26 @@ extension SessionController {
                 checkpoint?.setCheckpointStatus(message, kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] \(message)")
             }
-            // One step count for the trainer file's metadata and the save's
-            // [LAYER-HEALTH] block.
-            guard let championID = champion.identifier?.description,
-                  let trainerID = trainer.identifier?.description,
-                  let promotionSaveStep = trainingStats?.steps else {
-                failBeforeWriting("Post-promotion save failed: the champion or the trainer has no model ID, or the run has no step count")
+            guard let promotionSaveCut else {
+                preconditionFailure("a promotion save that will run built its session state at the promotion's cut")
+            }
+            // One step count, from the cut, for the trainer file's metadata
+            // and the save's [LAYER-HEALTH] block.
+            let championID: String
+            let trainerID: String
+            let promotionSaveStep: Int
+            let sessionState: SessionCheckpointState
+            switch promotionSaveCut {
+            case .success(let cut):
+                championID = cut.championID
+                trainerID = cut.trainerID
+                promotionSaveStep = cut.trainingStep
+                sessionState = cut.state
+            case .failure(let error):
+                failBeforeWriting("Post-promotion save failed (session state): \(error.localizedDescription)")
                 return
             }
             let includeReplayBuffer = promotionSaveIncludesReplayBuffer
-            let sessionState = buildCurrentSessionState(
-                championID: championID,
-                trainerID: trainerID,
-                arenaClock: .arenaJustFinished,
-                includeReplayBuffer: includeReplayBuffer
-            )
             // Captured as a `let` so the detached save task below can read it.
             let promotionSaveTrainerStep = trainerSnapshotCompletedSteps
             // The trainer was rewound to exactly this state on promotion:
@@ -994,10 +1033,7 @@ extension SessionController {
         let arenaStartTrainingSnapshot = await trainingBox?.snapshot()
         let steps = arenaStartTrainingSnapshot?.stats.steps ?? trainingStats?.steps ?? 0
         if let arenaStartTrainingSnapshot {
-            trainingStats = arenaStartTrainingSnapshot.stats
-            lastTrainStep = arenaStartTrainingSnapshot.lastTiming
-            realRollingPolicyLoss = arenaStartTrainingSnapshot.rollingPolicyLoss
-            realRollingValueLoss = arenaStartTrainingSnapshot.rollingValueLoss
+            publishTrainingStats(arenaStartTrainingSnapshot)
         }
 
         logArenaStart(steps: steps, trainer: trainer, champion: champion, startSnapshot: arenaStartTrainingSnapshot)

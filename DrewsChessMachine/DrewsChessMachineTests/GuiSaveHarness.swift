@@ -10,9 +10,14 @@
 //  is released and carries on. The fake self-play worker takes a game
 //  serial, appends a short game to the buffer and records it on the stats
 //  box every iteration; the fake trainer draws a minibatch, which advances
-//  the buffer's sampler. When the trainer acknowledges a pause it records
-//  what it saw, so a test can compare a save's record with the state at
-//  that instant.
+//  the buffer's sampler, and then counts the step on the trainer's clock and
+//  on the run's training stats box, as a real step does. When the trainer
+//  acknowledges a pause it records what it saw, so a test can compare a
+//  save's record and session state with the state at that instant.
+//
+//  Nothing refreshes the controller's published counters (`trainingStats`,
+//  `parallelStats`) on its own — there is no heartbeat here; a test calls
+//  `publishCountersLikeTheHeartbeat()` where a heartbeat tick would land.
 //
 //  The workers run on their own threads (not the cooperative pool), as the
 //  real workers' blocking work does. Sessions are written only to a
@@ -34,6 +39,9 @@ final class GuiSaveHarness {
         let emittedGames: Int
         let emittedPositions: Int
         let totalPositionsAdded: Int
+        let trainingSteps: Int
+        let trainerCompletedSteps: Int
+        let selfPlayGames: Int
     }
 
     static let architecture = ResumeEquivalenceTests.architecture
@@ -47,6 +55,7 @@ final class GuiSaveHarness {
     let buffer: ReplayBuffer
     let serials = GameSerialCounter(firstSerial: 0)
     let box: ParallelWorkerStatsBox
+    let trainingStatsBox = TrainingLiveStatsBox(rollingWindow: SessionController.rollingLossWindow)
     let sessionsDirectory: URL
     let trainerPauseObservations = SyncBox<[TrainerPauseObservation]>([])
 
@@ -106,6 +115,7 @@ final class GuiSaveHarness {
             mode: .seeded, configuredSeed: 24, commandLineSeed: nil, drawSeed: { 0 })
         controller.runBehaviorFingerprint = BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "ab")
         controller.parallelWorkerStatsBox = box
+        controller.trainingBox = trainingStatsBox
         controller.lineageTracker = tracker
         // The segment counts on this box from its counts now, as
         // `beginLineageSegment` sets it up at a Play-and-Train start.
@@ -124,11 +134,14 @@ final class GuiSaveHarness {
         let buffer = buffer
         let serials = serials
         let box = box
+        let trainingStatsBox = trainingStatsBox
+        let trainer = trainer
         let observations = trainerPauseObservations
         let floatsPerBoard = BoardEncoder.tensorLength(for: Self.architecture.inputEncoding)
         Self.startWorker(group: finishedWorkers, stop: stop, gate: selfPlayGate, onPause: {}, work: {
             _ = serials.next()
             Self.appendGame(to: buffer, floatsPerBoard: floatsPerBoard)
+            box.recordCompletedGame(moves: Self.positionsPerGame, durationMs: 1, result: .stalemate)
             box.recordEmittedGame(
                 result: .stalemate,
                 flushed: FlushedGameStats(positions: Self.positionsPerGame, phaseByPly: .zero, phaseByMaterial: .zero))
@@ -142,7 +155,10 @@ final class GuiSaveHarness {
                     nextGameSerial: serials.nextSerial,
                     emittedGames: counts.emittedGames,
                     emittedPositions: counts.emittedPositions,
-                    totalPositionsAdded: buffer.stateSnapshot().totalPositionsAdded))
+                    totalPositionsAdded: buffer.stateSnapshot().totalPositionsAdded,
+                    trainingSteps: trainingStatsBox.snapshot().stats.steps,
+                    trainerCompletedSteps: trainer.completedTrainSteps,
+                    selfPlayGames: counts.selfPlayGames))
             }
         }, work: {
             var boards = [Float](repeating: 0, count: 2 * floatsPerBoard)
@@ -156,7 +172,17 @@ final class GuiSaveHarness {
                 }
                 _ = buffer.sample(count: 2, intoBoards: bb, moves: mb, zs: zb)
             }}}
+            let step = trainer.completedTrainSteps + 1
+            trainer.completedTrainSteps = step
+            trainingStatsBox.setStepCount(step)
         })
+    }
+
+    /// Set the controller's published counters from the live boxes, as a
+    /// heartbeat tick does.
+    func publishCountersLikeTheHeartbeat() {
+        controller.trainingStats = trainingStatsBox.snapshot().stats
+        controller.parallelStats = box.snapshot()
     }
 
     /// Stop both fake workers and wait for them to exit.
