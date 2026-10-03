@@ -265,32 +265,12 @@ extension SessionParameterResume {
         logResumeUsesCurrent("batch_size", saved: rs.batchSize, current: p.trainingBatchSize)
         logResumeUsesCurrent("promote_threshold", saved: rs.promoteThreshold, current: p.arenaPromoteThreshold)
         logResumeUsesCurrent("arena_games", saved: rs.arenaGames, current: p.arenaGamesPerTournament)
-        // The run's master seed is lineage state that no session
-        // records yet: it must travel with the game serials and arena
-        // index it seeds (restoring the seed alone would replay the
-        // run's first game streams), and those land with the lineage
-        // record (determinism plan P6). Every resume therefore
-        // resolves the seed as a session saved before seeding existed:
-        // the mode is held at unseeded for this run, so a fresh seed is
-        // drawn and logged on the [RUN] line, and the seed is NOT EXACT.
-        restore(
-            RandomSeedModeParameter.self,
-            saved: nil,
-            current: p.randomSeedMode.rawValue,
-            describe: { RandomSeedMode(persistedRawValue: $0).logToken },
-            write: { rawValue, source in
-                let mode = RandomSeedMode(persistedRawValue: rawValue)
-                switch source {
-                case .session:
-                    p.randomSeedMode = mode
-                case .preFeature:
-                    p.holdForThisRun { p.randomSeedMode = mode }
-                case .currentSetting, .notExact:
-                    break
-                }
-            }
-        )
-        restore(RandomSeed.self, saved: nil, into: \.randomSeed)
+        // The run-seed settings (`random_seed_mode`, `random_seed`) are
+        // left alone. A resume does not use them: it continues the saved
+        // run's seed together with its streams (the trainer file's
+        // lineage record), or, when it cannot, draws a seed for the run —
+        // `startRealTraining` decides which, and the resume's
+        // `rng_sampler` / `serials` gaps report a seed not continued.
         if let notExact = notExactSummary() {
             log(notExact)
         }
@@ -357,7 +337,7 @@ extension SessionParameterResume {
                 case .session:
                     p.policyLabelSmoothingMode = mode
                 case .preFeature:
-                    p.holdForThisRun { p.policyLabelSmoothingMode = mode }
+                    p.holdForThisRun(PolicyLabelSmoothingModeParameter.self) { p.policyLabelSmoothingMode = mode }
                 case .currentSetting, .notExact:
                     break
                 }
@@ -394,7 +374,7 @@ extension SessionParameterResume {
             case .session:
                 p.arenaPromotionCriterion = criterion
             case .preFeature:
-                p.holdForThisRun { p.arenaPromotionCriterion = criterion }
+                p.holdForThisRun(ArenaPromotionCriterionParameter.self) { p.arenaPromotionCriterion = criterion }
             case .currentSetting, .notExact:
                 break
             }

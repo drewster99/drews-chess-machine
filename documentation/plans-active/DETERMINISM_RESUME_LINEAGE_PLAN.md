@@ -1228,7 +1228,12 @@ unmodified). Validation: `[RESUME-DIFF]` on a legacy fixture session; no
   `SessionParameterResume` applies it in the GUI resume block (one call per key,
   replacing the hand branches), logs `[RESUME-DIFF]`, and collects not-exact keys
   for a `[RESUME] NOT EXACT: parameters …` line. Pre-feature values are held for
-  the run (`TrainingParameters.holdForThisRun`), never persisted. The trainer is
+  the run (`TrainingParameters.holdForThisRun`), never persisted. (Review
+  2026-10-03: a hold now records the value it replaced, and the next Play-and-Train
+  start that does not continue the run puts those values back —
+  `TrainingParameters.releaseRunHolds` — so a held value no longer governs a later
+  fresh run in the same launch; the GUI resume also stopped restoring the run-seed
+  settings, which it never used.) The trainer is
   then configured through `TrainerHyperparameters(p.snapshot()).apply(to:)`, the
   fresh-start path. Composite sets keep their set semantics (policy smoothing
   mode/δ/cap; arena criterion + SPRT; the load-time review of unusable values) but

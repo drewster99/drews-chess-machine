@@ -30,6 +30,26 @@ extension SessionController {
     /// see `TrainingStartMode` for the four cases.
     func startRealTraining(mode: TrainingStartMode = .freshOrFromLoadedSession) {
         SessionLogger.shared.log("[BUTTON] Play and Train")
+        // A run that does not continue the stopped one starts from the
+        // user's settings: values an earlier resume held for its run only
+        // (pre-feature values, out-of-range session values) are put back
+        // first. A resume below holds its own again. Continue after Stop is
+        // the same run and keeps them.
+        if mode != .continueAfterStop {
+            do {
+                let released = try TrainingParameters.shared.releaseRunHolds()
+                if !released.isEmpty {
+                    let values = released.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.displayText)" }
+                    SessionLogger.shared.log("[PARAM] values held for the previous resumed run released for this run: "
+                        + values.joined(separator: " "))
+                }
+            } catch {
+                let message = "Play and Train not started: could not restore the settings an earlier resumed run held for itself (\(error.localizedDescription))"
+                SessionLogger.shared.log("[PARAM] \(message)")
+                checkpoint?.setCheckpointStatus(message, kind: .error)
+                return
+            }
+        }
         // Begin a new training segment for cumulative wall-time
         // tracking. Closed via `closeActiveTrainingSegment` on Stop or
         // at save time. Don't try to open one if the previous Stop
@@ -116,8 +136,7 @@ extension SessionController {
         }
         // The run's master seed. A continue after Stop goes on with the same
         // run, so it keeps the seed and the game serials; anything else starts
-        // a run and resolves it here — after the resume above, which decides
-        // the seed mode a resumed session runs with.
+        // a run and resolves it here.
         let runSeed: RunRandomSeed
         let gameSerials: GameSerialCounter
         // A resumed session whose record carries the run's streams continues
@@ -141,8 +160,23 @@ extension SessionController {
             SessionLogger.shared.log("[RESUME] rng: run seed, game serials (next \(nextSerial)) and arena count (\(arenasStarted)) continue the saved run")
         } else {
             let p = TrainingParameters.shared
+            // A resumed session whose run is not continued (it predates the
+            // recorded streams, `--seed` names another seed, or its streams
+            // were named under another derivation) runs on a drawn seed, as
+            // a session saved before seeding did: the configured seed would
+            // replay a different run's first game streams under this run's
+            // name. `--seed` still wins inside `resolve`. The resume reports
+            // `rng_sampler` / `serials` NOT EXACT.
+            let resumingWithoutItsRun = resumeState != nil && !continueMode
+            if resumingWithoutItsRun {
+                if let commandLineSeed {
+                    SessionLogger.shared.log("[RESUME] rng: the saved run's seed is not continued; --seed \(commandLineSeed) seeds this run")
+                } else {
+                    SessionLogger.shared.log("[RESUME] rng: the saved run's seed is not continued; a seed is drawn for this run")
+                }
+            }
             runSeed = RunRandomSeed.resolve(
-                mode: p.randomSeedMode,
+                mode: resumingWithoutItsRun ? .unseeded : p.randomSeedMode,
                 configuredSeed: p.randomSeed,
                 commandLineSeed: commandLineSeed,
                 drawSeed: RunRandomSeed.systemDrawnSeed

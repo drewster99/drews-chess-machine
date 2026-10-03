@@ -2202,6 +2202,49 @@ public final class TrainingParameters {
     /// synchronous sequence), like `suppressPersistence`.
     nonisolated(unsafe) private static var admittingSessionValueOutsideDeclaredRange = false
 
+    /// The value each key held before a resume held a value for its run only
+    /// (`holdForThisRun`, or `restoreFromSession` of an out-of-range value),
+    /// by parameter id — what `releaseRunHolds` puts back. The first hold of
+    /// a key records it, so a second resume in the same launch cannot
+    /// replace the user's value with the first resume's held one. Any other
+    /// successful assignment of the key (a user edit, a Load Parameters or
+    /// `--parameters` apply, a session's in-range value) removes the entry:
+    /// that value is the one the next run should keep. Main actor only,
+    /// read and written synchronously like `suppressPersistence`.
+    nonisolated(unsafe) private(set) static var runHeldPriorValues: [String: ParameterValue] = [:]
+
+    /// True only while a run-only hold assigns its value, so the
+    /// assignment does not clear the entry the hold just recorded.
+    nonisolated(unsafe) private static var assigningRunHold = false
+
+    /// Record what key `id` holds now as the value a run-only hold
+    /// replaces, unless an earlier hold of the key already recorded it.
+    private func recordRunHoldPrior(id: String) {
+        guard Self.runHeldPriorValues[id] == nil else { return }
+        guard let prior = collectValues()[id] else {
+            preconditionFailure("run-only hold of '\(id)', which is not a declared training parameter")
+        }
+        Self.runHeldPriorValues[id] = prior
+    }
+
+    /// Put back every value a run-only hold replaced and forget the holds:
+    /// called when a run that is not a continuation starts, so values held
+    /// for an earlier resumed run never govern it. The values are applied
+    /// without persisting — they may be a `--parameters` override that was
+    /// never saved, and a value the user saved was never changed by the
+    /// hold. Returns what was restored, by id, for the caller to log.
+    @discardableResult
+    func releaseRunHolds() throws -> [String: ParameterValue] {
+        let priors = Self.runHeldPriorValues
+        guard !priors.isEmpty else { return [:] }
+        let previous = Self.suppressPersistence
+        Self.suppressPersistence = true
+        defer { Self.suppressPersistence = previous }
+        try apply(priors)
+        Self.runHeldPriorValues = [:]
+        return priors
+    }
+
     /// Session resume's write: restore a resumed `.dcmsession`'s own saved
     /// value, even when it lies outside the range declared today.
     ///
@@ -2218,9 +2261,11 @@ public final class TrainingParameters {
     /// every resume write always has been). An out-of-range value is logged
     /// as a `[RESUME-PARAM] WARNING`, held in memory for this run, and never
     /// persisted to `UserDefaults`: it is the session's value, not an app
-    /// setting, and the next launch's validated load would reject it. A later
-    /// in-range edit replaces and persists normally; a later session save
-    /// carries the restored value forward.
+    /// setting, and the next launch's validated load would reject it. Like a
+    /// `holdForThisRun` value it is released (`releaseRunHolds`) when a run
+    /// that does not continue this one starts. A later in-range edit
+    /// replaces and persists normally; a later session save carries the
+    /// restored value forward.
     func restoreFromSession<K: TrainingParameterKey>(
         _ key: K.Type,
         _ value: K.Value,
@@ -2238,8 +2283,13 @@ public final class TrainingParameters {
             "[RESUME-PARAM] WARNING \(K.id): saved value \(value) is outside the current declared range \(rangeText); "
                 + "restored anyway (a resume runs on the session's own values), held for this run only and not saved to app settings"
         )
+        recordRunHoldPrior(id: K.id)
         Self.admittingSessionValueOutsideDeclaredRange = true
-        defer { Self.admittingSessionValueOutsideDeclaredRange = false }
+        Self.assigningRunHold = true
+        defer {
+            Self.admittingSessionValueOutsideDeclaredRange = false
+            Self.assigningRunHold = false
+        }
         self[keyPath: keyPath] = value
     }
 
@@ -2265,23 +2315,33 @@ public final class TrainingParameters {
     /// applied because the session predates the parameter. Validated like
     /// every assignment, but never written to `UserDefaults` — the session
     /// factually trained without the feature, while the user's saved setting
-    /// (say, dropout 0.7) still governs the next fresh run. A later edit of
-    /// the field persists normally; a later session save carries the held
-    /// value forward.
-    func holdForThisRun(_ assign: () -> Void) {
+    /// (say, dropout 0.7) still governs the next fresh run: the value the
+    /// key held before is recorded, and `releaseRunHolds` puts it back when
+    /// a run that does not continue this one starts. A later edit of the
+    /// field persists normally and is kept; a later session save carries the
+    /// held value forward.
+    ///
+    /// `assign` must assign key `K` only (for a key the settings expose as
+    /// a richer type than its stored value, such as an enum).
+    func holdForThisRun<K: TrainingParameterKey>(_ key: K.Type, _ assign: () -> Void) {
+        recordRunHoldPrior(id: K.id)
         let previous = Self.suppressPersistence
         Self.suppressPersistence = true
-        defer { Self.suppressPersistence = previous }
+        Self.assigningRunHold = true
+        defer {
+            Self.suppressPersistence = previous
+            Self.assigningRunHold = false
+        }
         assign()
     }
 
-    /// `holdForThisRun(_:)` for one key path.
+    /// `holdForThisRun(_:_:)` for one key path.
     func holdForThisRun<K: TrainingParameterKey>(
         _ key: K.Type,
         _ value: K.Value,
         into keyPath: ReferenceWritableKeyPath<TrainingParameters, K.Value>
     ) {
-        holdForThisRun { self[keyPath: keyPath] = value }
+        holdForThisRun(K.self) { self[keyPath: keyPath] = value }
     }
 
     /// The `Double` whose shortest decimal text is the same as `saved`'s: the
@@ -2329,6 +2389,11 @@ public final class TrainingParameters {
             SessionLogger.shared.log(message)
             FileHandle.standardError.write(Data((message + "\n").utf8))
             return false
+        }
+        // An assignment that is not itself a run-only hold is the value the
+        // next run keeps, so it ends any hold of the key.
+        if !assigningRunHold {
+            runHeldPriorValues.removeValue(forKey: K.id)
         }
         if suppressPersistence { return true }
         let defaults = UserDefaults.standard
