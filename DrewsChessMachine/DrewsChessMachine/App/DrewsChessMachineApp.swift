@@ -550,9 +550,11 @@ struct DrewsChessMachineApp: App {
                                               there (still never the --start-model, never a non-regular file).
               --enumerate-checkpoints         Also keep a copy of every save as <stem>-replay-step<N>.safetensors
                                               (<stem>-step<N> when the stem has no -replay-latest marker; see
-                                              --train-vs-uci below for its step files). Never overwrites: step numbers
-                                              restart in every run, so the run refuses to start when its stem already
-                                              has step files it could reach -- give every resumed segment its own
+                                              --train-vs-uci below for its step files). An exact resume of a recorded
+                                              run writes <stem>-replay-seg<k>-step<N>, k its lineage segment index, so
+                                              it can keep the stem. Never overwrites: step numbers restart in every
+                                              segment, so the run refuses to start when its stem already has step
+                                              files it could reach at its segment index -- give that run its own
                                               --out-model stem (e.g. <name>-resume2-replay-latest.safetensors).
               --epochs <n>                    Replay budget: number of full passes over the corpus.
               --gpu-capture-step <n> --gpu-capture-out <file.gputrace>

@@ -124,6 +124,18 @@ final class LineageTracker: @unchecked Sendable {
     /// Measured trainer-step seconds this segment.
     private let segmentTrainStepSec = SyncBox<Double>(0)
 
+    /// The segment index a run records, decided by how it starts: an exact
+    /// resume of a run that carries a lineage record continues that run as
+    /// its next segment; anything else — a fresh run, a branch, or a resume
+    /// of a file written before lineage existed — begins a run, at segment 0.
+    /// The one rule for it: the tracker below and the step-checkpoint names
+    /// (`EnumeratedCheckpointNaming`) both take it from here, so a segment's
+    /// step files always carry the index its records do.
+    static func segmentIndex(exactResumeOf parent: ParentFile?) -> Int {
+        guard let parent, case .recorded(let record) = parent.lineage else { return 0 }
+        return record.run.segmentIndex + 1
+    }
+
     /// Start a segment. `segmentStartTrainerStep` is the trainer clock when
     /// the segment begins (after any exact restore), or nil when the writer
     /// has no trainer.
@@ -139,14 +151,14 @@ final class LineageTracker: @unchecked Sendable {
         let segmentID = UUID().uuidString
         switch start {
         case .fresh(let freshInitialization):
-            run = (UUID().uuidString, 0, segmentID, .fresh, false, [], false)
+            run = (UUID().uuidString, Self.segmentIndex(exactResumeOf: nil), segmentID, .fresh, false, [], false)
             initialization = freshInitialization
             parent = nil
             segments = []
             derivationHistory = []
             baseGames = 0; basePositions = 0; baseTrainStepSec = 0; baseWallSec = 0
         case .branch(let file):
-            run = (UUID().uuidString, 0, segmentID, .branch, false, [], false)
+            run = (UUID().uuidString, Self.segmentIndex(exactResumeOf: nil), segmentID, .branch, false, [], false)
             initialization = nil
             parent = file.recordParent
             segments = []
@@ -163,7 +175,7 @@ final class LineageTracker: @unchecked Sendable {
                 guard legacyTotals == nil else {
                     throw TrackerError.legacyTotalsWithRecordedLineage(parentModelID: file.modelID)
                 }
-                run = (record.run.lineageRunID, record.run.segmentIndex + 1, segmentID, .resume,
+                run = (record.run.lineageRunID, Self.segmentIndex(exactResumeOf: file), segmentID, .resume,
                        exactness.isExact, exactness.tokens, record.run.continuesUnrecordedHistory)
                 segments = record.segments + [LineageRecord.SegmentSummary(of: record)]
                 baseGames = record.fed.cumGames
@@ -174,7 +186,7 @@ final class LineageTracker: @unchecked Sendable {
                 // The parent predates lineage: this run starts here, and the
                 // history before it is unrecorded except what a legacy GUI
                 // session counted itself.
-                run = (UUID().uuidString, 0, segmentID, .resume, false, exactness.tokens, true)
+                run = (UUID().uuidString, Self.segmentIndex(exactResumeOf: file), segmentID, .resume, false, exactness.tokens, true)
                 segments = []
                 baseGames = nil
                 basePositions = nil

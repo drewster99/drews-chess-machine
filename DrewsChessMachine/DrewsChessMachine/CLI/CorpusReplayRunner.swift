@@ -311,9 +311,10 @@ enum TrainerOutputFileError: LocalizedError, Equatable {
         case let .enumeratedStepsAlreadyPresent(firstPath, count, steps, reachable, suggestion):
             return "refusing to start: --enumerate-checkpoints would write step files this run can reach "
                 + "(\(reachable)), but \(count) step file(s) of this --out-model stem already exist there "
-                + "(steps \(steps); first: \(firstPath)). Step numbers restart in every run, so a run that "
-                + "reuses a stem collides with an earlier segment's checkpoints. Give this run its own "
-                + "--out-model stem — every resumed segment gets its own — e.g. \(suggestion)."
+                + "(steps \(steps); first: \(firstPath)). Step numbers restart in every segment and step "
+                + "names carry the segment's lineage index, so these files belong to another run that used "
+                + "this stem at the same segment index. Give this run its own --out-model stem, e.g. "
+                + "\(suggestion)."
         case let .outModelNamedLikeAnEnumeratedCheckpoint(path, step):
             return "refusing to start: --out-model \(path) is named like the step-\(step) checkpoint that "
                 + "--enumerate-checkpoints writes. The rolling output is rewritten on every save, so under that "
@@ -364,6 +365,16 @@ struct RollingOutputPlan: Equatable, Sendable {
 /// `<base>-<tag>-step<N>`, any other stem gains `-step<N>`. The one place the
 /// name is built and the only parser of it, so the pre-flight scan and the
 /// writes cannot disagree about which files are a stem's step files.
+///
+/// Step numbers restart in every segment, so a resumed segment's step files
+/// carry the segment's lineage index: segment `k > 0` writes
+/// `<base>-<tag>-seg<k>-step<N>` (`<stem>-seg<k>-step<N>` without a tag
+/// marker). Segment 0 — every run's first segment — carries no marker, so
+/// its names are the ones runs have always written. A resumed segment can
+/// therefore keep its stem without its step files ever colliding with, or
+/// being mistaken for, an earlier segment's; the index comes from
+/// `LineageTracker.segmentIndex(exactResumeOf:)`, the same rule the
+/// segment's lineage records use.
 struct EnumeratedCheckpointNaming: Equatable, Sendable {
     /// Corpus replay's run tag (`--replay-corpus`).
     static let corpusReplayRunTag = "replay"
@@ -377,22 +388,35 @@ struct EnumeratedCheckpointNaming: Equatable, Sendable {
 
     /// What precedes the step number in every enumerated name.
     private static let stepMarker = "-step"
+    /// What precedes the segment index in a later segment's names.
+    private static let segmentMarker = "-seg"
     private static let fileExtension = "safetensors"
 
     let rollingOutputURL: URL
     /// `corpusReplayRunTag` or `trainVsUciRunTag`: the run kind in the
     /// rolling file's `-<tag>-latest` marker.
     let runTag: String
+    /// The writing segment's lineage index (`LineageTracker.segmentIndex(exactResumeOf:)`).
+    let segmentIndex: Int
+
+    init(rollingOutputURL: URL, runTag: String, segmentIndex: Int) {
+        precondition(segmentIndex >= 0, "a lineage segment index is never negative (got \(segmentIndex))")
+        self.rollingOutputURL = rollingOutputURL
+        self.runTag = runTag
+        self.segmentIndex = segmentIndex
+    }
 
     private var rollingStem: String { rollingOutputURL.deletingPathExtension().lastPathComponent }
     private var rollingMarker: String { "-\(runTag)-latest" }
+    /// `-seg<k>` for a later segment; empty for segment 0.
+    private var segmentPart: String { segmentIndex == 0 ? "" : "\(Self.segmentMarker)\(segmentIndex)" }
     var directory: URL { rollingOutputURL.deletingLastPathComponent() }
 
     func fileName(step: Int) -> String {
         let stem = rollingStem
         let enumeratedStem = stem.contains(rollingMarker)
-            ? stem.replacingOccurrences(of: rollingMarker, with: "-\(runTag)\(Self.stepMarker)\(step)")
-            : "\(stem)\(Self.stepMarker)\(step)"
+            ? stem.replacingOccurrences(of: rollingMarker, with: "-\(runTag)\(segmentPart)\(Self.stepMarker)\(step)")
+            : "\(stem)\(segmentPart)\(Self.stepMarker)\(step)"
         return "\(enumeratedStem).\(Self.fileExtension)"
     }
 
@@ -406,9 +430,9 @@ struct EnumeratedCheckpointNaming: Equatable, Sendable {
         let stem = rollingStem
         let prefix: String
         if let marker = stem.range(of: rollingMarker) {
-            prefix = String(stem[..<marker.lowerBound]) + "-\(runTag)\(Self.stepMarker)"
+            prefix = String(stem[..<marker.lowerBound]) + "-\(runTag)\(segmentPart)\(Self.stepMarker)"
         } else {
-            prefix = "\(stem)\(Self.stepMarker)"
+            prefix = "\(stem)\(segmentPart)\(Self.stepMarker)"
         }
         guard name.hasPrefix(prefix) else { return nil }
         let digits = name.dropFirst(prefix.count).prefix { $0.isASCII && $0.isNumber }
@@ -435,22 +459,37 @@ struct EnumeratedCheckpointNaming: Equatable, Sendable {
             let digits = stem[markerRange.upperBound...].prefix { $0.isASCII && $0.isNumber }
             guard !digits.isEmpty, let step = Int(digits) else { continue }
             let beforeMarker = String(stem[..<markerRange.lowerBound])
-            var candidateRollingStems: [(stem: String, runTag: String)] = []
-            // A stem without a `-<tag>-latest` marker: the step marker ends the name.
-            if !beforeMarker.isEmpty, digits.endIndex == stem.endIndex {
-                candidateRollingStems += allRunTags.map { (stem: beforeMarker, runTag: $0) }
+            // Two readings of what precedes the step marker: the whole of it as
+            // a segment-0 base, and — when it ends in `-seg<k>` — the part
+            // before that as a later segment's base. Each candidate is
+            // confirmed by rebuilding the name, so only a real reading counts.
+            var readings: [(base: String, segmentIndex: Int, segmentPart: String)] = [(beforeMarker, 0, "")]
+            if let segmentRange = beforeMarker.range(of: segmentMarker, options: .backwards) {
+                let segmentDigits = beforeMarker[segmentRange.upperBound...]
+                if !segmentDigits.isEmpty, segmentDigits.allSatisfy({ $0.isASCII && $0.isNumber }),
+                   let parsed = Int(segmentDigits) {
+                    readings.append((String(beforeMarker[..<segmentRange.lowerBound]), parsed,
+                                     String(beforeMarker[segmentRange.lowerBound...])))
+                }
             }
-            // A stem whose `-<tag>-latest` marker(s) became `-<tag>-step<N>`.
-            for runTag in allRunTags where beforeMarker.hasSuffix("-\(runTag)") {
-                let rollingStem = stem.replacingOccurrences(
-                    of: "-\(runTag)\(stepMarker)\(step)", with: "-\(runTag)-latest")
-                candidateRollingStems.append((stem: rollingStem, runTag: runTag))
-            }
-            for candidate in candidateRollingStems {
-                let naming = EnumeratedCheckpointNaming(
-                    rollingOutputURL: URL(fileURLWithPath: "/").appendingPathComponent("\(candidate.stem)\(suffix)"),
-                    runTag: candidate.runTag)
-                if naming.step(ofFileName: name) == step { return step }
+            for reading in readings {
+                var candidateRollingStems: [(stem: String, runTag: String)] = []
+                // A stem without a `-<tag>-latest` marker: the step marker ends the name.
+                if !reading.base.isEmpty, digits.endIndex == stem.endIndex {
+                    candidateRollingStems += allRunTags.map { (stem: reading.base, runTag: $0) }
+                }
+                // A stem whose `-<tag>-latest` marker(s) became `-<tag>[-seg<k>]-step<N>`.
+                for runTag in allRunTags where reading.base.hasSuffix("-\(runTag)") {
+                    let rollingStem = stem.replacingOccurrences(
+                        of: "-\(runTag)\(reading.segmentPart)\(stepMarker)\(step)", with: "-\(runTag)-latest")
+                    candidateRollingStems.append((stem: rollingStem, runTag: runTag))
+                }
+                for candidate in candidateRollingStems {
+                    let naming = EnumeratedCheckpointNaming(
+                        rollingOutputURL: URL(fileURLWithPath: "/").appendingPathComponent("\(candidate.stem)\(suffix)"),
+                        runTag: candidate.runTag, segmentIndex: reading.segmentIndex)
+                    if naming.step(ofFileName: name) == step { return step }
+                }
             }
         }
         return nil
@@ -1049,7 +1088,10 @@ enum CorpusReplayRunner {
         // before any GPU work, rather than halt at the first colliding save.
         let enumeratedWriter: EnumeratedCheckpointWriter?
         if config.enumerateCheckpoints {
-            let naming = EnumeratedCheckpointNaming(rollingOutputURL: outModelURL, runTag: EnumeratedCheckpointNaming.corpusReplayRunTag)
+            let naming = EnumeratedCheckpointNaming(
+                rollingOutputURL: outModelURL, runTag: EnumeratedCheckpointNaming.corpusReplayRunTag,
+                segmentIndex: LineageTracker.segmentIndex(
+                    exactResumeOf: resumeSnapshot != nil ? startModelFile?.lineageParent : nil))
             try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(naming: naming, stepLimit: config.stepLimit)
             enumeratedWriter = EnumeratedCheckpointWriter(naming: naming)
             emit("[REPLAY] enumerated checkpoints: \(naming.url(step: autosaveEvery).path) and siblings (never overwritten)")

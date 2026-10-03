@@ -16,6 +16,10 @@
 #                           trainer is found by its exact --out-model path
 #   PROBE_START_WAIT_SEC    how long to wait for the trainer to appear
 #   PROBE_MAX_ATTEMPTS      failed probes of one checkpoint before it is given up on
+#   PROBE_SEGMENT           the lineage segment index of the run segment to probe. A
+#                           resumed segment names its step files
+#                           <stem>-replay-seg<k>-step<N>; the run's first segment (0)
+#                           names them <stem>-replay-step<N>. Unset means segment 0.
 #
 # Identity comes from each checkpoint's safetensors metadata (probe_record.py): the file
 # name's step must match the header's training_step and the probe's modelID the header's
@@ -36,6 +40,10 @@ M="$HOME/Library/Application Support/DrewsChessMachine/Models"
 ROLLING="$M/$STEM-replay-latest.safetensors"
 START_WAIT=${PROBE_START_WAIT_SEC:-600}
 MAX_ATTEMPTS=${PROBE_MAX_ATTEMPTS:-3}
+SEGMENT=${PROBE_SEGMENT:-0}
+[[ "$SEGMENT" == <-> && "$SEGMENT" == (0|[1-9]*) ]] || { echo "PROBE_SEGMENT must be a non-negative integer without leading zeros: $SEGMENT" >&2; exit 2; }
+# The marker the app puts before the step number: none for segment 0, -seg<k> after.
+if [ "$SEGMENT" = 0 ]; then SEGMENT_PART=""; else SEGMENT_PART="-seg$SEGMENT"; fi
 ERRDIR="${OUT:r}.errors"
 mkdir -p "$ERRDIR"
 touch "$OUT"
@@ -72,8 +80,8 @@ while true; do
   # Sampled before the pass: a trainer that has exited has already published every
   # checkpoint, so this pass sees its last one and the loop can stop after it.
   alive=0; [ $ONCE = 0 ] && trainer_alive && alive=1
-  for f in "$M/$STEM"-replay-step<->.safetensors(Nn); do
-    s=${${f:t:r}##*-replay-step}
+  for f in "$M/$STEM"-replay"$SEGMENT_PART"-step<->.safetensors(Nn); do
+    s=${${f:t:r}##*-replay"$SEGMENT_PART"-step}
     if [ -n "$LIMIT" ] && [ "$s" -gt "$LIMIT" ]; then
       [ -z "${skipped_logged[$s]:-}" ] && { echo "skipping step $s (above the step limit $LIMIT)"; skipped_logged[$s]=1; }
       continue

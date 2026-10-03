@@ -549,7 +549,10 @@ def enum_specs(cfg):
 
     A segment carrying a `segment_id` (filled by `derive-registry` from the files'
     lineage records) is not listed here: its checkpoints are found by that id in
-    their headers (`lineage_checkpoints`), not by name."""
+    their headers (`lineage_checkpoints`), not by name. That is also the only way a
+    resumed lineage segment's files are found: the app names a segment k > 0's step
+    files `<stem>-replay-seg<k>-step<N>`, which these `-replay-step*` globs never
+    match, so such a segment needs its `segment_id` (run `derive-registry`)."""
     segs = cfg.get("segments", [])
     run_glob = enum_glob(cfg)
     specs = []

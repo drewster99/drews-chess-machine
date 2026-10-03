@@ -301,7 +301,9 @@ enum TrainVsUciRunner {
                 rollingOutputURL: try TrainVsUciSession.enumeratedNamingBase(
                     checkpointStem: config.checkpointStem, startSource: startSource,
                     runModelID: config.runModelID),
-                runTag: EnumeratedCheckpointNaming.trainVsUciRunTag)
+                runTag: EnumeratedCheckpointNaming.trainVsUciRunTag,
+                segmentIndex: LineageTracker.segmentIndex(
+                    exactResumeOf: resumeSnapshot != nil ? startModelFile?.lineageParent : nil))
             try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(naming: naming, stepLimit: config.stepLimit)
             enumeratedWriter = EnumeratedCheckpointWriter(naming: naming)
             emit("[VS-UCI] enumerated checkpoints: \(naming.url(step: autosaveEvery).path) and siblings (never overwritten)")
