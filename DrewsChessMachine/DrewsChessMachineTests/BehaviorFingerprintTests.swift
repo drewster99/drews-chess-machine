@@ -14,8 +14,24 @@ import XCTest
 
 final class BehaviorFingerprintTests: XCTestCase {
 
+    /// A small architecture, so each computation stays fast.
+    private static func architecture(
+        encoding: InputEncoding = .basic30, seReductionRatio: Int = 4, compute: ComputeDataType = .float32
+    ) -> NetworkArchitecture {
+        NetworkArchitecture(
+            inputEncoding: encoding, channels: 16, numBlocks: 2, stemConvKernelSize: 3,
+            activationFunction: .relu, blockActivationStyle: .pre,
+            blockSkipMerge: .cleanAdd, blockUseRezero: false, rezeroAlphaInit: 0.5,
+            blockConv1KernelSize: 3, blockConv2KernelSize: 3,
+            blockSeStyle: .scaleAndBias, blockSeReductionRatio: seReductionRatio,
+            policyHeadStyle: .intermediateConv, policyPreConvChannels: 16,
+            valueHeadStyle: .wdlSoftmax, valueHeadConvChannels: 4, valueHeadHiddenUnits: 16,
+            computeDataType: compute
+        )
+    }
+
     private let fp32 = BehaviorFingerprint.Settings(
-        inputEncoding: .basic30, computeDataType: .float32, policyTailPrecision: .float32FromPreBatchNorm)
+        arch: BehaviorFingerprintTests.architecture(), policyTailPrecision: .float32FromPreBatchNorm)
 
     /// Run streams named under another derivation: every stream's master
     /// seed is shifted, as a changed derivation would shift them.
@@ -43,20 +59,51 @@ final class BehaviorFingerprintTests: XCTestCase {
 
     func testNumericsSettingsChangeTheFingerprint() async throws {
         let base = try await BehaviorFingerprint.computeUncached(for: fp32, streamDerivation: DCMRandomStreams.self)
-        let bf16 = BehaviorFingerprint.Settings(inputEncoding: .basic30, computeDataType: .bFloat16,
+        let bf16 = BehaviorFingerprint.Settings(arch: Self.architecture(compute: .bFloat16),
                                                 policyTailPrecision: .float32FromPreBatchNorm)
         let bf16Fingerprint = try await BehaviorFingerprint.computeUncached(for: bf16, streamDerivation: DCMRandomStreams.self)
         XCTAssertNotEqual(base.sha256, bf16Fingerprint.sha256)
         let otherTail = try await BehaviorFingerprint.computeUncached(
-            for: BehaviorFingerprint.Settings(inputEncoding: .basic30, computeDataType: .bFloat16,
+            for: BehaviorFingerprint.Settings(arch: Self.architecture(compute: .bFloat16),
                                               policyTailPrecision: .mixedFinalProjection),
             streamDerivation: DCMRandomStreams.self)
         XCTAssertNotEqual(bf16Fingerprint.sha256, otherTail.sha256)
         let otherEncoding = try await BehaviorFingerprint.computeUncached(
-            for: BehaviorFingerprint.Settings(inputEncoding: .basic20, computeDataType: .float32,
+            for: BehaviorFingerprint.Settings(arch: Self.architecture(encoding: .basic20),
                                               policyTailPrecision: .float32FromPreBatchNorm),
             streamDerivation: DCMRandomStreams.self)
         XCTAssertNotEqual(base.sha256, otherEncoding.sha256)
+    }
+
+    /// The fingerprint trains the checkpoint's own architecture, so a change
+    /// in one of its blocks — here only the SE reduction ratio — changes it.
+    func testAnArchitectureOnlyChangeChangesTheFingerprint() async throws {
+        let base = try await BehaviorFingerprint.computeUncached(for: fp32, streamDerivation: DCMRandomStreams.self)
+        let otherSE = try await BehaviorFingerprint.computeUncached(
+            for: BehaviorFingerprint.Settings(arch: Self.architecture(seReductionRatio: 2),
+                                              policyTailPrecision: .float32FromPreBatchNorm),
+            streamDerivation: DCMRandomStreams.self)
+        XCTAssertNotEqual(base.sha256, otherSE.sha256)
+    }
+
+    /// A history encoding trains from stacks the buffer rebuilds, and is as
+    /// repeatable as a single-frame one.
+    func testAHistoryEncodingFingerprintIsRepeatable() async throws {
+        let settings = BehaviorFingerprint.Settings(arch: Self.architecture(encoding: .full10ply200),
+                                                    policyTailPrecision: .float32FromPreBatchNorm)
+        let first = try await BehaviorFingerprint.computeUncached(for: settings, streamDerivation: DCMRandomStreams.self)
+        let second = try await BehaviorFingerprint.computeUncached(for: settings, streamDerivation: DCMRandomStreams.self)
+        XCTAssertEqual(first, second)
+    }
+
+    /// A recipe-1 fingerprint (the fixed tiny network) never matches one of
+    /// this recipe, so a file saved under it resumes with a `build` gap.
+    func testARecipeOneFingerprintIsAGapUnderTheCurrentRecipe() throws {
+        XCTAssertEqual(BehaviorFingerprint.recipe, 2)
+        let running = BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "ab12")
+        let saved = try record(fingerprint: BehaviorFingerprint.Record(recipe: 1, sha256: "ab12"))
+        XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: saved, runningBuild: laterBuild(than: saved.build),
+                                                 runningDevice: saved.device, runningFingerprint: running).gaps, [.build])
     }
 
     // MARK: - The resume decision

@@ -22,10 +22,15 @@
 //     the run streams' `sampler` stream (so the stream derivation is
 //     covered); move choices with Dirichlet noise from a self-play game
 //     stream; and the dropout Philox state MPSGraph derives from a seed.
-//  3. Training: a fixed tiny network, with the checkpoint's compute data
-//     type and the running policy-tail precision, initialized from a fixed
-//     init seed, trained one SGD step (with dropout) on that buffer — its
-//     losses and its exported weights and velocity, bit for bit.
+//  3. Training: the checkpoint's own architecture — its block groups,
+//     convolutions, SE, ReZero, activations, heads, input encoding and
+//     compute data type — under the running policy-tail precision,
+//     initialized from a fixed init seed (never the checkpoint's trained
+//     weights), trained one SGD step (with dropout, which includes the
+//     value-baseline forward pass) on a batch drawn from that buffer — its
+//     losses and its exported weights and velocity, bit for bit. Recipe 1
+//     trained a fixed tiny network instead, which left any change in a
+//     block type it lacked undetected.
 //
 //  Everything that can change these bytes — encoder, move generation,
 //  sampler, stream derivation, MoveSampler and its Dirichlet draw, MPSGraph
@@ -34,11 +39,11 @@
 //  saved fingerprint incomparable, which is treated as different, never as
 //  equal.
 //
-//  The recipe's numbers (seeds, hyperparameters, the tiny architecture) are
-//  constants of the recipe, deliberately not the run's settings or the
-//  parameters' declared defaults, so a fingerprint depends on code and
-//  platform only. It is computed once per process for each (input encoding,
-//  compute data type, policy-tail precision) and cached.
+//  The recipe's numbers (seeds, hyperparameters) are constants of the
+//  recipe, deliberately not the run's settings or the parameters' declared
+//  defaults, so a fingerprint depends on code, platform and the checkpoint's
+//  architecture only. It is computed once per process for each (architecture,
+//  policy-tail precision) and cached.
 //
 
 import CryptoKit
@@ -49,7 +54,7 @@ enum BehaviorFingerprint {
 
     /// The recipe version. Bump it whenever the micro-computation changes;
     /// fingerprints of different recipes never compare equal.
-    static let recipe = 1
+    static let recipe = 2
 
     /// A computed fingerprint, as a lineage record stores it
     /// (`rng.behavior_fingerprint`).
@@ -63,23 +68,16 @@ enum BehaviorFingerprint {
         }
     }
 
-    /// What the fingerprint is computed for: the checkpoint's numerics.
+    /// What the fingerprint is computed for: the checkpoint's architecture
+    /// (which carries its input encoding and compute data type) and the
+    /// policy-tail precision its trainer runs under.
     struct Settings: Hashable, Sendable {
-        let inputEncoding: InputEncoding
-        let computeDataType: ComputeDataType
+        let architecture: NetworkArchitecture
         let policyTailPrecision: ChessNetwork.PolicyTailPrecision
 
-        init(inputEncoding: InputEncoding, computeDataType: ComputeDataType,
-             policyTailPrecision: ChessNetwork.PolicyTailPrecision) {
-            self.inputEncoding = inputEncoding
-            self.computeDataType = computeDataType
-            self.policyTailPrecision = policyTailPrecision
-        }
-
-        /// The settings of a trainer of `arch` under `policyTailPrecision`.
         init(arch: NetworkArchitecture, policyTailPrecision: ChessNetwork.PolicyTailPrecision) {
-            self.init(inputEncoding: arch.inputEncoding, computeDataType: arch.computeDataType,
-                      policyTailPrecision: policyTailPrecision)
+            self.architecture = arch
+            self.policyTailPrecision = policyTailPrecision
         }
     }
 
@@ -168,24 +166,32 @@ enum BehaviorFingerprint {
 
     private static let queue = DispatchQueue(label: "drewschess.behavior-fingerprint", qos: .userInitiated)
 
-    /// Steps 1 and 2, and the tiny trainer for step 3 (built, not yet
+    /// Steps 1 and 2, and the checkpoint-architecture trainer for step 3 (built, not yet
     /// trained). Runs on `queue`.
     private static func prepare<Streams: FingerprintStreamSource>(
         settings: Settings, streams: Streams.Type
     ) throws -> (hasher: SHA256, buffer: ReplayBuffer, trainer: ChessTrainer) {
         var hasher = SHA256()
-        let header = "dcm-behavior-fingerprint recipe=\(recipe) encoding=\(settings.inputEncoding.rawValue) "
-            + "compute=\(settings.computeDataType.rawValue) policy_tail=\(settings.policyTailPrecision.rawValue)"
+        // The architecture itself is not hashed: what it computes is, below.
+        // Hashing its serialized form would make a change in how it is
+        // written (a new Codable field) read as a change in behavior.
+        let header = "dcm-behavior-fingerprint recipe=\(recipe) policy_tail=\(settings.policyTailPrecision.rawValue)"
         hasher.update(data: Data(header.utf8))
+        let arch = settings.architecture
+        let encoding = arch.inputEncoding
+        // The replay buffer stores one mover-relative frame per ply (the
+        // start of the full encoding) and rebuilds a history stack at sample
+        // time — the layout `ActiveGame` writes.
+        let storedFrameFloats = encoding.planesPerFrame * ChessNetwork.boardSize * ChessNetwork.boardSize
         let runStreams = Streams.streams(masterSeed: masterSeed)
 
-        // 1. Board encoding under the checkpoint's encoding, and the game's
-        //    positions in the tiny network's encoding for the buffer.
+        // 1. Board encoding under the checkpoint's encoding; each position's
+        //    stored frame goes to the buffer.
         let engine = ChessGameEngine()
         var bufferGame: [(board: [Float], policyIndex: Int32, materialCount: UInt8)] = []
         for uci in recipeGame {
-            append(BoardEncoder.encode(engine.state, history: engine.recentStates, encoding: settings.inputEncoding),
-                   to: &hasher)
+            let encoded = BoardEncoder.encode(engine.state, history: engine.recentStates, encoding: encoding)
+            append(encoded, to: &hasher)
             let mover = engine.state.currentPlayer
             guard let move = ChessMove.parseUCI(uci, legal: engine.currentLegalMoves) else {
                 throw FingerprintError.recipeMoveIllegal(uci)
@@ -193,7 +199,7 @@ enum BehaviorFingerprint {
             var materialCount = 0
             for case let piece? in engine.state.board where piece.type != .pawn { materialCount += 1 }
             bufferGame.append((
-                board: BoardEncoder.encode(engine.state, history: engine.recentStates, encoding: tinyArchitecture.inputEncoding),
+                board: Array(encoded.prefix(storedFrameFloats)),
                 policyIndex: Int32(PolicyEncoding.policyIndex(move, currentPlayer: mover)),
                 materialCount: UInt8(materialCount)))
             do {
@@ -202,11 +208,10 @@ enum BehaviorFingerprint {
                 throw FingerprintError.recipeMoveIllegal(uci)
             }
         }
-        append(BoardEncoder.encode(engine.state, history: engine.recentStates, encoding: settings.inputEncoding),
-               to: &hasher)
+        append(BoardEncoder.encode(engine.state, history: engine.recentStates, encoding: encoding), to: &hasher)
 
         // 2. Seeded draws: replay-buffer batches under each constraint kind.
-        let buffer = ReplayBuffer(capacity: 128, inputEncoding: tinyArchitecture.inputEncoding,
+        let buffer = ReplayBuffer(capacity: 128, inputEncoding: encoding,
                                   sampler: runStreams.generator(.sampler))
         for (gameIndex, outcome) in gameOutcomes.enumerated() {
             appendGame(bufferGame, outcome: outcome, gameIndex: gameIndex, to: buffer)
@@ -219,7 +224,7 @@ enum BehaviorFingerprint {
         for constraint in constraints {
             buffer.setSamplingConstraints(constraint)
             for _ in 0..<drawsPerConstraint {
-                try appendDraw(from: buffer, to: &hasher)
+                try appendDraw(from: buffer, encoding: encoding, to: &hasher)
             }
         }
         buffer.setSamplingConstraints(.unconstrained)
@@ -255,9 +260,8 @@ enum BehaviorFingerprint {
         let philox = try DropoutPhiloxState.derived(fromSeed: philoxSeed, device: device, commandQueue: commandQueue)
         for word in philox.words { append(UInt32(bitPattern: word), to: &hasher) }
 
-        // 3. The tiny trainer, with recipe hyperparameters.
-        var arch = tinyArchitecture
-        arch.computeDataType = settings.computeDataType
+        // 3. A trainer of the checkpoint's architecture, from the recipe's
+        //    init seed, with the recipe's hyperparameters.
         let trainer = try ChessTrainer(
             dropoutStream: runStreams.generator(.dropout),
             learningRate: 0.01,
@@ -291,19 +295,6 @@ enum BehaviorFingerprint {
         return (hasher, buffer, trainer)
     }
 
-    /// The recipe's fixed tiny network (the checkpoint's compute data type
-    /// replaces `computeDataType`).
-    static let tinyArchitecture: NetworkArchitecture = NetworkArchitecture(
-        inputEncoding: .basic30, channels: 16, numBlocks: 2, stemConvKernelSize: 3,
-        activationFunction: .relu, blockActivationStyle: .pre,
-        blockSkipMerge: .cleanAdd, blockUseRezero: false, rezeroAlphaInit: 0.5,
-        blockConv1KernelSize: 3, blockConv2KernelSize: 3,
-        blockSeStyle: .scaleAndBias, blockSeReductionRatio: 4,
-        policyHeadStyle: .intermediateConv, policyPreConvChannels: 16,
-        valueHeadStyle: .wdlSoftmax, valueHeadConvChannels: 4, valueHeadHiddenUnits: 16,
-        computeDataType: .float32
-    )
-
     private static func stratifiedConstraints() -> ReplayBuffer.SamplingConstraints {
         let n = ReplayBufferAnalyzer.materialBuckets.count
         var weights = [Float](repeating: 0, count: n)
@@ -312,12 +303,15 @@ enum BehaviorFingerprint {
                                                 targetMeanGameLengthPlies: 0, materialBucketWeights: weights)
     }
 
-    private static func appendGame(_ game: [(board: [Float], policyIndex: Int32, materialCount: UInt8)],
+    /// Append one game the way `ActiveGame.flush` does: newest ply first,
+    /// each row's ply index its game ply, outcomes signed by mover.
+    private static func appendGame(_ forward: [(board: [Float], policyIndex: Int32, materialCount: UInt8)],
                                    outcome: Float, gameIndex: Int, to buffer: ReplayBuffer) {
-        let n = game.count
+        let n = forward.count
+        let game = Array(forward.reversed())
         let boards = game.flatMap(\.board)
         let moves = game.map(\.policyIndex)
-        let plies = (0..<n).map { UInt16($0) }
+        let plies = (0..<n).map { UInt16(n - 1 - $0) }
         let taus = [Float](repeating: 0.8, count: n)
         let hashes = game.map { position in
             position.board.withUnsafeBufferPointer { b -> UInt64 in
@@ -326,8 +320,8 @@ enum BehaviorFingerprint {
             }
         }
         let materials = game.map(\.materialCount)
-        // Outcomes alternate sign by mover, as a real flush writes them.
-        let outcomes = (0..<n).map { $0 % 2 == 0 ? outcome : -outcome }
+        // Outcomes signed by the row's mover (white moves on even plies).
+        let outcomes = plies.map { $0 % 2 == 0 ? outcome : -outcome }
         boards.withUnsafeBufferPointer { b in
         moves.withUnsafeBufferPointer { m in
         plies.withUnsafeBufferPointer { pl in
@@ -348,8 +342,9 @@ enum BehaviorFingerprint {
         }}}}}}}
     }
 
-    private static func appendDraw(from buffer: ReplayBuffer, to hasher: inout SHA256) throws {
-        let floatsPerBoard = BoardEncoder.tensorLength(for: tinyArchitecture.inputEncoding)
+    private static func appendDraw(from buffer: ReplayBuffer, encoding: InputEncoding,
+                                   to hasher: inout SHA256) throws {
+        let floatsPerBoard = BoardEncoder.tensorLength(for: encoding)
         var boards = [Float](repeating: 0, count: batchSize * floatsPerBoard)
         var moves = [Int32](repeating: 0, count: batchSize)
         var zs = [Float](repeating: 0, count: batchSize)
@@ -373,8 +368,10 @@ enum BehaviorFingerprint {
         withUnsafeBytes(of: value.littleEndian) { hasher.update(bufferPointer: $0) }
     }
 
+    /// The floats' IEEE bit patterns, little-endian, in one update (Apple
+    /// silicon stores them that way, so the array's bytes are exactly that).
     private static func append(_ values: [Float], to hasher: inout SHA256) {
-        for value in values { append(value.bitPattern, to: &hasher) }
+        values.withUnsafeBytes { hasher.update(bufferPointer: $0) }
     }
 }
 
