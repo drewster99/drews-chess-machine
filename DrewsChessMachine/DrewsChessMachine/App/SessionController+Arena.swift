@@ -595,7 +595,8 @@ extension SessionController {
             let trainerID = trainer.identifier?.description ?? "unknown"
             let sessionState = buildCurrentSessionState(
                 championID: championID,
-                trainerID: trainerID
+                trainerID: trainerID,
+                arenaClock: .arenaJustFinished
             )
             // One step count for both files' metadata and the save's
             // [LAYER-HEALTH] block.

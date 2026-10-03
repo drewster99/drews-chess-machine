@@ -235,6 +235,20 @@ final class ExactResumeCompletionTests: XCTestCase {
         XCTAssertFalse(box.shouldAutoTrigger(interval: 3_600))
     }
 
+    /// The post-promotion save is written inside the arena, before the
+    /// trigger box hears that the arena ended; it must record the arena as
+    /// just finished, not the time since the arena before it — else a resume
+    /// of every `-promote` save would run an arena at once.
+    @MainActor
+    func testAPostPromotionSaveRecordsTheArenaAsJustFinished() {
+        let controller = SessionController()
+        controller.arenaTriggerBox = ArenaTriggerBox(startTime: Date().addingTimeInterval(-900))
+        let live = controller.buildCurrentSessionState(championID: "c", trainerID: "t", arenaClock: .live)
+        let postPromotion = controller.buildCurrentSessionState(championID: "c", trainerID: "t", arenaClock: .arenaJustFinished)
+        XCTAssertEqual(live.arenaSecondsSinceLastArena ?? -1, 900, accuracy: 5)
+        XCTAssertEqual(postPromotion.arenaSecondsSinceLastArena, 0)
+    }
+
     // MARK: - Lineage of a resume
 
     func testAResumesRecordNamesItsGapsAndAnExactOneNamesNone() throws {

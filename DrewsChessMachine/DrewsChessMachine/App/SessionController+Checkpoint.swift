@@ -298,7 +298,8 @@ extension SessionController {
         // while self-play workers (which only append) are paused.
         let sessionState = buildCurrentSessionState(
             championID: championID,
-            trainerID: trainerID
+            trainerID: trainerID,
+            arenaClock: .live
         )
         let trainingStep = trainingStats?.steps ?? 0
         let bufferForSave = replayBuffer
@@ -930,6 +931,18 @@ extension SessionController {
     nonisolated static let trainerLearningRateDefault: Float = 1e-3
     nonisolated static let entropyRegularizationCoeffDefault: Float = 1e-3
 
+    /// Where the arena clock stands for a session save.
+    enum ArenaClockAtSave {
+        /// The trigger box's clock as it reads now. Saves outside an arena:
+        /// manual, periodic and SIGUSR2 saves are refused while one runs.
+        case live
+        /// The arena that triggered this save has just finished. The
+        /// post-promotion save is written inside the arena, before the
+        /// trigger box records that it ended, so the box still reads the time
+        /// since the arena before it.
+        case arenaJustFinished
+    }
+
     /// Build the Codable snapshot of the current session state (counters,
     /// hyperparameters, arena history, replay-buffer footprint, build info).
     /// Called at save time with the live state read off the main actor by both
@@ -937,10 +950,12 @@ extension SessionController {
     /// save. Closes the active training segment at save time (and re-opens a
     /// fresh one if training is still in progress) so the on-disk cumulative
     /// wall-time totals stay correct across mid-training saves.
+    /// `arenaClock` says which arena clock the save records.
     @MainActor
     func buildCurrentSessionState(
         championID: String,
-        trainerID: String
+        trainerID: String,
+        arenaClock: ArenaClockAtSave
     ) -> SessionCheckpointState {
         let params = TrainingParameters.shared
         let wasTraining = realTraining
@@ -949,6 +964,13 @@ extension SessionController {
             checkpoint?.beginActiveTrainingSegment()
         }
         let now = Date()
+        let secondsSinceLastArena: Double?
+        switch arenaClock {
+        case .live:
+            secondsSinceLastArena = arenaTriggerBox?.secondsSinceLastArena(now: now)
+        case .arenaJustFinished:
+            secondsSinceLastArena = 0
+        }
         let sessionStart = checkpoint?.currentSessionStart ?? (parallelStats?.sessionStart ?? now)
         let elapsedSec = max(0, now.timeIntervalSince(sessionStart))
         let snap = parallelStats
@@ -1118,7 +1140,7 @@ extension SessionController {
             wideLichess: lichessProbeWideHistory.makeSnapshot(),
             tactical: tacticalProbeHistory.makeSnapshot()
         )
-        .withArenaClock(secondsSinceLastArena: arenaTriggerBox?.secondsSinceLastArena(now: now))
+        .withArenaClock(secondsSinceLastArena: secondsSinceLastArena)
     }
 
     // MARK: - Session resume (Stage 4k)
