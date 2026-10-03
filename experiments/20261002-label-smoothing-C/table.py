@@ -23,7 +23,7 @@ from table_common import (BASELINE_LOG, buffer_plies_per_game, csv_points, csv_p
 PROBE_ARMS = [
     ("C policy ε 0.03", os.path.join(HERE, "probes.jsonl"), "20261002-5-WkQG"),
     ("C seed 2", os.path.join(HERE, "probes-seed2.jsonl"), probe_record.NOT_STARTED),
-    ("D value ε 0", os.path.join(HERE, "..", "20261002-label-smoothing-D", "probes.jsonl"), probe_record.NOT_STARTED),
+    ("D value ε 0", os.path.join(HERE, "..", "20261002-label-smoothing-D", "probes.jsonl"), "20261003-21-yEjN"),
 ]
 
 
