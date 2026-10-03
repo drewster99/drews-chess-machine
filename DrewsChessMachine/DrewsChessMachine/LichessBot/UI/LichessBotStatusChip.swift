@@ -58,9 +58,19 @@ struct LichessBotStatusChip: View {
         if games > 0 {
             return "\(base) · \(games) game\(games == 1 ? "" : "s")"
         }
-        let leftovers = controller.leftoverGamesFromLastRun.count
-        if leftovers > 0 {
-            return "\(base) · \(leftovers) unfinished from last run"
+        // Unfinished games may be running on DCM's clock; finished ones
+        // only wait to be filed. Both are settled by going online.
+        var lastRun: [String] = []
+        let unfinished = controller.leftoverGamesFromLastRun.count
+        if unfinished > 0 {
+            lastRun.append("\(unfinished) unfinished")
+        }
+        let toFile = controller.finishedGamesAwaitingFilingFromLastRun.count
+        if toFile > 0 {
+            lastRun.append("\(toFile) to file")
+        }
+        if !lastRun.isEmpty {
+            return "\(base) · \(lastRun.joined(separator: ", ")) from last run"
         }
         return base
     }

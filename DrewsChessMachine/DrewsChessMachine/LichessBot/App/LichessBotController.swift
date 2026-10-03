@@ -844,21 +844,52 @@ final class LichessBotController {
 
     // MARK: - Games left from the last run
 
-    /// Games whose journal an earlier run left in `InProgress/` (it stopped
-    /// with them running, or before filing them), found at launch while the
-    /// bot is offline. Any still live on Lichess runs on DCM's clock until
-    /// the bot goes online and resumes it; the status chip says so.
+    /// Games an earlier run left in `InProgress/` whose journal records no
+    /// finish (it stopped with them running), or whose journal can't be
+    /// read, found at launch while the bot is offline. Any still live on
+    /// Lichess runs on DCM's clock until the bot goes online and resumes
+    /// it; the status chip says so.
     private(set) var leftoverGamesFromLastRun: [String] = []
+    /// Games an earlier run finished but left in `InProgress/`, found at
+    /// launch while the bot is offline. A quit doesn't wait for a finished
+    /// game's post-game chat fetches, so ordinary quits leave these; nothing
+    /// is at stake, and going online files them (launch recovery). The
+    /// status chip counts them apart from the unfinished ones.
+    private(set) var finishedGamesAwaitingFilingFromLastRun: [String] = []
     private var leftoverJournalsChecked = false
 
+    /// Whether the bot is offline (or stopped in Error) — not going online,
+    /// online or draining.
+    private var isOfflineOrError: Bool {
+        switch connection {
+        case .offline, .error:
+            return true
+        case .connecting, .online, .draining:
+            return false
+        }
+    }
+
     /// Look once, at launch, for journals an earlier run left, and say so
-    /// (status chip, alarm, session log). Called from the main window's
-    /// status chip, which exists only in a GUI run: the controller itself is
-    /// also created for command-line runs, which must not report this.
+    /// (status chip, session log, and an alarm for any game that may still
+    /// be live). Called from the main window's status chip, which exists
+    /// only in a GUI run: the controller itself is also created for
+    /// command-line runs, which must not report this.
+    ///
+    /// Each journal is read for the finish it recorded. One that recorded a
+    /// finish is a game the last run finished but hadn't filed yet; one
+    /// with no finish may be running on Lichess on DCM's clock; one that
+    /// can't be read could be either, and its alarm names why.
+    ///
+    /// Going online resumes or files these games itself and clears the
+    /// report, so a report is dropped if going online began before or while
+    /// it was computed: `goOnline` leaves Offline/Error before its first
+    /// suspension, and every runtime start bumps `runtimeGeneration`.
     func noteLeftoverJournalsAtLaunch() async {
         guard !leftoverJournalsChecked else { return }
         leftoverJournalsChecked = true
-        guard runtime == nil else { return }
+        guard isOfflineOrError else { return }
+        let generationAtStart = runtimeGeneration
+        func stillOffline() -> Bool { runtimeGeneration == generationAtStart && isOfflineOrError }
         let store = LichessBotRecordStore(directory: dataDirectory, journalQueue: journalQueue, indexQueue: fileQueue, ourAccountID: accountID)
         let leftovers: [String]
         do {
@@ -867,9 +898,33 @@ final class LichessBotController {
             raiseAlarm("Checking for games left from the last run failed: \(Self.safeDescription(error))")
             return
         }
-        guard runtime == nil, !leftovers.isEmpty else { return }
-        leftoverGamesFromLastRun = leftovers
-        raiseAlarm("The last run left \(leftovers.count) game(s) not filed (\(leftovers.joined(separator: ", "))). Any still live on Lichess is running on DCM's clock: go online to resume it.")
+        guard stillOffline(), !leftovers.isEmpty else { return }
+        var unfinished: [String] = []
+        var finished: [String] = []
+        var unreadable: [(gameID: String, reason: String)] = []
+        for gameID in leftovers {
+            do {
+                if try await store.journalFinishedStatus(gameID: gameID) == nil {
+                    unfinished.append(gameID)
+                } else {
+                    finished.append(gameID)
+                }
+            } catch {
+                unreadable.append((gameID: gameID, reason: Self.safeDescription(error)))
+            }
+            guard stillOffline() else { return }
+        }
+        leftoverGamesFromLastRun = (unfinished + unreadable.map(\.gameID)).sorted()
+        finishedGamesAwaitingFilingFromLastRun = finished
+        if !finished.isEmpty {
+            SessionLogger.shared.log("[LICHESS-BOT] the last run finished \(finished.count) game(s) but didn't file them (\(finished.joined(separator: ", "))); going online files them")
+        }
+        if !unfinished.isEmpty {
+            raiseAlarm("The last run left \(unfinished.count) game(s) not filed with no finish recorded (\(unfinished.joined(separator: ", "))). Any still live on Lichess is running on DCM's clock: go online to resume it.")
+        }
+        for game in unreadable {
+            raiseAlarm("The last run left game \(game.gameID) not filed, and its journal can't be read, so DCM can't tell whether it finished: \(game.reason). If it is still live on Lichess it is running on DCM's clock: go online to resume it.")
+        }
     }
 
     /// Whether this game's filing waits for its post-game chat: the
@@ -2485,6 +2540,7 @@ final class LichessBotController {
         tokenState = .saved(info)
         // Going online resumes (or files) whatever the last run left.
         leftoverGamesFromLastRun = []
+        finishedGamesAwaitingFilingFromLastRun = []
 
         let settingsBox = SyncBox(settings)
         self.settingsBox = settingsBox
