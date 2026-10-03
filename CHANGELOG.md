@@ -17,6 +17,9 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 - **Fresh mints are reproducible and record their seed.** `--new-model --init-seed <u64>` (or a drawn seed) mints the same tensors on every machine; the seed and scheme are logged and written as `init_seed` / `init_scheme` safetensors metadata. Build New Model has an optional **Init seed** field (empty = drawn, shown in the status and the `[BUTTON]` log line). The BN-calibration warmup game is walked from the mint's `init.bn_calibration` stream. Fresh corpus-replay and train-vs-UCI runs (no start model) log their drawn seed.
 - **`--derive-model --set-se-beta-init glorot`** re-draws β with the same per-tensor stream under `--init-seed` (or a drawn seed), recorded in `derivation_history`.
 - `scripts/init_reproducibility.sh` mints a fixed set of seeds × presets and prints tensor-data hashes for comparing machines.
+- **Fresh corpus-replay and train-vs-UCI models take their init seed from the run seed** (`childSeed(master, "init")`), so `--seed` reproduces their weights as well as their BN calibration; logged `init_seed=… init_scheme=… (from run seed …)`.
+- **Every constructor says how its weights start:** `initialization` has no default on `ChessNetwork`, `ChessTrainer` or the hyperparameters convenience init.
+- **The seed is not in `dcm_lineage` yet:** the record's `rng` block has no init-seed slot, so a `--new-model` file carries it as flat `init_seed` / `init_scheme` keys beside its lineage.
 - Tests: `DCMNormalMathTests` (exhaustive over every grid input), `InitSchemeGoldenTests` (goldens from an independent Python implementation), `WeightInitializationTests`, `InitSeedRecordingTests`.
 
 ## 2026-10-02 CDT — Every training draw comes from a stream of the run's seed (`86ddc626`, `9f97426a`, `26f4d112`)

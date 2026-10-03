@@ -1586,6 +1586,31 @@ seed.
   training-vs-inference BN diagnostic varies it per trial; production sweeps pass
   `.drawnSeed()`. (6) `SetSEBetaInitDeriveOperation.init(value:groupIndices:)` draws a seed
   (existing tests use that form); the CLI path always records the seed it used.
+- **Merged with P3 and P6 (`20d5062d`).** P3 had wired the BN-calibration walk to a
+  model init seed on its own, so the two were made one:
+  - `NetworkInitMode` is `.randomWeights(initSeed:)` (P3's case, now also the seeded
+    per-tensor draw; the names `.seededRandomWeights` / `.weightsToBeLoaded` above
+    are gone) and `.overwrittenByLoad`, now a real case that draws nothing and gates
+    use until a load — P3's static of that name built from a system-drawn seed,
+    which its doc said per-tensor initialization would replace.
+  - The walk uses P3's `DCMRandomStreams.batchNormCalibrationGenerator(initSeed:)` and
+    `warmupBatch(encoding:random:)`; the derivation (`init.bn_calibration` under the
+    init seed) was the same in both, so `WeightInitScheme.bnCalibrationSeed` was
+    removed and its golden now pins the generator.
+  - A fresh corpus-replay or train-vs-UCI model takes P3's
+    `freshModelInitSeed` (`childSeed(master, "init")`) instead of a drawn seed, so
+    `--seed` reproduces its weights too; logged `init_seed=… init_scheme=… (from run
+    seed …)`. `WeightInitialization.drawnInitSeed()` draws through
+    `RunRandomSeed.systemDrawnSeed()`, the one system seed draw.
+  - P3's own init-seed draws in Build Network and `--new-model` were dropped:
+    each mint has the one seed (entered or drawn) that P5 logs and records.
+  - **Where the init seed is recorded.** D2 puts it in `dcm_lineage.rng.init_seed` /
+    `init_scheme`, but P6's `rng` block has no such slot (it holds `seed_mode` and the
+    dropout state, marked as P3/P9's integration point), and every record key is
+    required on decode, so adding one changes the v7 record. That change is left to the
+    phase that completes `rng` (P9/P10); until then the flat `init_seed` /
+    `init_scheme` keys of a `--new-model` file are the record, written next to its
+    `dcm_lineage`.
 
 **P6 — Format v5 + `LineageRecord`.** Files: `Persistence/LineageRecord.swift`,
 `Persistence/LineageTracker.swift`, `Network/ArchitectureFormat.swift` (v5),
