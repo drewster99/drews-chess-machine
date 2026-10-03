@@ -403,6 +403,36 @@ final class LineageRecordTests: XCTestCase {
         XCTAssertEqual(point.epoch, 1)
     }
 
+    /// A pre-lineage replay file whose `replay_*` keys are `keys`: the
+    /// trainer file's tensors and metadata, without its lineage, at format 6.
+    private func legacyReplayFile(_ keys: [String: String], named name: String) throws -> URL {
+        let data = try trainerFile(modelID: "20261003-1-LEGK", steps: 7,
+                                   lineage: try LineageRecord.forTests(trainerCompletedSteps: 7, corpus: nil))
+        let (tensors, md) = try SafetensorsFile.decode(data)
+        var legacy = md.filter { !Set([LineageRecord.metadataKey, SafetensorsFile.contentHashKey] + LineageRecord.MirrorKey.all).contains($0.key) }
+        legacy[SafetensorsModelIO.Key.formatVersion] = "6"
+        legacy.merge(keys) { _, new in new }
+        return try write(try SafetensorsFile.encode(tensors: tensors, metadata: legacy), named: name)
+    }
+
+    /// A missing position is not game 0: resuming there would silently
+    /// retrain the corpus from its start.
+    func testLegacyResumePointWithoutNextGameIndexThrows() throws {
+        let url = try legacyReplayFile(["replay_corpus_id": "corp-legacy", "replay_epoch": "1"], named: "no-next.safetensors")
+        XCTAssertThrowsError(try SafetensorsModelIO.replayResumePoint(at: url)) { error in
+            XCTAssertTrue(String(describing: error).contains("replay_next_game_index"), "\(error)")
+        }
+    }
+
+    func testLegacyResumePointWithMalformedEpochThrows() throws {
+        let url = try legacyReplayFile(["replay_corpus_id": "corp-legacy", "replay_next_game_index": "21",
+                                        "replay_epoch": "abc"], named: "bad-epoch.safetensors")
+        XCTAssertThrowsError(try SafetensorsModelIO.replayResumePoint(at: url)) { error in
+            XCTAssertTrue(String(describing: error).contains("replay_epoch"), "\(error)")
+            XCTAssertTrue(String(describing: error).contains("abc"), "\(error)")
+        }
+    }
+
     // MARK: - Derived models
 
     func testDerivedModelStartsANewRunCarryingTheSourceTotals() throws {

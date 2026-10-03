@@ -30,16 +30,22 @@
 //  pinned directly, without the GPU, by `ReplayBufferResumeEquivalenceTests`.
 //
 //  Variants: a resume inside the first epoch at a KL-probe step; a resume early
-//  in the second epoch (the refeed window reaches back across the wrap); and
-//  probes on versus off (a probe must not move any stream or weight). Corpus
-//  replay applies no sampling constraints (stratification and length tilt are
-//  GUI-only), so those draw paths are covered by the buffer tests, not here.
+//  in the second epoch (the refeed window reaches back across the wrap); the
+//  same under a two-pass epoch budget instead of a step limit; and probes on
+//  versus off (a probe must not move any stream or weight). Two resumes that
+//  cannot be exact are refused rather than run: one whose epoch budget the
+//  checkpoint's run has already spent, and one whose rebuilt buffer would
+//  not hold what the saved run's held (a run started part-way into the
+//  corpus that saved before its buffer filled). Replay samples under the
+//  run's sampling constraints, so the in-epoch resume is also run with the
+//  declared defaults, with every constraint binding, and with material
+//  stratification.
 //
 //  Not covered here, and why: a resume refused for a gap (a parameter change,
-//  a pre-lineage file) ends the process through the runner's exit path, so
-//  the refusal and the gap list are pinned at the decision level by
-//  `ExactResumeCompletionTests`; the GUI and train-vs-UCI state round trips
-//  (no trajectory claim, D-1) are pinned by `ExactResumeCompletionTests`,
+//  a pre-lineage file) throws a `CLIRunRefusal` out of `runReplay` — pinned
+//  in-process by `CorpusReplayRefusalTests`, and at the decision level (the
+//  gap list) by `ExactResumeCompletionTests`; the GUI and train-vs-UCI state
+//  round trips (no trajectory claim, D-1) are pinned by `ExactResumeCompletionTests`,
 //  `GuiResumeGapsTests`, `SessionSaveReplayBufferTests` and
 //  `RunObservabilityResumeTests`. `scripts/resume_equivalence.sh` runs the
 //  same comparison through the shipped binary on a real corpus.
@@ -207,6 +213,30 @@ final class ResumeEquivalenceTests: XCTestCase {
             presetName: nil,
             startShard: nil,
             startGameIndex: nil,
+            resumeExact: resumeExact,
+            acceptInexact: [],
+            outModelPath: tempDir.appendingPathComponent(out).path,
+            overwriteOutModel: false,
+            runModelID: "20261003-2-RQEV",
+            output: nil,
+            runRandomSeed: RunRandomSeed.resolve(
+                mode: .seeded, configuredSeed: Self.runSeed, commandLineSeed: nil,
+                drawSeed: { preconditionFailure("a seeded run never draws its seed") }))
+    }
+
+    /// A run configuration with the budget and start position of the
+    /// caller's choosing: a step limit, an epoch budget (`--epochs`), both
+    /// or neither (a single pass), and an optional `--start-game-index`.
+    private func config(stepLimit: Int?, epochs: Int?, startGameIndex: Int?, startModel: URL, resumeExact: Bool,
+                        out: String) -> CorpusReplayConfig {
+        CorpusReplayConfig(
+            corpusDirectories: [corpusDir],
+            stepLimit: stepLimit,
+            epochs: epochs,
+            startModelPath: startModel.path,
+            presetName: nil,
+            startShard: nil,
+            startGameIndex: startGameIndex,
             resumeExact: resumeExact,
             acceptInexact: [],
             outModelPath: tempDir.appendingPathComponent(out).path,
@@ -536,5 +566,91 @@ final class ResumeEquivalenceTests: XCTestCase {
                           try endState(straight.url, "\(c.name) uninterrupted"),
                           agreement: agreement, "\(c.name) resume")
         }
+    }
+
+    // MARK: - Epoch budget and buffer fill
+
+    /// A run's epoch budget counts from the start of its lineage, so a
+    /// resume of a checkpoint saved in the second epoch, with no step limit
+    /// and the default budget of one pass, has nothing left to train. It is
+    /// refused before any training or save — not run to an immediate end
+    /// whose save would record a corpus position behind its parent's.
+    func testAResumeWhoseEpochBudgetIsSpentIsRefused() async throws {
+        let first = try await run(stepLimit: 50, from: startModelURL, resumeExact: false,
+                                  out: "budget-first.safetensors", sampling: .declared)
+        XCTAssertEqual(try endState(first.url, "budget first segment").corpus.epoch, 1, "the save is in the second epoch")
+        let resumedOut = "budget-resumed.safetensors"
+        let cfg = config(stepLimit: nil, epochs: nil, startGameIndex: nil, startModel: first.url, resumeExact: true,
+                         out: resumedOut)
+        do {
+            let result = try await CorpusReplayRunner.runReplay(
+                config: cfg, params: try replayParams(probesOn: true, sampling: .declared), abort: ReplayAbortFlag())
+            XCTFail("the resume ran (\(result.steps) steps) although its epoch budget was spent")
+        } catch CorpusReplayError.exactResumeEpochBudgetSpent(let savedEpoch, let epochLimit) {
+            XCTAssertEqual(savedEpoch, 1)
+            XCTAssertEqual(epochLimit, 1)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent(resumedOut).path),
+                       "a refused resume writes no model")
+    }
+
+    /// Two passes straight through versus a step-limited first segment
+    /// ending in the second epoch, continued with `--resume-exact` under the
+    /// same two-pass budget: the resume crosses no wrap of its own, trains
+    /// to the end of the second pass, and ends where the uninterrupted run
+    /// ends.
+    func testACrossEpochResumeUnderAnEpochBudgetEndsWhereTheUninterruptedRunEnds() async throws {
+        let agreement = try await determinismProbe()
+        let n = 50
+        let params = try replayParams(probesOn: true, sampling: .declared)
+        let straight = try await CorpusReplayRunner.runReplay(
+            config: config(stepLimit: nil, epochs: 2, startGameIndex: nil, startModel: startModelURL, resumeExact: false,
+                           out: "epochs-straight.safetensors"),
+            params: params, abort: ReplayAbortFlag())
+        XCTAssertGreaterThan(straight.steps, n, "two passes take more steps than the first segment")
+        let first = try await run(stepLimit: n, from: startModelURL, resumeExact: false,
+                                  out: "epochs-first.safetensors", sampling: .declared)
+        XCTAssertEqual(try endState(first.url, "epochs first segment").corpus.epoch, 1, "the save is in the second epoch")
+        let second = try await CorpusReplayRunner.runReplay(
+            config: config(stepLimit: nil, epochs: 2, startGameIndex: nil, startModel: first.url, resumeExact: true,
+                           out: "epochs-second.safetensors"),
+            params: params, abort: ReplayAbortFlag())
+        XCTAssertEqual(second.steps, straight.steps - n, "the resume trains the rest of the second pass")
+        let straightEnd = try endState(tempDir.appendingPathComponent("epochs-straight.safetensors"), "two passes straight")
+        XCTAssertEqual(straightEnd.corpus.epoch, 2, "a finished two-pass run stands at the start of a third pass")
+        XCTAssertEqual(straightEnd.corpus.nextGameIndex, 0)
+        assertSameEnd(try endState(tempDir.appendingPathComponent("epochs-second.safetensors"), "two passes resumed"),
+                      straightEnd, agreement: agreement, "epoch-budget resume")
+    }
+
+    /// A run started part-way into the corpus that saves before its buffer
+    /// fills holds only the games it fed; the resume's refeed window
+    /// reaches back before that start, so the rebuilt buffer holds more.
+    /// The resume must not continue as exact with a buffer the saved run
+    /// never had.
+    func testAResumeOfARunStartedMidCorpusIsNotReportedExact() async throws {
+        let startGame = Self.corpusGames / 2
+        let firstOut = "midcorpus-first.safetensors"
+        let firstResult = try await CorpusReplayRunner.runReplay(
+            config: config(stepLimit: 3, epochs: nil, startGameIndex: startGame, startModel: startModelURL,
+                           resumeExact: false, out: firstOut),
+            params: try replayParams(probesOn: true, sampling: .declared), abort: ReplayAbortFlag())
+        XCTAssertEqual(firstResult.steps, 3)
+        let firstEnd = try endState(tempDir.appendingPathComponent(firstOut), "mid-corpus first segment")
+        XCTAssertLessThan(firstEnd.corpus.populatedPlies, firstEnd.corpus.bufferCapacity,
+                          "the first segment saves before its buffer fills")
+        let resumedOut = "midcorpus-resumed.safetensors"
+        do {
+            let result = try await CorpusReplayRunner.runReplay(
+                config: config(stepLimit: 3, epochs: nil, startGameIndex: nil,
+                               startModel: tempDir.appendingPathComponent(firstOut), resumeExact: true, out: resumedOut),
+                params: try replayParams(probesOn: true, sampling: .declared), abort: ReplayAbortFlag())
+            XCTFail("the resume ran (\(result.steps) steps) with a buffer the saved run never had")
+        } catch CorpusReplayError.exactResumeBufferMismatch(let saved, let rebuilt, _) {
+            XCTAssertEqual(saved, firstEnd.corpus.populatedPlies)
+            XCTAssertNotEqual(rebuilt, saved)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent(resumedOut).path),
+                       "a refused resume writes no model")
     }
 }

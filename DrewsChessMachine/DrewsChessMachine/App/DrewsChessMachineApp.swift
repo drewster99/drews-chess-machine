@@ -556,7 +556,11 @@ struct DrewsChessMachineApp: App {
                                               segment, so the run refuses to start when its stem already has step
                                               files it could reach at its segment index -- give that run its own
                                               --out-model stem (e.g. <name>-resume2-replay-latest.safetensors).
-              --epochs <n>                    Replay budget: number of full passes over the corpus.
+              --epochs <n>                    Replay budget: number of full passes over the corpus (default 1 when
+                                              no --training-step-limit is given), counted from the start of the
+                                              run's lineage: a --resume-exact of a checkpoint saved in pass k
+                                              (epoch k, 0-based) needs --epochs above k or a step limit, and is
+                                              refused otherwise.
               --gpu-capture-step <n> --gpu-capture-out <file.gputrace>
                                               (with --replay-corpus) Capture training step n as an Xcode GPU trace
                                               document for per-kernel profiling, then keep training. Needs the

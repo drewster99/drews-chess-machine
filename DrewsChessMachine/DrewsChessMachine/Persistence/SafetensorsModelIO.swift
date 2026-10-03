@@ -387,17 +387,23 @@ enum SafetensorsModelIO {
     /// model ID, content hash, trainer clock (`trainer_completed_steps`, or
     /// the plain file's `training_step`) and lineage, with no tensor decode.
     static func readParentFile(at url: URL) throws -> LineageTracker.ParentFile {
-        let md = try ModelFileCatalog.headerMetadata(at: url)
+        try readParentFile(fromMetadata: try ModelFileCatalog.headerMetadata(at: url), source: url.lastPathComponent)
+    }
+
+    /// `readParentFile(at:)` over a header's `__metadata__` already read, so
+    /// a caller that needs other keys of the same header reads it once.
+    /// `source` names the file in errors.
+    static func readParentFile(fromMetadata md: [String: String], source: String) throws -> LineageTracker.ParentFile {
         let version = try ArchitectureFormat.safetensorsFormatVersion(
-            metadataValue: md[Key.formatVersion], source: url.lastPathComponent)
+            metadataValue: md[Key.formatVersion], source: source)
         guard let modelID = md[Key.modelID] else {
-            throw IOError.missingModelID(source: url.lastPathComponent)
+            throw IOError.missingModelID(source: source)
         }
         let fileLineage = try lineage(fromMetadata: md, formatVersion: version)
         return LineageTracker.ParentFile(
             modelID: modelID,
             contentSHA256: md[SafetensorsFile.contentHashKey],
-            trainerCompletedSteps: try trainerClock(fromMetadata: md, source: url.lastPathComponent),
+            trainerCompletedSteps: try trainerClock(fromMetadata: md, source: source),
             lineage: fileLineage,
             derivationHistory: try LineageTracker.ParentFile.derivationHistory(lineage: fileLineage, metadata: md)
         )
@@ -425,11 +431,16 @@ enum SafetensorsModelIO {
     /// the `replay_*` / `built_by_*` keys corpus replay wrote then.
     struct ReplayResumeMetadata: Sendable {
         var corpusID: String
-        var corpusPath: String
+        /// Where the corpus was when the checkpoint was written — a hint;
+        /// the corpus is matched by `corpusID`. Nil when a file written
+        /// before lineage does not record it.
+        var corpusPath: String?
         var nextGameIndex: Int
         var epoch: Int
-        var populatedPlies: Int
-        var capacity: Int
+        /// Positions in the replay buffer at the save, and its capacity.
+        /// Nil when a file written before lineage does not record them.
+        var populatedPlies: Int?
+        var capacity: Int?
         var builtByBuild: Int?
         var builtByGit: String?
     }
@@ -438,6 +449,12 @@ enum SafetensorsModelIO {
     enum ReplayResumeError: Error, CustomStringConvertible {
         case noCorpusPosition(file: String)
         case noLegacyResumeMetadata(file: String)
+        /// A file written before lineage names its corpus but not this
+        /// part of its position.
+        case legacyKeyMissing(file: String, key: String)
+        /// A file written before lineage holds `value` for `key`, which is
+        /// not an integer.
+        case legacyKeyMalformed(file: String, key: String, value: String)
 
         var description: String {
             switch self {
@@ -445,15 +462,22 @@ enum SafetensorsModelIO {
                 return "\(file) carries a lineage without a corpus position (not a corpus-replay checkpoint)"
             case .noLegacyResumeMetadata(let file):
                 return "\(file) carries no replay_* resume metadata (not a corpus-replay checkpoint)"
+            case let .legacyKeyMissing(file, key):
+                return "\(file) names its corpus (replay_corpus_id) but has no \(key), so where it stood in the "
+                    + "corpus is unknown"
+            case let .legacyKeyMalformed(file, key, value):
+                return "\(file) has \(key) \"\(value)\", which is not an integer"
             }
         }
     }
 
     /// Where a corpus-replay checkpoint stood in its corpus: from its
     /// lineage record (`fed.corpus`) when it has one, else — for a file
-    /// written before lineage — from the legacy `replay_*` keys.
+    /// written before lineage — from the legacy `replay_*` keys. The header
+    /// is read once, for both.
     static func replayResumePoint(at url: URL) throws -> ReplayResumeMetadata {
-        let parent = try readParentFile(at: url)
+        let md = try ModelFileCatalog.headerMetadata(at: url)
+        let parent = try readParentFile(fromMetadata: md, source: url.lastPathComponent)
         switch parent.lineage {
         case .recorded(let record):
             guard let corpus = record.fed.corpus else {
@@ -470,38 +494,44 @@ enum SafetensorsModelIO {
                 builtByGit: record.build.gitHash
             )
         case .unrecorded:
-            guard let legacy = readResumeMetadata(at: url) else {
+            guard let legacy = try legacyResumeMetadata(fromMetadata: md, file: url.lastPathComponent) else {
                 throw ReplayResumeError.noLegacyResumeMetadata(file: url.lastPathComponent)
             }
             return legacy
         }
     }
 
-    /// Header-only read of the resume metadata: parses just the safetensors JSON
-    /// header (8-byte little-endian length prefix + that many JSON bytes), with
-    /// no tensor decode — cheap even on a multi-MB checkpoint. Returns nil if the
-    /// file isn't a resumable replay checkpoint (no `replay_corpus_id` key) or
-    /// the header can't be read.
-    static func readResumeMetadata(at url: URL) -> ReplayResumeMetadata? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? handle.close() }
-        guard let lenData = try? handle.read(upToCount: 8), lenData.count == 8 else { return nil }
-        var n: UInt64 = 0
-        for (k, b) in lenData.enumerated() { n |= UInt64(b) << (8 * k) }
-        guard n > 0, n < 64_000_000,
-              let jsonData = try? handle.read(upToCount: Int(n)), jsonData.count == Int(n),
-              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-              let md = obj["__metadata__"] as? [String: String],
-              let corpusID = md["replay_corpus_id"] else { return nil }
-        func intVal(_ key: String) -> Int? { md[key].flatMap { Int($0) } }
+    /// The resume point a file written before lineage records in its
+    /// `replay_*` / `built_by_*` header keys, or nil when it names no corpus
+    /// (`replay_corpus_id`; not a corpus-replay checkpoint). The position
+    /// (`replay_next_game_index`, `replay_epoch`) is required: a missing or
+    /// non-integer one throws, never reads as game 0 of epoch 0, which would
+    /// silently retrain the corpus from its start. The buffer fill and
+    /// capacity and the build number are nil when absent and throw when
+    /// present but not an integer.
+    static func legacyResumeMetadata(fromMetadata md: [String: String], file: String) throws -> ReplayResumeMetadata? {
+        guard let corpusID = md["replay_corpus_id"] else { return nil }
+        func optionalInt(_ key: String) throws -> Int? {
+            guard let text = md[key] else { return nil }
+            guard let value = Int(text) else {
+                throw ReplayResumeError.legacyKeyMalformed(file: file, key: key, value: text)
+            }
+            return value
+        }
+        func requiredInt(_ key: String) throws -> Int {
+            guard let value = try optionalInt(key) else {
+                throw ReplayResumeError.legacyKeyMissing(file: file, key: key)
+            }
+            return value
+        }
         return ReplayResumeMetadata(
             corpusID: corpusID,
-            corpusPath: md["replay_corpus_path"] ?? "",
-            nextGameIndex: intVal("replay_next_game_index") ?? 0,
-            epoch: intVal("replay_epoch") ?? 0,
-            populatedPlies: intVal("replay_populated_plies") ?? 0,
-            capacity: intVal("replay_capacity") ?? 0,
-            builtByBuild: intVal("built_by_build"),
+            corpusPath: md["replay_corpus_path"],
+            nextGameIndex: try requiredInt("replay_next_game_index"),
+            epoch: try requiredInt("replay_epoch"),
+            populatedPlies: try optionalInt("replay_populated_plies"),
+            capacity: try optionalInt("replay_capacity"),
+            builtByBuild: try optionalInt("built_by_build"),
             builtByGit: md["built_by_git"]
         )
     }

@@ -5,7 +5,7 @@ import os
 /// Cross-thread one-shot "please stop" flag for the train-vs-UCI loop.
 /// The SIGINT `DispatchSource` handler flips it; the training loop reads
 /// it once per step. Mirrors `CorpusReplayRunner`'s abort flag.
-private final class TrainVsUciAbortFlag: @unchecked Sendable {
+final class TrainVsUciAbortFlag: @unchecked Sendable {
     private let state = OSAllocatedUnfairLock(initialState: false)
     func request() { state.withLock { $0 = true } }
     var isRequested: Bool { state.withLock { $0 } }
@@ -109,7 +109,9 @@ enum TrainVsUciRunner {
         print(message)
     }
 
-    /// Run to completion and exit the process. Never returns.
+    /// Run to completion and exit the process. Never returns. Exit status 0
+    /// on success, 2 when the run is refused before it starts
+    /// (`CLIRunRefusal`), 33 on any other failure.
     static func runAndExit(config: TrainVsUciConfig, params: ReplayParams) -> Never {
         SessionLogger.shared.start()
         emit("[VS-UCI] starting train-vs-UCI over \(config.opponents.count) opponent kind(s)")
@@ -137,6 +139,13 @@ enum TrainVsUciRunner {
                     try await runTraining(config: config, params: params, abort: abort)
                 }
             }
+        } catch let refusal as CLIRunRefusal {
+            // Refused before any engine or network started: a usage
+            // problem, status 2, with the log drained before the exit.
+            FileHandle.standardError.write(Data("error: \(refusal.message)\n".utf8))
+            SessionLogger.shared.log("[VS-UCI] refused: \(refusal.message)")
+            SessionLogger.shared.shutdown()
+            Darwin.exit(2)
         } catch {
             FileHandle.standardError.write(Data("train-vs-uci: failed: \(error.localizedDescription)\n".utf8))
             SessionLogger.shared.log("[VS-UCI] failed: \(error.localizedDescription)")
@@ -150,7 +159,10 @@ enum TrainVsUciRunner {
 
     // MARK: - The run
 
-    private static func runTraining(config: TrainVsUciConfig, params p: ReplayParams, abort: TrainVsUciAbortFlag) async throws -> Result {
+    /// The whole train-vs-UCI run. Internal (not private) only so tests can
+    /// run its launch checks in-process; production enters through
+    /// `runAndExit`.
+    static func runTraining(config: TrainVsUciConfig, params p: ReplayParams, abort: TrainVsUciAbortFlag) async throws -> Result {
         // `--output` support. Only allocated when a destination was given, so a
         // run without `--output` carries no per-step recording cost at all.
         let recorder: CliTrainingRecorder? = config.output == nil ? nil : {
@@ -222,8 +234,7 @@ enum TrainVsUciRunner {
                                 configuredSeed: config.runRandomSeed.configuredSeed,
                                 commandLineSeed: config.runRandomSeed.origin == .commandLine ? config.runRandomSeed.masterSeed : nil)
                         } catch {
-                            FileHandle.standardError.write(Data("error: --resume-exact: \(error.localizedDescription)\n".utf8))
-                            Darwin.exit(2)
+                            throw CLIRunRefusal(message: "--resume-exact: \(error.localizedDescription)")
                         }
                         resumedStreams = streams
                         // Each opponent instance's game index sets the
@@ -253,8 +264,7 @@ enum TrainVsUciRunner {
                 let exactness = ResumeExactness.resume(of: file.lineageParent, gaps: resumeGaps)
                 emit(exactness.logLine)
                 if let refusal = exactness.refusal(accepting: config.acceptInexact) {
-                    FileHandle.standardError.write(Data("error: \(refusal)\n".utf8))
-                    Darwin.exit(2)
+                    throw CLIRunRefusal(message: refusal)
                 }
             }
         } else {
@@ -263,8 +273,7 @@ enum TrainVsUciRunner {
             if let pn = config.presetName {
                 guard let preset = NetworkArchitecture.Preset(rawValue: pn) else {
                     let names = NetworkArchitecture.Preset.allCases.map(\.rawValue).joined(separator: ", ")
-                    FileHandle.standardError.write(Data("error: unknown --preset '\(pn)'. Available: \(names)\n".utf8))
-                    Darwin.exit(2)
+                    throw CLIRunRefusal(message: "unknown --preset '\(pn)'. Available: \(names)")
                 }
                 arch = NetworkArchitecture.preset(preset)
                 emit("[VS-UCI] fresh net from preset: \(pn)")
