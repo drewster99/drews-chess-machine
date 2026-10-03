@@ -44,6 +44,12 @@
 //  - v7: no new architecture field; every safetensors model file must
 //    carry a `dcm_lineage` record (`LineageRecord`). Older files load with
 //    their lineage reported as unrecorded.
+//  - v8: the init-neutral options (determinism plan B2, decision D-4):
+//    block groups must state `se_gamma_bias_init`, `branch_output_init` and
+//    `skip_projection_init`; the architecture must state
+//    `policy_head_final_init`, `value_head_final_init` and
+//    `value_head_draw_prior`. Older files resolve each to its standard value
+//    — the init every model was built with before the options existed.
 //
 
 import Foundation
@@ -53,7 +59,7 @@ enum ArchitectureFormat {
     /// The version every writer stamps today. Safetensors write it as the
     /// string `dcm_format_version`; presets and `architecture.json` write it
     /// as the integer `format_version`.
-    static let currentVersion = 7
+    static let currentVersion = 8
 
     /// First version whose block groups must carry `se_beta_init`
     /// (`BlockGroup.seBetaInit`). Files older than this resolve a missing
@@ -84,6 +90,16 @@ enum ArchitectureFormat {
     /// no lineage, and its lineage is reported as unrecorded — never
     /// reconstructed.
     static let lineageRequiredFromVersion = 7
+
+    /// First version whose architectures must carry the init-neutral options
+    /// (`BlockGroup.seGammaBiasInit`, `branchOutputInit`, `skipProjectionInit`;
+    /// `NetworkArchitecture.policyHeadFinalInit`, `valueHeadFinalInit`,
+    /// `valueHeadDrawPrior`). Files older than this resolve each missing
+    /// option to its standard value — every model built before the options
+    /// existed was initialized that way, so the resolution describes exactly
+    /// the init it had, and the architecture compares equal to what the same
+    /// file decoded to before.
+    static let initOptionsRequiredFromVersion = 8
 
     /// The version reported for a carrier that predates version markers
     /// entirely — a safetensors file with no `dcm_format_version`, or a
@@ -171,6 +187,9 @@ enum ArchitectureFormat {
         /// True when `rezero_alpha_cap` may be absent and resolves to the
         /// group's `rezero_alpha_init × rezeroTanhCeilingMultiple`.
         var allowsMissingRezeroAlphaCap: Bool { formatVersion < ArchitectureFormat.rezeroAlphaCapRequiredFromVersion }
+        /// True when the init-neutral options may be absent and resolve to
+        /// their standard values.
+        var allowsMissingInitOptions: Bool { formatVersion < ArchitectureFormat.initOptionsRequiredFromVersion }
 
         /// The same file, re-stamped with the version a nested carrier
         /// declares (a preset's `format_version`), sharing the log.
@@ -216,6 +235,41 @@ enum ArchitectureFormat {
         let decoder = JSONDecoder()
         decoder.userInfo[decodeFormatUserInfoKey] = format
         return decoder
+    }
+
+    // MARK: Init-neutral options
+
+    /// Decodes one init-neutral option: the stated value; else, for a file
+    /// older than `initOptionsRequiredFromVersion` — or one whose structure
+    /// already proves it older (`legacyByConstruction`: the pre-block-groups
+    /// uniform-tower keys, which no writer of a version with these options
+    /// emits) — `standard` (recorded on the format's legacy log as
+    /// `<location>.<key> := <rendered standard>`); else a
+    /// `missingRequiredField` error. The one rule every init option —
+    /// block-group and head — decodes through.
+    static func decodeInitOption<Value: Decodable, Key: CodingKey>(
+        _ type: Value.Type,
+        key: Key,
+        in container: KeyedDecodingContainer<Key>,
+        decoder: Decoder,
+        format: DecodeFormat,
+        legacyByConstruction: Bool,
+        standard: Value,
+        rendered: (Value) -> String
+    ) throws -> Value {
+        if let stated = try container.decodeIfPresent(type, forKey: key) {
+            return stated
+        }
+        guard legacyByConstruction || format.allowsMissingInitOptions else {
+            throw FormatError.missingRequiredField(
+                field: key.stringValue,
+                location: location(of: decoder),
+                formatVersion: format.formatVersion,
+                source: format.source)
+        }
+        let prefix = decoder.codingPath.isEmpty ? "" : "\(location(of: decoder))."
+        format.legacyLog.record("\(prefix)\(key.stringValue) := \(rendered(standard))")
+        return standard
     }
 
     // MARK: Version parsing

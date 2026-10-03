@@ -135,10 +135,46 @@ enum WeightInitScheme {
     /// drawn row-major in the on-disk layout, scaled, then converted with the
     /// same transform the safetensors loader uses.
     static func nativeValues(initSeed: UInt64, spec: WeightTensorSpec, distribution: Distribution) throws -> [Float] {
+        let stored = try storedValues(initSeed: initSeed, spec: spec, distribution: distribution)
+        return SafetensorsModelIO.fromTorchLayout(kind: spec.kind, nativeShape: spec.shape, torchData: stored)
+    }
+
+    /// `spec`'s initial fp32 values under `initSeed` in the ON-DISK (PyTorch)
+    /// layout the scheme draws in — what `--derive-model`, which rewrites
+    /// on-disk tensors, writes for a re-draw. `nativeValues` is this, converted.
+    static func storedValues(initSeed: UInt64, spec: WeightTensorSpec, distribution: Distribution) throws -> [Float] {
         let std = try standardDeviation(of: spec, distribution: distribution)
         var stored = standardNormals(seed: tensorSeed(initSeed: initSeed, tensorName: spec.name), count: spec.elementCount)
         for index in stored.indices { stored[index] = std * stored[index] }
-        return SafetensorsModelIO.fromTorchLayout(kind: spec.kind, nativeShape: spec.shape, torchData: stored)
+        return stored
+    }
+
+    /// The initial SE FC2 bias of a block of `group`: the γ half (all of it
+    /// for `attenuate_only`, the first `C` elements for `scale_and_bias`) at
+    /// the group's `seGammaBiasInit`, the β half at zero. `[expand]` in both
+    /// layouts. The single source shared by the graph builder and
+    /// `--derive-model`.
+    static func seFC2BiasValues(group: BlockGroup) throws -> [Float] {
+        switch group.seStyle {
+        case .none:
+            throw WeightInitError.seBiasOnSELessGroup
+        case .attenuateOnly:
+            return [Float](repeating: group.seGammaBiasInit, count: group.channels)
+        case .scaleAndBias:
+            return [Float](repeating: group.seGammaBiasInit, count: group.channels)
+                + [Float](repeating: 0, count: group.channels)
+        }
+    }
+
+    /// The identity-like skip projection `[outC, inC, 1, 1]` (OIHW, which is
+    /// both the native and the on-disk layout of a conv): 1 from input channel
+    /// `i` to output channel `i` for every `i < min(inC, outC)`, 0 elsewhere.
+    static func identityLikeProjectionValues(outChannels: Int, inChannels: Int) -> [Float] {
+        var values = [Float](repeating: 0, count: outChannels * inChannels)
+        for channel in 0..<min(outChannels, inChannels) {
+            values[channel * inChannels + channel] = 1
+        }
+        return values
     }
 
     /// The native initial values of a block's SE FC2 weight: a Glorot draw
@@ -178,6 +214,10 @@ enum WeightInitError: Error, Equatable, LocalizedError {
     case unexpectedShape(name: String, shape: [Int])
     /// Zero-β applied to a tensor that is not a scale-and-bias SE FC2.
     case zeroBetaOnUnsupportedTensor(name: String)
+    /// An SE FC2 bias asked for on a group with no SE block.
+    case seBiasOnSELessGroup
+    /// An identity-like projection asked for on a tensor that is not a 1×1 conv.
+    case identityLikeOnUnsupportedTensor(name: String, shape: [Int])
 
     var errorDescription: String? {
         switch self {
@@ -195,6 +235,10 @@ enum WeightInitError: Error, Equatable, LocalizedError {
             return "Weight init: '\(name)' has shape \(shape), which is not a conv (OIHW) or FC ([in, out]) shape."
         case let .zeroBetaOnUnsupportedTensor(name):
             return "Weight init: zero-β applies only to a scale-and-bias SE FC2, not '\(name)'."
+        case .seBiasOnSELessGroup:
+            return "Weight init: an SE FC2 bias was requested for a block group with no SE block."
+        case let .identityLikeOnUnsupportedTensor(name, shape):
+            return "Weight init: an identity-like init applies only to a 1×1 conv, not '\(name)' with shape \(shape)."
         }
     }
 }
@@ -251,6 +295,42 @@ final class TensorInitializer {
             let values = try WeightInitScheme.seFC2NativeValues(initSeed: initSeed, spec: spec, group: group)
             return ChessNetwork.makeWeightData(values, dataType: dataType)
         case .overwrittenByLoad:
+            return ChessNetwork.zerosData(count: spec.elementCount, dataType: dataType)
+        }
+    }
+
+    /// The initial data of a width-transition skip projection under the
+    /// group's `skipProjectionInit`: a He draw, or the identity-like constant.
+    func skipProjectionData(_ name: String, nativeShape: [Int], initialization projectionInit: SkipProjectionInit,
+                            dataType: MPSDataType) throws -> Data {
+        switch projectionInit {
+        case .he:
+            return try weightData(name, nativeShape: nativeShape, distribution: .heNormal, dataType: dataType)
+        case .identityLike:
+            let spec = try claim(name, nativeShape: nativeShape)
+            guard spec.kind == .conv, spec.shape.count == 4, spec.shape[2] == 1, spec.shape[3] == 1 else {
+                throw WeightInitError.identityLikeOnUnsupportedTensor(name: name, shape: spec.shape)
+            }
+            switch initialization {
+            case .seeded:
+                return ChessNetwork.makeWeightData(
+                    WeightInitScheme.identityLikeProjectionValues(outChannels: spec.shape[0], inChannels: spec.shape[1]),
+                    dataType: dataType)
+            case .overwrittenByLoad:
+                return ChessNetwork.zerosData(count: spec.elementCount, dataType: dataType)
+            }
+        }
+    }
+
+    /// The initial data of a head's final projection under `finalInit`: a He
+    /// draw, or exact zeros.
+    func headFinalData(_ name: String, nativeShape: [Int], initialization finalInit: HeadFinalInit,
+                       dataType: MPSDataType) throws -> Data {
+        switch finalInit {
+        case .he:
+            return try weightData(name, nativeShape: nativeShape, distribution: .heNormal, dataType: dataType)
+        case .zero:
+            let spec = try claim(name, nativeShape: nativeShape)
             return ChessNetwork.zerosData(count: spec.elementCount, dataType: dataType)
         }
     }

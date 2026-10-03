@@ -111,7 +111,7 @@ final class LineageRecordTests: XCTestCase {
         let data = try trainerFile(modelID: "20261002-1-LNGA", steps: 12, lineage: record)
         let (tensors, md) = try SafetensorsFile.decode(data)
         XCTAssertFalse(tensors.isEmpty)
-        XCTAssertEqual(md[SafetensorsModelIO.Key.formatVersion], "7")
+        XCTAssertEqual(md[SafetensorsModelIO.Key.formatVersion], "8")
         XCTAssertEqual(md[LineageRecord.MirrorKey.lineageRunID], record.run.lineageRunID)
         XCTAssertEqual(md[LineageRecord.MirrorKey.cumTrainerStep], "12")
         XCTAssertEqual(md[LineageRecord.MirrorKey.segmentIndex], "0")

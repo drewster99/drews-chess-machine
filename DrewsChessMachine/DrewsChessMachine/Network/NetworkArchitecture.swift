@@ -354,6 +354,103 @@ enum SEScaleAndBiasBetaHalf {
     }
 }
 
+// MARK: - Init-neutral options (determinism plan B2, decision D-4)
+//
+// "Init-neutral" = the last layer of a path that is ADDED into a residual
+// stream or an output, initialized so the path contributes nothing (or a
+// known prior) at step 0 while still receiving gradient. Each option below
+// changes only the values a fresh build gives a tensor, never a tensor's
+// shape, and has a standard value equal to what every model was built with
+// before the option existed. Paths where zero would destroy the signal (the
+// post-merge LayerNorm, the stem, the feature-skip fusion conv, a zeroed skip
+// projection) are deliberately not offered.
+
+/// The init of the LAST BatchNorm γ of a block's residual branch.
+enum BranchOutputInit: String, Codable, CaseIterable, Sendable, Hashable {
+    /// γ = 1, like every BN (the behavior before this option existed).
+    case standard
+    /// γ = 0 on the BN that follows the branch's last conv (the "zero-init
+    /// last BN γ" of Goyal et al.): the branch adds exactly nothing at step 0,
+    /// so the block starts as its skip path; γ still receives gradient (its
+    /// normalized input is nonzero), and every conv keeps its random init.
+    /// Only a post-activation block has a BN after its last conv, so
+    /// `validate()` refuses it on a pre-activation group.
+    case zeroLastBNGamma = "zero_last_bn_gamma"
+}
+
+/// The init of a width-transition skip projection (the bias-free 1×1 conv a
+/// block gets where its input and output widths differ).
+enum SkipProjectionInit: String, Codable, CaseIterable, Sendable, Hashable {
+    /// He-normal, like every conv (the behavior before this option existed).
+    case he
+    /// A partial identity: weight 1 from input channel `i` to output channel
+    /// `i` for every `i` both widths have, 0 everywhere else — the projection
+    /// starts by passing the shared channels straight through and zero-filling
+    /// the new ones. It is the block's identity path, so it is never zero.
+    case identityLike = "identity_like"
+}
+
+/// The init of a head's final projection (the layer that produces the
+/// head's logits).
+enum HeadFinalInit: String, Codable, CaseIterable, Sendable, Hashable {
+    /// He-normal (the behavior before this option existed).
+    case he
+    /// Exactly zero: the head's output is its bias at step 0 — uniform policy
+    /// logits, or the value head's W/D/L prior. The final layer still gets
+    /// gradient (its input is nonzero); the earlier head layers start moving
+    /// one step later.
+    case zero
+}
+
+/// One init-neutral option of one architecture, named for the Build screen's
+/// highlight, the summary and the tests' "differs from standard" set. Block
+/// options carry their 0-based group index.
+enum InitOptionField: Hashable, Sendable {
+    case seGammaBiasInit(group: Int)
+    case branchOutputInit(group: Int)
+    case skipProjectionInit(group: Int)
+    case policyHeadFinalInit
+    case valueHeadFinalInit
+    case valueHeadDrawPrior
+
+    /// The architecture JSON key.
+    var jsonKey: String {
+        switch self {
+        case .seGammaBiasInit: return BlockGroup.CodingKeys.seGammaBiasInit.rawValue
+        case .branchOutputInit: return BlockGroup.CodingKeys.branchOutputInit.rawValue
+        case .skipProjectionInit: return BlockGroup.CodingKeys.skipProjectionInit.rawValue
+        case .policyHeadFinalInit: return NetworkArchitecture.CodingKeys.policyHeadFinalInit.rawValue
+        case .valueHeadFinalInit: return NetworkArchitecture.CodingKeys.valueHeadFinalInit.rawValue
+        case .valueHeadDrawPrior: return NetworkArchitecture.CodingKeys.valueHeadDrawPrior.rawValue
+        }
+    }
+
+    /// What a non-standard value of this option changes at step 0 — the
+    /// Build screen's tooltip.
+    var stepZeroEffect: String {
+        switch self {
+        case .seGammaBiasInit:
+            return "The SE gate bias starts at this level: at step 0 every SE gate is about sigmoid(bias) "
+                + "(0 → 0.5 halves the branch; a large bias passes it nearly unchanged). It still learns."
+        case .branchOutputInit:
+            return "The last BN γ of each branch starts at 0: the branch adds nothing at step 0, "
+                + "so each block starts as its skip path. γ still learns; every conv keeps its random init."
+        case .skipProjectionInit:
+            return "The width-transition 1×1 projection starts as a partial identity: shared channels pass "
+                + "straight through, new channels start at zero. It still learns."
+        case .policyHeadFinalInit:
+            return "The final policy layer starts at zero: the policy is uniform over every move at step 0. "
+                + "The layer still learns."
+        case .valueHeadFinalInit:
+            return "The final value layer starts at zero: at step 0 the value head outputs its W/D/L prior "
+                + "for every position. The layer still learns."
+        case .valueHeadDrawPrior:
+            return "The value head's initial draw probability: its output bias is set so the W/D/L softmax "
+                + "of zero logits is (½(1−p), p, ½(1−p))."
+        }
+    }
+}
+
 /// Policy-head topology. All three emit 4864 raw logits in the current
 /// `PolicyEncoding` (76x64); masking + softmax happen CPU-side downstream.
 enum PolicyHeadStyle: String, Codable, CaseIterable, Sendable, Hashable {
@@ -490,6 +587,30 @@ struct BlockGroup: Codable, Hashable, Sendable {
     /// resolve a missing value to the group's `activationFunction` (what the
     /// SE FC1 used before the field existed); v5+ files must state it.
     var seActivation: ActivationFunction
+    /// The value every element of the γ half of this group's SE FC2 bias
+    /// starts at (both SE styles; `attenuate_only`'s whole FC2 bias is its γ).
+    /// The standard value, 0, gives every SE gate `sigmoid(0) = 0.5` at init;
+    /// a positive level starts the SE nearly transparent (the neutral value,
+    /// `neutralSEGammaBiasInit`, gives 0.9). A constant, never a draw. On an
+    /// SE-less group it has no tensor, so `validate()` requires the standard
+    /// value there. Format-version gated (`ArchitectureFormat`): files older
+    /// than v8 resolve a missing value to the standard one.
+    var seGammaBiasInit: Float
+    /// The init of the last BN γ of this group's residual branches (see
+    /// `BranchOutputInit`). Format-version gated like `seGammaBiasInit`.
+    var branchOutputInit: BranchOutputInit
+    /// The init of this group's width-transition skip projection (see
+    /// `SkipProjectionInit`); meaningful only where the group's first block
+    /// changes width, and `validate()` requires the standard value elsewhere.
+    /// Format-version gated like `seGammaBiasInit`.
+    var skipProjectionInit: SkipProjectionInit
+
+    /// The SE γ-bias level every group had before `seGammaBiasInit` existed.
+    static let standardSEGammaBiasInit: Float = 0
+    /// The "near-identity SE" level the Neutral set uses: `ln 9`, so the gate
+    /// starts at exactly `sigmoid(ln 9) = 0.9` and the SE passes its branch
+    /// almost unchanged at step 0.
+    static let neutralSEGammaBiasInit = Float(log(9.0))
 
     /// `outputNorm` with the legacy-`nil` case folded into `.none`, so callers
     /// never branch on the Optional. This is the value the builder,
@@ -548,15 +669,19 @@ struct BlockGroup: Codable, Hashable, Sendable {
         case outputNorm = "output_norm"
         case seBetaInit = "se_beta_init"
         case seActivation = "se_activation"
+        case seGammaBiasInit = "se_gamma_bias_init"
+        case branchOutputInit = "branch_output_init"
+        case skipProjectionInit = "skip_projection_init"
     }
 
     /// Full memberwise init (spelled out because the custom `Codable` below
     /// suppresses the synthesized one): every field, the ReZero cap and the
     /// SE FC1 activation included. `outputNorm` and `seBetaInit` keep the
     /// defaults the synthesized init had: both are the behavior every group
-    /// had before the field existed. The overloads below omit the cap (and
-    /// optionally the SE activation) and spell the arrangements that existed
-    /// before those fields did.
+    /// had before the field existed. The init-neutral options are required
+    /// here with no default. The overloads below omit the cap (and optionally
+    /// the SE activation) and spell the arrangements that existed before
+    /// those fields did.
     init(
         count: Int,
         channels: Int,
@@ -573,7 +698,10 @@ struct BlockGroup: Codable, Hashable, Sendable {
         dropoutMultiplier: Float,
         outputNorm: BlockOutputNorm? = nil,
         seBetaInit: SEBetaInit = .glorot,
-        seActivation: ActivationFunction
+        seActivation: ActivationFunction,
+        seGammaBiasInit: Float,
+        branchOutputInit: BranchOutputInit,
+        skipProjectionInit: SkipProjectionInit
     ) {
         self.count = count
         self.channels = channels
@@ -591,6 +719,9 @@ struct BlockGroup: Codable, Hashable, Sendable {
         self.outputNorm = outputNorm
         self.seBetaInit = seBetaInit
         self.seActivation = seActivation
+        self.seGammaBiasInit = seGammaBiasInit
+        self.branchOutputInit = branchOutputInit
+        self.skipProjectionInit = skipProjectionInit
     }
 
     /// A group whose ReZero cap is derived from its init
@@ -601,7 +732,9 @@ struct BlockGroup: Codable, Hashable, Sendable {
     /// graph. `seActivation` is required here; the overload below, which also
     /// omits it, is the "SE FC1 shares the group's activation" spelling. A
     /// zero-init group needs the full init: its derived cap would be zero,
-    /// which `validate()` rejects.
+    /// which `validate()` rejects. Those recipes also predate the init-neutral
+    /// options, so this spelling states the standard value of each; a group
+    /// with a non-standard one sets it on the returned value.
     init(
         count: Int,
         channels: Int,
@@ -635,7 +768,10 @@ struct BlockGroup: Codable, Hashable, Sendable {
             dropoutMultiplier: dropoutMultiplier,
             outputNorm: outputNorm,
             seBetaInit: seBetaInit,
-            seActivation: seActivation)
+            seActivation: seActivation,
+            seGammaBiasInit: Self.standardSEGammaBiasInit,
+            branchOutputInit: .standard,
+            skipProjectionInit: .he)
     }
 
     /// A group whose SE FC1 uses the group's own `activationFunction` and
@@ -689,7 +825,11 @@ struct BlockGroup: Codable, Hashable, Sendable {
     /// resolve it to this group's `activation_function`), and
     /// `rezero_alpha_cap` from `ArchitectureFormat.rezeroAlphaCapRequiredFromVersion`
     /// (older files resolve it to `legacyRezeroAlphaCap` of this group's
-    /// `rezero_alpha_init`). Every resolution is recorded on `format`'s log.
+    /// `rezero_alpha_init`), and the init-neutral options (`se_gamma_bias_init`,
+    /// `branch_output_init`, `skip_projection_init`) from
+    /// `ArchitectureFormat.initOptionsRequiredFromVersion` (older files resolve
+    /// each to its standard value). Every resolution is recorded on `format`'s
+    /// log.
     init(from decoder: Decoder, format: ArchitectureFormat.DecodeFormat) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         count = try c.decode(Int.self, forKey: .count)
@@ -746,13 +886,26 @@ struct BlockGroup: Codable, Hashable, Sendable {
                 formatVersion: format.formatVersion,
                 source: format.source)
         }
+        seGammaBiasInit = try ArchitectureFormat.decodeInitOption(
+            Float.self, key: CodingKeys.seGammaBiasInit, in: c, decoder: decoder, format: format,
+            legacyByConstruction: false,
+            standard: Self.standardSEGammaBiasInit, rendered: { "\($0)" })
+        branchOutputInit = try ArchitectureFormat.decodeInitOption(
+            BranchOutputInit.self, key: CodingKeys.branchOutputInit, in: c, decoder: decoder, format: format,
+            legacyByConstruction: false,
+            standard: .standard, rendered: \.rawValue)
+        skipProjectionInit = try ArchitectureFormat.decodeInitOption(
+            SkipProjectionInit.self, key: CodingKeys.skipProjectionInit, in: c, decoder: decoder, format: format,
+            legacyByConstruction: false,
+            standard: .he, rendered: \.rawValue)
     }
 
     /// Writes every field. `output_norm` keeps its pre-existing
     /// write-only-when-set form so older fields encode byte-identically;
-    /// `se_beta_init`, `se_activation` and `rezero_alpha_cap` are ALWAYS
-    /// written (even when they equal their legacy resolution, and on groups
-    /// without ReZero), so a current-version file is self-describing.
+    /// `se_beta_init`, `se_activation`, `rezero_alpha_cap` and the
+    /// init-neutral options are ALWAYS written (even when they equal their
+    /// legacy resolution, and on groups without ReZero or SE), so a
+    /// current-version file is self-describing.
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(count, forKey: .count)
@@ -771,6 +924,9 @@ struct BlockGroup: Codable, Hashable, Sendable {
         try c.encodeIfPresent(outputNorm, forKey: .outputNorm)
         try c.encode(seBetaInit, forKey: .seBetaInit)
         try c.encode(seActivation, forKey: .seActivation)
+        try c.encode(seGammaBiasInit, forKey: .seGammaBiasInit)
+        try c.encode(branchOutputInit, forKey: .branchOutputInit)
+        try c.encode(skipProjectionInit, forKey: .skipProjectionInit)
     }
 }
 
@@ -838,6 +994,12 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
     /// Carries the Float directly (never coerced to Int) so it can report the
     /// NaN/infinite values it also rejects.
     case mustBeFinitePositive(field: String, value: Float)
+    /// A Float field that must be finite (any sign), e.g. the SE γ-bias init.
+    case mustBeFinite(field: String, value: Float)
+    /// An init-neutral option set to a non-standard value where its layer
+    /// does not exist (or, for the draw prior, outside its valid range).
+    /// `reason` says which.
+    case initOptionWithoutItsLayer(field: String, value: String, reason: String)
     /// `se_beta_init` other than `glorot` on a group whose SE style has no
     /// β half (only `scale_and_bias` does).
     case seBetaInitRequiresScaleAndBias(group: Int, seStyle: SEStyle, seBetaInit: SEBetaInit)
@@ -862,6 +1024,10 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
             return "\(field) must be finite and >= 0 (got \(value))"
         case .mustBeFinitePositive(let field, let value):
             return "\(field) must be finite and > 0 (got \(value))"
+        case .mustBeFinite(let field, let value):
+            return "\(field) must be finite (got \(value))"
+        case .initOptionWithoutItsLayer(let field, let value, let reason):
+            return "\(field) is '\(value)', but \(reason)"
         case .seBetaInitRequiresScaleAndBias(let group, let seStyle, let seBetaInit):
             return "blockGroups[\(group)].seBetaInit is '\(seBetaInit.rawValue)' but its se_style is "
                 + "'\(seStyle.rawValue)'; only '\(SEStyle.scaleAndBias.rawValue)' has a β half, so every "
@@ -911,6 +1077,22 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     var valueHeadConvChannels: Int
     var valueHeadHiddenUnits: Int
 
+    // Head init (init-neutral options, format v8) ---------------------------
+    /// Init of the policy head's final projection (`policy.conv.weight`, or
+    /// `policy.fc.weight` for `fc_bottleneck`). See `HeadFinalInit`.
+    var policyHeadFinalInit: HeadFinalInit
+    /// Init of the value head's final FC (`value.wdl_fc2.weight` /
+    /// `value.scalar_fc2.weight`). See `HeadFinalInit`.
+    var valueHeadFinalInit: HeadFinalInit
+    /// The W/D/L head's initial draw probability `p` in (0, 1): its final
+    /// bias starts at `wdlBiasPrior(drawProbability: p)`, so the softmax of
+    /// zero logits is `(½(1−p), p, ½(1−p))`. The standard value
+    /// (`standardValueHeadDrawPrior`) is the `ln 6` bias every W/D/L model was
+    /// built with. A claim about the data rather than a neutral choice, so the
+    /// Neutral set never changes it. A scalar value head has no draw class:
+    /// `validate()` requires the standard value there.
+    var valueHeadDrawPrior: Float
+
     // Precision -----------------------------------------------------------
     var computeDataType: ComputeDataType
 
@@ -943,6 +1125,9 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         valueHeadStyle: ValueHeadStyle,
         valueHeadConvChannels: Int,
         valueHeadHiddenUnits: Int,
+        policyHeadFinalInit: HeadFinalInit,
+        valueHeadFinalInit: HeadFinalInit,
+        valueHeadDrawPrior: Float,
         computeDataType: ComputeDataType,
         featureSkipSource: FeatureSkipSource,
         featureSkipFusion: FeatureSkipFusion,
@@ -959,6 +1144,9 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         self.valueHeadStyle = valueHeadStyle
         self.valueHeadConvChannels = valueHeadConvChannels
         self.valueHeadHiddenUnits = valueHeadHiddenUnits
+        self.policyHeadFinalInit = policyHeadFinalInit
+        self.valueHeadFinalInit = valueHeadFinalInit
+        self.valueHeadDrawPrior = valueHeadDrawPrior
         self.computeDataType = computeDataType
         self.featureSkipSource = featureSkipSource
         self.featureSkipFusion = featureSkipFusion
@@ -1018,7 +1206,13 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 // Every historical tower's SE FC1 used the tower's single
                 // activation. A tower with a different SE FC1 activation sets
                 // `seActivation` on the returned value's groups.
-                seActivation: activationFunction
+                seActivation: activationFunction,
+                // Every historical tower predates the init-neutral options,
+                // so it states their standard values; a tower with a
+                // non-standard one sets it on the returned value.
+                seGammaBiasInit: BlockGroup.standardSEGammaBiasInit,
+                branchOutputInit: .standard,
+                skipProjectionInit: .he
             )],
             stemConvKernelSize: stemConvKernelSize,
             activationFunction: activationFunction,
@@ -1027,6 +1221,9 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             valueHeadStyle: valueHeadStyle,
             valueHeadConvChannels: valueHeadConvChannels,
             valueHeadHiddenUnits: valueHeadHiddenUnits,
+            policyHeadFinalInit: .he,
+            valueHeadFinalInit: .he,
+            valueHeadDrawPrior: Self.standardValueHeadDrawPrior,
             computeDataType: computeDataType,
             // Uniform towers default to feature-skip OFF; presets that enable it
             // mutate the returned value's `featureSkip*` fields.
@@ -1062,6 +1259,9 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         case valueHeadStyle = "value_head_style"
         case valueHeadConvChannels = "value_head_conv_channels"
         case valueHeadHiddenUnits = "value_head_hidden_units"
+        case policyHeadFinalInit = "policy_head_final_init"
+        case valueHeadFinalInit = "value_head_final_init"
+        case valueHeadDrawPrior = "value_head_draw_prior"
         case computeDataType = "compute_data_type"
         case featureSkipSource = "feature_skip_source"
         case featureSkipFusion = "feature_skip_fusion"
@@ -1099,6 +1299,22 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         valueHeadStyle = try c.decode(ValueHeadStyle.self, forKey: .valueHeadStyle)
         valueHeadConvChannels = try c.decode(Int.self, forKey: .valueHeadConvChannels)
         valueHeadHiddenUnits = try c.decode(Int.self, forKey: .valueHeadHiddenUnits)
+        // The uniform-tower keys predate block groups, so a file in that form
+        // predates the head init options too, whatever version its carrier
+        // states (see the uniform-tower branch below).
+        let isUniformTowerForm = !c.contains(.blockGroups)
+        policyHeadFinalInit = try ArchitectureFormat.decodeInitOption(
+            HeadFinalInit.self, key: CodingKeys.policyHeadFinalInit, in: c, decoder: decoder, format: format,
+            legacyByConstruction: isUniformTowerForm,
+            standard: .he, rendered: \.rawValue)
+        valueHeadFinalInit = try ArchitectureFormat.decodeInitOption(
+            HeadFinalInit.self, key: CodingKeys.valueHeadFinalInit, in: c, decoder: decoder, format: format,
+            legacyByConstruction: isUniformTowerForm,
+            standard: .he, rendered: \.rawValue)
+        valueHeadDrawPrior = try ArchitectureFormat.decodeInitOption(
+            Float.self, key: CodingKeys.valueHeadDrawPrior, in: c, decoder: decoder, format: format,
+            legacyByConstruction: isUniformTowerForm,
+            standard: Self.standardValueHeadDrawPrior, rendered: { "\($0)" })
         computeDataType = try c.decode(ComputeDataType.self, forKey: .computeDataType)
         // Feature skip: optional + defaulted so every pre-feature-skip file decodes
         // to a fully-off (byte-identical) configuration.
@@ -1107,7 +1323,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         featureSkipToPolicyHead = try c.decodeIfPresent(Bool.self, forKey: .featureSkipToPolicyHead) ?? false
         featureSkipToValueHead = try c.decodeIfPresent(Bool.self, forKey: .featureSkipToValueHead) ?? false
         featureSkipToFinalBlock = try c.decodeIfPresent(Bool.self, forKey: .featureSkipToFinalBlock) ?? false
-        if c.contains(.blockGroups) {
+        if !isUniformTowerForm {
             var groupsContainer = try c.nestedUnkeyedContainer(forKey: .blockGroups)
             var groups: [BlockGroup] = []
             while !groupsContainer.isAtEnd {
@@ -1143,7 +1359,10 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 skipMerge: try c.decode(BlockSkipMerge.self, forKey: .legacyBlockSkipMerge),
                 dropoutMultiplier: 1,
                 seBetaInit: .glorot,
-                seActivation: activationFunction
+                seActivation: activationFunction,
+                seGammaBiasInit: BlockGroup.standardSEGammaBiasInit,
+                branchOutputInit: .standard,
+                skipProjectionInit: .he
             )]
             // The uniform-tower keys predate block groups, so no writer of any
             // version that has `se_beta_init`, `se_activation` or
@@ -1152,7 +1371,10 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             format.legacyLog.record(
                 "legacy uniform-tower keys: block_groups[0].\(BlockGroup.CodingKeys.seBetaInit.rawValue) := \(SEBetaInit.glorot.rawValue), "
                     + "block_groups[0].\(BlockGroup.CodingKeys.seActivation.rawValue) := \(activationFunction.rawValue), "
-                    + "block_groups[0].\(BlockGroup.CodingKeys.rezeroAlphaCap.rawValue) := \(legacyAlphaCap)")
+                    + "block_groups[0].\(BlockGroup.CodingKeys.rezeroAlphaCap.rawValue) := \(legacyAlphaCap), "
+                    + "block_groups[0].\(BlockGroup.CodingKeys.seGammaBiasInit.rawValue) := \(BlockGroup.standardSEGammaBiasInit), "
+                    + "block_groups[0].\(BlockGroup.CodingKeys.branchOutputInit.rawValue) := \(BranchOutputInit.standard.rawValue), "
+                    + "block_groups[0].\(BlockGroup.CodingKeys.skipProjectionInit.rawValue) := \(SkipProjectionInit.he.rawValue)")
         }
     }
 
@@ -1167,6 +1389,9 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         try c.encode(valueHeadStyle, forKey: .valueHeadStyle)
         try c.encode(valueHeadConvChannels, forKey: .valueHeadConvChannels)
         try c.encode(valueHeadHiddenUnits, forKey: .valueHeadHiddenUnits)
+        try c.encode(policyHeadFinalInit, forKey: .policyHeadFinalInit)
+        try c.encode(valueHeadFinalInit, forKey: .valueHeadFinalInit)
+        try c.encode(valueHeadDrawPrior, forKey: .valueHeadDrawPrior)
         try c.encode(computeDataType, forKey: .computeDataType)
         try c.encode(featureSkipSource, forKey: .featureSkipSource)
         try c.encode(featureSkipFusion, forKey: .featureSkipFusion)
@@ -1387,6 +1612,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 }
             }
         }
+        try validateInitOptions()
         try requirePositive("policyPreConvChannels", policyPreConvChannels)
         try requirePositive("valueHeadConvChannels", valueHeadConvChannels)
         try requirePositive("valueHeadHiddenUnits", valueHeadHiddenUnits)
@@ -1540,6 +1766,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             + " . act \(activationFunction.rawValue)"
             + " . policy \(policyHeadStyle.rawValue)(\(policySize))"
             + " . value \(valueDesc)"
+            + headInitMarker
             + skipDesc
             + " . \(computeDataType.rawValue) . \(parameterCount.formatted(.number)) params"
     }
@@ -1584,7 +1811,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         return "\(g.count)x[\(g.conv1KernelSize)x\(g.conv1KernelSize)+\(g.conv2KernelSize)x\(g.conv2KernelSize)"
             + " @\(g.channels), \(seDesc)\(seBetaDesc)\(seActivationDesc), \(g.activationFunction.rawValue)/\(g.activationStyle.rawValue)"
             + ", \(g.skipMerge.rawValue), \(rezeroDesc)\(outNormDesc)"
-            + ", drop*\(String(format: "%g", g.dropoutMultiplier))]"
+            + ", drop*\(String(format: "%g", g.dropoutMultiplier))\(groupInitMarker(g))]"
     }
 
     /// The ReZero clause of a group's rendering: `ReZero(<α₀>·tanh≤<cap>)`,
@@ -1759,6 +1986,187 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     /// per-trainable velocity tensors follow.
     func trainableTensorPlan() -> [WeightTensorSpec] {
         weightTensorPlan().filter { $0.kind != .bnRunningStat }
+    }
+}
+
+// MARK: - Init-neutral options
+
+extension NetworkArchitecture {
+
+    /// The draw probability every W/D/L model was built with before
+    /// `valueHeadDrawPrior` existed: bias `[0, ln 6, 0]`, softmax
+    /// `(0.125, 0.75, 0.125)`.
+    static let standardValueHeadDrawPrior: Float = 0.75
+
+    /// The W/D/L head's final bias for an initial draw probability `p`:
+    /// `[0, ln(2p / (1 − p)), 0]` (slot order `[win, draw, loss]`), whose
+    /// softmax is `(½(1−p), p, ½(1−p))` and whose derived scalar
+    /// `p_win − p_loss` is 0. The single source of the prior: the graph
+    /// builder, `--derive-model` and the tests all read it. Computed in Double
+    /// and narrowed once, so the standard prior is bit-identical to the `ln 6`
+    /// literal it replaced.
+    static func wdlBiasPrior(drawProbability p: Float) -> [Float] {
+        let probability = Double(p)
+        return [0, Float(log(2 * probability / (1 - probability))), 0]
+    }
+
+    /// The expanded-block index range of block group `group`.
+    func blockRange(ofGroup group: Int) -> Range<Int> {
+        let first = blockGroups[..<group].reduce(0) { $0 + $1.count }
+        return first..<(first + blockGroups[group].count)
+    }
+
+    /// The expanded blocks that carry a width-transition skip projection —
+    /// exactly the blocks `weightTensorPlan()` gives a `skip_proj.weight`
+    /// (input width, feature skip included, differs from the block's width).
+    var skipProjectionBlockIndices: [Int] {
+        var indices: [Int] = []
+        var inC = stemOutputChannels
+        for (index, block) in expandedBlocks.enumerated() {
+            if inC + blockSkipExtraInputChannels(blockIndex: index) != block.channels {
+                indices.append(index)
+            }
+            inC = block.channels
+        }
+        return indices
+    }
+
+    /// Whether any block of group `group` has a skip projection — where the
+    /// group's `skipProjectionInit` takes effect.
+    func groupHasSkipProjection(_ group: Int) -> Bool {
+        let range = blockRange(ofGroup: group)
+        return skipProjectionBlockIndices.contains { range.contains($0) }
+    }
+
+    /// The Neutral init set (the Build screen's "Neutral init" button and
+    /// `--derive-model --set-neutral-init`, so the two can never differ):
+    /// every option that has a layer to act on starts that path as a no-op —
+    /// a near-identity SE gate, a zero last BN γ where a BN follows the
+    /// branch's last conv (post-activation), an identity-like skip projection
+    /// where one exists, and zero head finals. Options without their layer
+    /// keep the standard value (`validate()` requires it there). The draw
+    /// prior is deliberately left alone: it is a claim about the training
+    /// data, and with a zero value-head final it IS the initial value output,
+    /// so it stays an explicit per-experiment choice.
+    func withNeutralInit() -> NetworkArchitecture {
+        var edited = self
+        for index in edited.blockGroups.indices {
+            let group = edited.blockGroups[index]
+            edited.blockGroups[index].seGammaBiasInit = group.seStyle == .none
+                ? BlockGroup.standardSEGammaBiasInit
+                : BlockGroup.neutralSEGammaBiasInit
+            edited.blockGroups[index].branchOutputInit = group.activationStyle == .post ? .zeroLastBNGamma : .standard
+            edited.blockGroups[index].skipProjectionInit = groupHasSkipProjection(index) ? .identityLike : .he
+        }
+        edited.policyHeadFinalInit = .zero
+        edited.valueHeadFinalInit = .zero
+        return edited
+    }
+
+    /// The Standard init set (the Build screen's "Standard init" button):
+    /// every option, the draw prior included, at the value every model was
+    /// built with before the options existed.
+    func withStandardInit() -> NetworkArchitecture {
+        var edited = self
+        for index in edited.blockGroups.indices {
+            edited.blockGroups[index].seGammaBiasInit = BlockGroup.standardSEGammaBiasInit
+            edited.blockGroups[index].branchOutputInit = .standard
+            edited.blockGroups[index].skipProjectionInit = .he
+        }
+        edited.policyHeadFinalInit = .he
+        edited.valueHeadFinalInit = .he
+        edited.valueHeadDrawPrior = Self.standardValueHeadDrawPrior
+        return edited
+    }
+
+    /// Every option whose value differs from the Standard set, groups in
+    /// order (SE γ bias, branch output, skip projection per group), then the
+    /// heads. Always compared against the standard value, never against an
+    /// earlier edit, so a reopened model or preset still shows what is
+    /// non-standard.
+    var nonStandardInitOptions: [InitOptionField] {
+        var fields: [InitOptionField] = []
+        for (index, group) in blockGroups.enumerated() {
+            if group.seGammaBiasInit != BlockGroup.standardSEGammaBiasInit { fields.append(.seGammaBiasInit(group: index)) }
+            if group.branchOutputInit != .standard { fields.append(.branchOutputInit(group: index)) }
+            if group.skipProjectionInit != .he { fields.append(.skipProjectionInit(group: index)) }
+        }
+        if policyHeadFinalInit != .he { fields.append(.policyHeadFinalInit) }
+        if valueHeadFinalInit != .he { fields.append(.valueHeadFinalInit) }
+        if valueHeadDrawPrior != Self.standardValueHeadDrawPrior { fields.append(.valueHeadDrawPrior) }
+        return fields
+    }
+
+    /// The init clause of a group's rendering, e.g. ` init:γb2.2,bnγ0,proj-id`:
+    /// present only when the group has a non-standard option, so every
+    /// architecture that predates the options renders byte-identically.
+    /// Shared by `groupSummary` and the Build screen's diagram.
+    static func groupInitMarker(_ g: BlockGroup) -> String {
+        var parts: [String] = []
+        if g.seGammaBiasInit != BlockGroup.standardSEGammaBiasInit {
+            parts.append("γb\(String(format: "%.3g", g.seGammaBiasInit))")
+        }
+        if g.branchOutputInit == .zeroLastBNGamma { parts.append("bnγ0") }
+        if g.skipProjectionInit == .identityLike { parts.append("proj-id") }
+        return parts.isEmpty ? "" : " init:" + parts.joined(separator: ",")
+    }
+
+    /// The head-init clause of the summary, e.g. ` . init: policy0, value0,
+    /// draw 0.6`: present only when a head option is non-standard.
+    var headInitMarker: String {
+        var parts: [String] = []
+        if policyHeadFinalInit == .zero { parts.append("policy0") }
+        if valueHeadFinalInit == .zero { parts.append("value0") }
+        if valueHeadDrawPrior != Self.standardValueHeadDrawPrior {
+            parts.append("draw \(String(format: "%.3g", valueHeadDrawPrior))")
+        }
+        return parts.isEmpty ? "" : " . init: " + parts.joined(separator: ", ")
+    }
+
+    /// The init-neutral checks `validate()` runs: each option needs its layer
+    /// (or must hold its standard value without one), the SE γ bias must be
+    /// finite, and the draw prior must be a probability strictly inside
+    /// (0, 1) on a W/D/L head and the standard value on a scalar one.
+    func validateInitOptions() throws {
+        for (index, group) in blockGroups.enumerated() {
+            guard group.seGammaBiasInit.isFinite else {
+                throw NetworkArchitectureError.mustBeFinite(
+                    field: "blockGroups[\(index)].seGammaBiasInit", value: group.seGammaBiasInit)
+            }
+            if group.seStyle == .none, group.seGammaBiasInit != BlockGroup.standardSEGammaBiasInit {
+                throw NetworkArchitectureError.initOptionWithoutItsLayer(
+                    field: "blockGroups[\(index)].\(BlockGroup.CodingKeys.seGammaBiasInit.rawValue)",
+                    value: "\(group.seGammaBiasInit)",
+                    reason: "the group has no SE block, so it must be \(BlockGroup.standardSEGammaBiasInit)")
+            }
+            if group.activationStyle == .pre, group.branchOutputInit != .standard {
+                throw NetworkArchitectureError.initOptionWithoutItsLayer(
+                    field: "blockGroups[\(index)].\(BlockGroup.CodingKeys.branchOutputInit.rawValue)",
+                    value: group.branchOutputInit.rawValue,
+                    reason: "a pre-activation block has no BN after its last conv")
+            }
+            if !groupHasSkipProjection(index), group.skipProjectionInit != .he {
+                throw NetworkArchitectureError.initOptionWithoutItsLayer(
+                    field: "blockGroups[\(index)].\(BlockGroup.CodingKeys.skipProjectionInit.rawValue)",
+                    value: group.skipProjectionInit.rawValue,
+                    reason: "no block of the group changes width, so it has no skip projection")
+            }
+        }
+        let priorField = CodingKeys.valueHeadDrawPrior.rawValue
+        switch valueHeadStyle {
+        case .wdlSoftmax:
+            guard valueHeadDrawPrior.isFinite, valueHeadDrawPrior > 0, valueHeadDrawPrior < 1 else {
+                throw NetworkArchitectureError.initOptionWithoutItsLayer(
+                    field: priorField, value: "\(valueHeadDrawPrior)",
+                    reason: "a draw probability must lie strictly between 0 and 1")
+            }
+        case .scalarTanh:
+            guard valueHeadDrawPrior == Self.standardValueHeadDrawPrior else {
+                throw NetworkArchitectureError.initOptionWithoutItsLayer(
+                    field: priorField, value: "\(valueHeadDrawPrior)",
+                    reason: "a scalar value head has no draw class, so it must be \(Self.standardValueHeadDrawPrior)")
+            }
+        }
     }
 }
 
