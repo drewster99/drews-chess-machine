@@ -142,6 +142,14 @@ class ProbeFailure(RuntimeError):
     """A probe that produced no measurement (timed out, failed, or reported an error)."""
 
 
+class BackfillIncomplete(RuntimeError):
+    """A `probe_backfill` pass that left checkpoints unprobed or unfiled.
+
+    Raised only after the pass has saved every row it did fill, so one checkpoint
+    that keeps failing costs its own row and nothing else; the message names each
+    checkpoint with its reason. The next pass retries them."""
+
+
 def probe(path):
     """The wide-probe summary for one checkpoint; raises ProbeFailure instead of
     returning nothing. A summary without pElo is a measurement of a non-finite value
@@ -568,11 +576,28 @@ def enum_specs(cfg):
 
 _LINEAGE_SCAN = None
 
+# How many unreadable files `_lineage_scan` names on stderr; the rest are counted.
+_LINEAGE_SCAN_ERRORS_SHOWN = 10
+
 def _lineage_scan():
-    """`dcm_lineage.scan(MODELS)`, read once per process: (recorded, unrecorded, errors)."""
+    """`dcm_lineage.scan(MODELS)`, read once per process: (recorded, unrecorded, errors).
+
+    `errors` are files the scan could not read, or whose lineage the app would
+    refuse. They are printed to stderr once per process here, and `probe_backfill`
+    reports them as failures of any run it finds checkpoints for by `segment_id`: an
+    unreadable file cannot say which segment it belongs to, so it may be one of
+    that run's checkpoints, and dropping it unannounced would leave a gap in the
+    run's history that nothing reports."""
     global _LINEAGE_SCAN
     if _LINEAGE_SCAN is None:
         _LINEAGE_SCAN = dcm_lineage.scan(MODELS)
+        errors = _LINEAGE_SCAN[2]
+        if errors:
+            print(f"[warn] {len(errors)} model file(s) under {MODELS} have no readable lineage:", file=sys.stderr)
+            for name, message in sorted(errors.items())[:_LINEAGE_SCAN_ERRORS_SHOWN]:
+                print(f"  {name}: {message}", file=sys.stderr)
+            if len(errors) > _LINEAGE_SCAN_ERRORS_SHOWN:
+                print(f"  (+{len(errors) - _LINEAGE_SCAN_ERRORS_SHOWN} more)", file=sys.stderr)
     return _LINEAGE_SCAN
 
 def lineage_checkpoints(cfg):
@@ -827,20 +852,34 @@ def _backfill_one(cfg, st, rows, by, cum, path, name, verbose, failures, segment
 
     `segment` is passed by the enumerated scan, which already knows which segment a
     file came from; without it `seg_for` has to guess from cum and mis-attributes any
-    mark sitting exactly on a segment boundary."""
+    mark sitting exactly on a segment boundary.
+
+    Everything that does not need the probe is worked out first: the file's
+    internals, its place on the time axis, its log metrics and its lineage cells.
+    Any of those can refuse the file (a tower mixing ReZero and non-ReZero blocks, a
+    missing tensor, a lineage record that contradicts the registry, a damaged
+    header), and a refusal found before the probe costs no GPU time. A refused or
+    unprobed file is appended to `failures` and skipped, never raised from here: the
+    caller still has to save the rows this pass already filled, and reports the
+    failures after that."""
     r = by.get(cum)
     if r and (r.get("pElo") not in ("", None) or NON_FINITE_PELO_NOTE in (r.get("note") or "")):
         return 0                                     # already measured
+    try:
+        cells = internals_cells(path)
+        elapsed, clock, meta, si = st.elapsed_and_clock(cum, segment)
+        met = _metrics_at(cfg["segments"][si]["log"], meta)
+        measured = lineage_cells(path, cfg["segments"][si], meta)
+    except (ValueError, KeyError, OSError, struct.error) as error:
+        failures.append((name, f"cannot file: {error}"))
+        print(f"  probe-backfill cum {cum}: cannot file {name} ({error})", file=sys.stderr)
+        return 0
     try:
         pr = probe(path)
     except ProbeFailure as error:
         failures.append((name, str(error)))
         print(f"  probe-backfill cum {cum}: FAILED ({error})", file=sys.stderr)
         return 0
-    cells = internals_cells(path)
-    elapsed, clock, meta, si = st.elapsed_and_clock(cum, segment)
-    met = _metrics_at(cfg["segments"][si]["log"], meta)
-    measured = lineage_cells(path, cfg["segments"][si], meta)
     non_finite = pr["pElo"] is None
     pf = dict(pElo="" if non_finite else round(pr["pElo"], 2),
               nll=round(pr.get("nll"), 4) if pr.get("nll") else "",
@@ -880,13 +919,26 @@ def probe_backfill(run, verbose=True):
       • enumerated  <stem>-replay-step<N>.safetensors  — app-side (--enumerate-
         checkpoints), local step N, cum = latest-segment base + N;
       • legacy      <...>-step<cum>-frozen.safetensors  — cum-named tracker snapshots
-        (pre-enumeration runs, and this run's earlier segments)."""
+        (pre-enumeration runs, and this run's earlier segments).
+
+    A checkpoint that cannot be probed or filed does not stop the pass: every row the
+    pass did fill is saved first, and then BackfillIncomplete names each checkpoint
+    left behind with its reason. So does a model file whose lineage cannot be read,
+    when this run finds checkpoints by `segment_id` (see `_lineage_scan`). A
+    contradiction between the lineage records and the registry about which files
+    belong to the run (`lineage_checkpoints`) is not a per-file failure: it raises
+    before anything is probed."""
     cfg = REG["runs"][run]
+    lineage_files = lineage_checkpoints(cfg)
     rows, snapshot = read_csv_for_update(run)
     by = {int(r["cum_step"]): r for r in rows}
     st = SegTime(cfg["segments"], run)
     filled = 0
     failures = []
+    if any(sg.get("segment_id") for sg in cfg["segments"]):
+        _, _, unreadable = _lineage_scan()
+        failures += [(name, f"no readable lineage, so it may be one of this run's checkpoints: {message}")
+                     for name, message in sorted(unreadable.items())]
 
     # (a) enumerated app-side checkpoints. One glob PER SEGMENT: the step in an
     # enumerated filename is segment-local, so it only becomes a cumulative step
@@ -905,7 +957,7 @@ def probe_backfill(run, verbose=True):
 
     # (a') checkpoints of segments identified by lineage `segment_id`, found by
     # their headers; the segment-local step comes from the record.
-    for si, f, n in lineage_checkpoints(cfg):
+    for si, f, n in lineage_files:
         ebase = cfg["segments"][si]["cumstep_base"]
         filled += _backfill_one(cfg, st, rows, by, ebase + n, f, os.path.basename(f), verbose, failures, segment=si)
 
@@ -925,9 +977,21 @@ def probe_backfill(run, verbose=True):
     if verbose:
         print(f"probe-backfilled {filled}")
     if failures:
-        raise ProbeFailure(f"{run}: {len(failures)} checkpoint(s) could not be probed (rows that "
-                           f"were probed are saved): " + "; ".join(n for n, _ in failures[:10]))
+        shown = failures[:_BACKFILL_FAILURES_SHOWN]
+        more = f"; (+{len(failures) - len(shown)} more)" if len(failures) > len(shown) else ""
+        raise BackfillIncomplete(
+            f"{run}: {len(failures)} checkpoint(s) could not be probed or filed (rows that were filled are "
+            f"saved): " + "; ".join(f"{n}: {_shortened(why)}" for n, why in shown) + more)
     return filled
+
+# How many failures BackfillIncomplete's message names, and how much of each reason
+# it keeps (a probe failure carries the probe's stderr tail; stderr already has it whole).
+_BACKFILL_FAILURES_SHOWN = 10
+_BACKFILL_REASON_CHARS = 300
+
+def _shortened(text):
+    text = " ".join(text.split())
+    return text if len(text) <= _BACKFILL_REASON_CHARS else text[:_BACKFILL_REASON_CHARS] + "…"
 
 def recompute_cum_steps(run, verbose=True):
     """Re-derive cum_step = segments[segment].cumstep_base + meta_step for every row.
