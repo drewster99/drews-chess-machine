@@ -24,7 +24,9 @@ Is ε = 0.1 more policy smoothing than needed now that the shared offset can't d
   NLL / top-1 by legal-move count bucket and policy entropy, `pLogitAbsMax`; for D
   value loss and W/D/L calibration.
 
-## Seed 2 continues past 33,000 (owner, 2026-10-03)
+## Seed 2 continuation past 33,000 — cancelled (owner, 2026-10-03)
+
+**Cancelled before it started** (owner, 2026-10-03 evening): seed 2 ends at its 33,000-step limit like the other arms. The watcher was stopped before seed 2 reached 33,000; nothing was resumed. The plan as prepared is kept below for the record; `parameters-seed2-continue.json` was never used for training.
 
 Seed 2 keeps training after its 33,000-step limit, resumed "as close to identically as
 possible". A watcher (session scratch `c2continue.sh`) waits for the build-2275 run to save
