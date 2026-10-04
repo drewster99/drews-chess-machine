@@ -1,8 +1,6 @@
 # 2026-10-03 — One wide block: 1 × [7×7 + 7×7] @ 216, no SE, no ReZero ("fatty")
 
-**Status:** queued — launches together with the skinny run
-(`../20261003-skinny-22x7x7-48/`) the moment label smoothing D ends (~20:45 CDT), so the
-two get matched wall time.
+**Status:** running since 2026-10-03 20:44:59 CDT, launched together with the skinny run when label smoothing D ended.
 
 ## Question
 
@@ -47,9 +45,10 @@ blocks @ 48) this makes a depth sweep at constant budget: 1 / 3 / 22 blocks.
 
 ## Launch record
 
-- **Launcher:** waits for label smoothing D's trainer to end, then starts this run and the
-  skinny run at the same moment, each with its probe loop. Launch times and session logs
-  are added here after launch.
+- **Launched** 2026-10-03 20:44:59 CDT (pid 72276), session log `dcm_log_20261003-204412.txt`, build 2275, the
+  moment label smoothing D's trainer ended; the other sweep run started in the same second.
+  Its `[REPLAY-HPARAMS]` line and batch line are identical to R7's; its `[REPLAY-CYCLE]` line
+  differs only in the start net's model ID.
 - **Commands**
 
 ```

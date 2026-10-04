@@ -1,7 +1,6 @@
 # 2026-10-03 — Deep and narrow: 22 × [7×7 + 7×7] @ 48, no SE, no ReZero ("skinny")
 
-**Status:** queued — launches together with the fatty run (`../20261003-fatty-1x7x7-216/`)
-the moment label smoothing D ends (~20:45 CDT), so the two get matched wall time.
+**Status:** running since 2026-10-03 20:44:59 CDT, launched together with the fatty run when label smoothing D ended.
 
 ## Question
 
@@ -43,9 +42,10 @@ the narrow width may be the bottleneck. The fatty run (1 block @ 216) is the sha
 
 ## Launch record
 
-- **Launcher:** waits for label smoothing D's trainer to end, then starts this run and the
-  fatty run at the same moment, each with its probe loop. Launch times and session logs are
-  added here after launch.
+- **Launched** 2026-10-03 20:44:59 CDT (pid 72279), session log `dcm_log_20261003-204412-2.txt`, build 2275, the
+  moment label smoothing D's trainer ended; the other sweep run started in the same second.
+  Its `[REPLAY-HPARAMS]` line and batch line are identical to R7's; its `[REPLAY-CYCLE]` line
+  differs only in the start net's model ID.
 - **Commands**
 
 ```
