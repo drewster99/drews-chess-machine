@@ -43,6 +43,11 @@ blocks @ 48) this makes a depth sweep at constant budget: 1 / 3 / 22 blocks.
   `20261003-fatty216-fresh.safetensors` (ModelID `20261004-4-XS2w`) is kept; `mint.txt`
   records that mint.
 
+- **Suspended** by the owner on 2026-10-03 at 23:46:03 CDT (SIGSTOP, pid 72276) at step
+  ~6,350, until slim-neck fatty (`20261003-fatty224-3x3stem/`) posts its 6k probe; a
+  watcher then resumes it with SIGCONT. The suspension shows as one long gap between two
+  `[REPLAY]` lines: wall time across it is not training time.
+
 ## Launch record
 
 - **Launched** 2026-10-03 20:44:59 CDT (pid 72276), session log `dcm_log_20261003-204412.txt`, build 2275, the
