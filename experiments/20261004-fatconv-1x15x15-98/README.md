@@ -55,6 +55,30 @@ partial-board kernel at wide width?
 - One seed; the two comparator seeds differ by ~22 pElo, so a gap under ~25 pElo over the
   last 5k steps is a tie.
 
+## Continuation past 33,000 (queued)
+
+The owner asked (2026-10-04) for fatconv not to stop at its 33,000-step limit. The running
+build-2275 process cannot change its limit, so a watcher (session scratch
+`fatconv_continue.sh`, the recipe prepared and dry-run-verified for label smoothing C seed 2)
+waits for it to save step 33,000 and end, then resumes `20261004-fatconv98-b2275-replay-step33000`
+with `--resume-exact` on build 2320 (`DCM-2320-1ab52554`) and no step limit (`--epochs 12`).
+
+- **Carried over exactly:** fp32 master weights, momentum velocity, the trainer step clock,
+  the LR/momentum cycle and its decay envelope, and the corpus position.
+- **Not exact** (build 2275 wrote no lineage record): `rng_sampler`, `dropout_state`,
+  `feed_carry`, `params`, `lineage`, `policy_tail`, accepted with `--accept-inexact`.
+  Dropout is 0, so its stream has no effect; `--policy-tail-precision fp32_from_pre_bn` is
+  passed as before.
+- **Sampling:** build 2275's corpus replay ignored the batch-composition parameters and drew
+  uniformly; build 2320 applies them. `parameters-continue.json` is `parameters.json` with
+  `max_plies_from_any_one_game` 10 → 400 and `target_sampled_game_length_plies` 999 → 0, the
+  nearest the declarations allow to the uniform draw. Build 2320 also carries the
+  adjudication fix (0.045% of games).
+- **Names:** the resumed run numbers its own steps, so it writes
+  `20261004-fatconv98-cont-replay-step<N>` (real step 33,000 + N), probed with build 2320
+  into `probes-cont.jsonl`.
+- **No comparator past 33,000:** R7/R8, fatty and slim-neck fatty all ended at 33,000.
+
 ## Launch record
 
 - **Launched** 2026-10-04 01:58:04 CDT (pid 36047), session log
