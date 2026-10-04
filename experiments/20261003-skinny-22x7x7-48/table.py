@@ -19,7 +19,7 @@ NO_REZERO = os.path.join(EXPERIMENTS, "20261002-noSE-noReZero")
 R7 = (os.path.join(NO_REZERO, "probes.jsonl"), "20261002-2-5tKN", "R7 no SE, no ReZero s1")
 R8 = (os.path.join(NO_REZERO, "probes-seed2.jsonl"), "20261002-4-T79u", "R8 no SE, no ReZero s2")
 # The run model_ids are filled in from each run's log once it has started.
-FATTY = (os.path.join(EXPERIMENTS, "20261003-fatty-1x7x7-216", "probes.jsonl"), probe_record.NOT_STARTED, "fatty")
+FATTY = (os.path.join(EXPERIMENTS, "20261003-fatty-1x7x7-216", "probes.jsonl"), "20261004-10-YpxP", "fatty")
 SKINNY = (os.path.join(HERE, "probes.jsonl"), probe_record.NOT_STARTED, "skinny")
 
 
