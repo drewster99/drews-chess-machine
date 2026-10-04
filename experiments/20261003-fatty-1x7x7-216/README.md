@@ -1,6 +1,6 @@
 # 2026-10-03 — One wide block: 1 × [7×7 + 7×7] @ 216, no SE, no ReZero ("fatty")
 
-**Status:** running since 2026-10-03 20:44:59 CDT, launched together with the skinny run when label smoothing D ended.
+**Status:** ended at its 33,000-step limit (2026-10-04 18:19:44 CDT). Final probe: pElo 1351.1, NLL 2.3647; 29k–33k average 1356.0 vs Avg(R7,R8) 1499.5. Launched 2026-10-03 20:44:59 CDT, together with the skinny run when label smoothing D ended.
 
 ## Question
 
