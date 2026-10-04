@@ -22,7 +22,7 @@ R7 = (os.path.join(NO_REZERO, "probes.jsonl"), "20261002-2-5tKN", "R7 no SE, no 
 R8 = (os.path.join(NO_REZERO, "probes-seed2.jsonl"), "20261002-4-T79u", "R8 no SE, no ReZero s2")
 FATTY = (os.path.join(EXPERIMENTS, "20261003-fatty-1x7x7-216", "probes.jsonl"), "20261004-10-YpxP", "fatty")
 # The run model_id is filled in from the run's log once it has written its first checkpoint.
-SLIM_NECK = (os.path.join(HERE, "probes.jsonl"), probe_record.NOT_STARTED, "slim-neck fatty")
+SLIM_NECK = (os.path.join(HERE, "probes.jsonl"), "20261004-13-K4Iu", "slim-neck fatty")
 
 START_IDS = {"fatty": "20261004-8-2Sao", "slim-neck fatty": "20261004-12-QsqZ",
              "R7 no SE, no ReZero s1": "20261002-1-bh2u", "R8 no SE, no ReZero s2": "20261002-3-x4gI"}
