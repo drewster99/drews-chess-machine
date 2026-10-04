@@ -23,7 +23,6 @@ R7 = (os.path.join(NO_REZERO, "probes.jsonl"), "20261002-2-5tKN", "R7 no SE, no 
 R8 = (os.path.join(NO_REZERO, "probes-seed2.jsonl"), "20261002-4-T79u", "R8 no SE, no ReZero s2")
 FATTY = (os.path.join(EXPERIMENTS, "20261003-fatty-1x7x7-216", "probes.jsonl"), "20261004-10-YpxP", "fatty")
 SLIM_NECK = (os.path.join(EXPERIMENTS, "20261003-fatty224-3x3stem", "probes.jsonl"), "20261004-13-K4Iu", "slim-neck fatty")
-# The run model_id is filled in from the run's first checkpoint once it is written.
 FATCONV = (os.path.join(HERE, "probes.jsonl"), "20261004-15-Pm6B", "fatconv")
 
 START_IDS = {"fatty": "20261004-8-2Sao", "slim-neck fatty": "20261004-12-QsqZ", "fatconv": "20261004-14-3Rkc",
