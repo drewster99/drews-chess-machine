@@ -15,7 +15,7 @@ the narrow width may be the bottleneck. The fatty run (1 block @ 216) is the sha
 - **Shape:** basic30 → stem 48 (7×7) → 22 × [7×7 + 7×7 @ 48, no SE, ReLU pre-act,
   clean_add, no ReZero, LayerNorm out] → policy intermediate_conv (K = 128) · value WDL
   (16 → FC128) · bf16. 5,197,807 parameters (logged count), +0.5% vs R7/R8's 5,170,319;
-  ≈ 323M MACs per position vs ≈ 322M. Standard init: policy and value final layers He,
+  ≈ 324M MACs per position vs ≈ 322M. Standard init: policy and value final layers He,
   draw prior 0.75.
 - **Everything but the tower identical to R7/R8:** the same frozen build 2275, the same
   `parameters.json` (byte-identical copy of `20261002-noSE-noReZero/parameters.json`),

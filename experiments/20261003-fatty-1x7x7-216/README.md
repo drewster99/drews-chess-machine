@@ -15,7 +15,7 @@ blocks @ 48) this makes a depth sweep at constant budget: 1 / 3 / 22 blocks.
 - **Shape:** basic30 → stem 216 (7×7) → 1 × [7×7 + 7×7 @ 216, no SE, ReLU pre-act,
   clean_add, no ReZero, LayerNorm out] → policy intermediate_conv (K = 128) · value WDL
   (16 → FC128) · bf16. 5,066,767 parameters (logged count), −2.0% vs R7/R8's 5,170,319;
-  ≈ 318M MACs per position vs ≈ 322M. Standard init: policy and value final layers He,
+  ≈ 316M MACs per position vs ≈ 322M. Standard init: policy and value final layers He,
   draw prior 0.75.
 - **Everything but the tower identical to R7/R8:** the same frozen build 2275 (`de0f22b`
   code, stamped `f6fdd88`), the same `parameters.json` (byte-identical copy of
