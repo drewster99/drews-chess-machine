@@ -1,0 +1,11 @@
+{"step": 0, "runs": "R1 R10 R12", "net": "20260929-test_SE_scale+bias-fresh", "modelID": "20260929-12-JZOe", "pElo": 544.9362187589008, "nll": 3.6393652360802364, "build": "DCM-2275-de0f22b"}
+{"step": 0, "runs": "R2 R11", "net": "20260929-test_SE_scale+bias-seed2-fresh", "modelID": "20260930-1-H1Oq", "pElo": 494.0556019809295, "nll": 3.7052895176370044, "build": "DCM-2275-de0f22b"}
+{"step": 0, "runs": "R3", "net": "20260929-test_SE_attenuate-only-fresh", "modelID": "20260929-13-06yp", "pElo": 468.93764475608714, "nll": 3.6663077240484205, "build": "DCM-2275-de0f22b"}
+{"step": 0, "runs": "R4", "net": "20261001-test_SE_scale+bias-fc1leaky-fresh", "modelID": "20261001-42-2q0Q", "pElo": 544.9362187589008, "nll": 3.639616454184484, "build": "DCM-2275-de0f22b"}
+{"step": 0, "runs": "R5", "net": "20260929-test_SE_none-fresh", "modelID": "20260929-18-D9is", "pElo": 501.3401890581937, "nll": 3.746871059120058, "build": "DCM-2275-de0f22b"}
+{"step": 0, "runs": "R6", "net": "20260929-test_SE_none-seed2-fresh", "modelID": "20260930-3-V9zk", "pElo": 502.3683828024491, "nll": 3.6884169797484256, "build": "DCM-2275-de0f22b"}
+{"step": 0, "runs": "R7", "net": "20261002-bench_v5s3_noSE_noReZero-fresh", "modelID": "20261002-1-bh2u", "pElo": 528.1082993697194, "nll": 3.5808953075403953, "build": "DCM-2275-de0f22b"}
+{"step": 0, "runs": "R8", "net": "20261002-bench_v5s3_noSE_noReZero-seed2-fresh", "modelID": "20261002-3-x4gI", "pElo": 525.2295923681829, "nll": 3.670558990709884, "build": "DCM-2275-de0f22b"}
+{"step": 0, "runs": "R9", "net": "20260929-test_SE_none-rz0cap1-fresh", "modelID": "20261002-6-SGuE", "pElo": 494.0556019809295, "nll": 3.73981859666108, "build": "DCM-2290-9a36f9f"}
+{"step": 0, "runs": "R13", "net": "20261003-fatty216-b2275-fresh", "modelID": "20261004-8-2Sao", "pElo": 601.3324970863471, "nll": 3.607853538271242, "build": "DCM-2275-de0f22b"}
+{"step": 0, "runs": "R14", "net": "20261003-skinny48-b2275-fresh", "modelID": "20261004-9-czp5", "pElo": 463.2092015455653, "nll": 3.746645989291124, "build": "DCM-2275-de0f22b"}
