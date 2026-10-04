@@ -47,6 +47,7 @@ blocks @ 48) this makes a depth sweep at constant budget: 1 / 3 / 22 blocks.
   ~6,350, until slim-neck fatty (`20261003-fatty224-3x3stem/`) posts its 6k probe; a
   watcher then resumes it with SIGCONT. The suspension shows as one long gap between two
   `[REPLAY]` lines: wall time across it is not training time.
+  Resumed 2026-10-04 00:55:28 CDT (SIGCONT, by the watcher) after slim-neck fatty's 6k probe.
 
 ## Launch record
 
