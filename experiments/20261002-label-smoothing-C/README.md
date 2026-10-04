@@ -1,8 +1,9 @@
 # 2026-10-02 — Label smoothing arm C: policy label smoothing ε 0.1 → 0.03 (`policy_label_smoothing_epsilon`)
 
-**Status:** running since 2026-10-02 06:14, launched by the experiment chain when
-leaky-FC1 ended (see `experiments/QUEUE.md`). Shares the GPU with the two no-ReZero
-runs; arm D launches when no-ReZero seed 1 ends.
+**Status:** ended. Seed 1 ran to its 33,000-step limit; seed 2 was stopped by the owner
+at step 31,906 (see "Seed 2"). Seed 1 was launched 2026-10-02 06:14 by the experiment
+chain when leaky-FC1 ended (see `experiments/QUEUE.md`), sharing the GPU with the two
+no-ReZero runs; arm D launched when no-ReZero seed 1 ended.
 
 ## Question
 
@@ -202,7 +203,7 @@ Both checkpoints probed with Release build 2285 (`df25a56` code) with
   (smallest gap 0.0169) is unaffected.
 - Same caveat as before: this is one training run of each; C seed 2 is queued.
 
-## Seed 2 (queued)
+## Seed 2
 
 Starts from the SE experiment's scale+bias **seed-2** fresh net
 (`20260929-test_SE_scale+bias-seed2-fresh.safetensors`), so its first 7,282 steps pair
@@ -210,4 +211,11 @@ with the baseline's seed 2 (`se_sb2`) the way seed 1 pairs with `se_sb`. Out ste
 `20261002-label-smoothing-C-seed2`, probes `probes-seed2.jsonl`. Launched by the
 local queue script when a training slot frees, after zero-init ReZero and label
 smoothing D (`experiments/QUEUE.md`).
+
+**Stopped** by the owner on 2026-10-03 at 22:54:58 CDT (SIGINT, pid 21928, log
+`dcm_log_20261003-033152.txt`) at step 31,906 of 33,000, to free memory: with the fatty
+and skinny depth-sweep runs beside it the three trainers' footprints totalled 70.8 GB on
+the 64 GB machine. The abort save wrote `20261002-label-smoothing-C-seed2-replay-latest`
+and the enumerated `…-replay-step31906`; its probe (pElo 1477.5, NLL 2.1958) is the last
+row of `probes-seed2.jsonl`.
 
