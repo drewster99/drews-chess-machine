@@ -1,0 +1,3 @@
+[NEW-MODEL] minting test_1_15x15_98-v5 (v5, 5141143 params) id=20261004-14-3Rkc
+[NEW-MODEL] wrote 20261004-15x15-98-b2275-fresh.safetensors — reuse via: --start-model /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261004-15x15-98-b2275-fresh.safetensors
+/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261004-15x15-98-b2275-fresh.safetensors

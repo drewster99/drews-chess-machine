@@ -1,0 +1,46 @@
+{
+  "architecture": {
+    "activation_function": "relu",
+    "block_groups": [
+      {
+        "activation_function": "relu",
+        "activation_style": "pre",
+        "branch_output_init": "standard",
+        "channels": 98,
+        "conv1_kernel_size": 15,
+        "conv2_kernel_size": 15,
+        "count": 1,
+        "dropout_multiplier": 1,
+        "output_norm": "layer_norm",
+        "rezero_alpha_cap": 0.4472136,
+        "rezero_alpha_init": 0.4472136,
+        "se_activation": "relu",
+        "se_beta_init": "glorot",
+        "se_gamma_bias_init": 0,
+        "se_reduction_ratio": 4,
+        "se_style": "none",
+        "skip_merge": "clean_add",
+        "skip_projection_init": "he",
+        "use_rezero": false
+      }
+    ],
+    "compute_data_type": "bfloat16",
+    "feature_skip_fusion": "concat_direct",
+    "feature_skip_source": "none",
+    "feature_skip_to_final_block": false,
+    "feature_skip_to_policy_head": false,
+    "feature_skip_to_value_head": false,
+    "input_encoding": "basic30",
+    "policy_head_final_init": "he",
+    "policy_head_style": "intermediate_conv",
+    "policy_pre_conv_channels": 128,
+    "stem_conv_kernel_size": 15,
+    "value_head_conv_channels": 16,
+    "value_head_draw_prior": 0.75,
+    "value_head_final_init": "he",
+    "value_head_hidden_units": 128,
+    "value_head_style": "wdl_softmax"
+  },
+  "format_version": 8,
+  "label": "test_1_15x15_98"
+}

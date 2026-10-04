@@ -1,4 +1,4 @@
-"""Per-position and per-step FLOPs for the R1-R15 start nets, from each file's own
+"""Per-position and per-step FLOPs for the R1-R16 start nets, from each file's own
 architecture metadata and tensor shapes, following ChessNetwork.swift's graph."""
 import json, os, struct
 M = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/Models")
@@ -11,7 +11,8 @@ NETS = [("R1 R10 R12", "20260929-test_SE_scale+bias-fresh"),
         ("R8", "20261002-bench_v5s3_noSE_noReZero-seed2-fresh"),
         ("R9", "20260929-test_SE_none-rz0cap1-fresh"),
         ("R13 fatty", "20261003-fatty216-b2275-fresh"), ("R14 skinny", "20261003-skinny48-b2275-fresh"),
-        ("R15 slim-neck fatty", "20261003-fatty224s3-b2275-fresh")]
+        ("R15 slim-neck fatty", "20261003-fatty224s3-b2275-fresh"),
+        ("R16 fatconv", "20261004-fatconv98-b2275-fresh")]
 BATCH = 4096
 SQ = 64
 # elementwise FLOPs per element, forward (training-mode BN/LN: batch stats + normalize)

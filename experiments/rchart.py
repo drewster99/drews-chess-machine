@@ -1,4 +1,4 @@
-"""The R1–R15 summary chart: pElo at 33k, 32k, 31k, 30k, 21k and 7k for every compared run,
+"""The R1–R16 summary chart: pElo at 33k, 32k, 31k, 30k, 21k and 7k for every compared run,
 read from the experiments' own table scripts (one source for every number)."""
 import subprocess, sys
 
@@ -7,7 +7,7 @@ TABLES = ["experiments/20261001-se-fc1-leaky/table.py",
           "experiments/20261002-label-smoothing-C/table.py",
           "experiments/20261002-noSE-noReZero/table.py"]
 STEPS = [33000, 32000, 31000, 30000, 21000, 7000]
-RUNNING = {"pElo fatty", "pElo slim-neck fatty"}
+RUNNING = {"pElo fatty", "pElo slim-neck fatty", "pElo fatconv"}
 # (label, column header in the table scripts, note)
 RUNS = [
     ("R1", "SE scale+bias, seed 1 (label-smoothing baseline, ε 0.1/0.013)", "pElo baseline ε 0.1 / 0.013", ""),
@@ -25,6 +25,7 @@ RUNS = [
     ("R13", "fatty: no SE, no ReZero, 1 block × 7×7 @216", "pElo fatty", "same budget as R7/R8"),
     ("R14", "skinny: no SE, no ReZero, 22 blocks × 7×7 @48", "pElo skinny", "same budget as R7/R8; stopped by the owner at 1,605"),
     ("R15", "slim-neck fatty: fatty with a 3×3 stem, 1 block × 7×7 @224", "pElo slim-neck fatty", "same budget as R7/R8"),
+    ("R16", "fatconv: 15×15 stem, 1 block × 15×15 @98", "pElo fatconv", "same budget as R7/R8"),
 ]
 
 def num(v):
@@ -49,7 +50,8 @@ for script in TABLES:
 import json, os
 for col, rel in (("pElo fatty", "experiments/20261003-fatty-1x7x7-216/probes.jsonl"),
                  ("pElo skinny", "experiments/20261003-skinny-22x7x7-48/probes.jsonl"),
-                 ("pElo slim-neck fatty", "experiments/20261003-fatty224-3x3stem/probes.jsonl")):
+                 ("pElo slim-neck fatty", "experiments/20261003-fatty224-3x3stem/probes.jsonl"),
+                 ("pElo fatconv", "experiments/20261004-fatconv-1x15x15-98/probes.jsonl")):
     cols[col] = {}
     path = os.path.join(REPO, rel)
     if os.path.exists(path):

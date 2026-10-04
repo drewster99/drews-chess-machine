@@ -10,3 +10,4 @@
 {"step": 0, "runs": "R13", "net": "20261003-fatty216-b2275-fresh", "modelID": "20261004-8-2Sao", "pElo": 601.3324970863471, "nll": 3.607853538271242, "build": "DCM-2275-de0f22b"}
 {"step": 0, "runs": "R14", "net": "20261003-skinny48-b2275-fresh", "modelID": "20261004-9-czp5", "pElo": 463.2092015455653, "nll": 3.746645989291124, "build": "DCM-2275-de0f22b"}
 {"step": 0, "runs": "R15", "net": "20261003-fatty224s3-b2275-fresh", "modelID": "20261004-12-QsqZ", "pElo": 480.0954463489288, "nll": 3.7283300450392516, "build": "DCM-2275-de0f22b"}
+{"step": 0, "runs": "R16", "net": "20261004-fatconv98-b2275-fresh", "modelID": "20261004-14-3Rkc", "pElo": 449.0152702238905, "nll": 3.8203907874094036, "build": "DCM-2275-de0f22b"}
