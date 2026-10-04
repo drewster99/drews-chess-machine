@@ -1,6 +1,9 @@
 # 2026-10-03 — Deep and narrow: 22 × [7×7 + 7×7] @ 48, no SE, no ReZero ("skinny")
 
-**Status:** running since 2026-10-03 20:44:59 CDT, launched together with the fatty run when label smoothing D ended.
+**Status:** stopped by the owner at step 1,605 (2026-10-03 23:17:58 CDT, SIGINT; the abort
+save wrote `20261003-skinny48-b2275-replay-latest` and `…-replay-step1605`, probed: pElo
+867.8, NLL 3.2008). It ran from 20:44:59 CDT, launched together with the fatty run when
+label smoothing D ended. Result: `20261003-fatty-vs-skinny/README.md`.
 
 ## Question
 

@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Probe the untrained starting nets of the 2026-09-29 – 10-03 architecture and label
-# smoothing runs (R1–R14) with --probe-set wide, the probe the runs' 1k checkpoints get,
+# smoothing runs (R1–R15) with --probe-set wide, the probe the runs' 1k checkpoints get,
 # and append one JSON line per net to step0-probes.jsonl: the step-0 row of their tables.
 # Each net is probed with the build its run's probes used (2275; R9's format-6 net needs
 # 2290). A net already in the output file is skipped, so the script can be re-run.
@@ -24,6 +24,7 @@ NETS=(
   "R9|20260929-test_SE_none-rz0cap1-fresh|$B2290"
   "R13|20261003-fatty216-b2275-fresh|$B2275"
   "R14|20261003-skinny48-b2275-fresh|$B2275"
+  "R15|20261003-fatty224s3-b2275-fresh|$B2275"
 )
 for entry in $NETS; do
   runs=${entry%%|*}; rest=${entry#*|}; net=${rest%%|*}; bin=${rest#*|}
