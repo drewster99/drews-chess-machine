@@ -1,0 +1,3 @@
+[NEW-MODEL] minting test_1_fatty_216-v5 (v5, 5066767 params) id=20261004-8-2Sao
+[NEW-MODEL] wrote 20261003-fatty216-b2275-fresh.safetensors — reuse via: --start-model /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261003-fatty216-b2275-fresh.safetensors
+/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261003-fatty216-b2275-fresh.safetensors

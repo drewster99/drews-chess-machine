@@ -1,0 +1,5 @@
+[ARCH] size guidance (--new-model test_1_fatty_216): parameters=5066767 physical_memory=64GB recommended_max=15000000 batch4096_max=20000000 batch512_max=56568542 verdict=within_recommended | Within the recommended size for this Mac (up to 15.0M parameters with 64 GB of memory).
+[NEW-MODEL] minting test_1_fatty_216 (v5, 5066767 params) id=20261004-4-XS2w init_seed=4683348161003864489 (entered) init_scheme=dcm-init-1
+[NEW-MODEL] built test_1_fatty_216 in 1130.3 ms
+[NEW-MODEL] wrote 20261003-fatty216-fresh.safetensors — reuse via: --start-model /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261003-fatty216-fresh.safetensors
+/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261003-fatty216-fresh.safetensors

@@ -1,60 +1,66 @@
 # 2026-10-03 — One wide block: 1 × [7×7 + 7×7] @ 216, no SE, no ReZero ("fatty")
 
-**Status:** running since 2026-10-03 20:13 CDT.
+**Status:** queued — launches together with the skinny run
+(`../20261003-skinny-22x7x7-48/`) the moment label smoothing D ends (~20:45 CDT), so the
+two get matched wall time.
 
 ## Question
 
 The no-SE / no-ReZero tower (3 blocks × two 7×7 convs @ 128; `20261002-noSE-noReZero/`,
-seeds 1 and 2) is the strongest shape so far. Does the same budget do as well spent on
-one wide block (two convs @ 216) instead of three narrow ones (six convs @ 128)? Same
-parameter count and compute, one third of the depth.
+seeds 1 and 2, R7 and R8 in the summary chart) is the strongest shape so far. Spend the
+same budget on one wide block (two convs @ 216) instead of three narrow ones (six convs
+@ 128): same parameters and compute, one third of the depth. With the skinny run (22
+blocks @ 48) this makes a depth sweep at constant budget: 1 / 3 / 22 blocks.
 
 ## Design
 
 - **Shape:** basic30 → stem 216 (7×7) → 1 × [7×7 + 7×7 @ 216, no SE, ReLU pre-act,
   clean_add, no ReZero, LayerNorm out] → policy intermediate_conv (K = 128) · value WDL
-  (16 → FC128) · bf16. 5,066,767 parameters (logged count), −2.0% vs the comparators'
-  5,170,319; ≈ 318M MACs per position vs ≈ 322M. Preset `test_1_fatty_216.json` (copied
-  here). Init options standard: policy and value final layers He, draw prior 0.75.
-- **Comparators (not re-run):** no SE, no ReZero seeds 1 and 2 (R7, R8 in the summary
-  chart), same everything but the tower shape.
-- **Start net:** `20261003-fatty216-fresh.safetensors`, ModelID `20261004-4-XS2w`, minted on
-  build 2320 with `--init-seed 4683348161003864489` (reproducible).
-- **Corpus / numerics / schedule:** corpus `20260624-192615-w3aA5b`, 12 epochs, step limit
-  33,000, `--enumerate-checkpoints`, `--policy-tail-precision fp32_from_pre_bn`.
-- **Parameters:** `parameters.json` here is the comparators' file with two keys changed so
-  that build 2320 samples as their build did. Build 2275 (the comparators') ignored the
-  batch-composition parameters in corpus replay and drew uniformly; 2320 applies them.
-  `max_plies_from_any_one_game` 10 → 400 (its declared maximum; cannot bind at batch
-  4096) and `target_sampled_game_length_plies` 999 → 0 (no length tilt), the nearest the
-  declarations allow to the uniform draw. The run logs
-  `sampling=(maxPerGame=400 maxDrawPct=100 targetLen=0 stratify=off applied=on)`.
-- **Other build differences vs 2275:** corpus replay now feeds games played past an
-  unclaimed threefold instead of dropping them (0.045% of this corpus's games); probes run
-  with build 2320.
+  (16 → FC128) · bf16. 5,066,767 parameters (logged count), −2.0% vs R7/R8's 5,170,319;
+  ≈ 318M MACs per position vs ≈ 322M. Standard init: policy and value final layers He,
+  draw prior 0.75.
+- **Everything but the tower identical to R7/R8:** the same frozen build 2275 (`de0f22b`
+  code, stamped `f6fdd88`), the same `parameters.json` (byte-identical copy of
+  `20261002-noSE-noReZero/parameters.json`), corpus `20260624-192615-w3aA5b`, 12 epochs,
+  step limit 33,000, `--enumerate-checkpoints`, `--policy-tail-precision fp32_from_pre_bn`.
+  Build 2275 samples batches uniformly in corpus replay, as it did for R7/R8.
+- **Start net:** `20261003-fatty216-b2275-fresh.safetensors`, ModelID `20261004-8-2Sao`,
+  minted on build 2275 from `test_1_fatty_216-v5.json` (the saved preset without the
+  format-8 init fields, which 2275 predates and which equal its built-in standard init).
+  Build 2275 has no `--init-seed`, so the start weights are not reproducible from a seed —
+  the same as R7/R8's.
+- **Probes:** pElo / NLL every 1,000 steps (`--probe-set wide`) with build 2275.
 
 ## What would count as an answer
 
-- One seed; the two comparator seeds differ by ~22 pElo, so a gap smaller than ~25 pElo
-  over the last 5k steps is a tie.
-- Faster or slower per step is reported separately (one wide block runs fewer, larger
-  convs).
+- One seed; the two comparator seeds differ by ~22 pElo, so a gap under ~25 pElo over the
+  last 5k steps is a tie.
+
+## History
+
+- A first launch (2026-10-03 20:13, build 2320, `test_1_fatty_216.json` minted with
+  `--init-seed 4683348161003864489`, sampler limits loosened to approximate build 2275's
+  uniform draw) was stopped by the owner at step 42 so that every training setting could
+  match R7/R8 exactly; its checkpoints and probe output were deleted. Its start net
+  `20261003-fatty216-fresh.safetensors` (ModelID `20261004-4-XS2w`) is kept; `mint.txt`
+  records that mint.
 
 ## Launch record
 
-- **Launched** 2026-10-03 20:13:27 CDT, session log `dcm_log_20261003-201327.txt`, build 2320
-  (`FrozenBuilds/DCM-2320-1ab52554.app`), run seed drawn and logged on the `[RUN]` line.
+- **Launcher:** waits for label smoothing D's trainer to end, then starts this run and the
+  skinny run at the same moment, each with its probe loop. Launch times and session logs
+  are added here after launch.
 - **Commands**
 
 ```
-BIN="$HOME/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2320-1ab52554.app/Contents/MacOS/DrewsChessMachine"
+BIN="$HOME/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2275-de0f22b.app/Contents/MacOS/DrewsChessMachine"
 M="$HOME/Library/Application Support/DrewsChessMachine/Models"
-"$BIN" --new-model --architecture test_1_fatty_216 --init-seed 4683348161003864489 \
-  --out-model "$M/20261003-fatty216-fresh.safetensors"
-"$BIN" --replay-corpus 20260624-192615-w3aA5b --start-model "$M/20261003-fatty216-fresh.safetensors" \
-  --out-model "$M/20261003-fatty216-replay-latest.safetensors" \
+"$BIN" --new-model --architecture experiments/20261003-fatty-1x7x7-216/test_1_fatty_216-v5.json \
+  --out-model "$M/20261003-fatty216-b2275-fresh.safetensors"
+"$BIN" --replay-corpus 20260624-192615-w3aA5b --start-model "$M/20261003-fatty216-b2275-fresh.safetensors" \
+  --out-model "$M/20261003-fatty216-b2275-replay-latest.safetensors" \
   --parameters experiments/20261003-fatty-1x7x7-216/parameters.json \
   --epochs 12 --training-step-limit 33000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn
-PROBE_BIN="$BIN" TRAINER_PID=<trainer pid> experiments/probe_loop.sh 20261003-fatty216 \
+PROBE_BIN="$BIN" TRAINER_PID=<trainer pid> experiments/probe_loop.sh 20261003-fatty216-b2275 \
   experiments/20261003-fatty-1x7x7-216/probes.jsonl
 ```
