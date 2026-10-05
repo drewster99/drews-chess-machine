@@ -83,6 +83,10 @@ with `--resume-exact` on build 2320 (`DCM-2320-1ab52554`) and no step limit (`--
   `origin=trainerStep 33000`, and the learning rate continues the original's (0.00124 at
   33,000; 0.00127 at 33,050). The cycle's trough was at ~31,000 (lr 0.00081), so the rate
   is rising again after 33,000.
+- **Probe builds agree:** build 2320's probe of the 33,000 checkpoint gives pElo 1395.8,
+  NLL 2.3135 — identical to build 2275's — so the continuation's probes (build 2320) and
+  the original's (build 2275) are on the same scale. The continuation's run ModelID is
+  `20261005-1-1vVl` (parent `20261004-15-Pm6B`); `table.py` adds its probes at 33,000 + N.
 
 ## Launch record
 

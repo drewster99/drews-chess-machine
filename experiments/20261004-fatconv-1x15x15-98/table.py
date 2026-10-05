@@ -24,6 +24,10 @@ R8 = (os.path.join(NO_REZERO, "probes-seed2.jsonl"), "20261002-4-T79u", "R8 no S
 FATTY = (os.path.join(EXPERIMENTS, "20261003-fatty-1x7x7-216", "probes.jsonl"), "20261004-10-YpxP", "fatty")
 SLIM_NECK = (os.path.join(EXPERIMENTS, "20261003-fatty224-3x3stem", "probes.jsonl"), "20261004-13-K4Iu", "slim-neck fatty")
 FATCONV = (os.path.join(HERE, "probes.jsonl"), "20261004-15-Pm6B", "fatconv")
+# The continuation past 33,000 (build 2320, --resume-exact; README "Continuation past
+# 33,000") numbers its own steps, so its probe at step N is real step CONT_OFFSET + N.
+FATCONV_CONT = (os.path.join(HERE, "probes-cont.jsonl"), "20261005-1-1vVl", "fatconv continuation")
+CONT_OFFSET = 33000
 
 START_IDS = {"fatty": "20261004-8-2Sao", "slim-neck fatty": "20261004-12-QsqZ", "fatconv": "20261004-14-3Rkc",
              "R7 no SE, no ReZero s1": "20261002-1-bh2u", "R8 no SE, no ReZero s2": "20261002-3-x4gI"}
@@ -62,6 +66,11 @@ def mean_of(a, b, step, index):
 
 def main():
     fatty, slim, fatconv, r7, r8 = points(FATTY), points(SLIM_NECK), points(FATCONV), points(R7), points(R8)
+    for step, value in probe_record.load_probe_points(FATCONV_CONT[0], FATCONV_CONT[1]).items():
+        real_step = CONT_OFFSET + step
+        if real_step in fatconv:
+            raise ValueError(f"fatconv continuation step {step} collides with the original run's step {real_step}")
+        fatconv[real_step] = value
     last = max(list(fatty) + list(slim) + list(fatconv))
     print("| step | pElo fatty | pElo slim-neck fatty | pElo fatconv | pElo Avg(R7,R8) "
           "| NLL fatty | NLL slim-neck fatty | NLL fatconv | NLL Avg(R7,R8) |")
