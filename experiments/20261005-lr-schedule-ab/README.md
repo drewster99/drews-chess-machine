@@ -1,8 +1,35 @@
 # 2026-10-05 — LR schedule A/B: constant 0.01 vs a 1.0 ↔ 0.001 cycle (R7 shape, basic24)
 
-**Status:** running since 2026-10-05 01:32 CDT. Both arms reached their 36,000-step limit at ~17:14 CDT and,
-at the owner's request, continue to trainer step 40,000 by an exact resume (see "Continuation to 40,000").
+**Status:** complete. Ran 2026-10-05 01:32–18:51 CDT: both arms to their 36,000-step limit (~17:14), then, at the
+owner's request, to trainer step 40,000 by an exact resume (see "Continuation to 40,000"). Arm C was stopped earlier.
 Summary: [E-0017](../summaries/E-0017_2026-10-05_lr-schedule-ab.html).
+
+## Results
+
+Probes (`--probe-set wide`, policy only) every 1,000 trainer steps; B's LR at each probe from its `[REPLAY]` lines.
+Full per-probe data: `probes-A.jsonl`, `probes-B.jsonl` (to 36k) and `probes-*-seg1.jsonl` (37k–40k, step + 36,000).
+
+| step | B phase | A pElo | B pElo | B − A | Avg(R7,R8) | B − Avg |
+|---:|---|---:|---:|---:|---:|---:|
+| 6,000 | trough | 1096.5 | 1405.6 | +309.1 | 1284.6 | +121.0 |
+| 16,000 | trough | 1314.0 | 1571.4 | +257.4 | 1335.6 | +235.7 |
+| 26,000 | trough | 1349.0 | 1609.4 | +260.3 | 1455.9 | +153.5 |
+| 31,000 | peak | 1395.8 | 1372.7 | −23.1 | 1485.9 | −113.2 |
+| 33,000 | falling | 1362.4 | 1578.5 | +216.2 | 1504.6 | +73.9 |
+| 36,000 | trough | 1453.8 | 1620.7 | +166.8 | | |
+| 38,000 | rising | 1427.1 | 1632.0 | +204.8 | | |
+| 40,000 | rising (LR 0.5) | 1396.8 | 1507.7 | +110.9 | | |
+
+- Best probe: B 1632.0 (NLL 2.0728) at 38k; A 1453.8 (NLL 2.2620) at 36k. B is ahead at 39 of 40 probes (the
+  exception, 31k, is at an LR peak).
+- B's best probe per low-LR stretch: 1409.2 (8k), 1581.6 (17k), 1609.4 (26k), 1632.0 (38k) — gains +172, +28, +23.
+- A's probe-to-probe noise is ±50–100 (e.g. 1402.0 at 24k, 1289.8 at 28k).
+- Avg(R7,R8) differs in input encoding (basic30), seeds and cycle (0.1 ↔ 0.001, 20k period, troughs 11k / 31k), so
+  B − Avg mixes those effects; it shows the 1.0 peak is at least not worse than R7/R8's schedule.
+- C: diverged at LR ≈ 3 (step 300), never recovered (see "Arm C").
+- B lost 6 of 16 value-head BN channels at its first LR peak (5 at steps 250–300, a sixth at 1,250–1,300); they
+  stayed dead. The policy probes do not measure the value head.
+- Summary page: E-0017.
 
 ## Question
 

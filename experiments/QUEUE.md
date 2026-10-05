@@ -8,10 +8,8 @@ conversation.
 
 | started | experiment | ends (est.) |
 |---|---|---|
-| 2026-10-05 01:32 | LR schedule A/B on a fresh basic24 R7-shape net (`20261005-lr-schedule-ab/`, E-0017): A constant LR 0.01, B cycle 1.0 ↔ 0.001 (10k period), both to 36k, same `--seed` | ~2026-10-05 16:35 |
+| — | nothing running (GPU idle since 2026-10-05 18:51) | |
 
-Queue script: `chain4.sh` was stopped 2026-10-04 23:31 (see decisions). Both A/B arms were launched at 01:32 by a
-local script (`lrab_chain.sh`, not in the repo), which keeps running only to stop arm B on a non-finite loss.
 
 ## Next (in order)
 
@@ -34,6 +32,9 @@ local script (`lrab_chain.sh`, not in the repo), which keeps running only to sto
 
 ## Finished
 
+- 2026-10-05 01:32 → 18:51 — LR schedule A/B/C on a fresh basic24 R7-shape net (`20261005-lr-schedule-ab/`, E-0017): A constant 0.01,
+  B cycle 1.0 ↔ 0.001 (10k period), to 36k then (owner) continued by exact resume to 40k; C (10 ↔ 0.01) diverged at ~300.
+  B best 1632.0 at 38k, A best 1453.8 at 36k; B ahead at 39 of 40 probes.
 - 2026-10-04 23:34 → 2026-10-05 01:32 — fp32 vs mixed policy-tail timing (A-B-B-A on R7 33k, the SE scale+bias net, a fresh
   `v4_5block_7x7`) and nt8y's step time (`20261004-policy-tail-precision/`, E-0011).
 - Earlier runs (R1–R16, numbered in `rchart.py`) have all ended; summaries of those since 2026-10-02 are in `summaries/`
@@ -118,3 +119,6 @@ local script (`lrab_chain.sh`, not in the repo), which keeps running only to sto
 - **2026-10-05 12:18 — arm C continued (owner), 15:34 stopped (owner).** Resumed exactly from step 513 to see whether
   it recovers or goes non-finite; it did neither (frozen at pElo ~585 through trainer step 6,116, no NaN/Inf). Details
   in `20261005-lr-schedule-ab/README.md`.
+- **2026-10-05 17:14 — A and B continued to 40k (owner: "allow them to go to 40k, then stop there").** Each was resumed
+  exactly from its 36,000-step final save with a 4,000-step segment limit (same build, parameters and seed); both ended
+  18:51 at trainer step 40,000. Details in `20261005-lr-schedule-ab/README.md`.

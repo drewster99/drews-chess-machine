@@ -300,12 +300,12 @@ window.DCM_EXPERIMENTS = [
   "date": "2026-10-05",
   "file": "E-0017_2026-10-05_lr-schedule-ab.html",
   "title": "LR schedule A/B/C: constant 0.01 vs cycles peaking at 1.0 and 10",
-  "status": "running",
+  "status": "complete",
   "tags": [
    "lr-schedule",
    "basic24"
   ],
-  "takeaway": "In progress: a constant LR of 0.01 (what our best long runs used) against a 1.0 ↔ 0.001 cycle on R7's shape (a 10 ↔ 0.01 cycle diverged within 300 steps); compare B at its troughs (6k, 16k, 26k, 36k).",
+  "takeaway": "On R7's shape a 1.0 ↔ 0.001 LR cycle (10k period) beats a constant 0.01 at almost every probe (best 1632.0 vs 1453.8 by 40k) and beats R7/R8's 0.1 ↔ 0.001 cycle at matched steps, while a 10 ↔ 0.01 cycle destroys the net within 300 steps; read a cycled run at its troughs, not mid-cycle.",
   "related": [
    "E-0008",
    "E-0012"
