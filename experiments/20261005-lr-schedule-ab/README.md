@@ -1,7 +1,7 @@
 # 2026-10-05 — LR schedule A/B: constant 0.01 vs a 1.0 ↔ 0.001 cycle (R7 shape, basic24)
 
-**Status:** running since 2026-10-05 01:32 CDT; both arms to 36,000 steps (est. ~16:00–17:00 CDT at the
-measured ~1.5 s/step while they share the GPU).
+**Status:** running since 2026-10-05 01:32 CDT. Both arms reached their 36,000-step limit at ~17:14 CDT and,
+at the owner's request, continue to trainer step 40,000 by an exact resume (see "Continuation to 40,000").
 Summary: [E-0017](../summaries/E-0017_2026-10-05_lr-schedule-ab.html).
 
 ## Question
@@ -57,6 +57,37 @@ for arm in A B; do stem=$([ $arm = A ] && echo 20261005-lrA-const01 || echo 2026
 done
 PROBE_BIN="$BIN" experiments/probe_loop.sh 20261005-lrA-const01 $E/probes-A.jsonl &
 PROBE_BIN="$BIN" experiments/probe_loop.sh 20261005-lrB-cyc1 $E/probes-B.jsonl &
+```
+
+## Continuation to 40,000 (owner, 2026-10-05)
+
+- Owner: "allow them to go to 40k, then stop there". The step limit is a launch flag, so each arm ran to its
+  36,000-step final save and was then continued with `--resume-exact` from that save
+  (`<stem>-replay-latest.safetensors`, header `training_step` 36000 checked before resuming), same build 2320
+  binary, same parameters file and `--seed`, `--training-step-limit 4000` (the limit counts the segment's own
+  steps), new out stems `20261005-lrA-const01-r1` / `20261005-lrB-cyc1-r1`.
+- A: log `dcm_log_20261005-171451.txt`, started 17:14:51. B: log `dcm_log_20261005-171541.txt`, started 17:15:41.
+  Both `[RESUME] EXACT`, `[RUN] … seg=1 (exact resume of …)`.
+- Enumerated files are `<stem>-r1-replay-seg1-step<N>`; probes in `probes-A-seg1.jsonl` / `probes-B-seg1.jsonl`,
+  whose `training_step` is the segment step: trainer step = segment step + 36,000.
+- Known gap: this build logs the `[REPLAY]` step lines on segment steps, so after the resume none of them lands on a
+  diagnostics step and their `pEnt` / `pW` / `pD` / `pL` / `vAbs` / `pLogitMean` / `vLogitMean` fields print `--`
+  (`documentation/plans-active/STATS_LINE_RESUME_CADENCE_FIX_PLAN.md`). Loss, illegal mass, gNorm, LR, momentum,
+  probes and `[LAYER-HEALTH]` are unaffected.
+- At 40,000 B's cycle is near LR 0.5 (rising toward its 41,000 peak), so B's 40k value is not a trough-comparable
+  point; its troughs are 6k, 16k, 26k, 36k.
+
+```
+BIN="$HOME/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2320-1ab52554.app/Contents/MacOS/DrewsChessMachine"
+M="$HOME/Library/Application Support/DrewsChessMachine/Models"
+E=experiments/20261005-lr-schedule-ab
+for arm in A B; do stem=$([ $arm = A ] && echo 20261005-lrA-const01 || echo 20261005-lrB-cyc1)
+  "$BIN" --replay-corpus 20260624-192615-w3aA5b --start-model "$M/$stem-replay-latest.safetensors" --resume-exact \
+    --out-model "$M/$stem-r1-replay-latest.safetensors" --parameters $E/parameters-$arm.json --epochs 12 \
+    --training-step-limit 4000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn --seed 20261005 &
+done
+# then, per arm, with the trainer's pid:
+PROBE_BIN="$BIN" PROBE_SEGMENT=1 TRAINER_PID=<pid> experiments/probe_loop.sh <stem>-r1 $E/probes-<arm>-seg1.jsonl &
 ```
 
 ## Arm C (added 2026-10-05 09:04, owner)
