@@ -74,7 +74,7 @@ Phases:
 ## Corrections to the audit (re-verified for this plan)
 
 - **85 keys, not 83.** `TrainingParameters.allKeys` (`Training/TrainingParameters.swift:2479-2565`) and `collectValues` (`:1756-1860`) both list 85 keys. The earlier count dropped `ArenaSPRTElo0` and `ArenaSPRTElo1`. The real snapshots on disk have 85 entries. 66 declarations are `liveTunable: true` and 19 are `false`.
-  - These counts are as of `c0130599`. `TRAINING_HEALTH_ALARMS_PLAN.md` adds 12 `liveTunable` keys (97 keys, 95 in a composed snapshot, 78 live-tunable). Wherever this plan's tests or validation need a count, they use `TrainingParameters.allKeys.count` (composed snapshots: `allKeys.count − 2`, gap 9), never a literal. See **Interaction with adjacent plans**.
+  - These counts are as of `c0130599`. `TRAINING_HEALTH_ALARMS_PLAN.md` adds 11 `liveTunable` keys (96 keys, 94 in a composed snapshot, 77 live-tunable; 11 after the owner removed `value_head_one_sided` with `value_loss_above_ln3`). Wherever this plan's tests or validation need a count, they use `TrainingParameters.allKeys.count` (composed snapshots: `allKeys.count − 2`, gap 9), never a literal. See **Interaction with adjacent plans**.
 - **The arena reads its games and threshold live; the stats/chart sample does not.**
   - Both keys are `liveTunable: false` (`:846`, `:835`), but the arena reads them from the singleton at use (`App/SessionController+Arena.swift:389`, `:1064`). Criterion and SPRT are read at each arena start (`:110-117`).
   - The run-start copies `sessionTournamentGames` / `sessionPromoteThreshold` (`App/SessionController+Training.swift:677-678`) are what the stats/chart sample reports (`:2023-2024`). That reporting is fixed in P3.
@@ -1316,7 +1316,7 @@ After P4, additionally:
 
 - **O-23 Reading schema-2 records (S1).** Schema 3 is written from P4 on, but every existing model and session file (23 lineage records surveyed, including the live LR A/B continuations) is schema 2. S1 decodes a schema-2 record — new keys absent, carried values marked unrecorded, never fabricated — so those files stay loadable and resumable; without it P4 makes every existing file unreadable. This is backward-compatibility code, which the owner's rules require an explicit request for. Approve S1's schema-2 read path (recommended; the architecture format already reads older versions the same way), or drop it and accept that schema-2 files can no longer be loaded?
 - **`HEAD_ACTIVATIONS_PLAN.md`** bumps the architecture format to v9 (`dcm_format_version`). This plan bumps only the lineage schema (2 → 3) and never the architecture format (Part S), so the numbers do not collide: a file written after both is format v9, schema 3. That plan's edit of the `"8"` pin at `LineageRecordTests.swift:114` is its own owner decision. Gap 1c's `architecture_at_departure` stores a source's architecture text verbatim with its own `format_version`, so a v8 text inside a v9 file is read under v8's rules.
-- **`TRAINING_HEALTH_ALARMS_PLAN.md`** adds 12 `liveTunable` `@TrainingParameter` keys (its checklist step 1):
+- **`TRAINING_HEALTH_ALARMS_PLAN.md`** adds 11 `liveTunable` `@TrainingParameter` keys (its checklist step 1):
   - they enter every composed snapshot (as that plan says), so this plan's counts are never literals (Corrections);
   - their stored properties' `didSet`s pass `oldValue` to `commitAssignment` like every other (gap 4); whichever plan lands second wires them;
   - they belong in gap 10's applicability table on every path.
