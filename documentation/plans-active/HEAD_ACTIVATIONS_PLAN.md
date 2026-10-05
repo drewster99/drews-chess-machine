@@ -699,7 +699,7 @@ Before P1 starts, freeze the build of P1's parent commit as `~/Library/Applicati
 
 # Owner decisions needed
 
-**Owner answers (2026-10-05):** OD-1 approved (rename to `stem_activation`), OD-5 approved, OD-6 approved, OD-7 approved. OD-2, OD-3, OD-4, OD-8, OD-9, OD-10 and OD-11 are open.
+**Owner answers (2026-10-05):** OD-1 approved (rename to `stem_activation`); OD-2 approved (own `feature_skip_activation`); OD-3: name the value FC1 field `value_head_fc1_hidden_activation`; OD-4: an explicit `does_not_apply` value (owner: "none" reads ambiguously) — required exactly when the topology lacks the site, refused on a site that exists, never meaning an identity activation (design sections to be revised to this); OD-5 approved; OD-6 approved; OD-7 approved; OD-8 approved; OD-9: both — document the frozen scripts **and** add the guard to each silent one; OD-10: re-save the presets at v9 (approved, optional); OD-11: add to `ROADMAP.md` (approved).
 
 | # | Decision | Recommendation |
 |---|---|---|

@@ -81,3 +81,13 @@ PROBE_BIN="$BIN" experiments/probe_loop.sh 20261005-lrB-cyc1 $E/probes-B.jsonl &
   mostly off (worst: the policy pre-BN, 91 dead). No loss was non-finite, so the watchdog never fired.
   Conclusion: at this net and batch, a cycle peak of 10 (effective step LR/(1−μ) ≈ 20 already at LR 3)
   destroys the network; 1.0 does not.
+- **Continued 2026-10-05 12:18 (owner: "see where it goes, or if we get NaNs").** `--resume-exact` from the
+  step-513 abort save on build 2323 (`[RESUME] EXACT`, random streams restored), out stem
+  `20261005-lrC-cyc10-r1` (enumerated files `…-r1-replay-seg1-step<N>`, probes in `probes-C-seg1.jsonl`; trainer step
+  = segment step + 513), log `dcm_log_20261005-121841.txt`, no auto-stop. It passed its LR 10 peak and fell to the
+  0.01 trough without recovering and without any non-finite value: probes at trainer steps 1,513–5,513 stayed at
+  pElo 582–585 / NLL 4.15, illegal-move mass ~0.967, gNorm ~0.01–0.02. Layer health at trainer step 5,513: 350 of
+  1,040 BN-fed channels dead, policy pre-BN 91 of 128 dead, value BN 14 of 16 dead, all 128 value-FC1 units at
+  exactly zero velocity; 0 non-finite values.
+- **Stopped by the owner 2026-10-05 15:34** at trainer step 6,116 (SIGINT, abort save
+  `20261005-lrC-cyc10-r1-replay-latest`).

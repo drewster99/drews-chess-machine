@@ -115,3 +115,6 @@ local script (`lrab_chain.sh`, not in the repo), which keeps running only to sto
 - **2026-10-05 09:22 — arm C stopped at step 513** under the owner's rule for B (stop if it blows up badly):
   the policy diverged as the LR passed ~3 (illegal-move mass 0.997 at step 300, then ~0.945 with gNorm
   0.02–0.06; 339 of 1,040 channels dead at the abort save). Details in `20261005-lr-schedule-ab/README.md`.
+- **2026-10-05 12:18 — arm C continued (owner), 15:34 stopped (owner).** Resumed exactly from step 513 to see whether
+  it recovers or goes non-finite; it did neither (frozen at pElo ~585 through trainer step 6,116, no NaN/Inf). Details
+  in `20261005-lr-schedule-ab/README.md`.
