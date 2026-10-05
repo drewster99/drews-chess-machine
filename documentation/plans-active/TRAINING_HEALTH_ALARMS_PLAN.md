@@ -10,10 +10,11 @@ Status (2026-10-05): **PLAN ONLY.** Nothing here is implemented.
 
 **What this plan does.**
 - Adds one pure, testable evaluator, `TrainingHealthEvaluator`. All three training paths use it: GUI Play-and-Train (including GUI `--train`), `--replay-corpus` and `--train-vs-uci`.
-- Feeds it only data the paths already compute:
+- Feeds it data the paths already compute:
   - the per-step `TrainStepTiming` that `trainStep` returns;
-  - the `LayerHealthSummary` that the live and checkpoint `[LAYER-HEALTH]` passes already build.
-- Adds no GPU work, no random draws and no change to trainer, optimizer or replay-buffer state.
+  - the `LayerHealthSummary` that the live and checkpoint `[LAYER-HEALTH]` passes already build;
+  - and one new, small read (OD-15): the optimizer velocity of the single tensor `value.fc1.weight`, every 1,000 trainer steps, on the paths whose saves do not already provide it (D6).
+- Adds no random draws and no change to trainer, optimizer or replay-buffer state. Its only GPU work is that one read, on the trainer's own queue between SGD steps.
 - Defines nine rules (a tenth, value loss above ln 3, was dropped by the owner, OD-7). Their thresholds were measured against three incident runs, four healthy replay runs, a long GUI self-play run, and a survey of every log since `[LAYER-HEALTH]` shipped.
 - Reports each alarm as one `[ALARM] health …` line in a fixed key=value format. By default every rule only logs.
 - Lets the owner set any rule to stop the run. The stop goes through each path's existing clean exit: on the CLI paths, the loop exit and final save; in the GUI, a training suspension or `AutoTrainTermination`.
@@ -49,6 +50,20 @@ Rules this plan follows (CLAUDE.md files and the owner's standing rules):
 | 10 | GUI: monitor wired to the trainer worker, the `[STATS]` ticker and the checkpoint passes. Promotion rewind handled. Alarm list view with its own Silence; one beep loop for both alarm sources. Health tab in the settings popover. Stop = training suspension with the worker parked (interactive) or `AutoTrainTermination` (`--train`) | P3 |
 | 11 | Docs: `documentation/training-health-alarms.md`, `--help`, CLAUDE.md tag list (OD-11), CHANGELOG | P4 |
 | 12 | Optional: move the GUI-only detectors' conditions into the shared evaluator (OD-9); lineage segment summary (OD-10, with HPARAM P4) | P5 |
+| 13 | Rule 3's value-FC1 velocity check at most 1,000 trainer steps apart on every path (OD-15, D6): reused from a save's checkpoint pass where one covers it, otherwise one dedicated read of that tensor | P1 (pure scheduling), P2 (trainer read, train-vs-UCI), P3 (GUI) |
+
+## Every check, its trigger and its interval
+
+The owner's rule (OD-15): every check runs on a set interval or trigger. "Step" is the trainer step unless it says segment step.
+
+| Check | GUI Play-and-Train / `--train` | `--replay-corpus` | `--train-vs-uci` |
+|---|---|---|---|
+| Record the step (rules 4–8's inputs) | every SGD step | every SGD step | every SGD step |
+| Live evaluation: live `[LAYER-HEALTH]` read (BN state, ReZero α) + rules 1, 2, 4–9 | every 25 session steps for the first 500, then every 60 s `[STATS]` emit (a median of 94 steps in the Ejp0 run) | every step-line tick: segment step 1, every step-line interval (50 at today's settings), every autosave segment step (cadence plan) | same as replay |
+| Checkpoint evaluation: full-tensor `[LAYER-HEALTH]` pass + rules 1, 2, 3, 9 | every session save: periodic (default 6 h), promotion, Promote Trainee Now, manual, SIGUSR2 | every rolling save: every 1,000 segment steps, plus the final save | every session save (periodic, time-based; final; abort), plus each enumerated checkpoint (every 1,000 segment steps) with `--enumerate-checkpoints` |
+| Rule 3 value-FC1 velocity (OD-15, D6) | every 1,000 steps: a dedicated read whenever 1,000 steps have passed since the run started or since the last rule-3 observation (a save's pass also counts) | every 1,000 steps, from the autosave's checkpoint pass (every 1,000 segment steps); a dedicated read only when that save or its pass produced no observation (a first, non-fatal save failure, `CLI/CorpusReplayRunner.swift:1628-1633`, or a failed health pass) | every 1,000 steps: from the enumerated checkpoint's pass with `--enumerate-checkpoints`, otherwise a dedicated read on the same deadline as the GUI |
+| `[HEALTH] check` line and `active` reminders | first live evaluation at or after each multiple of `training_health_check_interval_steps` (1,000) | same | same |
+| Stop | decided on the main actor after every delivered evaluation; the worker parks at its next loop top | `healthStop` checked at the loop top before every step | same as replay |
 
 ---
 
@@ -245,13 +260,13 @@ Defaults for the thresholds are **proposed** (OD-1). `Healthy` is the most extre
 |---|---|---|---|---|---|---|---|
 | 1 | `non_finite` | live + checkpoint digest `nonFiniteValueCount`. Any non-finite diagnostic field in `W` (`pLogitMean`, `valueAbsMean`, `valueMean`; the trainer's own halt checks only `valueMean` of these) | critical: count > 0 | never auto-clears (non-finite weights do not heal) | none: raises on first sight | 0 in all 73 logs | none of the incidents (C stayed finite) |
 | 2 | `dead_channels` | digest: dead count (β/\|γ\| < −3, `Training/LayerHealth.swift:73`) and per-site counts | warning, by OD-16: **absolute form** dead > 0, or **new-damage form** any site's dead count above its baseline (below). Critical (both forms): dead ÷ classified ≥ 0.05, or any site's dead ÷ channels ≥ 0.2 (OD-1, decided) | only when **no** raise condition of any level holds for 2 evaluations: absolute form, dead = 0 (which also ends both critical arms); new-damage form, every site at or below its baseline **and** neither critical arm holding. So a critically damaged baseline (C's segment 1 alone) never clears by staying unchanged | none (dead is near-permanent) | 0 in every healthy run surveyed | B critical 300 (`value.bn` 5/16 = 31%). C critical 50 |
-| 3 | `value_fc1_zero_velocity` | checkpoint digest `valueFC1` zero/units. Evaluated only once **steps trained by this process** (R0) ≥ 200 when the checkpoint's state was exported (otherwise no data) | warning: ≥ 0.05. Critical: ≥ 0.5 | < 0.025 at one checkpoint | none | ≤ 1/128 (0.8%) | B warning 1,000 (10/128). C critical 1,513 (128/128) |
+| 3 | `value_fc1_zero_velocity` | `valueFC1` zero/units, from a checkpoint digest or the dedicated value-FC1 read (D6), at least every 1,000 trainer steps on every path. Evaluated only once **steps trained by this process** (R0) ≥ 200 when the state was read (otherwise no data) | warning: ≥ 0.05. Critical: ≥ 0.5 | < 0.025 at one checkpoint | none | ≤ 1/128 (0.8%) | B warning 1,000 (10/128). C critical 1,513 (128/128) |
 | 4 | `illegal_mass` | `median_W(illegalMassPenalty)` | critical, **regression form**: the run's own running minimum of window medians has been < 0.5, and now ≥ 0.8. Critical, **not-learned form**: past the learning gate and ≥ 0.5 | < 0.3 for 2 evaluations | 2 evaluations, span ≥ 50 | replay ≤ 0.0649 from 2,000; fresh GUI ≤ 0.2189 from 2,000 (rolling mean, GUI-F1) | C critical 350 (regression). C segment 1: 2,063 (not learned) |
 | 5 | `gradient_collapse` | `median_W(gradGlobalNorm)` | critical: < 0.1 | ≥ 0.2 for 2 evaluations | 2 evaluations, span ≥ 50 | min 0.235 (B); GUI ≥ 2.648 | C critical 400 (cleared 913 near LR 10, re-raised 1,713) |
 | 6 | `loss_spike` | `max_W(loss)` and `median_W(loss)` against `ref` = median of the loss records in the 1,000 trainer steps before `W`. `ref` has data only when those records span ≥ 200 trainer steps (first to last) and number ≥ 5 — a span, not a record count, so the in-app per-step history and the sparse offline rows (D4) use one definition | warning: `median_W ≥ 1.5 × ref` or `max_W ≥ 3 × ref` | `median_W < 1.2 × ref` | none | logged ratio ≤ 1.029 | C warning 300 (×6.69) |
 | 7 | `policy_offset_drift` | `median_W(\|policyLogitMean\|)` (diagnostic) | warning: ≥ 3.0 | < 2.0 for 2 evaluations | 2 evaluations, span ≥ 50 | ≤ 0.760 | B warning 900. C warning 200 |
 | 8 | `value_head_one_sided` | `median_W(valueAbsMean − \|valueMean\|)` (diagnostic): 0 exactly when every position's `v` in the batch has the same sign. Applies only when `median_W(sampledBatchDrawFraction) ≤ 0.5` | warning, **regression form**: the run's running maximum has been ≥ 0.06, and now < 0.03. Warning, **not-learned form**: past the learning gate and < 0.03 | ≥ 0.06 for 2 evaluations | 2 evaluations, span ≥ 50 | ≥ 0.114 from 500; GUI ≥ 0.470 | C warning 250. B's single 0.004 at 250 does not sustain |
-| 9 | `bn_running_variance_runaway` | digest: largest `runningVarianceMaxOverMedian` | warning: ≥ 1,000 (**threshold still open**, OD-1) | < 300 for 2 evaluations | none | < 80 in healthy runs (231, 332 in runs from older models) | C warning 200 (1,415.5) |
+| 9 | `bn_running_variance_runaway` | digest: largest `runningVarianceMaxOverMedian` | warning: ≥ 1,000 (OD-1, decided) | < 300 for 2 evaluations | none | < 80 in healthy runs (231, 332 in runs from older models) | C warning 200 (1,415.5) |
 
 **Notes per rule (the measurements behind them):**
 
@@ -274,7 +289,7 @@ Defaults for the thresholds are **proposed** (OD-1). `Healthy` is the most extre
   - C shows the lag: 0/128 at the step-513 abort save, 128/128 at 1,513.
   - Velocity that has not accumulated reads as zero: a save before any training in the process, or soon after a branch whose velocity was not continued, shows every unit at exactly zero — including saves whose trainer clock reads up to 274 because a test set it (the 16/16 survey case). Hence the gate on **steps trained by this process** (R0), never on the trainer clock. C's step-513 abort save (513 trained) and every 1,000-step checkpoint pass it; every 16/16 save in the survey trained 0.
   - The velocity is `v ← μ·v + clipped gradient` (`Training/ChessTrainer.swift:4195-4199`). With μ = 0 it is the last step's gradient, so exact zero then means the unit had no gradient on that one batch: still a strong signal at batch 4,096, but with no lag. The `[HEALTH] config` line records the run's base μ, and every live raise and escalate line its effective μ (`mom=`), since A–C cycle momentum. A checkpoint evaluation's lines carry `mom=--` (no live value at hand).
-  - The rule is checkpoint-only because the live tier deliberately reads no velocity (`Training/LayerHealth.swift:113-114`). In the GUI, checkpoints are only the periodic (6 h) and promotion saves, so this rule is slow there (OD-15).
+  - The live tier deliberately reads no velocity (`Training/LayerHealth.swift:113-114`), and GUI saves are hours apart. So that the rule runs on a fixed interval everywhere (OD-15, decided), the value-FC1 velocity is read every 1,000 trainer steps: from a save's checkpoint pass where one covers the interval (every corpus-replay autosave; train-vs-UCI enumerated checkpoints), otherwise by one dedicated read of that tensor (D6).
   - SE FC1 zero velocity is reported, not alarmed: SE bottlenecks with many weak units were measured in healthy runs (`Training/LayerHealth.swift:9-17`).
 - **Rule 4.**
   - The regression form catches C's divergence at the first evaluation after it (the prototype fires at 350; the in-app per-step window would fire at the first evaluation whose window median is ≥ 0.8).
@@ -496,7 +511,7 @@ struct TrainingHealthEvaluation: Sendable {
 
 **Stop decisions** belong to their monitor. In the GUI they are made on the main actor (R2) only for a hop whose monitor is the current `trainingHealthMonitor`; a hop from an earlier run's monitor is dropped and logged. The trainer worker polls the park flag of the monitor its own run created. On the CLI the evaluator's `stopRequest` sets the run-local `healthStop` directly.
 
-No GPU, no random draws, no access to the trainer, buffer or optimizer. Probe isolation holds by construction: the monitor's only inputs are values the paths already hold.
+No GPU, no random draws, no access to the trainer, buffer or optimizer (D6's value-FC1 read is made by the path through `ChessTrainer`; the monitor only decides when it is due and evaluates its result). Probe isolation holds by construction: the monitor's only inputs are values the paths already hold.
 
 ## D3. Rendering and recording
 
@@ -531,6 +546,7 @@ No GPU, no random draws, no access to the trainer, buffer or optimizer. Probe is
   - `[REPLAY] step=` / `[VS-UCI] step=` lines: `--` means not measured, never 0;
   - `[LAYER-HEALTH] live` lines;
   - `[LAYER-HEALTH] checkpoint` headlines and their per-site table rows;
+  - `[LAYER-HEALTH] value-fc1` lines (D6), as rule-3-only observations;
   - `[BATCH-STATS]` JSON lines, for the batch draw fraction (`outcome_pct.D`, the most recent at or before each stats row) that rule 8's draw gate needs. The `[REPLAY]` line does not carry it; on these corpus runs it was about 0.066 (`dcm_log_20261005-090417.txt`, trainer step 10: 0.0659).
 - **Pre-scan.** Before evaluating, it reads every checkpoint table in the logs passed together and builds `site → channel count` **per run**: a run starts at each `[RUN]` line (lines before a log's first `[RUN]` form a run of their own), so a test-process log holding several runs (and architectures) gets one map per run, and a live line uses its own run's map. Two different counts for one site within one run are a malformed input: exit 2, naming both lines. A live line carries the worst site's dead count but not its channel count (`Training/LayerHealth.swift:985-990`), so this is the only offline source of that denominator (C's step-50 `value.bn` 12/16 needs the table at trainer step 513). A site with no known count makes the per-site arm "no data" for that evaluation; it is never guessed.
 - **Sparse semantics — the offline replay feeds the real evaluator, and these are the only differences from the app:**
@@ -556,6 +572,25 @@ No GPU, no random draws, no access to the trainer, buffer or optimizer. Probe is
 - Its four call sites — `App/SessionController+Training.swift:2120,2177`, `CLI/CorpusReplayRunner.swift:1927`, `CLI/TrainVsUciRunner.swift:783` — are converted in **P1** to `live(trainer:).lines` with no behavior change, so P1 builds on its own with `liveLines` removed. P2 (CLI) and P3 (GUI) then hand `summary` to the monitor.
 - `liveLine(summary:trainerStep:)` stays; `LayerHealthTests.swift:616` uses it.
 - The checkpoint passes already return the summary (`CheckpointOutcome.summary`). Their call sites hand it to the monitor: `CLI/CorpusReplayRunner.swift:1614-1623`, `CLI/TrainVsUciRunner.swift:562-572`, and `App/SessionController+Checkpoint.swift:622-643` (which gains `monitor` and `stamp` arguments and a main-actor delivery callback; callers `:598` and `App/SessionController+Arena.swift:821`).
+
+## D6. The value-FC1 velocity check (OD-15)
+
+**One schedule for every path: a deadline, not a grid.** `TrainingHealthMonitor.valueFC1ReadDue(trainerStep:) -> Bool` (pure, under the evaluation lock) is true when `trainerStep − anchor ≥ TrainingHealthThresholds.valueFC1CheckIntervalSteps` (1,000; a declared constant like the thresholds, OD-14). The **anchor** is the trainer step of the newest rule-3 observation in this generation (from any source, by its stamp's trainer step), or, when there is none yet, the trainer clock at which this process's monitor started recording (the first record's step − 1) or the restored clock after a rewind. So two consecutive rule-3 observations are never more than 1,000 trainer steps apart, whatever falls in between, and a save's pass simply moves the deadline. Every path asks after the step's work and after any checkpoint pass that step ran:
+- **Corpus replay** asks after the autosave block (`CLI/CorpusReplayRunner.swift:1979-1988`, pre-cadence-fix). Its rolling save runs at every 1,000th segment step (`:1110`), i.e. exactly 1,000 trainer steps after the process's starting clock and after each previous save, and its checkpoint pass feeds rule 3 before the question is asked. The deadline therefore lands on a save step that has already reset it, fresh or resumed (resumed at 513: start anchor 513, first save at trainer step 1,513, and so on), and no dedicated read happens — **as long as each save and its checkpoint pass succeed**. A first save failure is non-fatal (`:1628-1633`, the run continues) and a failed health pass returns no summary (`Training/LayerHealthLog.swift:69-70`); either leaves the anchor where it was, and the dedicated read at that step keeps the interval. That is the schedule working, not a double read: it reads only when no observation exists.
+- **Train-vs-UCI** asks after its enumerated-checkpoint / periodic-save blocks (`CLI/TrainVsUciRunner.swift:847-853`). With `--enumerate-checkpoints` its pass every 1,000 segment steps covers the interval; without it (the default; `writeEnumeratedCheckpoint` returns at once when no writer, `:646-647`) the read is dedicated.
+- **GUI** asks in the trainer worker right after `recordStep` (T8). Saves are hours apart, so the read is dedicated almost every time: 1,000 trainer steps after the session's start, and every 1,000 after that or after the latest save.
+
+**The read.** `ChessTrainer.readTrainableVelocity(named: "value.fc1.weight") async throws -> (velocity: [Float], completedTrainSteps: Int)`, new. It follows the existing read pattern exactly — `enqueue` onto the trainer's serial `executionQueue`, one `network.graph.run` whose only target is that tensor's velocity variable, fed the dummy inference input, read back as fp32 — as `internalReadLayerHealthLiveState` (`Training/ChessTrainer.swift:5784-5830`) and `readVelocityValues` (`:5562-5587`) do. Because it runs on `executionQueue`, it falls between SGD steps and never overlaps one. Its result goes through the existing pure `LayerHealth.hiddenUnitVelocityHealth(layer: LayerHealth.valueFC1Layer(for: arch), velocity:)` (`Training/LayerHealth.swift:245-252,614`), on the calling task after the read returns (a single pass over the tensor).
+
+**Probe isolation.** The graph run targets one variable and no operation, so nothing is assigned, no dropout op is encoded (no RNG advance), and the optimizer, weights, BN statistics and replay buffer are untouched — the same guarantee the live read has today. A test pins it (X1).
+
+**Observation and log.** The result is a checkpoint-tier observation whose digest carries only `valueFC1` (every other field absent, so other rules have no data from it), stamped with `observationStamp()` taken before the read, and evaluated through `evaluateCheckpoint`. It is logged as one line, which the offline replay also parses (D4):
+`[LAYER-HEALTH] value-fc1 trainerStep=<s> valueFC1ZeroVel=<zero>/<units> lowVel=<n> readMs=<ms> summaryMs=<ms>`.
+
+**Cost.**
+- Size: `64 × valueHeadConvChannels × valueHeadHiddenUnits` fp32 values. 131,072 values = 512 KB for the A/B/C architecture (16 × 128); 16 KB for a preset with 1 × 64.
+- Time (estimated, not yet measured): one single-target `graph.run` plus a copy of at most 512 KB from unified memory, ≈ 1–3 ms, and one pass over the values on the CPU, well under 1 ms. Once per 1,000 steps at the Ejp0 GUI pace (≈ 0.65 s/step, ≈ 650 s per 1,000 steps), that is about 0.0005% of training time; the trainer queue is held only for the read itself.
+- `readMs` and `summaryMs` are logged on every read and counted in `cost_ms`; V-5 checks them.
 
 ---
 
@@ -611,10 +646,12 @@ Line numbers in T3 and T4 are **pre-cadence-fix** (`main` at `62dc8559`). `STATS
 - `monitor.recordStep(timing, trainerStep: trainer.completedTrainSteps)` after `lineageTracker.recordTrainingStep` (`:1902`).
 - At the stats tick (`:1904-1928`): `observationStamp()` before the live read and `evaluateLive` after it (`:1927`), passing `liveLR` (`:1910`), `liveMomentum` (`:1911`) and the runner's `emit` as the log sink. Append the events to the recorder.
 - `evaluateCheckpoint` after the checkpoint pass (`:1614-1623`), inside `saveTrainerModel`; the monitor and the `healthStop` value are captured by that closure like `recorder` is.
+- After the autosave block (`:1979-1988`): `if monitor.valueFC1ReadDue(…)`, the dedicated read (D6). With the rolling save every 1,000 segment steps it is due on this path only when a save or its health pass produced no observation (D6); the call stays so all three paths share one schedule.
 - Stop: `healthStop` checked at the loop top (`:1849`); final save reason `health-stop` (`:2008`); termination reason (`:2032`); exit status (`:911-912,969`, OD-4).
 
 ### T4. `CLI/TrainVsUciRunner.swift` and `CLI/TrainVsUciSession.swift` (P2)
 - Same wiring at `:758` (record), `:764-786` (the step-line tick block; evaluate after the live read at `:783`), `:562-572` (checkpoint), and `:746` (stop check).
+- After the enumerated-checkpoint and periodic-save blocks (`:847-853`): `if monitor.valueFC1ReadDue(…)`, the dedicated read (D6).
 - `SaveKind.healthStop` (`CLI/TrainVsUciSession.swift:33-42`); final save at `:871-878` (the enumerated copy at `:873-875` takes `finalKind.rawValue`, so its layer-health context reads `vsuci-health-stop`); termination reason at `:887-889`; exit status at `:112,157`.
 
 ### T5. `CLI/CliTrainingRecorder.swift` (P2)
@@ -631,7 +668,7 @@ Part K.
 - `App/SessionController.swift`: `trainingHealthMonitor`, a new monitor at every `startRealTraining` (including a continue after Stop). `trainingSuspension` replaces `trainingSuspendedByDivergence` (`:280-289`), and every reader is updated (the `Bool` is removed, so a missed reader fails to compile):
   - `App/SessionController+Training.swift:524,1370,2394,2490,2491,2521`;
   - `App/SessionController+Heartbeat.swift:376,645`.
-- Trainer worker (`App/SessionController+Training.swift:1187-1273`): `recordStep(timing, trainerStep: trainer.completedTrainSteps)` after `box.recordStep(timing)` (`:1271`); the park-flag check at the loop top (`:1199`); the parked loop (R3).
+- Trainer worker (`App/SessionController+Training.swift:1187-1273`): `recordStep(timing, trainerStep: trainer.completedTrainSteps)` after `box.recordStep(timing)` (`:1271`); then `if monitor.valueFC1ReadDue(…)`, the dedicated read (D6), awaited inline so the next SGD step waits for it, then its main-actor delivery like any checkpoint evaluation; the park-flag check at the loop top (`:1199`); the parked loop (R3).
 - Stats task (`:1404-2180`): `observationStamp()` before each live read, `evaluateLive` after it (`:2119-2124`, `:2177-2179`), with the config resolved in the existing `MainActor.run` hop (Part K item 8). Then hop to the main actor so `TrainingAlarmController` re-reads the monitor's active set and the stop decision is made from the current actions (R2, R3).
 - Checkpoint passes: `logSavedTrainerLayerHealth` gains the monitor, the stamp (D2) read with the save's trainer export (for the promotion save, after the rewind, in the same pause), and a main-actor delivery callback (`App/SessionController+Checkpoint.swift:622-643`; callers `:598`, `App/SessionController+Arena.swift:821-827`). It calls `evaluateCheckpoint`, then delivers to the main actor like the stats task: identity check, active-set refresh, stop decision from the current actions (D2, R2).
 - Promotion: `monitor.noteTrainerClockRewind(to: trainerSnapshotCompletedSteps)` next to `trainingBox?.resetRollingWindows()` (`App/SessionController+Arena.swift:490`), under both pauses. `trainingAlarm?.clear()` (`:492`) clears the existing banner only; health alarms stay (they clear by recovery).
@@ -662,7 +699,7 @@ Part K.
 - CLAUDE.md tag list: `[HEALTH]` and the `[ALARM] health` form (OD-11). CLAUDE.md and `documentation/UCI.md` ("Output: session folders") also list the train-vs-UCI save tags; both gain `vsuci-health-stop` (OD-11).
 
 ### T11. Verified untouched
-- `ChessTrainer`'s graph, step and readbacks.
+- `ChessTrainer`'s graph, step and per-step readbacks. Its only change is the new read-only method `readTrainableVelocity(named:)` (D6), which adds no graph operation.
 - `LayerHealth` (the analysis and thresholds; only `LayerHealthLog` gains `live`).
 - The non-finite-loss halt.
 - The GUI legal-mass probe, the divergence / value-saturation / pD heartbeat detectors and the entropy `[ALARM]` line (`App/SessionController+Training.swift:2063-2069`), until OD-9.
@@ -702,6 +739,7 @@ Part K.
   - `testConcurrentRewindAndEvaluation` (an announced rewind racing an evaluation; no deadlock, state consistent);
   - `testUnannouncedRewindDuringLiveEvaluationDiscardsIt` and `testUnannouncedRewindDuringCheckpointEvaluationDiscardsIt`: a test hook pauses the evaluation between validation and commit, `recordStep` rewinds, the evaluation resumes; it must not commit, log an event or request a stop;
   - `testFinalCheckLineFlushesThePartialInterval`;
+  - `testValueFC1ReadDueAfterOneThousandStepsFromStart`, `testValueFC1ObservationsNeverMoreThanOneThousandApart` (a checkpoint at 1,001 moves the deadline to 2,001; nothing at 2,000 and nothing waits until 3,000), `testValueFC1ReadNeverDueOnCorpusReplaySaveCadence` (successful saves every 1,000 segment steps, fresh and resumed at 513), `testValueFC1ReadDueWhenASaveProducedNoObservation`, `testValueFC1ReadDueAnchorsOnTheRestoredClockAfterARewind`;
   - `testRule3UsesTheStampedTrainedCount`: a checkpoint stamped at 199 trained steps and evaluated after 200 is no data;
   - `testStaleHopFromAnEarlierMonitorIsIgnored` (P3, controller side);
   - `testCheckpointEvaluationNeverConsumesTheWindowOrDetectsRewind`;
@@ -717,6 +755,7 @@ Part K.
   - `testArmBRaisesValueBNDeadChannelCriticalAt300`, `…PolicyOffsetDriftWarningAt900`, `…ValueFC1WarningAt1000`, `…OnlyDeadChannelsIsCritical`.
   - `testArmARaisesNothing`, `testR7RaisesNothing`, `testR8RaisesNothing`.
   - The expected steps are the prototype's (Evidence table). If the Swift log replay differs in a step, the difference is reported to the owner and the expected value is not quietly changed.
+- **`ValueFC1VelocityReadTests.swift`** (needs Metal; P2): `readTrainableVelocity(named: "value.fc1.weight")` equals the matching slice of `exportVelocitySnapshot()` at the same step; and **probe isolation** — two trainers built from the same seed and weights, trained the same k steps with the same streams, one reading the velocity after every step, end with bit-identical weights, velocity and dropout Philox state.
 - **`TrainingHealthLogTests.swift`**: exact strings for every line kind (the grep contract), including `--`, signed values and site rendering.
 - **`TrainingHealthLogReplayTests.swift`**:
   - parsing of `[REPLAY]`, `[VS-UCI]`, live and checkpoint lines;
@@ -780,9 +819,11 @@ Every step runs only when no training run is live (owner rule), or with the owne
   - **Pass, cost:** two measurements, because `ms` covers only `trainStep` (`Training/ChessTrainer.swift:7243-7269`, printed at `CLI/CorpusReplayRunner.swift:1919`) and the monitor's work runs after it.
     - E runs with `training_health_check_interval_steps=50`, so its `[HEALTH] check` lines (plus the `final=true` one) cover the whole run. Σ`cost_ms` ≤ 0.5% of Σ`train_ms` over those lines (the same steps, from the same lines).
     - Wall time from the `[REPLAY] step=50` line to the `[REPLAY] step=300` line (timestamps; the three runs use an autosave interval above 300 so no save falls between them): |E − D1| ≤ max(1% of D1, |D1 − D2|).
+    - **Value-FC1 read (D6).** Corpus replay does no dedicated read while each save and its checkpoint pass succeed, so this is measured on a train-vs-UCI run without `--enumerate-checkpoints` of at least 3,000 steps (and again in V-6's GUI run): every `[LAYER-HEALTH] value-fc1` line's `readMs + summaryMs` ≤ 0.5% of the `train_ms` of the 1,000 steps it covers (in practice ≤ 5 × the median step `ms`), and Σ`cost_ms` still ≤ 0.5% of Σ`train_ms`. A corpus-replay run of 3,000 steps in which every save and its checkpoint pass succeed logs **no** `value-fc1` line, fresh and resumed from a checkpoint whose step is not a multiple of 1,000 (no double read).
 - **V-6 — GUI.**
   - Build New Model, then Play-and-Train for 3,000 trainer steps with defaults. **Pass:**
     - a `[HEALTH] check` line at the first `[STATS]` emit at or after each multiple of 1,000 trainer steps;
+    - one `[LAYER-HEALTH] value-fc1` line every 1,000 trainer steps from the session's start (no save fell in the run), with `readMs` within V-5's bound;
     - no `[ALARM] health` line;
     - the alarm list stays hidden;
     - the Health tab shows 12 settings and edits log `[PARAM]` lines;
@@ -801,17 +842,17 @@ Each phase builds once at its end, then is committed (owner's standing rule for 
 
 **Dependency: `STATS_LINE_RESUME_CADENCE_FIX_PLAN.md` lands before P2.** P2 wires the CLI evaluations into the step-line tick that plan replaces (`TrainingStepLogCadence.isStepLineTick`), and both edit the same runner blocks. P1 touches those blocks only for the mechanical `liveLines` → `live(trainer:).lines` conversion; if P1 goes first, the cadence fix rebases over a one-line change, and if the cadence fix goes first, P1 converts the post-fix block. P2 re-cites T3/T4 against the fixed code before implementing.
 
-- **P1 — Pure core and incident tests.** T1; T2 including the conversion of all four `liveLines` callers to `live(trainer:).lines` (D5), so `liveLines` can go and P1 builds alone; `TrainingHealthConfig` with its memberwise initializer only; the `TrainingAlarm.Severity` `Codable` extension. X1's evaluator, monitor, log, log-replay and incident-replay tests. No behavior change in any run.
-- **P2 — Parameters, CLI paths, results, offline replay.** Part K items 1–6 and 8 (CLI); `TrainingHealthConfig(_ snapshot:)`; T3–T7; X1's parameter and recorder tests; X2 (after OD-6). Validation V-1, V-1b, V-2, V-3, V-4, V-5.
+- **P1 — Pure core and incident tests.** T1; T2 including the conversion of all four `liveLines` callers to `live(trainer:).lines` (D5), so `liveLines` can go and P1 builds alone; `TrainingHealthConfig` with its memberwise initializer only; the `TrainingAlarm.Severity` `Codable` extension. X1's evaluator, monitor, log, log-replay and incident-replay tests; `valueFC1ReadDue` (D6) and its tests. No behavior change in any run.
+- **P2 — Parameters, CLI paths, results, offline replay.** Part K items 1–6 and 8 (CLI); `TrainingHealthConfig(_ snapshot:)`; T3–T7; `ChessTrainer.readTrainableVelocity(named:)` and `ValueFC1VelocityReadTests` (D6); X1's parameter and recorder tests; X2 (after OD-6). Validation V-1, V-1b, V-2, V-3, V-4, V-5.
 - **P3 — GUI.** T8, T9, Part K item 7 (the Health tab) and item 8's GUI side; X1's alarm-controller tests. V-6, V-7.
 - **P4 — Documentation.** T10.
-- **P5 — Later work.** OD-9 (shared conditions for the GUI-only detectors; decided yes, each `TrainingAlarmControllerTests` edit listed for approval when planned), OD-10 (bounded per-segment lineage alarm summary; decided yes, lands with HPARAM_RECORDING_PLAN P4's schema 3), OD-15 (live value-FC1 velocity read; still open, recommendation no).
+- **P5 — Later work.** OD-9 (shared conditions for the GUI-only detectors; decided yes, each `TrainingAlarmControllerTests` edit listed for approval when planned), OD-10 (bounded per-segment lineage alarm summary; decided yes, lands with HPARAM_RECORDING_PLAN P4's schema 3). (OD-15, decided: the value-FC1 velocity check on a fixed 1,000-step interval, is not P5 — it lands in P1–P3 with D6.)
 
 ---
 
 # Owner decisions needed
 
-Decided by the owner on 2026-10-05: OD-1 (except the `bn_running_variance_runaway` threshold), OD-2 to OD-11, OD-13, OD-14. OD-12 is superseded. **Still open:** the `bn_running_variance_runaway` threshold (OD-1), OD-15, OD-16 (fresh-review A3), OD-17. Each decision is recorded after its original text.
+Decided by the owner on 2026-10-05: every decision below (OD-1 in two rounds, OD-2 to OD-11, OD-13 to OD-17). OD-12 is superseded by its own plan. **None is open.** OD-16's decision carries an owner "revisit later" note. Each decision is recorded after its original text.
 
 - **OD-1 — Thresholds.** Accept Part R's defaults? Specifically:
   - `dead_channels` warning in the form OD-16 picks; critical at ≥ 10% overall or ≥ 50% of one site (B is then a warning; C is critical at step 50); *(the owner's decision below changes this to 5% / 20%)*
@@ -821,7 +862,9 @@ Decided by the owner on 2026-10-05: OD-1 (except the `bn_running_variance_runawa
   - `loss_spike` 1.5× median / 3× max (to be confirmed by V-2);
   - `bn_running_variance_runaway` at 1,000.
 
-  **Decided (owner, 2026-10-05):** `dead_channels`: warning on any dead channel (the absolute form; OD-16 stays open), critical at **≥ 5% overall or ≥ 20% of one site** (changed from 10% / 50%). With these, B is **critical at 300** (`value.bn` 5 of 16 = 31%) and C is still critical at 50; the event tables and tests are updated. All other OD-1 thresholds accepted, **except `bn_running_variance_runaway` at 1,000, which stays open** (owner unsure; measured `rvMaxOverMedian`: A max 7.4 at trainer step 34,250, after the Evidence cutoff — 7.2 within it; B max 78.6 at trainer step 1,400 and ≤ 36.3 after 5,000; C 461,870–548,521 on its live lines from trainer step 500 on; the two older-model runs 231 and 332).
+  **Decided (owner, 2026-10-05):** `dead_channels`: warning on any dead channel (the absolute form; OD-16 was then still open, and was later decided: absolute, revisit later), critical at **≥ 5% overall or ≥ 20% of one site** (changed from 10% / 50%). With these, B is **critical at 300** (`value.bn` 5 of 16 = 31%) and C is still critical at 50; the event tables and tests are updated. All other OD-1 thresholds accepted, **except `bn_running_variance_runaway` at 1,000, which stayed open** (owner unsure; measured `rvMaxOverMedian`: A max 7.4 at trainer step 34,250, after the Evidence cutoff — 7.2 within it; B max 78.6 at trainer step 1,400 and ≤ 36.3 after 5,000; C 461,870–548,521 on its live lines from trainer step 500 on; the two older-model runs 231 and 332).
+
+  **Decided (owner, 2026-10-05):** (second round, same day) `bn_running_variance_runaway` at 1,000 — decided. The owner also agreed that B's `value.bn` at 5 of 16 at step 300 is critical, as the 20% arm says (no change).
 - **OD-2 — Which rules may stop runs.**
   - All defaults are `log`, as requested.
   - Recommendation for when the owner wants unattended protection: `stop_on_critical` for `non_finite`, `illegal_mass`, `gradient_collapse` and `dead_channels`. Of these, only C reached a critical level (and no run reached `non_finite`).
@@ -841,9 +884,10 @@ Decided by the owner on 2026-10-05: OD-1 (except the `bn_running_variance_runawa
 - **OD-13 — GUI `--train` alarm stop: save first?** The legal-mass precedent exits without a session save. The recommendation is to follow it, for consistency. **Decided (owner, 2026-10-05):** yes.
 - **OD-14 — Thresholds as parameters?** The recommendation is no: declared constants, like `LayerHealth`'s and `TrainingAlarmController`'s. 9 rules with 1–3 thresholds each would add about 20 knobs. (V-2 reads its measurements from the permanent `[HEALTH] check` fields; there is no temporary debug switch.) **Decided (owner, 2026-10-05):** yes: declared constants.
 - **OD-15 — Live value-FC1 velocity in the GUI.** Rule 3 is checkpoint-only, and GUI checkpoints are hours apart. Reading `value.fc1.weight`'s velocity on the live tier (128 × 1,024 floats = 512 KB per read) would be new GPU readback on the trainer's queue. Rule 8 already covers the same failure live. The recommendation is no.
-  - **Still open; in plain terms** (the owner asked what it means): rule 3 spots a dead value head by finding hidden units in the value head's first fully connected layer (`value.fc1`) whose optimizer momentum has decayed to exactly zero — units that stopped learning. That momentum is only read when a checkpoint is saved, because reading it costs an extra 512 KB copy from the GPU. In the GUI, saves happen only every few hours (periodic) or at promotions, so the GUI would notice this failure hours late. OD-15 asks whether to also read that one tensor's momentum every `[STATS]` emit (about once a minute), so the GUI notices within minutes — at the cost of a 512 KB GPU read per minute, scheduled between training steps on the trainer's queue. The recommendation is no, because rule 8 (a value head whose outputs never change sign) catches the same failure live from numbers the trainer already reports, and caught C about 1,250 steps before rule 3 could.
-- **OD-16 — Rule 2's warning form.** Absolute (warn on any dead channel) or new-damage (warn only when a site's dead count rises above its count at the process's first evaluation); the critical arms are absolute in both. Recommendation: new-damage, so a long-trained line with a few dead channels (17 of 1,808 on the grafted v5 model) does not hold a permanent warning, with the baseline logged once so it is never hidden. **Still open.** Until it is decided the plan implements the absolute form (OD-1's decision). Note that with OD-1's 20% per-site critical arm, a line whose small `value.bn` (16 channels) already carries 4 or more dead channels is critical at its first evaluation under either form.
-- **OD-17 — Long-run evidence.** On two older long mixed-precision lines from before the head-numerics fix, rule 6 raised 21 times on the 268,500-step v5 line (ratios up to 2.36) and the since-dropped value-loss rule raised from step 58,050 on the 1.4M-step qeu8 line (Long runs). Keep rule 6's thresholds as proposed and treat those raises as true signals (they predate `da15920`), or loosen rule 6's median arm before merge? Recommendation: keep, since the defaults are log-only, and revisit after the first long post-fix run. **Still open.** (Its value-loss half is moot since OD-7 dropped that rule.)
+  - **In plain terms** (the owner asked what it means): rule 3 spots a dead value head by finding hidden units in the value head's first fully connected layer (`value.fc1`) whose optimizer momentum has decayed to exactly zero — units that stopped learning. That momentum is only read when a checkpoint is saved, because reading it costs an extra 512 KB copy from the GPU. In the GUI, saves happen only every few hours (periodic) or at promotions, so the GUI would notice this failure hours late. OD-15 asks whether to also read that one tensor's momentum every `[STATS]` emit (about once a minute), so the GUI notices within minutes — at the cost of a 512 KB GPU read per minute, scheduled between training steps on the trainer's queue. The recommendation is no, because rule 8 (a value head whose outputs never change sign) catches the same failure live from numbers the trainer already reports, and caught C about 1,250 steps before rule 3 could.
+  - **Decided (owner, 2026-10-05):** every check runs on a set interval or trigger. Rule 3's value-FC1 velocity read runs every 1,000 trainer steps on every path: corpus replay reuses its 1,000-step saves (no double read); train-vs-UCI reuses its enumerated checkpoints when they are on; otherwise — the GUI, whose saves are hours apart, and train-vs-UCI without `--enumerate-checkpoints` — one dedicated read of that tensor on the trainer's `executionQueue` between SGD steps, under the probe-isolation rules (D6). Cost in D6; checked in V-5. The "Every check" table near the top lists every check's trigger per path.
+- **OD-16 — Rule 2's warning form.** Absolute (warn on any dead channel) or new-damage (warn only when a site's dead count rises above its count at the process's first evaluation); the critical arms are absolute in both. Recommendation: new-damage, so a long-trained line with a few dead channels (17 of 1,808 on the grafted v5 model) does not hold a permanent warning, with the baseline logged once so it is never hidden. Until it is decided the plan implements the absolute form (OD-1's decision). **Decided (owner, 2026-10-05):** keep the absolute warning form for now. **Revisit later** (owner): a long-trained line that carries a few dead channels holds a permanent warning under it; the new-damage form, its tests and its offline semantics stay written down here for that revisit, but are not implemented. Note that with OD-1's 20% per-site critical arm, a line whose small `value.bn` (16 channels) already carries 4 or more dead channels is critical at its first evaluation under either form.
+- **OD-17 — Long-run evidence.** On two older long mixed-precision lines from before the head-numerics fix, rule 6 raised 21 times on the 268,500-step v5 line (ratios up to 2.36) and the since-dropped value-loss rule raised from step 58,050 on the 1.4M-step qeu8 line (Long runs). Keep rule 6's thresholds as proposed and treat those raises as true signals (they predate `da15920`), or loosen rule 6's median arm before merge? Recommendation: keep, since the defaults are log-only, and revisit after the first long post-fix run. (Its value-loss half is moot since OD-7 dropped that rule.) **Decided (owner, 2026-10-05):** keep the thresholds.
 
 ---
 
@@ -865,7 +909,7 @@ Decided by the owner on 2026-10-05: OD-1 (except the `bn_running_variance_runawa
 # Non-goals
 
 - Changing the trainer's non-finite-loss halt or any training math.
-- New GPU reads, extra forward passes, or probes. The monitor only reads values the paths already compute.
+- Extra forward passes or probes, and any GPU read beyond D6's one value-FC1 velocity read per 1,000 steps (OD-15, decided). Otherwise the monitor only reads values the paths already compute.
 - Alarm suppression around LR-cycle peaks (R0 explains why not).
 - Persisting alarm state in session files or model files. Every process starts its own evaluator. The not-learned gates use the lineage-continuous trainer clock, and the damage rules' critical arms read absolute counts, so a resumed process still raises critical damage at its first evaluation. A warning for damage already present at start depends on rule 2's form (OD-16).
 - Rewriting the existing GUI detectors or banner (OD-9 is the separate decision).
