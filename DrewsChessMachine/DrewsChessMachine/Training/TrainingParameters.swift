@@ -1091,7 +1091,7 @@ public enum LRCycleMin: TrainingParameterKey {}
     name: "LR Cycle Max",
     description: "Absolute learning rate at the LR cycle's peak (the period midpoint when not inverted) at the start of the decay horizon — the peak's start value. The peak decays geometrically from here to LR Cycle Peak End over LR Cycle Decay Horizon. Must be ≥ LR Cycle Min.",
     default: 0.1,
-    range: 1.0e-7...1.0,
+    range: 1.0e-7...10.0,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_max",
     liveTunable: true,

@@ -400,7 +400,7 @@ Absolute learning rate at the LR cycle's trough (the period boundaries when not 
 
 Absolute learning rate at the LR cycle's peak (the period midpoint when not inverted) at the start of the decay horizon — the peak's start value. The peak decays geometrically from here to LR Cycle Peak End over LR Cycle Decay Horizon. Must be ≥ LR Cycle Min.
 
-**Type:** Double · **Range:** 1e-07..1.0 · **Default:** 0.1 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Double · **Range:** 1e-07..10.0 · **Default:** 0.1 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### lr_cycle_invert
 
