@@ -2,7 +2,8 @@
 
 Status (2026-10-05): **PLAN ONLY.** Nothing here is implemented.
 - Independent review: **concurred on 2026-10-05, after five passes.** Every review item (A1–A20, B1–B9, C1–C6, D1–D7; N1–N6, NB1–NB7; P3-1, P3-2, NB-a–NB-c; P4-1 and nits; pass-5 nits) is listed, with what was done about it, in **Review reconciliation** at the end.
-- Every `file:line` was checked against `main` at `a7d3b9ca`.
+- Second review (code-level, against the source): **concurred on 2026-10-05, after four passes.** Items X1–X13, the later passes' items and every nit are listed in **Second review** at the end.
+- Every `file:line` was checked against `main` at `a7d3b9ca`, and re-checked at `c0130599`: the commits since change no cited line (the only source edit is the `lr_cycle_max` range, `Training/TrainingParameters.swift:1094`).
 - Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachine/` (project folder), `DrewsChessMachineTests/` (= `DrewsChessMachine/DrewsChessMachineTests/`), `documentation/` or `scripts/`.
 - Real-file evidence comes from header-only reads of the files under `~/Library/Application Support/DrewsChessMachine/`.
 
@@ -35,6 +36,7 @@ Older files must keep decoding. A value a file did not record is read back as *u
 |---|---|---|---|---|
 | 1 | Earlier segments of a run lose their configuration: `segments[]` has no parameters, argv, policy tail or corpus | Critical | Fix | P4 |
 | 1b | A branch or derive drops the parent run's history entirely (new run, `segments: []`) | Critical | Fix | P4 |
+| 1c | A derive that changes the architecture keeps no record of the architecture the earlier weights trained under | Medium | Fix (`architecture_at_departure` in `ancestry`) | P4 |
 | 2 | 4,311 pre-lineage files (format ≤ 6) carry no parameter snapshot | High (historical) | Optional log-reconstruction report; never written into model files | P6 (O-8) |
 | 3 | GUI: batch size, buffer capacity and minimum prefill are captured at run start but recorded at their *edited* value | High | Fix | P3 |
 | 4 | GUI: live edits during a segment leave no trace in the file | High | Fix | P4 |
@@ -43,6 +45,7 @@ Older files must keep decoding. A value a file did not record is read back as *u
 | 7 | Mixed corpora: only the first corpus's ID and path are recorded | Medium | Fix (provenance only; no new refusal) | P4 |
 | 8 | Policy-tail precision is not in the lineage record, champion files or segment summaries | Medium | Fix | P4 |
 | 9 | The snapshot's `random_seed*` settings contradict the run's actual seed; `--seed` is recorded as `configured` | Low–Medium | Fix | P4 |
+| 9b | The run's seed is dropped from champion files and segment summaries, and "New Session, keep trainer" can change it inside one segment | Medium | Fix (record-level `run_seeds`) | P4 |
 | 10 | Keys that do nothing on a path look meaningful | Low (replay); Low–Medium (vsuci) | Document now; code change deferred (O-12) | P5 |
 | 11 | Run budgets (resolved step/time/epoch limits) and train-vs-UCI opponent identity are not recorded | Low (budget) / Medium (opponents) | Fix | P4 |
 | 12 | The effective LR and momentum at save are not stored; the app computes the fed LR in two places (`buildFeeds` and the readout) | Low | Fix as a derived, never-read-back field from one shared function (O-16); with O-18, `buildFeeds` uses the same function | P4 |
@@ -51,8 +54,8 @@ Older files must keep decoding. A value a file did not record is read back as *u
 | B2 | Self-play Dirichlet noise (α 0.3, ε 0.25, 30 plies) is unrecorded and not covered by the behavior fingerprint | Medium (GUI) | Fix | P4 |
 | B3 | A branch loses the init seed and scheme of the weights it starts from | Medium | Fix (in `ancestry`) | P4 |
 | B4 | `cum_*` totals mean "this run" after a branch but "these weights" after a derive; the doc claims the latter | Medium | Doc fix + ancestry-summing helper (O-15) | P4 |
-| B5 | GUI: which champions generated the training data (promotion chain) is not in the trainer file | Medium (GUI) | Fix | P4 |
-| B6 | GUI auto replay-ratio mode: the delays and effective target in force are not the snapshot's values | Low–Medium (GUI) | Document + derived GUI-only field | P4, P5 |
+| B5 | GUI: which champions generated the training data (the segment's first champion, promotions, and models loaded between Stop and Continue) is not in the trainer file | Medium (GUI) | Fix | P4 |
+| B6 | GUI auto replay-ratio mode: the starting delay, and the delays and effective target in force, are not the snapshot's values | Low–Medium (GUI) | Document + GUI-only field | P4, P5 |
 | B8 | Toolchain and build configuration (Xcode, SDK, Debug/Release) are not recorded | Low–Medium | Fix | P1, P4 |
 | B9 | A load that recentered the value head changes the starting weights, and nothing records it | Low | Fix | P4 |
 
@@ -71,6 +74,7 @@ Phases:
 ## Corrections to the audit (re-verified for this plan)
 
 - **85 keys, not 83.** `TrainingParameters.allKeys` (`Training/TrainingParameters.swift:2479-2565`) and `collectValues` (`:1756-1860`) both list 85 keys. The earlier count dropped `ArenaSPRTElo0` and `ArenaSPRTElo1`. The real snapshots on disk have 85 entries. 66 declarations are `liveTunable: true` and 19 are `false`.
+  - These counts are as of `c0130599`. `TRAINING_HEALTH_ALARMS_PLAN.md` adds 12 `liveTunable` keys (97 keys, 95 in a composed snapshot, 78 live-tunable). Wherever this plan's tests or validation need a count, they use `TrainingParameters.allKeys.count` (composed snapshots: `allKeys.count − 2`, gap 9), never a literal. See **Interaction with adjacent plans**.
 - **The arena reads its games and threshold live; the stats/chart sample does not.**
   - Both keys are `liveTunable: false` (`:846`, `:835`), but the arena reads them from the singleton at use (`App/SessionController+Arena.swift:389`, `:1064`). Criterion and SPRT are read at each arena start (`:110-117`).
   - The run-start copies `sessionTournamentGames` / `sessionPromoteThreshold` (`App/SessionController+Training.swift:677-678`) are what the stats/chart sample reports (`:2023-2024`). That reporting is fixed in P3.
@@ -144,19 +148,20 @@ The architecture format version (`dcm_format_version`, `Network/ArchitectureForm
 
   At schema 3 every new key is required (the "every key required" rule, `:26-28`). At schema 2 the new keys must be **absent**, since no schema-2 writer produced them. They decode to the explicit `unrecorded` case.
 - **"Unrecorded" in memory.** One generic `enum LineageRecord.Recorded<Value> { case recorded(Value); case unrecorded }`.
-  - It encodes as `{"recorded": true, "value": …}` / `{"recorded": false}`.
-  - It is used only where a value can come from a record that predates the field.
+  - It encodes as `{"recorded": true, "value": …}` / `{"recorded": false}`. `value` is always present when `recorded` is true, and may itself be JSON `null` where the field allows it (`Recorded<T?>`).
+  - Decoding is strict: a missing `recorded`, a `recorded: true` without `value`, a `recorded: false` with a `value`, or any other key is a decode error naming the field.
+  - It is used only where a value can come from a record that predates the field, or where this process cannot know it (gap 1b's untracked trainer, B9).
 - **Every write is schema 3.** This includes:
   - a champion file of a loaded schema-2 model (`App/SessionController+Lineage.swift:440-441` → `withoutTrainerState()`, which now stamps `schema: currentSchema`);
   - a derive, graft or untrained copy of a schema-2 source (`Persistence/LineageTracker.swift:355-413`).
 
   Such a record is built from the source record:
-  - `run`, `parent`, `steps`, `fed`, `time`, `parameters` are copied as they are;
-  - `configuration` is `{"recorded": false}`;
+  - `run`, `parent`, `steps`, `fed`, `time`, `parameters` are copied as they are, except that a carried `fed.corpus` gets `corpus_identity: first_only` and `segment_start: {"recorded": false}` (gap 7);
+  - `configuration` is `null` when the source's `parameters` is null (a schema-2 mint, or an untrained copy of one: no training behind the weights, as at schema 3), and `{"recorded": false}` otherwise (review X6-2);
+  - `run_seeds` is `null` when the source's `parameters` is null; otherwise `recorded([{from_trainer_step: null, master_seed, seed_origin, stream_derivation}])` from the source's `rng.streams` when it has them (the seed in force at that save; since when is not recorded, so the step is null, never invented), and `{"recorded": false}` when it has none (gap 9b);
   - `segments` are mapped by S2's rules for a schema-2 record;
   - `ancestry` follows gap 1b;
-  - `build.git_diff_sha256` (and the B8 toolchain fields) are `{"recorded": false}` when the copied `build` is the source's;
-  - `fed.corpus` becomes `corpus_identity: first_only` (gap 7).
+  - `build.git_diff_sha256` (and the B8 toolchain fields) are `{"recorded": false}` when the copied `build` is the source's.
 
   Nothing is invented: every field is either copied, built by this process, or marked unrecorded.
 - **A derive, graft or untrained copy of a schema-3 source** (review N4) carries the source's `configuration` verbatim, as it carries `parameters` today (`Persistence/LineageTracker.swift:403`):
@@ -170,8 +175,9 @@ The architecture format version (`dcm_format_version`, `Network/ArchitectureForm
 - **Python mirrors.**
   - `scripts/dcm_lineage.py:51` `SUPPORTED_SCHEMA` stays equal to `currentSchema` (pinned, unchanged, by `documentation/dashboards/tests/test_lineage.py:133-134`).
   - A new `OLDEST_SUPPORTED_SCHEMA = 2` mirrors `oldestDecodableSchema`.
-  - `validated_record` (`:169-171`) accepts the range; its required-key lists (`:119-132`, `:174-177`) gain the schema-3 keys, required only at schema 3. These include each `parameter_changes` entry's `{trainer_step, recorded_unix, id, old, new, restamped_from}` and each `champion_changes` entry's keys.
+  - `validated_record` (`:169-171`) accepts the range; its required-key lists (`:119-132`, `:174-177`) gain the schema-3 keys, required only at schema 3. These include each `parameter_changes` entry's `{committed_at_trainer_step, recorded_unix, id, old, new, restamped_from}` and each `champion_changes` entry's keys.
   - `documentation/dashboards/ckpt_inventory.py:71` reads both corpus shapes.
+  - `test_lineage.py::test_refusals` builds its `schema.safetensors` fixture as a schema-2 record stamped `schema=3` (`documentation/dashboards/tests/test_lineage.py:224-225`). After P4 that record is still refused, now for its missing schema-3 keys, so the test passes unchanged; but it no longer tests an unsupported schema. A new `test_lineage_schema3.py::test_a_schema_above_the_supported_range_is_refused` (schema `SUPPORTED_SCHEMA + 1`) covers that.
 - **Forward compatibility is not provided.** A pre-P4 build refuses a schema-3 file (R1).
 
 ## S2. Schema-3 record shape
@@ -190,7 +196,8 @@ New or changed keys are marked; everything else is unchanged from schema 2.
       "corpus_identity": {"listed": [                  // CHANGED (gap 7): replaces corpus_id / corpus_path
         {"corpus_id": "20260624-192615-w3aA5b", "corpus_path": "/Users/…/Corpora/20260624-192615-w3aA5b", "shard_count": 46}
       ]},                                              // or {"first_only": {"corpus_id", "corpus_path"}} for a carried schema-2 position
-      "segment_start": {"epoch": 0, "next_game_index": 4254363},   // NEW (D7): where this segment's feed began
+      "segment_start": {"recorded": true, "value": {"epoch": 0, "next_game_index": 4254363}}
+                     | {"recorded": false},            // NEW (D7): where this segment's feed began; unrecorded only on a carried schema-2 position
       "epoch": 0, "next_game_index": 5038653, "shard": 11, "populated_plies": 500000,
       "buffer_capacity": 500000, "feed_ahead_positions": -8488, "feed_per_step": 8533,
       "shard_sha256": [ … ]                            // for "listed": count == Σ shard_count (checked on encode and decode)
@@ -208,10 +215,15 @@ New or changed keys are marked; everything else is unchanged from schema 2.
       "champion_changes": [],                          // B5; [] unless configuration.value.path_kind == "gui"
       "vsuci": null,                                   // B1 + gap 11: object exactly when configuration.value.path_kind == "vsuci"
       "self_play_dirichlet": null,                     // B2: object exactly when configuration.value.path_kind == "gui"
-      "start_value_head_recentered": false | true | null,  // B9: whether the segment's start weights were recentered by a load (false for weights built in-process, promoted, or a fresh CLI run); null only when the segment has no new start weights (continue, keep-trainer)
+      "start_value_head_recentered": {"recorded": true, "value": false},  // B9: taken once when the segment begins and kept for its whole life; unrecorded only for an untracked GUI trainer
       "schedule_at_save": {"cycle_step": 38093, "learning_rate_fed": 0.000123, "momentum_fed": 0.87} | null,  // gap 12; derived (names per O-18, see gap 12)
-      "replay_ratio_at_save": null                     // B6: object exactly when configuration.value.path_kind == "gui"; derived
+      "replay_ratio": null,                            // B6: object exactly when configuration.value.path_kind == "gui"
+      "health_alarms": {"evaluations": 12, "raised": []}  // TRAINING_HEALTH_ALARMS OD-10, only if that plan's evaluator has landed before P4 (see Interaction with adjacent plans)
     }},
+  "run_seeds": null                                    // NEW (gap 9b): null exactly when configuration is null
+             | {"recorded": false}                     //   carried schema-2 record without rng.streams
+             | {"recorded": true, "value": [{"from_trainer_step": 33000 | null, "master_seed": "18019510007828584227",
+                                              "seed_origin": "drawn", "stream_derivation": "v1"}]},  // one entry per seed, oldest first
   "build": {"build_number": …, "git_hash": "…", "git_branch": "main",
             "git_dirty": false,                        // meaning corrected from P1 (scope DrewsChessMachine/, generated files excluded)
             "git_diff_sha256": {"recorded": true, "value": null},     // NEW (gap 6): value null exactly when git_dirty is false
@@ -222,7 +234,8 @@ New or changed keys are marked; everything else is unchanged from schema 2.
   "device": { … unchanged … },
   "rng": { …, "streams": { …, "seed_origin": "configured" | "command_line" | "drawn" } },  // CHANGED (gap 9)
   "segments": [ <SegmentSummary v3> ],                 // CHANGED (gap 1)
-  "ancestry": [ <AncestorRun> ],                       // NEW (gaps 1b, B3)
+  "ancestry": {"history_before_oldest_run": "none" | "unrecorded",   // NEW (gaps 1b, 1c, B3, B4)
+               "runs": [ <AncestorRun> ]},
   "derivation_history": [ … unchanged … ]
 }
 ```
@@ -230,11 +243,13 @@ New or changed keys are marked; everything else is unchanged from schema 2.
 The `Recorded` wrappers inside `build` exist because a schema-3 file can carry a schema-2 source's `build` (S1). For a build this process writes they are always `recorded`.
 
 **Invariants (checked on encode and decode).**
-- `parameters == null` ⇒ `configuration == null`. The converse does not hold: a carried schema-2 record has `parameters` and `configuration: {"recorded": false}`.
+- `parameters == null` ⇔ `configuration == null` ⇔ `run_seeds == null`: a record with training behind it has all three (`configuration` / `run_seeds` possibly unrecorded when carried from schema 2), a record without has none.
 - Within a recorded `configuration.value` (review N4), the invariants are keyed to **`configuration.value.path_kind`**, never to the record's `invocation.path_kind`. A derive or untrained copy carries a source's configuration under its own `invocation`, so its two `path_kind`s legitimately differ:
   - `vsuci` non-null ⇔ `configuration.value.path_kind == "vsuci"`;
-  - `self_play_dirichlet` and `replay_ratio_at_save` non-null ⇔ `configuration.value.path_kind == "gui"`;
-  - `champion_changes` is `[]` unless `configuration.value.path_kind == "gui"`.
+  - `self_play_dirichlet` and `replay_ratio` non-null ⇔ `configuration.value.path_kind == "gui"`;
+  - `champion_changes` is `[]` unless `configuration.value.path_kind == "gui"`; on `gui` its first entry has trigger `segment_start`;
+- A recorded `run_seeds` value is non-empty; its non-null `from_trainer_step`s are non-decreasing; a null `from_trainer_step` appears only in an entry converted from schema 2; more than one entry only when `configuration.value.path_kind == "gui"`.
+- When the record has both `rng.streams` and a recorded `run_seeds`, the last entry equals `rng.streams`' `master_seed`, `seed_origin` and `stream_derivation` (gap 9b; the one copy is checked, not trusted). Every production trainer-state save has both. A record with streams but no parameter snapshot (written today only by tests, e.g. `ChampionLineageRecordTests.swift:33-39`) has `run_seeds: null` by the first invariant and is not checked.
 - `configuration.value.path_kind` is never `derive` or `new_model`, because those writers compose no configuration; they carry one or have none.
 
 **`configuration.vsuci`** (B1, gap 11):
@@ -242,12 +257,22 @@ The `Recorded` wrappers inside `build` exist because a schema-3 file can carry a
 {"max_plies_per_game": 400, "eval_sync_every_steps": 10,
  "trainer_move_selection": {"start_tau": 0.01, "decay_per_ply": 0, "floor_tau": 0.01, "dirichlet": null},  // from SamplingSchedule.argmax
  "opponents": [{"command": "/opt/homebrew/bin/stockfish", "executable_sha256": "…", "count": 4, "go_limit": "nodes 1",
-                "options": [{"name": "UCI_Elo", "value": "1400"}], "id_name": "Stockfish 17", "id_author": "…"}]}
+                "options": [{"name": "UCI_Elo", "value": "1400"}],
+                "identity": {"recorded": true, "value": {"id_name": "Stockfish 17" | null, "id_author": "…" | null}} | {"recorded": false}}]}
 ```
 
 **`configuration.self_play_dirichlet`** (B2): `{"alpha": 0.3, "epsilon": 0.25, "ply_limit": 30}`, read from `SamplingSchedule.selfPlay.dirichletNoise`.
 
-**`configuration.replay_ratio_at_save`** (B6, GUI): `{"auto_adjust": true, "effective_target": 0.51, "computed_step_delay_ms": 40, "computed_self_play_delay_ms": 0}`.
+**`run_seeds`** (gap 9b) is a record-level key beside `configuration`, so that a schema-2 trainer record's known seed survives conversion even though its configuration is unrecorded. Entries: `{"from_trainer_step", "master_seed" (decimal string, as `rng.streams.master_seed` is written, `Persistence/LineageRecord.swift:699`), "seed_origin", "stream_derivation"}`. `withoutTrainerState()` keeps it, summaries and ancestry carry it.
+
+**`configuration.champion_changes`** entries (B5): `{"trainer_step", "recorded_unix", "champion_model_id", "champion_content_sha256" (null for weights never written to a file), "trigger": "segment_start" | "arena" | "manual" | "loaded_model"}`.
+
+**`configuration.replay_ratio`** (B6, GUI):
+```jsonc
+{"starts": [{"trainer_step": 33000, "auto_adjust": true,
+             "initial_training_step_delay_ms": 50, "initial_delay_source": "last_auto_computed_delay_ms" | "training_step_delay_ms"}],
+ "at_save": {"auto_adjust": true, "target_ratio": 0.51, "current_ratio": 0.49, "training_step_delay_ms": 40, "self_play_delay_ms": 0} | null}  // one RatioSnapshot; derived, never read back
+```
 
 **`SegmentSummary` at schema 3.** All existing keys (`Persistence/LineageRecord.swift:713-766`), plus:
 
@@ -257,32 +282,57 @@ The `Recorded` wrappers inside `build` exist because a schema-3 file can carry a
 "corpus_identity": {"recorded": true, "value": {"listed": […]} | {"first_only": {…}} | null} | {"recorded": false},
 "segment_start_corpus": {"recorded": true, "value": {"epoch": 0, "next_game_index": 0} | null} | {"recorded": false},
 "path_kind":     {"recorded": true, "value": "replay"} | {"recorded": false},
-"argv":          {"recorded": true, "value": ["…"]} | {"recorded": false}
+"argv":          {"recorded": true, "value": ["…"]} | {"recorded": false},
+"run_seeds":     {"recorded": true, "value": [ …entries… ] | null} | {"recorded": false}
 ```
 
 What each summary field holds:
 
 | Field | Summary of a schema-3 record | Summary of a schema-2 record | Summary carried from inside a schema-2 record's `segments` |
 |---|---|---|---|
-| `configuration` | the record's (null / unrecorded / value) | `{"recorded": false}` | `{"recorded": false}` |
+| `configuration` | the record's: null → `recorded(null)`, unrecorded → unrecorded, value → `recorded(value)` | `recorded(null)` when its `parameters` is null, else `{"recorded": false}` | `{"recorded": false}` |
+| `run_seeds` | the record's, mapped the same way | `recorded(null)` when its `parameters` is null (a mint); `recorded([{from_trainer_step: null, …}])` from its `rng.streams`; `{"recorded": false}` when it has none | `{"recorded": false}` |
 | `parameters` | recorded | recorded (schema 2 has it) | `{"recorded": false}` |
 | `corpus_identity` | recorded `listed` (or null when not replay) | recorded `first_only` | `{"recorded": false}` |
-| `segment_start_corpus` | recorded | `{"recorded": false}` | `{"recorded": false}` |
+| `segment_start_corpus` | the record's `fed.corpus.segment_start` (recorded, or unrecorded on a carried position), or `recorded(null)` when not replay | `{"recorded": false}` | `{"recorded": false}` |
 | `path_kind`, `argv` | recorded | recorded (schema 2 has `invocation`) | `{"recorded": false}` |
 
 A schema-2 parent's flat `trainer_policy_tail_precision` is not read into its summary (O-6). The summary's policy tail therefore lives inside `configuration`, which is unrecorded for such a parent.
 
-**`AncestorRun`** (gaps 1b, B3), oldest first:
+**`ancestry`** (gaps 1b, 1c, B3, B4) holds every earlier run whose weights this run's weights descend from, oldest first, and says whether anything came before the oldest:
+
+- `history_before_oldest_run` is about the oldest run in the chain: `runs.first`, or this record's own run when `runs` is empty.
+  - `"none"`: that run began `fresh` (a mint, or a fresh training run), so the chain is complete.
+  - `"unrecorded"`: that run began from weights whose history no file in the chain records: a resume or branch of a file written before lineage, a derive of one, an untracked GUI trainer, or (for a schema-2 ancestor) a branch or derive whose own ancestry schema 2 did not record.
+  - This corrects the plan's earlier claim that `run.continues_unrecorded_history` stays the signal: `.branch` sets that flag to `false` unconditionally (`Persistence/LineageTracker.swift:181-187`), so a branch from a pre-lineage file would otherwise read as complete.
+- Built once per record, by `LineageTracker` (S3):
+
+  | This run's start | `history_before_oldest_run` | `runs` |
+  |---|---|---|
+  | `fresh` | `none` | `[]` |
+  | `resume` of a schema-3 record | carried | carried |
+  | `resume` of a schema-2 record | from that run's first-segment start (`segments.first?.start ?? run.start`): `fresh` → `none`; anything else → `unrecorded` | `[]` |
+  | `resume` of an unrecorded file, or an untracked GUI trainer | `unrecorded` | `[]` |
+  | `branch` / `derive` of a schema-3 record X | X's | X's `runs` + `[AncestorRun(X)]` |
+  | `branch` / `derive` of a schema-2 record X | from X's first-segment start, as for a schema-2 resume | `[AncestorRun(X)]` |
+  | `branch` / `derive` of an unrecorded file | `unrecorded` | `[]` |
+
+**`AncestorRun`**:
 
 ```jsonc
 {"lineage_run_id": "C378E0D2-…",
  "left_by": "branch" | "derive",
  "left_at": {"model_id": "…", "content_sha256": "…" | null, "trainer_completed_steps": 2000 | null},
+ "totals_at_departure": {"cum_trainer_step": 2000 | null, "cum_games": … | null, "cum_positions": … | null,
+                         "cum_train_step_sec": … | null, "cum_wall_sec": … | null},
+ "architecture_at_departure": null | {"format_version": "8", "architecture_json": "…"},
  "initialization": {"recorded": true, "value": {"init_seed": "20261005", "init_scheme": "dcm-init-1"} | null} | {"recorded": false},
  "segments": [ <SegmentSummary v3> ]}
 ```
 
 - `left_at` is the next run's `parent` (copied from `LineageTracker.ParentFile.recordParent`, `Persistence/LineageTracker.swift:70-78`).
+- `totals_at_departure` copies X's `steps.cum_trainer_step`, `fed.cum_games` / `cum_positions` and `time.cum_train_step_sec` / `cum_wall_sec`, null exactly where X's are. B4's `weights_totals` needs them.
+- `architecture_at_departure` (gap 1c) is the source file's `architecture` metadata text and its `dcm_format_version`, copied byte for byte by the writer that read the source. It is non-null exactly when `left_by == "derive"` and the derived architecture differs from the source's (`NetworkArchitecture` is `Equatable`; the comparison is the one `ensureChampionBuilt` already makes, `App/SessionController.swift:1157`). A branch never changes the architecture, and an architecture-preserving copy states nothing new, so both are null; the architecture of a null entry is that of the next entry with one, or of the file itself.
 - `initialization` comes from the ancestor record's `rng.initialization` (`Persistence/LineageRecord.swift:508-516`), read together with how that ancestor *run* began (review N3, refined).
   - A null `rng.initialization` is ambiguous by the field's own doc: "started from another file's weights", **or** "a run continuing a file written before this field".
   - The run's first segment decides which. Its start is `segments.first?.start ?? run.start`: a resumed segment's own `run.start` is `resume`, so a run that began as a branch and was later resumed must be read from its first summary.
@@ -302,9 +352,9 @@ A schema-2 parent's flat `trainer_policy_tail_precision` is not read into its su
 | Value | Source | Copies, and how they are kept equal |
 |---|---|---|
 | Parameters in force | `parameters.snapshot_json` | `configuration` holds no parameter values. A summary's `parameters` is a copy of *that segment's* record, a different fact. |
-| Schedule of a trainer-state file | The exported `TrainerResumeSnapshot.schedule`, written as flat `trainer_lr_warmup_steps` / `trainer_lr_momentum_cycle` / `_envelope` (`Training/TrainerResumeState.swift:127-157`) and read on resume | The snapshot's 21 schedule keys are composed *from the same exported schedule* (gap 5 rule), so they agree by construction. `SafetensorsModelIO.encode` refuses a disagreement as a backstop (`IOError.scheduleDisagreesWithLineage`). |
-| Policy tail of a trainer-state file | Flat `trainer_policy_tail_precision`, read on resume (`Persistence/SafetensorsModelIO.swift:166-167`, `:329-330`) | `configuration.policy_tail_precision`. Encode refuses a disagreement when both are present (`IOError.policyTailDisagreesWithLineage`), the same pattern as `lineageStepDisagreesWithTrainerClock` (`:150-157`). |
-| Seed | `rng.streams.master_seed` + `seed_origin` | None: composed snapshots drop `random_seed*` (gap 9). |
+| Schedule of a trainer-state file | The `TrainerScheduleState` the file is written with, as flat `trainer_lr_warmup_steps` / `trainer_lr_momentum_cycle` / `_envelope` (`Training/TrainerResumeState.swift:127-157`) and read on resume: the export's on the CLI paths, the save cut's on the GUI (gap 5) | The snapshot's 21 schedule keys are composed *from that same value* (gap 5 rule), so they agree by construction. `SafetensorsModelIO.encode` refuses a disagreement, or a snapshot missing any of the 21 keys, as a backstop (`IOError.scheduleDisagreesWithLineage`). |
+| Policy tail of a trainer-state file | Flat `trainer_policy_tail_precision`, read on resume (`Persistence/SafetensorsModelIO.swift:166-167`, `:329-330`) | `configuration.policy_tail_precision`. Encode refuses a disagreement when both are present (`IOError.policyTailDisagreesWithLineage`), the same pattern as `lineageStepDisagreesWithTrainerClock` (`:158-162`). |
+| Seed | `rng.streams.master_seed` + `seed_origin` + `stream_derivation` on a trainer-state record; `run_seeds` everywhere (champion files and summaries drop `rng.streams`, `Persistence/LineageRecord.swift:899-913`) | The last `run_seeds` entry is checked equal to `rng.streams` on encode and decode when both exist (S2). Composed snapshots drop `random_seed*` (gap 9). |
 | Corpus identity | `fed.corpus.corpus_identity` | Summaries copy it. |
 | Effective LR/momentum fed to the optimizer | Today **two** host-side implementations: the feed math in `buildFeeds` (`Training/ChessTrainer.swift:6102`; warmup `:6154-6158`, base LR `:6173`, √batch `:6174-6182`, warmup applied `:6183`, momentum `:6203`) and the readouts `effectiveLearningRate` / `effectiveMomentum` (`:4437-4462`, `:4473-4479`), which say they mirror it. This is a pre-existing single-source violation (review N6). With O-18 approved: one function, `LRMomentumCycleReadout.values(schedule:staticLearningRate:staticMomentum:batchSize:sqrtBatchScaling:)`, called by `buildFeeds` **and** both readouts. | `schedule_at_save` is computed by that function from the record's own inputs and never read back; with O-18 its values are the fed values by construction. If O-18 is declined, the fields are named `learning_rate_readout` / `momentum_readout` and documented as the status-bar readout that mirrors `buildFeeds` (gap 12). |
 | Self-play Dirichlet | `SamplingSchedule.selfPlay.dirichletNoise` (`Network/MPSChessPlayer.swift:52-56`, used at `App/SessionController.swift:1040`) | `configuration.self_play_dirichlet`, read from it at save. |
@@ -328,7 +378,7 @@ A schema-2 parent's flat `trainer_policy_tail_precision` is not read into its su
 **Decision.** Fix in code (P4).
 
 **Design.**
-1. `SegmentSummary` gains `configuration`, `parameters`, `corpus_identity`, `segment_start_corpus`, `path_kind` and `argv` (S2).
+1. `SegmentSummary` gains `configuration`, `parameters`, `corpus_identity`, `segment_start_corpus`, `path_kind`, `argv` and `run_seeds` (S2).
    - `SegmentSummary.init(of record:)` (`:750-766`) fills them from the record and the record's schema. Every value comes from the record being summarized.
 2. `LineageTracker` stays the one builder (`Persistence/LineageTracker.swift:5-17`). The resume case keeps `record.segments + [SegmentSummary(of: record)]` (`:201`).
 3. No save site changes for this gap. Every path records through `LineageTracker.record`:
@@ -350,8 +400,10 @@ A schema-2 parent's flat `trainer_policy_tail_precision` is not read into its su
     - `corpus_identity` is `first_only 20260624-192615-w3aA5b`;
     - the carried `segments[0]` has every new field `{"recorded": false}`.
 - `testSchemaThreeRequiresEverySummaryKey`.
+- `testRecordedDecodingIsStrict`: a missing `recorded`, `recorded: true` without `value`, `recorded: false` with a `value`, and an extra key are each a decode error; `{"recorded": true, "value": null}` round-trips where the field allows null.
 - `testSchemaTwoRecordWithASchemaThreeKeyIsRefused`.
 - `testAChampionFileOfALoadedSchemaTwoModelIsSchemaThreeWithUnrecordedConfiguration` (A8).
+- `testASchemaTwoMintConvertsToNullConfigurationAndSeeds` (pass 2): a schema-2 mint record → `withoutTrainerState()` (champion) and → `untrainedCopyRecord` (derive), each encoded and decoded at schema 3 with `configuration`, `run_seeds` and `parameters` all null, and its summary's `configuration` / `run_seeds` `recorded(null)`.
 - `testACarriedEightyFiveKeySnapshotDecodesAtSchemaThree` (A8).
 - `testChampionRecordKeepsSegmentsConfigurationAndAncestry` (complements `ChampionLineageRecordTests`, which is unchanged).
 
@@ -368,19 +420,22 @@ Branching is the most common start in current experiments: lrA, lrB and `seg-res
 **Decision.** Fix in code (P4). Severity raised to Critical (review C1).
 
 **Design.**
-- New record key `ancestry: [AncestorRun]` (S2).
-- **Branch:** `ancestry = parentRecord.ancestry + [AncestorRun(lineageRunID: parentRecord.run.lineageRunID, leftBy: .branch, leftAt: file.recordParent, initialization: AncestorRun.initialization(of: parentRecord) /* S2 table */, segments: parentRecord.segments + [SegmentSummary(of: parentRecord)])]`.
-- **Derive / graft / untrained copy:** the same with `leftBy: .derive`.
-- **Resume:** carried verbatim. **Fresh:** `[]`.
-- **Unrecorded parent** (e.g. `b2275-step33000`): `[]`. `run.continues_unrecorded_history` stays the signal (`:206-216`).
+- New record key `ancestry: {history_before_oldest_run, runs: [AncestorRun]}`, built by S2's table.
+- **Branch from a recorded X:** `runs = X.ancestry.runs (or [] for schema 2) + [AncestorRun(lineageRunID: X.run.lineageRunID, leftBy: .branch, leftAt: file.recordParent, totalsAtDeparture: .init(of: X), architectureAtDeparture: nil, initialization: AncestorRun.initialization(of: X) /* S2 table */, segments: X.segments + [SegmentSummary(of: X)])]`.
+- **Derive / graft / untrained copy:** the same with `leftBy: .derive`, and `architectureAtDeparture` per gap 1c.
+- **Resume:** carried verbatim. **Fresh:** `{none, []}`.
+- **Unrecorded parent** (e.g. `b2275-step33000`): `{unrecorded, []}`. `run.continues_unrecorded_history` alone is not the signal: a branch sets it to `false` (`Persistence/LineageTracker.swift:181-187`), and a derive sets it only from whether the immediate source has a record (`:381`). `history_before_oldest_run` is.
 - `AncestorRun.initialization` follows S2's table: the ancestor's `rng.initialization`, read with how that run began. A schema-2 record carries `rng.initialization` (schema 2 has `init_seed` / `init_scheme`), so the same table applies to it.
+- `LineageTracker.init` gains no argument: a branch or resume already passes the parent `ParentFile`, whose `lineage` holds X. `untrainedCopyRecord` gains one required argument, `sourceArchitecture: AncestorRun.ArchitectureAtDeparture?` (gap 1c); its three test call sites pass `nil` (O-1).
 
 **Tests** (in `SegmentConfigurationRecordTests.swift`):
 - `testABranchCarriesTheParentRunAsAncestry` (regression).
 - `testADeriveCarriesTheSourceRunAsAncestry`.
 - `testADeriveOfASchemaTwoSourceCarriesItsParametersAndMarksConfigurationUnrecorded` (A8).
 - `testABranchOfABranchKeepsBothAncestorsOldestFirst`.
-- `testABranchOfAnUnrecordedParentHasNoAncestryAndSaysSo`.
+- `testABranchOfAnUnrecordedParentHasNoAncestryAndSaysSo`: `{unrecorded, []}`, although `continues_unrecorded_history` is `false`.
+- `testABranchOfARecordedParentWhoseHistoryIsUnrecordedCarriesUnrecorded`: X resumed a pre-lineage file (the fatconv98-cont fixture); a branch of X has `runs == [X]` and `unrecorded`.
+- `testABranchOfASchemaTwoBranchIsUnrecordedBeforeIt`: the lrA-shaped fixture (a schema-2 branch from a mint) gives `unrecorded`, since schema 2 kept no ancestry.
 - `testAResumeCarriesAncestryVerbatim`.
 - `testABranchFromAMintCarriesTheMintsInitSeedInAncestry` (B3).
 - `testAnAncestorThatResumedAnUnrecordedFileHasUnrecordedInitialization`: uses the fatconv98-cont fixture (first segment `resume`, `continues_unrecorded_history true`, `init_seed null`) (N3).
@@ -390,8 +445,29 @@ Branching is the most common start in current experiments: lrA, lrB and `seg-res
 - `testAnUntrainedGuiCopyOfAReplayFileKeepsTheReplayConfiguration` (N4).
 
 **Validation.**
-- V4: `--derive-model --from <segment-1 file of V4> …` produces `ancestry[0].segments` with two recorded summaries, and `ancestry[0].left_at.model_id == parent.model_id`.
+- V4: the branch from V2's segment-1 file has `ancestry.runs[0].segments` with two recorded summaries, `ancestry.runs[0].left_at.model_id == parent.model_id` and `history_before_oldest_run "none"`.
+- V4: the derive from a `champion.safetensors` (V4's derive bullet) has `ancestry.runs.last.left_by "derive"`. (`--derive-model` refuses trainer-state files, `documentation/deriving-models.md:23-26`, so it cannot start from V2's checkpoints.)
 - A branch from a mint carries the mint's `init_seed`.
+
+## Gap 1c — a derive that changes the architecture forgets the earlier one (Medium)
+
+**Problem.**
+- A `DerivationRecord` stores each operation's name, arguments and the *names* of the architecture fields it changed (`Persistence/ModelDerivation.swift:224-262`, `:266-285`), not their earlier values. `--set-activation` overwrites every activation (`:785-799`).
+- Architecture-only operations (`--set-activation`, `--set-se-activation`, `--set-rezero-alpha-cap`) are allowed on a trained champion (`documentation/deriving-models.md:36-38`), and a graft copies trained tensors into another architecture.
+- So a model trained under ReLU, derived to leaky ReLU and trained further, states only its current architecture: the architecture its earlier steps trained under is in no file of the line once the source is gone.
+
+**Decision.** Fix in code (P4), in `ancestry` (S2 `architecture_at_departure`). No change to `DerivationRecord`.
+
+**Design.**
+- `ModelDerivation.derive` (`Persistence/ModelDerivation.swift:416`) and `ModelGraft` (`Persistence/ModelGraft.swift:380`) pass the source file's architecture metadata text and `dcm_format_version` (both in the `sourceMetadata` they already hold) when the target architecture differs from the decoded source architecture; otherwise `nil`. The GUI untrained copy (`App/SessionController+Lineage.swift:443`) passes `nil`: it changes nothing.
+- The text is stored as read, never re-encoded: a legacy source keeps its own format, and its legacy resolution stays the reader's job, as for the source itself.
+
+**Tests** (in `SegmentConfigurationRecordTests.swift`):
+- `testAnArchitectureChangingDeriveRecordsTheSourceArchitecture` (regression): trained run A → `--set-activation` derive B → branch C, which trains. In C's records (before and after training) `ancestry.runs` is `[A, B]`: A's entry (`left_by "derive"`) has `architecture_at_departure` equal to A's architecture text byte for byte, and B's entry (`left_by "branch"`) has `null`.
+- `testAnArchitecturePreservingCopyRecordsNoArchitecture`.
+- `testABranchRecordsNoArchitecture`.
+
+**Validation.** V4's derive: `architecture_at_departure.architecture_json` equals the source file's `architecture` metadata value.
 
 ## Gap 2 — the pre-lineage archive (High, historical)
 
@@ -437,7 +513,7 @@ Branching is the most common start in current experiments: lrA, lrB and `seg-res
    - `func inForce(over: TrainingParametersSnapshot) -> TrainingParametersSnapshot`, which replaces exactly those three values;
    - `replayBufferCapacity` is read from the run's `ReplayBuffer.capacity`: the measured value, which on continue is the reused buffer's.
 2. `SessionController` stores `runStartCapture: RunStartParameterCapture?`.
-   - It is set by `beginRunStartCapture(buffer:)`, which `startRealTraining` calls at every start (continue included) right after the buffer is chosen.
+   - It is set by `beginRunStartCapture(buffer:)`, which `startRealTraining` calls at every start (continue included) right after the buffer is chosen and before `beginRunLineage`, whose `[RUN]` record takes a configuration cut (gap 5).
    - It is kept through Stop, since a save between Stop and Continue describes the steps just trained. It is replaced at the next start and cleared only when the session is torn down.
    - The locals at `:675-676` read from it.
 3. Every in-run reader takes the capture:
@@ -451,7 +527,7 @@ Branching is the most common start in current experiments: lrA, lrB and `seg-res
 4. Popover: while a capture exists, committing a changed captured key logs `[PARAM] trainingBatchSize: 4096 -> 1024 (applies at the next Play-and-Train start; this run keeps 4096)`. The field's existing view shows the caption "Applies at the next Play-and-Train start" (`TrainingSettingsPopover.swift`).
 5. **Captured keys inside one segment** (review A3).
    - The capture is re-taken at every start, and a segment can span several starts: Continue after Stop; "New Session, keep trainer", which keeps the tracker (`App/SessionController+Lineage.swift:182-185`) while building a new buffer at the current capacity (`App/SessionController+Training.swift:192-205`, `continueMode` false).
-   - When a start that keeps the segment captures a value different from the previous capture, it appends one `parameter_changes` entry per changed key: `trainer_step` = `trainer.completedTrainSteps` at that start, `old` = previous capture, `new` = this capture.
+   - When a start that keeps the segment captures a value different from the previous capture, it appends one `parameter_changes` entry per changed key: `committed_at_trainer_step` = `trainer.completedTrainSteps` at that start (no step is in flight at a start, so the next step uses it), `old` = previous capture, `new` = this capture.
    - Assignments to captured keys during a run are not journalled (gap 4), because they do not take effect.
 
 **P3 order** (review A5):
@@ -462,7 +538,7 @@ Branching is the most common start in current experiments: lrA, lrB and `seg-res
 `GuiSaveHarness` and `GuiLineageLifecycleTests` install trackers directly. They need a `beginRunStartCapture` call next to each (O-14), or they would hit the no-capture error.
 
 **Tests** (new `DrewsChessMachineTests/RunStartParameterCaptureTests.swift`; every test that assigns `TrainingParameters.shared` uses the `TrainerHyperparametersTests` pattern (`DrewsChessMachineTests/TrainerHyperparametersTests.swift:31-41`): snapshot in `setUp`, `suppressPersistence = true`, restore in `tearDown`):
-- `testInForceReplacesOnlyTheCapturedKeys` (pure; all 85 keys).
+- `testInForceReplacesOnlyTheCapturedKeys` (pure; every key in `allKeys`).
 - `testCapturedKeysAreNotLiveTunable`.
 - `testAGuiSaveRecordsTheBatchSizeTheRunTrainsAt` (regression).
   - `GuiSaveHarness`: capture at batch 64, set the singleton to 128, call `lineageRecordForSave`, and assert 64.
@@ -480,7 +556,7 @@ Branching is the most common start in current experiments: lrA, lrB and `seg-res
 
 **Problem.**
 - The GUI snapshot is taken at save (`App/SessionController+Lineage.swift:385`).
-- 66 of the 85 keys are `liveTunable: true`. A change at step 30,000 of a 60,000-step segment survives only as the value at save, and in `[PARAM]` log lines.
+- 66 of the 85 keys (at `c0130599`) are `liveTunable: true`. A change at step 30,000 of a 60,000-step segment survives only as the value at save, and in `[PARAM]` log lines.
 
 **How it misleads.** A file trained at LR 0.001 for most of a segment and at 0.0005 for its last 500 steps reads as an LR-0.0005 run.
 
@@ -493,7 +569,8 @@ Branching is the most common start in current experiments: lrA, lrB and `seg-res
    - It is also called on the `admittingSessionValueOutsideDeclaredRange` path (`:2454-2459`). Only a resume reaches that path, and it runs before the new segment's tracker exists, so those entries land in a journal that is discarded (point 3).
 2. The observer is `nonisolated static let runChangeObserver: SyncBox<(@Sendable (String, ParameterValue, ParameterValue) -> Void)?>`, next to the existing static flags (declared at `:2270`, `:2276`, `:2291`).
    - The closure is `@Sendable` (review NB4).
-   - `SessionController` installs and removes it on the main actor. It captures the segment's `ParameterChangeJournal` (a `Sendable` class) and the trainer's clock box **weakly**, so a lingering observer cannot keep a replaced trainer or journal alive.
+   - `SessionController` installs and removes it on the main actor. It captures the segment's `ParameterChangeJournal` (a `Sendable` class) and the `ChessTrainer` **weakly**, and reads the clock through the trainer's public `completedTrainSteps` getter (`Training/ChessTrainer.swift:4357-4360`; the `_completedTrainSteps` box itself is private, `:1501`). A lingering observer therefore cannot keep a replaced trainer or journal alive.
+   - `commitAssignment` copies the closure out of the `SyncBox` and calls it **after** the box's lock is released, so the observer (which takes the journal's own lock) never runs under another lock.
    - **Skipped assignments:**
      - assignments made while `assigningRunHold` is set (a resume's run-only holds, `:2361-2364`, `:2403-2406`);
      - assignments to `LineageRecord.Parameters.excludedParameterIDs` (the seed settings; review NB2). A mid-run seed edit does not affect the running run, and those keys are not in composed snapshots, so the undo derivation stays over the snapshot's own keys.
@@ -502,15 +579,20 @@ Branching is the most common start in current experiments: lrA, lrB and `seg-res
    - Consequences:
      - (a) a resume's `applyGuiSession` (`App/SessionController+Training.swift:107-118`) writes into the previous segment's journal, which `beginLineageSegment` then discards (`App/SessionController+Lineage.swift:230-233`). Correct: the new segment starts from those values.
      - (b) "New Session, keep trainer" releases run holds at the top of `startRealTraining` (`App/SessionController+Training.swift:38-45`; `releaseRunHolds` sets only `suppressPersistence`, `Training/TrainingParameters.swift:2310-2319`). Those releases are journalled in the kept segment, which is correct: its trainer takes the released values (`App/SessionController+Training.swift:105-122`, `!continueMode`).
-   - Each entry is `{trainer_step, recorded_unix, id, old, new, restamped_from}`.
-     - `trainer_step` is `trainer.completedTrainSteps` (a `SyncBox` read, `Training/ChessTrainer.swift:4357-4360`) at commit. The change applies from the next step started after it.
-     - `restamped_from` is `null`, or the original step when an arena promotion rewound the clock past the entry (gap 5 design 2, P4-1).
-   - **Encode check:** no entry's `trainer_step` exceeds the record's `steps.cum_trainer_step` (and, in a summary, its `end_trainer_step`). A violation is a writer bug, and the save refuses (`IOError.journalEntryAfterRecordClock`). The check is skipped when that step count is `null` (a record or summary with no recorded trainer clock): there is nothing to compare against, and nothing is assumed.
+   - Each entry is `{committed_at_trainer_step, recorded_unix, id, old, new, restamped_from}`.
+     - `committed_at_trainer_step` is `trainer.completedTrainSteps` (a `SyncBox` read, `Training/ChessTrainer.swift:4357-4360`) when the assignment committed. It records **when the setting changed**, not the step a consumer first used it (review X3). Adoption depends on the consumer, and the field's doc comment and P5 state it:
+       - trainer-level keys reach the trainer when the popover pushes `TrainerHyperparameters.apply(to:)` (`App/UpperContentView/TrainingSettingsPopoverModel.swift:1583-1584`), one property assignment at a time (`Training/TrainerHyperparameters.swift:118-139`). A step builds its feeds before it runs and increments the clock after (`Training/ChessTrainer.swift:4901-4946`), so the first step to use the value is `committed_at_trainer_step + 1` when the push lands before the in-progress step builds its feeds (or no step is in progress), and `+ 2` when that step had already built them (`:4901-4908`) and so already consumed the old value;
+       - self-play and arena sampling keys take effect at each game's next start (`App/SessionController+Training.swift:476-485`);
+       - replay-ratio keys at the controller's next reconcile; captured keys at the next start (gap 3).
+     - Recording the exact consumer step would need a hook in the trainer's step path, which this plan excludes (Part V, "No change to training math"). The one-step uncertainty for trainer keys is stated, not hidden.
+     - `restamped_from` is `null`, or the original value when an arena promotion rewound the clock past the entry (gap 5 design 2, P4-1).
+   - **Encode check:** no entry's `committed_at_trainer_step` exceeds the record's `steps.cum_trainer_step` (and, in a summary, its `end_trainer_step`). A violation is a writer bug, and the save refuses (`IOError.journalEntryAfterRecordClock`). The check is skipped when that step count is `null` (a record or summary with no recorded trainer clock): there is nothing to compare against, and nothing is assumed.
    - Captured keys follow gap 3 point 5.
 4. `LineageTracker.record` writes `configuration.parameter_changes` from the journal. CLI paths use an explicitly empty journal: their run parameters are an immutable snapshot (P2), so `[]` is true by construction.
 
 **Tests** (new `DrewsChessMachineTests/ParameterChangeJournalTests.swift`, persistence-safe as in gap 3):
-- `testACommittedLiveChangeIsJournalledWithTheTrainerStep`.
+- `testACommittedLiveChangeIsJournalledWithTheClockAtCommit`.
+- `testTheObserverIsCalledOutsideTheSyncBoxLock`.
 - `testARejectedAssignmentIsNotJournalled`.
 - `testRunHoldAssignmentsAreNotJournalled`.
 - `testAResumesRestoresAreNotInTheNewSegmentsJournal`.
@@ -525,7 +607,7 @@ Branching is the most common start in current experiments: lrA, lrB and `seg-res
 - `testAGuiSaveRecordsALiveLearningRateChange` (regression; `GuiSaveHarness`).
 - `testAReplayRecordHasNoParameterChanges` (in `SegmentConfigurationRecordTests.swift`).
 
-**Validation.** V3: change LR mid-run and save. Expect one `parameter_changes` entry whose `trainer_step` is within one step of the `[STATS]` step at that time, and whose `old` / `new` match the `[PARAM]` line.
+**Validation.** V3: change LR mid-run and save. Expect one `parameter_changes` entry whose `committed_at_trainer_step` is within one step of the `[STATS]` step at that time, and whose `old` / `new` match the `[PARAM]` line.
 
 ## Gap 5 — the snapshot's schedule can contradict the schedule actually trained (Medium–High)
 
@@ -544,33 +626,33 @@ Branching is the most common start in current experiments: lrA, lrB and `seg-res
 1. `extension TrainingParametersSnapshot { func adoptingSchedule(_ s: TrainerScheduleState) -> TrainingParametersSnapshot }`, in `Training/LRMomentumCycle.swift` beside the forward mapping (`:327-366`).
    - It writes `lr_warmup_steps` and the 20 cycle/envelope/follow keys from `s`; types are identical, so it is exact.
    - It builds the result with `TrainingParametersSnapshot(values:)` and **does not validate or clamp** against today's declared ranges. The checkpoint's value is what ran, even if a range has since narrowed. Its doc comment says so (review D1).
-2. **One rule for every trainer-state save.** The lineage `Parameters` are `inForceSnapshot.adoptingSchedule(exported.schedule).lineageValues()`, where `exported` is the `TrainerResumeSnapshot` this save writes. The 21 schedule keys therefore come from the same value as the flat `trainer_*` keys.
+2. **One rule for every trainer-state save.** The lineage `Parameters` are `inForceSnapshot.adoptingSchedule(schedule).lineageValues()`, where `schedule` is the `TrainerScheduleState` the file's flat `trainer_*` keys are written from. The 21 schedule keys therefore come from the same value as the flat keys.
    - **CLI (P2):** `ReplayParams` becomes derived from one snapshot (O-3): `let parameters`, with every other field a `let` computed in `init`. `func adoptingSchedule(_:) throws -> ReplayParams` rebuilds it. Both runners replace `trainerHyperparameters = p.trainer.adoptingSchedule(…)` with `p = try p.adoptingSchedule(…)`. A CLI trainer cannot change its schedule mid-run, so the run-start adoption equals every save's export.
-   - **GUI (P4):** `lineageRecordForSave(at:trainerCompletedSteps:schedule:dropoutPhiloxState:dropoutStreamState:)` gains a required `schedule: TrainerScheduleState` (no default).
-     - Saves pass `trainerSnapshot.schedule` (`App/SessionController+Checkpoint.swift:469`).
+   - **GUI (P4): one save cut** (review X4). An ordinary save cannot take its schedule from the export: `exportResumeSnapshot` reads the schedule after an awaited weight export (`Training/TrainerResumeState.swift:276-283`), and the main actor is free during the awaits (`App/SessionController+Checkpoint.swift:432-472`), so a popover commit there would give a record whose snapshot adopts the exported (old) schedule while the journal already holds the change.
+     - New `struct GuiConfigurationCut: Sendable { inForce: TrainingParametersSnapshot; schedule: TrainerScheduleState; parameterChangeCount: Int; championChangeCount: Int; replayRatio: ReplayRatioController.RatioSnapshot? }` (plus the merged health-alarm summary when `configuration.health_alarms` is part of schema 3), made by one function, `SessionController.takeConfigurationCut()`, in **one main-actor turn with no suspension**, after the training pause is acquired: `runStartCapture.inForce(over: TrainingParameters.shared.snapshot())`, `TrainerScheduleState(currentlyRunningOn: trainer)`, the two journal lengths, and `replayRatioSnapshot` (B6). The popover's commit and `apply(to:)` run on the main actor, so no commit can fall inside the cut.
+     - `lineageRecordForSave(at:cut:dropoutPhiloxState:dropoutStreamState:)` takes the cut instead of reading the singleton (required; no default). The record's `parameters` are `cut.inForce.adoptingSchedule(cut.schedule).lineageValues()`, and its `parameter_changes` / `champion_changes` are the journal's first `cut.…Count` entries.
+     - **Ordinary saves** (`saveSessionInternal`) take the cut right after `trainingGate.pauseAndWait` (`App/SessionController+Checkpoint.swift:432`), before the detached export (`:443-445`). After the export they require `trainerSnapshot.schedule.completedTrainSteps == cut.schedule.completedTrainSteps` (training is paused, so a difference is a bug: `LineageSegmentError.configurationCutClockMoved`), and write the trainer file with `TrainerResumeSnapshot(trainerWeights: exported.trainerWeights, schedule: cut.schedule, dropoutRNG: exported.dropoutRNG)`. The flat keys, the record's schedule keys and its journal therefore all describe the cut. A commit after the cut is a journal entry of the next save at the paused clock, which the trainer receives before its next step, so the record undoes correctly.
+     - `session.json`'s parameter fields are still built from the singleton after the export (`buildCurrentSessionState`, `:493`), as today. A GUI resume reads its schedule from them and logs any difference from the trainer file (`Training/TrainerResumeState.swift:69-99`). That file is not a model file and is unchanged here apart from gap 3's batch-size fields.
      - **Arena promotion (review N2).** Today the arena-start snapshot is a tuple of weights, velocity, completed steps and dropout state (`App/SessionController+Arena.swift:170-181`), with no schedule. The promotion rewinds those four (`:455-467`), not the warmup/cycle configuration, which a popover commit can change while the arena runs.
-       - The arena start therefore also captures `TrainerScheduleState(currentlyRunningOn: trainer)` and the in-force snapshot `runStartCapture.inForce(over: TrainingParameters.shared.snapshot())`, in the same main-actor turn that starts the existing detached export, and **after** the arena has acquired the training pause (`App/SessionController+Arena.swift:134`; the export follows at `:170-181`). The clock in the captured `TrainerScheduleState` then equals the `completedSteps` read inside the detached export (`:173`), which the post-promotion save below relies on (review pass 3, NB-c).
-       - The promotion record (`:501`) composes its `parameters` as `capturedSnapshot.adoptingSchedule(capturedSchedule).lineageValues()` and passes `capturedSchedule` as `schedule:`. `lineageRecordForSave` therefore takes the parameter snapshot as an explicit argument too: saves pass the in-force snapshot read right after the export, and the promotion passes the arena-start one.
+       - The arena start therefore also takes a `GuiConfigurationCut`, in the same main-actor turn that starts the existing detached export, and **after** the arena has acquired the training pause (`App/SessionController+Arena.swift:134`; the export follows at `:170-181`). The clock in the captured `TrainerScheduleState` then equals the `completedSteps` read inside the detached export (`:173`), which the post-promotion save below relies on (review pass 3, NB-c).
+       - The promotion record (`:501`) passes the arena-start cut to `lineageRecordForSave`, exactly as an ordinary save passes its own.
        - **Training is not paused during the tournament** (review pass 4, P4-1). The arena pauses training only for the candidate snapshot (comment `App/SessionController+Arena.swift:126-133`, which says training "can continue through the full tournament"; pause `:134`–`:188`). On promotion it pauses both gates (`:423-425`) and rewinds weights, velocity and clock to the arena-start step S (`:455-467`, clock at `:463`). Settings are not rewound.
        - So a setting edited mid-arena is journalled at a step after S, a step the rewind discards. The rewound trainer uses it from step S+1, which can even come *before* the journalled step.
-       - **Re-stamping at promotion.** Under the promotion's pauses, right after the rewind, every journal entry (`parameter_changes`, and gap 3.5 recapture entries if any) whose `trainer_step` is greater than S is re-stamped to S. Its original step is kept in a new field, `restamped_from`. The entries stay in commit order, so the last edit of a key still wins. The meaning is again "applies from the next step": S+1 in the rewound trainer.
-       - **The promotion record** is built from the arena-start capture. It includes only the journal entries that existed at the arena-start capture (the length of each journal array, `parameter_changes` and `champion_changes`, is captured with the schedule and snapshot), so its `parameters` and `parameter_changes` agree and undo correctly to the segment start. Mid-arena edits appear in the trainer's later records, at S, with `restamped_from`.
+       - **Re-stamping at promotion.** Under the promotion's pauses, right after the rewind, every journal entry (`parameter_changes`, and gap 3.5 recapture entries if any) whose `committed_at_trainer_step` is greater than S is re-stamped to S. Its original value is kept in a new field, `restamped_from`. The entries stay in commit order, so the last edit of a key still wins. Both gates are paused here and the trainer already holds the setting, so the rewound trainer uses it from exactly S+1.
+       - **The promotion record** is built from the arena-start cut. It includes only the journal entries that existed at the cut (the cut's two counts), so its `parameters` and `parameter_changes` agree and undo correctly to the segment start. Mid-arena edits appear in the trainer's later records, at S, with `restamped_from`.
        - **A kept arena** (no promotion): nothing is rewound, so nothing is re-stamped. Mid-arena edits keep their real steps.
      - **The inline post-promotion save** (review pass 3, P3-1).
-       - The arena's `-promote` autosave writes `trainer.safetensors` itself, not through `saveSessionInternal`. Its trainer metadata schedule (`App/SessionController+Arena.swift:713-723`) is today built from the trainer's *current* `lrWarmupSteps` / `lrMomentumCycle`, and its lineage is `promotionLineage` (`:739`, passed at `:790`).
+       - The arena's `-promote` autosave writes `trainer.safetensors` itself, not through `saveSessionInternal`. Its trainer metadata schedule (`App/SessionController+Arena.swift:713-723`) is today built from the trainer's *current* `lrWarmupSteps` / `lrMomentumCycle`, and its lineage is `promotionLineage` (`:738`, passed at `:790`).
        - After N2, that record carries the arena-start schedule. An in-arena schedule edit would therefore make the flat `trainer_*` keys and the record disagree, and the P4 backstop would fail every such `-promote` save.
-       - The fix: that metadata takes its schedule from the same arena-start capture (`capturedSchedule`, whose `completedTrainSteps` equals `trainerSnapshotCompletedSteps` because training was paused). The file's flat keys and its record then come from one value and describe the rewound state the file holds.
+       - The fix: that metadata takes its schedule from the same arena-start cut (`cut.schedule`, whose `completedTrainSteps` equals `trainerSnapshotCompletedSteps` because training was paused). The file's flat keys and its record then come from one value and describe the rewound state the file holds.
        - A later edit reaches files through the journal and the next save (gap 4). On a GUI resume of this file, `TrainerScheduleState.forSessionResume` uses the session's values and logs any difference (`Training/TrainerResumeState.swift:69-99`), as today.
-     - Promote Trainee Now passes `TrainerScheduleState(currentlyRunningOn: trainer)` under its pause (`App/SessionController+ManualPromote.swift:169`).
-     - The `[RUN]` start record and `lineageForResults` pass `TrainerScheduleState(currentlyRunningOn: trainer)` (`App/SessionController+Lineage.swift:241`, `:250`).
-3. **Backstop (P4, not P2; review N1):** `SafetensorsModelIO.encode` (`Persistence/SafetensorsModelIO.swift:150-161`) refuses a trainer-state file whose lineage `parameters` is non-nil and whose schedule keys differ from `metadata.trainerSchedule` (`IOError.scheduleDisagreesWithLineage`).
+     - Promote Trainee Now takes a cut under its pause (`App/SessionController+ManualPromote.swift:169`).
+     - The `[RUN]` start record and `lineageForResults` take a cut when they run (`App/SessionController+Lineage.swift:241`, `:250`); they write no file.
+3. **Backstop (P4, not P2; review N1):** `SafetensorsModelIO.encode` (`Persistence/SafetensorsModelIO.swift:155-164`) refuses a trainer-state file whose lineage `parameters` is non-nil and either lacks any of the 21 schedule keys or holds a value that differs from `metadata.trainerSchedule` (`IOError.scheduleDisagreesWithLineage`, naming the key). A missing key is a refusal, never a skip: every composed snapshot holds all 21 (`adoptingSchedule` writes them).
    - Records with `parameters: nil` (`LineageRecord.forTests`, `DrewsChessMachineTests/LineageTestSupport.swift:13-27`; mints) are unaffected.
+   - Four existing tests write trainer-state files whose record has a one- or three-key snapshot with no schedule keys: `GuiLineageLifecycleTests.swift:55-67`, `GuiResumeGapsTests.swift:41-51`, `GuiResumeContinuationGapsTests.swift:38-50` and `LineageRecordTests.swift:28-40` (used at `:56`, `:228-248`, `:292`). Their fixture snapshots must become a full snapshot adopting the file's schedule. That is a fixture edit, owner decision O-19; if it is declined, the backstop is dropped and the rule rests on construction and the gap-5 tests.
    - It lands in the **same commit as the GUI rule**. In P2/P3 the GUI still reads the singleton after the awaited export (`App/SessionController+Checkpoint.swift:445` → `:469`), so a guard in P2 would turn that race into failed session saves. P2 fixes only the CLI composition, which is correct by construction.
-4. **Non-schedule keys in a GUI save** (review NB3). Static LR, weight decay and the other keys are read from the singleton after the awaited export (`:445` → `:469`). A popover commit in that window is recorded with its new value. That is consistent, not a contradiction:
-   - the journal (gap 4) holds the change at the paused clock, i.e. "applies from the next step";
-   - the trainer receives it before the next step.
-
-   The snapshot is the *in-force set as of the save's clock + journal*. It is not claimed to be cut-consistent with the tensors for keys that do not travel in the trainer file.
+4. **Non-schedule keys in a GUI save** (review NB3, superseded by X4). They come from the same cut, so a popover commit during the save's awaits is in neither the record's snapshot nor its journal; it is the next save's journal entry at the paused clock. The snapshot, the journal and the flat schedule keys are one cut.
 5. Gap 13 is handled alongside.
 
 **Tests** (new `DrewsChessMachineTests/ReplayResumeRecordedParametersTests.swift`; uses the static, internal `ResumeEquivalenceTests.writeCorpus(in:)`, `writeStartModel(in:)` and `architecture`, so no existing file is edited):
@@ -581,7 +663,7 @@ Branching is the most common start in current experiments: lrA, lrB and `seg-res
   - It uses only `ReplayParams.init(_:)` and `runReplay(config:params:abort:)`, which survive P2, so it compiles today and fails today.
 - `testSnapshotAdoptingScheduleRoundTripsEveryField`: 200 seeded random schedules, envelope included; other keys unchanged.
 - `testAdoptingScheduleKeepsAnOutOfRangeCheckpointValue`.
-- P4: `testAGuiSaveRecordsTheExportedScheduleNotALaterEdit`. Using `GuiSaveHarness`, change the cycle in the singleton between the export and the record (the harness's pause hooks) and assert the record's schedule keys equal the export's.
+- P4: `testAGuiSaveRecordsTheCutNotALaterEdit` (X4). Using `GuiSaveHarness`, commit a cycle change (singleton write + `apply(to:)`) after the cut and before the record (the harness's pause hooks). Assert: the record's schedule keys and the file's flat `trainer_*` keys equal the cut's; the record's `parameter_changes` does not hold the edit; the next save's does, at the paused clock; undoing each save's journal from its snapshot gives the segment-start snapshot.
 - P4: `testAPromotionRecordsTheArenaStartScheduleNotAnEditDuringTheArena` (N2). Using `GuiSaveHarness`, start an arena, change the cycle in the singleton before promotion, promote, and assert the promotion record's schedule and parameters equal the arena-start capture, with the mid-arena edit absent from the promotion record and present in the next save's `parameter_changes` at step S with `restamped_from` equal to its original step (P4-1). It also asserts that the post-promotion session save **succeeds**, and that its `trainer.safetensors` flat `trainer_*` keys equal its record's schedule keys (P3-1). If the harness cannot drive an arena without Metal, the extracted functions that compose the promotion record and the post-promotion trainer metadata from the arena-start capture are tested directly, and the end-to-end case is validated in V3.
 - P4 (moved from P2, N1): `testEncodeRefusesARecordWhoseScheduleDisagreesWithTheTrainerSchedule`.
 
@@ -650,7 +732,7 @@ A name-list comparison would add nothing, so none is added. The existing first-I
 - Encode and decode check that `Σ shard_count == shard_sha256.count` for `.listed`.
 - Schema 2 decodes to `.firstOnly`.
 - The runner builds the list in its existing loop (`:1154-1170`).
-- `fed.corpus.segment_start` (review D7) records the `(epoch, next_game_index)` this segment's feed began at: the resolved start, after `--start-shard` / `--start-game-index` / resume.
+- `fed.corpus.segment_start` (review D7) records the `(epoch, next_game_index)` this segment's feed began at: the resolved start, after `--start-shard` / `--start-game-index` / resume. It is `Recorded`: a schema-3 record carrying a schema-2 position (a champion file of a loaded schema-2 replay model, `withoutTrainerState` copying `fed`, `Persistence/LineageRecord.swift:899-913`) has no such value, so it is `{"recorded": false}` there and recorded everywhere else (review X5).
 - `SafetensorsModelIO.replayResumePoint` (`Persistence/SafetensorsModelIO.swift:502-526`) exposes `firstCorpusID`, derived from either case, for the unchanged check.
 - `ckpt_inventory.py:71` reads both shapes.
 
@@ -659,6 +741,7 @@ A name-list comparison would add nothing, so none is added. The existing first-I
 - `testASchemaTwoCorpusPositionDecodesAsFirstOnly`.
 - `testShardCountsMustSumToTheShardHashCount`.
 - `testSegmentStartIsTheResolvedStartGameIndex`.
+- `testAChampionFileOfASchemaTwoReplayModelHasAnUnrecordedSegmentStart` (X5): a schema-2 replay record → `withoutTrainerState()` → encode → decode at schema 3.
 
 **Validation.** A V4 variant with `--replay-corpus X --replay-corpus Y`: `corpus_identity.listed` has two entries, and their shard counts sum to the `shard_sha256` length.
 
@@ -714,7 +797,42 @@ A name-list comparison would add nothing, so none is added. The existing first-I
 - `testASchemaTwoSeedOriginStillDecodes`.
 - `testAnInheritedSeedKeepsTheFirstSegmentsOriginAndMode` (covers `.commandLine` in both switches).
 
-**Validation.** V2 with `--seed 777`: a composed snapshot of 83 keys, and `rng.streams.seed_origin "command_line"`.
+**Validation.** V2 with `--seed 777`: a composed snapshot of `TrainingParameters.allKeys.count − 2` keys (83 at `c0130599`), and `rng.streams.seed_origin "command_line"`.
+
+## Gap 9b — the run's seed is lost outside the trainer file (Medium)
+
+**Problem** (review X1).
+- The seed a run trained under lives only in `rng.streams` (`Persistence/LineageRecord.swift:603-653`).
+- `withoutTrainerState()` drops `rng.streams` (`Persistence/LineageRecord.swift:899-913`), so every champion file, including a promoted champion's origin (`App/SessionController+Lineage.swift:467-473`), records no seed. `SegmentSummary` holds none either, so summaries and ancestry lose it.
+- "New Session, keep trainer" keeps the segment (`App/SessionController+Lineage.swift:182-185`) but resolves a new seed and restarts the game serials (`App/SessionController+Training.swift:148-187`, `continueMode` false). The trainer file's `rng.streams` then states only the last seed of a segment that ran under two.
+- Gap 9 removes the snapshot's seed *settings*, which were wrong anyway; this gap keeps the *actual* seed where it is needed.
+
+**Decision.** Fix in code (P4).
+
+**Design.**
+- Record-level `run_seeds` (S2): one entry per seed the segment ran under, `{from_trainer_step, master_seed, seed_origin, stream_derivation}`. It sits beside `configuration` rather than inside it, so that a schema-2 trainer record's known seed survives conversion (S1) although its configuration is unrecorded (review pass 2). `withoutTrainerState()` keeps it, so champion files, summaries and ancestry carry it.
+- `LineageTracker.noteRunSeed(_ seed: RunRandomSeed, atTrainerStep:)` appends an entry. It is called **after the segment's tracker is selected and the trainer restored**, never earlier: in the GUI the seed is resolved at `App/SessionController+Training.swift:148-190`, before any tracker for the new segment exists and before the trainer is restored (`:870-929`); `beginRunLineage` runs at `:1063-1071`, and the tracker is created at `App/SessionController+Lineage.swift:230-232` (review pass 2).
+- **GUI segment-start inputs.** `startRealTraining` stores, beside `runRandomSeed` (which it already stores):
+  - `runSeedStartKind: RunSeedStartKind` — `.continued` in the Continue branch (`App/SessionController+Training.swift:149-152`), `.resolvedOrInherited` in the other two (`:153-190`);
+  - `replayRatioStart: ReplayRatioStart` (B6) — set where the controller is built (`:488-497`).
+- **One production function**, `SessionController.noteSegmentStart(on tracker:, isNewSegment:)`, called by `beginLineageSegment` after the tracker is selected (`App/SessionController+Lineage.swift:230-232`, or the kept one) and before the `[RUN]` record (`:239-243`), with `trainer.completedTrainSteps` (the restored clock):
+  - a new segment (fresh, branch, resume, or a kept trainer with no tracked lineage): a `run_seeds` entry, a `replay_ratio.starts` entry, and the `segment_start` champion entry (B5), whose model ID is `beginRunLineage`'s `championIdentifier` and whose content hash comes from `championOrigin` (a missing origin throws the existing `noChampionOrigin`);
+  - a kept segment: a `replay_ratio.starts` entry, plus a `run_seeds` entry when `runSeedStartKind == .resolvedOrInherited` ("New Session, keep trainer"); a Continue after Stop keeps the run's seed and serials and adds no seed entry.
+  - Missing inputs throw `LineageSegmentError.noSegmentStartInputs`, checked where the existing `noRunSeed` guard is (`:239`). No default.
+- **CLI:** each runner calls `noteRunSeed` once, right after creating its tracker and before its `[RUN]` start record (`CLI/CorpusReplayRunner.swift:1514-1520`, `CLI/TrainVsUciRunner.swift:447-453`).
+- `record()` refuses a record with training behind it and no seed noted. The S2 invariant ties the last entry to `rng.streams` when both exist.
+
+**Tests** (in `LineageSeedRecordTests.swift`):
+- `testAChampionFileKeepsTheRunSeed` (regression): a promoted champion's record has `run_seeds` equal to the trainer record's.
+- `testABranchAncestryKeepsTheParentRunsSeeds`.
+- `testNewSessionKeepTrainerAppendsTheNewSeed` and `testContinueAfterStopAddsNoSeedEntry`.
+- `testASessionResumeThatInheritsItsSeedRecordsItAtTheRestoredClock` and `testASessionResumeThatDrawsASeedRecordsTheDrawnSeed`: the entry lands in the new segment's tracker, at the trainer's restored clock.
+- `testAContinueOfAnUntrackedTrainerStartsWithItsSeed`.
+- `testASchemaTwoTrainerRecordsSeedSurvivesConversion`: the cont-step6093 fixture → `withoutTrainerState()` (schema 3), its summary, and a derive of it each have `run_seeds == recorded([{from_trainer_step: null, master_seed: "18019510007828584227", seed_origin: "drawn", …}])`.
+- `testALastRunSeedThatDisagreesWithTheStreamsIsRefused`.
+- `testARecordWithNoNotedSeedIsRefused`.
+
+**Validation.** V2: segment 0's `run_seeds.value == [{from_trainer_step: 0, master_seed: "777", seed_origin: "command_line", …}]`; the resumed segment's entry has `from_trainer_step 200`. V3: Stop ▸ New Session, keep trainer ▸ Save gives two entries.
 
 ## Gap 10 — keys that do nothing on a path look meaningful (Low; Low–Medium for train-vs-UCI)
 
@@ -732,7 +850,7 @@ A name-list comparison would add nothing, so none is added. The existing first-I
   - `batch_stats_interval`, `kl_probe_interval`.
 - **vsuci:** the same **except** `replay_ratio_target` (the driver passes `replayRatioTarget: nil`, `CLI/TrainVsUciRunner.swift:841`), plus `periodic_autosave_interval_sec` (read once at start, per CLAUDE.md). It reads nothing from Self-Play Sampling; its ply cap and move selection are `configuration.vsuci` (B1).
 - **gui:** every key. Some act only under `--train` (`legal_mass_collapse_*`, `App/SessionController+Training.swift`).
-- **all paths:** the seed keys are recorded in `rng.streams`, not the snapshot (gap 9).
+- **all paths:** the seed keys are recorded in `rng.streams` and `run_seeds`, not the snapshot (gaps 9, 9b). If `TRAINING_HEALTH_ALARMS_PLAN.md` lands, its 12 `training_health_*` keys apply on every path (read once at start on the CLI paths, live in the GUI; that plan's checklist step 8).
 
 The table is maintained by hand until O-12 is decided. P5's document says so.
 
@@ -740,7 +858,7 @@ The table is maintained by hand until O-12 is decided. P5's document says so.
 
 **Problem.**
 - **Budgets.**
-  - Step and time limits from a `--parameters` file (`CLI/CliTrainingConfig.swift:27-34`) are applied (`App/DrewsChessMachineApp.swift:1114`, `:1417-1418`) but appear in no record.
+  - Step and time limits from a `--parameters` file (`CLI/CliTrainingConfig.swift:27-34`) appear in no record. Train-vs-UCI applies both (`App/DrewsChessMachineApp.swift:1417-1418`); corpus replay applies only the step limit (`:1114`) and has no time limit at all, so a parameters file's `training_time_limit` is silently ignored there (a pre-existing gap, O-21).
   - `--epochs` is argv only.
   - When neither `--epochs` nor a step limit is given, the run enforces one epoch: `let epochLimit: Int? = config.epochs ?? (stepLimit == nil ? 1 : nil)` (`CLI/CorpusReplayRunner.swift:1218-1219`).
 - **Opponents.** The spec (`CLI/TrainVsUciRunner.swift:15-26`) is argv only. Engine identity is never captured: `UCIArbiter.handshake` skips the `id` lines (`App/UCI/UCIArbiter.swift:168-176`).
@@ -750,16 +868,17 @@ The table is maintained by hand until O-12 is decided. P5's document says so.
 **Design.**
 - `configuration.budget = {training_step_limit, training_time_limit_sec, epoch_limit}` holds the **resolved** limits each runner enforces (review A6). `null` means the path enforces no such limit.
   - The corpus-replay resolution moves into one function, `CorpusReplayConfig.resolvedBudget`, which the runner (`:1218-1219`) and the record both call.
+  - Corpus replay's `training_time_limit_sec` is always `null`: it enforces none.
   - Train-vs-UCI uses `stepLimit` / `timeLimitSec` (`CLI/TrainVsUciRunner.swift:31-32`).
   - GUI `--train` uses its resolved limits (`App/DrewsChessMachineApp.swift:318-356`).
   - Interactive GUI: all `null`.
 - `configuration.vsuci.opponents` (S2):
   - `executable_sha256` of the resolved executable, computed once at run start;
-  - `id_name` / `id_author` from the first instance's handshake: `UCIArbiter.handshake()` returns `UCIEngineIdentity`, collecting `id name` / `id author` before `uciok`. A missing `id name` is recorded `null` and logged `[VS-UCI] engine … sent no id name`;
+  - `identity` from the pool's first completed handshake: `UCIArbiter.handshake()` returns `UCIEngineIdentity`, collecting `id name` / `id author` before `uciok`, and the arbiter keeps it. Handshakes run in the driver (`Training/TrainVsUciDriver.swift:187-188`, relaunch `:610-611`), after the runner's `[RUN]` start record (`CLI/TrainVsUciRunner.swift:447-453`) and the pool's construction (`:455-469`). So a record composed before any instance of a pool has completed a handshake (the `[RUN]` record; a pool whose every instance failed to start) has `identity: {"recorded": false}`, stated, never guessed. A missing `id name` line inside a completed handshake is `id_name: null`, logged `[VS-UCI] engine … sent no id name`;
   - option values pass the same secret-marker redaction as argv (`Persistence/LineageRecord.swift:972-1011`).
 
 **Tests.**
-- `DrewsChessMachineTests/UCIEngineIdentityTests.swift` (new): `testHandshakeReturnsTheEnginesIdLines`, with a fake engine in the style of `DrewsChessMachineTests/UCIArbiterTests.swift:219-230`, which prints `id name Fake` / `id author test`. Also `testAnEngineWithoutIdNameRecordsNull`.
+- `DrewsChessMachineTests/UCIEngineIdentityTests.swift` (new): `testHandshakeReturnsTheEnginesIdLines`, with a fake engine in the style of `DrewsChessMachineTests/UCIArbiterTests.swift:219-230`, which prints `id name Fake` / `id author test`. Also `testAnEngineWithoutIdNameRecordsNull`, and (in `TrainVsUciLineageTests.swift`) `testARecordBeforeAnyHandshakeHasUnrecordedIdentity`.
 - In `SegmentConfigurationRecordTests.swift`:
   - `testAReplayRecordCarriesItsResolvedBudget` (regression);
   - `testAReplayWithNeitherEpochsNorAStepLimitRecordsEpochLimitOne`;
@@ -769,7 +888,7 @@ The table is maintained by hand until O-12 is decided. P5's document says so.
 **Validation.**
 - V2: `budget.training_step_limit 200`, `epoch_limit null`.
 - V2b (segment 0 without a step limit, on a tiny corpus): `epoch_limit 1`.
-- V5: `opponents[0].id_name` equals the engine's output, and `executable_sha256` equals `shasum -a 256 <binary>`.
+- V5: `opponents[0].identity.value.id_name` equals the engine's output, and `executable_sha256` equals `shasum -a 256 <binary>`.
 
 ## Gap 12 — effective LR/momentum at save not stored (Low)
 
@@ -793,7 +912,7 @@ Recommended: both yes. That also removes the existing duplicate.
   - This is CPU arithmetic producing feed scalars, not graph-builder code. The feed tensors, placeholders and graph are unchanged.
   - The fields are `learning_rate_fed` / `momentum_fed`, and they are the fed values by construction (same function, same inputs).
 - **Without O-18:** only the readouts call it; `buildFeeds` keeps its own copy. The fields are named `learning_rate_readout` / `momentum_readout`, and P5 documents them as the status-bar readout that mirrors `buildFeeds`.
-- `configuration.schedule_at_save` = the function applied to the *exported* schedule and the record's own in-force static LR, momentum, batch size and √batch flag. It never reads live trainer properties.
+- `configuration.schedule_at_save` = the function applied to the schedule the record's parameters adopt (the export's on the CLI paths, the cut's on the GUI, gap 5) and the record's own in-force static LR, momentum, batch size and √batch flag. It never reads live trainer properties.
 - `null` for records without a trainer.
 
 **Tests** (in `SegmentConfigurationRecordTests.swift`, plus `DrewsChessMachineTests/LRMomentumCycleReadoutTests.swift`, new):
@@ -879,41 +998,50 @@ Recommended: both yes. That also removes the existing duplicate.
 - A branch restarts all totals at the new trainer's clock (`Persistence/LineageTracker.swift:181-187`), while a derive or graft continues the source's (`:386-401`). A branch from a 100k-step model reports e.g. `cum_trainer_step 3000`.
 
 **Decision (O-15).**
-- Recommended (a): correct the doc to "this run's totals". With `ancestry` (gap 1b), add a `scripts/dcm_lineage.py` helper `weights_totals(record)` that sums this run's totals with each `AncestorRun`'s, stopping at an unrecorded total. No stored copy is added.
+- Recommended (a): correct the doc to "this run's totals". With `ancestry` (gap 1b), add a `scripts/dcm_lineage.py` helper `weights_totals(record)`. No stored copy is added.
+  - A derive already continues its source's totals (`Persistence/LineageTracker.swift:370-400`), and a branch restarts them. So the helper adds an ancestor's `totals_at_departure` **only where that ancestor was left by a branch**; summing at a derive boundary would count the source twice (review X6). Example: A (100 steps) → branch → B (50) → derive → C (+10): C's own total is 60 (B's 50 carried), and the weights' total is 60 + A's 100 = 160.
+  - It returns *unrecorded* (never a partial sum) when `history_before_oldest_run` is `unrecorded`, or any total it needs is null.
 - (b): store `steps.weights_cum_trainer_step` (and games/time) as `Recorded<Int?>`.
 
 The plan implements (a) in P4 unless the owner picks (b).
 
-**Tests.** `documentation/dashboards/tests/test_lineage_schema3.py::test_weights_totals_sum_along_ancestry_and_stop_at_unrecorded`.
+**Tests.** In `documentation/dashboards/tests/test_lineage_schema3.py`: `test_weights_totals_sum_along_ancestry_and_stop_at_unrecorded`, `test_a_derive_is_not_counted_twice` (train → derive; repeated derives; derive → branch; a resumed derived run), `test_an_unrecorded_oldest_run_gives_unrecorded`.
 
 ## B5 — GUI promotion chain (Medium, GUI)
 
-**Problem.** Self-play games come only from the current champion, which changes at each arena promotion or Promote Trainee Now. The trainer file records only `rng.streams.arenas_started` (`Persistence/LineageRecord.swift:626-628`). The history is in `session.json`'s `arenaHistory`, which is not in the model file.
+**Problem.** Self-play games come only from the current champion. It changes at each arena promotion or Promote Trainee Now, and also when a model is loaded while training is stopped: a same-architecture Load Model keeps the trainer (`App/SessionController.swift:1156-1158`) and replaces the champion's weights and identity (`App/SessionController+Checkpoint.swift:797-824`), and a following Continue keeps the segment (`App/SessionController+Lineage.swift:182-185`) (review X10). The trainer file records only `rng.streams.arenas_started` (`Persistence/LineageRecord.swift:626-628`). The history is in `session.json`'s `arenaHistory`, which is not in the model file and has no loads.
 
 **Decision.** Fix in code (P4), modified from the review.
-- A new `noteChampionChange(championID:trainerCompletedSteps:trigger:)` is called next to the two existing promotion calls (`App/SessionController+Arena.swift:509`, `App/SessionController+ManualPromote.swift:175`).
+- A new `noteChampionChange(championID:contentSHA256:trainerCompletedSteps:trigger:)` is called:
+  - when a segment's tracker is created (`beginLineageSegment`, `App/SessionController+Lineage.swift:230-232`), with trigger `segment_start` and the champion at that moment;
+  - next to the two existing promotion calls (`App/SessionController+Arena.swift:509`, `App/SessionController+ManualPromote.swift:175`), triggers `arena` / `manual`;
+  - next to the two load sites that set `championOrigin` (Load Model `App/SessionController+Checkpoint.swift:811`, Load Session `:1002`), trigger `loaded_model`, when a tracker exists. With no tracker there is no segment to journal into, and the next segment's `segment_start` entry names the loaded champion.
 - It does not go inside `recordPromotedChampionOrigin`, so `ChampionLineageRecordTests`' three direct calls (`DrewsChessMachineTests/ChampionLineageRecordTests.swift:99`, `:113`, `:117`) stay unedited.
 
 **Design.**
-- `configuration.champion_changes`, entries `{trainer_step, recorded_unix, champion_model_id, trigger: "arena" | "manual"}`.
+- `configuration.champion_changes`, entries as in S2 (`trainer_step`, `recorded_unix`, `champion_model_id`, `champion_content_sha256`, `trigger`). `champion_content_sha256` is the `championOrigin` file's `content_sha256`, null for a built or promoted champion, whose weights were never read from a file.
 - It is held by the segment journal (gap 4) and is `[]` on CLI paths.
-- `trainer_step` is the clock the promoted weights carry: S, the arena-start step the trainer was rewound to (`trainerSnapshotCompletedSteps`), for an arena promotion; the trainer's clock under the pause for Promote Trainee Now. It is never the pre-rewind clock (P4-1).
+- `trainer_step` is the trainer's clock when the champion took over. For a promotion it is the clock the promoted weights carry: S, the arena-start step the trainer was rewound to (`trainerSnapshotCompletedSteps`), for an arena promotion; the trainer's clock under the pause for Promote Trainee Now. It is never the pre-rewind clock (P4-1).
 - **Ordering (review NB7):** `noteChampionChange` runs *after* the promotion's lineage record has been built (`App/SessionController+Arena.swift:501-504` before `:509`; `App/SessionController+ManualPromote.swift:169-171` before `:175`). The champion's own origin record therefore never lists itself, and the trainer's next save is the first record with the entry.
 
-**Tests.** `testAPromotionIsJournalledWithTheTrainerStep`, `testPromoteTraineeNowIsJournalledAsManual`, `testThePromotionRecordPrecedesItsChampionChangeEntry`.
+**Tests.** `testAPromotionIsJournalledWithTheTrainerStep`, `testPromoteTraineeNowIsJournalledAsManual`, `testThePromotionRecordPrecedesItsChampionChangeEntry`, `testASegmentStartsWithItsChampion`, `testLoadingAModelBetweenStopAndContinueIsJournalled` (X10, regression: Stop ▸ Load Model of the same architecture ▸ Continue ▸ save; the record's `champion_changes` ends with the loaded model's ID and `loaded_model`).
 
 ## B6 — GUI auto replay-ratio: delays and effective target in force (Low–Medium, GUI)
 
 **Problem.** With `replay_ratio_auto_adjust` on:
-- the controller computes training-step and self-play delays and an integral-compensated effective target (`SessionController.effectiveReplayRatioTarget`, `App/SessionController.swift:448`; `ReplayRatioController.computedDelayMs`, `Training/ReplayRatioController.swift:792`; `smoothedSelfPlayDelayMs`, `:852`);
-- they are written back to the singleton only when auto is switched off (`App/UpperContentView/ControlSideEffectsProbe.swift:202-248`).
+- the controller computes training-step and self-play delays and an integral-compensated effective target (`SessionController.effectiveReplayRatioTarget`, `App/SessionController.swift:448`; the delays the workers apply are the `RatioSnapshot`'s gated `computedDelayMs` / `computedSelfPlayDelayMs`, `Training/ReplayRatioController.swift:720-743`; the raw getters at `:786-794` and `:845-853` are UI and mode-transition bookkeeping, not applied values);
+- they are written back to the singleton only when auto is switched off (`App/UpperContentView/ControlSideEffectsProbe.swift:202-248`);
+- each start seeds the controller's delay from `lastAutoComputedDelayMs` when auto is on (`App/SessionController+Training.swift:488-494`), a `UserDefaults` value outside `TrainingParameters` (`App/SessionController.swift:407-414`) that the heartbeat overwrites (`App/SessionController+Heartbeat.swift:276-283`), so no file records the starting delay (review X9).
 
 **Decision.**
 - Document in P5.
-- Add the derived, never-read-back `configuration.replay_ratio_at_save` (GUI only) in P4.
+- Add `configuration.replay_ratio` (GUI only, S2) in P4:
+  - `starts`: one entry per Play-and-Train start in the segment (Continue and keep-trainer starts included), with the trainer clock, the auto flag and the `initialDelayMs` the controller was built with and where it came from. The inputs are **captured** where the controller is built (`:488-497`, stored as `replayRatioStart`) and **appended** by `noteSegmentStart` after the tracker is selected and the trainer restored, with the restored clock (gap 9b). Never appended at construction: no tracker for a new segment exists yet, and the clock is not yet restored (`:870-929`).
+  - `at_save`: derived, never read back, every field from **one** `RatioSnapshot`: the heartbeat's last one (`replayRatioSnapshot`, mirrored at `App/SessionController+Heartbeat.swift:281`). Its `targetRatio` (`Training/ReplayRatioController.swift:725`) is the controller's target in force, which the compensator sets to the effective target (`App/SessionController.swift:481-501`); `effectiveReplayRatioTarget` is not read, since the compensator runs after the snapshot is stored (`App/SessionController+Heartbeat.swift:301`) and is nil in manual mode (`App/SessionController.swift:471-475`). The snapshot is stored in `GuiConfigurationCut` (`replayRatio: RatioSnapshot?`), so an arena-start cut keeps the value the promotion record describes. `null` when no snapshot exists, stated as such: no heartbeat has run since the start, or training is stopped (Stop clears `replayRatioSnapshot`, `App/SessionController+Training.swift:2462`), so a save between Stop and Continue describes no running controller.
 - The measured average reuse stays derivable as `cum_trainer_step × batch / cum_positions`.
+- `lastAutoComputedDelayMs`'s `?? 50` read (`App/SessionController.swift:413`) is a pre-existing fallback; the record states the value actually used, and the fallback itself is O-20.
 
-**Test.** `testAGuiRecordCarriesTheReplayRatioStateAtSave`.
+**Tests.** `testAGuiRecordCarriesTheReplayRatioStateAtSave` (every `at_save` field from one snapshot, including in manual mode), `testACompensatorTargetChangeAfterTheSnapshotIsNotMixedIn` (the compensator moves the controller's target after the heartbeat stored its snapshot and before the cut; `at_save.target_ratio` is the snapshot's), `testAnArenaStartCutKeepsItsReplayRatioThroughLaterHeartbeats`, `testEachStartRecordsTheControllersInitialDelay` (X9, regression).
 
 ## B8 — toolchain and build configuration (Low–Medium)
 
@@ -934,7 +1062,7 @@ The plan implements (a) in P4 unless the owner picks (b).
 
 **Problem.** Decoding an unmarked W/D/L head removes its shared offset (`Persistence/ValueHeadRecentering.swift:20-33`, report `:44-56`). The result is on `ModelCheckpointFile.valueHeadCentering` (`Persistence/ModelCheckpointFile.swift:315-317`) and logged under `[NUMERICS]`. The child's starting weights then differ from the bytes its `parent.content_sha256` names.
 
-**Decision.** Fix in P4, modified from the review: the fact goes in the segment's `configuration.start_value_head_recentered` rather than in `parent`. `LineageTracker.ParentFile` (constructed in 23 test sites) is not touched.
+**Decision.** Fix in P4, modified from the review: the fact goes in the segment's `configuration.start_value_head_recentered` rather than in `parent`. It is a fact about the weights the *segment* began from, so it is taken once, when the tracker is created, and kept by the tracker for the segment's whole life (review X8). `LineageTracker.ParentFile` (constructed in 23 test sites) is not touched.
 
 **Design.** Value rule (review N5):
 - **CLI.** The runner that loads `--start-model` has the decoded file's `valueHeadCentering`: `.recentered` → `true`; `.alreadyCentered` / `.notApplicable` → `false`. `.keptAsStored` is never used to train (`Persistence/ValueHeadRecentering.swift:30-32`), so it is an error here.
@@ -945,7 +1073,8 @@ The plan implements (a) in P4 unless the owner picks (b).
   - A branch records `true` for `.loaded(.recentered)`, and `false` for any other `.loaded` and for `.notLoaded`.
 - **Built champion** (`.built`): `false`.
 - **CLI fresh run** (no `--start-model`): `false`, as for a built GUI champion (review pass 3, P3-2).
-- **Continue after Stop and New Session, keep trainer:** `null`, because the segment has no new start weights.
+- **Continue after Stop and New Session, keep trainer** with a tracker: the segment continues, and so does its value, unchanged (review X8; these starts create no tracker).
+- **A kept trainer with no tracked lineage** (a new `.resume(untrackedTrainer)` segment, `App/SessionController+Lineage.swift:188-199`): `{"recorded": false}`: the process does not know how that trainer's weights were loaded.
 - A CLI `--resume-exact` loads its start file, so it records that file's value under the CLI rule above (review pass 4 nit).
 - **GUI session resume** (trainer loaded from `trainer.safetensors`): the trainer file's own `valueHeadCentering`, as for the CLI.
 
@@ -953,7 +1082,8 @@ The plan implements (a) in P4 unless the owner picks (b).
 - `testARecenteredStartFileIsRecorded`, using an unmarked file built as `ValueHeadRecentering`'s existing tests build it.
 - `testAGuiBranchFromARecenteredLoadedChampionRecordsTrue` (N5).
 - `testAGuiBranchFromAPromotedChampionRecordsFalse`.
-- `testAContinuedSegmentRecordsNull`.
+- `testAContinuedSegmentKeepsItsStartValue` (X8): a segment begun from a recentered load records `true` before and after Stop ▸ Continue.
+- `testAnUntrackedTrainerSegmentRecordsUnrecorded`.
 - `testAFreshCLIRunRecordsFalse` (P3-2).
 
 `ChampionLineageRecordTests` constructs `.file(…)` at `:50`, `:63`, `:81` and pattern-matches it at `:101`. These gain the `startWeights:` argument and binding; this is listed in O-14.
@@ -970,6 +1100,7 @@ Each phase is its own commit: build, the phase's tests, commit (the owner's stan
   - the generated `App/BuildInfo.swift`;
   - new `documentation/dashboards/tests/test_build_info_script.py`;
   - new `DrewsChessMachineTests/BuildInfoConsistencyTests.swift`;
+  - new `scripts/safetensors_tensor_compare.py` and `documentation/dashboards/tests/test_safetensors_tensor_compare.py` (the "No change to training math" comparator, used from P2 on);
   - `CHANGELOG.md`.
 - Order: the Python regression test fails against the current script; fix; it passes.
 - Lowest risk: no Swift logic changes.
@@ -1011,14 +1142,17 @@ One commit, because a schema-3 shape must never change after a build has written
 
 1. **API-first.**
    - Add the schema-3 types: `Recorded`, `SegmentSummary` fields, `TrainingConfiguration`, `AncestorRun`, `CorpusIdentity`, `Build` fields, `SeedOrigin.commandLine`.
-   - Add the schema-aware decode, `lineageRecordForSave`'s `schedule:`, `UCIArbiter.handshake`'s identity return, and the required tracker/record arguments (forcing O-1/O-14).
+   - Add the schema-aware decode, `lineageRecordForSave`'s `cut:`, `GuiConfigurationCut`, `UCIArbiter.handshake`'s identity return, `untrainedCopyRecord`'s `sourceArchitecture:`, and the required record arguments (forcing O-1/O-14).
    - `currentSchema` stays 2; nothing writes schema 3.
 2. **Regression tests.** Add the regression tests (JSON-level); set `currentSchema = 3`; see them fail (values not yet filled).
 3. **Recording.**
    - `LineageTracker` fills `configuration`, the summaries and `ancestry`.
    - `ParameterChangeJournal` + the `commitAssignment` hook (`Training/TrainingParameters.swift:1533-1657`, `:2449-2474`).
    - Recaptures (gap 3.5), champion changes.
-   - The runners: corpora, `segment_start`, budget, `vsuci`, policy tail, Dirichlet, value-head recentering, `schedule_at_save` via the shared readout, `replay_ratio_at_save`.
+   - The runners: corpora, `segment_start`, budget, `vsuci`, policy tail, Dirichlet, value-head recentering (once per segment), `run_seeds` (gap 9b), `schedule_at_save` via the shared readout, `replay_ratio` (starts and `at_save`).
+   - `ancestry`'s `history_before_oldest_run`, `totals_at_departure` and `architecture_at_departure` (gaps 1b, 1c); `untrainedCopyRecord`'s `sourceArchitecture` argument from `ModelDerivation` and `ModelGraft`.
+   - `GuiConfigurationCut` and `takeConfigurationCut()`, used by ordinary saves, the arena start, Promote Trainee Now and the `[RUN]` / results records (gap 5, X4); the trainer file written with the cut's schedule.
+   - `noteChampionChange` at segment start, promotions and the two load sites (B5, X10).
    - `configuration.value.path_kind` and the invariants keyed to it (N4).
    - The promotion-time journal re-stamp, `restamped_from`, and the journal-clock encode check (P4-1).
    - The arena-start capture of schedule and in-force snapshot (N2), and the inline post-promotion save's trainer metadata built from it (`App/SessionController+Arena.swift:713-723`; P3-1).
@@ -1026,14 +1160,14 @@ One commit, because a schema-3 shape must never change after a build has written
    - With O-18, `buildFeeds` calling the shared readout (N6).
    - The seed exclusion; the encode backstops (the schedule backstop moves here from P2, N1; the policy-tail backstop).
    - `withoutTrainerState()` and `untrainedCopyRecord` writing schema 3 from older sources.
-   - `CLI/CliTrainingRecorder.swift`: `ResultsLineage` (`:306-331`) also encodes `configuration`, but not `segments` / `ancestry` / `derivation_history` (review A10).
+   - `CLI/CliTrainingRecorder.swift`: `ResultsLineage` (`:306-331`, a hand-written encoder) also encodes `configuration` and `run_seeds`, but not `segments` / `ancestry` / `derivation_history` (review A10). `run_seeds` must be listed explicitly: a GUI `--train` results record comes from `lineageForResults` (`App/SessionController+Lineage.swift:249-252`), which has no dropout stream state and so no `rng.streams`, making `run_seeds` its only seed record (review pass 3). Test: `testResultsLineageCarriesConfigurationAndRunSeeds`, including a GUI-shaped record without streams.
    - The doc correction for `cum_*` (B4).
 
    Every regression test passes unmodified.
 4. **Python.**
    - `scripts/dcm_lineage.py`: schema range, schema-3 required keys (`:119-132`, `:174-177`), the `weights_totals` helper.
    - `documentation/dashboards/ckpt_inventory.py`.
-   - New `documentation/dashboards/tests/test_lineage_schema3.py`: `test_oldest_supported_schema_matches_the_app`, `test_schema_three_summary_keys_are_required`, `test_weights_totals_sum_along_ancestry_and_stop_at_unrecorded`.
+   - New `documentation/dashboards/tests/test_lineage_schema3.py`: `test_oldest_supported_schema_matches_the_app`, `test_schema_three_summary_keys_are_required`, `test_a_schema_above_the_supported_range_is_refused`, and B4's three `weights_totals` tests.
    - The existing `test_lineage.py` is unchanged.
 5. **Fixtures.** `DrewsChessMachineTests/LineageSchemaTwoFixtures.swift` holds the two real `dcm_lineage` texts (cont-step6093, seg-resume-check seg1) as Swift raw string literals, copied byte for byte and never edited. `testFixtureLiteralsAreUnedited` pins each literal's SHA-256. The test target has no resource-bundle mechanism today (review A16).
 
@@ -1079,34 +1213,39 @@ After P4, additionally:
 - `configuration.value.policy_tail_precision` equals the flat key;
 - `budget = {training_step_limit: 200, training_time_limit_sec: null, epoch_limit: null}`;
 - `segments[0].parameters.value.sha256` equals the step-200 file's `parameters.sha256`;
-- `rng.streams.seed_origin "command_line"`, and the composed snapshot has 83 keys;
+- `rng.streams.seed_origin "command_line"`, the composed snapshot has `allKeys.count − 2` keys (83 at `c0130599`), and `run_seeds.value` is one entry with `master_seed "777"` and `from_trainer_step 200`;
 - `fed.corpus.corpus_identity.listed` has one entry, and `segment_start` equals the step-200 file's `next_game_index` / `epoch`.
 
 **V2b (P4).** `budget.epoch_limit 1` when neither `--epochs` nor a step limit is given. This is checked by the XCTest `testAReplayWithNeitherEpochsNorAStepLimitRecordsEpochLimitOne`, on the synthetic corpus in a temporary folder, not end to end (review NB5). `--import-pgn` has no output-folder flag (`CLI/PGNImporter.swift:21`, `:92`; `outputParentDirectory` is set by no CLI argument), so an import would write into the production `Corpora/` folder, and a real-corpus single-epoch run is far too long for a validation step.
 
-**V3 (P3, P4; GUI).** See gaps 3 and 4. Then resume the saved session and save again: `segments[0].configuration.value.parameter_changes` holds the first segment's LR change, and the new segment's is `[]`. After an arena promotion, `champion_changes` has one `"arena"` entry.
+**V3 (P3, P4; GUI).** See gaps 3 and 4. Then resume the saved session and save again: `segments[0].configuration.value.parameter_changes` holds the first segment's LR change, and the new segment's is `[]`. After an arena promotion, `champion_changes` is `[segment_start, arena]`. Then Stop ▸ File ▸ Load Model (a model of the same architecture) ▸ Continue ▸ Save: `champion_changes` ends with a `loaded_model` entry naming it (X10). Stop ▸ New Session, keep trainer ▸ Save: `run_seeds` has two entries and `replay_ratio.starts` three (9b, X9). The session's `champion.safetensors` after the promotion is V4's derive source.
 
 **V4 (P4; branch, derive, mixed corpora).**
-- `--start-model $S/v2-replay-seg1-step200.safetensors` **without** `--resume-exact` (new `--out-model`): `ancestry[0].segments` has two summaries, and `ancestry[0].initialization.value` equals the V2 files' `rng.init_seed` / `init_scheme`. V2's segment 0 had no `--start-model`, so it is a fresh run whose init seed is recorded and carried by the exact resume (`Persistence/LineageTracker.swift:193`) (review N3).
-- A branch from a mint (Build/`--new-model` with a seed): `ancestry[0].initialization.value.init_seed` equals the mint's.
-- `--derive-model --from <that file> <an operation valid for its arch> --out $S/d.safetensors`: `ancestry` grows, and `derivation_history` gains one record.
-- `--replay-corpus X --replay-corpus Y`: `corpus_identity.listed` has two entries.
+- Branch: `$BIN --replay-corpus 20260624-192615-w3aA5b --parameters $S/A.json --seed 778 --start-model $S/v2-replay-seg1-step200.safetensors --training-step-limit 50 --out-model $S/v4-branch-latest.safetensors --enumerate-checkpoints`. In `$S/v4-branch-step50.safetensors`: `ancestry.history_before_oldest_run "none"`, `ancestry.runs[0].segments` has two summaries, `ancestry.runs[0].totals_at_departure.cum_trainer_step 400`, `architecture_at_departure null`, and `ancestry.runs[0].initialization.value` equals the V2 files' `rng.init_seed` / `init_scheme`. V2's segment 0 had no `--start-model`, so it is a fresh run whose init seed is recorded and carried by the exact resume (`Persistence/LineageTracker.swift:193`) (review N3).
+- A branch from a mint: `$BIN --new-model --architecture v4_5block_7x7 --out-model $S/mint.safetensors --init-seed 20261005`, then the branch command above with `--start-model $S/mint.safetensors` and `--out-model $S/v4-mint-branch-latest.safetensors`: `ancestry.runs[0].initialization.value.init_seed "20261005"`.
+- Derive (needs a model file, not a trainer-state file, `documentation/deriving-models.md:23-26`): `$BIN --derive-model --from <V3 session folder>/champion.safetensors --set-activation leaky_relu --out $S/d.safetensors` (`relu` instead if the source already uses `leaky_relu`). Expect `ancestry.runs.last.left_by "derive"`, `architecture_at_departure.architecture_json` equal to the source's `architecture` metadata value, `ancestry.runs.last.segments` matching the source record's `segments` + its own summary, and one more `derivation_history` record. With no V3 session available, V5's `vsuci-final` `champion.safetensors` is the source.
+- Mixed corpora: the V2 segment-0 command with a second `--replay-corpus <another sealed corpus ID>` and `--out-model $S/v4-mixed-latest.safetensors`: `corpus_identity.listed` has two entries whose `shard_count`s sum to `len(shard_sha256)`.
 
-**V5 (P4; train-vs-UCI, owner machine with an engine).** `--train-vs-uci "cmd=<engine>;n=1;go=nodes 1" --training-step-limit 20`. Check `configuration.value.vsuci` (B1, gap 11), and that `session.json` `maxPliesPerGame` is 400.
+**V5 (P4; train-vs-UCI, owner machine with an engine).** `$BIN --train-vs-uci "cmd=/opt/homebrew/bin/stockfish;n=1;go=nodes 1" --start-model $S/mint.safetensors --parameters $S/A.json --seed 779 --training-step-limit 20 --out-session-dir $S/v5-sessions --output $S/v5-results.json` (engine path as installed). In the `vsuci-final` folder: `trainer.safetensors`' `configuration.value.vsuci.max_plies_per_game 400`, `eval_sync_every_steps 10`, `trainer_move_selection` equal to `SamplingSchedule.argmax`, `opponents[0].executable_sha256` equal to `shasum -a 256 /opt/homebrew/bin/stockfish`, `opponents[0].identity.value.id_name` equal to the engine's `id name` line; `session.json` `maxPliesPerGame 400` (B1, gap 11). `$S/v5-results.json`'s `lineage` object has `configuration`.
 
 **Old files still decode (all phases).** With the new build:
 - `--analyze-numerics <file> --numerics-static-only` (read-only; writes its report under the analyses folder) succeeds on cont-step6093, `seg-resume-check-replay-seg1-step1000`, `b2275-step33000` and one v3 file.
 - `scripts/dcm_lineage.py` reads every lineage file and derives the same runs as before.
-- **Baseline for an exact resume of a schema-2 file** (review A14; build 2320 never resumed cont-step6093, so there is no earlier token set to compare with): a `--resume-exact` of cont-step6093 (`--policy-tail-precision fp32_from_pre_bn --epochs 12 --training-step-limit 10`, out-model in `$S`) must log:
+- **Baseline for an exact resume of a schema-2 file** (review A14; build 2320 never resumed cont-step6093, so there is no earlier token set to compare with): a `--resume-exact` of cont-step6093 with the parent's own corpus, parameters file, epoch budget and policy tail, so that no parameter gap can arise (review X12): `$BIN --replay-corpus 20260624-192615-w3aA5b --parameters experiments/20261004-fatconv-1x15x15-98/parameters-continue.json --start-model ~/Library/Application\ Support/DrewsChessMachine/Models/20261004-fatconv98-cont-replay-step6093.safetensors --resume-exact --policy-tail-precision fp32_from_pre_bn --epochs 12 --training-step-limit 10 --out-model $S/cont-resume-latest.safetensors` Compared with the parent's own argv (`invocation.argv`): the start model is the parent itself, `--out-model` is in `$S`, a step limit is added, and the parent's `--accept-inexact` list and `--enumerate-checkpoints` are dropped (the point is to see which gaps arise). Its feed per step and buffer capacity then match the parent's (`CLI/CorpusReplayRunner.swift:1267-1271`, `:1306-1309`). It must log:
   - `[RESUME] build changed (2320 1ab52554+dirty → …), behavior fingerprint matches|differs`;
   - then `[RESUME] EXACT` when the fingerprint matches, or `[RESUME] NOT EXACT: build` (refused unless `--accept-inexact build`) when it differs (`Training/ResumeExactness.swift:106-139`).
 
   No other token may appear. This resume writes schema 3, and its new segment's summary of the cont segment carries `parameters` recorded and `configuration` unrecorded.
 
 **No change to training math.**
-- **Two builds, same run:** the pre-phase and post-phase builds each run V2's segment 0 with `--seed 777`.
-  - Where the `ResumeEquivalenceTests` determinism probe reports `bitExact`, the two files' `content_sha256` (tensor data only, `Persistence/SafetensorsFile.swift:27-29`) must be equal.
-  - Otherwise, compare per tensor with `scripts/safetensors_tensor_hash.py` within the probe's tolerance.
+- **Two builds, same run** (review X12): the pre-phase build runs V2's segment 0 (`--seed 777`) **twice** (files `pre-a`, `pre-b`), and the post-phase build once (`post`).
+  - New `scripts/safetensors_tensor_compare.py <reference> <other> [--max-relative R]` (P1, stdlib only). It requires the same tensor names, dtypes and shapes.
+    - `R = 0` (the default) compares raw tensor bytes: bit identity, so `+0` and `−0` differ.
+    - `R > 0` decodes F32 / F16 / BF16 and computes each tensor's `max|a − b| / max(max|a|, FLT_MIN)`, the rule and denominator floor `ResumeEquivalenceTests` applies (`DrewsChessMachineTests/ResumeEquivalenceTests.swift:421-425`); an all-zero reference tensor therefore compares against `FLT_MIN`, never divides by zero. A NaN or ±Inf in either tensor fails unless the two tensors' bytes are identical.
+    - Exit 0 when every tensor passes, 1 otherwise or on any name / dtype / shape mismatch, 2 on an unreadable file. It prints the worst ratio and its tensor.
+    - Tests: `documentation/dashboards/tests/test_safetensors_tensor_compare.py` (identical files; one ULP apart; signed zero at `R = 0`; an all-zero tensor; a NaN; a shape mismatch; a missing tensor; each dtype).
+  - `F` = the worst ratio of `compare(pre-a, pre-b)`: the machine's own run-to-run floor (0 where steps are bit-reproducible). Pass: `compare(pre-a, post, --max-relative F)` exits 0. Both numbers go in the phase's CHANGELOG entry.
+  - `scripts/safetensors_tensor_hash.py` is not used here: it prints one file's two hashes and compares nothing (`:16-43`).
 - **Existing suites that must pass unchanged** (targeted runs; full suite once before merging, per CLAUDE.md):
   - `ResumeEquivalenceTests`, `ExactResumeTests`, `ExactResumeCompletionTests`, `CheckpointManagerSafetensorsTests`, `TrainerHyperparametersTests`;
   - `LineageRecordTests`, `LineageProvenanceTests`, `ChampionLineageRecordTests`, `UntrainedCopyRecordTests`, `DeriveLineageTrainedSourceTests`, `PolicyTailPrecisionProvenanceTests`;
@@ -1114,20 +1253,23 @@ After P4, additionally:
   - `TrainingParametersTests`, `TrainingParametersRunHoldTests`, `RunSeedParameterTests`, `UCIArbiterTests`, `BehaviorFingerprintTests`;
   - the Python suites in `documentation/dashboards/tests/`.
 
-  Tests that need edits are only those listed in O-1, O-3 and O-14.
+  Tests that need edits are only those listed in O-1, O-3, O-14 and O-19.
 - **No graph-builder, trainer-step or sampler edits in any phase.** Each phase's diff is reviewed for changes under `Network/ChessNetwork.swift` graph code, `Training/ChessTrainer.swift` step code and `Training/ReplayBuffer.swift` sampling. The allowed trainer edits are gap 12's readout refactor of `effectiveLearningRate` / `effectiveMomentum` and, only with O-18, `buildFeeds`' host-side LR/momentum scalars calling the same function. Both are guarded by pinned bit-identical tests, and the latter also by `ResumeEquivalenceTests`.
 
 ---
 
 # Owner decisions needed
 
-- **O-1 Mechanical test call-site edits (P4, required).** New required arguments with no defaults (no silent defaults). Only arguments are added; no assertion changes.
-  - `.record(` on a tracker: `LineageRecordTests.swift` (10), `ExactResumeCompletionTests.swift` (3), `LineageProvenanceTests.swift` (3), `BehaviorFingerprintTests.swift` (1), `LineageTestSupport.swift` (1), `GuiLineageLifecycleTests.swift` (1), `GuiResumeGapsTests.swift:38`, `GuiResumeContinuationGapsTests.swift:35`, `DropoutRNGStateTests.swift:179`, `TrainVsUciSessionTests.swift:180`, `SegmentIndexedCheckpointNamingTests.swift:88`;
-  - `LineageRecord(`: `ChampionLineageRecordTests.swift` (6), `InitSeedRecordingTests.swift` (2), `LineageRecordTests.swift` (1), `LineageTestSupport.swift` (1);
+- **O-1 Mechanical test call-site edits (P4, required).** New required arguments with no defaults (no silent defaults), and one setup line where a test records training. No assertion changes.
+  - Setup lines (gap 9b, B5; review pass 2): a tracker that records with a non-nil parameter snapshot must have a noted seed, and a `gui` one its `segment_start` champion entry, or `record()` refuses. Right after each such tracker's construction, a production `tracker.noteRunSeed(…)` call (and, on `gui` trackers, `tracker.noteChampionChange(… trigger: .segmentStart)`) is added: `LineageRecordTests.swift` (the trackers recording at `:56`, `:228`, `:238`, `:248`, `:292`), `LineageProvenanceTests.swift:158` (its `startRecord` at `:162`), and the `gui` trackers at `GuiLineageLifecycleTests.swift:50`, `GuiResumeGapsTests.swift:32`, `GuiResumeContinuationGapsTests.swift:29`. Every other test tracker records with `parameters: nil` and needs none.
+  - `.record(` on a tracker: `LineageRecordTests.swift` (10), `ExactResumeCompletionTests.swift` (3), `LineageProvenanceTests.swift` (3), `BehaviorFingerprintTests.swift` (1), `LineageTestSupport.swift` (1), `GuiLineageLifecycleTests.swift` (1), `GuiResumeGapsTests.swift:38`, `GuiResumeContinuationGapsTests.swift:35`, `DropoutRNGStateTests.swift:179`, `TrainVsUciSessionTests.swift:180`, `SegmentIndexedCheckpointNamingTests.swift:88`, `ChampionLineageRecordTests.swift:33`;
+  - `.startRecord(`: `ExactResumeCompletionTests.swift:230`, `:234`, `:393`, `LineageProvenanceTests.swift:162`, `:201`;
+  - `LineageRecord(` constructions: `LineageRecordTests.swift:90`, `LineageTestSupport.swift:41` (the earlier count of 6 in `ChampionLineageRecordTests` and 2 in `InitSeedRecordingTests` matched `championFileLineageRecord(` and test names, not constructions);
+  - `untrainedCopyRecord(` (gap 1c's `sourceArchitecture:`, passed `nil`): `DeriveLineageTrainedSourceTests.swift:84`, `UntrainedCopyRecordTests.swift:23`, `:36`;
   - `CorpusPosition(`: `ExactResumeTests.swift` (2), `LineageRecordTests.swift` (2);
   - `Build(buildNumber:`: `BehaviorFingerprintTests.swift`, `ExactResumeCompletionTests.swift`, `LineageTestSupport.swift` (1 each).
 
-  Counts are from `grep` at `a7d3b9ca`, including calls whose arguments start on the next line. They are re-counted with a multi-line pattern (`record\(\s*\n?\s*at:`) before P4.
+  Counts are from `grep` at `c0130599`, including calls whose arguments start on the next line. They are re-counted with a multi-line pattern (`record\(\s*\n?\s*at:`) before P4. `LineageTracker.init` gains no argument (gap 1b), so its test constructions are not edited.
 - **O-2 Regression-test sequencing.** In P2 (B1), P3 and P4, regression tests are written after an API-first step so they compile. They fail at that point and pass after the fix, unmodified. Is that acceptable as "write the test first"?
 - **O-3 `ReplayParams` becomes immutable and derived (P2).**
   - `ResumeEquivalenceTests.swift:196-203`, `CorpusReplayRefusalTests.swift` and `FinalTrainerSaveFailureTests.swift` build their snapshot with `declaredDefaults(overriding:)` instead of mutating fields afterwards.
@@ -1148,7 +1290,9 @@ After P4, additionally:
 - **O-13 Opponent executable.** `TrainVsUciOpponentSpec.command` is documented as an executable path (`CLI/TrainVsUciRunner.swift:16-17`). If a bare name resolved through `PATH` is ever allowed, record and hash the resolved path.
 - **O-14 GUI test-support edits (P3/P4, required).** Only setup and arguments are added; no assertion changes.
   - `DrewsChessMachineTests/GuiSaveHarness.swift:119` and `GuiLineageLifecycleTests.swift:109`, `:132`, `:167`: a `controller.beginRunStartCapture(buffer:)` call next to each tracker assignment.
-  - `LineageFedCountsTests.swift:70`, `:97`: the new `schedule:` and parameter-snapshot arguments of `lineageRecordForSave` (P4; with review N1's resolution the GUI rule and this edit are both in P4).
+  - `GuiLineageLifecycleTests.swift:145-161` (`testASuccessfulStartConsumesThePendingSession`): it begins a segment through `beginRunLineage`, whose `[RUN]` record now takes a configuration cut and whose `noteSegmentStart` needs the segment-start inputs (gap 9b). Setup added before the call: `beginRunStartCapture(buffer:)`, `runSeedStartKind`, `replayRatioStart`, and `controller.championOrigin = .built(initialization: .forTests)` (review X11, passes 2 and 3). `noteSegmentStart` takes the champion's model ID from `beginRunLineage`'s existing `championIdentifier` argument and its content hash from `championOrigin`; a missing origin throws the existing `LineageSegmentError.noChampionOrigin`, never "not from a file". This fixture sets no origin today (production sets it at load, `App/SessionController+Checkpoint.swift:1002`), hence the setup line. The three failure tests at `:88-146` fail before or at the same guards as today (fingerprint, `noRunSeed`), and `beginRunLineage` restores the previous tracker on any failure (`App/SessionController+Lineage.swift:100-140`), so they need no edit.
+  - `GuiSaveHarness.swift:114-125` installs its tracker directly, without the production start path, and then records (`LineageFedCountsTests.swift:70-72`, `SessionSaveConsistentCutTests`). After `championOrigin` is set (`:125`) it calls the production `noteSegmentStart(on: tracker, isNewSegment: true)`, with `runSeedStartKind` and `replayRatioStart` set first, so its records carry the `run_seeds` and `segment_start` entries the invariants require (pass 2). No other test installs a tracker and then records: `GuiLineageLifecycleTests.swift:109`, `:132`, `:167` install one and never record.
+  - `LineageFedCountsTests.swift:70`, `:97`: the new `cut:` argument of `lineageRecordForSave`, a `GuiConfigurationCut` built with its memberwise initializer (P4; with review N1's resolution the GUI rule and this edit are both in P4).
   - `ChampionLineageRecordTests.swift:50`, `:63`, `:81` (constructions of `ChampionOrigin.file`) and `:101` (pattern match): the new `startWeights:` associated value (N5, P4).
 - **O-15 `cum_*` meaning (B4).** (a) Correct the doc to "this run's totals" + an ancestry-summing helper (recommended, planned), or (b) store weights-totals.
 - **O-16 Gap 12.** Keep `schedule_at_save` (with the readout refactor) or defer it? It is derivable from the file.
@@ -1157,6 +1301,25 @@ After P4, additionally:
   - It is guarded by a pinned bit-identical test and `ResumeEquivalenceTests`.
   - It is the one trainer step-path edit in this plan, and it removes an existing duplicate.
   - If declined, `schedule_at_save`'s fields are named `learning_rate_readout` / `momentum_readout`.
+- **O-19 Fixture edits for the schedule backstop (P4; review X11).** The backstop refuses a trainer-state file whose record's snapshot lacks a schedule key (gap 5 design 3). Four tests write such files with one- or three-key fixture snapshots: `GuiLineageLifecycleTests.swift:55`, `GuiResumeGapsTests.swift:41`, `GuiResumeContinuationGapsTests.swift:38`, `LineageRecordTests.swift:28-30`. Each fixture becomes `TrainingParametersSnapshot.declaredDefaults(overriding: <its current keys>).adoptingSchedule(<the schedule that file is written with>).lineageValues()`. No assertion changes. One test is content-dependent: `LineageRecordTests.testParametersHashMustMatchItsSnapshot` (`:88-99`) replaces `4096` with `2048` in the record text and asserts the decode fails. The edited fixture keeps `training_batch_size 4096` (its override), so the replacement still changes the hashed snapshot and the assertion still holds. (`LineageProvenanceTests`' `params_sha` fragment is computed from its own record, `:185`, written by `startRecord`, not into a trainer file.) If declined, the encode backstop is dropped; the rule rests on construction and the gap-5 tests.
+- **O-20 `lastAutoComputedDelayMs` fallback (B6).** Its getter returns 50 when `UserDefaults` holds no value (`App/SessionController.swift:413`), a silent default that predates this plan. Replace it with an explicit first-launch value logged as such, or keep it? The record states the value used either way.
+- **O-21 Corpus replay ignores a parameters-file `training_time_limit` (gap 11).** `--replay-corpus` applies only the file's step limit (`App/DrewsChessMachineApp.swift:1114`). Refuse a file that sets a time limit on that path, or keep ignoring it? The record says `training_time_limit_sec: null` either way.
+- **O-22 Order of this plan's P4 and the alarm plan (with `TRAINING_HEALTH_ALARMS_PLAN.md` OD-10, approved 2026-10-05).** The alarm summary can be in schema 3 only if the alarm evaluator exists when P4 is implemented. Recommended: land that plan's P1–P3 before this plan's P4, so `configuration.health_alarms` is part of schema 3. Otherwise P4 ships without it and the summary needs schema 4. See **Interaction with adjacent plans**.
+
+# Interaction with adjacent plans
+
+- **`HEAD_ACTIVATIONS_PLAN.md`** bumps the architecture format to v9 (`dcm_format_version`). This plan bumps only the lineage schema (2 → 3) and never the architecture format (Part S), so the numbers do not collide: a file written after both is format v9, schema 3. That plan's edit of the `"8"` pin at `LineageRecordTests.swift:114` is its own owner decision. Gap 1c's `architecture_at_departure` stores a source's architecture text verbatim with its own `format_version`, so a v8 text inside a v9 file is read under v8's rules.
+- **`TRAINING_HEALTH_ALARMS_PLAN.md`** adds 12 `liveTunable` `@TrainingParameter` keys (its checklist step 1):
+  - they enter every composed snapshot (as that plan says), so this plan's counts are never literals (Corrections);
+  - their stored properties' `didSet`s pass `oldValue` to `commitAssignment` like every other (gap 4); whichever plan lands second wires them;
+  - they belong in gap 10's applicability table on every path.
+- **Its OD-10** (approved by the owner, 2026-10-05: a bounded per-segment summary, one entry per rule that raised, `{rule, first_trainer_step, highest_severity, raise_count}`, at most about 1.2 KB per segment) was written as "one optional field" landing "with HPARAM P4's schema 3". At schema 3 every key is required and a shape never changes after a build has written it (Part S, P4), so it cannot be optional. It becomes the required key `configuration.health_alarms` (S2):
+  - inside `configuration`, so it reaches `SegmentSummary`, champion files and ancestry, and a carried schema-2 record has it unrecorded with the rest of `configuration`;
+  - shape `{"evaluations": N, "raised": [{rule, first_trainer_step, highest_severity, raise_count}]}`. `evaluations` is the number of evaluator checks the segment ran, so `evaluations: 0` honestly says "never evaluated" (alarms disabled, `training_health_alarms_enabled` false, or no check reached yet), while `raised: []` with `evaluations > 0` says "checked, nothing raised". An entry exists only for a rule that raised. Both parts are bounded (one integer, at most one entry per rule);
+  - **accumulated by the tracker across monitors.** That plan creates a new `TrainingHealthMonitor` at every GUI start, Continue included (`TRAINING_HEALTH_ALARMS_PLAN.md:668`), while a segment spans Continue and keep-trainer starts. The tracker keeps the merged summary of the segment's ended monitors; at each start it merges the outgoing monitor's summary in (evaluations and `raise_count` summed, `first_trainer_step` the minimum, `highest_severity` the maximum), and a record merges that with the live monitor's summary without changing the stored one, so nothing is counted twice. CLI paths have one monitor per process, which is one segment;
+  - the `GuiConfigurationCut` carries the merged summary at the cut, so a promotion record built from the arena-start cut describes the trainer as of S; raises during the arena reach the next save. A raise is an observation at the trainer clock when it was seen; a promotion's rewind does not remove it, and no clock check applies to it;
+  - tests (P4, with that plan's monitor): `testAContinueKeepsEarlierRaises`, `testNewSessionKeepTrainerKeepsEarlierRaises`, `testDisabledAlarmsRecordZeroEvaluations`, `testAPromotionRecordHasTheArenaStartAlarmSummary`, `testMergingTwiceCountsOnce`;
+  - it lands in P4's commit only if the evaluator has landed first (O-22); otherwise it is schema 4. The `health_alarms` line in S2 is conditional on that order, and is removed from S2 before P4 if the order is the other way.
 
 # Risks
 
@@ -1168,7 +1331,7 @@ After P4, additionally:
 - **R3 The `commitAssignment` hook touches every stored property's `didSet`** (`Training/TrainingParameters.swift:1533-1657`). The edit is mechanical. It is covered by `TrainingParametersTests`, `TrainingParametersRunHoldTests` and the new journal tests.
 - **R4 Header growth.** About 3.6 KB per summary, never truncated. The 64 MB header guard (`Persistence/ModelFileCatalog.swift:252`) is the backstop. A long line's header size is measured before merge.
 - **R5 Encode guards can halt a save.** The schedule and policy-tail checks throw from `SafetensorsModelIO.encode`.
-  - With gap 5's rule (lineage schedule composed from the same export the flat keys come from), no production writer can trip the schedule check; it only catches a writer that bypasses the rule. `testAGuiSaveRecordsTheExportedScheduleNotALaterEdit` and `testAPromotionRecordsTheArenaStartScheduleNotAnEditDuringTheArena` pin the GUI race and arena cases.
+  - With gap 5's rule (the lineage schedule composed from the same `TrainerScheduleState` the flat keys are written from: the export's on the CLI paths, the configuration cut's on the GUI), no production writer can trip the schedule check; it only catches a writer that bypasses the rule. `testAGuiSaveRecordsTheCutNotALaterEdit` and `testAPromotionRecordsTheArenaStartScheduleNotAnEditDuringTheArena` pin the GUI race and arena cases.
   - The schedule check ships in the same commit as the GUI rule (P4), never before it (N1).
   - Corpus replay tolerates one failed save and halts on the second (`CLI/CorpusReplayRunner.swift:164-206`).
 - **R6 `git_dirty` meaning shifts at P1.** Schema-2 records written after P1 carry the corrected flag; earlier ones the always-true flag. The build number tells them apart (the P1 CHANGELOG names it).
@@ -1296,3 +1459,68 @@ The reviewer concurred with the plan, with no blockers, on 2026-10-05. Four non-
 - the multi-line O-1 counts;
 - the log counts quoted in gap 2;
 - whether the behavior fingerprint covers the 4096 √batch base.
+
+# Second review
+
+A second reviewer checked the plan against the source (every citation, completeness, design, phasing, tests, validation, and the two adjacent plans). Each item was verified in the code before it was folded in.
+
+## Pass 1
+
+| Item | Verdict | Where / why |
+|---|---|---|
+| X1 the seed disappears from champion files and summaries; keep-trainer changes it inside a segment | Accepted | New gap 9b (`configuration.run_seeds`, S2 invariant against `rng.streams`). Verified: `withoutTrainerState` drops `rng.streams` (`Persistence/LineageRecord.swift:899-913`); "New Session, keep trainer" keeps the tracker (`App/SessionController+Lineage.swift:182-185`) and resolves a new seed with serials from 0 (`App/SessionController+Training.swift:157-187`). |
+| X2 ancestry loses the architecture earlier weights trained under | Accepted | New gap 1c (`architecture_at_departure`, verbatim source text). Verified: `DerivationRecord` keeps changed field *names* only (`Persistence/ModelDerivation.swift:224-285`); `--set-activation` overwrites (`:785-799`) and is allowed on a trained champion (`documentation/deriving-models.md:36-38`). |
+| X3 the journal cannot claim the step a change took effect | Accepted, as stated semantics | Gap 4: the field is now `committed_at_trainer_step` and documents adoption per consumer (trainer keys at `+1` or `+2`; self-play at the next game; captured keys at the next start). Verified: feeds are built before the step runs and the clock increments after (`Training/ChessTrainer.swift:4901-4946`); `apply(to:)` assigns property by property (`Training/TrainerHyperparameters.swift:118-139`). Recording the consumer's step would need a hook in the trainer's step path, which Part V excludes. After a promotion's re-stamp the step is exact (both gates paused). |
+| X4 an ordinary GUI save pairs the exported schedule with a later journal | Accepted | Gap 5: one `GuiConfigurationCut` (snapshot, trainer schedule, journal counts) in one main-actor turn after the training pause and before the export; the trainer file is written with the cut's schedule after a clock check. The same cut serves the arena start, Promote Trainee Now and the `[RUN]` record. Verified: `exportResumeSnapshot` reads the schedule after an awaited export (`Training/TrainerResumeState.swift:276-283`), and the record is built after two more awaits (`App/SessionController+Checkpoint.swift:443-472`). Supersedes NB3's "documented, no code". |
+| X5 a carried schema-2 corpus position has no `segment_start` | Accepted | S2 / gap 7: `fed.corpus.segment_start` is `Recorded`; new test. |
+| X6 `weights_totals` double-counts derives | Accepted | B4: add ancestor totals only at branch boundaries; `AncestorRun.totals_at_departure`; three tests. Verified the derive carry (`Persistence/LineageTracker.swift:370-400`). |
+| X7 the unrecorded-history signal is not preserved | Accepted | S2 `ancestry.history_before_oldest_run` and its build table; gap 1b corrected (the old claim about `continues_unrecorded_history` was wrong: `.branch` sets it `false`, `Persistence/LineageTracker.swift:181-187`); two new tests. |
+| X8 Continue clears the segment's recentering fact | Accepted | B9: taken once per segment and kept; `Recorded<Bool>`, unrecorded only for an untracked GUI trainer. Supersedes pass 3's "`null` only for continuation". |
+| X9 the GUI's initial auto-delay is unrecorded; cited getters are not applied values | Accepted | B6: `configuration.replay_ratio` with `starts` (initial delay and its source) and `at_save` from the heartbeat's `RatioSnapshot` (`Training/ReplayRatioController.swift:720-743`). The `?? 50` fallback is O-20. |
+| X10 loaded champions are missing from the champion journal | Accepted | B5: `segment_start` and `loaded_model` triggers at the two load sites; regression test. Verified that a same-architecture Load Model keeps the trainer (`App/SessionController.swift:1156-1158`) and the tracker. |
+| X11 owner-decision lists omit test edits | Accepted | O-1 corrected (`ChampionLineageRecordTests.swift:33` added; `startRecord(` and `untrainedCopyRecord(` sites added; the `LineageRecord(` counts for `ChampionLineageRecordTests` and `InitSeedRecordingTests` were grep hits on other names and are removed). O-14 adds `GuiLineageLifecycleTests.swift:145-161`. New O-19 for the four trainer-file fixtures the strict schedule backstop would refuse; the backstop treats a missing key as a refusal, never a skip. |
+| X12 validation not runnable as written | Accepted | New `scripts/safetensors_tensor_compare.py` (P1) with a measured run-to-run floor; V4 derive from a `champion.safetensors` (derive refuses trainer-state files); concrete V4/V5 commands and outputs; the schema-2 baseline uses the parent's own parameters file and argv. |
+| X13 OD-10's optional field conflicts with schema-3 immutability | Accepted | **Interaction with adjacent plans**; O-22. |
+| Nit: `SafetensorsModelIO.swift:150-157` | Accepted | Now `:158-162` (S3). |
+| Nit: `promotionLineage` at `:739` | Accepted | Now `:738`. |
+| Nit: replay applies no time limit | Accepted | Gap 11: replay's `training_time_limit_sec` is always `null`; the silent ignore is O-21. |
+| Nit: strict `Recorded` decoding | Accepted | S1 and `testRecordedDecodingIsStrict`. |
+| Nit: observer access to the private clock box; call outside the lock | Accepted | Gap 4 design 2: weak `ChessTrainer`, public getter; invoked after the `SyncBox` lock is released. |
+| Nit: `test_lineage.py` no longer tests a future schema | Accepted | S1; new `test_a_schema_above_the_supported_range_is_refused`. |
+| Adjacent: counts change if the alarms plan lands first | Accepted | Corrections, V2, gap 9: counts from `allKeys.count`; applicability table. |
+
+## Pass 2
+
+The reviewer confirmed X3–X8, X10, X12, X13 and the pass-1 nits as resolved, and raised:
+
+| Item | Verdict | Where / why |
+|---|---|---|
+| Seed and replay-ratio start entries would be noted before their tracker and the restored clock exist | Accepted | Gap 9b: the inputs are stored by `startRealTraining` (`runSeedStartKind`, `replayRatioStart`) and noted by one production function, `noteSegmentStart`, inside `beginLineageSegment` after the tracker is selected and before `[RUN]`; new segments (including a Continue of an untracked trainer) get every entry. Verified the order: seed `App/SessionController+Training.swift:148-190`, controller `:488-497`, trainer restore `:870-929`, `beginRunLineage` `:1063-1071`, tracker `App/SessionController+Lineage.swift:230-232`. CLI notes once after its tracker (`CLI/CorpusReplayRunner.swift:1514-1520`, `CLI/TrainVsUciRunner.swift:447-453`). |
+| A schema-2 trainer record's known seed is lost when its configuration is unrecorded | Accepted | `run_seeds` moved to the record level (S2), with a schema-2 conversion that keeps the seed with `from_trainer_step: null` (S1); summary mapping; new test on the cont-step6093 fixture. |
+| `at_save` mixed a stored snapshot with a later compensator target; the cut could not carry it | Accepted | B6: every field from one `RatioSnapshot` (its `targetRatio`, `Training/ReplayRatioController.swift:725`); `GuiConfigurationCut.replayRatio`; tests for manual mode and an arena-start cut. Verified the compensator runs after the snapshot is stored (`App/SessionController+Heartbeat.swift:281`, `:301`) and clears the effective target in manual mode (`App/SessionController.swift:471-475`). |
+| The architecture regression asserted on the wrong ancestor | Accepted | Gap 1c test: A → derive B → branch C; A's entry holds the architecture, B's is null. |
+| Harness trackers would lack the new mandatory entries | Accepted | O-14: `GuiSaveHarness` calls the production `noteSegmentStart` after `championOrigin` is set; the success test at `GuiLineageLifecycleTests.swift:145-161` gets the inputs. O-1 gains the setup lines for every test tracker that records with a parameter snapshot (audited: five in `LineageRecordTests`, one in `LineageProvenanceTests`, three `gui` trackers). The three failure tests need nothing: `beginRunLineage` restores the previous tracker on failure. |
+| A schema-2 mint conversion contradicted `parameters == null ⇒ configuration == null` | Accepted | S1: null parameters convert to null `configuration` and `run_seeds`; the invariant is now `parameters == null ⇔ configuration == null ⇔ run_seeds == null`. |
+| Nit: O-19 said no test asserts on snapshot content | Accepted | O-19 names `testParametersHashMustMatchItsSnapshot` (`LineageRecordTests.swift:88-99`) and why it still holds. |
+| Nit: alarm counts and OD-10 status | Accepted | 12 keys (97 / 95 / 78); OD-10 is approved, so `configuration.health_alarms` is specified (S2, adjacency section) and O-22 now asks only for the order of the two plans. |
+| Nit: comparator edge cases | Accepted | Byte comparison at `R = 0`; the `FLT_MIN` denominator floor; non-finite handling; tests. |
+| Nit: stale instructions (`schedule:`, O-19 missing from the edit list, R5) | Accepted | P4 step 1, Part V, R5. |
+| Nit: train-vs-UCI identity before the handshake | Accepted | Gap 11: `identity` is `Recorded`, unrecorded until the pool's first completed handshake (driver `Training/TrainVsUciDriver.swift:187-188`); new test. |
+| Nit: the X3 timing wording | Accepted | Gap 4: `+2` only when the in-progress step had already built its feeds. |
+| Nit: baseline argv wording | Accepted | Part V lists every difference from the parent's argv. |
+
+## Pass 3
+
+The reviewer confirmed the relocated `run_seeds`, the single-snapshot `at_save`, the corrected architecture test, the mint conversion, the comparator and the remaining pass-2 nits, and raised:
+
+| Item | Verdict | Where / why |
+|---|---|---|
+| B6 still said "appended at the controller's construction" | Accepted | B6 now says captured at construction, appended by `noteSegmentStart` (gap 9b) after the tracker is selected and the clock restored. |
+| The success test has no champion origin for the `segment_start` entry | Accepted | O-14 adds `championOrigin = .built(initialization: .forTests)`; gap 9b states where the champion ID and hash come from, and that a missing origin throws (no default). Verified the fixture sets none (`GuiLineageLifecycleTests.swift:145-161`). |
+| `run_seeds` outside `configuration` would miss `results.json` | Accepted | P4 step 3: `ResultsLineage` encodes it explicitly; test includes a GUI-shaped record without streams (`lineageForResults` has none, `App/SessionController+Lineage.swift:249-252`). |
+| The alarm summary's lifetime and empty value | Accepted | Adjacency section: `{evaluations, raised}`, accumulated by the tracker across the per-start monitors (merge once at each start, merge-without-store at each record), carried in the cut for promotions; five tests. Verified a new monitor per GUI start (`TRAINING_HEALTH_ALARMS_PLAN.md:668`) and the disabled mode (`:608`). |
+| Nits: summary seeds of a schema-2 mint; gap 1's field list; mint round-trip tests; compensator-change test | Accepted | Summary table, gap 1 design 1, `testASchemaTwoMintConvertsToNullConfigurationAndSeeds`, `testACompensatorTargetChangeAfterTheSnapshotIsNotMixedIn`. |
+
+## Pass 4
+
+The reviewer confirmed every pass-3 item resolved and found **no must-fix issues**. One nit was applied: B6's `at_save: null` also covers a save while stopped, since Stop clears `replayRatioSnapshot` (`App/SessionController+Training.swift:2462`). **Concurred on 2026-10-05, after four passes.**
