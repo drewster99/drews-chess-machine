@@ -75,7 +75,10 @@ def main():
     print("| step | pElo fatty | pElo slim-neck fatty | pElo fatconv | pElo Avg(R7,R8) "
           "| NLL fatty | NLL slim-neck fatty | NLL fatconv | NLL Avg(R7,R8) |")
     print("|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
-    for step in range(0, last + 1000, 1000):
+    # The 1,000-step grid, plus any step off it (a final save at an interrupt) as its own row.
+    grid = set(range(0, last + 1, 1000))
+    off_grid = {s for arm in (fatty, slim, fatconv) for s in arm if s % 1000}
+    for step in sorted(grid | off_grid):
         avg_pelo, avg_nll = mean_of(r7, r8, step, 0), mean_of(r7, r8, step, 1)
         row = [f"{step:,}",
                probe_record.pelo_cell(fatty, step), probe_record.pelo_cell(slim, step),
