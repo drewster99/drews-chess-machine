@@ -7,7 +7,7 @@ TABLES = ["experiments/20261001-se-fc1-leaky/table.py",
           "experiments/20261002-label-smoothing-C/table.py",
           "experiments/20261002-noSE-noReZero/table.py"]
 STEPS = [33000, 32000, 31000, 30000, 21000, 7000]
-RUNNING = {"pElo fatconv"}
+RUNNING = set()
 # (label, column header in the table scripts, note)
 RUNS = [
     ("R1", "SE scale+bias, seed 1 (label-smoothing baseline, ε 0.1/0.013)", "pElo baseline ε 0.1 / 0.013", ""),

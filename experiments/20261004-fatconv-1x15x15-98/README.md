@@ -1,6 +1,6 @@
 # 2026-10-04 — Fatconv: 15×15 stem and 1 × [15×15 + 15×15] @ 98, no SE, no ReZero (R16)
 
-**Status:** running since 2026-10-04 01:58:04 CDT, beside fatty and slim-neck fatty.
+**Status:** the build-2275 run ended at its 33,000-step limit (2026-10-04 21:07:55 CDT; final probe pElo 1395.8, NLL 2.3135; 29k–33k average 1387.1 vs Avg(R7,R8) 1499.5). It continues past 33,000 on build 2320 (see "Continuation past 33,000"). Launched 2026-10-04 01:58:04 CDT, beside fatty and slim-neck fatty.
 
 ## Question
 
@@ -55,7 +55,7 @@ partial-board kernel at wide width?
 - One seed; the two comparator seeds differ by ~22 pElo, so a gap under ~25 pElo over the
   last 5k steps is a tie.
 
-## Continuation past 33,000 (queued)
+## Continuation past 33,000
 
 The owner asked (2026-10-04) for fatconv not to stop at its 33,000-step limit. The running
 build-2275 process cannot change its limit, so a watcher (session scratch
@@ -78,6 +78,11 @@ with `--resume-exact` on build 2320 (`DCM-2320-1ab52554`) and no step limit (`--
   `20261004-fatconv98-cont-replay-step<N>` (real step 33,000 + N), probed with build 2320
   into `probes-cont.jsonl`.
 - **No comparator past 33,000:** R7/R8, fatty and slim-neck fatty all ended at 33,000.
+- **Started** 2026-10-04 21:08:10 CDT (pid 86306, session log `dcm_log_20261004-210810.txt`).
+  `[RESUME] NOT EXACT` names exactly the six accepted gaps; `[REPLAY-CYCLE]` reports
+  `origin=trainerStep 33000`, and the learning rate continues the original's (0.00124 at
+  33,000; 0.00127 at 33,050). The cycle's trough was at ~31,000 (lr 0.00081), so the rate
+  is rising again after 33,000.
 
 ## Launch record
 
