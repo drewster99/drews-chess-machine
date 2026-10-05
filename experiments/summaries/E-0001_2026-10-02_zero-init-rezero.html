@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0001">
+<meta name="dcm-date" content="2026-10-02">
+<meta name="dcm-title" content="Zero-init ReZero (α₀ = 0, cap 1.0)">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="architecture, rezero">
+<meta name="dcm-takeaway" content="Starting ReZero at zero gains nothing: it ends level with capped ReZero and below both no-ReZero seeds, so the baseline stays without ReZero.">
+<meta name="dcm-related" content="E-0004">
+<meta name="dcm-superseded-by" content="">
+<title>E-0001 · Zero-init ReZero (α₀ = 0, cap 1.0)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0001</span><span>2026-10-02</span><span class="status complete">complete</span></div>
+<h1>Zero-init ReZero (α₀ = 0, cap 1.0)</h1>
+<div class="tags"><span class="tag">architecture</span><span class="tag">rezero</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>Our ReZero had never started at zero: α₀ was 0.447 with the cap tied to it, so it acted as a fixed residual scale. Does the published form (every block starts as the identity, α₀ = 0, cap 1.0) beat the capped form or no ReZero at all?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Runs</dt><dd>R9 zero-init ReZero, run <code>20261003-1-NKTv</code>, from <code>20261002-6-SGuE</code> (derived bit-exactly from R5's fresh net; only the three α tensors differ). Comparators: R5 capped ReZero (<code>se_none</code> seed 1), R7 / R8 no ReZero (<code>20261002-2-5tKN</code> / <code>20261002-4-T79u</code>).</dd><dt>Architecture</dt><dd>3 × [7×7 + 7×7] @128, no SE, LayerNorm block output, basic30, bf16, 5.17M parameters.</dd><dt>Builds</dt><dd>Trained: R9 on 2290 (<code>9a36f9f</code>, first build reading architecture format v6), R7/R8 on 2275, R5 on 2255. Probed: R9 with 2290, R7/R8 with 2275, R5 by an earlier build (dashboard). Builds read up to ~2.6 pElo apart on one checkpoint.</dd><dt>Training</dt><dd>Corpus replay of <code>20260624-192615-w3aA5b</code> (the first 20.9M games of the Lichess May 2026 standard rated dump), batch 4,096, LR cycle 0.1 ↔ 0.001 (20,000-step period after a 1,000-step warmup, each peak slightly lower than the last), 33,000-step limit, <code>--policy-tail-precision fp32_from_pre_bn</code>.</dd><dt>Measure</dt><dd>pElo and NLL on the <code>--probe-set wide</code> Lichess puzzle probes, every 1,000 steps; both measure the policy only. Seeds of one recipe differ by up to ~25 pElo (R7 and R8: 22.5 over 29–33k).</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>Mean pElo over a window of probes (R5 stopped at 32,036, so its late window is 29–32k)</caption><thead><tr><th>run</th><th class="n">steps 5–7k</th><th class="n">steps 29–32k</th><th class="n">steps 29–33k</th></tr></thead><tbody><tr><td>R9 zero-init ReZero</td><td class="n">1250.0</td><td class="n">1466.0</td><td class="n">1469.4</td></tr><tr><td>R5 capped ReZero</td><td class="n">1269.8</td><td class="n">1476.4</td><td class="n">—</td></tr><tr><td>R7 no ReZero</td><td class="n">1277.9</td><td class="n">1486.9</td><td class="n">1488.2</td></tr><tr><td>R8 no ReZero</td><td class="n">1295.8</td><td class="n">1509.4</td><td class="n">1510.7</td></tr></tbody></table></div><figure class="chart"><script type="application/json">{"x": {"label": "training step"}, "y": {"label": "pElo"}, "series": [{"name": "R9 zero-init ReZero", "points": [[1000, 816.7347842356446], [2000, 1063.8584527396629], [3000, 1132.1202487871901], [4000, 1214.8179381056266], [5000, 1233.9772924835456], [6000, 1266.0283715995351], [7000, 1250.0106693307744], [8000, 1287.7072711303017], [9000, 1274.2899102201504], [10000, 1293.896877272704], [11000, 1290.2864984980433], [12000, 1292.3496484682037], [13000, 1292.865404070144], [14000, 1292.865404070144], [15000, 1303.1779033167782], [16000, 1294.9283000598607], [17000, 1291.8338801483278], [18000, 1260.8629939096581], [19000, 1324.8189398320014], [20000, 1294.9283000598607], [21000, 1304.7243591741972], [22000, 1349.0144307167861], [23000, 1402.4869512269397], [24000, 1401.9731529676405], [25000, 1418.411854036323], [26000, 1444.6005019654403], [27000, 1474.3720187618214], [28000, 1465.6468773685888], [29000, 1458.4609017501639], [30000, 1471.805871761483], [31000, 1466.1601407246862], [32000, 1467.699915278397], [33000, 1483.0965331087723]]}, {"name": "R5 capped ReZero", "points": [[1000, 916.12], [2000, 1085.47], [3000, 1172.25], [4000, 1222.59], [5000, 1246.91], [6000, 1265.0], [7000, 1297.51], [8000, 1305.24], [9000, 1313.49], [10000, 1300.08], [11000, 1327.39], [12000, 1316.58], [13000, 1311.94], [14000, 1307.82], [15000, 1315.55], [16000, 1327.39], [17000, 1299.57], [18000, 1307.82], [19000, 1316.06], [20000, 1298.54], [21000, 1312.97], [22000, 1353.65], [23000, 1386.56], [24000, 1402.49], [25000, 1437.93], [26000, 1439.98], [27000, 1463.59], [28000, 1482.07], [29000, 1474.89], [30000, 1483.61], [31000, 1469.75], [32000, 1477.45]]}, {"name": "Avg(R7,R8) no ReZero", "points": [[1000, 925.4951330812747], [2000, 1051.9231188399915], [3000, 1148.2718289892418], [4000, 1229.0565745244442], [5000, 1268.8678905667027], [6000, 1284.605775962141], [7000, 1307.0376761445307], [8000, 1318.376075352057], [9000, 1318.8918258675797], [10000, 1309.1016590850008], [11000, 1328.4214267428292], [12000, 1329.9628635793945], [13000, 1328.6790208302623], [14000, 1312.4515269333888], [15000, 1333.5721618429382], [16000, 1335.631253380343], [17000, 1301.3646182696712], [18000, 1325.847810361736], [19000, 1335.0756796304145], [20000, 1276.0920861189777], [21000, 1329.437788589482], [22000, 1379.0887957792686], [23000, 1418.4118437364205], [24000, 1430.736641993003], [25000, 1474.8805718807866], [26000, 1455.8942419569796], [27000, 1483.6095338825917], [28000, 1490.2810477986875], [29000, 1493.8727260780454], [30000, 1502.3401074121555], [31000, 1485.918467670161], [32000, 1510.5504670432297], [33000, 1504.6492363743891]], "dash": true}]}</script><figcaption>pElo by step. Zero-init is below capped ReZero at 27 of 32 shared probes and ends below both no-ReZero seeds (29–33k mean).</figcaption></figure>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>Zero-init lagged early (−19.8 against capped ReZero at 5–7k) and finished close to it (−10.4 over the same 29–32k window). Over 29–33k it ended 18.8 below R7 and 41.3 below R8. One seed, and seeds of one recipe differ by up to ~25 pElo, so gaps under that are inside seed noise. The α trajectory per block was not analyzed.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">Starting ReZero at zero gains nothing: it ends level with capped ReZero and below both no-ReZero seeds, so the baseline stays without ReZero.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261002-rezero-zero-init/README.md">experiments/20261002-rezero-zero-init/</a></li><li><a href="../20261002-noSE-noReZero/README.md">experiments/20261002-noSE-noReZero/</a> — the no-ReZero comparators and charts</li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

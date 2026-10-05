@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0003">
+<meta name="dcm-date" content="2026-10-03">
+<meta name="dcm-title" content="Value label smoothing ε 0.013 → 0">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="label-smoothing, value-head, loss">
+<meta name="dcm-takeaway" content="Removing value-target smoothing made no measurable difference to policy strength at 33k.">
+<meta name="dcm-related" content="E-0002">
+<meta name="dcm-superseded-by" content="">
+<title>E-0003 · Value label smoothing ε 0.013 → 0</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0003</span><span>2026-10-03</span><span class="status complete">complete</span></div>
+<h1>Value label smoothing ε 0.013 → 0</h1>
+<div class="tags"><span class="tag">label-smoothing</span><span class="tag">value-head</span><span class="tag">loss</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>Is value-target smoothing still needed now that the value head's shared offset cannot drift?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Runs</dt><dd>R12 (run <code>20261003-21-yEjN</code>), from the same fresh net as baseline R1 (<code>20260929-12-JZOe</code>; R1's trained ID <code>20260929-22-bWdy</code>).</dd><dt>Only variable</dt><dd><code>value_label_smoothing_epsilon</code> 0.013 → 0.</dd><dt>Architecture</dt><dd>SE scale+bias net, as E-0002.</dd><dt>Builds</dt><dd>Trained: R12 on 2275 (<code>de0f22b</code>), R1 on 2255 (per the SE report's <code>built_by_build</code>; the D README's "the baseline's build" is corrected). Probed: R12 with 2275, R1 by an earlier build (~2.6 pElo lower on one checked checkpoint).</dd><dt>Training</dt><dd>Corpus replay of <code>20260624-192615-w3aA5b</code> (the first 20.9M games of the Lichess May 2026 standard rated dump), batch 4,096, LR cycle 0.1 ↔ 0.001 (20,000-step period after a 1,000-step warmup, each peak slightly lower than the last), 33,000-step limit, <code>--policy-tail-precision fp32_from_pre_bn</code>.</dd><dt>Measure</dt><dd>pElo and NLL on the <code>--probe-set wide</code> Lichess puzzle probes, every 1,000 steps; both measure the policy only. Seeds of one recipe differ by up to ~25 pElo (R7 and R8: 22.5 over 29–33k).</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>Mean pElo over a window of probes</caption><thead><tr><th>window</th><th class="n">D (value ε 0)</th><th class="n">baseline (ε 0.013)</th><th class="n">D − baseline</th></tr></thead><tbody><tr><td>steps 5–7k</td><td class="n">1244.8</td><td class="n">1258.8</td><td class="n">−14.0</td></tr><tr><td>steps 29–33k</td><td class="n">1467.0</td><td class="n">1453.5</td><td class="n">+13.5</td></tr></tbody></table></div><figure class="chart"><script type="application/json">{"x": {"label": "training step"}, "y": {"label": "pElo"}, "series": [{"name": "D value \u03b5 0 (R12)", "points": [[1000, 963.8405275192149], [2000, 1122.1876914969666], [3000, 1154.554045381467], [4000, 1178.4918825555646], [5000, 1242.7718211739111], [6000, 1239.1511552856814], [7000, 1252.5951909375613], [8000, 1269.643251099208], [9000, 1270.1596040405643], [10000, 1283.063835366474], [11000, 1296.4753403722502], [12000, 1290.8023052016651], [13000, 1279.451523944795], [14000, 1293.896877272704], [15000, 1299.053493072769], [16000, 1289.7706789228187], [17000, 1293.3811469923007], [18000, 1255.1793113471463], [19000, 1211.7084949392279], [20000, 1296.4753403722502], [21000, 1340.2653374582283], [22000, 1283.579825835645], [23000, 1380.9019029265032], [24000, 1377.3032176087759], [25000, 1467.699915278397], [26000, 1425.0885186421374], [27000, 1466.673401476909], [28000, 1451.7876830936675], [29000, 1459.4875040967936], [30000, 1469.2396671306765], [31000, 1460.5140946135352], [32000, 1478.9909489527604], [33000, 1466.673401476909]]}, {"name": "baseline (R1)", "points": [[1000, 879.16], [2000, 1073.88], [3000, 1160.8], [4000, 1184.73], [5000, 1240.7], [6000, 1267.58], [7000, 1268.09], [8000, 1263.45], [9000, 1269.13], [10000, 1275.32], [11000, 1278.42], [12000, 1294.93], [13000, 1285.13], [14000, 1276.87], [15000, 1283.58], [16000, 1286.16], [17000, 1252.6], [18000, 1268.09], [19000, 1222.07], [20000, 1287.19], [21000, 1308.85], [22000, 1314.52], [23000, 1314.0], [24000, 1347.47], [25000, 1439.47], [26000, 1439.98], [27000, 1441.52], [28000, 1446.65], [29000, 1451.27], [30000, 1446.65], [31000, 1438.44], [32000, 1469.75], [33000, 1461.54]]}]}</script><figcaption>pElo by step.</figcaption></figure>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>D trailed early (−14.0) and led late (+13.5); allowing for the ~2.6 probe-build offset, about −16.6 and +10.9. Both are inside seed noise. pElo measures the policy only; the value head's own calibration under ε = 0 was not analyzed, so this says nothing about value accuracy.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">Removing value-target smoothing made no measurable difference to policy strength at 33k.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261002-label-smoothing-D/README.md">experiments/20261002-label-smoothing-D/</a></li><li><a href="../20260929-se-style-ab/REPORT-final.md">experiments/20260929-se-style-ab/REPORT-final.md</a> — the baseline's run and build</li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

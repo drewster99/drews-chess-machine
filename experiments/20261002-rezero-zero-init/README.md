@@ -1,6 +1,6 @@
 # 2026-10-02 — Zero-init ReZero (α₀ = 0, cap 1.0), no SE
 
-**Status:** running since 2026-10-02 20:24 CDT.
+**Status:** ended at its 33,000-step limit (launched 2026-10-02 20:24 CDT). Summary: [E-0001](../summaries/E-0001_2026-10-02_zero-init-rezero.html).
 
 ## Question
 
@@ -29,7 +29,7 @@ reach the branch scale the no-ReZero nets chose.
 - **Corpus / parameters / numerics:** corpus `20260624-192615-w3aA5b`, the SE experiment's
   pinned `parameters.json` (copied here, identical), 12 epochs, step limit 33,000,
   `--policy-tail-precision fp32_from_pre_bn`.
-- **Build:** needs format v6, so it runs on a newer build than the comparators (2275); the
+- **Build:** needs format v6, so it runs on a newer build than the comparators (2275 for no ReZero, 2255 for ReZero seed 1); the
   launch record names it. Engine changes between the two builds are listed there.
 - **Measurements:** pElo / NLL every 1,000 steps (`--probe-set wide`, with the same newer
   binary); effective α per block over time (from the enumerated checkpoints); branch scale
@@ -57,8 +57,8 @@ Zero-init ReZero is charted with the no-SE ReZero / no-ReZero runs in
 - **Launched** 2026-10-02 20:24:30 CDT (session log `dcm_log_20261002-202430.txt`), in the slot
   freed by no-ReZero seed 1, by the experiment queue.
 - **Build** 2290, git `9a36f9f`, frozen as `FrozenBuilds/DCM-2290-9a36f9f.app` (binary sha256
-  prefix `59228bed24fb`). It is the first build that reads architecture format v6. The comparators
-  ran on build 2275 (`de0f22b`); the engine changes between the two are the zero-init ReZero
+  prefix `59228bed24fb`). It is the first build that reads architecture format v6. The no-ReZero
+  comparators ran on build 2275 (`de0f22b`) and ReZero seed 1 (`se_none`) on 2255; the engine changes between 2275 and 2290 are the zero-init ReZero
   support itself (explicit `rezero_alpha_cap`), per-move label smoothing (off here: mode
   `fixed_total`), and Lichess-bot work. Corpus replay's adjudication fix lands after this build,
   so this run's fed stream matches its comparators.

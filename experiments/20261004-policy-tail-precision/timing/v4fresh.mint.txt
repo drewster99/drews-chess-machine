@@ -1,0 +1,5 @@
+[ARCH] size guidance (--new-model v4_5block_7x7): parameters=8445748 physical_memory=64GB recommended_max=15000000 batch4096_max=20000000 batch512_max=56568542 verdict=within_recommended | Within the recommended size for this Mac (up to 15.0M parameters with 64 GB of memory).
+[NEW-MODEL] minting v4_5block_7x7 (v4, 8445748 params) id=20261005-3-SQ2a init_seed=2150607837842323118 (drawn) init_scheme=dcm-init-1
+[NEW-MODEL] built v4_5block_7x7 in 320.3 ms
+[NEW-MODEL] wrote v4fresh.safetensors — reuse via: --start-model ./v4fresh.safetensors
+./v4fresh.safetensors

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0016">
+<meta name="dcm-date" content="2026-10-05">
+<meta name="dcm-title" content="Do saved model files record how they were trained?">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="provenance, lineage, audit">
+<meta name="dcm-takeaway" content="No: a lineage-era file records its own segment&#x27;s 85 settings, but earlier segments, branches, GUI live edits and several settings are missing or wrong, and git_dirty is always true; a reviewed fix plan is written.">
+<meta name="dcm-related" content="E-0008,E-0017">
+<meta name="dcm-superseded-by" content="">
+<title>E-0016 · Do saved model files record how they were trained?</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0016</span><span>2026-10-05</span><span class="status complete">complete</span></div>
+<h1>Do saved model files record how they were trained?</h1>
+<div class="tags"><span class="tag">provenance</span><span class="tag">lineage</span><span class="tag">audit</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>Can one <code>.safetensors</code> checkpoint alone say exactly how its weights were trained, across every save path, resumes, branches and live edits?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Method</dt><dd>Two independent read-only code audits (one blind to the other) plus header reads of every model file on disk; the fix plan was then reviewed in five passes until the second auditor concurred.</dd><dt>Evidence</dt><dd>Header census of 4,334 model files; the lineage-era files (all schema 2, all <code>git_dirty: true</code>), e.g. <code>20261004-fatconv98-cont-replay-step6093</code>.</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>Main findings</caption><thead><tr><th>gap</th><th>severity</th><th>example</th></tr></thead><tbody><tr><td>a file records only the segment that wrote it</td><td>Critical</td><td>fatconv's 39,093-step file: settings cover only its last 6,093 steps</td></tr><tr><td>a branch or derive drops the parent's training history</td><td>Critical</td><td>a branch keeps only the parent's model ID and hash; arms A/B (E-0017) also lose their start net's init seed</td></tr><tr><td>pre-lineage files (format ≤ 6) record no settings</td><td>High (historical)</td><td>4,311 of the files on disk</td></tr><tr><td>GUI: batch size, buffer and prefill recorded at their edited, not in-force, value; live edits leave no trace</td><td>High</td><td>code reading; no lineage-era GUI file exists yet</td></tr><tr><td><code>git_dirty</code> is true for every build</td><td>High</td><td>the build script bumps a tracked file before its dirty check</td></tr><tr><td>CLI exact resume: snapshot schedule can contradict the adopted one; changed parameters still report EXACT</td><td>Medium</td><td>—</td></tr><tr><td>policy-tail precision, run budgets, opponent identity, Dirichlet noise, init seed across a branch, toolchain: missing or misleading</td><td>Low–Medium</td><td>snapshot shows <code>random_seed 0</code> while the run used <code>--seed</code></td></tr></tbody></table></div>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>Most settings are captured for the segment that wrote a file, so recent single-segment runs are well described; multi-segment lines, branches and GUI runs are not. The plan fixes most gaps with one new lineage record format (schema 3) that older files still decode, records nothing it cannot know (absent values stay "unrecorded"), and is phased so each step builds and commits on its own. Implementation waits on owner decisions O-1 to O-18 (several involve edits to existing tests).</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">No: a lineage-era file records its own segment&#x27;s 85 settings, but earlier segments, branches, GUI live edits and several settings are missing or wrong, and git_dirty is always true; a reviewed fix plan is written.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../../documentation/plans-active/HPARAM_RECORDING_PLAN.md">documentation/plans-active/HPARAM_RECORDING_PLAN.md</a> — the full audit, plan, owner decisions and review reconciliation</li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

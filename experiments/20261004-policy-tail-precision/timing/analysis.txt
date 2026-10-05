@@ -1,0 +1,16 @@
+r7-fp32A wall ms/step 816.1  sampled step ms median 760.4
+r7-mixedA wall ms/step 801.4  sampled step ms median 741.9
+r7-mixedB wall ms/step 832.3  sampled step ms median 747.5
+r7-fp32B wall ms/step 808.1  sampled step ms median 752.4
+se-fp32A wall ms/step 818.5  sampled step ms median 761.4
+se-mixedA wall ms/step 813.2  sampled step ms median 752.1
+se-mixedB wall ms/step 813.5  sampled step ms median 752.8
+se-fp32B wall ms/step 824.1  sampled step ms median 752.4
+v4-fp32A wall ms/step 1175.3  sampled step ms median 1116.8
+v4-mixedA wall ms/step 1171.2  sampled step ms median 1114.0
+v4-mixedB wall ms/step 1180.2  sampled step ms median 1126.0
+v4-fp32B wall ms/step 1173.9  sampled step ms median 1116.5
+nt8y-fp32 wall ms/step 443.1  sampled step ms median 413.1
+r7: fp32 mean 812.1  mixed mean 816.8  change +4.7 ms (+0.6%)
+se: fp32 mean 821.3  mixed mean 813.3  change -8.0 ms (-1.0%)
+v4: fp32 mean 1174.6  mixed mean 1175.7  change +1.1 ms (+0.1%)

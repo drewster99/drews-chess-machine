@@ -6,37 +6,38 @@ conversation.
 
 ## Running
 
-| started | experiment | log | ends (est.) |
-|---|---|---|---|
-| 2026-10-02 06:14 | label smoothing C, policy ε 0.03 (`20261002-label-smoothing-C/`), to 33k | `dcm_log_20261002-061425.txt` | after the no-ReZero runs |
-| 2026-10-02 01:11 | no SE, no ReZero (`20261002-noSE-noReZero/`), to 33k | `dcm_log_20261002-011124.txt` | ~2026-10-02 16:00 |
-| 2026-10-02 03:55 | no SE, no ReZero **seed 2** (same folder), to 33k | `dcm_log_20261002-035513.txt` | later than seed 1 (three runs share the GPU) |
+| started | experiment | ends (est.) |
+|---|---|---|
+| 2026-10-05 01:32 | LR schedule A/B on a fresh basic24 R7-shape net (`20261005-lr-schedule-ab/`, E-0017): A constant LR 0.01, B cycle 1.0 ↔ 0.001 (10k period), both to 36k, same `--seed` | ~2026-10-05 16:35 |
 
-Queue script (a local script, not in the repo; `chain4.sh` since 2026-10-02 17:58):
-whenever fewer than three replay runs are training it launches the next ready item —
-zero-init ReZero once its format-v6 build is frozen, then label smoothing D, then C
-seed 2 — each with `experiments/probe_loop.sh`; the mixed-tail timing runs when every
-replay run has ended.
+Queue script: `chain4.sh` was stopped 2026-10-04 23:31 (see decisions). Both A/B arms were launched at 01:32 by a
+local script (`lrab_chain.sh`, not in the repo), which keeps running only to stop arm B on a non-finite loss.
 
 ## Next (in order)
 
-1. **Mixed-tail timing, 128-channel models** — fp32 tail vs mixed, A-B-B-A, 600
+1. ~~**Mixed-tail timing, 128-channel models** — fp32 tail vs mixed, A-B-B-A, 600
    steps each, on the v5-style SE net and `v4_5block_7x7`. Needs the GPU to
-   itself: runs when every replay run has ended (moved behind C and D; see decisions).
+   itself: runs when every replay run has ended (moved behind C and D; see decisions).~~
+   Done 2026-10-05 01:32, with R7 33k added (owner-requested); E-0011.
 2. ~~**Full test suite** for the layer-health tracking batch (in a gap).~~ Done
    2026-10-02 03:35 alongside the Lichess shutdown fix: 1701 passed, 0 failed, 1 skipped.
 3. ~~**Label smoothing C:** policy ε 0.1 → 0.03 (`plans-active/POLICY_LABEL_SMOOTHING_EXPERIMENTS.md`).
    Launches automatically when leaky-FC1 ends.~~ Launched 2026-10-02 06:14.
-4. **Zero-init ReZero** (`20261002-rezero-zero-init/`) — first in the queue; launches
-   when a slot frees once its build is frozen.
-5. **Label smoothing D:** value ε 0.013 → 0. Launches when a slot frees (queue order).
-6. **Label smoothing C seed 2** — from the scale+bias seed-2 fresh net; launches when
-   a slot frees (queue order).
+4. ~~**Zero-init ReZero** (`20261002-rezero-zero-init/`) — first in the queue; launches
+   when a slot frees once its build is frozen.~~ Done (R9, E-0001).
+5. ~~**Label smoothing D:** value ε 0.013 → 0. Launches when a slot frees (queue order).~~ Done (R12, E-0003).
+6. ~~**Label smoothing C seed 2** — from the scale+bias seed-2 fresh net; launches when
+   a slot frees (queue order).~~ Ran; stopped by the owner at 31,906 (R11, E-0002).
 7. **Label smoothing B:** per-move policy smoothing (code in place; its complement
    target is being fixed first — `plans-completed/REVIEW_2026-10-02_FIXES_PLAN.md` B2).
 8. ~~Second no-ReZero seed if the ReZero result is close.~~ Launched 2026-10-02 03:55.
 
 ## Finished
+
+- 2026-10-04 23:34 → 2026-10-05 01:32 — fp32 vs mixed policy-tail timing (A-B-B-A on R7 33k, the SE scale+bias net, a fresh
+  `v4_5block_7x7`) and nt8y's step time (`20261004-policy-tail-precision/`, E-0011).
+- Earlier runs (R1–R16, numbered in `rchart.py`) have all ended; summaries of those since 2026-10-02 are in `summaries/`
+  (open `summaries/index.html`).
 
 - **Leaky ReLU in SE FC1** (`20261001-se-fc1-leaky/`), 2026-10-01 15:18 → 2026-10-02
   06:13, 33k steps. Final 1492.8 pElo / 2.2381 NLL vs ReLU twin 1463.1 / 2.2614;
@@ -91,3 +92,26 @@ replay run has ended.
   rather than later") takes the first free slot, ahead of D and C seed 2, as soon as
   its format-v6 build is frozen; if no build is ready when a slot frees, the slot goes
   to D instead of waiting.
+- **2026-10-04 23:31 — chain4 stopped; timing benchmark restarted clean.** chain4 (from
+  2026-10-02) was still alive. When fatconv's continuation ended at 22:59 it started its
+  queued timing benchmark (build 2275, `bench3/`), and the owner-requested benchmark started
+  at 23:04 on build 2320, so the two shared the GPU for ~30 minutes and every timing in that
+  window is unusable. Both were stopped (chain4's remaining work was that benchmark, which the
+  new one covers); the contended results are set aside, and the restart refuses to start any
+  run while another DCM job is on the GPU.
+- **2026-10-04 23:56 — value-head vs Stockfish analysis during the benchmark** (owner: "whatever
+  you can do in less than 10 minutes"). CPU only, 3 minutes; it overlapped the timed window of
+  `r7-mixedB`, whose wall time (832.3 ms/step vs 801.4 for `r7-mixedA`) is excluded; its
+  sampled step median is unaffected. Not re-run (owner: no benchmark re-runs for it).
+- **2026-10-05 00:57 — LR A/B queued (owner: "go with A and B after the brief timing run";
+  "if B doesn't blow up badly within the first 10k, run it to 36k").** Fresh basic24 R7-shape
+  net minted with `--init-seed 20261005`; both arms use `--seed 20261005`, so they see the same
+  batches; R7/R8's parameters otherwise, with the sampler set to the nearest uniform equivalent
+  (build 2320 applies batch-composition constraints that 2275 ignored).
+- **2026-10-05 09:04 — arm C added (owner: "identical to B, but with 10 and 0.01").** `lr_cycle_max` was declared
+  with an upper bound of 1.0, so the bound was raised to 10 (owner chose 10 over 100, and launching now over
+  waiting for A/B to finish). Build 2323, frozen as `DCM-2323-58e9f952-lrmax10`. A and B slow to ~2 s/step while
+  three trainers share the GPU.
+- **2026-10-05 09:22 — arm C stopped at step 513** under the owner's rule for B (stop if it blows up badly):
+  the policy diverged as the LR passed ~3 (illegal-move mass 0.997 at step 300, then ~0.945 with gNorm
+  0.02–0.06; 339 of 1,040 channels dead at the abort save). Details in `20261005-lr-schedule-ab/README.md`.

@@ -1,6 +1,7 @@
 # 2026-10-03 — Slim-neck fatty: fatty with a 3×3 stem, 1 × [7×7 + 7×7] @ 224, no SE, no ReZero (R15)
 
 **Status:** ended at its 33,000-step limit (2026-10-04 18:13:07 CDT). Final probe: pElo 1348.0, NLL 2.3630. Launched 2026-10-03 23:18:25 CDT in the slot skinny's stop freed.
+Summary: [E-0005](../summaries/E-0005_2026-10-03_slim-neck-fatty.html).
 
 ## Question
 

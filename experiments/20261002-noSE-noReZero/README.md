@@ -1,6 +1,7 @@
 # 2026-10-02 — No SE, with vs without ReZero
 
-**Status:** running (launched 2026-10-02 01:11 CDT), alongside the leaky-FC1 run.
+**Status:** both seeds ended at their 33,000-step limit (seed 1 launched 2026-10-02 01:11 CDT, alongside the leaky-FC1 run; seed 2 at 03:55). These are R7 and R8: the Avg(R7,R8) comparator in
+E-0001 and E-0004 to E-0008, and the reference for E-0015 and E-0017.
 
 ## Question
 

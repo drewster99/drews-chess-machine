@@ -1,9 +1,13 @@
 # 2026-10-03 — Depth at a fixed budget: fatty (1 block @ 216) vs skinny (22 blocks @ 48)
 
-**Status:** result to date. Skinny (R14) was stopped by the owner at step 1,605; fatty (R13)
-continues to its 33,000-step limit and is reported here through step 5,000. Per-run detail:
-`20261003-fatty-1x7x7-216/` and `20261003-skinny-22x7x7-48/`. The follow-up, slim-neck fatty
-(R15), is in `20261003-fatty224-3x3stem/`.
+**Status:** complete. Skinny (R14) was stopped by the owner at step 1,605; fatty (R13) ran to its
+33,000-step limit (29–33k mean pElo 1356.0 against Avg(R7,R8)'s 1499.5). The sections below were written
+at 5,000 steps; the final comparison is in
+[E-0004](../summaries/E-0004_2026-10-03_depth-at-fixed-budget.html) (the "Summary: R1–R15" section below is a
+2026-10-03 23:30 snapshot; `python3 experiments/rchart.py` prints the current table). The 33k checkpoints' tensor health is in
+`tensor-health/` ([E-0007](../summaries/E-0007_2026-10-04_fatty-tensor-health.html)). Per-run detail:
+`20261003-fatty-1x7x7-216/` and `20261003-skinny-22x7x7-48/`; the follow-up, slim-neck fatty (R15), is in
+`20261003-fatty224-3x3stem/`.
 
 ## Question
 

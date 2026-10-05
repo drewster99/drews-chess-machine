@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0011">
+<meta name="dcm-date" content="2026-10-04">
+<meta name="dcm-title" content="Training speed: fp32 vs mixed policy tail, and nt8y&#x27;s step cost">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="speed, numerics, policy-head, bf16">
+<meta name="dcm-takeaway" content="The mixed (bf16) policy tail changes training step time by only −1.5% to +0.3% on 128-channel heads, within run-to-run noise, so our runs keep passing --policy-tail-precision fp32_from_pre_bn (the app default is still mixed).">
+<meta name="dcm-related" content="E-0010,E-0015">
+<meta name="dcm-superseded-by" content="">
+<title>E-0011 · Training speed: fp32 vs mixed policy tail, and nt8y&#x27;s step cost</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0011</span><span>2026-10-04</span><span class="status complete">complete</span></div>
+<h1>Training speed: fp32 vs mixed policy tail, and nt8y&#x27;s step cost</h1>
+<div class="tags"><span class="tag">speed</span><span class="tag">numerics</span><span class="tag">policy-head</span><span class="tag">bf16</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>The mixed tail was made the app default for speed, but its saving had only been measured on Ejp0, whose policy head has a 512-channel pre-conv, where it saved ~5%. What does it save on our 128-channel heads? The same alone-on-the-GPU method also measured nt8y's step cost on this Mac (for E-0015).</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Nets</dt><dd>R7 at 33k; the SE scale+bias seed-2 net at 7,282 steps; a fresh <code>v4_5block_7x7</code> (<code>20261005-3-SQ2a</code>); nt8y's last checkpoint (ModelID <code>20260708-4-kEiZ</code>, fp32 tail only).</dd><dt>Build / machine</dt><dd>2320 (<code>1ab52554</code>), M5 Max on AC power, one job on the GPU at a time (each run refuses to start otherwise).</dd><dt>Method</dt><dd>600 corpus-replay steps per run, A-B-B-A (fp32, mixed, mixed, fp32); wall time from step 200 to 550, plus the median of the logged per-step times.</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>Wall ms per step</caption><thead><tr><th>net</th><th class="n">fp32 A</th><th class="n">mixed A</th><th class="n">mixed B</th><th class="n">fp32 B</th><th class="n">mixed vs fp32</th></tr></thead><tbody><tr><td>R7 33k</td><td class="n">816.1</td><td class="n">801.4</td><td class="n">excluded</td><td class="n">808.1</td><td class="n">−1.3%</td></tr><tr><td>SE scale+bias</td><td class="n">818.5</td><td class="n">813.2</td><td class="n">813.5</td><td class="n">824.1</td><td class="n">−1.0%</td></tr><tr><td>fresh v4_5block_7x7</td><td class="n">1175.3</td><td class="n">1171.2</td><td class="n">1180.2</td><td class="n">1173.9</td><td class="n">+0.1%</td></tr><tr><td>nt8y</td><td class="n">443.1</td><td class="n"></td><td class="n"></td><td class="n"></td><td class="n"></td></tr></tbody></table></div><p class="note">R7 mixed B (832.3) is excluded: a CPU-only analysis (E-0013) ran during its timed window. Its median step time (747.5 ms) matches mixed A's (741.9). On median step times the changes are −1.5%, −0.6% and +0.3%. An earlier attempt that shared the GPU with a second benchmark is discarded.</p>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>With a 128-channel pre-conv there is little head work for bf16 to save; every difference is about the size of the fp32 A–B spread (R7 1.0%), so all three are within run-to-run noise. It is not worth the extra rounding (E-0010) for training these nets. nt8y runs at 443 ms/step (wall) here, 1.83× faster than R7; its July logs imply ~2.4× (wall ~335 ms/step), a gap not explained (E-0015).</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">The mixed (bf16) policy tail changes training step time by only −1.5% to +0.3% on 128-channel heads, within run-to-run noise, so our runs keep passing --policy-tail-precision fp32_from_pre_bn (the app default is still mixed).</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261004-policy-tail-precision/README.md">experiments/20261004-policy-tail-precision/</a> — <code>timing/</code>: scripts, run list with log names, analysis</li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

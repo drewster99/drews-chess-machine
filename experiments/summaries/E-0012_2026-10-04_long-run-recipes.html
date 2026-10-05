@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0012">
+<meta name="dcm-date" content="2026-10-04">
+<meta name="dcm-title" content="How our long runs were trained: LR, momentum and heads">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="lr-schedule, history, policy-head, value-head">
+<meta name="dcm-takeaway" content="Our two best long runs (v5 peak 1770.5, qeu8 peak 1742.1) trained at a constant LR of 0.01 with no cycle, and used opposite head sizes.">
+<meta name="dcm-related" content="E-0008,E-0014,E-0015,E-0017">
+<meta name="dcm-superseded-by" content="">
+<title>E-0012 · How our long runs were trained: LR, momentum and heads</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0012</span><span>2026-10-04</span><span class="status complete">complete</span></div>
+<h1>How our long runs were trained: LR, momentum and heads</h1>
+<div class="tags"><span class="tag">lr-schedule</span><span class="tag">history</span><span class="tag">policy-head</span><span class="tag">value-head</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>Before changing the LR schedule for a long run: what did the long corpus-replay runs that kept improving actually use?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Runs</dt><dd>v5 (5 × 7×7 @128, 8.45M), qeu8 (2 × 15×15 @64, 3.93M), nt8y (3 × 15×15 @32, 1.53M), coxw (1 × 7×7 @128, 1.86M); all corpus replay of <code>20260624-192615-w3aA5b</code>, June–August 2026 builds (the logs carry no build numbers).</dd><dt>Method</dt><dd>First <code>[REPLAY-HPARAMS]</code> line and every logged step LR of each surviving segment log; head shapes from the dashboard registry.</dd><dt>Gaps</dt><dd>Logs lost for v5's first three segments (0–100k), nt8y's first segment (0–65,883) and coxw's (0–55,550). v5's are recorded in <code>documentation/v5-layernorm-output.md</code> (LR 0.01 flat, 500-step warmup, momentum 0.9 then 0.93, weight decay 1e-4 → 5e-4 → 2.5e-4, clip 30, buffer 1M); nt8y's and coxw's first segments are unrecorded.</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>Settings in every surviving segment log</caption><thead><tr><th></th><th>v5 (100k → 860k)</th><th>qeu8 (0 → 176k)</th><th>qeu8 (176k → 1.57M)</th><th>nt8y / coxw (later segments)</th><th>R7/R8 (33k tests)</th></tr></thead><tbody><tr><td>LR</td><td>0.01 constant</td><td>0.01 constant</td><td>0.01 constant</td><td>0.01 constant</td><td>cycle 0.1 ↔ 0.001</td></tr><tr><td>momentum</td><td>0.93</td><td>0.93</td><td>0.90</td><td>0.93 then 0.90 / 0.90</td><td>0.85 ↔ 0.95</td></tr><tr><td>LR/(1−μ)</td><td>0.143</td><td>0.143</td><td>0.100</td><td>0.143 then 0.100 / 0.100</td><td>0.67 ↔ 0.016</td></tr><tr><td>weight decay</td><td>0.00025</td><td>0.00025</td><td>0.0005</td><td>0.00025 then 0.0005 / 0.0005</td><td>0.0003</td></tr><tr><td>grad clip / buffer</td><td>30 / 1M</td><td>30 / 1M</td><td>30 / 1M</td><td>30 / 1M</td><td>15 / 500k</td></tr></tbody></table></div><div class="tablebox"><table><caption>Heads</caption><thead><tr><th>run</th><th>policy pre-conv K (trunk width)</th><th>value conv → FC1</th><th>best pElo</th></tr></thead><tbody><tr><td>v5</td><td>128 (128)</td><td>16 → 128</td><td>1770.5 @ 639k</td></tr><tr><td>qeu8</td><td>512 (64)</td><td>16 → 64</td><td>1742.1 @ 857k</td></tr><tr><td>nt8y</td><td>512 (32)</td><td>16 → 64</td><td>1629.9 @ 303k</td></tr><tr><td>coxw</td><td>128 (128)</td><td>16 → 128</td><td>1493.4 @ 331k</td></tr><tr><td>R7 / R8</td><td>128 (128)</td><td>16 → 128</td><td>1510.6 avg @ 32k (33k limit)</td></tr></tbody></table></div>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>Every logged step after warmup in every surviving log reads exactly <code>lr=0.01</code>; no segment ran an LR cycle. The cycle used in the 33k tests swings the effective step 0.016–0.67, around the long runs' constant 0.10–0.14. The two best runs used opposite head balances (v5 small policy and big value head; qeu8 big policy and small value head), but their trunks also differ, so the head's own effect is not separable here. They peaked within 30 pElo; v5 later declined (800–860k mean 1557) while qeu8 held (1656).</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">Our two best long runs (v5 peak 1770.5, qeu8 peak 1742.1) trained at a constant LR of 0.01 with no cycle, and used opposite head sizes.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261005-long-run-history/README.md">experiments/20261005-long-run-history/</a> — <code>long_run_history.py</code> and <code>results.md</code></li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

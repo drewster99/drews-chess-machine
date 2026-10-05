@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DCM Experiments</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-page="index">
+<main>
+<header class="exp">
+<h1>DCM experiments</h1>
+<p class="note">One-page summaries, latest ID first. Each links to the experiment's folder for the full data. Conventions: <a href="README.md">README.md</a>.</p>
+</header>
+<div class="searchbar">
+<input id="search" type="search" placeholder="Search titles, takeaways, tags, IDs…" aria-label="Search experiments">
+<span id="count" class="note"></span>
+</div>
+<div id="tags" class="tagfilter" role="group" aria-label="Filter by tag"></div>
+<div class="tablebox">
+<table class="index">
+<thead><tr><th>ID</th><th>Date</th><th>Experiment</th><th>Status</th><th>Tags</th><th>Takeaway</th></tr></thead>
+<tbody id="index-body"></tbody>
+</table>
+</div>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

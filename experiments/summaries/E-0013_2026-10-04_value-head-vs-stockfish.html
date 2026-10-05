@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0013">
+<meta name="dcm-date" content="2026-10-04">
+<meta name="dcm-title" content="Value head vs Stockfish at predicting game results">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="value-head, stockfish, evaluation">
+<meta name="dcm-takeaway" content="Our value head predicts these games&#x27; results as well as a recalibrated Stockfish eval (CE 0.763 vs 0.771), so most of what is left is outcome noise, not a weak head.">
+<meta name="dcm-related" content="E-0009,E-0014">
+<meta name="dcm-superseded-by" content="">
+<title>E-0013 · Value head vs Stockfish at predicting game results</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0013</span><span>2026-10-04</span><span class="status complete">complete</span></div>
+<h1>Value head vs Stockfish at predicting game results</h1>
+<div class="tags"><span class="tag">value-head</span><span class="tag">stockfish</span><span class="tag">evaluation</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>The value head's cross-entropy against game results is only ~7% below always guessing the result rates (0.763 vs 0.821). Is the head weak, or are results simply that unpredictable? Compare with a strong evaluator on the same positions.</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Model</dt><dd>R7 at 33k, <code>20261002-bench_v5s3_noSE_noReZero-replay-step33000</code> (ModelID <code>20261002-2-5tKN</code>).</dd><dt>Positions</dt><dd>The 8,172 corpus positions of E-0009 (shards 20/26/32/38, two random plies per game, seed 20261004); target = the game's result from the side to move.</dd><dt>Stockfish</dt><dd><code>Stockfish dev-20260529-b1053e60</code>, 50,000 nodes per position, 1 thread. Its own W/D/L model expects engine-level play (CE 3.07 used raw), so its eval was mapped to these games' results by a 3-class logistic fit on one feature, tanh(cp/400), 2-fold cross-validated (fitted on one half, scored on the other, both ways).</dd><dt>Measure</dt><dd>Cross-entropy (nats) against the actual result; e<sup>−CE</sup> is the typical (geometric-mean) probability given to it.</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>Cross-entropy by position bucket (lower is better)</caption><thead><tr><th>positions</th><th class="n">n</th><th class="n">guess the bucket's rates</th><th class="n">our value head</th><th class="n">Stockfish, recalibrated</th></tr></thead><tbody><tr><td>all positions</td><td class="n">8,172</td><td class="n">0.821</td><td class="n">0.763</td><td class="n">0.771</td></tr><tr><td>ply 0–10</td><td class="n">1,807</td><td class="n">0.772</td><td class="n">0.776</td><td class="n">0.771</td></tr><tr><td>ply 11–30</td><td class="n">2,700</td><td class="n">0.802</td><td class="n">0.782</td><td class="n">0.783</td></tr><tr><td>ply 31–60</td><td class="n">2,502</td><td class="n">0.807</td><td class="n">0.741</td><td class="n">0.735</td></tr><tr><td>ply 61–100</td><td class="n">979</td><td class="n">0.908</td><td class="n">0.756</td><td class="n">0.800</td></tr><tr><td>ply 101+</td><td class="n">184</td><td class="n">1.025</td><td class="n">0.668</td><td class="n">0.936</td></tr><tr><td>last 10 plies of the game</td><td class="n">1,625</td><td class="n">0.790</td><td class="n">0.647</td><td class="n">0.654</td></tr><tr><td>11–30 plies left</td><td class="n">2,718</td><td class="n">0.778</td><td class="n">0.730</td><td class="n">0.730</td></tr><tr><td>31–60 plies left</td><td class="n">2,608</td><td class="n">0.812</td><td class="n">0.788</td><td class="n">0.798</td></tr><tr><td>61+ plies left</td><td class="n">1,221</td><td class="n">0.935</td><td class="n">0.933</td><td class="n">0.963</td></tr><tr><td>material equal</td><td class="n">3,944</td><td class="n">0.803</td><td class="n">0.798</td><td class="n">0.791</td></tr><tr><td>material 1–2 apart</td><td class="n">2,320</td><td class="n">0.828</td><td class="n">0.770</td><td class="n">0.784</td></tr><tr><td>material 3–5 apart</td><td class="n">1,123</td><td class="n">0.833</td><td class="n">0.720</td><td class="n">0.733</td></tr><tr><td>material 6+ apart</td><td class="n">785</td><td class="n">0.864</td><td class="n">0.626</td><td class="n">0.690</td></tr></tbody></table></div>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>A much stronger evaluator, mapped through a single stage-blind feature, gets no lower CE on these labels, which suggests most of the remaining 0.76 is outcome noise: later blunders, flags and resignations in Lichess human and bot games. The one-feature mapping is miscalibrated late in games (ply 101+: 0.936 vs our 0.668), so a richer mapping could do somewhat better. The head learns where it should: no better than the base rate in the opening, clearly better late in games and with lopsided material (where it beats Stockfish's mapped eval: 0.626 vs 0.690). Even in the last 10 plies both sit near 0.65 (~52% on the actual result). Material is a simple side-to-move piece count, blurred by mid-exchange positions.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">Our value head predicts these games&#x27; results as well as a recalibrated Stockfish eval (CE 0.763 vs 0.771), so most of what is left is outcome noise, not a weak head.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261004-value-head-vs-stockfish/README.md">experiments/20261004-value-head-vs-stockfish/</a> — <code>value_stage.py</code>, <code>value_stage.json</code></li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

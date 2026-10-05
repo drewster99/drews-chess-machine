@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0010">
+<meta name="dcm-date" content="2026-10-04">
+<meta name="dcm-title" content="Policy tail in bf16: accuracy now, and logit growth over long runs">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="numerics, policy-head, bf16">
+<meta name="dcm-takeaway" content="Running the policy tail (BN, ReLU and final projection) in bf16 costs nothing measurable at 33k (≤ 2.1 pElo); bf16 spacing becomes comparable to the legal spread only around |logit| 32–64.">
+<meta name="dcm-related" content="E-0009,E-0011,E-0014">
+<meta name="dcm-superseded-by" content="">
+<title>E-0010 · Policy tail in bf16: accuracy now, and logit growth over long runs</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0010</span><span>2026-10-04</span><span class="status complete">complete</span></div>
+<h1>Policy tail in bf16: accuracy now, and logit growth over long runs</h1>
+<div class="tags"><span class="tag">numerics</span><span class="tag">policy-head</span><span class="tag">bf16</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>Our runs compute the policy tail in fp32 (<code>fp32_from_pre_bn</code>). The app default, <code>mixed_final_projection</code>, runs the tail's BN, ReLU and final 1×1 projection in bf16 and widens only the projection's output. Does that rounding cost anything, and could logits grow large enough over 500k–1M steps for it to matter?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Models</dt><dd>33k checkpoints of fatconv, R7, R8 (as E-0009).</dd><dt>Method</dt><dd><code>--probe-model --probe-set wide</code> on build 2320, once with each <code>--policy-tail-precision</code>; growth from the dashboards' <code>pLogit_mean</code> history and the probes' <code>policy_logit_abs_max</code>.</dd><dt>Note</dt><dd><code>probe_loop.sh</code> passes no tail flag, so its probes use the build's default tail: mixed on builds 2275 and later.</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>Same checkpoint, two policy tails</caption><thead><tr><th>model</th><th class="n">fp32 pElo / NLL</th><th class="n">mixed pElo / NLL</th><th class="n">pElo, mixed − fp32</th></tr></thead><tbody><tr><td>fatconv</td><td class="n">1397.9 / 2.3134</td><td class="n">1395.8 / 2.3135</td><td class="n">−2.1</td></tr><tr><td>R7</td><td class="n">1492.8 / 2.1927</td><td class="n">1493.4 / 2.1930</td><td class="n">+0.6</td></tr><tr><td>R8</td><td class="n">1515.4 / 2.2042</td><td class="n">1515.9 / 2.2041</td><td class="n">+0.5</td></tr></tbody></table></div><div class="tablebox"><table><caption>Logit size over time</caption><thead><tr><th>source</th><th>measure</th><th>values</th></tr></thead><tbody><tr><td>R7 probes</td><td>mean max |logit|</td><td>14.19 (1k) → 18.29 (8k) → 17.20 (20k) → 19.48 (33k)</td></tr><tr><td>fatconv continuation</td><td>mean max |logit|</td><td>19.39 (34k) → 18.85 (38k) → 18.10 (39,093)</td></tr><tr><td>qeu8 (before logit centering)</td><td>mean max |logit| (dashboard <code>pLogit_mean</code>)</td><td>15.8 (33k) → 25 (200k) → 55 (700k) → 93 (1M) → 164 (1.4M)</td></tr><tr><td>v5 (before logit centering)</td><td>mean max |logit| (dashboard <code>pLogit_mean</code>)</td><td>16.1 (33k) → 39.5 (400k) → 206 (700k)</td></tr></tbody></table></div>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>At |logit| ≈ 17 bf16's step is 0.125 against a legal spread of ~0.58, and the probes show no effect. The old runs' growth came from a drifting shared offset: the 2026-09-28 survey found legal logits at −120 … −266 on v5's later segments and qeu8's late line (Ejp0), against +9 … +19 on healthy lines. The current loss removes that drift (logits are centered per position before the cross-entropy, so that direction gets zero gradient). What remains is the legal-vs-illegal gap, which grows only logarithmically as illegal mass shrinks. Whether bf16 would matter at 32–64 is an inference from its spacing, not measured. Watch <code>policy_logit_abs_max</code> in long runs; past ~30 re-run this comparison.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">Running the policy tail (BN, ReLU and final projection) in bf16 costs nothing measurable at 33k (≤ 2.1 pElo); bf16 spacing becomes comparable to the legal spread only around |logit| 32–64.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261004-policy-tail-precision/README.md">experiments/20261004-policy-tail-precision/</a> — <code>probe-accuracy.txt</code></li><li><a href="../../documentation/plans-active/HEAD_NUMERICS_PLAN.md">documentation/plans-active/HEAD_NUMERICS_PLAN.md</a> — the centering fix and the tail modes</li><li><a href="../../documentation/research/bf16-head-offset/README.md">documentation/research/bf16-head-offset/</a> — the 2026-09-28 shared-offset survey</li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0002">
+<meta name="dcm-date" content="2026-10-02">
+<meta name="dcm-title" content="Policy label smoothing ε 0.1 → 0.03">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="label-smoothing, policy-head, loss">
+<meta name="dcm-takeaway" content="Lower policy smoothing (ε 0.03) finished 20 pElo ahead on one seed — inside seed noise, so not established.">
+<meta name="dcm-related" content="E-0003">
+<meta name="dcm-superseded-by" content="">
+<title>E-0002 · Policy label smoothing ε 0.1 → 0.03</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0002</span><span>2026-10-02</span><span class="status complete">complete</span></div>
+<h1>Policy label smoothing ε 0.1 → 0.03</h1>
+<div class="tags"><span class="tag">label-smoothing</span><span class="tag">policy-head</span><span class="tag">loss</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>With the shared logit offset no longer able to drift, is ε = 0.1 more policy-target smoothing than needed?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Runs</dt><dd>R10 seed 1 (run <code>20261002-5-WkQG</code>), from the same fresh net as baseline R1 (<code>20260929-12-JZOe</code>; R1's trained ID <code>20260929-22-bWdy</code>); R11 seed 2 (run <code>20261003-22-oLbF</code>), from baseline R2's fresh net (<code>20260930-1-H1Oq</code>), stopped by the owner at 31,906.</dd><dt>Only variable</dt><dd><code>policy_label_smoothing_epsilon</code> 0.1 → 0.03.</dd><dt>Architecture</dt><dd>SE scale+bias net: 3 × [7×7 + 7×7] @128, ReZero, LayerNorm out, basic30, bf16.</dd><dt>Builds</dt><dd>Trained: R10/R11 on 2275 (<code>de0f22b</code>); baselines R1 on 2255, R2 on 2259 (no training-math change per the SE report). Probed: R10/R11 with 2275; the baselines by an earlier build that read ~2.6 pElo lower on one checked checkpoint (<code>se_sb</code> 10k).</dd><dt>Training</dt><dd>Corpus replay of <code>20260624-192615-w3aA5b</code> (the first 20.9M games of the Lichess May 2026 standard rated dump), batch 4,096, LR cycle 0.1 ↔ 0.001 (20,000-step period after a 1,000-step warmup, each peak slightly lower than the last), 33,000-step limit, <code>--policy-tail-precision fp32_from_pre_bn</code>.</dd><dt>Measure</dt><dd>pElo and NLL on the <code>--probe-set wide</code> Lichess puzzle probes, every 1,000 steps; both measure the policy only. Seeds of one recipe differ by up to ~25 pElo (R7 and R8: 22.5 over 29–33k).</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>Mean pElo over a window of probes</caption><thead><tr><th>pair</th><th class="n">C (ε 0.03)</th><th class="n">baseline (ε 0.1)</th><th class="n">C − baseline</th></tr></thead><tbody><tr><td>seed 1, steps 5–7k</td><td class="n">1269.0</td><td class="n">1258.8</td><td class="n">+10.2</td></tr><tr><td>seed 1, steps 29–33k</td><td class="n">1473.8</td><td class="n">1453.5</td><td class="n">+20.2</td></tr><tr><td>seed 2, steps 5–7k</td><td class="n">1249.6</td><td class="n">1234.7</td><td class="n">+15.0</td></tr></tbody></table></div><p class="note">Baseline seed 2 (R2) stopped at 7,282, so seed 2 has no comparator later.</p><figure class="chart"><script type="application/json">{"x": {"label": "training step"}, "y": {"label": "pElo"}, "series": [{"name": "C \u03b5 0.03 (R10)", "points": [[1000, 1006.9744057973987], [2000, 1126.8942089660536], [3000, 1173.8129149512724], [4000, 1243.28899066762], [5000, 1255.6960878237278], [6000, 1270.6759425098512], [7000, 1280.4836808532864], [8000, 1288.7390010026702], [9000, 1266.0283715995351], [10000, 1295.9596727337857], [11000, 1277.3870452890737], [12000, 1303.1779033167782], [13000, 1311.4244498113976], [14000, 1291.3180990722722], [15000, 1333.5730024071004], [16000, 1285.6436542760612], [17000, 1286.1595782266972], [18000, 1284.0958029211497], [19000, 1245.3574995317958], [20000, 1294.9283000598607], [21000, 1345.4121870010558], [22000, 1346.9560604985077], [23000, 1381.9300335437247], [24000, 1405.055852921008], [25000, 1438.9529193857616], [26000, 1431.7643734995117], [27000, 1452.8143676470117], [28000, 1461.5406735181555], [29000, 1476.938111521638], [30000, 1461.5406735181555], [31000, 1458.974204415827], [32000, 1491.3073870554604], [33000, 1480.017356005248]]}, {"name": "baseline \u03b5 0.1 (R1)", "points": [[1000, 879.16], [2000, 1073.88], [3000, 1160.8], [4000, 1184.73], [5000, 1240.7], [6000, 1267.58], [7000, 1268.09], [8000, 1263.45], [9000, 1269.13], [10000, 1275.32], [11000, 1278.42], [12000, 1294.93], [13000, 1285.13], [14000, 1276.87], [15000, 1283.58], [16000, 1286.16], [17000, 1252.6], [18000, 1268.09], [19000, 1222.07], [20000, 1287.19], [21000, 1308.85], [22000, 1314.52], [23000, 1314.0], [24000, 1347.47], [25000, 1439.47], [26000, 1439.98], [27000, 1441.52], [28000, 1446.65], [29000, 1451.27], [30000, 1446.65], [31000, 1438.44], [32000, 1469.75], [33000, 1461.54]]}]}</script><figcaption>pElo by step, seed 1.</figcaption></figure>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>Seed 1 was ahead at 28 of 33 probes and ended +20.2 over 29–33k; seed 2 was ahead at 5–7k. Both gaps are under the ~25-pElo seed spread (an estimate from the no-SE R7/R8 pair, imported to this net), and the ~2.6-pElo probe-build offset, measured once on seed 1's baseline and assumed for seed 2, accounts for part of them.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">Lower policy smoothing (ε 0.03) finished 20 pElo ahead on one seed — inside seed noise, so not established.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261002-label-smoothing-C/README.md">experiments/20261002-label-smoothing-C/</a></li><li><a href="../../documentation/plans-active/POLICY_LABEL_SMOOTHING_EXPERIMENTS.md">documentation/plans-active/POLICY_LABEL_SMOOTHING_EXPERIMENTS.md</a></li><li><a href="../20260929-se-style-ab/REPORT-final.md">experiments/20260929-se-style-ab/REPORT-final.md</a> — the baselines' runs and builds</li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

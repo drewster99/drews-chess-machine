@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0014">
+<meta name="dcm-date" content="2026-10-05">
+<meta name="dcm-title" content="Head health in long runs: nt8y vs qeu8 vs v5">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="value-head, policy-head, numerics, history">
+<meta name="dcm-takeaway" content="nt8y&#x27;s ~1600 plateau is not explained by its heads&#x27; numerics: its policy logits stayed bf16-safe, while qeu8 and v5 kept climbing with value heads worse than the base rate and later with policy offsets that broke bf16.">
+<meta name="dcm-related" content="E-0010,E-0012,E-0013,E-0015">
+<meta name="dcm-superseded-by" content="">
+<title>E-0014 · Head health in long runs: nt8y vs qeu8 vs v5</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0014</span><span>2026-10-05</span><span class="status complete">complete</span></div>
+<h1>Head health in long runs: nt8y vs qeu8 vs v5</h1>
+<div class="tags"><span class="tag">value-head</span><span class="tag">policy-head</span><span class="tag">numerics</span><span class="tag">history</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>nt8y flattened around 1600 by 250–300k steps while qeu8 and v5 kept climbing. Were nt8y's heads failing in that window, and how did the climbing runs' heads look?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Runs</dt><dd>nt8y, qeu8, v5 (see E-0012), all trained before logit centering and fp32 head tails.</dd><dt>Sources</dt><dd>Dashboard CSV rows averaged per step window: <code>vLoss</code> (training-batch value cross-entropy, slightly label-smoothed; ln 3 = 1.099 is a uniform guess, ~0.82 the base rate) and <code>pLogit_mean</code> / <code>pLogit_peak</code> (the probes' mean and peak max |policy logit| per checkpoint, averaged over the window). Head offsets measured directly by the 2026-09-28 bf16 survey on each line's checkpoints (fp64 vs bf16 forward pass).</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>Value head: training vLoss by window</caption><thead><tr><th>steps</th><th class="n">nt8y</th><th class="n">qeu8</th><th class="n">v5</th></tr></thead><tbody><tr><td>100–150k</td><td class="n">0.816</td><td class="n">0.811</td><td class="n">0.850</td></tr><tr><td>200–250k</td><td class="n">0.818 *</td><td class="n">0.979</td><td class="n">0.852</td></tr><tr><td>250–312k</td><td class="n">0.833</td><td class="n">1.104</td><td class="n">0.911</td></tr><tr><td>400–450k</td><td class="n"></td><td class="n">1.057</td><td class="n">1.096</td></tr><tr><td>600–650k</td><td class="n"></td><td class="n">1.074</td><td class="n">1.107</td></tr></tbody></table></div><div class="tablebox"><table><caption>Policy head: probes' max |logit| by window, mean (mean of peaks)</caption><thead><tr><th>steps</th><th class="n">nt8y</th><th class="n">qeu8</th><th class="n">v5</th></tr></thead><tbody><tr><td>100–150k</td><td class="n">24.3 (47)</td><td class="n">19.6 (40)</td><td class="n">14.4 (22)</td></tr><tr><td>200–250k</td><td class="n">36.0 (75) *</td><td class="n">27.3 (50)</td><td class="n">18.7 (36)</td></tr><tr><td>250–312k</td><td class="n">38.1 (76)</td><td class="n">29.4 (50)</td><td class="n">25.8 (50)</td></tr><tr><td>600–650k</td><td class="n"></td><td class="n">47.8 (74)</td><td class="n">136.4 (153)</td></tr><tr><td>800–860k</td><td class="n"></td><td class="n">69.9 (95)</td><td class="n">324.3 (357)</td></tr></tbody></table></div><p class="note">* nt8y 200–250k rests on 15 vLoss rows and 8 probe rows of the window's 50.</p><div class="tablebox"><table><caption>Shared offsets measured by the 2026-09-28 survey</caption><thead><tr><th>checkpoint</th><th>line, cumulative step</th><th>value shared logit (verdict)</th><th>policy legal-logit mean (verdict)</th></tr></thead><tbody><tr><td><code>20260707-1-cslu</code></td><td>nt8y, 291,662</td><td>−105 (degraded; CE unchanged)</td><td>+1.4 (fine)</td></tr><tr><td><code>20260708-4-kEiZ</code></td><td>nt8y, 312,748 (end)</td><td>−236 (BAD)</td><td>+1.1 (fine)</td></tr><tr><td><code>20260703-1-Dg5v</code></td><td>v5, 368,826</td><td>+504 (BAD)</td><td>−2.2 (fine)</td></tr><tr><td><code>20260714-1-h7vI</code> … <code>0pTW</code></td><td>v5, ~705k to the end</td><td>+513 … +515 (BAD)</td><td>−178 … −266 (BAD)</td></tr><tr><td><code>20260727-1-Ejp0</code></td><td>qeu8, 1,572,915 (end)</td><td>+513 (BAD)</td><td>−138 (BAD)</td></tr></tbody></table></div>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>Value: qeu8's training value CE rose past the base rate from ~200k and v5's from ~250k (near-uniform from ~350k), yet both kept improving (qeu8 1600 → 1656, v5 1617 → 1720); the survey found large shared value offsets on both. nt8y's value head looked healthy in training, though the survey found its offset growing (−105, then −236 at its end). Policy: nt8y's large max |logit| was not a shared offset (legal-logit mean +1.4, bf16 KL 7e-6), so bf16 did not cost it resolution. The climbing runs did develop the offset: v5's legal logits reached −178 … −266 from ~705k, where bf16 ties up to 63% of top-2 choices, and v5 fell from ~1720 to 1557 by 800–860k. Something other than head numerics limited nt8y; its size (1.53M) is the obvious candidate but is not tested here.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">nt8y&#x27;s ~1600 plateau is not explained by its heads&#x27; numerics: its policy logits stayed bf16-safe, while qeu8 and v5 kept climbing with value heads worse than the base rate and later with policy offsets that broke bf16.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261005-long-run-history/README.md">experiments/20261005-long-run-history/</a> — section 3 of <code>results.md</code></li><li><a href="../../documentation/research/bf16-head-offset/README.md">documentation/research/bf16-head-offset/</a> — the survey (<code>results/final_table.txt</code>)</li><li><a href="../../documentation/plans-active/HEAD_NUMERICS_PLAN.md">documentation/plans-active/HEAD_NUMERICS_PLAN.md</a></li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

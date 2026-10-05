@@ -1,6 +1,7 @@
 # 2026-10-04 — Fatconv: 15×15 stem and 1 × [15×15 + 15×15] @ 98, no SE, no ReZero (R16)
 
 **Status:** the build-2275 run ended at its 33,000-step limit (2026-10-04 21:07:55 CDT; final probe pElo 1395.8, NLL 2.3135; 29k–33k average 1387.1 vs Avg(R7,R8) 1499.5). Its continuation on build 2320 was stopped by the owner at 39,093 (2026-10-04 22:59:11 CDT, SIGINT; final probe pElo 1352.6, NLL 2.3743) while the learning rate was rising toward its 41,000 peak (see "Continuation past 33,000"). Launched 2026-10-04 01:58:04 CDT, beside fatty and slim-neck fatty.
+Summaries: [E-0006](../summaries/E-0006_2026-10-04_fatconv-15x15.html) (to 33k), [E-0008](../summaries/E-0008_2026-10-04_fatconv-continuation-lr-cycle.html) (continuation and the LR cycle).
 
 ## Question
 

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0009">
+<meta name="dcm-date" content="2026-10-04">
+<meta name="dcm-title" content="ReLU inputs and pre-softmax logits: fatconv vs R7/R8">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="numerics, policy-head, value-head, diagnostics">
+<meta name="dcm-takeaway" content="No channel is saturated and only a few value FC1 units are near-dead; legal-move logits sit near +17.3 with a ~0.58 spread, all logits within −18.3…+28.1, value logits within ±4.21.">
+<meta name="dcm-related" content="E-0007,E-0010,E-0013">
+<meta name="dcm-superseded-by" content="">
+<title>E-0009 · ReLU inputs and pre-softmax logits: fatconv vs R7/R8</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0009</span><span>2026-10-04</span><span class="status complete">complete</span></div>
+<h1>ReLU inputs and pre-softmax logits: fatconv vs R7/R8</h1>
+<div class="tags"><span class="tag">numerics</span><span class="tag">policy-head</span><span class="tag">value-head</span><span class="tag">diagnostics</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>What is the mean of every value entering every ReLU (anything above 1, or never negative)? What are the min / max / mean of the policy and value logits just before their softmaxes?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Models</dt><dd>33k checkpoints: fatconv <code>20261004-fatconv98-b2275-replay-step33000</code>, R7 <code>20261002-bench_v5s3_noSE_noReZero-replay-step33000</code>, R8 <code>…-seed2-replay-step33000</code>.</dd><dt>Positions</dt><dd>8,172 positions from 4,086 games of the training corpus <code>20260624-192615-w3aA5b</code>, shards 20/26/32/38 (never reached by these 33k runs), two random plies per game, seed 20261004. Repeated on the app audit's 4,097 bot-game positions: broadly the same, except that the illegal-beats-legal row reverses (fatconv yes by 1.11, R7 and R8 never).</dd><dt>Method</dt><dd>fp32 numpy forward pass mirroring <code>ChessNetwork.swift</code>; checked against the app's <code>--analyze-numerics</code> to every printed digit.</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>Pre-softmax logits and ReLU inputs (corpus positions)</caption><thead><tr><th></th><th class="n">fatconv</th><th class="n">R7</th><th class="n">R8</th></tr></thead><tbody><tr><td>legal-move logit, per-position mean (median)</td><td class="n">17.22</td><td class="n">17.39</td><td class="n">17.36</td></tr><tr><td>legal spread (std), median</td><td class="n">0.581</td><td class="n">0.576</td><td class="n">0.589</td></tr><tr><td>all 4,864 logits: min / max</td><td class="n">−16.89 / 27.59</td><td class="n">−14.58 / 27.45</td><td class="n">−18.29 / 28.06</td></tr><tr><td>mean of all logits / of illegal logits</td><td class="n">0.725 / 0.621</td><td class="n">0.765 / 0.660</td><td class="n">0.753 / 0.648</td></tr><tr><td>softmax mass on illegal moves (all-move softmax)</td><td class="n">0.51%</td><td class="n">0.30%</td><td class="n">0.31%</td></tr><tr><td>positions where an illegal move beats the best legal one</td><td class="n">none (closest 0.01)</td><td class="n">yes (by 1.01)</td><td class="n">yes (by 0.14)</td></tr><tr><td>value logits: min / max</td><td class="n">−3.32 / 2.51</td><td class="n">−2.80 / 3.21</td><td class="n">−2.97 / 4.21</td></tr><tr><td>highest BN-fed ReLU channel mean (all at tower end)</td><td class="n">0.88</td><td class="n">0.74</td><td class="n">0.71</td></tr><tr><td>value FC1 units with mean &gt; 1 / never positive</td><td class="n">3 / 4</td><td class="n">2 / 11</td><td class="n">3 / 12</td></tr><tr><td>channels that never go negative</td><td class="n">0</td><td class="n">0</td><td class="n">0</td></tr></tbody></table></div>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>No ReLU input is always non-negative, so none acts as a pass-through. The never-positive value FC1 units receive almost no gradient: their optimizer velocity is 0.007–0.21× the layer median, all inside the app audit's low-velocity class (R8 unit 0 is ≈ 0), so they are dormant, close to dead. The policy separates legal from illegal moves by about +16.6–16.7, and the choice among legal moves lives in a ~0.58 spread on top. Near 17, bf16's step is 0.125, which matters only if the final projection runs in bf16 (E-0010). Illegal-beats-legal cases are masked out at play time.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">No channel is saturated and only a few value FC1 units are near-dead; legal-move logits sit near +17.3 with a ~0.58 spread, all logits within −18.3…+28.1, value logits within ±4.21.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261004-head-logits-relu-inputs/README.md">experiments/20261004-head-logits-relu-inputs/</a> — scripts, both JSON result sets, the app audits, and the full report (<code>report.html</code>, with architecture tables and head diagrams)</li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

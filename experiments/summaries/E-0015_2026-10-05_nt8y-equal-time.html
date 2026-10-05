@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0015">
+<meta name="dcm-date" content="2026-10-05">
+<meta name="dcm-title" content="nt8y vs R7/R8 at matched wall time">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="architecture, speed, history">
+<meta name="dcm-takeaway" content="Measured on this Mac, nt8y is only 1.83× faster per step than R7, so at equal wall time it ends about 90 pElo behind R7/R8 at the 33k mark.">
+<meta name="dcm-related" content="E-0011,E-0012,E-0014">
+<meta name="dcm-superseded-by" content="">
+<title>E-0015 · nt8y vs R7/R8 at matched wall time</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0015</span><span>2026-10-05</span><span class="status complete">complete</span></div>
+<h1>nt8y vs R7/R8 at matched wall time</h1>
+<div class="tags"><span class="tag">architecture</span><span class="tag">speed</span><span class="tag">history</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>nt8y (1.53M parameters) was only 1278 at 33k against R7/R8's 1504.6, but its steps are cheaper. At equal wall time, which is ahead?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Runs</dt><dd>nt8y (dashboard CSV, July 2026 build) and Avg(R7,R8) probes.</dd><dt>Speed</dt><dd>Measured alone on this M5 Max, build 2320, fp32 tail, wall time over steps 200–550 of 600 (E-0011): R7 812.1 ms/step, nt8y 443.1 ms/step, ratio 1.833. nt8y's July runs logged ~254 ms per step of GPU time (<code>ms=</code>) and ~335 ms/step of wall time, i.e. about 2.4× R7's wall time here; the July setup (possibly a VM, all-bf16 head) differs and the gap is not explained. With the app's default mixed tail nt8y's 512-channel policy head would likely run somewhat faster (a ratio nearer ~1.9).</dd><dt>Method</dt><dd>nt8y step = R7/R8 step × 1.833. Probe means in windows: ±1–2k for R7/R8, ±2k for nt8y.</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>pElo at matched wall time</caption><thead><tr><th>R7/R8 step</th><th class="n">R7/R8</th><th class="n">nt8y step</th><th class="n">nt8y</th><th class="n">nt8y − R7/R8</th></tr></thead><tbody><tr><td>2,000</td><td class="n">1041.9</td><td class="n">3,666</td><td class="n">946.8</td><td class="n">−95.1</td></tr><tr><td>5,000</td><td class="n">1260.9</td><td class="n">9,164</td><td class="n">1087.7</td><td class="n">−173.2</td></tr><tr><td>10,000</td><td class="n">1321.0</td><td class="n">18,328</td><td class="n">1218.3</td><td class="n">−102.7</td></tr><tr><td>15,000</td><td class="n">1322.4</td><td class="n">27,492</td><td class="n">1281.6</td><td class="n">−40.7</td></tr><tr><td>20,000</td><td class="n">1329.1</td><td class="n">36,655</td><td class="n">1340.4</td><td class="n">+11.3</td></tr><tr><td>25,000</td><td class="n">1452.7</td><td class="n">45,819</td><td class="n">1377.8</td><td class="n">−74.9</td></tr><tr><td>30,000</td><td class="n">1496.6</td><td class="n">54,983</td><td class="n">1410.5</td><td class="n">−86.1</td></tr><tr><td>33,000</td><td class="n">1500.4</td><td class="n">60,481</td><td class="n">1411.0</td><td class="n">−89.4</td></tr></tbody></table></div>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>nt8y trails at every point except around R7/R8's 20k (where R7/R8 sat at the high-LR part of their cycle). An earlier estimate divided R7's wall time by nt8y's July GPU time (≥3.2×) and concluded the two were level per hour; the measurement here overturns that. This compares two recipes, not just two sizes: nt8y also had SE and ReZero, a July build without logit centering, and (in its later segments; segment 0, which holds every nt8y step used here, is unrecorded) constant LR 0.01 and other weight decay, clip and buffer settings. The 33k R7/R8 window is one-sided (31–33k).</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">Measured on this Mac, nt8y is only 1.83× faster per step than R7, so at equal wall time it ends about 90 pElo behind R7/R8 at the 33k mark.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261005-long-run-history/README.md">experiments/20261005-long-run-history/</a> — section 4 of <code>results.md</code></li><li><a href="../20261004-policy-tail-precision/README.md">experiments/20261004-policy-tail-precision/</a> — the step-time measurements</li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

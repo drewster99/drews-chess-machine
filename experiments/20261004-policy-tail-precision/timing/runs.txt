@@ -1,0 +1,15 @@
+r7-fp32A rc=0 secs=490 tail=fp32_from_pre_bn power='AC Power' log=/Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20261004-233435.txt
+r7-mixedA rc=0 secs=484 tail=mixed_final_projection power='AC Power' log=/Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20261004-234245.txt
+r7-mixedB rc=0 secs=500 tail=mixed_final_projection power='AC Power' log=/Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20261004-235049.txt
+r7-fp32B rc=0 secs=489 tail=fp32_from_pre_bn power='AC Power' log=/Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20261004-235909.txt
+se-fp32A rc=0 secs=495 tail=fp32_from_pre_bn power='AC Power' log=/Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20261005-000718.txt
+se-mixedA rc=0 secs=490 tail=mixed_final_projection power='AC Power' log=/Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20261005-001533.txt
+se-mixedB rc=0 secs=491 tail=mixed_final_projection power='AC Power' log=/Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20261005-002343.txt
+se-fp32B rc=0 secs=497 tail=fp32_from_pre_bn power='AC Power' log=/Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20261005-003154.txt
+v4-fp32A rc=0 secs=711 tail=fp32_from_pre_bn power='AC Power' log=/Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20261005-004011.txt
+v4-mixedA rc=0 secs=706 tail=mixed_final_projection power='AC Power' log=/Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20261005-005202.txt
+v4-mixedB rc=0 secs=710 tail=mixed_final_projection power='AC Power' log=/Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20261005-010348.txt
+v4-fp32B rc=0 secs=708 tail=fp32_from_pre_bn power='AC Power' log=/Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20261005-011538.txt
+BENCH_DONE
+nt8y-fp32 rc=0 secs=272 tail=fp32_from_pre_bn power='AC Power' log=/Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20261005-012743.txt
+NT8Y_DONE

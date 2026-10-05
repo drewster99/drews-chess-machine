@@ -1,0 +1,43 @@
+[NUMERICS] 1 checkpoint(s), policy tail fp32_from_pre_bn, no corpus shard
+error: Incompatible element type for ANE: expected fp16, f8E4M3, si8, ui8, si16, or ui16
+error: Incompatible element type for ANE: expected fp16, f8E4M3, si8, ui8, si16, or ui16
+error: Incompatible element type for ANE: expected fp16, f8E4M3, si8, ui8, si16, or ui16
+error: Incompatible element type for ANE: expected fp16, f8E4M3, si8, ui8, si16, or ui16
+[NUMERICS] /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261002-bench_v5s3_noSE_noReZero-replay-step33000.safetensors
+model file:20261002-bench_v5s3_noSE_noReZero-replay-step33000.safetensors id 20261002-2-5tKN step 33000, compute bfloat16, policy tail fp32_from_pre_bn
+overall: degraded
+value fc2 shared offset: mean-row ratio 0.5663 = 0.8009x init, bias mean 0.5968 (init 0.5973) -> fine
+policy final shared offset: mean-row ratio 0.2394 = 2.073x init, bias mean -3.348e-05 -> fine
+batch-norm stats: worst |mean|/std 8.933 at block1_bn1 channel 87 -> fine
+masters vs working: not compared (a saved model file holds one set of weights)
+layer health: scope=all_tensors reluSites=9/10 ch=1040 dead=0 off=0 alwaysOn=0 worst=none maxBetaOverGamma=+0.43@tower_final_bn[88] minBetaOverGamma=-0.77@blocks.1.bn1[92] rvMaxOverMedian=8.1@blocks.1.bn1[19] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=0/128 maxAbs=4.531@blocks.2.bn1.running_mean
+  batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+    site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+    stem.bn         -             128    n/a    n/a    n/a      0      0     -0.13 [92]         +0.04 [29]            7.3 [101]
+    blocks.0.bn1    relu          128      0      0      0      0      0     -0.22 [101]        +0.16 [125]           2.0 [19]
+    blocks.0.bn2    relu          128      0      0      0      0      0     -0.61 [33]         +0.03 [109]           2.8 [13]
+    blocks.1.bn1    relu          128      0      0      0      0      0     -0.77 [92]         +0.04 [46]            8.1 [19]
+    blocks.1.bn2    relu          128      0      0      0      0      0     -0.42 [84]         +0.01 [126]           3.5 [32]
+    blocks.2.bn1    relu          128      0      0      0      0      0     -0.76 [92]         +0.05 [37]            4.8 [19]
+    blocks.2.bn2    relu          128      0      0      0      0      0     -0.56 [38]         +0.16 [52]            2.0 [110]
+    tower_final_bn  relu          128      0      0      0      0      0     -0.13 [125]        +0.43 [88]            5.1 [40]
+    policy.pre_bn   relu          128      0      0      0      0      0     -0.14 [79]         +0.22 [121]           2.6 [3]
+    value.bn        relu           16      0      0      0      0      0     -0.47 [9]          -0.29 [4]             2.7 [7]
+  FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+    value.fc1.weight  relu  units 128  zero 0  low 41  median unit norm 0.006485
+    (no SE blocks)
+  ReZero: none
+  non-finite: 0 values in 0 of 102 tensors (10338302 values examined)
+  largest |value|: blocks.2.bn1.running_mean 4.531, blocks.1.bn1.running_mean 4.094, blocks.0.bn2.running_var 3.691, blocks.1.bn2.running_var 3.444, policy.pre_bn.running_mean 3.237
+positions: 4097 (start 1, corpus 0, Lichess 4096 from 63 games; 4096 with a game result); corpus: no corpus shard was given
+value fp32: ties 0, CE 0.9607 (delta 0), mean |dv| 0, argmax changed 0, shared logit median 0.643, start W/D/L 0.494/0.043/0.463 -> fine
+value bf16: ties 0, CE 0.9605 (delta -1.890e-04), mean |dv| 0.003189, argmax changed 0.003661, shared logit median 0.6415, start W/D/L 0.494/0.043/0.463 -> fine
+value fp16: ties 0, CE 0.9607 (delta 2.664e-05), mean |dv| 6.547e-04, argmax changed 7.322e-04, shared logit median 0.6433, start W/D/L 0.494/0.043/0.463 -> fine
+policy fp32: KL 0, top-2 ties 0, top-1 changed 0, legal level median 17.36, legal spread median 0.5653, all-move mean median 0.7411 -> fine
+policy bf16: KL 2.770e-04, top-2 ties 0, top-1 changed 0.0166, legal level median 17.36, legal spread median 0.5662, all-move mean median 0.7408 -> fine
+policy fp16: KL 4.714e-06, top-2 ties 0, top-1 changed 0.001953, legal level median 17.36, legal spread median 0.5654, all-move mean median 0.7404 -> fine
+activation taps: 23
+findings: 0 BAD, 1 degraded
+  degraded weights: block2_res_ln_beta [fp16] — headroom 3.656e+06, underflow 0.01562, flush-to-zero 0, rounding/spread 2.507e-04
+
+{"event":"numerics","json":".\/numerics_audit_20261004-214005_20261002-2-5tKN.json","layer_health_always_on_channels":0,"layer_health_dead_channels":0,"layer_health_mostly_off_channels":0,"layer_health_non_finite_values":0,"layer_health_running_variance_max_over_median":8.1384059932477655,"layer_health_running_variance_worst_site":"blocks.1.bn1","layer_health_se_zero_velocity_units":0,"layer_health_value_fc1_zero_velocity_units":0,"model":"\/Users\/andrew\/Library\/Application Support\/DrewsChessMachine\/Models\/20261002-bench_v5s3_noSE_noReZero-replay-step33000.safetensors","model_id":"20261002-2-5tKN","overall":"degraded","policy_kl_bf16":0.00027696512883593064,"policy_kl_fp16":4.7138725936023411e-06,"policy_offset_ratio_to_init":2.0729662465213936,"policy_tail_precision":"fp32_from_pre_bn","policy_top2_ties_bf16":0,"policy_top2_ties_fp16":0,"positions":4097,"training_step":33000,"value_ce_delta_bf16":-0.00018900846804481564,"value_ce_delta_fp16":2.663816607839653e-05,"value_offset_ratio_to_init":0.80089289404378283,"value_ties_bf16":0,"value_ties_fp16":0}

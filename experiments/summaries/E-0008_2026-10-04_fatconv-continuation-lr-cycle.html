@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0008">
+<meta name="dcm-date" content="2026-10-04">
+<meta name="dcm-title" content="Fatconv past 33k, and what the LR cycle does to pElo">
+<meta name="dcm-status" content="stopped">
+<meta name="dcm-tags" content="lr-schedule, architecture">
+<meta name="dcm-takeaway" content="pElo tracks the LR cycle: it stalls or dips while the LR is high and jumps as it falls, so compare runs trough to trough, never mid-cycle.">
+<meta name="dcm-related" content="E-0006,E-0017">
+<meta name="dcm-superseded-by" content="">
+<title>E-0008 · Fatconv past 33k, and what the LR cycle does to pElo</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0008</span><span>2026-10-04</span><span class="status stopped">stopped</span></div>
+<h1>Fatconv past 33k, and what the LR cycle does to pElo</h1>
+<div class="tags"><span class="tag">lr-schedule</span><span class="tag">architecture</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>The owner asked for fatconv not to stop at 33k. It was resumed on a newer build with <code>--resume-exact</code>. As it continued, pElo fell: has fatconv hit its limit, or is this the LR schedule?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Run</dt><dd>fatconv continuation, run <code>20261005-1-1vVl</code> (parent <code>20261004-15-Pm6B</code>), <code>--resume-exact</code> from the 33k checkpoint on build 2320 (weights, optimizer state, clock, LR cycle and corpus position continued; six gaps accepted with <code>--accept-inexact</code>: rng_sampler, dropout_state, feed_carry, params, lineage, policy_tail); stopped by the owner at 39,093 (SIGINT, clean abort save).</dd><dt>Schedule</dt><dd>LR cycle 0.1 ↔ 0.001, 20,000-step period, cosine in log-LR; momentum follows inversely 0.85 ↔ 0.95; 1,000-step warmup; slow decay envelope (×0.871 per cycle).</dd><dt>Caveat</dt><dd>Build 2320 applies the batch-composition sampler that 2275 ignored; the parameters were set to the nearest uniform equivalent. Probes on 2275 and 2320 agree to every printed digit on the 33k checkpoint.</dd><dt>Measure</dt><dd>pElo and NLL on the <code>--probe-set wide</code> Lichess puzzle probes, every 1,000 steps; both measure the policy only. Seeds of one recipe differ by up to ~25 pElo (R7 and R8: 22.5 over 29–33k).</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>Applied LR and momentum, and pElo, every 2,000 steps (all probes in the chart and the artifacts)</caption><thead><tr><th>step</th><th class="n">applied LR</th><th class="n">momentum μ</th><th class="n">LR/(1−μ)</th><th class="n">fatconv pElo</th><th class="n">Avg(R7,R8) pElo</th></tr></thead><tbody><tr><td>1,000</td><td class="n">0.100</td><td class="n">0.850</td><td class="n">0.667</td><td class="n">992.5</td><td class="n">925.5</td></tr><tr><td>3,000</td><td class="n">0.0635</td><td class="n">0.860</td><td class="n">0.452</td><td class="n">1158.7</td><td class="n">1148.3</td></tr><tr><td>5,000</td><td class="n">0.0198</td><td class="n">0.885</td><td class="n">0.172</td><td class="n">1217.9</td><td class="n">1268.9</td></tr><tr><td>7,000</td><td class="n">0.00471</td><td class="n">0.916</td><td class="n">0.0558</td><td class="n">1237.6</td><td class="n">1307.0</td></tr><tr><td>9,000</td><td class="n">0.00147</td><td class="n">0.941</td><td class="n">0.0247</td><td class="n">1251.6</td><td class="n">1318.9</td></tr><tr><td>11,000</td><td class="n">0.000933</td><td class="n">0.950</td><td class="n">0.0187</td><td class="n">1262.4</td><td class="n">1328.4</td></tr><tr><td>13,000</td><td class="n">0.00143</td><td class="n">0.941</td><td class="n">0.0240</td><td class="n">1254.1</td><td class="n">1328.7</td></tr><tr><td>15,000</td><td class="n">0.00446</td><td class="n">0.916</td><td class="n">0.0529</td><td class="n">1250.5</td><td class="n">1333.6</td></tr><tr><td>17,000</td><td class="n">0.0182</td><td class="n">0.885</td><td class="n">0.158</td><td class="n">1238.6</td><td class="n">1301.4</td></tr><tr><td>19,000</td><td class="n">0.0569</td><td class="n">0.860</td><td class="n">0.408</td><td class="n">1220.0</td><td class="n">1335.1</td></tr><tr><td>21,000</td><td class="n">0.0871</td><td class="n">0.851</td><td class="n">0.585</td><td class="n">1224.1</td><td class="n">1329.4</td></tr><tr><td>23,000</td><td class="n">0.0553</td><td class="n">0.861</td><td class="n">0.396</td><td class="n">1318.6</td><td class="n">1418.4</td></tr><tr><td>25,000</td><td class="n">0.0173</td><td class="n">0.885</td><td class="n">0.151</td><td class="n">1359.3</td><td class="n">1474.9</td></tr><tr><td>27,000</td><td class="n">0.00410</td><td class="n">0.916</td><td class="n">0.0488</td><td class="n">1383.5</td><td class="n">1483.6</td></tr><tr><td>29,000</td><td class="n">0.00128</td><td class="n">0.941</td><td class="n">0.0215</td><td class="n">1382.4</td><td class="n">1493.9</td></tr><tr><td>31,000</td><td class="n">0.000813</td><td class="n">0.950</td><td class="n">0.0163</td><td class="n">1384.5</td><td class="n">1485.9</td></tr><tr><td>33,000</td><td class="n">0.00124</td><td class="n">0.941</td><td class="n">0.0209</td><td class="n">1395.8</td><td class="n">1504.6</td></tr><tr><td>35,000</td><td class="n">0.00388</td><td class="n">0.916</td><td class="n">0.0462</td><td class="n">1372.2</td><td class="n"></td></tr><tr><td>37,000</td><td class="n">0.0159</td><td class="n">0.886</td><td class="n">0.139</td><td class="n">1370.1</td><td class="n"></td></tr><tr><td>39,000</td><td class="n">0.0495</td><td class="n">0.861</td><td class="n">0.357</td><td class="n">1330.0</td><td class="n"></td></tr><tr><td>39,093 (stop)</td><td class="n"></td><td class="n"></td><td class="n"></td><td class="n">1352.6</td><td class="n"></td></tr></tbody></table></div><figure class="chart"><script type="application/json">{"x": {"label": "training step"}, "y": {"label": "pElo"}, "series": [{"name": "fatconv", "points": [[1000, 992.4841821293851], [2000, 1093.3562156561184], [3000, 1158.7214165850655], [4000, 1159.2422061327925], [5000, 1217.9266543517224], [6000, 1209.1167267166902], [7000, 1237.5991815446423], [8000, 1233.9772924835456], [9000, 1251.561430783598], [10000, 1247.9427590154805], [11000, 1262.4127655899715], [12000, 1246.908705073381], [13000, 1254.1457109343928], [14000, 1260.8629939096581], [15000, 1250.527606044237], [16000, 1258.2797348326699], [17000, 1238.6338481688726], [18000, 1263.445870913255], [19000, 1219.998734905067], [20000, 1230.8721170251647], [21000, 1224.1419615331533], [22000, 1301.11579486466], [23000, 1318.6377846016717], [24000, 1316.5770537579542], [25000, 1359.3041567317619], [26000, 1356.7320501297145], [27000, 1383.472176003041], [28000, 1384.500235663931], [29000, 1382.4440881305272], [30000, 1386.0422727561295], [31000, 1384.500235663931], [32000, 1386.556271260693], [33000, 1395.8070948450218], [34000, 1393.751540540543], [35000, 1372.1616074869276], [36000, 1387.070262882803], [37000, 1370.10474990368], [38000, 1374.218342126635], [39000, 1329.9687455200024], [39093, 1352.616232672006]]}, {"name": "Avg(R7,R8)", "points": [[1000, 925.4951330812747], [2000, 1051.9231188399915], [3000, 1148.2718289892418], [4000, 1229.0565745244442], [5000, 1268.8678905667027], [6000, 1284.605775962141], [7000, 1307.0376761445307], [8000, 1318.376075352057], [9000, 1318.8918258675797], [10000, 1309.1016590850008], [11000, 1328.4214267428292], [12000, 1329.9628635793945], [13000, 1328.6790208302623], [14000, 1312.4515269333888], [15000, 1333.5721618429382], [16000, 1335.631253380343], [17000, 1301.3646182696712], [18000, 1325.847810361736], [19000, 1335.0756796304145], [20000, 1276.0920861189777], [21000, 1329.437788589482], [22000, 1379.0887957792686], [23000, 1418.4118437364205], [24000, 1430.736641993003], [25000, 1474.8805718807866], [26000, 1455.8942419569796], [27000, 1483.6095338825917], [28000, 1490.2810477986875], [29000, 1493.8727260780454], [30000, 1502.3401074121555], [31000, 1485.918467670161], [32000, 1510.5504670432297], [33000, 1504.6492363743891]], "dash": true}], "vlines": [{"x": 11000, "label": "trough"}, {"x": 21000, "label": "peak"}, {"x": 31000, "label": "trough"}]}</script><figcaption>pElo by step, with the LR cycle's troughs (11k, 31k) and peak (21k) marked.</figcaption></figure>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>Most of each cycle's gain comes while the LR falls through roughly 0.08 → 0.004 (21k–27k: fatconv +159, R7/R8 +154). Below about 0.0025 pElo is flat for ~6,000 steps per cycle; at high LR it stalls or dips. At equal LR the falling side is higher than the rising side (18k 1263.4 vs 24k 1316.6 at LR ≈ 0.034), so learning does happen near the peak but is hidden by the noise. Fatconv's drop after 33k (1395.8 → 1330.0 at 39k, then 1352.6 at the 39,093 stop) goes the same way as the first cycle's rise but about twice as far (13k → 19k: −34.1 for fatconv, +6.4 for R7/R8), so it does not show a limit, though the sampler change at the resume is a possible contributor; the continuation never reached the next trough (~51k). Trough-to-trough gain from 9–13k to 29–33k was +134.5 for fatconv against +176.5 for R7/R8.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">pElo tracks the LR cycle: it stalls or dips while the LR is high and jumps as it falls, so compare runs trough to trough, never mid-cycle.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261004-fatconv-1x15x15-98/README.md">experiments/20261004-fatconv-1x15x15-98/</a> — “Continuation past 33,000”, <code>probes-cont.jsonl</code>, <code>table.py</code></li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

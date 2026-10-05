@@ -1,0 +1,2 @@
+r7-fp32A rc=0 secs=857 tail=fp32_from_pre_bn power='AC Power' log=/Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20261004-230425.txt
+r7-mixedA rc=0 secs=852 tail=mixed_final_projection power='AC Power' log=/Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20261004-231841.txt

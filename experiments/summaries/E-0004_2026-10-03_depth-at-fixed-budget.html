@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0004">
+<meta name="dcm-date" content="2026-10-03">
+<meta name="dcm-title" content="Depth at a fixed budget: 1 wide block vs 3 vs 22 narrow">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="architecture, depth, speed">
+<meta name="dcm-takeaway" content="At R7/R8&#x27;s parameter budget, three blocks beat one wide block by about 140 pElo; 22 narrow blocks learned slowest and ran ~4× slower per step than the wide block.">
+<meta name="dcm-related" content="E-0005,E-0006,E-0007">
+<meta name="dcm-superseded-by" content="">
+<title>E-0004 · Depth at a fixed budget: 1 wide block vs 3 vs 22 narrow</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0004</span><span>2026-10-03</span><span class="status complete">complete</span></div>
+<h1>Depth at a fixed budget: 1 wide block vs 3 vs 22 narrow</h1>
+<div class="tags"><span class="tag">architecture</span><span class="tag">depth</span><span class="tag">speed</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>R7/R8 (3 blocks @128) was the best shape so far. Spend the same parameters and compute on one wide block or many narrow ones: which uses the budget best?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Runs</dt><dd>fatty R13, 1 × [7×7+7×7] @216 (run <code>20261004-10-YpxP</code>); skinny R14, 22 × [7×7+7×7] @48 (run <code>20261004-11-e7dM</code>, stopped by the owner at 1,605); baseline Avg(R7,R8), 3 × @128.</dd><dt>Budget</dt><dd>trainable parameters: fatty 5,064,751, R7/R8 5,167,983, skinny 5,193,103; MACs per position: fatty 315.7M, R7/R8 322.3M, skinny 323.6M.</dd><dt>Build</dt><dd>2275 (<code>de0f22b</code>), with a <code>parameters.json</code> byte-identical to R7/R8's.</dd><dt>Training</dt><dd>Corpus replay of <code>20260624-192615-w3aA5b</code> (the first 20.9M games of the Lichess May 2026 standard rated dump), batch 4,096, LR cycle 0.1 ↔ 0.001 (20,000-step period after a 1,000-step warmup, each peak slightly lower than the last), 33,000-step limit, <code>--policy-tail-precision fp32_from_pre_bn</code>.</dd><dt>Measure</dt><dd>pElo and NLL on the <code>--probe-set wide</code> Lichess puzzle probes, every 1,000 steps; both measure the policy only. Seeds of one recipe differ by up to ~25 pElo (R7 and R8: 22.5 over 29–33k).</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>pElo</caption><thead><tr><th>shape</th><th class="n">step 1,000</th><th class="n">steps 29–33k mean</th><th class="n">step time vs fatty (GPU shared by 2 trainers)</th></tr></thead><tbody><tr><td>1 block @216 (fatty)</td><td class="n">994.1</td><td class="n">1356.0</td><td class="n">1×</td></tr><tr><td>3 blocks @128 (R7/R8)</td><td class="n">925.5</td><td class="n">1499.5</td><td class="n">not measured</td></tr><tr><td>22 blocks @48 (skinny)</td><td class="n">668.9</td><td class="n">stopped at 1,605 (867.8)</td><td class="n">4.1×</td></tr></tbody></table></div><figure class="chart"><script type="application/json">{"x": {"label": "training step"}, "y": {"label": "pElo"}, "series": [{"name": "fatty 1 \u00d7 @216", "points": [[1000, 994.0973724861205], [2000, 1121.1413921812232], [3000, 1126.3714086512014], [4000, 1174.3329041806792], [5000, 1177.4522926300479], [6000, 1218.962733982617], [7000, 1229.836912858073], [8000, 1232.9423063795675], [9000, 1237.0818219278558], [10000, 1244.840397577695], [11000, 1245.8745847313116], [12000, 1252.5951909375613], [13000, 1251.561430783598], [14000, 1237.5991815446423], [15000, 1250.0106693307744], [16000, 1280.9997388466882], [17000, 1226.2131155148159], [18000, 1225.1775763955989], [19000, 1230.3545241138468], [20000, 1286.1595782266972], [21000, 1260.3463728461056], [22000, 1277.3870452890737], [23000, 1259.8297364534214], [24000, 1304.7243591741972], [25000, 1307.3015494649135], [26000, 1341.8094910580762], [27000, 1346.4414451772668], [28000, 1342.324189993954], [29000, 1367.5335022092322], [30000, 1358.2753395454502], [31000, 1353.6452392586334], [32000, 1349.5290006569367], [33000, 1351.0726566885232]]}, {"name": "Avg(R7,R8) 3 \u00d7 @128", "points": [[1000, 925.4951330812747], [2000, 1051.9231188399915], [3000, 1148.2718289892418], [4000, 1229.0565745244442], [5000, 1268.8678905667027], [6000, 1284.605775962141], [7000, 1307.0376761445307], [8000, 1318.376075352057], [9000, 1318.8918258675797], [10000, 1309.1016590850008], [11000, 1328.4214267428292], [12000, 1329.9628635793945], [13000, 1328.6790208302623], [14000, 1312.4515269333888], [15000, 1333.5721618429382], [16000, 1335.631253380343], [17000, 1301.3646182696712], [18000, 1325.847810361736], [19000, 1335.0756796304145], [20000, 1276.0920861189777], [21000, 1329.437788589482], [22000, 1379.0887957792686], [23000, 1418.4118437364205], [24000, 1430.736641993003], [25000, 1474.8805718807866], [26000, 1455.8942419569796], [27000, 1483.6095338825917], [28000, 1490.2810477986875], [29000, 1493.8727260780454], [30000, 1502.3401074121555], [31000, 1485.918467670161], [32000, 1510.5504670432297], [33000, 1504.6492363743891]]}, {"name": "skinny 22 \u00d7 @48", "points": [[1000, 668.9], [1605, 867.8]]}]}</script><figcaption>pElo by step. Fatty leads to 2k; the 3-block baseline is ahead from 3k on except at 20k.</figcaption></figure>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>Three blocks beat one wide block at this budget: over 29–33k the 3-block net is 143.5 pElo ahead (153.5 at the 33k probe). The single block is also wider (216 vs 128), so this is not depth alone, and it is one seed per shape. The 22-block net was slowest to learn per step, has ~2.3× R7/R8's activation elements per position, and ran 4.1× slower per step than fatty (3.1× while three trainers shared the GPU), consistent with conv efficiency falling with channel width (not measured directly).</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">At R7/R8&#x27;s parameter budget, three blocks beat one wide block by about 140 pElo; 22 narrow blocks learned slowest and ran ~4× slower per step than the wide block.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261003-fatty-vs-skinny/README.md">experiments/20261003-fatty-vs-skinny/</a></li><li><a href="../20261003-fatty-1x7x7-216/README.md">experiments/20261003-fatty-1x7x7-216/</a></li><li><a href="../20261003-skinny-22x7x7-48/README.md">experiments/20261003-skinny-22x7x7-48/</a></li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

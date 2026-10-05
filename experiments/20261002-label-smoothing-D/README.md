@@ -1,7 +1,8 @@
 # 2026-10-02 — Label smoothing arm D: value label smoothing ε 0.013 → 0 (`value_label_smoothing_epsilon`)
 
-**Status:** running since 2026-10-03 00:28 CDT, sharing the GPU with label smoothing C and
-zero-init ReZero.
+**Status:** ended at its 33,000-step limit (launched 2026-10-03 00:28 CDT, sharing the GPU with
+label smoothing C and zero-init ReZero).
+Summary: [E-0003](../summaries/E-0003_2026-10-03_value-label-smoothing-0.html).
 
 ## Question
 
@@ -18,7 +19,8 @@ Is value-target smoothing still needed now that the shared value offset can't dr
 - **Baseline (not re-run):** ReLU scale+bias seed 1 (`se_sb`, 33,014 steps).
 - **Everything else identical:** corpus `20260624-192615-w3aA5b`, 12 epochs, step
   limit 33,000, `--policy-tail-precision fp32_from_pre_bn` (the baseline's
-  numerics), build 2275 (= `de0f22b`'s app code; stamped `f6fdd88`).
+  numerics). Build 2275 (= `de0f22b`'s app code; stamped `f6fdd88`); the baseline ran on
+  build 2255 (`built_by_build`, per `../20260929-se-style-ab/REPORT-final.md`).
 - **Measurements:** pElo / NLL every 1,000 steps (`--probe-set wide`); for C also
   NLL / top-1 by legal-move count bucket and policy entropy, `pLogitAbsMax`; for D
   value loss and W/D/L calibration.
@@ -36,9 +38,10 @@ Arm D is charted with arm C and the baseline in
 
 - **Launched** 2026-10-03 00:28:16 CDT (session log `dcm_log_20261003-002816.txt`), by the
   experiment queue in the slot freed by no-ReZero seed 2.
-- **Build** 2275 (`de0f22b` app code), frozen as `FrozenBuilds/DCM-2275-de0f22b.app` — the
-  baseline's build, so this run's fed stream and sampling match the baseline's (it predates the
-  corpus-adjudication fix and the replay sampling-constraint change).
+- **Build** 2275 (`de0f22b` app code), frozen as `FrozenBuilds/DCM-2275-de0f22b.app`. The
+  baseline ran on 2255 (corrected 2026-10-05; this line first called 2275 the baseline's build). Both
+  builds predate the corpus-adjudication fix and the replay sampling-constraint change, so this run's
+  fed stream and sampling match the baseline's.
 - **Run model ID** `20261003-21-yEjN` (parent `20260929-12-JZOe`, the shared starting net).
 - **Command**
 

@@ -1,0 +1,6 @@
+20261004-fatconv98-b2275-replay-step3300 fp32_from_pre_bn pElo 1397.9 nll 2.3134 argmax 1759 absmax 19.368
+20261004-fatconv98-b2275-replay-step3300 mixed_final_projection pElo 1395.8 nll 2.3135 argmax 1755 absmax 19.368
+20261002-bench_v5s3_noSE_noReZero-replay fp32_from_pre_bn pElo 1492.8 nll 2.1927 argmax 1944 absmax 19.484
+20261002-bench_v5s3_noSE_noReZero-replay mixed_final_projection pElo 1493.4 nll 2.193 argmax 1945 absmax 19.484
+20261002-bench_v5s3_noSE_noReZero-seed2- fp32_from_pre_bn pElo 1515.4 nll 2.2042 argmax 1988 absmax 19.498
+20261002-bench_v5s3_noSE_noReZero-seed2- mixed_final_projection pElo 1515.9 nll 2.2041 argmax 1989 absmax 19.498

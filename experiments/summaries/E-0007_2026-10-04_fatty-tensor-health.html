@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0007">
+<meta name="dcm-date" content="2026-10-04">
+<meta name="dcm-title" content="Tensor health of the single-block nets at 33k">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="numerics, diagnostics, input-encoding">
+<meta name="dcm-takeaway" content="Fatty and slim-neck fatty have no dead, stuck-on or oversized channels at 33k; the findings are input planes whose stem weights never train and small fp16/bf16 rounding flags on two biases.">
+<meta name="dcm-related" content="E-0004,E-0005,E-0009">
+<meta name="dcm-superseded-by" content="">
+<title>E-0007 · Tensor health of the single-block nets at 33k</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0007</span><span>2026-10-04</span><span class="status complete">complete</span></div>
+<h1>Tensor health of the single-block nets at 33k</h1>
+<div class="tags"><span class="tag">numerics</span><span class="tag">diagnostics</span><span class="tag">input-encoding</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>Do the final 33k checkpoints of the two single-block nets show dead or stuck-on channels, values large enough to be clipped or to overflow, or anything odd just before the softmaxes?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Models</dt><dd>fatty <code>20261003-fatty216-b2275-replay-step33000</code> (run <code>20261004-10-YpxP</code>); slim-neck fatty <code>20261003-fatty224s3-b2275-replay-step33000</code> (run <code>20261004-13-K4Iu</code>).</dd><dt>Method</dt><dd>The app's <code>--analyze-numerics</code> audit (build 2320; 4,097 positions: the start position plus 63 games played by DCM's own Lichess bot) plus a per-tensor weight and optimizer-velocity analysis (<code>fatty_tensors.py</code>).</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>Health checks</caption><thead><tr><th>check</th><th class="n">fatty</th><th class="n">slim-neck fatty</th></tr></thead><tbody><tr><td>channels estimated active &lt;5% or &gt;95% at every BN → ReLU (Φ(β/|γ|) from BN γ, β)</td><td class="n">0</td><td class="n">0</td></tr><tr><td>estimated active fraction range across those channels</td><td class="n">0.29–0.69</td><td class="n">0.30–0.63</td></tr><tr><td>app audit: dead / always-on channels (β/|γ| beyond ∓3)</td><td class="n">0 / 0</td><td class="n">0 / 0</td></tr><tr><td>smallest filter / unit weight norm ÷ its layer median</td><td class="n">≥ 0.63</td><td class="n">≥ 0.58</td></tr><tr><td>non-finite values (62 tensors)</td><td class="n">0</td><td class="n">0</td></tr><tr><td>largest hidden activation (residual sum before the block's layer norm)</td><td class="n">22.03</td><td class="n">20.88</td></tr><tr><td>app audit overall verdict</td><td class="n">degraded: fp16 underflow in block-0 LayerNorm β and value FC1 bias</td><td class="n">degraded: fp16 underflow in block-0 LayerNorm β; bf16 rounding of value FC2 bias</td></tr><tr><td>max |policy logit| / max |value logit|</td><td class="n">27.60 / 3.68</td><td class="n">27.61 / 3.87</td></tr><tr><td>stem input planes with exactly zero optimizer velocity</td><td class="n">7 (19, 20, 21, 22, 24, 26, 28)</td><td class="n">same 7</td></tr></tbody></table></div><p>Six of the zero-velocity planes (20, 21, 22, 24, 26, 28) are repetition planes that can never be 1 under chess rules; plane 19 (position seen twice before) fires only rarely in corpus replay and had not fired recently enough to leave velocity. Together they hold about 74k of fatty's parameters (1.5%).</p>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>Nothing is close to bf16 or fp16 overflow, and plain ReLU has no upper clip, so large values are not a risk here. The audit's "degraded" verdicts are rounding of small bias values in fp16 (not used in training) and one bf16 bias. The six impossible planes are always zero in training; plane 19 fires rarely in corpus replay, and at play time it can fire where an outside referee decides draws (Lichess bot, <code>--uci</code>), feeding barely trained weights. <code>basic24</code> removes the six impossible planes, not plane 19.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">Fatty and slim-neck fatty have no dead, stuck-on or oversized channels at 33k; the findings are input planes whose stem weights never train and small fp16/bf16 rounding flags on two biases.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261003-fatty-vs-skinny/tensor-health/README.md">experiments/20261003-fatty-vs-skinny/tensor-health/</a> — audit JSONs, stdout and <code>fatty_tensors.py</code></li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

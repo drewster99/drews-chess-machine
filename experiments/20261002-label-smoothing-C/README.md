@@ -4,6 +4,7 @@
 at step 31,906 (see "Seed 2"). Seed 1 was launched 2026-10-02 06:14 by the experiment
 chain when leaky-FC1 ended (see `experiments/QUEUE.md`), sharing the GPU with the two
 no-ReZero runs; arm D launched when no-ReZero seed 1 ended.
+Summary: [E-0002](../summaries/E-0002_2026-10-02_policy-label-smoothing-003.html).
 
 ## Question
 
@@ -20,7 +21,8 @@ Is ε = 0.1 more policy smoothing than needed now that the shared offset can't d
 - **Baseline (not re-run):** ReLU scale+bias seed 1 (`se_sb`, 33,014 steps).
 - **Everything else identical:** corpus `20260624-192615-w3aA5b`, 12 epochs, step
   limit 33,000, `--policy-tail-precision fp32_from_pre_bn` (the baseline's
-  numerics), build 2275 (= `de0f22b`'s app code; stamped `f6fdd88`).
+  numerics). Build 2275 (= `de0f22b`'s app code; stamped `f6fdd88`); the baselines ran on
+  build 2255 (seed 1) and 2259 (seed 2) (`built_by_build`, per `../20260929-se-style-ab/REPORT-final.md`).
 - **Measurements:** pElo / NLL every 1,000 steps (`--probe-set wide`); for C also
   NLL / top-1 by legal-move count bucket and policy entropy, `pLogitAbsMax`; for D
   value loss and W/D/L calibration.

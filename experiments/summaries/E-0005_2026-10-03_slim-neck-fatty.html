@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0005">
+<meta name="dcm-date" content="2026-10-03">
+<meta name="dcm-title" content="Slim-neck fatty: 3×3 stem, wider block">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="architecture, stem">
+<meta name="dcm-takeaway" content="By 33k, moving fatty&#x27;s stem budget into width (3×3 stem, 224 channels) made no measurable difference.">
+<meta name="dcm-related" content="E-0004,E-0006">
+<meta name="dcm-superseded-by" content="">
+<title>E-0005 · Slim-neck fatty: 3×3 stem, wider block</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0005</span><span>2026-10-03</span><span class="status complete">complete</span></div>
+<h1>Slim-neck fatty: 3×3 stem, wider block</h1>
+<div class="tags"><span class="tag">architecture</span><span class="tag">stem</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>Fatty spends 6.3% of its budget on a 7×7 stem. Shrink the stem to 3×3 and widen the block 216 → 224: is a wider block with a local stem better?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Runs</dt><dd>R15 slim-neck fatty, 1 × [7×7+7×7] @224 with a 3×3 stem (run <code>20261004-13-K4Iu</code>, fresh <code>20261004-12-QsqZ</code>); comparator fatty (E-0004).</dd><dt>Budget</dt><dd>5,153,903 trainable parameters, 321.4M MACs per position.</dd><dt>Build</dt><dd>2275.</dd><dt>Training</dt><dd>Corpus replay of <code>20260624-192615-w3aA5b</code> (the first 20.9M games of the Lichess May 2026 standard rated dump), batch 4,096, LR cycle 0.1 ↔ 0.001 (20,000-step period after a 1,000-step warmup, each peak slightly lower than the last), 33,000-step limit, <code>--policy-tail-precision fp32_from_pre_bn</code>.</dd><dt>Measure</dt><dd>pElo and NLL on the <code>--probe-set wide</code> Lichess puzzle probes, every 1,000 steps; both measure the policy only. Seeds of one recipe differ by up to ~25 pElo (R7 and R8: 22.5 over 29–33k).</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>pElo and NLL</caption><thead><tr><th>run</th><th class="n">pElo, 29–33k mean</th><th class="n">pElo at 33k</th><th class="n">NLL at 33k</th></tr></thead><tbody><tr><td>slim-neck fatty</td><td class="n">1342.6</td><td class="n">1348.0</td><td class="n">2.3630</td></tr><tr><td>fatty</td><td class="n">1356.0</td><td class="n">1351.1</td><td class="n">2.3647</td></tr></tbody></table></div><figure class="chart"><script type="application/json">{"x": {"label": "training step"}, "y": {"label": "pElo"}, "series": [{"name": "slim-neck fatty", "points": [[1000, 956.2247254234476], [2000, 1082.3129345182956], [3000, 1120.0949427108408], [4000, 1202.3756592696368], [5000, 1218.962733982617], [6000, 1234.4947585909854], [7000, 1248.4597612143234], [8000, 1235.012206810523], [9000, 1243.28899066762], [10000, 1247.9427590154805], [11000, 1248.9767469661251], [12000, 1239.668445011499], [13000, 1242.2546346639815], [14000, 1240.7029725065863], [15000, 1250.527606044237], [16000, 1277.3870452890737], [17000, 1213.7815385175204], [18000, 1251.0445265118992], [19000, 1231.9072480456211], [20000, 1230.8721170251647], [21000, 1210.1534963095678], [22000, 1247.9427590154805], [23000, 1215.3361075797484], [24000, 1312.455060476209], [25000, 1314.5161464430762], [26000, 1333.0581386614404], [27000, 1334.0878562060302], [28000, 1354.6742108706485], [29000, 1345.4121870010558], [30000, 1348.4998517612748], [31000, 1332.5432649372196], [32000, 1338.72109801747], [33000, 1347.9852637600206]]}, {"name": "fatty", "points": [[1000, 994.0973724861205], [2000, 1121.1413921812232], [3000, 1126.3714086512014], [4000, 1174.3329041806792], [5000, 1177.4522926300479], [6000, 1218.962733982617], [7000, 1229.836912858073], [8000, 1232.9423063795675], [9000, 1237.0818219278558], [10000, 1244.840397577695], [11000, 1245.8745847313116], [12000, 1252.5951909375613], [13000, 1251.561430783598], [14000, 1237.5991815446423], [15000, 1250.0106693307744], [16000, 1280.9997388466882], [17000, 1226.2131155148159], [18000, 1225.1775763955989], [19000, 1230.3545241138468], [20000, 1286.1595782266972], [21000, 1260.3463728461056], [22000, 1277.3870452890737], [23000, 1259.8297364534214], [24000, 1304.7243591741972], [25000, 1307.3015494649135], [26000, 1341.8094910580762], [27000, 1346.4414451772668], [28000, 1342.324189993954], [29000, 1367.5335022092322], [30000, 1358.2753395454502], [31000, 1353.6452392586334], [32000, 1349.5290006569367], [33000, 1351.0726566885232]]}]}</script><figcaption>pElo by step.</figcaption></figure>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>Over 29–33k the two single-block nets are 13.4 pElo apart (3.1 at the 33k probe), inside seed noise; their final NLLs are within 0.002, though slim-neck's NLL is slightly worse over 29–32k. Earlier the order changed: slim-neck led by ~25 at 5–7k and trailed by ~41 at 21–23k. Changing the stem does not close the gap to three blocks.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">By 33k, moving fatty&#x27;s stem budget into width (3×3 stem, 224 channels) made no measurable difference.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261003-fatty224-3x3stem/README.md">experiments/20261003-fatty224-3x3stem/</a></li><li><a href="../20261003-fatty-vs-skinny/README.md">experiments/20261003-fatty-vs-skinny/</a> — the R1–R15 summary table</li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

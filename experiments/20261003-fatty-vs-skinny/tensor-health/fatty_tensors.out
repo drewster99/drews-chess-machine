@@ -1,0 +1,175 @@
+
+=== fatty  model_id=20261004-10-YpxP  step=33000
+tensor                           shape                   mean      std       min       max    |max|  ~0 frac
+blocks.0.bn1.bias                [216]                -0.1063   0.1046   -0.7657    0.1466   0.7657   0.0000
+blocks.0.bn1.running_mean        [216]                -0.0114   0.0270   -0.0874    0.0499   0.0874   0.0000
+blocks.0.bn1.running_var         [216]                 0.7983   0.1115    0.4618    1.0797   1.0797   0.0000
+blocks.0.bn1.weight              [216]                 0.9781   0.1517    0.6821    2.2292   2.2292   0.0000
+blocks.0.bn2.bias                [216]                -0.0611   0.1369   -1.0786    0.0929   1.0786   0.0000
+blocks.0.bn2.running_mean        [216]                -0.5171   0.7188   -2.9158    1.5857   2.9158   0.0000
+blocks.0.bn2.running_var         [216]                 1.1433   0.3038    0.6308    3.4323   3.4323   0.0000
+blocks.0.bn2.weight              [216]                 1.0718   0.1607    0.9465    2.0330   2.0330   0.0000
+blocks.0.conv1.weight            [216, 216, 7, 7]     -0.0002   0.0140   -0.3966    0.3615   0.3966   0.0001
+blocks.0.conv2.weight            [216, 216, 7, 7]     -0.0000   0.0151   -0.3335    0.2810   0.3335   0.0001
+blocks.0.res_ln.bias             [216]                 0.0010   0.0033   -0.0111    0.0138   0.0138   0.0000
+blocks.0.res_ln.weight           [216]                 1.0025   0.0038    0.9922    1.0167   1.0167   0.0000
+opt.blocks.0.bn1.bias.velocity   [216]                 0.0001   0.0022   -0.0052    0.0083   0.0083   0.0046
+opt.blocks.0.bn1.weight.velocity [216]                 0.0000   0.0022   -0.0128    0.0091   0.0128   0.0000
+opt.blocks.0.bn2.bias.velocity   [216]                -0.0002   0.0017   -0.0052    0.0069   0.0069   0.0000
+opt.blocks.0.bn2.weight.velocity [216]                -0.0001   0.0022   -0.0074    0.0118   0.0118   0.0000
+opt.blocks.0.conv1.weight.velocity [2286144]            -0.0000   0.0007   -0.0098    0.0099   0.0099   0.0014
+opt.blocks.0.conv2.weight.velocity [2286144]             0.0000   0.0007   -0.0171    0.0142   0.0171   0.0016
+opt.blocks.0.res_ln.bias.velocity [216]                 0.0000   0.0002   -0.0013    0.0010   0.0013   0.0046
+opt.blocks.0.res_ln.weight.velocity [216]                -0.0000   0.0002   -0.0009    0.0006   0.0009   0.0046
+opt.policy.conv.bias.velocity    [76]                  0.0000   0.0028   -0.0076    0.0102   0.0102   0.0000
+opt.policy.conv.weight.velocity  [9728]               -0.0001   0.0061   -0.0374    0.0538   0.0538   0.0216
+opt.policy.pre_bn.bias.velocity  [128]                 0.0004   0.0040   -0.0073    0.0127   0.0127   0.0000
+opt.policy.pre_bn.weight.velocity [128]                -0.0010   0.0130   -0.0435    0.0404   0.0435   0.0000
+opt.policy.pre_conv.weight.velocity [27648]               0.0001   0.0037   -0.0234    0.0286   0.0286   0.0004
+opt.stem.bn.bias.velocity        [216]                 0.0000   0.0006   -0.0015    0.0020   0.0020   0.0000
+opt.stem.bn.weight.velocity      [216]                 0.0002   0.0014   -0.0053    0.0072   0.0072   0.0000
+opt.stem.conv.weight.velocity    [317520]             -0.0000   0.0020   -0.0259    0.0441   0.0441   0.2416
+opt.tower_final_bn.bias.velocity [216]                 0.0004   0.0031   -0.0124    0.0172   0.0172   0.0000
+opt.tower_final_bn.weight.velocity [216]                -0.0001   0.0061   -0.0277    0.0202   0.0277   0.0000
+opt.value.bn.bias.velocity       [16]                 -0.0001   0.0227   -0.0339    0.0690   0.0690   0.0000
+opt.value.bn.weight.velocity     [16]                  0.0017   0.0255   -0.0388    0.0735   0.0735   0.0000
+opt.value.conv.weight.velocity   [3456]                0.0001   0.0037   -0.0162    0.0294   0.0294   0.0006
+opt.value.fc1.bias.velocity      [128]                 0.0003   0.0017   -0.0048    0.0075   0.0075   0.0000
+opt.value.fc1.weight.velocity    [131072]              0.0000   0.0007   -0.0078    0.0130   0.0130   0.0519
+opt.value.wdl_fc2.bias.velocity  [3]                   0.0000   0.0148   -0.0178    0.0184   0.0184   0.0000
+opt.value.wdl_fc2.weight.velocity [384]                 0.0000   0.0073   -0.0294    0.0314   0.0314   0.0026
+policy.conv.bias                 [76]                  0.0000   0.0845   -0.0773    0.5413   0.5413   0.0000
+policy.conv.weight               [76, 128, 1, 1]       0.0152   0.1465   -1.0511    0.8604   1.0511   0.0000
+policy.pre_bn.bias               [128]                 0.0160   0.0781   -0.1507    0.3468   0.3468   0.0000
+policy.pre_bn.running_mean       [128]                -0.7234   0.9290   -3.0730    1.8624   3.0730   0.0000
+policy.pre_bn.running_var        [128]                 0.8294   0.3758    0.2676    2.2719   2.2719   0.0000
+policy.pre_bn.weight             [128]                 1.0774   0.1063    0.8112    1.4177   1.4177   0.0000
+policy.pre_conv.weight           [128, 216, 1, 1]     -0.0054   0.0896   -0.5258    0.5602   0.5602   0.0000
+stem.bn.bias                     [216]                -0.0114   0.0270   -0.0875    0.0498   0.0875   0.0000
+stem.bn.running_mean             [216]                -0.0279   0.1029   -0.2438    0.2719   0.2719   0.0000
+stem.bn.running_var              [216]                 0.0462   0.0178    0.0198    0.1351   0.1351   0.0000
+stem.bn.weight                   [216]                 0.8913   0.0631    0.6780    1.0378   1.0378   0.0000
+stem.conv.weight                 [216, 30, 7, 7]       0.0001   0.0375   -0.5032    0.9345   0.9345   0.0000
+tower_final_bn.bias              [216]                 0.0485   0.0949   -0.3098    0.6583   0.6583   0.0000
+tower_final_bn.running_mean      [216]                 0.0012   0.7072   -1.6505    2.0529   2.0529   0.0000
+tower_final_bn.running_var       [216]                 0.5049   0.2498    0.1427    1.8837   1.8837   0.0000
+tower_final_bn.weight            [216]                 0.9900   0.1407    0.7890    1.8600   1.8600   0.0000
+value.bn.bias                    [16]                 -0.2808   0.0767   -0.5033   -0.1758   0.5033   0.0000
+value.bn.running_mean            [16]                 -0.0861   0.4707   -0.8952    0.7579   0.8952   0.0000
+value.bn.running_var             [16]                  0.6493   0.2007    0.4306    1.1945   1.1945   0.0000
+value.bn.weight                  [16]                  0.7042   0.0978    0.5786    0.8862   0.8862   0.0000
+value.conv.weight                [16, 216, 1, 1]      -0.0013   0.0812   -0.2937    0.3837   0.3837   0.0000
+value.fc1.bias                   [128]                 0.0008   0.0173   -0.0653    0.0724   0.0724   0.0000
+value.fc1.weight                 [128, 1024]          -0.0013   0.0351   -0.1781    0.1506   0.1781   0.0000
+value.wdl_fc2.bias               [3]                   0.5960   0.1083    0.4944    0.7461   0.7461   0.0000
+value.wdl_fc2.weight             [3, 128]             -0.0017   0.1157   -0.4836    0.3426   0.4836   0.0000
+-- conv/FC output-unit weight norms (dead unit = norm ~0)
+  blocks.0.conv1.weight          units  216  min 1.2214  median 1.4189  max 2.0396  min/median 0.861
+  blocks.0.conv2.weight          units  216  min 1.2265  median 1.5482  max 2.2775  min/median 0.792
+  policy.conv.weight             units   76  min 1.0801  median 1.7109  max 2.4369  min/median 0.631
+  policy.pre_conv.weight         units  128  min 1.0761  median 1.3063  max 1.6376  min/median 0.824
+  stem.conv.weight               units  216  min 1.1684  median 1.3770  max 2.7925  min/median 0.849
+  value.conv.weight              units   16  min 1.1059  median 1.1939  max 1.3132  min/median 0.926
+  value.fc1.weight               units  128  min 1.0386  median 1.1165  max 1.3082  min/median 0.930
+  value.wdl_fc2.weight           units    3  min 1.2853  median 1.3020  max 1.3406  min/median 0.987
+-- BN sites feeding ReLU: P(channel active) = Phi(beta/|gamma|)
+  blocks.0.bn1     ch  216  |gamma| min 0.682 med 0.971 max 2.229  P(active) min 0.297 med 0.464 max 0.548  (<5%: 0, >95%: 0)
+  blocks.0.bn2     ch  216  |gamma| min 0.946 med 1.027 max 2.033  P(active) min 0.297 med 0.489 max 0.537  (<5%: 0, >95%: 0)
+  tower_final_bn   ch  216  |gamma| min 0.789 med 0.957 max 1.860  P(active) min 0.408 med 0.516 max 0.687  (<5%: 0, >95%: 0)
+  policy.pre_bn    ch  128  |gamma| min 0.811 med 1.061 max 1.418  P(active) min 0.453 med 0.503 max 0.619  (<5%: 0, >95%: 0)
+  value.bn         ch   16  |gamma| min 0.579 med 0.674 max 0.886  P(active) min 0.285 med 0.344 max 0.404  (<5%: 0, >95%: 0)
+
+=== slim-neck  model_id=20261004-13-K4Iu  step=33000
+tensor                           shape                   mean      std       min       max    |max|  ~0 frac
+blocks.0.bn1.bias                [224]                -0.1121   0.0808   -0.7695    0.0600   0.7695   0.0000
+blocks.0.bn1.running_mean        [224]                -0.0081   0.0309   -0.1670    0.0578   0.1670   0.0000
+blocks.0.bn1.running_var         [224]                 0.8462   0.1237    0.5304    1.5421   1.5421   0.0000
+blocks.0.bn1.weight              [224]                 0.9823   0.1353    0.7090    1.8840   1.8840   0.0000
+blocks.0.bn2.bias                [224]                -0.0697   0.1326   -0.8109    0.0868   0.8109   0.0000
+blocks.0.bn2.running_mean        [224]                -0.5727   1.0066   -3.0736    2.2555   3.0736   0.0000
+blocks.0.bn2.running_var         [224]                 1.7849   0.4928    0.9356    5.2552   5.2552   0.0000
+blocks.0.bn2.weight              [224]                 1.0508   0.1628    0.8760    2.0962   2.0962   0.0000
+blocks.0.conv1.weight            [224, 224, 7, 7]     -0.0002   0.0139   -0.5341    0.4761   0.5341   0.0001
+blocks.0.conv2.weight            [224, 224, 7, 7]      0.0000   0.0149   -0.3948    0.4665   0.4665   0.0001
+blocks.0.res_ln.bias             [224]                 0.0009   0.0033   -0.0091    0.0148   0.0148   0.0000
+blocks.0.res_ln.weight           [224]                 1.0027   0.0044    0.9941    1.0324   1.0324   0.0000
+opt.blocks.0.bn1.bias.velocity   [224]                -0.0002   0.0020   -0.0058    0.0054   0.0058   0.0045
+opt.blocks.0.bn1.weight.velocity [224]                 0.0000   0.0023   -0.0058    0.0110   0.0110   0.0000
+opt.blocks.0.bn2.bias.velocity   [224]                -0.0004   0.0018   -0.0072    0.0051   0.0072   0.0000
+opt.blocks.0.bn2.weight.velocity [224]                -0.0002   0.0025   -0.0169    0.0058   0.0169   0.0000
+opt.blocks.0.conv1.weight.velocity [2458624]             0.0000   0.0007   -0.0140    0.0111   0.0140   0.0014
+opt.blocks.0.conv2.weight.velocity [2458624]             0.0000   0.0007   -0.0115    0.0106   0.0115   0.0014
+opt.blocks.0.res_ln.bias.velocity [224]                -0.0000   0.0002   -0.0007    0.0008   0.0008   0.0000
+opt.blocks.0.res_ln.weight.velocity [224]                -0.0000   0.0002   -0.0008    0.0008   0.0008   0.0045
+opt.policy.conv.bias.velocity    [76]                  0.0000   0.0027   -0.0065    0.0094   0.0094   0.0263
+opt.policy.conv.weight.velocity  [9728]                0.0000   0.0058   -0.0533    0.0511   0.0533   0.0217
+opt.policy.pre_bn.bias.velocity  [128]                 0.0002   0.0034   -0.0103    0.0141   0.0141   0.0000
+opt.policy.pre_bn.weight.velocity [128]                -0.0003   0.0102   -0.0442    0.0366   0.0442   0.0000
+opt.policy.pre_conv.weight.velocity [28672]               0.0000   0.0034   -0.0298    0.0238   0.0298   0.0003
+opt.stem.bn.bias.velocity        [224]                -0.0001   0.0005   -0.0014    0.0014   0.0014   0.0045
+opt.stem.bn.weight.velocity      [224]                 0.0003   0.0015   -0.0060    0.0059   0.0060   0.0045
+opt.stem.conv.weight.velocity    [60480]              -0.0000   0.0028   -0.0279    0.0431   0.0431   0.2350
+opt.tower_final_bn.bias.velocity [224]                 0.0002   0.0023   -0.0077    0.0085   0.0085   0.0000
+opt.tower_final_bn.weight.velocity [224]                -0.0000   0.0045   -0.0235    0.0168   0.0235   0.0000
+opt.value.bn.bias.velocity       [16]                  0.0047   0.0216   -0.0446    0.0431   0.0446   0.0000
+opt.value.bn.weight.velocity     [16]                  0.0094   0.0275   -0.0432    0.0701   0.0701   0.0000
+opt.value.conv.weight.velocity   [3584]                0.0001   0.0036   -0.0177    0.0204   0.0204   0.0000
+opt.value.fc1.bias.velocity      [128]                 0.0009   0.0021   -0.0072    0.0088   0.0088   0.0078
+opt.value.fc1.weight.velocity    [131072]              0.0001   0.0008   -0.0119    0.0139   0.0139   0.0293
+opt.value.wdl_fc2.bias.velocity  [3]                   0.0000   0.0336   -0.0326    0.0462   0.0462   0.0000
+opt.value.wdl_fc2.weight.velocity [384]                 0.0000   0.0104   -0.0405    0.0794   0.0794   0.0026
+policy.conv.bias                 [76]                  0.0000   0.0748   -0.0816    0.4881   0.4881   0.0000
+policy.conv.weight               [76, 128, 1, 1]       0.0156   0.1448   -0.9990    0.9313   0.9990   0.0000
+policy.pre_bn.bias               [128]                 0.0066   0.0625   -0.1066    0.2885   0.2885   0.0000
+policy.pre_bn.running_mean       [128]                -0.6659   0.7976   -2.8055    0.9052   2.8055   0.0000
+policy.pre_bn.running_var        [128]                 0.8263   0.3694    0.2384    3.1453   3.1453   0.0000
+policy.pre_bn.weight             [128]                 1.0608   0.0972    0.8326    1.3419   1.3419   0.0000
+policy.pre_conv.weight           [128, 224, 1, 1]     -0.0050   0.0874   -0.5090    0.4883   0.5090   0.0000
+stem.bn.bias                     [224]                -0.0081   0.0309   -0.1671    0.0580   0.1671   0.0000
+stem.bn.running_mean             [224]                -0.0298   0.0778   -0.2872    0.1625   0.2872   0.0000
+stem.bn.running_var              [224]                 0.0304   0.0197    0.0108    0.1934   0.1934   0.0000
+stem.bn.weight                   [224]                 0.9176   0.0650    0.7285    1.2394   1.2394   0.0000
+stem.conv.weight                 [224, 30, 3, 3]       0.0002   0.0769   -0.5197    1.0630   1.0630   0.0000
+tower_final_bn.bias              [224]                 0.0440   0.0837   -0.3780    0.4525   0.4525   0.0000
+tower_final_bn.running_mean      [224]                 0.0016   0.7344   -2.0156    2.6721   2.6721   0.0000
+tower_final_bn.running_var       [224]                 0.4697   0.2108    0.1434    1.5315   1.5315   0.0000
+tower_final_bn.weight            [224]                 0.9909   0.1371    0.8171    2.0478   2.0478   0.0000
+value.bn.bias                    [16]                 -0.2638   0.0734   -0.4022   -0.1637   0.4022   0.0000
+value.bn.running_mean            [16]                 -0.2130   0.4224   -0.8898    0.6788   0.8898   0.0000
+value.bn.running_var             [16]                  0.6984   0.3088    0.3424    1.5574   1.5574   0.0000
+value.bn.weight                  [16]                  0.7186   0.0875    0.5762    0.9192   0.9192   0.0000
+value.conv.weight                [16, 224, 1, 1]      -0.0027   0.0797   -0.3236    0.3104   0.3236   0.0000
+value.fc1.bias                   [128]                -0.0005   0.0168   -0.0485    0.0913   0.0913   0.0000
+value.fc1.weight                 [128, 1024]          -0.0015   0.0352   -0.1497    0.1672   0.1672   0.0000
+value.wdl_fc2.bias               [3]                   0.5959   0.0501    0.5581    0.6667   0.6667   0.0000
+value.wdl_fc2.weight             [3, 128]             -0.0032   0.1094   -0.5255    0.3137   0.5255   0.0000
+-- conv/FC output-unit weight norms (dead unit = norm ~0)
+  blocks.0.conv1.weight          units  224  min 1.2589  median 1.4360  max 2.2958  min/median 0.877
+  blocks.0.conv2.weight          units  224  min 1.2600  median 1.5524  max 2.4207  min/median 0.812
+  policy.conv.weight             units   76  min 0.9887  median 1.6962  max 2.1616  min/median 0.583
+  policy.pre_conv.weight         units  128  min 1.0623  median 1.2974  max 1.6589  min/median 0.819
+  stem.conv.weight               units  224  min 1.0424  median 1.2282  max 1.9844  min/median 0.849
+  value.conv.weight              units   16  min 1.1100  median 1.1978  max 1.2435  min/median 0.927
+  value.fc1.weight               units  128  min 1.0488  median 1.1169  max 1.3004  min/median 0.939
+  value.wdl_fc2.weight           units    3  min 1.1844  median 1.2433  max 1.2853  min/median 0.953
+-- BN sites feeding ReLU: P(channel active) = Phi(beta/|gamma|)
+  blocks.0.bn1     ch  224  |gamma| min 0.709 med 0.967 max 1.884  P(active) min 0.341 med 0.454 max 0.522  (<5%: 0, >95%: 0)
+  blocks.0.bn2     ch  224  |gamma| min 0.876 med 1.002 max 2.096  P(active) min 0.317 med 0.485 max 0.536  (<5%: 0, >95%: 0)
+  tower_final_bn   ch  224  |gamma| min 0.817 med 0.960 max 2.048  P(active) min 0.391 med 0.517 max 0.626  (<5%: 0, >95%: 0)
+  policy.pre_bn    ch  128  |gamma| min 0.833 med 1.054 max 1.342  P(active) min 0.465 med 0.498 max 0.593  (<5%: 0, >95%: 0)
+  value.bn         ch   16  |gamma| min 0.576 med 0.685 max 0.919  P(active) min 0.298 med 0.366 max 0.407  (<5%: 0, >95%: 0)
+
+
+######## zero-velocity patterns
+
+fatty stem: input planes with exact-zero velocity fraction (and weight norm):
+  p0:0.00/4.47  p1:0.00/4.58  p2:0.00/4.46  p3:0.00/4.42  p4:0.00/4.95  p5:0.00/5.59  p6:0.00/4.63  p7:0.00/5.00  p8:0.00/4.97  p9:0.00/5.10  p10:0.00/6.12  p11:0.00/4.16  p12:0.00/2.94  p13:0.00/2.92  p14:0.00/2.73  p15:0.00/2.76  p16:0.14/3.34  p17:0.00/3.21  p18:0.00/2.86  p19:1.00/2.97  p20:1.00/2.95  p21:1.00/2.97  p22:1.00/2.99  p23:0.00/2.86  p24:1.00/2.99  p25:0.00/2.93  p26:1.00/2.97  p27:0.00/2.95  p28:1.00/2.96  p29:0.00/2.91
+fatty value.fc1: input features whose velocity row is all zero: 0 of 1024 -> by value.conv channel: {}  squares(rank,file) sample: []
+fatty policy.conv: output channels all-zero velocity: []  input channels all-zero: []  total zero entries 0
+fatty policy.conv.bias velocity zeros at channels: []
+
+slim-neck stem: input planes with exact-zero velocity fraction (and weight norm):
+  p0:0.00/3.70  p1:0.00/4.00  p2:0.00/3.81  p3:0.00/3.92  p4:0.00/4.11  p5:0.00/4.75  p6:0.00/4.01  p7:0.00/4.28  p8:0.00/4.00  p9:0.00/4.34  p10:0.00/4.78  p11:0.00/3.83  p12:0.00/2.65  p13:0.00/2.61  p14:0.00/2.50  p15:0.00/2.45  p16:0.00/3.29  p17:0.00/3.13  p18:0.00/2.76  p19:1.00/2.98  p20:1.00/3.02  p21:1.00/3.02  p22:1.00/3.02  p23:0.00/2.79  p24:1.00/3.03  p25:0.00/2.95  p26:1.00/3.00  p27:0.00/2.89  p28:1.00/3.05  p29:0.00/3.01
+slim-neck value.fc1: input features whose velocity row is all zero: 1 of 1024 -> by value.conv channel: {1: 1}  squares(rank,file) sample: [(0, 0)]
+slim-neck policy.conv: output channels all-zero velocity: []  input channels all-zero: []  total zero entries 0
+slim-neck policy.conv.bias velocity zeros at channels: []
