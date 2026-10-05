@@ -1,6 +1,6 @@
 # 2026-10-04 — Fatconv: 15×15 stem and 1 × [15×15 + 15×15] @ 98, no SE, no ReZero (R16)
 
-**Status:** the build-2275 run ended at its 33,000-step limit (2026-10-04 21:07:55 CDT; final probe pElo 1395.8, NLL 2.3135; 29k–33k average 1387.1 vs Avg(R7,R8) 1499.5). It continues past 33,000 on build 2320 (see "Continuation past 33,000"). Launched 2026-10-04 01:58:04 CDT, beside fatty and slim-neck fatty.
+**Status:** the build-2275 run ended at its 33,000-step limit (2026-10-04 21:07:55 CDT; final probe pElo 1395.8, NLL 2.3135; 29k–33k average 1387.1 vs Avg(R7,R8) 1499.5). Its continuation on build 2320 was stopped by the owner at 39,093 (2026-10-04 22:59:11 CDT, SIGINT; final probe pElo 1352.6, NLL 2.3743) while the learning rate was rising toward its 41,000 peak (see "Continuation past 33,000"). Launched 2026-10-04 01:58:04 CDT, beside fatty and slim-neck fatty.
 
 ## Question
 
@@ -87,6 +87,16 @@ with `--resume-exact` on build 2320 (`DCM-2320-1ab52554`) and no step limit (`--
   NLL 2.3135 — identical to build 2275's — so the continuation's probes (build 2320) and
   the original's (build 2275) are on the same scale. The continuation's run ModelID is
   `20261005-1-1vVl` (parent `20261004-15-Pm6B`); `table.py` adds its probes at 33,000 + N.
+- **Stopped** by the owner at continuation step 6,093 (real step 39,093), 2026-10-04 22:59:11
+  CDT, by SIGINT: the run finished its step, wrote the abort save
+  `20261004-fatconv98-cont-replay-latest.safetensors` (trainerStep 39093, corpus shard 11) and
+  the enumerated `20261004-fatconv98-cont-replay-step6093`, and exited; the probe loop probed
+  that checkpoint and ended. `table.py` shows the off-grid 39,093 probe as its own row.
+- **What the 6,093 steps showed:** the learning rate rose from 0.00124 to about 0.05 over
+  them, and pElo fell as it did in the first cycle's rise (fatconv 1395.8 at 33,000, 1330.0
+  at 39,000; 1263.4 at 18,000 against 1220.0 at 19,000 in the first cycle). The continuation
+  never reached the next trough (~51,000), so it does not say whether fatconv had more to
+  gain.
 
 ## Launch record
 
