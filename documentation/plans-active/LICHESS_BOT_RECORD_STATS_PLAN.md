@@ -1,6 +1,6 @@
 # Lichess bot: record statistics on the Overview
 
-Status (2026-10-06): **PLAN ONLY.** Nothing here is implemented. Implementation starts after `LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md` lands (it edits the controller and the generation info this plan reads; §9 P-gate).
+Status (2026-10-06): **PLAN ONLY.** Nothing here is implemented. Implementation starts after `LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md` lands (it edits the controller and the generation info this plan reads; §9 P-gate), except P0, which touches none of its files and should land first (§4.5).
 - Every `file:line` was checked against `main` at `c1a36294`. The working tree held uncommitted follow-lineage edits to `LichessBotModelSlots.swift`, `LichessBotModelSwitchStatusView.swift` and `CheckpointManager.swift`; nothing below cites those files' uncommitted lines.
 - Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachineTests/` (= `DrewsChessMachine/DrewsChessMachineTests/`), `documentation/` or `scripts/`.
 - Numbers about the bot's data were measured on this Mac on 2026-10-06 from `~/Library/Application Support/DrewsChessMachine/LichessBot/` itself (sizes base-2).
@@ -21,7 +21,7 @@ Status (2026-10-06): **PLAN ONLY.** Nothing here is implemented. Implementation 
 **What this plan does.**
 - Defines every statistic exactly (§3), including the edge cases: no games, all wins, all losses, missing ratings, unrated games, aborted games, missing move decisions.
 - Puts all computation in pure, tested functions under `LichessBot/Stats/` (§4.1). Views only format and lay out.
-- Reduces each game record to a small set of per-game facts once, when its index row is built, and stores them in the existing games index (schema 2 → 3). Statistics never open a record file (§4.2).
+- Reduces each game record to a small set of per-game facts once, when its index row is built, and stores them in the existing games index (next index schema, coordinated with the challenge-log plan, §4.2). Statistics never open a record file (§4.2).
 - Computes the statistics off the main actor on a dedicated serial work queue, after every index change and when a period boundary passes (§4.3).
 - Fills the Record card's empty left column with the expanded period table and a tabbed panel (Time controls, Models, Self-assessment, Endings, Opponent strength), keeping the recent-games list (§5).
 - Fixes one latent record-builder bug that would misattribute moves to models (§1.4, P0), regression test first.
@@ -77,7 +77,7 @@ Rules this plan follows (CLAUDE.md files and the owner's standing rules):
 
 ## 2. Measured (2026-10-06, this Mac)
 
-- **Data:** 206 game records, all from 2026-10-01 onward; 11.7 MB of record JSON (average 58.1 KB, largest 143.7 KB); `index.json` 91.4 KB (about 454 B per row). At this rate (~200 games a day on 2026-10-06) 10,000 games is about 50 days of play.
+- **Data:** 206 game records, the first created 2026-09-28 (by local date, America/Chicago: 64 on 09-28, 23 on 09-29, 4 on 09-30, 31 on 10-02, 84 on 10-06); 11.7 MB of record JSON (average 58.1 KB, largest 143.7 KB); `index.json` 91.4 KB (about 454 B per row). The busiest day, 2026-10-06, had 84 games between 11:34 and 17:55, about 13 games per hour online. At that rate 10,000 games is about 770 hours online.
 - **Mix:** blitz 74, rapid 62, bullet 44, classical 26; rated 181, casual 25; bots 199, humans 7; reconciliation `matched` 206.
 - **Statuses:** mate 162; draw with local threefold 26; outoftime with a winner 5; resign 4; stalemate 4; timeout with a winner 2; draw with local insufficient material 1; `insufficientMaterialClaim` 1; outoftime without a winner 1. No aborted record yet.
 - **Decisions:** 7,712 of our moves, 7,711 with a decision and clocks (one without).
@@ -135,7 +135,7 @@ All anchored on the game's **start** (`createdAt`, as today), in the **system ca
 | Score | `(W + ½D) / (W + D + L)` | `%.1f%%`; "–" with no scored game |
 | Perf | performance rating, §3.4, over scored games with an opponent rating | integer; "≥1890" / "≤1100" for a perfect or zero score; "–" with none |
 | Opp avg | mean `opponentRating` over the same games | integer; "–" with none |
-| Rating ± | Σ `ourRatingDiff` over rated games with a recorded diff | signed integer with a true minus sign; "–" with no rated game; a "*" marker when any rated game in the period lacks a diff, and the tooltip says "k of m rated games have a rating change" |
+| Rating ± | Σ `ourRatingDiff` over rated games with a recorded diff | signed integer with a true minus sign; "–" with no rated game, and "–*" with rated games of which none has a diff (never "0"); a "*" marker when any rated game in the period lacks a diff, and the tooltip says "k of m rated games have a rating change" |
 | vs bots, vs humans, as White, as Black | as today (W–D–L of that split) | as today |
 
 - Rating change is **never inferred** from consecutive `ourRatingBefore` values: concurrent games make a later game's starting rating predate an earlier game's result (the bot plays several games at once).
@@ -145,7 +145,7 @@ All anchored on the game's **start** (`createdAt`, as today), in the **system ca
 
 - Expected score of a game: `E(R, Rᵢ) = 1 / (1 + 10^((Rᵢ − R) / 400))`.
 - Over n games with opponent ratings Rᵢ and total score S, the performance rating is the R that solves `Σᵢ E(R, Rᵢ) = S`, the maximum-likelihood (ML) estimate under the Elo logistic model. The sum is strictly increasing in R, so the solution is unique.
-- Solved by bisection on `[min Rᵢ − 2000, max Rᵢ + 2000]` until the bracket is narrower than 0.01, in `Double`; displayed rounded to an integer.
+- Solved by bisection in `Double` until the bracket is narrower than 0.01; displayed rounded to an integer. The bracket is derived from the data, never a fixed margin: with `p = S / n` (0 < p < 1 after the half-point rule below) and `L = 400·log₁₀(p / (1 − p))`, the root lies in `[min Rᵢ + L, max Rᵢ + L]`, because `n·E(R, max Rᵢ) ≤ S ≤ n·E(R, min Rᵢ)`. When every Rᵢ is equal the bracket has zero width and the root is `R₀ + L` exactly. (A fixed `[min Rᵢ − 2000, max Rᵢ + 2000]` misses the root once n exceeds about 50,000 games at a half-point score: `n / (1 + 10⁵) > ½`.)
 - Cases:
   - n = 0 → `.none` ("–").
   - 0 < S < n → `.estimate(R)`.
@@ -156,12 +156,12 @@ All anchored on the game's **start** (`createdAt`, as today), in the **system ca
 
 ### 3.5 Time controls (item 2)
 
-- Rows: `ultraBullet`, `bullet`, `blitz`, `rapid`, `classical`, `correspondence`, in that order, then any other `speed` string a record holds, verbatim. A row is shown when the account has a rating in it or a record has a game in it.
+- Rows: `ultraBullet`, `bullet`, `blitz`, `rapid`, `classical`, `correspondence`, in that order, then any other `speed` string a record holds, verbatim. One of the six is shown when the account has a rating in it or a record has a game in it; any other row only when a record has a game in it. `account.perfs` also holds puzzle and variant pools ("Puzzle modes decode here too", `LichessBot/API/LichessBotAPIModels.swift:538-540`), which never become rows.
 - Columns:
-  - **Rating:** the account's current rating from `controller.account.perfs[speed]` (Lichess's own number, refreshed after every filed game), "?" when provisional. Read by the view directly; not part of the computed statistics.
+  - **Rating:** the account's current rating from `controller.account?.perfs?[speed]` (Lichess's own number, refreshed after every filed game, `LichessBotController.swift:3362-3369`), "?" appended when `prov` is true. "–" with the tooltip "account not loaded" while `account` is nil (no token, or before the first fetch). Read by the view directly; not part of the computed statistics.
   - **Today ±, Week ±:** §3.3's rating change restricted to the speed, for Today and This week.
   - **Games, W–D–L, Score, Perf:** for the speed, over the panel's selected period (OD-7).
-  - **Trend:** a sparkline of `ourRatingBefore` over the speed's last 100 rated games with a rating, oldest to newest, then the current account rating as the final point. Every point is a rating Lichess reported; nothing is interpolated (OD-9).
+  - **Trend:** a sparkline of `ourRatingBefore` over the speed's last 100 rated games with a rating, oldest to newest, then the current account rating as the final point (left off while `account` is nil). Every point is a rating Lichess reported; nothing is interpolated (OD-9).
 
 ### 3.6 The network judging itself (item 6)
 
@@ -176,11 +176,12 @@ Every number here comes from `decision.win / draw / loss` on DCM's own moves (th
   - **Skill:** `1 − Brier / Brier_ref`, where `Brier_ref = 1 − Σₖ fₖ²` is the Brier score of always predicting the same games' own W / D / L frequencies `fₖ`. Positive = better than knowing only the base rates. "–" when `Brier_ref = 0` (every game the same result).
   - Games that ended before move N are not in that row (survivors only); the row's tooltip says so.
 - **Reliability over every move** (all DCM moves with a decision): ten buckets of E, `[0, 0.1)`, …, `[0.9, 1.0]`; per bucket, the number of positions, mean predicted E and mean actual score of those positions' games. Positions in one game share its result, so long games weigh more; the tooltip says so.
+  - The bucket index is `min(9, max(0, Int((Double(E) * 10).rounded(.down))))`, one function used by the reducer and the tests. `win`, `draw`, `loss` are `Float` (`LichessBotMoveChooser.swift:22-24`), so E can land a rounding step above 1.0 (clamped into bucket 9) or just below a tenth (it lands in the lower bucket; the tests pin that rather than assume decimal edges). A record never holds a non-finite probability: the record encoder uses `JSONEncoder`'s default `nonConformingFloatEncodingStrategy` (throw), so such a game is never filed.
 - **Held win / held loss:** a game "reached a held win" when `win ≥ 0.80` on two consecutive DCM moves that both have decisions (a move without a decision breaks the run); likewise "held loss" with `loss ≥ 0.80` (OD-14).
   - **Blown win:** reached a held win, and the result is a draw or a loss.
   - **Save:** reached a held loss, and the result is a draw or a win.
   - Shown as "x blown of y held wins (z%)" and "x saved of y held losses (z%)", with the 20 most recent of each listed (opponent, result, ply where the hold began, a button that opens the game on Lichess through `LichessBotLinks.openGame`).
-- **Decisive ply** (won and lost games only): the earliest ply of a DCM move from which the result's own probability (`win` for a win, `loss` for a loss) stays ≥ 0.80 on **every** later DCM move with a decision, through DCM's last decision. "Never" when the last decision is below 0.80. Reported for won and lost games separately: mean and median decisive ply, mean lead (`plies − decisive ply`), and the never count (OD-15).
+- **Decisive ply** (won and lost games only): the earliest ply of a DCM move **with a decision** whose result probability (`win` for a win, `loss` for a loss) is ≥ 0.80 and stays ≥ 0.80 on **every** later DCM move with a decision, through DCM's last decision. Moves without a decision are skipped here (unlike a held run, which they break). "Never" when the last decision is below 0.80. A won or lost game with no decision at all is "no data", not "never". Reported for won and lost games separately: mean and median decisive ply, mean lead (`plies − decisive ply`), the never count and the no-data count (OD-15).
 - **Threshold constants** (0.80, two moves, checkpoints 10/20/40, ten buckets) live in one declaration, `LichessBotSelfAssessmentDefinition`. The per-game facts are reduced with them, so changing one bumps the index schema (§4.2).
 
 ### 3.7 Opponent strength (item 3)
@@ -188,8 +189,8 @@ Every number here comes from `decision.win / draw / loss` on DCM's own moves (th
 - Over scored games with both `ourRatingBefore` and `opponentRating`:
   - `dᵢ = opponentRating − ourRatingBefore` (the gap at game start, same speed);
   - expected score `Eᵢ = 1 / (1 + 10^(dᵢ / 400))`.
-- **Bands by gap** (OD-10), 100 points wide: `< −400`, `−400…−301`, `−300…−201`, `−200…−101`, `−100…−1`, `0…99`, `100…199`, `200…299`, `300…399`, `≥ 400` (band index `floor(d / 100)` clamped to −5…4). Gaps pool across speeds, because each is measured within its own pool.
-- Per band: n, actual score, mean expected score, and the difference with a 95% interval `± 1.96 · sd(sᵢ − Eᵢ) / √n` (shown for n ≥ 2).
+- **Bands by gap** (OD-10), 100 points wide: `< −400`, `−400…−301`, `−300…−201`, `−200…−101`, `−100…−1`, `0…99`, `100…199`, `200…299`, `300…399`, `≥ 400` (band index `floor(d / 100)` clamped to −5…4). The floor is a floored division (`Int((Double(d) / 100).rounded(.down))`), not Swift's `/`, which truncates toward zero and would put −1…−99 in band 0. Gaps pool across speeds, because each is measured within its own pool.
+- Per band: n, actual score, mean expected score, and the difference with a 95% interval `± 1.96 · sd(sᵢ − Eᵢ) / √n` (sample standard deviation, divisor n − 1; shown for n ≥ 2).
 - **50% point:** the gap Δ solving `Σᵢ 1 / (1 + 10^((dᵢ − Δ) / 400)) = S` (§3.4's solver and edge cases). DCM scores 50% against opponents rated Δ above its own rating; Elo predicts Δ = 0 when the rating is accurate. Displayed "Scores 50% at +37 (n games)".
 
 ### 3.8 Models and checkpoints (item 4)
@@ -198,9 +199,9 @@ Every number here comes from `decision.win / draw / loss` on DCM's own moves (th
   - the file's SHA-256 (`fileSHA256`, the whole file's bytes) when the generation was loaded from a file. The header's `content_sha256` (`lineage.contentSHA256`) is a different hash and is not mixed in, so one file never becomes two keys;
   - otherwise (source kind, model ID, training step).
   - Two generations of one key are one model (a relaunch that reloads the same file).
-- **Attribution:** a game belongs to the generation that chose the most of DCM's moves in it; on a tie, the later one. Games played by more than one generation are also counted in a "mixed" column on the row they were attributed to.
-- **Rows:** grouped by model ID (one CLI process = one model ID = one lineage segment), newest last game first. Each group expands into one row per checkpoint (key), ordered by training step. Group and checkpoint rows show: model ID, training step (and lineage cumulative step when recorded), games, W–D–L, score with 95% interval `± 1.96 · sd(sᵢ) / √n` (n ≥ 2), Perf, Opp avg, mixed, first and last game.
-- **Progression chart** (follow-lineage): x = lineage cumulative trainer step, else training step; y = score with its interval, or Perf (picker). Consecutive checkpoints of one lineage run are merged into one point until it holds ≥ 30 scored games (OD-12); a run with fewer than two points shows the table only. At ~200 games a day and a checkpoint every ~33 minutes (follow-lineage plan §1.5), one checkpoint sees about 4–5 games, too few to plot alone.
+- **Attribution:** a game belongs to the generation that chose the most of DCM's moves in it; on a tie, the later one in the record's `generations` order (order of first use). Games played by more than one generation are also counted in a "mixed" column on the row they were attributed to. A scored game in which no DCM move has a generation (DCM never moved — the opponent resigned or left first — or every DCM move is known only from the export) goes to its own **"No model recorded"** row, never dropped and never given to a neighbor.
+- **Rows:** grouped by model ID (one CLI process = one model ID = one lineage segment), newest last game first. Each group expands into one row per checkpoint (key), ordered by training step. Group and checkpoint rows show: model ID, training step (and lineage cumulative step when recorded), games, W–D–L, score with 95% interval `± 1.96 · sd(sᵢ) / √n` (sample standard deviation, divisor n − 1; n ≥ 2), Perf, Opp avg, mixed, first and last game.
+- **Progression chart** (follow-lineage): x = lineage cumulative trainer step, else training step; y = score with its interval, or Perf (picker). Consecutive checkpoints of one lineage run are merged into one point until it holds ≥ 30 scored games (OD-12); a run with fewer than two points shows the table only. At about 13 games per hour online (§2) and a checkpoint every ~33 minutes (follow-lineage plan §1.5), one checkpoint sees about 7 games, too few to plot alone; a point merges about four checkpoints.
 
 ### 3.9 How games end (item 5)
 
@@ -223,6 +224,7 @@ One classification, `LichessBotGameEnding`, from `(status, winner, ourScore, loc
 | Not counted | `ourScore` nil |
 
 - The pane shows a matrix: endings as rows, DCM won / drew / lost as columns, counts and the share of each column. Rows with no games are left out of the data (not hidden in the view). Statuses this build does not know are never folded into a known row.
+- Scored statuses the table does not name land in "Other: <status>" with Lichess's spelling, including `timeout` without a winner, `noStart` with a winner, `cheat` and `variantEnd` (`LichessBotGameStatusName`, `LichessBotAPIModels.swift:53-68`). Each has a test.
 
 ---
 
@@ -236,26 +238,33 @@ One classification, `LichessBotGameEnding`, from `(status, winner, ourScore, loc
 | `LichessBotStatsPeriods.swift` | the six periods, their starts, `nextChange` |
 | `LichessBotGameFacts.swift` | the per-game facts (§4.2) and their reduction from a `LichessBotGameRecord`; `LichessBotSelfAssessmentDefinition` |
 | `LichessBotGameEnding.swift` | §3.9's classification |
-| `LichessBotRecordStatistics.swift` | the snapshot (§4.4) and `compute(rows:now:calendar:filter:)` |
+| `LichessBotRecordStatistics.swift` | the snapshot (§4.4) and `compute(rows:now:calendar:)` (every filter, every period) |
 | `LichessBotStatsFormat.swift` | number formatting shared by every pane (signed rating with a true minus, "≥" / "≤" estimates, percentages, padded counts) |
 
 - `LichessBotRecordSummary` stays. `compute(rows:now:calendar:)` and `Records.today / thisWeek / allTime` keep their signatures (`LichessBotRecordSummaryTests` uses them unchanged). There is one period enum, `LichessBotStatsPeriod` (in `LichessBotStatsPeriods.swift`); `LichessBotRecordSummary.Period` becomes a `typealias` of it, and `Records` gains `lastHour`, `thisMonth`, `thisYear`, all filled from `LichessBotStatsPeriods`, so the periods and their boundaries have one definition.
+  - `LichessBotStatsPeriod`'s raw values are stable identifiers (`lastHour`, `today`, …), because the selected period is persisted (§5.1); the display text is a separate `label`. Today's grid reads `period.rawValue` as its label (`LichessBotRecordCard.swift:86`), so P1 switches it to `label`; it shows all six rows until P3 replaces it.
+  - `LichessBotRecordStatistics.compute` builds its W–D–L splits with `LichessBotPeriodRecord.add` (`LichessBotRecordSummary.swift:141-153`) through `LichessBotRecordSummary.compute`, so the split rules have one definition and `compute` keeps a production caller after the card stops calling it.
+  - `LichessBotResultTally.games` keeps its meaning (scored + unscored; `LichessBotRecordSummaryTests.swift:34` and the History tab's sort key, `LichessBotRecordSummary.swift:39`, rely on it). OD-2's "Games" column reads `scored`.
 - Every aggregation is a single pass over the rows (dictionaries for grouping); nothing is quadratic in games. Each ML solve costs about 20 bisection steps × the games in its group.
+- The Rated / Casual / All filter (OD-3) is computed like the period: `compute` produces every filter × every period in one call, so changing the filter is a lookup, not a recompute, and the controller holds no filter state. Cost: three times the passes of a single filter (§7's scale test covers it).
 
-### 4.2 Per-move data reaches the statistics through the index (schema 3)
+### 4.2 Per-move data reaches the statistics through the index (next schema)
 
 - `LichessBotGameSummary` gains one field, `let facts: LichessBotGameFacts?`, filled by `init(record:)`. Optional so an index row without it decodes: nil means "no per-game facts" (only possible in a test fixture written by hand, since a schema-2 index is rejected and rebuilt). Statistics count such rows as "no move data".
 - `LichessBotGameFacts` (Codable, Sendable, Equatable):
   - `localDrawCondition`, `ourMoveCount`, `ourMovesWithDecision`;
   - `checkpoints: [Checkpoint]` — `moveNumber`, `win`, `draw`, `loss` for each checkpoint DCM reached with a decision;
   - `expectedScoreBuckets: [Bucket]` — non-empty buckets only: `index`, `positions`, `sumExpected`;
-  - `heldWinStartPly: Int?`, `heldLossStartPly: Int?` — the ply of the first DCM move of the first held run;
-  - `decisivePly: Int?` — §3.6, nil for draws, unscored games and "never";
+  - `heldWinStartPly: Int?`, `heldLossStartPly: Int?` — the ply of the first DCM move of the first held run; nil means "no held run" (a game with no decisions has none either, and `ourMovesWithDecision` tells the two apart);
+  - `decisive: LichessBotDecisivePly` — §3.6, an enum, not an optional, so one nil never carries several meanings: `.notApplicable` (a draw or an unscored game), `.noDecisions` (won or lost, no DCM move with a decision), `.never`, `.atPly(Int)`;
+  - nothing ply-based for a game that did not start from the standard position (`setup.variant` / `setup.initialFen`): the bot declines those (`LichessBot/Play/LichessBotChallengePolicy.swift:53-57`) and the record builder colors moves by ply parity (`LichessBotGameRecord.swift:751`), so such a record, if one ever exists, counts as "no move data";
   - `generations: [GenerationFacts]` — model key parts (`sourceKind`, `modelID`, `trainingStep`, `fileSHA256`, lineage run ID, segment index, cumulative step) and `ourMoves` decided by it.
 - Why the index and not a second cache: the index is already the derived per-game cache that Stats reads, rebuilt from records whenever it is stale (`LichessBotIndex.swift:4-5`, `:58-65`). A second cache would need its own staleness signature and could disagree with the first (OD-16).
-- **Schema bump 2 → 3** (`LichessBotIndex.swift:66`). The first load after the upgrade rejects the schema-2 file and rebuilds from every record (`:168-179`, `:225`). One added log line, `[LICHESS-BOT] index rebuilt: <n> records in <s> s (<reason>)`, measures it on every rebuild.
-- **Cost.** Each row grows by about 1 KB (three checkpoints, up to ten buckets, one generation with a 64-character hash), to about 1.5 KB: `index.json` ≈ 0.3 MB at 206 games and ≈ 15 MB at 10,000. The rebuild decodes every record once (§2: a fraction of a second today; seconds to tens of seconds at 10,000). Until the first rebuild finishes, the card shows "Loading the game records…" (today's behavior). After that, each filed game costs today's incremental upsert plus re-encoding the larger file on the utility queue.
-- **Two builds alternating** (an older build reading a schema-3 index rejects it and writes schema 2, and back) rebuild on each switch. Accepted: the index is a cache (Risks).
+- **Schema bump** (`LichessBotIndex.swift:66`): to the **next** index schema version on `main` when P2 starts — 3 if `LICHESS_BOT_CHALLENGE_LOG_PLAN.md`'s index change (its `origin` row field, its §3.5, also written as "2 → 3") has not landed, 4 if it has. The two plans never ship different row shapes under one number: a build with only one plan's field would otherwise accept the other build's index and read the missing field as nil for every game. If both index changes are implemented together, one bump covers both. The first load after the upgrade rejects the older file and rebuilds from every record (`:168-179`, `:224`). One added log line, `[LICHESS-BOT] index rebuilt: <n> records in <s> s (<reason>)`, measures it on every rebuild.
+- **Cost.** Each row grows by about 1 KB (three checkpoints, up to ten buckets, one generation with a 64-character hash), to about 1.5 KB: `index.json` ≈ 0.3 MB at 206 games and ≈ 15 MB at 10,000. The rebuild decodes every record once (§2: a fraction of a second today; seconds to tens of seconds at 10,000). Until the first rebuild finishes, the card shows "Loading the game records…" (today's behavior).
+  - The rebuild runs on the controller's general file queue, which also carries the protocol log, player notes, the Keychain and the instance lock (`LichessBotController.swift:358-360`). At 10,000 records the one rebuild per bump delays those, going online included, by its duration. Today (206 records) it is well under a second.
+  - Each filed game already decodes the whole index twice and encodes it once on that queue: `upsert` reads the stored index and writes the new one (`LichessBotIndex.swift:184-206`), then `refreshIndex` loads it again (`LichessBotController.swift:3065-3073`, `:3381-3382`). Facts triple the bytes those three passes handle. The P2 timing log covers `upsert` and `load` as well as rebuilds so the real cost is visible; if it matters, `finalize` can hand the `File` that `upsert` returns to the controller instead of the reload (today it is discarded, `LichessBotRecordStore.swift:178`).
+- **Two builds alternating** (an older build reading the newer index rejects it and writes its own schema, and back) rebuild on each switch. Accepted: the index is a cache (Risks).
 - Records do not change (except P0's generation fix, §4.5). Old records decode as they do today, and their facts are computed from whatever they hold: a record without decisions yields facts with zero `ourMovesWithDecision`.
 
 ### 4.3 Computing off the main actor, and incremental updates
@@ -263,28 +272,36 @@ One classification, `LichessBotGameEnding`, from `(status, winner, ourScore, loc
 - The controller gains:
   - `private let statisticsQueue = LichessBotFileQueue(label: "drewschess.lichessbot.statistics", qos: .utility)`. It is a work executor for CPU work, separate from the file queue so an index rebuild never delays a recompute and the reverse. It is closed at bot shutdown beside the file queue (`LichessBotController.swift:1267`);
   - `private(set) var recordStatistics: LichessBotRecordStatisticsState` — `.loading`, `.ready(LichessBotRecordStatistics)`, `.failed(String)`;
-  - `scheduleRecordStatistics(reason:)`: increments a request counter, captures `index.rows` (a value), `Date()`, `Calendar.current` and the filter, runs `LichessBotRecordStatistics.compute` on `statisticsQueue` through `run` (which resumes a continuation), and on the main actor applies the result only if its request is still the latest. An older result that finishes late is dropped.
+  - `scheduleRecordStatistics(reason:)`: does nothing once the controller has shut down (`isShutDown`, `LichessBotController.swift:1216-1218`); otherwise increments a request counter, captures `index.rows` (a value), `Date()` and `Calendar.current`, runs `LichessBotRecordStatistics.compute` on `statisticsQueue` through `run` (which resumes a continuation), and on the main actor applies the outcome only if its request is still the latest. An older outcome that finishes late — a result or an error — is dropped. The `Task` that awaits `run` catches every error inside its body: the latest request's error becomes `.failed(text)` and is logged (`[LICHESS-BOT] record stats failed (<reason>): …`); nothing is left to an unobserved `Task`. `compute` is synchronous CPU work and never runs on the main actor or the cooperative pool.
+  - `remembered…` selections for the panel (tab, period, Rated / Casual / All filter), persisted in the controller's `defaults` exactly like `rememberedSettingsTab` (`LichessBotController.swift:346-351`, `:449-455`): a stored value that no longer exists is logged and ignored, and tests use a temporary defaults suite. Not `@AppStorage`, which would read the test host's real defaults in render tests. The card height stays in its existing `@AppStorage` key.
 - **Triggers:**
   - the `index` `didSet` (launch, every filed game, a rebuild): reason `index`;
-  - the Rated / Casual filter changing: reason `filter`;
-  - a clock loop started by the root view's `.task` (so it runs while the window is open and stops when it closes): every 60 s it recomputes when `now ≥ snapshot.validUntil` (from `nextChange`) or `TimeZone.current` differs from the snapshot's. Reason `clock`. Waking from sleep or a time-zone change is caught within a minute.
+  - the clock: `recordStatisticsClockTick(now:)`, a controller method, recomputes (reason `clock`) when the state is `.ready` and `now ≥ snapshot.validUntil` (from `nextChange`) or `TimeZone.current.identifier` differs from the snapshot's. A `.failed` state is not retried by the clock (it would log every minute); the next index change or time-zone change retries it. Tests call the method with a manual `now`.
+  - A loop in its own `.task` modifier on the root view calls the tick every 60 s while the window is open (not appended to the existing `.task`, whose awaits run in sequence, `LichessBotRootView.swift:49-56`). The loop follows `refreshGridClock`'s pattern (`LichessBotController.swift:605-613`): `Task.sleep` inside `do`, and a thrown error (cancellation when the window closes; `Task.sleep` throws nothing else) ends the loop with a comment saying so. `Task.sleep` runs on the continuous clock, which keeps counting while the Mac sleeps, so waking from sleep is caught at the next tick; a wall-clock change is caught by comparing against `validUntil`.
+  - The controller also observes `.NSSystemTimeZoneDidChange` and `.NSSystemClockDidChange` and recomputes at once, unconditionally (reason `clock`): a clock set backwards leaves `now` before `validUntil`, so the tick's condition would never fire for it. Whether a running process's `TimeZone.current` follows a System Settings change without help is not established here; P2 checks it live (§8.4), and if it does not, the observer calls `NSTimeZone.resetSystemTimeZone()` before the tick.
 - **When a game finishes:** reconciler files it → `upsert` writes the index incrementally (unchanged) → `refreshIndex` → `didSet` → one full recompute over the in-memory rows. Recomputing from rows (rather than updating aggregates in place) keeps one code path and one definition; the P2 test bounds it at 10,000 synthetic rows (§7).
-- **Log:** one `[LICHESS-BOT] record stats (<reason>): games=… W-D-L=… score=… perf=… rating=±… brier@20=… ms=…` line per `index` or `filter` recompute (not per clock tick), so a wrong number is visible in the session log and the validation script can compare against it.
-- The view reads `controller.recordStatistics` only. The card stops calling `LichessBotRecordSummary.compute` in its body (`LichessBotRecordCard.swift:41-46`); the minute `TimelineView` stays for the recent-games list's relative times.
+- **Log:** one `[LICHESS-BOT] record stats (<reason>): games=… W-D-L=… score=… perf=… rating=±… brier@20=… ms=…` line (all time, filter All) per `index` recompute (not per clock tick), so a wrong number is visible in the session log and the validation script can compare against it.
+- The view reads `controller.recordStatistics` only. The card stops calling `LichessBotRecordSummary.compute` in its body (`LichessBotRecordCard.swift:41-46`); the minute `TimelineView` stays for the recent-games list's relative times. The index rows are already newest first (`LichessBotIndex.swift:234-238`), so the recent list takes a prefix instead of re-sorting every row on the main actor each minute (`LichessBotRecordCard.swift:48`).
 
 ### 4.4 The snapshot (`LichessBotRecordStatistics`)
 
+Held per filter (`LichessBotStatsFilter`: all, rated, casual), so the filter is a lookup like the period:
 - `periodRows: [LichessBotStatsPeriod: PeriodRow]` (item 1).
-- `byPeriod: [LichessBotStatsPeriod: PeriodBreakdowns]` with `timeControls`, `models`, `selfAssessment`, `endings`, `opponentStrength` — one per period, so the panel's period picker (OD-7) is a lookup, not a recompute. Cost: six passes per recompute.
-- `ratingTrends: [String: [RatingPoint]]` (per speed; period-independent).
+- `byPeriod: [LichessBotStatsPeriod: PeriodBreakdowns]` with `timeControls`, `models`, `selfAssessment`, `endings`, `opponentStrength` — one per period, so the panel's period picker (OD-7) is a lookup, not a recompute. Cost: six passes per filter, eighteen per recompute.
 - `notCounted: Int`, `ratedWithoutRatingChange: Int`, `rowsWithoutFacts: Int`.
-- `computedAt`, `validUntil`, `timeZoneIdentifier`, `filter`.
+
+Once per snapshot:
+- `ratingTrends: [String: [RatingPoint]]` (per speed; from rated games, so independent of period and filter).
+- `computedAt`, `validUntil`, `timeZoneIdentifier`.
 
 ### 4.5 P0: generation attribution across sessions
 
 - `Replay.apply(.moveDecided)` keeps a generation when no **equal** `LichessBotGenerationInfo` is already listed (it is `Equatable`; generations from two sessions differ at least in `snapshotAt`).
 - `LichessBotGameRecord.Move` gains `generationIndex: Int?`, the index into `generations` of the generation that made the decision. Optional, so records written before it decode; nil there means "not recorded" and the facts reducer then resolves the move by `generationID`, which is exact in those records because they only ever held one generation per ID (they may hold the wrong one, which cannot be repaired without rebuilding the record from its kept journal; out of scope).
 - The record schema version stays 1: the change is additive.
+- The PGN's per-move `gen=<id>` comment (`LichessBot/Data/LichessBotPGNWriter.swift:90-91`) keeps the per-session ID; across sessions it is ambiguous, and the `DCMModelIDs` tag still names every model. Unchanged here.
+- `LichessBotGenerationInfo.generationID`'s doc comment says "Distinct per snapshot within one run of the app" (`LichessBotGameInterfaces.swift:22`); it is distinct per going-online. P0 corrects it, after follow-lineage's edit of that file lands (below).
+- **Sequencing with follow-lineage.** `LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md` keeps the numbering (a first generation is 1 per `prepare`; "a failed build uses up no generation number", its Review) and states that records and the index need no change (its §3.6); its working-tree edits to `LichessBotModelSlots.swift` change build joining and file loading, not IDs. It adds `lineage` to `LichessBotGenerationInfo` with a nil default, which P0's equality covers and P0's test constructions compile with either way. P0 touches only `LichessBotGameRecord.swift` and a new test file, so it is **exempt from the P-gate** and should land as soon as possible: follow-lineage makes a model change between sessions routine, and every game resumed across a relaunch after that is misattributed until P0 is in. The doc-comment fix waits for follow-lineage's P3.
 
 ---
 
@@ -292,23 +309,27 @@ One classification, `LichessBotGameEnding`, from `(status, winner, ourScore, loc
 
 ### 5.1 The card
 
-- Wide (the left column's ideal width plus 380 points for recent games fits): `HStack` — left column, divider, recent games (`minWidth` 380, scrolling, as today).
-- Narrow (the 680-point minimum): `VStack` — left column, then recent games. Chosen with `ViewThatFits(in: .horizontal)`; both variants are their own `View` structs, and the selected tab and period live in `@AppStorage`, so the switch on resize loses nothing.
+- One arrangement view, `LichessBotRecordCardLayout`, places the same three children — left column, separator, recent games — with `AnyLayout(HStackLayout(…))` when the card is at least `LichessBotStatsStyle.wideCardWidth` points wide (a declared constant: the period table's measured width at the 680-point detail pane plus 380 for recent games, fixed in P3 from the render test) and `AnyLayout(VStackLayout(…))` below it. The width comes from `onGeometryChange(for: Bool.self)` on the card content (not `GeometryReader`).
+  - Not `ViewThatFits`: it chooses by each child's ideal width, which here depends on the data (the longest opponent name in the recent list, the digit counts in the tables, the widest pane in the panel `ZStack`), so the arrangement would flip as games arrive, not only as the window resizes; and its two variants are different view types, so every flip would discard the panes' `@State` (the Models table's expanded groups) and scroll positions. `AnyLayout` keeps the children's identity across the switch.
+  - Wide: recent games `minWidth` 380, scrolling, as today. Narrow: recent games below, at a fixed `LichessBotStatsStyle.narrowRecentGamesHeight` (200).
+  - The separator is a `Divider`; the render tests at both widths confirm it is vertical in the horizontal arrangement and horizontal in the vertical one, and if not, it becomes a 1-point `Rectangle` in `LichessBotStatsStyle`'s separator color, sized per arrangement.
+- The card's content has a fixed height (`LichessBotRecordCard.swift:21`), and a `.frame(height:)` does not clip. The period table, footnote and panel header take their ideal heights; the panel content takes the rest inside a vertical `ScrollView`, so a tall pane scrolls instead of overflowing the card.
+- The card shows `controller.recordStatistics`'s three states as three children each `.shown(_:)` for its state (loading text, the content, the red failure text), not a `switch` in `body` (today's `LichessBotRecordGrid` switches, `LichessBotRecordCard.swift:62-66`).
 - Left column, top to bottom:
   1. **Period table** (§3.3): six rows; header in `LichessBotStatsStyle.headerFont`, numbers in `LichessBotStatsStyle.numberFont` (monospaced), counts padded to one width per column as today. Inside a horizontal `ScrollView` so it never clips at 680 points.
   2. **Footnote line** (secondary): not-counted games, rated games without a rating change, rows without move data; each part only when non-zero (empty string otherwise; the line keeps its place).
-  3. **Panel header:** a segmented `Picker` — Time controls · Models · Self-assessment · Endings · Opponent strength — then a menu `Picker` for the period (default All time) and the Rated / Casual / All filter (OD-3).
+  3. **Panel header:** a segmented `Picker` — Time controls · Models · Self-assessment · Endings · Opponent strength — then a menu `Picker` for the period (default All time) and the Rated / Casual / All filter (OD-3). The three selections bind to the controller's `remembered…` properties (§4.3). The Rated / Casual / All filter applies to the period table as well as the panes.
   4. **Panel content:** a `ZStack` holding every pane, each `.shown(selected == pane)`.
-- The card's default height rises from 240 to 560 (OD-19); the `@AppStorage` key is unchanged, so an operator who already dragged it keeps their height.
+- The card's default height rises from 240 to 560 (OD-19); the `@AppStorage` key is unchanged, so an operator who already dragged it keeps their height. Sound as specified: `@AppStorage`'s declared default applies only while the key holds no value, and the resize handle writes the key only on a drag or an accessibility adjustment (`LichessBotHeightResizeHandle.swift:39`, `:52-54`), never on appear.
 
 ### 5.2 Panes (one `View` per file under `LichessBot/UI/`)
 
 | File | Pane / piece |
 |---|---|
-| `LichessBotRecordCardWideLayout.swift`, `LichessBotRecordCardNarrowLayout.swift` | the two arrangements |
+| `LichessBotRecordCardLayout.swift` | the one arrangement view (`AnyLayout`, wide or stacked) |
 | `LichessBotRecordPeriodTable.swift` | item 1 (replaces `LichessBotRecordGrid`, `LichessBotRecordCard.swift:57-116`) |
 | `LichessBotRecordFootnote.swift` | footnote line |
-| `LichessBotRecordPanel.swift`, `LichessBotRecordPanelHeader.swift` | tab and period pickers, pane `ZStack` |
+| `LichessBotRecordPanel.swift`, `LichessBotRecordPanelHeader.swift` | tab, period and filter pickers, pane `ZStack` |
 | `LichessBotTimeControlTable.swift`, `LichessBotRatingSparkline.swift` | item 2 (sparkline: Swift Charts `LineMark`, 120×22, no axes, tooltip with first/last date and rating range) |
 | `LichessBotModelRecordTable.swift`, `LichessBotModelRecordGroupRow.swift`, `LichessBotModelProgressChart.swift` | item 4 (grid with a disclosure `Button` per group; chart `PointMark` + `RuleMark` intervals, one color per lineage run) |
 | `LichessBotSelfAssessmentPane.swift`, `LichessBotCalibrationTable.swift`, `LichessBotReliabilityChart.swift`, `LichessBotHeldGamesList.swift` | item 6 (calibration table on top, reliability chart beside the held-win / held-loss / decisive-ply figures, recent blown wins and saves below) |
@@ -337,13 +358,18 @@ One classification, `LichessBotGameEnding`, from `(status, winner, ourScore, loc
 | Game without any decision (export-only moves, an old record) | Counted in results; no checkpoint, bucket or held-run contribution; "missing" counts where it reached a checkpoint. |
 | One move without a decision mid-game | Breaks a held run; excluded from buckets; a checkpoint on it counts as missing. |
 | Game shorter than move N | Not in checkpoint N (survivors only; tooltip). |
-| Game played by two generations | Attributed by majority, counted as mixed (§3.8). |
+| Game played by two generations (a mid-game model switch, `midGameRefresh`) | Attributed by majority, counted as mixed (§3.8). Its self-assessment facts use every decision, whichever generation made it (per-model self-assessment is a later phase, §11). |
+| Game resumed after a relaunch | One record from every kept journal, with every session's generations once P0 is in (§4.5); attributed and counted like any other game. Its periods use `createdAt`, not the resume time. |
+| Scored game with no generation (DCM never moved, or only export-known moves) | Its own "No model recorded" row in Models (§3.8); counted everywhere else. |
+| Won or lost game with no decision | Decisive ply "no data", not "never" (§3.6). |
 | Same model reloaded (two generations, one file hash) | One key. |
 | Generation ID reused across sessions in an old record | Resolved by ID (exact in old records); P0 fixes new records. |
 | Unknown speed string | Its own Time controls row, labeled verbatim, after the known speeds. |
 | Unknown status | "Other: <status>" ending row, never folded into a known row. |
 | `createdAt` in the future | Counted in every current period (no upper bound). |
-| Time zone or clock change | Clock loop recomputes within 60 s. |
+| Time zone or clock change | Recomputed at once from the system notifications, and by the 60-s tick at the latest (§4.3). |
+| Account not loaded (no token, before the first fetch) | Time controls' Rating column "–" with a tooltip; no final sparkline point (§3.5). |
+| Remembered tab / period / filter that no longer exists | Logged and ignored; the default is used (§4.3). |
 | Midnight / week / month / year rollover | `nextChange` passes → recompute. |
 | DST change day | `Calendar` gives the day start; tested with `America/Chicago` on 2026-11-01. |
 | Index rebuild in progress | Previous snapshot stays on screen; "Loading…" only before the first index. |
@@ -355,35 +381,37 @@ One classification, `LichessBotGameEnding`, from `(status, winner, ourScore, loc
 
 ## 7. Tests (new files only; existing tests unmodified)
 
-**P0 — `DrewsChessMachineTests/LichessBotGenerationAttributionTests.swift`** (written first, must fail on today's code):
-- `testTwoSessionsWithTheSameGenerationIDKeepBothModels` — a journal with session 1's generation 1 (model A) deciding plies 0–10 and, after a second header, session 2's generation 1 (model B) deciding plies 12–20: the record lists both generations and each move's `generationIndex` names its own.
-- `testOldRecordWithoutGenerationIndexStillDecodes`.
+**P0 — `DrewsChessMachineTests/LichessBotGenerationAttributionTests.swift`.** The first test is written first and must **compile and fail** on today's code, so it uses only existing API; a test that names `generationIndex` would not compile before the fix, which proves nothing.
+- `testTwoSessionsWithTheSameGenerationIDKeepBothModels` (written first) — a journal with session 1's generation 1 (model A) deciding plies 0–10 and, after a second header (`resumed: true`), session 2's generation 1 (model B) deciding plies 12–20: `record.generations.map(\.modelID) == [A, B]` and `LichessBotGameSummary(record:).modelIDs == [A, B]`. Today it fails (one generation, model A).
+- `testEachMoveNamesTheGenerationThatDecidedIt` (with the fix) — the same journal: every one of DCM's moves at plies 0–10 has `generationIndex` 0, at 12–20 index 1.
+- `testOneGenerationJournaledManyTimesIsListedOnce` — equal infos collapse to one entry.
+- `testOldRecordWithoutGenerationIndexStillDecodes` — a record JSON without the key decodes, and the facts reducer attributes its moves by `generationID`.
 
 **P1 — pure core:**
-- `LichessBotEloMathTests`: expected score symmetry and the 400-point 10:1 odds; closed-form single-opponent cases (p = 0.25, 0.5, 0.75); mixed opponents against a hand-computed root; all wins / all losses / one win / one loss / one draw; n = 0; extreme ratings (bracket never fails); monotonicity; `ratingOffset` = 0 when every result equals its expectation.
+- `LichessBotEloMathTests`: expected score symmetry and the 400-point 10:1 odds; closed-form single-opponent cases (p = 0.25, 0.5, 0.75); mixed opponents against a hand-computed root; all wins / all losses / one win / one loss / one draw; n = 0; extreme ratings and n = 100,000 at a half-point score (the data-derived bracket of §3.4 always holds the root); every opponent at one rating (zero-width bracket, exact `R₀ + L`); monotonicity; `ratingOffset` = 0 when every result equals its expectation.
 - `LichessBotStatsPeriodsTests`: each boundary in `Europe/Paris`, `America/Chicago` (DST day), `Pacific/Auckland`; week start with `firstWeekday` 1 and 2; last hour across midnight; `nextChange` picks the earliest of the five candidates; future `createdAt`.
-- `LichessBotGameEndingTests`: every row of §3.9, an unknown status, an unknown status with a winner, `outoftime` with and without a winner.
-- `LichessBotGameFactsTests` (records built with `LichessBotRecordBuilder.build` from journals, as the data-layer tests do): checkpoints at the right plies for White and Black; a game ending before move 40; a missing decision at a checkpoint; bucket edges (E = 0.1 exactly, E = 1.0); held run of exactly two, a run broken by a missing decision, a single-move spike (no hold); decisive ply for a win, a loss, a "never", a draw (nil); per-generation move counts.
-- `LichessBotRecordStatisticsTests`: every §3.3 column for each period from hand-built rows; Games excludes unscored; Rating ± skips missing diffs and reports coverage; Lichess AI excluded from Perf only; Rated / Casual filter; time-control rows including an unknown speed; sparkline cap and order; model key by hash vs (source, model, step); majority attribution and tie; mixed count; progression binning at 30 games; calibration means, Brier, skill (and "–" when every result is the same); reliability per bucket; blown wins and saves; bands at every edge (−401, −400, −1, 0, 399, 400); 50% point; no games; all aborted; rows without facts.
+- `LichessBotGameEndingTests`: every row of §3.9, an unknown status, an unknown status with a winner, `outoftime` with and without a winner, `timeout` without a winner, `noStart` with a winner, `cheat`.
+- `LichessBotGameFactsTests` (records built with `LichessBotRecordBuilder.build` from journals, as the data-layer tests do): checkpoints at the right plies for White and Black; a game ending before move 40; a missing decision at a checkpoint; bucket edges through the one index function (`Float` E of 0.1, 0.3, 0.9, 1.0 and one rounding step above 1.0); held run of exactly two, a run broken by a missing decision, a single-move spike (no hold); decisive ply for a win, a loss, a "never", a won game with no decisions (`.noDecisions`), a draw (`.notApplicable`), a decision-less move inside the decisive stretch (skipped); per-generation move counts with `generationIndex` and, for an old record, by `generationID`; a game in which DCM never moved (no generation).
+- `LichessBotRecordStatisticsTests`: every §3.3 column for each period from hand-built rows; Games excludes unscored; Rating ± skips missing diffs and reports coverage, and is "–*" when no rated game has a diff; Lichess AI excluded from Perf only; every filter's numbers equal `compute` over the rows pre-filtered to it; time-control rows including an unknown speed; sparkline cap and order; model key by hash vs (source, model, step); majority attribution and tie (later in `generations` order); mixed count; the "No model recorded" row; progression binning at 30 games; calibration means, Brier, skill (and "–" when every result is the same); reliability per bucket; blown wins and saves; bands at every edge (−401, −400, −1, 0, 399, 400); 50% point; no games; all aborted; rows without facts.
 - `LichessBotStatsFormatTests`: true minus sign, "≥" / "≤", "–", padding.
-- Existing suites that guard P1 (run, unmodified): `LichessBotRecordSummaryTests`, `LichessBotHistoryTests`, `LichessBotBotListTests`.
+- Existing suites that guard P1 (run, unmodified): `LichessBotRecordSummaryTests`, `LichessBotHistoryTests`, `LichessBotBotListTests`. They decode hand-written row JSON without `facts` (`LichessBotRecordSummaryTests.swift:9-14`), which still decodes because synthesized `Codable` treats an absent `let facts: LichessBotGameFacts?` as nil; `compute`, `Records` and `LichessBotResultTally.games` keep their meaning (§4.1).
 
 **P2 — index and pipeline:**
-- `LichessBotIndexFactsTests`: a schema-2 `index.json` is rebuilt to schema 3 with facts equal to `LichessBotGameFacts(record:)` of each record; incremental `upsert` equals `rebuild` with facts; a row JSON without `facts` decodes (nil).
-- `LichessBotRecordStatisticsPipelineTests` (controller with temporary defaults and data folder): a filed game updates the snapshot; a late older result is dropped; the clock recompute fires when `validUntil` passes (manual time); `.failed` on a calendar without intervals.
-- `LichessBotRecordStatisticsScaleTests`: 10,000 synthetic rows compute in under 1 s (a guard against quadratic code, far above the expected cost).
+- `LichessBotIndexFactsTests`: an `index.json` of the previous schema is rebuilt to the current one with facts equal to `LichessBotGameFacts(record:)` of each record; incremental `upsert` equals `rebuild` with facts; a row JSON without `facts` decodes (nil).
+- `LichessBotRecordStatisticsPipelineTests` (controller with temporary defaults and data folder): a filed game updates the snapshot; a late older result is dropped, and so is a late older error; `recordStatisticsClockTick(now:)` recomputes once `validUntil` passes and not before; a `.failed` state is not retried by the tick; `.failed` on a calendar without intervals; a shut-down controller schedules nothing; the remembered tab, period and filter persist across controllers on one temporary suite, and a stored value that no longer exists is ignored (as `LichessBotSettingsViewRenderTests.swift:121-136` does for the Settings tab).
+- `LichessBotRecordStatisticsScaleTests`: a guard against quadratic code that does not depend on the build configuration's speed (tests run unoptimized): best-of-three times for 2,500 and 10,000 synthetic rows, asserting the ratio is below 8 (linear ≈ 4, quadratic ≈ 16), plus a loose absolute bound of 10 s at 10,000 rows.
 - Existing suites that guard P2 (run, unmodified): `LichessBotDataLayerTests` (incremental index equals rebuild, stale index rebuilt), `LichessBotPostGameChatFilingTests`.
 
-**P3–P8 — UI:** `LichessBotRecordCardRenderTests` in the style of `LichessBotSettingsViewRenderTests`: the card at 680 and 1,180 points wide, every pane, light and dark, with no games, with the 206-game fixture shape (synthetic), and with all-wins data; each must render a non-empty image.
+**P3–P8 — UI:** `LichessBotRecordCardRenderTests` in the style of `LichessBotSettingsViewRenderTests` (controller on a temporary defaults suite): the card at 680 and 1,180 points wide (both arrangements), every pane, light and dark, in each state (loading, ready, failed), with no games, with the 206-game fixture shape (synthetic), and with all-wins data; each must render a non-empty image.
 
 ---
 
 ## 8. Validation
 
-1. **Independent numbers.** P1 adds `scripts/lichess_bot_record_stats.py`, a separate Python implementation of §3 over `LichessBot/Games/**/*.json` (the preview in §2 is its prototype). After P2, compare its all-time and today output with the `[LICHESS-BOT] record stats (index)` line of a fresh launch: games, W–D–L, score, Perf (±1), Rating ±, Brier at move 20 must agree exactly (Perf within rounding).
-2. **Schema bump.** Launch once with the schema-2 index: one `[LICHESS-BOT] index rebuilt: 206 records in … s` line; `index.json` has `"schemaVersion":3` and a `facts` object per row; a second launch does not rebuild.
+1. **Independent numbers.** P1 adds `scripts/lichess_bot_record_stats.py`, a separate Python implementation of §3 over `LichessBot/Games/**/*.json` (the preview in §2 is its prototype). After P2, compare its all-time and today output with the `[LICHESS-BOT] record stats (index)` line of a fresh launch: games, W–D–L, score, Perf (±1), Rating ± must agree exactly; Perf within ±1; Brier at move 20 to the logged three decimals (the records hold `Float` probabilities, which Python reads back as the shortest decimal, so the last digits of a `Double` sum can differ).
+2. **Schema bump.** Launch once with the previous schema's index: one `[LICHESS-BOT] index rebuilt: <n> records in … s` line; `index.json` has the new `schemaVersion` and a `facts` object per row; a second launch does not rebuild.
 3. **A game finishing.** With the bot online, the `record stats (index)` line follows the game's `finalized` protocol entry within seconds, and the card's Last hour and Today rows include it.
-4. **Rollover.** Last hour drops a game 60 minutes after its start (within the 60-s loop); a time-zone change in System Settings moves Today's boundary within a minute.
+4. **Rollover.** Last hour drops a game 60 minutes after its start (within the 60-s loop); a time-zone change in System Settings moves Today's boundary at once (notification) or within a minute (tick). This step also establishes whether `TimeZone.current` follows the change unaided (§4.3).
 5. **P0.** The regression test fails before the fix and passes after, unmodified.
 6. **Visual.** Render-test PNGs at 680 and 1,180 points, light and dark, checked for alignment of every numeric column and no clipping; then the live window at its minimum size.
 7. **Tests.** Targeted suites per phase; the full suite once after P2 (persistence changed), per `CLAUDE.md`.
@@ -392,13 +420,13 @@ One classification, `LichessBotGameEnding`, from `(status, winner, ourScore, loc
 
 ## 9. Phases (each: implement → build with drews-xcode-mcp → targeted tests → commit)
 
+- **P0.** Generation attribution fix (§4.5), regression test first (OD-17). Not behind the P-gate: it touches only `LichessBotGameRecord.swift` and a new test file, none of which follow-lineage edits; land it now (§4.5, sequencing). The generation-ID doc-comment fix in `LichessBotGameInterfaces.swift` waits for the P-gate.
 - **P-gate.** `LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md` merged on `main`, its tests green. Re-check this plan's `file:line` references against that commit.
-- **P0.** Generation attribution fix (§4.5), regression test first (OD-17).
 - **P1.** Pure core (§4.1) and its tests; `scripts/lichess_bot_record_stats.py`.
-- **P2.** Index schema 3 with facts, rebuild timing log, controller pipeline (queue, state, triggers, clock loop, log line); tests; full suite.
+- **P2.** Next index schema with facts (number per §4.2's coordination with the challenge-log plan), rebuild timing log, controller pipeline (queue, state, triggers, clock loop, log line); tests; full suite.
 Phases P3–P8 follow the recommended item order of OD-21; if the owner orders the items differently, P3–P8 are reordered to match (P0–P2 come first either way, since every pane needs them).
 
-- **P3.** Item 1: card layouts, period table, footnote, panel header with the period and Rated / Casual pickers, `LichessBotStatsStyle`, `LichessBotStatsFormat` in the views; render tests.
+- **P3.** Item 1: card layouts, period table, footnote, panel header with the tab, period and Rated / Casual / All pickers on the controller's remembered selections, `LichessBotStatsStyle`, `LichessBotStatsFormat` in the views; render tests.
 - **P4.** Item 2: Time controls pane and sparkline.
 - **P5.** Item 4: Models pane and progression chart.
 - **P6.** Item 6: Self-assessment pane.
@@ -409,7 +437,8 @@ Phases P3–P8 follow the recommended item order of OD-21; if the owner orders t
 
 ## 10. Risks
 
-- **Rebuild time at scale.** The first launch after each schema bump decodes every record. Mitigated by the timing log and by the card keeping its previous snapshot; a later phase can rebuild in the background while showing the old index if the measured cost warrants it.
+- **Rebuild time at scale.** The first launch after each schema bump decodes every record, on the general file queue that also serves the Keychain, the instance lock and the protocol log (§4.2), so at 10,000 records going online waits for it. Mitigated by the timing log and by the card keeping its previous snapshot; a later phase can rebuild in the background while showing the old index if the measured cost warrants it.
+- **Two plans bump the index schema.** This plan and the challenge-log plan each change the row; §4.2's rule (next number on `main`, never a shared number for two shapes) keeps them apart. Each bump costs one rebuild.
 - **Overconfident value head reads as "blown wins".** §2's preview shows predicted E far above results. The pane leads with calibration so the blown-win count is read in its light.
 - **Small samples.** Per-checkpoint and per-band numbers are noisy; every number shows its n, intervals appear from n ≥ 2, and the progression chart bins to 30 games.
 - **Survivorship in checkpoints.** Move-40 rows describe long games only; stated in tooltips.
@@ -428,7 +457,7 @@ Phases P3–P8 follow the recommended item order of OD-21; if the owner orders t
 - **L4 — item 10, openings:** by ECO (Encyclopaedia of Chess Openings) family, as White and as Black, from `openingECO` / `openingName`.
 - **L5 — item 11, opponents:** most played, highest-rated win, streaks (from existing index fields).
 - **L6 — item 12, bot health:** anomalies, rejected moves, stream reconnects, reconciliation mismatches by period (facts: counts).
-- **D1 — origin breakdown (depends on `LICHESS_BOT_CHALLENGE_LOG_PLAN.md`):** once records carry a game's origin (matchmaking / manual challenge / incoming accepted), the summary gains it (schema bump) and the panel gains an "Origin" split (W–D–L, score, Perf per origin). Records without it show as "not recorded", never folded into a known origin.
+- **D1 — origin breakdown (depends on `LICHESS_BOT_CHALLENGE_LOG_PLAN.md`):** that plan already adds `origin` to the record and to `LichessBotGameSummary` with its own index bump (its §3.5), so D1 needs **no further schema change**. D1 reads each game's origin from that plan's one resolver, the controller's `originsByGameID` (`LichessBotGameOriginDisplay`, its §3.6), not from the raw row field: the resolver also covers games played before origins were recorded (the challenge-log join), and it is "the one place that decides what origin a game shows". `scheduleRecordStatistics` captures that map beside the rows, recomputes when it changes, and the panel gains an "Origin" split by `LichessBotGameOriginCategory` (W–D–L, score, Perf per category). Its `unknown` category is its own row, never folded into a known origin.
 - Per-model self-assessment; a two-parameter logistic fit for the 50% point (free slope); the Lichess rating-history API for the sparkline (E49); `LICHESS_BOT_PLAN.md` §11's filters and CSV export.
 
 ---
@@ -450,9 +479,46 @@ Phases P3–P8 follow the recommended item order of OD-21; if the owner orders t
 - **OD-13 Calibration:** DCM's 10th / 20th / 40th move, 3-class Brier with skill against base rates, plus a ten-bucket reliability chart over every move. *Recommend.*
 - **OD-14 Blown wins and saves:** `win` (`loss`) ≥ 0.80 held over two consecutive DCM moves; "not won" = draw or loss. Alternatives: a single move; expected score ≥ 0.80. *Recommend two moves* (one-move spikes before a recapture would otherwise count).
 - **OD-15 Decisive ply:** the earliest DCM move from which the result's own probability stays ≥ 0.80 to DCM's last decision, won and lost games separately, with lead and never counts. *Recommend.*
-- **OD-16 Per-move data path:** facts in the index summary (schema 3, one full rebuild per bump) rather than a separate cache. *Recommend the index.*
+- **OD-16 Per-move data path:** facts in the index summary (next index schema, one full rebuild per bump) rather than a separate cache. *Recommend the index.*
 - **OD-17 Fold the generation-ID fix (P0) into this plan**, regression test first. Alternative: a separate fix before this plan. *Recommend fold* — per-model stats depend on it.
 - **OD-18 Draws with no rule seen locally** labeled "Agreed / other draw". *Recommend.*
 - **OD-19 Card default height** 240 → 560 for operators who never dragged it (key unchanged). *Recommend.*
 - **OD-20 Account card ratings grid** stays as it is for now, though Time controls repeats its ratings. *Recommend keep*; revisit after P4.
 - **OD-21 First-pass scope and order:** which of the twelve proposed items ship first, and in what order. *Recommend items 1, 2, 4, 6, then 5 and 3* (the record table, then per-time-control, per-model and self-assessment, which most directly show how strong the bot is and whether its own evaluations can be trusted; endings and opponent strength last, as they refine the same picture); items 7–12 and the origin breakdown as later phases (§11). Alternative: any other subset or order; the phase list (§9) is reordered to match.
+
+---
+
+## Review (2026-10-06, against `main` at `dad00b85`)
+
+Every claim below was checked in the code; the data figures were re-measured from the records with an independent script.
+
+**Verified, no change needed.**
+- Generation IDs restart at 1 per `prepare` (`LichessBotModelSlots.swift:238`, committed), and the record builder keeps a generation only if no earlier one has its ID, attaching only the ID to each move (`LichessBotGameRecord.swift:519-523`, `:497`, `:771-772`). The finding (§1.4) is real. `snapshotAt` is `Date()` at generation creation (`LichessBotModelSlots.swift:81-90`), so two sessions' generations are never equal; equality-based dedup (§4.5) is sound.
+- The follow-lineage plan and its working-tree edits do not change generation numbering or the record builder (§4.5, sequencing).
+- Old rows and the hand-written test JSON still decode with `facts` optional; `compute(rows:now:calendar:)` and `Records.today / thisWeek / allTime` keep their signatures. No existing test needs editing: no test touches the Record card, `LichessBotRecordSummary.Period`'s raw values, the index schema number or `LichessBotGameRecord.Move`'s initializer; `LichessBotDataLayerTests.swift:184` (`generations == [generation]`) still holds with equality dedup.
+- The §2 self-assessment preview (calibration at 10/20/40, Brier, held wins and losses) reproduces exactly from the records.
+- The §3.4 ML equation, the Brier score and its base-rate reference (`1 − Σ fₖ²`), the 50%-point equation and its sign, the band edges, and the DST date (2026-11-01 is the Sunday Chicago leaves DST) are correct.
+- OD-19's height change is sound (§5.1).
+
+**Must-fixes applied.**
+1. **§2 data:** the records start 2026-09-28, not 2026-10-01; the bot played 84 games on 2026-10-06 (about 13 per hour online), not ~200 a day. The 10,000-game horizon and §3.8's games-per-checkpoint (about 7, not 4–5) follow.
+2. **§3.4 bisection bracket:** the fixed `[min − 2000, max + 2000]` misses the root past about 50,000 games at a half-point score. Replaced by the exact data-derived bracket `[min Rᵢ + L, max Rᵢ + L]`, zero width when every rating is equal; tests added.
+3. **§3.6 / §4.2 decisive ply:** `decisivePly: Int?` gave nil three meanings (draw, never, no data). Now an enum with `.noDecisions` separate from `.never`; decision-less moves are skipped explicitly; bucket indexing is one clamped function over `Float` E.
+4. **§3.7 bands:** the band index needs floored division; Swift's `/` truncates toward zero and puts −1…−99 in band 0. Sample standard deviation (n − 1) stated for both intervals.
+5. **§3.8 models:** scored games with no generation (DCM never moved) had no home; they get a "No model recorded" row. Tie order defined.
+6. **§3.5 time controls:** `account.perfs` holds puzzle and variant pools too; only the six speeds come from the account. `account` nil is handled.
+7. **Filter (OD-3):** the filter was captured by the controller but its single home was unspecified. It is now precomputed like the period (no controller filter state, no `filter` trigger), and the tab, period and filter selections are remembered in the controller's defaults like `rememberedSettingsTab` (testable on a temporary suite; unknown stored values logged), not `@AppStorage`. Period raw values are stable identifiers with a separate label.
+8. **§4.1:** `LichessBotResultTally.games` keeps its meaning (a test and the History sort rely on it); the statistics reuse `LichessBotPeriodRecord.add` so `LichessBotRecordSummary.compute` keeps a production caller.
+9. **§4.3 concurrency and the clock:** the awaiting `Task` handles every error; late errors are dropped like late results; nothing is scheduled after shutdown. The clock loop gets its own `.task` (the existing one runs its awaits in sequence), follows `refreshGridClock`'s cancellation pattern, and calls a controller tick method that tests drive with a manual `now`; time-zone and clock-change notifications recompute at once (a clock set backwards included), and P2 checks whether `TimeZone.current` updates unaided. `.failed` is not retried every minute.
+10. **§4.2 schema and cost:** the challenge-log plan also bumps the index 2 → 3. Each plan now takes the next number on `main` (never two row shapes under one number). The cost now counts the two decodes and one encode per filed game and the first rebuild's hold on the general file queue (Keychain, instance lock, protocol log).
+11. **§4.5 / §7 P0:** a regression test that names `generationIndex` cannot compile before the fix, so it cannot "fail first". The first test now uses only existing API (`generations`, the summary's `modelIDs`); `generationIndex` gets its own test. P0 is taken out of the P-gate: it touches no follow-lineage file and every game resumed across a relaunch under follow-lineage is misattributed until it lands.
+12. **§5.1 layout:** `ViewThatFits` picks by data-dependent ideal widths (opponent names, digit counts, the widest pane), so the arrangement would flip as games arrive and lose the panes' `@State` on each flip. Replaced by one view with `AnyLayout` and a declared width threshold from `onGeometryChange`. Added: the panel content scrolls vertically inside the fixed card height (a `.frame(height:)` does not clip), and the three states render through `.shown`, not a `switch`.
+13. **§7 / §8:** scale test made independent of the unoptimized test build (a 2,500 / 10,000-row time ratio plus a loose bound); Brier validation to three decimals (`Float` storage); the schema steps no longer assume the number 3; new edge-case tests (endings `timeout` without a winner, `noStart` with a winner, `cheat`; "–*" rating change; no-model row; `.noDecisions`).
+14. **§9 / §11 D1:** P2 and D1 updated for the schema coordination; D1 reads origins from the challenge-log plan's resolver (`originsByGameID`) and needs no schema bump of its own.
+
+**Open points for the owner.**
+- **R-1 Score interval.** `± 1.96 · sd / √n` collapses to ±0 when every result in a group is the same (common at 2–5 games). Keep it and show "±0" with a tooltip, or switch to an interval that stays honest at small n (for example, a bootstrap or a Wilson-type interval on the score). The plan keeps the normal approximation.
+- **R-2 Layout mechanism.** The review replaced `ViewThatFits` with `AnyLayout` + a width threshold (must-fix 12). If the owner prefers a different breakpoint rule (for example, always stacked below a fixed window width), only `LichessBotStatsStyle.wideCardWidth` changes.
+- **R-3 Remembered selections** move from `@AppStorage` (as proposed) to the controller's defaults (must-fix 7), matching the Settings tab. The card height stays in `@AppStorage`.
+- **R-4 Index schema order.** Which of this plan's P2 and the challenge-log plan's index phase lands first decides who takes 3. One combined bump is possible only if both land together.
+- **R-5 PGN `gen=` comments** stay per-session IDs, ambiguous across a relaunch (§4.5). Changing them would be a PGN format change; not proposed.
