@@ -903,6 +903,8 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         let operations: [any DeriveOperation] = [
             SetActivationDeriveOperation(value: .doesNotApply),
             SetSEActivationDeriveOperation(value: .doesNotApply, groupIndices: nil),
+            SetSiteActivationDeriveOperation(site: .valueHeadConv, value: .doesNotApply),
+            SetSiteActivationDeriveOperation(site: .stem, value: .doesNotApply),
         ]
         for operation in operations {
             XCTAssertThrowsError(try operation.apply(to: source)) { error in
@@ -931,6 +933,118 @@ final class ArchitectureActivationSiteTests: XCTestCase {
                     "value_head_fc1_hidden_activation"] {
             XCTAssertEqual(object[key] as? String, "gelu", key)
         }
+    }
+
+    // MARK: - Derive (per-site setters)
+
+    private func assertEveryTensorBitExact(_ source: Data, _ derived: Data, _ context: String) throws {
+        let (sourceTensors, _) = try SafetensorsFile.decode(source)
+        let (derivedTensors, _) = try SafetensorsFile.decode(derived)
+        XCTAssertEqual(sourceTensors.map(\.name), derivedTensors.map(\.name), context)
+        for (before, after) in zip(sourceTensors, derivedTensors) {
+            XCTAssertEqual(before.shape, after.shape, "\(context): \(before.name)")
+            XCTAssertEqual(before.data.map(\.bitPattern), after.data.map(\.bitPattern), "\(context): \(before.name)")
+        }
+    }
+
+    func testEachSiteSetterChangesOnlyItsFieldAndCopiesEveryTensorBitExact() throws {
+        let source = Self.fullSiteFixture()
+        let sourceData = try encodedModel(source)
+        for site in ArchitectureActivationSite.allCases {
+            let kind = try XCTUnwrap(ModelDerivation.kind(forFlag: "--\(SetSiteActivationDeriveOperation.name(for: site))"))
+            XCTAssertEqual(kind.changedArchitectureFields, [site.jsonKey])
+            let result = try derive(sourceData, [try kind.make("leaky_relu", nil)])
+            XCTAssertEqual(result.targetArchitecture, try setting(source, .leakyRelu, at: site), "\(site)")
+            XCTAssertTrue(result.rewrites.isEmpty, "\(site)")
+            try assertEveryTensorBitExact(sourceData, result.data, "\(site)")
+            XCTAssertEqual(result.record.operations.map(\.operation), [kind.name])
+            XCTAssertEqual(result.record.operations.first?.arguments, ["value": "leaky_relu"])
+            XCTAssertEqual(result.record.operations.first?.changedArchitectureFields, [site.jsonKey])
+        }
+    }
+
+    func testSiteSetterRefusesASiteTheTopologyLacks() throws {
+        let cases: [(NetworkArchitecture, ArchitectureActivationSite)] = [
+            (Self.tiny(style: .pre), .stem), (Self.tiny(style: .post), .towerEnd),
+            (Self.tiny(), .featureSkipFusion), (Self.tiny(policy: .simpleConv), .policyHead),
+        ]
+        for (arch, site) in cases {
+            XCTAssertThrowsError(try SetSiteActivationDeriveOperation(site: site, value: .relu).apply(to: arch)) { error in
+                guard case .operationNotApplicable(_, let detail)? = error as? ModelDerivation.DeriveError else {
+                    return XCTFail("\(site): expected operationNotApplicable, got \(error)")
+                }
+                XCTAssertTrue(detail.contains(site.absentReason), detail)
+            }
+        }
+    }
+
+    func testSiteSetterRefusesDoesNotApply() {
+        for kind in SetSiteActivationDeriveOperation.kinds {
+            XCTAssertThrowsError(try kind.make("does_not_apply", nil)) { error in
+                guard case .operationNotApplicable(let operation, let detail)? = error as? ModelDerivation.DeriveError else {
+                    return XCTFail("\(kind.flag): expected operationNotApplicable, got \(error)")
+                }
+                XCTAssertEqual(operation, kind.name)
+                XCTAssertTrue(detail.contains("'does_not_apply' is not an activation function"), detail)
+            }
+        }
+    }
+
+    func testSiteSetterRefusesANoOp() {
+        XCTAssertThrowsError(try SetSiteActivationDeriveOperation(site: .valueHeadConv, value: .relu).apply(to: .current)) { error in
+            guard case .operationNotApplicable(_, let detail)? = error as? ModelDerivation.DeriveError else {
+                return XCTFail("expected operationNotApplicable, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("already"), detail)
+        }
+    }
+
+    func testSiteSetterRejectsAnUnknownValue() {
+        for kind in SetSiteActivationDeriveOperation.kinds {
+            XCTAssertThrowsError(try kind.make("swish", nil)) { error in
+                guard case .operationNotApplicable(_, let detail)? = error as? ModelDerivation.DeriveError else {
+                    return XCTFail("\(kind.flag): expected operationNotApplicable, got \(error)")
+                }
+                XCTAssertTrue(detail.contains("'swish'"), detail)
+            }
+            XCTAssertEqual(kind.valueSyntax, "relu|silu|gelu|leaky_relu")
+        }
+    }
+
+    func testSiteSettersAreAllowedOnATrainedSource() throws {
+        let arch = Self.tiny()
+        let weights = arch.weightTensorPlan().enumerated().map { tensorIndex, spec in
+            (0..<spec.elementCount).map { Float(tensorIndex * 5 + $0 % 11) * 0.125 + 0.0625 }
+        }
+        let meta = ModelCheckpointMetadata(creator: "test", trainingStep: 1200, parentModelID: "", notes: "fixture")
+        let trained = try SafetensorsModelIO.encode(
+            modelID: "20261005-1-TRND", createdAtUnix: 1_790_000_000, metadata: meta, weights: weights,
+            architecture: arch, includesVelocity: false,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: meta.trainerSchedule.map(\.completedTrainSteps), corpus: nil))
+        let result = try derive(trained, [SetSiteActivationDeriveOperation(site: .valueHeadFC1Hidden, value: .leakyRelu)])
+        XCTAssertEqual(result.targetArchitecture.valueHeadFC1HiddenActivation, .leakyRelu)
+        try assertEveryTensorBitExact(trained, result.data, "trained source")
+    }
+
+    func testSetActivationThenASiteSetterGivesTheMixedArchitecture() throws {
+        let sourceData = try encodedModel(.current)
+        // The CLI builds the operations in catalog order, which puts
+        // --set-activation before every site setter.
+        let kinds = ModelDerivation.operationKinds.map(\.name)
+        let siteIndex = try XCTUnwrap(kinds.firstIndex(of: "set-value-head-fc1-hidden-activation"))
+        let activationIndex = try XCTUnwrap(kinds.firstIndex(of: "set-activation"))
+        XCTAssertLessThan(activationIndex, siteIndex)
+        let result = try derive(sourceData, [
+            SetActivationDeriveOperation(value: .gelu),
+            SetSiteActivationDeriveOperation(site: .valueHeadFC1Hidden, value: .leakyRelu),
+        ])
+        let target = result.targetArchitecture
+        XCTAssertEqual(target.valueHeadFC1HiddenActivation, .leakyRelu)
+        for site in [ArchitectureActivationSite.towerEnd, .policyHead, .valueHeadConv] {
+            XCTAssertEqual(target.activation(at: site), .gelu, "\(site)")
+        }
+        XCTAssertTrue(target.blockGroups.allSatisfy { $0.activationFunction == .gelu })
+        XCTAssertEqual(target.stemActivation, .doesNotApply)
     }
 
     // MARK: - Build screen

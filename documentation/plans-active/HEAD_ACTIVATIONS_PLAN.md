@@ -1,8 +1,8 @@
 # Per-site activations plan: the stem, tower end, feature-skip fusion, policy head and value head each choose their own activation
 
 Status (2026-10-05): **IMPLEMENTING.** Phase status:
-- [x] **P1** — format v9, `does_not_apply`, graph, layer health, `--set-activation`, Build screen pickers, Python (commit recorded in **Implementation notes**).
-- [ ] **P2** — per-site derive setters.
+- [x] **P1** — format v9, `does_not_apply`, graph, layer health, `--set-activation`, Build screen pickers, Python (`4e70c615`).
+- [x] **P2** — per-site derive setters (commit recorded in **Implementation notes**).
 - [ ] **P3** — "Use for every activation" and the diagram.
 - [ ] **P4** — documentation, presets, ROADMAP completion.
 
@@ -868,7 +868,7 @@ Before P1 starts, freeze the build of P1's parent commit as `~/Library/Applicati
 
 Recorded as each phase lands; every deviation from the text above is listed with its reason.
 
-**P1** (commit: see the CHANGELOG entry and `git log`; this line is updated by the next phase's commit):
+**P1** (`4e70c615`):
 - Built once (`build_failed: false`); full suite on the scheme's test plan (slow suites on): 2,380 passed, 0 failed, 1 skipped (`LegacyDcmmodelLoadTests`, gated on `DCM_RUN_LEGACY_LOAD` as before). `drews-xcode-mcp`'s `run_project_tests` has no `-only-testing`, so every "targeted run" of this plan is the full suite (about 23 minutes on this machine).
 - Python: `python3 -m unittest discover -s documentation/dashboards/tests` 117 passed (including the new `test_dcm_arch_site_activations.py`). Gate: pre-edit (`git show 20f64f68:…`) vs post-edit `relu_inputs.run` on F, R7, R8 over the same 4,097 bot positions — identical JSON; `value_stage.net_probs` on 256 positions from `value_stage.sample([20], 128, 2, 20261004)` — bit-identical arrays for all three.
 - `OLD` frozen before P1 as `FrozenBuilds/DCM-2324-20f64f68.app` (build 2324 of `20f64f68`).
@@ -878,6 +878,12 @@ Recorded as each phase lands; every deviation from the text above is listed with
 - `BuildNewModelModel` gained `existingActivationSites` (one composition per redraw, beside `siteExists(_:)`) and `storedActivation(at:)`; `applyMainActivationEverywhere` logs `[BUTTON] Build New Model: Use for every activation <fn>`.
 - The render test checks the picker's presentation value instead of the drawn controls (see its X1 entry).
 - `ModelDerivation.parseActivationFunctionValue` / `doesNotApplyRefusal` are the one parser and refusal of every activation operation (P2's site setters use them too).
+
+**P2** (commit: see `git log`; recorded here by the next phase's commit):
+- `Persistence/SiteActivationDerive.swift`: one `SetSiteActivationDeriveOperation(site:value:)`, its six catalog kinds built from `ArchitectureActivationSite.allCases` (`SetSiteActivationDeriveOperation.kinds`, inserted after `--set-se-activation`). Operation names are `set-` plus the site's JSON key in kebab case.
+- `SEBetaInitTests.swift:610` catalog pin updated (OD-6). The P2 cases of X1 added to `ArchitectureActivationSiteTests`; `testDirectlyConstructedOperationsRefuseDoesNotApply` now covers the site setter too.
+- Built once (`build_failed: false`); full suite: 2,387 passed, 0 failed, 1 skipped (the env-gated legacy-load test).
+- `deriving-models.md`: the six rows, the order note, two examples, the trained-source and refusal lines.
 
 # Owner decisions
 

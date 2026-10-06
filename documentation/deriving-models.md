@@ -34,7 +34,8 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
   `training_step` or `source_training_step` that is not a non-negative integer is refused
   as well. One case cannot be detected: a file written before lineage that was trained
   but states no `training_step` and no derivation history reads as untrained. Operations
-  that change no tensor (`--set-activation`, `--set-se-activation`,
+  that change no tensor (`--set-activation`, `--set-se-activation`, the per-site
+  activation setters such as `--set-value-head-fc1-hidden-activation`,
   `--set-rezero-alpha-cap`) work on a champion too.
 - `--out`: the destination. It must end in `.safetensors`, must not exist, and must
   differ from `--from`. Nothing is ever overwritten.
@@ -56,6 +57,12 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
 | `--set-se-beta-init` | `glorot` \| `zero` | `block_groups[].se_beta_init` on `scale_and_bias` groups | β half of each affected block's SE FC2: `blocks.<i>.se_scalebias.fc2.weight` rows C..2C−1 (on-disk `[2C, r]` layout) and `blocks.<i>.se_scalebias.fc2.bias` C..2C−1 |
 | `--set-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | every architecture-level site activation the topology has (`stem_activation`, `tower_end_activation`, `feature_skip_activation`, `policy_head_activation`, `value_head_conv_activation`, `value_head_fc1_hidden_activation`; an absent site stays `does_not_apply`) and every `block_groups[].activation_function`; `block_groups[].se_activation` on SE-less groups only | none (activations have no parameters) |
 | `--set-se-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | `block_groups[].se_activation` on groups with an SE block | none (activations have no parameters) |
+| `--set-stem-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | `stem_activation` (a post-activation first block group only) | none (activations have no parameters) |
+| `--set-tower-end-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | `tower_end_activation` (a pre-activation last block group only) | none (activations have no parameters) |
+| `--set-feature-skip-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | `feature_skip_activation` (a compress fusion node routed to a head only) | none (activations have no parameters) |
+| `--set-policy-head-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | `policy_head_activation` (`intermediate_conv` / `fc_bottleneck` only) | none (activations have no parameters) |
+| `--set-value-head-conv-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | `value_head_conv_activation` | none (activations have no parameters) |
+| `--set-value-head-fc1-hidden-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | `value_head_fc1_hidden_activation` | none (activations have no parameters) |
 | `--set-rezero-alpha-init` | a number `>= 0` | `block_groups[].rezero_alpha_init` on groups with ReZero | `blocks.<i>.rezero_alpha` (the one-element α tensor) of every block in an affected group, set to exactly the value |
 | `--set-rezero-alpha-cap` | a number `> 0` | `block_groups[].rezero_alpha_cap` on groups with ReZero | none (the cap has no parameters) |
 | `--set-neutral-init` | `all` | the Neutral init set (below) on every block group and head; not the draw prior | the tensors of every option the set changes |
@@ -141,7 +148,9 @@ back to `he`) uses the tensor's own `init/<name>` stream under the init seed.
 
 Operations run in the order listed above, so `--set-activation X --set-se-activation Y`
 gives activation X with an FC1 activation of Y, and passing the same value to both gives
-that activation everywhere. `--set-neutral-init` runs before the per-option operations,
+that activation everywhere. The per-site setters run after `--set-activation`, so
+`--set-activation X --set-value-head-fc1-hidden-activation Y` gives X everywhere except
+the value FC1 hidden layer, which gets Y. `--set-neutral-init` runs before the per-option operations,
 so `--set-neutral-init all --set-value-head-final-init he` is the neutral set with the
 value head's final layer re-drawn. The SE gate (sigmoid) and the value output (softmax or tanh)
 are structural and don't change.
@@ -164,6 +173,15 @@ DrewsChessMachine --derive-model --from fresh.safetensors --set-activation leaky
 # The same fresh net with leaky ReLU at every hidden activation:
 DrewsChessMachine --derive-model --from fresh.safetensors --set-activation leaky_relu \
     --set-se-activation leaky_relu --out fresh-leaky.safetensors
+
+# Leaky ReLU heads on a ReLU tower (policy pre-block, value conv, value FC1 hidden):
+DrewsChessMachine --derive-model --from fresh.safetensors --set-policy-head-activation leaky_relu \
+    --set-value-head-conv-activation leaky_relu --set-value-head-fc1-hidden-activation leaky_relu \
+    --out fresh-leaky-heads.safetensors
+
+# Leaky ReLU everywhere except a ReLU value FC1 hidden layer:
+DrewsChessMachine --derive-model --from fresh.safetensors --set-activation leaky_relu \
+    --set-value-head-fc1-hidden-activation relu --out fresh-leaky-relu-fc1.safetensors
 
 # Zero-initialized ReZero (every α tensor exactly 0) with cap 1.0:
 DrewsChessMachine --derive-model --from fresh.safetensors --set-rezero-alpha-init 0 \
@@ -213,8 +231,10 @@ DrewsChessMachine --replay-corpus <corpus> --start-model fresh-beta0.safetensors
   (`--set-rezero-alpha-init`, `--set-rezero-alpha-cap`), a group that is not
   post-activation (`--set-branch-output-init`), a group that does not change width
   (`--set-skip-projection-init`), a draw prior on a scalar value head, or
-  `does_not_apply` as the value of `--set-activation` or `--set-se-activation` (it marks a
-  site the topology lacks; it is not an activation function).
+  `does_not_apply` as the value of `--set-activation`, `--set-se-activation` or a per-site
+  setter (it marks a site the topology lacks; it is not an activation function), or a
+  per-site setter on a site the model's topology lacks (the error names why it is absent,
+  e.g. `--set-stem-activation` on a pre-activation tower).
 - The output is decoded back through the normal loader before it is written.
 
 ## Grafting onto another architecture (`--graft-to`)

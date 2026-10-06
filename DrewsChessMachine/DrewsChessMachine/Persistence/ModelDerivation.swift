@@ -120,6 +120,7 @@ enum ModelDerivation {
         SetSEBetaInitDeriveOperation.kind,
         SetActivationDeriveOperation.kind,
         SetSEActivationDeriveOperation.kind,
+    ] + SetSiteActivationDeriveOperation.kinds + [
         SetRezeroAlphaInitDeriveOperation.kind,
         SetRezeroAlphaCapDeriveOperation.kind,
         SetNeutralInitDeriveOperation.kind,
