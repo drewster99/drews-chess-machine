@@ -15,8 +15,6 @@ enum LichessBotChallengeDecision: Equatable, Sendable {
 struct LichessBotChallengeContext: Sendable, Equatable {
     /// The bot is Online: not Draining, not cooling down from a 429.
     var acceptingNewGames: Bool
-    /// A model generation is ready to play (plan E15).
-    var modelReady: Bool
     var activeGames: Int
     /// Games and challenges committed per lowercased opponent id.
     var activeGamesByOpponent: [String: Int]
@@ -49,9 +47,6 @@ enum LichessBotChallengePolicy {
         // Bot state.
         if !context.acceptingNewGames {
             return .decline(.later, rule: "not accepting new games")
-        }
-        if !context.modelReady {
-            return .decline(.later, rule: "model not ready")
         }
 
         // What DCM cannot play at all.

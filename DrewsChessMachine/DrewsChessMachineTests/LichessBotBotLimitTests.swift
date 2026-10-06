@@ -38,7 +38,7 @@ final class LichessBotBotLimitTests: XCTestCase {
         try LichessBotSettingsStore.save(settings, to: defaults)
         let token = LichessBotResumeFakeLichess.token
         let controller = LichessBotController(
-            modelProvider: LichessBotFakeModelProvider(snapshot: nil),
+            modelProvider: try await LichessBotFakeModelProvider.randomChampion(),
             defaults: defaults,
             dataDirectory: directory,
             services: LichessBotControllerServices(

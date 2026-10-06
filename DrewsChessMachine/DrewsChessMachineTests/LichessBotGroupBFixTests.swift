@@ -2,8 +2,8 @@ import XCTest
 @testable import DrewsChessMachine
 
 /// Live-game resume and anomaly de-duplication, per-opponent accounting of
-/// outgoing challenges, the accept re-check after a model build, and alarm
-/// de-duplication (Lichess bot plan §7, §13, §14.3a).
+/// outgoing challenges, and alarm de-duplication (Lichess bot plan §7, §13,
+/// §14.3a).
 final class LichessBotGroupBFixTests: XCTestCase {
 
     // MARK: - Live game
@@ -58,7 +58,7 @@ final class LichessBotGroupBFixTests: XCTestCase {
         let time: LichessBotManualTime
     }
 
-    private func makeHarness(provider: any LichessBotModelProvider, configure: (inout LichessBotSettings) -> Void) throws -> Harness {
+    private func makeHarness(provider: any LichessBotModelProvider, configure: (inout LichessBotSettings) -> Void) async throws -> Harness {
         var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
         configure(&settings)
@@ -66,7 +66,7 @@ final class LichessBotGroupBFixTests: XCTestCase {
         let time = LichessBotManualTime()
         let account = LichessBotFakeAccountAPI(script: [.open(lines: [])])
         let gate = LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in }
-        let slots = LichessBotModelSlots(provider: provider, time: time) { _ in }
+        let slots = try await LichessBotModelSlots.prepare(for: frozen.model, provider: provider, time: time, log: { _ in })
         let events = SyncBox<[LichessBotManagerEvent]>([])
         let manager = LichessBotSessionManager(
             accountAPI: account,
@@ -106,7 +106,7 @@ final class LichessBotGroupBFixTests: XCTestCase {
     // MARK: - Per-opponent accounting
 
     func testPendingOutgoingChallengeCountsAgainstThatOpponent() async throws {
-        let h = try makeHarness(provider: LichessBotFakeModelProvider.unbuildableChampion()) { settings in
+        let h = try await makeHarness(provider: try await LichessBotFakeModelProvider.randomChampion()) { settings in
             settings.challenge.maxConcurrentGames = 4
             settings.challenge.maxSimultaneousGamesPerOpponent = 1
         }
@@ -129,7 +129,7 @@ final class LichessBotGroupBFixTests: XCTestCase {
     }
 
     func testReservationCountsUntilReleasedOrSent() async throws {
-        let h = try makeHarness(provider: LichessBotFakeModelProvider.unbuildableChampion()) { settings in
+        let h = try await makeHarness(provider: try await LichessBotFakeModelProvider.randomChampion()) { settings in
             settings.challenge.maxConcurrentGames = 4
             settings.challenge.maxSimultaneousGamesPerOpponent = 1
         }
@@ -161,61 +161,6 @@ final class LichessBotGroupBFixTests: XCTestCase {
         XCTAssertEqual(ids, ["sent"])
         let afterSend = await h.manager.reserveOutgoingChallenge(against: "bob", perOpponentLimit: 2)
         XCTAssertEqual(afterSend.committedBefore, 1, "counted once, not as both a reservation and a pending challenge")
-    }
-
-    // MARK: - Accept re-check after the model build
-
-    /// A champion whose snapshot waits until the test releases it.
-    private final class GatedModelProvider: LichessBotModelProvider, @unchecked Sendable {
-        private let snapshot: LichessBotWeightsSnapshot
-        let latch = LichessBotTestLatch()
-        let entered = SyncBox<Bool>(false)
-
-        init(snapshot: LichessBotWeightsSnapshot) {
-            self.snapshot = snapshot
-        }
-
-        func championModelID() async -> String? {
-            snapshot.modelID
-        }
-
-        func championSnapshot() async throws -> LichessBotWeightsSnapshot {
-            entered.value = true
-            await latch.wait()
-            return snapshot
-        }
-
-        func trainerAvailable() async -> Bool {
-            false
-        }
-
-        func trainerSnapshot() async throws -> LichessBotWeightsSnapshot {
-            throw LichessBotModelError.noTrainer
-        }
-    }
-
-    func testAcceptRechecksAcceptingAfterTheModelBuild() async throws {
-        let base = try await LichessBotFakeModelProvider.randomChampion()
-        let provider = GatedModelProvider(snapshot: try await base.championSnapshot())
-        let h = try makeHarness(provider: provider) { settings in
-            settings.challenge.maxConcurrentGames = 4
-        }
-        let run = Task { await h.manager.run() }
-        defer { run.cancel() }
-        try await waitUntil("the event stream is open") { await h.account.opens == 1 }
-
-        await h.account.send(challengeLine(id: "c1", challenger: "alice"))
-        try await waitUntil("the model build has started") { provider.entered.value }
-        await h.manager.setAcceptingNewGames(false)
-        provider.latch.open()
-        try await waitUntil("the challenge is answered") { await h.account.declined.count == 1 }
-
-        let accepted = await h.account.accepted
-        XCTAssertEqual(accepted, [])
-        let reasons = await h.account.declineReasons
-        XCTAssertEqual(reasons, [.later])
-        let awaiting = await h.manager.acceptedAwaitingStartIDs()
-        XCTAssertEqual(awaiting, [])
     }
 
     // MARK: - Alarms

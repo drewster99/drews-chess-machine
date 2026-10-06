@@ -535,6 +535,12 @@ Each edit only adapts a test to the new invariant (a generation exists before th
 - **Left unused, not deleted:** `LichessBotFakeModelProvider.unbuildableChampion()` (`LichessBotSessionManagerTests.swift:114-123`) has no caller after the swaps above; removing it is a test-file deletion and needs the owner's approval like the rest.
 - **Exact list for approval.** Deletions: `LichessBotSessionManagerTests.testDeclinesLaterWithoutAModel`; `LichessBotGroupBFixTests.testAcceptRechecksAcceptingAfterTheModelBuild` with `GatedModelProvider`, its MARK and the doc-comment clause; the `modelReady: false` assertion of `LichessBotPolicyTests.testDrainingAndModelNotReadyDeclineLater` (plus its rename). Edits: the provider swaps (eleven go-online sites in nine files; nine `unbuildableChampion()` → `randomChampion()` swaps at `LichessBotSessionManagerTests.swift:217`, `:245`, `LichessBotPhase5CoreTests.swift:197`, `LichessBotMultipleChallengesTests.swift:28`, `LichessBotReviewFixTests.swift:111`, `:213`, `:248`, `LichessBotGroupBFixTests.swift:109`, `:132`), the slot constructions rewritten to `prepare` (nine sites in five files: three harnesses and six inline constructions), the `snapshotCount` 0 → 1 change, the `LichessBotPolicyTests` context-builder change and the `LichessBotGameSessionFaultTests` parameter type.
 
+**Further existing-test edits the implementation needed** (approved by the owner on 2026-10-06 on condition that each is listed here with its reason; none weakens an assertion, none deletes a test):
+- `LichessBotChallengeQueueControllerTests.makeOnlineController` and `LichessBotSessionManagerTests.makeHarness`: their provider parameter's default (`LichessBotFakeModelProvider(snapshot: nil)`) is removed rather than swapped, because a default argument cannot `await` `randomChampion()`. The call sites that relied on it now pass `try await LichessBotFakeModelProvider.randomChampion()` (four in each file: `LichessBotChallengeQueueControllerTests` `:206`, `:258`, `:277`, `:304`; `LichessBotSessionManagerTests` `testChallengeResponseBudget` and the three takeover tests).
+- `LichessBotNotesAtGoOnlineTests.makeController` and `LichessBotOfflineQuitTests.makeController` were synchronous, so the swap made them `async` and their call sites `try await` (two each).
+- `LichessBotQuitWithdrawalTests` (`:106`, `:136`): the controller factory closure is synchronous, so the provider is made just before it (`let model = try await …randomChampion()`) and the closure passes `model`.
+- The inline slot constructions in `LichessBotMultipleChallengesTests` and `LichessBotReviewFixTests` prepare for `LichessBotModelSettings.testBaseline()` (the champion source their fake serves); the harnesses with a settings value in scope prepare for its `model`.
+
 ---
 
 ## 6. Validation
@@ -703,3 +709,18 @@ Should-fix (left to implementation, not edited):
 - Going online only clears the launch-time leftover report when it succeeds, but `noteLeftoverJournalsAtLaunch` runs once per launch and skips while connecting (`:897-900`). If the operator goes online before it ran and the build fails, no leftover report is shown until relaunch. Pre-existing for every going-online failure; more likely now that a missing champion fails going online.
 - `LichessBotFakeModelProvider.unbuildableChampion()` is left with no caller (removing it needs approval), and `testAcceptsThenPlaysTheGame`'s doc comment (`:274-275`) becomes inaccurate.
 
+
+---
+
+## 12. Implementation decisions
+
+Decisions taken while implementing, where the plan left a choice open or the code needed something it did not spell out. Each follows the owner's rules and the plan's intent.
+
+**P-ready**
+- **Going-online progress is tied to an attempt counter, not `runtimeGeneration`.** `runtimeGeneration` moves only when a runtime starts or is torn down, and a failed attempt tears down nothing, so a late progress hop from a failed attempt could land in the next attempt before that one bumps it. `goingOnlineAttempt` is bumped at the start of every `goOnline`; a hop applies only to its own attempt while it is still preparing the model.
+- **A third going-online step, `.startingSession` ("Starting the session").** After the model is built, going online still seeds the day's counts and starts the streams; the operator sees that the model step finished. It also gives `testGoOfflineAfterThePreparedModelStillCancels` a point to wait for (the press must land after `prepare` returned).
+- **`LichessBotController.journalQueue` is internal, not private,** so that test can hold the journal queue and stop going online at the leftover-journal read. Nothing in the app uses it outside the controller.
+- **`LichessBotModelSourceKind.displayName`** is the one place the sources' names live; the source picker, the model card headline, the going-online step and the switch status read it.
+- **The switch status view also shows the last failed refresh** (with its retry time) when no switch is pending: a vanished champion or a failing live-trainer snapshot is then visible on the model card, not only in the alarms.
+- **A failed build uses up no generation number** (as before): the builder returns the built network and the slots number it when they publish it.
+- **`goingOnlineCancelled` / `shutDownWhileGoingOnline` count as "stopped"** in the challenge queue's error classification; no send can throw them, but the switch must be exhaustive and "stopped" keeps the entry.

@@ -3,9 +3,9 @@
 enum BuildInfo {
     static let buildNumber = 2347
     static let buildDate = "2026-10-06"
-    static let buildTimestamp = "2026-10-06T15:53:00-0500"
+    static let buildTimestamp = "2026-10-06T13:42:31-0500"
     static let gitHash = "5138c628"
-    static let gitBranch = "worktree-agent-a5aae13e873e3a8a4"
+    static let gitBranch = "main"
     static let gitDirty = true
 
     /// One-line human-readable summary, e.g. "build 237 (abc1234*) 2026-04-17".

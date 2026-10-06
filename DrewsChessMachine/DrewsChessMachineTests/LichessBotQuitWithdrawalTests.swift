@@ -101,9 +101,10 @@ final class LichessBotQuitWithdrawalTests: XCTestCase {
 
     func testShutdownWaitsForTheWithdrawalOfAnUnansweredChallenge() async throws {
         let lichess = LichessBotWithdrawalHoldingLichess()
+        let model = try await LichessBotFakeModelProvider.randomChampion()
         let (controller, root) = try await makeOnlineController(lichess: lichess) { defaults, directory, services in
             LichessBotController(
-                modelProvider: LichessBotFakeModelProvider(snapshot: nil),
+                modelProvider: model,
                 defaults: defaults,
                 dataDirectory: directory,
                 services: services
@@ -131,9 +132,10 @@ final class LichessBotQuitWithdrawalTests: XCTestCase {
     func testShutdownGivesUpOnAWithdrawalAfterItsLimitAndLogsIt() async throws {
         let lichess = LichessBotWithdrawalHoldingLichess()
         let limit = Duration.milliseconds(500)
+        let model = try await LichessBotFakeModelProvider.randomChampion()
         let (controller, root) = try await makeOnlineController(lichess: lichess) { defaults, directory, services in
             LichessBotController(
-                modelProvider: LichessBotFakeModelProvider(snapshot: nil),
+                modelProvider: model,
                 defaults: defaults,
                 dataDirectory: directory,
                 services: services,

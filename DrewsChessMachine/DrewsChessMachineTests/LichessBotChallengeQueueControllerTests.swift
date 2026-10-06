@@ -145,7 +145,7 @@ final class LichessBotChallengeQueueControllerTests: XCTestCase {
     /// fake Lichess, all removed after the test.
     private func makeOnlineController(
         lichess: LichessBotFakeLichess = LichessBotFakeLichess(),
-        modelProvider: LichessBotFakeModelProvider = LichessBotFakeModelProvider(snapshot: nil),
+        modelProvider: LichessBotFakeModelProvider,
         finishedGameHold: Duration = LichessBotController.finishedGameHold,
         configure: (inout LichessBotSettings) -> Void
     ) async throws -> LichessBotController {
@@ -203,7 +203,7 @@ final class LichessBotChallengeQueueControllerTests: XCTestCase {
     /// wait for a slot.
     func testSelectingMorePlayersThanFreeSlotsSendsThoseThatFitAndQueuesTheRest() async throws {
         let lichess = LichessBotFakeLichess()
-        let controller = try await makeOnlineController(lichess: lichess) { settings in
+        let controller = try await makeOnlineController(lichess: lichess, modelProvider: try await LichessBotFakeModelProvider.randomChampion()) { settings in
             settings.challenge.maxConcurrentGames = 3
         }
         try await controller.sendChallenge(to: "zed", request: request)
@@ -255,7 +255,7 @@ final class LichessBotChallengeQueueControllerTests: XCTestCase {
     /// decline cool-down in the player notes.
     func testADeclineSendsTheNextEntryAndRecordsTheCooldown() async throws {
         let lichess = LichessBotFakeLichess()
-        let controller = try await makeOnlineController(lichess: lichess) { settings in
+        let controller = try await makeOnlineController(lichess: lichess, modelProvider: try await LichessBotFakeModelProvider.randomChampion()) { settings in
             settings.challenge.maxConcurrentGames = 1
             settings.challenge.gamesReservedForHumans = 0
             settings.matchmaking.declineCooldownHours = 6
@@ -274,7 +274,7 @@ final class LichessBotChallengeQueueControllerTests: XCTestCase {
     /// an answer.
     func testGoingOfflineClearsTheQueueAndWithdrawsPendingChallenges() async throws {
         let lichess = LichessBotFakeLichess()
-        let controller = try await makeOnlineController(lichess: lichess) { settings in
+        let controller = try await makeOnlineController(lichess: lichess, modelProvider: try await LichessBotFakeModelProvider.randomChampion()) { settings in
             settings.challenge.maxConcurrentGames = 2
             settings.challenge.gamesReservedForHumans = 0
         }
@@ -301,7 +301,7 @@ final class LichessBotChallengeQueueControllerTests: XCTestCase {
             #"{"id":"fitbot","username":"FitBot","title":"BOT","perfs":{"blitz":{"games":50,"rating":1600,"rd":60,"prog":0}}}"#,
             #"{"id":"farbot","username":"FarBot","title":"BOT","perfs":{"blitz":{"games":50,"rating":2500,"rd":60,"prog":0}}}"#,
         ].joined(separator: "\n") + "\n"
-        let controller = try await makeOnlineController(lichess: lichess) { settings in
+        let controller = try await makeOnlineController(lichess: lichess, modelProvider: try await LichessBotFakeModelProvider.randomChampion()) { settings in
             settings.challenge.maxConcurrentGames = 2
             settings.challenge.gamesReservedForHumans = 1
             settings.matchmaking.timeControls = [.blitz5plus3]

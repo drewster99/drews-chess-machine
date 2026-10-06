@@ -163,7 +163,7 @@ final class LichessBotGameSessionFaultTests: XCTestCase {
     private func makeHarness(
         server: LichessBotFakeGameServer,
         source: any LichessBotMoveSource = LichessBotScriptedMoveSource(),
-        latestMoveSource: @escaping @Sendable () async -> (any LichessBotMoveSource)? = { nil },
+        latestMoveSource: @escaping @Sendable () async -> any LichessBotMoveSource = { LichessBotScriptedMoveSource() },
         pacing: SyncBox<LichessBotMovePacingSnapshot> = SyncBox(LichessBotMovePacingSnapshot()),
         configure: (inout LichessBotSettings) -> Void = { _ in }
     ) -> Harness {

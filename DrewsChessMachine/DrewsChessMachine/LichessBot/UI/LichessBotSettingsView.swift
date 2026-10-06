@@ -397,10 +397,9 @@ struct LichessBotModelSettingsSection: View {
     var body: some View {
         Section("Model — applies to the next game") {
             Picker("Source", selection: $settings.source) {
-                Text("Champion").tag(LichessBotModelSourceKind.champion)
-                Text("Trainer snapshot").tag(LichessBotModelSourceKind.trainerSnapshot)
-                Text("Live trainer").tag(LichessBotModelSourceKind.liveTrainer)
-                Text("Model file").tag(LichessBotModelSourceKind.file)
+                ForEach(LichessBotModelSourceKind.allCases, id: \.self) { kind in
+                    Text(kind.displayName).tag(kind)
+                }
             }
             // Rows for other sources stay in place, disabled, so the form
             // doesn't reshuffle as the source changes.

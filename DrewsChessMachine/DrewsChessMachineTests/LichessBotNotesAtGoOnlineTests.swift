@@ -31,7 +31,7 @@ final class LichessBotNotesAtGoOnlineTests: XCTestCase {
     /// A controller over a fresh data folder (prepared by `prepare` before
     /// the controller exists), not yet online; everything is removed after
     /// the test.
-    private func makeController(lichess: LichessBotResumeFakeLichess, prepare: (LichessBotDataDirectory) throws -> Void) throws -> (controller: LichessBotController, directory: LichessBotDataDirectory) {
+    private func makeController(lichess: LichessBotResumeFakeLichess, prepare: (LichessBotDataDirectory) throws -> Void) async throws -> (controller: LichessBotController, directory: LichessBotDataDirectory) {
         let defaults = try makeTemporaryDefaults()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LichessBotNotesAtGoOnlineTests-\(UUID().uuidString)", isDirectory: true)
         let directory = LichessBotDataDirectory(root: root)
@@ -44,7 +44,7 @@ final class LichessBotNotesAtGoOnlineTests: XCTestCase {
         try LichessBotSettingsStore.save(settings, to: defaults)
         let token = LichessBotResumeFakeLichess.token
         let controller = LichessBotController(
-            modelProvider: LichessBotFakeModelProvider(snapshot: nil),
+            modelProvider: try await LichessBotFakeModelProvider.randomChampion(),
             defaults: defaults,
             dataDirectory: directory,
             services: LichessBotControllerServices(
@@ -69,7 +69,7 @@ final class LichessBotNotesAtGoOnlineTests: XCTestCase {
 
     func testGoingOnlineWithoutTheBotWindowLoadsNotesAndChallengeOutcomes() async throws {
         let lichess = LichessBotResumeFakeLichess()
-        let (controller, _) = try makeController(lichess: lichess) { directory in
+        let (controller, _) = try await makeController(lichess: lichess) { directory in
             var notes = LichessBotPlayerNotes()
             notes.toggleFavorite("maia1")
             try notes.save(to: directory.playerNotesURL)
@@ -87,7 +87,7 @@ final class LichessBotNotesAtGoOnlineTests: XCTestCase {
         let lichess = LichessBotResumeFakeLichess()
         let refusal = Self.refusalText
         lichess.challengeRefusals.modify { $0["maia1"] = refusal }
-        let (controller, directory) = try makeController(lichess: lichess) { directory in
+        let (controller, directory) = try await makeController(lichess: lichess) { directory in
             try Data("not player notes".utf8).write(to: directory.playerNotesURL)
         }
         await controller.goOnline()

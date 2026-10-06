@@ -111,17 +111,6 @@ final class LichessBotFakeModelProvider: LichessBotModelProvider, @unchecked Sen
         ))
     }
 
-    /// A champion that exists but whose weights can't build a network:
-    /// enough for decisions that must never build one.
-    static func unbuildableChampion() -> LichessBotFakeModelProvider {
-        LichessBotFakeModelProvider(snapshot: LichessBotWeightsSnapshot(
-            weights: [],
-            architecture: .current,
-            modelID: "20260928-1-TEST",
-            trainingStep: nil
-        ))
-    }
-
     func championModelID() async -> String? {
         snapshot?.modelID
     }
@@ -156,10 +145,10 @@ final class LichessBotSessionManagerTests: XCTestCase {
 
     private func makeHarness(
         script: [LichessBotFakeAccountAPI.Connection],
-        provider: LichessBotFakeModelProvider = LichessBotFakeModelProvider(snapshot: nil),
+        provider: LichessBotFakeModelProvider,
         gameServer: LichessBotFakeGameServer? = nil,
         configure: (inout LichessBotSettings) -> Void = { _ in }
-    ) throws -> Harness {
+    ) async throws -> Harness {
         var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
         configure(&settings)
@@ -167,7 +156,7 @@ final class LichessBotSessionManagerTests: XCTestCase {
         let time = LichessBotManualTime()
         let account = LichessBotFakeAccountAPI(script: script)
         let gate = LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in }
-        let slots = LichessBotModelSlots(provider: provider, time: time) { _ in }
+        let slots = try await LichessBotModelSlots.prepare(for: settings.model, provider: provider, time: time, log: { _ in })
         let events = SyncBox<[LichessBotManagerEvent]>([])
         let observer = LichessBotRecordingGameObserver()
         let manager = LichessBotSessionManager(
@@ -214,8 +203,8 @@ final class LichessBotSessionManagerTests: XCTestCase {
     // MARK: - Challenges
 
     func testDeclinesWhatDCMCannotPlay() async throws {
-        let provider = LichessBotFakeModelProvider.unbuildableChampion()
-        let h = try makeHarness(
+        let provider = try await LichessBotFakeModelProvider.randomChampion()
+        let h = try await makeHarness(
             script: [.openThenClose(lines: [
                 challengeLine(id: "c1", variant: "chess960"),
                 challengeLine(id: "c2", rated: true),
@@ -229,21 +218,12 @@ final class LichessBotSessionManagerTests: XCTestCase {
         let accepted = await h.account.accepted
         XCTAssertEqual(reasons, [.standard, .casual])
         XCTAssertEqual(accepted, [])
-        XCTAssertEqual(provider.snapshotCount.value, 0, "declines never build a network")
-    }
-
-    func testDeclinesLaterWithoutAModel() async throws {
-        let h = try makeHarness(script: [.openThenClose(lines: [challengeLine(id: "c1")])])
-        let run = Task { await h.manager.run() }
-        try await waitUntil("the manager stops", advancing: h.time) { stopReason(h) != nil }
-        await run.value
-        let reasons = await h.account.declineReasons
-        XCTAssertEqual(reasons, [.later])
+        XCTAssertEqual(provider.snapshotCount.value, 1, "declines build nothing beyond the generation prepared before going online")
     }
 
     func testDrainingDeclinesLater() async throws {
-        let provider = LichessBotFakeModelProvider.unbuildableChampion()
-        let h = try makeHarness(script: [.openThenClose(lines: [challengeLine(id: "c1")])], provider: provider)
+        let provider = try await LichessBotFakeModelProvider.randomChampion()
+        let h = try await makeHarness(script: [.openThenClose(lines: [challengeLine(id: "c1")])], provider: provider)
         await h.manager.setAcceptingNewGames(false)
         let run = Task { await h.manager.run() }
         try await waitUntil("the manager stops", advancing: h.time) { stopReason(h) != nil }
@@ -257,7 +237,7 @@ final class LichessBotSessionManagerTests: XCTestCase {
     func testChallengeResponseBudget() async throws {
         let budget = LichessBotChallengeSettings.testBaseline().challengeResponseBudgetPerMinute
         let lines = (0...budget).map { challengeLine(id: "c\($0)", variant: "chess960") }
-        let h = try makeHarness(script: [.open(lines: lines)])
+        let h = try await makeHarness(script: [.open(lines: lines)], provider: try await LichessBotFakeModelProvider.randomChampion())
         let run = Task { await h.manager.run() }
         try await waitUntil("every challenge is handled") {
             h.events.value.filter { event in
@@ -271,13 +251,13 @@ final class LichessBotSessionManagerTests: XCTestCase {
         await run.value
     }
 
-    /// Accepting builds the model generation first (E15); the game that
-    /// follows plays with that same generation, and its end is reported.
+    /// The game that follows an acceptance plays with the generation
+    /// prepared before going online (E15), and its end is reported.
     func testAcceptsThenPlaysTheGame() async throws {
         let provider = try await LichessBotFakeModelProvider.randomChampion()
         let server = try LichessBotFakeGameServer()
         await server.setScript(afterOurMoves: [.finish(status: "resign", winner: "white")])
-        let h = try makeHarness(
+        let h = try await makeHarness(
             script: [.open(lines: [challengeLine(id: "c1"), gameStartLine()])],
             provider: provider,
             gameServer: server
@@ -309,7 +289,7 @@ final class LichessBotSessionManagerTests: XCTestCase {
         let provider = try await LichessBotFakeModelProvider.randomChampion()
         let server = try LichessBotFakeGameServer()
         await server.setScript(afterOurMoves: [.opponentThinks])
-        let h = try makeHarness(script: [.open(lines: [gameStartLine(), gameStartLine()])], provider: provider, gameServer: server)
+        let h = try await makeHarness(script: [.open(lines: [gameStartLine(), gameStartLine()])], provider: provider, gameServer: server)
         let run = Task { await h.manager.run() }
         try await waitUntil("the first move is posted") { await server.record().acceptedPlies == [0] }
         // Both gameStart lines were sent before the sentinel, so the
@@ -336,7 +316,7 @@ final class LichessBotSessionManagerTests: XCTestCase {
         let provider = try await LichessBotFakeModelProvider.randomChampion()
         let server = try LichessBotFakeGameServer()
         await server.setScript(afterOurMoves: [.opponentThinks])
-        let h = try makeHarness(script: [.open(lines: [gameStartLine()])], provider: provider, gameServer: server)
+        let h = try await makeHarness(script: [.open(lines: [gameStartLine()])], provider: provider, gameServer: server)
         let run = Task { await h.manager.run() }
         try await waitUntil("the first move is posted") { await server.record().acceptedPlies == [0] }
         await server.endSilently(status: "resign", winner: "white")
@@ -355,7 +335,7 @@ final class LichessBotSessionManagerTests: XCTestCase {
     // MARK: - Takeover (plan §6.1)
 
     func testRepeatedImmediateServerClosesAreATakeover() async throws {
-        let h = try makeHarness(script: Array(repeating: .openThenClose(lines: []), count: 5))
+        let h = try await makeHarness(script: Array(repeating: .openThenClose(lines: []), count: 5), provider: try await LichessBotFakeModelProvider.randomChampion())
         let run = Task { await h.manager.run() }
         try await waitUntil("the manager stops", advancing: h.time, by: .milliseconds(500)) { stopReason(h) != nil }
         await run.value
@@ -368,7 +348,7 @@ final class LichessBotSessionManagerTests: XCTestCase {
     }
 
     func testFailedConnectsAreNotATakeover() async throws {
-        let h = try makeHarness(script: Array(repeating: .fail, count: 5))
+        let h = try await makeHarness(script: Array(repeating: .fail, count: 5), provider: try await LichessBotFakeModelProvider.randomChampion())
         let run = Task { await h.manager.run() }
         try await waitUntil("the manager stops", advancing: h.time, by: .seconds(10)) { stopReason(h) != nil }
         await run.value
@@ -379,7 +359,7 @@ final class LichessBotSessionManagerTests: XCTestCase {
     func testALongStreamResetsTheTakeoverCount() async throws {
         let threshold = LichessBotSessionManager.takeoverThreshold
         let short = Array(repeating: LichessBotFakeAccountAPI.Connection.openThenClose(lines: []), count: threshold - 1)
-        let h = try makeHarness(script: short + [.open(lines: [])] + short)
+        let h = try await makeHarness(script: short + [.open(lines: [])] + short, provider: try await LichessBotFakeModelProvider.randomChampion())
         let run = Task { await h.manager.run() }
         try await waitUntil("the long stream opens", advancing: h.time, by: .milliseconds(500)) { await h.account.opens == threshold }
         // Keep-alives hold the stream open past the takeover window.

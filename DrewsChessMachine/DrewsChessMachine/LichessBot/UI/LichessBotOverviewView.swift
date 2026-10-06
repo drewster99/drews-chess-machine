@@ -56,6 +56,10 @@ struct LichessBotControlsCard: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .shown(controller.isFilingRecords)
+                    Text(controller.goingOnlineStatusText ?? "")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .shown(controller.goingOnlineStatusText != nil)
                     Text(errorText)
                         .font(.callout)
                         .foregroundStyle(.red)
@@ -84,7 +88,7 @@ struct LichessBotControlsCard: View {
                     Button("Go Offline") {
                         Task { await controller.goOffline() }
                     }
-                    .disabled(!controller.isRunning)
+                    .disabled(!controller.canGoOffline)
                     Button("Resign All…", role: .destructive) {
                         confirmingResignAll = true
                     }
@@ -266,7 +270,10 @@ struct LichessBotModelCard: View {
     var body: some View {
         GroupBox("Model") {
             VStack(alignment: .leading, spacing: 4) {
-                Text(controller.settings.model.source.rawValue)
+                // The playing generation's own source: during a switch the
+                // settings already name the next one, which the switch
+                // status below reports.
+                Text(controller.generation?.sourceKind.displayName ?? controller.settings.model.source.displayName)
                     .font(.headline)
                 Text(controller.generation.map { "\($0.modelID) · generation \($0.generationID)" } ?? "No generation built yet")
                     .font(.system(.callout, design: .monospaced))
@@ -277,6 +284,7 @@ struct LichessBotModelCard: View {
                 Text(controller.generation.map { "snapshot \($0.snapshotAt.formatted(date: .omitted, time: .standard))" } ?? "")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                LichessBotModelSwitchStatusView(controller: controller)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
