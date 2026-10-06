@@ -1,8 +1,12 @@
 import json, struct, os, math, sys
 import numpy as np
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "scripts"))
+import dcm_arch
 M=os.path.expanduser("~/Library/Application Support/DrewsChessMachine/Models")
 def load(f):
     b=open(f,'rb'); n=struct.unpack('<Q',b.read(8))[0]; h=json.loads(b.read(n)); md=h.pop('__metadata__'); base=8+n
+    # The BN sites below are labelled ReLU-fed without reading a key.
+    dcm_arch.require_relu(md, f, ('tower_end_activation', 'policy_head_activation', 'value_head_conv_activation'), block_main_path=True)
     raw=open(f,'rb').read()
     out={}
     for k,v in h.items():

@@ -289,7 +289,7 @@ final class RuntimeArchReachTests: XCTestCase {
     func testSiluAndGeluChangeForwardPassVsReLU() async throws {
         try requireMetal()
         var reluArch = NetworkArchitecture.current
-        reluArch.activationFunction = .relu
+        try reluArch.setActivationAtEveryExistingSite(.relu)
 
         // One random weight set, shared across all three activations. Loading
         // it over each net overwrites the build-time BN warmup stats too, so
@@ -301,7 +301,7 @@ final class RuntimeArchReachTests: XCTestCase {
 
         func policy(_ activation: ActivationFunction) async throws -> [Float] {
             var arch = reluArch
-            arch.activationFunction = activation
+            try arch.setActivationAtEveryExistingSite(activation)
             let net = try ChessMPSNetwork(.randomWeights(initSeed: 6), arch: arch)
             try await net.network.loadWeights(weights)
             let box = SyncBox<[Float]>([])
@@ -328,7 +328,7 @@ final class RuntimeArchReachTests: XCTestCase {
         // gelu's exact erf path is the most exotic activation op; exercise it in
         // the training graph (not just inference) to prove it builds and runs.
         var arch = NetworkArchitecture.current
-        arch.activationFunction = .gelu
+        try arch.setActivationAtEveryExistingSite(.gelu)
         let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: arch, initialization: .seeded(initSeed: 1))
         let timing = try await trainer.trainStep(batchSize: 8)
         XCTAssertTrue(timing.policyLoss.isFinite, "gelu policy loss must be finite")

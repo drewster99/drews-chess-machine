@@ -118,10 +118,10 @@ final class LeakyReLUTests: XCTestCase {
     func testLeakyReLUChangesTheForwardPassAndTrains() async throws {
         _ = try requireMetal()
         var reluArch = NetworkArchitecture.current
-        reluArch.activationFunction = .relu
+        try reluArch.setActivationAtEveryExistingSite(.relu)
         for index in reluArch.blockGroups.indices { reluArch.blockGroups[index].activationFunction = .relu }
         var leakyArch = reluArch
-        leakyArch.activationFunction = .leakyRelu
+        try leakyArch.setActivationAtEveryExistingSite(.leakyRelu)
         for index in leakyArch.blockGroups.indices { leakyArch.blockGroups[index].activationFunction = .leakyRelu }
 
         let reluNet = try ChessMPSNetwork(.randomWeights(initSeed: 1), arch: reluArch)
@@ -167,15 +167,17 @@ final class LeakyReLUTests: XCTestCase {
 
     func testSetActivationChangesEverySiteAndCopiesEveryTensor() throws {
         var source = NetworkArchitecture.current
-        source.activationFunction = .relu
+        try source.setMainActivationEverywhere(.relu)
         for index in source.blockGroups.indices { source.blockGroups[index].activationFunction = .relu }
         let sourceData = try encodedModel(source)
 
         let result = try derive(sourceData, to: .leakyRelu)
-        XCTAssertEqual(result.targetArchitecture.activationFunction, .leakyRelu)
+        for site in ArchitectureActivationSite.allCases {
+            XCTAssertEqual(result.targetArchitecture.activation(at: site), result.targetArchitecture.hasActivationSite(site) ? .leakyRelu : .doesNotApply, "\(site)")
+        }
         XCTAssertTrue(result.targetArchitecture.blockGroups.allSatisfy { $0.activationFunction == .leakyRelu })
         var expected = source
-        expected.activationFunction = .leakyRelu
+        try expected.setMainActivationEverywhere(.leakyRelu)
         for index in expected.blockGroups.indices { expected.blockGroups[index].activationFunction = .leakyRelu }
         XCTAssertEqual(result.targetArchitecture, expected, "only the activation fields may change")
         XCTAssertTrue(result.rewrites.isEmpty, "activations have no parameters")
@@ -194,7 +196,7 @@ final class LeakyReLUTests: XCTestCase {
 
     func testSetActivationRefusesANoOp() throws {
         var source = NetworkArchitecture.current
-        source.activationFunction = .leakyRelu
+        try source.setActivationAtEveryExistingSite(.leakyRelu)
         for index in source.blockGroups.indices { source.blockGroups[index].activationFunction = .leakyRelu }
         XCTAssertThrowsError(try derive(try encodedModel(source), to: .leakyRelu)) { error in
             guard case .operationNotApplicable? = error as? ModelDerivation.DeriveError else {

@@ -8,11 +8,12 @@ posset.pkl resampled to 4096 (seed 0); advantage from the model's fp64 value."""
 import sys, os, json, pickle, math, numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 from fwd16 import *
+import dcm_arch
 A = os.path.expanduser('~/Library/Application Support/DrewsChessMachine/')
-md, T = load(A + sys.argv[1]); arch = norm_arch(md['architecture']); T = {k: v for k, v in T.items() if not k.startswith('opt.')}
+md, T = load(A + sys.argv[1]); sites = dcm_arch.site_activations_md(md); arch = norm_arch_md(md); T = {k: v for k, v in T.items() if not k.startswith('opt.')}
 P = [p for p in pickle.load(open(POSSET, 'rb')) if p['src'] == 'corpus']
 B = 4096; idx = np.random.default_rng(0).integers(0, len(P), B); ui, cnt = np.unique(idx, return_counts=True)
-o = forward_batched(T, arch, np.stack([P[i]['x'] for i in ui]).astype(np.float64))
+o = forward_batched(T, arch, np.stack([P[i]['x'] for i in ui]).astype(np.float64), sites=sites)
 pv = softmax(o['vl_raw']); v = pv[:, 0] - pv[:, 2]
 lab = np.array([P[i]['label'] for i in ui]); z = np.array([{0: 1., 1: 0., 2: -1.}[l] for l in lab])
 Adv = z - v; rms = math.sqrt(max(np.sum(cnt * Adv ** 2) / B, 0.04) + 1e-6); an = Adv / rms; ap = np.maximum(an, 0); am = np.maximum(-an, 0)

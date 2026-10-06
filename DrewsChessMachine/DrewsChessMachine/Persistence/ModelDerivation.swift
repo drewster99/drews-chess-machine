@@ -735,14 +735,55 @@ struct SetSEBetaInitDeriveOperation: DeriveOperation {
     }
 }
 
+// MARK: - Activation values
+
+extension ModelDerivation {
+
+    /// Parses an activation operation's value: one of
+    /// `ActivationFunction.functions`. `does_not_apply` is refused with its
+    /// own message — it is a marker for a site the topology lacks, never a
+    /// function an operation can set — and any other unknown text is refused
+    /// naming the functions. The one parser every activation operation uses.
+    static func parseActivationFunctionValue(_ value: String, operation: String, setsWhat: String) throws -> ActivationFunction {
+        if value == ActivationFunction.doesNotApply.rawValue {
+            throw doesNotApplyRefusal(operation: operation, setsWhat: setsWhat)
+        }
+        guard let parsed = ActivationFunction(rawValue: value) else {
+            throw DeriveError.operationNotApplicable(
+                operation: operation,
+                detail: "value '\(value)' is not one of \(ActivationFunction.functionList)")
+        }
+        return parsed
+    }
+
+    /// The refusal of `does_not_apply` as an operation's value, at parse and
+    /// again at apply (an operation constructed directly never reaches the
+    /// parser).
+    static func doesNotApplyRefusal(operation: String, setsWhat: String) -> DeriveError {
+        DeriveError.operationNotApplicable(
+            operation: operation,
+            detail: "'\(ActivationFunction.doesNotApply.rawValue)' is not an activation function; it marks a site "
+                + "the topology lacks, and \(setsWhat)")
+    }
+
+    /// `ActivationFunction.functions` as an operation's value syntax.
+    static var activationFunctionValueSyntax: String {
+        ActivationFunction.functions.map(\.rawValue).joined(separator: "|")
+    }
+}
+
 // MARK: - Operation: set-activation
 
-/// Sets the main hidden activation: the tower-level `activation_function`
-/// (stem, tower end, both heads) and every block group's
-/// `activation_function` (block main path, `activation_gated` merge). No
-/// activation has parameters, so no tensor is rewritten: the derived file
-/// holds the source's weights bit-exact and differs only in the activation,
-/// which is what an activation A/B from one fresh net needs.
+/// Sets the main hidden activation everywhere: every architecture-level
+/// activation site the model has (stem, tower end, feature-skip fusion,
+/// policy head, value conv, value FC1 hidden — each only where the topology
+/// has it; an absent site stays `does_not_apply`) and every block group's
+/// `activation_function` (block main path, `activation_gated` merge). The
+/// rule is `NetworkArchitecture.setMainActivationEverywhere`, which the Build
+/// screen's "Use for every activation" applies too. No activation has
+/// parameters, so no tensor is rewritten: the derived file holds the
+/// source's weights bit-exact and differs only in the activation, which is
+/// what an activation A/B from one fresh net needs.
 ///
 /// The SE FC1 activation is a separate field (`se_activation`) with its own
 /// operation, `--set-se-activation`, and this one leaves it alone on every
@@ -757,27 +798,27 @@ struct SetSEBetaInitDeriveOperation: DeriveOperation {
 struct SetActivationDeriveOperation: DeriveOperation {
     let value: ActivationFunction
 
+    /// What this operation sets, for the `does_not_apply` refusal.
+    private static let setsWhat = "--set-activation sets only sites that exist"
+
     static let kind = DeriveOperationKind(
         name: "set-activation",
         flag: "--set-activation",
-        valueSyntax: ActivationFunction.allCases.map(\.rawValue).joined(separator: "|"),
-        summary: "Set the main hidden activation: the tower-level activation_function (stem, tower end, policy "
-            + "and value heads) and every block group's activation_function (block main path, activation_gated "
-            + "merge). The SE FC1 activation of groups with an SE block is not changed (use --set-se-activation; "
-            + "an SE-less group's se_activation follows, as validation requires). Activations have no "
-            + "parameters, so every tensor is copied bit-exact.",
-        changedArchitectureFields: [
-            "activation_function", "block_groups[].activation_function", "block_groups[].se_activation",
+        valueSyntax: ModelDerivation.activationFunctionValueSyntax,
+        summary: "Set the main hidden activation everywhere: every architecture-level site the model has (stem, "
+            + "tower end, feature-skip fusion, policy head, value conv, value FC1 hidden) and every block group's "
+            + "activation_function (block main path, activation_gated merge). A site the topology lacks stays "
+            + "does_not_apply. The SE FC1 activation of groups with an SE block is not changed (use "
+            + "--set-se-activation; an SE-less group's se_activation follows, as validation requires). "
+            + "Activations have no parameters, so every tensor is copied bit-exact.",
+        changedArchitectureFields: ArchitectureActivationSite.allCases.map(\.jsonKey) + [
+            "block_groups[].activation_function", "block_groups[].se_activation",
         ],
         rewrittenTensorsDescription: "none",
         acceptsGroupSelection: false,
         make: { value, _ in
-            guard let parsed = ActivationFunction(rawValue: value) else {
-                throw ModelDerivation.DeriveError.operationNotApplicable(
-                    operation: "set-activation",
-                    detail: "value '\(value)' is not one of \(ActivationFunction.allCases.map(\.rawValue).joined(separator: ", "))")
-            }
-            return SetActivationDeriveOperation(value: parsed)
+            SetActivationDeriveOperation(value: try ModelDerivation.parseActivationFunctionValue(
+                value, operation: "set-activation", setsWhat: SetActivationDeriveOperation.setsWhat))
         })
 
     var kindName: String { Self.kind.name }
@@ -785,18 +826,21 @@ struct SetActivationDeriveOperation: DeriveOperation {
     var recordedArguments: [String: String] { ["value": value.rawValue] }
 
     func apply(to architecture: NetworkArchitecture) throws -> NetworkArchitecture {
-        let alreadySet = architecture.activationFunction == value
+        guard value != .doesNotApply else {
+            throw ModelDerivation.doesNotApplyRefusal(operation: kindName, setsWhat: Self.setsWhat)
+        }
+        let alreadySet = ArchitectureActivationSite.allCases
+            .filter { architecture.hasActivationSite($0) }
+            .allSatisfy { architecture.activation(at: $0) == value }
             && architecture.blockGroups.allSatisfy { $0.activationFunction == value }
         guard !alreadySet else {
             throw ModelDerivation.DeriveError.operationNotApplicable(
                 operation: kindName,
-                detail: "the tower-level and every group's activation_function are already '\(value.rawValue)'; nothing to derive")
+                detail: "every existing architecture-level activation site and every group's activation_function "
+                    + "are already '\(value.rawValue)'; nothing to derive")
         }
         var edited = architecture
-        edited.activationFunction = value
-        for index in edited.blockGroups.indices {
-            edited.blockGroups[index].setActivationFunction(value)
-        }
+        try edited.setMainActivationEverywhere(value)
         return edited
     }
 
@@ -818,10 +862,13 @@ struct SetSEActivationDeriveOperation: DeriveOperation {
     /// 0-based block-group indices, or nil for every group with an SE block.
     let groupIndices: [Int]?
 
+    /// What this operation sets, for the `does_not_apply` refusal.
+    private static let setsWhat = "an SE FC1 exists whenever its SE block does"
+
     static let kind = DeriveOperationKind(
         name: "set-se-activation",
         flag: "--set-se-activation",
-        valueSyntax: ActivationFunction.allCases.map(\.rawValue).joined(separator: "|"),
+        valueSyntax: ModelDerivation.activationFunctionValueSyntax,
         summary: "Set se_activation, the activation after the SE excitation FC1, on block groups that have an "
             + "SE block (all of them, or those named by --group). The main-path activation is not changed. "
             + "Activations have no parameters, so every tensor is copied bit-exact.",
@@ -829,12 +876,10 @@ struct SetSEActivationDeriveOperation: DeriveOperation {
         rewrittenTensorsDescription: "none",
         acceptsGroupSelection: true,
         make: { value, groupIndices in
-            guard let parsed = ActivationFunction(rawValue: value) else {
-                throw ModelDerivation.DeriveError.operationNotApplicable(
-                    operation: "set-se-activation",
-                    detail: "value '\(value)' is not one of \(ActivationFunction.allCases.map(\.rawValue).joined(separator: ", "))")
-            }
-            return SetSEActivationDeriveOperation(value: parsed, groupIndices: groupIndices)
+            SetSEActivationDeriveOperation(
+                value: try ModelDerivation.parseActivationFunctionValue(
+                    value, operation: "set-se-activation", setsWhat: SetSEActivationDeriveOperation.setsWhat),
+                groupIndices: groupIndices)
         })
 
     var kindName: String { Self.kind.name }
@@ -874,6 +919,9 @@ struct SetSEActivationDeriveOperation: DeriveOperation {
     }
 
     func apply(to architecture: NetworkArchitecture) throws -> NetworkArchitecture {
+        guard value != .doesNotApply else {
+            throw ModelDerivation.doesNotApplyRefusal(operation: kindName, setsWhat: Self.setsWhat)
+        }
         let groups = try selectedGroups(in: architecture)
         guard groups.contains(where: { architecture.blockGroups[$0].seActivation != value }) else {
             throw ModelDerivation.DeriveError.operationNotApplicable(

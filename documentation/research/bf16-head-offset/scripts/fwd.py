@@ -1,4 +1,6 @@
-import numpy as np, json, struct, sys
+import numpy as np, json, struct, sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '..', 'scripts'))
+import dcm_arch
 def load(p):
     with open(p,'rb') as f:
         n=struct.unpack('<Q',f.read(8))[0]; h=json.loads(f.read(n)); data=f.read()
@@ -78,7 +80,10 @@ def conv(x,w,q):
 def bn(x,T,n,q):
     g=T[n+'.weight'];b=T[n+'.bias'];m=T[n+'.running_mean'];v=T[n+'.running_var']
     return q((x-m[:,None,None])/np.sqrt(v[:,None,None]+1e-5)*g[:,None,None]+b[:,None,None])
-def forward(T,arch,x,precision='f64',return_all=False):
+def forward(T,arch,x,precision='f64',return_all=False,*,md):
+    # This forward applies ReLU at the block main path, the tower end and both
+    # value sites without reading their keys; refuse any file where they are not ReLU.
+    dcm_arch.require_relu(md,'fwd.forward',('tower_end_activation','value_head_conv_activation','value_head_fc1_hidden_activation'),block_main_path=True)
     q=(lambda a:a) if precision=='f64' else bf16
     W=(lambda a:a) if precision=='f64' else bf16   # weights stored bf16 in-graph
     TT={k:W(v) for k,v in T.items() if not k.startswith('opt.')}

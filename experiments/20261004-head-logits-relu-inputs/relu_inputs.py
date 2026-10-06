@@ -14,6 +14,8 @@ Usage: relu_inputs.py <out.json> <label>=<model.safetensors> ..."""
 import glob, json, math, os, struct, sys
 import numpy as np
 import chess
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+import dcm_arch
 
 GAMES = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/LichessBot/Games")
 CAP = 4096
@@ -28,7 +30,7 @@ def load(path):
     for k, v in h.items():
         s, e = v["data_offsets"]
         t[k] = np.frombuffer(raw[base + s:base + e], dtype=np.float32).reshape(v["shape"]).copy()
-    return md, json.loads(md["architecture"]), t
+    return md, dcm_arch.norm_arch_md(md), t
 
 # ---------------------------------------------------------------- positions
 def row_col(sq):            # python-chess square -> DCM (row 0 = rank 8, col 0 = file a)
@@ -201,11 +203,17 @@ def ln(x, t, name):
     mu = x.mean(1, keepdims=True); var = x.var(1, keepdims=True)
     return (x - mu) / np.sqrt(var + EPS) * t[name + ".weight"][None, :, None, None] + t[name + ".bias"][None, :, None, None]
 
-def forward(x, arch, t, record):
+def forward(x, arch, t, record, *, sites):
+    """sites: dcm_arch.site_activations_md(md) of the file (which also checks them
+    against the topology); every site this forward applies is modelled as ReLU."""
     groups = arch["block_groups"]
     assert all(g["activation_style"] == "pre" and g["se_style"] == "none" and not g["use_rezero"]
                and g["skip_merge"] == "clean_add" and g.get("output_norm") == "layer_norm" for g in groups), "unsupported architecture"
     assert arch["policy_head_style"] == "intermediate_conv" and arch["value_head_style"] == "wdl_softmax"
+    assert all(g["activation_function"] == "relu" for g in groups), "only ReLU block main paths are modelled"
+    for key in ("tower_end_activation", "policy_head_activation", "value_head_conv_activation", "value_head_fc1_hidden_activation"):
+        assert sites[key] == "relu", f"only a ReLU {key} is modelled (the file has {sites[key]!r})"
+    assert arch["feature_skip_source"] == "none", "a feature skip is not modelled"
     h = conv(x, t["stem.conv.weight"]); record("tap:stem_bn_input", h)
     h = bn(h, t, "stem.bn")
     i = 0
@@ -246,6 +254,7 @@ class ChannelStats:
 
 def run(label, path, pos):
     md, arch, t = load(path)
+    sites = dcm_arch.site_activations_md(md)
     stats = {}; maxabs = {}
     def record(name, a):
         if name.startswith("tap:"):
@@ -254,7 +263,7 @@ def run(label, path, pos):
     X = np.stack([p[0] for p in pos])
     logits_all = []; vlog_all = []
     for i in range(0, len(X), 64):
-        lg, vl = forward(X[i:i + 64], arch, t, record)
+        lg, vl = forward(X[i:i + 64], arch, t, record, sites=sites)
         logits_all.append(lg); vlog_all.append(vl)
     L = np.concatenate(logits_all); V = np.concatenate(vlog_all)
     legal_means = []; legal_spreads = []; legal_min = []; legal_max = []; all_means = []

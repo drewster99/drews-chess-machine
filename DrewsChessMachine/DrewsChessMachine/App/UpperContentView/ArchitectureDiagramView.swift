@@ -50,7 +50,7 @@ struct ArchitectureDiagramView: View {
             connector()
             cell(width: barWidth(arch.stemOutputChannels), emphasized: false) {
                 line("stem \(arch.stemConvKernelSize)×\(arch.stemConvKernelSize) conv", bold: true)
-                line("\(arch.inputPlanes) → \(arch.stemOutputChannels)ch · BN\(arch.hasStemActivation ? " · \(arch.activationFunction.rawValue)" : "")")
+                line("\(arch.inputPlanes) → \(arch.stemOutputChannels)ch · BN\(arch.hasStemActivation ? " · \(arch.stemActivation.rawValue)" : "")")
                 paramsLine(segs.stem)
             }
             ForEach(Array(arch.blockGroups.enumerated()), id: \.offset) { gi, g in
@@ -65,7 +65,7 @@ struct ArchitectureDiagramView: View {
             if arch.hasTowerEndBN {
                 connector()
                 cell(width: barWidth(arch.towerOutputChannels), emphasized: false) {
-                    line("tower-end BN · \(arch.activationFunction.rawValue)", bold: true)
+                    line("tower-end BN · \(arch.towerEndActivation.rawValue)", bold: true)
                     paramsLine(segs.towerEndBN)
                 }
             }

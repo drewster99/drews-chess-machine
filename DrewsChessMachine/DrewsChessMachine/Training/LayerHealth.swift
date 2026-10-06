@@ -162,14 +162,18 @@ enum LayerHealth {
     /// tower-end BN→act (pre-activation tail only) → feature-skip compress
     /// BN→act (compress fusion with a routed head only) → policy pre-block
     /// BN→act (`intermediate_conv` / `fc_bottleneck`) → value BN→act. Block
-    /// sites use the block's own activation; the stem, tower-end, feature
-    /// skip and heads use the tower-level `activationFunction`.
+    /// sites use the block's own activation; every architecture-level site
+    /// is tagged with its own field (`stemActivation`, `towerEndActivation`,
+    /// `featureSkipActivation`, `policyHeadActivation`,
+    /// `valueHeadConvActivation`), read only where the site exists — so
+    /// `does_not_apply`, the value an absent site holds, never becomes a tag
+    /// (an absent stem activation is `nil`: its BN feeds no activation).
     static func batchNormSites(for arch: NetworkArchitecture) -> [BatchNormSite] {
         var sites: [BatchNormSite] = []
         sites.append(BatchNormSite(
             name: "stem.bn",
             channels: arch.stemOutputChannels,
-            activation: arch.hasStemActivation ? arch.activationFunction : nil))
+            activation: arch.hasStemActivation ? arch.stemActivation : nil))
 
         // Thread the incoming width exactly as `weightTensorPlan` does: a
         // pre-activation BN1 normalizes the block's INPUT (including any
@@ -198,21 +202,21 @@ enum LayerHealth {
 
         if arch.hasTowerEndBN {
             sites.append(BatchNormSite(
-                name: "tower_final_bn", channels: arch.towerOutputChannels, activation: arch.activationFunction))
+                name: "tower_final_bn", channels: arch.towerOutputChannels, activation: arch.towerEndActivation))
         }
         if arch.featureSkipUsesCompressNode {
             sites.append(BatchNormSite(
-                name: "feature_skip.bn", channels: arch.towerOutputChannels, activation: arch.activationFunction))
+                name: "feature_skip.bn", channels: arch.towerOutputChannels, activation: arch.featureSkipActivation))
         }
         switch arch.policyHeadStyle {
         case .simpleConv:
             break
         case .intermediateConv, .fcBottleneck:
             sites.append(BatchNormSite(
-                name: "policy.pre_bn", channels: arch.policyPreConvChannels, activation: arch.activationFunction))
+                name: "policy.pre_bn", channels: arch.policyPreConvChannels, activation: arch.policyHeadActivation))
         }
         sites.append(BatchNormSite(
-            name: "value.bn", channels: arch.valueHeadConvChannels, activation: arch.activationFunction))
+            name: "value.bn", channels: arch.valueHeadConvChannels, activation: arch.valueHeadConvActivation))
         return sites
     }
 
@@ -241,14 +245,16 @@ enum LayerHealth {
     }
 
     /// The value head's FC1 (`flatten(conv channels × 64) → hidden`),
-    /// activated by the tower-level `activationFunction`.
+    /// activated by the model's `valueHeadFC1HiddenActivation` (a site every
+    /// model has). The activation only labels the velocity row: zero-velocity
+    /// counting measures the weight velocity whatever the function.
     static func valueFC1Layer(for arch: NetworkArchitecture) -> HiddenUnitLayer {
         HiddenUnitLayer(
             weightTensorName: "value.fc1.weight",
             blockIndex: nil,
             inputCount: arch.boardSize * arch.boardSize * arch.valueHeadConvChannels,
             unitCount: arch.valueHeadHiddenUnits,
-            activation: arch.activationFunction)
+            activation: arch.valueHeadFC1HiddenActivation)
     }
 
     /// Every block with ReZero, in block order.
@@ -271,6 +277,9 @@ enum LayerHealth {
 
     /// The BN classification that applies to a site's activation. An
     /// exhaustive switch, so a new activation function must decide here.
+    /// `does_not_apply` is unreachable: every site reads its activation
+    /// field only where the site exists (`batchNormSites`), and `validate()`
+    /// refuses `does_not_apply` at every existing site.
     static func classification(for activation: ActivationFunction?) -> LayerHealthSummary.ActivationClassification {
         guard let activation else { return .notApplicableNoActivation }
         switch activation {
@@ -278,6 +287,9 @@ enum LayerHealth {
             return .classified
         case .silu, .gelu:
             return .notApplicableSmoothActivation
+        case .doesNotApply:
+            preconditionFailure("LayerHealth: 'does_not_apply' tags a batch-norm site that exists. "
+                + "validate() refuses it at every existing site, so this is a defect.")
         }
     }
 

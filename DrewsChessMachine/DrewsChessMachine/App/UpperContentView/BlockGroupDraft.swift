@@ -32,8 +32,17 @@ final class BlockGroupDraft: Identifiable {
     /// The group's full recipe, edited in place by the row's controls.
     var group: BlockGroup
 
-    init(_ group: BlockGroup) {
+    /// Called after every edit of this group that can change which
+    /// architecture-level activation sites exist (its activation style: the
+    /// first group's decides the stem, the last group's the tower end). The
+    /// model that owns the draft passes its site sync, so a site that
+    /// disappears drops its choice inside the edit itself. A `let`, so
+    /// observation does not track it.
+    let onTopologyChange: @MainActor () -> Void
+
+    init(_ group: BlockGroup, onTopologyChange: @escaping @MainActor () -> Void) {
         self.group = group
+        self.onTopologyChange = onTopologyChange
     }
 
     /// The group's main-path activation, set through the rule the Build
@@ -42,6 +51,18 @@ final class BlockGroupDraft: Identifiable {
     var activationFunction: ActivationFunction {
         get { group.activationFunction }
         set { group.setActivationFunction(newValue) }
+    }
+
+    /// The group's activation style, set through the draft so the model's
+    /// site sync runs inside the edit (`onTopologyChange`). The style picker
+    /// is the screen's only writer of a group's style and binds this, never
+    /// `group.activationStyle` directly.
+    var activationStyle: BlockActivationStyle {
+        get { group.activationStyle }
+        set {
+            group.activationStyle = newValue
+            onTopologyChange()
+        }
     }
 
     /// The group's output normalization as a non-optional value for the

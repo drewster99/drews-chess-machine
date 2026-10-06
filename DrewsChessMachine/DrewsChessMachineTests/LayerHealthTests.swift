@@ -68,6 +68,7 @@ final class LayerHealthTests: XCTestCase {
                 skipMerge: .cleanAdd, dropoutMultiplier: 1,
                 seActivation: .leakyRelu),
         ]
+        arch.stemActivation = .leakyRelu
         return arch
     }
 
@@ -75,6 +76,7 @@ final class LayerHealthTests: XCTestCase {
         var arch = tinyArch(policy: .fcBottleneck)
         arch.featureSkipSource = .stemOutput
         arch.featureSkipFusion = .compressConvBNReLU
+        arch.featureSkipActivation = .relu
         arch.featureSkipToPolicyHead = true
         arch.featureSkipToValueHead = false
         arch.featureSkipToFinalBlock = false

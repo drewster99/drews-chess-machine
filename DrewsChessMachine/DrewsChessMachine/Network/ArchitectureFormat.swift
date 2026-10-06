@@ -50,6 +50,15 @@
 //    `policy_head_final_init`, `value_head_final_init` and
 //    `value_head_draw_prior`. Older files resolve each to its standard value
 //    — the init every model was built with before the options existed.
+//  - v9: the architecture must state `stem_activation`,
+//    `tower_end_activation`, `feature_skip_activation`,
+//    `policy_head_activation`, `value_head_conv_activation`,
+//    `value_head_fc1_hidden_activation`; each is `does_not_apply` exactly
+//    when the topology lacks the site. Older files resolve an existing site
+//    to their own top-level `activation_function`, the activation every one
+//    of those sites used before the fields existed, and an absent site to
+//    `does_not_apply`. A v9+ block-groups architecture must not state the
+//    retired top-level `activation_function`.
 //
 
 import Foundation
@@ -59,7 +68,7 @@ enum ArchitectureFormat {
     /// The version every writer stamps today. Safetensors write it as the
     /// string `dcm_format_version`; presets and `architecture.json` write it
     /// as the integer `format_version`.
-    static let currentVersion = 8
+    static let currentVersion = 9
 
     /// First version whose block groups must carry `se_beta_init`
     /// (`BlockGroup.seBetaInit`). Files older than this resolve a missing
@@ -101,6 +110,18 @@ enum ArchitectureFormat {
     /// file decoded to before.
     static let initOptionsRequiredFromVersion = 8
 
+    /// First version whose architectures must carry the six
+    /// architecture-level site activations (`NetworkArchitecture.stemActivation`,
+    /// `towerEndActivation`, `featureSkipActivation`, `policyHeadActivation`,
+    /// `valueHeadConvActivation`, `valueHeadFC1HiddenActivation`) and must not
+    /// carry the top-level `activation_function` they replace. Files older
+    /// than this resolve each missing site from that `activation_function`
+    /// (a site the topology has — every one of them used it before the split)
+    /// or to `does_not_apply` (a site it lacks), so the architecture builds
+    /// the identical graph and compares equal to what the same file decoded
+    /// to before.
+    static let siteActivationsRequiredFromVersion = 9
+
     /// The version reported for a carrier that predates version markers
     /// entirely — a safetensors file with no `dcm_format_version`, or a
     /// preset / `architecture.json` with no `format_version`. Every such file
@@ -128,6 +149,19 @@ enum ArchitectureFormat {
         case unsupportedFutureVersion(version: Int, newestSupported: Int, source: String)
         /// The version marker is present but is not a positive integer.
         case unparseableVersion(value: String, source: String)
+        /// A field a later version replaced, stated in a file of that version
+        /// or newer (where it would otherwise be silently ignored).
+        case retiredField(field: String, location: String, formatVersion: Int, source: String, replacedBy: [String])
+        /// An architecture-level site activation disagrees with whether the
+        /// topology has the site (`NetworkArchitecture.activationSiteMismatch`).
+        case activationSiteMismatch(ActivationSiteMismatch, location: String, formatVersion: Int, source: String)
+        /// `does_not_apply` in a field whose site always exists: a block
+        /// group's `activation_function` / `se_activation`, or the uniform
+        /// tower's `activation_function`, which those come from.
+        case doesNotApplyAtAnAlwaysPresentSite(field: String, location: String, formatVersion: Int, source: String)
+        /// A file older than v9 that states neither some site activations nor
+        /// the top-level `activation_function` they resolve from.
+        case legacyActivationFunctionMissing(unresolvedSites: [String], location: String, formatVersion: Int, source: String)
 
         var description: String {
             switch self {
@@ -139,6 +173,21 @@ enum ArchitectureFormat {
                 return "\(source): format v\(version) is newer than this build supports (newest: v\(newest))"
             case .unparseableVersion(let value, let source):
                 return "\(source): format version '\(value)' is not a positive integer"
+            case .retiredField(let field, let location, let version, let source, let replacedBy):
+                return "\(source): architecture field '\(field)' at \(location) was retired in format "
+                    + "v\(ArchitectureFormat.siteActivationsRequiredFromVersion), and a format v\(version) file must "
+                    + "not state it; it is replaced by \(replacedBy.joined(separator: ", "))"
+            case .activationSiteMismatch(let mismatch, let location, let version, let source):
+                return "\(source): format v\(version) architecture at \(location): \(mismatch.description)"
+            case .doesNotApplyAtAnAlwaysPresentSite(let field, let location, let version, let source):
+                return "\(source): format v\(version) architecture field '\(field)' at \(location) is "
+                    + "'\(ActivationFunction.doesNotApply.rawValue)', but that site always exists: "
+                    + "choose one of \(ActivationFunction.functionList)"
+            case .legacyActivationFunctionMissing(let unresolved, let location, let version, let source):
+                return "\(source): format v\(version) architecture at \(location) states neither "
+                    + "\(unresolved.joined(separator: ", ")) nor the top-level 'activation_function' they "
+                    + "resolve from; a file older than v\(ArchitectureFormat.siteActivationsRequiredFromVersion) "
+                    + "must state one or the other"
             }
         }
 
@@ -190,6 +239,10 @@ enum ArchitectureFormat {
         /// True when the init-neutral options may be absent and resolve to
         /// their standard values.
         var allowsMissingInitOptions: Bool { formatVersion < ArchitectureFormat.initOptionsRequiredFromVersion }
+        /// True when the six site activations may be absent and resolve from
+        /// the file's top-level `activation_function` (and when that key is
+        /// not retired).
+        var allowsMissingSiteActivations: Bool { formatVersion < ArchitectureFormat.siteActivationsRequiredFromVersion }
 
         /// The same file, re-stamped with the version a nested carrier
         /// declares (a preset's `format_version`), sharing the log.
@@ -270,6 +323,57 @@ enum ArchitectureFormat {
         let prefix = decoder.codingPath.isEmpty ? "" : "\(location(of: decoder))."
         format.legacyLog.record("\(prefix)\(key.stringValue) := \(rendered(standard))")
         return standard
+    }
+
+    // MARK: Site activations
+
+    /// One architecture-level site activation as pass one of
+    /// `NetworkArchitecture.init(from:format:)` decodes it: the value, and
+    /// whether it was resolved from the file's top-level
+    /// `activation_function` (so pass two may still turn it into
+    /// `does_not_apply` and must log it) rather than stated.
+    struct DecodedSiteActivation: Sendable {
+        let value: ActivationFunction
+        let wasResolvedFromLegacy: Bool
+    }
+
+    /// Decodes one site activation: the stated value, at any version (real
+    /// pre-v9 files never state it, but the tests' re-stamped current
+    /// encodes do, exactly as `decodeInitOption` allows); else, for a file
+    /// older than `siteActivationsRequiredFromVersion` or in the uniform-tower
+    /// form (`legacyByConstruction`), the file's `legacyTowerActivation`,
+    /// marked resolved; else `missingRequiredField`. A file allowed to
+    /// resolve that has no `activation_function` either throws
+    /// `legacyActivationFunctionMissing`, naming every site key it lacks
+    /// (`allSiteKeys` absent from the container), so the error lists all of
+    /// them however many there are and makes nothing up.
+    static func decodeSiteActivation<Key: CodingKey>(
+        key: Key,
+        in container: KeyedDecodingContainer<Key>,
+        decoder: Decoder,
+        format: DecodeFormat,
+        legacyByConstruction: Bool,
+        legacyTowerActivation: ActivationFunction?,
+        allSiteKeys: [Key]
+    ) throws -> DecodedSiteActivation {
+        if let stated = try container.decodeIfPresent(ActivationFunction.self, forKey: key) {
+            return DecodedSiteActivation(value: stated, wasResolvedFromLegacy: false)
+        }
+        guard legacyByConstruction || format.allowsMissingSiteActivations else {
+            throw FormatError.missingRequiredField(
+                field: key.stringValue,
+                location: location(of: decoder),
+                formatVersion: format.formatVersion,
+                source: format.source)
+        }
+        guard let legacyTowerActivation else {
+            throw FormatError.legacyActivationFunctionMissing(
+                unresolvedSites: allSiteKeys.filter { !container.contains($0) }.map(\.stringValue),
+                location: location(of: decoder),
+                formatVersion: format.formatVersion,
+                source: format.source)
+        }
+        return DecodedSiteActivation(value: legacyTowerActivation, wasResolvedFromLegacy: true)
     }
 
     // MARK: Version parsing

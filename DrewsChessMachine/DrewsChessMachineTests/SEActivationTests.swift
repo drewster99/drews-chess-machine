@@ -246,7 +246,7 @@ final class SEActivationTests: XCTestCase {
     }
 
     func testRoundTripPreservesEveryValue() throws {
-        for value in ActivationFunction.allCases {
+        for value in ActivationFunction.functions {
             let arch = Self.twoGroupArchitecture(group0SE: value, group1SE: .relu)
             try arch.validate()
             let decoded = try SafetensorsModelIO.decode(try encodedModel(arch))
@@ -316,7 +316,7 @@ final class SEActivationTests: XCTestCase {
                 .seActivationRequiresSE(group: 1, seActivation: .leakyRelu, activationFunction: .relu))
         }
         // Any value is valid on a group that has an SE block.
-        for value in ActivationFunction.allCases {
+        for value in ActivationFunction.functions {
             var withSE = Self.twoGroupArchitecture(group0SE: value, group1SE: value)
             withSE.blockGroups[0].seStyle = .attenuateOnly
             XCTAssertNoThrow(try withSE.validate(), value.rawValue)
@@ -367,7 +367,7 @@ final class SEActivationTests: XCTestCase {
         let leakyFC1Only = Self.twoGroupArchitecture(group0SE: .leakyRelu, group1SE: .leakyRelu)
         var leakyEverywhere = Self.twoGroupArchitecture(
             group0Activation: .leakyRelu, group0SE: .leakyRelu, group1SE: .leakyRelu)
-        leakyEverywhere.activationFunction = .leakyRelu
+        try leakyEverywhere.setActivationAtEveryExistingSite(.leakyRelu)
         leakyEverywhere.blockGroups[1].activationFunction = .leakyRelu
         for arch in [reluEverywhere, leakyFC1Only, leakyEverywhere] { try arch.validate() }
 
@@ -540,7 +540,9 @@ final class SEActivationTests: XCTestCase {
             SetActivationDeriveOperation(value: .leakyRelu),
             SetSEActivationDeriveOperation(value: .leakyRelu, groupIndices: nil),
         ])
-        XCTAssertEqual(everywhere.targetArchitecture.activationFunction, .leakyRelu)
+        for site in ArchitectureActivationSite.allCases {
+            XCTAssertEqual(everywhere.targetArchitecture.activation(at: site), everywhere.targetArchitecture.hasActivationSite(site) ? .leakyRelu : .doesNotApply, "\(site)")
+        }
         XCTAssertTrue(everywhere.targetArchitecture.blockGroups.allSatisfy {
             $0.activationFunction == .leakyRelu && $0.seActivation == .leakyRelu
         })
@@ -589,7 +591,7 @@ final class SEActivationTests: XCTestCase {
         let derived = try SetActivationDeriveOperation(value: .leakyRelu).apply(to: source)
 
         let model = BuildNewModelModel(NamedArchitecture(label: "test", architecture: source))
-        model.activationFunction = .leakyRelu
+        try model.applyMainActivationEverywhere(.leakyRelu)
         for draft in model.blockGroupDrafts {
             draft.activationFunction = .leakyRelu
         }

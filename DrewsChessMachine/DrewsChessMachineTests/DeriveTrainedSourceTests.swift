@@ -84,6 +84,8 @@ final class DeriveTrainedSourceTests: XCTestCase {
         let cap = try derive(trained, [SetRezeroAlphaCapDeriveOperation(value: 1, groupIndices: nil)])
         XCTAssertTrue(cap.targetArchitecture.blockGroups.allSatisfy { $0.rezeroAlphaCap == 1 })
         let activation = try derive(trained, [SetActivationDeriveOperation(value: .leakyRelu)])
-        XCTAssertEqual(activation.targetArchitecture.activationFunction, .leakyRelu)
+        for site in ArchitectureActivationSite.allCases {
+            XCTAssertEqual(activation.targetArchitecture.activation(at: site), activation.targetArchitecture.hasActivationSite(site) ? .leakyRelu : .doesNotApply, "\(site)")
+        }
     }
 }

@@ -22,6 +22,11 @@ struct BuildNewModelView: View {
 
     @State private var saveStatus: String?
 
+    /// The functions a block group's "Activation" and "SE activation"
+    /// pickers offer: `ActivationFunction.functions`, never `allCases`
+    /// (which includes the `does_not_apply` marker a group never accepts).
+    static let groupActivationChoices = ActivationFunction.functions
+
     /// A Save-as-Preset the store refused because a preset of that name
     /// already exists, captured at click time so "Replace" writes exactly
     /// what the user was looking at when they saved — not whatever the
@@ -64,6 +69,7 @@ struct BuildNewModelView: View {
         // every row.
         let nonStandard = model.nonStandardInitOptions
         let groupsWithSkipProjection = model.groupsWithSkipProjection
+        let existingSites = model.existingActivationSites
         VStack(spacing: 0) {
             Text("New Network")
                 .font(.title2.weight(.semibold))
@@ -90,7 +96,12 @@ struct BuildNewModelView: View {
 
                     Section("Tower") {
                         intField("Stem kernel size (odd)", $model.stemConvKernelSize)
-                        enumPicker("Tower-level activation", $model.activationFunction, ActivationFunction.allCases)
+                        ArchitectureSiteActivationPicker(
+                            site: .stem, activation: $model.stemActivation,
+                            siteExists: existingSites.contains(.stem))
+                        ArchitectureSiteActivationPicker(
+                            site: .towerEnd, activation: $model.towerEndActivation,
+                            siteExists: existingSites.contains(.towerEnd))
                         LabeledContent("Total blocks") {
                             Text(model.totalBlocks?.formatted(.number) ?? "invalid")
                                 .monospacedDigit()
@@ -131,6 +142,9 @@ struct BuildNewModelView: View {
                         if model.policyHeadStyle != .simpleConv {
                             intField("Policy pre-conv channels (K)", $model.policyPreConvChannels)
                         }
+                        ArchitectureSiteActivationPicker(
+                            site: .policyHead, activation: $model.policyHeadActivation,
+                            siteExists: existingSites.contains(.policyHead))
                         InitOptionRow(
                             isNonStandard: nonStandard.contains(.policyHeadFinalInit),
                             stepZeroEffect: InitOptionField.policyHeadFinalInit.stepZeroEffect
@@ -142,7 +156,13 @@ struct BuildNewModelView: View {
                     Section("Value head") {
                         enumPicker("Value style", $model.valueHeadStyle, ValueHeadStyle.allCases)
                         intField("Value conv channels", $model.valueHeadConvChannels)
+                        ArchitectureSiteActivationPicker(
+                            site: .valueHeadConv, activation: $model.valueHeadConvActivation,
+                            siteExists: existingSites.contains(.valueHeadConv))
                         intField("Value hidden units", $model.valueHeadHiddenUnits)
+                        ArchitectureSiteActivationPicker(
+                            site: .valueHeadFC1Hidden, activation: $model.valueHeadFC1HiddenActivation,
+                            siteExists: existingSites.contains(.valueHeadFC1Hidden))
                         InitOptionRow(
                             isNonStandard: nonStandard.contains(.valueHeadFinalInit),
                             stepZeroEffect: InitOptionField.valueHeadFinalInit.stepZeroEffect
@@ -164,6 +184,12 @@ struct BuildNewModelView: View {
 
                     Section("Feature skip") {
                         enumPicker("Source", $model.featureSkipSource, FeatureSkipSource.allCases)
+                        // Outside the source check, so it is present (and
+                        // disabled) with the feature skip off, like every
+                        // other site picker.
+                        ArchitectureSiteActivationPicker(
+                            site: .featureSkipFusion, activation: $model.featureSkipActivation,
+                            siteExists: existingSites.contains(.featureSkipFusion))
                         if model.featureSkipSource != .none {
                             Toggle("Route to policy head", isOn: $model.featureSkipToPolicyHead)
                             Toggle("Route to value head", isOn: $model.featureSkipToValueHead)
@@ -448,17 +474,20 @@ private struct BlockGroupFieldsView: View {
         }
         // Through the draft, so an SE-less group's SE activation moves with
         // it (`BlockGroup.setActivationFunction`).
-        enumPicker("Activation", $draft.activationFunction, ActivationFunction.allCases)
+        enumPicker("Activation", $draft.activationFunction, BuildNewModelView.groupActivationChoices)
         // The SE FC1's own activation (issue #2). Always present so the
         // row layout never shifts; disabled on an SE-less group, where it
         // has no effect — unless it disagrees with the group's activation
         // (left behind by switching SE off), in which case validate()
         // reports it and the picker stays enabled so it can be fixed here.
-        enumPicker("SE activation", $draft.group.seActivation, ActivationFunction.allCases)
+        enumPicker("SE activation", $draft.group.seActivation, BuildNewModelView.groupActivationChoices)
             .disabled(draft.group.seStyle == .none
                       && draft.group.seActivation == draft.group.activationFunction)
             .help("Activation after the SE bottleneck FC1 (C → C/r), set independently of the group's activation (on a group without SE it has no effect and follows the group's activation). leaky_relu here keeps FC1 units from dying at almost no cost.")
-        enumPicker("Activation style", $draft.group.activationStyle, BlockActivationStyle.allCases)
+        // Through the draft, so the model's site sync runs inside the edit
+        // (the first group's style decides the stem, the last group's the
+        // tower end).
+        enumPicker("Activation style", $draft.activationStyle, BlockActivationStyle.allCases)
         enumPicker("Skip merge", $draft.group.skipMerge, BlockSkipMerge.allCases)
         enumPicker("Output norm", $draft.outputNorm, BlockOutputNorm.allCases)
         Toggle("Use ReZero", isOn: $draft.group.useRezero)

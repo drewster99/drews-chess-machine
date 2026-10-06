@@ -104,6 +104,7 @@ final class InitNeutralOptionsTests: XCTestCase {
         var arch = Self.architecture()
         arch.blockGroups[0].seStyle = .none
         arch.blockGroups[0].activationStyle = .pre
+        arch.clearActivationSitesTheTopologyLacks()
         let neutral = arch.withNeutralInit()
         XCTAssertEqual(neutral.blockGroups[0].seGammaBiasInit, BlockGroup.standardSEGammaBiasInit)
         XCTAssertEqual(neutral.blockGroups[0].branchOutputInit, .standard)

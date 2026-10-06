@@ -36,6 +36,7 @@ final class HeadNumericsTailTests: XCTestCase {
         var a = NetworkArchitecture.current
         a.computeDataType = dtype
         if let policy { a.policyHeadStyle = policy }
+        a.clearActivationSitesTheTopologyLacks()
         if let value { a.valueHeadStyle = value }
         return a
     }

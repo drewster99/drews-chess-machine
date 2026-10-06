@@ -218,15 +218,24 @@ struct PlaneGroup: Sendable, Hashable {
     }
 }
 
-/// Hidden-activation function. Chosen per block group (`BlockGroup.activationFunction`:
-/// block main path, `activation_gated` merge; `BlockGroup.seActivation`: SE FC1) and
-/// once at the tower level
-/// (`NetworkArchitecture.activationFunction`: stem activation, tower-end activation,
-/// policy head, value head conv and FC1). Verified across all of git history: every
-/// architecture before SiLU/GELU were added used ReLU at every hidden site, so `.relu`
-/// reproduces all historical nets. The SE gate (`sigmoid`) and the value output
-/// (`tanh` for `scalar_tanh`, `softmax` for `wdl_softmax`) are structural and NOT
-/// governed by this.
+/// Hidden-activation function, or the `does_not_apply` marker. Chosen per block
+/// group (`BlockGroup.activationFunction`: block main path, `activation_gated`
+/// merge; `BlockGroup.seActivation`: SE FC1) and once per architecture-level site
+/// (`NetworkArchitecture.stemActivation`, `towerEndActivation`,
+/// `featureSkipActivation`, `policyHeadActivation`, `valueHeadConvActivation`,
+/// `valueHeadFC1HiddenActivation`; see `ArchitectureActivationSite`). Verified
+/// across all of git history: every architecture before SiLU/GELU were added used
+/// ReLU at every hidden site, so `.relu` reproduces all historical nets. The SE
+/// gate (`sigmoid`) and the value output (`tanh` for `scalar_tanh`, `softmax` for
+/// `wdl_softmax`) are structural and NOT governed by this.
+///
+/// `does_not_apply` is not a function. It marks an architecture-level site the
+/// model's topology does not have (a pre-activation tower's stem, a simple_conv
+/// policy head's pre-block, …), and never means identity or linear. It is legal
+/// only in the six architecture-level site fields, and there exactly when the
+/// site does not exist (`NetworkArchitecture.activationSiteMismatch`); a block
+/// group's fields never accept it. Every list a person or a CLI chooses a
+/// function from is `functions`, never `allCases`.
 enum ActivationFunction: String, Codable, CaseIterable, Sendable, Hashable {
     case relu
     case silu
@@ -236,6 +245,20 @@ enum ActivationFunction: String, Codable, CaseIterable, Sendable, Hashable {
     /// every input (a dead ReLU unit, as measured in the SE bottlenecks) can
     /// still recover.
     case leakyRelu = "leaky_relu"
+    /// The marker an architecture-level site field holds when the topology
+    /// lacks the site. Not a function (see the type's doc).
+    case doesNotApply = "does_not_apply"
+
+    /// Every case that names a function: the list every picker, every derive
+    /// value syntax and every per-function test iterates. `allCases` minus
+    /// `does_not_apply`, so a function added later joins it automatically
+    /// while the marker never does.
+    static let functions: [ActivationFunction] = allCases.filter { $0 != .doesNotApply }
+
+    /// `functions` as the `relu, silu, …` text error messages offer.
+    static var functionList: String {
+        functions.map(\.rawValue).joined(separator: ", ")
+    }
 
     /// The negative-side slope of `leaky_relu`: a fixed constant, not an
     /// architecture field, so `leaky_relu` means the same function in every
@@ -451,6 +474,130 @@ enum InitOptionField: Hashable, Sendable {
     }
 }
 
+/// One architecture-level activation site: an activation the graph builds
+/// outside the block groups, whose function the architecture states in its own
+/// field. In graph build order. Each site exists only for some topologies
+/// (`NetworkArchitecture.hasActivationSite`); where it does not, its field
+/// holds `does_not_apply`.
+enum ArchitectureActivationSite: CaseIterable, Hashable, Sendable {
+    /// `stem_act`: after the stem BN, when the first block group is
+    /// post-activation.
+    case stem
+    /// `tower_final_act`: after the tower-end BN, when the last block group
+    /// is pre-activation.
+    case towerEnd
+    /// `feature_skip_act`: after the compress fusion node's BN, when that
+    /// node is built.
+    case featureSkipFusion
+    /// `policy_pre_act`: the policy pre-block's activation
+    /// (`intermediate_conv`, `fc_bottleneck`).
+    case policyHead
+    /// `value_act`: after the value head's conv BN. Always exists.
+    case valueHeadConv
+    /// `value_fc1_act`: the value head's FC1 hidden layer. Always exists.
+    case valueHeadFC1Hidden
+
+    /// The architecture JSON key, read from `NetworkArchitecture.CodingKeys`
+    /// (the single source of every key).
+    var codingKey: NetworkArchitecture.CodingKeys {
+        switch self {
+        case .stem: return .stemActivation
+        case .towerEnd: return .towerEndActivation
+        case .featureSkipFusion: return .featureSkipActivation
+        case .policyHead: return .policyHeadActivation
+        case .valueHeadConv: return .valueHeadConvActivation
+        case .valueHeadFC1Hidden: return .valueHeadFC1HiddenActivation
+        }
+    }
+
+    var jsonKey: String { codingKey.rawValue }
+
+    /// The site's name in `architectureSummary`'s per-site activation clause.
+    var summaryLabel: String {
+        switch self {
+        case .stem: return "stem"
+        case .towerEnd: return "tower_end"
+        case .featureSkipFusion: return "fusion"
+        case .policyHead: return "policy"
+        case .valueHeadConv: return "value_conv"
+        case .valueHeadFC1Hidden: return "value_fc1_hidden"
+        }
+    }
+
+    /// The Build New Model screen's picker label.
+    var displayName: String {
+        switch self {
+        case .stem: return "Stem activation"
+        case .towerEnd: return "Tower-end activation"
+        case .featureSkipFusion: return "Fusion activation"
+        case .policyHead: return "Pre-block activation"
+        case .valueHeadConv: return "Conv activation"
+        case .valueHeadFC1Hidden: return "FC1 hidden activation"
+        }
+    }
+
+    /// What the site's activation is applied to — the Build screen's help
+    /// text for a site that exists.
+    var siteDescription: String {
+        switch self {
+        case .stem:
+            return "Applied to the stem BN's output (a post-activation first block group only)."
+        case .towerEnd:
+            return "Applied to the tower-end BN's output, which every head reads (a pre-activation last block group only)."
+        case .featureSkipFusion:
+            return "Applied to the compress fusion node's BN output (compress_conv_bn_relu routed to a head only)."
+        case .policyHead:
+            return "Applied to the policy pre-block's BN output (intermediate_conv and fc_bottleneck only)."
+        case .valueHeadConv:
+            return "Applied to the value head's conv BN output."
+        case .valueHeadFC1Hidden:
+            return "Applied to the value head's FC1 hidden layer (value_head_hidden_units wide)."
+        }
+    }
+
+    /// Why the site is missing when the topology lacks it — for errors, the
+    /// legacy log and the Build screen's help text. The two value sites exist
+    /// in every model, so theirs only says so.
+    var absentReason: String {
+        switch self {
+        case .stem:
+            return "the first block group is pre-activation, so the stem has no activation"
+        case .towerEnd:
+            return "the last block group is post-activation, so the tower has no tower-end activation"
+        case .featureSkipFusion:
+            return "no compress fusion node is built (that needs a feature-skip source, "
+                + "\(FeatureSkipFusion.compressConvBNReLU.rawValue) fusion and a routed head)"
+        case .policyHead:
+            return "the policy head is \(PolicyHeadStyle.simpleConv.rawValue), so it has no pre-block"
+        case .valueHeadConv, .valueHeadFC1Hidden:
+            return "never: every value head has this layer"
+        }
+    }
+}
+
+/// An architecture-level site whose activation field disagrees with whether
+/// the site exists: `does_not_apply` at a site the topology has, or a function
+/// at one it lacks. Carries the one message every error built from it uses
+/// (`NetworkArchitectureError.activationSiteMismatch`,
+/// `ArchitectureFormat.FormatError.activationSiteMismatch`).
+struct ActivationSiteMismatch: Equatable, Sendable, CustomStringConvertible {
+    let site: ArchitectureActivationSite
+    let value: ActivationFunction
+    let siteExists: Bool
+    /// Why the site exists or not in this architecture
+    /// (`NetworkArchitecture.activationSiteReason`).
+    let reason: String
+
+    var description: String {
+        if siteExists {
+            return "\(site.jsonKey) is '\(value.rawValue)', but \(reason): "
+                + "choose one of \(ActivationFunction.functionList)"
+        }
+        return "\(site.jsonKey) is '\(value.rawValue)', but \(reason): "
+            + "it must be '\(ActivationFunction.doesNotApply.rawValue)'"
+    }
+}
+
 /// Policy-head topology. All three emit 4864 raw logits in the current
 /// `PolicyEncoding` (76x64); masking + softmax happen CPU-side downstream.
 enum PolicyHeadStyle: String, Codable, CaseIterable, Sendable, Hashable {
@@ -645,7 +792,17 @@ struct BlockGroup: Codable, Hashable, Sendable {
     /// own. The single rule the Build-New-Model screen and
     /// `--derive-model --set-activation` both apply, so the same edit made
     /// either way yields the same architecture.
+    ///
+    /// `does_not_apply` is a defect here, not an input: a group's main path
+    /// exists whenever the group does. It cannot throw (its caller is the
+    /// non-throwing `BlockGroupDraft.activationFunction` setter), and every
+    /// caller passes a function — the group picker lists
+    /// `ActivationFunction.functions`, and
+    /// `NetworkArchitecture.setMainActivationEverywhere` refuses the marker
+    /// before it calls this.
     mutating func setActivationFunction(_ activation: ActivationFunction) {
+        precondition(activation != .doesNotApply,
+                     "BlockGroup.setActivationFunction: 'does_not_apply' is not an activation function")
         activationFunction = activation
         if seStyle == .none {
             seActivation = activation
@@ -841,6 +998,13 @@ struct BlockGroup: Codable, Hashable, Sendable {
         useRezero = try c.decode(Bool.self, forKey: .useRezero)
         rezeroAlphaInit = try c.decode(Float.self, forKey: .rezeroAlphaInit)
         activationFunction = try c.decode(ActivationFunction.self, forKey: .activationFunction)
+        guard activationFunction != .doesNotApply else {
+            throw ArchitectureFormat.FormatError.doesNotApplyAtAnAlwaysPresentSite(
+                field: CodingKeys.activationFunction.rawValue,
+                location: ArchitectureFormat.location(of: decoder),
+                formatVersion: format.formatVersion,
+                source: format.source)
+        }
         activationStyle = try c.decode(BlockActivationStyle.self, forKey: .activationStyle)
         skipMerge = try c.decode(BlockSkipMerge.self, forKey: .skipMerge)
         dropoutMultiplier = try c.decode(Float.self, forKey: .dropoutMultiplier)
@@ -859,6 +1023,13 @@ struct BlockGroup: Codable, Hashable, Sendable {
                 source: format.source)
         }
         if let stated = try c.decodeIfPresent(ActivationFunction.self, forKey: .seActivation) {
+            guard stated != .doesNotApply else {
+                throw ArchitectureFormat.FormatError.doesNotApplyAtAnAlwaysPresentSite(
+                    field: CodingKeys.seActivation.rawValue,
+                    location: ArchitectureFormat.location(of: decoder),
+                    formatVersion: format.formatVersion,
+                    source: format.source)
+            }
             seActivation = stated
         } else if format.allowsMissingSEActivation {
             seActivation = activationFunction
@@ -1023,9 +1194,26 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
     /// device-independent: the Build New Model screen, `--new-model`, the
     /// GUI build and a graft refuse with it before building.
     case trainingStateExceedsPhysicalMemory(parameterCount: Int, trainingStateBytes: Double, physicalMemoryBytes: UInt64)
+    /// An architecture-level site's activation field disagrees with whether
+    /// the topology has the site (`NetworkArchitecture.activationSiteMismatch`).
+    case activationSiteMismatch(ActivationSiteMismatch)
+    /// `does_not_apply` passed where a function is required: a setter that
+    /// applies one activation to every existing site. `context` names it.
+    case notAnActivationFunction(context: String)
+    /// `does_not_apply` in a block group's `activationFunction` or
+    /// `seActivation`, sites that exist whenever their group does.
+    case doesNotApplyAtAnAlwaysPresentSite(field: String)
 
     var description: String {
         switch self {
+        case .activationSiteMismatch(let mismatch):
+            return mismatch.description
+        case .notAnActivationFunction(let context):
+            return "\(context): '\(ActivationFunction.doesNotApply.rawValue)' is not an activation function; "
+                + "it marks a site the topology lacks (choose one of \(ActivationFunction.functionList))"
+        case .doesNotApplyAtAnAlwaysPresentSite(let field):
+            return "\(field) is '\(ActivationFunction.doesNotApply.rawValue)', but that site exists whenever "
+                + "its block group does: choose one of \(ActivationFunction.functionList)"
         case .arithmeticOverflow(let quantity):
             return "\(quantity) overflows Int: the architecture is too large to represent"
         case .trainingStateExceedsPhysicalMemory(let parameterCount, let trainingStateBytes, let physicalMemoryBytes):
@@ -1080,19 +1268,39 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     /// stem outputs the FIRST group's width; the heads read the LAST's.
     var blockGroups: [BlockGroup]
     var stemConvKernelSize: Int
-    /// Hidden activation for the tower-LEVEL sites (stem activation when
-    /// post-act, tower-end activation, both heads). Block main paths use
-    /// their group's own `activationFunction`.
-    var activationFunction: ActivationFunction
+
+    // Architecture-level activation sites (format v9) ------------------------
+    // One field per site (`ArchitectureActivationSite`). Each holds a function
+    // exactly when the topology has the site and `does_not_apply` exactly when
+    // it does not (`activationSiteMismatch`; checked on decode, in
+    // `validate()` and by every setter). Block main paths and SE FC1s use
+    // their group's own fields.
+    /// `stem_act`, after the stem BN. Exists when the first block group is
+    /// post-activation (`hasStemActivation`).
+    var stemActivation: ActivationFunction
+    /// `tower_final_act`, after the tower-end BN that every head reads.
+    /// Exists when the last block group is pre-activation (`hasTowerEndBN`).
+    var towerEndActivation: ActivationFunction
+    /// `feature_skip_act`, after the compress fusion node's BN. Exists when
+    /// that node is built (`featureSkipUsesCompressNode`).
+    var featureSkipActivation: ActivationFunction
 
     // Policy head ---------------------------------------------------------
     var policyHeadStyle: PolicyHeadStyle
     var policyPreConvChannels: Int       // K for intermediate_conv / fc_bottleneck
+    /// `policy_pre_act`, the policy pre-block's activation. Exists when
+    /// `policyHeadStyle` is `intermediate_conv` or `fc_bottleneck`.
+    var policyHeadActivation: ActivationFunction
 
     // Value head ----------------------------------------------------------
     var valueHeadStyle: ValueHeadStyle
     var valueHeadConvChannels: Int
     var valueHeadHiddenUnits: Int
+    /// `value_act`, after the value head's conv BN. Every model has it.
+    var valueHeadConvActivation: ActivationFunction
+    /// `value_fc1_act`, the value head's FC1 hidden layer (whose width is
+    /// `valueHeadHiddenUnits`). Every model has it.
+    var valueHeadFC1HiddenActivation: ActivationFunction
 
     // Head init (init-neutral options, format v8) ---------------------------
     /// Init of the policy head's final projection (`policy.conv.weight`, or
@@ -1131,17 +1339,24 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     static let policyChannels = 76
     static var policySize: Int { policyChannels * boardSize * boardSize }   // 4864
 
-    /// All-required memberwise init — NO defaults (no silent fallbacks).
+    /// All-required memberwise init — NO defaults (no silent fallbacks). Like
+    /// every other field, the six site activations are not checked here;
+    /// `validate()` checks them against the topology.
     init(
         inputEncoding: InputEncoding,
         blockGroups: [BlockGroup],
         stemConvKernelSize: Int,
-        activationFunction: ActivationFunction,
+        stemActivation: ActivationFunction,
+        towerEndActivation: ActivationFunction,
+        featureSkipActivation: ActivationFunction,
         policyHeadStyle: PolicyHeadStyle,
         policyPreConvChannels: Int,
+        policyHeadActivation: ActivationFunction,
         valueHeadStyle: ValueHeadStyle,
         valueHeadConvChannels: Int,
         valueHeadHiddenUnits: Int,
+        valueHeadConvActivation: ActivationFunction,
+        valueHeadFC1HiddenActivation: ActivationFunction,
         policyHeadFinalInit: HeadFinalInit,
         valueHeadFinalInit: HeadFinalInit,
         valueHeadDrawPrior: Float,
@@ -1155,12 +1370,17 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         self.inputEncoding = inputEncoding
         self.blockGroups = blockGroups
         self.stemConvKernelSize = stemConvKernelSize
-        self.activationFunction = activationFunction
+        self.stemActivation = stemActivation
+        self.towerEndActivation = towerEndActivation
+        self.featureSkipActivation = featureSkipActivation
         self.policyHeadStyle = policyHeadStyle
         self.policyPreConvChannels = policyPreConvChannels
+        self.policyHeadActivation = policyHeadActivation
         self.valueHeadStyle = valueHeadStyle
         self.valueHeadConvChannels = valueHeadConvChannels
         self.valueHeadHiddenUnits = valueHeadHiddenUnits
+        self.valueHeadConvActivation = valueHeadConvActivation
+        self.valueHeadFC1HiddenActivation = valueHeadFC1HiddenActivation
         self.policyHeadFinalInit = policyHeadFinalInit
         self.valueHeadFinalInit = valueHeadFinalInit
         self.valueHeadDrawPrior = valueHeadDrawPrior
@@ -1174,6 +1394,12 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
 
     /// Convenience for the (common) uniform tower: one group carrying every
     /// block field, count = `numBlocks`. All-required — no defaults.
+    ///
+    /// `activationFunction` is the one activation a historical
+    /// single-recipe tower used at every hidden site: the group's main path,
+    /// its SE FC1, and every architecture-level site its topology has. Every
+    /// site it lacks is `does_not_apply` (`clearActivationSitesTheTopologyLacks`,
+    /// so the existence rule is not restated here).
     init(
         inputEncoding: InputEncoding,
         channels: Int,
@@ -1232,12 +1458,17 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 skipProjectionInit: .he
             )],
             stemConvKernelSize: stemConvKernelSize,
-            activationFunction: activationFunction,
+            stemActivation: activationFunction,
+            towerEndActivation: activationFunction,
+            featureSkipActivation: activationFunction,
             policyHeadStyle: policyHeadStyle,
             policyPreConvChannels: policyPreConvChannels,
+            policyHeadActivation: activationFunction,
             valueHeadStyle: valueHeadStyle,
             valueHeadConvChannels: valueHeadConvChannels,
             valueHeadHiddenUnits: valueHeadHiddenUnits,
+            valueHeadConvActivation: activationFunction,
+            valueHeadFC1HiddenActivation: activationFunction,
             policyHeadFinalInit: .he,
             valueHeadFinalInit: .he,
             valueHeadDrawPrior: Self.standardValueHeadDrawPrior,
@@ -1250,6 +1481,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             featureSkipToValueHead: false,
             featureSkipToFinalBlock: false
         )
+        clearActivationSitesTheTopologyLacks()
     }
 
     // MARK: Codable — explicit lower_snake_case keys
@@ -1265,17 +1497,29 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     // `ArchitectureFormat` and `BlockGroup.init(from:format:)`): the carrier's
     // format version decides whether an absent field resolves to its legacy
     // value or is a hard error.
+    //
+    // The six architecture-level site activations (format v9) replace the
+    // single top-level `activation_function`, which is now decode-only
+    // (`legacyActivationFunction`): a file older than v9, or in the
+    // uniform-tower form, resolves each unstated site from it (an existing
+    // site) or to `does_not_apply` (a site the topology lacks); a v9+
+    // block-groups file must state all six and must not state it.
 
     enum CodingKeys: String, CodingKey {
         case inputEncoding = "input_encoding"
         case blockGroups = "block_groups"
         case stemConvKernelSize = "stem_conv_kernel_size"
-        case activationFunction = "activation_function"
+        case stemActivation = "stem_activation"
+        case towerEndActivation = "tower_end_activation"
+        case featureSkipActivation = "feature_skip_activation"
         case policyHeadStyle = "policy_head_style"
         case policyPreConvChannels = "policy_pre_conv_channels"
+        case policyHeadActivation = "policy_head_activation"
         case valueHeadStyle = "value_head_style"
         case valueHeadConvChannels = "value_head_conv_channels"
         case valueHeadHiddenUnits = "value_head_hidden_units"
+        case valueHeadConvActivation = "value_head_conv_activation"
+        case valueHeadFC1HiddenActivation = "value_head_fc1_hidden_activation"
         case policyHeadFinalInit = "policy_head_final_init"
         case valueHeadFinalInit = "value_head_final_init"
         case valueHeadDrawPrior = "value_head_draw_prior"
@@ -1285,6 +1529,9 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         case featureSkipToPolicyHead = "feature_skip_to_policy_head"
         case featureSkipToValueHead = "feature_skip_to_value_head"
         case featureSkipToFinalBlock = "feature_skip_to_final_block"
+        // The tower-wide activation before format v9 — decode-only, never
+        // written; refused in a v9+ block-groups file.
+        case legacyActivationFunction = "activation_function"
         // Legacy uniform-tower keys — decode-only, never written.
         case legacyChannels = "channels"
         case legacyNumBlocks = "num_blocks"
@@ -1306,11 +1553,23 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
 
     /// Decodes an architecture from a file of `format.formatVersion`, threading
     /// the format into every block group (see `BlockGroup.init(from:format:)`).
+    ///
+    /// The six site activations decode in two passes, because which sites
+    /// exist depends on the topology (groups, policy style, feature skip) and
+    /// the existence rule (`hasActivationSite`) is an instance method usable
+    /// only once every stored property is set. Pass one takes each stated
+    /// value, or — in a file allowed to omit it — provisionally the file's own
+    /// top-level `activation_function`, marking the site resolved
+    /// (`ArchitectureFormat.decodeSiteActivation`). Pass two, on the complete
+    /// value, turns each resolved site the topology lacks into
+    /// `does_not_apply`, records every resolution on the legacy log, and then
+    /// refuses any site whose value disagrees with its existence. Nothing is
+    /// ever repaired: a mismatch can only come from a stated value (or a
+    /// legacy `activation_function` of `does_not_apply`), and it is an error.
     init(from decoder: Decoder, format: ArchitectureFormat.DecodeFormat) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         inputEncoding = try c.decode(InputEncoding.self, forKey: .inputEncoding)
         stemConvKernelSize = try c.decode(Int.self, forKey: .stemConvKernelSize)
-        activationFunction = try c.decode(ActivationFunction.self, forKey: .activationFunction)
         policyHeadStyle = try c.decode(PolicyHeadStyle.self, forKey: .policyHeadStyle)
         policyPreConvChannels = try c.decode(Int.self, forKey: .policyPreConvChannels)
         valueHeadStyle = try c.decode(ValueHeadStyle.self, forKey: .valueHeadStyle)
@@ -1320,6 +1579,51 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         // predates the head init options too, whatever version its carrier
         // states (see the uniform-tower branch below).
         let isUniformTowerForm = !c.contains(.blockGroups)
+        // A v9+ block-groups file states the six site keys instead; a stale
+        // `activation_function` there (an old preset hand-bumped to v9) would
+        // otherwise be silently ignored by a reader who thinks it still sets
+        // the heads. The uniform-tower form is legacy by construction.
+        if !isUniformTowerForm, !format.allowsMissingSiteActivations, c.contains(.legacyActivationFunction) {
+            throw ArchitectureFormat.FormatError.retiredField(
+                field: CodingKeys.legacyActivationFunction.rawValue,
+                location: ArchitectureFormat.location(of: decoder),
+                formatVersion: format.formatVersion,
+                source: format.source,
+                replacedBy: ArchitectureActivationSite.allCases.map(\.jsonKey))
+        }
+        // Optional here: a file that states all six site keys needs no
+        // tower-wide value (the committed tests re-stamp current encodes as
+        // older versions that way). The uniform-tower form requires it below,
+        // because its group's own fields come from it.
+        let legacyTowerActivation = try c.decodeIfPresent(ActivationFunction.self, forKey: .legacyActivationFunction)
+        let siteKeys = ArchitectureActivationSite.allCases.map(\.codingKey)
+        func decodeSite(_ site: ArchitectureActivationSite) throws -> ArchitectureFormat.DecodedSiteActivation {
+            try ArchitectureFormat.decodeSiteActivation(
+                key: site.codingKey, in: c, decoder: decoder, format: format,
+                legacyByConstruction: isUniformTowerForm,
+                legacyTowerActivation: legacyTowerActivation,
+                allSiteKeys: siteKeys)
+        }
+        let decodedStem = try decodeSite(.stem)
+        let decodedTowerEnd = try decodeSite(.towerEnd)
+        let decodedFeatureSkip = try decodeSite(.featureSkipFusion)
+        let decodedPolicyHead = try decodeSite(.policyHead)
+        let decodedValueHeadConv = try decodeSite(.valueHeadConv)
+        let decodedValueHeadFC1Hidden = try decodeSite(.valueHeadFC1Hidden)
+        stemActivation = decodedStem.value
+        towerEndActivation = decodedTowerEnd.value
+        featureSkipActivation = decodedFeatureSkip.value
+        policyHeadActivation = decodedPolicyHead.value
+        valueHeadConvActivation = decodedValueHeadConv.value
+        valueHeadFC1HiddenActivation = decodedValueHeadFC1Hidden.value
+        let resolvedSites: [ArchitectureActivationSite] = [
+            (ArchitectureActivationSite.stem, decodedStem),
+            (.towerEnd, decodedTowerEnd),
+            (.featureSkipFusion, decodedFeatureSkip),
+            (.policyHead, decodedPolicyHead),
+            (.valueHeadConv, decodedValueHeadConv),
+            (.valueHeadFC1Hidden, decodedValueHeadFC1Hidden),
+        ].filter { $0.1.wasResolvedFromLegacy }.map(\.0)
         policyHeadFinalInit = try ArchitectureFormat.decodeInitOption(
             HeadFinalInit.self, key: CodingKeys.policyHeadFinalInit, in: c, decoder: decoder, format: format,
             legacyByConstruction: isUniformTowerForm,
@@ -1359,6 +1663,14 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             }
             blockGroups = groups
         } else {
+            let towerActivation = try c.decode(ActivationFunction.self, forKey: .legacyActivationFunction)
+            guard towerActivation != .doesNotApply else {
+                throw ArchitectureFormat.FormatError.doesNotApplyAtAnAlwaysPresentSite(
+                    field: CodingKeys.legacyActivationFunction.rawValue,
+                    location: ArchitectureFormat.location(of: decoder),
+                    formatVersion: format.formatVersion,
+                    source: format.source)
+            }
             let legacyAlphaInit = try c.decode(Float.self, forKey: .legacyRezeroAlphaInit)
             let legacyAlphaCap = BlockGroup.legacyRezeroAlphaCap(forAlphaInit: legacyAlphaInit)
             blockGroups = [BlockGroup(
@@ -1371,27 +1683,60 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 useRezero: try c.decode(Bool.self, forKey: .legacyBlockUseRezero),
                 rezeroAlphaInit: legacyAlphaInit,
                 rezeroAlphaCap: legacyAlphaCap,
-                activationFunction: activationFunction,
+                activationFunction: towerActivation,
                 activationStyle: try c.decode(BlockActivationStyle.self, forKey: .legacyBlockActivationStyle),
                 skipMerge: try c.decode(BlockSkipMerge.self, forKey: .legacyBlockSkipMerge),
                 dropoutMultiplier: 1,
                 seBetaInit: .glorot,
-                seActivation: activationFunction,
+                seActivation: towerActivation,
                 seGammaBiasInit: BlockGroup.standardSEGammaBiasInit,
                 branchOutputInit: .standard,
                 skipProjectionInit: .he
             )]
+        }
+
+        // Pass two (`self` is complete): a resolved site the topology lacks
+        // becomes `does_not_apply`; each resolution is described for the log.
+        var siteResolutions: [String] = []
+        for site in resolvedSites {
+            if hasActivationSite(site) {
+                siteResolutions.append(
+                    "\(site.jsonKey) := \(activation(at: site).rawValue) "
+                        + "(the file's \(CodingKeys.legacyActivationFunction.rawValue))")
+            } else {
+                setStoredActivation(.doesNotApply, at: site)
+                siteResolutions.append(
+                    "\(site.jsonKey) := \(ActivationFunction.doesNotApply.rawValue) (\(site.absentReason))")
+            }
+        }
+        if isUniformTowerForm {
             // The uniform-tower keys predate block groups, so no writer of any
-            // version that has `se_beta_init`, `se_activation` or
-            // `rezero_alpha_cap` emits them: this form is legacy by
-            // construction, whatever version the carrier states.
+            // version that has `se_beta_init`, `se_activation`,
+            // `rezero_alpha_cap` or the site activations emits them: this form
+            // is legacy by construction, whatever version the carrier states.
+            let group = blockGroups[0]
+            let groupResolutions = [
+                "block_groups[0].\(BlockGroup.CodingKeys.seBetaInit.rawValue) := \(SEBetaInit.glorot.rawValue)",
+                "block_groups[0].\(BlockGroup.CodingKeys.seActivation.rawValue) := \(group.seActivation.rawValue)",
+                "block_groups[0].\(BlockGroup.CodingKeys.rezeroAlphaCap.rawValue) := \(group.rezeroAlphaCap)",
+                "block_groups[0].\(BlockGroup.CodingKeys.seGammaBiasInit.rawValue) := \(BlockGroup.standardSEGammaBiasInit)",
+                "block_groups[0].\(BlockGroup.CodingKeys.branchOutputInit.rawValue) := \(BranchOutputInit.standard.rawValue)",
+                "block_groups[0].\(BlockGroup.CodingKeys.skipProjectionInit.rawValue) := \(SkipProjectionInit.he.rawValue)",
+            ]
             format.legacyLog.record(
-                "legacy uniform-tower keys: block_groups[0].\(BlockGroup.CodingKeys.seBetaInit.rawValue) := \(SEBetaInit.glorot.rawValue), "
-                    + "block_groups[0].\(BlockGroup.CodingKeys.seActivation.rawValue) := \(activationFunction.rawValue), "
-                    + "block_groups[0].\(BlockGroup.CodingKeys.rezeroAlphaCap.rawValue) := \(legacyAlphaCap), "
-                    + "block_groups[0].\(BlockGroup.CodingKeys.seGammaBiasInit.rawValue) := \(BlockGroup.standardSEGammaBiasInit), "
-                    + "block_groups[0].\(BlockGroup.CodingKeys.branchOutputInit.rawValue) := \(BranchOutputInit.standard.rawValue), "
-                    + "block_groups[0].\(BlockGroup.CodingKeys.skipProjectionInit.rawValue) := \(SkipProjectionInit.he.rawValue)")
+                "legacy uniform-tower keys: " + (groupResolutions + siteResolutions).joined(separator: ", "))
+        } else {
+            let prefix = decoder.codingPath.isEmpty ? "" : "\(ArchitectureFormat.location(of: decoder))."
+            for resolution in siteResolutions {
+                format.legacyLog.record(prefix + resolution)
+            }
+        }
+        if let mismatch = activationSiteMismatch {
+            throw ArchitectureFormat.FormatError.activationSiteMismatch(
+                mismatch,
+                location: ArchitectureFormat.location(of: decoder),
+                formatVersion: format.formatVersion,
+                source: format.source)
         }
     }
 
@@ -1400,12 +1745,20 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         try c.encode(inputEncoding, forKey: .inputEncoding)
         try c.encode(blockGroups, forKey: .blockGroups)
         try c.encode(stemConvKernelSize, forKey: .stemConvKernelSize)
-        try c.encode(activationFunction, forKey: .activationFunction)
+        // All six, `does_not_apply` included, so a v9 file says which sites
+        // its topology lacks; the retired `activation_function` is never
+        // written.
+        try c.encode(stemActivation, forKey: .stemActivation)
+        try c.encode(towerEndActivation, forKey: .towerEndActivation)
+        try c.encode(featureSkipActivation, forKey: .featureSkipActivation)
         try c.encode(policyHeadStyle, forKey: .policyHeadStyle)
         try c.encode(policyPreConvChannels, forKey: .policyPreConvChannels)
+        try c.encode(policyHeadActivation, forKey: .policyHeadActivation)
         try c.encode(valueHeadStyle, forKey: .valueHeadStyle)
         try c.encode(valueHeadConvChannels, forKey: .valueHeadConvChannels)
         try c.encode(valueHeadHiddenUnits, forKey: .valueHeadHiddenUnits)
+        try c.encode(valueHeadConvActivation, forKey: .valueHeadConvActivation)
+        try c.encode(valueHeadFC1HiddenActivation, forKey: .valueHeadFC1HiddenActivation)
         try c.encode(policyHeadFinalInit, forKey: .policyHeadFinalInit)
         try c.encode(valueHeadFinalInit, forKey: .valueHeadFinalInit)
         try c.encode(valueHeadDrawPrior, forKey: .valueHeadDrawPrior)
@@ -1605,10 +1958,26 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     /// (`checkedParameterCountBreakdown()`), so the Build New Model screen
     /// can validate whatever the user has typed. Whether the model fits this
     /// Mac is a separate, build-time question (`ModelSizeGuidance`).
+    ///
+    /// Activations: a block group's `activationFunction` and `seActivation`
+    /// must be functions (their sites exist whenever the group does), and
+    /// each architecture-level site field must be a function exactly when
+    /// the topology has the site and `does_not_apply` exactly when it does
+    /// not (`activationSiteMismatch`). The site check runs after the
+    /// init-option and feature-skip checks, so an architecture with one of
+    /// those older, more specific errors reports that error first.
     func validate() throws {
         try requireOdd("stemConvKernelSize", stemConvKernelSize)
         try validateTowerShape()
         for (gi, g) in blockGroups.enumerated() {
+            guard g.activationFunction != .doesNotApply else {
+                throw NetworkArchitectureError.doesNotApplyAtAnAlwaysPresentSite(
+                    field: "blockGroups[\(gi)].activationFunction")
+            }
+            guard g.seActivation != .doesNotApply else {
+                throw NetworkArchitectureError.doesNotApplyAtAnAlwaysPresentSite(
+                    field: "blockGroups[\(gi)].seActivation")
+            }
             try requirePositive("blockGroups[\(gi)].channels", g.channels)
             try requireOdd("blockGroups[\(gi)].conv1KernelSize", g.conv1KernelSize)
             try requireOdd("blockGroups[\(gi)].conv2KernelSize", g.conv2KernelSize)
@@ -1682,6 +2051,9 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             if featureSkipFusion == .compressConvBNReLU, featureSkipToFinalBlock {
                 throw NetworkArchitectureError.featureSkipUnsupported(option: "compress_conv_bn_relu + to_final_block")
             }
+        }
+        if let mismatch = activationSiteMismatch {
+            throw NetworkArchitectureError.activationSiteMismatch(mismatch)
         }
         // Last: every width, kernel and count it multiplies is now known to
         // be positive, so the only way it can fail is an overflow.
@@ -1921,7 +2293,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         return "v\(architectureVersionLabel)"
             + " . in \(inputEncoding.rawValue)(\(inputPlanes)) -> stem \(stemOutputChannels) (\(stemConvKernelSize)x\(stemConvKernelSize))"
             + " . \(groupsDesc)"
-            + " . act \(activationFunction.rawValue)"
+            + siteActivationClause
             + " . policy \(policyHeadStyle.rawValue)(\(policySize))"
             + " . value \(valueDesc)"
             + headInitMarker
@@ -2144,6 +2516,170 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     /// per-trainable velocity tensors follow.
     func trainableTensorPlan() -> [WeightTensorSpec] {
         weightTensorPlan().filter { $0.kind != .bnRunningStat }
+    }
+}
+
+// MARK: - Architecture-level activation sites (format v9)
+
+extension NetworkArchitecture {
+
+    /// Whether the topology has `site`: the single existence rule every
+    /// consumer reads (decode, `validate()`, the setters, the Build screen,
+    /// the summary). Built from the same properties the graph builder
+    /// branches on, and never expands the tower, so the Build screen can ask
+    /// it about any draft (one with at least one group).
+    func hasActivationSite(_ site: ArchitectureActivationSite) -> Bool {
+        switch site {
+        case .stem:
+            return hasStemActivation
+        case .towerEnd:
+            return hasTowerEndBN
+        case .featureSkipFusion:
+            return featureSkipUsesCompressNode
+        case .policyHead:
+            switch policyHeadStyle {
+            case .simpleConv: return false
+            case .intermediateConv, .fcBottleneck: return true
+            }
+        case .valueHeadConv, .valueHeadFC1Hidden:
+            return true
+        }
+    }
+
+    /// The value `site`'s field holds. The six stored properties stay the
+    /// single source of truth; this only selects one.
+    func activation(at site: ArchitectureActivationSite) -> ActivationFunction {
+        switch site {
+        case .stem: return stemActivation
+        case .towerEnd: return towerEndActivation
+        case .featureSkipFusion: return featureSkipActivation
+        case .policyHead: return policyHeadActivation
+        case .valueHeadConv: return valueHeadConvActivation
+        case .valueHeadFC1Hidden: return valueHeadFC1HiddenActivation
+        }
+    }
+
+    /// Why `site` exists in this architecture, or why it does not — the
+    /// reason a mismatch error gives.
+    func activationSiteReason(_ site: ArchitectureActivationSite) -> String {
+        guard hasActivationSite(site) else { return site.absentReason }
+        switch site {
+        case .stem:
+            return "the first block group is post-activation, so the stem has an activation"
+        case .towerEnd:
+            return "the last block group is pre-activation, so the tower ends in a BN and an activation"
+        case .featureSkipFusion:
+            return "a compress fusion node is built (\(FeatureSkipFusion.compressConvBNReLU.rawValue) routed to a head)"
+        case .policyHead:
+            return "the policy head has a pre-block (\(policyHeadStyle.rawValue))"
+        case .valueHeadConv:
+            return "every value head has a conv activation"
+        case .valueHeadFC1Hidden:
+            return "every value head has an FC1 hidden layer"
+        }
+    }
+
+    /// The first site, in build order, whose field disagrees with whether
+    /// the topology has it: `does_not_apply` at an existing site, or a
+    /// function at an absent one. Nil when every site agrees. The one rule
+    /// decode, `validate()` and the Build screen all apply.
+    var activationSiteMismatch: ActivationSiteMismatch? {
+        for site in ArchitectureActivationSite.allCases {
+            let value = activation(at: site)
+            let exists = hasActivationSite(site)
+            if (value != .doesNotApply) != exists {
+                return ActivationSiteMismatch(
+                    site: site, value: value, siteExists: exists, reason: activationSiteReason(site))
+            }
+        }
+        return nil
+    }
+
+    /// Writes one site's stored field, unchecked. Every public path goes
+    /// through a checking setter; decode uses this for its second pass.
+    private mutating func setStoredActivation(_ value: ActivationFunction, at site: ArchitectureActivationSite) {
+        switch site {
+        case .stem: stemActivation = value
+        case .towerEnd: towerEndActivation = value
+        case .featureSkipFusion: featureSkipActivation = value
+        case .policyHead: policyHeadActivation = value
+        case .valueHeadConv: valueHeadConvActivation = value
+        case .valueHeadFC1Hidden: valueHeadFC1HiddenActivation = value
+        }
+    }
+
+    /// Sets one site's activation. Refuses a value that disagrees with the
+    /// site's existence — a function at a site the topology lacks, or
+    /// `does_not_apply` at one it has — leaving the architecture unchanged.
+    mutating func setActivation(_ value: ActivationFunction, at site: ArchitectureActivationSite) throws {
+        let exists = hasActivationSite(site)
+        guard (value != .doesNotApply) == exists else {
+            throw NetworkArchitectureError.activationSiteMismatch(ActivationSiteMismatch(
+                site: site, value: value, siteExists: exists, reason: activationSiteReason(site)))
+        }
+        setStoredActivation(value, at: site)
+    }
+
+    /// Sets `value` at every architecture-level site the topology has and
+    /// never touches a site it lacks (those stay `does_not_apply`). Refuses
+    /// `does_not_apply` before changing anything.
+    mutating func setActivationAtEveryExistingSite(_ value: ActivationFunction) throws {
+        guard value != .doesNotApply else {
+            throw NetworkArchitectureError.notAnActivationFunction(context: "the activation for every existing site")
+        }
+        for site in ArchitectureActivationSite.allCases where hasActivationSite(site) {
+            setStoredActivation(value, at: site)
+        }
+    }
+
+    /// The `--set-activation` rule, shared with the Build screen's "Use for
+    /// every activation" so an edit made either way gives the same
+    /// architecture: `value` at every existing architecture-level site and
+    /// on every block group's main path (`BlockGroup.setActivationFunction`,
+    /// which moves an SE-less group's `seActivation` with it and leaves an SE
+    /// group's alone). Refuses `does_not_apply` before changing anything.
+    ///
+    /// It equals the uniform convenience init built with `value` only on an
+    /// SE-less tower; with SE blocks that also needs each group's
+    /// `seActivation` set (`--set-se-activation`).
+    mutating func setMainActivationEverywhere(_ value: ActivationFunction) throws {
+        guard value != .doesNotApply else {
+            throw NetworkArchitectureError.notAnActivationFunction(context: "the main activation everywhere")
+        }
+        try setActivationAtEveryExistingSite(value)
+        for index in blockGroups.indices {
+            blockGroups[index].setActivationFunction(value)
+        }
+    }
+
+    /// Sets every site the topology lacks to `does_not_apply` and leaves
+    /// every existing site alone. It never fills a site that exists: a site
+    /// that has just appeared keeps whatever it holds — `does_not_apply` if
+    /// it was cleared when it last disappeared — and `validate()` names it
+    /// until a function is chosen. For code that has just changed the
+    /// topology (the Build screen, tests that flip a style). Decode and
+    /// `validate()` never call it: a stored mismatch is an error, never
+    /// repaired.
+    mutating func clearActivationSitesTheTopologyLacks() {
+        for site in ArchitectureActivationSite.allCases where !hasActivationSite(site) {
+            setStoredActivation(.doesNotApply, at: site)
+        }
+    }
+
+    /// The summary's activation clause. ` . act X` when every site the
+    /// topology has uses one activation `X` — the form every architecture
+    /// had before the sites were split, so their summaries are unchanged —
+    /// otherwise ` . act ` and each existing site's `<label> <fn>` in build
+    /// order. `does_not_apply` never appears: absent sites are not listed.
+    var siteActivationClause: String {
+        let present = ArchitectureActivationSite.allCases.filter { hasActivationSite($0) }
+        let activations = present.map { activation(at: $0) }
+        if let first = activations.first, activations.allSatisfy({ $0 == first }) {
+            return " . act \(first.rawValue)"
+        }
+        return " . act " + zip(present, activations)
+            .map { "\($0.summaryLabel) \($1.rawValue)" }
+            .joined(separator: ", ")
     }
 }
 

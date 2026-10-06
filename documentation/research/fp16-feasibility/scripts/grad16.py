@@ -26,11 +26,12 @@ momentum mu:  |g| ≈ |v|·(1−mu) (persistent part) … |v|·sqrt(1−mu²) (n
 import sys, os, json, pickle, math, numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 from fwd16 import *
+import dcm_arch
 
 MP = sys.argv[1]; OUT = sys.argv[2]
 TR = sys.argv[3] if len(sys.argv) > 3 else None; MU = float(sys.argv[4]) if len(sys.argv) > 4 else None
 B = 4096
-md, T = load(MP); arch = norm_arch(md['architecture'])
+md, T = load(MP); sites = dcm_arch.site_activations_md(md); arch = norm_arch_md(md)
 T = {k: v for k, v in T.items() if not k.startswith('opt.')}
 P = [p for p in pickle.load(open(POSSET, 'rb')) if p['src'] == 'corpus']
 rng = np.random.default_rng(0); idx = rng.integers(0, len(P), B)
@@ -38,7 +39,7 @@ X = np.stack([P[i]['x'] for i in idx]).astype(np.float64)
 labels = np.array([P[i]['label'] for i in idx]); legal = [np.asarray(P[i]['legal']) for i in idx]; tgt = [P[i]['target'] for i in idx]
 R = dict(model=dict(model_id=md['model_id'], training_step=md.get('training_step'), native=arch['compute_data_type'], batch=B))
 ui, cnt = np.unique(idx, return_counts=True); U = len(ui)
-o = forward_batched(T, arch, np.stack([P[i]['x'] for i in ui]).astype(np.float64), keep=('pl_raw', 'vl_raw', 'f1', 'feat', 'tower'))
+o = forward_batched(T, arch, np.stack([P[i]['x'] for i in ui]).astype(np.float64), keep=('pl_raw', 'vl_raw', 'f1', 'feat', 'tower'), sites=sites)
 pl = o['pl_raw']; vl = o['vl_raw']; f1 = o['f1']; feat = o['feat']; tower = o['tower']
 labels = np.array([P[i]['label'] for i in ui]); legal = [np.asarray(P[i]['legal']) for i in ui]; tgt = [P[i]['target'] for i in ui]
 cw = cnt.astype(np.float64)            # multiplicity of each unique position in the B-sample batch

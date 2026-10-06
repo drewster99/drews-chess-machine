@@ -30,6 +30,7 @@ final class PolicyTailPrecisionTests: XCTestCase {
         var a = NetworkArchitecture.current
         a.computeDataType = dtype
         if let policy { a.policyHeadStyle = policy }
+        a.clearActivationSitesTheTopologyLacks()
         return a
     }
 

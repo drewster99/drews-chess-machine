@@ -1,6 +1,12 @@
 # Per-site activations plan: the stem, tower end, feature-skip fusion, policy head and value head each choose their own activation
 
-Status (2026-10-05): **PLAN ONLY.** Nothing here is implemented.
+Status (2026-10-05): **IMPLEMENTING.** Phase status:
+- [x] **P1** — format v9, `does_not_apply`, graph, layer health, `--set-activation`, Build screen pickers, Python (commit recorded in **Implementation notes**).
+- [ ] **P2** — per-site derive setters.
+- [ ] **P3** — "Use for every activation" and the diagram.
+- [ ] **P4** — documentation, presets, ROADMAP completion.
+
+The original planning status, kept for the record: **PLAN ONLY.** Nothing here was implemented when the review passes below ran.
 - Independent review (2026-10-05): **concurred after three passes** on the first design. First pass: the architecture direction was approved. Six must-fix items and nine clarifications were raised, and each is listed with what was done about it in **Review reconciliation** at the end.
 - Revised the same day for the owner's answers (see **Owner decisions**): the value FC1 field is `value_head_fc1_hidden_activation` (OD-3); a site the topology lacks holds the explicit value `does_not_apply`, checked in both directions (OD-4, replacing the earlier "keep any value, never read it" design); the frozen Python scripts that would silently model ReLU get a guard (OD-9); the user presets are re-saved at v9 (OD-10); `ROADMAP.md` gets an entry (OD-11). The revised design (with `does_not_apply`) has had its own review passes, recorded as passes 4 onward in **Review reconciliation** with the verdict of each: external review passes 4 and 5 (must-fix items, all applied), then, with the external reviewer out of quota, an independent agent review that **concurred**; its fixes are applied.
 - Open owner decisions raised by the revision: OD-12, OD-13, OD-14 (see **Owner decisions**). **OD-12 and OD-14 block P1**; OD-13 does not. OD-15 records the interaction with the alarms plan and needs no decision here.
@@ -153,10 +159,10 @@ Why these names:
 - **`ActivationFunction` gains one case** (OD-4): `case doesNotApply = "does_not_apply"` (the raw value matches the snake_case of `leaky_relu`). Its doc comment (`NetworkArchitecture.swift:221-229`) is rewritten to list the per-site fields and to state:
   - `does_not_apply` is not a function. It marks an architecture-level site the model's topology does not have. It never means identity or linear.
   - It is legal only in the six site fields, and there exactly when the site does not exist (D3).
-- **`ActivationFunction` stops being `CaseIterable`.** In its place, `static let functions: [ActivationFunction] = [.relu, .silu, .gelu, .leakyRelu]`, documented as "every case that names a function: the list every picker, every derive value syntax and every per-function test iterates". Why:
-  - with the conformance kept, `allCases` would silently start including `does_not_apply` in the group pickers (`BuildNewModelView.swift:451`, `:457`) and in the `--set-activation` / `--set-se-activation` value syntax and parse (`ModelDerivation.swift:763`, `:775-778`, `:824`, `:832-835`);
-  - dropping it makes the compiler list every one of those uses, and the two test loops (X2).
-  - `enumPicker` (`BuildNewModelView.swift:566-572`) constrains `E: CaseIterable` without using it (it takes the case list as an argument). The constraint is dropped, so the group pickers can pass `ActivationFunction.functions`.
+- **`ActivationFunction` keeps `CaseIterable` (OD-14, owner's decision), and gains `static let functions: [ActivationFunction]` = `allCases` without `does_not_apply`**, documented as "every case that names a function: the list every picker, every derive value syntax and every per-function test iterates". Why the list is needed:
+  - `allCases` now includes `does_not_apply`, so every list a person or a CLI chooses a function from must use `functions` instead: the group pickers (`BuildNewModelView.swift:451`, `:457`), the site pickers, and the `--set-activation` / `--set-se-activation` value syntax and parse (`ModelDerivation.swift:763`, `:775-778`, `:824`, `:832-835`), plus the two test loops (X2);
+  - with the conformance kept, the compiler does not find a future `allCases` use. The guard is a test (`testEveryActivationChoiceListIsTheFunctionsList`, X1) pinning that `functions` excludes `does_not_apply` and that each picker list (`ArchitectureSiteActivationPicker.functionChoices`, `BuildNewModelView.groupActivationChoices`) and each derive value syntax equals `functions`, plus review.
+  - `enumPicker` (`BuildNewModelView.swift:566-572`) keeps its `CaseIterable` constraint; `ActivationFunction` still satisfies it.
 - Each new site field is a non-optional `ActivationFunction`.
 - New `enum ArchitectureActivationSite: CaseIterable, Hashable, Sendable`, in graph build order: `stem`, `towerEnd`, `featureSkipFusion`, `policyHead`, `valueHeadConv`, `valueHeadFC1Hidden`. It follows the `InitOptionField` precedent (`NetworkArchitecture.swift:408-452`). Each case provides:
   - `jsonKey`, read from `NetworkArchitecture.CodingKeys` (the single source of every key);
@@ -212,7 +218,7 @@ The order inside `validate()` is deliberate: an architecture with an older, more
 
 **What it costs:**
 - Code that flips a topology style after building an architecture must clear or choose the affected sites. In the app that is the Build screen (D8). In the tests it is 7 helper lines (X2, OD-12).
-- `ActivationFunction` stops being `CaseIterable` (D2).
+- Every list of choosable activations must use `ActivationFunction.functions`, not `allCases` (D2, OD-14).
 
 ## D4. JSON shape (v9)
 
@@ -332,7 +338,7 @@ The screen edits the topology in several places: each group's style (bound direc
 - `FormatError` (`:124-146`): `retiredField` (OD-5), `activationSiteMismatch`, `doesNotApplyAtAnAlwaysPresentSite`, `legacyActivationFunctionMissing`, each with its description.
 
 ### T2. `Network/NetworkArchitecture.swift`
-- `ActivationFunction` (`:221-244`): the `doesNotApply` case, `functions`, no `CaseIterable`, rewritten doc (D2).
+- `ActivationFunction` (`:221-244`): the `doesNotApply` case, `functions` (`allCases` without it; `CaseIterable` kept, OD-14), rewritten doc (D2).
 - `ArchitectureActivationSite` enum and `ActivationSiteMismatch` (new; beside `InitOptionField`, `:405-452`).
 - `NetworkArchitectureError` (`:977-1066`): `activationSiteMismatch`, `notAnActivationFunction(context:)`, `doesNotApplyAtAnAlwaysPresentSite(field:)`, with descriptions.
 - `BlockGroup.init(from:format:)` (`:833-901`): refuse `does_not_apply` in `activation_function` / `se_activation` (D3). `BlockGroup.setActivationFunction` (`:648-653`): the `does_not_apply` precondition (D3).
@@ -421,7 +427,7 @@ The screen edits the topology in several places: each group's style (bound direc
   - Feature skip section (`:165-180`): "Fusion activation", placed **outside** the existing `if model.featureSkipSource != .none` block (directly after the "Source" picker), so it is always present like every other site picker, and disabled through `siteExists(.featureSkipFusion)`.
   - Policy head section (`:126-141`): "Pre-block activation".
   - Value head section (`:142-164`): "Conv activation" and "FC1 hidden activation".
-  - Group pickers (`:451`, `:457`): `ActivationFunction.functions`; `enumPicker` (`:566-572`) drops its unused `CaseIterable` constraint.
+  - Group pickers (`:451`, `:457`): `ActivationFunction.functions` (through `BuildNewModelView.groupActivationChoices`); `enumPicker` (`:566-572`) is unchanged (OD-14 keeps `CaseIterable`).
   - The group "Activation style" picker (`:461`) binds `$draft.activationStyle` (D8).
 
 ### T9. `App/UpperContentView/ArchitectureDiagramView.swift`
@@ -555,6 +561,7 @@ Python scripts fall into three kinds, and they are handled differently.
 
 *`does_not_apply` itself:*
 - `testDoesNotApplyIsNotAFunction`: the raw value is `"does_not_apply"`; `ActivationFunction.functions` is exactly `[.relu, .silu, .gelu, .leakyRelu]`.
+- `testEveryActivationChoiceListIsTheFunctionsList` (OD-14): `functions` excludes `does_not_apply` and equals `allCases` without it; `ArchitectureSiteActivationPicker.functionChoices`, `BuildNewModelView.groupActivationChoices` and the `--set-activation` / `--set-se-activation` value syntax all equal `functions`.
 
 *Format gate:*
 - `testCurrentVersionRequiresSiteActivations`: `siteActivationsRequiredFromVersion == 9`, `currentVersion >= 9`, `SafetensorsModelIO.formatVersion == String(currentVersion)`.
@@ -657,7 +664,7 @@ Python scripts fall into three kinds, and they are handled differently.
 - `testLeakyHeadsTrainOneFiniteStep`: bf16, under both `PolicyTailPrecision` values.
 - `testAHeadActivationChangeChangesTheBehaviorFingerprint`: `BehaviorFingerprint.computeUncached` for ReLU vs a leaky value head; the SHA-256s differ.
 
-**`DrewsChessMachineTests/BuildNewModelSiteActivationRenderTests.swift`** (hosted, like `BuildNewModelTowerShapeRenderTests.swift:20-60`): host the screen and, for each of pre/post first group, pre/post last group, `simple_conv`, and the compress fusion on/off, settle it and check:
+**`DrewsChessMachineTests/BuildNewModelSiteActivationRenderTests.swift`** (hosted, like `BuildNewModelTowerShapeRenderTests.swift:20-60`). *As implemented (P1):* the drawn pickers cannot be read back in-process — SwiftUI builds no accessibility tree for an in-process query (the hosting view's `accessibilityChildren()` is empty without an accessibility client; checked with a scratch probe) and draws a Form picker as a graphics view, not an `NSPopUpButton`. So the picker's whole presentation is a value, `ArchitectureSiteActivationPicker.presentation(site:activation:siteExists:)` (enabled, needs-choice, the menu entries, the help), which the body draws and the test checks for every site of every hosted configuration; the screen is hosted and settled to prove it draws without a trap; picker presence on screen moves to V7 (checked on the running app). The planned checks were: host the screen and, for each of pre/post first group, pre/post last group, `simple_conv`, and the compress fusion on/off, settle it and check:
 - it draws without a trap;
 - all six site pickers are present in every configuration, the "Fusion activation" picker included, even with `featureSkipSource == .none` (T8);
 - each picker's enabled state equals `siteExists`;
@@ -683,7 +690,7 @@ If a GPU test that asserts bit-identity across two different graphs (`testEachHe
 Four causes:
 - **The rename (OD-1)** makes the first rows compile errors, so none can keep compiling with a silently different meaning. Every such edit keeps the test's original intent: "the tower-level activation" becomes "every existing architecture-level site".
 - **The version bump** fails `LineageRecordTests.swift:114` at run time, because it pins the literal `"8"`. The catalog pin is a P2 row.
-- **`ActivationFunction` stops being `CaseIterable`** (OD-4, D2): two loops over `allCases` stop compiling. Kept on `allCases` they would also fail, since `validate()` refuses `does_not_apply` in a group field.
+- **`ActivationFunction.allCases` now includes `does_not_apply`** (OD-4, OD-14, D2): two test loops over `allCases` would fail, since `validate()` refuses `does_not_apply` in a group field, so they iterate `ActivationFunction.functions`.
 - **Topology flips after construction (OD-4, D3)**: seven fixture helpers change a style or the fusion after building an architecture and then validate or build it. A site that disappears now holds a value it must not; a site that appears holds `does_not_apply`. Each gets one line that clears or chooses the affected site. The rest of each test is unchanged.
 
 Totals: OD-6 (approved): 11 tests in 6 files; 14 lines in P1, plus the catalog pin in P2. OD-12 (new): 9 lines in 6 files, every one in P1. Every line is listed below, with its owner decision.
@@ -749,7 +756,7 @@ Each of these must pass. Each is **unchanged apart from the X2 edits listed for 
 Each phase builds on its own and is committed after it builds and its targeted tests pass (the owner's standing rule for approved multi-phase plans; no push). One build at the end of each phase, through `drews-xcode-mcp` `build_project`. No test or CLI run while a training run is live.
 
 ### P1 — Format v9, `does_not_apply`, graph, layer health, `--set-activation`, Build screen pickers, Python (T1–T4, T7-P1, T8 except the menu, T9-P1, T11, ROADMAP entry)
-**P1 starts only after OD-12 and OD-14 are answered** (they decide P1's test edits and the `CaseIterable` removal). P1 is the first commit whose builds write v9 files, so the Python readers and guards move with it (T11). No commit leaves the tooling unable to read what the app writes. The Build screen's six pickers land here too: with `does_not_apply` a style switch can make a site appear that must be chosen, so the screen needs every picker from the first v9 build.
+**P1 starts only after OD-12 and OD-14 are answered** (they decide P1's test edits and whether `CaseIterable` stays; both answered 2026-10-05: OD-12 approved, OD-14 keep). P1 is the first commit whose builds write v9 files, so the Python readers and guards move with it (T11). No commit leaves the tooling unable to read what the app writes. The Build screen's six pickers land here too: with `does_not_apply` a style switch can make a site appear that must be chosen, so the screen needs every picker from the first v9 build.
 - All of T1–T4.
 - `SetActivationDeriveOperation` and the `SetSEActivationDeriveOperation` value list.
 - The Build screen model, pickers and topology sync (T8 except the "Use for every activation" menu, which is P3; `applyMainActivationEverywhere` itself lands in P1 for the X2 `SEActivationTests.swift:592` edit).
@@ -857,6 +864,21 @@ Before P1 starts, freeze the build of P1's parent commit as `~/Library/Applicati
 
 ---
 
+# Implementation notes
+
+Recorded as each phase lands; every deviation from the text above is listed with its reason.
+
+**P1** (commit: see the CHANGELOG entry and `git log`; this line is updated by the next phase's commit):
+- Built once (`build_failed: false`); full suite on the scheme's test plan (slow suites on): 2,380 passed, 0 failed, 1 skipped (`LegacyDcmmodelLoadTests`, gated on `DCM_RUN_LEGACY_LOAD` as before). `drews-xcode-mcp`'s `run_project_tests` has no `-only-testing`, so every "targeted run" of this plan is the full suite (about 23 minutes on this machine).
+- Python: `python3 -m unittest discover -s documentation/dashboards/tests` 117 passed (including the new `test_dcm_arch_site_activations.py`). Gate: pre-edit (`git show 20f64f68:…`) vs post-edit `relu_inputs.run` on F, R7, R8 over the same 4,097 bot positions — identical JSON; `value_stage.net_probs` on 256 positions from `value_stage.sample([20], 128, 2, 20261004)` — bit-identical arrays for all three.
+- `OLD` frozen before P1 as `FrozenBuilds/DCM-2324-20f64f68.app` (build 2324 of `20f64f68`).
+- `ArchitectureFormat.decodeSiteActivation` takes one more argument than D5 names, `allSiteKeys`, and returns `DecodedSiteActivation` (value + whether it was resolved), so `legacyActivationFunctionMissing` names every unresolved key whichever key is decoded first.
+- `ActivationSiteMismatch` carries a `reason` (from the new `NetworkArchitecture.activationSiteReason(_:)`: why the site exists or not in this architecture), so the message can name the policy style or the group style, as D2's examples do. `ArchitectureActivationSite` also has `codingKey` (the `CodingKeys` case `jsonKey` reads) and `siteDescription` (the picker's help for an existing site). `ActivationFunction.functionList` renders `functions` for messages.
+- OD-14 (keep `CaseIterable`): `ActivationFunction.functions` is `allCases` without `does_not_apply`; the picker lists go through `ArchitectureSiteActivationPicker.functionChoices` and `BuildNewModelView.groupActivationChoices`, pinned by the new `testEveryActivationChoiceListIsTheFunctionsList`. `enumPicker` keeps its constraint.
+- `BuildNewModelModel` gained `existingActivationSites` (one composition per redraw, beside `siteExists(_:)`) and `storedActivation(at:)`; `applyMainActivationEverywhere` logs `[BUTTON] Build New Model: Use for every activation <fn>`.
+- The render test checks the picker's presentation value instead of the drawn controls (see its X1 entry).
+- `ModelDerivation.parseActivationFunctionValue` / `doesNotApplyRefusal` are the one parser and refusal of every activation operation (P2's site setters use them too).
+
 # Owner decisions
 
 **Owner answers (2026-10-05):** OD-1 approved (rename to `stem_activation`); OD-2 approved (own `feature_skip_activation`); OD-3: name the value FC1 field `value_head_fc1_hidden_activation`; OD-4: an explicit `does_not_apply` value (owner: "none" reads ambiguously) — required exactly when the topology lacks the site, refused on a site that exists, never meaning an identity activation; OD-5 approved; OD-6 approved; OD-7 approved; OD-8 approved; OD-9: both — document the frozen scripts **and** add the guard to each silent one; OD-10: re-save the presets at v9 (approved, optional); OD-11: add to `ROADMAP.md` (approved).
@@ -880,7 +902,7 @@ Before P1 starts, freeze the build of P1's parent commit as `~/Library/Applicati
 | # | Decision | Recommendation | Status |
 |---|---|---|---|
 | OD-12 | Approve the 9 additional existing-test lines OD-4 causes (X2 rows marked **12**): `SEActivationTests.swift:249`, `:319` (`allCases` → `functions`); one clearing line after the style change in `HeadNumericsTailTests.swift:38`, `PolicyTailPrecisionTests.swift:32` and `InitNeutralOptionsTests.swift:106`; one explicit site value in `LayerHealthTests.swift` `mixedArch` (stem `leaky_relu`) and `compressSkipArch` (fusion `relu`), and in `NetworkArchitectureTests.swift:356`, `:384` (fusion `relu`). | Approve. Each keeps the test's intent and makes its fixture a legal architecture under OD-4. The alternative is a design in which absent sites hold any value, which OD-4 rules out. | **Decided (owner, 2026-10-05): approved** — edit the 9 test lines. |
-| OD-13 | An SE-less group's `se_activation` keeps today's rule (it must equal the group's `activation_function`, `NetworkArchitecture.swift:1631-1638`) rather than becoming `does_not_apply`. The SE FC1 is a site the topology lacks there, so the OD-4 principle could apply. | **Keep today's rule.** The brief scopes `does_not_apply` to the architecture-level sites. Changing a group field would need format v9 to rewrite every group's `se_activation` resolution, touch `BlockGroup.setActivationFunction`, the group editor and `SEActivationTests.testSELessGroupMustMatchItsActivation`, and would change no graph. It can be a later, separate change. | **Open — owner.** Does not block P1 as recommended (the plan implements "keep"); choosing the alternative would add a group-level change and new test edits to P1. |
+| OD-13 | An SE-less group's `se_activation` keeps today's rule (it must equal the group's `activation_function`, `NetworkArchitecture.swift:1631-1638`) rather than becoming `does_not_apply`. The SE FC1 is a site the topology lacks there, so the OD-4 principle could apply. | **Keep today's rule.** The brief scopes `does_not_apply` to the architecture-level sites. Changing a group field would need format v9 to rewrite every group's `se_activation` resolution, touch `BlockGroup.setActivationFunction`, the group editor and `SEActivationTests.testSELessGroupMustMatchItsActivation`, and would change no graph. It can be a later, separate change. | **Not answered by the owner; implemented as recommended ("keep today's rule")** (2026-10-05, per the owner's instruction to implement the recommendation). |
 | OD-14 | Remove `CaseIterable` from `ActivationFunction` (D2), so every list of activations is chosen explicitly (`ActivationFunction.functions`), or keep it and replace each known `allCases` use by hand | **Remove it.** The compiler then finds every use, including any added later; kept, `allCases` silently offers `does_not_apply` in pickers and derive value lists. | **Decided (owner, 2026-10-05): keep `CaseIterable`**; every picker, derive value list and test loop uses `ActivationFunction.functions` (= `allCases` without `does_not_apply`), and a new test pins that `functions` excludes `does_not_apply` and that each picker / derive list equals `functions`. (A future `allCases` use is not caught by the compiler; that test and review are the guard.) |
 | OD-15 | `TRAINING_HEALTH_ALARMS_PLAN.md` rule 3 (value-FC1 zero velocity) under a non-`relu` `value_head_fc1_hidden_activation`. `LayerHealth` keeps reporting `valueFC1ZeroVel` either way (T4). | Rule 3 applies only to `relu`. | **No decision needed in this plan.** The alarms plan's own design already says this (its rule-3 note, `TRAINING_HEALTH_ALARMS_PLAN.md:276`); whether that text is owner-approved is tracked in that plan, not here. This plan only makes `valueFC1Layer(for:)` return the new field (T4), which that note relies on. Does not block any phase. |
 

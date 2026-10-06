@@ -729,7 +729,7 @@ final class ChessNetwork: @unchecked Sendable {
         // tower defers the first nonlinearity to block 0's `BN -> act` (the
         // stem BN still bounds x_0, the skip highway's starting value).
         if arch.hasStemActivation {
-            x = Self.activation(g, x, arch, name: "stem_act")
+            x = Self.activation(g, x, arch.stemActivation, name: "stem_act")
         }
 
         // Hold the stem output for the optional feature skip (a single long concat
@@ -892,7 +892,7 @@ final class ChessNetwork: @unchecked Sendable {
                 batchMeans: &batchMeans,
                 batchVars: &batchVars
             )
-            x = Self.activation(g, x, arch, name: "tower_final_act")
+            x = Self.activation(g, x, arch.towerEndActivation, name: "tower_final_act")
         }
         taps?.record("tower_output", x)
 
@@ -930,7 +930,7 @@ final class ChessNetwork: @unchecked Sendable {
                 trainables: &trainables, shouldDecay: &shouldDecay,
                 runningStats: &runningStats, runningStatsAssignOps: &runningStatsAssigns,
                 batchMeans: &batchMeans, batchVars: &batchVars)
-            f = Self.activation(g, f, arch, name: "feature_skip_act")
+            f = Self.activation(g, f, arch.featureSkipActivation, name: "feature_skip_act")
             policyHeadInput = arch.featureSkipToPolicyHead ? f : x
             valueHeadInput = arch.featureSkipToValueHead ? f : x
         } else if arch.featureSkipEnabled, arch.featureSkipFusion == .concatDirect,
@@ -2361,21 +2361,22 @@ final class ChessNetwork: @unchecked Sendable {
         return desc
     }
 
-    /// The tower-LEVEL hidden activation (stem act when post-act, tower-end,
-    /// heads), selected by `arch.activationFunction`. Block main paths and SE
-    /// FC1 use the overload below with their group's own function
-    /// (`activationFunction` and `seActivation` respectively).
-    private static func activation(
-        _ graph: MPSGraph, _ x: MPSGraphTensor, _ arch: NetworkArchitecture, name: String
-    ) -> MPSGraphTensor {
-        activation(graph, x, arch.activationFunction, name: name)
-    }
-
     /// SiLU = `x*sigmoid(x)`; GELU exact (erf-based); leaky ReLU with the
-    /// fixed `ActivationFunction.leakyReLUNegativeSlope`. The SE gate
-    /// (sigmoid) and value output (tanh/softmax) are structural and call their
-    /// own ops directly. Internal (not private) so tests can check each
-    /// function's values and gradients on a bare graph.
+    /// fixed `ActivationFunction.leakyReLUNegativeSlope`. Every hidden site
+    /// passes its own field: a block group its `activationFunction` /
+    /// `seActivation`, an architecture-level site its per-site field
+    /// (`stemActivation`, `towerEndActivation`, …). There is deliberately no
+    /// overload taking the whole architecture, so a site can only ever be
+    /// built from the field that names it. The SE gate (sigmoid) and value
+    /// output (tanh/softmax) are structural and call their own ops directly.
+    /// Internal (not private) so tests can check each function's values and
+    /// gradients on a bare graph.
+    ///
+    /// `does_not_apply` is never built: it marks a site the topology lacks,
+    /// `validate()` (run by `init` before any graph is built) refuses it at
+    /// every site that exists, and each site's call is reached only where the
+    /// site exists. Reaching it here is a defect in that validation or a call
+    /// site — never something to paper over with an identity activation.
     static func activation(
         _ graph: MPSGraph, _ x: MPSGraphTensor, _ fn: ActivationFunction, name: String
     ) -> MPSGraphTensor {
@@ -2398,6 +2399,9 @@ final class ChessNetwork: @unchecked Sendable {
             let onePlus = graph.addition(erf, one, name: "\(name)_1plus")
             let hx = graph.multiplication(half, x, name: "\(name)_halfx")
             return graph.multiplication(hx, onePlus, name: name)
+        case .doesNotApply:
+            preconditionFailure("ChessNetwork: 'does_not_apply' reached the graph builder at '\(name)'. "
+                + "validate() refuses it at every site that is built, so this is a defect.")
         }
     }
 
@@ -3203,7 +3207,7 @@ final class ChessNetwork: @unchecked Sendable {
                     trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                     runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
             }
-            x = activation(graph, x, arch, name: "policy_pre_act")
+            x = activation(graph, x, arch.policyHeadActivation, name: "policy_pre_act")
             taps?.record("policy_pre_act", x)
             let convW = graph.variable(
                 with: try initializer.headFinalData(
@@ -3255,7 +3259,7 @@ final class ChessNetwork: @unchecked Sendable {
                     trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                     runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
             }
-            x = activation(graph, x, arch, name: "policy_pre_act")
+            x = activation(graph, x, arch.policyHeadActivation, name: "policy_pre_act")
             taps?.record("policy_pre_act", x)
             let flatSize = pK * Self.boardSize * Self.boardSize
             x = graph.reshape(x, shape: [-1, NSNumber(value: flatSize)], name: "policy_flatten_pre")
@@ -3464,7 +3468,7 @@ final class ChessNetwork: @unchecked Sendable {
             batchMeans: &batchMeans,
             batchVars: &batchVars
         )
-        x = activation(graph, x, arch, name: "value_act")
+        x = activation(graph, x, arch.valueHeadConvActivation, name: "value_act")
 
         // Flatten: [batch, convChannels, 8, 8] -> [batch, convChannels*64]
         let flattenSize = Self.boardSize * Self.boardSize * convChannels
@@ -3492,7 +3496,7 @@ final class ChessNetwork: @unchecked Sendable {
         shouldDecay.append(false)
         x = graph.matrixMultiplication(primary: x, secondary: fc1W, name: "value_fc1")
         x = graph.addition(x, fc1Bias, name: "value_fc1_bias_add")
-        x = activation(graph, x, arch, name: "value_fc1_act")
+        x = activation(graph, x, arch.valueHeadFC1HiddenActivation, name: "value_fc1_act")
         taps?.record("value_fc1_act", x)
 
         // FC2: hidden -> valueHeadClasses (3 = W/D/L logits, or 1 = scalar pre-tanh).

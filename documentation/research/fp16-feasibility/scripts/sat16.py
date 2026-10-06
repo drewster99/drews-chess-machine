@@ -4,12 +4,13 @@ exactly 1.0 (or 0.0) makes a derivative computed from the output
 import sys, os, json, pickle, math, numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 from fwd16 import *
+import dcm_arch
 A = os.path.expanduser('~/Library/Application Support/DrewsChessMachine/')
 P = pickle.load(open(POSSET, 'rb'))
 X = np.stack([p['x'] for p in P]).astype(np.float64)
 out = {}
 for rel in sys.argv[1:]:
-    md, T = load(A + rel); arch = norm_arch(md['architecture']); g = arch['block_groups'][0]
+    md, T = load(A + rel); sites = dcm_arch.site_activations_md(md); arch = norm_arch_md(md); g = arch['block_groups'][0]
     r = dict(model_id=md['model_id'], training_step=md.get('training_step'))
     if g['use_rezero']:
         C = g['rezero_alpha_cap']; rz = {}
@@ -20,7 +21,7 @@ for rel in sys.argv[1:]:
         r['rezero'] = rz
     sat = {}
     for s in range(0, len(X), 128):
-        a = forward(T, arch, X[s:s + 128], capture=True)['acts']
+        a = forward(T, arch, X[s:s + 128], capture=True, sites=sites)['acts']
         for k, v in a.items():
             if not k.endswith('se.sig'): continue
             d = sat.setdefault(k, [0, 0, 0, 0, 0])

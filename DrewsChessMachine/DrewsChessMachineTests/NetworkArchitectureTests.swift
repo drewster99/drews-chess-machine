@@ -354,6 +354,7 @@ final class NetworkArchitectureTests: XCTestCase {
         // Valid: compress to heads (head-only, no final block).
         var compress = NetworkArchitecture.preset(.v4_5block_7x7_fusion)
         compress.featureSkipFusion = .compressConvBNReLU
+        compress.featureSkipActivation = .relu
         XCTAssertNoThrow(try compress.validate())
 
         // Valid: concatDirect to final block (alongside the heads).
@@ -382,6 +383,7 @@ final class NetworkArchitectureTests: XCTestCase {
     func testFeatureSkipCompressModeDualContract() throws {
         var a = NetworkArchitecture.preset(.v4_5block_7x7_fusion)
         a.featureSkipFusion = .compressConvBNReLU
+        a.featureSkipActivation = .relu
         try a.validate()
         XCTAssertTrue(a.featureSkipUsesCompressNode)
         // Heads are NOT widened under compress (they read the compressed towerC node).

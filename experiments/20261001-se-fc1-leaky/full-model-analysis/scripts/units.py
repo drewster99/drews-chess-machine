@@ -185,7 +185,24 @@ class SiteWriter:
             self.rows.append(row)
 
 
+def require_supported_architecture(ckpt):
+    """Refuses a checkpoint whose topology or head activations `analyze` does
+    not model: it labels tower_final_bn, policy.pre_bn, value.bn and the value
+    FC1 (and its reader) as ReLU-fed, and assumes the heads read the tower output
+    directly. A simple_conv model has no policy pre-block, so its
+    policy_head_activation is 'does_not_apply' and it is refused here too."""
+    if ckpt.architecture["feature_skip_source"] != "none":
+        raise ValueError(f"{ckpt.file}: a feature skip is not modelled (feature_skip_source "
+                         f"{ckpt.architecture['feature_skip_source']!r})")
+    sites = L.dcm_arch.site_activations_md(ckpt.metadata)
+    for key in ("tower_end_activation", "policy_head_activation", "value_head_conv_activation",
+                "value_head_fc1_hidden_activation"):
+        if sites[key] != "relu":
+            raise ValueError(f"{ckpt.file}: {key} is {sites[key]!r}; only a ReLU {key} is modelled")
+
+
 def analyze(run, ckpt, fresh):
+    require_supported_architecture(ckpt)
     rows = []
     stem_now = ckpt["stem.conv.weight"]
     stem0 = fresh["stem.conv.weight"]

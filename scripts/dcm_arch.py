@@ -14,6 +14,15 @@ existed. For the ReZero cap that legacy value is
 `rezero_alpha_init * REZERO_TANH_CEILING_MULTIPLE` — the C the forward pass
 `C * tanh(alpha / C)` used before `rezero_alpha_cap` was stored.
 
+The six architecture-level site activations of format v9 (`stem_activation`,
+`tower_end_activation`, `feature_skip_activation`, `policy_head_activation`,
+`value_head_conv_activation`, `value_head_fc1_hidden_activation`) are resolved
+by `site_activations` / `site_activations_md`, not by `norm_arch`: only scripts
+that model the heads need them. A site the topology lacks holds
+'does_not_apply' (never an identity activation), and only such a site may hold
+it. `require_relu` is the one-line guard of a script that models ReLU at sites
+it never reads a key for.
+
 Import from anywhere in the repository with
 
     sys.path.insert(0, os.path.join(<repo root>, "scripts"))
@@ -39,6 +48,21 @@ SE_ACTIVATION_REQUIRED_FROM_VERSION = 5
 REZERO_ALPHA_CAP_REQUIRED_FROM_VERSION = 6
 # NetworkArchitecture.rezeroTanhCeilingMultiple: the frozen legacy cap rule.
 REZERO_TANH_CEILING_MULTIPLE = 1.0
+# First format whose architecture must state the six site activations below and
+# must not state the top-level `activation_function` they replace; older files
+# resolve each existing site from that `activation_function` and each absent one
+# to DOES_NOT_APPLY (ArchitectureFormat.siteActivationsRequiredFromVersion).
+SITE_ACTIVATIONS_REQUIRED_FROM_VERSION = 9
+# NetworkArchitecture's site keys, in graph build order (ArchitectureActivationSite).
+SITE_ACTIVATION_KEYS = (
+    'stem_activation', 'tower_end_activation', 'feature_skip_activation',
+    'policy_head_activation', 'value_head_conv_activation', 'value_head_fc1_hidden_activation')
+# The value a site field holds when the topology lacks the site. Not a function.
+DOES_NOT_APPLY = 'does_not_apply'
+# ActivationFunction.functions: every token that names a function.
+ACTIVATION_FUNCTIONS = ('relu', 'silu', 'gelu', 'leaky_relu')
+# The format the app gives a carrier with no version marker (legacy).
+UNVERSIONED_LEGACY_VERSION = 3
 # A safetensors header larger than this is not a DCM model header (theirs are
 # a few kilobytes); refusing it keeps a damaged length prefix from being read
 # as a request for gigabytes.
@@ -72,7 +96,11 @@ def norm_arch(s, format_version=None):
             use_rezero=a['block_use_rezero'], rezero_alpha_init=a['rezero_alpha_init'],
             activation_function=a['activation_function'],
             activation_style=a['block_activation_style'], skip_merge=a['block_skip_merge'],
-            dropout_multiplier=1, se_beta_init='glorot', se_activation=a['activation_function'])]
+            dropout_multiplier=1, se_beta_init='glorot', se_activation=a['activation_function'],
+            # The uniform-tower form is legacy by construction whatever version
+            # its carrier states, so its cap is always the legacy derivation
+            # (NetworkArchitecture's uniform-tower expansion).
+            rezero_alpha_cap=a['rezero_alpha_init'] * REZERO_TANH_CEILING_MULTIPLE)]
     version = None if format_version is None else int(format_version)
     strict_beta = version is not None and version >= SE_BETA_INIT_REQUIRED_FROM_VERSION
     strict_se_act = version is not None and version >= SE_ACTIVATION_REQUIRED_FROM_VERSION
@@ -102,6 +130,137 @@ def norm_arch_md(md):
     if 'architecture' not in md:
         raise ArchitectureError("safetensors __metadata__ has no 'architecture'")
     return norm_arch(md['architecture'], md.get('dcm_format_version'))
+
+
+_SITE_ABSENT_REASON = {
+    'stem_activation': 'the first block group is pre-activation, so the stem has no activation',
+    'tower_end_activation': 'the last block group is post-activation, so the tower has no tower-end activation',
+    'feature_skip_activation': 'no compress fusion node is built',
+    'policy_head_activation': 'the policy head is simple_conv, so it has no pre-block',
+}
+
+
+def site_exists(norm, key):
+    """Whether a normalized architecture (`norm_arch` output) has the site of
+    `key` — the rule of NetworkArchitecture.hasActivationSite."""
+    groups = norm['block_groups']
+    if key == 'stem_activation':
+        return groups[0]['activation_style'] == 'post'
+    if key == 'tower_end_activation':
+        return groups[-1]['activation_style'] == 'pre'
+    if key == 'feature_skip_activation':
+        return (norm.get('feature_skip_source', 'none') != 'none'
+                and norm.get('feature_skip_fusion') == 'compress_conv_bn_relu'
+                and bool(norm.get('feature_skip_to_policy_head') or norm.get('feature_skip_to_value_head')))
+    if key == 'policy_head_activation':
+        style = norm['policy_head_style']
+        if style not in ('simple_conv', 'intermediate_conv', 'fc_bottleneck'):
+            raise ArchitectureError(f"unknown policy_head_style {style!r}")
+        return style != 'simple_conv'
+    if key in ('value_head_conv_activation', 'value_head_fc1_hidden_activation'):
+        return True
+    raise ArchitectureError(f"{key!r} is not a site activation key (one of {', '.join(SITE_ACTIVATION_KEYS)})")
+
+
+def _require_token(key, value):
+    if value != DOES_NOT_APPLY and value not in ACTIVATION_FUNCTIONS:
+        raise ArchitectureError(f"{key} is {value!r}, which is not one of {', '.join(ACTIVATION_FUNCTIONS)} "
+                                f"or {DOES_NOT_APPLY!r}")
+
+
+def site_activations(arch, format_version=None):
+    """The six site activations of a DCM architecture JSON (string or dict, as
+    stored — before `norm_arch`, which erases the uniform-tower form), under the
+    app's rules (NetworkArchitecture.init(from:format:)):
+
+    - a stated key wins, at any version;
+    - a file older than SITE_ACTIVATIONS_REQUIRED_FROM_VERSION (None = unversioned
+      = legacy), or in the uniform-tower form, resolves an unstated site from its
+      top-level `activation_function` where the topology has the site and to
+      DOES_NOT_APPLY where it does not; with no `activation_function` either it
+      raises, naming every unresolved key;
+    - a v9+ block-groups file missing a key, or stating the retired top-level
+      `activation_function`, raises.
+
+    Then both directions are checked — a site the topology has must hold a
+    function and one it lacks must hold DOES_NOT_APPLY — and a DOES_NOT_APPLY in
+    any group's `activation_function` / `se_activation` raises. Every
+    ArchitectureError names the key and the site."""
+    raw = json.loads(arch) if isinstance(arch, str) else dict(arch)
+    version = UNVERSIONED_LEGACY_VERSION if format_version is None else int(format_version)
+    uniform = 'block_groups' not in raw
+    legacy_allowed = uniform or version < SITE_ACTIVATIONS_REQUIRED_FROM_VERSION
+    if not uniform and not legacy_allowed and 'activation_function' in raw:
+        raise ArchitectureError(
+            f"format v{version} architecture states the retired top-level 'activation_function'; "
+            f"it is replaced by {', '.join(SITE_ACTIVATION_KEYS)}")
+    tower = raw.get('activation_function')
+    if tower is not None:
+        _require_token('activation_function', tower)
+    if uniform:
+        if tower is None:
+            raise ArchitectureError("a uniform-tower architecture must state 'activation_function'")
+        if tower == DOES_NOT_APPLY:
+            raise ArchitectureError("activation_function is 'does_not_apply', but that site always exists")
+    values = {}
+    resolved = []
+    for key in SITE_ACTIVATION_KEYS:
+        if key in raw:
+            _require_token(key, raw[key])
+            values[key] = raw[key]
+        elif legacy_allowed:
+            resolved.append(key)
+        else:
+            raise ArchitectureError(f"site activation '{key}' is missing in a format v{version} architecture")
+    if resolved and tower is None:
+        raise ArchitectureError(
+            f"format v{version} architecture states neither {', '.join(resolved)} nor the top-level "
+            f"'activation_function' they resolve from")
+    norm = norm_arch(raw, None if uniform else format_version)
+    for key in resolved:
+        values[key] = tower if site_exists(norm, key) else DOES_NOT_APPLY
+    for i, group in enumerate(norm['block_groups']):
+        for field in ('activation_function', 'se_activation'):
+            if group[field] == DOES_NOT_APPLY:
+                raise ArchitectureError(
+                    f"block_groups[{i}].{field} is 'does_not_apply', but that site exists whenever its group does")
+    for key in SITE_ACTIVATION_KEYS:
+        exists = site_exists(norm, key)
+        if exists and values[key] == DOES_NOT_APPLY:
+            raise ArchitectureError(f"{key} is 'does_not_apply', but the model has that site: choose one of "
+                                    f"{', '.join(ACTIVATION_FUNCTIONS)}")
+        if not exists and values[key] != DOES_NOT_APPLY:
+            raise ArchitectureError(f"{key} is {values[key]!r}, but {_SITE_ABSENT_REASON[key]}: "
+                                    f"it must be 'does_not_apply'")
+    return values
+
+
+def site_activations_md(md):
+    """site_activations for a safetensors __metadata__ dict, gated on its dcm_format_version."""
+    if 'architecture' not in md:
+        raise ArchitectureError("safetensors __metadata__ has no 'architecture'")
+    return site_activations(md['architecture'], md.get('dcm_format_version'))
+
+
+def require_relu(md, source, sites, block_main_path=False):
+    """The guard of a script that models ReLU at `sites` without reading a key:
+    raises ArchitectureError naming `source` and the site unless every named site
+    of the file (a safetensors __metadata__ dict) is exactly 'relu'. A site the
+    file lacks is 'does_not_apply' and raises too — the caller models it as a
+    present ReLU. With block_main_path=True every block group's
+    `activation_function` must be 'relu' as well."""
+    values = site_activations_md(md)
+    for key in sites:
+        if key not in SITE_ACTIVATION_KEYS:
+            raise ArchitectureError(f"{source}: {key!r} is not a site activation key")
+        if values[key] != 'relu':
+            raise ArchitectureError(f"{source}: {key} is {values[key]!r}; this script models a ReLU there "
+                                    f"and cannot analyse this file")
+    if block_main_path:
+        for i, group in enumerate(norm_arch_md(md)['block_groups']):
+            if group['activation_function'] != 'relu':
+                raise ArchitectureError(f"{source}: block_groups[{i}].activation_function is "
+                                        f"{group['activation_function']!r}; this script models a ReLU main path")
 
 
 def read_metadata(path):

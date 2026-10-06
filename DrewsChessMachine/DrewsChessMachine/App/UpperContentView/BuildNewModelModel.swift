@@ -48,8 +48,25 @@ final class BuildNewModelModel {
     /// collapsing. Changed only through the group methods below.
     private(set) var blockGroupDrafts: [BlockGroupDraft]
     var stemConvKernelSize: Int
-    var activationFunction: ActivationFunction
-    var policyHeadStyle: PolicyHeadStyle
+    /// The six architecture-level site activations, one per site
+    /// (`ArchitectureActivationSite`). Each holds `does_not_apply` while the
+    /// topology lacks its site: a site that disappears drops its choice
+    /// inside the edit that removed it (`syncSiteActivationsWithTopology`),
+    /// and one that appears holds `does_not_apply` until a function is
+    /// chosen — `validationError` names it and Build / Save stay disabled —
+    /// so an earlier choice is never restored silently.
+    var stemActivation: ActivationFunction
+    var towerEndActivation: ActivationFunction
+    var featureSkipActivation: ActivationFunction
+    var policyHeadActivation: ActivationFunction
+    var valueHeadConvActivation: ActivationFunction
+    var valueHeadFC1HiddenActivation: ActivationFunction
+    // The topology fields below can make a site appear or disappear, so each
+    // edit syncs the site activations before it returns. (Assignments in
+    // `init` go through the init accessor and run no observer.)
+    var policyHeadStyle: PolicyHeadStyle {
+        didSet { syncSiteActivationsWithTopology() }
+    }
     var policyPreConvChannels: Int
     var valueHeadStyle: ValueHeadStyle
     var valueHeadConvChannels: Int
@@ -64,10 +81,20 @@ final class BuildNewModelModel {
     /// disables the whole feature. All destinations (policy/value heads, final
     /// block) and both fusion modes are supported; `validate()` rejects only
     /// `compressConvBNReLU` fusion combined with the final-block destination.
-    var featureSkipSource: FeatureSkipSource
-    var featureSkipFusion: FeatureSkipFusion
-    var featureSkipToPolicyHead: Bool
-    var featureSkipToValueHead: Bool
+    var featureSkipSource: FeatureSkipSource {
+        didSet { syncSiteActivationsWithTopology() }
+    }
+    var featureSkipFusion: FeatureSkipFusion {
+        didSet { syncSiteActivationsWithTopology() }
+    }
+    var featureSkipToPolicyHead: Bool {
+        didSet { syncSiteActivationsWithTopology() }
+    }
+    var featureSkipToValueHead: Bool {
+        didSet { syncSiteActivationsWithTopology() }
+    }
+    /// Does not decide whether the compress fusion node is built
+    /// (`featureSkipUsesCompressNode`), so it needs no site sync.
     var featureSkipToFinalBlock: Bool
 
     /// Name to save the current config under (Save-as-Preset). Defaults from the
@@ -96,11 +123,19 @@ final class BuildNewModelModel {
 
     init(_ named: NamedArchitecture = NamedArchitecture(label: "Custom", architecture: .current)) {
         let a = named.architecture
+        // The drafts capture `self` (their topology-change callback), which
+        // is legal only once every stored property is set: start with no
+        // drafts, set everything else, then build them.
+        self.blockGroupDrafts = []
         self.labelOverride = ""
         self.inputEncoding = a.inputEncoding
-        self.blockGroupDrafts = a.blockGroups.map(BlockGroupDraft.init)
         self.stemConvKernelSize = a.stemConvKernelSize
-        self.activationFunction = a.activationFunction
+        self.stemActivation = a.stemActivation
+        self.towerEndActivation = a.towerEndActivation
+        self.featureSkipActivation = a.featureSkipActivation
+        self.policyHeadActivation = a.policyHeadActivation
+        self.valueHeadConvActivation = a.valueHeadConvActivation
+        self.valueHeadFC1HiddenActivation = a.valueHeadFC1HiddenActivation
         self.policyHeadStyle = a.policyHeadStyle
         self.policyPreConvChannels = a.policyPreConvChannels
         self.valueHeadStyle = a.valueHeadStyle
@@ -115,7 +150,24 @@ final class BuildNewModelModel {
         self.featureSkipToPolicyHead = a.featureSkipToPolicyHead
         self.featureSkipToValueHead = a.featureSkipToValueHead
         self.featureSkipToFinalBlock = a.featureSkipToFinalBlock
+        self.blockGroupDrafts = a.blockGroups.map { makeDraft($0) }
         self.availablePresets = ArchitecturePresetStore.allPresets()
+    }
+
+    /// A draft of `group` wired to this model's site sync. The model is the
+    /// only creator of drafts.
+    ///
+    /// `[weak self]`: SwiftUI can keep a row's bindings alive past the update
+    /// that removes the row (see `BlockGroupDraft`), and those bindings hold
+    /// the draft, not the model, so a style write can reach a draft whose
+    /// model is gone. That draft is detached exactly like a removed one —
+    /// the write changes only the orphan draft and there is no model state
+    /// left to sync — so the skipped call is the correct outcome there, not
+    /// a silent fallback. (`unowned` would crash on that write.)
+    private func makeDraft(_ group: BlockGroup) -> BlockGroupDraft {
+        BlockGroupDraft(group, onTopologyChange: { [weak self] in
+            self?.syncSiteActivationsWithTopology()
+        })
     }
 
     /// Re-scan the preset folder. Call after saving a new user preset so it
@@ -126,13 +178,18 @@ final class BuildNewModelModel {
 
     /// Populate every field from a preset (the picker selection is derived from
     /// architecture equality, so no separate "selected" flag is needed).
+    ///
+    /// The assignments run one by one, and each topology field's observer
+    /// syncs the site activations against a half-replaced topology, which
+    /// can rewrite them. So the six site activations are assigned last, in
+    /// one block after every topology field: whatever an intermediate sync
+    /// did, they end equal to the snapshot's own (consistent) values.
     func load(_ named: NamedArchitecture) {
         let a = named.architecture
         labelOverride = ""
         inputEncoding = a.inputEncoding
-        blockGroupDrafts = a.blockGroups.map(BlockGroupDraft.init)
+        blockGroupDrafts = a.blockGroups.map { makeDraft($0) }
         stemConvKernelSize = a.stemConvKernelSize
-        activationFunction = a.activationFunction
         policyHeadStyle = a.policyHeadStyle
         policyPreConvChannels = a.policyPreConvChannels
         valueHeadStyle = a.valueHeadStyle
@@ -147,20 +204,35 @@ final class BuildNewModelModel {
         featureSkipToPolicyHead = a.featureSkipToPolicyHead
         featureSkipToValueHead = a.featureSkipToValueHead
         featureSkipToFinalBlock = a.featureSkipToFinalBlock
+        stemActivation = a.stemActivation
+        towerEndActivation = a.towerEndActivation
+        featureSkipActivation = a.featureSkipActivation
+        policyHeadActivation = a.policyHeadActivation
+        valueHeadConvActivation = a.valueHeadConvActivation
+        valueHeadFC1HiddenActivation = a.valueHeadFC1HiddenActivation
     }
 
-    /// The architecture described by the current fields.
+    /// The architecture described by the current fields, with every site
+    /// the topology lacks cleared to `does_not_apply`
+    /// (`clearActivationSitesTheTopologyLacks`), so it never holds a
+    /// function at an absent site. A site that exists keeps its stored
+    /// value, `does_not_apply` included, which `validate()` then names.
     var architecture: NetworkArchitecture {
-        NetworkArchitecture(
+        var composed = NetworkArchitecture(
             inputEncoding: inputEncoding,
             blockGroups: blockGroups,
             stemConvKernelSize: stemConvKernelSize,
-            activationFunction: activationFunction,
+            stemActivation: stemActivation,
+            towerEndActivation: towerEndActivation,
+            featureSkipActivation: featureSkipActivation,
             policyHeadStyle: policyHeadStyle,
             policyPreConvChannels: policyPreConvChannels,
+            policyHeadActivation: policyHeadActivation,
             valueHeadStyle: valueHeadStyle,
             valueHeadConvChannels: valueHeadConvChannels,
             valueHeadHiddenUnits: valueHeadHiddenUnits,
+            valueHeadConvActivation: valueHeadConvActivation,
+            valueHeadFC1HiddenActivation: valueHeadFC1HiddenActivation,
             policyHeadFinalInit: policyHeadFinalInit,
             valueHeadFinalInit: valueHeadFinalInit,
             valueHeadDrawPrior: valueHeadDrawPrior,
@@ -171,6 +243,82 @@ final class BuildNewModelModel {
             featureSkipToValueHead: featureSkipToValueHead,
             featureSkipToFinalBlock: featureSkipToFinalBlock
         )
+        composed.clearActivationSitesTheTopologyLacks()
+        return composed
+    }
+
+    // MARK: Architecture-level activation sites
+
+    /// Copies the composed architecture's six site activations back into the
+    /// stored fields, so a site the topology just lost holds
+    /// `does_not_apply` and a later reappearance asks for a new choice
+    /// instead of restoring the old one. Runs synchronously inside every
+    /// model mutation that can change which sites exist (the topology
+    /// fields' observers, the group methods, a draft's style edit), so no
+    /// disappear → reappear sequence can skip it, however edits are
+    /// coalesced or rendered.
+    func syncSiteActivationsWithTopology() {
+        let composed = architecture
+        if stemActivation != composed.stemActivation { stemActivation = composed.stemActivation }
+        if towerEndActivation != composed.towerEndActivation { towerEndActivation = composed.towerEndActivation }
+        if featureSkipActivation != composed.featureSkipActivation { featureSkipActivation = composed.featureSkipActivation }
+        if policyHeadActivation != composed.policyHeadActivation { policyHeadActivation = composed.policyHeadActivation }
+        if valueHeadConvActivation != composed.valueHeadConvActivation {
+            valueHeadConvActivation = composed.valueHeadConvActivation
+        }
+        if valueHeadFC1HiddenActivation != composed.valueHeadFC1HiddenActivation {
+            valueHeadFC1HiddenActivation = composed.valueHeadFC1HiddenActivation
+        }
+    }
+
+    /// The stored activation of `site` (the value its picker binds).
+    func storedActivation(at site: ArchitectureActivationSite) -> ActivationFunction {
+        switch site {
+        case .stem: return stemActivation
+        case .towerEnd: return towerEndActivation
+        case .featureSkipFusion: return featureSkipActivation
+        case .policyHead: return policyHeadActivation
+        case .valueHeadConv: return valueHeadConvActivation
+        case .valueHeadFC1Hidden: return valueHeadFC1HiddenActivation
+        }
+    }
+
+    /// Whether the current topology has `site` (its picker is enabled only
+    /// then).
+    func siteExists(_ site: ArchitectureActivationSite) -> Bool {
+        architecture.hasActivationSite(site)
+    }
+
+    /// Every site the current topology has, from one composition of the
+    /// architecture — what the screen reads once per redraw.
+    var existingActivationSites: Set<ArchitectureActivationSite> {
+        let composed = architecture
+        return Set(ArchitectureActivationSite.allCases.filter { composed.hasActivationSite($0) })
+    }
+
+    /// "Use for every activation": `value` at every existing site and on
+    /// every group's main path, through
+    /// `NetworkArchitecture.setMainActivationEverywhere` — the rule
+    /// `--derive-model --set-activation` applies, so the same edit made
+    /// either way gives the same architecture. Copied back through the
+    /// existing drafts so every row keeps its identity. Throws (changing
+    /// nothing) only for `does_not_apply`, which its callers never pass.
+    func applyMainActivationEverywhere(_ value: ActivationFunction) throws {
+        var edited = architecture
+        try edited.setMainActivationEverywhere(value)
+        SessionLogger.shared.log("[BUTTON] Build New Model: Use for every activation \(value.rawValue)")
+        precondition(edited.blockGroups.count == blockGroupDrafts.count,
+                     "BuildNewModelModel: setting the activation changed the number of block groups")
+        for (draft, group) in zip(blockGroupDrafts, edited.blockGroups) {
+            draft.group.activationFunction = group.activationFunction
+            draft.group.seActivation = group.seActivation
+        }
+        stemActivation = edited.stemActivation
+        towerEndActivation = edited.towerEndActivation
+        featureSkipActivation = edited.featureSkipActivation
+        policyHeadActivation = edited.policyHeadActivation
+        valueHeadConvActivation = edited.valueHeadConvActivation
+        valueHeadFC1HiddenActivation = edited.valueHeadFC1HiddenActivation
     }
 
     // MARK: Groups (the editor's add/duplicate/remove/reorder)
@@ -233,7 +381,8 @@ final class BuildNewModelModel {
     /// Insert a copy of `draft`'s group directly after it.
     func duplicateGroup(_ draft: BlockGroupDraft) {
         let index = position(of: draft)
-        blockGroupDrafts.insert(BlockGroupDraft(draft.group), at: index + 1)
+        blockGroupDrafts.insert(makeDraft(draft.group), at: index + 1)
+        syncSiteActivationsWithTopology()
     }
 
     /// Append a copy of the last group (the editor's "Add group").
@@ -241,7 +390,8 @@ final class BuildNewModelModel {
         guard let last = blockGroupDrafts.last else {
             preconditionFailure("BuildNewModelModel: a tower always has at least one block group")
         }
-        blockGroupDrafts.append(BlockGroupDraft(last.group))
+        blockGroupDrafts.append(makeDraft(last.group))
+        syncSiteActivationsWithTopology()
     }
 
     /// Remove `draft`'s group. The editor disables removing the only group,
@@ -249,6 +399,7 @@ final class BuildNewModelModel {
     func removeGroup(_ draft: BlockGroupDraft) {
         precondition(blockGroupDrafts.count > 1, "BuildNewModelModel: the only block group cannot be removed")
         blockGroupDrafts.remove(at: position(of: draft))
+        syncSiteActivationsWithTopology()
     }
 
     /// Move `draft`'s group one slot toward the input (-1) or the heads (+1).
@@ -260,6 +411,7 @@ final class BuildNewModelModel {
         precondition(blockGroupDrafts.indices.contains(target),
                      "BuildNewModelModel: block group \(index) cannot move by \(offset)")
         blockGroupDrafts.swapAt(index, target)
+        syncSiteActivationsWithTopology()
     }
 
     // MARK: Init-neutral options
