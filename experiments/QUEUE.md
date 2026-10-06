@@ -9,6 +9,7 @@ conversation.
 | started | experiment | ends (est.) |
 |---|---|---|
 | 2026-10-05 20:41 | LR arm B-leaky (`20261005-lr-schedule-ab/`): B's recipe and start weights with leaky ReLU in the value head (conv + FC1), to 40k | ~2026-10-06 08:00–10:00 (shares the GPU with test runs) |
+| 2026-10-05 23:13 | LR arm C-leaky (`20261005-lr-schedule-ab/`): C's recipe (cycle 10 ↔ 0.01) and trainable start weights with leaky ReLU at every activation, to 40k | ~2026-10-06 midday (shares the GPU) |
 
 
 ## Next (in order)

@@ -1,6 +1,6 @@
 # 2026-10-05 — LR schedule A/B: constant 0.01 vs a 1.0 ↔ 0.001 cycle (R7 shape, basic24)
 
-**Status:** A/B/C complete; arm B-leaky running since 2026-10-05 20:41. A/B/C ran 2026-10-05 01:32–18:51 CDT: both arms to their 36,000-step limit (~17:14), then, at the
+**Status:** A/B/C complete; arms B-leaky (since 20:41) and C-leaky (since 23:13) running. A/B/C ran 2026-10-05 01:32–18:51 CDT: both arms to their 36,000-step limit (~17:14), then, at the
 owner's request, to trainer step 40,000 by an exact resume (see "Continuation to 40,000"). Arm C was stopped earlier.
 Summary: [E-0017](../summaries/E-0017_2026-10-05_lr-schedule-ab.html).
 
@@ -146,6 +146,21 @@ E=experiments/20261005-lr-schedule-ab
   --training-step-limit 40000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn --seed 20261005 &
 PROBE_BIN="$BIN" TRAINER_PID=<pid> experiments/probe_loop.sh 20261005-lrBleaky-cyc1 $E/probes-Bleaky.jsonl &
 ```
+
+## Arm C-leaky (added 2026-10-05 23:13, owner)
+
+- Owner: "let's do a leaky version of C with the crazy high LR schedule". C's damage was not confined to the value head
+  (339 of 1,040 BN-fed channels dead by step 513, policy pre-BN 91 of 128), so C-leaky uses `leaky_relu` (slope 0.01)
+  at every activation: the block group (main path; its unused SE activation set to match, as the build's v9 rule
+  requires), tower end, policy head, value-head conv and value FC1. Stem and feature skip have no activation here.
+  Everything else is C's: `parameters-C.json` (cycle 10 ↔ 0.01), `--seed 20261005`, same flags; 40,000-step limit.
+- Architecture `r7_basic24_leakyall.json` (format v9). Start net `20261005-r7b24-leakyall-fresh.safetensors`, ModelID
+  `20261006-40-7URa`, `--init-seed 20261005`: every trainable tensor is byte-identical to C's start net
+  `20261005-22-yRzB`; only the BN running means/variances differ (by about 1%), because the mint's calibration
+  forward pass runs through the leaky activations.
+- Build: the same frozen binary as B-leaky (`FrozenBuilds/DCM-2331-4e70c615-p1headact.app`, binary build 2330, sha256
+  prefix `1ae960792717`). Launched 23:13:35, log `dcm_log_20261005-231335.txt`, stem `20261005-lrCleaky-cyc10`,
+  probes `probes-Cleaky.jsonl`. Shares the GPU with B-leaky and with test runs.
 
 ## Arm C (added 2026-10-05 09:04, owner)
 
