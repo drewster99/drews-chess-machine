@@ -1,6 +1,6 @@
 # 2026-10-05 — LR schedule A/B: constant 0.01 vs a 1.0 ↔ 0.001 cycle (R7 shape, basic24)
 
-**Status:** complete. Ran 2026-10-05 01:32–18:51 CDT: both arms to their 36,000-step limit (~17:14), then, at the
+**Status:** A/B/C complete; arm B-leaky running since 2026-10-05 20:41. A/B/C ran 2026-10-05 01:32–18:51 CDT: both arms to their 36,000-step limit (~17:14), then, at the
 owner's request, to trainer step 40,000 by an exact resume (see "Continuation to 40,000"). Arm C was stopped earlier.
 Summary: [E-0017](../summaries/E-0017_2026-10-05_lr-schedule-ab.html).
 
@@ -115,6 +115,36 @@ for arm in A B; do stem=$([ $arm = A ] && echo 20261005-lrA-const01 || echo 2026
 done
 # then, per arm, with the trainer's pid:
 PROBE_BIN="$BIN" PROBE_SEGMENT=1 TRAINER_PID=<pid> experiments/probe_loop.sh <stem>-r1 $E/probes-<arm>-seg1.jsonl &
+```
+
+## Arm B-leaky (added 2026-10-05 20:41, owner)
+
+- Owner: "re-run B but with leaky relu where it counts ASAP". B's damage was confined to the value head (at 40k:
+  `value.bn` 6 of 16 channels dead, `value.fc1` 27 of 128 hidden units at zero velocity; tower, tower end and policy
+  head clean), so B-leaky is B with `value_head_conv_activation` and `value_head_fc1_hidden_activation` set to
+  `leaky_relu` (slope 0.01). Everything else is B's: `parameters-B.json`, `--seed 20261005`, same flags, but a
+  40,000-step limit in one segment.
+- Architecture `r7_basic24_leakyvalue.json` (format v9, the per-site activations of HEAD_ACTIVATIONS_PLAN phase 1).
+  Start net `20261005-r7b24-leakyvalue-fresh.safetensors`, ModelID `20261006-5-AUSd`, `--init-seed 20261005`: its 61
+  tensors are byte-identical to B's start net `20261005-22-yRzB` (fresh trainables do not depend on activation), so
+  only the two value-head activations differ.
+- Build: phase-1 commit `4e70c615` plus in-progress phase-2 derive-setter edits (not on the training or mint path),
+  so `dirty=true`. Frozen as `FrozenBuilds/DCM-2331-4e70c615-p1headact.app` (binary sha256 prefix `1ae960792717`);
+  **the folder name says 2331, but the binary reports build 2330** in its `[RUN]` line — the counter had already
+  advanced when it was copied. Identify it by the sha, not the name.
+- Launched 20:41:08, log `dcm_log_20261005-204108.txt`, stem `20261005-lrBleaky-cyc1`, probes `probes-Bleaky.jsonl`.
+  Shares the GPU with test runs of the per-site-activation implementation, which slows it but does not change its math.
+  Step-1 loss 11.8118 (B: 11.8138; the value head's activation changes the value loss from step 1).
+
+```
+BIN="$HOME/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2331-4e70c615-p1headact.app/Contents/MacOS/DrewsChessMachine"
+M="$HOME/Library/Application Support/DrewsChessMachine/Models"
+E=experiments/20261005-lr-schedule-ab
+"$BIN" --new-model --architecture $E/r7_basic24_leakyvalue.json --init-seed 20261005 --out-model "$M/20261005-r7b24-leakyvalue-fresh.safetensors"
+"$BIN" --replay-corpus 20260624-192615-w3aA5b --start-model "$M/20261005-r7b24-leakyvalue-fresh.safetensors" \
+  --out-model "$M/20261005-lrBleaky-cyc1-replay-latest.safetensors" --parameters $E/parameters-B.json --epochs 12 \
+  --training-step-limit 40000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn --seed 20261005 &
+PROBE_BIN="$BIN" TRAINER_PID=<pid> experiments/probe_loop.sh 20261005-lrBleaky-cyc1 $E/probes-Bleaky.jsonl &
 ```
 
 ## Arm C (added 2026-10-05 09:04, owner)

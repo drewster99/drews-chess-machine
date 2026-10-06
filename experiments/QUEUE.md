@@ -8,7 +8,7 @@ conversation.
 
 | started | experiment | ends (est.) |
 |---|---|---|
-| — | nothing running (GPU idle since 2026-10-05 18:51) | |
+| 2026-10-05 20:41 | LR arm B-leaky (`20261005-lr-schedule-ab/`): B's recipe and start weights with leaky ReLU in the value head (conv + FC1), to 40k | ~2026-10-06 08:00–10:00 (shares the GPU with test runs) |
 
 
 ## Next (in order)
