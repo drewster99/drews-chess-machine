@@ -1,6 +1,6 @@
 # 2026-10-05 — LR schedule A/B: constant 0.01 vs a 1.0 ↔ 0.001 cycle (R7 shape, basic24)
 
-**Status:** A/B/C complete; arm B-leaky running since 20:41; C-leaky stopped 23:43. A/B/C ran 2026-10-05 01:32–18:51 CDT: both arms to their 36,000-step limit (~17:14), then, at the
+**Status:** A/B/C complete; arms B-leaky (since 20:41), B-leakyall and B-silu (since 23:44) running; C-leaky stopped 23:43. A/B/C ran 2026-10-05 01:32–18:51 CDT: both arms to their 36,000-step limit (~17:14), then, at the
 owner's request, to trainer step 40,000 by an exact resume (see "Continuation to 40,000"). Arm C was stopped earlier.
 Summary: [E-0017](../summaries/E-0017_2026-10-05_lr-schedule-ab.html).
 
@@ -146,6 +146,24 @@ E=experiments/20261005-lr-schedule-ab
   --training-step-limit 40000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn --seed 20261005 &
 PROBE_BIN="$BIN" TRAINER_PID=<pid> experiments/probe_loop.sh 20261005-lrBleaky-cyc1 $E/probes-Bleaky.jsonl &
 ```
+
+## Arms B-leakyall and B-silu (added 2026-10-05 23:44, owner)
+
+- Owner: "start B leaky everywhere and B leaky+silu", after B's `blocks.2.bn1` was seen drifting toward the dead line
+  across LR cycles (worst β/|γ| −1.17 → −2.55, 5 channels mostly off by 36k; the whole layer's median β −0.18 → −0.75)
+  while A (constant 0.01) barely moved (−0.41 at 40k), including at matched NLL.
+- **B-leakyall**: `r7_basic24_leakyall.json` — leaky ReLU at every activation (blocks, tower end, policy head, value conv,
+  value FC1); start net `20261005-r7b24-leakyall-fresh.safetensors` (`20261006-40-7URa`, shared read-only with C-leaky's
+  start). Stem `20261005-lrBleakyall-cyc1`, log `dcm_log_20261005-234434.txt`, probes `probes-Bleakyall.jsonl`.
+- **B-silu**: `r7_basic24_silublocks_leakyheads.json` — SiLU in the block group and at the tower end (the tower), leaky ReLU
+  in the policy head, value conv and value FC1 (the heads). The tower-end choice is mine: it is the tower's last
+  activation, so it follows the blocks. Start net `20261005-r7b24-silublocks-leakyheads-fresh.safetensors`
+  (`20261006-42-Lzj4`). Stem `20261005-lrBsilu-cyc1`, log `dcm_log_20261005-234437.txt`, probes `probes-Bsilu.jsonl`.
+- Both: `parameters-B.json`, `--seed 20261005`, 40,000 steps, same flags and frozen build as B-leaky. Every trainable
+  tensor is byte-identical to B's start net; only the 16 BN running-statistics tensors differ (mint-time calibration
+  through the different activations). `[LAYER-HEALTH]` does not classify SiLU sites (dead/off/on = n/a), so B-silu's
+  tower health is read from β/|γ| ranges and running-variance ratios instead.
+- Three runs (B-leaky, B-leakyall, B-silu) and the implementation's test runs share the GPU.
 
 ## Arm C-leaky (added 2026-10-05 23:13, owner)
 
