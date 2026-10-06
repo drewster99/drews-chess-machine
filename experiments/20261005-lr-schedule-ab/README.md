@@ -1,6 +1,6 @@
 # 2026-10-05 — LR schedule A/B: constant 0.01 vs a 1.0 ↔ 0.001 cycle (R7 shape, basic24)
 
-**Status:** A/B/C complete; arms B-leaky (since 20:41) and C-leaky (since 23:13) running. A/B/C ran 2026-10-05 01:32–18:51 CDT: both arms to their 36,000-step limit (~17:14), then, at the
+**Status:** A/B/C complete; arm B-leaky running since 20:41; C-leaky stopped 23:43. A/B/C ran 2026-10-05 01:32–18:51 CDT: both arms to their 36,000-step limit (~17:14), then, at the
 owner's request, to trainer step 40,000 by an exact resume (see "Continuation to 40,000"). Arm C was stopped earlier.
 Summary: [E-0017](../summaries/E-0017_2026-10-05_lr-schedule-ab.html).
 
@@ -161,6 +161,15 @@ PROBE_BIN="$BIN" TRAINER_PID=<pid> experiments/probe_loop.sh 20261005-lrBleaky-c
 - Build: the same frozen binary as B-leaky (`FrozenBuilds/DCM-2331-4e70c615-p1headact.app`, binary build 2330, sha256
   prefix `1ae960792717`). Launched 23:13:35, log `dcm_log_20261005-231335.txt`, stem `20261005-lrCleaky-cyc10`,
   probes `probes-Cleaky.jsonl`. Shares the GPU with B-leaky and with test runs.
+- Result: it trained like C to LR 2 (step 200: loss 5.15, illegal-move mass 0.34), then broke at LR 3 differently from C.
+  C went quiet (loss 8.6, gNorm 0.02); C-leaky exploded through the value head: value loss 0.93 → 6,622 (step 350) →
+  32,846 (step 400); total loss 33,011 / 76,059 / 414,420 / 4,494,490 / 2,243,050 at steps 400 / 500 / 600 / 900 / 1,000;
+  gNorm up to 393,032; illegal-move mass 0.95–0.97. Probe at step 1,000: pElo 497.2, NLL 4.2782 (B: 1018.2, 2.8753).
+  Weights stayed finite throughout (0 non-finite values in 102 tensors at steps 1,000 and 1,175). BN-fed channels classified
+  dead: 0 at step 50, 26 at 300, 367 at 400, 527 at 1,000, 543 at 1,175 (worst site policy pre-BN, 93 of 128).
+- Conclusion: leaky ReLU everywhere does not make a 10-peak cycle survivable on this net and batch; it changes the
+  failure from frozen (C) to runaway (C-leaky). The usable peak lies between 1 (B) and 3.
+- **Stopped by the owner 2026-10-05 23:43** at step 1,175 (SIGINT, abort save `20261005-lrCleaky-cyc10-replay-latest`).
 
 ## Arm C (added 2026-10-05 09:04, owner)
 
