@@ -385,7 +385,7 @@ Each phase builds and commits on its own once its tests pass (P1 and P2 together
 - **OD-14** Put `lastBatchStatsSummary` / `lastBatchStatsUniquePct` under one `SyncBox` (recommended; the GUI already reads them unlocked).
 - **OD-15** (new, cross-plan with the alarms plan) On a step where both a step line and an alarm evaluation are due (every fixed line step: every 50 through 1,000, then every 1,000), take **one** live `[LAYER-HEALTH]` read and use it for both the logged readout and the monitor (recommended; the read is a `graph.run` on the trainer queue, and two reads of identical state are waste) — or two independent reads (simpler coupling, double GPU reads on those steps). The alarms plan's revision implements whichever is chosen; this plan only fixes the order (line block, then evaluation, then save).
 - **OD-16** `experiments/20261005-lr-schedule-ab/bn_liveness.py`: update it to the two-basis rule if any arm of the live LR experiment is resumed on the P2 build (recommended, only then) — or leave it reading pre-change files only.
-- **OD-B** Approve test edits TE-1 to TE-4, including the **two test deletions** and **one removed assertion** listed under TE-4 (TE-5: none expected).
+- **OD-B** Approve test edits TE-1 to TE-4, including the **two test deletions** and **one removed assertion** listed under TE-4 (TE-5: none expected). **Decided (owner, 2026-10-06): approved**, including deleting `testALaterSegmentsNamesCarryItsIndex` and `testEachSegmentParsesOnlyItsOwnStepFiles` and removing the `-seg1-` name assertion from `testTheSegmentIndexComesFromTheLineageRule`.
 - **OD-C** (old) Moot: every checkpoint step is now a fixed line step and carries diagnostics.
 
 ---
