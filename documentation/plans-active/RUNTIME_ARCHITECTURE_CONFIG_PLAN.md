@@ -925,7 +925,7 @@ listed in the status block at the top.
   without ReZero. See `documentation/rezero-alpha-clamp.md` ("Explicit cap and the zero
   init").
 
-## 20. Architecture format v9: per-site activations (implemented 2026-10-05)
+## 20. Architecture formats v9 and v10: per-site activations (implemented 2026-10-05)
 
 Full plan, owner decisions and validation record: `documentation/plans-active/HEAD_ACTIVATIONS_PLAN.md`.
 
@@ -961,6 +961,14 @@ Full plan, owner decisions and validation record: `documentation/plans-active/HE
   - A v9+ block-groups file missing a site key fails with `missingRequiredField`; one that
     still states `activation_function` fails with `retiredField`. Encoding writes all six
     keys, `does_not_apply` included, and never `activation_function`.
+- **Format version 10: the same rule for the SE FC1** (owner decision OD-13). A block
+  group's `se_activation` is `does_not_apply` exactly when the group has no SE block
+  (`NetworkArchitectureError.seActivationMismatch`, `FormatError.seActivationMismatch`).
+  Switching SE off sets it (`BlockGroup.seStyle`'s observer); switching SE on leaves
+  `does_not_apply` until a function is chosen. A file older than v10 — v9 included, whose
+  writers still forced an SE-less group's value to the group's activation — resolves that
+  value to `does_not_apply` (logged; a differing value is refused, as it was then).
+  `ArchitectureFormat.seLessSEActivationDoesNotApplyFromVersion`.
 - **Identity:** every existing file and every code preset decodes to the value it had (the
   uniform convenience init sets each existing site to its activation and the rest to
   `does_not_apply`), building the identical forward pass. The summary keeps ` . act X` when

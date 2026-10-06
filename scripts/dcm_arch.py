@@ -53,6 +53,11 @@ REZERO_TANH_CEILING_MULTIPLE = 1.0
 # resolve each existing site from that `activation_function` and each absent one
 # to DOES_NOT_APPLY (ArchitectureFormat.siteActivationsRequiredFromVersion).
 SITE_ACTIVATIONS_REQUIRED_FROM_VERSION = 9
+# First format whose SE-less block groups must state se_activation =
+# 'does_not_apply' (OD-13); older files (v9 included) wrote the group's own
+# activation there, never applied, and resolve it to 'does_not_apply'
+# (ArchitectureFormat.seLessSEActivationDoesNotApplyFromVersion).
+SE_LESS_SE_ACTIVATION_DOES_NOT_APPLY_FROM_VERSION = 10
 # NetworkArchitecture's site keys, in graph build order (ArchitectureActivationSite).
 SITE_ACTIVATION_KEYS = (
     'stem_activation', 'tower_end_activation', 'feature_skip_activation',
@@ -96,7 +101,9 @@ def norm_arch(s, format_version=None):
             use_rezero=a['block_use_rezero'], rezero_alpha_init=a['rezero_alpha_init'],
             activation_function=a['activation_function'],
             activation_style=a['block_activation_style'], skip_merge=a['block_skip_merge'],
-            dropout_multiplier=1, se_beta_init='glorot', se_activation=a['activation_function'],
+            dropout_multiplier=1, se_beta_init='glorot',
+            # An SE-less group has no FC1 (OD-13).
+            se_activation=(DOES_NOT_APPLY if a['block_se_style'] == 'none' else a['activation_function']),
             # The uniform-tower form is legacy by construction whatever version
             # its carrier states, so its cap is always the legacy derivation
             # (NetworkArchitecture's uniform-tower expansion).
@@ -105,6 +112,7 @@ def norm_arch(s, format_version=None):
     strict_beta = version is not None and version >= SE_BETA_INIT_REQUIRED_FROM_VERSION
     strict_se_act = version is not None and version >= SE_ACTIVATION_REQUIRED_FROM_VERSION
     strict_cap = version is not None and version >= REZERO_ALPHA_CAP_REQUIRED_FROM_VERSION
+    legacy_se_less = version is None or version < SE_LESS_SE_ACTIVATION_DOES_NOT_APPLY_FROM_VERSION
     for i, g in enumerate(a['block_groups']):
         if 'se_beta_init' not in g:
             if strict_beta:
@@ -116,6 +124,16 @@ def norm_arch(s, format_version=None):
                 raise ArchitectureError(
                     f"block_groups[{i}].se_activation missing in a format v{format_version} architecture")
             g['se_activation'] = g['activation_function']
+        # OD-13: an SE-less group's se_activation is 'does_not_apply'. Before v10
+        # it had to equal the group's activation and was never applied, so such
+        # a file's value resolves to it; any other value is refused, as the app
+        # refuses it (NetworkArchitecture's decoder).
+        if g.get('se_style') == 'none' and legacy_se_less and g['se_activation'] != DOES_NOT_APPLY:
+            if g['se_activation'] != g['activation_function']:
+                raise ArchitectureError(
+                    f"block_groups[{i}].se_activation is {g['se_activation']!r} on a group without an SE block "
+                    f"and differs from its activation_function {g['activation_function']!r}")
+            g['se_activation'] = DOES_NOT_APPLY
         if 'rezero_alpha_cap' not in g:
             if strict_cap:
                 raise ArchitectureError(
@@ -183,8 +201,9 @@ def site_activations(arch, format_version=None):
       `activation_function`, raises.
 
     Then both directions are checked — a site the topology has must hold a
-    function and one it lacks must hold DOES_NOT_APPLY — and a DOES_NOT_APPLY in
-    any group's `activation_function` / `se_activation` raises. Every
+    function and one it lacks must hold DOES_NOT_APPLY — and the same rule for
+    each block group: `activation_function` is a function, and `se_activation`
+    is DOES_NOT_APPLY exactly when the group has no SE block (OD-13). Every
     ArchitectureError names the key and the site."""
     raw = json.loads(arch) if isinstance(arch, str) else dict(arch)
     version = UNVERSIONED_LEGACY_VERSION if format_version is None else int(format_version)
@@ -220,10 +239,18 @@ def site_activations(arch, format_version=None):
     for key in resolved:
         values[key] = tower if site_exists(norm, key) else DOES_NOT_APPLY
     for i, group in enumerate(norm['block_groups']):
-        for field in ('activation_function', 'se_activation'):
-            if group[field] == DOES_NOT_APPLY:
-                raise ArchitectureError(
-                    f"block_groups[{i}].{field} is 'does_not_apply', but that site exists whenever its group does")
+        if group['activation_function'] == DOES_NOT_APPLY:
+            raise ArchitectureError(
+                f"block_groups[{i}].activation_function is 'does_not_apply', but that site exists whenever its group does")
+        has_se = group['se_style'] != 'none'
+        if has_se and group['se_activation'] == DOES_NOT_APPLY:
+            raise ArchitectureError(
+                f"block_groups[{i}].se_activation is 'does_not_apply', but the group has an SE block: choose one of "
+                f"{', '.join(ACTIVATION_FUNCTIONS)}")
+        if not has_se and group['se_activation'] != DOES_NOT_APPLY:
+            raise ArchitectureError(
+                f"block_groups[{i}].se_activation is {group['se_activation']!r}, but the group has no SE block: "
+                f"it must be 'does_not_apply'")
     for key in SITE_ACTIVATION_KEYS:
         exists = site_exists(norm, key)
         if exists and values[key] == DOES_NOT_APPLY:

@@ -59,6 +59,11 @@
 //    of those sites used before the fields existed, and an absent site to
 //    `does_not_apply`. A v9+ block-groups architecture must not state the
 //    retired top-level `activation_function`.
+//  - v10: the same rule reaches the block groups (OD-13): an SE-less group's
+//    `se_activation` must be `does_not_apply`. An older file's SE-less group
+//    (v9 included, whose writers still required it to equal the group's
+//    activation) states the group's activation there, never applied by any
+//    graph, and resolves it to `does_not_apply`.
 //
 
 import Foundation
@@ -68,7 +73,7 @@ enum ArchitectureFormat {
     /// The version every writer stamps today. Safetensors write it as the
     /// string `dcm_format_version`; presets and `architecture.json` write it
     /// as the integer `format_version`.
-    static let currentVersion = 9
+    static let currentVersion = 10
 
     /// First version whose block groups must carry `se_beta_init`
     /// (`BlockGroup.seBetaInit`). Files older than this resolve a missing
@@ -122,6 +127,13 @@ enum ArchitectureFormat {
     /// to before.
     static let siteActivationsRequiredFromVersion = 9
 
+    /// First version whose SE-less block groups must state `se_activation` =
+    /// `does_not_apply` (OD-13). Files older than this — v9 included — wrote
+    /// the group's own activation there (the rule then), which no graph ever
+    /// applied; it resolves to `does_not_apply`. A value that differs from the
+    /// group's activation was refused then and is refused now.
+    static let seLessSEActivationDoesNotApplyFromVersion = 10
+
     /// The version reported for a carrier that predates version markers
     /// entirely — a safetensors file with no `dcm_format_version`, or a
     /// preset / `architecture.json` with no `format_version`. Every such file
@@ -159,6 +171,9 @@ enum ArchitectureFormat {
         /// group's `activation_function` / `se_activation`, or the uniform
         /// tower's `activation_function`, which those come from.
         case doesNotApplyAtAnAlwaysPresentSite(field: String, location: String, formatVersion: Int, source: String)
+        /// A block group's `se_activation` disagrees with its SE style (a
+        /// function without an SE block, or `does_not_apply` with one).
+        case seActivationMismatch(seStyle: SEStyle, seActivation: ActivationFunction, location: String, formatVersion: Int, source: String)
         /// A file older than v9 that states neither some site activations nor
         /// the top-level `activation_function` they resolve from.
         case legacyActivationFunctionMissing(unresolvedSites: [String], location: String, formatVersion: Int, source: String)
@@ -183,6 +198,9 @@ enum ArchitectureFormat {
                 return "\(source): format v\(version) architecture field '\(field)' at \(location) is "
                     + "'\(ActivationFunction.doesNotApply.rawValue)', but that site always exists: "
                     + "choose one of \(ActivationFunction.functionList)"
+            case .seActivationMismatch(let seStyle, let seActivation, let location, let version, let source):
+                return "\(source): format v\(version) architecture field 'se_activation' at \(location) is "
+                    + "'\(seActivation.rawValue)', but " + BlockGroup.seActivationRule(seStyle: seStyle)
             case .legacyActivationFunctionMissing(let unresolved, let location, let version, let source):
                 return "\(source): format v\(version) architecture at \(location) states neither "
                     + "\(unresolved.joined(separator: ", ")) nor the top-level 'activation_function' they "
@@ -243,6 +261,11 @@ enum ArchitectureFormat {
         /// the file's top-level `activation_function` (and when that key is
         /// not retired).
         var allowsMissingSiteActivations: Bool { formatVersion < ArchitectureFormat.siteActivationsRequiredFromVersion }
+        /// True when an SE-less group's `se_activation` may still hold the
+        /// group's activation, resolved to `does_not_apply`.
+        var allowsLegacySELessSEActivation: Bool {
+            formatVersion < ArchitectureFormat.seLessSEActivationDoesNotApplyFromVersion
+        }
 
         /// The same file, re-stamped with the version a nested carrier
         /// declares (a preset's `format_version`), sharing the log.

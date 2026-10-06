@@ -790,9 +790,8 @@ extension ModelDerivation {
 /// operation, `--set-se-activation`, and this one leaves it alone on every
 /// group that has an SE block — so "ReLU blocks, leaky FC1" and "leaky
 /// everywhere" are both one derive away (the latter = both flags; the
-/// catalog order applies this operation first). On an SE-less group the
-/// field has no effect and `validate()` requires it to equal the group's
-/// activation, so there it is updated alongside. That rule lives in
+/// catalog order applies this operation first). An SE-less group has no FC1,
+/// so its field is `does_not_apply` and stays so. That rule lives in
 /// `BlockGroup.setActivationFunction`, which the Build-New-Model screen
 /// applies too, so the same activation edit gives the same architecture
 /// whichever way it is made.
@@ -809,11 +808,11 @@ struct SetActivationDeriveOperation: DeriveOperation {
         summary: "Set the main hidden activation everywhere: every architecture-level site the model has (stem, "
             + "tower end, feature-skip fusion, policy head, value conv, value FC1 hidden) and every block group's "
             + "activation_function (block main path, activation_gated merge). A site the topology lacks stays "
-            + "does_not_apply. The SE FC1 activation of groups with an SE block is not changed (use "
-            + "--set-se-activation; an SE-less group's se_activation follows, as validation requires). "
-            + "Activations have no parameters, so every tensor is copied bit-exact.",
+            + "does_not_apply. The SE FC1 activation is not changed (use --set-se-activation; an SE-less "
+            + "group's se_activation is does_not_apply). Activations have no parameters, so every tensor is "
+            + "copied bit-exact.",
         changedArchitectureFields: ArchitectureActivationSite.allCases.map(\.jsonKey) + [
-            "block_groups[].activation_function", "block_groups[].se_activation",
+            "block_groups[].activation_function",
         ],
         rewrittenTensorsDescription: "none",
         acceptsGroupSelection: false,

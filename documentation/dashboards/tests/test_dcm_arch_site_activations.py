@@ -40,7 +40,7 @@ def group(**fields):
     base = dict(count=1, channels=16, conv1_kernel_size=3, conv2_kernel_size=3, se_style="none",
                 se_reduction_ratio=4, use_rezero=False, rezero_alpha_init=1.0, rezero_alpha_cap=1.0,
                 activation_function="relu", activation_style="pre", skip_merge="clean_add",
-                dropout_multiplier=1, se_beta_init="glorot", se_activation="relu",
+                dropout_multiplier=1, se_beta_init="glorot", se_activation="does_not_apply",
                 se_gamma_bias_init=0, branch_output_init="standard", skip_projection_init="he")
     base.update(fields)
     return base
@@ -83,7 +83,7 @@ def uniform(activation_function, style="pre", **fields):
     return base
 
 
-def md(arch, version="9"):
+def md(arch, version="10"):
     out = {"architecture": json.dumps(arch)}
     if version is not None:
         out["dcm_format_version"] = version
@@ -156,10 +156,27 @@ class SiteActivationResolutionTests(unittest.TestCase):
         with self.assertRaisesRegex(dcm_arch.ArchitectureError, "value_head_conv_activation"):
             dcm_arch.site_activations_md(md(architecture(sites=dict(value_head_conv_activation="does_not_apply"))))
 
-    def test_does_not_apply_in_a_group_raises(self):
-        for field in ("activation_function", "se_activation"):
-            with self.assertRaisesRegex(dcm_arch.ArchitectureError, field):
-                dcm_arch.site_activations_md(md(architecture(groups=[group(**{field: "does_not_apply"})])))
+    def test_group_fields_follow_the_groups_topology(self):
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "activation_function"):
+            dcm_arch.site_activations_md(md(architecture(groups=[group(activation_function="does_not_apply")])))
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "se_activation"):
+            dcm_arch.site_activations_md(md(architecture(groups=[group(se_style="scale_and_bias")])))
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "se_activation"):
+            dcm_arch.site_activations_md(md(architecture(groups=[group(se_activation="relu")])))
+        # A v9 file (written before OD-13) still resolves it.
+        self.assertEqual(dcm_arch.norm_arch_md(md(architecture(groups=[group(se_activation="relu")]), "9"))
+                         ["block_groups"][0]["se_activation"], "does_not_apply")
+        dcm_arch.site_activations_md(md(architecture(groups=[group(se_style="scale_and_bias", se_activation="leaky_relu")])))
+
+    def test_legacy_se_less_group_resolves_to_does_not_apply(self):
+        legacy_group = legacy(architecture(groups=[group(se_activation="relu")]), "relu")
+        normalized = dcm_arch.norm_arch_md(md(legacy_group, "8"))
+        self.assertEqual(normalized["block_groups"][0]["se_activation"], "does_not_apply")
+        dcm_arch.site_activations_md(md(legacy_group, "8"))
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "se_activation"):
+            dcm_arch.norm_arch_md(md(legacy(architecture(groups=[group(se_activation="gelu")]), "relu"), "8"))
+        self.assertEqual(dcm_arch.norm_arch_md(md(uniform("relu"), "3"))["block_groups"][0]["se_activation"],
+                         "does_not_apply")
 
     def test_unknown_token_raises(self):
         with self.assertRaisesRegex(dcm_arch.ArchitectureError, "tower_end_activation"):
@@ -188,7 +205,7 @@ class RequireReluTests(unittest.TestCase):
             dcm_arch.require_relu(md(architecture()), "t", ("stem_activation",))
 
     def test_checks_the_main_path_only_when_asked(self):
-        leaky_groups = md(architecture(groups=[group(activation_function="leaky_relu", se_activation="leaky_relu")]))
+        leaky_groups = md(architecture(groups=[group(activation_function="leaky_relu")]))
         dcm_arch.require_relu(leaky_groups, "t", self.ALL)
         with self.assertRaisesRegex(dcm_arch.ArchitectureError, "block_groups\\[0\\]"):
             dcm_arch.require_relu(leaky_groups, "t", self.ALL, block_main_path=True)

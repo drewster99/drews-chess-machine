@@ -55,7 +55,7 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
 | flag | values | changes | rewrites |
 |---|---|---|---|
 | `--set-se-beta-init` | `glorot` \| `zero` | `block_groups[].se_beta_init` on `scale_and_bias` groups | β half of each affected block's SE FC2: `blocks.<i>.se_scalebias.fc2.weight` rows C..2C−1 (on-disk `[2C, r]` layout) and `blocks.<i>.se_scalebias.fc2.bias` C..2C−1 |
-| `--set-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | every architecture-level site activation the topology has (`stem_activation`, `tower_end_activation`, `feature_skip_activation`, `policy_head_activation`, `value_head_conv_activation`, `value_head_fc1_hidden_activation`; an absent site stays `does_not_apply`) and every `block_groups[].activation_function`; `block_groups[].se_activation` on SE-less groups only | none (activations have no parameters) |
+| `--set-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | every architecture-level site activation the topology has (`stem_activation`, `tower_end_activation`, `feature_skip_activation`, `policy_head_activation`, `value_head_conv_activation`, `value_head_fc1_hidden_activation`; an absent site stays `does_not_apply`) and every `block_groups[].activation_function` (never `se_activation`) | none (activations have no parameters) |
 | `--set-se-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | `block_groups[].se_activation` on groups with an SE block | none (activations have no parameters) |
 | `--set-stem-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | `stem_activation` (a post-activation first block group only) | none (activations have no parameters) |
 | `--set-tower-end-activation` | `relu` \| `silu` \| `gelu` \| `leaky_relu` | `tower_end_activation` (a pre-activation last block group only) | none (activations have no parameters) |
@@ -84,9 +84,8 @@ pre-block, value conv, value FC1 hidden layer) and each block group's main path 
 `activation_gated` merge. A site the topology lacks (the stem of a pre-activation tower,
 the tower end of a post-activation one, the policy pre-block of `simple_conv`, the fusion
 node without compress fusion) holds `does_not_apply` and keeps it. `does_not_apply` is
-not an activation function, so it is refused as a value. It doesn't accept `--group`. It leaves the SE FC1 activation (`se_activation`) of every group with an
-SE block alone. On an SE-less group `se_activation` has no effect and must equal the
-group's activation, so it changes along with it there.
+not an activation function, so it is refused as a value. It doesn't accept `--group`. It never changes `se_activation`: a group with an SE block keeps its FC1's activation,
+and an SE-less group has no FC1, so its `se_activation` is `does_not_apply` and stays so.
 
 `--set-se-activation` sets `se_activation`, the activation after the SE excitation FC1
 (the pooled `C → C/r` bottleneck), on groups with an SE block: all of them, or those named
@@ -209,12 +208,13 @@ DrewsChessMachine --replay-corpus <corpus> --start-model fresh-beta0.safetensors
   arguments, the architecture fields it changes, and the tensors it rewrote. A chain of
   derivations can therefore be traced from the newest file alone.
 - `dcm_format_version` = the current version (`ArchitectureFormat.currentVersion`), and the target architecture. A legacy
-  source (format v8 or older) is read under the legacy rules (`se_beta_init` → `glorot`
-  before v4, `se_activation` → the group's activation before v5, `rezero_alpha_cap` →
-  the group's `rezero_alpha_init` before v6, every init-neutral option → its standard value
-  before v8, and before v9 each architecture-level site activation → the file's top-level
-  `activation_function` where the topology has the site and `does_not_apply` where it does
-  not); the derived file states every field.
+  source (format v9 or older) is read under the legacy rules (`se_beta_init` → `glorot`
+  before v4, `se_activation` → the group's activation before v5 (`does_not_apply` on an
+  SE-less group), `rezero_alpha_cap` → the group's `rezero_alpha_init` before v6, every
+  init-neutral option → its standard value before v8, before v9 each architecture-level
+  site activation → the file's top-level `activation_function` where the topology has the
+  site and `does_not_apply` where it does not, and before v10 an SE-less group's
+  `se_activation` → `does_not_apply`); the derived file states every field.
 - Every other `__metadata__` key of the source is copied verbatim. This includes
   `training_step`, the value-head centering marker, and any `replay_*` provenance.
 

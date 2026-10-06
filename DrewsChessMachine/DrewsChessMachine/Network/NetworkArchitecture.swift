@@ -674,7 +674,21 @@ struct BlockGroup: Codable, Hashable, Sendable {
     var channels: Int
     var conv1KernelSize: Int
     var conv2KernelSize: Int
-    var seStyle: SEStyle
+    /// The group's SE style. Removing the SE block (`.none`) removes its FC1,
+    /// so `seActivation` becomes `does_not_apply` in the same assignment —
+    /// every path that edits the style (the Build screen, derive, tests) gets
+    /// the one consistent value without a separate step. Adding an SE block
+    /// leaves `seActivation` as it is: `does_not_apply` when the group had no
+    /// SE block, which `validate()` names until a function is chosen, so an
+    /// FC1 activation is never invented. (Assignments in the initializers do
+    /// not run this observer.)
+    var seStyle: SEStyle {
+        didSet {
+            if seStyle == .none {
+                seActivation = .doesNotApply
+            }
+        }
+    }
     var seReductionRatio: Int            // consumed only when seStyle != none
     var useRezero: Bool
     /// The value every block's trainable ReZero scalar α starts at. Consumed
@@ -727,12 +741,17 @@ struct BlockGroup: Codable, Hashable, Sendable {
     /// `[batch, C/r]` vectors, so a leaky ReLU there costs essentially
     /// nothing, while leaky ReLU on every conv costs several percent of
     /// training speed. No activation has parameters, so this never changes a
-    /// tensor. Meaningful only when `seStyle != .none`; `validate()` requires
-    /// it to equal `activationFunction` on an SE-less group so two
-    /// architectures that build the same graph are equal. Decoding is
+    /// tensor. A group without an SE block has no FC1, so its value is
+    /// `does_not_apply` there and only there — the rule of the
+    /// architecture-level sites (`ArchitectureActivationSite`), applied to the
+    /// group (`validate()`, decode; owner decision OD-13). Decoding is
     /// format-version gated (`ArchitectureFormat`): files before format v5
     /// resolve a missing value to the group's `activationFunction` (what the
-    /// SE FC1 used before the field existed); v5+ files must state it.
+    /// SE FC1 used before the field existed) on an SE group and to
+    /// `does_not_apply` on an SE-less one; v5+ files must state it; and a file
+    /// before v10 whose SE-less group states the group's own activation (the
+    /// value `validate()` forced there then, never applied) resolves it to
+    /// `does_not_apply`.
     var seActivation: ActivationFunction
     /// The value every element of the γ half of this group's SE FC2 bias
     /// starts at (both SE styles; `attenuate_only`'s whole FC2 bias is its γ).
@@ -784,12 +803,10 @@ struct BlockGroup: Codable, Hashable, Sendable {
         Float(Double(alphaInit) * NetworkArchitecture.rezeroTanhCeilingMultiple)
     }
 
-    /// Set the group's main-path activation. On a group without an SE block
-    /// `seActivation` moves with it: there it is dead configuration (no FC1
-    /// to apply it to) and `validate()` requires the two equal, so two
-    /// architectures that build the same graph stay equal. On a group with an
-    /// SE block `seActivation` is left alone — it changes only when set on its
-    /// own. The single rule the Build-New-Model screen and
+    /// Set the group's main-path activation. `seActivation` is never touched:
+    /// on a group with an SE block it changes only when set on its own, and
+    /// on an SE-less group it is `does_not_apply` whatever the main path uses.
+    /// The single rule the Build-New-Model screen and
     /// `--derive-model --set-activation` both apply, so the same edit made
     /// either way yields the same architecture.
     ///
@@ -804,9 +821,6 @@ struct BlockGroup: Codable, Hashable, Sendable {
         precondition(activation != .doesNotApply,
                      "BlockGroup.setActivationFunction: 'does_not_apply' is not an activation function")
         activationFunction = activation
-        if seStyle == .none {
-            seActivation = activation
-        }
     }
 
     enum CodingKeys: String, CodingKey {
@@ -931,7 +945,8 @@ struct BlockGroup: Codable, Hashable, Sendable {
             skipProjectionInit: .he)
     }
 
-    /// A group whose SE FC1 uses the group's own `activationFunction` and
+    /// A group whose SE FC1 uses the group's own `activationFunction` (and
+    /// whose `seActivation` is `does_not_apply` when it has no SE block) and
     /// whose ReZero cap is derived from its init — the only arrangement that
     /// existed before `seActivation` and `rezeroAlphaCap` did, so every recipe
     /// written before them (code presets, tests) keeps its meaning.
@@ -966,7 +981,7 @@ struct BlockGroup: Codable, Hashable, Sendable {
             dropoutMultiplier: dropoutMultiplier,
             outputNorm: outputNorm,
             seBetaInit: seBetaInit,
-            seActivation: activationFunction)
+            seActivation: seStyle == .none ? .doesNotApply : activationFunction)
     }
 
     /// Decodes under the format attached to the decoder (strict current
@@ -1023,19 +1038,21 @@ struct BlockGroup: Codable, Hashable, Sendable {
                 source: format.source)
         }
         if let stated = try c.decodeIfPresent(ActivationFunction.self, forKey: .seActivation) {
-            guard stated != .doesNotApply else {
-                throw ArchitectureFormat.FormatError.doesNotApplyAtAnAlwaysPresentSite(
-                    field: CodingKeys.seActivation.rawValue,
-                    location: ArchitectureFormat.location(of: decoder),
-                    formatVersion: format.formatVersion,
-                    source: format.source)
-            }
-            seActivation = stated
+            seActivation = try Self.decodedSEActivation(
+                stated: stated, seStyle: seStyle, activationFunction: activationFunction,
+                decoder: decoder, format: format)
         } else if format.allowsMissingSEActivation {
-            seActivation = activationFunction
-            format.legacyLog.record(
-                "\(ArchitectureFormat.location(of: decoder)).\(CodingKeys.seActivation.rawValue) := \(activationFunction.rawValue) "
-                    + "(the group's \(CodingKeys.activationFunction.rawValue))")
+            if seStyle == .none {
+                seActivation = .doesNotApply
+                format.legacyLog.record(
+                    "\(ArchitectureFormat.location(of: decoder)).\(CodingKeys.seActivation.rawValue) := "
+                        + "\(ActivationFunction.doesNotApply.rawValue) (\(Self.seLessReason))")
+            } else {
+                seActivation = activationFunction
+                format.legacyLog.record(
+                    "\(ArchitectureFormat.location(of: decoder)).\(CodingKeys.seActivation.rawValue) := \(activationFunction.rawValue) "
+                        + "(the group's \(CodingKeys.activationFunction.rawValue))")
+            }
         } else {
             throw ArchitectureFormat.FormatError.missingRequiredField(
                 field: CodingKeys.seActivation.rawValue,
@@ -1069,6 +1086,53 @@ struct BlockGroup: Codable, Hashable, Sendable {
             SkipProjectionInit.self, key: CodingKeys.skipProjectionInit, in: c, decoder: decoder, format: format,
             legacyByConstruction: false,
             standard: .he, rendered: \.rawValue)
+    }
+
+    /// Why an SE-less group's `seActivation` is `does_not_apply` — for the
+    /// legacy log and errors.
+    static let seLessReason = "the group has no SE block, so it has no SE FC1"
+
+    /// The second half of every `se_activation` mismatch message: why the
+    /// value is wrong for a group of `seStyle`, and what it must be.
+    static func seActivationRule(seStyle: SEStyle) -> String {
+        if seStyle == .none {
+            return "\(seLessReason) (se_style '\(SEStyle.none.rawValue)'): it must be "
+                + "'\(ActivationFunction.doesNotApply.rawValue)'"
+        }
+        return "the group has an SE block (se_style '\(seStyle.rawValue)'): choose one of \(ActivationFunction.functionList)"
+    }
+
+    /// A stated `se_activation`, checked against the group's SE style: a
+    /// function on a group with an SE block, `does_not_apply` on one without.
+    /// A file older than v10 whose SE-less group states the group's own
+    /// activation — the value `validate()` required there before the field
+    /// could say `does_not_apply`, never applied by any graph — resolves to
+    /// `does_not_apply` (logged). Any other disagreement is refused, never
+    /// repaired.
+    private static func decodedSEActivation(
+        stated: ActivationFunction,
+        seStyle: SEStyle,
+        activationFunction: ActivationFunction,
+        decoder: Decoder,
+        format: ArchitectureFormat.DecodeFormat
+    ) throws -> ActivationFunction {
+        let hasSE = seStyle != .none
+        if (stated != .doesNotApply) == hasSE {
+            return stated
+        }
+        if !hasSE, format.allowsLegacySELessSEActivation, stated == activationFunction {
+            format.legacyLog.record(
+                "\(ArchitectureFormat.location(of: decoder)).\(CodingKeys.seActivation.rawValue) := "
+                    + "\(ActivationFunction.doesNotApply.rawValue) (\(seLessReason); the file's value "
+                    + "\(stated.rawValue) was its activation_function)")
+            return .doesNotApply
+        }
+        throw ArchitectureFormat.FormatError.seActivationMismatch(
+            seStyle: seStyle,
+            seActivation: stated,
+            location: ArchitectureFormat.location(of: decoder),
+            formatVersion: format.formatVersion,
+            source: format.source)
     }
 
     /// Writes every field. `output_norm` keeps its pre-existing
@@ -1174,9 +1238,10 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
     /// `se_beta_init` other than `glorot` on a group whose SE style has no
     /// β half (only `scale_and_bias` does).
     case seBetaInitRequiresScaleAndBias(group: Int, seStyle: SEStyle, seBetaInit: SEBetaInit)
-    /// `se_activation` differing from the group's `activation_function` on a
-    /// group with no SE block, where it would be dead configuration.
-    case seActivationRequiresSE(group: Int, seActivation: ActivationFunction, activationFunction: ActivationFunction)
+    /// A group's `se_activation` disagrees with whether it has an SE block:
+    /// a function on an SE-less group (no FC1 to apply it to), or
+    /// `does_not_apply` on a group with one.
+    case seActivationMismatch(group: Int, seStyle: SEStyle, seActivation: ActivationFunction)
     /// Feature skip is enabled (`source != .none`) but no destination is routed.
     case featureSkipNoDestination
     /// A feature-skip combination that is config-carried but unsupported —
@@ -1237,10 +1302,9 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
             return "blockGroups[\(group)].seBetaInit is '\(seBetaInit.rawValue)' but its se_style is "
                 + "'\(seStyle.rawValue)'; only '\(SEStyle.scaleAndBias.rawValue)' has a β half, so every "
                 + "other SE style requires se_beta_init '\(SEBetaInit.glorot.rawValue)'"
-        case .seActivationRequiresSE(let group, let seActivation, let activationFunction):
-            return "blockGroups[\(group)].seActivation is '\(seActivation.rawValue)' but the group has no SE block "
-                + "(se_style '\(SEStyle.none.rawValue)'); an SE-less group's se_activation must equal its "
-                + "activation_function ('\(activationFunction.rawValue)')"
+        case .seActivationMismatch(let group, let seStyle, let seActivation):
+            return "blockGroups[\(group)].seActivation is '\(seActivation.rawValue)', but "
+                + BlockGroup.seActivationRule(seStyle: seStyle)
         case .kernelMustBeOdd(let field, let value):
             return "\(field) must be odd for symmetric same-padding (got \(value))"
         case .nonPositive(let field, let value):
@@ -1447,9 +1511,10 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 // tower sets `seBetaInit` on the returned value's groups.
                 seBetaInit: .glorot,
                 // Every historical tower's SE FC1 used the tower's single
-                // activation. A tower with a different SE FC1 activation sets
-                // `seActivation` on the returned value's groups.
-                seActivation: activationFunction,
+                // activation (an SE-less tower has no FC1). A tower with a
+                // different SE FC1 activation sets `seActivation` on the
+                // returned value's groups.
+                seActivation: blockSeStyle == .none ? .doesNotApply : activationFunction,
                 // Every historical tower predates the init-neutral options,
                 // so it states their standard values; a tower with a
                 // non-standard one sets it on the returned value.
@@ -1673,12 +1738,13 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             }
             let legacyAlphaInit = try c.decode(Float.self, forKey: .legacyRezeroAlphaInit)
             let legacyAlphaCap = BlockGroup.legacyRezeroAlphaCap(forAlphaInit: legacyAlphaInit)
+            let legacySEStyle = try c.decode(SEStyle.self, forKey: .legacyBlockSeStyle)
             blockGroups = [BlockGroup(
                 count: try c.decode(Int.self, forKey: .legacyNumBlocks),
                 channels: try c.decode(Int.self, forKey: .legacyChannels),
                 conv1KernelSize: try c.decode(Int.self, forKey: .legacyBlockConv1KernelSize),
                 conv2KernelSize: try c.decode(Int.self, forKey: .legacyBlockConv2KernelSize),
-                seStyle: try c.decode(SEStyle.self, forKey: .legacyBlockSeStyle),
+                seStyle: legacySEStyle,
                 seReductionRatio: try c.decode(Int.self, forKey: .legacyBlockSeReductionRatio),
                 useRezero: try c.decode(Bool.self, forKey: .legacyBlockUseRezero),
                 rezeroAlphaInit: legacyAlphaInit,
@@ -1688,7 +1754,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 skipMerge: try c.decode(BlockSkipMerge.self, forKey: .legacyBlockSkipMerge),
                 dropoutMultiplier: 1,
                 seBetaInit: .glorot,
-                seActivation: towerActivation,
+                seActivation: legacySEStyle == .none ? .doesNotApply : towerActivation,
                 seGammaBiasInit: BlockGroup.standardSEGammaBiasInit,
                 branchOutputInit: .standard,
                 skipProjectionInit: .he
@@ -1974,10 +2040,6 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 throw NetworkArchitectureError.doesNotApplyAtAnAlwaysPresentSite(
                     field: "blockGroups[\(gi)].activationFunction")
             }
-            guard g.seActivation != .doesNotApply else {
-                throw NetworkArchitectureError.doesNotApplyAtAnAlwaysPresentSite(
-                    field: "blockGroups[\(gi)].seActivation")
-            }
             try requirePositive("blockGroups[\(gi)].channels", g.channels)
             try requireOdd("blockGroups[\(gi)].conv1KernelSize", g.conv1KernelSize)
             try requireOdd("blockGroups[\(gi)].conv2KernelSize", g.conv2KernelSize)
@@ -1997,13 +2059,14 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 throw NetworkArchitectureError.seBetaInitRequiresScaleAndBias(
                     group: gi, seStyle: g.seStyle, seBetaInit: g.seBetaInit)
             }
-            // An SE-less group has no FC1, so its se_activation is dead
-            // configuration. Pinning it to the group's activation keeps one
-            // value per graph: otherwise two SE-less architectures that build
-            // the identical network would compare (and hash) unequal.
-            if g.seStyle == .none, g.seActivation != g.activationFunction {
-                throw NetworkArchitectureError.seActivationRequiresSE(
-                    group: gi, seActivation: g.seActivation, activationFunction: g.activationFunction)
+            // An SE-less group has no FC1, so its se_activation is
+            // `does_not_apply` there and only there (OD-13): one value per
+            // graph, so two architectures that build the identical network
+            // compare (and hash) equal, and an SE group always names its
+            // FC1's function.
+            if (g.seActivation != .doesNotApply) != (g.seStyle != .none) {
+                throw NetworkArchitectureError.seActivationMismatch(
+                    group: gi, seStyle: g.seStyle, seActivation: g.seActivation)
             }
             // ReZero. The cap C feeds a division in the forward `C · tanh(α / C)`:
             // a zero (or NaN/infinite) cap produces a NaN that propagates
@@ -2636,8 +2699,9 @@ extension NetworkArchitecture {
     /// every activation" so an edit made either way gives the same
     /// architecture: `value` at every existing architecture-level site and
     /// on every block group's main path (`BlockGroup.setActivationFunction`,
-    /// which moves an SE-less group's `seActivation` with it and leaves an SE
-    /// group's alone). Refuses `does_not_apply` before changing anything.
+    /// which never touches `seActivation`: an SE group keeps its FC1's
+    /// function and an SE-less group's stays `does_not_apply`). Refuses
+    /// `does_not_apply` before changing anything.
     ///
     /// It equals the uniform convenience init built with `value` only on an
     /// SE-less tower; with SE blocks that also needs each group's

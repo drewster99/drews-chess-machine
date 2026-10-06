@@ -306,16 +306,29 @@ final class SEActivationTests: XCTestCase {
     // MARK: - Validation and summary
 
     func testSELessGroupMustMatchItsActivation() throws {
+        // OD-13: an SE-less group has no FC1, so its se_activation is
+        // does_not_apply — switching SE off sets it — and nothing else.
         var arch = Self.twoGroupArchitecture(group0SE: .relu, group1SE: .relu)
         arch.blockGroups[1].seStyle = .none
+        XCTAssertEqual(arch.blockGroups[1].seActivation, .doesNotApply)
         XCTAssertNoThrow(try arch.validate())
-        arch.blockGroups[1].seActivation = .leakyRelu
-        XCTAssertThrowsError(try arch.validate()) { error in
+        for value in ActivationFunction.functions {
+            arch.blockGroups[1].seActivation = value
+            XCTAssertThrowsError(try arch.validate(), value.rawValue) { error in
+                XCTAssertEqual(
+                    error as? NetworkArchitectureError,
+                    .seActivationMismatch(group: 1, seStyle: .none, seActivation: value))
+            }
+        }
+        // A group with an SE block must name its FC1's function.
+        var withoutChoice = Self.twoGroupArchitecture(group0SE: .relu, group1SE: .relu)
+        withoutChoice.blockGroups[0].seActivation = .doesNotApply
+        XCTAssertThrowsError(try withoutChoice.validate()) { error in
             XCTAssertEqual(
                 error as? NetworkArchitectureError,
-                .seActivationRequiresSE(group: 1, seActivation: .leakyRelu, activationFunction: .relu))
+                .seActivationMismatch(group: 0, seStyle: .scaleAndBias, seActivation: .doesNotApply))
         }
-        // Any value is valid on a group that has an SE block.
+        // Any function is valid on a group that has an SE block.
         for value in ActivationFunction.functions {
             var withSE = Self.twoGroupArchitecture(group0SE: value, group1SE: value)
             withSE.blockGroups[0].seStyle = .attenuateOnly
@@ -517,14 +530,14 @@ final class SEActivationTests: XCTestCase {
         }
         // Without --group, only the SE group changes.
         let allSE = try derive(noSEData, [SetSEActivationDeriveOperation(value: .leakyRelu, groupIndices: nil)])
-        XCTAssertEqual(allSE.targetArchitecture.blockGroups.map(\.seActivation), [.leakyRelu, .relu])
+        XCTAssertEqual(allSE.targetArchitecture.blockGroups.map(\.seActivation), [.leakyRelu, .doesNotApply])
 
         XCTAssertThrowsError(try SetSEActivationDeriveOperation.kind.make("leaky", nil))
         XCTAssertNoThrow(try SetSEActivationDeriveOperation.kind.make("leaky_relu", [0]))
     }
 
     /// `--set-activation` changes the main path only: an SE group keeps its
-    /// FC1 activation, an SE-less group's follows (validation requires it).
+    /// FC1 activation, an SE-less group's stays `does_not_apply` (OD-13).
     /// Both flags together give "leaky everywhere".
     func testSetActivationLeavesSEGroupsFC1Alone() throws {
         var source = Self.twoGroupArchitecture(group0SE: .relu, group1SE: .relu)
@@ -533,7 +546,7 @@ final class SEActivationTests: XCTestCase {
 
         let mainOnly = try derive(sourceData, [SetActivationDeriveOperation(value: .leakyRelu)])
         XCTAssertEqual(mainOnly.targetArchitecture.blockGroups.map(\.activationFunction), [.leakyRelu, .leakyRelu])
-        XCTAssertEqual(mainOnly.targetArchitecture.blockGroups.map(\.seActivation), [.relu, .leakyRelu])
+        XCTAssertEqual(mainOnly.targetArchitecture.blockGroups.map(\.seActivation), [.relu, .doesNotApply])
         try assertEveryTensorBitExact(sourceData, mainOnly.data)
 
         let everywhere = try derive(sourceData, [
@@ -544,7 +557,7 @@ final class SEActivationTests: XCTestCase {
             XCTAssertEqual(everywhere.targetArchitecture.activation(at: site), everywhere.targetArchitecture.hasActivationSite(site) ? .leakyRelu : .doesNotApply, "\(site)")
         }
         XCTAssertTrue(everywhere.targetArchitecture.blockGroups.allSatisfy {
-            $0.activationFunction == .leakyRelu && $0.seActivation == .leakyRelu
+            $0.activationFunction == .leakyRelu && $0.seActivation == ($0.seStyle == .none ? .doesNotApply : .leakyRelu)
         })
         try assertEveryTensorBitExact(sourceData, everywhere.data)
     }
@@ -553,7 +566,7 @@ final class SEActivationTests: XCTestCase {
 
     /// The Build screen applies the shared rule (`BlockGroup.setActivationFunction`):
     /// a group with an SE block keeps its SE activation when its main-path
-    /// activation changes; an SE-less group's SE activation moves with it.
+    /// activation changes; an SE-less group's stays `does_not_apply` (OD-13).
     @MainActor
     func testBuildScreenActivationEditAppliesTheSharedRule() {
         let model = BuildNewModelModel(NamedArchitecture(
@@ -571,10 +584,11 @@ final class SEActivationTests: XCTestCase {
         XCTAssertEqual(first.group.seActivation, .leakyRelu)
         XCTAssertTrue(model.isValid)
         XCTAssertTrue(model.summary.contains("(fc1 leaky_relu)"), model.summary)
-        // An SE-less group's SE activation moves with it, keeping it valid.
+        // An SE-less group's SE activation is does_not_apply, whatever its
+        // main path uses, which keeps it valid.
         second.group.seStyle = .none
         second.activationFunction = .gelu
-        XCTAssertEqual(second.group.seActivation, .gelu)
+        XCTAssertEqual(second.group.seActivation, .doesNotApply)
         XCTAssertTrue(model.isValid, model.validationError ?? "")
         // The other group is untouched throughout.
         XCTAssertEqual(first.group.seActivation, .leakyRelu)
@@ -597,6 +611,6 @@ final class SEActivationTests: XCTestCase {
         }
         XCTAssertEqual(model.architecture, derived)
         XCTAssertEqual(derived.blockGroups[0].seActivation, .relu)
-        XCTAssertEqual(derived.blockGroups[1].seActivation, .leakyRelu)
+        XCTAssertEqual(derived.blockGroups[1].seActivation, .doesNotApply)
     }
 }

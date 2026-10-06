@@ -22,9 +22,10 @@ struct BuildNewModelView: View {
 
     @State private var saveStatus: String?
 
-    /// The functions a block group's "Activation" and "SE activation"
-    /// pickers offer: `ActivationFunction.functions`, never `allCases`
-    /// (which includes the `does_not_apply` marker a group never accepts).
+    /// The functions a block group's "Activation" picker offers:
+    /// `ActivationFunction.functions`, never `allCases` (which includes the
+    /// `does_not_apply` marker a group's main path never accepts). The "SE
+    /// activation" picker offers `ArchitectureSiteActivationPicker.functionChoices`.
     static let groupActivationChoices = ActivationFunction.functions
 
     /// The functions the "Use for every activation" menu offers.
@@ -495,15 +496,18 @@ private struct BlockGroupFieldsView: View {
         // Through the draft, so an SE-less group's SE activation moves with
         // it (`BlockGroup.setActivationFunction`).
         enumPicker("Activation", $draft.activationFunction, BuildNewModelView.groupActivationChoices)
-        // The SE FC1's own activation (issue #2). Always present so the
-        // row layout never shifts; disabled on an SE-less group, where it
-        // has no effect — unless it disagrees with the group's activation
-        // (left behind by switching SE off), in which case validate()
-        // reports it and the picker stays enabled so it can be fixed here.
-        enumPicker("SE activation", $draft.group.seActivation, BuildNewModelView.groupActivationChoices)
-            .disabled(draft.group.seStyle == .none
-                      && draft.group.seActivation == draft.group.activationFunction)
-            .help("Activation after the SE bottleneck FC1 (C → C/r), set independently of the group's activation (on a group without SE it has no effect and follows the group's activation). leaky_relu here keeps FC1 units from dying at almost no cost.")
+        // The SE FC1's own activation (issue #2), a site that exists only
+        // with an SE block (OD-13): always present so the row layout never
+        // shifts, disabled and `does_not_apply` on an SE-less group, and
+        // asking for a choice when SE is switched on (`BlockGroup.seStyle`
+        // clears it when SE is switched off).
+        ArchitectureSiteActivationPicker(
+            title: "SE activation",
+            activation: $draft.group.seActivation,
+            siteExists: draft.group.seStyle != .none,
+            siteDescription: "Activation after the SE bottleneck FC1 (C → C/r), set independently of the group's "
+                + "activation. leaky_relu here keeps FC1 units from dying at almost no cost.",
+            absentReason: BlockGroup.seLessReason)
         // Through the draft, so the model's site sync runs inside the edit
         // (the first group's style decides the stem, the last group's the
         // tower end).

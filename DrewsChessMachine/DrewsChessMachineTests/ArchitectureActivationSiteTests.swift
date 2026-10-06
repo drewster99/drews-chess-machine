@@ -367,7 +367,8 @@ final class ArchitectureActivationSiteTests: XCTestCase {
             XCTAssertThrowsError(try decode(object, version: version, source: "bumped.json")) { error in
                 XCTAssertEqual(error as? ArchitectureFormat.FormatError,
                                .retiredField(field: "activation_function", location: "the top level",
-                                             formatVersion: 9, source: version == nil ? "architecture JSON" : "bumped.json",
+                                             formatVersion: version ?? ArchitectureFormat.currentVersion,
+                                             source: version == nil ? "architecture JSON" : "bumped.json",
                                              replacedBy: Self.siteKeys))
             }
         }
@@ -524,21 +525,24 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         }
     }
 
-    func testDoesNotApplyIsRefusedInEveryBlockGroupField() throws {
+    /// A group's main path always exists, so `does_not_apply` is refused
+    /// there; its SE FC1 exists exactly when it has an SE block (OD-13), so
+    /// `se_activation` is `does_not_apply` on an SE-less group and a
+    /// function on an SE group — anything else is refused.
+    func testBlockGroupActivationFieldsFollowTheGroupsTopology() throws {
         for seStyle in [SEStyle.scaleAndBias, .none] {
             let arch = Self.tiny(seStyle: seStyle)
-            for field in ["activation_function", "se_activation"] {
-                var object = try object(arch)
-                var groups = try XCTUnwrap(object["block_groups"] as? [[String: Any]])
-                groups[0][field] = "does_not_apply"
-                object["block_groups"] = groups
-                for version in [9, 5] {
-                    XCTAssertThrowsError(try decode(object, version: version, source: "g.json")) { error in
-                        XCTAssertEqual(error as? ArchitectureFormat.FormatError,
-                                       .doesNotApplyAtAnAlwaysPresentSite(field: field, location: "block_groups[0]",
-                                                                          formatVersion: version, source: "g.json"),
-                                       "\(seStyle.rawValue) \(field) v\(version)")
-                    }
+            XCTAssertEqual(arch.blockGroups[0].seActivation, seStyle == .none ? .doesNotApply : .relu)
+            var object = try object(arch)
+            var groups = try XCTUnwrap(object["block_groups"] as? [[String: Any]])
+            groups[0]["activation_function"] = "does_not_apply"
+            object["block_groups"] = groups
+            for version in [9, 5] {
+                XCTAssertThrowsError(try decode(object, version: version, source: "g.json")) { error in
+                    XCTAssertEqual(error as? ArchitectureFormat.FormatError,
+                                   .doesNotApplyAtAnAlwaysPresentSite(field: "activation_function", location: "block_groups[0]",
+                                                                      formatVersion: version, source: "g.json"),
+                                   "\(seStyle.rawValue) v\(version)")
                 }
             }
             var mainPath = arch
@@ -547,13 +551,121 @@ final class ArchitectureActivationSiteTests: XCTestCase {
                 XCTAssertEqual(error as? NetworkArchitectureError,
                                .doesNotApplyAtAnAlwaysPresentSite(field: "blockGroups[0].activationFunction"))
             }
-            var se = arch
-            se.blockGroups[0].seActivation = .doesNotApply
-            XCTAssertThrowsError(try se.validate()) { error in
-                XCTAssertEqual(error as? NetworkArchitectureError,
-                               .doesNotApplyAtAnAlwaysPresentSite(field: "blockGroups[0].seActivation"))
+        }
+        // An SE group stating does_not_apply, at v9 and v5.
+        var seObject = try object(Self.tiny(seStyle: .scaleAndBias))
+        var seGroups = try XCTUnwrap(seObject["block_groups"] as? [[String: Any]])
+        seGroups[0]["se_activation"] = "does_not_apply"
+        seObject["block_groups"] = seGroups
+        for version in [9, 5] {
+            XCTAssertThrowsError(try decode(seObject, version: version, source: "g.json")) { error in
+                XCTAssertEqual(error as? ArchitectureFormat.FormatError,
+                               .seActivationMismatch(seStyle: .scaleAndBias, seActivation: .doesNotApply,
+                                                     location: "block_groups[0]", formatVersion: version, source: "g.json"))
             }
         }
+        // An SE-less group stating a function in a current-format file (from
+        // v10; a v9 file's value resolves, see the next test).
+        var lessObject = try object(Self.tiny(seStyle: .none))
+        var lessGroups = try XCTUnwrap(lessObject["block_groups"] as? [[String: Any]])
+        lessGroups[0]["se_activation"] = "relu"
+        lessObject["block_groups"] = lessGroups
+        let current = ArchitectureFormat.currentVersion
+        XCTAssertGreaterThanOrEqual(current, ArchitectureFormat.seLessSEActivationDoesNotApplyFromVersion)
+        XCTAssertThrowsError(try decode(lessObject, version: current, source: "g.json")) { error in
+            XCTAssertEqual(error as? ArchitectureFormat.FormatError,
+                           .seActivationMismatch(seStyle: .none, seActivation: .relu,
+                                                 location: "block_groups[0]", formatVersion: current, source: "g.json"))
+        }
+        // In memory, both directions.
+        var seGroupWithoutChoice = Self.tiny(seStyle: .scaleAndBias)
+        seGroupWithoutChoice.blockGroups[0].seActivation = .doesNotApply
+        XCTAssertThrowsError(try seGroupWithoutChoice.validate()) { error in
+            XCTAssertEqual(error as? NetworkArchitectureError,
+                           .seActivationMismatch(group: 0, seStyle: .scaleAndBias, seActivation: .doesNotApply))
+        }
+        var seLessWithFunction = Self.tiny(seStyle: .none)
+        seLessWithFunction.blockGroups[0].seActivation = .leakyRelu
+        XCTAssertThrowsError(try seLessWithFunction.validate()) { error in
+            XCTAssertEqual(error as? NetworkArchitectureError,
+                           .seActivationMismatch(group: 0, seStyle: .none, seActivation: .leakyRelu))
+        }
+    }
+
+    /// Before v10 (v9 included: the files the first per-site build wrote) an
+    /// SE-less group's se_activation had to equal the group's activation and
+    /// was never applied: such a file resolves it to
+    /// `does_not_apply` (logged), a value that disagreed is refused (the app
+    /// refused it then too), and a file older than v5 that omits it resolves
+    /// it to `does_not_apply` as well.
+    func testPreV9SELessGroupResolvesItsSEActivationToDoesNotApply() throws {
+        let arch = Self.tiny(seStyle: .none)
+        var object = try object(arch)
+        var groups = try XCTUnwrap(object["block_groups"] as? [[String: Any]])
+        groups[0]["se_activation"] = "relu"
+        object["block_groups"] = groups
+        XCTAssertEqual(ArchitectureFormat.seLessSEActivationDoesNotApplyFromVersion, 10)
+        for version in [9, 8, 5] {
+            let (decoded, format) = try decode(object, version: version, source: "old.json")
+            XCTAssertEqual(decoded, arch, "v\(version)")
+            let line = try XCTUnwrap(format?.legacyLogLine)
+            XCTAssertTrue(line.contains("block_groups[0].se_activation := does_not_apply"), line)
+        }
+        groups[0]["se_activation"] = "gelu"
+        object["block_groups"] = groups
+        XCTAssertThrowsError(try decode(object, version: 8, source: "old.json")) { error in
+            XCTAssertEqual(error as? ArchitectureFormat.FormatError,
+                           .seActivationMismatch(seStyle: .none, seActivation: .gelu,
+                                                 location: "block_groups[0]", formatVersion: 8, source: "old.json"))
+        }
+        groups[0].removeValue(forKey: "se_activation")
+        object["block_groups"] = groups
+        let (omitted, omittedFormat) = try decode(object, version: 4, source: "old.json")
+        XCTAssertEqual(omitted, arch)
+        XCTAssertTrue(try XCTUnwrap(omittedFormat?.legacyLogLine).contains("block_groups[0].se_activation := does_not_apply"))
+        // The legacy uniform-tower form with no SE block.
+        let (uniform, _) = try decode(try Self.uniformTowerJSON(activation: "silu"), version: nil)
+        XCTAssertEqual(uniform.blockGroups[0].seActivation, .doesNotApply)
+    }
+
+    /// Switching SE off sets the FC1 activation to `does_not_apply`;
+    /// switching it on leaves `does_not_apply`, which validation names until a
+    /// function is chosen.
+    func testSEStyleChangesKeepTheFC1ActivationConsistent() throws {
+        var arch = Self.tiny(seStyle: .scaleAndBias)
+        arch.blockGroups[0].seActivation = .leakyRelu
+        arch.blockGroups[0].seStyle = .attenuateOnly
+        XCTAssertEqual(arch.blockGroups[0].seActivation, .leakyRelu, "SE to SE keeps the choice")
+        arch.blockGroups[0].seStyle = .none
+        XCTAssertEqual(arch.blockGroups[0].seActivation, .doesNotApply)
+        XCTAssertNoThrow(try arch.validate())
+        arch.blockGroups[0].seStyle = .scaleAndBias
+        XCTAssertEqual(arch.blockGroups[0].seActivation, .doesNotApply, "an earlier choice is never restored")
+        XCTAssertThrowsError(try arch.validate())
+        arch.blockGroups[0].seActivation = .silu
+        XCTAssertNoThrow(try arch.validate())
+    }
+
+    @MainActor
+    func testBuildScreenAsksForAnSEActivationWhenSEIsSwitchedOn() throws {
+        let model = BuildNewModelModel(NamedArchitecture(label: "t", architecture: Self.tiny(seStyle: .none)))
+        let draft = model.blockGroupDrafts[0]
+        let off = ArchitectureSiteActivationPicker.presentation(
+            activation: draft.group.seActivation, siteExists: draft.group.seStyle != .none,
+            siteDescription: "", absentReason: BlockGroup.seLessReason)
+        XCTAssertFalse(off.isEnabled)
+        draft.group.seStyle = .scaleAndBias
+        XCTAssertEqual(draft.group.seActivation, .doesNotApply)
+        let error = try XCTUnwrap(model.validationError)
+        XCTAssertTrue(error.contains("blockGroups[0].seActivation"), error)
+        XCTAssertNil(model.buildRequest)
+        let on = ArchitectureSiteActivationPicker.presentation(
+            activation: draft.group.seActivation, siteExists: draft.group.seStyle != .none,
+            siteDescription: "", absentReason: BlockGroup.seLessReason)
+        XCTAssertTrue(on.isEnabled)
+        XCTAssertTrue(on.needsChoice)
+        draft.group.seActivation = .leakyRelu
+        XCTAssertTrue(model.isValid, model.validationError ?? "")
     }
 
     // MARK: - Semantics
@@ -734,14 +846,14 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         var mixed = architecture(groups: [
             group(.scaleAndBias, main: .relu, se: .relu),
             group(.attenuateOnly, main: .relu, se: .leakyRelu),
-            group(.none, main: .relu, se: .relu),
+            group(.none, main: .relu, se: .doesNotApply),
         ], sites: .relu)
         try mixed.validate()
         try mixed.setMainActivationEverywhere(.gelu)
         let expected = architecture(groups: [
             group(.scaleAndBias, main: .gelu, se: .relu),
             group(.attenuateOnly, main: .gelu, se: .leakyRelu),
-            group(.none, main: .gelu, se: .gelu),
+            group(.none, main: .gelu, se: .doesNotApply),
         ], sites: .gelu)
         XCTAssertEqual(mixed, expected)
         try mixed.validate()
@@ -871,7 +983,7 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         try expected.setMainActivationEverywhere(.leakyRelu)
         XCTAssertEqual(target, expected)
         XCTAssertEqual(Set(SetActivationDeriveOperation.kind.changedArchitectureFields),
-                       Set(Self.siteKeys + ["block_groups[].activation_function", "block_groups[].se_activation"]))
+                       Set(Self.siteKeys + ["block_groups[].activation_function"]))
 
         // On a pre-activation tower the absent sites stay does_not_apply.
         let pre = try derive(try encodedModel(.current), [SetActivationDeriveOperation(value: .silu)]).targetArchitecture
@@ -1124,7 +1236,8 @@ final class ArchitectureActivationSiteTests: XCTestCase {
             let derived = try SetActivationDeriveOperation(value: function).apply(to: source)
             XCTAssertEqual(model.architecture, derived, function.rawValue)
             XCTAssertEqual(model.architecture.blockGroups[1].seActivation, .relu, "an SE group keeps its FC1 activation")
-            XCTAssertEqual(model.architecture.blockGroups[0].seActivation, function, "an SE-less group's follows")
+            XCTAssertEqual(model.architecture.blockGroups[0].seActivation, .doesNotApply,
+                           "an SE-less group's stays does_not_apply")
             for site in ArchitectureActivationSite.allCases {
                 XCTAssertEqual(model.storedActivation(at: site),
                                source.hasActivationSite(site) ? function : .doesNotApply, "\(function.rawValue) \(site)")
