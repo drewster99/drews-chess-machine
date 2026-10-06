@@ -9,6 +9,15 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-06 — Hyperparameter recording P2: a CLI resume records what it trains
+
+Plan: `documentation/plans-active/HPARAM_RECORDING_PLAN.md` (gaps 5-CLI and 13; B1's `session.json` fix).
+
+- **An exact resume's records now carry the schedule the trainer runs.** `--resume-exact` (corpus replay and train-vs-UCI) already trained under the checkpoint's warmup and LR/momentum cycle, but every lineage record of the resumed segment (and its `[RUN]` `params_sha`) carried the configured schedule from `--parameters`. `ReplayParams` is now immutable and derived from one snapshot; `ReplayParams.adoptingSchedule(_:)` rebuilds it from `TrainingParametersSnapshot.adoptingSchedule(_:)` (the 21 schedule keys written from the checkpoint's `TrainerScheduleState`, never validated or clamped), so the trainer, the record and the file's flat `trainer_*` keys come from one value.
+- **`[RESUME-DIFF] <id>: parent=… this_run=…`** on a CLI `--resume-exact`, one line per training parameter that differs from the parent's recorded snapshot (after schedule adoption, so an adopted schedule is never reported). Parent values are read by declared type, not range: a value outside today's range is reported `(parent value out of today's range)`, a key this build no longer declares `(parent only …)`, one the parent predates `(this run only …)`, seed settings as informational. A parent snapshot that cannot be read refuses the resume. Whether a difference should also be a resume gap is still owner decision O-4; today it is only logged.
+- **Train-vs-UCI `session.json` `maxPliesPerGame`** is the run's `--max-plies` (default 400), not the self-play ply cap this path never reads.
+- Tests: `ReplayResumeRecordedParametersTests`, `TrainVsUciSessionStateTests`; owner-approved edits (O-3) to `ResumeEquivalenceTests`, `CorpusReplayRefusalTests` (batch 16 → 64) and `FinalTrainerSaveFailureTests`, which now build their parameters with `declaredDefaults(overriding:)` instead of mutating fields, and to `TrainVsUciSessionTests` (the new `maxPliesPerGame:` argument at its two `sessionState` calls).
+
 ## 2026-10-06 — Hyperparameter recording P1: build identity
 
 Plan: `documentation/plans-active/HPARAM_RECORDING_PLAN.md` (gap 6 flag, B8 constants).

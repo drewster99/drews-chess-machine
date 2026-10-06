@@ -162,7 +162,7 @@ enum TrainVsUciRunner {
     /// The whole train-vs-UCI run. Internal (not private) only so tests can
     /// run its launch checks in-process; production enters through
     /// `runAndExit`.
-    static func runTraining(config: TrainVsUciConfig, params p: ReplayParams, abort: TrainVsUciAbortFlag) async throws -> Result {
+    static func runTraining(config: TrainVsUciConfig, params configuredParams: ReplayParams, abort: TrainVsUciAbortFlag) async throws -> Result {
         // `--output` support. Only allocated when a destination was given, so a
         // run without `--output` carries no per-step recording cost at all.
         let recorder: CliTrainingRecorder? = config.output == nil ? nil : {
@@ -193,6 +193,10 @@ enum TrainVsUciRunner {
             try TrainVsUciSession.startSource(path: $0)
         }
         var startSession: LoadedSession? = nil
+        // The parameters the run trains under: the configured ones, with the
+        // checkpoint's own schedule adopted on an exact resume (see
+        // `ReplayParams.adoptingSchedule`).
+        let p: ReplayParams
         if let startSource {
             let file: ModelCheckpointFile
             let fileName: String
@@ -221,6 +225,12 @@ enum TrainVsUciRunner {
                 }
                 let snapshot = try TrainerResumeSnapshot(checkpoint: file, fileName: fileName)
                 resumeSnapshot = snapshot
+                // An exact resume trains under the checkpoint's own schedule
+                // — see `[REPLAY-RESUME]` in CorpusReplayRunner.
+                for line in configuredParams.trainer.scheduleDifferences(from: snapshot.schedule) {
+                    emit("[VS-UCI-RESUME] WARNING \(line)")
+                }
+                p = try configuredParams.adoptingSchedule(snapshot.schedule)
                 emit(PolicyTailPrecisionResume.exactResumeLogLine(
                     saved: file.metadata.trainerPolicyTailPrecision, running: ChessNetwork.PolicyTailPrecision.process))
                 resumeGaps += PolicyTailPrecisionResume.gaps(
@@ -251,7 +261,13 @@ enum TrainVsUciRunner {
                     } else {
                         resumeGaps += [.rngSampler, .serials]
                     }
-                    if parentRecord.parameters == nil { resumeGaps.append(.params) }
+                    if let parentParameters = parentRecord.parameters {
+                        for line in try ParameterDifference.exactResumeLogLines(parent: parentParameters, inForce: p.parameters) {
+                            emit(line)
+                        }
+                    } else {
+                        resumeGaps.append(.params)
+                    }
                     let environment = ResumeGap.environmentGaps(
                         writtenBy: parentRecord, runningBuild: .current, runningDevice: .current,
                         runningFingerprint: try await BehaviorFingerprint.compute(
@@ -266,8 +282,11 @@ enum TrainVsUciRunner {
                 if let refusal = exactness.refusal(accepting: config.acceptInexact) {
                     throw CLIRunRefusal(message: refusal)
                 }
+            } else {
+                p = configuredParams
             }
         } else {
+            p = configuredParams
             startModelFile = nil
             parentModelID = ""
             if let pn = config.presetName {
@@ -333,17 +352,9 @@ enum TrainVsUciRunner {
         // Configured through `TrainerHyperparameters` — the same path the GUI
         // session and corpus replay use — so every trainer-level parameter
         // lands, including the LR/momentum cycle, dropout and the stats /
-        // KL-probe intervals.
-        // An exact resume trains under the checkpoint's own schedule — see
-        // `[REPLAY-RESUME]` in CorpusReplayRunner.
-        var resumedHyperparameters = p.trainer
-        if let resumeSnapshot {
-            for line in p.trainer.scheduleDifferences(from: resumeSnapshot.schedule) {
-                emit("[VS-UCI-RESUME] WARNING \(line)")
-            }
-            resumedHyperparameters = p.trainer.adoptingSchedule(resumeSnapshot.schedule)
-        }
-        let hp = resumedHyperparameters
+        // KL-probe intervals. On an exact resume `p` already carries the
+        // checkpoint's own schedule (adopted where the snapshot was read).
+        let hp = p.trainer
         // A start model's weights replace the trainer's; a fresh run starts
         // from an init seed derived from the run seed, so `--seed`
         // reproduces its initialization.
@@ -601,7 +612,8 @@ enum TrainVsUciRunner {
                     parameters: p.parameters,
                     hyperparameters: hp,
                     arch: arch,
-                    bufferSnapshot: bufferForSave?.stateSnapshot())
+                    bufferSnapshot: bufferForSave?.stateSnapshot(),
+                    maxPliesPerGame: config.maxPliesPerGame)
                 let url = try await CheckpointManager.saveSession(
                     championWeights: championWeights,
                     championID: config.runModelID,

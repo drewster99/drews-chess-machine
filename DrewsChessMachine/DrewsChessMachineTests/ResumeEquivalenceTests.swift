@@ -192,16 +192,18 @@ final class ResumeEquivalenceTests: XCTestCase {
     /// warmup, and the KL probe and batch-stats diagnostics either both on at
     /// a short cadence or both off.
     func replayParams(probesOn: Bool, sampling: Sampling) throws -> ReplayParams {
-        var p = try ReplayParams(TrainingParametersSnapshot.declaredDefaults(overriding: sampling.parameterValues))
-        p.trainingBatchSize = 32
-        p.replayBufferCapacity = 2000
-        p.replayBufferMinPositionsBeforeTraining = 500
-        p.replayRatioTarget = 0.48
-        p.trainer.dropoutRate = 0.1
-        p.trainer.lrWarmupSteps = 5
-        p.trainer.klProbeInterval = probesOn ? 3 : 0
-        p.trainer.batchStatsInterval = probesOn ? 5 : 0
-        return p
+        let pinned: [String: ParameterValue] = [
+            TrainingBatchSize.id: .int(32),
+            ReplayBufferCapacity.id: .int(2000),
+            ReplayBufferMinPositionsBeforeTraining.id: .int(500),
+            ReplayRatioTarget.id: .double(0.48),
+            DropoutRate.id: .double(0.1),
+            LRWarmupSteps.id: .int(5),
+            KLProbeInterval.id: .int(probesOn ? 3 : 0),
+            BatchStatsInterval.id: .int(probesOn ? 5 : 0),
+        ]
+        return try ReplayParams(TrainingParametersSnapshot.declaredDefaults(
+            overriding: sampling.parameterValues.merging(pinned) { _, pinnedValue in pinnedValue }))
     }
 
     private func config(stepLimit: Int, startModel: URL, resumeExact: Bool, out: String) -> CorpusReplayConfig {
