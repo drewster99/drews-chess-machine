@@ -2117,7 +2117,7 @@ extension SessionController {
                             let elapsed = Date().timeIntervalSince(sessionStart)
                             await logOne(elapsedTarget: elapsed, legalMassOverride: lastLegalMass)
                             if lastLayerHealthStep.map({ steps - $0 >= layerHealthBootstrapStride }) ?? true {
-                                for line in await LayerHealthLog.liveLines(trainer: trainer) {
+                                for line in await LayerHealthLog.live(trainer: trainer).lines {
                                     SessionLogger.shared.log(line)
                                 }
                                 lastLayerHealthStep = steps
@@ -2174,7 +2174,7 @@ extension SessionController {
                         }
                         let elapsed = Date().timeIntervalSince(sessionStart)
                         await logOne(elapsedTarget: elapsed, legalMassOverride: lastLegalMass)
-                        for line in await LayerHealthLog.liveLines(trainer: trainer) {
+                        for line in await LayerHealthLog.live(trainer: trainer).lines {
                             SessionLogger.shared.log(line)
                         }
                     }
