@@ -50,10 +50,6 @@ final class LichessBotSessionModelProvider: LichessBotModelProvider {
         return LichessBotWeightsSnapshot(weights: weights, architecture: champion.arch, modelID: "\(identifier)", trainingStep: nil)
     }
 
-    func trainerAvailable() async -> Bool {
-        session?.trainer != nil
-    }
-
     func trainerSnapshot() async throws -> LichessBotWeightsSnapshot {
         guard let session else { throw LichessBotSessionModelError.sessionGone }
         guard let trainer = session.trainer else { throw LichessBotModelError.noTrainer }

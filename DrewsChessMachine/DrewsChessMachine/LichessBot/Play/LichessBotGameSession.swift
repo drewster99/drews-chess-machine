@@ -42,7 +42,7 @@ actor LichessBotGameSession {
     private let settingsProvider: @Sendable () async -> LichessBotSettings
     /// The newest model generation already built. Read while our clock runs,
     /// so it never builds one.
-    private let latestMoveSource: @Sendable () async -> (any LichessBotMoveSource)?
+    private let latestMoveSource: @Sendable () async -> any LichessBotMoveSource
     private let onTurnStatus: @Sendable (String, LichessBotTurnStatus) async -> Void
     /// The generation playing this game: the one it started with, or, for a
     /// live-trainer game with mid-game refresh on, the newest snapshot since.
@@ -145,7 +145,7 @@ actor LichessBotGameSession {
         ourAccountID: String,
         api: any LichessBotGameAPI,
         moveSource: any LichessBotMoveSource,
-        latestMoveSource: @escaping @Sendable () async -> (any LichessBotMoveSource)?,
+        latestMoveSource: @escaping @Sendable () async -> any LichessBotMoveSource,
         settingsProvider: @escaping @Sendable () async -> LichessBotSettings,
         observer: any LichessBotGameObserver,
         time: any LichessBotTimeSource,
@@ -605,12 +605,9 @@ actor LichessBotGameSession {
         if settings.model.midGameRefresh,
            settings.model.source == .liveTrainer,
            playingMoveSource.info.sourceKind == .liveTrainer {
-            if let latest = await latestMoveSource() {
-                if latest.info.sourceKind == .liveTrainer {
-                    playingMoveSource = latest
-                }
-            } else {
-                await observer.gameEvent(gameID: gameID, .anomaly("mid-game refresh: no model generation is built; continuing with generation \(playingMoveSource.info.generationID)"))
+            let latest = await latestMoveSource()
+            if latest.info.sourceKind == .liveTrainer {
+                playingMoveSource = latest
             }
         }
         let source = playingMoveSource

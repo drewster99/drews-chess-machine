@@ -78,7 +78,7 @@ final class LichessBotPollObservationTests: XCTestCase {
         let lichess = LichessBotFakeLichess()
         let controller = try await makeOnlineController(
             lichess: lichess,
-            modelProvider: LichessBotFakeModelProvider(snapshot: nil),
+            modelProvider: try await LichessBotFakeModelProvider.randomChampion(),
             finishedGameHold: LichessBotController.finishedGameHold)
         let changed = trackGames(of: controller)
         try await Task.sleep(for: twoPolls)

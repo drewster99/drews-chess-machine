@@ -146,7 +146,7 @@ final class LichessBotPhase5CoreTests: XCTestCase {
 
     // MARK: - Manager: outgoing challenges and one game
 
-    private func makeManager(script: [LichessBotFakeAccountAPI.Connection], provider: LichessBotFakeModelProvider, server: LichessBotFakeGameServer, events: SyncBox<[LichessBotManagerEvent]>, time: LichessBotManualTime) -> (LichessBotSessionManager, LichessBotFakeAccountAPI) {
+    private func makeManager(script: [LichessBotFakeAccountAPI.Connection], provider: LichessBotFakeModelProvider, server: LichessBotFakeGameServer, events: SyncBox<[LichessBotManagerEvent]>, time: LichessBotManualTime) async throws -> (LichessBotSessionManager, LichessBotFakeAccountAPI) {
         var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
         let frozen = settings
@@ -155,7 +155,7 @@ final class LichessBotPhase5CoreTests: XCTestCase {
             accountAPI: account,
             gameAPI: server,
             gate: LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in },
-            slots: LichessBotModelSlots(provider: provider, time: time) { _ in },
+            slots: try await LichessBotModelSlots.prepare(for: frozen.model, provider: provider, time: time, log: { _ in }),
             ourAccountID: LichessBotFakeGameServer.botID,
             time: time,
             settingsProvider: { frozen },
@@ -192,9 +192,9 @@ final class LichessBotPhase5CoreTests: XCTestCase {
     func testOutgoingChallengeDeclineAndCancelAreReported() async throws {
         let events = SyncBox<[LichessBotManagerEvent]>([])
         let time = LichessBotManualTime()
-        let (manager, account) = makeManager(
+        let (manager, account) = try await makeManager(
             script: [.open(lines: [])],
-            provider: LichessBotFakeModelProvider.unbuildableChampion(),
+            provider: try await LichessBotFakeModelProvider.randomChampion(),
             server: try LichessBotFakeGameServer(),
             events: events,
             time: time
@@ -235,7 +235,7 @@ final class LichessBotPhase5CoreTests: XCTestCase {
         let server = try LichessBotFakeGameServer()
         await server.setScript(afterOurMoves: [.opponentThinks])
         let provider = try await LichessBotFakeModelProvider.randomChampion()
-        let (manager, account) = makeManager(script: [.open(lines: [])], provider: provider, server: server, events: events, time: time)
+        let (manager, account) = try await makeManager(script: [.open(lines: [])], provider: provider, server: server, events: events, time: time)
         await manager.setOneGameMode(true)
         let run = Task { await manager.run() }
         try await waitUntil("the stream opens") { await account.opens == 1 }

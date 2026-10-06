@@ -50,7 +50,6 @@ final class LichessBotPolicyTests: XCTestCase {
 
     private func context(
         accepting: Bool = true,
-        modelReady: Bool = true,
         activeGames: Int = 0,
         activeByOpponent: [String: Int] = [:],
         gamesToday: Int = 0,
@@ -59,7 +58,6 @@ final class LichessBotPolicyTests: XCTestCase {
     ) -> LichessBotChallengeContext {
         LichessBotChallengeContext(
             acceptingNewGames: accepting,
-            modelReady: modelReady,
             activeGames: activeGames,
             activeGamesByOpponent: activeByOpponent,
             gamesToday: gamesToday,
@@ -97,9 +95,8 @@ final class LichessBotPolicyTests: XCTestCase {
         }
     }
 
-    func testDrainingAndModelNotReadyDeclineLater() {
+    func testDrainingDeclinesLater() {
         XCTAssertEqual(reason(decide(challenge(), context: context(accepting: false))), .later)
-        XCTAssertEqual(reason(decide(challenge(), context: context(modelReady: false))), .later)
     }
 
     func testVariantsAndFromPositionDeclineStandard() {

@@ -1,6 +1,6 @@
 # 2026-10-05 — LR schedule A/B: constant 0.01 vs a 1.0 ↔ 0.001 cycle (R7 shape, basic24)
 
-**Status:** A/B/C complete; arms B-leaky (since 20:41), B-leakyall and B-silu (since 23:44) running; C-leaky stopped 23:43. A/B/C ran 2026-10-05 01:32–18:51 CDT: both arms to their 36,000-step limit (~17:14), then, at the
+**Status:** A/B/C complete; arm B-leaky complete (2026-10-05 20:41 → 2026-10-06 16:24, E-0019); arms B-leakyall and B-silu (since 23:44) running; C-leaky stopped 23:43. A/B/C ran 2026-10-05 01:32–18:51 CDT: both arms to their 36,000-step limit (~17:14), then, at the
 owner's request, to trainer step 40,000 by an exact resume (see "Continuation to 40,000"). Arm C was stopped earlier.
 Summary: [E-0017](../summaries/E-0017_2026-10-05_lr-schedule-ab.html).
 
@@ -163,6 +163,119 @@ E=experiments/20261005-lr-schedule-ab
 PROBE_BIN="$BIN" TRAINER_PID=<pid> experiments/probe_loop.sh 20261005-lrBleaky-cyc1 $E/probes-Bleaky.jsonl &
 ```
 
+### Results (finished 2026-10-06 16:24)
+
+- Ran to trainer step 40,000 in one segment and exited cleanly (`[REPLAY] done: steps=40000 positionsFed=341561598
+  gamesFed=5152480`, exit code 0, 16:24:09); the final save (`20261005-lrBleaky-cyc1-replay-latest`, step 40,000,
+  ModelID `20261006-6-Xxvl`) succeeded, and all 40 enumerated checkpoints and probes exist. Wall time 19 h 43 min,
+  sharing the GPU throughout (with the per-site-activation test runs, then with B-leakyall and B-silu), so its step
+  time is not comparable with B's.
+- Probes (`probes-Bleaky.jsonl`), with A and B from `probes-A*.jsonl` / `probes-B*.jsonl` (trainer step); LR is
+  B-leaky's own `[REPLAY]` value at that step (the same schedule as B's):
+
+| step | LR | A pElo | B pElo | B-leaky pElo | B-leaky − B | B NLL | B-leaky NLL |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1,000 | 1 | 824.4 | 1018.2 | 1004.8 | −13.4 | 2.8753 | 2.9418 |
+| 2,000 | 0.517 | 932.1 | 1251.6 | 1234.0 | −17.6 | 2.5588 | 2.5557 |
+| 3,000 | 0.0918 | 967.1 | 1321.7 | 1331.0 | +9.3 | 2.4466 | 2.4359 |
+| 4,000 | 0.0109 | 1026.2 | 1391.2 | 1383.0 | −8.2 | 2.3744 | 2.3787 |
+| 5,000 | 0.00193 | 1049.6 | 1402.5 | 1388.1 | −14.4 | 2.3516 | 2.3573 |
+| 6,000 | 0.000998 | 1096.5 | 1405.6 | 1388.1 | −17.5 | 2.3491 | 2.3577 |
+| 7,000 | 0.00193 | 1121.7 | 1395.8 | 1391.7 | −4.1 | 2.3491 | 2.3547 |
+| 8,000 | 0.0108 | 1149.9 | 1409.2 | 1395.8 | −13.4 | 2.3314 | 2.3446 |
+| 9,000 | 0.0914 | 1154.0 | 1372.2 | 1366.5 | −5.7 | 2.3896 | 2.3981 |
+| 10,000 | 0.513 | 1148.8 | 1384.0 | 1349.5 | −34.5 | 2.3439 | 2.4340 |
+| 11,000 | 0.991 | 1205.5 | 1320.7 | 1240.2 | −80.5 | 2.4775 | 2.5424 |
+| 12,000 | 0.512 | 1224.1 | 1430.7 | 1395.8 | −34.9 | 2.3321 | 2.3933 |
+| 13,000 | 0.0911 | 1267.1 | 1554.9 | 1531.3 | −23.6 | 2.1679 | 2.1987 |
+| 14,000 | 0.0108 | 1240.2 | 1557.5 | 1554.9 | −2.6 | 2.1639 | 2.1616 |
+| 15,000 | 0.00192 | 1280.5 | 1566.2 | 1557.0 | −9.2 | 2.1507 | 2.1702 |
+| 16,000 | 0.000993 | 1314.0 | 1571.4 | 1567.8 | −3.6 | 2.1442 | 2.1557 |
+| 17,000 | 0.00192 | 1305.2 | 1581.6 | 1574.4 | −7.2 | 2.1427 | 2.1503 |
+| 18,000 | 0.0108 | 1289.3 | 1573.9 | 1571.9 | −2.1 | 2.1437 | 2.1493 |
+| 19,000 | 0.0907 | 1274.3 | 1558.5 | 1532.9 | −25.7 | 2.1444 | 2.1827 |
+| 20,000 | 0.508 | 1295.4 | 1471.3 | 1471.8 | +0.5 | 2.2335 | 2.2656 |
+| 21,000 | 0.982 | 1324.3 | 1332.5 | 1365.5 | +32.9 | 2.4590 | 2.3874 |
+| 22,000 | 0.508 | 1305.2 | 1372.2 | 1396.8 | +24.7 | 2.3624 | 2.3339 |
+| 23,000 | 0.0904 | 1329.5 | 1573.4 | 1589.8 | +16.4 | 2.1207 | 2.1131 |
+| 24,000 | 0.0107 | 1402.0 | 1597.5 | 1611.4 | +13.9 | 2.1257 | 2.1139 |
+| 25,000 | 0.00191 | 1338.7 | 1604.7 | 1600.1 | −4.6 | 2.1138 | 2.1159 |
+| 26,000 | 0.000989 | 1349.0 | 1609.4 | 1606.8 | −2.6 | 2.1084 | 2.1099 |
+| 27,000 | 0.00191 | 1394.3 | 1603.7 | 1607.3 | +3.6 | 2.1134 | 2.1080 |
+| 28,000 | 0.0107 | 1289.8 | 1598.6 | 1618.1 | +19.5 | 2.1100 | 2.1021 |
+| 29,000 | 0.09 | 1380.9 | 1596.0 | 1609.9 | +13.9 | 2.1360 | 2.1074 |
+| 30,000 | 0.504 | 1347.0 | 1504.6 | 1376.3 | −128.4 | 2.2333 | 2.3738 |
+| 31,000 | 0.973 | 1395.8 | 1372.7 | 1379.4 | +6.7 | 2.3466 | 2.3890 |
+| 32,000 | 0.503 | 1323.3 | 1431.3 | 1394.3 | −37.0 | 2.3024 | 2.3829 |
+| 33,000 | 0.0897 | 1362.4 | 1578.5 | 1550.8 | −27.7 | 2.1375 | 2.1463 |
+| 34,000 | 0.0107 | 1329.5 | 1614.0 | 1613.5 | −0.5 | 2.0942 | 2.0962 |
+| 35,000 | 0.0019 | 1396.3 | 1628.4 | 1628.9 | +0.5 | 2.0774 | 2.0825 |
+| 36,000 | 0.000984 | 1453.8 | 1620.7 | 1626.3 | +5.7 | 2.0869 | 2.0830 |
+| 37,000 | 0.0019 | 1423.0 | 1627.8 | 1631.4 | +3.6 | 2.0793 | 2.0759 |
+| 38,000 | 0.0106 | 1427.1 | 1632.0 | 1641.7 | +9.8 | 2.0728 | 2.0664 |
+| 39,000 | 0.0893 | 1381.4 | 1583.7 | 1582.1 | −1.5 | 2.1230 | 2.1348 |
+| 40,000 | 0.5 | 1396.8 | 1507.7 | 1469.2 | −38.5 | 2.2211 | 2.2123 |
+
+- Best probe: B-leaky 1641.7 (NLL 2.0664) at 38k; B 1632.0 (NLL 2.0728) at 38k, +9.8 pElo and −0.0064 NLL. Both
+  arms' best NLL is at the same probe.
+- Best probe per low-LR stretch (steps 4k–8k, 14k–18k, 24k–28k, 34k–38k): B-leaky 1395.8 / 1574.4 / 1618.1 /
+  1641.7; B 1409.2 / 1581.6 / 1609.4 / 1632.0. At the troughs: 6k −17.5, 16k −3.6, 26k −2.6, 36k +5.7.
+- Over the 20 low-LR probes the difference B-leaky − B averages −1.7 pElo (standard deviation 9.3, range −17.5 …
+  +19.5; NLL +0.0026). Over the 9 high-LR probes (10k–12k, 20k–22k, 30k–32k) it averages −27.8 (standard deviation
+  51.8, range −128.4 … +32.9). The two arms use the same seed and so the same batches; what differs is the value-head
+  activation (and GPU nondeterminism).
+- Value loss is the same in both arms: mean `vLoss` over steps 37,001–40,000 0.8032 (B-leaky) vs 0.8031 (B), A 0.8093;
+  over 5k–7k 0.8136 vs 0.8135; over 25k–27k 0.8015 vs 0.8013. `pD` 0.07 in both at 40k, `vAbs` 0.250 vs 0.252.
+
+#### Layer health at 40,000 (B-leaky vs B vs A)
+
+From the `[LAYER-HEALTH] checkpoint replay-final` blocks (B-leaky `dcm_log_20261005-204108.txt`, B
+`dcm_log_20261005-171541.txt`, A `dcm_log_20261005-171451.txt`) and `bn_liveness.py --steps 40000 --site <site>`, which
+agree. Dead = β/|γ| < −3, mostly off = −3 … −2, always on > +3; pass-through = expected |f′| under a Gaussian input.
+The stem BN feeds no activation here (n/a).
+
+| site | act (B-leaky) | dead / off B-leaky | dead / off B | dead / off A | min β/|γ| B-leaky | min β/|γ| B | min β/|γ| A | median pass-through B-leaky / B / A | rv max/median B-leaky / B / A |
+|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| blocks.0.bn1 | relu | 0 / 0 | 0 / 0 | 0 / 0 | −0.98 | −1.18 | −0.13 | 0.304 / 0.295 / 0.516 | 9.3 / 9.4 / 2.3 |
+| blocks.0.bn2 | relu | 0 / 0 | 0 / 0 | 0 / 0 | −1.61 | −1.61 | −0.21 | 0.210 / 0.218 / 0.493 | 3.5 / 4.5 / 2.1 |
+| blocks.1.bn1 | relu | 0 / 0 | 0 / 0 | 0 / 0 | −1.75 | −1.60 | −0.38 | 0.185 / 0.199 / 0.497 | 95.6 / 37.1 / 6.2 |
+| blocks.1.bn2 | relu | 0 / 1 | 0 / 0 | 0 / 0 | −2.19 | −1.92 | −0.38 | 0.166 / 0.159 / 0.496 | 8.9 / 7.5 / 1.7 |
+| blocks.2.bn1 | relu | 0 / 1 | 0 / 5 | 0 / 0 | −2.51 | −2.53 | −0.41 | 0.136 / 0.139 / 0.494 | 36.0 / 32.6 / 3.8 |
+| blocks.2.bn2 | relu | 0 / 0 | 0 / 0 | 0 / 0 | −1.59 | −1.99 | −0.36 | 0.244 / 0.247 / 0.526 | 3.5 / 3.7 / 1.5 |
+| tower_final_bn | relu | 0 / 0 | 0 / 0 | 0 / 0 | −0.86 | −0.73 | −0.07 | 0.558 / 0.523 / 0.535 | 5.7 / 5.8 / 6.0 |
+| policy.pre_bn | relu | 0 / 0 | 0 / 0 | 0 / 0 | −1.55 | −1.22 | −0.05 | 0.642 / 0.635 / 0.523 | 4.7 / 4.3 / 2.7 |
+| value.bn | leaky_relu (B, A: relu) | 0 / 1 | 6 / 0 | 0 / 0 | −2.30 | −10.63 | −0.14 | 0.096 / 0.053 / 0.470 | 2.4 / 3.1 / 1.6 |
+
+- Value FC1 hidden units (128): zero velocity 0 / 27 / 0 (B-leaky / B / A); low velocity (nonzero, < 5% of the layer's
+  p90 unit norm) 15 / 10 / 37. No always-on channels and no non-finite values in any arm.
+- Over the whole run (801 `[LAYER-HEALTH] live` lines) B-leaky never had a channel past β/|γ| = −3; its largest
+  mostly-off count was 5 (first at step 39,350; worst site `blocks.2.bn1`, 3 of them). B had 5 dead `value.bn` channels
+  by step 300 and 6 from step 1,300 to the end.
+
+#### Interpretation
+
+- Leaky ReLU in the value head did what it was meant to do there: `value.bn` 0 of 16 channels past −3 (B: 6), value
+  FC1 0 of 128 units at zero velocity (B: 27). Its most negative channel is at −2.30 and its median pass-through 0.096,
+  so the head is still pushed negative, but every channel keeps a gradient.
+- That changed neither the value loss nor policy strength measurably. B's dead value channels cost no value loss
+  (0.8031 vs 0.8032 late), and at low LR the policy probes differ by −1.7 ± 9.3 pElo on average. The +9.8 at 38k is
+  inside that spread; the high-LR probes differ more (±52) because a probe taken mid-peak depends on where in an
+  unstable stretch it lands. One seed per arm.
+- The tower (ReLU in both arms) drifts the same way under the cycle in both: by 40k the six block BNs' median β is −0.45 to
+  −0.78 and `blocks.2.bn1`'s most negative channel is about −2.5 in both, against A's −0.41.
+  `blocks.1.bn1`'s running-variance max/median is 95.6 in B-leaky (B 37.1, A 6.2), one channel (14) in both cycled
+  arms. The LR cycle, not the value-head activation, drives this; B-leakyall and B-silu test the tower activation.
+- The policy probes do not measure the value head, so a value-only change was not expected to move them; the
+  value-head result above is the measured one.
+
+Reproduce the analysis (read-only; the training and probe commands are above):
+
+```
+python3 experiments/20261005-lr-schedule-ab/bn_liveness.py --steps 40000                    # per-run summary, A / B / B-leaky
+python3 experiments/20261005-lr-schedule-ab/bn_liveness.py --steps 40000 --site value.bn    # one site; repeat per site
+grep -A16 'LAYER-HEALTH\] checkpoint replay-final' ~/Library/Logs/DrewsChessMachine/dcm_log_20261005-204108.txt
+```
+
 ## Arms B-leakyall and B-silu (added 2026-10-05 23:44, owner)
 
 - Owner: "start B leaky everywhere and B leaky+silu", after B's `blocks.2.bn1` was seen drifting toward the dead line
@@ -181,6 +294,24 @@ PROBE_BIN="$BIN" TRAINER_PID=<pid> experiments/probe_loop.sh 20261005-lrBleaky-c
   tower health is read from β/|γ| ranges and running-variance ratios instead; `bn_liveness.py` reports SiLU sites'
   pass-through.
 - Three runs (B-leaky, B-leakyall, B-silu) and the implementation's test runs share the GPU.
+
+## Arm B-silu-clip1 (added 2026-10-06 17:00, owner)
+
+- Owner: "Do a resume of silu from 18000 checkpoint with cap at 1.0". The question is whether a gradient-norm cap of 1.0
+  stops B-silu's step-20,600 blowup: gNorm 2.57 at LR 0.88, illegal mass 0.80, 20 of 128 policy pre-BN channels
+  parked, and pElo 1571.9 at 19k down to 457.4 at 21k. B-silu itself ran with cap 15, which never bound after step 1.
+- `--resume-exact` from `20261005-lrBsilu-cyc1-replay-step18000.safetensors` (trainer step 18,000, before the blowup),
+  `parameters-Bsilu-clip1.json` (`parameters-B.json` with `grad_clip_max_norm` 1.0, nothing else changed),
+  `--accept-inexact params`, `--training-step-limit 22000` (the limit counts this segment's steps, so it ends at trainer
+  step 40,000), `--seed 20261005`, same frozen build 2330 (`DCM-2331-4e70c615-p1headact.app`) and flags as B-silu.
+  Stem `20261006-lrBsilu-clip1` (segment-1 names `-replay-seg1-step<N>`, N = trainer step − 18,000), log
+  `dcm_log_20261006-170000.txt`, probes `probes-Bsilu-clip1-seg1.jsonl` (`PROBE_SEGMENT=1`).
+- The resume logged `[RESUME] EXACT` even though `grad_clip_max_norm` changed: in this build the `params` gap only covers
+  a checkpoint with no parameter snapshot, a changed per-step feed, or a changed buffer capacity. It does not compare the
+  parameter values themselves. The run's `[REPLAY-HPARAMS]` line shows `gradClip=1`, and step 1 ran at lr 0.0108, B's
+  LR at trainer step 18,001. The RNG streams (sampler, dropout) were restored, so up to the cap this run follows B-silu's
+  feed and draws. Until gNorm first exceeds 1.0 it should track B-silu step for step (weights bit for bit only where
+  MPSGraph steps are deterministic).
 
 ## Arm C-leaky (added 2026-10-05 23:13, owner)
 

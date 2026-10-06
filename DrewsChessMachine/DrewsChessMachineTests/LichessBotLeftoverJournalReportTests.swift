@@ -110,7 +110,7 @@ final class LichessBotLeftoverJournalReportTests: XCTestCase {
         let installation = try makeInstallation()
         try await leaveAFinishedGameUnfiled(installation)
 
-        let second = makeController(installation, transport: LichessBotResumeFakeLichess(), modelProvider: LichessBotFakeModelProvider(snapshot: nil))
+        let second = makeController(installation, transport: LichessBotResumeFakeLichess(), modelProvider: try await LichessBotFakeModelProvider.randomChampion())
         await second.noteLeftoverJournalsAtLaunch()
         XCTAssertEqual(second.finishedGamesAwaitingFilingFromLastRun, ["cbob"])
         await second.goOnline()
@@ -137,7 +137,7 @@ final class LichessBotLeftoverJournalReportTests: XCTestCase {
         // A journal with no lines yet: a game that never recorded a finish.
         try Data().write(to: installation.directory.inProgressJournalURL(gameID: "cbob"))
         let lichess = LichessBotForwardingFakeLichess(holdsAccount: true)
-        let controller = makeController(installation, transport: lichess, modelProvider: LichessBotFakeModelProvider(snapshot: nil))
+        let controller = makeController(installation, transport: lichess, modelProvider: try await LichessBotFakeModelProvider.randomChampion())
         addTeardownBlock {
             lichess.accountRelease.open()
         }

@@ -1953,7 +1953,7 @@ enum CorpusReplayRunner {
                 emit(line)
                 // Live layer health at the same cadence: BN state + ReZero α,
                 // read on the trainer's queue between steps.
-                for healthLine in await LayerHealthLog.liveLines(trainer: trainer) {
+                for healthLine in await LayerHealthLog.live(trainer: trainer).lines {
                     emit(healthLine)
                 }
                 // Same cadence as the log line, so results.json and the log

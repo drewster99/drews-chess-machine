@@ -37,6 +37,12 @@ struct LichessBotGenerationInfo: Sendable, Equatable, Codable {
     /// before this field existed. The default keeps memberwise construction
     /// that predates it compiling; the production builder always passes it.
     var valueHeadRecenteredOnLoad: Bool? = nil
+
+    /// The weights this generation was built from, comparable with the
+    /// settings' `LichessBotModelSettings.generationSource`.
+    var generationSource: LichessBotGenerationSource {
+        LichessBotGenerationSource(kind: sourceKind, filePath: sourceKind == .file ? filePath : nil)
+    }
 }
 
 /// Something that chooses moves: a model generation in production, a

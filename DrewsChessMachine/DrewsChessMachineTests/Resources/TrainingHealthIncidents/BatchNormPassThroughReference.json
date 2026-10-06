@@ -1,0 +1,969 @@
+{
+ "description": "Pass-through P = E|f'(\u03b3z + \u03b2)|, excess pass-through X and parked / mostly-off band per (activation, \u03b3, \u03b2), from experiments/20261005-lr-schedule-ab/bn_liveness.py's excess_pass_through / pass_through (the Python mirror of BatchNormPassThrough).",
+ "parked_below": 0.0013498980316300957,
+ "mostly_off_below": 0.022750131948179216,
+ "silu_derivative_root": -1.278464542761074,
+ "gelu_derivative_root": -0.7517915246935645,
+ "cases": [
+  {
+   "activation": "relu",
+   "gamma": 1.0,
+   "beta": 0.0,
+   "excess_pass_through": 0.5,
+   "pass_through": 0.5,
+   "band": "passing"
+  },
+  {
+   "activation": "relu",
+   "gamma": 1.3,
+   "beta": -2.0,
+   "excess_pass_through": 0.061967902836371234,
+   "pass_through": 0.061967902836371234,
+   "band": "passing"
+  },
+  {
+   "activation": "relu",
+   "gamma": 0.7,
+   "beta": 0.5,
+   "excess_pass_through": 0.7624747379730235,
+   "pass_through": 0.7624747379730235,
+   "band": "passing"
+  },
+  {
+   "activation": "relu",
+   "gamma": -0.9,
+   "beta": -1.1,
+   "excess_pass_through": 0.11081180122969676,
+   "pass_through": 0.11081180122969676,
+   "band": "passing"
+  },
+  {
+   "activation": "relu",
+   "gamma": 2.0,
+   "beta": -6.0,
+   "excess_pass_through": 0.0013498980316300957,
+   "pass_through": 0.0013498980316300957,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "relu",
+   "gamma": 1.0,
+   "beta": -9.06,
+   "excess_pass_through": 6.522527806571389e-20,
+   "pass_through": 6.522527806571389e-20,
+   "band": "parked"
+  },
+  {
+   "activation": "relu",
+   "gamma": 1.0,
+   "beta": -9.2,
+   "excess_pass_through": 1.7897488120140712e-20,
+   "pass_through": 1.7897488120140712e-20,
+   "band": "parked"
+  },
+  {
+   "activation": "relu",
+   "gamma": 5.0,
+   "beta": -16.64,
+   "excess_pass_through": 0.0004373593323166594,
+   "pass_through": 0.0004373593323166594,
+   "band": "parked"
+  },
+  {
+   "activation": "relu",
+   "gamma": 10.0,
+   "beta": -25.0,
+   "excess_pass_through": 0.0062096653257761375,
+   "pass_through": 0.0062096653257761375,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "relu",
+   "gamma": 20.0,
+   "beta": -60.0,
+   "excess_pass_through": 0.0013498980316300957,
+   "pass_through": 0.0013498980316300957,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "relu",
+   "gamma": 50.0,
+   "beta": -150.0,
+   "excess_pass_through": 0.0013498980316300957,
+   "pass_through": 0.0013498980316300957,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "relu",
+   "gamma": 100.0,
+   "beta": -300.0,
+   "excess_pass_through": 0.0013498980316300957,
+   "pass_through": 0.0013498980316300957,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "relu",
+   "gamma": 605.0,
+   "beta": -1000.0,
+   "excess_pass_through": 0.0491763655945246,
+   "pass_through": 0.0491763655945246,
+   "band": "passing"
+  },
+  {
+   "activation": "relu",
+   "gamma": 605.0,
+   "beta": 2000.0,
+   "excess_pass_through": 0.999526446557047,
+   "pass_through": 0.999526446557047,
+   "band": "passing"
+  },
+  {
+   "activation": "relu",
+   "gamma": 0.001,
+   "beta": -2.4,
+   "excess_pass_through": 0.0,
+   "pass_through": 0.0,
+   "band": "parked"
+  },
+  {
+   "activation": "relu",
+   "gamma": 0.001,
+   "beta": -0.4,
+   "excess_pass_through": 0.0,
+   "pass_through": 0.0,
+   "band": "parked"
+  },
+  {
+   "activation": "relu",
+   "gamma": 1000.0,
+   "beta": 0.0,
+   "excess_pass_through": 0.5,
+   "pass_through": 0.5,
+   "band": "passing"
+  },
+  {
+   "activation": "relu",
+   "gamma": 0.0,
+   "beta": 1.0,
+   "excess_pass_through": 1.0,
+   "pass_through": 1.0,
+   "band": "passing"
+  },
+  {
+   "activation": "relu",
+   "gamma": 0.0,
+   "beta": -1.0,
+   "excess_pass_through": 0.0,
+   "pass_through": 0.0,
+   "band": "parked"
+  },
+  {
+   "activation": "relu",
+   "gamma": 0.0,
+   "beta": 0.0,
+   "excess_pass_through": 0.0,
+   "pass_through": 0.0,
+   "band": "parked"
+  },
+  {
+   "activation": "relu",
+   "gamma": 1.0,
+   "beta": -4.0,
+   "excess_pass_through": 3.167124183311996e-05,
+   "pass_through": 3.167124183311996e-05,
+   "band": "parked"
+  },
+  {
+   "activation": "relu",
+   "gamma": 1.0,
+   "beta": -5.5,
+   "excess_pass_through": 1.8989562465887738e-08,
+   "pass_through": 1.8989562465887738e-08,
+   "band": "parked"
+  },
+  {
+   "activation": "relu",
+   "gamma": 5.0,
+   "beta": -14.0,
+   "excess_pass_through": 0.0025551303304279377,
+   "pass_through": 0.0025551303304279377,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "relu",
+   "gamma": 0.25,
+   "beta": -3.0,
+   "excess_pass_through": 1.7764821120777016e-33,
+   "pass_through": 1.7764821120777016e-33,
+   "band": "parked"
+  },
+  {
+   "activation": "relu",
+   "gamma": 0.25,
+   "beta": -0.76,
+   "excess_pass_through": 0.001182890743104407,
+   "pass_through": 0.001182890743104407,
+   "band": "parked"
+  },
+  {
+   "activation": "relu",
+   "gamma": 3.0,
+   "beta": 7.0,
+   "excess_pass_through": 0.9901846713713547,
+   "pass_through": 0.9901846713713547,
+   "band": "passing"
+  },
+  {
+   "activation": "relu",
+   "gamma": 0.5,
+   "beta": -60.0,
+   "excess_pass_through": 0.0,
+   "pass_through": 0.0,
+   "band": "parked"
+  },
+  {
+   "activation": "relu",
+   "gamma": 1.0,
+   "beta": 60.0,
+   "excess_pass_through": 1.0,
+   "pass_through": 1.0,
+   "band": "passing"
+  },
+  {
+   "activation": "relu",
+   "gamma": 0.02,
+   "beta": -1.278,
+   "excess_pass_through": 0.0,
+   "pass_through": 0.0,
+   "band": "parked"
+  },
+  {
+   "activation": "relu",
+   "gamma": 2.0,
+   "beta": -9.0,
+   "excess_pass_through": 3.3976731247300615e-06,
+   "pass_through": 3.3976731247300615e-06,
+   "band": "parked"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 1.0,
+   "beta": 0.0,
+   "excess_pass_through": 0.5,
+   "pass_through": 0.505,
+   "band": "passing"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 1.3,
+   "beta": -2.0,
+   "excess_pass_through": 0.061967902836371234,
+   "pass_through": 0.07134822380800752,
+   "band": "passing"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 0.7,
+   "beta": 0.5,
+   "excess_pass_through": 0.7624747379730235,
+   "pass_through": 0.7648499905932932,
+   "band": "passing"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": -0.9,
+   "beta": -1.1,
+   "excess_pass_through": 0.11081180122969676,
+   "pass_through": 0.11970368321739978,
+   "band": "passing"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 2.0,
+   "beta": -6.0,
+   "excess_pass_through": 0.0013498980316300957,
+   "pass_through": 0.011336399051313794,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 1.0,
+   "beta": -9.06,
+   "excess_pass_through": 6.522527806571389e-20,
+   "pass_through": 0.01,
+   "band": "parked"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 1.0,
+   "beta": -9.2,
+   "excess_pass_through": 1.7897488120140712e-20,
+   "pass_through": 0.01,
+   "band": "parked"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 5.0,
+   "beta": -16.64,
+   "excess_pass_through": 0.0004373593323166594,
+   "pass_through": 0.010432985738993494,
+   "band": "parked"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 10.0,
+   "beta": -25.0,
+   "excess_pass_through": 0.0062096653257761375,
+   "pass_through": 0.016147568672518375,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 20.0,
+   "beta": -60.0,
+   "excess_pass_through": 0.0013498980316300957,
+   "pass_through": 0.011336399051313794,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 50.0,
+   "beta": -150.0,
+   "excess_pass_through": 0.0013498980316300957,
+   "pass_through": 0.011336399051313794,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 100.0,
+   "beta": -300.0,
+   "excess_pass_through": 0.0013498980316300957,
+   "pass_through": 0.011336399051313794,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 605.0,
+   "beta": -1000.0,
+   "excess_pass_through": 0.0491763655945246,
+   "pass_through": 0.058684601938579356,
+   "band": "passing"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 605.0,
+   "beta": 2000.0,
+   "excess_pass_through": 0.999526446557047,
+   "pass_through": 0.9995311820914765,
+   "band": "passing"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 0.001,
+   "beta": -2.4,
+   "excess_pass_through": 0.0,
+   "pass_through": 0.01,
+   "band": "parked"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 0.001,
+   "beta": -0.4,
+   "excess_pass_through": 0.0,
+   "pass_through": 0.01,
+   "band": "parked"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 1000.0,
+   "beta": 0.0,
+   "excess_pass_through": 0.5,
+   "pass_through": 0.505,
+   "band": "passing"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 0.0,
+   "beta": 1.0,
+   "excess_pass_through": 1.0,
+   "pass_through": 1.0,
+   "band": "passing"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 0.0,
+   "beta": -1.0,
+   "excess_pass_through": 0.0,
+   "pass_through": 0.01,
+   "band": "parked"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 0.0,
+   "beta": 0.0,
+   "excess_pass_through": 0.0,
+   "pass_through": 0.01,
+   "band": "parked"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 1.0,
+   "beta": -4.0,
+   "excess_pass_through": 3.167124183311996e-05,
+   "pass_through": 0.010031354529414789,
+   "band": "parked"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 1.0,
+   "beta": -5.5,
+   "excess_pass_through": 1.8989562465887738e-08,
+   "pass_through": 0.01000001879966684,
+   "band": "parked"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 5.0,
+   "beta": -14.0,
+   "excess_pass_through": 0.0025551303304279377,
+   "pass_through": 0.012529579027123658,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 0.25,
+   "beta": -3.0,
+   "excess_pass_through": 1.7764821120777016e-33,
+   "pass_through": 0.01,
+   "band": "parked"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 0.25,
+   "beta": -0.76,
+   "excess_pass_through": 0.001182890743104407,
+   "pass_through": 0.011171061835673363,
+   "band": "parked"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 3.0,
+   "beta": 7.0,
+   "excess_pass_through": 0.9901846713713547,
+   "pass_through": 0.9902828246576412,
+   "band": "passing"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 0.5,
+   "beta": -60.0,
+   "excess_pass_through": 0.0,
+   "pass_through": 0.01,
+   "band": "parked"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 1.0,
+   "beta": 60.0,
+   "excess_pass_through": 1.0,
+   "pass_through": 1.0,
+   "band": "passing"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 0.02,
+   "beta": -1.278,
+   "excess_pass_through": 0.0,
+   "pass_through": 0.01,
+   "band": "parked"
+  },
+  {
+   "activation": "leaky_relu",
+   "gamma": 2.0,
+   "beta": -9.0,
+   "excess_pass_through": 3.3976731247300615e-06,
+   "pass_through": 0.010003363696393482,
+   "band": "parked"
+  },
+  {
+   "activation": "silu",
+   "gamma": 1.0,
+   "beta": 0.0,
+   "excess_pass_through": 0.5116394065015483,
+   "pass_through": 0.5116394065015483,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 1.3,
+   "beta": -2.0,
+   "excess_pass_through": 0.1384966624548209,
+   "pass_through": 0.1384966624548209,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 0.7,
+   "beta": 0.5,
+   "excess_pass_through": 0.6991182162600357,
+   "pass_through": 0.6991182162600357,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": -0.9,
+   "beta": -1.1,
+   "excess_pass_through": 0.19381903268086387,
+   "pass_through": 0.19381903268086387,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 2.0,
+   "beta": -6.0,
+   "excess_pass_through": 0.025075059687299037,
+   "pass_through": 0.025075059687299037,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 1.0,
+   "beta": -9.06,
+   "excess_pass_through": 0.0013515251267364524,
+   "pass_through": 0.0013515251267364524,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "silu",
+   "gamma": 1.0,
+   "beta": -9.2,
+   "excess_pass_through": 0.0011984086438144668,
+   "pass_through": 0.0011984086438144668,
+   "band": "parked"
+  },
+  {
+   "activation": "silu",
+   "gamma": 5.0,
+   "beta": -16.64,
+   "excess_pass_through": 0.0013391784004961982,
+   "pass_through": 0.0013391784004961982,
+   "band": "parked"
+  },
+  {
+   "activation": "silu",
+   "gamma": 10.0,
+   "beta": -25.0,
+   "excess_pass_through": 0.007624048978452862,
+   "pass_through": 0.007624048978452862,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "silu",
+   "gamma": 20.0,
+   "beta": -60.0,
+   "excess_pass_through": 0.0014971393377825478,
+   "pass_through": 0.0014971393377825478,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "silu",
+   "gamma": 50.0,
+   "beta": -150.0,
+   "excess_pass_through": 0.0014014643542704978,
+   "pass_through": 0.0014014643542704978,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "silu",
+   "gamma": 100.0,
+   "beta": -300.0,
+   "excess_pass_through": 0.001374999799362048,
+   "pass_through": 0.001374999799362048,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "silu",
+   "gamma": 605.0,
+   "beta": -1000.0,
+   "excess_pass_through": 0.04927015923025313,
+   "pass_through": 0.04927015923025313,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 605.0,
+   "beta": 2000.0,
+   "excess_pass_through": 0.9995279992040835,
+   "pass_through": 0.9995279992040835,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 0.001,
+   "beta": -2.4,
+   "excess_pass_through": 0.09983925551426964,
+   "pass_through": 0.09983925551426964,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 0.001,
+   "beta": -0.4,
+   "excess_pass_through": 0.3052081339413072,
+   "pass_through": 0.3052081339413072,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 1000.0,
+   "beta": 0.0,
+   "excess_pass_through": 0.5002221810946234,
+   "pass_through": 0.5002221810946234,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 0.0,
+   "beta": 1.0,
+   "excess_pass_through": 0.9276705118714869,
+   "pass_through": 0.9276705118714869,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 0.0,
+   "beta": -1.0,
+   "excess_pass_through": 0.07232948812851325,
+   "pass_through": 0.07232948812851325,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 0.0,
+   "beta": 0.0,
+   "excess_pass_through": 0.5,
+   "pass_through": 0.5,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 1.0,
+   "beta": -4.0,
+   "excess_pass_through": 0.054547877674551104,
+   "pass_through": 0.054547877674551104,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 1.0,
+   "beta": -5.5,
+   "excess_pass_through": 0.022880157207328018,
+   "pass_through": 0.022880157207328018,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 5.0,
+   "beta": -14.0,
+   "excess_pass_through": 0.005453245010515981,
+   "pass_through": 0.005453245010515981,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "silu",
+   "gamma": 0.25,
+   "beta": -3.0,
+   "excess_pass_through": 0.08730505852483576,
+   "pass_through": 0.08730505852483576,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 0.25,
+   "beta": -0.76,
+   "excess_pass_through": 0.16295254443628643,
+   "pass_through": 0.16295254443628643,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 3.0,
+   "beta": 7.0,
+   "excess_pass_through": 1.0064150327519479,
+   "pass_through": 1.0064150327519479,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 0.5,
+   "beta": -60.0,
+   "excess_pass_through": 0.0,
+   "pass_through": 0.0,
+   "band": "parked"
+  },
+  {
+   "activation": "silu",
+   "gamma": 1.0,
+   "beta": 60.0,
+   "excess_pass_through": 1.0,
+   "pass_through": 1.0,
+   "band": "passing"
+  },
+  {
+   "activation": "silu",
+   "gamma": 0.02,
+   "beta": -1.278,
+   "excess_pass_through": 0.0034791245671739286,
+   "pass_through": 0.0034791245671739286,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "silu",
+   "gamma": 2.0,
+   "beta": -9.0,
+   "excess_pass_through": 0.003587082335082471,
+   "pass_through": 0.003587082335082471,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 1.0,
+   "beta": 0.0,
+   "excess_pass_through": 0.5393242135077346,
+   "pass_through": 0.5393242135077346,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 1.3,
+   "beta": -2.0,
+   "excess_pass_through": 0.11900543210893319,
+   "pass_through": 0.11900543210893319,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 0.7,
+   "beta": 0.5,
+   "excess_pass_through": 0.7650605181650401,
+   "pass_through": 0.7650605181650401,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": -0.9,
+   "beta": -1.1,
+   "excess_pass_through": 0.19029601350466446,
+   "pass_through": 0.19029601350466446,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 2.0,
+   "beta": -6.0,
+   "excess_pass_through": 0.005517200059319792,
+   "pass_through": 0.005517200059319792,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 1.0,
+   "beta": -9.06,
+   "excess_pass_through": 1.490010650305353e-09,
+   "pass_through": 1.490010650305353e-09,
+   "band": "parked"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 1.0,
+   "beta": -9.2,
+   "excess_pass_through": 7.997106789929495e-10,
+   "pass_through": 7.997106789929495e-10,
+   "band": "parked"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 5.0,
+   "beta": -16.64,
+   "excess_pass_through": 0.000636409693577587,
+   "pass_through": 0.000636409693577587,
+   "band": "parked"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 10.0,
+   "beta": -25.0,
+   "excess_pass_through": 0.006891033286723056,
+   "pass_through": 0.006891033286723056,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 20.0,
+   "beta": -60.0,
+   "excess_pass_through": 0.001430315509556464,
+   "pass_through": 0.001430315509556464,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 50.0,
+   "beta": -150.0,
+   "excess_pass_through": 0.0013806098105958173,
+   "pass_through": 0.0013806098105958173,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 100.0,
+   "beta": -300.0,
+   "excess_pass_through": 0.0013650894483831573,
+   "pass_through": 0.0013650894483831573,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 605.0,
+   "beta": -1000.0,
+   "excess_pass_through": 0.04923359040903187,
+   "pass_through": 0.04923359040903187,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 605.0,
+   "beta": 2000.0,
+   "excess_pass_through": 0.9995273949507757,
+   "pass_through": 0.9995273949507757,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 0.001,
+   "beta": -2.4,
+   "excess_pass_through": 0.04554938408019328,
+   "pass_through": 0.04554938408019328,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 0.001,
+   "beta": -0.4,
+   "excess_pass_through": 0.19727048509951534,
+   "pass_through": 0.19727048509951534,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 1000.0,
+   "beta": 0.0,
+   "excess_pass_through": 0.5001356171842821,
+   "pass_through": 0.5001356171842821,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 0.0,
+   "beta": 1.0,
+   "excess_pass_through": 1.0833154705876864,
+   "pass_through": 1.0833154705876864,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 0.0,
+   "beta": -1.0,
+   "excess_pass_through": 0.08331547058768632,
+   "pass_through": 0.08331547058768632,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 0.0,
+   "beta": 0.0,
+   "excess_pass_through": 0.5,
+   "pass_through": 0.5,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 1.0,
+   "beta": -4.0,
+   "excess_pass_through": 0.008176144940838658,
+   "pass_through": 0.008176144940838658,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 1.0,
+   "beta": -5.5,
+   "excess_pass_through": 0.0003529781628862595,
+   "pass_through": 0.0003529781628862595,
+   "band": "parked"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 5.0,
+   "beta": -14.0,
+   "excess_pass_through": 0.003410093294825589,
+   "pass_through": 0.003410093294825589,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 0.25,
+   "beta": -3.0,
+   "excess_pass_through": 0.014014108782735499,
+   "pass_through": 0.014014108782735499,
+   "band": "mostly_off"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 0.25,
+   "beta": -0.76,
+   "excess_pass_through": 0.08439597290029932,
+   "pass_through": 0.08439597290029932,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 3.0,
+   "beta": 7.0,
+   "excess_pass_through": 0.9949403836313088,
+   "pass_through": 0.9949403836313088,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 0.5,
+   "beta": -60.0,
+   "excess_pass_through": 0.0,
+   "pass_through": 0.0,
+   "band": "parked"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 1.0,
+   "beta": 60.0,
+   "excess_pass_through": 1.0,
+   "pass_through": 1.0,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 0.02,
+   "beta": -1.278,
+   "excess_pass_through": 0.12457726959829718,
+   "pass_through": 0.12457726959829718,
+   "band": "passing"
+  },
+  {
+   "activation": "gelu",
+   "gamma": 2.0,
+   "beta": -9.0,
+   "excess_pass_through": 7.907549505355133e-05,
+   "pass_through": 7.907549505355133e-05,
+   "band": "parked"
+  }
+ ]
+}

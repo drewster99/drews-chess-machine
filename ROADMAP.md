@@ -38,6 +38,7 @@ original rationale is not lost.
     - the lineage tree picker (§9.1)
     - the opponent card (§14.3b)
     - chat-panel operator input and move delay/hold (§14.3c)
+  - **Lichess bot: follow a model lineage on disk, and build the model before going online (planned 2026-10-06).** Plan: documentation/plans-active/LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md.
   - **After that:** Phase 6 (Games, Stats, Events views) and Phase 7 (hardening and soak).
 
 - **Lineage provenance in every checkpoint (added 2026-09-28; not started).** Record a checkpoint's place in its training lineage *inside the file*, so cumulative progress and exact ancestry never depend on the dashboards' `registry.json` (`cumstep_base`, `enum_stem`) or on session logs.
