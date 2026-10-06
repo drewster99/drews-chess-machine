@@ -148,6 +148,7 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         XCTAssertEqual(ActivationFunction.functions, ActivationFunction.allCases.filter { $0 != .doesNotApply })
         XCTAssertEqual(ArchitectureSiteActivationPicker.functionChoices, ActivationFunction.functions)
         XCTAssertEqual(BuildNewModelView.groupActivationChoices, ActivationFunction.functions)
+        XCTAssertEqual(BuildNewModelView.mainActivationChoices, ActivationFunction.functions)
         let syntax = ActivationFunction.functions.map(\.rawValue).joined(separator: "|")
         XCTAssertEqual(SetActivationDeriveOperation.kind.valueSyntax, syntax)
         XCTAssertEqual(SetSEActivationDeriveOperation.kind.valueSyntax, syntax)
@@ -1104,6 +1105,35 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         model.policyHeadActivation = .leakyRelu
         XCTAssertTrue(model.isValid, model.validationError ?? "")
         XCTAssertEqual(model.architecture.policyHeadActivation, .leakyRelu)
+    }
+
+    /// The Build screen's "Use for every activation" and `--derive-model
+    /// --set-activation` give the same architecture: one SE group and one
+    /// SE-less group, post → pre (so the stem and the tower end both exist).
+    @MainActor
+    func testUseForEveryActivationMatchesDeriveSetActivation() throws {
+        var source = Self.tiny(seStyle: .scaleAndBias)
+        var post = Self.tiny(style: .post).blockGroups[0]
+        post.activationStyle = .post
+        source.blockGroups.insert(post, at: 0)
+        source.stemActivation = .relu
+        try source.validate()
+        for function in ActivationFunction.functions where function != .relu {
+            let model = BuildNewModelModel(NamedArchitecture(label: "t", architecture: source))
+            try model.applyMainActivationEverywhere(function)
+            let derived = try SetActivationDeriveOperation(value: function).apply(to: source)
+            XCTAssertEqual(model.architecture, derived, function.rawValue)
+            XCTAssertEqual(model.architecture.blockGroups[1].seActivation, .relu, "an SE group keeps its FC1 activation")
+            XCTAssertEqual(model.architecture.blockGroups[0].seActivation, function, "an SE-less group's follows")
+            for site in ArchitectureActivationSite.allCases {
+                XCTAssertEqual(model.storedActivation(at: site),
+                               source.hasActivationSite(site) ? function : .doesNotApply, "\(function.rawValue) \(site)")
+            }
+            XCTAssertTrue(model.isValid, model.validationError ?? "")
+        }
+        let model = BuildNewModelModel(NamedArchitecture(label: "t", architecture: source))
+        XCTAssertThrowsError(try model.applyMainActivationEverywhere(.doesNotApply))
+        XCTAssertEqual(model.architecture, source, "a refused edit changes nothing")
     }
 
     /// Snapshots of every topology kind the load must reproduce.

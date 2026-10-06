@@ -27,6 +27,9 @@ struct BuildNewModelView: View {
     /// (which includes the `does_not_apply` marker a group never accepts).
     static let groupActivationChoices = ActivationFunction.functions
 
+    /// The functions the "Use for every activation" menu offers.
+    static let mainActivationChoices = ActivationFunction.functions
+
     /// A Save-as-Preset the store refused because a preset of that name
     /// already exists, captured at click time so "Replace" writes exactly
     /// what the user was looking at when they saved — not whatever the
@@ -102,6 +105,23 @@ struct BuildNewModelView: View {
                         ArchitectureSiteActivationPicker(
                             site: .towerEnd, activation: $model.towerEndActivation,
                             siteExists: existingSites.contains(.towerEnd))
+                        // The `--derive-model --set-activation` rule, from the
+                        // same function (`setMainActivationEverywhere`), so an
+                        // edit made either way gives the same architecture.
+                        Menu("Use for every activation") {
+                            ForEach(BuildNewModelView.mainActivationChoices, id: \.self) { function in
+                                Button(function.rawValue) {
+                                    do {
+                                        try model.applyMainActivationEverywhere(function)
+                                    } catch {
+                                        saveStatus = "Use for every activation: \(error)"
+                                    }
+                                }
+                            }
+                        }
+                        .help("Sets this activation at every architecture-level site the model has and on every block "
+                              + "group's main path (the --derive-model --set-activation rule). A group with an SE block "
+                              + "keeps its SE activation.")
                         LabeledContent("Total blocks") {
                             Text(model.totalBlocks?.formatted(.number) ?? "invalid")
                                 .monospacedDigit()

@@ -78,7 +78,7 @@ struct ArchitectureDiagramView: View {
                 cell(width: 175, emphasized: false) {
                     line("policy · \(arch.policyHeadStyle.rawValue)", bold: true)
                     if arch.policyHeadStyle != .simpleConv {
-                        line("\(arch.policyHeadInputChannels) → K=\(arch.policyPreConvChannels)")
+                        line("\(arch.policyHeadInputChannels) → K=\(arch.policyPreConvChannels) · \(arch.policyHeadActivation.rawValue)")
                     }
                     line("→ \(arch.policySize) logits")
                     if arch.policyHeadFinalInit != .he {
@@ -88,7 +88,8 @@ struct ArchitectureDiagramView: View {
                 }
                 cell(width: 175, emphasized: false) {
                     line("value · \(arch.valueHeadStyle.rawValue)", bold: true)
-                    line("\(arch.valueHeadInputChannels) → \(arch.valueHeadConvChannels)ch → FC\(arch.valueHeadHiddenUnits)")
+                    line("\(arch.valueHeadInputChannels) → \(arch.valueHeadConvChannels)ch · \(arch.valueHeadConvActivation.rawValue)")
+                    line("→ FC\(arch.valueHeadHiddenUnits) · \(arch.valueHeadFC1HiddenActivation.rawValue)")
                     line("→ \(arch.valueHeadClasses) \(arch.valueHeadClasses == 3 ? "(W/D/L)" : "(scalar)")")
                     if arch.valueHeadFinalInit != .he {
                         nonStandardInitLine(" init: final \(arch.valueHeadFinalInit.rawValue)")
@@ -173,7 +174,12 @@ struct ArchitectureDiagramView: View {
         let detail = compressParams > 0
             ? "\(compressParams.formatted(.number)) params"
             : "+\(arch.featureSkipSourceChannels)ch"
-        return Text("⤳ skip \(arch.featureSkipSource.rawValue) → [\(dests)] · \(arch.featureSkipFusion.rawValue) (\(detail))")
+        // The fusion node's activation, drawn only where the node is built,
+        // so `does_not_apply` never appears.
+        let fusionActivation = arch.hasActivationSite(.featureSkipFusion)
+            ? " · \(arch.featureSkipActivation.rawValue)"
+            : ""
+        return Text("⤳ skip \(arch.featureSkipSource.rawValue) → [\(dests)] · \(arch.featureSkipFusion.rawValue)\(fusionActivation) (\(detail))")
             .font(.system(.caption2, design: .monospaced).weight(.semibold))
             .monospacedDigit()
             .lineLimit(1)

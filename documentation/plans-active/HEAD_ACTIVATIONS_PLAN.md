@@ -2,8 +2,8 @@
 
 Status (2026-10-05): **IMPLEMENTING.** Phase status:
 - [x] **P1** — format v9, `does_not_apply`, graph, layer health, `--set-activation`, Build screen pickers, Python (`4e70c615`).
-- [x] **P2** — per-site derive setters (commit recorded in **Implementation notes**).
-- [ ] **P3** — "Use for every activation" and the diagram.
+- [x] **P2** — per-site derive setters (`fa0ab1e8`).
+- [x] **P3** — "Use for every activation" and the diagram (commit recorded in **Implementation notes**).
 - [ ] **P4** — documentation, presets, ROADMAP completion.
 
 The original planning status, kept for the record: **PLAN ONLY.** Nothing here was implemented when the review passes below ran.
@@ -879,11 +879,17 @@ Recorded as each phase lands; every deviation from the text above is listed with
 - The render test checks the picker's presentation value instead of the drawn controls (see its X1 entry).
 - `ModelDerivation.parseActivationFunctionValue` / `doesNotApplyRefusal` are the one parser and refusal of every activation operation (P2's site setters use them too).
 
-**P2** (commit: see `git log`; recorded here by the next phase's commit):
+**P2** (`fa0ab1e8`):
 - `Persistence/SiteActivationDerive.swift`: one `SetSiteActivationDeriveOperation(site:value:)`, its six catalog kinds built from `ArchitectureActivationSite.allCases` (`SetSiteActivationDeriveOperation.kinds`, inserted after `--set-se-activation`). Operation names are `set-` plus the site's JSON key in kebab case.
 - `SEBetaInitTests.swift:610` catalog pin updated (OD-6). The P2 cases of X1 added to `ArchitectureActivationSiteTests`; `testDirectlyConstructedOperationsRefuseDoesNotApply` now covers the site setter too.
 - Built once (`build_failed: false`); full suite: 2,387 passed, 0 failed, 1 skipped (the env-gated legacy-load test).
 - `deriving-models.md`: the six rows, the order note, two examples, the trained-source and refusal lines.
+
+**P3** (commit: see `git log`; recorded here by the next phase's commit):
+- The Tower section's `Menu("Use for every activation")` lists `BuildNewModelView.mainActivationChoices` (= `functions`, added to the OD-14 test) and calls `applyMainActivationEverywhere`; a thrown error goes to the screen's status line. The diagram shows the policy pre-block, value conv and value FC1 hidden activations, and the fusion node's activation in the feature-skip marker where the node is built.
+- New test `testUseForEveryActivationMatchesDeriveSetActivation` (a post → pre tower with an SE-less and an SE group, every function but ReLU, plus the `does_not_apply` refusal leaving the model unchanged).
+- Built once (`build_failed: false`); full suite: 2,388 passed, 0 failed, 1 skipped (env-gated).
+- **Screen check (V7), on the running Release build with no training live and no auto-resume pointer:** all six site pickers are drawn (the fusion picker with the feature-skip source at `none`, disabled, "does not apply"); the stem picker is disabled with "does not apply" on the default pre-activation tower; switching group 1 to `post` turns the stem picker orange with "choose…", disables the tower-end picker, shows the `stem_activation` message in the readout and the diagram pane, and disables Build and Save as Preset; choosing `relu` clears the message; switching to `pre` and back to `post` shows "choose…" again (the choice is not restored); "Use for every activation ▸ leaky_relu" gives the summary ` . act leaky_relu` (the SE group keeps `fc1 relu`); then setting the policy pre-block to `relu` gives the listed-sites clause ` . act stem leaky_relu, policy relu, value_conv leaky_relu, value_fc1_hidden leaky_relu`, and the diagram shows each site's activation. Save as Preset was not exercised on screen (it would add a file to the user's Presets folder); the preset round trip of all six fields is covered by `testRoundTripPreservesEachSiteIndependently`, and P4's preset re-save writes through that same path.
 
 # Owner decisions
 
