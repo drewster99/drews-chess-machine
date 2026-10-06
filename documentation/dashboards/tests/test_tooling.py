@@ -27,7 +27,7 @@ import table_common  # noqa: E402
 
 
 def group(**fields):
-    base = dict(count=3, channels=128, activation_function="relu", use_rezero=True,
+    base = dict(count=3, channels=128, se_style="scale_and_bias", activation_function="relu", use_rezero=True,
                 rezero_alpha_init=0.4472136, se_beta_init="glorot", se_activation="relu")
     base.update(fields)
     return base

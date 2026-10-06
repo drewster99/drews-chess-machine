@@ -31,6 +31,7 @@ Import from anywhere in the repository with
 This module has no import-time side effects and needs only the standard
 library.
 """
+import copy
 import json
 import math
 import struct
@@ -68,6 +69,10 @@ DOES_NOT_APPLY = 'does_not_apply'
 ACTIVATION_FUNCTIONS = ('relu', 'silu', 'gelu', 'leaky_relu')
 # The format the app gives a carrier with no version marker (legacy).
 UNVERSIONED_LEGACY_VERSION = 3
+# ArchitectureFormat.currentVersion: the newest format this module understands.
+# A newer (or non-positive) version is refused, as the app's requireSupported
+# refuses it, rather than read under rules that may not hold for it.
+CURRENT_FORMAT_VERSION = 10
 # A safetensors header larger than this is not a DCM model header (theirs are
 # a few kilobytes); refusing it keeps a damaged length prefix from being read
 # as a request for gigabytes.
@@ -78,21 +83,76 @@ class ArchitectureError(ValueError):
     """A header whose architecture the app would refuse to load."""
 
 
+def checked_format_version(format_version):
+    """The carrier's format version as an int, or None for an unversioned
+    (legacy) carrier. Refuses what the app refuses
+    (ArchitectureFormat.requireSupported / safetensorsFormatVersion): a value
+    that is not an integer, one of 0 or below, or one newer than
+    CURRENT_FORMAT_VERSION."""
+    if format_version is None:
+        return None
+    try:
+        version = int(format_version)
+    except (TypeError, ValueError):
+        raise ArchitectureError(f"format version {format_version!r} is not an integer") from None
+    if version <= 0:
+        raise ArchitectureError(f"format version {format_version!r} is not a positive integer")
+    if version > CURRENT_FORMAT_VERSION:
+        raise ArchitectureError(
+            f"format v{version} is newer than this module understands (newest: v{CURRENT_FORMAT_VERSION})")
+    return version
+
+
+def _refuse_retired_activation_function(a, uniform, version):
+    """A v9+ block-groups architecture must not state the top-level
+    `activation_function` the six site keys replaced (FormatError.retiredField);
+    the uniform-tower form is legacy by construction and exempt."""
+    if (not uniform and version is not None and version >= SITE_ACTIVATIONS_REQUIRED_FROM_VERSION
+            and 'activation_function' in a):
+        raise ArchitectureError(
+            f"format v{version} architecture states the retired top-level 'activation_function'; "
+            f"it is replaced by {', '.join(SITE_ACTIVATION_KEYS)}")
+
+
+def _require_group_token(i, field, value, allow_does_not_apply):
+    if value in ACTIVATION_FUNCTIONS or (allow_does_not_apply and value == DOES_NOT_APPLY):
+        return
+    allowed = ', '.join(ACTIVATION_FUNCTIONS + ((DOES_NOT_APPLY,) if allow_does_not_apply else ()))
+    raise ArchitectureError(f"block_groups[{i}].{field} is {value!r}, which is not one of {allowed}")
+
+
 def norm_arch(s, format_version=None):
     """Normalize a DCM architecture JSON (string or dict) to the block-groups form.
 
-    format_version: the carrier's `dcm_format_version` (string or int). Files of
-    version >= SE_BETA_INIT_REQUIRED_FROM_VERSION must carry `se_beta_init` on
+    Never changes its argument: a dict is deep-copied first.
+
+    format_version: the carrier's `dcm_format_version` (string or int; None for an
+    unversioned carrier, which is legacy). A version that is not a positive integer,
+    or is newer than CURRENT_FORMAT_VERSION, raises (`checked_format_version`). Files
+    of version >= SE_BETA_INIT_REQUIRED_FROM_VERSION must carry `se_beta_init` on
     every block group, files of version >= SE_ACTIVATION_REQUIRED_FROM_VERSION
     `se_activation`, and files of version >= REZERO_ALPHA_CAP_REQUIRED_FROM_VERSION
     `rezero_alpha_cap` (a missing one raises, mirroring the Swift loader). Older or
     unversioned files resolve a missing `se_beta_init` to 'glorot', a missing
-    `se_activation` to the group's `activation_function`, and a missing
-    `rezero_alpha_cap` to `rezero_alpha_init * REZERO_TANH_CEILING_MULTIPLE`. Prefer
+    `se_activation` to the group's `activation_function` on a group with an SE block
+    and to 'does_not_apply' on one without, and a missing `rezero_alpha_cap` to
+    `rezero_alpha_init * REZERO_TANH_CEILING_MULTIPLE`.
+
+    The block-group activation rules are checked as the app checks them: each
+    group's `activation_function` is a function; `se_activation` is
+    'does_not_apply' exactly when the group has no SE block (OD-13) — a file older
+    than v10 whose SE-less group states the group's own activation resolves it to
+    'does_not_apply', any other disagreement raises; and a v9+ block-groups
+    architecture must not state the retired top-level `activation_function`. The six
+    site activations themselves are resolved by `site_activations`. Prefer
     `norm_arch_md(md)`, which reads the version from the file's metadata.
     """
-    a = json.loads(s) if isinstance(s, str) else dict(s)
-    if 'block_groups' not in a:
+    a = json.loads(s) if isinstance(s, str) else copy.deepcopy(s)
+    version = checked_format_version(format_version)
+    uniform = 'block_groups' not in a
+    _refuse_retired_activation_function(a, uniform, version)
+    if uniform:
+        _require_group_token(0, 'activation_function', a['activation_function'], allow_does_not_apply=False)
         a['block_groups'] = [dict(
             count=a['num_blocks'], channels=a['channels'],
             conv1_kernel_size=a['block_conv1_kernel_size'],
@@ -108,12 +168,16 @@ def norm_arch(s, format_version=None):
             # its carrier states, so its cap is always the legacy derivation
             # (NetworkArchitecture's uniform-tower expansion).
             rezero_alpha_cap=a['rezero_alpha_init'] * REZERO_TANH_CEILING_MULTIPLE)]
-    version = None if format_version is None else int(format_version)
     strict_beta = version is not None and version >= SE_BETA_INIT_REQUIRED_FROM_VERSION
     strict_se_act = version is not None and version >= SE_ACTIVATION_REQUIRED_FROM_VERSION
     strict_cap = version is not None and version >= REZERO_ALPHA_CAP_REQUIRED_FROM_VERSION
-    legacy_se_less = version is None or version < SE_LESS_SE_ACTIVATION_DOES_NOT_APPLY_FROM_VERSION
+    legacy_se_less = uniform or version is None or version < SE_LESS_SE_ACTIVATION_DOES_NOT_APPLY_FROM_VERSION
     for i, g in enumerate(a['block_groups']):
+        for required in ('se_style', 'activation_function'):
+            if required not in g:
+                raise ArchitectureError(f"block_groups[{i}].{required} is missing")
+        has_se = g['se_style'] != 'none'
+        _require_group_token(i, 'activation_function', g['activation_function'], allow_does_not_apply=False)
         if 'se_beta_init' not in g:
             if strict_beta:
                 raise ArchitectureError(
@@ -123,16 +187,21 @@ def norm_arch(s, format_version=None):
             if strict_se_act:
                 raise ArchitectureError(
                     f"block_groups[{i}].se_activation missing in a format v{format_version} architecture")
-            g['se_activation'] = g['activation_function']
+            g['se_activation'] = g['activation_function'] if has_se else DOES_NOT_APPLY
+        _require_group_token(i, 'se_activation', g['se_activation'], allow_does_not_apply=True)
         # OD-13: an SE-less group's se_activation is 'does_not_apply'. Before v10
         # it had to equal the group's activation and was never applied, so such
-        # a file's value resolves to it; any other value is refused, as the app
-        # refuses it (NetworkArchitecture's decoder).
-        if g.get('se_style') == 'none' and legacy_se_less and g['se_activation'] != DOES_NOT_APPLY:
-            if g['se_activation'] != g['activation_function']:
+        # a file's value resolves to it; any other disagreement raises, as the
+        # app's decoder refuses it (BlockGroup.decodedSEActivation).
+        if has_se and g['se_activation'] == DOES_NOT_APPLY:
+            raise ArchitectureError(
+                f"block_groups[{i}].se_activation is 'does_not_apply', but the group has an SE block: choose one of "
+                f"{', '.join(ACTIVATION_FUNCTIONS)}")
+        if not has_se and g['se_activation'] != DOES_NOT_APPLY:
+            if not (legacy_se_less and g['se_activation'] == g['activation_function']):
                 raise ArchitectureError(
-                    f"block_groups[{i}].se_activation is {g['se_activation']!r} on a group without an SE block "
-                    f"and differs from its activation_function {g['activation_function']!r}")
+                    f"block_groups[{i}].se_activation is {g['se_activation']!r}, but the group has no SE block: "
+                    f"it must be 'does_not_apply'")
             g['se_activation'] = DOES_NOT_APPLY
         if 'rezero_alpha_cap' not in g:
             if strict_cap:
@@ -201,18 +270,19 @@ def site_activations(arch, format_version=None):
       `activation_function`, raises.
 
     Then both directions are checked — a site the topology has must hold a
-    function and one it lacks must hold DOES_NOT_APPLY — and the same rule for
-    each block group: `activation_function` is a function, and `se_activation`
-    is DOES_NOT_APPLY exactly when the group has no SE block (OD-13). Every
+    function and one it lacks must hold DOES_NOT_APPLY — and `norm_arch` checks the
+    same rule for each block group: `activation_function` is a function, and
+    `se_activation` is DOES_NOT_APPLY exactly when the group has no SE block
+    (OD-13). An explicit JSON null in a site key counts as absent (the app's
+    decodeIfPresent). A version that is not a positive integer or is newer than
+    CURRENT_FORMAT_VERSION raises. Never changes its argument. Every
     ArchitectureError names the key and the site."""
-    raw = json.loads(arch) if isinstance(arch, str) else dict(arch)
-    version = UNVERSIONED_LEGACY_VERSION if format_version is None else int(format_version)
+    raw = json.loads(arch) if isinstance(arch, str) else copy.deepcopy(arch)
+    checked = checked_format_version(format_version)
+    version = UNVERSIONED_LEGACY_VERSION if checked is None else checked
     uniform = 'block_groups' not in raw
     legacy_allowed = uniform or version < SITE_ACTIVATIONS_REQUIRED_FROM_VERSION
-    if not uniform and not legacy_allowed and 'activation_function' in raw:
-        raise ArchitectureError(
-            f"format v{version} architecture states the retired top-level 'activation_function'; "
-            f"it is replaced by {', '.join(SITE_ACTIVATION_KEYS)}")
+    _refuse_retired_activation_function(raw, uniform, version)
     tower = raw.get('activation_function')
     if tower is not None:
         _require_token('activation_function', tower)
@@ -224,7 +294,8 @@ def site_activations(arch, format_version=None):
     values = {}
     resolved = []
     for key in SITE_ACTIVATION_KEYS:
-        if key in raw:
+        # An explicit JSON null is absent, as Swift's decodeIfPresent reads it.
+        if raw.get(key) is not None:
             _require_token(key, raw[key])
             values[key] = raw[key]
         elif legacy_allowed:
@@ -238,19 +309,7 @@ def site_activations(arch, format_version=None):
     norm = norm_arch(raw, None if uniform else format_version)
     for key in resolved:
         values[key] = tower if site_exists(norm, key) else DOES_NOT_APPLY
-    for i, group in enumerate(norm['block_groups']):
-        if group['activation_function'] == DOES_NOT_APPLY:
-            raise ArchitectureError(
-                f"block_groups[{i}].activation_function is 'does_not_apply', but that site exists whenever its group does")
-        has_se = group['se_style'] != 'none'
-        if has_se and group['se_activation'] == DOES_NOT_APPLY:
-            raise ArchitectureError(
-                f"block_groups[{i}].se_activation is 'does_not_apply', but the group has an SE block: choose one of "
-                f"{', '.join(ACTIVATION_FUNCTIONS)}")
-        if not has_se and group['se_activation'] != DOES_NOT_APPLY:
-            raise ArchitectureError(
-                f"block_groups[{i}].se_activation is {group['se_activation']!r}, but the group has no SE block: "
-                f"it must be 'does_not_apply'")
+    # The block-group activation rules (OD-13 included) are checked by norm_arch.
     for key in SITE_ACTIVATION_KEYS:
         exists = site_exists(norm, key)
         if exists and values[key] == DOES_NOT_APPLY:

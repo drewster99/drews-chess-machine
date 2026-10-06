@@ -844,6 +844,11 @@ listed in the status block at the top.
 
 ## 18. Architecture format v5: `se_activation` (issue #2, implemented 2026-10-01)
 
+> **Partly superseded by §20 (format v10, owner decision OD-13):** an SE-less group's
+> `se_activation` is now `does_not_apply` (not its group's activation), `seActivationRequiresSE`
+> became `seActivationMismatch`, and a file before v5 resolves an SE-less group's missing value
+> to `does_not_apply`. The record below is kept as written.
+
 - **New per-group field** `block_groups[].se_activation`: `relu` | `silu` | `gelu` | `leaky_relu`
   (`BlockGroup.seActivation`). It is the activation after the SE excitation FC1 (the pooled
   `C → C/r` bottleneck), independent of the group's main-path `activation_function`.

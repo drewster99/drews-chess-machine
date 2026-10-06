@@ -9,6 +9,7 @@ Every test works on synthetic architectures; nothing reads a model file.
 import importlib
 import json
 import os
+import re
 import sys
 import unittest
 
@@ -186,6 +187,60 @@ class SiteActivationResolutionTests(unittest.TestCase):
         arch = architecture(feature_skip_source="stem_output", feature_skip_fusion="compress_conv_bn_relu",
                             feature_skip_to_policy_head=True, sites=dict(feature_skip_activation="relu"))
         self.assertEqual(dcm_arch.site_activations_md(md(arch))["feature_skip_activation"], "relu")
+
+
+class NormArchParityTests(unittest.TestCase):
+    """norm_arch refuses what the app's decoder refuses, on its own."""
+
+    def test_unknown_format_versions_are_refused(self):
+        for version in ("11", "0", "-1", "nine"):
+            with self.assertRaises(dcm_arch.ArchitectureError, msg=version):
+                dcm_arch.norm_arch_md(md(architecture(), version))
+            with self.assertRaises(dcm_arch.ArchitectureError, msg=version):
+                dcm_arch.site_activations_md(md(architecture(), version))
+        self.assertEqual(dcm_arch.checked_format_version(str(dcm_arch.CURRENT_FORMAT_VERSION)),
+                         dcm_arch.CURRENT_FORMAT_VERSION)
+        self.assertIsNone(dcm_arch.checked_format_version(None))
+
+    def test_v10_group_rules_are_enforced_by_norm_arch(self):
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "se_activation"):
+            dcm_arch.norm_arch_md(md(architecture(groups=[group(se_activation="relu")])))
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "se_activation"):
+            dcm_arch.norm_arch_md(md(architecture(groups=[group(se_style="attenuate_only")])))
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "retired"):
+            dcm_arch.norm_arch_md(md(architecture(activation_function="relu")))
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "activation_function"):
+            dcm_arch.norm_arch_md(md(architecture(groups=[group(activation_function="does_not_apply")])))
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "se_activation"):
+            dcm_arch.norm_arch_md(md(architecture(groups=[group(se_style="scale_and_bias", se_activation="swish")])))
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "se_style"):
+            dcm_arch.norm_arch_md(md(architecture(groups=[{k: v for k, v in group().items() if k != "se_style"}])))
+
+    def test_an_explicit_null_site_key_is_absent(self):
+        legacy_arch = legacy(architecture(), "gelu")
+        legacy_arch["policy_head_activation"] = None
+        self.assertEqual(dcm_arch.site_activations_md(md(legacy_arch, "8"))["policy_head_activation"], "gelu")
+        current = architecture()
+        current["policy_head_activation"] = None
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "policy_head_activation"):
+            dcm_arch.site_activations_md(md(current))
+
+    def test_the_callers_dict_is_never_changed(self):
+        arch = legacy(architecture(groups=[group(se_activation="relu")]), "relu")
+        snapshot = json.loads(json.dumps(arch))
+        dcm_arch.norm_arch(arch, "8")
+        dcm_arch.site_activations(arch, "8")
+        self.assertEqual(arch, snapshot)
+
+    def test_activation_functions_match_the_swift_enum(self):
+        source = open(os.path.join(REPO, "DrewsChessMachine", "DrewsChessMachine", "Network",
+                                   "NetworkArchitecture.swift"), encoding="utf-8").read()
+        body = re.search(r"enum ActivationFunction\b[^{]*\{(.*?)\n\}", source, re.S).group(1)
+        raw_values = []
+        for name, raw in re.findall(r"^\s*case (\w+)(?: = \"([^\"]+)\")?\s*$", body, re.M):
+            raw_values.append(raw or name)
+        self.assertEqual(raw_values[-1], dcm_arch.DOES_NOT_APPLY)
+        self.assertEqual(tuple(raw_values[:-1]), dcm_arch.ACTIVATION_FUNCTIONS)
 
 
 class RequireReluTests(unittest.TestCase):

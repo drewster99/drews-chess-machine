@@ -366,7 +366,7 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         for version in [9, nil] as [Int?] {
             XCTAssertThrowsError(try decode(object, version: version, source: "bumped.json")) { error in
                 XCTAssertEqual(error as? ArchitectureFormat.FormatError,
-                               .retiredField(field: "activation_function", location: "the top level",
+                               .retiredField(field: "activation_function", retiredInVersion: 9, location: "the top level",
                                              formatVersion: version ?? ArchitectureFormat.currentVersion,
                                              source: version == nil ? "architecture JSON" : "bumped.json",
                                              replacedBy: Self.siteKeys))
@@ -466,8 +466,9 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         let directory = try temporaryDirectory()
         for (index, entry) in try mismatchCases().enumerated() {
             let description = entry.mismatch.description
-            XCTAssertTrue(description.hasPrefix("\(entry.mismatch.site.jsonKey) is '\(entry.mismatch.value.rawValue)', but "),
-                          description)
+            let site = entry.mismatch.site
+            XCTAssertTrue(description.hasPrefix(
+                "\(site.displayName) (\(site.jsonKey)) is '\(entry.mismatch.value.rawValue)', but "), description)
 
             let model = try encodedModel(entry.base)
             let file = try rewriting(model, version: "9", architecture: entry.object)
@@ -598,7 +599,7 @@ final class ArchitectureActivationSiteTests: XCTestCase {
     /// `does_not_apply` (logged), a value that disagreed is refused (the app
     /// refused it then too), and a file older than v5 that omits it resolves
     /// it to `does_not_apply` as well.
-    func testPreV9SELessGroupResolvesItsSEActivationToDoesNotApply() throws {
+    func testAnOlderFilesSELessGroupResolvesItsSEActivationToDoesNotApply() throws {
         let arch = Self.tiny(seStyle: .none)
         var object = try object(arch)
         var groups = try XCTUnwrap(object["block_groups"] as? [[String: Any]])

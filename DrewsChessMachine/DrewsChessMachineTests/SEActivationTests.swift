@@ -305,7 +305,7 @@ final class SEActivationTests: XCTestCase {
 
     // MARK: - Validation and summary
 
-    func testSELessGroupMustMatchItsActivation() throws {
+    func testSELessGroupSEActivationIsDoesNotApplyAndAnSEGroupNamesAFunction() throws {
         // OD-13: an SE-less group has no FC1, so its se_activation is
         // does_not_apply — switching SE off sets it — and nothing else.
         var arch = Self.twoGroupArchitecture(group0SE: .relu, group1SE: .relu)

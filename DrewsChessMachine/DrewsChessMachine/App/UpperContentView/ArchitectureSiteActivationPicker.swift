@@ -96,14 +96,18 @@ struct ArchitectureSiteActivationPicker: View {
         let presentation = Self.presentation(
             activation: activation, siteExists: siteExists,
             siteDescription: siteDescription, absentReason: absentReason)
-        Picker(selection: $activation) {
-            ForEach(presentation.entries, id: \.value) { entry in
-                Text(entry.title).tag(entry.value)
+        Picker(
+            selection: $activation,
+            content: {
+                ForEach(presentation.entries, id: \.value) { entry in
+                    Text(entry.title).tag(entry.value)
+                }
+            },
+            label: {
+                Text(title)
+                    .foregroundStyle(presentation.needsChoice ? Color.orange : Color.primary)
             }
-        } label: {
-            Text(title)
-                .foregroundStyle(presentation.needsChoice ? Color.orange : Color.primary)
-        }
+        )
         .disabled(!presentation.isEnabled)
         .help(presentation.help)
     }

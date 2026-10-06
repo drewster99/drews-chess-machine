@@ -902,7 +902,7 @@ struct SetSEActivationDeriveOperation: DeriveOperation {
                     operation: kindName,
                     detail: "--group \(index) is out of range (the model has \(architecture.blockGroups.count) block groups, 0-based)")
             }
-            for index in groupIndices where architecture.blockGroups[index].seStyle == .none {
+            for index in groupIndices where !architecture.blockGroups[index].hasSEFC1 {
                 throw ModelDerivation.DeriveError.operationNotApplicable(
                     operation: kindName,
                     detail: "block group \(index) has se_style '\(SEStyle.none.rawValue)'; se_activation applies only "
@@ -910,7 +910,7 @@ struct SetSEActivationDeriveOperation: DeriveOperation {
             }
             return groupIndices
         }
-        let all = architecture.blockGroups.indices.filter { architecture.blockGroups[$0].seStyle != .none }
+        let all = architecture.blockGroups.indices.filter { architecture.blockGroups[$0].hasSEFC1 }
         guard !all.isEmpty else {
             throw ModelDerivation.DeriveError.operationNotApplicable(
                 operation: kindName, detail: "the model has no block group with an SE block")

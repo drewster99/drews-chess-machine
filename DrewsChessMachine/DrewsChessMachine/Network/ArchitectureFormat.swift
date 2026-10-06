@@ -36,7 +36,8 @@
 //    resolve it to `glorot`.
 //  - v5: block groups must state `se_activation` (issue #2). Older files
 //    resolve it to the group's own `activation_function`, which is the
-//    activation the SE FC1 used before the field existed.
+//    activation the SE FC1 used before the field existed (on a group without
+//    an SE block, `does_not_apply` — see v10).
 //  - v6: block groups must state `rezero_alpha_cap`, the asymptote of the
 //    forward ReZero soft bound `C·tanh(α/C)`. Older files resolve it to
 //    `rezero_alpha_init × NetworkArchitecture.rezeroTanhCeilingMultiple`,
@@ -82,7 +83,9 @@ enum ArchitectureFormat {
 
     /// First version whose block groups must carry `se_activation`
     /// (`BlockGroup.seActivation`, GitHub issue #2). Files older than this
-    /// resolve a missing field to the group's own `activation_function` —
+    /// resolve a missing field on a group with an SE block to the group's own
+    /// `activation_function` (on an SE-less group, to `does_not_apply`; see
+    /// `seLessSEActivationDoesNotApplyFromVersion`) —
     /// before the field existed the SE FC1 always used the group's
     /// activation, so that resolution rebuilds exactly the graph the file
     /// was trained with (ReLU for every model saved before SiLU/GELU/leaky
@@ -163,7 +166,7 @@ enum ArchitectureFormat {
         case unparseableVersion(value: String, source: String)
         /// A field a later version replaced, stated in a file of that version
         /// or newer (where it would otherwise be silently ignored).
-        case retiredField(field: String, location: String, formatVersion: Int, source: String, replacedBy: [String])
+        case retiredField(field: String, retiredInVersion: Int, location: String, formatVersion: Int, source: String, replacedBy: [String])
         /// An architecture-level site activation disagrees with whether the
         /// topology has the site (`NetworkArchitecture.activationSiteMismatch`).
         case activationSiteMismatch(ActivationSiteMismatch, location: String, formatVersion: Int, source: String)
@@ -188,9 +191,9 @@ enum ArchitectureFormat {
                 return "\(source): format v\(version) is newer than this build supports (newest: v\(newest))"
             case .unparseableVersion(let value, let source):
                 return "\(source): format version '\(value)' is not a positive integer"
-            case .retiredField(let field, let location, let version, let source, let replacedBy):
+            case .retiredField(let field, let retiredInVersion, let location, let version, let source, let replacedBy):
                 return "\(source): architecture field '\(field)' at \(location) was retired in format "
-                    + "v\(ArchitectureFormat.siteActivationsRequiredFromVersion), and a format v\(version) file must "
+                    + "v\(retiredInVersion), and a format v\(version) file must "
                     + "not state it; it is replaced by \(replacedBy.joined(separator: ", "))"
             case .activationSiteMismatch(let mismatch, let location, let version, let source):
                 return "\(source): format v\(version) architecture at \(location): \(mismatch.description)"

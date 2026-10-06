@@ -9,7 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
-## 2026-10-05 22:45 CDT — Per-site activations: SE-less `se_activation` is `does_not_apply` (format v10), presets re-saved (`47e3b976` and the P4 completion commit)
+## 2026-10-06 — Per-site activations: final-recheck fixes
+
+- Build New Model: validation messages name a site by its picker label with the JSON key in parentheses; the site picker no longer uses multiple trailing closures; one source for "this group has an SE FC1" (`SEStyle.hasFC1`).
+- `scripts/dcm_arch.py`: `norm_arch` refuses what the app's decoder refuses (unknown format versions, the OD-13 rule both ways at v10+, the retired top-level `activation_function`, unknown group tokens, a missing `se_style`), treats a JSON null site key as absent, and no longer changes its caller's dicts.
+- Stale comments and docs corrected; `HEAD_ACTIVATIONS_PLAN.md` records decisions ID-9 to ID-12.
+
+## 2026-10-05 22:45 CDT — Per-site activations: SE-less `se_activation` is `does_not_apply` (format v10), presets re-saved (`47e3b976`, `784ef37b`)
 
 - **OD-13** (`47e3b976`): a block group's `se_activation` is `does_not_apply` exactly when the group has no SE block. Switching SE off sets it; switching it on asks for a function (Build New Model shows "choose…" and disables Build/Save). Format **v10**: a v9-or-older file's SE-less value (which had to equal the group's activation and was never applied) resolves to `does_not_apply`, logged; v9 files written by the first per-site build (the B-leaky run's checkpoints) therefore still load. `--set-activation` no longer changes `se_activation`.
 - **P4 completion:** the ten user presets re-saved at v10 after a verified backup (`Backups/Presets-pre-v9-20261005/`); validation V3–V8 passed (old vs new probes identical per position; an old-build trainer file resumes exactly with a matching behavior fingerprint; layer health identical; the leaky-head derive, mint and refusals behave as planned). ROADMAP entry completed. Full suite after P4: 2,391 passed, 0 failed, 1 skipped (env-gated).

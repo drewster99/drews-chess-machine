@@ -109,13 +109,20 @@ struct BuildNewModelView: View {
                         // The `--derive-model --set-activation` rule, from the
                         // same function (`setMainActivationEverywhere`), so an
                         // edit made either way gives the same architecture.
+                        // `applyMainActivationEverywhere` throws only for
+                        // `does_not_apply` (`setMainActivationEverywhere`'s
+                        // one refusal), which this menu never offers: its
+                        // choices are `ActivationFunction.functions`, pinned
+                        // by `testEveryActivationChoiceListIsTheFunctionsList`.
+                        // A throw here is therefore a defect, not a user error.
                         Menu("Use for every activation") {
                             ForEach(BuildNewModelView.mainActivationChoices, id: \.self) { function in
                                 Button(function.rawValue) {
                                     do {
                                         try model.applyMainActivationEverywhere(function)
                                     } catch {
-                                        saveStatus = "Use for every activation: \(error)"
+                                        preconditionFailure("Use for every activation offered '\(function.rawValue)', "
+                                            + "which setMainActivationEverywhere refused: \(error)")
                                     }
                                 }
                             }
@@ -493,8 +500,9 @@ private struct BlockGroupFieldsView: View {
         if draft.group.seStyle == .scaleAndBias {
             enumPicker("SE β init", $draft.group.seBetaInit, SEBetaInit.allCases)
         }
-        // Through the draft, so an SE-less group's SE activation moves with
-        // it (`BlockGroup.setActivationFunction`).
+        // Through the draft, so the edit applies the rule
+        // `--derive-model --set-activation` shares
+        // (`BlockGroup.setActivationFunction`).
         enumPicker("Activation", $draft.activationFunction, BuildNewModelView.groupActivationChoices)
         // The SE FC1's own activation (issue #2), a site that exists only
         // with an SE block (OD-13): always present so the row layout never
@@ -504,7 +512,7 @@ private struct BlockGroupFieldsView: View {
         ArchitectureSiteActivationPicker(
             title: "SE activation",
             activation: $draft.group.seActivation,
-            siteExists: draft.group.seStyle != .none,
+            siteExists: draft.group.hasSEFC1,
             siteDescription: "Activation after the SE bottleneck FC1 (C → C/r), set independently of the group's "
                 + "activation. leaky_relu here keeps FC1 units from dying at almost no cost.",
             absentReason: BlockGroup.seLessReason)

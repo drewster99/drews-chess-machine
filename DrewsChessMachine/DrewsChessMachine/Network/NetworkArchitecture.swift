@@ -331,6 +331,17 @@ enum SEStyle: String, Codable, CaseIterable, Sendable, Hashable {
     case attenuateOnly = "attenuate_only"
     /// FC2 emits `2*channels` (gamma||beta), applied as `sigmoid(gamma)*x + beta`.
     case scaleAndBias = "scale_and_bias"
+
+    /// Whether a block of this style has an SE excitation FC1 — the site
+    /// `BlockGroup.seActivation` names. The single rule every reader of that
+    /// existence uses (decode, `validate()`, the style observer, the Build
+    /// screen, derive); a group's form is `BlockGroup.hasSEFC1`.
+    var hasFC1: Bool {
+        switch self {
+        case .none: return false
+        case .attenuateOnly, .scaleAndBias: return true
+        }
+    }
 }
 
 /// How the β (additive) half of a `scaleAndBias` SE block's FC2 is
@@ -589,11 +600,14 @@ struct ActivationSiteMismatch: Equatable, Sendable, CustomStringConvertible {
     let reason: String
 
     var description: String {
+        // Named by the Build screen's picker label, which is what the user
+        // sees, with the JSON key a file states in parentheses.
+        let subject = "\(site.displayName) (\(site.jsonKey))"
         if siteExists {
-            return "\(site.jsonKey) is '\(value.rawValue)', but \(reason): "
+            return "\(subject) is '\(value.rawValue)', but \(reason): "
                 + "choose one of \(ActivationFunction.functionList)"
         }
-        return "\(site.jsonKey) is '\(value.rawValue)', but \(reason): "
+        return "\(subject) is '\(value.rawValue)', but \(reason): "
             + "it must be '\(ActivationFunction.doesNotApply.rawValue)'"
     }
 }
@@ -684,11 +698,15 @@ struct BlockGroup: Codable, Hashable, Sendable {
     /// not run this observer.)
     var seStyle: SEStyle {
         didSet {
-            if seStyle == .none {
+            if !seStyle.hasFC1 {
                 seActivation = .doesNotApply
             }
         }
     }
+
+    /// Whether the group has an SE excitation FC1 (`SEStyle.hasFC1`), so
+    /// whether `seActivation` names a function or is `does_not_apply`.
+    var hasSEFC1: Bool { seStyle.hasFC1 }
     var seReductionRatio: Int            // consumed only when seStyle != none
     var useRezero: Bool
     /// The value every block's trainable ReZero scalar α starts at. Consumed
@@ -981,7 +999,7 @@ struct BlockGroup: Codable, Hashable, Sendable {
             dropoutMultiplier: dropoutMultiplier,
             outputNorm: outputNorm,
             seBetaInit: seBetaInit,
-            seActivation: seStyle == .none ? .doesNotApply : activationFunction)
+            seActivation: seStyle.hasFC1 ? activationFunction : .doesNotApply)
     }
 
     /// Decodes under the format attached to the decoder (strict current
@@ -994,7 +1012,9 @@ struct BlockGroup: Codable, Hashable, Sendable {
     /// is required from `ArchitectureFormat.seBetaInitRequiredFromVersion`
     /// (older files resolve it to `.glorot`), `se_activation` from
     /// `ArchitectureFormat.seActivationRequiredFromVersion` (older files
-    /// resolve it to this group's `activation_function`), and
+    /// resolve it to this group's `activation_function`, or to
+    /// `does_not_apply` on a group without an SE block; a stated value is
+    /// checked against the SE style, `decodedSEActivation`), and
     /// `rezero_alpha_cap` from `ArchitectureFormat.rezeroAlphaCapRequiredFromVersion`
     /// (older files resolve it to `legacyRezeroAlphaCap` of this group's
     /// `rezero_alpha_init`), and the init-neutral options (`se_gamma_bias_init`,
@@ -1042,7 +1062,7 @@ struct BlockGroup: Codable, Hashable, Sendable {
                 stated: stated, seStyle: seStyle, activationFunction: activationFunction,
                 decoder: decoder, format: format)
         } else if format.allowsMissingSEActivation {
-            if seStyle == .none {
+            if !seStyle.hasFC1 {
                 seActivation = .doesNotApply
                 format.legacyLog.record(
                     "\(ArchitectureFormat.location(of: decoder)).\(CodingKeys.seActivation.rawValue) := "
@@ -1095,7 +1115,7 @@ struct BlockGroup: Codable, Hashable, Sendable {
     /// The second half of every `se_activation` mismatch message: why the
     /// value is wrong for a group of `seStyle`, and what it must be.
     static func seActivationRule(seStyle: SEStyle) -> String {
-        if seStyle == .none {
+        if !seStyle.hasFC1 {
             return "\(seLessReason) (se_style '\(SEStyle.none.rawValue)'): it must be "
                 + "'\(ActivationFunction.doesNotApply.rawValue)'"
         }
@@ -1116,7 +1136,7 @@ struct BlockGroup: Codable, Hashable, Sendable {
         decoder: Decoder,
         format: ArchitectureFormat.DecodeFormat
     ) throws -> ActivationFunction {
-        let hasSE = seStyle != .none
+        let hasSE = seStyle.hasFC1
         if (stated != .doesNotApply) == hasSE {
             return stated
         }
@@ -1303,7 +1323,7 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
                 + "'\(seStyle.rawValue)'; only '\(SEStyle.scaleAndBias.rawValue)' has a β half, so every "
                 + "other SE style requires se_beta_init '\(SEBetaInit.glorot.rawValue)'"
         case .seActivationMismatch(let group, let seStyle, let seActivation):
-            return "blockGroups[\(group)].seActivation is '\(seActivation.rawValue)', but "
+            return "Group \(group + 1) SE activation (blockGroups[\(group)].seActivation) is '\(seActivation.rawValue)', but "
                 + BlockGroup.seActivationRule(seStyle: seStyle)
         case .kernelMustBeOdd(let field, let value):
             return "\(field) must be odd for symmetric same-padding (got \(value))"
@@ -1514,7 +1534,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 // activation (an SE-less tower has no FC1). A tower with a
                 // different SE FC1 activation sets `seActivation` on the
                 // returned value's groups.
-                seActivation: blockSeStyle == .none ? .doesNotApply : activationFunction,
+                seActivation: blockSeStyle.hasFC1 ? activationFunction : .doesNotApply,
                 // Every historical tower predates the init-neutral options,
                 // so it states their standard values; a tower with a
                 // non-standard one sets it on the returned value.
@@ -1651,6 +1671,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         if !isUniformTowerForm, !format.allowsMissingSiteActivations, c.contains(.legacyActivationFunction) {
             throw ArchitectureFormat.FormatError.retiredField(
                 field: CodingKeys.legacyActivationFunction.rawValue,
+                retiredInVersion: ArchitectureFormat.siteActivationsRequiredFromVersion,
                 location: ArchitectureFormat.location(of: decoder),
                 formatVersion: format.formatVersion,
                 source: format.source,
@@ -1754,7 +1775,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
                 skipMerge: try c.decode(BlockSkipMerge.self, forKey: .legacyBlockSkipMerge),
                 dropoutMultiplier: 1,
                 seBetaInit: .glorot,
-                seActivation: legacySEStyle == .none ? .doesNotApply : towerActivation,
+                seActivation: legacySEStyle.hasFC1 ? towerActivation : .doesNotApply,
                 seGammaBiasInit: BlockGroup.standardSEGammaBiasInit,
                 branchOutputInit: .standard,
                 skipProjectionInit: .he
@@ -2064,7 +2085,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             // graph, so two architectures that build the identical network
             // compare (and hash) equal, and an SE group always names its
             // FC1's function.
-            if (g.seActivation != .doesNotApply) != (g.seStyle != .none) {
+            if (g.seActivation != .doesNotApply) != g.hasSEFC1 {
                 throw NetworkArchitectureError.seActivationMismatch(
                     group: gi, seStyle: g.seStyle, seActivation: g.seActivation)
             }
@@ -2427,7 +2448,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     /// summary is byte-identical to the pre-field form. Shared by
     /// `groupSummary` and the Build screen's diagram so the two never drift.
     static func seActivationMarker(_ g: BlockGroup) -> String {
-        guard g.seStyle != .none, g.seActivation != g.activationFunction else { return "" }
+        guard g.hasSEFC1, g.seActivation != g.activationFunction else { return "" }
         return " (fc1 \(g.seActivation.rawValue))"
     }
 

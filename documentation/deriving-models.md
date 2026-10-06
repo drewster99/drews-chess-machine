@@ -84,7 +84,8 @@ pre-block, value conv, value FC1 hidden layer) and each block group's main path 
 `activation_gated` merge. A site the topology lacks (the stem of a pre-activation tower,
 the tower end of a post-activation one, the policy pre-block of `simple_conv`, the fusion
 node without compress fusion) holds `does_not_apply` and keeps it. `does_not_apply` is
-not an activation function, so it is refused as a value. It doesn't accept `--group`. It never changes `se_activation`: a group with an SE block keeps its FC1's activation,
+not an activation function, so it is refused as a value. It doesn't accept `--group`.
+It never changes `se_activation`: a group with an SE block keeps its FC1's activation,
 and an SE-less group has no FC1, so its `se_activation` is `does_not_apply` and stays so.
 
 `--set-se-activation` sets `se_activation`, the activation after the SE excitation FC1

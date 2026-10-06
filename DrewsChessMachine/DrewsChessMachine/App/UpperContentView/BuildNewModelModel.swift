@@ -150,8 +150,8 @@ final class BuildNewModelModel {
         self.featureSkipToPolicyHead = a.featureSkipToPolicyHead
         self.featureSkipToValueHead = a.featureSkipToValueHead
         self.featureSkipToFinalBlock = a.featureSkipToFinalBlock
-        self.blockGroupDrafts = a.blockGroups.map { makeDraft($0) }
         self.availablePresets = ArchitecturePresetStore.allPresets()
+        self.blockGroupDrafts = a.blockGroups.map { makeDraft($0) }
     }
 
     /// A draft of `group` wired to this model's site sync. The model is the
