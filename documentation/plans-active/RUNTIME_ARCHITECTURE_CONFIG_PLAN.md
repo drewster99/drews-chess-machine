@@ -924,3 +924,86 @@ listed in the status block at the top.
   `--set-rezero-alpha-cap <v>` sets only the field. Both accept `--group` and refuse groups
   without ReZero. See `documentation/rezero-alpha-clamp.md` ("Explicit cap and the zero
   init").
+
+## 20. Architecture format v9: per-site activations (implemented 2026-10-05)
+
+Full plan, owner decisions and validation record: `documentation/plans-active/HEAD_ACTIVATIONS_PLAN.md`.
+
+- **Six architecture-level site fields replace the top-level `activation_function`**, which
+  drove every hidden activation outside the block groups at once:
+  `stem_activation` (`stem_act`, a post-activation first group), `tower_end_activation`
+  (`tower_final_act`, a pre-activation last group), `feature_skip_activation`
+  (`feature_skip_act`, a compress fusion node routed to a head), `policy_head_activation`
+  (`policy_pre_act`, `intermediate_conv` / `fc_bottleneck`), `value_head_conv_activation`
+  (`value_act`, always) and `value_head_fc1_hidden_activation` (`value_fc1_act`, always).
+  Swift: `NetworkArchitecture.stemActivation` … `valueHeadFC1HiddenActivation`, enumerated by
+  `ArchitectureActivationSite`. Graph op names are unchanged. No tensor changes, so the
+  parameter count, tensor plan and fresh trainables are unchanged.
+- **`does_not_apply`** (`ActivationFunction.doesNotApply`): a site field holds it exactly
+  when the topology lacks the site, and only then. It is not a function and never means
+  identity; the graph builder and layer health treat reaching it as a defect. The rule is
+  `NetworkArchitecture.activationSiteMismatch`, checked on every decode, in `validate()`
+  (after the init-option and feature-skip checks) and by every setter
+  (`setActivation(_:at:)`, `setActivationAtEveryExistingSite`,
+  `setMainActivationEverywhere`). A block group's `activation_function` / `se_activation`
+  never accepts it. `ActivationFunction` keeps `CaseIterable`; every choice list uses
+  `ActivationFunction.functions` (`allCases` without the marker).
+- **Format version 9** (`ArchitectureFormat.siteActivationsRequiredFromVersion`):
+  - A stated site key is used at any version.
+  - A file older than v9, or in the legacy uniform-tower form, resolves each unstated site
+    to its own top-level `activation_function` where the topology has the site (what every
+    one of those sites used before the split) and to `does_not_apply` where it does not,
+    logged once per load, e.g. `[ARCH] legacy file (format v8) <file>: stem_activation :=
+    does_not_apply (the first block group is pre-activation, so the stem has no
+    activation); tower_end_activation := relu (the file's activation_function); …`. One
+    with neither the site keys nor `activation_function` fails with
+    `legacyActivationFunctionMissing`.
+  - A v9+ block-groups file missing a site key fails with `missingRequiredField`; one that
+    still states `activation_function` fails with `retiredField`. Encoding writes all six
+    keys, `does_not_apply` included, and never `activation_function`.
+- **Identity:** every existing file and every code preset decodes to the value it had (the
+  uniform convenience init sets each existing site to its activation and the rest to
+  `does_not_apply`), building the identical forward pass. The summary keeps ` . act X` when
+  every existing site has one activation, and otherwise lists the existing sites
+  (` . act tower_end relu, policy leaky_relu, …`).
+- **Layer health** tags each BN site and the value FC1 layer with its own site's field.
+- **`--derive-model`:** `--set-activation` sets every existing site and every group's main
+  path; six per-site setters (`--set-stem-activation`, …, `--set-value-head-fc1-hidden-activation`)
+  set one site each, run after `--set-activation`, and refuse a site the topology lacks.
+  All refuse `does_not_apply`.
+- **Build New Model:** one picker per site, always present, disabled where the site does
+  not exist; a site that appears holds `does_not_apply` and must be chosen ("choose…")
+  before Build or Save; a "Use for every activation" menu applies the `--set-activation`
+  rule. The diagram shows each existing site's activation.
+- **Python:** `scripts/dcm_arch.py` mirrors the rules (`site_activations`,
+  `site_activations_md`, `site_exists`, `require_relu`); the reusable forward-pass readers
+  (`experiments/20261004-head-logits-relu-inputs/relu_inputs.py` and its caller
+  `value_stage.py`, `documentation/research/fp16-feasibility/scripts/fwd16.py` and its six
+  callers, `experiments/20261001-se-fc1-leaky/full-model-analysis/scripts/units.py`) take
+  the resolved sites and refuse any site they do not model as ReLU.
+
+### Frozen Python scripts
+
+These scripts are records of one analysis each. They model ReLU at every site they touch
+and are valid only for the checkpoints their own folders name.
+
+Three would have modelled ReLU silently on a non-ReLU file; each now refuses one through a
+one-line `dcm_arch.require_relu` guard naming the sites it models:
+
+| Script | Models as ReLU | Guard |
+|---|---|---|
+| `documentation/research/bf16-head-offset/scripts/fwd.py` | block main path, tower end, value conv, value FC1 (inside `forward`) | `forward` takes a required keyword-only `md` and checks those sites and the main path first (`load` stays unguarded: `recenter.py`, `posset.py` and `posset_ejp0.py` use only `load` / the encoder) |
+| `experiments/20261003-fatty-vs-skinny/tensor-health/fatty_tensors.py` | the BN sites `blocks.0.bn1/bn2`, `tower_final_bn`, `policy.pre_bn`, `value.bn` as ReLU-fed | in `load`: tower end, policy pre-block, value conv and the main path |
+| `experiments/20261001-se-fc1-leaky/full-model-analysis/scripts/input_features.py` | value-conv features as `ReLU(value.bn)` | after each `Checkpoint`: value conv only |
+
+The rest are left unedited: on a v9 file they either fail loudly or model no activation.
+
+| Script | On a v9 model |
+|---|---|
+| `documentation/research/bf16-head-offset/scripts/fwd3.py`, `fwd4.py` and `net681.py` (calls `fwd4.forward`) | `KeyError` on the top-level `activation_function`, loud |
+| the other `bf16-head-offset/scripts/*` that run a forward from `fwd3` / `fwd4`: `analyze.py`, `trajce.py`, `validate2.py`, `variants.py`, `calib.py`, `calib_scan.py`, `gradcheck.py`, `heads681.py`, `sfcompare.py`, `trend_fwd.py` | `KeyError`, loud |
+| `documentation/research/policy-head-2026-10-01/scripts/analyze_policy_head.py` | `KeyError`, loud |
+| `experiments/20260929-se-style-ab/final_data.py`; the other `policy-head-2026-10-01/scripts/*`; `bf16-head-offset/scripts/traj2.py`; `bf16-head-offset/scripts/lines_list.py` | model no activation of a loaded file |
+
+`experiments/arch_flops.py` costs every activation as one op per element and reads no
+activation field, so it is unchanged.

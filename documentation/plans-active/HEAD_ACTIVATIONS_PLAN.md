@@ -3,8 +3,8 @@
 Status (2026-10-05): **IMPLEMENTING.** Phase status:
 - [x] **P1** — format v9, `does_not_apply`, graph, layer health, `--set-activation`, Build screen pickers, Python (`4e70c615`).
 - [x] **P2** — per-site derive setters (`fa0ab1e8`).
-- [x] **P3** — "Use for every activation" and the diagram (commit recorded in **Implementation notes**).
-- [ ] **P4** — documentation, presets, ROADMAP completion.
+- [x] **P3** — "Use for every activation" and the diagram (`5abff2d5`).
+- [ ] **P4** — documentation **done** (§20, CLAUDE.md, CHANGELOG); **waiting for an idle machine:** the user-preset re-save (OD-10), V3b–V6 and the rest of V8, then the ROADMAP entry marked complete. A training run (arm B-leaky of `experiments/20261005-lr-schedule-ab`, started 20:41) is live, and Part V runs only with none live.
 
 The original planning status, kept for the record: **PLAN ONLY.** Nothing here was implemented when the review passes below ran.
 - Independent review (2026-10-05): **concurred after three passes** on the first design. First pass: the architecture direction was approved. Six must-fix items and nine clarifications were raised, and each is listed with what was done about it in **Review reconciliation** at the end.
@@ -885,11 +885,16 @@ Recorded as each phase lands; every deviation from the text above is listed with
 - Built once (`build_failed: false`); full suite: 2,387 passed, 0 failed, 1 skipped (the env-gated legacy-load test).
 - `deriving-models.md`: the six rows, the order note, two examples, the trained-source and refusal lines.
 
-**P3** (commit: see `git log`; recorded here by the next phase's commit):
+**P3** (`5abff2d5`):
 - The Tower section's `Menu("Use for every activation")` lists `BuildNewModelView.mainActivationChoices` (= `functions`, added to the OD-14 test) and calls `applyMainActivationEverywhere`; a thrown error goes to the screen's status line. The diagram shows the policy pre-block, value conv and value FC1 hidden activations, and the fusion node's activation in the feature-skip marker where the node is built.
 - New test `testUseForEveryActivationMatchesDeriveSetActivation` (a post → pre tower with an SE-less and an SE group, every function but ReLU, plus the `does_not_apply` refusal leaving the model unchanged).
 - Built once (`build_failed: false`); full suite: 2,388 passed, 0 failed, 1 skipped (env-gated).
 - **Screen check (V7), on the running Release build with no training live and no auto-resume pointer:** all six site pickers are drawn (the fusion picker with the feature-skip source at `none`, disabled, "does not apply"); the stem picker is disabled with "does not apply" on the default pre-activation tower; switching group 1 to `post` turns the stem picker orange with "choose…", disables the tower-end picker, shows the `stem_activation` message in the readout and the diagram pane, and disables Build and Save as Preset; choosing `relu` clears the message; switching to `pre` and back to `post` shows "choose…" again (the choice is not restored); "Use for every activation ▸ leaky_relu" gives the summary ` . act leaky_relu` (the SE group keeps `fc1 relu`); then setting the policy pre-block to `relu` gives the listed-sites clause ` . act stem leaky_relu, policy relu, value_conv leaky_relu, value_fc1_hidden leaky_relu`, and the diagram shows each site's activation. Save as Preset was not exercised on screen (it would add a file to the user's Presets folder); the preset round trip of all six fields is covered by `testRoundTripPreservesEachSiteIndependently`, and P4's preset re-save writes through that same path.
+
+**P4, documentation part** (commit: see `git log`):
+- `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md` §20 (with the frozen-scripts tables), `CLAUDE.md` (OD-7 text), `CHANGELOG.md`.
+- **V3, run before the live training run was noticed** (OLD = `FrozenBuilds/DCM-2324-20f64f68.app`, NEW = the post-P3 Release build, copied to the scratch folder): `--probe-model --probe-set 200` on all six evidence files. Every per-position record (`--probe-positions-out`) is identical between OLD and NEW, values compared as exact float text. Three summary aggregates differ in the last digit (`avgProb` on r7b24, `nll` on the v5 fc1leaky and T97X files); repeated runs of OLD alone and of NEW alone flip between the same two values, so this is the summary's existing summation-order nondeterminism, not a change in the forward pass. NEW's `[ARCH] legacy file …` lines list the six resolutions exactly as V3 expects (stem and fusion `does_not_apply` on the pre-act files; tower end, policy and fusion on the v3 post-act `simple_conv` file; stem, policy and fusion on the v3 pre-act `simple_conv` file; `gelu` for T97X and `leaky_relu` for the v4 leaky file at every existing site).
+- **V8, guard checks on the checkpoints each frozen script ran on** (header reads only): `fwd.py`'s guard passes on `20260702-Qeu8-resume3-replay-step681000`; `fatty_tensors.py`'s on both fatty step-33000 files; `input_features.py`'s on all 43 files `fma_lib.discover("leaky")` and `discover("relu_s2")` return. The leaky-heads refusals wait for V5's file.
 
 # Owner decisions
 
