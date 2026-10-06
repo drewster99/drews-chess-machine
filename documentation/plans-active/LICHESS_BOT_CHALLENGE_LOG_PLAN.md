@@ -728,7 +728,7 @@ If implementation finds an edit is needed after all, it stops and lists it for t
    
    If games are played before P4 lands, rerun Appendix B (games) and Appendix B.2 (row states) on the then-current files and compare with those.
 4. **Idempotence.** Close and reopen the window: the log says `unchanged`, and the file's SHA-256 and modification time are unchanged. Remove nothing; protocol files only grow.
-5. **Read-only proof.** Before and after P4, `shasum` every file under `Games/`, plus `index.json` (except at P3, where its schema bump rebuilds it) and `challenge-outcomes.json`: identical. For `Protocol/`, which the app itself may append to while the window is open, each pre-existing file's first *old-size* bytes hash the same (only appended, never rewritten).
+5. **Read-only proof.** Before and after P4, `shasum` every file under `Games/`, plus `index.json` and `challenge-outcomes.json`: identical. The exception is P3, where the schema bump rebuilds `index.json` once. After P3, its `schemaVersion` is the version after the bump (one more than the stored file had before P3; no literal number, §7), each row has an `origin` key or none, and a second launch does not rebuild it. For `Protocol/`, which the app itself may append to while the window is open, each pre-existing file's first *old-size* bytes hash the same (only appended, never rewritten).
 6. **Live (P2–P3), on lichess.org.** Go online and send:
    - one challenge from the sheet;
    - one queued challenge;
