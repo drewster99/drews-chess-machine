@@ -308,7 +308,26 @@ window.DCM_EXPERIMENTS = [
   "takeaway": "On R7's shape a 1.0 ↔ 0.001 LR cycle (10k period) beats a constant 0.01 at almost every probe (best 1632.0 vs 1453.8 by 40k) and beats R7/R8's 0.1 ↔ 0.001 cycle at matched steps, while a 10 ↔ 0.01 cycle destroys the net within 300 steps; read a cycled run at its troughs, not mid-cycle.",
   "related": [
    "E-0008",
-   "E-0012"
+   "E-0012",
+   "E-0018"
+  ],
+  "supersededBy": null
+ },
+ {
+  "id": "E-0018",
+  "date": "2026-10-05",
+  "file": "E-0018_2026-10-05_leaky-relu-at-lr-10.html",
+  "title": "Leaky ReLU everywhere under the 10 ↔ 0.01 LR cycle (arm C-leaky)",
+  "status": "complete",
+  "tags": [
+   "lr-schedule",
+   "activations",
+   "leaky-relu",
+   "basic24"
+  ],
+  "takeaway": "Leaky ReLU at every activation does not make a 10-peak LR cycle survivable on R7's shape: the net trained like C to LR 2, then ran away at LR 3 instead of freezing (loss to 4.5M, finite weights); keep the cycle peak at or below 1 on this net.",
+  "related": [
+   "E-0017"
   ],
   "supersededBy": null
  }

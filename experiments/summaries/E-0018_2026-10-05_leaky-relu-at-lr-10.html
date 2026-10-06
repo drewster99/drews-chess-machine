@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0018">
+<meta name="dcm-date" content="2026-10-05">
+<meta name="dcm-title" content="Leaky ReLU everywhere under the 10 ↔ 0.01 LR cycle (arm C-leaky)">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="lr-schedule, activations, leaky-relu, basic24">
+<meta name="dcm-takeaway" content="Leaky ReLU at every activation does not make a 10-peak LR cycle survivable on R7&#x27;s shape: the net trained like C to LR 2, then ran away at LR 3 instead of freezing (loss to 4.5M, finite weights); keep the cycle peak at or below 1 on this net.">
+<meta name="dcm-related" content="E-0017">
+<meta name="dcm-superseded-by" content="">
+<title>E-0018 · Leaky ReLU everywhere under the 10 ↔ 0.01 LR cycle (arm C-leaky)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0018</span><span>2026-10-05</span><span class="status complete">complete</span></div>
+<h1>Leaky ReLU everywhere under the 10 ↔ 0.01 LR cycle (arm C-leaky)</h1>
+<div class="tags"><span class="tag">lr-schedule</span><span class="tag">activations</span><span class="tag">leaky-relu</span><span class="tag">basic24</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>Arm C (LR cycle 10 ↔ 0.01) destroyed the net at LR ≈ 3: the policy put 99.7% of its mass on illegal moves and 339 of 1,040 BN-fed channels went dead, frozen at pElo ≈ 585 (E-0017). With per-site activations available, does leaky ReLU everywhere — which keeps a gradient through every channel — let the same schedule survive?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Net</dt><dd>R7's shape, basic24 input, 3 × [7×7 + 7×7] @128 pre-activation, no SE; leaky ReLU (slope 0.01) at the block group, tower end, policy head, value conv and value FC1 (<code>r7_basic24_leakyall.json</code>, format v9). Start net <code>20261006-40-7URa</code>: every trainable tensor byte-identical to C's start <code>20261005-22-yRzB</code>; only the BN running statistics differ (~1%, mint-time calibration through the leaky activations).</dd><dt>Recipe</dt><dd>C's: <code>parameters-C.json</code> (cycle 10 ↔ 0.01, 10k period, momentum following inversely), <code>--seed 20261005</code> (C's batches), corpus <code>20260624-192615-w3aA5b</code>, batch 4,096, fp32 policy tail.</dd><dt>Build / run</dt><dd>Frozen <code>DCM-2331-4e70c615-p1headact.app</code> (binary build 2330, sha256 <code>1ae960792717</code>; per-site activations phase 1). Started 2026-10-05 23:13, log <code>dcm_log_20261005-231335.txt</code>; stopped by the owner at step 1,175 (23:43).</dd><dt>Compared with</dt><dd>Arm C (ReLU everywhere), same schedule, seed and trainable start weights.</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>C (ReLU) vs C-leaky at matched steps. Dead = BN-fed channels with β/|γ| < −3 of 1,040 (C's value is the nearest logged one; C was stopped at step 513).</caption><thead><tr><th>step</th><th class="n">LR</th><th class="n">loss C</th><th class="n">loss C-leaky</th><th class="n">illegal mass C</th><th class="n">illegal mass C-leaky</th><th class="n">gNorm C</th><th class="n">gNorm C-leaky</th><th class="n">dead C</th><th class="n">dead C-leaky</th></tr></thead><tbody><tr><td>100</td><td class="n">1</td><td class="n">5.74</td><td class="n">5.67</td><td class="n">0.318</td><td class="n">0.406</td><td class="n">1.50</td><td class="n">0.92</td><td class="n">14</td><td class="n">13</td></tr><tr><td>200</td><td class="n">2</td><td class="n">5.14</td><td class="n">5.15</td><td class="n">0.289</td><td class="n">0.336</td><td class="n">0.62</td><td class="n">0.42</td><td class="n">25</td><td class="n">17</td></tr><tr><td>300</td><td class="n">3</td><td class="n">36.4</td><td class="n">9.00</td><td class="n">0.997</td><td class="n">0.675</td><td class="n">14.3</td><td class="n">2.60</td><td class="n"></td><td class="n">26</td></tr><tr><td>400</td><td class="n">4</td><td class="n">8.64</td><td class="n">33,011</td><td class="n">0.948</td><td class="n">0.827</td><td class="n">0.018</td><td class="n">2,485</td><td class="n"></td><td class="n">367</td></tr><tr><td>500</td><td class="n">5</td><td class="n">8.61</td><td class="n">76,059</td><td class="n">0.945</td><td class="n">0.958</td><td class="n">0.057</td><td class="n">15,990</td><td class="n"></td><td class="n">417</td></tr><tr><td>600</td><td class="n">6</td><td class="n"></td><td class="n">414,420</td><td class="n"></td><td class="n">0.969</td><td class="n"></td><td class="n">46,526</td><td class="n"></td><td class="n">457</td></tr><tr><td>1,000</td><td class="n">10</td><td class="n"></td><td class="n">2,243,050</td><td class="n"></td><td class="n">0.951</td><td class="n"></td><td class="n">21,315</td><td class="n"></td><td class="n">527</td></tr></tbody></table></div><p>C-leaky's breakdown went through the value head first: value loss 0.93 at step 300, 6,622 at 350, 32,846 at 400, while policy loss was 7.4, 181, 163. Probes: pElo 497.2 / NLL 4.2782 at step 1,000 and 365.2 / 9.3194 at the step-1,175 abort save (B at step 1,000: 1018.2 / 2.8753). No weight ever went non-finite (0 non-finite values in 102 tensors at steps 1,000 and 1,175), so the trainer's non-finite halt never fired. At the abort save 543 BN-fed channels were past β/|γ| = −3, 177 between −3 and −2, 14 always on; the worst site was the policy pre-BN (93 of 128).</p>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>Up to LR 2 the two arms are indistinguishable (loss 5.15 vs 5.14), so leaky ReLU neither helped nor hurt there. At LR 3 both broke. C went quiet: its value channels died, the policy put 99.7% of its probability on illegal moves, and gradients vanished (gNorm 0.02). C-leaky stayed live: with gradient flowing through every channel, the value logits and the loss grew without bound (gNorm up to 393,032) while the weights stayed finite. So the failure at LR ≥ 3 is the step size, not the activation; leaky ReLU only changes its form. One seed; the usable peak lies between 1 (B, healthy) and 3.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">Leaky ReLU at every activation does not make a 10-peak LR cycle survivable on R7&#x27;s shape: the net trained like C to LR 2, then ran away at LR 3 instead of freezing (loss to 4.5M, finite weights); keep the cycle peak at or below 1 on this net.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261005-lr-schedule-ab/README.md">experiments/20261005-lr-schedule-ab/</a> — "Arm C-leaky": architecture, launch command, results, stop</li><li><a href="../20261005-lr-schedule-ab/probes-Cleaky.jsonl">experiments/20261005-lr-schedule-ab/probes-Cleaky.jsonl</a> — probes</li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>
