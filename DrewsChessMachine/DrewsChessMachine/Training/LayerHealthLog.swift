@@ -23,15 +23,39 @@ enum LayerHealthLog {
 
     // MARK: - Live tier
 
+    /// The outcome of a live health read: the lines to log, and — when the
+    /// read and the summary succeeded — the summary together with the
+    /// trainer's completed-step clock read on the trainer queue with the
+    /// tensors, so a consumer (the training-health monitor) can pair the
+    /// summary with exactly the steps it describes. Both are nil when the
+    /// read failed; the failure is then the one line in `lines`.
+    struct LiveOutcome: Sendable {
+        let lines: [String]
+        let summary: LayerHealthSummary?
+        let trainerStep: Int?
+    }
+
     /// Read the trainer's BN state and ReZero α between steps, summarize,
-    /// and render the live line (or the line reporting why it failed).
-    static func liveLines(trainer: ChessTrainer) async -> [String] {
+    /// and render the live line (or the line reporting why it failed). The
+    /// summary runs on a GCD queue: a SiLU or GELU site's parked count is a
+    /// numerical integral per channel, too long for the cooperative pool.
+    static func live(trainer: ChessTrainer) async -> LiveOutcome {
         do {
             let state = try await trainer.readLayerHealthLiveState()
-            let summary = try LayerHealth.summarizeLiveState(arch: trainer.arch, tensors: state.tensors)
-            return [liveLine(summary: summary, trainerStep: state.completedTrainSteps)]
+            let arch = trainer.arch
+            let tensors = state.tensors
+            let summary = try await runOffPool {
+                try LayerHealth.summarizeLiveState(arch: arch, tensors: tensors)
+            }
+            return LiveOutcome(
+                lines: [liveLine(summary: summary, trainerStep: state.completedTrainSteps)],
+                summary: summary,
+                trainerStep: state.completedTrainSteps)
         } catch {
-            return ["\(tag) live read failed: \(error.localizedDescription)"]
+            return LiveOutcome(
+                lines: ["\(tag) live read failed: \(error.localizedDescription)"],
+                summary: nil,
+                trainerStep: nil)
         }
     }
 
@@ -84,11 +108,20 @@ enum LayerHealthLog {
         arch: NetworkArchitecture,
         trainerWeights: [[Float]]
     ) async throws -> LayerHealthSummary {
+        try await runOffPool {
+            try LayerHealth.summarizeTrainerState(arch: arch, trainerWeights: trainerWeights)
+        }
+    }
+
+    /// Run a synchronous summary on a GCD queue and resume with its result,
+    /// so the cooperative thread keeps making progress.
+    private static func runOffPool(
+        _ work: @escaping @Sendable () throws -> LayerHealthSummary
+    ) async throws -> LayerHealthSummary {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
                 do {
-                    continuation.resume(returning: try LayerHealth.summarizeTrainerState(
-                        arch: arch, trainerWeights: trainerWeights))
+                    continuation.resume(returning: try work())
                 } catch {
                     continuation.resume(throwing: error)
                 }

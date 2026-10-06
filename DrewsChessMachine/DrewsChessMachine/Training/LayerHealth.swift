@@ -529,7 +529,12 @@ enum LayerHealth {
     /// always on when β > 0 and dead otherwise; it is counted in
     /// `zeroGammaChannelCount` and left out of the β/|γ| extremes, which
     /// would be infinite. Running variance: max and median over its finite
-    /// values; max/median is nil when the median is not positive.
+    /// values; max/median is nil when the median is not positive. The
+    /// activation-aware parked / mostly-off counts and pass-through extremes
+    /// (`passThroughHealth`) cover every site an activation consumes,
+    /// whatever the function; a SiLU or GELU site costs a numerical integral
+    /// per channel, so callers on the cooperative pool hop to a GCD queue
+    /// (`LayerHealthLog`).
     static func batchNormSiteHealth(
         site: BatchNormSite,
         gamma: [Float],
@@ -594,6 +599,7 @@ enum LayerHealth {
         } else {
             maxOverMedian = nil
         }
+        let passThrough = passThroughHealth(activation: site.activation, gamma: gamma, beta: beta)
 
         return LayerHealthSummary.BatchNormSiteHealth(
             site: site.name,
@@ -613,7 +619,42 @@ enum LayerHealth {
             runningVarianceMaxChannel: varianceMax?.channel,
             runningVarianceMedian: varianceMedian,
             runningVarianceMaxOverMedian: maxOverMedian,
-            nonFiniteRunningVarianceCount: nonFiniteVariances)
+            nonFiniteRunningVarianceCount: nonFiniteVariances,
+            parkedChannelCount: passThrough?.parked,
+            parkedMostlyOffChannelCount: passThrough?.mostlyOff,
+            minPassThrough: passThrough?.minimum,
+            medianPassThrough: passThrough?.median)
+    }
+
+    /// The activation-aware parked / mostly-off counts and the pass-through
+    /// extremes of one site (`BatchNormPassThrough`), over its finite
+    /// channels; nil when no activation consumes the site's output.
+    static func passThroughHealth(
+        activation: ActivationFunction?,
+        gamma: [Float],
+        beta: [Float]
+    ) -> (parked: Int, mostlyOff: Int, minimum: Double?, median: Double?)? {
+        guard let activation, BatchNormPassThrough.isModeled(activation) else { return nil }
+        var parked = 0
+        var mostlyOff = 0
+        var passThroughs: [Double] = []
+        passThroughs.reserveCapacity(gamma.count)
+        for channel in 0..<min(gamma.count, beta.count) {
+            let g = Double(gamma[channel])
+            let b = Double(beta[channel])
+            guard g.isFinite, b.isFinite else { continue }
+            switch BatchNormPassThrough.band(activation: activation, gamma: g, beta: b) {
+            case .parked: parked += 1
+            case .mostlyOff: mostlyOff += 1
+            case .passing: break
+            }
+            passThroughs.append(BatchNormPassThrough.passThrough(activation: activation, gamma: g, beta: b))
+        }
+        let sorted = passThroughs.sorted()
+        let median: Double? = sorted.isEmpty
+            ? nil
+            : NetworkWeightAnalyzer.percentile(p: 50, sortedAscending: sorted)
+        return (parked, mostlyOff, sorted.first, median)
     }
 
     /// Zero- and low-velocity units of one FC hidden layer. `velocity` is in
@@ -788,6 +829,19 @@ struct LayerHealthSummary: Codable, Sendable, Equatable {
         /// nil when the median running variance is not positive.
         let runningVarianceMaxOverMedian: Double?
         let nonFiniteRunningVarianceCount: Int
+        /// Activation-aware counts (`BatchNormPassThrough`), over finite
+        /// channels: parked (excess pass-through < Φ(−3)) and mostly off
+        /// (< Φ(−2)). nil only when no activation consumes the site's output.
+        /// For relu / leaky_relu they equal `deadChannelCount` /
+        /// `mostlyOffChannelCount` exactly; for silu / gelu they are the only
+        /// classification.
+        let parkedChannelCount: Int?
+        let parkedMostlyOffChannelCount: Int?
+        /// Smallest and median pass-through E|f'(γz + β)| over finite
+        /// channels; nil when no activation consumes the output or no channel
+        /// is finite.
+        let minPassThrough: Double?
+        let medianPassThrough: Double?
 
         /// Dead + mostly off + always on; nil when not classified.
         var unhealthyChannelCount: Int? {
@@ -816,6 +870,10 @@ struct LayerHealthSummary: Codable, Sendable, Equatable {
             case runningVarianceMedian = "running_variance_median"
             case runningVarianceMaxOverMedian = "running_variance_max_over_median"
             case nonFiniteRunningVarianceCount = "non_finite_running_variance_count"
+            case parkedChannelCount = "parked_channel_count"
+            case parkedMostlyOffChannelCount = "parked_mostly_off_channel_count"
+            case minPassThrough = "min_pass_through"
+            case medianPassThrough = "median_pass_through"
         }
     }
 
@@ -947,6 +1005,21 @@ struct LayerHealthSummary: Codable, Sendable, Equatable {
         return worst
     }
 
+    /// Sites with an activation-aware parked count (every site an activation
+    /// consumes, whatever the function).
+    var passThroughSites: [BatchNormSiteHealth] {
+        batchNormSites.filter { $0.parkedChannelCount != nil }
+    }
+    var passThroughChannelCount: Int { passThroughSites.reduce(0) { $0 + $1.channelCount } }
+    var parkedChannelCount: Int { passThroughSites.reduce(0) { $0 + ($1.parkedChannelCount ?? 0) } }
+    var parkedMostlyOffChannelCount: Int {
+        passThroughSites.reduce(0) { $0 + ($1.parkedMostlyOffChannelCount ?? 0) }
+    }
+    /// Every site with at least one parked channel, in graph order.
+    var sitesWithParkedChannels: [BatchNormSiteHealth] {
+        passThroughSites.filter { ($0.parkedChannelCount ?? 0) > 0 }
+    }
+
     /// Largest β/|γ| over classified sites.
     var maxBetaOverAbsGammaSite: BatchNormSiteHealth? {
         classifiedSites
@@ -1028,6 +1101,7 @@ extension LayerHealthSummary {
             fields.append("rezeroCapFrac=n/a")
         }
         fields.append("nonFinite=\(nonFiniteValueCount)")
+        fields.append(contentsOf: parkedFields())
         if let se = squeezeExcitationFC1 {
             if se.isEmpty {
                 fields.append("seZeroVel=none")
@@ -1055,6 +1129,29 @@ extension LayerHealthSummary {
         return fields.joined(separator: " ")
     }
 
+    /// The activation-aware fields of the compact line, after `nonFinite=`:
+    /// `parkedSites` (sites with a pass-through model / all BN sites),
+    /// `parkedCh`, `parked`, `parkedOff`, and `parkedBy` naming every site
+    /// with a parked channel as `site:parked/channels` (`none` when there is
+    /// none). `parked=n/a` alone when no BN site feeds an activation. The
+    /// existing relu / leaky_relu fields (`dead`, `off`, …) keep their
+    /// meaning; for those sites parked equals dead.
+    func parkedFields() -> [String] {
+        let sites = passThroughSites
+        guard !sites.isEmpty else { return ["parked=n/a"] }
+        let affected = sitesWithParkedChannels
+        let by = affected.isEmpty
+            ? "none"
+            : affected.map { "\($0.site):\($0.parkedChannelCount ?? 0)/\($0.channelCount)" }.joined(separator: ",")
+        return [
+            "parkedSites=\(sites.count)/\(batchNormSites.count)",
+            "parkedCh=\(passThroughChannelCount)",
+            "parked=\(parkedChannelCount)",
+            "parkedOff=\(parkedMostlyOffChannelCount)",
+            "parkedBy=\(by)",
+        ]
+    }
+
     /// The detailed multi-line rendering (no tag, no headline): a BN site
     /// table, the velocity checks, ReZero, the NaN sweep and the largest
     /// |value| tensors.
@@ -1068,6 +1165,17 @@ extension LayerHealthSummary {
         lines.append("  \(Self.batchNormHeader(nameWidth: nameWidth))")
         for site in batchNormSites {
             lines.append("  \(Self.batchNormRow(site, nameWidth: nameWidth))")
+        }
+
+        let passThrough = passThroughSites
+        if !passThrough.isEmpty {
+            let parked = String(format: "%.5f", BatchNormPassThrough.parkedBelow)
+            let mostlyOff = String(format: "%.5f", BatchNormPassThrough.mostlyOffBelow)
+            lines.append("parked channels — every activation: pass-through P = E|f'(γz+β)|, z ~ N(0,1); parked when P above its floor < \(parked) of the range (Φ(-3)), mostly off < \(mostlyOff) (Φ(-2)); equals dead / off for relu/leaky_relu")
+            lines.append("  \(Self.passThroughHeader(nameWidth: nameWidth))")
+            for site in passThrough {
+                lines.append("  \(Self.passThroughRow(site, nameWidth: nameWidth))")
+            }
         }
 
         if let reason = velocityNotIncludedReason {
@@ -1113,6 +1221,7 @@ extension LayerHealthSummary {
         static let count = 6
         static let extreme = 17
         static let varianceRatio = 9
+        static let passThrough = 10
     }
 
     private static func batchNormHeader(nameWidth: Int) -> String {
@@ -1145,6 +1254,24 @@ extension LayerHealthSummary {
             row += "  (\(site.nonFiniteRunningVarianceCount) non-finite running var)"
         }
         return row
+    }
+
+    private static func passThroughHeader(nameWidth: Int) -> String {
+        let counts = ["ch", "parked", "off"].map { leftPad($0, BatchNormColumn.count) }.joined(separator: " ")
+        let passes = ["min P", "median P"].map { leftPad($0, BatchNormColumn.passThrough) }.joined(separator: " ")
+        return "\(rightPad("site", nameWidth))  \(rightPad("act", BatchNormColumn.activation)) \(counts)  \(passes)"
+    }
+
+    private static func passThroughRow(_ site: BatchNormSiteHealth, nameWidth: Int) -> String {
+        let countValues: [Int?] = [site.channelCount, site.parkedChannelCount, site.parkedMostlyOffChannelCount]
+        let counts = countValues
+            .map { leftPad($0.map(String.init) ?? "n/a", BatchNormColumn.count) }
+            .joined(separator: " ")
+        let passes = [site.minPassThrough, site.medianPassThrough]
+            .map { leftPad($0.map { String(format: "%.6f", $0) } ?? "n/a", BatchNormColumn.passThrough) }
+            .joined(separator: " ")
+        let activation = rightPad(site.activation?.rawValue ?? "-", BatchNormColumn.activation)
+        return "\(rightPad(site.site, nameWidth))  \(activation) \(counts)  \(passes)"
     }
 
     private static func extreme(_ value: Double?, _ channel: Int?) -> String {

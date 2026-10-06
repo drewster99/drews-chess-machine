@@ -1,0 +1,1045 @@
+# training-health incident excerpt
+# run: B (arm B: LR cycle 1.0 <-> 0.001)
+# source: dcm_log_20261005-013235.txt sha256=cfcd309c10a0b2e7ced3827d689c8ce97799af79eed3a36ead747ec61d002a3c lines=13422 (at extraction, 2026-10-06)
+# selection: every line before the first step row past trainer step 1500 (except [BATCH-STATS]), then every [LAYER-HEALTH] checkpoint block after it up to trainer step 32700 (the plan's Evidence cutoff)
+# every selected line is verbatim; [BATCH-STATS] lines are left out (the replay reads nothing from them)
+01:32:35.674  [REPLAY] starting offline corpus replay over 1 corpus path(s)
+01:32:35.687  [REPLAY] start-model: 20261005-r7b24-fresh.safetensors modelID=20261005-22-yRzB encoding=basic24
+01:32:35.687  [REPLAY-ARCH] (start-model) v5 . in basic24(24) -> stem 128 (7x7) . 3x[7x7+7x7 @128, no-SE, relu/pre, clean_add, no-ReZero, out:layer_norm, drop*1] . act relu . policy intermediate_conv(4864) . value WDL(16->FC128) . bfloat16 . 5,132,687 params
+01:32:35.687  [REPLAY-HPARAMS] lr=0.001 batch=4096 wd=0.0003 momentum=0.9 gradClip=15 entropyBonus=0 drawPenalty=0 policyW=1 valueW=1 illegalW=1 pLabelSmooth=0.1 pLabelSmoothMode=fixed_total pLabelSmoothPerMove=0.0033 pLabelSmoothPerMoveCap=0.5 vLabelSmooth=0.013 dropout=0 lrWarmup=1000 bufCap=500000 replayRatio=0.48 minPrefill=250000 complementCE=on sqrtBatchLR=on batchStats=10 klProbe=100 sampling=(maxPerGame=400 maxDrawPct=100 targetLen=0 stratify=off applied=on)
+01:32:35.687  [REPLAY] trainer-model output: /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261005-lrB-cyc1-replay-latest.safetensors (new file)
+01:32:35.705  [REPLAY] enumerated checkpoints: /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261005-lrB-cyc1-replay-step1000.safetensors and siblings (never overwritten)
+01:32:35.706  [REPLAY] corpus 20260624-192615-w3aA5b: 46 sealed shard(s)
+01:32:35.708  [PARAM] random_seed from --seed: 20261005 (overrides random_seed_mode and random_seed=0 for this process)
+01:32:35.708  [REPLAY] building network + trainer (encoding=basic24)
+01:32:35.844  [NUMERICS] policy_tail_precision=fp32_from_pre_bn source=flag (affects bf16 / fp16 models only)
+01:32:35.844  [PARAM] dropoutRate applied to training graph: 0.0000
+01:32:36.104  [REPLAY] start-model weights loaded into trainer (working+masters, velocity zeroed; new branch) + feeder net (base tensors=61)
+01:32:36.105  [REPLAY-CYCLE] lr=[trough 1.00e-03,peak 1.00e+00]^10000st cnt=0 inv=true mom=[0.75,0.90]^1000st cnt=0 inv=false decay=[peak->1.00e-04 trough->1.00e-05 over 10000000st] momFollow=[low 0.850->0.900 high 0.950->0.950] origin=trainerStep 0 cycleStep 0 cycleLR=1.0000e+00 cycleMom=0.8500 (new branch from 20261005-22-yRzB; its clock, warmup and velocity are not continued)
+01:32:36.105  [RUN] path=replay run=9249756B-D845-4102-BE55-1C94D88BE5BB seg=0 (branch from 20261005-22-yRzB sha=b750edb1883a) build=2320 git=1ab52554 dirty=true device="Apple M5 Max" vm=false os="Version 27.2 (Build 26B5091g)" seed=20261005 mode=seeded(--seed) derivation=v1 params_sha=b6cb733707db cum_step=0 cum_games=0 cum_train_sec=0.0 argv="/Users/andrew/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2320-1ab52554.app/Contents/MacOS/DrewsChessMachine --replay-corpus 20260624-192615-w3aA5b --start-model /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261005-r7b24-fresh.safetensors --out-model /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261005-lrB-cyc1-replay-latest.safetensors --parameters /Users/andrew/cursor/drews-chess-machine/experiments/20261005-lr-schedule-ab/parameters-B.json --epochs 12 --training-step-limit 36000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn --seed 20261005"
+01:32:36.105  [REPLAY] batchSize=4096 reuse=0.48 K=8533 minPrefill=250000 stepLimit=36000 epochLimit=12
+01:32:38.955  [REPLAY] pre-filled: bufCount=250052 positionsFed=250052 gamesFed=3777 rejected=0 skipped=0
+01:32:39.066  [MASK CHECK] pos=0 movedIdx=1020 inLegalMask=true legalCount=35
+01:32:39.066  [MASK CHECK] pos=1 movedIdx=3186 inLegalMask=true legalCount=35
+01:32:39.066  [MASK CHECK] pos=2 movedIdx=3705 inLegalMask=true legalCount=7
+01:32:39.066  [MASK CHECK] pos=3 movedIdx=2279 inLegalMask=true legalCount=27
+01:32:39.066  [MASK CHECK] pos=4 movedIdx=118 inLegalMask=true legalCount=36
+01:32:39.066  [MASK CHECK] pos=5 movedIdx=54 inLegalMask=true legalCount=30
+01:32:39.066  [MASK CHECK] pos=6 movedIdx=3261 inLegalMask=true legalCount=40
+01:32:39.066  [MASK CHECK] pos=7 movedIdx=1396 inLegalMask=true legalCount=36
+01:32:39.079  [EXEC] reducedPrecisionFastMath default=0 override=nil
+01:32:39.079  [KL-PROBE] built subgraph batch=4096 policySize=4864 stash=76MB
+01:32:39.095  [EXEC] compiled training executable batch=4096 diagnostics=false klStash=true targets=5
+01:32:40.724  [KL-PROBE] step=0 batch=4096 kl=0.000109 klSd=0.000057 klSd/kl=0.52 drop=0.000 gpu=1442.5ms probe=187.6ms overhead=13.0% amortized@100=0.13%
+01:32:40.725  [REPLAY] step=1 loss=11.8138 pLoss=8.6299 vLoss=2.1901 pEnt=-- pIllM=0.9938 playedP=-- pW=-- pD=-- pL=-- vAbs=-- pLogitMean=-- vLogitMean=-- gNorm=31.172 lr=0.001 ms=1760.2 buf=250052 plies=250052 games=3777 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=1
+01:32:40.742  [LAYER-HEALTH] live trainerStep=1 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=0 off=0 alwaysOn=0 worst=none maxBetaOverGamma=+0.00@blocks.0.bn1[0] minBetaOverGamma=+0.00@blocks.0.bn1[0] rvMaxOverMedian=3.2@stem.bn[47] rezero=none nonFinite=0
+01:32:40.839  [EXEC] reducedPrecisionFastMath default=0 override=nil
+01:32:40.855  [EXEC] compiled training executable batch=4096 diagnostics=false klStash=false targets=5
+01:32:50.877  [EXEC] reducedPrecisionFastMath default=0 override=nil
+01:32:50.893  [EXEC] compiled training executable batch=4096 diagnostics=true klStash=false targets=30
+01:32:52.158  [ENCODE-COST] step=9 batch=4096 n=10 encodeMs=(p50=486.78 p99=612.19) gpuWaitMs=(p50=698.39 p99=814.41)
+01:32:52.158  [LEGAL-COST] step=10 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=9) p1ms=(p50=5.14 p99=11.90) p2ms=(p50=8.40 p99=87.69) p3ms=(p50=1163.84 p99=1673.27) legalMaskMs=(p50=11.57 p99=12.17) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1232.70 p99=1435.97) gapMs=(p50=55.32)
+01:33:04.493  [ENCODE-COST] step=19 batch=4096 n=10 encodeMs=(p50=427.13 p99=550.52) gpuWaitMs=(p50=723.76 p99=840.12)
+01:33:04.493  [LEGAL-COST] step=20 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.98 p99=11.35) p2ms=(p50=7.41 p99=8.85) p3ms=(p50=1176.09 p99=1286.14) legalMaskMs=(p50=11.63 p99=11.82) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1248.73 p99=1356.74) gapMs=(p50=62.25)
+01:33:16.964  [ENCODE-COST] step=29 batch=4096 n=10 encodeMs=(p50=464.58 p99=570.09) gpuWaitMs=(p50=675.01 p99=728.65)
+01:33:16.965  [LEGAL-COST] step=30 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.17 p99=12.07) p2ms=(p50=8.04 p99=9.48) p3ms=(p50=1182.98 p99=1314.49) legalMaskMs=(p50=11.69 p99=12.10) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1253.65 p99=1387.88) gapMs=(p50=58.47)
+01:33:29.407  [ENCODE-COST] step=39 batch=4096 n=10 encodeMs=(p50=441.57 p99=591.25) gpuWaitMs=(p50=707.12 p99=732.12)
+01:33:29.407  [LEGAL-COST] step=40 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.34 p99=12.12) p2ms=(p50=7.39 p99=8.70) p3ms=(p50=1180.91 p99=1234.42) legalMaskMs=(p50=11.81 p99=12.14) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1251.88 p99=1316.07) gapMs=(p50=59.24)
+01:33:42.375  [ENCODE-COST] step=49 batch=4096 n=10 encodeMs=(p50=510.27 p99=632.39) gpuWaitMs=(p50=687.92 p99=695.71)
+01:33:42.376  [LEGAL-COST] step=50 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.58 p99=13.76) p2ms=(p50=8.81 p99=11.33) p3ms=(p50=1222.74 p99=1269.89) legalMaskMs=(p50=11.63 p99=13.20) legalMaskPerPosUs=(p50=2.8 p99=3.2) interStepMs=(p50=1298.38 p99=1350.22) gapMs=(p50=62.26)
+01:33:42.376  [REPLAY] step=50 loss=5.5271 pLoss=4.3243 vLoss=0.8876 pEnt=2.723 pIllM=0.3152 playedP=0.075 pW=0.42 pD=0.07 pL=0.50 vAbs=0.110 pLogitMean=0.1553 vLogitMean=1.9519 gNorm=3.215 lr=0.05 ms=1278.3 buf=500000 plies=668192 games=10125 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=50
+01:33:42.377  [LAYER-HEALTH] live trainerStep=50 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=0 off=0 alwaysOn=0 worst=none maxBetaOverGamma=+0.06@policy.pre_bn[42] minBetaOverGamma=-0.05@policy.pre_bn[40] rvMaxOverMedian=3.3@stem.bn[47] rezero=none nonFinite=0
+01:33:55.399  [ENCODE-COST] step=59 batch=4096 n=10 encodeMs=(p50=517.40 p99=594.55) gpuWaitMs=(p50=694.05 p99=751.62)
+01:33:55.399  [LEGAL-COST] step=60 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.30 p99=11.87) p2ms=(p50=8.44 p99=9.42) p3ms=(p50=1221.90 p99=1336.84) legalMaskMs=(p50=11.62 p99=12.12) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1298.70 p99=1412.81) gapMs=(p50=63.06)
+01:34:08.271  [ENCODE-COST] step=69 batch=4096 n=10 encodeMs=(p50=510.37 p99=596.43) gpuWaitMs=(p50=690.94 p99=742.81)
+01:34:08.272  [LEGAL-COST] step=70 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.21 p99=13.31) p2ms=(p50=7.50 p99=9.75) p3ms=(p50=1228.55 p99=1245.69) legalMaskMs=(p50=11.64 p99=11.84) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1306.28 p99=1326.03) gapMs=(p50=65.01)
+01:34:21.376  [ENCODE-COST] step=79 batch=4096 n=10 encodeMs=(p50=497.29 p99=601.34) gpuWaitMs=(p50=703.50 p99=732.82)
+01:34:21.377  [LEGAL-COST] step=80 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.86 p99=10.79) p2ms=(p50=8.94 p99=9.93) p3ms=(p50=1241.25 p99=1346.59) legalMaskMs=(p50=11.70 p99=12.18) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1317.05 p99=1420.49) gapMs=(p50=64.01)
+01:34:34.091  [ENCODE-COST] step=89 batch=4096 n=10 encodeMs=(p50=517.43 p99=548.02) gpuWaitMs=(p50=704.30 p99=839.74)
+01:34:34.091  [LEGAL-COST] step=90 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.79 p99=13.83) p2ms=(p50=7.94 p99=9.86) p3ms=(p50=1221.98 p99=1303.00) legalMaskMs=(p50=11.59 p99=12.15) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1293.24 p99=1374.55) gapMs=(p50=60.52)
+01:34:47.709  [ENCODE-COST] step=99 batch=4096 n=10 encodeMs=(p50=532.59 p99=613.81) gpuWaitMs=(p50=710.73 p99=892.28)
+01:34:47.710  [LEGAL-COST] step=100 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.46 p99=13.36) p2ms=(p50=9.51 p99=9.83) p3ms=(p50=1267.12 p99=1404.12) legalMaskMs=(p50=11.91 p99=12.20) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1343.29 p99=1474.12) gapMs=(p50=61.20)
+01:34:47.710  [REPLAY] step=100 loss=4.5718 pLoss=3.5415 vLoss=0.8535 pEnt=2.845 pIllM=0.1769 playedP=0.099 pW=0.50 pD=0.08 pL=0.42 vAbs=0.123 pLogitMean=0.3122 vLogitMean=1.5652 gNorm=2.205 lr=0.1 ms=1270.8 buf=500000 plies=1094822 games=16614 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=100
+01:34:47.711  [LAYER-HEALTH] live trainerStep=100 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=0 off=0 alwaysOn=0 worst=none maxBetaOverGamma=+0.13@tower_final_bn[31] minBetaOverGamma=-0.07@policy.pre_bn[40] rvMaxOverMedian=3.3@stem.bn[47] rezero=none nonFinite=0
+01:34:49.611  [KL-PROBE] step=100 batch=4096 kl=0.589870 klSd=0.255016 klSd/kl=0.43 drop=0.000 gpu=1655.7ms probe=150.4ms overhead=9.1% amortized@100=0.09%
+01:35:02.051  [ENCODE-COST] step=109 batch=4096 n=10 encodeMs=(p50=497.86 p99=889.71) gpuWaitMs=(p50=777.51 p99=956.53)
+01:35:02.051  [LEGAL-COST] step=110 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.60 p99=13.35) p2ms=(p50=8.11 p99=9.90) p3ms=(p50=1288.63 p99=1826.53) legalMaskMs=(p50=11.46 p99=12.40) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1359.42 p99=1901.06) gapMs=(p50=58.08)
+01:35:15.817  [ENCODE-COST] step=119 batch=4096 n=10 encodeMs=(p50=395.04 p99=498.05) gpuWaitMs=(p50=910.09 p99=964.41)
+01:35:15.817  [LEGAL-COST] step=120 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.14 p99=14.04) p2ms=(p50=8.42 p99=10.51) p3ms=(p50=1303.17 p99=1433.85) legalMaskMs=(p50=11.53 p99=15.60) legalMaskPerPosUs=(p50=2.8 p99=3.8) interStepMs=(p50=1374.40 p99=1505.42) gapMs=(p50=57.67)
+01:35:29.832  [ENCODE-COST] step=129 batch=4096 n=10 encodeMs=(p50=372.91 p99=545.23) gpuWaitMs=(p50=913.81 p99=989.43)
+01:35:29.832  [LEGAL-COST] step=130 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.68 p99=13.94) p2ms=(p50=8.50 p99=11.10) p3ms=(p50=1296.78 p99=1561.22) legalMaskMs=(p50=11.66 p99=15.42) legalMaskPerPosUs=(p50=2.8 p99=3.8) interStepMs=(p50=1367.85 p99=1659.91) gapMs=(p50=57.89)
+01:35:43.213  [ENCODE-COST] step=139 batch=4096 n=10 encodeMs=(p50=481.96 p99=571.28) gpuWaitMs=(p50=757.97 p99=806.45)
+01:35:43.214  [LEGAL-COST] step=140 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.44 p99=12.37) p2ms=(p50=7.54 p99=9.89) p3ms=(p50=1280.64 p99=1399.86) legalMaskMs=(p50=11.47 p99=11.92) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1351.23 p99=1469.38) gapMs=(p50=58.62)
+01:35:57.216  [ENCODE-COST] step=149 batch=4096 n=10 encodeMs=(p50=512.99 p99=619.94) gpuWaitMs=(p50=805.35 p99=927.53)
+01:35:57.217  [LEGAL-COST] step=150 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.05 p99=11.62) p2ms=(p50=7.77 p99=8.81) p3ms=(p50=1332.68 p99=1497.96) legalMaskMs=(p50=11.70 p99=15.41) legalMaskPerPosUs=(p50=2.9 p99=3.8) interStepMs=(p50=1403.31 p99=1589.61) gapMs=(p50=57.81)
+01:35:57.217  [REPLAY] step=150 loss=4.5663 pLoss=3.5890 vLoss=0.8428 pEnt=2.644 pIllM=0.1344 playedP=0.113 pW=0.53 pD=0.07 pL=0.40 vAbs=0.192 pLogitMean=0.3266 vLogitMean=1.1582 gNorm=2.965 lr=0.15 ms=1230.9 buf=500000 plies=1521507 games=23047 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=150
+01:35:57.217  [LAYER-HEALTH] live trainerStep=150 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=0 off=0 alwaysOn=0 worst=none maxBetaOverGamma=+0.22@tower_final_bn[31] minBetaOverGamma=-0.08@policy.pre_bn[40] rvMaxOverMedian=2.8@stem.bn[47] rezero=none nonFinite=0
+01:36:11.336  [ENCODE-COST] step=159 batch=4096 n=10 encodeMs=(p50=379.09 p99=597.23) gpuWaitMs=(p50=922.78 p99=965.82)
+01:36:11.336  [LEGAL-COST] step=160 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.92 p99=13.17) p2ms=(p50=7.56 p99=9.08) p3ms=(p50=1314.62 p99=1489.35) legalMaskMs=(p50=11.64 p99=11.74) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1388.42 p99=1563.99) gapMs=(p50=61.31)
+01:36:25.199  [ENCODE-COST] step=169 batch=4096 n=10 encodeMs=(p50=370.17 p99=416.74) gpuWaitMs=(p50=916.15 p99=949.19)
+01:36:25.200  [LEGAL-COST] step=170 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.45 p99=12.05) p2ms=(p50=7.44 p99=9.16) p3ms=(p50=1326.30 p99=1329.58) legalMaskMs=(p50=11.54 p99=11.84) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1397.12 p99=1401.39) gapMs=(p50=57.92)
+01:36:38.974  [ENCODE-COST] step=179 batch=4096 n=10 encodeMs=(p50=466.15 p99=528.31) gpuWaitMs=(p50=912.84 p99=936.70)
+01:36:38.975  [LEGAL-COST] step=180 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.76 p99=11.56) p2ms=(p50=7.72 p99=9.05) p3ms=(p50=1313.48 p99=1465.29) legalMaskMs=(p50=11.80 p99=12.01) legalMaskPerPosUs=(p50=2.9 p99=2.9) interStepMs=(p50=1382.52 p99=1534.17) gapMs=(p50=56.56)
+01:36:52.523  [ENCODE-COST] step=189 batch=4096 n=10 encodeMs=(p50=523.32 p99=622.68) gpuWaitMs=(p50=749.41 p99=942.76)
+01:36:52.523  [LEGAL-COST] step=190 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.82 p99=13.10) p2ms=(p50=7.75 p99=9.95) p3ms=(p50=1294.04 p99=1341.27) legalMaskMs=(p50=11.58 p99=12.16) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1365.80 p99=1409.05) gapMs=(p50=59.19)
+01:37:06.386  [ENCODE-COST] step=199 batch=4096 n=10 encodeMs=(p50=548.97 p99=602.61) gpuWaitMs=(p50=742.27 p99=762.13)
+01:37:06.386  [LEGAL-COST] step=200 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.33 p99=12.69) p2ms=(p50=8.96 p99=9.75) p3ms=(p50=1312.79 p99=1346.13) legalMaskMs=(p50=11.85 p99=12.25) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1388.01 p99=1418.50) gapMs=(p50=60.94)
+01:37:06.386  [REPLAY] step=200 loss=4.2583 pLoss=3.3094 vLoss=0.8150 pEnt=2.810 pIllM=0.1340 playedP=0.108 pW=0.42 pD=0.05 pL=0.52 vAbs=0.187 pLogitMean=0.3151 vLogitMean=1.2173 gNorm=1.737 lr=0.2 ms=1330.7 buf=500000 plies=1948135 games=29513 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=200
+01:37:06.387  [LAYER-HEALTH] live trainerStep=200 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=0 off=0 alwaysOn=0 worst=none maxBetaOverGamma=+0.28@tower_final_bn[31] minBetaOverGamma=-0.11@policy.pre_bn[40] rvMaxOverMedian=2.7@tower_final_bn[75] rezero=none nonFinite=0
+01:37:08.123  [KL-PROBE] step=200 batch=4096 kl=0.321556 klSd=0.196922 klSd/kl=0.61 drop=0.000 gpu=1418.6ms probe=226.7ms overhead=16.0% amortized@100=0.16%
+01:37:20.718  [ENCODE-COST] step=209 batch=4096 n=10 encodeMs=(p50=479.37 p99=658.48) gpuWaitMs=(p50=864.20 p99=974.32)
+01:37:20.718  [LEGAL-COST] step=210 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=3.97 p99=9.65) p2ms=(p50=7.57 p99=9.49) p3ms=(p50=1321.44 p99=1666.25) legalMaskMs=(p50=11.64 p99=12.38) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1394.15 p99=1736.88) gapMs=(p50=61.17)
+01:37:34.803  [ENCODE-COST] step=219 batch=4096 n=10 encodeMs=(p50=511.80 p99=535.05) gpuWaitMs=(p50=822.17 p99=968.76)
+01:37:34.804  [LEGAL-COST] step=220 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.78 p99=9.98) p2ms=(p50=7.05 p99=9.07) p3ms=(p50=1353.05 p99=1369.17) legalMaskMs=(p50=10.73 p99=11.24) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1422.05 p99=1443.96) gapMs=(p50=57.17)
+01:37:49.033  [ENCODE-COST] step=229 batch=4096 n=10 encodeMs=(p50=499.44 p99=599.68) gpuWaitMs=(p50=830.94 p99=959.68)
+01:37:49.033  [LEGAL-COST] step=230 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.73 p99=9.80) p2ms=(p50=7.31 p99=9.18) p3ms=(p50=1357.59 p99=1508.74) legalMaskMs=(p50=11.20 p99=11.74) legalMaskPerPosUs=(p50=2.7 p99=2.9) interStepMs=(p50=1428.37 p99=1578.94) gapMs=(p50=57.75)
+01:38:03.396  [ENCODE-COST] step=239 batch=4096 n=10 encodeMs=(p50=514.39 p99=617.52) gpuWaitMs=(p50=814.72 p99=962.72)
+01:38:03.396  [LEGAL-COST] step=240 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.46 p99=9.53) p2ms=(p50=7.11 p99=9.13) p3ms=(p50=1358.80 p99=1518.74) legalMaskMs=(p50=11.11 p99=11.43) legalMaskPerPosUs=(p50=2.7 p99=2.8) interStepMs=(p50=1425.39 p99=1593.52) gapMs=(p50=55.01)
+01:38:17.732  [ENCODE-COST] step=249 batch=4096 n=10 encodeMs=(p50=397.92 p99=433.49) gpuWaitMs=(p50=950.05 p99=1012.52)
+01:38:17.732  [LEGAL-COST] step=250 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.60 p99=12.35) p2ms=(p50=7.77 p99=8.61) p3ms=(p50=1365.80 p99=1419.54) legalMaskMs=(p50=11.02 p99=11.41) legalMaskPerPosUs=(p50=2.7 p99=2.8) interStepMs=(p50=1437.01 p99=1490.67) gapMs=(p50=57.84)
+01:38:17.732  [REPLAY] step=250 loss=4.6073 pLoss=3.5485 vLoss=0.8746 pEnt=2.733 pIllM=0.1842 playedP=0.109 pW=0.59 pD=0.05 pL=0.36 vAbs=0.234 pLogitMean=0.1251 vLogitMean=1.1116 gNorm=1.749 lr=0.25 ms=1361.0 buf=500000 plies=2374804 games=35963 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=250
+01:38:17.733  [LAYER-HEALTH] live trainerStep=250 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=0 off=0 alwaysOn=0 worst=none maxBetaOverGamma=+0.41@tower_final_bn[31] minBetaOverGamma=-0.28@policy.pre_bn[113] rvMaxOverMedian=4.1@stem.bn[83] rezero=none nonFinite=0
+01:38:32.071  [ENCODE-COST] step=259 batch=4096 n=10 encodeMs=(p50=416.85 p99=531.27) gpuWaitMs=(p50=951.75 p99=968.78)
+01:38:32.071  [LEGAL-COST] step=260 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.46 p99=10.42) p2ms=(p50=6.86 p99=8.90) p3ms=(p50=1361.65 p99=1513.95) legalMaskMs=(p50=11.21 p99=11.73) legalMaskPerPosUs=(p50=2.7 p99=2.9) interStepMs=(p50=1432.14 p99=1580.77) gapMs=(p50=58.17)
+01:38:46.013  [ENCODE-COST] step=269 batch=4096 n=10 encodeMs=(p50=385.16 p99=435.84) gpuWaitMs=(p50=930.77 p99=947.81)
+01:38:46.013  [LEGAL-COST] step=270 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.76 p99=13.15) p2ms=(p50=7.53 p99=9.50) p3ms=(p50=1324.56 p99=1377.10) legalMaskMs=(p50=11.71 p99=12.30) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1399.18 p99=1445.97) gapMs=(p50=62.33)
+01:38:59.798  [ENCODE-COST] step=279 batch=4096 n=10 encodeMs=(p50=483.26 p99=508.61) gpuWaitMs=(p50=805.04 p99=937.87)
+01:38:59.798  [LEGAL-COST] step=280 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.12 p99=12.06) p2ms=(p50=8.38 p99=9.92) p3ms=(p50=1305.39 p99=1465.92) legalMaskMs=(p50=11.59 p99=12.04) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1380.21 p99=1542.38) gapMs=(p50=62.34)
+01:39:13.691  [ENCODE-COST] step=289 batch=4096 n=10 encodeMs=(p50=395.20 p99=417.89) gpuWaitMs=(p50=931.42 p99=960.69)
+01:39:13.691  [LEGAL-COST] step=290 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.73 p99=12.15) p2ms=(p50=7.53 p99=9.97) p3ms=(p50=1323.72 p99=1397.96) legalMaskMs=(p50=11.70 p99=11.96) legalMaskPerPosUs=(p50=2.9 p99=2.9) interStepMs=(p50=1392.58 p99=1468.08) gapMs=(p50=56.59)
+01:39:27.461  [ENCODE-COST] step=299 batch=4096 n=10 encodeMs=(p50=539.91 p99=577.31) gpuWaitMs=(p50=752.53 p99=850.83)
+01:39:27.461  [LEGAL-COST] step=300 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.38 p99=13.22) p2ms=(p50=9.21 p99=10.08) p3ms=(p50=1303.52 p99=1399.19) legalMaskMs=(p50=11.67 p99=12.40) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1376.05 p99=1471.02) gapMs=(p50=57.93)
+01:39:27.461  [REPLAY] step=300 loss=4.4198 pLoss=3.5047 vLoss=0.8178 pEnt=2.615 pIllM=0.0972 playedP=0.105 pW=0.46 pD=0.06 pL=0.48 vAbs=0.169 pLogitMean=-0.0262 vLogitMean=0.7243 gNorm=2.939 lr=0.3 ms=1301.1 buf=500000 plies=2801422 games=42394 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=300
+01:39:27.462  [LAYER-HEALTH] live trainerStep=300 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=3 alwaysOn=0 worst=value.bn(dead 5 off 3 on 0) maxBetaOverGamma=+0.52@tower_final_bn[31] minBetaOverGamma=-10.45@value.bn[7] rvMaxOverMedian=32.3@stem.bn[74] rezero=none nonFinite=0
+01:39:28.994  [KL-PROBE] step=300 batch=4096 kl=0.419049 klSd=0.207399 klSd/kl=0.49 drop=0.000 gpu=1362.8ms probe=79.1ms overhead=5.8% amortized@100=0.06%
+01:39:41.544  [ENCODE-COST] step=309 batch=4096 n=10 encodeMs=(p50=506.65 p99=592.59) gpuWaitMs=(p50=788.54 p99=841.44)
+01:39:41.544  [LEGAL-COST] step=310 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=3.44 p99=10.34) p2ms=(p50=7.57 p99=9.90) p3ms=(p50=1332.66 p99=1463.35) legalMaskMs=(p50=11.82 p99=12.33) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1401.15 p99=1533.45) gapMs=(p50=57.48)
+01:39:55.642  [ENCODE-COST] step=319 batch=4096 n=10 encodeMs=(p50=389.37 p99=529.83) gpuWaitMs=(p50=924.39 p99=971.57)
+01:39:55.642  [LEGAL-COST] step=320 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.68 p99=13.42) p2ms=(p50=7.65 p99=9.75) p3ms=(p50=1327.16 p99=1521.04) legalMaskMs=(p50=11.60 p99=12.12) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1399.39 p99=1590.20) gapMs=(p50=59.89)
+01:40:09.828  [ENCODE-COST] step=329 batch=4096 n=10 encodeMs=(p50=378.15 p99=446.08) gpuWaitMs=(p50=929.76 p99=993.55)
+01:40:09.828  [LEGAL-COST] step=330 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.22 p99=11.88) p2ms=(p50=8.12 p99=9.27) p3ms=(p50=1338.50 p99=1461.77) legalMaskMs=(p50=11.56 p99=11.88) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1408.92 p99=1536.84) gapMs=(p50=57.08)
+01:40:23.903  [ENCODE-COST] step=339 batch=4096 n=10 encodeMs=(p50=502.59 p99=542.64) gpuWaitMs=(p50=842.08 p99=958.49)
+01:40:23.904  [LEGAL-COST] step=340 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.58 p99=10.05) p2ms=(p50=8.55 p99=9.28) p3ms=(p50=1346.86 p99=1404.39) legalMaskMs=(p50=11.18 p99=11.78) legalMaskPerPosUs=(p50=2.7 p99=2.9) interStepMs=(p50=1415.79 p99=1474.71) gapMs=(p50=55.82)
+01:40:38.141  [ENCODE-COST] step=349 batch=4096 n=10 encodeMs=(p50=520.87 p99=565.83) gpuWaitMs=(p50=823.94 p99=843.76)
+01:40:38.142  [LEGAL-COST] step=350 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=3.47 p99=9.56) p2ms=(p50=6.97 p99=8.98) p3ms=(p50=1361.33 p99=1417.52) legalMaskMs=(p50=10.78 p99=11.44) legalMaskPerPosUs=(p50=2.6 p99=2.8) interStepMs=(p50=1431.34 p99=1484.66) gapMs=(p50=59.57)
+01:40:38.142  [REPLAY] step=350 loss=4.1377 pLoss=3.2250 vLoss=0.8186 pEnt=2.822 pIllM=0.0942 playedP=0.122 pW=0.50 pD=0.06 pL=0.44 vAbs=0.166 pLogitMean=-0.1791 vLogitMean=0.7330 gNorm=0.794 lr=0.35 ms=1265.8 buf=500000 plies=3228166 games=48821 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=350
+01:40:38.143  [LAYER-HEALTH] live trainerStep=350 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=2 alwaysOn=0 worst=value.bn(dead 5 off 2 on 0) maxBetaOverGamma=+0.57@tower_final_bn[31] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=54.0@stem.bn[74] rezero=none nonFinite=0
+01:40:52.645  [ENCODE-COST] step=359 batch=4096 n=10 encodeMs=(p50=579.22 p99=612.85) gpuWaitMs=(p50=777.04 p99=892.11)
+01:40:52.645  [LEGAL-COST] step=360 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.94 p99=11.55) p2ms=(p50=7.94 p99=9.36) p3ms=(p50=1371.65 p99=1496.98) legalMaskMs=(p50=11.37 p99=11.95) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1443.42 p99=1567.58) gapMs=(p50=58.89)
+01:41:06.959  [ENCODE-COST] step=369 batch=4096 n=10 encodeMs=(p50=517.73 p99=527.69) gpuWaitMs=(p50=823.27 p99=871.63)
+01:41:06.959  [LEGAL-COST] step=370 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=3.43 p99=11.68) p2ms=(p50=7.19 p99=9.62) p3ms=(p50=1361.34 p99=1384.92) legalMaskMs=(p50=11.26 p99=11.64) legalMaskPerPosUs=(p50=2.7 p99=2.8) interStepMs=(p50=1432.49 p99=1453.26) gapMs=(p50=60.53)
+01:41:21.184  [ENCODE-COST] step=379 batch=4096 n=10 encodeMs=(p50=574.87 p99=593.42) gpuWaitMs=(p50=769.02 p99=977.31)
+01:41:21.184  [LEGAL-COST] step=380 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.21 p99=10.60) p2ms=(p50=7.69 p99=8.49) p3ms=(p50=1366.80 p99=1529.29) legalMaskMs=(p50=11.34 p99=11.91) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1436.90 p99=1600.18) gapMs=(p50=57.21)
+01:41:35.789  [ENCODE-COST] step=389 batch=4096 n=10 encodeMs=(p50=361.13 p99=599.45) gpuWaitMs=(p50=1039.51 p99=1055.69)
+01:41:35.789  [LEGAL-COST] step=390 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.83 p99=9.02) p2ms=(p50=7.54 p99=7.99) p3ms=(p50=1402.04 p99=1428.68) legalMaskMs=(p50=10.84 p99=11.77) legalMaskPerPosUs=(p50=2.6 p99=2.9) interStepMs=(p50=1467.99 p99=1500.99) gapMs=(p50=55.58)
+01:41:50.644  [ENCODE-COST] step=399 batch=4096 n=10 encodeMs=(p50=347.17 p99=440.20) gpuWaitMs=(p50=1057.81 p99=1083.13)
+01:41:50.645  [LEGAL-COST] step=400 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.48 p99=10.20) p2ms=(p50=7.62 p99=7.87) p3ms=(p50=1420.11 p99=1437.00) legalMaskMs=(p50=10.70 p99=10.87) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1487.80 p99=1504.29) gapMs=(p50=57.59)
+01:41:50.645  [REPLAY] step=400 loss=4.1241 pLoss=3.2297 vLoss=0.8114 pEnt=2.790 pIllM=0.0830 playedP=0.118 pW=0.51 pD=0.06 pL=0.43 vAbs=0.193 pLogitMean=-0.2927 vLogitMean=0.7334 gNorm=1.320 lr=0.4 ms=1412.6 buf=500000 plies=3654819 games=55255 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=400
+01:41:50.645  [LAYER-HEALTH] live trainerStep=400 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=2 alwaysOn=0 worst=value.bn(dead 5 off 2 on 0) maxBetaOverGamma=+0.61@tower_final_bn[31] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=68.2@stem.bn[74] rezero=none nonFinite=0
+01:41:52.259  [KL-PROBE] step=400 batch=4096 kl=0.419212 klSd=0.166382 klSd/kl=0.40 drop=0.000 gpu=1404.4ms probe=117.3ms overhead=8.4% amortized@100=0.08%
+01:42:05.472  [ENCODE-COST] step=409 batch=4096 n=10 encodeMs=(p50=587.01 p99=636.12) gpuWaitMs=(p50=779.03 p99=979.42)
+01:42:05.472  [LEGAL-COST] step=410 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.47 p99=12.06) p2ms=(p50=6.92 p99=9.13) p3ms=(p50=1397.83 p99=1547.36) legalMaskMs=(p50=10.81 p99=11.45) legalMaskPerPosUs=(p50=2.6 p99=2.8) interStepMs=(p50=1467.34 p99=1614.25) gapMs=(p50=57.12)
+01:42:20.040  [ENCODE-COST] step=419 batch=4096 n=10 encodeMs=(p50=523.28 p99=629.51) gpuWaitMs=(p50=837.12 p99=992.35)
+01:42:20.040  [LEGAL-COST] step=420 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=3.37 p99=10.71) p2ms=(p50=7.89 p99=9.10) p3ms=(p50=1377.68 p99=1537.43) legalMaskMs=(p50=10.75 p99=11.18) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1446.60 p99=1604.74) gapMs=(p50=57.66)
+01:42:34.406  [ENCODE-COST] step=429 batch=4096 n=10 encodeMs=(p50=520.09 p99=633.03) gpuWaitMs=(p50=843.88 p99=856.14)
+01:42:34.407  [LEGAL-COST] step=430 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.20 p99=11.36) p2ms=(p50=8.29 p99=9.17) p3ms=(p50=1382.49 p99=1506.97) legalMaskMs=(p50=10.71 p99=11.24) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1451.91 p99=1574.07) gapMs=(p50=56.92)
+01:42:48.899  [ENCODE-COST] step=439 batch=4096 n=10 encodeMs=(p50=582.81 p99=628.63) gpuWaitMs=(p50=785.80 p99=840.29)
+01:42:48.899  [LEGAL-COST] step=440 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.13 p99=12.26) p2ms=(p50=9.27 p99=9.53) p3ms=(p50=1382.17 p99=1453.12) legalMaskMs=(p50=10.72 p99=11.42) legalMaskPerPosUs=(p50=2.6 p99=2.8) interStepMs=(p50=1454.30 p99=1524.51) gapMs=(p50=57.73)
+01:43:03.475  [ENCODE-COST] step=449 batch=4096 n=10 encodeMs=(p50=520.09 p99=653.73) gpuWaitMs=(p50=840.00 p99=954.34)
+01:43:03.475  [LEGAL-COST] step=450 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.42 p99=9.38) p2ms=(p50=7.88 p99=9.39) p3ms=(p50=1372.25 p99=1509.19) legalMaskMs=(p50=10.69 p99=11.30) legalMaskPerPosUs=(p50=2.6 p99=2.8) interStepMs=(p50=1441.72 p99=1576.61) gapMs=(p50=59.16)
+01:43:03.475  [REPLAY] step=450 loss=4.0687 pLoss=3.1871 vLoss=0.8194 pEnt=2.783 pIllM=0.0622 playedP=0.125 pW=0.47 pD=0.06 pL=0.47 vAbs=0.166 pLogitMean=-0.5332 vLogitMean=0.7329 gNorm=0.891 lr=0.45 ms=1415.0 buf=500000 plies=4081392 games=61710 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=450
+01:43:03.476  [LAYER-HEALTH] live trainerStep=450 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=2 alwaysOn=0 worst=value.bn(dead 5 off 2 on 0) maxBetaOverGamma=+0.65@tower_final_bn[31] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=71.3@stem.bn[74] rezero=none nonFinite=0
+01:43:17.774  [ENCODE-COST] step=459 batch=4096 n=10 encodeMs=(p50=377.17 p99=527.77) gpuWaitMs=(p50=937.85 p99=1037.39)
+01:43:17.774  [LEGAL-COST] step=460 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.88 p99=10.09) p2ms=(p50=7.74 p99=9.46) p3ms=(p50=1331.49 p99=1561.71) legalMaskMs=(p50=11.54 p99=11.80) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1404.24 p99=1631.86) gapMs=(p50=60.14)
+01:43:31.680  [ENCODE-COST] step=469 batch=4096 n=10 encodeMs=(p50=371.21 p99=383.36) gpuWaitMs=(p50=948.63 p99=969.02)
+01:43:31.681  [LEGAL-COST] step=470 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.12 p99=11.41) p2ms=(p50=7.45 p99=8.67) p3ms=(p50=1336.45 p99=1375.17) legalMaskMs=(p50=11.60 p99=11.73) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1409.00 p99=1444.47) gapMs=(p50=59.98)
+01:43:45.476  [ENCODE-COST] step=479 batch=4096 n=10 encodeMs=(p50=496.54 p99=623.23) gpuWaitMs=(p50=796.76 p99=821.20)
+01:43:45.476  [LEGAL-COST] step=480 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.75 p99=10.73) p2ms=(p50=8.56 p99=9.58) p3ms=(p50=1308.25 p99=1465.12) legalMaskMs=(p50=11.83 p99=12.34) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1380.41 p99=1536.91) gapMs=(p50=60.85)
+01:43:59.591  [ENCODE-COST] step=489 batch=4096 n=10 encodeMs=(p50=558.65 p99=616.50) gpuWaitMs=(p50=766.88 p99=858.48)
+01:43:59.591  [LEGAL-COST] step=490 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.45 p99=10.81) p2ms=(p50=7.69 p99=9.98) p3ms=(p50=1346.33 p99=1459.06) legalMaskMs=(p50=11.85 p99=12.04) legalMaskPerPosUs=(p50=2.9 p99=2.9) interStepMs=(p50=1417.73 p99=1530.75) gapMs=(p50=58.26)
+01:44:13.601  [ENCODE-COST] step=499 batch=4096 n=10 encodeMs=(p50=376.28 p99=510.97) gpuWaitMs=(p50=926.98 p99=957.53)
+01:44:13.601  [LEGAL-COST] step=500 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.68 p99=12.46) p2ms=(p50=7.87 p99=9.82) p3ms=(p50=1327.84 p99=1486.36) legalMaskMs=(p50=11.62 p99=12.01) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1398.25 p99=1557.23) gapMs=(p50=57.87)
+01:44:13.601  [REPLAY] step=500 loss=4.0155 pLoss=3.1386 vLoss=0.8098 pEnt=2.898 pIllM=0.0671 playedP=0.110 pW=0.48 pD=0.06 pL=0.45 vAbs=0.206 pLogitMean=-0.6702 vLogitMean=0.7450 gNorm=1.240 lr=0.5 ms=1195.5 buf=500000 plies=4508091 games=68143 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=500
+01:44:13.602  [LAYER-HEALTH] live trainerStep=500 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=1 alwaysOn=0 worst=value.bn(dead 5 off 1 on 0) maxBetaOverGamma=+0.66@tower_final_bn[31] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=75.7@stem.bn[74] rezero=none nonFinite=0
+01:44:15.215  [KL-PROBE] step=500 batch=4096 kl=0.406821 klSd=0.216183 klSd/kl=0.53 drop=0.000 gpu=1304.9ms probe=217.9ms overhead=16.7% amortized@100=0.17%
+01:44:27.677  [ENCODE-COST] step=509 batch=4096 n=10 encodeMs=(p50=413.26 p99=531.24) gpuWaitMs=(p50=924.88 p99=940.03)
+01:44:27.678  [LEGAL-COST] step=510 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.45 p99=12.09) p2ms=(p50=7.48 p99=10.00) p3ms=(p50=1340.03 p99=1542.66) legalMaskMs=(p50=11.69 p99=11.87) legalMaskPerPosUs=(p50=2.9 p99=2.9) interStepMs=(p50=1412.51 p99=1613.67) gapMs=(p50=59.55)
+01:44:41.515  [ENCODE-COST] step=519 batch=4096 n=10 encodeMs=(p50=502.76 p99=517.56) gpuWaitMs=(p50=802.26 p99=856.58)
+01:44:41.516  [LEGAL-COST] step=520 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=3.70 p99=11.84) p2ms=(p50=8.78 p99=9.91) p3ms=(p50=1323.57 p99=1382.57) legalMaskMs=(p50=11.89 p99=12.26) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1391.97 p99=1449.68) gapMs=(p50=55.91)
+01:44:55.651  [ENCODE-COST] step=529 batch=4096 n=10 encodeMs=(p50=489.09 p99=542.37) gpuWaitMs=(p50=886.17 p99=967.93)
+01:44:55.652  [LEGAL-COST] step=530 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.42 p99=11.99) p2ms=(p50=8.53 p99=10.04) p3ms=(p50=1314.86 p99=1512.47) legalMaskMs=(p50=11.74 p99=12.46) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1385.25 p99=1580.11) gapMs=(p50=57.44)
+01:45:09.584  [ENCODE-COST] step=539 batch=4096 n=10 encodeMs=(p50=488.01 p99=535.43) gpuWaitMs=(p50=848.82 p99=939.86)
+01:45:09.584  [LEGAL-COST] step=540 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.88 p99=10.43) p2ms=(p50=7.64 p99=9.68) p3ms=(p50=1355.37 p99=1432.85) legalMaskMs=(p50=11.72 p99=12.24) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1426.25 p99=1504.54) gapMs=(p50=58.35)
+01:45:23.359  [ENCODE-COST] step=549 batch=4096 n=10 encodeMs=(p50=510.69 p99=602.78) gpuWaitMs=(p50=790.94 p99=842.31)
+01:45:23.359  [LEGAL-COST] step=550 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.60 p99=9.83) p2ms=(p50=7.82 p99=9.65) p3ms=(p50=1309.35 p99=1465.44) legalMaskMs=(p50=11.74 p99=12.26) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1380.07 p99=1537.94) gapMs=(p50=60.30)
+01:45:23.359  [REPLAY] step=550 loss=4.1254 pLoss=3.2364 vLoss=0.8245 pEnt=2.706 pIllM=0.0645 playedP=0.128 pW=0.47 pD=0.07 pL=0.45 vAbs=0.178 pLogitMean=-1.1313 vLogitMean=0.7113 gNorm=1.675 lr=0.55 ms=1296.7 buf=500000 plies=4934688 games=74611 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=550
+01:45:23.360  [LAYER-HEALTH] live trainerStep=550 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=1 alwaysOn=0 worst=value.bn(dead 5 off 1 on 0) maxBetaOverGamma=+0.67@tower_final_bn[31] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=69.5@stem.bn[74] rezero=none nonFinite=0
+01:45:37.512  [ENCODE-COST] step=559 batch=4096 n=10 encodeMs=(p50=554.05 p99=624.74) gpuWaitMs=(p50=770.15 p99=838.29)
+01:45:37.513  [LEGAL-COST] step=560 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.13 p99=11.13) p2ms=(p50=9.45 p99=9.96) p3ms=(p50=1342.10 p99=1483.47) legalMaskMs=(p50=11.79 p99=12.21) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1411.57 p99=1556.67) gapMs=(p50=54.89)
+01:45:51.341  [ENCODE-COST] step=569 batch=4096 n=10 encodeMs=(p50=553.71 p99=582.31) gpuWaitMs=(p50=736.05 p99=823.03)
+01:45:51.341  [LEGAL-COST] step=570 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.02 p99=11.56) p2ms=(p50=7.63 p99=9.72) p3ms=(p50=1315.43 p99=1368.98) legalMaskMs=(p50=11.90 p99=12.48) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1391.06 p99=1443.72) gapMs=(p50=62.98)
+01:46:05.508  [ENCODE-COST] step=579 batch=4096 n=10 encodeMs=(p50=511.83 p99=641.57) gpuWaitMs=(p50=916.16 p99=962.86)
+01:46:05.508  [LEGAL-COST] step=580 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.04 p99=13.12) p2ms=(p50=7.70 p99=10.07) p3ms=(p50=1347.21 p99=1496.27) legalMaskMs=(p50=11.71 p99=12.31) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1415.23 p99=1568.70) gapMs=(p50=55.28)
+01:46:19.539  [ENCODE-COST] step=589 batch=4096 n=10 encodeMs=(p50=557.16 p99=610.11) gpuWaitMs=(p50=755.68 p99=837.64)
+01:46:19.540  [LEGAL-COST] step=590 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.59 p99=12.66) p2ms=(p50=7.57 p99=9.49) p3ms=(p50=1327.02 p99=1467.56) legalMaskMs=(p50=11.81 p99=12.49) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1398.95 p99=1548.81) gapMs=(p50=58.77)
+01:46:33.388  [ENCODE-COST] step=599 batch=4096 n=10 encodeMs=(p50=498.58 p99=640.57) gpuWaitMs=(p50=790.63 p99=824.13)
+01:46:33.388  [LEGAL-COST] step=600 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=3.99 p99=12.20) p2ms=(p50=7.94 p99=10.04) p3ms=(p50=1316.12 p99=1450.07) legalMaskMs=(p50=11.80 p99=12.15) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1386.99 p99=1522.32) gapMs=(p50=58.94)
+01:46:33.388  [REPLAY] step=600 loss=3.9575 pLoss=3.0594 vLoss=0.8347 pEnt=2.827 pIllM=0.0634 playedP=0.134 pW=0.46 pD=0.07 pL=0.47 vAbs=0.163 pLogitMean=-1.4984 vLogitMean=0.7109 gNorm=0.856 lr=0.6 ms=1306.9 buf=500000 plies=5361349 games=81137 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=600
+01:46:33.389  [LAYER-HEALTH] live trainerStep=600 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=2 alwaysOn=0 worst=value.bn(dead 5 off 2 on 0) maxBetaOverGamma=+0.71@tower_final_bn[31] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=67.3@stem.bn[74] rezero=none nonFinite=0
+01:46:34.909  [KL-PROBE] step=600 batch=4096 kl=0.229947 klSd=0.136555 klSd/kl=0.59 drop=0.000 gpu=1284.3ms probe=147.1ms overhead=11.5% amortized@100=0.11%
+01:46:47.585  [ENCODE-COST] step=609 batch=4096 n=10 encodeMs=(p50=489.72 p99=527.11) gpuWaitMs=(p50=802.69 p99=1016.03)
+01:46:47.585  [LEGAL-COST] step=610 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=3.86 p99=10.75) p2ms=(p50=7.79 p99=8.86) p3ms=(p50=1320.08 p99=1547.67) legalMaskMs=(p50=12.01 p99=12.31) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1390.84 p99=1618.24) gapMs=(p50=59.10)
+01:47:01.575  [ENCODE-COST] step=619 batch=4096 n=10 encodeMs=(p50=370.61 p99=431.82) gpuWaitMs=(p50=932.70 p99=952.68)
+01:47:01.575  [LEGAL-COST] step=620 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.25 p99=11.62) p2ms=(p50=7.44 p99=9.38) p3ms=(p50=1328.56 p99=1352.31) legalMaskMs=(p50=11.62 p99=11.98) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1404.68 p99=1422.07) gapMs=(p50=63.44)
+01:47:15.364  [ENCODE-COST] step=629 batch=4096 n=10 encodeMs=(p50=371.43 p99=513.78) gpuWaitMs=(p50=921.59 p99=951.37)
+01:47:15.364  [LEGAL-COST] step=630 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.40 p99=11.88) p2ms=(p50=7.46 p99=8.76) p3ms=(p50=1315.47 p99=1342.49) legalMaskMs=(p50=11.53 p99=11.71) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1389.97 p99=1411.62) gapMs=(p50=61.64)
+01:47:29.184  [ENCODE-COST] step=639 batch=4096 n=10 encodeMs=(p50=491.79 p99=523.30) gpuWaitMs=(p50=791.35 p99=823.48)
+01:47:29.184  [LEGAL-COST] step=640 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.63 p99=12.61) p2ms=(p50=8.38 p99=9.86) p3ms=(p50=1322.31 p99=1364.06) legalMaskMs=(p50=11.50 p99=11.98) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1392.86 p99=1443.27) gapMs=(p50=57.54)
+01:47:43.193  [ENCODE-COST] step=649 batch=4096 n=10 encodeMs=(p50=476.99 p99=555.79) gpuWaitMs=(p50=917.79 p99=952.30)
+01:47:43.194  [LEGAL-COST] step=650 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.77 p99=13.20) p2ms=(p50=8.60 p99=10.18) p3ms=(p50=1331.23 p99=1441.06) legalMaskMs=(p50=11.61 p99=12.05) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1400.71 p99=1513.58) gapMs=(p50=56.11)
+01:47:43.194  [REPLAY] step=650 loss=3.9744 pLoss=3.1063 vLoss=0.8155 pEnt=2.841 pIllM=0.0526 playedP=0.127 pW=0.51 pD=0.06 pL=0.43 vAbs=0.202 pLogitMean=-1.8041 vLogitMean=0.7136 gNorm=0.866 lr=0.65 ms=1291.4 buf=500000 plies=5787980 games=87653 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=650
+01:47:43.195  [LAYER-HEALTH] live trainerStep=650 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=1 alwaysOn=0 worst=value.bn(dead 5 off 1 on 0) maxBetaOverGamma=+0.69@tower_final_bn[31] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=64.4@stem.bn[74] rezero=none nonFinite=0
+01:47:57.033  [ENCODE-COST] step=659 batch=4096 n=10 encodeMs=(p50=372.36 p99=431.82) gpuWaitMs=(p50=939.60 p99=969.85)
+01:47:57.033  [LEGAL-COST] step=660 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.92 p99=12.14) p2ms=(p50=7.45 p99=8.96) p3ms=(p50=1344.50 p99=1361.71) legalMaskMs=(p50=11.63 p99=12.30) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1414.03 p99=1432.00) gapMs=(p50=57.16)
+01:48:10.663  [ENCODE-COST] step=669 batch=4096 n=10 encodeMs=(p50=494.85 p99=629.26) gpuWaitMs=(p50=763.58 p99=825.58)
+01:48:10.664  [LEGAL-COST] step=670 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.43 p99=10.28) p2ms=(p50=7.82 p99=9.51) p3ms=(p50=1299.30 p99=1437.91) legalMaskMs=(p50=11.86 p99=12.41) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1375.31 p99=1505.62) gapMs=(p50=63.76)
+01:48:24.630  [ENCODE-COST] step=679 batch=4096 n=10 encodeMs=(p50=550.52 p99=592.84) gpuWaitMs=(p50=754.08 p99=770.23)
+01:48:24.631  [LEGAL-COST] step=680 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.27 p99=10.55) p2ms=(p50=7.53 p99=9.70) p3ms=(p50=1321.14 p99=1385.47) legalMaskMs=(p50=12.02 p99=12.54) legalMaskPerPosUs=(p50=2.9 p99=3.1) interStepMs=(p50=1393.21 p99=1454.97) gapMs=(p50=59.26)
+01:48:38.611  [ENCODE-COST] step=689 batch=4096 n=10 encodeMs=(p50=423.19 p99=571.53) gpuWaitMs=(p50=909.21 p99=1034.23)
+01:48:38.611  [LEGAL-COST] step=690 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.66 p99=9.10) p2ms=(p50=7.69 p99=9.81) p3ms=(p50=1345.86 p99=1389.50) legalMaskMs=(p50=10.96 p99=11.82) legalMaskPerPosUs=(p50=2.7 p99=2.9) interStepMs=(p50=1417.61 p99=1456.34) gapMs=(p50=59.40)
+01:48:52.989  [ENCODE-COST] step=699 batch=4096 n=10 encodeMs=(p50=325.86 p99=340.25) gpuWaitMs=(p50=1032.32 p99=1051.52)
+01:48:52.989  [LEGAL-COST] step=700 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.86 p99=10.15) p2ms=(p50=6.96 p99=7.91) p3ms=(p50=1368.80 p99=1403.86) legalMaskMs=(p50=10.82 p99=10.98) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1434.57 p99=1469.93) gapMs=(p50=55.95)
+01:48:52.989  [REPLAY] step=700 loss=3.9249 pLoss=3.0634 vLoss=0.8171 pEnt=2.790 pIllM=0.0445 playedP=0.137 pW=0.48 pD=0.06 pL=0.47 vAbs=0.190 pLogitMean=-2.0593 vLogitMean=0.7278 gNorm=0.894 lr=0.7 ms=1384.7 buf=500000 plies=6214635 games=94100 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=700
+01:48:52.990  [LAYER-HEALTH] live trainerStep=700 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=0 alwaysOn=0 worst=value.bn(dead 5 off 0 on 0) maxBetaOverGamma=+0.72@policy.pre_bn[108] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=60.2@stem.bn[74] rezero=none nonFinite=0
+01:48:54.578  [KL-PROBE] step=700 batch=4096 kl=0.121449 klSd=0.056304 klSd/kl=0.46 drop=0.000 gpu=1379.7ms probe=119.0ms overhead=8.6% amortized@100=0.09%
+01:49:07.056  [ENCODE-COST] step=709 batch=4096 n=10 encodeMs=(p50=548.82 p99=598.86) gpuWaitMs=(p50=755.15 p99=1047.94)
+01:49:07.056  [LEGAL-COST] step=710 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.62 p99=9.39) p2ms=(p50=9.33 p99=9.95) p3ms=(p50=1326.12 p99=1518.94) legalMaskMs=(p50=11.81 p99=12.34) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1398.37 p99=1589.59) gapMs=(p50=57.30)
+01:49:21.092  [ENCODE-COST] step=719 batch=4096 n=10 encodeMs=(p50=542.01 p99=603.36) gpuWaitMs=(p50=757.34 p99=818.95)
+01:49:21.093  [LEGAL-COST] step=720 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.23 p99=13.18) p2ms=(p50=8.81 p99=10.04) p3ms=(p50=1320.56 p99=1441.17) legalMaskMs=(p50=11.79 p99=11.90) legalMaskPerPosUs=(p50=2.9 p99=2.9) interStepMs=(p50=1393.67 p99=1521.59) gapMs=(p50=59.08)
+01:49:34.810  [ENCODE-COST] step=729 batch=4096 n=10 encodeMs=(p50=520.49 p99=592.57) gpuWaitMs=(p50=761.63 p99=819.01)
+01:49:34.810  [LEGAL-COST] step=730 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.19 p99=13.18) p2ms=(p50=7.82 p99=10.04) p3ms=(p50=1313.69 p99=1349.85) legalMaskMs=(p50=11.95 p99=12.38) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1384.76 p99=1419.84) gapMs=(p50=58.06)
+01:49:48.909  [ENCODE-COST] step=739 batch=4096 n=10 encodeMs=(p50=559.16 p99=604.32) gpuWaitMs=(p50=754.55 p99=831.36)
+01:49:48.909  [LEGAL-COST] step=740 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.03 p99=14.13) p2ms=(p50=7.62 p99=9.95) p3ms=(p50=1332.18 p99=1458.05) legalMaskMs=(p50=11.75 p99=12.14) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1403.30 p99=1539.33) gapMs=(p50=58.49)
+01:50:02.879  [ENCODE-COST] step=749 batch=4096 n=10 encodeMs=(p50=377.09 p99=516.71) gpuWaitMs=(p50=929.77 p99=948.02)
+01:50:02.880  [LEGAL-COST] step=750 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.84 p99=12.87) p2ms=(p50=7.73 p99=9.42) p3ms=(p50=1322.43 p99=1477.45) legalMaskMs=(p50=11.71 p99=11.96) legalMaskPerPosUs=(p50=2.9 p99=2.9) interStepMs=(p50=1393.46 p99=1547.09) gapMs=(p50=58.46)
+01:50:02.880  [REPLAY] step=750 loss=3.8554 pLoss=3.0128 vLoss=0.8039 pEnt=2.848 pIllM=0.0388 playedP=0.140 pW=0.48 pD=0.06 pL=0.46 vAbs=0.196 pLogitMean=-2.6123 vLogitMean=0.7001 gNorm=0.581 lr=0.75 ms=1231.5 buf=500000 plies=6641305 games=100549 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=750
+01:50:02.882  [LAYER-HEALTH] live trainerStep=750 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=1 alwaysOn=0 worst=value.bn(dead 5 off 1 on 0) maxBetaOverGamma=+0.84@policy.pre_bn[108] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=53.3@stem.bn[74] rezero=none nonFinite=0
+01:50:17.167  [ENCODE-COST] step=759 batch=4096 n=10 encodeMs=(p50=379.54 p99=457.44) gpuWaitMs=(p50=938.72 p99=1007.04)
+01:50:17.167  [LEGAL-COST] step=760 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.86 p99=11.34) p2ms=(p50=8.00 p99=9.86) p3ms=(p50=1347.34 p99=1465.03) legalMaskMs=(p50=11.64 p99=11.83) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1417.59 p99=1533.77) gapMs=(p50=57.40)
+01:50:30.741  [ENCODE-COST] step=769 batch=4096 n=10 encodeMs=(p50=542.18 p99=564.95) gpuWaitMs=(p50=750.73 p99=912.76)
+01:50:30.742  [LEGAL-COST] step=770 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.06 p99=12.55) p2ms=(p50=7.87 p99=9.26) p3ms=(p50=1313.90 p99=1329.24) legalMaskMs=(p50=11.88 p99=12.30) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1386.04 p99=1401.36) gapMs=(p50=59.22)
+01:50:44.679  [ENCODE-COST] step=779 batch=4096 n=10 encodeMs=(p50=542.73 p99=562.70) gpuWaitMs=(p50=756.19 p99=775.58)
+01:50:44.679  [LEGAL-COST] step=780 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.20 p99=11.36) p2ms=(p50=9.33 p99=10.00) p3ms=(p50=1324.57 p99=1341.63) legalMaskMs=(p50=11.90 p99=12.18) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1399.66 p99=1414.12) gapMs=(p50=60.57)
+01:50:58.645  [ENCODE-COST] step=789 batch=4096 n=10 encodeMs=(p50=551.64 p99=586.59) gpuWaitMs=(p50=739.52 p99=861.03)
+01:50:58.645  [LEGAL-COST] step=790 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.26 p99=13.73) p2ms=(p50=7.97 p99=9.70) p3ms=(p50=1318.06 p99=1379.48) legalMaskMs=(p50=11.88 p99=12.18) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1391.15 p99=1449.42) gapMs=(p50=59.87)
+01:51:12.646  [ENCODE-COST] step=799 batch=4096 n=10 encodeMs=(p50=555.00 p99=600.93) gpuWaitMs=(p50=759.87 p99=784.66)
+01:51:12.646  [LEGAL-COST] step=800 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.27 p99=12.66) p2ms=(p50=9.18 p99=10.12) p3ms=(p50=1321.44 p99=1391.29) legalMaskMs=(p50=11.69 p99=12.16) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1394.24 p99=1463.54) gapMs=(p50=58.35)
+01:51:12.646  [REPLAY] step=800 loss=3.9075 pLoss=3.0606 vLoss=0.8128 pEnt=2.819 pIllM=0.0341 playedP=0.140 pW=0.47 pD=0.07 pL=0.46 vAbs=0.165 pLogitMean=-2.9331 vLogitMean=0.7074 gNorm=0.702 lr=0.8 ms=1311.3 buf=500000 plies=7067936 games=106984 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=800
+01:51:12.647  [LAYER-HEALTH] live trainerStep=800 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=2 alwaysOn=0 worst=value.bn(dead 5 off 2 on 0) maxBetaOverGamma=+0.88@policy.pre_bn[108] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=51.0@stem.bn[74] rezero=none nonFinite=0
+01:51:14.106  [KL-PROBE] step=800 batch=4096 kl=0.127185 klSd=0.068201 klSd/kl=0.54 drop=0.000 gpu=1282.4ms probe=83.3ms overhead=6.5% amortized@100=0.06%
+01:51:26.844  [ENCODE-COST] step=809 batch=4096 n=10 encodeMs=(p50=498.01 p99=613.47) gpuWaitMs=(p50=915.55 p99=964.26)
+01:51:26.845  [LEGAL-COST] step=810 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.84 p99=13.24) p2ms=(p50=8.53 p99=9.95) p3ms=(p50=1353.97 p99=1458.95) legalMaskMs=(p50=11.66 p99=12.39) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1425.97 p99=1531.36) gapMs=(p50=58.63)
+01:51:40.637  [ENCODE-COST] step=819 batch=4096 n=10 encodeMs=(p50=376.70 p99=506.83) gpuWaitMs=(p50=918.13 p99=948.60)
+01:51:40.637  [LEGAL-COST] step=820 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.02 p99=12.97) p2ms=(p50=7.38 p99=8.99) p3ms=(p50=1320.39 p99=1354.63) legalMaskMs=(p50=11.55 p99=11.82) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1388.47 p99=1432.64) gapMs=(p50=55.68)
+01:51:54.598  [ENCODE-COST] step=829 batch=4096 n=10 encodeMs=(p50=518.11 p99=636.98) gpuWaitMs=(p50=811.17 p99=947.08)
+01:51:54.598  [LEGAL-COST] step=830 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.06 p99=11.30) p2ms=(p50=7.39 p99=9.84) p3ms=(p50=1311.40 p99=1489.09) legalMaskMs=(p50=11.68 p99=12.10) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1379.00 p99=1565.76) gapMs=(p50=55.15)
+01:52:08.502  [ENCODE-COST] step=839 batch=4096 n=10 encodeMs=(p50=379.08 p99=499.31) gpuWaitMs=(p50=919.53 p99=959.11)
+01:52:08.502  [LEGAL-COST] step=840 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.18 p99=13.51) p2ms=(p50=7.42 p99=8.76) p3ms=(p50=1321.03 p99=1479.94) legalMaskMs=(p50=11.48 p99=11.89) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1393.28 p99=1552.52) gapMs=(p50=59.65)
+01:52:22.518  [ENCODE-COST] step=849 batch=4096 n=10 encodeMs=(p50=370.90 p99=416.60) gpuWaitMs=(p50=943.78 p99=977.71)
+01:52:22.518  [LEGAL-COST] step=850 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.03 p99=12.79) p2ms=(p50=7.93 p99=9.55) p3ms=(p50=1338.61 p99=1402.06) legalMaskMs=(p50=11.53 p99=11.96) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1407.86 p99=1479.54) gapMs=(p50=56.29)
+01:52:22.518  [REPLAY] step=850 loss=3.8296 pLoss=2.9790 vLoss=0.8140 pEnt=2.852 pIllM=0.0366 playedP=0.143 pW=0.50 pD=0.07 pL=0.44 vAbs=0.221 pLogitMean=-3.4569 vLogitMean=0.7176 gNorm=0.501 lr=0.85 ms=1408.7 buf=500000 plies=7494593 games=113499 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=850
+01:52:22.519  [LAYER-HEALTH] live trainerStep=850 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=1 alwaysOn=0 worst=value.bn(dead 5 off 1 on 0) maxBetaOverGamma=+0.96@policy.pre_bn[108] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=45.8@stem.bn[74] rezero=none nonFinite=0
+01:52:36.331  [ENCODE-COST] step=859 batch=4096 n=10 encodeMs=(p50=374.05 p99=440.00) gpuWaitMs=(p50=927.77 p99=948.96)
+01:52:36.331  [LEGAL-COST] step=860 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.17 p99=11.99) p2ms=(p50=7.51 p99=9.34) p3ms=(p50=1318.08 p99=1408.43) legalMaskMs=(p50=11.74 p99=12.62) legalMaskPerPosUs=(p50=2.9 p99=3.1) interStepMs=(p50=1385.23 p99=1477.90) gapMs=(p50=55.47)
+01:52:50.268  [ENCODE-COST] step=869 batch=4096 n=10 encodeMs=(p50=366.19 p99=422.39) gpuWaitMs=(p50=936.27 p99=989.49)
+01:52:50.268  [LEGAL-COST] step=870 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.36 p99=11.98) p2ms=(p50=7.78 p99=9.35) p3ms=(p50=1324.49 p99=1371.79) legalMaskMs=(p50=11.67 p99=11.90) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1394.22 p99=1441.99) gapMs=(p50=56.59)
+01:53:04.037  [ENCODE-COST] step=879 batch=4096 n=10 encodeMs=(p50=376.48 p99=490.70) gpuWaitMs=(p50=909.78 p99=1000.67)
+01:53:04.037  [LEGAL-COST] step=880 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.15 p99=12.54) p2ms=(p50=8.57 p99=9.34) p3ms=(p50=1319.34 p99=1397.50) legalMaskMs=(p50=11.52 p99=11.94) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1391.58 p99=1467.25) gapMs=(p50=58.52)
+01:53:18.045  [ENCODE-COST] step=889 batch=4096 n=10 encodeMs=(p50=397.52 p99=522.35) gpuWaitMs=(p50=922.08 p99=952.09)
+01:53:18.045  [LEGAL-COST] step=890 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.36 p99=11.93) p2ms=(p50=8.11 p99=9.08) p3ms=(p50=1331.20 p99=1458.49) legalMaskMs=(p50=11.58 p99=12.65) legalMaskPerPosUs=(p50=2.8 p99=3.1) interStepMs=(p50=1400.50 p99=1530.26) gapMs=(p50=55.83)
+01:53:31.978  [ENCODE-COST] step=899 batch=4096 n=10 encodeMs=(p50=461.49 p99=578.99) gpuWaitMs=(p50=895.38 p99=940.43)
+01:53:31.978  [LEGAL-COST] step=900 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=3.86 p99=13.49) p2ms=(p50=7.42 p99=9.86) p3ms=(p50=1350.08 p99=1472.41) legalMaskMs=(p50=11.61 p99=12.41) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1422.05 p99=1545.08) gapMs=(p50=60.69)
+01:53:31.978  [REPLAY] step=900 loss=3.9319 pLoss=3.0806 vLoss=0.8076 pEnt=2.876 pIllM=0.0437 playedP=0.125 pW=0.48 pD=0.06 pL=0.46 vAbs=0.193 pLogitMean=-3.8032 vLogitMean=0.7092 gNorm=0.658 lr=0.9 ms=1302.5 buf=500000 plies=7921223 games=119988 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=900
+01:53:31.979  [LAYER-HEALTH] live trainerStep=900 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=2 alwaysOn=0 worst=value.bn(dead 5 off 2 on 0) maxBetaOverGamma=+1.01@policy.pre_bn[108] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=42.0@stem.bn[74] rezero=none nonFinite=0
+01:53:33.619  [KL-PROBE] step=900 batch=4096 kl=0.159745 klSd=0.101063 klSd/kl=0.63 drop=0.000 gpu=1328.2ms probe=220.5ms overhead=16.6% amortized@100=0.17%
+01:53:46.594  [ENCODE-COST] step=909 batch=4096 n=10 encodeMs=(p50=325.46 p99=418.48) gpuWaitMs=(p50=1018.84 p99=1062.64)
+01:53:46.595  [LEGAL-COST] step=910 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.90 p99=9.37) p2ms=(p50=7.65 p99=8.06) p3ms=(p50=1386.76 p99=1568.38) legalMaskMs=(p50=10.80 p99=12.65) legalMaskPerPosUs=(p50=2.6 p99=3.1) interStepMs=(p50=1453.12 p99=1641.35) gapMs=(p50=55.80)
+01:54:00.962  [ENCODE-COST] step=919 batch=4096 n=10 encodeMs=(p50=330.72 p99=409.37) gpuWaitMs=(p50=1015.82 p99=1064.05)
+01:54:00.962  [LEGAL-COST] step=920 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.51 p99=9.74) p2ms=(p50=7.47 p99=8.08) p3ms=(p50=1374.36 p99=1397.07) legalMaskMs=(p50=10.82 p99=10.92) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1439.76 p99=1464.59) gapMs=(p50=55.42)
+01:54:15.247  [ENCODE-COST] step=929 batch=4096 n=10 encodeMs=(p50=327.08 p99=413.86) gpuWaitMs=(p50=1011.40 p99=1053.47)
+01:54:15.247  [LEGAL-COST] step=930 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.62 p99=9.41) p2ms=(p50=6.70 p99=8.30) p3ms=(p50=1369.81 p99=1389.61) legalMaskMs=(p50=10.80 p99=11.07) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1435.83 p99=1456.09) gapMs=(p50=56.71)
+01:54:29.628  [ENCODE-COST] step=939 batch=4096 n=10 encodeMs=(p50=328.29 p99=417.94) gpuWaitMs=(p50=1022.61 p99=1067.25)
+01:54:29.628  [LEGAL-COST] step=940 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.57 p99=9.34) p2ms=(p50=7.55 p99=7.92) p3ms=(p50=1381.78 p99=1407.06) legalMaskMs=(p50=10.82 p99=10.91) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1446.81 p99=1473.97) gapMs=(p50=54.91)
+01:54:43.945  [ENCODE-COST] step=949 batch=4096 n=10 encodeMs=(p50=319.89 p99=410.03) gpuWaitMs=(p50=1022.88 p99=1052.15)
+01:54:43.945  [LEGAL-COST] step=950 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.79 p99=9.41) p2ms=(p50=7.57 p99=7.89) p3ms=(p50=1369.28 p99=1393.49) legalMaskMs=(p50=10.83 p99=10.97) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1435.68 p99=1459.71) gapMs=(p50=56.04)
+01:54:43.945  [REPLAY] step=950 loss=3.7970 pLoss=2.9706 vLoss=0.7947 pEnt=2.890 pIllM=0.0317 playedP=0.140 pW=0.49 pD=0.06 pL=0.46 vAbs=0.190 pLogitMean=-4.2951 vLogitMean=0.6955 gNorm=0.448 lr=0.95 ms=1366.2 buf=500000 plies=8347899 games=126489 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=950
+01:54:43.946  [LAYER-HEALTH] live trainerStep=950 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=2 alwaysOn=0 worst=value.bn(dead 5 off 2 on 0) maxBetaOverGamma=+1.07@policy.pre_bn[108] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=37.1@stem.bn[74] rezero=none nonFinite=0
+01:54:58.256  [ENCODE-COST] step=959 batch=4096 n=10 encodeMs=(p50=330.74 p99=385.56) gpuWaitMs=(p50=1020.96 p99=1048.47)
+01:54:58.257  [LEGAL-COST] step=960 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.57 p99=9.85) p2ms=(p50=7.69 p99=8.12) p3ms=(p50=1372.61 p99=1400.42) legalMaskMs=(p50=10.85 p99=11.01) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1439.67 p99=1467.54) gapMs=(p50=56.79)
+01:55:12.702  [ENCODE-COST] step=969 batch=4096 n=10 encodeMs=(p50=331.07 p99=396.10) gpuWaitMs=(p50=1025.32 p99=1083.99)
+01:55:12.702  [LEGAL-COST] step=970 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.55 p99=9.16) p2ms=(p50=7.78 p99=8.15) p3ms=(p50=1362.94 p99=1479.51) legalMaskMs=(p50=10.67 p99=10.83) legalMaskPerPosUs=(p50=2.6 p99=2.6) interStepMs=(p50=1432.62 p99=1546.75) gapMs=(p50=59.35)
+01:55:27.043  [ENCODE-COST] step=979 batch=4096 n=10 encodeMs=(p50=337.91 p99=432.15) gpuWaitMs=(p50=1005.91 p99=1050.95)
+01:55:27.044  [LEGAL-COST] step=980 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.53 p99=9.38) p2ms=(p50=7.50 p99=7.85) p3ms=(p50=1366.42 p99=1411.35) legalMaskMs=(p50=10.78 p99=10.94) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1433.58 p99=1478.40) gapMs=(p50=57.13)
+01:55:40.548  [ENCODE-COST] step=989 batch=4096 n=10 encodeMs=(p50=322.43 p99=574.22) gpuWaitMs=(p50=968.54 p99=1033.90)
+01:55:40.549  [LEGAL-COST] step=990 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.87 p99=9.48) p2ms=(p50=7.68 p99=9.74) p3ms=(p50=1328.75 p99=1376.96) legalMaskMs=(p50=10.86 p99=11.04) legalMaskPerPosUs=(p50=2.7 p99=2.7) interStepMs=(p50=1402.35 p99=1444.67) gapMs=(p50=63.04)
+01:55:54.938  [ENCODE-COST] step=999 batch=4096 n=10 encodeMs=(p50=325.88 p99=401.71) gpuWaitMs=(p50=1032.36 p99=1068.02)
+01:55:54.939  [LEGAL-COST] step=1000 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.89 p99=9.55) p2ms=(p50=7.45 p99=7.78) p3ms=(p50=1378.89 p99=1425.57) legalMaskMs=(p50=10.91 p99=11.05) legalMaskPerPosUs=(p50=2.7 p99=2.7) interStepMs=(p50=1445.49 p99=1491.26) gapMs=(p50=56.25)
+01:55:54.939  [REPLAY] step=1000 loss=3.8029 pLoss=2.9621 vLoss=0.8127 pEnt=2.874 pIllM=0.0281 playedP=0.139 pW=0.47 pD=0.07 pL=0.46 vAbs=0.186 pLogitMean=-4.5030 vLogitMean=0.6822 gNorm=0.498 lr=1 ms=1353.8 buf=500000 plies=8774530 games=132916 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=1000
+01:55:54.940  [LAYER-HEALTH] live trainerStep=1000 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=2 alwaysOn=0 worst=value.bn(dead 5 off 2 on 0) maxBetaOverGamma=+1.09@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=36.7@stem.bn[74] rezero=none nonFinite=0
+01:55:55.139  [PARAM] dropoutRate applied to training graph: 0.1000
+01:55:55.188  [MASK CHECK] pos=0 movedIdx=3882 inLegalMask=true legalCount=30
+01:55:55.188  [MASK CHECK] pos=1 movedIdx=36 inLegalMask=true legalCount=30
+01:55:55.188  [MASK CHECK] pos=2 movedIdx=3641 inLegalMask=true legalCount=29
+01:55:55.188  [MASK CHECK] pos=3 movedIdx=3188 inLegalMask=true legalCount=32
+01:55:55.188  [MASK CHECK] pos=4 movedIdx=36 inLegalMask=true legalCount=30
+01:55:55.188  [MASK CHECK] pos=5 movedIdx=3882 inLegalMask=true legalCount=30
+01:55:55.188  [MASK CHECK] pos=6 movedIdx=4094 inLegalMask=true legalCount=29
+01:55:55.188  [MASK CHECK] pos=7 movedIdx=1020 inLegalMask=true legalCount=28
+01:55:55.188  [EXEC] reducedPrecisionFastMath default=0 override=nil
+01:55:55.208  [EXEC] compiled training executable batch=16 diagnostics=false klStash=false targets=5
+01:55:55.543  [REPLAY] saved trainer model (autosave) step=1000 trainerStep=1000 nextGame=132916 shard=0 epoch=0 -> 20261005-lrB-cyc1-replay-latest.safetensors
+01:55:55.550  [LAYER-HEALTH] checkpoint replay-autosave step=1000 trainerStep=1000 scope=all_tensors reluSites=9/10 ch=1040 dead=5 off=2 alwaysOn=0 worst=value.bn(dead 5 off 2 on 0) maxBetaOverGamma=+1.09@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=36.7@stem.bn[74] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=10/128 maxAbs=32.92@blocks.0.bn2.running_var
+01:55:55.550  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+01:55:55.550  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+01:55:55.550  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.13 [69]         +0.08 [26]           36.7 [74]
+01:55:55.550  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.29 [62]         +0.16 [18]            1.8 [31]
+01:55:55.550  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -0.48 [126]        -0.08 [41]           12.4 [96]
+01:55:55.550  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -0.27 [76]         +0.16 [31]            4.6 [31]
+01:55:55.550  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -0.62 [20]         -0.11 [110]           3.3 [73]
+01:55:55.550  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -0.41 [11]         +0.17 [31]            5.8 [31]
+01:55:55.550  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -0.55 [73]         -0.14 [30]            1.8 [26]
+01:55:55.550  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.21 [58]         +0.66 [31]            3.9 [75]
+01:55:55.550  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.83 [26]         +1.09 [60]            2.8 [60]
+01:55:55.550  [LAYER-HEALTH]     value.bn        relu           16      5      2      0      0      0    -10.63 [7]          -0.57 [10]            2.2 [8]
+01:55:55.550  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+01:55:55.550  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 10 [10,18,28,29,36,49,54,60,119,123]  low 17  median unit norm 0.001649
+01:55:55.550  [LAYER-HEALTH]     (no SE blocks)
+01:55:55.550  [LAYER-HEALTH]   ReZero: none
+01:55:55.550  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+01:55:55.550  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 32.92, blocks.1.bn2.running_var 7.774, policy.pre_bn.running_var 6.562, blocks.2.bn2.running_var 6.041, blocks.0.bn2.running_mean 5.717
+01:55:55.564  [REPLAY] enumerated checkpoint -> 20261005-lrB-cyc1-replay-step1000.safetensors
+01:55:57.103  [KL-PROBE] step=1000 batch=4096 kl=0.122270 klSd=0.062228 klSd/kl=0.51 drop=0.000 gpu=1225.0ms probe=223.3ms overhead=18.2% amortized@100=0.18%
+01:56:09.736  [ENCODE-COST] step=1009 batch=4096 n=10 encodeMs=(p50=377.02 p99=421.48) gpuWaitMs=(p50=927.30 p99=947.42)
+01:56:09.736  [LEGAL-COST] step=1010 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.89 p99=13.03) p2ms=(p50=7.82 p99=9.05) p3ms=(p50=1332.73 p99=1470.79) legalMaskMs=(p50=11.45 p99=11.64) legalMaskPerPosUs=(p50=2.8 p99=2.8) interStepMs=(p50=1402.09 p99=2164.23) gapMs=(p50=56.65)
+01:56:23.508  [ENCODE-COST] step=1019 batch=4096 n=10 encodeMs=(p50=515.84 p99=598.69) gpuWaitMs=(p50=780.51 p99=881.49)
+01:56:23.508  [LEGAL-COST] step=1020 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.06 p99=11.89) p2ms=(p50=8.60 p99=9.81) p3ms=(p50=1318.06 p99=1440.68) legalMaskMs=(p50=11.72 p99=12.26) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1385.77 p99=1515.41) gapMs=(p50=54.04)
+01:56:37.472  [ENCODE-COST] step=1029 batch=4096 n=10 encodeMs=(p50=400.29 p99=504.84) gpuWaitMs=(p50=917.56 p99=992.47)
+01:56:37.472  [LEGAL-COST] step=1030 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.79 p99=13.22) p2ms=(p50=7.65 p99=9.06) p3ms=(p50=1339.63 p99=1486.96) legalMaskMs=(p50=11.62 p99=11.88) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1418.02 p99=1556.79) gapMs=(p50=65.96)
+01:56:51.337  [ENCODE-COST] step=1039 batch=4096 n=10 encodeMs=(p50=382.91 p99=504.02) gpuWaitMs=(p50=917.89 p99=941.93)
+01:56:51.337  [LEGAL-COST] step=1040 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.56 p99=13.16) p2ms=(p50=8.21 p99=8.81) p3ms=(p50=1321.72 p99=1467.44) legalMaskMs=(p50=11.64 p99=12.31) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1393.57 p99=1538.49) gapMs=(p50=58.09)
+01:57:04.808  [ENCODE-COST] step=1049 batch=4096 n=10 encodeMs=(p50=474.65 p99=520.78) gpuWaitMs=(p50=787.92 p99=944.43)
+01:57:04.808  [LEGAL-COST] step=1050 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.11 p99=12.01) p2ms=(p50=8.36 p99=9.03) p3ms=(p50=1313.18 p99=1333.73) legalMaskMs=(p50=11.68 p99=12.57) legalMaskPerPosUs=(p50=2.9 p99=3.1) interStepMs=(p50=1384.94 p99=1403.80) gapMs=(p50=58.30)
+01:57:04.808  [REPLAY] step=1050 loss=3.7557 pLoss=2.9096 vLoss=0.8185 pEnt=2.874 pIllM=0.0276 playedP=0.139 pW=0.45 pD=0.07 pL=0.49 vAbs=0.209 pLogitMean=-4.7846 vLogitMean=0.6871 gNorm=0.479 lr=0.998 ms=1181.1 buf=500000 plies=9201214 games=139396 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=1050
+01:57:04.809  [LAYER-HEALTH] live trainerStep=1050 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=2 alwaysOn=0 worst=value.bn(dead 5 off 2 on 0) maxBetaOverGamma=+1.10@policy.pre_bn[108] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=33.9@stem.bn[74] rezero=none nonFinite=0
+01:57:19.006  [ENCODE-COST] step=1059 batch=4096 n=10 encodeMs=(p50=537.53 p99=626.13) gpuWaitMs=(p50=747.27 p99=941.90)
+01:57:19.007  [LEGAL-COST] step=1060 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.03 p99=12.39) p2ms=(p50=8.57 p99=10.17) p3ms=(p50=1334.61 p99=1482.56) legalMaskMs=(p50=11.74 p99=12.18) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1404.20 p99=1549.98) gapMs=(p50=56.99)
+01:57:32.915  [ENCODE-COST] step=1069 batch=4096 n=10 encodeMs=(p50=378.83 p99=426.59) gpuWaitMs=(p50=910.87 p99=946.12)
+01:57:32.916  [LEGAL-COST] step=1070 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.06 p99=11.88) p2ms=(p50=7.41 p99=9.21) p3ms=(p50=1323.32 p99=1337.27) legalMaskMs=(p50=11.69 p99=11.96) legalMaskPerPosUs=(p50=2.9 p99=2.9) interStepMs=(p50=1394.17 p99=1410.78) gapMs=(p50=58.38)
+01:57:46.651  [ENCODE-COST] step=1079 batch=4096 n=10 encodeMs=(p50=369.81 p99=407.00) gpuWaitMs=(p50=921.11 p99=972.42)
+01:57:46.652  [LEGAL-COST] step=1080 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.77 p99=13.03) p2ms=(p50=7.60 p99=9.20) p3ms=(p50=1319.35 p99=1362.78) legalMaskMs=(p50=11.63 p99=11.82) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1390.31 p99=1434.09) gapMs=(p50=58.58)
+01:58:00.539  [ENCODE-COST] step=1089 batch=4096 n=10 encodeMs=(p50=480.60 p99=523.25) gpuWaitMs=(p50=833.42 p99=958.06)
+01:58:00.539  [LEGAL-COST] step=1090 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.49 p99=11.99) p2ms=(p50=8.06 p99=9.47) p3ms=(p50=1315.06 p99=1455.84) legalMaskMs=(p50=11.77 p99=12.22) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1388.31 p99=1530.20) gapMs=(p50=59.70)
+01:58:14.291  [ENCODE-COST] step=1099 batch=4096 n=10 encodeMs=(p50=491.43 p99=524.19) gpuWaitMs=(p50=792.88 p99=919.66)
+01:58:14.292  [LEGAL-COST] step=1100 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=3.77 p99=12.29) p2ms=(p50=8.64 p99=9.92) p3ms=(p50=1303.03 p99=1457.59) legalMaskMs=(p50=11.81 p99=12.23) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1374.91 p99=1531.52) gapMs=(p50=59.47)
+01:58:14.292  [REPLAY] step=1100 loss=3.7635 pLoss=2.9367 vLoss=0.8019 pEnt=2.871 pIllM=0.0250 playedP=0.145 pW=0.48 pD=0.06 pL=0.46 vAbs=0.205 pLogitMean=-5.0900 vLogitMean=0.6811 gNorm=0.428 lr=0.993 ms=1324.5 buf=500000 plies=9627836 games=145925 rejected=0 skipped=0 epoch=0 mom=0.8501 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=1100
+01:58:14.292  [LAYER-HEALTH] live trainerStep=1100 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=2 alwaysOn=0 worst=value.bn(dead 5 off 2 on 0) maxBetaOverGamma=+1.27@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=31.0@stem.bn[74] rezero=none nonFinite=0
+01:58:16.054  [KL-PROBE] step=1100 batch=4096 kl=0.050738 klSd=0.034584 klSd/kl=0.68 drop=0.000 gpu=1456.8ms probe=209.9ms overhead=14.4% amortized@100=0.14%
+01:58:29.043  [ENCODE-COST] step=1109 batch=4096 n=10 encodeMs=(p50=347.88 p99=514.81) gpuWaitMs=(p50=1011.48 p99=1058.12)
+01:58:29.043  [LEGAL-COST] step=1110 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.78 p99=9.19) p2ms=(p50=7.57 p99=8.77) p3ms=(p50=1381.86 p99=1687.62) legalMaskMs=(p50=10.89 p99=11.72) legalMaskPerPosUs=(p50=2.7 p99=2.9) interStepMs=(p50=1448.89 p99=1762.60) gapMs=(p50=56.68)
+01:58:43.408  [ENCODE-COST] step=1119 batch=4096 n=10 encodeMs=(p50=331.65 p99=392.63) gpuWaitMs=(p50=1025.57 p99=1061.54)
+01:58:43.408  [LEGAL-COST] step=1120 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.68 p99=9.49) p2ms=(p50=7.50 p99=8.11) p3ms=(p50=1381.24 p99=1394.61) legalMaskMs=(p50=10.85 p99=11.00) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1447.14 p99=1461.00) gapMs=(p50=55.72)
+01:58:57.714  [ENCODE-COST] step=1129 batch=4096 n=10 encodeMs=(p50=331.44 p99=406.83) gpuWaitMs=(p50=1019.89 p99=1033.47)
+01:58:57.714  [LEGAL-COST] step=1130 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.47 p99=9.49) p2ms=(p50=7.49 p99=7.72) p3ms=(p50=1361.39 p99=1417.98) legalMaskMs=(p50=10.83 p99=11.29) legalMaskPerPosUs=(p50=2.6 p99=2.8) interStepMs=(p50=1428.36 p99=1484.57) gapMs=(p50=57.01)
+01:59:11.991  [ENCODE-COST] step=1139 batch=4096 n=10 encodeMs=(p50=329.20 p99=397.11) gpuWaitMs=(p50=1012.99 p99=1047.70)
+01:59:11.991  [LEGAL-COST] step=1140 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.55 p99=9.46) p2ms=(p50=7.60 p99=7.96) p3ms=(p50=1365.87 p99=1393.88) legalMaskMs=(p50=10.87 p99=11.07) legalMaskPerPosUs=(p50=2.7 p99=2.7) interStepMs=(p50=1437.97 p99=1460.90) gapMs=(p50=61.95)
+01:59:26.354  [ENCODE-COST] step=1149 batch=4096 n=10 encodeMs=(p50=331.52 p99=398.18) gpuWaitMs=(p50=1031.58 p99=1053.82)
+01:59:26.355  [LEGAL-COST] step=1150 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.80 p99=9.18) p2ms=(p50=6.65 p99=7.88) p3ms=(p50=1372.94 p99=1406.25) legalMaskMs=(p50=10.78 p99=11.01) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1439.76 p99=1473.37) gapMs=(p50=57.38)
+01:59:26.355  [REPLAY] step=1150 loss=3.7716 pLoss=2.9290 vLoss=0.8189 pEnt=2.818 pIllM=0.0237 playedP=0.147 pW=0.48 pD=0.06 pL=0.47 vAbs=0.215 pLogitMean=-5.2620 vLogitMean=0.6697 gNorm=0.605 lr=0.985 ms=1360.4 buf=500000 plies=10054477 games=152388 rejected=0 skipped=0 epoch=0 mom=0.8502 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=1150
+01:59:26.356  [LAYER-HEALTH] live trainerStep=1150 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=2 alwaysOn=0 worst=value.bn(dead 5 off 2 on 0) maxBetaOverGamma=+1.15@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=28.4@stem.bn[74] rezero=none nonFinite=0
+01:59:40.638  [ENCODE-COST] step=1159 batch=4096 n=10 encodeMs=(p50=326.21 p99=335.45) gpuWaitMs=(p50=1027.70 p99=1045.05)
+01:59:40.638  [LEGAL-COST] step=1160 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.54 p99=9.37) p2ms=(p50=7.43 p99=7.96) p3ms=(p50=1362.37 p99=1401.05) legalMaskMs=(p50=10.75 p99=10.96) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1432.61 p99=1467.81) gapMs=(p50=60.27)
+01:59:54.954  [ENCODE-COST] step=1169 batch=4096 n=10 encodeMs=(p50=333.88 p99=415.43) gpuWaitMs=(p50=1016.47 p99=1032.76)
+01:59:54.954  [LEGAL-COST] step=1170 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.45 p99=9.49) p2ms=(p50=6.56 p99=7.74) p3ms=(p50=1377.05 p99=1390.02) legalMaskMs=(p50=10.71 p99=10.86) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1443.04 p99=1462.54) gapMs=(p50=56.97)
+02:00:09.394  [ENCODE-COST] step=1179 batch=4096 n=10 encodeMs=(p50=328.82 p99=414.54) gpuWaitMs=(p50=1029.35 p99=1081.50)
+02:00:09.395  [LEGAL-COST] step=1180 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.84 p99=9.17) p2ms=(p50=7.51 p99=8.04) p3ms=(p50=1372.74 p99=1430.67) legalMaskMs=(p50=10.82 p99=10.94) legalMaskPerPosUs=(p50=2.6 p99=2.7) interStepMs=(p50=1438.85 p99=1503.53) gapMs=(p50=55.77)
+02:00:23.134  [ENCODE-COST] step=1189 batch=4096 n=10 encodeMs=(p50=285.97 p99=331.73) gpuWaitMs=(p50=989.64 p99=1024.74)
+02:00:23.134  [LEGAL-COST] step=1190 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.12 p99=13.41) p2ms=(p50=8.98 p99=9.94) p3ms=(p50=1316.58 p99=1365.03) legalMaskMs=(p50=11.68 p99=12.46) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1385.78 p99=1430.56) gapMs=(p50=56.10)
+02:00:37.491  [ENCODE-COST] step=1199 batch=4096 n=10 encodeMs=(p50=328.93 p99=358.03) gpuWaitMs=(p50=1015.17 p99=1057.43)
+02:00:37.491  [LEGAL-COST] step=1200 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=2.45 p99=9.77) p2ms=(p50=7.47 p99=7.70) p3ms=(p50=1374.00 p99=1424.03) legalMaskMs=(p50=10.75 p99=11.34) legalMaskPerPosUs=(p50=2.6 p99=2.8) interStepMs=(p50=1438.82 p99=1496.72) gapMs=(p50=54.90)
+02:00:37.491  [REPLAY] step=1200 loss=3.7360 pLoss=2.9080 vLoss=0.8064 pEnt=2.831 pIllM=0.0217 playedP=0.153 pW=0.48 pD=0.06 pL=0.46 vAbs=0.196 pLogitMean=-5.4529 vLogitMean=0.6852 gNorm=0.592 lr=0.973 ms=1393.4 buf=500000 plies=10481119 games=158937 rejected=0 skipped=0 epoch=0 mom=0.8504 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=1200
+02:00:37.492  [LAYER-HEALTH] live trainerStep=1200 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=2 alwaysOn=0 worst=value.bn(dead 5 off 2 on 0) maxBetaOverGamma=+1.15@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=26.6@stem.bn[74] rezero=none nonFinite=0
+02:00:39.043  [KL-PROBE] step=1200 batch=4096 kl=0.062483 klSd=0.044457 klSd/kl=0.71 drop=0.000 gpu=1343.2ms probe=110.1ms overhead=8.2% amortized@100=0.08%
+02:00:51.671  [ENCODE-COST] step=1209 batch=4096 n=10 encodeMs=(p50=546.11 p99=618.60) gpuWaitMs=(p50=787.31 p99=927.79)
+02:00:51.672  [LEGAL-COST] step=1210 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.36 p99=10.21) p2ms=(p50=7.35 p99=10.06) p3ms=(p50=1386.89 p99=1483.79) legalMaskMs=(p50=11.87 p99=12.54) legalMaskPerPosUs=(p50=2.9 p99=3.1) interStepMs=(p50=1461.02 p99=1552.52) gapMs=(p50=61.43)
+02:01:05.454  [ENCODE-COST] step=1219 batch=4096 n=10 encodeMs=(p50=494.53 p99=537.71) gpuWaitMs=(p50=793.05 p99=953.38)
+02:01:05.454  [LEGAL-COST] step=1220 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.88 p99=11.23) p2ms=(p50=8.18 p99=9.02) p3ms=(p50=1306.08 p99=1511.35) legalMaskMs=(p50=11.57 p99=11.76) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1377.12 p99=1583.50) gapMs=(p50=57.97)
+02:01:19.414  [ENCODE-COST] step=1229 batch=4096 n=10 encodeMs=(p50=479.44 p99=508.01) gpuWaitMs=(p50=905.31 p99=947.55)
+02:01:19.415  [LEGAL-COST] step=1230 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.28 p99=12.36) p2ms=(p50=7.88 p99=9.36) p3ms=(p50=1308.25 p99=1461.25) legalMaskMs=(p50=11.68 p99=12.04) legalMaskPerPosUs=(p50=2.9 p99=2.9) interStepMs=(p50=1379.26 p99=1533.00) gapMs=(p50=57.85)
+02:01:33.278  [ENCODE-COST] step=1239 batch=4096 n=10 encodeMs=(p50=378.25 p99=423.03) gpuWaitMs=(p50=920.31 p99=949.73)
+02:01:33.279  [LEGAL-COST] step=1240 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.90 p99=11.51) p2ms=(p50=7.44 p99=9.32) p3ms=(p50=1324.58 p99=1332.54) legalMaskMs=(p50=11.74 p99=11.97) legalMaskPerPosUs=(p50=2.9 p99=2.9) interStepMs=(p50=1396.36 p99=1411.17) gapMs=(p50=59.45)
+02:01:47.127  [ENCODE-COST] step=1249 batch=4096 n=10 encodeMs=(p50=370.54 p99=411.48) gpuWaitMs=(p50=912.45 p99=985.28)
+02:01:47.128  [LEGAL-COST] step=1250 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.03 p99=13.01) p2ms=(p50=7.44 p99=9.37) p3ms=(p50=1313.41 p99=1384.95) legalMaskMs=(p50=11.56 p99=11.68) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1389.36 p99=1456.28) gapMs=(p50=63.48)
+02:01:47.128  [REPLAY] step=1250 loss=3.7700 pLoss=2.9400 vLoss=0.8098 pEnt=2.907 pIllM=0.0201 playedP=0.141 pW=0.50 pD=0.07 pL=0.43 vAbs=0.185 pLogitMean=-5.6555 vLogitMean=0.6493 gNorm=0.434 lr=0.958 ms=1320.2 buf=500000 plies=10907775 games=165443 rejected=0 skipped=0 epoch=0 mom=0.8506 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=1250
+02:01:47.128  [LAYER-HEALTH] live trainerStep=1250 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=5 off=2 alwaysOn=0 worst=value.bn(dead 5 off 2 on 0) maxBetaOverGamma=+1.27@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=40.3@stem.bn[102] rezero=none nonFinite=0
+02:02:00.716  [ENCODE-COST] step=1259 batch=4096 n=10 encodeMs=(p50=465.79 p99=525.75) gpuWaitMs=(p50=797.02 p99=951.95)
+02:02:00.717  [LEGAL-COST] step=1260 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.58 p99=10.24) p2ms=(p50=7.75 p99=9.72) p3ms=(p50=1313.06 p99=1347.12) legalMaskMs=(p50=11.70 p99=12.47) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1385.52 p99=1418.65) gapMs=(p50=60.12)
+02:02:14.595  [ENCODE-COST] step=1269 batch=4096 n=10 encodeMs=(p50=552.01 p99=566.72) gpuWaitMs=(p50=750.46 p99=831.80)
+02:02:14.596  [LEGAL-COST] step=1270 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.17 p99=10.99) p2ms=(p50=7.73 p99=9.69) p3ms=(p50=1322.56 p99=1333.03) legalMaskMs=(p50=12.13 p99=12.25) legalMaskPerPosUs=(p50=3.0 p99=3.0) interStepMs=(p50=1394.36 p99=1404.52) gapMs=(p50=58.90)
+02:02:28.471  [ENCODE-COST] step=1279 batch=4096 n=10 encodeMs=(p50=546.21 p99=560.72) gpuWaitMs=(p50=746.56 p99=768.78)
+02:02:28.472  [LEGAL-COST] step=1280 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.56 p99=13.10) p2ms=(p50=9.61 p99=9.93) p3ms=(p50=1311.36 p99=1340.28) legalMaskMs=(p50=11.92 p99=12.46) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1392.26 p99=1415.11) gapMs=(p50=65.73)
+02:02:42.286  [ENCODE-COST] step=1289 batch=4096 n=10 encodeMs=(p50=437.48 p99=560.20) gpuWaitMs=(p50=836.97 p99=873.69)
+02:02:42.287  [LEGAL-COST] step=1290 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=6.93 p99=9.33) p2ms=(p50=7.45 p99=8.16) p3ms=(p50=1319.21 p99=1339.84) legalMaskMs=(p50=10.84 p99=11.78) legalMaskPerPosUs=(p50=2.6 p99=2.9) interStepMs=(p50=1395.54 p99=1423.17) gapMs=(p50=61.96)
+02:02:56.097  [ENCODE-COST] step=1299 batch=4096 n=10 encodeMs=(p50=497.29 p99=610.86) gpuWaitMs=(p50=782.10 p99=832.92)
+02:02:56.097  [LEGAL-COST] step=1300 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.26 p99=12.70) p2ms=(p50=8.56 p99=9.11) p3ms=(p50=1310.02 p99=1465.80) legalMaskMs=(p50=11.75 p99=11.89) legalMaskPerPosUs=(p50=2.9 p99=2.9) interStepMs=(p50=1381.69 p99=1544.16) gapMs=(p50=57.84)
+02:02:56.097  [REPLAY] step=1300 loss=3.6889 pLoss=2.8883 vLoss=0.7808 pEnt=2.918 pIllM=0.0198 playedP=0.143 pW=0.48 pD=0.06 pL=0.46 vAbs=0.220 pLogitMean=-5.7702 vLogitMean=0.6694 gNorm=0.332 lr=0.94 ms=1318.2 buf=500000 plies=11334448 games=171904 rejected=0 skipped=0 epoch=0 mom=0.8509 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=1300
+02:02:56.098  [LAYER-HEALTH] live trainerStep=1300 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=6 off=1 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+1.24@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=66.0@stem.bn[102] rezero=none nonFinite=0
+02:02:57.600  [KL-PROBE] step=1300 batch=4096 kl=0.033887 klSd=0.020651 klSd/kl=0.61 drop=0.000 gpu=1323.5ms probe=86.8ms overhead=6.6% amortized@100=0.07%
+02:03:10.091  [ENCODE-COST] step=1309 batch=4096 n=10 encodeMs=(p50=544.97 p99=583.32) gpuWaitMs=(p50=753.95 p99=836.14)
+02:03:10.092  [LEGAL-COST] step=1310 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.17 p99=13.45) p2ms=(p50=8.41 p99=9.74) p3ms=(p50=1313.95 p99=1430.45) legalMaskMs=(p50=11.93 p99=12.35) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1394.40 p99=1503.21) gapMs=(p50=66.86)
+02:03:24.096  [ENCODE-COST] step=1319 batch=4096 n=10 encodeMs=(p50=558.55 p99=578.86) gpuWaitMs=(p50=747.43 p99=759.89)
+02:03:24.096  [LEGAL-COST] step=1320 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.45 p99=13.80) p2ms=(p50=7.70 p99=9.80) p3ms=(p50=1329.28 p99=1354.69) legalMaskMs=(p50=11.64 p99=12.14) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1404.58 p99=1425.93) gapMs=(p50=62.15)
+02:03:38.019  [ENCODE-COST] step=1329 batch=4096 n=10 encodeMs=(p50=517.13 p99=593.09) gpuWaitMs=(p50=787.24 p99=834.96)
+02:03:38.019  [LEGAL-COST] step=1330 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.42 p99=10.62) p2ms=(p50=7.72 p99=9.58) p3ms=(p50=1331.53 p99=1449.05) legalMaskMs=(p50=11.71 p99=12.28) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1403.32 p99=1519.08) gapMs=(p50=59.66)
+02:03:52.072  [ENCODE-COST] step=1339 batch=4096 n=10 encodeMs=(p50=374.21 p99=511.24) gpuWaitMs=(p50=935.62 p99=947.12)
+02:03:52.072  [LEGAL-COST] step=1340 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.25 p99=12.12) p2ms=(p50=7.47 p99=9.46) p3ms=(p50=1332.04 p99=1471.40) legalMaskMs=(p50=11.49 p99=11.72) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1403.16 p99=1542.64) gapMs=(p50=58.40)
+02:04:05.971  [ENCODE-COST] step=1349 batch=4096 n=10 encodeMs=(p50=372.57 p99=410.24) gpuWaitMs=(p50=925.41 p99=945.71)
+02:04:05.971  [LEGAL-COST] step=1350 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.67 p99=12.64) p2ms=(p50=7.50 p99=8.79) p3ms=(p50=1322.37 p99=1339.99) legalMaskMs=(p50=11.70 p99=11.86) legalMaskPerPosUs=(p50=2.9 p99=2.9) interStepMs=(p50=1392.46 p99=1412.18) gapMs=(p50=56.92)
+02:04:05.971  [REPLAY] step=1350 loss=3.7706 pLoss=2.9365 vLoss=0.8159 pEnt=2.901 pIllM=0.0183 playedP=0.139 pW=0.48 pD=0.06 pL=0.46 vAbs=0.196 pLogitMean=-5.8874 vLogitMean=0.6727 gNorm=0.433 lr=0.92 ms=1309.9 buf=500000 plies=11761188 games=178282 rejected=0 skipped=0 epoch=0 mom=0.8512 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=1350
+02:04:05.972  [LAYER-HEALTH] live trainerStep=1350 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=6 off=1 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+1.37@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=75.1@stem.bn[102] rezero=none nonFinite=0
+02:04:19.700  [ENCODE-COST] step=1359 batch=4096 n=10 encodeMs=(p50=384.71 p99=505.53) gpuWaitMs=(p50=922.62 p99=948.08)
+02:04:19.700  [LEGAL-COST] step=1360 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.89 p99=12.64) p2ms=(p50=7.64 p99=9.60) p3ms=(p50=1317.37 p99=1373.97) legalMaskMs=(p50=11.51 p99=12.35) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1388.84 p99=1441.25) gapMs=(p50=58.95)
+02:04:33.438  [ENCODE-COST] step=1369 batch=4096 n=10 encodeMs=(p50=481.68 p99=611.31) gpuWaitMs=(p50=785.48 p99=934.54)
+02:04:33.439  [LEGAL-COST] step=1370 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.12 p99=10.59) p2ms=(p50=8.05 p99=10.12) p3ms=(p50=1293.21 p99=1480.63) legalMaskMs=(p50=11.62 p99=12.41) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1363.02 p99=1552.09) gapMs=(p50=56.64)
+02:04:47.264  [ENCODE-COST] step=1379 batch=4096 n=10 encodeMs=(p50=383.21 p99=524.65) gpuWaitMs=(p50=917.84 p99=947.64)
+02:04:47.264  [LEGAL-COST] step=1380 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.71 p99=10.47) p2ms=(p50=7.48 p99=10.02) p3ms=(p50=1307.10 p99=1493.34) legalMaskMs=(p50=11.65 p99=12.33) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1378.92 p99=1562.93) gapMs=(p50=59.63)
+02:05:01.087  [ENCODE-COST] step=1389 batch=4096 n=10 encodeMs=(p50=555.02 p99=570.97) gpuWaitMs=(p50=742.90 p99=768.11)
+02:05:01.088  [LEGAL-COST] step=1390 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.25 p99=10.11) p2ms=(p50=9.45 p99=9.88) p3ms=(p50=1320.07 p99=1331.98) legalMaskMs=(p50=12.05 p99=12.31) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1391.53 p99=1412.42) gapMs=(p50=56.76)
+02:05:15.224  [ENCODE-COST] step=1399 batch=4096 n=10 encodeMs=(p50=542.10 p99=606.58) gpuWaitMs=(p50=773.85 p99=860.90)
+02:05:15.225  [LEGAL-COST] step=1400 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.26 p99=12.75) p2ms=(p50=8.60 p99=9.71) p3ms=(p50=1324.92 p99=1474.63) legalMaskMs=(p50=12.04 p99=12.29) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1399.52 p99=1547.61) gapMs=(p50=60.73)
+02:05:15.225  [REPLAY] step=1400 loss=3.6977 pLoss=2.8802 vLoss=0.7998 pEnt=2.882 pIllM=0.0177 playedP=0.147 pW=0.48 pD=0.06 pL=0.46 vAbs=0.236 pLogitMean=-6.0105 vLogitMean=0.6854 gNorm=0.469 lr=0.897 ms=1331.7 buf=500000 plies=12187759 games=184728 rejected=0 skipped=0 epoch=0 mom=0.8516 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=1400
+02:05:15.225  [LAYER-HEALTH] live trainerStep=1400 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=6 off=1 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+1.30@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=78.6@stem.bn[102] rezero=none nonFinite=0
+02:05:16.740  [KL-PROBE] step=1400 batch=4096 kl=0.033166 klSd=0.021958 klSd/kl=0.66 drop=0.000 gpu=1306.8ms probe=115.7ms overhead=8.9% amortized@100=0.09%
+02:05:29.129  [ENCODE-COST] step=1409 batch=4096 n=10 encodeMs=(p50=472.83 p99=514.79) gpuWaitMs=(p50=811.82 p99=929.56)
+02:05:29.129  [LEGAL-COST] step=1410 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.29 p99=12.00) p2ms=(p50=7.49 p99=9.40) p3ms=(p50=1317.15 p99=1443.44) legalMaskMs=(p50=11.67 p99=12.16) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1389.31 p99=1515.50) gapMs=(p50=59.38)
+02:05:42.764  [ENCODE-COST] step=1419 batch=4096 n=10 encodeMs=(p50=486.11 p99=544.26) gpuWaitMs=(p50=796.75 p99=942.46)
+02:05:42.765  [LEGAL-COST] step=1420 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=3.87 p99=12.14) p2ms=(p50=7.87 p99=9.64) p3ms=(p50=1298.75 p99=1470.63) legalMaskMs=(p50=11.72 p99=12.37) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1370.29 p99=1540.89) gapMs=(p50=59.80)
+02:05:56.571  [ENCODE-COST] step=1429 batch=4096 n=10 encodeMs=(p50=505.39 p99=608.03) gpuWaitMs=(p50=778.46 p99=941.48)
+02:05:56.571  [LEGAL-COST] step=1430 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.84 p99=10.59) p2ms=(p50=7.95 p99=10.22) p3ms=(p50=1311.20 p99=1466.51) legalMaskMs=(p50=11.91 p99=12.35) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1387.91 p99=1538.82) gapMs=(p50=63.93)
+02:06:10.674  [ENCODE-COST] step=1439 batch=4096 n=10 encodeMs=(p50=522.53 p99=616.59) gpuWaitMs=(p50=808.15 p99=967.97)
+02:06:10.674  [LEGAL-COST] step=1440 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.24 p99=10.64) p2ms=(p50=9.14 p99=9.92) p3ms=(p50=1328.53 p99=1510.15) legalMaskMs=(p50=11.82 p99=12.13) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1402.61 p99=1586.38) gapMs=(p50=59.71)
+02:06:24.312  [ENCODE-COST] step=1449 batch=4096 n=10 encodeMs=(p50=407.72 p99=502.29) gpuWaitMs=(p50=894.58 p99=950.30)
+02:06:24.313  [LEGAL-COST] step=1450 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.43 p99=11.66) p2ms=(p50=8.00 p99=8.95) p3ms=(p50=1307.70 p99=1472.84) legalMaskMs=(p50=11.62 p99=11.96) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1382.36 p99=1543.75) gapMs=(p50=61.22)
+02:06:24.313  [REPLAY] step=1450 loss=3.7164 pLoss=2.8975 vLoss=0.8026 pEnt=2.870 pIllM=0.0164 playedP=0.149 pW=0.48 pD=0.07 pL=0.45 vAbs=0.201 pLogitMean=-6.1173 vLogitMean=0.6843 gNorm=0.363 lr=0.871 ms=1314.2 buf=500000 plies=12614406 games=191184 rejected=0 skipped=0 epoch=0 mom=0.8520 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=1450
+02:06:24.314  [LAYER-HEALTH] live trainerStep=1450 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=6 off=1 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+1.35@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=77.2@stem.bn[102] rezero=none nonFinite=0
+02:06:38.302  [ENCODE-COST] step=1459 batch=4096 n=10 encodeMs=(p50=410.49 p99=520.11) gpuWaitMs=(p50=922.38 p99=939.40)
+02:06:38.303  [LEGAL-COST] step=1460 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.01 p99=12.74) p2ms=(p50=8.77 p99=9.62) p3ms=(p50=1323.85 p99=1479.29) legalMaskMs=(p50=11.67 p99=11.84) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1394.66 p99=1552.12) gapMs=(p50=57.03)
+02:06:51.989  [ENCODE-COST] step=1469 batch=4096 n=10 encodeMs=(p50=369.14 p99=499.15) gpuWaitMs=(p50=917.73 p99=959.17)
+02:06:51.990  [LEGAL-COST] step=1470 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.33 p99=12.74) p2ms=(p50=7.57 p99=9.07) p3ms=(p50=1313.01 p99=1343.21) legalMaskMs=(p50=11.58 p99=11.89) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1385.99 p99=1415.96) gapMs=(p50=60.08)
+02:07:05.855  [ENCODE-COST] step=1479 batch=4096 n=10 encodeMs=(p50=548.35 p99=607.63) gpuWaitMs=(p50=752.89 p99=804.06)
+02:07:05.855  [LEGAL-COST] step=1480 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.37 p99=12.59) p2ms=(p50=7.50 p99=9.98) p3ms=(p50=1324.48 p99=1432.20) legalMaskMs=(p50=12.01 p99=12.32) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1391.90 p99=1502.35) gapMs=(p50=54.54)
+02:07:19.897  [ENCODE-COST] step=1489 batch=4096 n=10 encodeMs=(p50=406.55 p99=556.58) gpuWaitMs=(p50=911.35 p99=959.97)
+02:07:19.897  [LEGAL-COST] step=1490 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.46 p99=10.74) p2ms=(p50=7.47 p99=9.36) p3ms=(p50=1314.80 p99=1485.96) legalMaskMs=(p50=11.59 p99=12.26) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1386.24 p99=1555.03) gapMs=(p50=58.52)
+02:07:33.341  [ENCODE-COST] step=1499 batch=4096 n=10 encodeMs=(p50=480.35 p99=588.52) gpuWaitMs=(p50=783.91 p99=928.78)
+02:07:33.342  [LEGAL-COST] step=1500 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.38 p99=10.29) p2ms=(p50=7.98 p99=9.96) p3ms=(p50=1306.53 p99=1322.58) legalMaskMs=(p50=11.60 p99=12.19) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1376.77 p99=1390.81) gapMs=(p50=56.88)
+02:07:33.342  [REPLAY] step=1500 loss=3.6457 pLoss=2.8257 vLoss=0.8038 pEnt=2.885 pIllM=0.0162 playedP=0.148 pW=0.45 pD=0.06 pL=0.49 vAbs=0.227 pLogitMean=-6.2194 vLogitMean=0.6719 gNorm=0.408 lr=0.844 ms=1321.4 buf=500000 plies=13041037 games=197659 rejected=0 skipped=0 epoch=0 mom=0.8524 lrCyc[pk=1.0e+00,tr=1.0e-03] trainerStep=1500
+02:07:33.343  [LAYER-HEALTH] live trainerStep=1500 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=6 off=1 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+1.48@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=71.4@stem.bn[102] rezero=none nonFinite=0
+02:07:35.074  [KL-PROBE] step=1500 batch=4096 kl=0.027118 klSd=0.018641 klSd/kl=0.69 drop=0.000 gpu=1433.5ms probe=208.6ms overhead=14.6% amortized@100=0.15%
+02:07:47.611  [ENCODE-COST] step=1509 batch=4096 n=10 encodeMs=(p50=370.34 p99=601.29) gpuWaitMs=(p50=918.63 p99=953.31)
+02:07:47.611  [LEGAL-COST] step=1510 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.05 p99=10.72) p2ms=(p50=7.45 p99=9.83) p3ms=(p50=1335.22 p99=1662.12) legalMaskMs=(p50=11.68 p99=11.95) legalMaskPerPosUs=(p50=2.9 p99=2.9) interStepMs=(p50=1406.16 p99=1732.41) gapMs=(p50=58.44)
+02:08:01.258  [ENCODE-COST] step=1519 batch=4096 n=10 encodeMs=(p50=492.64 p99=606.51) gpuWaitMs=(p50=797.03 p99=936.27)
+02:08:01.259  [LEGAL-COST] step=1520 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.14 p99=12.17) p2ms=(p50=7.83 p99=10.31) p3ms=(p50=1305.70 p99=1461.82) legalMaskMs=(p50=11.85 p99=12.08) legalMaskPerPosUs=(p50=2.9 p99=2.9) interStepMs=(p50=1379.79 p99=1531.24) gapMs=(p50=62.11)
+02:08:15.099  [ENCODE-COST] step=1529 batch=4096 n=10 encodeMs=(p50=367.20 p99=511.28) gpuWaitMs=(p50=917.78 p99=963.36)
+02:08:15.100  [LEGAL-COST] step=1530 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.01 p99=10.15) p2ms=(p50=7.49 p99=9.01) p3ms=(p50=1316.25 p99=1495.07) legalMaskMs=(p50=11.64 p99=11.79) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1389.62 p99=1566.96) gapMs=(p50=60.88)
+02:08:28.656  [ENCODE-COST] step=1539 batch=4096 n=10 encodeMs=(p50=485.44 p99=581.64) gpuWaitMs=(p50=789.06 p99=801.70)
+02:08:28.656  [LEGAL-COST] step=1540 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=4.77 p99=12.96) p2ms=(p50=8.35 p99=9.48) p3ms=(p50=1295.41 p99=1402.61) legalMaskMs=(p50=11.73 p99=12.23) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=1363.06 p99=1471.06) gapMs=(p50=54.53)
+02:08:42.514  [ENCODE-COST] step=1549 batch=4096 n=10 encodeMs=(p50=556.08 p99=568.16) gpuWaitMs=(p50=742.14 p99=756.14)
+02:08:42.514  [LEGAL-COST] step=1550 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.31 p99=10.46) p2ms=(p50=8.23 p99=9.84) p3ms=(p50=1313.90 p99=1334.10) legalMaskMs=(p50=12.14 p99=12.32) legalMaskPerPosUs=(p50=3.0 p99=3.0) interStepMs=(p50=1383.82 p99=1404.49) gapMs=(p50=56.38)
+02:19:16.169  [LAYER-HEALTH] checkpoint replay-autosave step=2000 trainerStep=2000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=1 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+1.67@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=24.5@stem.bn[102] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=6/128 maxAbs=32.43@blocks.0.bn2.running_var
+02:19:16.169  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+02:19:16.169  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+02:19:16.169  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.25 [40]         +0.13 [26]           24.5 [102]
+02:19:16.169  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.50 [62]         +0.21 [18]            2.3 [31]
+02:19:16.169  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -0.97 [53]         -0.17 [58]           10.5 [96]
+02:19:16.169  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -0.60 [11]         +0.11 [31]            8.1 [31]
+02:19:16.169  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -0.92 [29]         -0.25 [110]           2.7 [20]
+02:19:16.169  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -0.88 [40]         +0.26 [31]            8.4 [31]
+02:19:16.169  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.14 [85]         -0.18 [127]           2.8 [119]
+02:19:16.169  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.24 [58]         +0.74 [96]            4.0 [75]
+02:19:16.169  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.77 [26]         +1.67 [60]            2.6 [66]
+02:19:16.169  [LAYER-HEALTH]     value.bn        relu           16      6      1      0      0      0    -10.63 [7]          -0.69 [10]            3.5 [14]
+02:19:16.169  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+02:19:16.169  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 6 [28,29,36,60,119,123]  low 27  median unit norm 0.002677
+02:19:16.169  [LAYER-HEALTH]     (no SE blocks)
+02:19:16.169  [LAYER-HEALTH]   ReZero: none
+02:19:16.169  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+02:19:16.169  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 32.43, blocks.2.bn2.running_var 7.37, blocks.0.bn2.running_mean 7.231, blocks.1.bn2.running_var 6.861, policy.pre_bn.running_var 6.719
+02:43:47.674  [LAYER-HEALTH] checkpoint replay-autosave step=3000 trainerStep=3000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=0 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+1.66@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=9.1@blocks.0.bn2[96] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=10/128 maxAbs=26.75@blocks.0.bn2.running_var
+02:43:47.674  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+02:43:47.674  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+02:43:47.674  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.28 [40]         +0.14 [26]            8.2 [74]
+02:43:47.674  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.54 [62]         +0.25 [18]            2.4 [31]
+02:43:47.674  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.05 [53]         -0.15 [49]            9.1 [96]
+02:43:47.674  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -0.66 [107]        +0.08 [31]            8.6 [31]
+02:43:47.674  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -0.98 [29]         -0.25 [57]            2.5 [73]
+02:43:47.674  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.00 [40]         +0.31 [31]            8.8 [31]
+02:43:47.674  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.16 [85]         -0.14 [127]           2.8 [119]
+02:43:47.674  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.25 [58]         +0.84 [96]            4.4 [75]
+02:43:47.674  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.73 [26]         +1.66 [60]            2.8 [66]
+02:43:47.674  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.71 [10]            3.7 [14]
+02:43:47.674  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+02:43:47.674  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 10 [18,28,29,36,49,54,60,91,119,123]  low 25  median unit norm 0.002355
+02:43:47.674  [LAYER-HEALTH]     (no SE blocks)
+02:43:47.674  [LAYER-HEALTH]   ReZero: none
+02:43:47.674  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+02:43:47.674  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 26.75, blocks.0.bn2.running_mean 7.099, policy.pre_bn.running_var 6.065, blocks.2.bn2.running_var 5.68, blocks.1.bn2.running_var 5.455
+03:09:09.943  [LAYER-HEALTH] checkpoint replay-autosave step=4000 trainerStep=4000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=0 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+1.74@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=8.9@blocks.1.bn1[31] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=10/128 maxAbs=23.25@blocks.0.bn2.running_var
+03:09:09.943  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+03:09:09.943  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+03:09:09.943  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.28 [40]         +0.15 [26]            7.9 [83]
+03:09:09.943  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.55 [62]         +0.26 [18]            2.4 [31]
+03:09:09.943  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.05 [53]         -0.11 [49]            8.3 [96]
+03:09:09.943  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -0.67 [107]        +0.08 [31]            8.9 [31]
+03:09:09.943  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -0.98 [29]         -0.23 [57]            2.4 [20]
+03:09:09.943  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.00 [40]         +0.32 [31]            8.8 [31]
+03:09:09.943  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.17 [85]         -0.13 [10]            2.8 [119]
+03:09:09.943  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.25 [58]         +0.85 [96]            4.5 [75]
+03:09:09.943  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.70 [26]         +1.74 [60]            2.9 [66]
+03:09:09.943  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.63 [10]            3.6 [14]
+03:09:09.943  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+03:09:09.943  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 10 [10,18,28,29,36,49,54,60,119,123]  low 26  median unit norm 0.00268
+03:09:09.943  [LAYER-HEALTH]     (no SE blocks)
+03:09:09.943  [LAYER-HEALTH]   ReZero: none
+03:09:09.943  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+03:09:09.943  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 23.25, blocks.0.bn2.running_mean 6.619, policy.pre_bn.running_var 5.844, blocks.2.bn2.running_var 5.473, policy.conv.bias 5.342
+03:35:00.599  [LAYER-HEALTH] checkpoint replay-autosave step=5000 trainerStep=5000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=1 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+1.74@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=8.9@blocks.1.bn1[31] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=11/128 maxAbs=23.7@blocks.0.bn2.running_var
+03:35:00.599  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+03:35:00.599  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+03:35:00.599  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.28 [40]         +0.15 [26]            7.7 [83]
+03:35:00.599  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.55 [62]         +0.26 [18]            2.4 [31]
+03:35:00.599  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.06 [53]         -0.11 [49]            8.4 [96]
+03:35:00.599  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -0.67 [107]        +0.08 [31]            8.9 [31]
+03:35:00.599  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -0.99 [29]         -0.23 [57]            2.3 [33]
+03:35:00.599  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.00 [40]         +0.32 [31]            8.8 [31]
+03:35:00.599  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.17 [85]         -0.13 [10]            2.8 [119]
+03:35:00.599  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.25 [58]         +0.85 [96]            4.6 [75]
+03:35:00.599  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.69 [26]         +1.74 [60]            2.9 [66]
+03:35:00.599  [LAYER-HEALTH]     value.bn        relu           16      6      1      0      0      0    -10.63 [7]          -0.62 [10]            3.6 [14]
+03:35:00.599  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+03:35:00.599  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 11 [10,18,28,29,36,49,54,60,91,119,123]  low 30  median unit norm 0.003873
+03:35:00.599  [LAYER-HEALTH]     (no SE blocks)
+03:35:00.599  [LAYER-HEALTH]   ReZero: none
+03:35:00.599  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+03:35:00.599  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 23.7, blocks.0.bn2.running_mean 6.657, policy.pre_bn.running_var 5.891, blocks.2.bn2.running_var 5.424, policy.conv.bias 5.347
+04:00:39.244  [LAYER-HEALTH] checkpoint replay-autosave step=6000 trainerStep=6000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=0 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+1.74@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=9.0@blocks.1.bn1[31] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=11/128 maxAbs=23.75@blocks.0.bn2.running_var
+04:00:39.244  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+04:00:39.244  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+04:00:39.244  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.28 [40]         +0.15 [26]            7.7 [83]
+04:00:39.244  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.55 [62]         +0.26 [18]            2.4 [31]
+04:00:39.244  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.06 [53]         -0.11 [49]            8.4 [96]
+04:00:39.244  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -0.68 [107]        +0.08 [31]            9.0 [31]
+04:00:39.244  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -0.99 [29]         -0.23 [57]            2.3 [33]
+04:00:39.244  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.00 [40]         +0.32 [31]            8.8 [31]
+04:00:39.244  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.17 [85]         -0.13 [10]            2.8 [119]
+04:00:39.244  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.25 [58]         +0.85 [96]            4.5 [75]
+04:00:39.244  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.69 [26]         +1.74 [60]            2.9 [66]
+04:00:39.244  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.62 [10]            3.5 [14]
+04:00:39.244  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+04:00:39.244  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 11 [10,18,28,29,36,49,54,60,91,119,123]  low 28  median unit norm 0.003986
+04:00:39.244  [LAYER-HEALTH]     (no SE blocks)
+04:00:39.244  [LAYER-HEALTH]   ReZero: none
+04:00:39.244  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+04:00:39.244  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 23.75, blocks.0.bn2.running_mean 6.655, policy.pre_bn.running_var 5.869, blocks.2.bn2.running_var 5.393, policy.conv.bias 5.35
+04:26:02.993  [LAYER-HEALTH] checkpoint replay-autosave step=7000 trainerStep=7000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=0 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+1.74@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=9.1@blocks.1.bn1[31] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=11/128 maxAbs=23.55@blocks.0.bn2.running_var
+04:26:02.993  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+04:26:02.993  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+04:26:02.993  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.29 [40]         +0.15 [26]            7.8 [83]
+04:26:02.993  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.55 [62]         +0.26 [18]            2.4 [31]
+04:26:02.993  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.06 [53]         -0.10 [49]            8.3 [96]
+04:26:02.993  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -0.68 [107]        +0.08 [31]            9.1 [31]
+04:26:02.993  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -0.99 [29]         -0.23 [57]            2.3 [20]
+04:26:02.993  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.00 [40]         +0.33 [31]            8.9 [31]
+04:26:02.993  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.17 [85]         -0.12 [10]            2.8 [119]
+04:26:02.993  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.25 [58]         +0.85 [96]            4.5 [75]
+04:26:02.993  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.68 [26]         +1.74 [60]            2.9 [66]
+04:26:02.993  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.62 [10]            3.5 [14]
+04:26:02.993  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+04:26:02.993  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 11 [18,25,28,29,36,49,54,60,91,119,123]  low 28  median unit norm 0.003347
+04:26:02.993  [LAYER-HEALTH]     (no SE blocks)
+04:26:02.993  [LAYER-HEALTH]   ReZero: none
+04:26:02.993  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+04:26:02.993  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 23.55, blocks.0.bn2.running_mean 6.641, policy.pre_bn.running_var 5.872, blocks.2.bn2.running_var 5.373, policy.conv.bias 5.352
+04:51:06.099  [LAYER-HEALTH] checkpoint replay-autosave step=8000 trainerStep=8000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=0 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+1.72@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=9.1@blocks.1.bn1[31] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=12/128 maxAbs=23.96@blocks.0.bn2.running_var
+04:51:06.099  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+04:51:06.099  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+04:51:06.099  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.29 [40]         +0.15 [26]            7.8 [83]
+04:51:06.099  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.55 [62]         +0.26 [18]            2.4 [31]
+04:51:06.099  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.06 [53]         -0.10 [49]            8.5 [96]
+04:51:06.099  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -0.68 [107]        +0.08 [31]            9.1 [31]
+04:51:06.099  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -0.99 [29]         -0.23 [57]            2.3 [20]
+04:51:06.099  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.00 [40]         +0.33 [31]            8.8 [31]
+04:51:06.099  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.17 [85]         -0.12 [10]            2.8 [119]
+04:51:06.099  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.25 [58]         +0.85 [96]            4.6 [75]
+04:51:06.099  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.68 [26]         +1.72 [60]            2.9 [66]
+04:51:06.099  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.61 [10]            3.5 [14]
+04:51:06.099  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+04:51:06.099  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 12 [10,18,25,28,29,36,49,54,60,91,119,123]  low 28  median unit norm 0.002558
+04:51:06.099  [LAYER-HEALTH]     (no SE blocks)
+04:51:06.099  [LAYER-HEALTH]   ReZero: none
+04:51:06.099  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+04:51:06.099  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 23.96, blocks.0.bn2.running_mean 6.612, policy.pre_bn.running_var 5.89, policy.conv.bias 5.357, blocks.2.bn2.running_var 5.335
+05:16:03.007  [LAYER-HEALTH] checkpoint replay-autosave step=9000 trainerStep=9000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=1 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+1.70@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=9.2@blocks.1.bn1[31] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=12/128 maxAbs=22.69@blocks.0.bn2.running_var
+05:16:03.007  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+05:16:03.007  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+05:16:03.007  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.29 [40]         +0.15 [26]            7.5 [83]
+05:16:03.007  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.55 [62]         +0.27 [18]            2.4 [31]
+05:16:03.007  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.05 [53]         -0.09 [49]            8.2 [96]
+05:16:03.007  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -0.68 [107]        +0.09 [31]            9.2 [31]
+05:16:03.007  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.00 [29]         -0.23 [57]            2.6 [22]
+05:16:03.007  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.01 [40]         +0.34 [31]            9.1 [31]
+05:16:03.007  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.17 [85]         -0.11 [10]            2.8 [119]
+05:16:03.007  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.24 [58]         +0.87 [96]            4.6 [75]
+05:16:03.007  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.68 [80]         +1.70 [60]            2.9 [66]
+05:16:03.007  [LAYER-HEALTH]     value.bn        relu           16      6      1      0      0      0    -10.63 [7]          -0.58 [10]            3.5 [14]
+05:16:03.007  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+05:16:03.007  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 12 [10,18,25,28,29,36,49,54,60,91,119,123]  low 26  median unit norm 0.00198
+05:16:03.007  [LAYER-HEALTH]     (no SE blocks)
+05:16:03.007  [LAYER-HEALTH]   ReZero: none
+05:16:03.007  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+05:16:03.007  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 22.69, blocks.0.bn2.running_mean 6.698, policy.pre_bn.running_var 5.798, policy.conv.bias 5.372, blocks.1.bn2.running_var 5.182
+05:41:02.251  [LAYER-HEALTH] checkpoint replay-autosave step=10000 trainerStep=10000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=0 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+1.75@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=9.7@blocks.2.bn1[31] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=9/128 maxAbs=21.02@blocks.0.bn2.running_var
+05:41:02.251  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+05:41:02.251  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+05:41:02.251  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.33 [11]         +0.16 [26]            7.0 [74]
+05:41:02.251  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.59 [62]         +0.29 [18]            2.4 [31]
+05:41:02.251  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.13 [53]         -0.14 [80]            8.5 [96]
+05:41:02.251  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -0.76 [107]        +0.06 [31]            9.1 [31]
+05:41:02.251  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.07 [29]         -0.25 [57]            2.9 [20]
+05:41:02.251  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.18 [40]         +0.35 [31]            9.7 [31]
+05:41:02.251  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.23 [85]         -0.11 [10]            2.9 [119]
+05:41:02.251  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.25 [58]         +0.86 [96]            4.3 [75]
+05:41:02.251  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.73 [26]         +1.75 [60]            2.7 [66]
+05:41:02.251  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.83 [10]            4.2 [14]
+05:41:02.251  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+05:41:02.251  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 9 [18,28,29,36,49,54,60,119,123]  low 28  median unit norm 0.00205
+05:41:02.251  [LAYER-HEALTH]     (no SE blocks)
+05:41:02.251  [LAYER-HEALTH]   ReZero: none
+05:41:02.251  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+05:41:02.251  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 21.02, blocks.0.bn2.running_mean 6.492, policy.conv.bias 5.357, blocks.1.bn2.running_var 5.318, policy.pre_bn.running_var 5.079
+06:06:09.235  [LAYER-HEALTH] checkpoint replay-autosave step=11000 trainerStep=11000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=0 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+1.93@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=11.7@blocks.2.bn1[31] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=8/128 maxAbs=19.05@blocks.0.bn2.running_var
+06:06:09.235  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+06:06:09.235  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+06:06:09.235  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.48 [40]         +0.22 [34]            4.5 [74]
+06:06:09.235  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.72 [62]         +0.29 [18]            2.9 [76]
+06:06:09.235  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.39 [53]         -0.25 [58]            6.6 [96]
+06:06:09.235  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -0.98 [107]        -0.05 [31]            9.9 [31]
+06:06:09.235  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.30 [29]         -0.42 [109]           4.2 [33]
+06:06:09.235  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.56 [40]         +0.40 [31]           11.7 [31]
+06:06:09.235  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.52 [85]         -0.21 [38]            3.3 [119]
+06:06:09.235  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.30 [58]         +0.90 [55]            4.3 [75]
+06:06:09.235  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.82 [26]         +1.93 [60]            2.7 [22]
+06:06:09.235  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.89 [1]             5.3 [14]
+06:06:09.235  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+06:06:09.235  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 8 [28,29,36,49,60,91,119,123]  low 29  median unit norm 0.002376
+06:06:09.235  [LAYER-HEALTH]     (no SE blocks)
+06:06:09.235  [LAYER-HEALTH]   ReZero: none
+06:06:09.235  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+06:06:09.235  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 19.05, blocks.1.bn2.running_var 7.152, blocks.0.bn2.running_mean 6.298, policy.conv.bias 5.571, policy.pre_bn.running_var 5.457
+06:31:02.491  [LAYER-HEALTH] checkpoint replay-autosave step=12000 trainerStep=12000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=1 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+2.01@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=13.6@blocks.2.bn1[31] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=8/128 maxAbs=14.3@blocks.0.bn2.running_var
+06:31:02.491  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+06:31:02.491  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+06:31:02.491  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.72 [40]         +0.29 [34]            4.5 [83]
+06:31:02.491  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.79 [62]         +0.36 [18]            3.9 [76]
+06:31:02.491  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.48 [53]         -0.27 [80]            4.8 [96]
+06:31:02.491  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.05 [107]        -0.13 [31]           12.8 [14]
+06:31:02.491  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.39 [29]         -0.41 [77]            4.9 [33]
+06:31:02.491  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.89 [40]         +0.94 [31]           13.6 [31]
+06:31:02.491  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.64 [85]         -0.18 [37]            3.3 [119]
+06:31:02.491  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.36 [58]         +1.07 [55]            4.2 [75]
+06:31:02.491  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.74 [13]         +2.01 [60]            3.0 [22]
+06:31:02.491  [LAYER-HEALTH]     value.bn        relu           16      6      1      0      0      0    -10.63 [7]          -0.90 [1]             4.8 [14]
+06:31:02.491  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+06:31:02.491  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 8 [28,29,36,49,60,91,119,123]  low 28  median unit norm 0.001866
+06:31:02.491  [LAYER-HEALTH]     (no SE blocks)
+06:31:02.491  [LAYER-HEALTH]   ReZero: none
+06:31:02.491  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+06:31:02.491  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 14.3, blocks.1.bn2.running_var 7.179, blocks.0.bn2.running_mean 6.872, policy.conv.bias 5.703, policy.pre_bn.running_var 5.573
+06:56:14.388  [LAYER-HEALTH] checkpoint replay-autosave step=13000 trainerStep=13000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=0 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+2.03@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=14.5@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=12/128 maxAbs=12@blocks.0.bn2.running_var
+06:56:14.388  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+06:56:14.388  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+06:56:14.388  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.78 [40]         +0.31 [110]           5.1 [83]
+06:56:14.388  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.80 [78]         +0.36 [18]            4.1 [76]
+06:56:14.388  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.49 [53]         -0.20 [49]            4.2 [50]
+06:56:14.388  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.10 [107]        -0.14 [31]           14.5 [14]
+06:56:14.388  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.44 [29]         -0.45 [77]            5.1 [33]
+06:56:14.388  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.93 [40]         +1.05 [31]           13.9 [125]
+06:56:14.388  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.68 [85]         -0.13 [37]            3.3 [119]
+06:56:14.388  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.36 [108]        +1.15 [55]            4.4 [75]
+06:56:14.388  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.70 [13]         +2.03 [60]            3.2 [22]
+06:56:14.388  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.93 [1]             5.8 [14]
+06:56:14.388  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+06:56:14.388  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 12 [18,28,29,36,49,54,60,70,91,106,119,123]  low 23  median unit norm 0.003074
+06:56:14.388  [LAYER-HEALTH]     (no SE blocks)
+06:56:14.388  [LAYER-HEALTH]   ReZero: none
+06:56:14.388  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+06:56:14.388  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 12, blocks.1.bn2.running_var 6.482, blocks.0.bn2.running_mean 6.352, policy.conv.bias 5.784, policy.pre_bn.running_var 5.274
+07:21:04.337  [LAYER-HEALTH] checkpoint replay-autosave step=14000 trainerStep=14000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=0 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+2.01@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=14.2@blocks.2.bn1[125] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=14/128 maxAbs=11.98@blocks.0.bn2.running_var
+07:21:04.337  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+07:21:04.337  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+07:21:04.337  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.79 [40]         +0.31 [110]           5.0 [83]
+07:21:04.337  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.80 [78]         +0.37 [18]            4.2 [76]
+07:21:04.337  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.48 [53]         -0.16 [49]            4.2 [50]
+07:21:04.337  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.10 [107]        -0.13 [31]           14.0 [14]
+07:21:04.337  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.44 [29]         -0.44 [77]            5.2 [33]
+07:21:04.337  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.98 [40]         +1.08 [31]           14.2 [125]
+07:21:04.337  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.67 [85]         -0.12 [37]            3.2 [26]
+07:21:04.337  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.36 [108]        +1.17 [55]            4.4 [75]
+07:21:04.337  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.68 [13]         +2.01 [60]            3.4 [22]
+07:21:04.337  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.86 [1]             6.1 [14]
+07:21:04.337  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+07:21:04.337  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 14 [10,18,25,28,29,36,49,54,60,70,91,106,119,123]  low 23  median unit norm 0.00354
+07:21:04.337  [LAYER-HEALTH]     (no SE blocks)
+07:21:04.337  [LAYER-HEALTH]   ReZero: none
+07:21:04.337  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+07:21:04.337  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 11.98, blocks.1.bn2.running_var 6.484, blocks.0.bn2.running_mean 6.301, policy.conv.bias 5.814, policy.pre_bn.running_var 5.236
+07:46:08.909  [LAYER-HEALTH] checkpoint replay-autosave step=15000 trainerStep=15000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=0 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+2.01@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=14.4@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=15/128 maxAbs=11.97@blocks.0.bn2.running_var
+07:46:08.909  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+07:46:08.909  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+07:46:08.909  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.79 [40]         +0.31 [110]           4.9 [83]
+07:46:08.909  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.80 [78]         +0.37 [18]            4.2 [76]
+07:46:08.909  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.48 [53]         -0.16 [49]            4.2 [50]
+07:46:08.909  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.10 [107]        -0.13 [31]           14.4 [14]
+07:46:08.909  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.45 [29]         -0.43 [61]            5.2 [33]
+07:46:08.909  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.98 [40]         +1.08 [31]           14.1 [31]
+07:46:08.909  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.67 [85]         -0.11 [37]            3.2 [119]
+07:46:08.909  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.36 [108]        +1.17 [55]            4.4 [75]
+07:46:08.909  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.68 [13]         +2.01 [60]            3.4 [22]
+07:46:08.909  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.86 [1]             6.1 [14]
+07:46:08.909  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+07:46:08.909  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 15 [10,18,25,28,29,36,49,53,54,60,70,91,106,119,123]  low 22  median unit norm 0.003321
+07:46:08.909  [LAYER-HEALTH]     (no SE blocks)
+07:46:08.909  [LAYER-HEALTH]   ReZero: none
+07:46:08.909  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+07:46:08.909  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 11.97, blocks.1.bn2.running_var 6.461, blocks.0.bn2.running_mean 6.289, policy.conv.bias 5.82, policy.pre_bn.running_var 5.256
+08:11:00.877  [LAYER-HEALTH] checkpoint replay-autosave step=16000 trainerStep=16000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=0 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+2.02@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=14.3@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=15/128 maxAbs=11.98@blocks.0.bn2.running_var
+08:11:00.877  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+08:11:00.877  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+08:11:00.877  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.79 [40]         +0.31 [110]           5.0 [83]
+08:11:00.877  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.81 [78]         +0.37 [18]            4.2 [76]
+08:11:00.877  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.48 [53]         -0.16 [49]            4.2 [50]
+08:11:00.877  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.11 [107]        -0.13 [31]           14.3 [14]
+08:11:00.877  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.45 [29]         -0.43 [61]            5.2 [33]
+08:11:00.877  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.98 [40]         +1.08 [31]           14.1 [31]
+08:11:00.877  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.67 [85]         -0.12 [37]            3.2 [26]
+08:11:00.877  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.36 [108]        +1.17 [55]            4.4 [75]
+08:11:00.877  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.68 [13]         +2.02 [60]            3.4 [22]
+08:11:00.877  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.86 [1]             6.2 [14]
+08:11:00.877  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+08:11:00.877  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 15 [10,18,25,28,29,36,49,53,54,60,70,91,106,119,123]  low 22  median unit norm 0.004849
+08:11:00.877  [LAYER-HEALTH]     (no SE blocks)
+08:11:00.877  [LAYER-HEALTH]   ReZero: none
+08:11:00.877  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+08:11:00.877  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 11.98, blocks.1.bn2.running_var 6.44, blocks.0.bn2.running_mean 6.299, policy.conv.bias 5.821, policy.pre_bn.running_var 5.28
+08:35:50.263  [LAYER-HEALTH] checkpoint replay-autosave step=17000 trainerStep=17000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=0 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+2.02@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=14.2@blocks.2.bn1[31] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=14/128 maxAbs=11.93@blocks.0.bn2.running_var
+08:35:50.263  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+08:35:50.263  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+08:35:50.263  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.79 [40]         +0.31 [110]           5.0 [83]
+08:35:50.263  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.81 [78]         +0.37 [18]            4.2 [76]
+08:35:50.263  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.47 [53]         -0.15 [49]            4.2 [50]
+08:35:50.263  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.10 [107]        -0.13 [31]           14.2 [14]
+08:35:50.263  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.45 [29]         -0.43 [61]            5.2 [33]
+08:35:50.263  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.98 [40]         +1.09 [31]           14.2 [31]
+08:35:50.263  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.66 [85]         -0.11 [37]            3.2 [119]
+08:35:50.263  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.36 [108]        +1.18 [55]            4.4 [75]
+08:35:50.263  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.67 [13]         +2.02 [60]            3.4 [22]
+08:35:50.263  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.86 [1]             6.2 [14]
+08:35:50.263  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+08:35:50.263  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 14 [10,18,25,28,29,36,49,54,60,70,91,110,119,123]  low 23  median unit norm 0.004727
+08:35:50.263  [LAYER-HEALTH]     (no SE blocks)
+08:35:50.263  [LAYER-HEALTH]   ReZero: none
+08:35:50.263  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+08:35:50.263  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 11.93, blocks.1.bn2.running_var 6.437, blocks.0.bn2.running_mean 6.303, policy.conv.bias 5.824, policy.pre_bn.running_var 5.258
+09:00:29.934  [LAYER-HEALTH] checkpoint replay-autosave step=18000 trainerStep=18000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=0 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+2.00@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=14.4@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=15/128 maxAbs=11.94@blocks.0.bn2.running_var
+09:00:29.934  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+09:00:29.934  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+09:00:29.934  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.80 [40]         +0.31 [110]           5.1 [83]
+09:00:29.934  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.81 [78]         +0.37 [18]            4.2 [76]
+09:00:29.934  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.47 [53]         -0.15 [49]            4.2 [50]
+09:00:29.934  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.10 [107]        -0.13 [31]           14.4 [14]
+09:00:29.934  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.45 [29]         -0.43 [61]            5.3 [33]
+09:00:29.934  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.98 [40]         +1.09 [31]           14.1 [125]
+09:00:29.934  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.66 [85]         -0.11 [37]            3.2 [119]
+09:00:29.934  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.36 [108]        +1.17 [55]            4.4 [75]
+09:00:29.934  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.67 [13]         +2.00 [60]            3.4 [22]
+09:00:29.934  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.85 [10]            6.1 [14]
+09:00:29.934  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+09:00:29.934  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 15 [10,18,25,28,29,36,49,54,60,70,91,106,110,119,123]  low 22  median unit norm 0.003625
+09:00:29.934  [LAYER-HEALTH]     (no SE blocks)
+09:00:29.934  [LAYER-HEALTH]   ReZero: none
+09:00:29.934  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+09:00:29.934  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 11.94, blocks.1.bn2.running_var 6.418, blocks.0.bn2.running_mean 6.281, policy.conv.bias 5.828, policy.pre_bn.running_var 5.285
+09:29:54.460  [LAYER-HEALTH] checkpoint replay-autosave step=19000 trainerStep=19000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=0 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+2.04@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=14.6@blocks.2.bn1[125] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=15/128 maxAbs=11.69@blocks.0.bn2.running_var
+09:29:54.460  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+09:29:54.460  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+09:29:54.460  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.79 [40]         +0.31 [110]           4.5 [83]
+09:29:54.460  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.81 [78]         +0.37 [18]            4.2 [76]
+09:29:54.460  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.46 [53]         -0.15 [49]            4.2 [50]
+09:29:54.460  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.10 [107]        -0.13 [31]           14.5 [14]
+09:29:54.460  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.44 [29]         -0.43 [77]            5.3 [33]
+09:29:54.460  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      0      0      0      0     -1.99 [40]         +1.12 [31]           14.6 [125]
+09:29:54.460  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.65 [85]         -0.09 [37]            3.2 [26]
+09:29:54.460  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.36 [108]        +1.19 [55]            4.5 [75]
+09:29:54.460  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.66 [13]         +2.04 [60]            3.4 [22]
+09:29:54.460  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.82 [10]            6.2 [14]
+09:29:54.460  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+09:29:54.460  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 15 [10,18,28,29,36,49,53,54,60,70,91,106,110,119,123]  low 22  median unit norm 0.002393
+09:29:54.460  [LAYER-HEALTH]     (no SE blocks)
+09:29:54.460  [LAYER-HEALTH]   ReZero: none
+09:29:54.460  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+09:29:54.460  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 11.69, blocks.0.bn2.running_mean 6.31, blocks.1.bn2.running_var 6.256, policy.conv.bias 5.845, policy.pre_bn.running_var 5.182
+09:53:19.588  [LAYER-HEALTH] checkpoint replay-autosave step=20000 trainerStep=20000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=2 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+1.96@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=15.7@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=13/128 maxAbs=10.96@blocks.0.bn2.running_var
+09:53:19.588  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+09:53:19.588  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+09:53:19.588  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -0.81 [40]         +0.33 [26]            4.2 [74]
+09:53:19.588  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.84 [78]         +0.36 [18]            4.3 [76]
+09:53:19.588  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.45 [53]         -0.26 [49]            4.6 [96]
+09:53:19.588  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.10 [11]         -0.15 [31]           15.7 [14]
+09:53:19.588  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.45 [29]         -0.46 [77]            5.7 [33]
+09:53:19.588  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      1      0      0      0     -2.03 [40]         +0.93 [31]           15.3 [31]
+09:53:19.588  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.68 [85]         -0.09 [37]            3.3 [119]
+09:53:19.588  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.37 [58]         +1.19 [55]            4.2 [75]
+09:53:19.588  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.71 [13]         +1.96 [60]            3.3 [22]
+09:53:19.588  [LAYER-HEALTH]     value.bn        relu           16      6      1      0      0      0    -10.63 [7]          -0.83 [9]             5.7 [14]
+09:53:19.588  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+09:53:19.588  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 13 [18,25,28,29,36,49,54,60,70,91,106,119,123]  low 24  median unit norm 0.002909
+09:53:19.588  [LAYER-HEALTH]     (no SE blocks)
+09:53:19.588  [LAYER-HEALTH]   ReZero: none
+09:53:19.588  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+09:53:19.588  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 10.96, blocks.0.bn2.running_mean 5.947, blocks.1.bn2.running_var 5.885, policy.conv.bias 5.765, policy.pre_bn.running_var 4.648
+10:16:36.666  [LAYER-HEALTH] checkpoint replay-autosave step=21000 trainerStep=21000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=3 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+1.93@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=19.4@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=10/128 maxAbs=11.13@blocks.0.bn2.running_var
+10:16:36.666  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+10:16:36.666  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+10:16:36.666  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.06 [40]         +0.39 [34]            3.9 [74]
+10:16:36.667  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -0.89 [78]         +0.37 [18]            5.4 [76]
+10:16:36.667  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.66 [53]         -0.38 [94]            4.6 [50]
+10:16:36.667  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.27 [11]         -0.17 [31]           19.4 [14]
+10:16:36.667  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.52 [29]         -0.55 [77]            5.8 [33]
+10:16:36.667  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      2      0      0      0     -2.16 [40]         +0.98 [31]           17.9 [31]
+10:16:36.667  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.81 [85]         -0.22 [37]            3.3 [119]
+10:16:36.667  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.47 [108]        +1.27 [55]            3.8 [31]
+10:16:36.667  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.83 [7]          +1.93 [60]            3.5 [22]
+10:16:36.667  [LAYER-HEALTH]     value.bn        relu           16      6      1      0      0      0    -10.63 [7]          -0.97 [1]             5.7 [10]
+10:16:36.667  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+10:16:36.667  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 10 [18,28,29,36,49,60,91,106,119,123]  low 29  median unit norm 0.001936
+10:16:36.667  [LAYER-HEALTH]     (no SE blocks)
+10:16:36.667  [LAYER-HEALTH]   ReZero: none
+10:16:36.667  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+10:16:36.667  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 11.13, blocks.1.bn2.running_var 5.972, policy.conv.bias 5.749, blocks.0.bn2.running_mean 5.627, policy.pre_bn.running_var 5.366
+10:39:46.284  [LAYER-HEALTH] checkpoint replay-autosave step=22000 trainerStep=22000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=3 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+2.05@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=23.0@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=13/128 maxAbs=11.05@blocks.0.bn2.running_var
+10:39:46.284  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+10:39:46.284  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+10:39:46.284  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.11 [40]         +0.49 [51]            3.3 [74]
+10:39:46.284  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -1.01 [78]         +0.43 [18]            5.8 [76]
+10:39:46.284  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.64 [53]         -0.37 [49]            4.4 [50]
+10:39:46.284  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.30 [52]         -0.25 [12]           23.0 [14]
+10:39:46.284  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.65 [29]         -0.52 [28]            6.3 [33]
+10:39:46.284  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      3      0      0      0     -2.18 [40]         +1.11 [31]           20.0 [31]
+10:39:46.284  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.90 [85]         -0.21 [37]            3.2 [119]
+10:39:46.284  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.52 [108]        +1.43 [55]            4.5 [31]
+10:39:46.284  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.93 [7]          +2.05 [60]            3.6 [22]
+10:39:46.284  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.76 [1]             3.5 [10]
+10:39:46.284  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+10:39:46.284  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 13 [10,18,28,29,36,49,53,60,70,91,106,119,123]  low 24  median unit norm 0.002746
+10:39:46.284  [LAYER-HEALTH]     (no SE blocks)
+10:39:46.284  [LAYER-HEALTH]   ReZero: none
+10:39:46.284  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+10:39:46.284  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 11.05, blocks.1.bn2.running_var 5.981, policy.conv.bias 5.787, policy.pre_bn.running_var 5.312, blocks.0.bn2.running_mean 5.083
+11:03:20.884  [LAYER-HEALTH] checkpoint replay-autosave step=23000 trainerStep=23000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=3 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+2.08@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=24.6@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=17/128 maxAbs=10.31@blocks.0.bn2.running_var
+11:03:20.884  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+11:03:20.884  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+11:03:20.884  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.14 [40]         +0.50 [51]            4.4 [74]
+11:03:20.884  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -1.06 [78]         +0.50 [18]            5.9 [12]
+11:03:20.884  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.64 [53]         -0.33 [58]            4.3 [50]
+11:03:20.884  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.29 [52]         -0.21 [12]           24.6 [14]
+11:03:20.884  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.73 [29]         -0.51 [28]            6.6 [33]
+11:03:20.884  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      2      0      0      0     -2.35 [40]         +1.22 [31]           21.3 [31]
+11:03:20.884  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.86 [85]         -0.16 [37]            3.2 [122]
+11:03:20.884  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.55 [108]        +1.51 [55]            4.7 [31]
+11:03:20.884  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.94 [7]          +2.08 [60]            4.0 [22]
+11:03:20.884  [LAYER-HEALTH]     value.bn        relu           16      6      1      0      0      0    -10.63 [7]          -0.72 [1]             3.6 [14]
+11:03:20.884  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+11:03:20.884  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 17 [10,18,25,28,29,36,49,53,54,60,70,78,91,106,119,122,…]  low 21  median unit norm 0.002594
+11:03:20.884  [LAYER-HEALTH]     (no SE blocks)
+11:03:20.884  [LAYER-HEALTH]   ReZero: none
+11:03:20.884  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+11:03:20.884  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 10.31, policy.conv.bias 5.866, blocks.1.bn2.running_var 5.638, policy.pre_bn.running_var 5.105, blocks.0.bn2.running_mean 4.848
+11:26:38.601  [LAYER-HEALTH] checkpoint replay-autosave step=24000 trainerStep=24000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=3 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+2.06@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=25.3@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=19/128 maxAbs=10.14@blocks.0.bn2.running_var
+11:26:38.601  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+11:26:38.601  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+11:26:38.601  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.14 [40]         +0.50 [51]            4.5 [74]
+11:26:38.601  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -1.07 [78]         +0.51 [18]            6.0 [12]
+11:26:38.601  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.64 [53]         -0.30 [58]            4.3 [50]
+11:26:38.601  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.29 [52]         -0.22 [12]           25.3 [14]
+11:26:38.601  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.73 [29]         -0.51 [33]            6.7 [33]
+11:26:38.601  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      2      0      0      0     -2.38 [40]         +1.25 [31]           21.4 [31]
+11:26:38.601  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.86 [85]         -0.16 [37]            3.3 [122]
+11:26:38.601  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.55 [108]        +1.51 [55]            4.8 [31]
+11:26:38.601  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.91 [7]          +2.06 [60]            4.2 [22]
+11:26:38.601  [LAYER-HEALTH]     value.bn        relu           16      6      1      0      0      0    -10.63 [7]          -0.62 [1]             3.7 [14]
+11:26:38.601  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+11:26:38.601  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 19 [10,18,25,28,29,36,49,53,54,60,70,78,91,104,106,110,…]  low 17  median unit norm 0.002982
+11:26:38.601  [LAYER-HEALTH]     (no SE blocks)
+11:26:38.601  [LAYER-HEALTH]   ReZero: none
+11:26:38.601  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+11:26:38.601  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 10.14, policy.conv.bias 5.891, blocks.1.bn2.running_var 5.635, policy.pre_bn.running_var 5.215, blocks.0.bn2.running_mean 4.946
+11:50:01.746  [LAYER-HEALTH] checkpoint replay-autosave step=25000 trainerStep=25000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=3 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+2.06@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=25.5@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=17/128 maxAbs=10.18@blocks.0.bn2.running_var
+11:50:01.746  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+11:50:01.746  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+11:50:01.746  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.14 [40]         +0.50 [51]            4.5 [74]
+11:50:01.746  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -1.07 [78]         +0.51 [18]            5.9 [12]
+11:50:01.746  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.65 [53]         -0.29 [58]            4.2 [50]
+11:50:01.746  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.29 [52]         -0.21 [12]           25.5 [14]
+11:50:01.746  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.74 [29]         -0.52 [33]            6.7 [33]
+11:50:01.746  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      2      0      0      0     -2.38 [40]         +1.25 [31]           21.6 [31]
+11:50:01.746  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.85 [85]         -0.16 [37]            3.3 [122]
+11:50:01.746  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.55 [108]        +1.52 [55]            4.9 [31]
+11:50:01.746  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.91 [7]          +2.06 [60]            4.3 [22]
+11:50:01.746  [LAYER-HEALTH]     value.bn        relu           16      6      1      0      0      0    -10.63 [7]          -0.62 [1]             3.8 [14]
+11:50:01.746  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+11:50:01.746  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 17 [10,18,25,28,29,36,49,53,60,70,74,78,91,106,119,122,…]  low 21  median unit norm 0.004129
+11:50:01.746  [LAYER-HEALTH]     (no SE blocks)
+11:50:01.746  [LAYER-HEALTH]   ReZero: none
+11:50:01.746  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+11:50:01.746  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 10.18, policy.conv.bias 5.895, blocks.1.bn2.running_var 5.655, policy.pre_bn.running_var 5.234, blocks.0.bn2.running_mean 4.948
+12:13:10.857  [LAYER-HEALTH] checkpoint replay-autosave step=26000 trainerStep=26000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=3 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+2.06@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=25.0@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=18/128 maxAbs=10.21@blocks.0.bn2.running_var
+12:13:10.857  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+12:13:10.857  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+12:13:10.857  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.14 [40]         +0.50 [51]            4.6 [74]
+12:13:10.857  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -1.07 [78]         +0.51 [18]            5.9 [12]
+12:13:10.857  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.64 [53]         -0.29 [58]            4.3 [50]
+12:13:10.857  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.29 [52]         -0.21 [12]           25.0 [14]
+12:13:10.857  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.74 [29]         -0.51 [33]            6.7 [33]
+12:13:10.857  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      2      0      0      0     -2.38 [40]         +1.26 [31]           21.6 [31]
+12:13:10.857  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.85 [85]         -0.16 [37]            3.3 [122]
+12:13:10.857  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.55 [108]        +1.52 [55]            4.9 [31]
+12:13:10.857  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.91 [7]          +2.06 [60]            4.3 [22]
+12:13:10.857  [LAYER-HEALTH]     value.bn        relu           16      6      1      0      0      0    -10.63 [7]          -0.63 [1]             3.7 [14]
+12:13:10.857  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+12:13:10.857  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 18 [10,18,25,28,29,36,49,53,54,60,70,78,91,104,106,119,…]  low 19  median unit norm 0.00484
+12:13:10.857  [LAYER-HEALTH]     (no SE blocks)
+12:13:10.857  [LAYER-HEALTH]   ReZero: none
+12:13:10.857  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+12:13:10.857  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 10.21, policy.conv.bias 5.897, blocks.1.bn2.running_var 5.668, policy.pre_bn.running_var 5.231, blocks.0.bn2.running_mean 4.962
+12:45:01.549  [LAYER-HEALTH] checkpoint replay-autosave step=27000 trainerStep=27000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=3 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+2.06@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=24.5@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=18/128 maxAbs=10.23@blocks.0.bn2.running_var
+12:45:01.549  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+12:45:01.549  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+12:45:01.549  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.14 [40]         +0.50 [51]            4.6 [74]
+12:45:01.549  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -1.07 [78]         +0.51 [18]            5.9 [12]
+12:45:01.549  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.64 [53]         -0.29 [58]            4.3 [50]
+12:45:01.549  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.29 [52]         -0.21 [12]           24.5 [14]
+12:45:01.549  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.74 [29]         -0.51 [33]            6.7 [33]
+12:45:01.549  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      2      0      0      0     -2.39 [40]         +1.27 [31]           21.5 [31]
+12:45:01.549  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.85 [85]         -0.16 [37]            3.3 [122]
+12:45:01.549  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.55 [108]        +1.52 [55]            4.8 [31]
+12:45:01.549  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.91 [7]          +2.06 [60]            4.2 [22]
+12:45:01.549  [LAYER-HEALTH]     value.bn        relu           16      6      1      0      0      0    -10.63 [7]          -0.62 [1]             3.8 [14]
+12:45:01.549  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+12:45:01.549  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 18 [10,18,25,28,29,36,49,53,54,60,70,78,91,106,119,122,…]  low 18  median unit norm 0.003626
+12:45:01.549  [LAYER-HEALTH]     (no SE blocks)
+12:45:01.549  [LAYER-HEALTH]   ReZero: none
+12:45:01.549  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+12:45:01.549  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 10.23, policy.conv.bias 5.899, blocks.1.bn2.running_var 5.653, policy.pre_bn.running_var 5.218, blocks.0.bn2.running_mean 4.955
+13:19:23.327  [LAYER-HEALTH] checkpoint replay-autosave step=28000 trainerStep=28000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=3 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+2.04@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=25.1@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=20/128 maxAbs=10.23@blocks.0.bn2.running_var
+13:19:23.327  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+13:19:23.327  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+13:19:23.327  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.14 [40]         +0.50 [51]            4.4 [74]
+13:19:23.327  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -1.07 [78]         +0.51 [18]            5.9 [12]
+13:19:23.327  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.64 [53]         -0.29 [58]            4.3 [50]
+13:19:23.327  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.29 [52]         -0.21 [12]           25.1 [14]
+13:19:23.327  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.74 [29]         -0.51 [33]            6.7 [33]
+13:19:23.327  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      2      0      0      0     -2.39 [40]         +1.28 [31]           21.8 [31]
+13:19:23.327  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.85 [85]         -0.16 [37]            3.3 [122]
+13:19:23.327  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.55 [108]        +1.54 [55]            4.8 [31]
+13:19:23.327  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.91 [7]          +2.04 [60]            4.2 [22]
+13:19:23.327  [LAYER-HEALTH]     value.bn        relu           16      6      1      0      0      0    -10.63 [7]          -0.63 [1]             3.8 [14]
+13:19:23.327  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+13:19:23.327  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 20 [10,18,25,28,29,36,49,53,54,60,70,78,91,104,106,110,…]  low 15  median unit norm 0.003503
+13:19:23.327  [LAYER-HEALTH]     (no SE blocks)
+13:19:23.327  [LAYER-HEALTH]   ReZero: none
+13:19:23.327  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+13:19:23.327  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 10.23, policy.conv.bias 5.905, blocks.1.bn2.running_var 5.648, policy.pre_bn.running_var 5.194, blocks.0.bn2.running_mean 4.972
+13:54:08.109  [LAYER-HEALTH] checkpoint replay-autosave step=29000 trainerStep=29000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=4 alwaysOn=0 worst=value.bn(dead 6 off 1 on 0) maxBetaOverGamma=+2.09@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=24.4@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=20/128 maxAbs=9.845@blocks.0.bn2.running_var
+13:54:08.109  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+13:54:08.109  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+13:54:08.109  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.15 [40]         +0.51 [51]            4.0 [74]
+13:54:08.109  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -1.07 [78]         +0.51 [18]            6.0 [12]
+13:54:08.109  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.63 [53]         -0.28 [58]            4.2 [50]
+13:54:08.109  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.29 [52]         -0.20 [12]           24.4 [14]
+13:54:08.109  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.74 [29]         -0.51 [33]            6.7 [33]
+13:54:08.109  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      3      0      0      0     -2.41 [40]         +1.30 [31]           21.8 [31]
+13:54:08.109  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.84 [85]         -0.15 [37]            3.4 [122]
+13:54:08.109  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.55 [108]        +1.55 [55]            4.8 [31]
+13:54:08.109  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.91 [7]          +2.09 [60]            4.2 [22]
+13:54:08.109  [LAYER-HEALTH]     value.bn        relu           16      6      1      0      0      0    -10.63 [7]          -0.57 [1]             3.8 [14]
+13:54:08.109  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+13:54:08.109  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 20 [10,18,25,28,29,36,49,53,54,60,70,74,78,91,104,106,…]  low 17  median unit norm 0.003287
+13:54:08.109  [LAYER-HEALTH]     (no SE blocks)
+13:54:08.109  [LAYER-HEALTH]   ReZero: none
+13:54:08.109  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+13:54:08.109  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 9.845, policy.conv.bias 5.919, blocks.1.bn2.running_var 5.476, policy.pre_bn.running_var 4.972, blocks.0.bn2.running_mean 4.794
+14:29:11.040  [LAYER-HEALTH] checkpoint replay-autosave step=30000 trainerStep=30000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=3 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+1.94@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=26.3@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=19/128 maxAbs=8.009@blocks.0.bn2.running_var
+14:29:11.040  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+14:29:11.040  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+14:29:11.040  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.15 [40]         +0.55 [51]            3.6 [74]
+14:29:11.040  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -1.08 [78]         +0.53 [18]            6.3 [12]
+14:29:11.040  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.63 [53]         -0.30 [58]            4.0 [50]
+14:29:11.040  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.30 [11]         -0.25 [12]           26.3 [14]
+14:29:11.040  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.72 [29]         -0.48 [77]            7.0 [33]
+14:29:11.040  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      3      0      0      0     -2.32 [40]         +1.11 [31]           21.4 [31]
+14:29:11.040  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.85 [85]         -0.12 [37]            3.4 [122]
+14:29:11.040  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.57 [108]        +1.57 [55]            4.8 [31]
+14:29:11.040  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -0.97 [7]          +1.94 [60]            4.0 [22]
+14:29:11.040  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.61 [1]             4.1 [14]
+14:29:11.040  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+14:29:11.040  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 19 [10,18,25,28,29,36,49,53,54,60,70,74,78,91,104,106,…]  low 18  median unit norm 0.002727
+14:29:11.040  [LAYER-HEALTH]     (no SE blocks)
+14:29:11.040  [LAYER-HEALTH]   ReZero: none
+14:29:11.040  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+14:29:11.040  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 8.009, policy.conv.bias 5.861, blocks.1.bn2.running_var 4.992, blocks.0.bn2.running_mean 4.762, policy.pre_bn.running_var 4.522
+15:04:22.690  [LAYER-HEALTH] checkpoint replay-autosave step=31000 trainerStep=31000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=4 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+1.90@policy.pre_bn[61] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=29.6@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=15/128 maxAbs=8.878@blocks.0.bn2.running_var
+15:04:22.690  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+15:04:22.690  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+15:04:22.690  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.29 [40]         +0.68 [51]            3.0 [12]
+15:04:22.690  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -1.05 [78]         +0.56 [18]            7.7 [12]
+15:04:22.690  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.75 [53]         -0.36 [94]            4.4 [50]
+15:04:22.690  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.42 [11]         -0.28 [12]           29.6 [14]
+15:04:22.690  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.79 [29]         -0.52 [33]            6.7 [33]
+15:04:22.690  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      4      0      0      0     -2.37 [40]         +1.20 [31]           22.8 [31]
+15:04:22.690  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      0      0      0      0     -1.97 [85]         -0.23 [37]            3.4 [122]
+15:04:22.690  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.62 [108]        +1.59 [55]            5.1 [31]
+15:04:22.690  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -1.11 [7]          +1.90 [61]            3.9 [22]
+15:04:22.690  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.61 [1]             3.3 [10]
+15:04:22.690  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+15:04:22.690  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 15 [10,18,28,29,36,49,53,54,60,70,91,104,106,119,123]  low 22  median unit norm 0.002988
+15:04:22.690  [LAYER-HEALTH]     (no SE blocks)
+15:04:22.690  [LAYER-HEALTH]   ReZero: none
+15:04:22.690  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+15:04:22.690  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 8.878, policy.conv.bias 5.847, blocks.1.bn2.running_var 5.181, blocks.0.bn1.running_var 4.888, policy.pre_bn.running_var 4.825
+15:37:59.262  [LAYER-HEALTH] checkpoint replay-autosave step=32000 trainerStep=32000 scope=all_tensors reluSites=9/10 ch=1040 dead=6 off=5 alwaysOn=0 worst=value.bn(dead 6 off 0 on 0) maxBetaOverGamma=+2.06@policy.pre_bn[60] minBetaOverGamma=-10.63@value.bn[7] rvMaxOverMedian=32.1@blocks.1.bn1[14] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=24/128 maxAbs=9.272@blocks.0.bn2.running_var
+15:37:59.263  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+15:37:59.263  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+15:37:59.263  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.50 [103]        +0.81 [51]            4.1 [74]
+15:37:59.263  [LAYER-HEALTH]     blocks.0.bn1    relu          128      0      0      0      0      0     -1.15 [62]         +0.51 [18]            8.7 [12]
+15:37:59.263  [LAYER-HEALTH]     blocks.0.bn2    relu          128      0      0      0      0      0     -1.66 [53]         -0.41 [3]             4.6 [64]
+15:37:59.263  [LAYER-HEALTH]     blocks.1.bn1    relu          128      0      0      0      0      0     -1.54 [52]         -0.24 [12]           32.1 [14]
+15:37:59.263  [LAYER-HEALTH]     blocks.1.bn2    relu          128      0      0      0      0      0     -1.90 [29]         -0.52 [33]            6.9 [33]
+15:37:59.263  [LAYER-HEALTH]     blocks.2.bn1    relu          128      0      4      0      0      0     -2.32 [40]         +1.23 [31]           27.6 [125]
+15:37:59.263  [LAYER-HEALTH]     blocks.2.bn2    relu          128      0      1      0      0      0     -2.02 [85]         -0.20 [37]            3.5 [122]
+15:37:59.263  [LAYER-HEALTH]     tower_final_bn  relu          128      0      0      0      0      0     -0.69 [108]        +1.63 [78]            5.3 [31]
+15:37:59.263  [LAYER-HEALTH]     policy.pre_bn   relu          128      0      0      0      0      0     -1.14 [7]          +2.06 [60]            3.9 [22]
+15:37:59.263  [LAYER-HEALTH]     value.bn        relu           16      6      0      0      0      0    -10.63 [7]          -0.55 [1]             3.0 [10]
+15:37:59.263  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+15:37:59.263  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 24 [10,18,22,25,28,29,36,41,49,53,54,55,60,70,72,74,…]  low 14  median unit norm 0.002933
+15:37:59.263  [LAYER-HEALTH]     (no SE blocks)
+15:37:59.263  [LAYER-HEALTH]   ReZero: none
+15:37:59.263  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+15:37:59.263  [LAYER-HEALTH]   largest |value|: blocks.0.bn2.running_var 9.272, policy.conv.bias 5.854, blocks.1.bn2.running_var 5.259, blocks.0.bn1.running_var 5.103, policy.pre_bn.running_var 4.781

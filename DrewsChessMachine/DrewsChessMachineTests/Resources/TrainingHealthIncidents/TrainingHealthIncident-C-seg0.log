@@ -1,0 +1,201 @@
+# training-health incident excerpt
+# run: C segment 0 (arm C: LR cycle 10 <-> 0.01), trainer steps 1-513
+# source: dcm_log_20261005-090417.txt sha256=d3bb463bb9478c6299fb485537bcde8ac27478b927e75e6236daa8776103f73e lines=247 (at extraction, 2026-10-06)
+# selection: every line of the log except [BATCH-STATS]
+# every selected line is verbatim; [BATCH-STATS] lines are left out (the replay reads nothing from them)
+09:04:17.373  [REPLAY] starting offline corpus replay over 1 corpus path(s)
+09:04:17.389  [REPLAY] start-model: 20261005-r7b24-fresh.safetensors modelID=20261005-22-yRzB encoding=basic24
+09:04:17.390  [REPLAY-ARCH] (start-model) v5 . in basic24(24) -> stem 128 (7x7) . 3x[7x7+7x7 @128, no-SE, relu/pre, clean_add, no-ReZero, out:layer_norm, drop*1] . act relu . policy intermediate_conv(4864) . value WDL(16->FC128) . bfloat16 . 5,132,687 params
+09:04:17.390  [REPLAY-HPARAMS] lr=0.001 batch=4096 wd=0.0003 momentum=0.9 gradClip=15 entropyBonus=0 drawPenalty=0 policyW=1 valueW=1 illegalW=1 pLabelSmooth=0.1 pLabelSmoothMode=fixed_total pLabelSmoothPerMove=0.0033 pLabelSmoothPerMoveCap=0.5 vLabelSmooth=0.013 dropout=0 lrWarmup=1000 bufCap=500000 replayRatio=0.48 minPrefill=250000 complementCE=on sqrtBatchLR=on batchStats=10 klProbe=100 sampling=(maxPerGame=400 maxDrawPct=100 targetLen=0 stratify=off applied=on)
+09:04:17.390  [REPLAY] trainer-model output: /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261005-lrC-cyc10-replay-latest.safetensors (new file)
+09:04:17.569  [REPLAY] enumerated checkpoints: /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261005-lrC-cyc10-replay-step1000.safetensors and siblings (never overwritten)
+09:04:17.572  [REPLAY] corpus 20260624-192615-w3aA5b: 46 sealed shard(s)
+09:04:17.578  [PARAM] random_seed from --seed: 20261005 (overrides random_seed_mode and random_seed=0 for this process)
+09:04:17.578  [REPLAY] building network + trainer (encoding=basic24)
+09:04:17.719  [NUMERICS] policy_tail_precision=fp32_from_pre_bn source=flag (affects bf16 / fp16 models only)
+09:04:17.719  [PARAM] dropoutRate applied to training graph: 0.0000
+09:04:18.035  [REPLAY] start-model weights loaded into trainer (working+masters, velocity zeroed; new branch) + feeder net (base tensors=61)
+09:04:18.035  [REPLAY-CYCLE] lr=[trough 1.00e-02,peak 1.00e+01]^10000st cnt=0 inv=true mom=[0.75,0.90]^1000st cnt=0 inv=false decay=[peak->1.00e-04 trough->1.00e-05 over 10000000st] momFollow=[low 0.850->0.900 high 0.950->0.950] origin=trainerStep 0 cycleStep 0 cycleLR=1.0000e+01 cycleMom=0.8500 (new branch from 20261005-22-yRzB; its clock, warmup and velocity are not continued)
+09:04:18.036  [RUN] path=replay run=E67A96F2-52A0-40F9-BCCA-9EFB5B960E3E seg=0 (branch from 20261005-22-yRzB sha=b750edb1883a) build=2323 git=58e9f952 dirty=true device="Apple M5 Max" vm=false os="Version 27.2 (Build 26B5091g)" seed=20261005 mode=seeded(--seed) derivation=v1 params_sha=4ab318e16c54 cum_step=0 cum_games=0 cum_train_sec=0.0 argv="/Users/andrew/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2323-58e9f952-lrmax10.app/Contents/MacOS/DrewsChessMachine --replay-corpus 20260624-192615-w3aA5b --start-model /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261005-r7b24-fresh.safetensors --out-model /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261005-lrC-cyc10-replay-latest.safetensors --parameters /Users/andrew/cursor/drews-chess-machine/experiments/20261005-lr-schedule-ab/parameters-C.json --epochs 12 --training-step-limit 36000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn --seed 20261005"
+09:04:18.036  [REPLAY] batchSize=4096 reuse=0.48 K=8533 minPrefill=250000 stepLimit=36000 epochLimit=12
+09:04:21.190  [REPLAY] pre-filled: bufCount=250052 positionsFed=250052 gamesFed=3777 rejected=0 skipped=0
+09:04:21.495  [MASK CHECK] pos=0 movedIdx=1020 inLegalMask=true legalCount=35
+09:04:21.495  [MASK CHECK] pos=1 movedIdx=3186 inLegalMask=true legalCount=35
+09:04:21.495  [MASK CHECK] pos=2 movedIdx=3705 inLegalMask=true legalCount=7
+09:04:21.495  [MASK CHECK] pos=3 movedIdx=2279 inLegalMask=true legalCount=27
+09:04:21.495  [MASK CHECK] pos=4 movedIdx=118 inLegalMask=true legalCount=36
+09:04:21.495  [MASK CHECK] pos=5 movedIdx=54 inLegalMask=true legalCount=30
+09:04:21.495  [MASK CHECK] pos=6 movedIdx=3261 inLegalMask=true legalCount=40
+09:04:21.495  [MASK CHECK] pos=7 movedIdx=1396 inLegalMask=true legalCount=36
+09:04:21.509  [EXEC] reducedPrecisionFastMath default=0 override=nil
+09:04:21.510  [KL-PROBE] built subgraph batch=4096 policySize=4864 stash=76MB
+09:04:21.527  [EXEC] compiled training executable batch=4096 diagnostics=false klStash=true targets=5
+09:04:24.483  [KL-PROBE] step=0 batch=4096 kl=0.000109 klSd=0.000057 klSd/kl=0.52 drop=0.000 gpu=2712.7ms probe=241.6ms overhead=8.9% amortized@100=0.09%
+09:04:24.483  [REPLAY] step=1 loss=11.8138 pLoss=8.6299 vLoss=2.1901 pEnt=-- pIllM=0.9938 playedP=-- pW=-- pD=-- pL=-- vAbs=-- pLogitMean=-- vLogitMean=-- gNorm=31.172 lr=0.01 ms=3281.3 buf=250052 plies=250052 games=3777 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+01,tr=1.0e-02] trainerStep=1
+09:04:24.501  [LAYER-HEALTH] live trainerStep=1 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=0 off=0 alwaysOn=0 worst=none maxBetaOverGamma=+0.00@blocks.0.bn1[0] minBetaOverGamma=+0.00@blocks.0.bn1[0] rvMaxOverMedian=3.2@stem.bn[47] rezero=none nonFinite=0
+09:04:24.599  [EXEC] reducedPrecisionFastMath default=0 override=nil
+09:04:24.617  [EXEC] compiled training executable batch=4096 diagnostics=false klStash=false targets=5
+09:04:41.474  [EXEC] reducedPrecisionFastMath default=0 override=nil
+09:04:41.494  [EXEC] compiled training executable batch=4096 diagnostics=true klStash=false targets=30
+09:04:44.215  [ENCODE-COST] step=9 batch=4096 n=10 encodeMs=(p50=772.83 p99=1714.48) gpuWaitMs=(p50=1258.34 p99=1350.25)
+09:04:44.216  [LEGAL-COST] step=10 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=9) p1ms=(p50=4.23 p99=11.37) p2ms=(p50=8.82 p99=276.64) p3ms=(p50=2048.46 p99=3005.16) legalMaskMs=(p50=11.61 p99=12.85) legalMaskPerPosUs=(p50=2.8 p99=3.1) interStepMs=(p50=2088.96 p99=2848.99) gapMs=(p50=27.46)
+09:05:05.427  [ENCODE-COST] step=19 batch=4096 n=10 encodeMs=(p50=703.02 p99=1166.50) gpuWaitMs=(p50=1278.20 p99=1536.43)
+09:05:05.427  [LEGAL-COST] step=20 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=6.10 p99=13.66) p2ms=(p50=11.48 p99=14.99) p3ms=(p50=1969.37 p99=2617.37) legalMaskMs=(p50=11.07 p99=12.13) legalMaskPerPosUs=(p50=2.7 p99=3.0) interStepMs=(p50=2053.18 p99=2702.46) gapMs=(p50=66.24)
+09:05:26.715  [ENCODE-COST] step=29 batch=4096 n=10 encodeMs=(p50=803.96 p99=1160.07) gpuWaitMs=(p50=1341.23 p99=1456.29)
+09:05:26.715  [LEGAL-COST] step=30 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.46 p99=15.37) p2ms=(p50=10.08 p99=11.76) p3ms=(p50=2033.76 p99=2363.06) legalMaskMs=(p50=11.23 p99=12.56) legalMaskPerPosUs=(p50=2.7 p99=3.1) interStepMs=(p50=2115.98 p99=2447.30) gapMs=(p50=64.69)
+09:05:47.386  [ENCODE-COST] step=39 batch=4096 n=10 encodeMs=(p50=781.42 p99=1223.34) gpuWaitMs=(p50=1231.48 p99=1461.87)
+09:05:47.387  [LEGAL-COST] step=40 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.05 p99=48.61) p2ms=(p50=10.44 p99=12.43) p3ms=(p50=1948.53 p99=2708.96) legalMaskMs=(p50=11.44 p99=11.97) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=2025.72 p99=2796.45) gapMs=(p50=59.71)
+09:06:07.933  [ENCODE-COST] step=49 batch=4096 n=10 encodeMs=(p50=646.01 p99=1056.09) gpuWaitMs=(p50=1322.72 p99=1574.92)
+09:06:07.934  [LEGAL-COST] step=50 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=8.26 p99=33.11) p2ms=(p50=9.72 p99=13.98) p3ms=(p50=2028.49 p99=2656.46) legalMaskMs=(p50=11.34 p99=12.00) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=2106.96 p99=2743.00) gapMs=(p50=60.50)
+09:06:07.934  [REPLAY] step=50 loss=6.4783 pLoss=5.0650 vLoss=0.9002 pEnt=2.519 pIllM=0.5131 playedP=0.068 pW=0.47 pD=0.06 pL=0.46 vAbs=0.015 pLogitMean=-0.0173 vLogitMean=0.6120 gNorm=1.235 lr=0.5 ms=2665.3 buf=500000 plies=668192 games=10125 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+01,tr=1.0e-02] trainerStep=50
+09:06:07.937  [LAYER-HEALTH] live trainerStep=50 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=12 off=2 alwaysOn=0 worst=value.bn(dead 12 off 2 on 0) maxBetaOverGamma=+0.33@policy.pre_bn[16] minBetaOverGamma=-106.97@value.bn[8] rvMaxOverMedian=29.8@stem.bn[31] rezero=none nonFinite=0
+09:06:28.221  [ENCODE-COST] step=59 batch=4096 n=10 encodeMs=(p50=592.31 p99=1410.74) gpuWaitMs=(p50=1310.33 p99=1567.97)
+09:06:28.222  [LEGAL-COST] step=60 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=6.85 p99=17.42) p2ms=(p50=9.70 p99=17.33) p3ms=(p50=1983.77 p99=2481.82) legalMaskMs=(p50=10.99 p99=11.80) legalMaskPerPosUs=(p50=2.7 p99=2.9) interStepMs=(p50=2060.39 p99=2572.57) gapMs=(p50=60.07)
+09:06:48.940  [ENCODE-COST] step=69 batch=4096 n=10 encodeMs=(p50=715.37 p99=1032.85) gpuWaitMs=(p50=1360.84 p99=1467.29)
+09:06:48.941  [LEGAL-COST] step=70 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.26 p99=55.87) p2ms=(p50=9.05 p99=10.55) p3ms=(p50=2026.35 p99=2416.91) legalMaskMs=(p50=11.54 p99=13.19) legalMaskPerPosUs=(p50=2.8 p99=3.2) interStepMs=(p50=2112.04 p99=2506.35) gapMs=(p50=69.38)
+09:07:09.442  [ENCODE-COST] step=79 batch=4096 n=10 encodeMs=(p50=637.62 p99=1223.98) gpuWaitMs=(p50=1356.47 p99=1433.97)
+09:07:09.442  [LEGAL-COST] step=80 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=6.89 p99=26.10) p2ms=(p50=10.08 p99=11.05) p3ms=(p50=2011.93 p99=2383.14) legalMaskMs=(p50=11.48 p99=12.47) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=2096.27 p99=2475.81) gapMs=(p50=67.36)
+09:07:30.442  [ENCODE-COST] step=89 batch=4096 n=10 encodeMs=(p50=667.05 p99=1251.53) gpuWaitMs=(p50=1377.82 p99=1503.05)
+09:07:30.442  [LEGAL-COST] step=90 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=6.02 p99=11.37) p2ms=(p50=9.66 p99=10.79) p3ms=(p50=2061.23 p99=2627.51) legalMaskMs=(p50=10.96 p99=11.64) legalMaskPerPosUs=(p50=2.7 p99=2.8) interStepMs=(p50=2144.46 p99=2710.33) gapMs=(p50=67.55)
+09:07:51.349  [ENCODE-COST] step=99 batch=4096 n=10 encodeMs=(p50=600.15 p99=1347.01) gpuWaitMs=(p50=1393.37 p99=1536.45)
+09:07:51.350  [LEGAL-COST] step=100 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.72 p99=12.56) p2ms=(p50=10.08 p99=12.15) p3ms=(p50=1977.62 p99=2785.52) legalMaskMs=(p50=10.89 p99=12.00) legalMaskPerPosUs=(p50=2.7 p99=2.9) interStepMs=(p50=2050.97 p99=2873.87) gapMs=(p50=57.55)
+09:07:51.350  [REPLAY] step=100 loss=5.7369 pLoss=4.5472 vLoss=0.8717 pEnt=2.490 pIllM=0.3179 playedP=0.075 pW=0.49 pD=0.05 pL=0.46 vAbs=0.098 pLogitMean=-1.3832 vLogitMean=0.6574 gNorm=1.502 lr=1 ms=2795.5 buf=500000 plies=1094822 games=16614 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+01,tr=1.0e-02] trainerStep=100
+09:07:51.355  [LAYER-HEALTH] live trainerStep=100 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=14 off=2 alwaysOn=0 worst=value.bn(dead 12 off 1 on 0) maxBetaOverGamma=+0.81@tower_final_bn[0] minBetaOverGamma=-153.84@value.bn[8] rvMaxOverMedian=58.1@stem.bn[57] rezero=none nonFinite=0
+09:07:54.426  [KL-PROBE] step=100 batch=4096 kl=0.520036 klSd=0.280379 klSd/kl=0.54 drop=0.000 gpu=2712.0ms probe=263.1ms overhead=9.7% amortized@100=0.10%
+09:08:13.501  [ENCODE-COST] step=109 batch=4096 n=10 encodeMs=(p50=680.38 p99=1460.80) gpuWaitMs=(p50=1298.60 p99=1561.75)
+09:08:13.502  [LEGAL-COST] step=110 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.83 p99=14.07) p2ms=(p50=9.34 p99=10.14) p3ms=(p50=1996.22 p99=3038.61) legalMaskMs=(p50=11.49 p99=12.01) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=2070.42 p99=3120.15) gapMs=(p50=59.03)
+09:08:33.837  [ENCODE-COST] step=119 batch=4096 n=10 encodeMs=(p50=615.29 p99=1246.24) gpuWaitMs=(p50=1315.68 p99=1480.54)
+09:08:33.838  [LEGAL-COST] step=120 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=8.05 p99=17.93) p2ms=(p50=10.70 p99=13.21) p3ms=(p50=2011.74 p99=2522.85) legalMaskMs=(p50=11.80 p99=12.11) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=2091.50 p99=2616.07) gapMs=(p50=61.00)
+09:08:54.319  [ENCODE-COST] step=129 batch=4096 n=10 encodeMs=(p50=657.97 p99=1053.39) gpuWaitMs=(p50=1339.27 p99=1543.03)
+09:08:54.320  [LEGAL-COST] step=130 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.81 p99=16.56) p2ms=(p50=10.66 p99=12.86) p3ms=(p50=1996.23 p99=2429.82) legalMaskMs=(p50=11.43 p99=11.86) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=2088.02 p99=2522.68) gapMs=(p50=73.32)
+09:09:14.485  [ENCODE-COST] step=139 batch=4096 n=10 encodeMs=(p50=564.50 p99=1068.51) gpuWaitMs=(p50=1317.40 p99=1463.70)
+09:09:14.486  [LEGAL-COST] step=140 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=8.14 p99=38.24) p2ms=(p50=9.06 p99=19.78) p3ms=(p50=1973.67 p99=2357.96) legalMaskMs=(p50=11.32 p99=12.24) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=2060.59 p99=2446.72) gapMs=(p50=69.72)
+09:09:34.226  [ENCODE-COST] step=149 batch=4096 n=10 encodeMs=(p50=759.06 p99=1139.92) gpuWaitMs=(p50=1161.62 p99=1328.14)
+09:09:34.226  [LEGAL-COST] step=150 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=10.31 p99=20.46) p2ms=(p50=8.71 p99=13.84) p3ms=(p50=1960.36 p99=2129.12) legalMaskMs=(p50=11.69 p99=11.86) legalMaskPerPosUs=(p50=2.9 p99=2.9) interStepMs=(p50=2041.29 p99=2217.38) gapMs=(p50=61.91)
+09:09:34.226  [REPLAY] step=150 loss=5.1343 pLoss=3.9693 vLoss=0.8725 pEnt=2.858 pIllM=0.2925 playedP=0.076 pW=0.46 pD=0.08 pL=0.46 vAbs=0.054 pLogitMean=-4.5106 vLogitMean=0.6296 gNorm=0.608 lr=1.5 ms=2091.5 buf=500000 plies=1521507 games=23047 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+01,tr=1.0e-02] trainerStep=150
+09:09:34.227  [LAYER-HEALTH] live trainerStep=150 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=24 off=4 alwaysOn=0 worst=value.bn(dead 12 off 2 on 0) maxBetaOverGamma=+0.84@tower_final_bn[11] minBetaOverGamma=-191.99@blocks.0.bn2[55] rvMaxOverMedian=498.1@blocks.0.bn2[78] rezero=none nonFinite=0
+09:09:55.010  [ENCODE-COST] step=159 batch=4096 n=10 encodeMs=(p50=500.70 p99=1382.96) gpuWaitMs=(p50=1448.34 p99=1625.75)
+09:09:55.011  [LEGAL-COST] step=160 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=10.87 p99=33.43) p2ms=(p50=9.03 p99=12.82) p3ms=(p50=1985.04 p99=2295.24) legalMaskMs=(p50=11.16 p99=11.72) legalMaskPerPosUs=(p50=2.7 p99=2.9) interStepMs=(p50=2116.19 p99=2383.65) gapMs=(p50=111.24)
+09:10:16.126  [ENCODE-COST] step=169 batch=4096 n=10 encodeMs=(p50=581.13 p99=1563.82) gpuWaitMs=(p50=1402.14 p99=1573.54)
+09:10:16.127  [LEGAL-COST] step=170 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=10.40 p99=16.06) p2ms=(p50=8.26 p99=10.51) p3ms=(p50=1992.75 p99=2391.60) legalMaskMs=(p50=11.08 p99=11.57) legalMaskPerPosUs=(p50=2.7 p99=2.8) interStepMs=(p50=2072.46 p99=2484.34) gapMs=(p50=61.04)
+09:10:37.224  [ENCODE-COST] step=179 batch=4096 n=10 encodeMs=(p50=614.35 p99=1279.24) gpuWaitMs=(p50=1316.70 p99=1411.77)
+09:10:37.224  [LEGAL-COST] step=180 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=11.13 p99=31.07) p2ms=(p50=9.71 p99=11.70) p3ms=(p50=1997.20 p99=2558.23) legalMaskMs=(p50=11.29 p99=11.92) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=2085.96 p99=2648.83) gapMs=(p50=67.93)
+09:10:58.153  [ENCODE-COST] step=189 batch=4096 n=10 encodeMs=(p50=625.91 p99=1058.33) gpuWaitMs=(p50=1397.56 p99=1576.28)
+09:10:58.154  [LEGAL-COST] step=190 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=9.31 p99=14.67) p2ms=(p50=8.33 p99=11.39) p3ms=(p50=2040.31 p99=2290.92) legalMaskMs=(p50=11.40 p99=11.99) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=2117.52 p99=2377.37) gapMs=(p50=59.56)
+09:11:19.272  [ENCODE-COST] step=199 batch=4096 n=10 encodeMs=(p50=617.61 p99=1183.12) gpuWaitMs=(p50=1342.21 p99=1439.81)
+09:11:19.273  [LEGAL-COST] step=200 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=12.48 p99=74.15) p2ms=(p50=9.86 p99=16.12) p3ms=(p50=2015.88 p99=2185.05) legalMaskMs=(p50=11.44 p99=12.53) legalMaskPerPosUs=(p50=2.8 p99=3.1) interStepMs=(p50=2097.34 p99=2289.26) gapMs=(p50=59.13)
+09:11:19.273  [REPLAY] step=200 loss=5.1376 pLoss=3.9890 vLoss=0.8593 pEnt=2.793 pIllM=0.2893 playedP=0.076 pW=0.51 pD=0.05 pL=0.44 vAbs=0.089 pLogitMean=-5.6759 vLogitMean=0.6159 gNorm=0.621 lr=2 ms=2145.7 buf=500000 plies=1948135 games=29513 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+01,tr=1.0e-02] trainerStep=200
+09:11:19.274  [LAYER-HEALTH] live trainerStep=200 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=25 off=3 alwaysOn=0 worst=value.bn(dead 12 off 1 on 0) maxBetaOverGamma=+1.00@tower_final_bn[92] minBetaOverGamma=-153.63@value.bn[8] rvMaxOverMedian=1415.5@blocks.0.bn2[78] rezero=none nonFinite=0
+09:11:22.516  [KL-PROBE] step=200 batch=4096 kl=0.411811 klSd=0.167423 klSd/kl=0.41 drop=0.000 gpu=2609.0ms probe=522.2ms overhead=20.0% amortized@100=0.20%
+09:11:41.482  [ENCODE-COST] step=209 batch=4096 n=10 encodeMs=(p50=631.50 p99=1251.16) gpuWaitMs=(p50=1357.81 p99=1571.36)
+09:11:41.482  [LEGAL-COST] step=210 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=8.27 p99=17.05) p2ms=(p50=10.11 p99=12.64) p3ms=(p50=2159.48 p99=3157.19) legalMaskMs=(p50=11.50 p99=11.70) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=2238.96 p99=3243.61) gapMs=(p50=61.10)
+09:12:02.251  [ENCODE-COST] step=219 batch=4096 n=10 encodeMs=(p50=780.66 p99=1117.16) gpuWaitMs=(p50=1292.30 p99=1371.20)
+09:12:02.251  [LEGAL-COST] step=220 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=8.20 p99=14.76) p2ms=(p50=9.87 p99=13.21) p3ms=(p50=2079.81 p99=2510.37) legalMaskMs=(p50=11.58 p99=12.33) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=2165.11 p99=2593.33) gapMs=(p50=67.24)
+09:12:22.261  [ENCODE-COST] step=229 batch=4096 n=10 encodeMs=(p50=628.63 p99=1212.76) gpuWaitMs=(p50=1281.72 p99=1607.79)
+09:12:22.262  [LEGAL-COST] step=230 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=9.60 p99=17.43) p2ms=(p50=8.80 p99=12.13) p3ms=(p50=1988.51 p99=2258.53) legalMaskMs=(p50=11.39 p99=12.33) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=2069.86 p99=2334.71) gapMs=(p50=62.96)
+09:12:42.829  [ENCODE-COST] step=239 batch=4096 n=10 encodeMs=(p50=492.67 p99=1108.69) gpuWaitMs=(p50=1434.13 p99=1521.23)
+09:12:42.830  [LEGAL-COST] step=240 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.98 p99=14.15) p2ms=(p50=8.23 p99=9.87) p3ms=(p50=1955.43 p99=2448.44) legalMaskMs=(p50=11.51 p99=12.02) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=2038.45 p99=2531.54) gapMs=(p50=66.81)
+09:13:02.619  [ENCODE-COST] step=249 batch=4096 n=10 encodeMs=(p50=625.35 p99=1242.44) gpuWaitMs=(p50=1284.56 p99=1456.93)
+09:13:02.620  [LEGAL-COST] step=250 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=9.40 p99=136.71) p2ms=(p50=8.75 p99=12.16) p3ms=(p50=1935.94 p99=2119.28) legalMaskMs=(p50=11.22 p99=12.03) legalMaskPerPosUs=(p50=2.7 p99=2.9) interStepMs=(p50=2017.57 p99=2207.80) gapMs=(p50=63.48)
+09:13:02.620  [REPLAY] step=250 loss=4.7847 pLoss=3.4011 vLoss=1.1475 pEnt=2.613 pIllM=0.2360 playedP=0.116 pW=0.80 pD=0.03 pL=0.17 vAbs=0.639 pLogitMean=-6.8423 vLogitMean=0.6112 gNorm=0.899 lr=2.5 ms=2127.2 buf=500000 plies=2374804 games=35963 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+01,tr=1.0e-02] trainerStep=250
+09:13:02.621  [LAYER-HEALTH] live trainerStep=250 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=28 off=5 alwaysOn=0 worst=value.bn(dead 13 off 2 on 0) maxBetaOverGamma=+1.05@tower_final_bn[92] minBetaOverGamma=-153.63@value.bn[8] rvMaxOverMedian=1833.1@blocks.0.bn2[78] rezero=none nonFinite=0
+09:13:23.433  [ENCODE-COST] step=259 batch=4096 n=10 encodeMs=(p50=718.35 p99=1296.38) gpuWaitMs=(p50=1292.00 p99=1465.64)
+09:13:23.433  [LEGAL-COST] step=260 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.55 p99=14.51) p2ms=(p50=9.29 p99=11.95) p3ms=(p50=2031.00 p99=2356.46) legalMaskMs=(p50=11.32 p99=12.44) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=2112.01 p99=2438.72) gapMs=(p50=64.18)
+09:13:44.528  [ENCODE-COST] step=269 batch=4096 n=10 encodeMs=(p50=714.53 p99=1199.90) gpuWaitMs=(p50=1224.07 p99=1452.25)
+09:13:44.528  [LEGAL-COST] step=270 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=9.64 p99=17.25) p2ms=(p50=9.88 p99=13.99) p3ms=(p50=2019.58 p99=2388.79) legalMaskMs=(p50=11.61 p99=12.39) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=2105.13 p99=2486.36) gapMs=(p50=66.04)
+09:14:04.374  [ENCODE-COST] step=279 batch=4096 n=10 encodeMs=(p50=727.12 p99=1044.03) gpuWaitMs=(p50=1127.66 p99=1343.91)
+09:14:04.375  [LEGAL-COST] step=280 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.39 p99=14.08) p2ms=(p50=10.81 p99=12.64) p3ms=(p50=1889.98 p99=2147.19) legalMaskMs=(p50=11.52 p99=12.07) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1972.09 p99=2224.17) gapMs=(p50=63.92)
+09:14:25.325  [ENCODE-COST] step=289 batch=4096 n=10 encodeMs=(p50=686.36 p99=1099.40) gpuWaitMs=(p50=1283.04 p99=1429.65)
+09:14:25.325  [LEGAL-COST] step=290 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=10.33 p99=15.55) p2ms=(p50=9.14 p99=12.66) p3ms=(p50=2062.68 p99=2339.13) legalMaskMs=(p50=11.43 p99=11.95) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=2147.48 p99=2425.89) gapMs=(p50=65.32)
+09:14:46.116  [ENCODE-COST] step=299 batch=4096 n=10 encodeMs=(p50=676.59 p99=824.10) gpuWaitMs=(p50=1322.51 p99=1470.98)
+09:14:46.116  [LEGAL-COST] step=300 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=8.32 p99=14.22) p2ms=(p50=9.81 p99=13.94) p3ms=(p50=1981.06 p99=2188.94) legalMaskMs=(p50=11.36 p99=11.80) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=2063.83 p99=2273.28) gapMs=(p50=64.63)
+09:14:46.116  [REPLAY] step=300 loss=36.3806 pLoss=34.1114 vLoss=1.2720 pEnt=1.623 pIllM=0.9971 playedP=0.067 pW=0.11 pD=0.10 pL=0.79 vAbs=0.677 pLogitMean=-6.2725 vLogitMean=0.6114 gNorm=14.325 lr=3 ms=2196.7 buf=500000 plies=2801422 games=42394 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+01,tr=1.0e-02] trainerStep=300
+09:14:46.119  [LAYER-HEALTH] live trainerStep=300 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=322 off=98 alwaysOn=10 worst=policy.pre_bn(dead 92 off 15 on 0) maxBetaOverGamma=+52.78@blocks.1.bn1[95] minBetaOverGamma=-7102.97@policy.pre_bn[117] rvMaxOverMedian=178538.0@value.bn[12] rezero=none nonFinite=0
+09:14:49.259  [KL-PROBE] step=300 batch=4096 kl=2.747576 klSd=2.004519 klSd/kl=0.73 drop=0.000 gpu=2653.7ms probe=368.2ms overhead=13.9% amortized@100=0.14%
+09:15:08.555  [ENCODE-COST] step=309 batch=4096 n=10 encodeMs=(p50=678.61 p99=1246.85) gpuWaitMs=(p50=1406.86 p99=1519.81)
+09:15:08.556  [LEGAL-COST] step=310 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.45 p99=15.80) p2ms=(p50=9.01 p99=13.52) p3ms=(p50=2131.97 p99=3052.69) legalMaskMs=(p50=11.36 p99=12.09) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=2213.00 p99=3143.10) gapMs=(p50=64.57)
+09:15:29.815  [ENCODE-COST] step=319 batch=4096 n=10 encodeMs=(p50=690.63 p99=1348.94) gpuWaitMs=(p50=1321.43 p99=1672.42)
+09:15:29.815  [LEGAL-COST] step=320 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.14 p99=13.32) p2ms=(p50=10.26 p99=12.95) p3ms=(p50=2148.44 p99=2619.15) legalMaskMs=(p50=11.42 p99=12.34) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=2226.60 p99=2711.45) gapMs=(p50=60.76)
+09:15:50.431  [ENCODE-COST] step=329 batch=4096 n=10 encodeMs=(p50=495.62 p99=1235.53) gpuWaitMs=(p50=1464.99 p99=1591.07)
+09:15:50.432  [LEGAL-COST] step=330 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=6.63 p99=12.49) p2ms=(p50=9.66 p99=11.29) p3ms=(p50=2003.74 p99=2137.59) legalMaskMs=(p50=11.16 p99=12.19) legalMaskPerPosUs=(p50=2.7 p99=3.0) interStepMs=(p50=2084.55 p99=2217.15) gapMs=(p50=64.52)
+09:16:12.144  [ENCODE-COST] step=339 batch=4096 n=10 encodeMs=(p50=645.48 p99=1752.97) gpuWaitMs=(p50=1379.24 p99=1460.44)
+09:16:12.145  [LEGAL-COST] step=340 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=8.52 p99=13.74) p2ms=(p50=9.17 p99=10.18) p3ms=(p50=2060.73 p99=2821.41) legalMaskMs=(p50=11.30 p99=12.49) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=2143.32 p99=2906.02) gapMs=(p50=64.90)
+09:16:32.880  [ENCODE-COST] step=349 batch=4096 n=10 encodeMs=(p50=594.16 p99=1461.55) gpuWaitMs=(p50=1370.10 p99=1489.28)
+09:16:32.881  [LEGAL-COST] step=350 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=8.67 p99=18.13) p2ms=(p50=8.75 p99=10.35) p3ms=(p50=1959.05 p99=2731.68) legalMaskMs=(p50=11.22 p99=15.00) legalMaskPerPosUs=(p50=2.7 p99=3.7) interStepMs=(p50=2039.92 p99=2824.31) gapMs=(p50=63.45)
+09:16:32.881  [REPLAY] step=350 loss=8.7093 pLoss=6.8958 vLoss=0.8677 pEnt=2.707 pIllM=0.9458 playedP=0.065 pW=0.46 pD=0.05 pL=0.49 vAbs=0.033 pLogitMean=-0.8083 vLogitMean=0.6146 gNorm=0.059 lr=3.5 ms=2741.8 buf=500000 plies=3228166 games=48821 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+01,tr=1.0e-02] trainerStep=350
+09:16:32.882  [LAYER-HEALTH] live trainerStep=350 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=340 off=101 alwaysOn=7 worst=policy.pre_bn(dead 91 off 15 on 0) maxBetaOverGamma=+1301.46@tower_final_bn[6] minBetaOverGamma=-3382.58@blocks.0.bn2[79] rvMaxOverMedian=421711.0@value.bn[12] rezero=none nonFinite=0
+09:16:53.706  [ENCODE-COST] step=359 batch=4096 n=10 encodeMs=(p50=613.15 p99=1062.83) gpuWaitMs=(p50=1347.53 p99=1566.75)
+09:16:53.706  [LEGAL-COST] step=360 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=8.83 p99=14.43) p2ms=(p50=8.42 p99=8.94) p3ms=(p50=2057.28 p99=2444.05) legalMaskMs=(p50=11.49 p99=12.29) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=2135.55 p99=2529.56) gapMs=(p50=61.02)
+09:17:13.891  [ENCODE-COST] step=369 batch=4096 n=10 encodeMs=(p50=733.90 p99=1189.96) gpuWaitMs=(p50=1179.96 p99=1495.95)
+09:17:13.891  [LEGAL-COST] step=370 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.74 p99=18.83) p2ms=(p50=8.66 p99=10.07) p3ms=(p50=1923.92 p99=2342.48) legalMaskMs=(p50=11.66 p99=12.22) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=1999.30 p99=2435.94) gapMs=(p50=58.98)
+09:17:34.732  [ENCODE-COST] step=379 batch=4096 n=10 encodeMs=(p50=801.86 p99=1336.14) gpuWaitMs=(p50=1187.11 p99=1346.81)
+09:17:34.732  [LEGAL-COST] step=380 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.35 p99=13.98) p2ms=(p50=8.66 p99=10.25) p3ms=(p50=2000.88 p99=2708.89) legalMaskMs=(p50=11.76 p99=12.25) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=2082.01 p99=2794.22) gapMs=(p50=65.12)
+09:17:55.126  [ENCODE-COST] step=389 batch=4096 n=10 encodeMs=(p50=609.63 p99=1373.55) gpuWaitMs=(p50=1298.60 p99=1480.40)
+09:17:55.126  [LEGAL-COST] step=390 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.89 p99=14.43) p2ms=(p50=8.10 p99=9.83) p3ms=(p50=1959.70 p99=2614.52) legalMaskMs=(p50=11.51 p99=11.78) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=2040.51 p99=2699.62) gapMs=(p50=66.81)
+09:18:15.735  [ENCODE-COST] step=399 batch=4096 n=10 encodeMs=(p50=562.16 p99=1422.79) gpuWaitMs=(p50=1363.25 p99=1506.22)
+09:18:15.736  [LEGAL-COST] step=400 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.91 p99=15.38) p2ms=(p50=9.13 p99=10.53) p3ms=(p50=1971.29 p99=2456.82) legalMaskMs=(p50=11.33 p99=12.43) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=2046.45 p99=2542.81) gapMs=(p50=60.12)
+09:18:15.736  [REPLAY] step=400 loss=8.6401 pLoss=6.8210 vLoss=0.8715 pEnt=2.732 pIllM=0.9476 playedP=0.064 pW=0.48 pD=0.06 pL=0.46 vAbs=0.018 pLogitMean=-0.7581 vLogitMean=0.6159 gNorm=0.018 lr=4 ms=2465.0 buf=500000 plies=3654819 games=55255 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+01,tr=1.0e-02] trainerStep=400
+09:18:15.740  [LAYER-HEALTH] live trainerStep=400 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=340 off=101 alwaysOn=6 worst=policy.pre_bn(dead 91 off 15 on 0) maxBetaOverGamma=+431.66@tower_final_bn[6] minBetaOverGamma=-3394.53@blocks.0.bn2[79] rvMaxOverMedian=444435.8@value.bn[12] rezero=none nonFinite=0
+09:18:18.764  [KL-PROBE] step=400 batch=4096 kl=0.000069 klSd=0.000132 klSd/kl=1.92 drop=0.000 gpu=2692.4ms probe=232.2ms overhead=8.6% amortized@100=0.09%
+09:18:39.101  [ENCODE-COST] step=409 batch=4096 n=10 encodeMs=(p50=825.24 p99=1749.43) gpuWaitMs=(p50=1336.32 p99=1433.58)
+09:18:39.101  [LEGAL-COST] step=410 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=5.89 p99=13.64) p2ms=(p50=8.61 p99=10.25) p3ms=(p50=2063.76 p99=3168.53) legalMaskMs=(p50=11.89 p99=12.42) legalMaskPerPosUs=(p50=2.9 p99=3.0) interStepMs=(p50=2144.37 p99=3248.45) gapMs=(p50=66.11)
+09:18:59.531  [ENCODE-COST] step=419 batch=4096 n=10 encodeMs=(p50=704.73 p99=1200.40) gpuWaitMs=(p50=1291.83 p99=1378.57)
+09:18:59.532  [LEGAL-COST] step=420 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=8.20 p99=111.71) p2ms=(p50=9.75 p99=11.60) p3ms=(p50=2021.14 p99=2537.07) legalMaskMs=(p50=11.59 p99=11.89) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=2102.01 p99=2626.99) gapMs=(p50=62.92)
+09:19:19.501  [ENCODE-COST] step=429 batch=4096 n=10 encodeMs=(p50=661.05 p99=1464.45) gpuWaitMs=(p50=1272.26 p99=1545.19)
+09:19:19.502  [LEGAL-COST] step=430 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.69 p99=116.72) p2ms=(p50=8.60 p99=11.56) p3ms=(p50=1981.30 p99=2331.81) legalMaskMs=(p50=11.41 p99=11.94) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=2058.39 p99=2418.89) gapMs=(p50=60.80)
+09:19:39.779  [ENCODE-COST] step=439 batch=4096 n=10 encodeMs=(p50=774.72 p99=997.61) gpuWaitMs=(p50=1160.52 p99=1582.65)
+09:19:39.779  [LEGAL-COST] step=440 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=9.61 p99=25.22) p2ms=(p50=9.25 p99=10.81) p3ms=(p50=1913.87 p99=2599.68) legalMaskMs=(p50=11.65 p99=12.04) legalMaskPerPosUs=(p50=2.8 p99=2.9) interStepMs=(p50=1992.11 p99=2684.03) gapMs=(p50=59.38)
+09:20:00.538  [ENCODE-COST] step=449 batch=4096 n=10 encodeMs=(p50=733.46 p99=1261.71) gpuWaitMs=(p50=1219.20 p99=1511.53)
+09:20:00.539  [LEGAL-COST] step=450 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=8.47 p99=14.43) p2ms=(p50=8.45 p99=10.37) p3ms=(p50=1974.21 p99=2483.92) legalMaskMs=(p50=11.49 p99=12.58) legalMaskPerPosUs=(p50=2.8 p99=3.1) interStepMs=(p50=2066.53 p99=2570.97) gapMs=(p50=75.41)
+09:20:00.539  [REPLAY] step=450 loss=8.6159 pLoss=6.7934 vLoss=0.8827 pEnt=2.710 pIllM=0.9398 playedP=0.058 pW=0.47 pD=0.06 pL=0.46 vAbs=0.011 pLogitMean=-1.0563 vLogitMean=0.6185 gNorm=0.048 lr=4.5 ms=2491.5 buf=500000 plies=4081392 games=61710 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+01,tr=1.0e-02] trainerStep=450
+09:20:00.543  [LAYER-HEALTH] live trainerStep=450 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=339 off=102 alwaysOn=6 worst=policy.pre_bn(dead 91 off 15 on 0) maxBetaOverGamma=+339.63@tower_final_bn[6] minBetaOverGamma=-3394.53@blocks.0.bn2[79] rvMaxOverMedian=451754.3@value.bn[12] rezero=none nonFinite=0
+09:20:21.712  [ENCODE-COST] step=459 batch=4096 n=10 encodeMs=(p50=780.25 p99=1148.53) gpuWaitMs=(p50=1290.10 p99=1433.00)
+09:20:21.712  [LEGAL-COST] step=460 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.77 p99=16.87) p2ms=(p50=8.56 p99=11.41) p3ms=(p50=2029.18 p99=2606.88) legalMaskMs=(p50=11.41 p99=12.75) legalMaskPerPosUs=(p50=2.8 p99=3.1) interStepMs=(p50=2116.66 p99=2694.30) gapMs=(p50=71.15)
+09:20:42.560  [ENCODE-COST] step=469 batch=4096 n=10 encodeMs=(p50=617.69 p99=1180.59) gpuWaitMs=(p50=1347.55 p99=1415.25)
+09:20:42.560  [LEGAL-COST] step=470 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=8.39 p99=15.18) p2ms=(p50=8.39 p99=11.64) p3ms=(p50=1991.70 p99=2364.02) legalMaskMs=(p50=11.56 p99=12.19) legalMaskPerPosUs=(p50=2.8 p99=3.0) interStepMs=(p50=2072.72 p99=2450.51) gapMs=(p50=64.25)
+09:21:03.640  [ENCODE-COST] step=479 batch=4096 n=10 encodeMs=(p50=618.78 p99=1372.55) gpuWaitMs=(p50=1321.08 p99=1520.34)
+09:21:03.640  [LEGAL-COST] step=480 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.26 p99=14.09) p2ms=(p50=8.30 p99=14.47) p3ms=(p50=1968.97 p99=2623.27) legalMaskMs=(p50=11.03 p99=11.44) legalMaskPerPosUs=(p50=2.7 p99=2.8) interStepMs=(p50=2053.02 p99=2713.61) gapMs=(p50=68.50)
+09:21:24.863  [ENCODE-COST] step=489 batch=4096 n=10 encodeMs=(p50=509.24 p99=1519.04) gpuWaitMs=(p50=1471.92 p99=1533.33)
+09:21:24.863  [LEGAL-COST] step=490 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.51 p99=17.91) p2ms=(p50=8.60 p99=11.28) p3ms=(p50=2014.61 p99=3012.18) legalMaskMs=(p50=11.13 p99=11.99) legalMaskPerPosUs=(p50=2.7 p99=2.9) interStepMs=(p50=2096.97 p99=3102.93) gapMs=(p50=66.24)
+09:21:45.962  [ENCODE-COST] step=499 batch=4096 n=10 encodeMs=(p50=628.15 p99=1343.60) gpuWaitMs=(p50=1354.16 p99=1485.74)
+09:21:45.962  [LEGAL-COST] step=500 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=7.26 p99=20.10) p2ms=(p50=10.02 p99=15.36) p3ms=(p50=1971.24 p99=2851.12) legalMaskMs=(p50=11.06 p99=11.88) legalMaskPerPosUs=(p50=2.7 p99=2.9) interStepMs=(p50=2061.07 p99=2948.43) gapMs=(p50=72.55)
+09:21:45.963  [REPLAY] step=500 loss=8.6092 pLoss=6.7816 vLoss=0.8831 pEnt=2.760 pIllM=0.9446 playedP=0.059 pW=0.49 pD=0.06 pL=0.45 vAbs=0.037 pLogitMean=-1.1248 vLogitMean=0.6159 gNorm=0.057 lr=5 ms=2860.9 buf=500000 plies=4508091 games=68143 rejected=0 skipped=0 epoch=0 mom=0.8500 lrCyc[pk=1.0e+01,tr=1.0e-02] trainerStep=500
+09:21:45.968  [LAYER-HEALTH] live trainerStep=500 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=339 off=102 alwaysOn=5 worst=policy.pre_bn(dead 91 off 15 on 0) maxBetaOverGamma=+299.15@tower_final_bn[6] minBetaOverGamma=-3394.53@blocks.0.bn2[79] rvMaxOverMedian=461869.9@value.bn[12] rezero=none nonFinite=0
+09:21:48.886  [KL-PROBE] step=500 batch=4096 kl=0.001387 klSd=0.002083 klSd/kl=1.50 drop=0.000 gpu=2479.3ms probe=335.0ms overhead=13.5% amortized@100=0.14%
+09:22:08.408  [ENCODE-COST] step=509 batch=4096 n=10 encodeMs=(p50=649.98 p99=1462.48) gpuWaitMs=(p50=1285.16 p99=1436.83)
+09:22:08.408  [LEGAL-COST] step=510 batch=4096 window=(p1=10 p2=10 p3=10 lm=10 is=10) p1ms=(p50=8.72 p99=14.15) p2ms=(p50=9.34 p99=10.57) p3ms=(p50=1990.31 p99=2837.66) legalMaskMs=(p50=10.99 p99=11.78) legalMaskPerPosUs=(p50=2.7 p99=2.9) interStepMs=(p50=2079.42 p99=2923.49) gapMs=(p50=71.06)
+09:22:13.004  [REPLAY] SIGINT received — finishing current step, saving, then exiting (Ctrl-C again to force-quit)
+09:22:14.638  [REPLAY] abort requested — stopping at step 513
+09:22:14.885  [PARAM] dropoutRate applied to training graph: 0.1000
+09:22:16.105  [MASK CHECK] pos=0 movedIdx=3882 inLegalMask=true legalCount=30
+09:22:16.105  [MASK CHECK] pos=1 movedIdx=36 inLegalMask=true legalCount=30
+09:22:16.105  [MASK CHECK] pos=2 movedIdx=3641 inLegalMask=true legalCount=29
+09:22:16.105  [MASK CHECK] pos=3 movedIdx=3188 inLegalMask=true legalCount=32
+09:22:16.105  [MASK CHECK] pos=4 movedIdx=36 inLegalMask=true legalCount=30
+09:22:16.105  [MASK CHECK] pos=5 movedIdx=3882 inLegalMask=true legalCount=30
+09:22:16.105  [MASK CHECK] pos=6 movedIdx=4094 inLegalMask=true legalCount=29
+09:22:16.105  [MASK CHECK] pos=7 movedIdx=1020 inLegalMask=true legalCount=28
+09:22:16.105  [EXEC] reducedPrecisionFastMath default=0 override=nil
+09:22:16.122  [EXEC] compiled training executable batch=16 diagnostics=false klStash=false targets=5
+09:22:17.465  [REPLAY] saved trainer model (abort) step=513 trainerStep=513 nextGame=69822 shard=0 epoch=0 -> 20261005-lrC-cyc10-replay-latest.safetensors
+09:22:17.472  [LAYER-HEALTH] checkpoint replay-abort step=513 trainerStep=513 scope=all_tensors reluSites=9/10 ch=1040 dead=339 off=101 alwaysOn=5 worst=policy.pre_bn(dead 91 off 15 on 0) maxBetaOverGamma=+278.50@tower_final_bn[6] minBetaOverGamma=-3394.53@blocks.0.bn2[79] rvMaxOverMedian=466888.2@value.bn[12] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=0/128 maxAbs=3.582e+08@policy.pre_bn.running_var
+09:22:17.472  [LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+09:22:17.472  [LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]
+09:22:17.472  [LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0    -17.38 [93]        +22.85 [87]          243.2 [78]
+09:22:17.472  [LAYER-HEALTH]     blocks.0.bn1    relu          128     24      7      0      0      0   -134.30 [58]         +0.65 [98]           61.1 [65]
+09:22:17.472  [LAYER-HEALTH]     blocks.0.bn2    relu          128     42     10      1      0      0  -3394.53 [79]         +3.72 [58]           65.5 [58]
+09:22:17.472  [LAYER-HEALTH]     blocks.1.bn1    relu          128     38      9      0      0      0   -451.26 [17]         +2.61 [70]          191.7 [25]
+09:22:17.472  [LAYER-HEALTH]     blocks.1.bn2    relu          128     17      2      0      0      0   -394.29 [73]         +1.13 [21]          174.7 [106]
+09:22:17.472  [LAYER-HEALTH]     blocks.2.bn1    relu          128     28      8      1      0      0   -188.52 [60]        +13.09 [25]          938.2 [34]
+09:22:17.472  [LAYER-HEALTH]     blocks.2.bn2    relu          128     57     28      0      0      0   -764.71 [2]          +1.48 [78]         5344.9 [23]
+09:22:17.472  [LAYER-HEALTH]     tower_final_bn  relu          128     28     21      3      0      0    -45.90 [61]       +278.50 [6]        108495.8 [11]
+09:22:17.472  [LAYER-HEALTH]     policy.pre_bn   relu          128     91     15      0      0      0  -2157.49 [117]        -0.52 [11]        53540.4 [127]
+09:22:17.472  [LAYER-HEALTH]     value.bn        relu           16     14      1      0      0      0   -153.63 [8]          -1.56 [5]        466888.2 [12]
+09:22:17.472  [LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+09:22:17.472  [LAYER-HEALTH]     value.fc1.weight  relu  units 128  zero 0  low 62  median unit norm 2.459e-17
+09:22:17.472  [LAYER-HEALTH]     (no SE blocks)
+09:22:17.472  [LAYER-HEALTH]   ReZero: none
+09:22:17.472  [LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (10263038 values examined)
+09:22:17.472  [LAYER-HEALTH]   largest |value|: policy.pre_bn.running_var 3.582e+08, value.bn.running_var 9.720e+07, blocks.2.bn2.running_var 6.880e+07, blocks.1.bn2.running_var 1.155e+06, blocks.0.bn2.running_var 4.331e+04
+09:22:17.497  [REPLAY] enumerated checkpoint -> 20261005-lrC-cyc10-replay-step513.safetensors
+09:22:18.102  [REPLAY] done: steps=513 positionsFed=4618951 gamesFed=69822 rejected=0 skipped=0 epochs=0

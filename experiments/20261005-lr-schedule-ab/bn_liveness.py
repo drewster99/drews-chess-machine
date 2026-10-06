@@ -2,18 +2,20 @@
 """Per-site batch-norm health for the LR-schedule arms, for every activation function.
 
 `[LAYER-HEALTH]` classifies a BN channel as dead / mostly off / always on from β/|γ|, which
-only means something for ReLU and leaky ReLU, so it prints n/a for SiLU and GELU sites.
-This script reads the enumerated checkpoints directly and reports, for every BN site that
-feeds an activation, two activation-aware numbers:
+only means something for ReLU and leaky ReLU, so it prints n/a for SiLU and GELU sites
+(its activation-aware `parked` counts, from the app's `BatchNormPassThrough`, cover every
+activation; this script mirrors that model). This script reads the enumerated checkpoints
+directly and reports, for every BN site that feeds an activation, two activation-aware
+numbers:
 
 - **pass-through** P: the expected magnitude of the activation's derivative, E|f'(γz + β)|,
   with z ~ N(0, 1) standing for the BN-normalized input — the fraction of the incoming
   gradient the channel passes back on average. Φ(β/|γ|) for ReLU, α + (1 − α)Φ(β/|γ|) for
-  leaky ReLU with slope α, and a numerical integral for SiLU.
+  leaky ReLU with slope α, and a numerical integral for SiLU and (exact, erf) GELU.
 - **excess pass-through** X: the part of P above what the activation passes whatever its
-  input (its floor: 0 for ReLU and SiLU, α for leaky ReLU), as a share of the range above
+  input (its floor: 0 for ReLU, SiLU and GELU, α for leaky ReLU), as a share of the range above
   that floor, X = (P − floor) / (1 − floor). For ReLU and leaky ReLU X is exactly Φ(β/|γ|),
-  the share of inputs on the unit-slope side; for SiLU it is P.
+  the share of inputs on the unit-slope side; for SiLU and GELU it is P.
 
 A channel is **parked** when X < Φ(−3) and **mostly off** when Φ(−3) ≤ X < Φ(−2). For ReLU
 and leaky ReLU these are `[LAYER-HEALTH]`'s dead (β/|γ| < −3) and mostly off (−3 ≤ β/|γ| < −2)
@@ -61,23 +63,26 @@ RUNS = {
     "C-leaky (cycle peak 10)": ("20261005-lrCleaky-cyc10-replay-step",),
 }
 
-# Activations this script has a pass-through model for, in report order.
-MODELED_ACTIVATIONS = ("relu", "leaky_relu", "silu")
+# Activations this script has a pass-through model for, in report order. The Swift app's
+# `BatchNormPassThrough` (Training/BatchNormPassThrough.swift) is the single source of these
+# models and of the integration below; this script mirrors it, and the app's tests check the
+# two agree (DrewsChessMachineTests/BatchNormPassThroughTests.swift).
+MODELED_ACTIVATIONS = ("relu", "leaky_relu", "silu", "gelu")
 LEAKY_SLOPE = 0.01  # ActivationFunction.leakyReLUNegativeSlope in the Swift app
-PASS_THROUGH_FLOOR = {"relu": 0.0, "leaky_relu": LEAKY_SLOPE, "silu": 0.0}
+PASS_THROUGH_FLOOR = {"relu": 0.0, "leaky_relu": LEAKY_SLOPE, "silu": 0.0, "gelu": 0.0}
 # LayerHealth.deadBetaOverAbsGamma / mostlyOffBetaOverAbsGamma, as excess pass-through.
 PARKED_BELOW = 0.5 * math.erfc(3.0 / math.sqrt(2.0))  # Φ(−3)
 MOSTLY_OFF_BELOW = 0.5 * math.erfc(2.0 / math.sqrt(2.0))  # Φ(−2)
 
-# SiLU integration: Y = γz + β ~ N(β, γ²) is integrated in y over β ± SILU_SIGMA_SPAN·|γ|,
-# clipped to ±SILU_SATURATION; beyond it |silu'(y)| equals 1 (above) or 0 (below) to well
+# SiLU / GELU integration: Y = γz + β ~ N(β, γ²) is integrated in y over β ± SMOOTH_SIGMA_SPAN·|γ|,
+# clipped to ±SMOOTH_SATURATION; beyond it |f'(y)| equals 1 (above) or 0 (below) to well
 # under double precision, so the mass there is added in closed form. Panels are at most
-# SILU_PANEL_Y wide in y and |γ| / SILU_PANELS_PER_SIGMA wide relative to the Gaussian, with
-# a panel edge at silu's sign change so |silu'| is smooth inside each panel.
-SILU_SIGMA_SPAN = 9.0
-SILU_SATURATION = 50.0
-SILU_PANEL_Y = 0.25
-SILU_PANELS_PER_SIGMA = 4.0
+# SMOOTH_PANEL_Y wide in y and |γ| / SMOOTH_PANELS_PER_SIGMA wide relative to the Gaussian, with
+# a panel edge at f''s sign change so |f'| is smooth inside each panel.
+SMOOTH_SIGMA_SPAN = 9.0
+SMOOTH_SATURATION = 50.0
+SMOOTH_PANEL_Y = 0.25
+SMOOTH_PANELS_PER_SIGMA = 4.0
 _GL_X, _GL_W = np.polynomial.legendre.leggauss(16)
 
 
@@ -97,35 +102,50 @@ def silu_derivative(y):
     return s * (1.0 + y * (1.0 - s))
 
 
-def _silu_derivative_root():
-    """The one y where silu' changes sign (silu' < 0 below it): 1 + y(1 − σ(y)) = 0."""
-    lo, hi = -2.0, -1.0
-    if not (silu_derivative(np.array([lo]))[0] < 0 < silu_derivative(np.array([hi]))[0]):
-        raise AssertionError("silu' does not change sign in the bisection bracket")
+def gelu_derivative(y):
+    """Exact (erf) GELU, as the app builds it: d/dy [y·Φ(y)] = Φ(y) + y·φ(y)."""
+    y = np.asarray(y, dtype=np.float64)
+    return phi_cdf(y) + y * np.exp(-0.5 * y * y) / math.sqrt(2.0 * math.pi)
+
+
+SMOOTH_DERIVATIVES = {"silu": silu_derivative, "gelu": gelu_derivative}
+# A bracket holding the one y where each derivative changes sign (negative below it).
+SMOOTH_ROOT_BRACKETS = {"silu": (-2.0, -1.0), "gelu": (-1.0, -0.5)}
+
+
+def _derivative_root(activation):
+    """The one y where f' changes sign (f' < 0 below it), by bisection."""
+    derivative = SMOOTH_DERIVATIVES[activation]
+    lo, hi = SMOOTH_ROOT_BRACKETS[activation]
+    if not (derivative(np.array([lo]))[0] < 0 < derivative(np.array([hi]))[0]):
+        raise AssertionError(f"{activation}' does not change sign in the bisection bracket")
     for _ in range(200):
         mid = 0.5 * (lo + hi)
-        if silu_derivative(np.array([mid]))[0] < 0:
+        if derivative(np.array([mid]))[0] < 0:
             lo = mid
         else:
             hi = mid
     return 0.5 * (lo + hi)
 
 
-SILU_DERIVATIVE_ROOT = _silu_derivative_root()
+SMOOTH_DERIVATIVE_ROOTS = {act: _derivative_root(act) for act in SMOOTH_DERIVATIVES}
+SILU_DERIVATIVE_ROOT = SMOOTH_DERIVATIVE_ROOTS["silu"]
 
 
-def silu_pass_through(gamma, beta):
-    """E|silu'(Y)| for Y ~ N(β, γ²), one channel; γ = 0 is the constant input β."""
+def smooth_pass_through(activation, gamma, beta):
+    """E|f'(Y)| for Y ~ N(β, γ²), one channel, f SiLU or GELU; γ = 0 is the constant input β."""
+    derivative = SMOOTH_DERIVATIVES[activation]
+    root = SMOOTH_DERIVATIVE_ROOTS[activation]
     sigma = abs(gamma)
     if sigma == 0.0:
-        return float(abs(silu_derivative(np.array([beta]))[0]))
-    lo = max(beta - SILU_SIGMA_SPAN * sigma, -SILU_SATURATION)
-    hi = min(beta + SILU_SIGMA_SPAN * sigma, SILU_SATURATION)
-    saturated_mass = float(phi_cdf((beta - SILU_SATURATION) / sigma)) if hi == SILU_SATURATION else 0.0
+        return float(abs(derivative(np.array([beta]))[0]))
+    lo = max(beta - SMOOTH_SIGMA_SPAN * sigma, -SMOOTH_SATURATION)
+    hi = min(beta + SMOOTH_SIGMA_SPAN * sigma, SMOOTH_SATURATION)
+    saturated_mass = float(phi_cdf((beta - SMOOTH_SATURATION) / sigma)) if hi == SMOOTH_SATURATION else 0.0
     if lo >= hi:
         return saturated_mass
-    width = min(SILU_PANEL_Y, sigma / SILU_PANELS_PER_SIGMA)
-    edges = [lo, SILU_DERIVATIVE_ROOT, hi] if lo < SILU_DERIVATIVE_ROOT < hi else [lo, hi]
+    width = min(SMOOTH_PANEL_Y, sigma / SMOOTH_PANELS_PER_SIGMA)
+    edges = [lo, root, hi] if lo < root < hi else [lo, hi]
     total = 0.0
     for a, b in zip(edges[:-1], edges[1:]):
         bounds = np.linspace(a, b, max(1, math.ceil((b - a) / width)) + 1)
@@ -134,8 +154,13 @@ def silu_pass_through(gamma, beta):
         y = (middle[:, None] + half[:, None] * _GL_X[None, :]).ravel()
         w = (half[:, None] * _GL_W[None, :]).ravel()
         density = np.exp(-0.5 * ((y - beta) / sigma) ** 2) / (sigma * math.sqrt(2.0 * math.pi))
-        total += float((np.abs(silu_derivative(y)) * density * w).sum())
+        total += float((np.abs(derivative(y)) * density * w).sum())
     return total + saturated_mass
+
+
+def silu_pass_through(gamma, beta):
+    """E|silu'(Y)| for Y ~ N(β, γ²), one channel; γ = 0 is the constant input β."""
+    return smooth_pass_through("silu", gamma, beta)
 
 
 def excess_pass_through(activation, gamma, beta):
@@ -148,8 +173,8 @@ def excess_pass_through(activation, gamma, beta):
         x[zero] = (b[zero] > 0).astype(np.float64)
         x[~zero] = phi_cdf(b[~zero] / np.abs(g[~zero]))
         return x
-    if activation == "silu":
-        return np.array([silu_pass_through(gi, bi) for gi, bi in zip(g, b)])
+    if activation in SMOOTH_DERIVATIVES:
+        return np.array([smooth_pass_through(activation, gi, bi) for gi, bi in zip(g, b)])
     raise ValueError(f"no pass-through model for activation {activation!r}")
 
 
@@ -309,7 +334,7 @@ def selftest():
             elif act == "leaky_relu":
                 d = np.where(y > 0, 1.0, LEAKY_SLOPE)
             else:
-                d = np.abs(silu_derivative(y))
+                d = np.abs(SMOOTH_DERIVATIVES[act](y))
             model = float(pass_through(act, np.array([g]), np.array([b]))[0])
             assert abs(d.mean() - model) < 2e-3, (act, g, b, d.mean(), model)
     # SiLU at large |γ| and near the parked line, against a dense trapezoid in y.
@@ -319,12 +344,23 @@ def selftest():
         dense = np.exp(-0.5 * ((y - b) / g) ** 2) / (abs(g) * math.sqrt(2 * math.pi)) * np.abs(silu_derivative(y))
         reference = float(np.trapezoid(dense, y))
         assert abs(silu_pass_through(g, b) - reference) <= 1e-5 * reference, (g, b, reference)
+    # GELU likewise, near its parked line and at large |γ|.
+    for g, b in [(1.0, -4.0), (1.0, -5.5), (5.0, -14.0), (20.0, -60.0), (605.0, -1000.0), (1e-3, -0.4),
+                 (1000.0, 0.0)]:
+        y = np.linspace(b - 12 * abs(g), b + 12 * abs(g), 4_000_001)
+        dense = np.exp(-0.5 * ((y - b) / g) ** 2) / (abs(g) * math.sqrt(2 * math.pi)) * np.abs(gelu_derivative(y))
+        reference = float(np.trapezoid(dense, y))
+        assert abs(smooth_pass_through("gelu", g, b) - reference) <= 1e-5 * reference, (g, b, reference)
     # SiLU derivative against a central finite difference, and its sign change.
     y = np.linspace(-8, 8, 2001)
     silu = lambda v: v * logistic(v)
     fd = (silu(y + 1e-5) - silu(y - 1e-5)) / 2e-5
     assert np.max(np.abs(fd - silu_derivative(y))) < 1e-6
     assert abs(float(silu_derivative(np.array([SILU_DERIVATIVE_ROOT]))[0])) < 1e-12
+    gelu = lambda v: v * phi_cdf(v)
+    fd = (gelu(y + 1e-5) - gelu(y - 1e-5)) / 2e-5
+    assert np.max(np.abs(fd - gelu_derivative(y))) < 1e-6
+    assert abs(float(gelu_derivative(np.array([SMOOTH_DERIVATIVE_ROOTS["gelu"]]))[0])) < 1e-12
     # Parked / mostly off equal LayerHealth's β/|γ| bands for ReLU and leaky ReLU, γ = 0 included
     # (LayerHealth: γ = 0 is always on when β > 0, else dead).
     g = np.concatenate([rng.normal(0, 2, 20000), np.zeros(4)])
@@ -388,7 +424,7 @@ def selftest():
         except ValueError:
             continue
         raise AssertionError(f"not refused: {bad}")
-    print("selftest ok: pass-through (Monte Carlo; SiLU against a dense integral to |γ| = 1000); parked / mostly off "
+    print("selftest ok: pass-through (Monte Carlo; SiLU and GELU against a dense integral to |γ| = 1000); parked / mostly off "
           "= LayerHealth bands for relu / leaky_relu; site mapping and refusals; checkpoint identity")
 
 
