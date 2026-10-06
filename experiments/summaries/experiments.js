@@ -330,5 +330,25 @@ window.DCM_EXPERIMENTS = [
    "E-0017"
   ],
   "supersededBy": null
+ },
+ {
+  "id": "E-0019",
+  "date": "2026-10-05",
+  "file": "E-0019_2026-10-05_leaky-value-head-lr-cycle.html",
+  "title": "Leaky ReLU in the value head under the 1.0 ↔ 0.001 LR cycle (arm B-leaky)",
+  "status": "complete",
+  "tags": [
+   "lr-schedule",
+   "activations",
+   "leaky-relu",
+   "value-head",
+   "basic24"
+  ],
+  "takeaway": "Leaky ReLU in the value head kept every value-head channel and FC1 unit alive (0 of 16 dead vs B's 6; 0 of 128 FC1 units at zero velocity vs 27) but left value loss and policy strength unchanged (low-LR probes −1.7 ± 9.3 pElo vs B; best 1641.7 vs 1632.0 at 38k); use it in the value head for its health, not for strength.",
+  "related": [
+   "E-0017",
+   "E-0018"
+  ],
+  "supersededBy": null
  }
 ];

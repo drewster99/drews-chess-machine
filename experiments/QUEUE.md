@@ -8,7 +8,6 @@ conversation.
 
 | started | experiment | ends (est.) |
 |---|---|---|
-| 2026-10-05 20:41 | LR arm B-leaky (`20261005-lr-schedule-ab/`): B's recipe and start weights with leaky ReLU in the value head (conv + FC1), to 40k | ~2026-10-06 08:00–10:00 (shares the GPU with test runs) |
 | 2026-10-05 23:44 | LR arm B-leakyall: B with leaky ReLU at every activation, to 40k | shares the GPU with two other runs |
 | 2026-10-05 23:44 | LR arm B-silu: B with SiLU in the tower (blocks + tower end) and leaky ReLU in the heads, to 40k | shares the GPU with two other runs |
 
@@ -34,6 +33,10 @@ conversation.
 
 ## Finished
 
+- 2026-10-05 20:41 → 2026-10-06 16:24 — LR arm B-leaky (`20261005-lr-schedule-ab/`, E-0019): B with leaky ReLU in the value head
+  (conv + FC1), to 40k. Value head kept every channel (`value.bn` 0 of 16 dead vs B's 6; value FC1 0 of 128 units at zero
+  velocity vs 27); value loss unchanged (0.8032 vs 0.8031 over 37k–40k); policy probes −1.7 ± 9.3 pElo vs B at low LR.
+  Best 1641.7 at 38k (B 1632.0 at 38k).
 - 2026-10-05 23:13 → 23:43 — LR arm C-leaky (`20261005-lr-schedule-ab/`): C with leaky ReLU everywhere; trained like C to LR 2,
   then ran away from LR 3 (loss to 4.5M, finite weights, 543 dead channels); stopped by the owner at step 1,175.
 - 2026-10-05 01:32 → 18:51 — LR schedule A/B/C on a fresh basic24 R7-shape net (`20261005-lr-schedule-ab/`, E-0017): A constant 0.01,
