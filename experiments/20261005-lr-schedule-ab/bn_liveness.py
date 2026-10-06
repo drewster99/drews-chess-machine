@@ -58,6 +58,7 @@ RUNS = {
     "B-leaky (value head)": ("20261005-lrBleaky-cyc1-replay-step",),
     "B-leakyall": ("20261005-lrBleakyall-cyc1-replay-step",),
     "B-silu": ("20261005-lrBsilu-cyc1-replay-step",),
+    "B-silu clip 1.0 (from 18k)": ("20261006-lrBsilu-clip1-replay-seg1-step",),
     "C-leaky (cycle peak 10)": ("20261005-lrCleaky-cyc10-replay-step",),
 }
 

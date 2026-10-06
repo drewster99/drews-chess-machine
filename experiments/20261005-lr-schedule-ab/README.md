@@ -295,6 +295,24 @@ grep -A16 'LAYER-HEALTH\] checkpoint replay-final' ~/Library/Logs/DrewsChessMach
   pass-through.
 - Three runs (B-leaky, B-leakyall, B-silu) and the implementation's test runs share the GPU.
 
+## Arm B-silu-clip1 (added 2026-10-06 17:00, owner)
+
+- Owner: "Do a resume of silu from 18000 checkpoint with cap at 1.0". The question is whether a gradient-norm cap of 1.0
+  stops B-silu's step-20,600 blowup: gNorm 2.57 at LR 0.88, illegal mass 0.80, 20 of 128 policy pre-BN channels
+  parked, and pElo 1571.9 at 19k down to 457.4 at 21k. B-silu itself ran with cap 15, which never bound after step 1.
+- `--resume-exact` from `20261005-lrBsilu-cyc1-replay-step18000.safetensors` (trainer step 18,000, before the blowup),
+  `parameters-Bsilu-clip1.json` (`parameters-B.json` with `grad_clip_max_norm` 1.0, nothing else changed),
+  `--accept-inexact params`, `--training-step-limit 22000` (the limit counts this segment's steps, so it ends at trainer
+  step 40,000), `--seed 20261005`, same frozen build 2330 (`DCM-2331-4e70c615-p1headact.app`) and flags as B-silu.
+  Stem `20261006-lrBsilu-clip1` (segment-1 names `-replay-seg1-step<N>`, N = trainer step − 18,000), log
+  `dcm_log_20261006-170000.txt`, probes `probes-Bsilu-clip1-seg1.jsonl` (`PROBE_SEGMENT=1`).
+- The resume logged `[RESUME] EXACT` even though `grad_clip_max_norm` changed: in this build the `params` gap only covers
+  a checkpoint with no parameter snapshot, a changed per-step feed, or a changed buffer capacity. It does not compare the
+  parameter values themselves. The run's `[REPLAY-HPARAMS]` line shows `gradClip=1`, and step 1 ran at lr 0.0108, B's
+  LR at trainer step 18,001. The RNG streams (sampler, dropout) were restored, so up to the cap this run follows B-silu's
+  feed and draws. Until gNorm first exceeds 1.0 it should track B-silu step for step (weights bit for bit only where
+  MPSGraph steps are deterministic).
+
 ## Arm C-leaky (added 2026-10-05 23:13, owner)
 
 - Owner: "let's do a leaky version of C with the crazy high LR schedule". C's damage was not confined to the value head
