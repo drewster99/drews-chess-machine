@@ -10,7 +10,7 @@ Status (2026-10-06): **PLAN ONLY.** Nothing here is implemented. Implementation 
 
 **The request (owner, 2026-10-06).** "Right now we have a large amount of UI space with just a few lines of output. We could add a few buckets... last hour, today, this week, this month, this year, all time. But also, think of what other kinds of stats or evals we can show."
 
-**Owner-approved first pass, in order:** items 1, 2, 4, 6, then 5 and 3 (numbering from the proposal the owner saw). Items 7–12 and the origin breakdown are later phases (§11).
+**Proposed first pass, in order (not yet approved; OD-21):** items 1, 2, 4, 6, then 5 and 3 (numbering from the proposal the owner saw). Items 7–12 and the origin breakdown are later phases (§11).
 1. Record table: last hour / today / this week / this month / this year / all time, plus performance rating, average opponent rating and net rating change on rated games.
 2. Per time control: current rating, change today and this week, W–D–L, score, performance rating, rating sparkline.
 4. Per model / checkpoint: games, score, performance rating, with checkpoint progression under follow-lineage.
@@ -396,6 +396,8 @@ One classification, `LichessBotGameEnding`, from `(status, winner, ourScore, loc
 - **P0.** Generation attribution fix (§4.5), regression test first (OD-17).
 - **P1.** Pure core (§4.1) and its tests; `scripts/lichess_bot_record_stats.py`.
 - **P2.** Index schema 3 with facts, rebuild timing log, controller pipeline (queue, state, triggers, clock loop, log line); tests; full suite.
+Phases P3–P8 follow the recommended item order of OD-21; if the owner orders the items differently, P3–P8 are reordered to match (P0–P2 come first either way, since every pane needs them).
+
 - **P3.** Item 1: card layouts, period table, footnote, panel header with the period and Rated / Casual pickers, `LichessBotStatsStyle`, `LichessBotStatsFormat` in the views; render tests.
 - **P4.** Item 2: Time controls pane and sparkline.
 - **P5.** Item 4: Models pane and progression chart.
@@ -453,3 +455,4 @@ One classification, `LichessBotGameEnding`, from `(status, winner, ourScore, loc
 - **OD-18 Draws with no rule seen locally** labeled "Agreed / other draw". *Recommend.*
 - **OD-19 Card default height** 240 → 560 for operators who never dragged it (key unchanged). *Recommend.*
 - **OD-20 Account card ratings grid** stays as it is for now, though Time controls repeats its ratings. *Recommend keep*; revisit after P4.
+- **OD-21 First-pass scope and order:** which of the twelve proposed items ship first, and in what order. *Recommend items 1, 2, 4, 6, then 5 and 3* (the record table, then per-time-control, per-model and self-assessment, which most directly show how strong the bot is and whether its own evaluations can be trusted; endings and opponent strength last, as they refine the same picture); items 7–12 and the origin breakdown as later phases (§11). Alternative: any other subset or order; the phase list (§9) is reordered to match.
